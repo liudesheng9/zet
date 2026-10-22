@@ -92,11 +92,13 @@ try {
     Assert (@($modelModeTrace | Where-Object tool -in @('get_card','get_tree','list_trees')).Count -eq 0) 'model mode does not reread the head through a full Card projection'
     $env:ZT_FAIL_CARD = 'ScopeBook/1|a'
     $null = Invoke-Zt @(
-        @{tool='create_topic';arguments=@{title='生产投入';body='本主题讨论生产投入。'}},
-        @{tool='create_successor';arguments=@{at='0/0';title='资金提高生产投入';body='资金被企业投入生产。此卡尚未补来源。'}},
-        @{tool='create_successor';arguments=@{at='0/1';title='生产投入会提高产出';body="资金被投入生产。`n`n来源：[[ScopeBook]] §1"}}
+        # docs/literature-only-digest-design.md: the book's own Cards live in its Literature tree (a section
+        # anchor and its Cards); a Topic-tree Card belongs to no book and is not checked here.
+        @{tool='create_successor';arguments=@{at='ScopeBook/1';title='生产投入';body='§2 投入'}},
+        @{tool='create_successor';arguments=@{at='ScopeBook/2';kind='side';title='资金提高生产投入';body='资金被企业投入生产。此卡尚未补来源。'}},
+        @{tool='create_successor';arguments=@{at='ScopeBook/2|a';title='生产投入会提高产出';body="资金被投入生产。`n`n来源：[[ScopeBook]] §1"}}
     )
-    [IO.File]::AppendAllText((Join-Path $staging 'owned-g01.txt'), "0/1`n", $utf8)
+    [IO.File]::AppendAllText((Join-Path $staging 'owned-g01.txt'), "ScopeBook/2|a`n", $utf8)
     $env:ZT_BULK_MISSING = 'OtherBook/1'
     $bookTraceFile = Join-Path $scratch 'book-tools.jsonl'
     $env:ZT_TRACE_TOOLS = $bookTraceFile
@@ -104,16 +106,16 @@ try {
     $bookPlan = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\card-compiler.ps1') -Step plan -Work $bookWork -Book ScopeBook -Staging $staging -NoOrphans -Rules 'R4,R6,I3,L1,L2' 2>&1)
     Assert ($LASTEXITCODE -eq 0) "whole-book quality does not require an unrelated book body: $($bookPlan -join ' | ')"
     $bookState = Get-Content -LiteralPath (Join-Path $bookWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-    Assert ('0/1' -in $bookState.picked -and '0/2' -in $bookState.picked -and 'ScopeBook/1|a' -in $bookState.picked) 'book scope includes both declared owned Topic Cards and previously attributed Topic Cards'
+    Assert ('ScopeBook/2|a' -in $bookState.picked -and 'ScopeBook/2|a|1' -in $bookState.picked -and 'ScopeBook/1|a' -in $bookState.picked) 'book scope includes the declared owned Cards and the other Cards of the book tree'
     $bookFaults = [IO.File]::ReadAllText((Join-Path $bookWork 'before\audit-faults.txt'))
-    Assert ($bookFaults.Contains('0/1 R4') -and $bookFaults.Contains('0/1 R6') -and $bookFaults.Contains('0/1 I3')) 'an owned Card with no source is checked rather than lost through inferred book attribution'
+    Assert ($bookFaults.Contains('ScopeBook/2|a R4') -and $bookFaults.Contains('ScopeBook/2|a R6') -and $bookFaults.Contains('ScopeBook/2|a I3')) 'an owned Card with no source is checked rather than lost through inferred book attribution'
     $bookTrace = @(Get-Content -LiteralPath $bookTraceFile -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
     Assert (@($bookTrace | Where-Object tool -in @('get_card','get_tree','list_trees','list_hubs')).Count -eq 0 -and @($bookTrace.process_id | Sort-Object -Unique).Count -eq 1) 'the Card book cycle uses bounded book/external inputs through one process without a global audit'
     $bookCoverage = Get-Content -LiteralPath (Join-Path $bookWork 'before\audit.json') -Raw -Encoding utf8 | ConvertFrom-Json
     Assert ($bookCoverage.complete -and $bookCoverage.scope.kind -eq 'book') 'the book cycle labels its complete quality scope'
     $null = Invoke-Zt @(
         @{tool='create_successor';arguments=@{at='ScopeBook/1';kind='side';type='event';title='2001年企业收购厂房';body="时间：2001年。`n地点：上海。`n参与者：一家企业。`n经过：企业收购厂房。`n来源：[[ScopeBook]] §1"}},
-        @{tool='create_successor';arguments=@{at='0/2';title='没有引用的结论会保留为孤立卡';body="没有其他卡引用这个结论。`n`n来源：[[ScopeBook]] §1"}},
+        @{tool='create_successor';arguments=@{at='ScopeBook/2|a|1';title='没有引用的结论会保留为孤立卡';body="没有其他卡引用这个结论。`n`n来源：[[ScopeBook]] §1"}},
         @{tool='edit_card';arguments=@{at='OtherBook/1';body="§1 外部锚点。`n`n见 [[ScopeBook/1|a]]。"}},
         @{tool='edit_card';arguments=@{at='OtherBook/1|a';body="外部机制会影响企业投入。`n`n印证 [[ScopeBook/1|d]]：外部证据说明企业通过收购厂房增加生产投入。"}}
     )
@@ -121,7 +123,7 @@ try {
     $relationPlan = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\card-compiler.ps1') -Step plan -Work $relationshipWork -Book ScopeBook -Staging $staging -Rules 'I5,E4' 2>&1)
     Assert ($LASTEXITCODE -eq 0) "book checks use incoming facts without reading an external navigation anchor body: $($relationPlan -join ' | ')"
     $relationFaults = [IO.File]::ReadAllText((Join-Path $relationshipWork 'before\audit-faults.txt'))
-    Assert (-not $relationFaults.Contains('ScopeBook/1|a I5') -and -not $relationFaults.Contains('ScopeBook/1|d E4') -and $relationFaults.Contains('0/3 I5')) 'incoming anchor addresses and kinded external Idea carriers retain the existing orphan and Event checks'
+    Assert (-not $relationFaults.Contains('ScopeBook/1|a I5') -and -not $relationFaults.Contains('ScopeBook/1|d E4') -and $relationFaults.Contains('ScopeBook/2|a|2 I5')) 'incoming anchor addresses and kinded external Idea carriers retain the existing orphan and Event checks'
     $relationCards = Get-Content -LiteralPath (Join-Path $relationshipWork 'before\audit-cards.json') -Raw -Encoding utf8 | ConvertFrom-Json
     Assert (@($relationCards | Where-Object { $_.address -eq 'OtherBook/1|a' -and $_.category -eq 'context' }).Count -eq 1) 'an external relationship carrier stays context rather than becoming a writable Card or an orphan candidate'
     $env:ZT_BULK_MISSING = $savedMissing
@@ -132,11 +134,12 @@ try {
     $full = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey ScopeBook -Out (Join-Path $fullWork 'before') -SkipModels 2>&1)
     Assert ($LASTEXITCODE -eq 0) 'the full-book oracle runs on the same fixture'
     # Global inbound rules are deliberately not part of this NoOrphans group.
-    $fullFaults = @(Get-Content -LiteralPath (Join-Path $fullWork 'before\audit-faults.txt') -Encoding utf8 | Where-Object { $_ -match '^ScopeBook/1\|a (R4|R6|L1|L2) ' })
-    $scopedFaults = @($faults -split '\r?\n' | Where-Object { $_ -match '^ScopeBook/1\|a (R4|R6|L1|L2) ' })
+    # The audit writes a Card's fault lines in no fixed rule order; compare the sets.
+    $fullFaults = @(Get-Content -LiteralPath (Join-Path $fullWork 'before\audit-faults.txt') -Encoding utf8 | Where-Object { $_ -match '^ScopeBook/1\|a (R4|R6|L1|L2) ' } | Sort-Object)
+    $scopedFaults = @($faults -split '\r?\n' | Where-Object { $_ -match '^ScopeBook/1\|a (R4|R6|L1|L2) ' } | Sort-Object)
     Assert (($scopedFaults -join "`n") -ceq ($fullFaults -join "`n")) "the scoped and full-book checks return identical requested owned-Card fault lines: $($scopedFaults -join ' | ') / $($fullFaults -join ' | ')"
-    $oracleRelations = @(Get-Content -LiteralPath (Join-Path $fullWork 'before\audit-faults.txt') -Encoding utf8 | Where-Object { $_ -match '^(ScopeBook/1\|[ad]|0/3) (I5|E4) ' } | Sort-Object)
-    $bookRelations = @($relationFaults -split '\r?\n' | Where-Object { $_ -match '^(ScopeBook/1\|[ad]|0/3) (I5|E4) ' } | Sort-Object)
+    $oracleRelations = @(Get-Content -LiteralPath (Join-Path $fullWork 'before\audit-faults.txt') -Encoding utf8 | Where-Object { $_ -match '^(ScopeBook/1\|[ad]|ScopeBook/2\|a\|2) (I5|E4) ' } | Sort-Object)
+    $bookRelations = @($relationFaults -split '\r?\n' | Where-Object { $_ -match '^(ScopeBook/1\|[ad]|ScopeBook/2\|a\|2) (I5|E4) ' } | Sort-Object)
     $oracleRevision = (Get-Content -LiteralPath (Join-Path $fullWork 'before\audit.json') -Raw -Encoding utf8 | ConvertFrom-Json).archive_revision
     $relationRevision = (Get-Content -LiteralPath (Join-Path $relationshipWork 'before\audit.json') -Raw -Encoding utf8 | ConvertFrom-Json).archive_revision
     Assert ($oracleRevision -eq $relationRevision -and ($oracleRelations -join "`n") -ceq ($bookRelations -join "`n")) 'book and global quality checks agree on the fixture orphan and Event faults at the same graph revision'
@@ -165,10 +168,10 @@ try {
     $lostStaging = Join-Path $scratch 'staging-does-not-exist'
     $lost = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\card-compiler.ps1') -Step plan -Work $lostStagingWork -Book ScopeBook -Staging $lostStaging -NoOrphans 2>&1)
     Assert ($LASTEXITCODE -ne 0 -and ($lost -join ' ').Contains('ownership staging') -and -not (Test-Path -LiteralPath (Join-Path $lostStagingWork 'state.json'))) 'an unreadable declared ownership folder cannot silently drop external owned Cards'
-    $env:ZT_BULK_MISSING = '0/0'
+    $env:ZT_BULK_MISSING = 'ScopeBook/2'
     $parentWork = Join-Path $scratch 'parent-titles'
-    $parentPlan = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\card-compiler.ps1') -Step plan -Work $parentWork -Book ScopeBook -Staging $staging -NoOrphans -Rules R4 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and [IO.File]::ReadAllText((Join-Path $parentWork 'fix-01.md')).Contains('- 父卡：`0/0` 生产投入')) 'parent context uses fresh catalogue titles without requiring an unrelated parent body'
+    $parentPlan = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\card-compiler.ps1') -Step plan -Work $parentWork -Book ScopeBook -Groups 1 -Staging $staging -NoOrphans -Rules R4 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and [IO.File]::ReadAllText((Join-Path $parentWork 'fix-01.md')).Contains('- 父卡：`ScopeBook/2` 生产投入')) 'parent context uses fresh catalogue titles without requiring an unrelated parent body'
 } finally {
     $env:ZT_CHECK_ZT = $savedCheckZt; $env:ZT_TRACE_TOOLS = $savedTrace
     $env:ZT_FAIL_TREE = $savedFailTree; $env:ZT_FAIL_CARD = $savedFailCard; $env:ZT_FAIL_FLAG = $savedFailFlag

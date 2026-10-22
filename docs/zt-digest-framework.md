@@ -1,5 +1,7 @@
 # ZT digests on the Workflow Framework Protocol
 
+> **2026-10-22: the digests build only Literature trees** (base 5.0.0, econ 6.0.0, math 5.0.0; `docs/literature-only-digest-design.md`). Topic trees, Topic Cards, Hub Cards and the register are written only by zt-idea-grow 3.0.0 (`docs/idea-grow-design.md`). Where this document describes a digest stage that writes them (concepts, review, hubs, mode hubs, Topic placement, Organize merges and Topic bodies), that stage is gone from the digests.
+
 The ZT digests are built by the Workflow Framework Protocol (global skill `workflow-framework-protocol`): one **base** holds every stage that all book types share, and each book type is a **variant** that installs its own **module set** (its layers and its prompts) into the base's slots. The assembler composes a variant with the base, builds one self-contained Workflow script, and installs it frozen: while it runs, its stages, their order, the roles and their models, the retries, checks, and modes cannot change; only data moves.
 
 | Workflow | Blueprint | Installed script | Book type |

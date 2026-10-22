@@ -260,6 +260,36 @@ fn unique_temp(prefix: &str) -> String {
     std::env::temp_dir().join(name).to_string_lossy().into_owned()
 }
 
+/// Attach each catalogue Card's outgoing Links (and their kinds) from the box's Link list. The
+/// catalogue holds the Literature trees only (docs/literature-only-digest-design.md), so a Link
+/// from or to a Topic-tree Card is skipped; any other Card missing from it is an incomplete read.
+fn attach_book_links(metadata: &mut [Value], positions: &BTreeMap<String, usize>, graph: &Value) -> Result<()> {
+    for card in metadata.iter_mut() {
+        card["links"] = json!([]);
+        card["kinds"] = json!({});
+    }
+    let topic = zt_check::mcp::scope::is_topic_address;
+    for link in graph["links"].as_array().context("incomplete book relationship list")? {
+        let source = link["source"].as_str().context("incomplete book Link source")?;
+        let target = link["target"].as_str().context("incomplete book Link target")?;
+        if topic(source) || topic(target) {
+            continue;
+        }
+        let source_index = *positions.get(source).context("incomplete book relationship source catalogue")?;
+        let broken = link["broken"].as_bool().context("incomplete book Link existence")?;
+        if !broken {
+            if !positions.contains_key(target) {
+                bail!("incomplete book relationship target catalogue `{target}`");
+            }
+            metadata[source_index]["links"].as_array_mut().unwrap().push(json!(target));
+            if let Some(kind) = link["kind"].as_str() {
+                metadata[source_index]["kinds"][target] = json!(kind);
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Compiler {
     fn zt(&mut self) -> Result<&mut Zt> {
         if self.zt.is_none() {
@@ -355,7 +385,7 @@ impl Compiler {
     fn invoke_scoped_audit(&mut self, dir: &str, group_only: bool) -> Result<AuditView> {
         let book = field(&self.state, "book");
         let revision = self.zt()?.cards(&[], "text")?.archive_revision;
-        let details = crate::snapshot::read_title_trees(self.zt()?)?;
+        let details = crate::snapshot::read_literature_trees(self.zt()?)?;
         if details
             .iter()
             .any(|tree| tree["archive_revision"].as_u64() != Some(revision))
@@ -383,39 +413,7 @@ impl Compiler {
                 .zt()?
                 .call("list_links", json!({}))
                 .context("incomplete book relationship read")?;
-            for card in &mut metadata {
-                card["links"] = json!([]);
-                card["kinds"] = json!({});
-            }
-            for link in graph["links"]
-                .as_array()
-                .context("incomplete book relationship list")?
-            {
-                let source = link["source"]
-                    .as_str()
-                    .context("incomplete book Link source")?;
-                let target = link["target"]
-                    .as_str()
-                    .context("incomplete book Link target")?;
-                let source_index = *positions
-                    .get(source)
-                    .context("incomplete book relationship source catalogue")?;
-                let broken = link["broken"]
-                    .as_bool()
-                    .context("incomplete book Link existence")?;
-                if !broken {
-                    if !positions.contains_key(target) {
-                        bail!("incomplete book relationship target catalogue `{target}`");
-                    }
-                    metadata[source_index]["links"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(json!(target));
-                    if let Some(kind) = link["kind"].as_str() {
-                        metadata[source_index]["kinds"][target] = json!(kind);
-                    }
-                }
-            }
+            attach_book_links(&mut metadata, &positions, &graph)?;
         }
         let catalogue_index = audit::book_of::book_index(&details, &metadata);
         let mut declared = BTreeSet::new();
@@ -2236,6 +2234,28 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn book_links_skip_topic_trees_outside_the_literature_catalogue() {
+        // docs/literature-only-digest-design.md: the card cycle reads only Literature trees, so a
+        // Link from or to a Topic-tree Card is outside its catalogue, not an incomplete read.
+        let mut metadata = vec![json!({"address": "Book2020/1"}), json!({"address": "Book2020/1|a"})];
+        let positions: BTreeMap<String, usize> =
+            [("Book2020/1".to_string(), 0), ("Book2020/1|a".to_string(), 1)].into_iter().collect();
+        let graph = json!({"links": [
+            {"source": "3/1", "target": "Book2020/1", "broken": false},
+            {"source": "Book2020/1|a", "target": "3/1", "broken": false, "kind": "rests-on"},
+            {"source": "Book2020/1|a", "target": "Book2020/1", "broken": false, "kind": "rests-on"}
+        ]});
+        attach_book_links(&mut metadata, &positions, &graph).unwrap();
+        assert_eq!(metadata[1]["links"], json!(["Book2020/1"]));
+        assert_eq!(metadata[1]["kinds"], json!({"Book2020/1": "rests-on"}));
+        assert_eq!(metadata[0]["links"], json!([]));
+        // A Literature-tree source missing from the catalogue is still an incomplete read.
+        let missing = json!({"links": [{"source": "Other2021/1", "target": "Book2020/1", "broken": false}]});
+        let error = attach_book_links(&mut metadata, &positions, &missing).unwrap_err().to_string();
+        assert_eq!(error, "incomplete book relationship source catalogue");
+    }
 
     #[test]
     fn the_card_cycle_report_names_the_restatement_resolution_it_has() {

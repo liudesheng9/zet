@@ -1,5 +1,7 @@
 # The ZT digest workflows
 
+> **2026-10-22: the digests build only Literature trees** (base 5.0.0, econ 6.0.0, math 5.0.0; `docs/literature-only-digest-design.md`). Topic trees, Topic Cards, Hub Cards and the register are written only by zt-idea-grow 3.0.0 (`docs/idea-grow-design.md`). Where this document describes a digest stage that writes them (concepts, review, hubs, mode hubs, Topic placement, Organize merges and Topic bodies), that stage is gone from the digests.
+
 The digest turns a book from the Scholar Archive into
 Cards in the agent Workspace: a Literature tree for the book, Topic trees for the ideas that stand
 on their own, Event Cards for the real events it reports, and a **structured model** for every

@@ -107,10 +107,11 @@ try {
     New-Item -ItemType Directory -Force (Join-Path $scratch 'baseline') | Out-Null
     New-Item -ItemType Directory -Force (Join-Path $scratch 'previous') | Out-Null
 
-    # --- earlier material: one Topic tree and one Card, so an earlier filing can be read ---
-    $null = Invoke-Zt @(@{ tool = 'create_topic'; arguments = @{ title = '旧主题'; body = '一个早已存在的主题。' } })
-    $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = '0/0'; title = '企业的边界由交易成本决定'; body = '企业的边界由交易成本决定。' } })
-    $earlier = '0/1'
+    # --- earlier material: an older book's Literature tree and one Card, so an earlier filing can be
+    # read (a digest files no Card in a Topic tree: docs/literature-only-digest-design.md) ---
+    $null = Invoke-Zt @(@{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = '@book{Earlier2020,title={Earlier book},author={Old, Ann},year={2020}}'; body = '一本早已读过的书。' } })
+    $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = 'Earlier2020'; kind = 'direct'; title = '企业的边界由交易成本决定'; body = '企业的边界由交易成本决定。' } })
+    $earlier = 'Earlier2020/1'
 
     # --- one prepared run of the pilot source ---
     $source = Join-Path $repo 'docs\digest-pilot-short-source.zh.md'
@@ -198,15 +199,16 @@ try {
     $draft = @{ schema_version = 1; unit = $unit.id; token = $unit.token; input_hash = $groupStart.input_hash; disposition = 'cards'; calls = @(
             @{ tool = 'edit_card'; arguments = @{ at = 'PilotGate/1'; title = '企业因市场失灵而出现'; body = $anchorBody; base_fingerprint = $job.inputs.anchor.fingerprint } },
             @{ tool = 'create_successor'; arguments = @{ at = 'PilotGate/1'; kind = 'side'; title = '企业因市场失灵而出现'; body = "市场失灵时企业替代价格机制。`n`n来源：[[PilotGate]] §导论" } },
-            @{ tool = 'create_successor'; arguments = @{ at = $earlier; kind = 'side'; title = '企业边界是一次成本比较'; body = "企业边界来自一次成本比较。`n`n来源：[[PilotGate]] §导论" } },
-            @{ tool = 'edit_card'; arguments = @{ at = 'PilotGate/1'; base_receipt = "$prefix/item-000000"; body = "$anchorBody`n`n承接 [[@@1]]，后者说明市场失灵。`n`n承接 [[@@2]]，后者把边界放进旧主题。" } }
+            @{ tool = 'create_successor'; arguments = @{ at = 'PilotGate/1'; kind = 'side'; title = '企业边界是一次成本比较'; body = "企业边界来自一次成本比较。对照 [[$earlier]]：旧书把边界归于交易成本。`n`n来源：[[PilotGate]] §导论" } },
+            @{ tool = 'edit_card'; arguments = @{ at = 'PilotGate/1'; base_receipt = "$prefix/item-000000"; body = "$anchorBody`n`n承接 [[@@1]]，后者说明市场失灵。`n`n承接 [[@@2]]，后者把边界放进旧书的笔记。" } }
         ) }
     Save-Json $groupStart.draft $draft
     $finished = Run-Digest @('group-finish', '-Out', $out, '-Group', '1', '-Token', "$($unit.token)", '-Draft', $groupStart.draft)
     $owned = @($finished.owned)
     Assert ($finished.state -eq 'done' -and $owned.Count -ge 2) "the run completes group 1 with its own receipts ($($owned -join ', '))"
-    $earlierFiled = @($owned | Where-Object { $_ -like "$earlier|*" }) | Select-Object -First 1
-    Assert ($earlierFiled) "the run filed one new Card beside the earlier Card ($earlierFiled)"
+    # docs/literature-only-digest-design.md: a group files only in its own Literature tree and links
+    # the earlier book's Card instead of filing beside it.
+    Assert (-not @($owned | Where-Object { $_ -like "$earlier|*" }).Count -and @($owned | Where-Object { $_ -like 'PilotGate/1|*' }).Count -ge 2) "the run files its Cards in its own Literature tree ($($owned -join ', '))"
     $null = Run-Digest @('ledger', 'report', '-Out', $out)
 
     # --- qualify without the reviewed evidence: partial, never a pass ---

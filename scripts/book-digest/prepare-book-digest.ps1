@@ -31,7 +31,7 @@
     `<Out>\source-faults.md` (see `zt-digest source-faults`).
   - Writes to -Out: book.zh.md, groups/gNN.md, shared-prefix.md (identical for every run, so the
     DeepSeek prompt cache can reuse it), and manifest.json.
-  - -Instructions (comma-separated instruction files of this folder, default dsh-instructions.zh.md)
+  - -Instructions (comma-separated instruction files of this folder, default dsh-digest-base.zh.md,dsh-model-cards.zh.md)
     builds shared-prefix.md: the first file, with each further file inserted before its `## 回复`
     section. The framework digests pass dsh-digest-base.zh.md plus their book type's files
     (docs/zt-digest-framework.md). -NoEventCandidates leaves the event candidates out of the group
@@ -59,7 +59,7 @@
   Parameters: -Source, -Out, -CitationKey, -BibTeX (required unless -Book resolves them); -Book,
   -BookTitle '', -StartHeading 导论, -EndHeading 参考, -SkipHeadings '', -MaxChars 20000,
   -MaxUnits 3, -MinUnitChars 1000, -FileId 0, -MinFigureBytes 3000, -MaxEventCandidates 12,
-  -NoteMaxChars 6000, -Instructions dsh-instructions.zh.md, -NoEventCandidates, -NoFigures, -Apply.
+  -NoteMaxChars 6000, -Instructions dsh-digest-base.zh.md,dsh-model-cards.zh.md, -NoEventCandidates, -NoFigures, -Apply.
 
   This script forwards every argument to `zt-digest prepare` (tools/zt-digest/src/prepare.rs),
   which does the work in one process with one `zt mcp`; callers should call the tool directly. It

@@ -14,7 +14,7 @@ updated: 2026-10-22
 
 This block holds what AI agents get to know about ZT, and the means to put it in front of them. It has three agent skills: `zt` teaches the slip-box's Workspaces, the `zt` MCP server's tools, and the Access rules. `zettelkasten` teaches how to compose, place, and link a Card the way Luhmann worked. `zt-digest-protocol` teaches the digest base, the shared part of every book-digest workflow. It also holds the shell helper `zt-mcp.ps1`, which lets an agent with no MCP tools (DeepSeek Harness) call the same server, and the installer `scripts/install-agent-integrations.ps1`. The installer copies the skills into Claude Code, Codex, and DeepSeek Harness and registers `zt mcp` as an MCP server. The block exists because the server only enforces the rules (agent Access, Card rules, confirm plans). The conventions that make Cards good (one idea, claim titles, kinded Links, model structure) live in skill text, and every agent harness must load that text from one source.
 
-**Owns:** the skill texts and their frontmatter (`skills/*/SKILL.md`, `skills/*/references/*.md`, `skills/*/agents/openai.yaml`); the helper path `skills/zt/scripts/zt-mcp.ps1`, now a forwarder to `zt-digest call` (the helper itself, with batching, `@@N` references, `-Allow`, `-Log`, `-SrcLog`, `-Moves`, `-TopicGate`, and `append_card`, is owned by [zt-digest](zt-digest.md)); the global installation and registration done by `scripts/install-agent-integrations.ps1`.
+**Owns:** the skill texts and their frontmatter (`skills/*/SKILL.md`, `skills/*/references/*.md`, `skills/*/agents/openai.yaml`); the helper path `skills/zt/scripts/zt-mcp.ps1`, now a forwarder to `zt-digest call` (the helper itself, with batching, `@@N` references, `-Allow`, `-Log`, `-SrcLog`, `-Moves`, `-Open`, `-TopicGate`, and `append_card`, is owned by [zt-digest](zt-digest.md), and the Literature scope it runs in by default by [zt-check](zt-check.md)); the global installation and registration done by `scripts/install-agent-integrations.ps1`.
 
 **Does not own:** the MCP server, its tool schemas and its `INSTRUCTIONS` text ([MCP server](mcp-server.md), `src/mcp.rs`); the Card operations and confirm plans behind the tools ([Card operations](card-operations.md)); the Card checker that enforces the Card language ([zt-check](zt-check.md)); the digest scripts that call the helper, including `zt-calls.ps1` ([Digest scripts](digest-scripts.md)); the DeepSeek instruction files ([Digest prompts](digest-prompts.md)); the Workflow scripts and the framework that builds them ([Digest workflows](digest-workflows.md)); the service that `zt mcp` needs ([Service, CLI and storage](service-and-cli.md)).
 
@@ -33,8 +33,8 @@ This block holds what AI agents get to know about ZT, and the means to put it in
 | | `skills/zt-digest-protocol/references/scripts.md` — a table of the base's tools, instruction files, workflow files, and tests. |
 | | `scripts/install-agent-integrations.ps1` — copies and links the skills, registers the server in Claude Code and Codex, checks the handshake. |
 | Depends on | [MCP server](mcp-server.md) (`zt mcp`, the tools the skills name and the helper calls); [Service, CLI and storage](service-and-cli.md) (`zt` on PATH, `zt up`, `zt version`); [zt-check](zt-check.md) (the checker the zettelkasten and digest-protocol skills send agents to); [zt-digest](zt-digest.md) (`zt-digest call`, which the helper path forwards to); external: PowerShell 7.5 (the installer calls `ConvertFrom-Json -DateKind`; `zt-mcp.ps1` declares 7.5 too), the `codex` CLI (optional), Claude Code's `~/.claude.json` and `~/.claude/settings.json`, DeepSeek Harness's `~/.dsh`. |
-| Used by | [Digest scripts](digest-scripts.md) (`zt-calls.ps1`, `model-compiler.ps1`, `organize-apply.ps1`, `card-compiler.ps1`, `math-compiler.ps1`, and the job files of `prepare-book-digest.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1` call the helper); [Digest prompts](digest-prompts.md) (`dsh-digest-base.zh.md`, `dsh-instructions.zh.md`, `dsh-link-instructions.zh.md`, `dsh-fill-instructions.zh.md`, `dsh-event-instructions.zh.md` show `zt-digest call` commands); [Digest workflows](digest-workflows.md) (`ZD_CALL` in `zt-digest-lib.js`: Organize's zt calls and the manager approvals, which name `zt-digest call` and pwsh with `zt-mcp.ps1`; and the `zettelkasten` skill sent to digest and link runs); every Claude Code, Codex, and DeepSeek Harness conversation that touches the slip-box. |
-| Tests | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` (helper `-SrcLog`, `-TopicGate`), `scripts/book-digest/tests/zt-calls.tests.ps1` (helper output under a GBK console), `scripts/book-digest/tests/card-compiler.tests.ps1` (uses `append_card`). The skills and the installer have no tests. |
+| Used by | [Digest scripts](digest-scripts.md) (`zt-calls.ps1`, `model-compiler.ps1`, `organize-apply.ps1`, `card-compiler.ps1`, `math-compiler.ps1`, and the job files of `prepare-book-digest.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1` call the helper); [Digest prompts](digest-prompts.md) (`dsh-digest-base.zh.md`, `dsh-link-instructions.zh.md`, `dsh-fill-instructions.zh.md`, `dsh-event-instructions.zh.md` show `zt-digest call` commands); [Digest workflows](digest-workflows.md) (`ZD_CALL` in `zt-digest-lib.js`: Organize's zt calls and the manager approvals, which name `zt-digest call` and pwsh with `zt-mcp.ps1`; and the `zettelkasten` skill sent to digest and link runs); every Claude Code, Codex, and DeepSeek Harness conversation that touches the slip-box. |
+| Tests | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` (helper `-SrcLog`, `-TopicGate`, the Literature scope without `-Open`), `scripts/book-digest/tests/zt-calls.tests.ps1` (helper output under a GBK console), `scripts/book-digest/tests/card-compiler.tests.ps1` (uses `append_card`). The skills and the installer have no tests. |
 
 ## Concepts
 
@@ -47,7 +47,8 @@ This block holds what AI agents get to know about ZT, and the means to put it in
 - `Model part`, `Model facet`, `Emphasis`, `Relation kind`, `Elaboration level`, `Math form`, `Derivation part`, `Derivation chain`, `Building block`, `Self-sufficient model` — the model vocabulary of `CONTEXT.md`. `skills/zettelkasten/SKILL.md` (*Model structure*) teaches how to design them; `skills/zt/SKILL.md` names the arguments and the `get_model` report fields.
 - `Hub Card`, `Hub level`, `Register`, `Structure Card` — entry points (`CONTEXT.md`); the zettelkasten skill (*Entry points, hubs, and structure Cards*) says when to write one by hand.
 - `Insert` — putting a new Card in another Card's place (`CONTEXT.md`); `insert_card` in the `zt` skill.
-- `Topic gate` — the lock the helper takes before `create_topic` (`-TopicGate`), so parallel digest runs do not make the same Topic twice (`CONTEXT.md`, `skills/zt/scripts/zt-mcp.ps1`).
+- `Literature scope` — the helper's default write scope (`docs/literature-only-digest-design.md`): without `-Open`, `zt-digest call` refuses `create_topic`, any write to a Topic-tree Card, a Hub Card, and authored text that links a Topic-tree Card, as every ZT digest does (they write only Literature trees). `-Open` is for hand work on Topic trees; `zt-idea-grow` writes its Topic trees in-process and needs no `-Open` (`skills/zt/SKILL.md`, `skills/zt/scripts/zt-mcp.ps1`).
+- `Topic gate` — the lock the helper takes before `create_topic` (`-TopicGate`, effective only with `-Open`, since the Literature scope refuses `create_topic`), so parallel hand runs do not make the same Topic twice (`CONTEXT.md`, `skills/zt/scripts/zt-mcp.ps1`).
 - `Call batch` — the helper's input: one JSON object `{"tool","arguments"}` or an array of them; `@@N` in a string argument is the address returned by call `N` (0-based) (`skills/zt/scripts/zt-mcp.ps1`).
 - `Allow list` — the file passed with `-Allow`: one address per line; the run may change only those Cards and the Cards it creates (`skills/zt/scripts/zt-mcp.ps1`).
 - `Compiler cycle` — survey, plan, DeepSeek writes, SELF-CHECK, apply, check, one fix round, report, cleanup: the basic block of every digest stage (`skills/zt-digest-protocol/SKILL.md`, section 2).
@@ -107,7 +108,7 @@ flowchart LR
 
 ### The helper (`skills/zt/scripts/zt-mcp.ps1`)
 
-The script forwards. It sets the console input and output to UTF-8, takes `zt-digest` from `ZT_DIGEST` or PATH (and fails with `zt-digest is not installed` when neither has it), pipes stdin through when its arguments contain `-`, runs `zt-digest call` with the same arguments, and exits with that exit code. `zt-digest call` (`tools/zt-digest/src/calls.rs`) is one process per run: it starts `zt mcp`, sends `initialize` (protocol `2025-06-18`) and `notifications/initialized`, then sends one `tools/call` per call, in order, and waits for the reply with the matching `id`. Between calls it resolves `@@N`, applies the allow list, strips `src`, takes the Topic gate, and writes the logs. At the end it closes the server's stdin and waits for it. The script keeps the line `zt-calls: direct reads`. Its documented output line also states the typed-refusal line a Lock produces (`card_locked <compact JSON>` just before `resume:`), that the Lock's tree, Lock id, reason and hint survive as JSON, and that such an answer is a destination refusal: it is never retried as a provider fault, and the tree is unlocked by its owner in the GUI (#137).
+The script forwards. It sets the console input and output to UTF-8, takes `zt-digest` from `ZT_DIGEST` or PATH (and fails with `zt-digest is not installed` when neither has it), pipes stdin through when its arguments contain `-`, runs `zt-digest call` with the same arguments, and exits with that exit code. `zt-digest call` (`tools/zt-digest/src/calls.rs`) is one process per run: it starts `zt mcp`, sends `initialize` (protocol `2025-06-18`) and `notifications/initialized`, then sends one `tools/call` per call, in order, and waits for the reply with the matching `id`. Between calls it resolves `@@N`, applies the allow list, strips `src`, takes the Topic gate, and writes the logs. Without `-Open` the process runs in the Literature scope, and a call the scope refuses ends the run. At the end it closes the server's stdin and waits for it. The script's help text names `[-Open]` in the synopsis and has a Scope paragraph: without `-Open` the helper refuses `create_topic`, Topic-tree and Hub writes and Topic Links; `-Open` is for hand work on Topic trees, and `zt-idea-grow` needs none. The script keeps the line `zt-calls: direct reads`. Its documented output line also states the typed-refusal line a Lock produces (`card_locked <compact JSON>` just before `resume:`), that the Lock's tree, Lock id, reason and hint survive as JSON, and that such an answer is a destination refusal: it is never retried as a provider fault, and the tree is unlocked by its owner in the GUI (#137).
 
 ### The installer (`scripts/install-agent-integrations.ps1`)
 
@@ -136,7 +137,7 @@ The frontmatter holds only `name` and `description`. The descriptions of `zt` an
 5. The confirm flow: `delete_card`, `move_card`, `insert_card`, and Citation key renames return a plan; call again with the `confirm` text (`delete`, the tree root's address, `move`, `insert`).
 6. The Scholar Archive tools: `scholar_archive_status`, `scholar_archive_read`, `scholar_archive_sql`, `scholar_archive_file` (its `link` is a Document link `[name](scholar:<file_id>)`), `scholar_archive_export`, `scholar_archive_artifact`.
 7. Rules: never change the human Workspace by any route (not by shell commands, the GUI API, or SQLite); write only through the MCP server; cite Cards by address.
-8. Fallbacks: if the service is down, `zt status` then `zt up`; if the harness has no `zt` tools, use the zt helper `zt-digest call` (one binary beside `zt`; `scripts/zt-mcp.ps1` forwards to it with the same arguments): `zt-digest call calls.json` for a UTF-8 JSON file of calls, `@'...'@ | zt-digest call -` for calls piped in, or `zt-digest call -Tool get_card -Json '{"at":"3/1"}'` for one call. `@@N`, the output lines, and the stop at the first error are as before; the `zt` shell commands act with human Access, so never write with them.
+8. Fallbacks: if the service is down, `zt status` then `zt up`; if the harness has no `zt` tools, use the zt helper `zt-digest call` (one binary beside `zt`; `scripts/zt-mcp.ps1` forwards to it with the same arguments): `zt-digest call calls.json` for a UTF-8 JSON file of calls, `@'...'@ | zt-digest call -` for calls piped in, or `zt-digest call -Tool get_card -Json '{"at":"3/1"}'` for one call. `@@N`, the output lines, and the stop at the first error are as before. The helper runs in the Literature scope by default, as the ZT digests do (they write only Literature trees): it refuses `create_topic`, writes to Topic-tree and Hub Cards, and Links to Topic-tree Cards; the agent adds `-Open` when it writes a Topic tree by hand. The `zt` shell commands act with human Access, so never write with them.
 9. Developing zt: `cargo test` from PowerShell (dump tests fail under Git Bash because of PATH), the deploy sequence (`zt down`, back up `zt.sqlite3` on a schema change, `cargo install --path . --locked`, `zt up`, `zt version`, `zt status`), and re-running the installer after a skill or registration change.
 
 **`zettelkasten`** (`skills/zettelkasten/SKILL.md`):
@@ -165,9 +166,9 @@ The frontmatter holds only `name` and `description`. The descriptions of `zt` an
 `zt-digest call` takes the parameters below; `zt-mcp.ps1` passes its arguments and stdin through unchanged, so both forms work:
 
 ```powershell
-zt-digest call <File|-> [-From N] [-Addresses a0,a1,...] [-Log <file>] [-Allow <file>] [-Moves <file>] [-SrcLog <file>] [-TopicGate <file>] [-TopicSimilarity 0.8]
-zt-digest call -Tool <name> [-Json '<arguments object>']
-pwsh -NoProfile -File skills/zt/scripts/zt-mcp.ps1 <File|-> [-From N] [-Addresses a0,a1,...] [-Log <file>] [-Allow <file>] [-Moves <file>] [-SrcLog <file>] [-TopicGate <file>] [-TopicSimilarity 0.8]
+zt-digest call <File|-> [-From N] [-Addresses a0,a1,...] [-Log <file>] [-Allow <file>] [-Moves <file>] [-SrcLog <file>] [-Open] [-TopicGate <file>] [-TopicSimilarity 0.8]
+zt-digest call -Tool <name> [-Json '<arguments object>'] [-Open]
+pwsh -NoProfile -File skills/zt/scripts/zt-mcp.ps1 <File|-> [-From N] [-Addresses a0,a1,...] [-Log <file>] [-Allow <file>] [-Moves <file>] [-SrcLog <file>] [-Open] [-TopicGate <file>] [-TopicSimilarity 0.8]
 pwsh -NoProfile -File skills/zt/scripts/zt-mcp.ps1 -Tool <name> [-Json '<arguments object>']
 ```
 
@@ -180,12 +181,13 @@ pwsh -NoProfile -File skills/zt/scripts/zt-mcp.ps1 -Tool <name> [-Json '<argumen
 | `-Allow` | File | `''` | Allow-list file. Refuses `create_topic`, `move_card`, `insert_card`, `delete_card`, `create_literature`, `edit_literature_metadata`. `edit_card`, `append_card`, and `create_successor` must target a listed address or a Card created earlier in the run. Read tools pass. |
 | `-Moves` | File | `''` | Append `{"i":N,"moved":{"old":"new",...}}` for each call whose result has a non-empty `moved` map. |
 | `-SrcLog` | File | `''` | Append `<address><TAB><src>` for each created Card whose call carried `src`. |
-| `-TopicGate` | File | `''` | Lock file for the Topic gate (see Behaviour). |
+| `-Open` | both | off | The open scope. Without it the run is in the Literature scope and refuses `create_topic`, any write whose `at`, `before`, `to` or `into` is a Topic-tree Card, a Hub Card (`type: hub`), and a `title`, `body` or `text` that links a Topic-tree Card (checked per item in `apply_batch`). Reads pass either way. |
+| `-TopicGate` | File | `''` | Lock file for the Topic gate (see Behaviour); with `-Open` only, because the Literature scope refuses `create_topic`. |
 | `-TopicSimilarity` | File | `0.8` | Bigram similarity at or above which a Topic title counts as the same. |
 | `-Tool` | Inline | required | One tool name. |
 | `-Json` | Inline | `'{}'` | That tool's arguments as a JSON object. |
 
-The inline set has no `-Log`, `-Allow`, or other options.
+The inline set has no `-Log`, `-Allow`, or other options; `-Open` is a switch the helper reads in both sets.
 
 Call objects:
 
@@ -206,6 +208,8 @@ Output, one line per call, on stdout:
 | `N <compact json>` | Any other result (reads, and plans that still need `confirm`). |
 | `N error <message>` | A JSON-RPC error, an `isError` result (its `error` field), an unresolved `@@N`, or an allow-list or Topic-gate refusal. Newlines in the message become spaces. |
 | `resume: -From N -Addresses a0,a1,...` | After an error line; the exit code is 1. |
+
+A call the Literature scope refuses prints no `N error` line and no resume line: the run ends with `zt-digest call: literature_only: <tool>: <reason>` on stderr and exit code 1, and the calls before it have already run.
 
 ### Installer
 
@@ -236,7 +240,7 @@ DeepSeek Harness gets the skills only (through the junctions); it gets no MCP re
 
 ### Running a call batch (`zt-digest call`, through `zt-mcp.ps1`)
 
-1. Parse the input: the file, stdin (`-`), or `-Tool`/`-Json`, as JSON (a BOM is ignored). Load the allow list if `-Allow` is set.
+1. Before anything else, `zt-digest` puts the process in the Literature scope unless the arguments hold `-Open` (`literature_scope` in `tools/zt-digest/src/main.rs`). Parse the input: the file, stdin (`-`), or `-Tool`/`-Json`, as JSON (a BOM is ignored). Load the allow list if `-Allow` is set.
 2. Find `zt` on PATH and start `zt mcp` with UTF-8 stdin and stdout.
 3. Send `initialize` (id 0), wait for its reply, send `notifications/initialized`.
 4. Fill the resolved-address list for the skipped calls from `-Addresses`.
@@ -246,7 +250,7 @@ DeepSeek Harness gets the skills only (through the junctions); it gets no MCP re
    3. `append_card`: `get_card`, then rewrite the call as `edit_card` with the appended body.
    4. Remove `src` from the arguments and keep it for `-SrcLog`.
    5. With `-TopicGate` and `create_topic`: open the gate file exclusively (`FileShare.None`), retrying every 200 ms for up to 120 s. Call `list_trees` with `workspace: agent`. Compare the new title's key (spaces, punctuation, and symbols removed, lower-cased) with each agent Topic's key. Refuse if a key is equal or the Dice similarity of their character bigrams is at least `-TopicSimilarity`; the refusal reads ``topic exists: `<root>` <title>. File the Card under that Topic instead of creating one.``
-   6. Send `tools/call` with the next id and wait for that reply. Release the gate.
+   6. In the Literature scope, check the call first (`zt_check::mcp::scope::literature_refusal`); a refused call is never sent and ends the run with `literature_only: <tool>: <reason>` and exit 1. Otherwise send `tools/call` with the next id and wait for that reply. Release the gate.
    7. On an error, print the error and resume lines and exit 1.
    8. Record the result's `address` (or null). For a `create*` call with an address: add it to the allow list, append it to `-Log`, and append `address<TAB>src` to `-SrcLog`. Append a non-empty `moved` map to `-Moves`.
    9. Print the `ok` line or the compact JSON line.
@@ -258,7 +262,8 @@ DeepSeek Harness gets the skills only (through the junctions); it gets no MCP re
 - **Stop at the first error.** Calls after a failed call never run. The resume line lets a caller fix call `N` in the same input and continue; earlier addresses still resolve.
 - **A plan is not an error.** `delete_card`, `move_card`, `insert_card`, and `edit_literature_metadata` without `confirm` return `{"applied": false, "confirm": ..., "plan": [...]}` (`plan_or_done` in `src/mcp.rs`); the helper prints it as `N <json>` and goes on. A batch that must change something carries the `confirm` text.
 - **Created Cards join the allow list**, so a run under `-Allow` may grow and edit the Cards it made. An allow file that lists no Card makes a run read-only, because every create and edit then needs a listed `at`; `model-compiler.ps1` gives its brief jobs `read-only.allow.txt` for this.
-- **The Topic gate serializes `create_topic` across processes** by the exclusive file lock, and holds it until the new Topic exists. Without `-TopicGate` the helper does not check titles.
+- **Literature scope by default.** A helper run without `-Open` can write only Literature trees, the same scope as every digest step; a ZT digest's job files never pass `-Open`. Hand work on a Topic tree passes it explicitly.
+- **The Topic gate serializes `create_topic` across processes** by the exclusive file lock, and holds it until the new Topic exists. Without `-TopicGate` the helper does not check titles; without `-Open` no `create_topic` gets that far.
 - **Addresses move.** After `insert_card`, `move_card`, or a `delete_card` that shifts siblings, an address read before may name another Card. The helper does not rewrite later calls; callers use `-Moves` or read again.
 - **The installer replaces only what it owns**: the `<name>` folders it copies, the junctions it made, `mcpServers.zt`, the `zt` entries in the two `*McpjsonServers` lists, `mcp__zt` in `permissions.allow`, and Codex's `zt` server. It refuses to delete a real directory under `~/.dsh/skills`.
 - **Open conversations keep their old server.** A new MCP tool or a changed skill reaches only conversations started after the installer runs (`skills/zt/SKILL.md`, the installer's help text).
@@ -327,6 +332,7 @@ A reply's `result.content[0].text` holds pretty JSON; `result.structuredContent`
 | `zt` on PATH | environment | — | The helper starts `zt mcp` from it; the tests prepend a scratch `bin` to PATH to test another `zt.exe`. |
 | `ZT_CONFIG_DIR` | environment, read by `zt` | the user's config | Points the `zt mcp` child (and `zt up`) at another archive; the helper tests use a scratch one. |
 | `ZT_GUI_PORT` | environment, read by `zt` | — | The helper-gate test sets `0`, so its scratch service does not take the live GUI port. |
+| `-Open` | helper switch | off (Literature scope) | Lets the run write Topic trees, Hub Cards and Topic Links. |
 | `-TopicSimilarity` | helper parameter | `0.8` | Threshold of the Topic gate. |
 | Skill trigger text | `description` in each `SKILL.md` | — | Decides when a harness loads the skill. |
 | Codex display names | `skills/*/agents/openai.yaml` | — | `display_name` and `short_description` shown by Codex. |
@@ -348,21 +354,27 @@ Re-run it after any change under `skills/`, after a change to the server's tools
 # one read inline (the skill's form; pwsh -NoProfile -File ~/.codex/skills/zt/scripts/zt-mcp.ps1 with the same arguments forwards to it)
 zt-digest call -Tool get_card -Json '{"at":"3/1"}'
 
-# a chain of writes from stdin, with logs and the Topic gate (the digest prompts' form)
+# a chain of Literature writes from stdin, with logs (the digest prompts' form; the Literature scope)
+@'
+[{"tool":"create_successor","arguments":{"at":"Smith2024/7","kind":"side","title":"所有者决定空白处的用法","body":"正文。","src":"sections/s02.md:10-20"}},
+ {"tool":"create_successor","arguments":{"at":"@@0","kind":"direct","title":"……","body":"依赖 [[@@0]]：……"}}]
+'@ | zt-digest call - -Log owned.txt -SrcLog src.txt
+
+# hand work on a Topic tree: -Open, and the Topic gate
 @'
 [{"tool":"create_topic","arguments":{"title":"剩余控制权","body":"本主题追问：谁决定契约没写的事。"}},
- {"tool":"create_successor","arguments":{"at":"@@0","title":"所有者决定空白处的用法","body":"正文。","src":"sections/s02.md:10-20"}}]
-'@ | zt-digest call - -Log owned.txt -SrcLog src.txt -TopicGate gate.lock
+ {"tool":"create_successor","arguments":{"at":"@@0","title":"所有者决定空白处的用法","body":"正文。"}}]
+'@ | zt-digest call - -Open -TopicGate gate.lock
 ```
 
-Output:
+Output of the second run:
 
 ```text
 0 ok 7/0
 1 ok 7/1
 ```
 
-After `1 error <reason>` and `resume: -From 1 -Addresses 7/0`, fix call 1 in the same input and run again with `-From 1 -Addresses 7/0`.
+After `1 error <reason>` and `resume: -From 1 -Addresses 7/0`, fix call 1 in the same input and run again with `-From 1 -Addresses 7/0`. Without `-Open` the second run stops at call 0 with `zt-digest call: literature_only: create_topic: …` and writes nothing.
 
 ### Call it from a digest script
 
@@ -398,9 +410,9 @@ cargo test mcp::tests
 | Test | Covers |
 |---|---|
 | `scripts/book-digest/tests/agent-lock-guidance.tests.ps1` | The owner's Lock policy as the agents receive it: the `initialize` answer of a real `zt mcp` and both skill texts say a locked Card is readable and linkable, new thought belongs in another unlocked tree, only the owner changes Locks, and `card_locked` is never retried; none names a Lock route, a token or a second write path. |
-| `scripts/book-digest/tests/zt-helper-gate.tests.ps1` | `src` never reaches zt and goes to `-SrcLog`; the Topic gate refuses the same title (with spaces and punctuation changed) and a near title, with a resume line; a different title passes; without `-TopicGate` nothing is checked; two helpers at once create one Topic. `-Zt` tests another binary. |
+| `scripts/book-digest/tests/zt-helper-gate.tests.ps1` | `src` never reaches zt and goes to `-SrcLog`; without `-Open` the helper refuses `create_topic`, a Card in a Topic tree and a Literature Card whose body links a Topic root (each with `literature_only` and a non-zero exit) and still writes a Literature tree; with `-Open` the Topic gate refuses the same title (with spaces and punctuation changed) and a near title, with a resume line; a different title passes; without `-TopicGate` nothing is checked; two helpers at once create one Topic. `-Zt` tests another binary. |
 | `scripts/book-digest/tests/requires-version.tests.ps1` | Every script under `scripts/` and `skills/` that uses `-DateKind` or dot-sources `zt-calls.ps1` declares `#Requires -Version 7.5`. |
-| `scripts/book-digest/tests/zt-calls.tests.ps1` | A batch of `create_topic`, `create_literature`, and `create_successor` with `@@` chaining through the helper; `list-models.ps1` reads the helper's UTF-8 output under a GBK (936) console. |
+| `scripts/book-digest/tests/zt-calls.tests.ps1` | A batch of `create_topic`, `create_literature`, and `create_successor` with `@@` chaining through the helper (with `-Open`); `list-models.ps1` reads the helper's UTF-8 output under a GBK (936) console. |
 | `scripts/book-digest/tests/card-compiler.tests.ps1` | The card compiler, whose orphan Links use `append_card`. |
 | `cargo test mcp::tests` (`src/mcp.rs`) | The server side the helper relies on: the handshake and protocol fallback, error codes, unique tool names with object schemas, no new trees in the human Workspace. |
 
@@ -413,14 +425,15 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **The server enforces, the skills teach.** The MCP server limits writes to the agent Workspace and keeps every Card rule (`src/mcp.rs` module comment; `docs/workspaces-and-mcp-design.md`). Body conventions are not validated by ZT: the skills teach them and `zt-check` checks them (`docs/event-and-model-cards-design.md`, `docs/finding-cards-design.md`). The hub rules live in `skills/zettelkasten/SKILL.md` (`docs/hub-cards-design.md`).
 - **One source, copied out.** The repository is the only source of the skills; the installer copies them rather than linking, so a harness never sees a half-edited working tree. DeepSeek Harness links to the Codex copy, so one copy serves both.
 - **A shell helper instead of a second server.** DeepSeek Harness has no `zt` tools, so the helper (`zt-digest call`, also reached through `zt-mcp.ps1`) speaks MCP to the same `zt mcp` with the same agent Access. The `zt` shell commands are never a fallback because they act with human Access (`skills/zt/SKILL.md`).
-- **Ownership by allow list, not by trust.** Parallel digest runs get `-Allow` so a DeepSeek run can change only its own Cards; `-Log` records what each run made, and `-TopicGate` stops two runs making one Topic (`docs/digest-card-layers-proposal.md`, the Topic gate row).
+- **Ownership by allow list, not by trust.** Parallel digest runs get `-Allow` so a DeepSeek run can change only its own Cards; `-Log` records what each run made, and `-TopicGate` stops two hand runs with `-Open` making one Topic (`docs/digest-card-layers-proposal.md`, the Topic gate row).
+- **The helper is Literature-only unless asked.** A digest builds only the book's Literature tree, and most helper runs are digest jobs, so the safe default is the Literature scope; a hand run that writes a Topic tree says so with `-Open` (`docs/literature-only-digest-design.md`). `zt-idea-grow` writes its Topic trees through its own open tools (`zt-digest grow`, `hub`, `register`) and needs no `-Open`.
 - **Skills are sent, not pasted.** Digest managers pass `zettelkasten` and `asd-ste100-zh` in the `skills` field of `deepseek_run` and every `deepseek_prompt`; no prompt file carries skill text. Where an instruction file's limits differ from a skill, the instruction file wins, because `zt-check` checks those numbers (`docs/zt-digest-workflow.md`, *Skills for DeepSeek*).
 
 ### Keeping the skill text consistent
 
 - `src/mcp.rs` holds three descriptions of the same behaviour: `INSTRUCTIONS` (sent on `initialize`), each tool's `description` and schema in `tool_definitions()`, and the skill `skills/zt/SKILL.md`. Change all three in one commit, together with `CONTEXT.md`, as the feature commits do. Nothing tests that they agree.
 - `skills/zettelkasten/SKILL.md` states rules that `zt-check` checks (the Card language table, F1–F4). A new or changed check rule changes the skill text in the same commit; [zt-check](zt-check.md) owns the rule code.
-- `skills/zt-digest-protocol/SKILL.md` and `references/scripts.md` restate the digest scripts, their steps, and the SELF-CHECK commands. A new script, step, or flag in `scripts/book-digest/` changes these tables.
+- `skills/zt-digest-protocol/SKILL.md` and `references/scripts.md` restate the digest scripts, their steps, and the SELF-CHECK commands. A new script, step, or flag in `scripts/book-digest/` changes these tables. The skill text has not followed the Literature-only base 5.0.0 yet: it still shows the `concepts` and `hubs` stages, mode `hubs`, the hub and `registerPlan` args, the `concepts`/`hub`/`register`/`restate` compilers, and a report with `concepts`, `review` and `register` facts, none of which the base runs now (see [Digest workflows](digest-workflows.md)).
 - `skills/zt/scripts/zt-mcp.ps1` exists twice at run time: the repository copy (used by `zt-calls.ps1` and the tests) and the installed copy at `~/.codex/skills/zt/scripts/zt-mcp.ps1` (`$installedHelper` in `prepare-book-digest.ps1`, `prepare-link-pass.ps1`, `event-compiler.ps1`, `finding-compiler.ps1`). Both copies only forward to `zt-digest call`, so the helper's behaviour changes when `scripts/install-zt-digest.ps1` installs a new `zt-digest.exe`, not when this installer runs. The skill texts, the DeepSeek prompts, and the workflows name `zt-digest call` directly; the job files of the PowerShell scripts still name the installed `zt-mcp.ps1`.
 - After any of these changes, re-run the installer and start a new conversation.
 
@@ -432,11 +445,14 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **All three skills are installed.** The loop takes every directory under `skills/`, but the installer's help text and `README.md` name only `zt` and `zettelkasten`, and `skills/zt/SKILL.md` asks for a re-run only after changes to `skills/zt/` and `skills/zettelkasten/`.
 - **PowerShell version.** The installer calls `ConvertFrom-Json -DateKind String`, a parameter that PowerShell 7.5 added, so it declares `#Requires -Version 7.5`; `zt-mcp.ps1` keeps the same declaration although it now only forwards; an older pwsh refuses them at the start. `scripts/book-digest/tests/requires-version.tests.ps1` checks every script that needs 7.5.
 - **`-Allow` refuses more than its help text says.** The code also refuses `create_literature` and `edit_literature_metadata`; the comment lists only `create_topic`, `move_card`, `insert_card`, and `delete_card`.
+- **Hand Topic work needs `-Open`.** Without it a run that creates a Topic, writes a Topic-tree or Hub Card, or links a Topic-tree Card stops at that call with `literature_only` and exit 1, with no resume line; the calls before it are already written. Re-run the remaining calls with `-Open` (and `-From`/`-Addresses` for the earlier addresses).
 - **`@@N` counts calls, not writes.** A read call takes an index too; `@@N` of a call whose result has no `address` throws `@@N has no address yet`.
 - **Inline mode has no options.** `-Tool`/`-Json` is its own parameter set; use a file or stdin for `-Allow`, `-Log`, and the rest.
 - **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
 
 ## Change history
+
+- `2026-10-22` — Literature-only digests (`docs/literature-only-digest-design.md`): the helper runs in the Literature scope by default. `skills/zt/SKILL.md` (When the server is unavailable) says the helper refuses `create_topic`, writes to Topic-tree and Hub Cards and Links to Topic-tree Cards, as the ZT digests do, and that hand Topic work adds `-Open`; `skills/zt/scripts/zt-mcp.ps1` names `[-Open]` in its synopsis and gains a Scope paragraph (`zt-idea-grow` needs no `-Open`). `zt-helper-gate.tests.ps1` proves the three refusals and the Literature write; it and `zt-calls.tests.ps1` pass `-Open` for their Topic batches. `skills/zt-digest-protocol/SKILL.md` is not yet updated.
 
 - `2026-10-22` — #140 S17 (Tree Lock): both skills carry the owner's Lock rule. `skills/zt/SKILL.md` (Rules) and `skills/zettelkasten/SKILL.md` (Maintenance) say a Card whose read carries `lock` belongs to a locked tree, its Cards stay readable, selectable and linkable, the new thought goes into another unlocked tree, only the owner changes Locks, a Card lock never widens Access, and a `card_locked` refusal is a planning error that is never retried, never answered with a different Access and never worked around through the shell, the GUI API, the archive file or another client's path. No route name or token appears. The installer was run after the change: `~/.claude/skills/{zt,zettelkasten,zt-digest-protocol}`, `~/.codex/skills/*` and the `~/.dsh/skills/*` junctions carry the new text, and the freshly installed `zt mcp` answers the handshake with 29 tools. Open conversations keep the instructions they started with, so a new one is needed for the new metadata.
 

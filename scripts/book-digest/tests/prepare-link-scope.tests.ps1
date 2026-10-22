@@ -132,7 +132,8 @@ try {
     $fourth = Digest @('prepare-link', '-Staging', $out)
     Assert (@($fourth.json.pending).Count -eq 0 -and $fourth.json.groups[0].done -eq $true) "linked-gNN.txt takes a completed group off the pending list (pending $(@($fourth.json.pending) -join ','); done $($fourth.json.groups[0].done); groups $(@($fourth.json.groups | ForEach-Object { "$($_.n):$($_.digest):$($_.done)" }) -join ' '))"
     $cardsAll = Get-Content -LiteralPath (Join-Path $scratch 'prepared\cards-all.md') -Raw -Encoding utf8
-    Assert ($cardsAll.Contains('Other2020') -and $cardsAll.Contains('旧主题下的卡片')) 'cards-all.md still lists every Card of both Workspaces'
+    # docs/literature-only-digest-design.md: the digest reads Literature trees only, so cards-all.md lists no Topic tree.
+    Assert ($cardsAll.Contains('Other2020') -and -not $cardsAll.Contains('旧主题下的卡片')) 'cards-all.md lists every Literature tree and no Topic tree'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

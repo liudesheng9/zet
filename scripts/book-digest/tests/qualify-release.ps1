@@ -263,7 +263,7 @@ $concurrentRunner = @'
 param([string]$Digest, [string]$File, [string]$Prefix, [string]$Trace, [string]$Seam, [string]$Out)
 $env:ZT_CHECK_ZT = $Seam
 $env:ZT_TRACE_TOOLS = $Trace
-$lines = @(& $Digest call $File -OperationPrefix $Prefix 2>&1 | ForEach-Object { "$_" })
+$lines = @(& $Digest call -Open -Open $File -OperationPrefix $Prefix 2>&1 | ForEach-Object { "$_" })
 [IO.File]::WriteAllLines($Out, $lines, [Text.UTF8Encoding]::new($false))
 exit $LASTEXITCODE
 '@
@@ -404,7 +404,7 @@ try {
 
         # --- model apply (R352) ----------------------------------------------------------------
         $warmFile = New-ModelCallFile 0 'Qualification model warm-up' (Join-Path $root 'model-warm.json')
-        $warmApply = Invoke-Digest -arguments @('call', $warmFile, '-OperationPrefix', "qualification-$v/model-warm/1/build") -trace (Join-Path $root 'trace-model-warm.jsonl')
+        $warmApply = Invoke-Digest -arguments @('call','-Open',$warmFile, '-OperationPrefix', "qualification-$v/model-warm/1/build") -trace (Join-Path $root 'trace-model-warm.jsonl')
         if ($warmApply.exit -ne 0) { throw "the model-apply warm-up failed: $(($warmApply.lines | Select-Object -Last 2) -join ' | ')" }
         $revisionBefore = (Get-LinkCheck).archive_revision
         $applySamples = [Collections.Generic.List[double]]::new()
@@ -413,7 +413,7 @@ try {
         for ($i = 1; $i -le $Runs; $i++) {
             $file = New-ModelCallFile $i "Qualification model $v $i" (Join-Path $root 'model-calls.json')
             $trace = Join-Path $root ("trace-model-$i.jsonl")
-            $run = Invoke-Digest -arguments @('call', $file, '-OperationPrefix', "qualification-$v/model-$i/1/build") -trace $trace
+            $run = Invoke-Digest -arguments @('call','-Open',$file, '-OperationPrefix', "qualification-$v/model-$i/1/build") -trace $trace
             $chunks = (@($run.calls | Where-Object { $_.tool -eq 'apply_batch' }) | ForEach-Object { $_.item_count })
             $chunkShapes.Add(($chunks -join ','))
             $applySamples.Add($run.ms)
@@ -427,13 +427,13 @@ try {
         $revisionAfter = (Get-LinkCheck).archive_revision
         Assert (($revisionAfter - $revisionBefore) -eq (2 * $Runs)) "each model apply publishes exactly two revisions: $($revisionAfter - $revisionBefore) for $Runs applies"
         # Receipts are the commit authority: a complete replay publishes nothing and duplicates nothing.
-        $replay = Invoke-Digest -arguments @('call', (Join-Path $root 'model-calls.json'), '-OperationPrefix', "qualification-$v/model-$Runs/1/build") -trace (Join-Path $root 'trace-model-replay.jsonl')
+        $replay = Invoke-Digest -arguments @('call','-Open',(Join-Path $root 'model-calls.json'), '-OperationPrefix', "qualification-$v/model-$Runs/1/build") -trace (Join-Path $root 'trace-model-replay.jsonl')
         $replayRevision = (Get-LinkCheck).archive_revision
         $acceptedAddresses = @(Get-CallAddresses $replay.lines)
         Assert ($replay.exit -eq 0 -and $replayRevision -eq $revisionAfter) "a complete replay of the accepted model plan publishes no revision and duplicates no Card"
         Assert ($acceptedAddresses.Count -eq 69) "the replayed plan returns the same 69 accepted addresses ($($acceptedAddresses.Count))"
         $modelCard = if ($acceptedAddresses.Count -ge 2) { $acceptedAddresses[1] } else { '' }
-        $modelRead = Invoke-Digest -arguments @('call', '-Tool', 'get_model', '-Json', (ConvertTo-Json -Compress -InputObject @{ at = $modelCard })) -trace (Join-Path $root 'trace-model-read.jsonl')
+        $modelRead = Invoke-Digest -arguments @('call','-Open','-Tool', 'get_model', '-Json', (ConvertTo-Json -Compress -InputObject @{ at = $modelCard })) -trace (Join-Path $root 'trace-model-read.jsonl')
         $model = ConvertFrom-CallJson ([string]$modelRead.last)
         Assert ($null -ne $model -and @($model.parts).Count -eq 66) "the applied model's part map is stable: 66 parts under $modelCard"
         $logLines = Get-LogLines $vroot
@@ -441,9 +441,9 @@ try {
         $applyLastWrite = (Get-LinkCheck).last_write
 
         # --- ordinary read/write on one warm process (R353) ------------------------------------
-        $topicCall = Invoke-Digest -arguments @('call', '-Tool', 'create_topic', '-Json', ('{"title":"Qualification ordinary ' + $v + '","body":"限定读写的固定卡片。"}')) -trace (Join-Path $root 'trace-fixture.jsonl')
+        $topicCall = Invoke-Digest -arguments @('call','-Open','-Tool', 'create_topic', '-Json', ('{"title":"Qualification ordinary ' + $v + '","body":"限定读写的固定卡片。"}')) -trace (Join-Path $root 'trace-fixture.jsonl')
         $fixtureTopic = @(Get-CallAddresses $topicCall.lines)[0]
-        $created = Invoke-Digest -arguments @('call', '-Tool', 'create_successor', '-Json', (ConvertTo-Json -Compress -InputObject @{ at = $fixtureTopic; title = 'Ordinary write target'; body = '第一版正文，用于限定读写测量。' })) -trace (Join-Path $root 'trace-fixture2.jsonl')
+        $created = Invoke-Digest -arguments @('call','-Open','-Tool', 'create_successor', '-Json', (ConvertTo-Json -Compress -InputObject @{ at = $fixtureTopic; title = 'Ordinary write target'; body = '第一版正文，用于限定读写测量。' })) -trace (Join-Path $root 'trace-fixture2.jsonl')
         $target = @(Get-CallAddresses $created.lines)[0]
         Start-WarmServer
         $null = Invoke-Warm 'get_card' @{ at = $target }
@@ -567,7 +567,7 @@ try {
             )
             $fixturePath = Join-Path $root 'fixture.json'
             [IO.File]::WriteAllText($fixturePath, ($fixture | ConvertTo-Json -Depth 8 -AsArray), $utf8)
-            $fixtureRun = Invoke-Digest -arguments @('call', $fixturePath) -trace $trace
+            $fixtureRun = Invoke-Digest -arguments @('call','-Open',$fixturePath) -trace $trace
             if ($fixtureRun.exit -ne 0) { throw "the fixed fixture of $name did not build: $(($fixtureRun.lines | Select-Object -Last 2) -join ' | ')" }
             $addresses = @(Get-CallAddresses $fixtureRun.lines)
             $fixedCard = $addresses[1]
@@ -577,7 +577,7 @@ try {
             if ($name -eq 'big') {
                 $unrelatedPath = New-UnrelatedCallFile $name (Join-Path $root 'unrelated.json')
                 $before = (Get-LinkCheck).archive_revision
-                $unrelatedRun = Invoke-Digest -arguments @('call', $unrelatedPath) -trace (Join-Path $root 'trace-unrelated.jsonl')
+                $unrelatedRun = Invoke-Digest -arguments @('call','-Open',$unrelatedPath) -trace (Join-Path $root 'trace-unrelated.jsonl')
                 if ($unrelatedRun.exit -ne 0) { throw "the unrelated Cards of $name were not created: $(($unrelatedRun.lines | Select-Object -Last 2) -join ' | ')" }
                 $unrelated = @(Get-CallAddresses $unrelatedRun.lines).Count
                 $unrelatedMs = $unrelatedRun.ms

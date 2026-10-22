@@ -34,17 +34,22 @@ try {
     $anchor='ModelGroup/1'
     $p.draft.calls=@(
         @{tool='edit_card';arguments=@{at=$anchor;title='融资约束影响企业投资';body='融资约束改变企业的投资选择。企业减少设备投入，生产能力随之下降。';base_fingerprint=$p.job.inputs.anchor.fingerprint}},
-        @{tool='create_topic';arguments=@{title='企业融资机制'}},
-        @{tool='create_successor';arguments=@{at='@@1';title='融资成本决定最优投入';type='model';level='concept';body='融资成本改变企业的投资选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[ModelGroup/1]]'}},
-        @{tool='create_successor';arguments=@{at='@@2';kind='side';title='企业比较投资收益与融资成本';type='model';facet='设定';body='可以说，企业比较投资收益与融资成本。融资成本超过收益时，企业取消投资。来源：[[ModelGroup/1]]'}}
+        @{tool='create_successor';arguments=@{at=$anchor;kind='side';title='融资成本决定最优投入';type='model';level='concept';body='融资成本改变企业的投资选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[ModelGroup/1]]'}},
+        @{tool='create_successor';arguments=@{at='@@1';kind='side';title='企业比较投资收益与融资成本';type='model';facet='设定';body='可以说，企业比较投资收益与融资成本。融资成本超过收益时，企业取消投资。来源：[[ModelGroup/1]]'}}
     )
     Save-Json $p.start.draft $p.draft
     $env:ZT_CHECK_ZT=Join-Path $PSScriptRoot 'seam-zt-mcp.cmd';$env:ZT_DRAFT_FAULT='cards'
     Refused ($p.args+@('-CheckOnly')) 'incomplete preview Card count' 'a partial native preview cannot create fabricated completion evidence'
     Remove-Item Env:ZT_DRAFT_FAULT,Env:ZT_CHECK_ZT
-    Invoke-Zt @(@{tool='create_topic';arguments=@{title='企业融资机制'}}) | Out-Null
-    Refused ($p.args+@('-CheckOnly')) 'Topic gate' 'identified groups retain the existing duplicate Topic title gate'
-    $p.draft.calls[1].arguments.title='信贷市场的信息结构';Save-Json $p.start.draft $p.draft
+    # docs/literature-only-digest-design.md: a group files its Model in the book's Literature tree; a
+    # draft that creates a Topic tree is refused by the Literature write scope (no Topic gate remains).
+    $topicDraft=$p.draft.Clone();$topicDraft.calls=@($p.draft.calls)+@(@{tool='create_topic';arguments=@{title='企业融资机制'}});Save-Json $p.start.draft $topicDraft
+    Refused ($p.args+@('-CheckOnly')) 'creates no Topic tree' 'a group draft that creates a Topic tree is refused by the Literature write scope'
+    # Another book's Literature tree is a Link target, never a destination of this group.
+    $null = Invoke-Zt @(@{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = '@book{OtherBook2020,title={Other}}'; body = '另一本书。' } })
+    $otherDraft=$p.draft.Clone();$otherDraft.calls=@($p.draft.calls)+@(@{tool='create_successor';arguments=@{at='OtherBook2020';kind='direct';title='别的书里的卡';body='不应写入。'}});Save-Json $p.start.draft $otherDraft
+    Refused ($p.args+@('-CheckOnly')) "files its Cards in the book's Literature tree" "a group draft that files a Card in another book's Literature tree is refused"
+    Save-Json $p.start.draft $p.draft
     $env:ZT_LEDGER_COMPLETE_FAULT='after_commit'
     Refused $p.args 'injected completion fault' 'a lost post-commit reply leaves one complete producer and its model candidate'
     Remove-Item Env:ZT_LEDGER_COMPLETE_FAULT

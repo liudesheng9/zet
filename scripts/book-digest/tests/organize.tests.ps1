@@ -1,10 +1,11 @@
 #Requires -Version 7
 # Run: pwsh -NoProfile -File scripts\book-digest\tests\organize.tests.ps1 [-Zt <zt.exe>]
-# Drives the new Organize stage on a scratch archive: organize-survey.ps1 finds the duplicate
-# Topics, organize-apply.ps1 merges them and moves a Card (and refuses a Model Card and a Literature
-# Card), and book-skeleton.ps1 (plan, apply) writes the structure Card, the Literature Card index,
-# and a Topic body that keeps its hub line, standing in for Opus's decisions.json and DeepSeek's
-# skeleton.json.
+# Drives the new Organize stage on a scratch archive: organize-survey.ps1 names no Topic as the
+# book's (a digest writes only the Literature tree, docs/literature-only-digest-design.md),
+# organize-apply.ps1 -Open (a Topic merge run by hand) merges the duplicate Topics and moves a Card
+# (and refuses a Model Card and a Literature Card), and book-skeleton.ps1 (plan, apply) writes the
+# structure Card and the Literature Card index and no Topic body, standing in for Opus's
+# decisions.json and DeepSeek's skeleton.json.
 param([string]$Zt = '')
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -28,7 +29,7 @@ $failed = 0
 function Assert($condition, $message) { if (-not $condition) { Write-Output "FAIL: $message"; $script:failed++ } else { Write-Output "ok: $message" } }
 function Last($lines) { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable }
 function Write-Calls($calls) {
-    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -64,11 +65,12 @@ try {
 
     # --- survey ---
     $survey = Last @(pwsh -NoProfile -File (Join-Path $dir 'organize-survey.ps1') -Staging $staging -Work $work 2>&1)
-    Assert ($survey.topics -eq 2 -and $survey.pairs -ge 1) "survey: two Topics and a duplicate pair ($($survey.topics), $($survey.pairs))"
+    # A Topic-tree Card belongs to no book, however it links the book (docs/literature-only-digest-design.md).
+    Assert ($survey.topics -eq 0 -and $survey.pairs -eq 0) "survey: no Topic and no duplicate pair is the book's ($($survey.topics), $($survey.pairs))"
     $md = Get-Content (Join-Path $work 'survey.md') -Raw -Encoding utf8
-    Assert ($md -match "``$a/0`` 剩余控制权" -and $md -match "``$b/0`` 剩余控制权的配置") 'survey: survey.md names both Topics of the pair'
+    Assert ($md -notmatch "``$a/0``" -and $md -notmatch "``$b/0``") 'survey: survey.md names neither Topic'
 
-    # --- Opus stand-in: merge B into A, move a Card, and three moves that must be refused ---
+    # --- a hand Topic merge (-Open): merge B into A, move a Card, and three moves that must be refused ---
     Save-Json (Join-Path $work 'decisions.json') @{
         thesis  = '剩余控制权的配置决定企业的边界与融资'
         merges  = @(@{ drop = "$b/0"; keep = "$a/0"; under = $aCards[1]; reason = '同一个概念' })
@@ -80,7 +82,7 @@ try {
         )
         notes   = @(@{ address = $bCards[1]; note = '链接事件卡。' })
     }
-    $applied = Last @(pwsh -NoProfile -File (Join-Path $dir 'organize-apply.ps1') -Work $work 2>&1)
+    $applied = Last @(pwsh -NoProfile -File (Join-Path $dir 'organize-apply.ps1') -Work $work -Open 2>&1)
     Assert ($applied.merges -eq 1 -and $applied.moves -eq 1 -and $applied.refused -eq 3) "apply: one merge, one move, three refusals ($($applied.merges), $($applied.moves), $($applied.refused))"
     Assert (-not (Get-Card "$b/0")) 'apply: the dropped Topic root is gone'
     $tree = @(Invoke-Zt @(@{ tool = 'get_tree'; arguments = @{ tree = $a } }))[0]
@@ -99,7 +101,7 @@ try {
     $planLines = @(pwsh -NoProfile -File (Join-Path $dir "book-skeleton.ps1") -Step plan -Staging $staging -Work $sw 2>&1)
     if ($LASTEXITCODE) { Write-Output ($planLines -join "`n") }
     $plan = Last $planLines
-    Assert ($plan.groups -eq 2 -and $plan.models -eq 1 -and $plan.events -eq 1 -and $plan.topics -eq 1) "skeleton plan: 2 groups, 1 model, 1 event, 1 Topic ($($plan.groups), $($plan.models), $($plan.events), $($plan.topics))"
+    Assert ($plan.groups -eq 2 -and $plan.models -eq 1 -and $plan.events -eq 1 -and $null -eq $plan.topics) "skeleton plan: 2 groups, 1 model, 1 event, no Topic ($($plan.groups), $($plan.models), $($plan.events), $($plan.topics))"
     $jobText = Get-Content (Join-Path $sw 'job.md') -Raw -Encoding utf8
     Assert ($jobText.Contains("SELF-CHECK: ``zt-digest skeleton -Step apply -Staging `"$staging`" -Work `"$sw`"``（不要加 -Apply）")) 'skeleton plan: the SELF-CHECK line names zt-digest skeleton, without -Apply'
     $entry = @($tree.cards | Where-Object { $_.address -eq $aCards[0] })[0].address
@@ -119,7 +121,8 @@ try {
     $lit = Get-Card $key
     Assert ($lit.body -match "第 1 组（第一章）：所有权决定剩余控制权。 → \[\[$key/1\]\]" -and $lit.body -match '原书文档：\[原书 PDF\]\(scholar:85\)' -and $lit.body -match [regex]::Escape("[[$($sk.written.structure)]]")) 'skeleton apply: the Literature Card holds the index, the structure Link, and its document line'
     $root = Get-Card "$a/0"
-    Assert ($root.body -match '本主题追问' -and $root.body -match [regex]::Escape("枢纽：[[$hub]]")) "skeleton apply: the Topic body is new and keeps its hub line ($($root.body -replace "
+    # A digest writes no Topic body: an answer that still carries `topics` is a problem, and the root stays.
+    Assert ($root.body -notmatch '本主题追问' -and $root.body -match [regex]::Escape("枢纽：[[$hub]]") -and @($sk.problems | Where-Object { $_ -match 'writes no Topic body' }).Count -eq 1) "skeleton apply: the Topic body is untouched and its answer is a problem ($($root.body -replace "
 ", ' / '))"
     $again = Last @(pwsh -NoProfile -File (Join-Path $dir 'book-skeleton.ps1') -Step apply -Staging $staging -Work $sw -Thesis '第二个论点' -Apply 2>&1)
     Assert ($again.written.structure -eq $sk.written.structure -and (Get-Card $sk.written.structure).title -eq '第二个论点') 'skeleton apply: a second run rewrites the same structure Card'

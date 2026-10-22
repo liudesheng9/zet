@@ -118,7 +118,10 @@ function Invoke-Zt($calls) {
         try { $values = Invoke-ZtDirect $calls } catch [IO.IOException] { Close-ZtServer; $values = Invoke-ZtDirect $calls }
         return $values
     }
-    $lines = @(($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    # -Open: Invoke-Zt is the tests' fixture path (only tests dot-source this file), which builds Topic
+    # trees and hubs; every digest step writes through zt-digest itself, in the Literature scope
+    # (docs/literature-only-digest-design.md).
+    $lines = @(($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt-mcp failed: $($lines -join ' | ')" }
     foreach ($line in $lines) {
         if ($line -match '^\d+ (\{.*)$') { $Matches[1] | ConvertFrom-Json -DateKind String }

@@ -66,7 +66,7 @@ try{
     $holderPid=(Get-Content -LiteralPath $ready -Raw).Trim()
     $before=(LogText)
     $watch=[Diagnostics.Stopwatch]::StartNew()
-    $out=Digest @('call','-Tool','create_topic','-Json','{"title":"Contended topic"}')
+    $out=Digest @('call','-Open','-Tool','create_topic','-Json','{"title":"Contended topic"}')
     $watch.Stop()
     Assert ($script:Code -eq 0) "a contended batch write commits after the holder releases: $out"
     Assert ($watch.Elapsed.TotalSeconds -ge 5) 'the write waited for the live holder instead of removing its file'
@@ -96,7 +96,7 @@ try{
     New-Item -ItemType Directory -Path $guard|Out-Null
     $before=(LogText)
     $watch.Restart()
-    $faulted=Digest @('call','-Tool','create_topic','-Json','{"title":"Never written"}')
+    $faulted=Digest @('call','-Open','-Tool','create_topic','-Json','{"title":"Never written"}')
     $watch.Stop()
     Assert ($script:Code -ne 0) "an unusable lock file is a fault: $faulted"
     Assert ($faulted -notmatch 'edit in progress') 'an access fault is never reported as a busy lock'
@@ -107,7 +107,7 @@ try{
 
     # --- T27: the daemon disappears, the stage health check waits for the restart and reconnects
     $prefix='run/service-health/1/create'
-    $firstOut=Digest @('call','-Tool','create_topic','-Json','{"title":"Survivor"}','-OperationPrefix',$prefix)
+    $firstOut=Digest @('call','-Open','-Tool','create_topic','-Json','{"title":"Survivor"}','-OperationPrefix',$prefix)
     Assert ($script:Code -eq 0) "the receipt-identified write commits: $firstOut"
     $address=($firstOut -split "`n")[0] -replace '^0 ok ',''
     $revision=((zt status|Where-Object{$_ -match '^revision: '}) -split ': ',2)[1]
@@ -144,7 +144,7 @@ try{
     $starts=@((LogText) -split "`n"|Where-Object{$_ -match 'daemon started '})
     Assert ($starts.Count -eq 2) "the restart started exactly one new daemon: $($starts.Count) starts"
     # The same receipt keys replay after the restart: committed writes are reconciled, not repeated.
-    $again=Digest @('call','-Tool','create_topic','-Json','{"title":"Survivor"}','-OperationPrefix',$prefix)
+    $again=Digest @('call','-Open','-Tool','create_topic','-Json','{"title":"Survivor"}','-OperationPrefix',$prefix)
     Assert ($script:Code -eq 0) "the retried write replays its receipt: $again"
     Assert (($again -split "`n")[0] -eq "0 ok $address") 'the replay returns the original address instead of creating a second Card'
     Assert (((zt status|Where-Object{$_ -match '^revision: '}) -split ': ',2)[1] -eq $revision) 'the replay publishes no new revision'

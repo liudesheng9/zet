@@ -11,7 +11,7 @@ $env:ZT_GUI_PORT = '0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message }; Write-Output "ok: $message" }
 function Write-Cards($calls) {
-    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "fixture create failed: $lines" }
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -92,17 +92,19 @@ try {
     $s = $first.baseline.sources
     Assert ($s.cards.known -ge 5 -and $s.cards.unknown -ge 3 -and $s.cards.multiple -eq 1 -and $s.cards.derived -eq 1) "the source sets keep known, unknown, multiple and derived apart: $($s.cards | ConvertTo-Json -Compress)"
     Assert ($s.direct.literature_tree -ge 2 -and $s.direct.source_line -ge 3) 'a Literature tree and a 来源 line are both counted as direct evidence'
+    # docs/literature-only-digest-design.md: a Card belongs to a book only in its Literature tree, so a
+    # semantic Link to another book makes no inferred owner: a Topic Card with no source shows no difference.
     $unknownRow = @($s.differences | Where-Object { $_.address -ceq $made[10] })[0]
-    Assert ($null -ne $unknownRow -and $unknownRow.inferred -ceq 'B2020' -and @($unknownRow.sources).Count -eq 0) 'a semantic Link to another book is the inferred owner but no source evidence, and the difference is shown'
+    Assert ($null -eq $unknownRow -and $s.differs -ge 1) 'a semantic Link to another book is no inferred owner and no source evidence, so no difference is shown'
     $sourcesFile = Read-Json (Join-Path $firstOut 'audit-sources.json')
     $partRow = @($sourcesFile.cards | Where-Object { $_.address -ceq $made[28] })[0]
     Assert ($partRow.sources.derived -contains 'A2020' -and @($partRow.sources.derived_from).Count -eq 1 -and $partRow.sources.derived_from[0] -ceq $made[4]) 'a Model part with no direct source borrows its model head evidence and names the head'
     $literalRow = @($sourcesFile.cards | Where-Object { $_.address -ceq $made[11] })[0]
     Assert (@($literalRow.sources.direct).Count -eq 2 -and $literalRow.sources.multiple -eq $true) 'two 来源 books stay multiple, never forced to one owner'
-    # A Bridge (a semantic Link to another book) moves the *inferred* attribution, and the report
-    # shows both readings so an already reviewed meaning cannot silently reverse (D074, D075).
-    $bridgeRow = @($s.differences | Where-Object { $_.address -ceq $made[29] })[0]
-    Assert ($null -ne $bridgeRow -and $bridgeRow.inferred -ceq 'B2020' -and (@($bridgeRow.sources) -join ',') -ceq 'A2020') 'a Bridge changes the inferred book while the explicit source evidence stays A2020, and the difference is shown'
+    # A Bridge (a semantic Link to another book) moves no attribution: the Topic Card belongs to no book
+    # while its explicit source evidence stays A2020, and the evidence file shows both readings (D074, D075).
+    $bridgeRow = @($sourcesFile.cards | Where-Object { $_.address -ceq $made[29] })[0]
+    Assert ($null -ne $bridgeRow -and $null -eq $bridgeRow.inferred -and (@($bridgeRow.sources.direct) -join ',') -ceq 'A2020') 'a Bridge changes no inferred book while the explicit source evidence stays A2020'
     # --- S01-AC03: the measures that this read can answer.
     $p1 = $first.baseline.measures.P1
     Assert ($p1.values.current.value -eq 1 -and $p1.values.current.with_rests_on -eq 3 -and $p1.values.current.unknown_source -ge 1 -and $p1.values.current.denominator -ge 12) "the current-scope own-source rests-on is counted with its denominator: $($p1.values.current | ConvertTo-Json -Compress)"

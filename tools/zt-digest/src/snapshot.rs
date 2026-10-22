@@ -51,6 +51,13 @@ pub(crate) fn read_title_trees(zt:&mut Zt)->Result<Vec<Value>> {
     Ok(trees)
 }
 
+/// The title catalogue of the Literature trees only (docs/literature-only-digest-design.md): a
+/// digest step reads, links and reviews Literature trees, never a Topic tree, which is
+/// zt-idea-grow's.
+pub(crate) fn read_literature_trees(zt: &mut Zt) -> Result<Vec<Value>> {
+    Ok(read_title_trees(zt)?.into_iter().filter(|t| !zt_check::mcp::scope::is_topic_address(&s(&t["tree"]))).collect())
+}
+
 /// `Cut`: a title of at most `chars` UTF-16 units, else cut and `…` added.
 pub(crate) fn cut(text: &str, chars: usize) -> String {
     if ps::len16(text) <= chars { text.to_string() } else { format!("{}…", ps::cut16(text, chars)) }

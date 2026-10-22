@@ -522,7 +522,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let min_figure_bytes = a.int_or("MinFigureBytes", 3000)?;
     let max_event_candidates = a.int_or("MaxEventCandidates", 12)?;
     let note_max_chars = a.int_or("NoteMaxChars", 6000)?;
-    let instructions = a.str_or("Instructions", "dsh-instructions.zh.md");
+    let instructions = a.str_or("Instructions", "dsh-digest-base.zh.md,dsh-model-cards.zh.md");
     let no_event_candidates = a.flag("NoEventCandidates");
     let no_figures = a.flag("NoFigures");
     let apply = a.flag("Apply");
@@ -749,7 +749,6 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         };
         all_candidates.extend(candidates);
         let src_log = join_path(&staging, &format!("src-{id}.txt"));
-        let gate = join_path(&staging, "topic-gate.lock");
         let events = if no_event_candidates { String::new() } else { format!("- 事件候选（本组小节中写出年份的句子；由你判断哪些是真实事件）：\n{event_lines}\n") };
         // The script's here-string: its lines end as the script file's did (CRLF).
         let head = [
@@ -758,9 +757,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             format!("- 锚点卡片：`{anchor}`"),
             format!("- 章节：{chapter}；小节：{}（文件 {}，原文附在下面）", headings.join("；"), sections.join("、")),
             format!("- 用词最接近的其他小节（先看这些）：{}", related.join("；")),
-            format!("- 写入命令：`... | zt-digest call - -Log \"{owned}\" -SrcLog \"{src_log}\" -TopicGate \"{gate}\"`"),
+            format!("- 写入命令：`... | zt-digest call - -Log \"{owned}\" -SrcLog \"{src_log}\"`（只写本书的文献树）"),
             format!("- SELF-CHECK: `zt-check --cards \"{anchor}\" --log \"{owned}\" --book {key}`"),
-            format!("- 现有主题卡片快照：`{staging}\\snapshot-{id}.md`（本组启动时生成）"),
+            format!("- 现有文献卡片快照：`{staging}\\snapshot-{id}.md`（本组启动时生成）"),
             format!("- 全书索引：`{index_path}`"),
             format!("- 本书术语表：`{staging}\\terms.md`（存在时先读它，按它用词）"),
             events,
@@ -945,8 +944,9 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
         return crate::lockcheck::stop("prepare-link", &refusal);
     }
 
-    // --- every tree, both Workspaces ---
-    let details = snapshot::read_title_trees(&mut zt)?;
+    // --- every Literature tree, both Workspaces (docs/literature-only-digest-design.md: the Link
+    // pass reads and links Literature trees only; Topic trees are zt-idea-grow's) ---
+    let details = snapshot::read_literature_trees(&mut zt)?;
     let mut text = String::new();
     text.push_str("# 全部卡片快照（地址与标题；[模型] 为模型卡，[模型·假设] 等为模型分卡，[事件] 为事件卡）");
     text.push_str(NL);

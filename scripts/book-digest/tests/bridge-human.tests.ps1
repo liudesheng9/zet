@@ -11,7 +11,7 @@ $env:ZT_CONFIG_DIR=Join-Path $scratch 'config';$env:ZT_GUI_PORT='0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 $compiler=Join-Path $PSScriptRoot '..\bridge-compiler.ps1'
 function Assert($ok,$text){if(-not $ok){throw $text};Write-Output "ok: $text"}
-function Calls($calls){$lines=@((ConvertTo-Json -InputObject @($calls) -Depth 20)|pwsh -NoProfile -File $script:ZtHelper -);if($LASTEXITCODE){throw "$lines"};,@($lines|Where-Object{$_ -match '^\d+ ok '}|ForEach-Object{($_ -split ' ok ',2)[1].Trim()})}
+function Calls($calls){$lines=@((ConvertTo-Json -InputObject @($calls) -Depth 20)|pwsh -NoProfile -File $script:ZtHelper - -Open);if($LASTEXITCODE){throw "$lines"};,@($lines|Where-Object{$_ -match '^\d+ ok '}|ForEach-Object{($_ -split ' ok ',2)[1].Trim()})}
 function Compile($a){$lines=@(pwsh -NoProfile -File $compiler @a);$script:Code=$LASTEXITCODE;$lines[-1]|ConvertFrom-Json -AsHashtable -DateKind String}
 function Audit($out){$lines=@(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey New2026 -Out $out -SkipModels);if($LASTEXITCODE){throw "$lines"};Get-Content -LiteralPath (Join-Path $out 'audit.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String}
 try{
@@ -23,10 +23,13 @@ const p=path.resolve(process.argv[2])
 if(!p.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(path.dirname(path.dirname(p))).startsWith('bridge-human-test-'))throw new Error('not a scratch archive: '+p)
 const c=new DatabaseSync(p)
 if(c.prepare('select count(*) as n from cards').get().n!==0)throw new Error('scratch archive is not empty')
-const add=c.prepare("insert into cards(location,is_topic,is_lit,text,workspace,card_type) values(?,?,0,?,'human','idea')")
 const nn=String.fromCharCode(10).repeat(2)
-for(const [at,root,text] of [['99990/0',1,'# 人类主题'+nn+'控制权'],['99990/1',0,'# 人类卡片讨论控制权'+nn+'控制权决定投资的激励。'],['99990/2',0,'# 人类卡片比较控制权'+nn+'对应 [[0/2]]：两处都讨论控制权决定投资的激励。']])add.run(at,root,text)
-c.prepare("insert or replace into metadata(key,value) values('next_topic_id','0')").run()
+// docs/literature-only-digest-design.md: Bridge targets are Literature-tree Cards, so the human
+// target sits in a human Literature tree, and the human Card that links the book links a Card of
+// the book's own Literature tree (the source's Direct successor, created below).
+c.prepare("insert into cards(location,citation_key,is_topic,is_lit,bibtex,text,workspace,card_type) values(null,'Hum1999',0,1,'@book{Hum1999,title={Human},year={1999}}','# Human','human','idea')").run()
+const add=c.prepare("insert into cards(location,is_topic,is_lit,text,workspace,card_type) values(?,0,0,?,'human','idea')")
+for(const [at,text] of [['Hum1999/1','# 第一组'+nn+'§1 控制权'],['Hum1999/1|a','# 人类卡片讨论控制权'+nn+'控制权决定投资的激励。'],['Hum1999/1|b','# 人类卡片比较控制权'+nn+'对应 [[New2026/1|a|1]]：两处都讨论控制权决定投资的激励。']])add.run(at,text)
 c.close()
 '@
  $seedFile=Join-Path $scratch 'seed.cjs';[IO.File]::WriteAllText($seedFile,$seed,[Text.UTF8Encoding]::new($false))
@@ -39,10 +42,9 @@ c.close()
  $made=Calls @(
   @{tool='create_literature';arguments=@{bibtex='@book{New2026,title={New},year={2026}}'}},
   @{tool='create_successor';arguments=@{at='New2026';title='第一组';body='§1 控制权'}},
-  @{tool='create_topic';arguments=@{title='控制权';body='控制权与投资'}},
-  @{tool='create_successor';arguments=@{at='@@2';title='控制权影响投资';body='控制权决定投资的激励。来源：[[New2026]] §1'}}
+  @{tool='create_successor';arguments=@{at='New2026/1';kind='side';title='控制权影响投资';body='控制权决定投资的激励。来源：[[New2026]] §1'}}
  )
- $source=$made[3];$target='99990/1'
+ $source=$made[2];$target='Hum1999/1|a'
  $before=(Invoke-Zt @(@{tool='get_card';arguments=@{at=$target}}))[0]
  $r=Compile @('-Step','plan','-Staging',$staging,'-CitationKey','New2026')
  $work=Join-Path $staging 'bridge';$plan=Get-Content -LiteralPath (Join-Path $work 'plan.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String

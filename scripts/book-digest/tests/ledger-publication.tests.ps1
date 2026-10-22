@@ -152,8 +152,9 @@ try {
     $skelDone = Run-Digest @('ledger','done','-Out',$out,'-Unit',$skelUnit.id,'-Token',"$($skelUnit.token)",'-Outputs',(Skeleton-Plan 'unresolved'))
     Assert ($skelDone.state -eq 'done' -and $skelDone.disposition -eq 'partial' -and @($skelDone.coverage).Count -eq $anchors.Count -and @($skelDone.coverage | Where-Object { $_.outcome -eq 'unresolved' -and $_.reason -and $_.producer }).Count -eq $anchors.Count) 'a skeleton revision completes with every prepared anchor explicitly unresolved instead of fabricated coverage'
 
-    # A hub refresh is coalesced by touched tree, so it declares that tree with its
-    # required upper hubs and Register instead of refreshing every tree at once.
+    # A producer records the trees it touched. A digest builds no hubs
+    # (docs/literature-only-digest-design.md): `hubs` is an excluded layer of every
+    # prepared run, so no hub refresh is ever published from these trees.
     $hubOut = Join-Path $scratch 'hubs'
     $hubSource = Join-Path $scratch 'hubs.md'
     [IO.File]::WriteAllText($hubSource,"# 导论`n`n企业的融资约束改变投资选择。`n`n# 参考`n未选择。",$utf8)
@@ -174,54 +175,23 @@ try {
     Assert ($hubDone.state -eq 'done' -and 'HubTree' -in $hubDone.trees) 'a completed producer records the trees it actually touched'
 
     $hubScope = Join-Path $scratch 'hub-scope.json'
-    [IO.File]::WriteAllText($hubScope,'{"tree":"OtherTree","upper":[],"register":null}',$utf8)
-    Refuses @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope) 'differs from the requested key'
     [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1"],"register":null}',$utf8)
-    $hubPublication = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
-    Assert ($hubPublication.unit -ceq 'hubs/HubTree@1' -and $hubPublication.scope.tree -ceq 'HubTree' -and $hubPublication.scope.upper -contains 'HubTree/1' -and @($hubPublication.contributions).Count -eq 1 -and $hubPublication.contributions[0].unit -ceq 'digest/g001@1') 'a hub refresh coalesces the producers that touched its declared tree'
-    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1","HubTree/2"],"register":null}',$utf8)
-    $changedScope = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
-    Assert ($changedScope.unit -ceq 'hubs/HubTree@2' -and -not $changedScope.reused) 'a changed declared scope is a changed input and registers the next revision'
-    [IO.File]::WriteAllText($hubScope,'{"tree":"OtherTree","upper":[],"register":null}',$utf8)
-    $untouched = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','OtherTree','-Scope',$hubScope)
-    Assert ($untouched.unit -ceq 'hubs/OtherTree@1' -and @($untouched.contributions).Count -eq 0) 'a tree no producer touched has no contributing work of its own'
+    Refuses @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope) 'is an excluded layer of this prepared run'
+    # The tree-keyed hub revisions (declared scope, a manifest that returns to an earlier
+    # input set) are gone with the layer (docs/literature-only-digest-design.md).
 
-    # R157/R159/R161: the manifest rule is about the present input set. A manifest that
-    # returns to an earlier one never hands back that terminal history: the next
-    # revision is registered so the report's latest revision stays current.
-    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1"],"register":null}',$utf8)
-    $reverted = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
-    Assert ($reverted.unit -ceq 'hubs/HubTree@3' -and -not $reverted.reused) 'a manifest that returns to an earlier input set registers fresh work instead of returning a superseded revision'
-    $supersededFirst = @((Run-Digest @('ledger','status','-Out',$hubOut,'-Layer','hubs')).units | Where-Object { $_.id -eq 'hubs/HubTree@1' })[0]
-    Assert ($supersededFirst.state -eq 'failed' -and $supersededFirst.fault.code -eq 'superseded' -and $supersededFirst.fault.by -ceq 'hubs/HubTree@2') 'the revision an earlier input set once had stays terminal history naming its replacement'
-
-    # R157/R158/R161: a done revision is never reopened, and a done revision is never
-    # handed back as current work after a later input set existed. The latest revision
-    # always describes the present inputs; older ones keep their own retained outcome.
-    $revertClaim = (Run-Digest @('ledger','next','-Out',$hubOut,'-Layer','hubs','-Take','1','-Owner','hub-manager')).units[0]
-    Assert ($revertClaim.id -ceq 'hubs/HubTree@3') 'the fresh hub revision derived from the present inputs is the only claimable one'
-    $hubReport = Join-Path $hubOut 'hub-report.json'
-    [IO.File]::WriteAllText($hubReport,(@{ fixture = 'hubs' } | ConvertTo-Json),$utf8)
-    $revertPlan = Join-Path $hubOut 'publication-hubs-HubTree-3.json'
-    [IO.File]::WriteAllText($revertPlan,(@{
-        schema_version = 1; kind = 'publication_completion'; unit = $revertClaim.id; token = $revertClaim.token
-        layer = 'hubs'; key = 'HubTree'; input_hash = $revertClaim.input_hash
-        disposition = 'published'; consumed = @($revertClaim.inputs.contributions | ForEach-Object { @{ unit = $_.unit; fingerprint = $_.fingerprint } })
-        unresolved = @(); coverage = @(); artifacts = @{ report = $hubReport }
-    } | ConvertTo-Json -Depth 8),$utf8)
-    $revertDone = Run-Digest @('ledger','done','-Out',$hubOut,'-Unit',$revertClaim.id,'-Token',"$($revertClaim.token)",'-Outputs',$revertPlan)
-    Assert ($revertDone.state -eq 'done' -and $revertDone.disposition -eq 'published') 'the re-derived hub revision completes against its checked input set'
-    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1","HubTree/2"],"register":null}',$utf8)
-    $afterDone = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
-    Assert ($afterDone.unit -ceq 'hubs/HubTree@4' -and -not $afterDone.reused) 'a changed input derives the next revision beside a done one'
-    $keptDone = @((Run-Digest @('ledger','status','-Out',$hubOut,'-Layer','hubs')).units | Where-Object { $_.id -eq 'hubs/HubTree@3' })[0]
-    Assert ($keptDone.state -eq 'done' -and @($afterDone.superseded) -notcontains 'hubs/HubTree@3' -and 'hubs/HubTree@3' -notin (Run-Digest @('ledger','rerun-list','-Out',$hubOut)).units.id) 'a done publication revision stays done and is never offered as rerunnable work'
-    [IO.File]::WriteAllText($hubScope,'{"tree":"HubTree","upper":["HubTree/1"],"register":null}',$utf8)
-    $reopened = Run-Digest @('ledger','publish','-Out',$hubOut,'-Layer','hubs','-Key','HubTree','-Scope',$hubScope)
-    $keptAgain = @((Run-Digest @('ledger','status','-Out',$hubOut,'-Layer','hubs')).units | Where-Object { $_.id -eq 'hubs/HubTree@3' })[0]
-    Assert ($reopened.unit -ceq 'hubs/HubTree@5' -and -not $reopened.reused -and $keptAgain.state -eq 'done' -and $keptAgain.result.disposition -eq 'published') 'returning to a done revision''s input set registers fresh work instead of reopening the done revision'
-    $hubHistory = @((Run-Digest @('ledger','status','-Out',$hubOut)).publications | Where-Object { $_.layer -eq 'hubs' -and $_.key -eq 'HubTree' })[0]
-    Assert ($hubHistory.latest -ceq 'hubs/HubTree@5' -and $hubHistory.current -eq $true -and @($hubHistory.superseded | Where-Object { $_.unit -ceq 'hubs/HubTree@3' -and $_.state -eq 'done' }).Count -eq 1) 'the report selects the revision that describes the present inputs and keeps the done one as superseded history'
+    # R157/R158/R161: a done revision is never reopened. A changed input set (one more
+    # note suggestion Organize must dispose) derives the next revision beside the done
+    # one; the done one keeps its retained outcome and is never offered as rerunnable work.
+    $bookNote = Join-Path $scratch 'book-note.json'
+    [IO.File]::WriteAllText($bookNote,'[{"id":"b01","card":"PublishBook/1","note":"[[PublishBook/2]] 承接 融资约束"}]',$utf8)
+    $null = Run-Digest @('ledger','notes','-Out',$out,'-Suggestions',$bookNote)
+    $afterDone = Run-Digest @('ledger','publish','-Out',$out,'-Layer','organize')
+    Assert ($afterDone.unit -ceq 'organize/book@4' -and -not $afterDone.reused) 'a changed input derives the next revision beside a done one'
+    $keptDone = @((Run-Digest @('ledger','status','-Out',$out,'-Layer','organize')).units | Where-Object { $_.id -eq 'organize/book@3' })[0]
+    Assert ($keptDone.state -eq 'done' -and $keptDone.result.disposition -eq 'partial' -and @($afterDone.superseded) -notcontains 'organize/book@3' -and 'organize/book@3' -notin (Run-Digest @('ledger','rerun-list','-Out',$out)).units.id) 'a done publication revision stays done and is never offered as rerunnable work'
+    $bookHistory = @((Run-Digest @('ledger','status','-Out',$out)).publications | Where-Object { $_.layer -eq 'organize' -and $_.key -eq 'book' })[0]
+    Assert ($bookHistory.latest -ceq 'organize/book@4' -and $bookHistory.current -eq $true -and @($bookHistory.superseded | Where-Object { $_.unit -ceq 'organize/book@3' -and $_.state -eq 'done' }).Count -eq 1) 'the report selects the revision that describes the present inputs and keeps the done one as superseded history'
 
     # Every independent note suggestion becomes one work unit with its own outcome,
     # registered against the Card state the suggestion was made from.
@@ -319,7 +289,7 @@ try {
     # A recorded structural mapping updates the addresses this run published; an
     # unexplained move is a precise conflict, not a silently stale locator.
     $moves = Join-Path $scratch 'moves.json'
-    $null = & $Digest call -Tool move_card -Json '{"at":"HubTree/1|a","to":"HubTree/2","confirm":"move"}' -Moves $moves 2>&1
+    $null = & $Digest call -Open -Tool move_card -Json '{"at":"HubTree/1|a","to":"HubTree/2","confirm":"move"}' -Moves $moves 2>&1
     Assert ($LASTEXITCODE -eq 0 -and (Test-Path $moves) -and ((Get-Content -LiteralPath $moves -Raw) -match 'HubTree/1\|a')) 'a real move records its exact structural mapping'
     $emptyMoves = Join-Path $scratch 'no-moves.json'
     [IO.File]::WriteAllText($emptyMoves,'{}',$utf8)
@@ -467,9 +437,9 @@ try {
         schema_version = 1; unit = $modelsGroup.id; token = $modelsGroup.token; input_hash = $modelsStart.input_hash; disposition = 'cards'
         calls = @(
             @{ tool = 'edit_card'; arguments = @{ at = 'ModelsBook/1'; title = '融资约束改变投资选择'; body = '融资约束改变企业的投资选择。企业减少设备投入，生产能力随之下降。'; base_fingerprint = $modelsJob.inputs.anchor.fingerprint } },
-            @{ tool = 'create_topic'; arguments = @{ title = '企业融资机制' } },
-            @{ tool = 'create_successor'; arguments = @{ at = '@@1'; title = '融资成本决定最优投入'; type = 'model'; level = 'concept'; body = '融资成本改变企业的投资选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[ModelsBook/1]]' } },
-            @{ tool = 'create_successor'; arguments = @{ at = '@@2'; kind = 'side'; title = '企业比较投资收益与融资成本'; type = 'model'; facet = '设定'; body = '可以说，企业比较投资收益与融资成本。融资成本超过收益时，企业取消投资。来源：[[ModelsBook/1]]' } }
+            # The Model Card is filed in the book's Literature tree (docs/literature-only-digest-design.md).
+            @{ tool = 'create_successor'; arguments = @{ at = 'ModelsBook/1'; kind = 'side'; title = '融资成本决定最优投入'; type = 'model'; level = 'concept'; body = '融资成本改变企业的投资选择。贷款收紧使企业减少设备投入。投入减少限制下一期的生产能力。来源：[[ModelsBook/1]]' } },
+            @{ tool = 'create_successor'; arguments = @{ at = '@@1'; kind = 'side'; title = '企业比较投资收益与融资成本'; type = 'model'; facet = '设定'; body = '可以说，企业比较投资收益与融资成本。融资成本超过收益时，企业取消投资。来源：[[ModelsBook/1]]' } }
         )
     } | ConvertTo-Json -Depth 8),$utf8)
     $modelsDone = Run-Digest @('group-finish','-Out',$modelsOut,'-Group','1','-Token',"$($modelsGroup.token)",'-Draft',$modelsStart.draft)
@@ -480,10 +450,9 @@ try {
     Assert (@($modelsNext.dispositions | Where-Object { $_.unit -ceq $modelChild[0] -and $_.disposition -eq 'pending' }).Count -eq 1) 'the fresh revision names the registered Model work as an explicit unresolved disposition'
     $modelsTerminal = @((Run-Digest @('ledger','status','-Out',$modelsOut,'-Layer','organize')).units | Where-Object { $_.id -eq $modelsInitial.unit })[0]
     Assert ($modelsTerminal.state -eq 'failed' -and $modelsTerminal.fault.code -eq 'superseded' -and $modelsTerminal.fault.by -ceq 'organize/book@2') 'the older publication revision is terminal history rather than rerunnable work'
-    $modelsHubScope = Join-Path $scratch 'models-hub-scope.json'
-    [IO.File]::WriteAllText($modelsHubScope,'{"tree":"ModelsBook","upper":[],"register":null}',$utf8)
-    $modelsHub = Run-Digest @('ledger','publish','-Out',$modelsOut,'-Layer','hubs','-Key','ModelsBook','-Scope',$modelsHubScope)
-    Assert ($modelsHub.unit -ceq 'hubs/ModelsBook@1' -and @($modelsHub.contributions | Where-Object { $_.unit -ceq 'digest/g001@1' }).Count -eq 1 -and @($modelsHub.dispositions | Where-Object { $_.unit -ceq $modelChild[0] -and $_.disposition -eq 'pending' }).Count -eq 1) 'the touched tree derives its own hub revision from the completed producer and the registered Model work'
+    # The skeleton stands where the hub revision stood: a digest builds no hubs (docs/literature-only-digest-design.md).
+    $modelsSkeleton = Run-Digest @('ledger','publish','-Out',$modelsOut,'-Layer','skeleton')
+    Assert ($modelsSkeleton.unit -ceq 'skeleton/book@2' -and -not $modelsSkeleton.reused -and @($modelsSkeleton.contributions | Where-Object { $_.unit -ceq 'digest/g001@1' }).Count -eq 1 -and @($modelsSkeleton.dispositions | Where-Object { $_.unit -ceq $modelChild[0] -and $_.disposition -eq 'pending' }).Count -eq 1) 'the skeleton revision derives from the completed producer and the registered Model work'
     $modelsLinks = Run-Digest @('ledger','publish','-Out',$modelsOut,'-Layer','link-check')
     Assert ($modelsLinks.unit -ceq 'link-check/book@2' -and @($modelsLinks.dispositions | Where-Object { $_.unit -ceq 'link/g001@1' }).Count -eq 1 -and @($modelsLinks.dispositions | Where-Object { $_.unit -ceq $modelChild[0] -and $_.disposition -eq 'pending' }).Count -eq 1) 'the Link pass revision consumes the registered Link work and the Model candidate of the completed producer'
 } finally {

@@ -32,14 +32,14 @@ try {
     $env:ZT_TRACE_TOOLS = $trace
     $env:ZT_DROP_BATCH_REPLY_FLAG = Join-Path $scratch 'committed-without-reply.flag'
     $prefix = 'qualification/model-large/1/build'
-    $lost = @(& $Digest call $inputFile -OperationPrefix $prefix 2>&1)
+    $lost = @(& $Digest call -Open $inputFile -OperationPrefix $prefix 2>&1)
     $lostExit = $LASTEXITCODE
     $treeList = Invoke-Zt @(@{tool='list_trees';arguments=@{}})
     $partialCount = 0
     if (@($treeList.trees).Count) { $partialCount = (Invoke-Zt @(@{tool='get_tree';arguments=@{tree='0'}})).cards.Count }
     Assert ($lostExit -ne 0 -and $partialCount -eq 64 -and (Test-Path -LiteralPath $env:ZT_DROP_BATCH_REPLY_FLAG)) 'the public helper loses its reply after one 64-item archive chunk commits'
     $env:ZT_TRACE_TOOLS = Join-Path $scratch 'retry-calls.jsonl'
-    $retry = @(& $Digest call $inputFile -OperationPrefix $prefix 2>&1)
+    $retry = @(& $Digest call -Open $inputFile -OperationPrefix $prefix 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and $retry.Count -eq 69) "retry completes the exact accepted calls: $($retry[-1])"
     $tree = Invoke-Zt @(@{tool='get_tree';arguments=@{tree='0'}})
     Assert ($tree.cards.Count -eq 68) 'replay restores original addresses without duplicating the committed prefix'
@@ -48,14 +48,14 @@ try {
     $revision = (Invoke-Zt @(@{tool='get_cards';arguments=@{addresses=@();view='text'}})).archive_revision
     Assert ($revision -eq 2) 'two committed chunks publish two revisions; the replayed prefix publishes none'
     $env:ZT_TRACE_TOOLS = Join-Path $scratch 'replay-calls.jsonl'
-    $replay = @(& $Digest call $inputFile -OperationPrefix $prefix 2>&1)
+    $replay = @(& $Digest call -Open $inputFile -OperationPrefix $prefix 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and ($replay -join "`n") -eq ($retry -join "`n")) 'a later new process returns every original allocated address'
     Assert ((Invoke-Zt @(@{tool='get_cards';arguments=@{addresses=@();view='text'}})).archive_revision -eq $revision) 'a complete replay makes no Card revision'
     $requests = @(Get-Content -LiteralPath (Join-Path $scratch 'retry-calls.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
     $writes = @($requests | Where-Object tool -eq 'apply_batch')
     Assert (($writes.item_count -join ',') -eq '64,5' -and @($writes.process_id | Sort-Object -Unique).Count -eq 1) 'the resumed helper uses two deterministic bounded batches through one MCP process'
     $null = Invoke-Zt @(@{tool='edit_card';arguments=@{at='0/1|a';body='Independent edit after the accepted build.'}})
-    $changed = @(& $Digest call $inputFile -OperationPrefix $prefix 2>&1)
+    $changed = @(& $Digest call -Open $inputFile -OperationPrefix $prefix 2>&1)
     Assert ($LASTEXITCODE -ne 0 -and ($changed -join ' ').Contains('identified output changed')) 'replayed receipts cannot claim completion after an output was independently edited'
     Assert ((Invoke-Zt @(@{tool='get_card';arguments=@{at='0/1|a'}})).body -eq 'Independent edit after the accepted build.') 'verification leaves the independent edit intact'
     $null = Invoke-Zt @(
@@ -106,7 +106,7 @@ try {
     $env:ZT_RACE_FLAG = Join-Path $scratch 'concurrent-writer.flag'
     $env:ZT_RACE_LINE = '另一位写作者在核对输出期间追加的一行。'
     $env:ZT_RACE_AFTER_BULK_REPLY = '1'
-    $concurrent = @(& $Digest call $concurrentCalls -OperationPrefix 'qualification/concurrent/1/build' 2>&1)
+    $concurrent = @(& $Digest call -Open $concurrentCalls -OperationPrefix 'qualification/concurrent/1/build' 2>&1)
     $concurrentExit = $LASTEXITCODE
     $wrote = Test-Path -LiteralPath $env:ZT_RACE_FLAG
     Remove-Item Env:ZT_RACE_AFTER_BULK_REPLY,Env:ZT_RACE_TARGET,Env:ZT_RACE_FLAG,Env:ZT_RACE_LINE -ErrorAction SilentlyContinue

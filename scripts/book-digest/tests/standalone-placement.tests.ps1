@@ -7,12 +7,12 @@
 # Direct successor there, an edit there and any unlisted parent are refused, a human Card is refused,
 # and the earlier Card's authored text never changes. Second the prompt the frozen workflows assemble:
 # `prepare` builds shared-prefix.md from `dsh-digest-base.zh.md` plus the book type's files, so that
-# assembled prompt must carry the ordered filing decision, the `-Beneath` call and the inline-Link
-# rule with no fixed quota. Third the group: `group-start` publishes the place-beside file from its
-# earlier-context pack, `group-finish` refuses a draft that continues a listed Card as a Direct
-# successor, and a draft that files one Card beside the earlier thought and one under its own anchor
-# completes through the receipt-owned path, replays without a second Card, and leaves every older
-# authored body byte-identical.
+# assembled prompt must carry the ordered filing decision and the inline-Link rule with no fixed
+# quota. Third the group (docs/literature-only-digest-design.md): `group-start` publishes the
+# place-beside file, which lists no Topic Card, `group-finish` refuses a draft that files a Card
+# beside the earlier Topic Card, and a draft that files its Card under its own anchor completes
+# through the receipt-owned path, replays without a second Card, and leaves every older authored
+# body byte-identical.
 param([string]$Zt = '', [string]$Digest = $env:ZT_DIGEST)
 $ErrorActionPreference = 'Stop'; $utf8 = [Text.UTF8Encoding]::new($false)
 $scratch = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "standalone-placement-test-$PID"))
@@ -72,13 +72,13 @@ try {
     $allow = Join-Path $scratch 'allow.txt'; [IO.File]::WriteAllText($allow, '', $utf8)
     $beside = Join-Path $scratch 'place-beside.txt'; [IO.File]::WriteAllText($beside, "$earlier`n", $utf8)
     $log = Join-Path $scratch 'owned.txt'
-    $placed = @(& $Digest call - -Allow $allow -Beneath $beside -Log $log 2>&1) ; $code = $LASTEXITCODE
+    $placed = @(& $Digest call -Open - -Allow $allow -Beneath $beside -Log $log 2>&1) ; $code = $LASTEXITCODE
     Assert ($code -ne 0) 'an empty call file is an error, not a silent no-op'
     $callsFile = Join-Path $scratch 'calls.json'
     $claim = '本文的学习外部性放宽 [[{0}]] 的固定技术假设：把技术水平写成可积累的。' -f $earlier
     $calls = @(@{ tool='create_successor'; arguments=@{ at=$earlier; kind='side'; title='学习外部性让技术可以积累'; body=$claim } })
     [IO.File]::WriteAllText($callsFile, (ConvertTo-Json -InputObject $calls -Depth 10), $utf8)
-    $lines = @(& $Digest call $callsFile -Allow $allow -Beneath $beside -Log $log 2>&1)
+    $lines = @(& $Digest call -Open $callsFile -Allow $allow -Beneath $beside -Log $log 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and ($lines -join ' ') -match '0 ok ') 'the helper files a Side successor beneath an earlier agent Topic Card'
     $created = (Get-Content -LiteralPath $log | Select-Object -Last 1)
     $newCard = Card $created
@@ -91,23 +91,23 @@ try {
 
     $directFile = Join-Path $scratch 'direct.json'
     [IO.File]::WriteAllText($directFile, (ConvertTo-Json -InputObject @(@{ tool='create_successor'; arguments=@{ at=$earlier; kind='direct'; title='直接接上'; body='把新卡接成直接后继。' } }) -Depth 10), $utf8)
-    $direct = Try-Digest @('call',$directFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
+    $direct = Try-Digest @('call','-Open',$directFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
     Assert ($direct.code -eq 1 -and $direct.text.Contains('only as a Side successor')) 'a Direct successor beneath an earlier Card is refused: its chain belongs to its own line of thought'
 
     $editFile = Join-Path $scratch 'edit.json'
     [IO.File]::WriteAllText($editFile, (ConvertTo-Json -InputObject @(@{ tool='edit_card'; arguments=@{ at=$earlier; title='改写早前卡'; body='改写别人的卡。' } }) -Depth 10), $utf8)
-    $edit = Try-Digest @('call',$editFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
+    $edit = Try-Digest @('call','-Open',$editFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
     Assert ($edit.code -eq 1 -and $edit.text.Contains('is not one of your Cards')) 'an earlier Card stays unwritable even when it may be continued'
 
     $unlisted = Join-Path $scratch 'unlisted.json'
     [IO.File]::WriteAllText($unlisted, (ConvertTo-Json -InputObject @(@{ tool='create_successor'; arguments=@{ at=$earlierSide; kind='side'; title='未读过的卡'; body='没有读全的卡不能接续。' } }) -Depth 10), $utf8)
-    $refused = Try-Digest @('call',$unlisted,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
+    $refused = Try-Digest @('call','-Open',$unlisted,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
     Assert ($refused.code -eq 1 -and $refused.text.Contains('is not one of your Cards')) 'a Card that is not on the place-beside list is refused'
 
     $humanFile = Join-Path $scratch 'human.json'
     [IO.File]::WriteAllText($humanFile, (ConvertTo-Json -InputObject @(@{ tool='create_successor'; arguments=@{ at=$humanAt; kind='side'; title='放进人类树'; body='把代理卡放进人类树。' } }) -Depth 10), $utf8)
     [IO.File]::WriteAllText($beside, "$earlier`n$humanAt`n", $utf8)
-    $humanTry = Try-Digest @('call',$humanFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
+    $humanTry = Try-Digest @('call','-Open',$humanFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
     Assert ($humanTry.code -eq 1 -and $humanTry.text.Contains('human')) 'an agent Card is never filed in a human tree, even when the Card is listed'
 
     # --- the group: the pack publishes the place-beside file, and the draft is receipt-owned -----------
@@ -120,17 +120,17 @@ try {
     # not only the standalone `dsh-instructions.zh.md` the workflows no longer load.
     $prefixText = [IO.File]::ReadAllText((Join-Path $out 'shared-prefix.md'))
     Assert ($prefixText.Contains('依附本书才能读懂的内容')) 'the live digest prompt states the ordered filing decision'
-    Assert ($prefixText.Contains('可续写的早前主题卡') -and $prefixText.Contains('-Beneath')) 'the live digest prompt names the place-beside file and the -Beneath call'
+    # docs/literature-only-digest-design.md: a digest files every Card in its book's Literature tree, so
+    # the prompt offers no earlier Topic Card to continue and names no -Beneath call.
+    Assert (-not $prefixText.Contains('可续写的早前主题卡') -and -not $prefixText.Contains('-Beneath')) 'the live digest prompt offers no place beside an earlier Topic Card'
     Assert ($prefixText.Contains('没有固定的 Link 条数') -and -not $prefixText.Contains('至少一半的卡片链接全书') -and -not $prefixText.Contains('父卡以外')) 'the live digest prompt writes Links in place with no fixed quota'
     $next = Run-Digest @('ledger','next','-Out',$out,'-Layer','digest','-Take','1','-Owner','group-manager')
     $unit = @($next.units)[0]
     $started = Run-Digest @('group-start','-Out',$out,'-Group','1','-Token',"$($unit.token)")
-    $besideFile = [string]$started.place_beside
     $listed = @(Get-Content -LiteralPath $started.job | ConvertFrom-Json -AsHashtable).artifacts.place_beside.path
     Assert ($listed -and (Test-Path -LiteralPath $listed)) 'group-start publishes the place-beside file as job evidence'
     $besideLines = @(Get-Content -LiteralPath $listed | Where-Object { $_.Trim() })
-    Assert ($besideLines -contains $earlier) "the earlier Card the pack read is offered for continuation ($($besideLines -join ', '))"
-    Assert (-not ($besideLines -contains $earlierTopic)) 'a Topic root is never offered as a place to continue'
+    Assert (-not ($besideLines -contains $earlier) -and -not ($besideLines -contains $earlierTopic)) "no earlier Topic Card is offered for continuation ($($besideLines -join ', '))"
 
     $anchor = "LaterBook/1"
     $anchorFingerprint = ([string]$started.job | ForEach-Object { (Get-Content -LiteralPath $_ -Raw | ConvertFrom-Json -AsHashtable).inputs.anchor.fingerprint })
@@ -143,33 +143,26 @@ try {
         disposition = 'cards'
         calls = @(
             @{ tool='create_successor'; arguments=@{ at=$anchor; kind='side'; title='本组对剩余控制权的界定'; body='本组把剩余控制权写成对资产剩余收益的控制。来源：[[LaterBook]] §1。' } },
-            @{ tool='create_successor'; arguments=@{ at=$earlier; kind='side'; title='剩余控制权也约束经理'; body=('对照 [[{0}]] 与人类工作区的 [[{1}]]：剩余控制权也约束经理，因为所有者能撤换经理。这个效果要求经理的任期短于所有者。来源：[[LaterBook]] §1。' -f $earlier, $humanAt) } },
+            @{ tool='create_successor'; arguments=@{ at=$earlier; kind='side'; title='剩余控制权也约束经理'; body=('对照 [[{0}]]：剩余控制权也约束经理，因为所有者能撤换经理。这个效果要求经理的任期短于所有者。来源：[[LaterBook]] §1。' -f $earlier) } },
             @{ tool='edit_card'; arguments=@{ at=$anchor; title='剩余控制权界定导论'; body='本组界定剩余控制权。'; base_fingerprint=$anchorFingerprint } }
         )
     }
+    # The group applies its draft through group-finish, which refuses any call the Literature write
+    # scope refuses: a Card filed beside the earlier Topic Card is a Topic-tree write.
     [IO.File]::WriteAllText($draftPath, ($draft | ConvertTo-Json -Depth 10), $utf8)
-    # The group applies its draft through group-finish, so the same rule the helper enforces must
-    # hold there: a Card read in full is continued only as a Side successor. Its Direct chain belongs
-    # to its own line of thought, and `0/2` is still free, so only the rule can refuse this draft.
-    $draft.calls[1].arguments.kind = 'direct'
-    [IO.File]::WriteAllText($draftPath, ($draft | ConvertTo-Json -Depth 10), $utf8)
-    $directGroup = Try-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath,'-CheckOnly')
-    Assert ($directGroup.code -eq 1 -and $directGroup.text.Contains('Side successor') -and $directGroup.text.Contains($earlier)) 'the group refuses a Direct successor beneath the earlier Card it read in full'
-    $draft.calls[1].arguments.kind = 'side'
+    $topicGroup = Try-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath,'-CheckOnly')
+    Assert ($topicGroup.code -eq 1 -and $topicGroup.text.Contains("Literature tree") -and $topicGroup.text.Contains($earlier)) "the group refuses a Card beside the earlier Topic Card ($($topicGroup.text))"
+    $draft.calls = @($draft.calls[0], $draft.calls[2])
     [IO.File]::WriteAllText($draftPath, ($draft | ConvertTo-Json -Depth 10), $utf8)
     $check = Run-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath,'-CheckOnly')
-    Assert ($check.preview -eq $true -or $check.check_only -eq $true) 'the group preview accepts one Card under its anchor and one beside the earlier Topic Card'
+    Assert ($check.preview -eq $true -or $check.check_only -eq $true) 'the group preview accepts the Card under its anchor'
     $finished = Run-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath)
-    $placed = @($finished.owned | Where-Object { $_.StartsWith("$earlier|") })
-    Assert ($placed.Count -eq 1 -and @($finished.owned) -contains $anchor -and @($finished.owned | Where-Object { $_.StartsWith("$anchor|") }).Count -eq 1) "the group owns one Card under its anchor and one beside earlier thought ($(($finished.owned) -join ', '))"
-    Assert (@($finished.substantive) -contains $placed[0] -and @($finished.receipt_keys).Count -eq 3) 'the placed Card is substantive and its creation has a receipt'
+    Assert (@($finished.owned | Where-Object { $_.StartsWith("$earlier|") }).Count -eq 0 -and @($finished.owned) -contains $anchor -and @($finished.owned | Where-Object { $_.StartsWith("$anchor|") }).Count -eq 1) "the group owns its anchor and one Card under it ($(($finished.owned) -join ', '))"
+    Assert (@($finished.receipt_keys).Count -eq 2) 'the creation and the anchor edit have receipts'
     $again = Run-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath)
     Assert ($again.reused -eq $true -and (@($again.owned) -join ',') -eq (@($finished.owned) -join ',')) 'a receipt-owned replay returns the same Cards and creates none'
     Assert (((Card $earlier).body -ceq $earlierText) -and ((Card $earlierSide).body -ceq $earlierSideText)) 'the earlier thought and its chain keep their authored bodies after the group'
-    $placedCard = Card $placed[0]
-    Assert ($placedCard.body.TrimStart().StartsWith('对照 [[') -and $placedCard.body.Contains($earlier)) 'the placed Card states its relation to the earlier Card in its first sentence'
-    Assert ($placedCard.body.Contains("[[$humanAt]]")) 'an agent Card links a human Card as a read-only reference'
-    Assert (((Card $humanAt).body -ceq $humanText) -and (Card $humanAt).text.Contains($placed[0])) 'the human Card keeps its authored text and gains only the generated Reverse link'
+    Assert ((Card $humanAt).body -ceq $humanText) 'the human Card keeps its authored text'
 } finally {
     Remove-Item Env:ZT_CHECK_ZT,Env:ZT_TRACE_TOOLS -ErrorAction SilentlyContinue
     zt down 2>&1 | Out-Null

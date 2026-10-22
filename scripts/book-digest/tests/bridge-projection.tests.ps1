@@ -24,7 +24,7 @@ $env:ZT_GUI_PORT = '0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message }; Write-Output "ok: $message" }
 function Write-Cards($calls) {
-    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "fixture create failed: $lines" }
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -74,12 +74,12 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = 'New2026'; title = '第一组'; body = '§1 控制权' } },
         @{ tool = 'create_literature'; arguments = @{ bibtex = '@book{Old2020,title={Old Book},year={2020}}' } },
         @{ tool = 'create_successor'; arguments = @{ at = 'Old2020'; title = '第一组'; body = '§1 控制权' } },
-        @{ tool = 'create_topic'; arguments = @{ title = '新书的控制权'; body = '控制权与事后议价。' } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@4'; title = '控制权决定债权人的议价能力'; body = "债权人掌握控制权后决定清算。控制权决定事后议价。`n`n来源：[[New2026]] §1" } },
-        @{ tool = 'create_topic'; arguments = @{ title = '旧书的控制权'; body = '控制权与企业边界。' } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@6'; title = '控制权决定企业的议价能力'; body = "企业掌握控制权后决定投资。控制权决定事后议价。`n`n来源：[[Old2020]] §1" } }
+        # docs/literature-only-digest-design.md: Bridge sources, targets and carriers are Literature-tree
+        # Cards, so the source is in the book's own tree and the target in the earlier book's tree.
+        @{ tool = 'create_successor'; arguments = @{ at = 'New2026/1'; kind = 'side'; title = '控制权决定债权人的议价能力'; body = "债权人掌握控制权后决定清算。控制权决定事后议价。`n`n来源：[[New2026]] §1" } },
+        @{ tool = 'create_successor'; arguments = @{ at = 'Old2020/1'; kind = 'side'; title = '控制权决定企业的议价能力'; body = "企业掌握控制权后决定投资。控制权决定事后议价。`n`n来源：[[Old2020]] §1" } }
     )
-    $source = $made[5]; $target = $made[7]
+    $source = $made[4]; $target = $made[5]
     $result = Compile @('-Step', 'plan', '-Staging', $staging, '-Work', $work, '-CitationKey', 'New2026', '-MaxSources', 1, '-Candidates', 1)
     $plan = Get-Content -LiteralPath (Join-Path $work 'plan.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
     $sentence = "对应 [[$target]]：两处都由控制权决定事后议价。"

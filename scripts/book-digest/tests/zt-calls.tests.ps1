@@ -24,7 +24,7 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = 'Test2020'; title = '第一章' } },
         @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1'; kind = 'side'; type = 'model'; title = '债务约束管理层：“硬”债务遏制帝国扩张'; body = $excerpt } }
     )
-    $out = ($calls | ConvertTo-Json -Depth 5 -AsArray) | pwsh -NoProfile -File $helper -
+    $out = ($calls | ConvertTo-Json -Depth 5 -AsArray) | pwsh -NoProfile -File $helper - -Open
     if ($LASTEXITCODE -ne 0) { throw "setup failed: $out" }
 
     # The parent reads the script's output in the console's code page, as a workflow agent does.

@@ -18,7 +18,7 @@ $seam = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
 $failed = 0
 function Assert($condition, $message) { if (-not $condition) { Write-Output "FAIL: $message"; $script:failed++ } else { Write-Output "ok: $message" } }
 function Write-Cards($calls) {
-    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "fixture create failed: $lines" }
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -33,7 +33,7 @@ function Invoke-Digest([string]$tool, [string[]]$Arguments) {
 function Read-Json($path) { Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String }
 function Write-Json($path, $value) { [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 32), $utf8) }
 function Call-Tool($tool, $arguments) {
-    $line = @(& $script:exe call -Tool $tool -Json ($arguments | ConvertTo-Json -Compress -Depth 10) 2>&1 | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^\d+ ' })
+    $line = @(& $script:exe call -Open -Tool $tool -Json ($arguments | ConvertTo-Json -Compress -Depth 10) 2>&1 | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^\d+ ' })
     if (-not $line) { throw "zt-digest call $tool answered nothing" }
     $text = ($line[-1] -split ' ', 2)[1]
     if ($text -match '^ok ') { return @{ ok = $true; address = $text.Substring(3).Trim() } }

@@ -9,6 +9,14 @@
 //!   zt-digest grow -Step apply    -Work <folder> [-Apply]
 //!   zt-digest grow -Step check    -Work <folder> -Round R
 //!   zt-digest grow -Step report   -Work <folder>
+//!   zt-digest grow -Step hubs-plan -Work <folder> [-Limits <json>] [-Trees <list>] [-Rebuild]
+//!   zt-digest grow -Step hubs-apply|hubs-check|hubs-report -Work <folder> [-Round R] [-Register apply|plan|off]
+//!   zt-digest grow -Step restate-cards -Work <folder>
+//!
+//! Since 3.0.0 (docs/literature-only-digest-design.md) the digests build only Literature trees, and
+//! this tool owns every Topic tree, Topic Card, hub and the register: the hubs round also runs alone
+//! (the workflow's mode hubs), takes the hub options the digests had, and the run's new Topic Cards
+//! get the restatement review (`zt-digest restate`, fed by restate-cards).
 //!
 //! plan      reads the Literature tree (either Workspace) and every title of the box, and writes
 //!           snapshot.md, topics.md, titles.json, sections\sNNN.md, jobs\gw-NNN.md (one per
@@ -1230,6 +1238,64 @@ fn hub_limits(survey: &Value) -> Value {
     })
 }
 
+/// A run's hub limit override (`hubLimits`, 3.0.0): each named key replaces the survey's value;
+/// the hub compiler clamps every value again. An unknown or non-numeric key is refused.
+fn merge_limits(computed: &Value, given: &Value) -> Result<Value> {
+    let mut merged = computed.clone();
+    let Some(over) = given.as_object() else { return Ok(merged) };
+    for (k, v) in over {
+        if computed.get(k).is_none() {
+            bail!("hub limit `{k}` is not one of {}", computed.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>().join(", ")).unwrap_or_default());
+        }
+        if !v.is_number() {
+            bail!("hub limit `{k}` must be a number");
+        }
+        merged[k] = v.clone();
+    }
+    Ok(merged)
+}
+
+/// The run's own new Topic Cards per source book, books and Cards sorted, at most `max` Cards a
+/// book (the restatement review's bound): the review compares a new Card with its own book's anchors
+/// and models and with the earlier Topic Idea Cards.
+fn grown_by_book(state: &Value, max: usize) -> Vec<(String, Vec<String>)> {
+    let mut books: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for (at, card) in state["cards"].as_object().into_iter().flatten() {
+        let book = s(&card["book"]);
+        if !book.is_empty() {
+            books.entry(book).or_default().push(at.clone());
+        }
+    }
+    books
+        .into_iter()
+        .map(|(book, mut cards)| {
+            cards.sort();
+            cards.truncate(max);
+            (book, cards)
+        })
+        .collect()
+}
+
+/// `-Step restate-cards`: the restatement review's inputs (`zt-digest restate`, moved from the
+/// digests in 3.0.0): one staging folder per source book, `<Work>\restate\rNN`, with its
+/// `manifest.json` (the book's Citation key) and `cards.txt` (the run's new Topic Cards from that
+/// book). Prints `{"books": N, "reviews": [{"id","book","staging","cards"}]}`, ids r01 …
+fn restate_cards(a: &Args) -> Result<()> {
+    let work = Work::open(&a.required("Work")?)?;
+    let state = work.state()?;
+    let mut reviews = Vec::new();
+    for (i, (book, cards)) in grown_by_book(&state, 200).into_iter().enumerate() {
+        let id = format!("r{:02}", i + 1);
+        let staging = work.path(&format!("restate\\{id}"));
+        std::fs::create_dir_all(&staging)?;
+        util::write_text(join_path(&staging, "manifest.json"), &serde_json::to_string_pretty(&json!({ "citation_key": book, "source": "zt-idea-grow" }))?)?;
+        util::write_text(join_path(&staging, "cards.txt"), &cards.join("
+"))?;
+        reviews.push(json!({ "id": id, "book": book, "staging": staging, "cards": cards.len() }));
+    }
+    util::print_last(&json!({ "books": reviews.len(), "reviews": reviews }))
+}
+
 /// The hub writer's instructions (the digest's own dsh-hub-instructions.zh.md).
 fn hub_doc() -> String {
     let dir = match std::env::var("ZT_DIGEST_SCRIPTS") {
@@ -1248,15 +1314,27 @@ fn retool_hub(plan: &Value, text: &str) -> String {
     text.replace("zt-digest hub -Step precheck", &format!("& '{tool}' hub -Step precheck")).replace("zt-digest call", &format!("& '{tool}' call"))
 }
 
-/// `-Step hubs-plan`: the hub survey, the limits, the hub plan, and one grow job per hub job.
+/// `-Step hubs-plan [-Limits <json>] [-Trees <list>] [-Rebuild]`: the hub survey, the limits (the
+/// survey's, with the run's override), the hub plan (only the named Topic trees for a pilot; every
+/// hub rewritten with -Rebuild), and one grow job per hub job.
 fn hubs_plan(a: &Args) -> Result<()> {
     let work = Work::open(&a.required("Work")?)?;
     let plan = work.read("plan.json").unwrap_or(json!({}));
     let hw = work.path("hubs");
     let survey = sibling_ok(&["hub", "-Step", "survey", "-Work", &hw])?;
-    let limits = hub_limits(&util::read_json(join_path(&hw, "survey.json"))?);
+    let given: Value = if a.has("Limits") { serde_json::from_str(&a.str("Limits")).context("-Limits is not JSON")? } else { Value::Null };
+    let limits = merge_limits(&hub_limits(&util::read_json(join_path(&hw, "survey.json"))?), &given)?;
     let seeded = seed_fields(&hw, &mut crate::zt::start()?)?;
-    let planned = sibling_ok(&["hub", "-Step", "plan", "-Work", &hw, "-Limits", &serde_json::to_string(&limits)?])?;
+    let limit_text = serde_json::to_string(&limits)?;
+    let trees = a.str("Trees");
+    let mut args = vec!["hub", "-Step", "plan", "-Work", &hw, "-Limits", &limit_text];
+    if !trees.is_empty() {
+        args.extend(["-Trees", &trees]);
+    }
+    if a.flag("Rebuild") {
+        args.push("-Rebuild");
+    }
+    let planned = sibling_ok(&args)?;
     let hstate = util::read_json(join_path(&hw, "state.json"))?;
     let doc = util::read_text(hub_doc())?;
     let mut state = work.state()?;
@@ -2212,8 +2290,12 @@ fn report(a: &Args) -> Result<()> {
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig", "Register"], &["Apply"])?;
-    let code = match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report", "hubs-plan", "hubs-apply", "hubs-check", "hubs-report"])?.as_str() {
+    let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig", "Register", "Limits", "Trees"], &["Apply", "Rebuild"])?;
+    let code = match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report", "hubs-plan", "hubs-apply", "hubs-check", "hubs-report", "restate-cards"])?.as_str() {
+        "restate-cards" => {
+            restate_cards(&a)?;
+            0
+        }
         "hubs-plan" => {
             hubs_plan(&a)?;
             0
@@ -2363,6 +2445,28 @@ mod tests {
         assert_eq!(hub_limits(&json!({ "trees": {} }))["neighbour_links"], json!(3));
         assert_eq!(last_object("x\n{\"a\":1}\nfaults: 0\n"), json!({ "a": 1 }));
         assert_eq!(retool_hub(&json!({ "tool": "D:\\t.exe" }), "SELF-CHECK: zt-digest hub -Step precheck -File f\nHELPER: zt-digest call"), "SELF-CHECK: & 'D:\\t.exe' hub -Step precheck -File f\nHELPER: & 'D:\\t.exe' call");
+    }
+
+    // 3.0.0 (docs/literature-only-digest-design.md): the hub options moved from the digests. A run's
+    // `hubLimits` override the survey's limits key by key; an unknown or non-numeric key is refused.
+    #[test]
+    fn the_hub_limit_override_replaces_only_the_keys_it_names() {
+        let computed = json!({ "topic_min": 6, "line_min": 20, "max_lines": 15, "per_job": 6 });
+        let merged = merge_limits(&computed, &json!({ "line_min": 12, "per_job": 2 })).unwrap();
+        assert_eq!(merged, json!({ "topic_min": 6, "line_min": 12, "max_lines": 15, "per_job": 2 }));
+        assert_eq!(merge_limits(&computed, &Value::Null).unwrap(), computed);
+        assert!(merge_limits(&computed, &json!({ "line_mix": 3 })).unwrap_err().to_string().contains("line_mix"));
+        assert!(merge_limits(&computed, &json!({ "line_min": "x" })).is_err());
+    }
+
+    // The restatement review takes the run's own new Topic Cards per source book, sorted, at most 200
+    // a book (its bound).
+    #[test]
+    fn the_grown_cards_are_grouped_by_book_within_the_review_bound() {
+        let state = json!({ "cards": { "12/1|b": { "book": "B" }, "12/1|a": { "book": "A" }, "3/2": { "book": "A" }, "4/1": {} } });
+        assert_eq!(grown_by_book(&state, 200), vec![("A".to_string(), vec!["12/1|a".to_string(), "3/2".to_string()]), ("B".to_string(), vec!["12/1|b".to_string()])]);
+        assert_eq!(grown_by_book(&state, 1)[0].1, vec!["12/1|a".to_string()]);
+        assert!(grown_by_book(&json!({}), 200).is_empty());
     }
 
     #[test]

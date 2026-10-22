@@ -45,9 +45,14 @@ try {
     $editor = Join-Path $scratch 'editor.ps1'
     [IO.File]::WriteAllText($editor,'param([string]$File); [IO.File]::WriteAllText($File,$env:ZT_ORPHAN_TEST_BODY,[Text.UTF8Encoding]::new($false))',$utf8)
     $env:EDITOR = "pwsh -NoProfile -File $editor"
+    # docs/literature-only-digest-design.md: the Card cycle reads Literature trees only, so the human
+    # inbound source is a human Literature-tree Card, not a human Topic.
+    $env:ZT_ORPHAN_TEST_BODY = "@book{HumanNotes2020, title={Human notes}}`n"
+    $humanBook = @(zt l --ws human 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and $humanBook[-1] -eq 'HumanNotes2020') "the owner CLI creates a human Literature tree: $($humanBook -join ' | ')"
     $env:ZT_ORPHAN_TEST_BODY = "# 人类作者的讨论`n`n参照 [[OrphanBook/1|d]]，后者给出了本次讨论的约束。`n"
-    $human = @(zt t '人类作者的讨论' 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and $human[-1] -eq '0/0') "the human inbound fixture uses the owner CLI: $($human -join ' | ')"
+    $human = @(zt n --at 'HumanNotes2020' 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and $human[-1] -eq 'HumanNotes2020/1') "the human inbound fixture uses the owner CLI: $($human -join ' | ')"
     $audit = Audit (Join-Path $scratch 'audit-before')
     $work = Join-Path $scratch 'card'
     $plan = @(& $Digest card -Step plan -Book OrphanBook -Work $work -Rules 'I5,E4,F4' -NoOrphans 2>&1)
@@ -63,8 +68,8 @@ try {
     Assert ($faults.Contains('OrphanBook/1|e E4') -and -not $faults.Contains('OrphanBook/1|e I5')) 'strong kinded inbound evidence stays separate from ordinary orphanhood'
     $null = Invoke-Zt @(@{tool='edit_card';arguments=@{at='OrphanBook/1';body='依赖 [[OrphanBook/1|a]]，后者给出了新的共同约束。参照 [[OrphanBook/1|c]]，后者给出了本组的具体论点。参照 [[OrphanBook/1|e]]，后者给出了本组的真实事件。'}})
     $env:ZT_ORPHAN_TEST_BODY = "# 企业退出限制了选择`n`n依赖 [[OrphanBook/1|e]]，后者给出了企业退出的真实事件。`n"
-    $humanIdea = @(zt n --at '0/0' 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and $humanIdea[-1] -eq '0/1') 'the owner CLI creates a human Idea carrier with a kinded Link'
+    $humanIdea = @(zt b --at 'HumanNotes2020/1' 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and $humanIdea[-1] -eq 'HumanNotes2020/1|a') 'the owner CLI creates a human Idea carrier with a kinded Link'
     $laterAudit = Audit (Join-Path $scratch 'audit-after')
     $report = @(& $Digest card -Step report -Work $work 2>&1)
     Assert ($LASTEXITCODE -eq 0) "the Card report rereads the later graph: $($report[-1])"
@@ -77,15 +82,15 @@ try {
     $cardReport = Read-Json (Join-Path $work 'report.json')
     Assert ($cardReport.orphans_after -eq $laterCard.orphan_check.list.Count) 'the public Card summary uses the shared orphan set rather than the stronger layer fault count'
     $null = Invoke-Zt @(
-        @{tool='create_topic';arguments=@{title='Declared book work'}},
-        @{tool='create_successor';arguments=@{at='1/0';title='尚未标明来源的观点';body='这张观点卡由本书的清单明确归属。'}}
+        # docs/literature-only-digest-design.md: declared work is a Literature-tree Card; a Topic Card belongs to no book.
+        @{tool='create_successor';arguments=@{at='OrphanBook/2';kind='side';title='尚未标明来源的观点';body='这张观点卡由本书的清单明确归属。'}}
     )
     $staging = Join-Path $scratch 'staging'
     New-Item -ItemType Directory -Force $staging | Out-Null
-    [IO.File]::WriteAllText((Join-Path $staging 'owned-g01.txt'),"1/1`n",$utf8)
+    [IO.File]::WriteAllText((Join-Path $staging 'owned-g01.txt'),"OrphanBook/2|b`n",$utf8)
     $declaredWork = Join-Path $scratch 'declared-card'
     $declaredPlan = @(& $Digest card -Step plan -Book OrphanBook -Work $declaredWork -Staging $staging -Rules I5 -NoOrphans 2>&1)
-    Assert ($LASTEXITCODE -eq 0) 'the Card cycle includes declared Topic work even before source attribution'
+    Assert ($LASTEXITCODE -eq 0) 'the Card cycle includes declared Literature work'
     $declaredCard = Read-Json (Join-Path $declaredWork 'before\audit.json')
     $targets = Join-Path $scratch 'orphan-targets.txt'
     [IO.File]::WriteAllText($targets,($declaredCard.orphan_check.targets -join "`n"),$utf8)
@@ -93,9 +98,9 @@ try {
     $declaredAuditLines = @(& $Digest audit -CitationKey OrphanBook -OrphanTargets $targets -Out $declaredOut -SkipModels 2>&1)
     Assert ($LASTEXITCODE -eq 0) "audit accepts the exact declared orphan target scope: $($declaredAuditLines[-1])"
     $declaredAudit = Read-Json (Join-Path $declaredOut 'audit.json')
-    Assert ('1/1' -in $declaredAudit.orphan_check.list -and ($declaredAudit.orphan_check.list -join ',') -ceq ($declaredCard.orphan_check.list -join ',') -and $declaredAudit.archive_revision -eq $declaredCard.archive_revision) 'explicitly equal scopes retain the same full orphan set, including unattributed owned work'
+    Assert ('OrphanBook/2|b' -in $declaredAudit.orphan_check.list -and ($declaredAudit.orphan_check.list -join ',') -ceq ($declaredCard.orphan_check.list -join ',') -and $declaredAudit.archive_revision -eq $declaredCard.archive_revision) 'explicitly equal scopes retain the same full orphan set, including unattributed owned work'
     $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
-    $env:ZT_BULK_MISSING = '0/1'
+    $env:ZT_BULK_MISSING = 'HumanNotes2020/1|a'
     $failedOut = Join-Path $scratch 'incomplete-audit'
     $failedAudit = @(& $Digest audit -CitationKey OrphanBook -Out $failedOut -SkipModels 2>&1)
     Assert ($LASTEXITCODE -ne 0 -and -not (Test-Path (Join-Path $failedOut 'audit.json'))) 'an unreadable human graph source cannot publish a complete orphan report'

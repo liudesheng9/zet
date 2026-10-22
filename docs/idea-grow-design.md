@@ -131,8 +131,13 @@ The owner may lock one whole Topic tree: it takes no new Cards until the owner u
 - At most 120 jobs per run, with Haiku managers at 8 DeepSeek runs each and 8 managers at once.
 - The workflow writes only agent Topic trees. It never edits a Literature-tree Card, never moves or deletes a Card, and never writes a human Card.
 
+## The only Topic-side workflow (3.0.0)
+
+The owner decided on 2026-10-22 that the digests build only Literature trees (`docs/literature-only-digest-design.md`). Every Topic-side compose is here: the Topic trees, the Topic Cards, the links across trees, the hubs and the register. 3.0.0 takes over what the digests did on that side: mode `hubs` (the hubs round and the register alone), the hub options (`hubTrees`, `hubRebuild`, `hubLimits`, `hubEffort`, `hubFixRounds`), and the restatement review of the run's new Topic Cards (`zt-digest restate`, one judge job per source book, fed by `grow -Step restate-cards`).
+
 ## Not in this version
 
 - (Since 2.5.0 the hubs round builds the hubs and the register; see the wiki block doc.)
+- The concept review of a term table against the Topics (`zt-digest concepts`, built for a digest staging folder) as the register plan's `-Review`, and the Topic merges and Card moves of the old digest Organize (`organize-survey`, `organize-apply -Open`): follow-ups.
 - Pairing across books: the snapshot and the closest-Cards list find related Cards from any book, but no Bridge review runs.
 - A second pass that re-files whole branches (join, topic-home): `zt-digest join` and `topic-home` remain separate review tools.

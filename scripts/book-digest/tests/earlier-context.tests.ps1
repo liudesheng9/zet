@@ -1,7 +1,8 @@
 #Requires -Version 7.5
 # S05 (#98): the bounded earlier-Card context pack of a digest group, at its public seams.
-# A scratch archive with twenty-five earlier control-rights Topics, a photosynthesis Topic tree with
-# a Model head and part and a long body, a human Topic, an accepted register entry and a four-group
+# A scratch archive with twenty-five earlier control-rights Cards, a photosynthesis Literature tree
+# with a Model head and part and a long body, a human Literature tree, an accepted register entry and
+# a four-group
 # book proves the published pack, its selection reason and budgets, the refused placeholders, the
 # sparse and truncated cases, the bounded re-read of a reply-limit refusal, and the one-retry rule
 # for a read set that crosses archive revisions.
@@ -32,43 +33,48 @@ function Read-Titles {
 }
 try {
     zt config set archive_root (Join-Path $scratch 'archive') | Out-Null; zt up | Out-Null
-    # Twenty-five earlier control-rights Topics, so a full twenty-Card pack is reachable and the read
-    # set is larger than the pack.
-    $control = 1..25 | ForEach-Object { @{ tool='create_topic'; arguments=@{ title="剩余控制权与谈判 $_"; body="剩余控制权决定第 $_ 种谈判地位。控制权分配影响谈判结果。" } } }
+    # docs/literature-only-digest-design.md: the pack reads Literature trees only, so the earlier
+    # thought is in earlier books' Literature trees. Twenty-five earlier control-rights Cards, so a full
+    # twenty-Card pack is reachable and the read set is larger than the pack.
+    $control = @(@{ tool='create_literature'; arguments=@{ bibtex='@book{Prior2020,title={Prior book}}'; body='更早的一本书。' } },
+        @{ tool='create_successor'; arguments=@{ at='Prior2020'; title='第一组'; body='§1' } }) +
+        @(1..25 | ForEach-Object { @{ tool='create_successor'; arguments=@{ at='Prior2020/1'; kind='side'; title="剩余控制权与谈判 $_"; body="剩余控制权决定第 $_ 种谈判地位。控制权分配影响谈判结果。" } } })
     $null = Invoke-Zt $control
-    # A sparse group's earlier Cards: three photosynthesis Topics (one body longer than one excerpt)
+    # A sparse group's earlier Cards: three photosynthesis Cards (one body longer than one excerpt)
     # and a Model head with its part.
     $photoLong = '光合作用把光能转成化学能。叶绿体完成这一转换，保存能量。' * 50
     $null = Invoke-Zt @(
-        @{ tool='create_topic'; arguments=@{ title='光合作用与叶绿体'; body='光合作用把光能转成化学能。叶绿体完成这一转换。' } },
-        @{ tool='create_topic'; arguments=@{ title='光合作用的能量转换'; body='光合作用保存能量。叶绿体中的色素吸收光。' } },
-        @{ tool='create_topic'; arguments=@{ title='光合作用的长文观察'; body=$photoLong } },
-        @{ tool='create_topic'; arguments=@{ title='光合作用的能量模型'; body='用模型表达光合作用。' } },
-        @{ tool='create_topic'; arguments=@{ title='剩余控制权的谈判模型'; body='用模型表达剩余控制权。' } },
+        @{ tool='create_literature'; arguments=@{ bibtex='@book{Photo2019,title={Photo book}}'; body='讲植物的书。' } },
+        @{ tool='create_successor'; arguments=@{ at='Photo2019'; title='第一组'; body='§1' } },
+        @{ tool='create_successor'; arguments=@{ at='Photo2019/1'; kind='side'; title='光合作用与叶绿体'; body='光合作用把光能转成化学能。叶绿体完成这一转换。' } },
+        @{ tool='create_successor'; arguments=@{ at='Photo2019/1'; kind='side'; title='光合作用的能量转换'; body='光合作用保存能量。叶绿体中的色素吸收光。' } },
+        @{ tool='create_successor'; arguments=@{ at='Photo2019/1'; kind='side'; title='光合作用的长文观察'; body=$photoLong } },
         @{ tool='create_topic'; arguments=@{ title='索引'; body='本主题收放代理工作区的入口。' } }
     )
     $titles=Read-Titles
-    $photoModel=$titles['光合作用的能量模型']; $controlModel=$titles['剩余控制权的谈判模型']; $index=$titles['索引']
+    $photoModel='Photo2019/1'; $controlModel='Prior2020/1'; $index=$titles['索引']
     # The photosynthesis Model head and part whose titles and bodies name group 4's own source.
-    $null = Invoke-Zt @(@{ tool='create_successor'; arguments=@{ at=$photoModel; kind='direct'; type='model'; level='concept'; title='光合作用如何把光能转成化学能'; body='问题：光合作用如何把光能转成化学能？叶绿体完成这一转换，保存能量。' } })
+    $null = Invoke-Zt @(@{ tool='create_successor'; arguments=@{ at=$photoModel; kind='side'; type='model'; level='concept'; title='光合作用如何把光能转成化学能'; body='问题：光合作用如何把光能转成化学能？叶绿体完成这一转换，保存能量。' } })
     $titles=Read-Titles; $photoHead=$titles['光合作用如何把光能转成化学能']
     $null = Invoke-Zt @(@{ tool='create_successor'; arguments=@{ at=$photoHead; kind='side'; type='model'; facet='假设'; title='假设：叶绿体完成能量转换'; body='假设叶绿体把光能转成化学能，保存能量。' } })
     # The control-rights Model head that the accepted register entry will name, and a part of it.
-    $null = Invoke-Zt @(@{ tool='create_successor'; arguments=@{ at=$controlModel; kind='direct'; type='model'; level='concept'; title='剩余控制权如何决定谈判地位'; body='问题：剩余控制权如何决定谈判地位？控制权分配影响谈判结果。' } })
+    $null = Invoke-Zt @(@{ tool='create_successor'; arguments=@{ at=$controlModel; kind='side'; type='model'; level='concept'; title='剩余控制权如何决定谈判地位'; body='问题：剩余控制权如何决定谈判地位？控制权分配影响谈判结果。' } })
     $titles=Read-Titles; $controlHead=$titles['剩余控制权如何决定谈判地位']
     $null = Invoke-Zt @(@{ tool='create_successor'; arguments=@{ at=$controlHead; kind='side'; type='model'; facet='假设'; title='假设：剩余控制权来自所有权'; body='假设剩余控制权来自所有权。' } })
-    # A human Topic and its Idea: read-only earlier references, never a filing destination.
+    # A human Literature tree and its Idea: read-only earlier references, never a filing destination.
     $editor=Join-Path $scratch 'editor.ps1'
     [IO.File]::WriteAllText($editor,'param([string]$File); [IO.File]::WriteAllText($File,$env:EARLIER_HUMAN_BODY,[Text.UTF8Encoding]::new($false))',$utf8)
     $env:EDITOR="pwsh -NoProfile -File $editor"
+    $env:EARLIER_HUMAN_BODY="@book{HumanNotes2018,title={Human notes}}`n"
+    $humanBook=@(zt l --ws human 2>&1)
     $env:EARLIER_HUMAN_BODY="# 剩余控制权的人类观察`n`n人类作者认为剩余控制权决定谈判地位。`n"
-    $humanTopic=@(zt t '剩余控制权的人类观察' 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and $humanTopic[-1] -match '^\d+/0$') 'a human Topic exists before the first group starts'
+    $humanTopic=@(zt n --at 'HumanNotes2018' 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and $humanBook[-1] -eq 'HumanNotes2018' -and $humanTopic[-1] -eq 'HumanNotes2018/1') 'a human Literature tree exists before the first group starts'
     $env:EARLIER_HUMAN_BODY="# 人类对剩余控制权的补充`n`n人类作者补充：控制权分配影响谈判结果。`n"
-    $humanIdea=@(zt n --at $humanTopic[-1] 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and $humanIdea[-1] -match '^\d+/1$') 'the human Workspace holds an earlier Idea beside it'
+    $humanIdea=@(zt b --at $humanTopic[-1] 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and $humanIdea[-1] -eq 'HumanNotes2018/1|a') 'the human Workspace holds an earlier Idea beside it'
     $titles=Read-Titles
-    Assert (@($titles.Keys | Where-Object { $_ -like '剩余控制权与谈判 *' }).Count -eq 25) 'twenty-five earlier control-rights Topics exist before the first group starts'
+    Assert (@($titles.Keys | Where-Object { $_ -like '剩余控制权与谈判 *' }).Count -eq 25) 'twenty-five earlier control-rights Cards exist before the first group starts'
     $source=Join-Path $scratch 'book.md'; $options=Join-Path $scratch 'options.json'
     [IO.File]::WriteAllText($source,"# 导论`n`n剩余控制权决定谈判地位。控制权分配影响谈判的结果。`n`n## 债务与控制权`n`n债务把控制权交给债权人。债权人取得剩余控制权。`n`n## 所有权与剩余控制权`n`n所有权决定剩余控制权的归属。所有者取得谈判地位。`n`n## 光合作用`n`n光合作用把光能转成化学能。叶绿体完成这一转换，保存能量。`n`n# 参考`n未选择。",$utf8)
     [IO.File]::WriteAllText($options,'{"terms":false}',$utf8)
@@ -82,7 +88,7 @@ try {
 
     $env:ZT_CHECK_ZT=Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
     # An earlier Card the read cannot deliver refuses the start before any pack or job is published.
-    $env:ZT_BULK_MISSING='1/0'
+    $env:ZT_BULK_MISSING='Prior2020/1|a'
     $refused=@(& $Digest group-start -Out $out -Group 2 -Token "$($claims[2].token)" 2>&1)
     Remove-Item Env:ZT_BULK_MISSING
     $claimFolder=Join-Path $out "group-jobs\g002\claim-$($claims[2].token)"
@@ -117,8 +123,8 @@ try {
     Assert (@($trace | Where-Object tool -EQ 'export_titles').Count -eq 1 -and @($trace | Where-Object tool -EQ 'get_register').Count -eq 1) 'one title catalogue and one register read serve the whole pack'
     Assert (@($trace | Where-Object { $_.tool -eq 'get_cards' -and $_.address_count -gt 200 }).Count -eq 0) 'no earlier-Card read exceeds the 200-address bound'
     Assert (@($trace | Where-Object { $_.tool -eq 'get_cards' -and $_.address_count -ge 10 }).Count -eq 1) 'one bounded text batch reads every earlier-Card body'
-    $instructions=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\dsh-instructions.zh.md'))
-    Assert ($instructions.Contains('早前上下文包') -and $instructions.Contains('读整张卡')) 'the digest writer instructions require the whole candidate before an identity or contradiction assertion'
+    # The legacy dsh-instructions.zh.md is deleted (docs/literature-only-digest-design.md); the pack
+    # text above states the read-the-whole-Card rule to the writer.
     $before=(Get-FileHash -LiteralPath $g1.earlier_context_path -Algorithm SHA256).Hash
     $again=Run-Digest @('group-start','-Out',$out,'-Group','1','-Token',"$($claims[1].token)")
     Assert ($again.reused -and (Get-FileHash -LiteralPath $again.earlier_context_path -Algorithm SHA256).Hash -eq $before) 'a resumed start reuses the frozen pack byte for byte'

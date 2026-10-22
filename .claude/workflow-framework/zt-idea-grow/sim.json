@@ -146,6 +146,64 @@
       }
     },
     {
+      "label": "^grow: restate cards$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"books\":1,\"reviews\":[{\"id\":\"r01\",\"book\":\"Key\",\"staging\":\"D:/zt-grow/box/restate/r01\",\"cards\":9}]}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: restate r01 prepare$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true,\"step\":\"prepare\",\"evidence_id\":\"e-g1\",\"cards\":9,\"reviewable\":3,\"candidates\":4,\"unread\":0,\"jobs\":[{\"id\":\"rj-01\",\"files\":[\"D:/zt-grow/box/restate/r01/work/dsh-restate-instructions.zh.md\",\"D:/zt-grow/box/restate/r01/work/rj-01.md\"],\"prompt\":\"judge\",\"answer\":\"D:/zt-grow/box/restate/r01/work/out/rj-01.json\"}]}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow restate r01 mgr",
+      "answer": {
+        "jobs": [
+          {
+            "id": "r01-rj",
+            "ok": true,
+            "reply": "{\"pairs\":4}",
+            "attempts": 1
+          }
+        ],
+        "started": [
+          "s9"
+        ],
+        "deleted": 1,
+        "not_deleted": []
+      }
+    },
+    {
+      "label": "^grow: restate r01 judge$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true,\"step\":\"judge\",\"judged_id\":\"j-g1\",\"judged\":4,\"unjudged\":0}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: restate r01 apply$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true,\"step\":\"apply\",\"written\":1,\"complete\":true}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: restate r01 report$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true,\"step\":\"report\",\"report_id\":\"rr-g1\",\"status\":\"resolved\",\"complete\":true,\"counts\":{\"pairs\":4,\"resolved_by_rewrite\":1,\"pending_existing_card_change\":0,\"unresolved\":0}}",
+        "tail": ""
+      }
+    },
+    {
       "label": "^grow: hubs plan$",
       "answer": {
         "exit_code": 0,

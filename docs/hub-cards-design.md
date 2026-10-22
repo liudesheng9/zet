@@ -1,5 +1,7 @@
 # Hub Cards Design
 
+> **2026-10-22: the digests build only Literature trees** (base 5.0.0, econ 6.0.0, math 5.0.0; `docs/literature-only-digest-design.md`). Topic trees, Topic Cards, Hub Cards and the register are written only by zt-idea-grow 3.0.0 (`docs/idea-grow-design.md`). Where this document describes a digest stage that writes them (concepts, review, hubs, mode hubs, Topic placement, Organize merges and Topic bodies), that stage is gone from the digests.
+
 Status: implemented in zt 0.16.0 and the `zt-book-digest` workflow (2026-10-14). The user approved the
 proposal the same day and decided who does the work of the hub stage (see *Decisions*). The text
 follows ASD-STE100 (Simplified Technical English) as the other design documents do. Card text in the examples is in

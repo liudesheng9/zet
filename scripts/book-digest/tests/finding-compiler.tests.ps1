@@ -28,7 +28,7 @@ function Last($lines) {
     try { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable } catch { throw "not JSON: $(@($lines) -join ' | ')" }
 }
 function Write-Calls($calls) {
-    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -41,11 +41,11 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = $key; kind = 'direct'; title = '第 1 组：缺少保险市场推迟投资'; body = '§1 - 访谈' } },
         @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'direct'; title = '第 2 组：信贷约束限制扩张'; body = '§2 - 调查' } }
     )
-    $topic = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '缺失的市场'; body = '本主题追问：缺少市场时企业怎样决策。' } }))[0] -replace '/0$', ''
+    # docs/literature-only-digest-design.md: each group's Idea Card is in the book's Literature tree, under its anchor.
     $ideas = Write-Calls @(
-        @{ tool = 'create_successor'; arguments = @{ at = "$topic/0"; title = '缺少保险市场使企业推迟投资'
+        @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'side'; title = '缺少保险市场使企业推迟投资'
                 body = "企业不能转移风险，所以推迟投资。依赖 [[$key/1]]：访谈的结论。`n`n来源：[[$key]] §1" } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@0'; kind = 'side'; title = '信贷约束使小企业放弃扩张'
+        @{ tool = 'create_successor'; arguments = @{ at = "$key/2"; kind = 'side'; title = '信贷约束使小企业放弃扩张'
                 body = "小企业借不到钱，所以不扩张。依赖 [[$key/2]]：调查的结论。`n`n来源：[[$key]] §2" } }
     )
     Set-Content -LiteralPath (Join-Path $staging 'owned-g01.txt') -Value $ideas[0] -Encoding utf8

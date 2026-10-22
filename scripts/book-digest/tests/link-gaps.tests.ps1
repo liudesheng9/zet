@@ -13,8 +13,8 @@
 
     * another book's Card with matching `§` numbers, an older Card that mentions one, and the host
       Card of a newly created Card are never owned or writable (AC02, AC03);
-    * a Card of the run created in a pre-existing Topic tree is owned because its receipt names it,
-      and only it is writable there (AC03);
+    * an older Card of another Literature tree stays unwritable: a digest writes only its own
+      book's Literature tree (docs/literature-only-digest-design.md);
     * source locators, register membership and a parent-only Link do not close a semantic gap; a
       kinded Link to another group or earlier material does (AC01, AC04);
     * an empty gap set starts no provider job and still settles the Link unit (AC07);
@@ -65,19 +65,17 @@ try {
     zt config set archive_root (Join-Path $scratch 'archive') | Out-Null
     zt up | Out-Null
 
-    # --- earlier material: an old Topic tree, a cost-argument Topic, and another book with the same
-    # section numbers as this run's source ---
+    # --- earlier material: an earlier book's Literature tree with an old Card and a cost argument, and
+    # another book with the same section numbers as this run's source (docs/literature-only-digest-
+    # design.md: the digest reads and links Literature trees only) ---
     $null = Invoke-Zt @(@{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = '@book{Other2020,title={Another book}}'; body = '另一本书。' } })
     $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = 'Other2020'; title = '风险分担说明租金'; body = '风险分担说明租金。' } })
-    $null = Invoke-Zt @(@{ tool = 'create_topic'; arguments = @{ title = '旧主题'; body = '一个早已存在的主题。' } })
-    $oldRoot = '0/0'
-    $oldAddr = '0/1'
-    $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = $oldRoot; title = '旧主题下的旧卡片'; body = "旧卡片提到 §1.2 与 §2.1，但它属于另一条思路。`n`n来源：[[Other2020]] §1.2" } })
-    $null = Invoke-Zt @(@{ tool = 'create_topic'; arguments = @{ title = '成本论证'; body = '一个早已存在的主题。' } })
-    $costRoot = '1/0'
-    $costAddr = '1/1'
-    $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = $costRoot; title = '交易成本决定企业边界'; body = '交易成本决定企业的边界。' } })
-    Assert ((BodyOf $oldAddr).Contains('§1.2')) 'an older Topic Card and another book''s Card name the same section numbers as the run'
+    $null = Invoke-Zt @(@{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = '@book{Earlier2019,title={An earlier book}}'; body = '更早的一本书。' } })
+    $oldAddr = 'Earlier2019/1'
+    $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = 'Earlier2019'; title = '更早一本书里的旧卡片'; body = "旧卡片提到 §1.2 与 §2.1，但它属于另一条思路。`n`n来源：[[Other2020]] §1.2" } })
+    $costAddr = 'Earlier2019/1|a'
+    $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = $oldAddr; kind = 'side'; title = '交易成本决定企业边界'; body = '交易成本决定企业的边界。' } })
+    Assert ((BodyOf $oldAddr).Contains('§1.2')) 'an older Card and another book''s Card name the same section numbers as the run'
 
     # --- one prepared run of the pilot source, three groups ---
     $source = Join-Path $repo 'docs\digest-pilot-short-source.zh.md'
@@ -89,7 +87,7 @@ try {
     $null = Invoke-Zt @(@{ tool = 'create_successor'; arguments = @{ at = 'Other2020/1'; kind = 'side'; title = '风险与租金'; body = "风险分担说明租金。`n`n来源：[[ScopeBook]] §1.2" } })
     Assert ((BodyOf 'Other2020/1|a').Contains('§1.2')) 'another book''s Card cites this book''s §1.2'
 
-    # --- group 1: one linked Card, one unlinked Card, one orphan, and a new Card inside the old tree ---
+    # --- group 1: one linked Card, one unlinked Card and one orphan, all in the book's own tree ---
     $claim = Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'digest', '-Take', '1', '-Owner', 'gap-manager')
     $started = Run-Digest @('group-start', '-Out', $out, '-Group', '1', '-Token', "$($claim.units[0].token)")
     $job = Get-Content -LiteralPath $started.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
@@ -100,15 +98,14 @@ try {
             @{ tool = 'create_successor'; arguments = @{ at = 'ScopeBook/1'; kind = 'side'; title = '交易成本决定企业的边界'; body = "依赖 [[$costAddr]]，后者给出相同的成本论证。" } },
             @{ tool = 'create_successor'; arguments = @{ at = 'ScopeBook/1'; kind = 'side'; title = '市场失灵让企业替代市场'; body = '市场失灵让企业替代市场，交易成本因此下降。' } },
             @{ tool = 'create_successor'; arguments = @{ at = 'ScopeBook/1'; kind = 'side'; title = '敲竹杠使专用性投资不足'; body = '敲竹杠使专用性投资不足。' } },
-            @{ tool = 'create_successor'; arguments = @{ at = $oldAddr; kind = 'side'; title = '企业的边界由交易成本决定'; body = '企业的边界由交易成本决定。' } },
-            @{ tool = 'edit_card'; arguments = @{ at = 'ScopeBook/1'; base_receipt = "$prefix1/item-000000"; body = "$anchorBody`n`n承接 [[@@1]]，后者用交易成本说明边界。`n`n承接 [[@@2]]，后者说明市场失灵。`n`n承接 [[@@4]]，后者把边界放进旧主题。" } }
+
+            @{ tool = 'edit_card'; arguments = @{ at = 'ScopeBook/1'; base_receipt = "$prefix1/item-000000"; body = "$anchorBody`n`n承接 [[@@1]]，后者用交易成本说明边界。`n`n承接 [[@@2]]，后者说明市场失灵。" } }
         ) }
     Save-Json $started.draft $draft1
     $group1 = Run-Digest @('group-finish', '-Out', $out, '-Group', '1', '-Token', "$($claim.units[0].token)", '-Draft', $started.draft)
     $owned1 = @($group1.owned)
     $created = @($owned1 | Where-Object { $_ -like 'ScopeBook/1|*' })
-    $underOld = @($owned1 | Where-Object { $_ -like "$oldAddr|*" })[0]
-    Assert ($group1.state -eq 'done' -and $created.Count -eq 3 -and $underOld) "group 1 owns its anchor, three new Cards and the one it created in the earlier Topic tree ($($owned1 -join ', '))"
+    Assert ($group1.state -eq 'done' -and $created.Count -eq 3 -and $owned1.Count -eq 4) "group 1 owns its anchor and three new Cards ($($owned1 -join ', '))"
     $cardsClaim = (Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'cards', '-Take', '1', '-Owner', 'gap-manager')).units[0]
     $null = Run-Digest @('cards-finish', '-Out', $out, '-Group', '1', '-Token', "$($cardsClaim.token)")
     $cardA = $created[0]; $cardB = $created[1]; $cardC = $created[2]
@@ -117,41 +114,39 @@ try {
     # --- prepare-link: the gap set, not the owned set, becomes the job; older bodies stay unwritable ---
     $before = Revision
     $prep = Run-Digest @('prepare-link', '-Staging', $out)
-    Assert ((@($prep.pending) -join ',') -eq '1' -and $prep.groups[0].gaps -eq 4 -and $prep.groups[0].skipped -eq 1) "prepare-link schedules only group 1 and reports 4 gaps among 5 owned Cards ($(@($prep.pending) -join ','); gaps $($prep.groups[0].gaps), skipped $($prep.groups[0].skipped))"
-    Assert ($prep.groups[0].position -eq 'anchor_position_missing' -and $prep.gap_total -eq 4 -and $prep.scheduled -eq 1) "the public scope names the anchor's missing position paragraph and the run totals ($($prep.gap_total) gaps, $($prep.scheduled) scheduled)"
+    Assert ((@($prep.pending) -join ',') -eq '1' -and $prep.groups[0].gaps -eq 3 -and $prep.groups[0].skipped -eq 1) "prepare-link schedules only group 1 and reports 3 gaps among 4 owned Cards ($(@($prep.pending) -join ','); gaps $($prep.groups[0].gaps), skipped $($prep.groups[0].skipped))"
+    Assert ($prep.groups[0].position -eq 'anchor_position_missing' -and $prep.gap_total -eq 3 -and $prep.scheduled -eq 1) "the public scope names the anchor's missing position paragraph and the run totals ($($prep.gap_total) gaps, $($prep.scheduled) scheduled)"
     $allow1 = @(Get-Content -LiteralPath (Join-Path $out 'allow-g01.txt') -Encoding utf8 | Where-Object { $_ -ne '' })
-    Assert (((($allow1 | Sort-Object) -join ',')) -eq (((@($cardB, $cardC, $underOld, 'ScopeBook/1') | Sort-Object) -join ','))) "the write fence is exactly the gap set ($($allow1 -join ', '))"
+    Assert (((($allow1 | Sort-Object) -join ',')) -eq (((@($cardB, $cardC, 'ScopeBook/1') | Sort-Object) -join ','))) "the write fence is exactly the gap set ($($allow1 -join ', '))"
     Assert (($allow1 -notcontains $oldAddr) -and ($allow1 -notcontains 'Other2020') -and ($allow1 -notcontains 'Other2020/1|a') -and ($allow1 -notcontains $cardA)) 'no older Card, no other book''s Card and no already-linked Card is writable'
     $scopeDoc = Get-Content -LiteralPath (Join-Path $out 'link-g01.md') -Raw -Encoding utf8
     Assert ($scopeDoc.Contains('缺口：no_semantic_link') -and -not $scopeDoc.Contains("### ``$cardA``")) "the group document lists only gap Cards ($($scopeDoc.Length) chars)"
     $gapRecord = Get-Content -LiteralPath (Join-Path $out 'link-gap-g01.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-    Assert (@($gapRecord.group.gaps).Count -eq 4 -and $gapRecord.group.skipped -contains $cardA) 'the frozen gap record names every gap and every skipped Card'
+    Assert (@($gapRecord.group.gaps).Count -eq 3 -and $gapRecord.group.skipped -contains $cardA) 'the frozen gap record names every gap and every skipped Card'
 
     # --- link-start freezes the scope and writes the one job ---
     $linkClaim = Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'link', '-Take', '1', '-Owner', 'gap-manager')
     Assert ($linkClaim.units[0].id -eq 'link/g001@1') "the completed group releases its Link unit ($($linkClaim.units[0].id))"
     $linkStart = Run-Digest @('link-start', '-Out', $out, '-Group', '1', '-Token', "$($linkClaim.units[0].token)")
-    Assert ($linkStart.expected_jobs -eq 1 -and @($linkStart.gap).Count -eq 4 -and $null -eq $linkStart.no_op) 'link-start publishes one job for the four gaps'
+    Assert ($linkStart.expected_jobs -eq 1 -and @($linkStart.gap).Count -eq 3 -and $null -eq $linkStart.no_op) 'link-start publishes one job for the three gaps'
     $startManifest = Get-Content -LiteralPath $linkStart.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $linkJob = Get-Content -LiteralPath $startManifest.artifacts.job.path -Raw -Encoding utf8
     $gapLines = @((($linkJob -split '## 缺口卡片')[-1] -split "`n") | Where-Object { $_ -match 'base_fingerprint=' })
-    Assert ($linkJob.Contains('SELF-CHECK') -and $linkJob.Contains($linkStart.input_hash) -and $gapLines.Count -eq 4) "the job file carries the binding, the SELF-CHECK line and exactly the gap Cards (gap lines $($gapLines.Count))"
+    Assert ($linkJob.Contains('SELF-CHECK') -and $linkJob.Contains($linkStart.input_hash) -and $gapLines.Count -eq 3) "the job file carries the binding, the SELF-CHECK line and exactly the gap Cards (gap lines $($gapLines.Count))"
 
     $draftPath = $linkStart.draft
     $base = $group1.receipt_keys
     $anchorParagraph = "在全书中的位置：本部分承接 [[$costAddr]] 的成本论证，引出下一部分的融资问题。"
     $bParagraph = "对照 [[$costAddr]]，两种失灵都让市场交易变得昂贵。"
-    $underParagraph = "依赖 [[$costAddr]]，后者把交易成本作为企业边界的依据。"
-    $anchorBefore = BodyOf 'ScopeBook/1'; $bBefore = BodyOf $cardB; $underBefore = BodyOf $underOld
+    $anchorBefore = BodyOf 'ScopeBook/1'; $bBefore = BodyOf $cardB
     $draft = @{ schema_version = 1; unit = 'link/g001@1'; token = $linkClaim.units[0].token; input_hash = $linkStart.input_hash; calls = @(
-            @{ tool = 'edit_card'; arguments = @{ at = 'ScopeBook/1'; base_receipt = $base[5]; owned_paragraph = @{ text = $anchorParagraph } } },
-            @{ tool = 'edit_card'; arguments = @{ at = $cardB; base_receipt = $base[2]; owned_paragraph = @{ text = $bParagraph } } },
-            @{ tool = 'edit_card'; arguments = @{ at = $underOld; base_receipt = $base[4]; owned_paragraph = @{ text = $underParagraph } } }
+            @{ tool = 'edit_card'; arguments = @{ at = 'ScopeBook/1'; base_receipt = $base[4]; owned_paragraph = @{ text = $anchorParagraph } } },
+            @{ tool = 'edit_card'; arguments = @{ at = $cardB; base_receipt = $base[2]; owned_paragraph = @{ text = $bParagraph } } }
         ); dispositions = @(@{ at = $cardC; outcome = 'no_link'; reason = '候选卡片都与它没有真实关系；本卡只陈述敲竹杠的后果。' }) }
     $checkArgs = @('link-finish', '-Out', $out, '-Group', '1', '-Token', "$($linkClaim.units[0].token)", '-Draft', $draftPath, '-CheckOnly')
     Save-Json $draftPath $draft
     $checked = Run-Digest $checkArgs
-    Assert ($checked.check_only -and $checked.complete -and @($checked.outcomes).Count -eq 5 -and $checked.self_check.count -eq 0 -and (Revision) -eq $before) 'a complete gap draft checks every owned Card without writing'
+    Assert ($checked.check_only -and $checked.complete -and @($checked.outcomes).Count -eq 4 -and $checked.self_check.count -eq 0 -and (Revision) -eq $before) 'a complete gap draft checks every owned Card without writing'
 
     # Refusals: a Card outside the gap set, an older body, and a paragraph that links only a source place.
     $badGap = $draft.Clone(); $badGap.calls = @($draft.calls) + @(@{ tool = 'edit_card'; arguments = @{ at = $cardA; base_receipt = $base[1]; owned_paragraph = @{ text = "依赖 [[$costAddr]]，后者给出相同的成本论证。" } } })
@@ -161,8 +156,8 @@ try {
     $badOld = $draft.Clone(); $badOld.calls = @($draft.calls) + @(@{ tool = 'edit_card'; arguments = @{ at = $oldAddr; base_fingerprint = 'x'; owned_paragraph = @{ text = '依赖 [[ScopeBook/1]]，后者是这一部分的索引。' } } })
     Save-Json $draftPath $badOld
     $r = Digest $checkArgs
-    Assert ($r.exit -ne 0 -and $r.text.Contains('not an owned Card')) 'an older body in the same Topic tree is never writable'
-    $badPlace = $draft.Clone(); $badPlace.calls = @($draft.calls[0], @{ tool = 'edit_card'; arguments = @{ at = $cardB; base_receipt = $base[2]; owned_paragraph = @{ text = '承接 [[ScopeBook/1]]，后者是这一部分的索引。' } } }, $draft.calls[2])
+    Assert ($r.exit -ne 0 -and $r.text.Contains('not an owned Card')) 'an older body in another Literature tree is never writable'
+    $badPlace = $draft.Clone(); $badPlace.calls = @($draft.calls[0], @{ tool = 'edit_card'; arguments = @{ at = $cardB; base_receipt = $base[2]; owned_paragraph = @{ text = '承接 [[ScopeBook/1]]，后者是这一部分的索引。' } } })
     Save-Json $draftPath $badPlace
     $r = Digest $checkArgs
     Assert ($r.exit -ne 0 -and $r.text.Contains('names no Card outside its own group')) 'a Link to the group''s own anchor is a source place, not a semantic Link'
@@ -184,11 +179,11 @@ try {
     $applied = Run-Digest @('link-finish', '-Out', $out, '-Group', '1', '-Token', "$($linkClaim.units[0].token)", '-Draft', $draftPath)
     Assert ($applied.state -eq 'done' -and $applied.complete -and (Revision) -eq ($before + 1)) 'the lost final reply recovers from its accepted plan without a second archive write'
     Assert ((BodyOf 'ScopeBook/1') -eq "$anchorBefore`n`n$anchorParagraph" -and (PositionCount (BodyOf 'ScopeBook/1')) -eq 1) 'the anchor gains exactly one 在全书中的位置 paragraph'
-    Assert ((BodyOf $cardB) -eq "$bBefore`n`n$bParagraph" -and (BodyOf $underOld) -eq "$underBefore`n`n$underParagraph") 'each written Card keeps its old body and gains only the owned sentence'
+    Assert ((BodyOf $cardB) -eq "$bBefore`n`n$bParagraph") 'each written Card keeps its old body and gains only the owned sentence'
     Assert ((BodyOf $cardC) -eq '敲竹杠使专用性投资不足。' -and (BodyOf $oldAddr).Contains('§1.2') -and (BodyOf 'Other2020/1|a').Contains('来源：[[ScopeBook]] §1.2')) 'the orphan, the older Card and the other book''s Card are byte-unchanged'
     Assert ((BodyOf $cardA) -eq "依赖 [[$costAddr]]，后者给出相同的成本论证。") 'the already-linked Card was never written'
-    Assert ((@($applied.changed) | Sort-Object) -join ',' -eq (@($cardB, $underOld, 'ScopeBook/1') | Sort-Object) -join ',') "the completion enumerates exactly the changed Cards ($(@($applied.changed) -join ', '))"
-    Assert ($applied.counts.gaps -eq 4 -and $applied.counts.skipped -eq 1 -and $applied.counts.linked -eq 3 -and $applied.counts.no_link -eq 1 -and $applied.counts.already_linked -eq 1) "the completion reports gap, skipped and outcome counts ($($applied.counts | ConvertTo-Json -Compress))"
+    Assert ((@($applied.changed) | Sort-Object) -join ',' -eq (@($cardB, 'ScopeBook/1') | Sort-Object) -join ',') "the completion enumerates exactly the changed Cards ($(@($applied.changed) -join ', '))"
+    Assert ($applied.counts.gaps -eq 3 -and $applied.counts.skipped -eq 1 -and $applied.counts.linked -eq 2 -and $applied.counts.no_link -eq 1 -and $applied.counts.already_linked -eq 1) "the completion reports gap, skipped and outcome counts ($($applied.counts | ConvertTo-Json -Compress))"
     Assert ($applied.quality.rules -eq 'L1,L2' -and $applied.quality.faults -eq 0) 'the completion carries its L1/L2 quality result'
     $audit = Run-Digest @('audit', '-CitationKey', 'ScopeBook', '-Out', (Join-Path $scratch 'audit'), '-SkipModels')
     Assert ($audit.books[0].orphans -ge 1) "the unresolved orphan stays a reported required fault after the none outcome ($($audit.books[0].orphans) orphan(s))"

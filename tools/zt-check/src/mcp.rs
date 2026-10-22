@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 mod owned;
+pub mod scope;
 
 /// Stable transport classification; a timed-out write may already have committed.
 #[derive(Debug)]
@@ -386,6 +387,12 @@ impl Zt {
 
     /// One tool call; the whole JSON-RPC reply, an error reply included.
     pub fn request(&mut self, tool: &str, arguments: Value) -> Result<Value> {
+        // The Literature scope (scope.rs): a digest process never writes a Topic tree or a hub.
+        if scope::literature_only()
+            && let Some(why) = scope::literature_refusal(tool, &arguments)
+        {
+            bail!("literature_only: {tool}: {why}");
+        }
         let id = json!(self.next);
         self.next += 1;
         self.exchange(json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": tool, "arguments": arguments } }),Some(id),tool)

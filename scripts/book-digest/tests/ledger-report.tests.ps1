@@ -31,7 +31,7 @@ function Fail-Digest([string[]]$Arguments) {
 function Save-Json([string]$Path,$Value) { [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 20 -Compress), $utf8) }
 # One helper call: its answer line is "N ok <address>" or "N <json>"; this fixture needs the address.
 function Call-Tool([string]$Tool,[hashtable]$Arguments) {
-    $lines = @(& $Digest call -Tool $Tool -Json ($Arguments | ConvertTo-Json -Depth 8 -Compress) 2>&1)
+    $lines = @(& $Digest call -Open -Tool $Tool -Json ($Arguments | ConvertTo-Json -Depth 8 -Compress) 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "call $Tool failed: $($lines -join ' ')" }
     $text = ($lines -join "`n")
     if ($text -match 'ok\s+(\S+)') { return $Matches[1] }

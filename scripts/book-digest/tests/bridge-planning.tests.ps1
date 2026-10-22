@@ -6,7 +6,7 @@ $env:ZT_CONFIG_DIR=Join-Path $scratch 'config';$env:ZT_GUI_PORT='0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 $compiler=Join-Path $PSScriptRoot '..\bridge-compiler.ps1'
 function Assert($ok,$text){if(-not $ok){throw $text};Write-Output "ok: $text"}
-function Calls($calls){$lines=@((ConvertTo-Json -InputObject @($calls) -Depth 20)|pwsh -NoProfile -File $script:ZtHelper -);if($LASTEXITCODE){throw "$lines"};,@($lines|Where-Object{$_ -match '^\d+ ok '}|ForEach-Object{($_ -split ' ok ',2)[1].Trim()})}
+function Calls($calls){$lines=@((ConvertTo-Json -InputObject @($calls) -Depth 20)|pwsh -NoProfile -File $script:ZtHelper - -Open);if($LASTEXITCODE){throw "$lines"};,@($lines|Where-Object{$_ -match '^\d+ ok '}|ForEach-Object{($_ -split ' ok ',2)[1].Trim()})}
 function Compile($a){$lines=@(pwsh -NoProfile -File $compiler @a);$script:Code=$LASTEXITCODE;$lines[-1]|ConvertFrom-Json -AsHashtable -DateKind String}
 try{
  zt config set archive_root (Join-Path $scratch 'archive')|Out-Null;zt up|Out-Null
@@ -14,17 +14,17 @@ try{
   @{tool='create_literature';arguments=@{bibtex='@book{New2026,title={New},year={2026}}'}},
   @{tool='create_successor';arguments=@{at='New2026';title='第一组';body='§1 控制权'}},
   @{tool='create_literature';arguments=@{bibtex='@book{Old2020,title={Old},year={2020}}'}},
-  @{tool='create_successor';arguments=@{at='Old2020';title='第一组';body='§1 控制权'}},
-  @{tool='create_topic';arguments=@{title='控制权';body='控制权与投资'}}
+  @{tool='create_successor';arguments=@{at='Old2020';title='第一组';body='§1 控制权'}}
  )
- for($i=0;$i -lt 121;$i++){$calls+=@{tool='create_successor';arguments=@{at="@@$($calls.Count-1)";title="控制权影响投资 $i";body='控制权改变投资的激励。来源：[[New2026]] §1'}}}
+ # docs/literature-only-digest-design.md: the book's Bridge sources are Cards of its own Literature tree.
+ for($i=0;$i -lt 121;$i++){$calls+=@{tool='create_successor';arguments=@{at=$(if($i){"@@$($calls.Count-1)"}else{'New2026/1'});kind=$(if($i){'direct'}else{'side'});title="控制权影响投资 $i";body='控制权改变投资的激励。来源：[[New2026]] §1'}}}
  for($i=0;$i -lt 12;$i++){$calls+=@{tool='create_successor';arguments=@{at=$(if($i){"@@$($calls.Count-1)"}else{'Old2020/1'});kind=$(if($i){'direct'}else{'side'});title="控制权改变投资 $i";body='企业根据控制权决定投资。'}}}
  foreach($level in @('formal','concept','')){$a=@{at='New2026/1';kind='side';type='model';title="控制权模型 $level";body='控制权影响投资的模型。'};if($level){$a.level=$level};$calls+=@{tool='create_successor';arguments=$a}}
  Calls $calls|Out-Null
  $default=Compile @('-Step','plan','-Staging',$staging,'-CitationKey','New2026')
  $plan=Get-Content -LiteralPath (Join-Path $staging 'bridge\plan.json') -Raw|ConvertFrom-Json -AsHashtable -DateKind String
  Assert ($Code -eq 0 -and $default.selected -eq 60 -and $plan.counts.eligible -eq 124 -and $plan.counts.omitted -eq 64 -and $plan.jobs.Count -eq 5) 'default selection is 60 sources, with explicit omissions and five twelve-source jobs'
- Assert ($plan.cards[$plan.sources[0].address].level -ceq 'formal' -and $plan.cards[$plan.sources[1].address].level -ceq 'concept' -and -not $plan.cards[$plan.sources[2].address].level) 'formal, concept and unclassified Model heads precede Topic Ideas'
+ Assert ($plan.cards[$plan.sources[0].address].level -ceq 'formal' -and $plan.cards[$plan.sources[1].address].level -ceq 'concept' -and -not $plan.cards[$plan.sources[2].address].level) 'formal, concept and unclassified Model heads precede the book''s Idea Cards'
  Assert (@($plan.sources|Where-Object{$_.candidates.Count -gt 7}).Count -eq 0 -and @($plan.jobs|Where-Object{$_.sources.Count -gt 12}).Count -eq 0) 'default candidate and job caps remain bounded'
  $jobPath=Join-Path $staging 'bridge\jobs\br-001.md';$jobText=Get-Content -LiteralPath $jobPath -Raw -Encoding utf8
  Remove-Item -LiteralPath $jobPath,(Join-Path $staging 'bridge\dsh-bridge-instructions.zh.md'),(Join-Path $staging 'bridge\read-only.allow.txt')
