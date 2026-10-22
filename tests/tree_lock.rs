@@ -573,6 +573,9 @@ fn every_public_writer_path_is_refused_before_it_writes() {
             .expect("cards")
     };
     let cards_before = member_count(&home);
+    // The complete stored state before the first refusal: every Card row, receipt, Link row, the
+    // revision and the Topic allocation, and the whole Lock baseline with its history (S09-AC07).
+    let state = archive_state(&home);
 
     // Every authored metadata field, through the MCP writer.
     for change in [
@@ -723,7 +726,8 @@ fn every_public_writer_path_is_refused_before_it_writes() {
     assert!(!deleted.status.success());
     assert!(String::from_utf8_lossy(&deleted.stderr).contains("locked tree"));
 
-    // Nothing was written: same Card count, same revision, same fingerprints and seal.
+    // Nothing was written: same Card count, same revision, same fingerprints and seal, and the
+    // complete stored state is byte-for-byte the one the Lock left.
     assert_eq!(member_count(&home), cards_before);
     assert_eq!(revision(&home), before, "a refused request writes nothing");
     let panel = gui.panel();
@@ -746,6 +750,11 @@ fn every_public_writer_path_is_refused_before_it_writes() {
         .collect::<Vec<_>>();
     assert_eq!(fingerprints.len(), 2);
     assert_eq!(panel["integrity"]["ok"], true);
+    assert_eq!(
+        archive_state(&home),
+        state,
+        "no refused single-tool write changed a Card row, receipt, Link row, the revision, the Topic allocation or a Lock fact"
+    );
     let (status, replan) = gui.post_with("/api/lock", &gui.token, &json!({ "root": root }));
     assert_eq!(status, 400, "a locked tree cannot be replanned: {replan}");
     assert!(replan["error"].as_str().unwrap().contains("already locked"));
