@@ -20,6 +20,13 @@
 //! The check belongs to the *destination* only. A Locked book used as a source, or an unrelated
 //! Locked tree in the same archive, never stops a mode: those Cards stay readable and linkable.
 
+//! A planner that reads the Lock facts itself (the Organize and Hub stages, S16/#139) answers in
+//! the same vocabulary for the decision it keeps in place: `card_locked`, the blocking Locked
+//! tree's root, the affected Cards, one reason (`edit`, `move`, `delete`, `create-inside`,
+//! `move-inside`, `pinned-move`, `pinned-delete`), the owner's hint and every blocking Lock. A
+//! pin keeps a Card's address and existence frozen, never its authored text (R336), so a planner
+//! reads `pinned_by` only to refuse a move or a delete.
+
 use crate::ps;
 use crate::util;
 use crate::zt::Zt;
@@ -44,10 +51,14 @@ pub struct Lock {
     pub since: String,
 }
 
-/// The Lock facts of one Card read (`get_card`/`get_cards`): `lock` is the active Lock of the
-/// Card's tree, or null. A Card read without the field is an unlocked Card.
+/// The Lock facts of a read Card (`lock` = `{lock_id, tree, since}`), or None.
 pub fn lock_fact(card: &Value) -> Option<Lock> {
-    let lock = card.get("lock")?.as_object()?;
+    lock_in(&card["lock"])
+}
+
+/// The Lock fact of one projected `lock` object.
+pub fn lock_in(lock: &Value) -> Option<Lock> {
+    let lock = lock.as_object()?;
     Some(Lock {
         lock_id: lock.get("lock_id")?.as_i64()?,
         tree: lock.get("tree")?.as_str()?.to_string(),
@@ -112,12 +123,173 @@ pub fn preflight(zt: &mut Zt, mode: &str, step: &str, key: &str) -> Result<Optio
     Ok(lock_of(zt, key)?.map(|lock| refusal(mode, step, key, &lock)))
 }
 
+// ---------------------------------------------------------------------------------------------
+// The Lock facts a planner reads (S16)
+// ---------------------------------------------------------------------------------------------
+
+/// One Card's active Lock and pin facts, exactly as every read projection states them: `lock` is
+/// the active Lock of the Card's tree (null when the tree is not Locked) and `pinned_by` names the
+/// roots of the active Locks whose Cards link this one.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Facts {
+    pub lock: Option<Lock>,
+    pub pinned_by: Vec<String>,
+}
+
+/// The Lock and pin facts of one read Card.
+pub fn facts_in(card: &Value) -> Facts {
+    Facts {
+        lock: lock_fact(card),
+        pinned_by: strings(&card["pinned_by"]),
+    }
+}
+
+/// The string items of a JSON array (a read's `pinned_by`, `inbound` or `mapping` keys).
+pub fn strings(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// `tree`'s id: `<n>` for a Topic tree, the Citation key for a Literature tree.
+pub fn tree_id(address: &str) -> String {
+    address.split('/').next().unwrap_or_default().to_string()
+}
+
+/// Whether `address` is `prefix`, lies below it (`prefix/1`, `prefix|a|1`) or beside it
+/// (`prefix|a`): the subtree a decision owns.
+pub fn inside(address: &str, prefix: &str) -> bool {
+    !prefix.is_empty()
+        && (address == prefix
+            || address.starts_with(&format!("{prefix}/"))
+            || address.starts_with(&format!("{prefix}|")))
+}
+
+/// The actionable sentence for a reason, exactly as the archive's own refusal gives it.
+pub fn hint_for(reason: &str) -> &'static str {
+    match reason {
+        "pinned-move" | "pinned-delete" => {
+            "write a new Card in another tree and link the locked Card, or unlock the tree in the GUI first"
+        }
+        _ => "unlock the tree in the GUI first",
+    }
+}
+
+/// The one sentence of a blocked plan item. `cards` are the affected Cards, `trees` the blocking
+/// Locked trees' roots; a pin names the pinned target, and the sources that pin it stay readable.
+fn blocked_message(reason: &str, cards: &[String], trees: &[String]) -> String {
+    let quoted = |values: &[String]| values.iter().map(|v| format!("`{v}`")).collect::<Vec<_>>().join(", ");
+    let card = quoted(cards);
+    let tree = quoted(trees);
+    match reason {
+        "move-inside" => format!("{card} is inside locked tree {tree}; a locked tree takes no moved-in Cards"),
+        "create-inside" => format!("{card} is inside locked tree {tree}; a locked tree takes no new Cards"),
+        "pinned-move" => format!("card {card} cannot be moved: it is a pinned target of locked tree {tree}"),
+        "pinned-delete" => format!("card {card} cannot be deleted: it is a pinned target of locked tree {tree}"),
+        "delete" => format!("card {card} cannot be deleted: it is in locked tree {tree}"),
+        "edit" => format!("card {card} is in locked tree {tree}; locked Cards can be linked but not changed"),
+        _ => format!("card {card} cannot be moved: it is in locked tree {tree}"),
+    }
+}
+
+/// The typed refusal of one blocked plan item (S16-AC05), in the archive's own vocabulary: the
+/// reason the item is kept in place, the affected Cards, the blocking Locked trees and their Lock
+/// ids, and — for a pin — the locked source Cards whose Links pin the target. A planner reports
+/// every item; it never drops one to make the plan succeed.
+pub fn blocked(reason: &str, cards: &[String], trees: &[String], locks: &[Lock], sources: &[String]) -> Value {
+    let mut cards = cards.to_vec();
+    cards.sort();
+    cards.dedup();
+    let mut trees = trees.to_vec();
+    trees.sort();
+    trees.dedup();
+    let mut value = json!({
+        "error": "card_locked",
+        "code": "card_locked",
+        "message": blocked_message(reason, &cards, &trees),
+        "tree": trees.first(),
+        "cards": cards,
+        "reason": reason,
+        "hint": hint_for(reason),
+    });
+    if !sources.is_empty() {
+        let mut sources = sources.to_vec();
+        sources.sort();
+        sources.dedup();
+        value["sources"] = json!(sources);
+    }
+    if !locks.is_empty() {
+        let mut blocks: Vec<Value> = locks
+            .iter()
+            .map(|lock| json!({"lock_id": lock.lock_id, "tree": lock.tree}))
+            .collect();
+        blocks.sort_by_key(|block| {
+            (
+                block["lock_id"].as_i64().unwrap_or(0),
+                block["tree"].as_str().unwrap_or_default().to_string(),
+            )
+        });
+        blocks.dedup();
+        value["locks"] = Value::Array(blocks);
+    }
+    value
+}
+
+/// The blocked refusal of one Card whose Locked tree keeps it in place: a member of a Locked tree
+/// (its authored text, address or existence) or a pinned target (its address or existence).
+pub fn blocked_card(reason: &str, card: &str, lock: &Lock) -> Value {
+    blocked(reason, &[card.to_string()], std::slice::from_ref(&lock.tree), std::slice::from_ref(lock), &[])
+}
+
+/// The blocked refusal of a destination inside a Locked tree: a Card none of the plan may create
+/// or move into it.
+pub fn blocked_destination(reason: &str, address: &str, lock: &Lock) -> Value {
+    blocked(reason, &[address.to_string()], std::slice::from_ref(&lock.tree), std::slice::from_ref(lock), &[])
+}
+
+/// The blocked refusal of a pinned target: the Locked trees that pin it are `pinned_by` roots; the
+/// Lock itself is read from the pinned Card's facts when it is available.
+pub fn blocked_pin(reason: &str, card: &str, pinned_by: &[String], lock: Option<&Lock>) -> Value {
+    let locks: Vec<Lock> = lock.cloned().into_iter().collect();
+    blocked(reason, &[card.to_string()], pinned_by, &locks, &[])
+}
+
+/// The archive refused a write the plan had allowed: a Lock that appeared after the plan, kept as
+/// its typed `card_locked` refusal instead of an English sentence. A stage that receives it stops
+/// the affected write, keeps the receipts it already committed and answers the refusal's own JSON.
+#[derive(Debug)]
+pub struct Stopped(pub Value);
+
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let said = self.0["message"].as_str().or_else(|| self.0["error"].as_str()).unwrap_or_default();
+        write!(f, "zt: {} {}", self.0["error"].as_str().unwrap_or("card_locked"), said)?;
+        write!(f, " {}", util::compact(&self.0))
+    }
+}
+
+impl std::error::Error for Stopped {}
+
+/// `Some(refusal)` when an error is the archive's typed Lock refusal (or a planner's own blocked
+/// refusal), so a stage recognizes it without matching English text (R338, S16-AC05).
+pub fn stopped_refusal(error: &anyhow::Error) -> Option<Value> {
+    error.downcast_ref::<Stopped>().map(|stopped| stopped.0.clone())
+}
+
 /// Reports a stopped step: the typed refusal as its last stdout line (so a caller reads the same
 /// JSON it reads from every step), the exact sentence on stderr, and the refusal exit code. It
 /// writes no file, allocates no job and changes no Card.
 pub fn stop(mode: &str, refusal: &Value) -> Result<i32> {
     util::print_line(&util::compact(refusal))?;
-    eprintln!("zt-digest {mode}: {}", refusal["error"].as_str().unwrap_or_default());
+    // The preflight refusal keeps the owner sentence in `error`; an archive refusal keeps its code
+    // there and the sentence in `message`. Either way the person reads what stopped the stage.
+    let said = refusal["message"]
+        .as_str()
+        .filter(|message| !message.trim().is_empty())
+        .or_else(|| refusal["error"].as_str())
+        .unwrap_or_default();
+    eprintln!("zt-digest {mode}: {said}");
     Ok(LOCKED_EXIT)
 }
 
@@ -178,5 +350,79 @@ mod tests {
         std::fs::write(dir.join("manifest.json"), "{not json").unwrap();
         assert_eq!(key_from_staging(&staging), "");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- S16 (#139): the planner's own blocked refusals -------------------------------------------
+
+    #[test]
+    fn a_cards_facts_are_its_lock_and_pin_roots() {
+        let locked = json!({
+            "lock": {"lock_id": 2, "tree": "4/0", "since": "2026-10-21T10:00:00.000Z"},
+            "pinned_by": ["4/0", "7/0"],
+        });
+        let facts = facts_in(&locked);
+        assert_eq!(
+            facts.lock,
+            Some(Lock { lock_id: 2, tree: "4/0".into(), since: "2026-10-21T10:00:00.000Z".into() })
+        );
+        assert_eq!(facts.pinned_by, vec!["4/0".to_string(), "7/0".to_string()]);
+        assert_eq!(facts_in(&json!({"lock": null, "pinned_by": []})), Facts::default());
+        assert_eq!(facts_in(&json!({})), Facts::default());
+    }
+
+    #[test]
+    fn an_address_tree_id_and_inside_name_the_lock_unit_and_its_subtree() {
+        assert_eq!(tree_id("4/2|a"), "4");
+        assert_eq!(tree_id("Smith2024/1"), "Smith2024");
+        assert!(inside("4/2|a", "4/2"));
+        assert!(inside("4/2|a/1", "4/2"));
+        assert!(inside("4/2", "4/2"));
+        assert!(!inside("4/20", "4/2"));
+        assert!(!inside("5/1", "4/2"));
+        assert!(!inside("4/1", ""));
+    }
+
+    #[test]
+    fn a_blocked_member_names_its_card_tree_reason_lock_and_hint() {
+        let value = blocked_card("move", "15/2|a", &lock());
+        assert_eq!(value["error"], json!("card_locked"));
+        assert_eq!(value["code"], json!("card_locked"));
+        assert_eq!(value["reason"], json!("move"));
+        assert_eq!(value["tree"], json!("K"));
+        assert_eq!(value["cards"], json!(["15/2|a"]));
+        assert_eq!(value["locks"], json!([{"lock_id": 2, "tree": "K"}]));
+        assert_eq!(value["hint"], json!("unlock the tree in the GUI first"));
+        assert!(value["message"].as_str().unwrap().contains("cannot be moved"), "{value}");
+        // A pin says it is a pinned target and gives the owner the other choice (R336).
+        let pin = blocked_pin("pinned-move", "12/3", &["K".to_string()], None);
+        assert_eq!(pin["reason"], json!("pinned-move"));
+        assert_eq!(pin["tree"], json!("K"));
+        assert!(pin["message"].as_str().unwrap().contains("pinned target"), "{pin}");
+        assert!(pin["hint"].as_str().unwrap().contains("link the locked Card"), "{pin}");
+        // A destination inside a Locked tree names the address that cannot be written.
+        let inside = blocked_destination("move-inside", "12/1|a", &lock());
+        assert_eq!(inside["reason"], json!("move-inside"));
+        assert_eq!(inside["cards"], json!(["12/1|a"]));
+        assert!(inside["message"].as_str().unwrap().contains("no moved-in Cards"), "{inside}");
+    }
+
+    #[test]
+    fn a_blocked_refusal_sorts_and_deduplicates_its_facts() {
+        let other = Lock { lock_id: 1, tree: "B/0".into(), since: String::new() };
+        let value = blocked(
+            "edit",
+            &["z/1".to_string(), "a/1".to_string(), "z/1".to_string()],
+            &["B/0".to_string(), "A/0".to_string(), "B/0".to_string()],
+            &[lock_with(2, "A/0"), other.clone(), lock_with(2, "A/0")],
+            &["s/2".to_string(), "s/1".to_string(), "s/1".to_string()],
+        );
+        assert_eq!(value["cards"], json!(["a/1", "z/1"]));
+        assert_eq!(value["tree"], json!("A/0"));
+        assert_eq!(value["sources"], json!(["s/1", "s/2"]));
+        assert_eq!(value["locks"], json!([{"lock_id": 1, "tree": "B/0"}, {"lock_id": 2, "tree": "A/0"}]));
+    }
+
+    fn lock_with(id: i64, tree: &str) -> Lock {
+        Lock { lock_id: id, tree: tree.into(), since: String::new() }
     }
 }

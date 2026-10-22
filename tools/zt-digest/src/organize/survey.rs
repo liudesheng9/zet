@@ -57,7 +57,24 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let faults = ps::read_lines(&ps::join(&audit_dir, "audit-faults.txt"))?;
     let listed = common::read_first(&mut zt, "list_trees", json!({ "workspace": "agent" }))?;
     let trees: Vec<Value> = ps::each(prop(&listed, "trees")).into_iter().filter(|t| eq(&pstr(t, "kind"), "topic")).cloned().collect();
-    survey(&p, &manifest, &key, &audit, &book, &cards, &faults, &trees)
+    // Tree Lock S16 (#139): `list_trees` answers whether an active Lock governs each Topic; the
+    // root's own read gives its Lock id and start, so a planner sees the tree it may not organize
+    // without this step becoming a Lock authority.
+    let locked: Vec<Value> = trees.iter().filter(|t| ps::truthy(&t["locked"])).map(|t| json!(pstr(t, "root"))).collect();
+    let mut locks = serde_json::Map::new();
+    if !locked.is_empty() {
+        let read = common::read_first(&mut zt, "get_cards", json!({ "addresses": locked, "view": "text" }))?;
+        for card in ps::each(&read["cards"]) {
+            let lock = &card["lock"];
+            if lock.is_object() {
+                locks.insert(
+                    pstr(card, "tree"),
+                    json!({"lock_id": lock["lock_id"], "tree": lock["tree"], "since": lock["since"]}),
+                );
+            }
+        }
+    }
+    survey(&p, &manifest, &key, &audit, &book, &cards, &faults, &trees, Value::Object(locks))
 }
 
 /// `Get-Bigrams`: the set of character bigrams (UTF-16 units, as .NET's Substring) of a title
@@ -160,7 +177,17 @@ fn duplicate_pairs(p: &Params, topics: &[Value], trees: &[Value], mine: &CiMap<V
 }
 
 #[allow(clippy::too_many_arguments)]
-fn survey(p: &Params, manifest: &Value, key: &str, audit: &Value, book: &Value, cards: &[Value], faults: &[String], trees: &[Value]) -> Result<i32> {
+fn survey(
+    p: &Params,
+    manifest: &Value,
+    key: &str,
+    audit: &Value,
+    book: &Value,
+    cards: &[Value],
+    faults: &[String],
+    trees: &[Value],
+    locks: Value,
+) -> Result<i32> {
     // --- Topics ---
     let mut mine: CiMap<Value> = CiMap::new();
     for t in ps::pipe(&book["topics"]["list"]) {
@@ -248,6 +275,21 @@ fn survey(p: &Params, manifest: &Value, key: &str, audit: &Value, book: &Value, 
     for t in &by_cards {
         sb.line(format!("| `{}` | {} | {} | {} |", field(t, "root"), field(t, "title"), field(t, "size"), field(t, "book_cards")));
     }
+    // A Locked tree stays readable and its Cards may be linked, but no organize plan changes it
+    // (R332): name it before the decisions are written.
+    if let Some(locks) = locks.as_object().filter(|locks| !locks.is_empty()) {
+        sb.blank();
+        sb.line("## 1b. Locked Topics (read-only: no plan may move or delete their Cards)").blank();
+        for t in trees.iter().filter(|t| ps::truthy(&t["locked"])) {
+            let entry = locks.get(&ps::key(&pstr(t, "tree"))).cloned().unwrap_or(Value::Null);
+            sb.line(format!(
+                "- `{}` {}（已锁定，Lock {}）：可读、可链接，不能写入或组织。",
+                pstr(t, "root"),
+                pstr(t, "title"),
+                ps::s(&entry["lock_id"])
+            ));
+        }
+    }
     sb.blank().line("## 2. Duplicate candidates").blank();
     if !pairs.is_empty() {
         sb.line("| Topic A | Topic B | similarity | one inside the other | Links between |").line("| --- | --- | --- | --- | --- |");
@@ -327,12 +369,14 @@ fn survey(p: &Params, manifest: &Value, key: &str, audit: &Value, book: &Value, 
     util::write_text(&survey_md, &sb.0)?;
     let survey = json!({
         "key": key, "title": pstr(manifest, "book_title"), "topics": topics, "pairs": pairs, "small": small_topics,
-        "proposals": proposals, "models": models, "notes": note_list, "broken_links": book["broken_links"], "hubs_missing": w["hubs"]["missing"]
+        "proposals": proposals, "models": models, "notes": note_list, "broken_links": book["broken_links"],
+        "hubs_missing": w["hubs"]["missing"], "locks": locks
     });
     util::write_text(ps::join(&p.work, "survey.json"), &ps::json_pretty(&survey))?;
     let last = json!({
         "survey": survey_md, "topics": topics.len(), "pairs": pairs.len(), "small": small_topics.len(), "proposals": proposals.len(),
-        "models": models.len(), "notes": note_list.len(), "broken_links": book["broken_links"]
+        "models": models.len(), "notes": note_list.len(), "broken_links": book["broken_links"],
+        "locked": survey["locks"].as_object().map_or(0, serde_json::Map::len)
     });
     util::print_line(&ps::json_compact(&last))?;
     Ok(0)

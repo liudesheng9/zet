@@ -686,6 +686,11 @@ fn execute_identified(
             let refusal = refusal_of(&raw);
             let said = typed_message(&message, &refusal);
             match &refusal {
+                Some(refusal) if refusal["error"] == json!("card_locked") => {
+                    // The typed refusal travels as itself (R338, S16-AC05): a stage stops the
+                    // affected write and answers the archive's own JSON, not a sentence.
+                    return Err(anyhow::Error::new(crate::lockcheck::Stopped(refusal.clone())));
+                }
                 Some(refusal) => bail!("zt: {said} {}", util::compact(refusal)),
                 None => bail!("zt: {said}"),
             }

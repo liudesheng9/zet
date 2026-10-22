@@ -110,7 +110,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     };
     match p.step.as_str() {
         "plan" => register.plan()?,
-        "apply" => register.apply()?,
+        "apply" => {
+            // A Lock that keeps a staged publication out (S16-AC05): the archive's typed refusal is
+            // the answer, the earlier parts publication keeps its receipts, and the stage exits with
+            // its own code instead of a crash.
+            if let Err(error) = register.apply() {
+                return match crate::lockcheck::stopped_refusal(&error) {
+                    Some(refusal) => crate::lockcheck::stop("register", &refusal),
+                    None => Err(error),
+                };
+            }
+        }
         _ => register.check()?,
     }
     Ok(0)
@@ -551,6 +561,27 @@ impl Register {
             }
         }
         Ok(Some(review))
+    }
+
+    /// The typed refusal of the first Locked publication destination, or None. A destination is
+    /// `(address, creates_here)`: a create at an existing Card is reported as `create-inside`, an
+    /// edit of one as `edit`. The rewrite of a Locked source is the archive's own check.
+    fn locked_destination(&mut self, destinations: &[(String, bool)]) -> Result<Option<Value>> {
+        let mut unique: Vec<String> = destinations.iter().map(|(address, _)| address.clone()).collect();
+        unique.sort();
+        unique.dedup();
+        for chunk in unique.chunks(200) {
+            let addresses: Vec<Value> = chunk.iter().map(|address| json!(address)).collect();
+            let answer = self.call("get_cards", json!({ "addresses": addresses, "view": "text" }))?;
+            for card in crate::ps::pipe(&answer["cards"]) {
+                let Some(lock) = crate::lockcheck::lock_in(&card["lock"]) else { continue };
+                let at = crate::ps::s(&card["address"]);
+                let creates = destinations.iter().any(|(address, creates)| *creates && crate::ps::eq(address, &at));
+                let reason = if creates { "create-inside" } else { "edit" };
+                return Ok(Some(crate::lockcheck::blocked_destination(reason, &at, &lock)));
+            }
+        }
+        Ok(None)
     }
 
     /// The one register of the agent Workspace, as `get_register` reads it, with the exact bodies
@@ -1870,13 +1901,37 @@ impl Register {
             );
         }
         let current = self.current_register(true)?;
+        // Tree Lock S16 (#139): a publication writes only at unlocked destinations (R331). The
+        // check runs before the first write and names the Locked register tree with the archive's
+        // typed refusal; a register that becomes Locked after it is stopped by the writer itself.
+        let calls = plan["calls"].as_array().cloned().unwrap_or_default();
+        let mut destinations: Vec<(String, bool)> = Vec::new();
+        let current_address = crate::ps::s(&current["address"]);
+        if !current_address.is_empty() {
+            destinations.push((current_address, false));
+        }
+        for call in &calls {
+            let at = crate::ps::s(&call["arguments"]["at"]);
+            if at.is_empty() || at.starts_with("@@") {
+                continue;
+            }
+            destinations.push((at, crate::ps::s(&call["tool"]) != "edit_card"));
+        }
+        for part in crate::ps::pipe(&plan["parts"]) {
+            let address = crate::ps::s(&part["address"]);
+            if !address.is_empty() {
+                destinations.push((address, false));
+            }
+        }
+        if let Some(refusal) = self.locked_destination(&destinations)? {
+            return Err(anyhow::Error::new(crate::lockcheck::Stopped(refusal)));
+        }
         let read_only = planned
             .iter()
             .flat_map(|(_, targets)| targets.iter())
             .filter(|address| human.contains(*address))
             .count();
         let prefix = base.to_string();
-        let calls = plan["calls"].as_array().cloned().unwrap_or_default();
         let mut wrote = 0;
         let mut replayed = 0;
         let mut receipts: Vec<String> = Vec::new();

@@ -1616,6 +1616,95 @@ fn a_pinned_target_stays_editable_without_renaming_it() {
     assert_eq!(panel["integrity"]["ok"], true);
 }
 
+/// S16-AC03 / R336: a pinned target stays editable as a Hub Card — title, body, type and Hub
+/// level — because a pin freezes its address and existence, never its authored text. The same
+/// edits on a Hub Card that is a member of the Locked tree are refused, so the pin is scoped to
+/// what it promises and never to the Card's type or its whole tree.
+#[test]
+fn an_unlocked_pinned_hub_stays_editable_and_only_its_address_is_frozen() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let outside = topic(&mut mcp, "Outside");
+    let hub = address(mcp.ok(
+        "create_successor",
+        json!({ "at": outside, "type": "hub", "level": "topic",
+                "title": "Hub way in", "body": "范围：the open subject." }),
+    ));
+    // A Hub Card inside the tree the owner will lock: it is a promised member, not a pinned target.
+    let member_hub = address(mcp.ok(
+        "create_successor",
+        json!({ "at": first, "kind": "side", "type": "hub", "level": "line",
+                "title": "Line hub", "body": "范围：one line of thought." }),
+    ));
+    mcp.ok("edit_card", json!({ "at": hub, "body": format!("范围：the open subject.\n\n- [[{member_hub}]]：the line.") }));
+    let elsewhere = topic(&mut mcp, "Elsewhere");
+    let beside = card(&mut mcp, &elsewhere, "Beside", "beside body");
+    // The locked tree's Card links the open hub, so the Lock pins it.
+    mcp.ok("edit_card", json!({ "at": first, "body": format!("links [[{hub}]]") }));
+    let lock = gui.lock(&root, None);
+    let seal = lock["seal"].clone();
+    let pinned = mcp.ok("get_card", json!({ "at": hub }));
+    assert_eq!(pinned["pinned_by"], json!([root]), "{pinned}");
+    assert!(pinned["lock"].is_null(), "a pinned target is not a Locked member: {pinned}");
+
+    // Title, body, type and Hub level of the pinned Hub all stay writable.
+    mcp.ok("edit_card", json!({ "at": hub, "title": "A better way in" }));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": hub, "body": format!("范围：rewritten.\n\n- [[{member_hub}]]：the line.") }),
+    );
+    mcp.ok("edit_card", json!({ "at": hub, "type": "idea" }));
+    let idea = mcp.ok("get_card", json!({ "at": hub }));
+    assert_eq!(idea["type"], json!("idea"), "{idea}");
+    mcp.ok("edit_card", json!({ "at": hub, "type": "hub", "level": "topic" }));
+    let edited = mcp.ok("get_card", json!({ "at": hub }));
+    assert_eq!(edited["title"], json!("A better way in"), "{edited}");
+    assert_eq!(edited["type"], json!("hub"), "{edited}");
+    assert_eq!(edited["level"], json!("topic"), "{edited}");
+    assert_eq!(edited["pinned_by"], json!([root]), "{edited}");
+
+    // The one pinned edit that changes an address or an existence is refused.
+    let refusal = mcp.refused("move_card", json!({ "at": hub, "before": beside }));
+    assert_card_locked(&refusal, "pinned-move", &root, &[&hub]);
+    let refusal = mcp.refused("delete_card", json!({ "at": hub }));
+    assert_card_locked(&refusal, "pinned-delete", &root, &[&hub]);
+
+    // The member Hub of the Locked tree itself is refused: pinning scopes what the Locked tree only
+    // names, so membership still freezes authored text.
+    for change in [
+        json!({ "at": member_hub, "title": "A renamed line" }),
+        json!({ "at": member_hub, "body": "范围：rewritten." }),
+        json!({ "at": member_hub, "type": "idea" }),
+    ] {
+        let refusal = mcp.refused("edit_card", change.clone());
+        assert_card_locked(&refusal, "edit", &root, &[&member_hub]);
+    }
+    // Only the pin's address and existence stay in the pinning tree's promise.
+    let panel = gui.panel();
+    let active = panel["locks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|lock| lock["unlocked_at"].is_null())
+        .expect("the Lock");
+    assert_eq!(active["seal"], seal);
+    assert_eq!(panel["integrity"]["ok"], true);
+    // The read that the hub compiler uses still reports the pinned Hub and its report.
+    let report = mcp.ok("get_hub", json!({ "at": hub }));
+    assert_eq!(report["level"], json!("topic"), "{report}");
+    assert!(
+        !report["faults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|fault| fault["fault"] == json!("broken")),
+        "{report}"
+    );
+}
+
 /// T07 / AC04: two active Locks can pin one target. Releasing one keeps the other protection;
 /// the target is free only after the last pinning Lock ends.
 #[test]

@@ -21,10 +21,11 @@
 //       two-step transfer meets a changed old Card between its writes.
 //   ZT_SLOW_TOOL, ZT_SLOW_MS, ZT_SLOW_FLAG   every call of this tool waits ZT_SLOW_MS before it is
 //       forwarded, so a real command outlives a shortened ledger lease; the flag marks the wait.
-//   ZT_LOCK_TREE, ZT_LOCK_AFTER_TOOL, ZT_LOCK_FLAG   once (no flag file yet), after a forwarded call
-//       of this tool succeeded and before its reply is sent, the owner locks that whole tree through
-//       the real token-guarded GUI route and the flag file marks it. The earlier call's receipt is
-//       committed; every later write the same run sends meets a real `card_locked` refusal.
+//   ZT_LOCK_TREE, ZT_LOCK_AFTER_TOOL, ZT_LOCK_AFTER_N, ZT_LOCK_FLAG   once (no flag file yet), after
+//       the ZT_LOCK_AFTER_N-th (default 1) forwarded call of this tool succeeded and before its reply
+//       is sent, the owner locks that whole tree through the real token-guarded GUI route and the flag
+//       file marks it. The earlier call's receipt is committed; every later write the same run sends
+//       meets a real `card_locked` refusal.
 // ZT_DRIFT_REVISION   a parallel writer that keeps committing: every read reply reports a higher
 //       archive revision than the one before it, so a caller that needs one view must retry once
 //       and then report its changing-view fault. `once` drifts on the first drifted read only.
@@ -59,6 +60,7 @@ real.on('exit', () => process.exit(0))
 
 let own = 1_000_000_000
 let identityViews = 0
+let lockCalls = 0
 const ask = message => new Promise(resolve => { waiting.set(message.id, resolve); real.stdin.write(JSON.stringify(message) + '\n') })
 const call = (name, args) => ask({ jsonrpc: '2.0', id: own++, method: 'tools/call', params: { name, arguments: args } })
 const send = message => process.stdout.write(JSON.stringify(message) + '\n')
@@ -268,8 +270,17 @@ async function handle(line) {
   if (tool === 'edit_card' && env.ZT_FAIL_AFTER_EDIT && at.at === env.ZT_FAIL_AFTER_EDIT && env.ZT_FAIL_FLAG && !failed(reply)) fs.writeFileSync(env.ZT_FAIL_FLAG, '')
   if (env.ZT_LOCK_TREE && env.ZT_LOCK_FLAG && !flag(env.ZT_LOCK_FLAG) && !failed(reply)
       && (!env.ZT_LOCK_AFTER_TOOL || tool === env.ZT_LOCK_AFTER_TOOL)) {
-    fs.writeFileSync(env.ZT_LOCK_FLAG, '')
-    await ownerLock(env.ZT_LOCK_TREE)
+    lockCalls += 1
+    if (lockCalls >= Number(env.ZT_LOCK_AFTER_N || 1)) {
+      fs.writeFileSync(env.ZT_LOCK_FLAG, '')
+      // A Lock that cannot be taken is recorded beside the flag, never a silent death of the seam:
+      // the caller's own refusal is what the test asserts.
+      try {
+        await ownerLock(env.ZT_LOCK_TREE)
+      } catch (error) {
+        fs.writeFileSync(`${env.ZT_LOCK_FLAG}.error`, String((error && error.stack) || error))
+      }
+    }
   }
   send(reply)
 }

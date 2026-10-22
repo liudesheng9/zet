@@ -179,6 +179,22 @@ impl Hub {
         Ok(self.reads(&[(tool, arguments)])?.into_iter().next().unwrap_or(Value::Null))
     }
 
+    /// The active Lock of each given tree root, keyed by tree id (one `get_cards` per 200 roots).
+    /// A root that does not exist carries no Lock: only a real tree can be Locked.
+    fn locked_trees(&mut self, roots: &[String]) -> Result<Map<String, Value>> {
+        let mut locked = Map::new();
+        for chunk in roots.chunks(200) {
+            let addresses: Vec<Value> = chunk.iter().map(|root| json!(root)).collect();
+            let answer = self.read_one("get_cards", json!({ "addresses": addresses, "view": "text" }))?;
+            for card in ps::each(&answer["cards"]) {
+                if card["lock"].is_object() {
+                    locked.insert(st(&card["tree"]), card["lock"].clone());
+                }
+            }
+        }
+        Ok(locked)
+    }
+
     /// `Invoke-Write`: the calls through the helper in one batch; the address of each `N ok` line.
     /// In `-Step stage` every call is recorded instead, and its address is the call's own result
     /// reference (`@@N`), which the review gate resolves when it publishes that change.
@@ -197,6 +213,13 @@ impl Hub {
             }
         }
         if let Some(failure) = failure {
+            // A Lock that appeared after the precheck stops the stage as itself (S16-AC05): the
+            // affected write is not retried, and the trees already written keep their state.
+            if let Some(refusal) = failure.refusal.clone().filter(|r| {
+                r["error"] == json!("card_locked") || r["code"] == json!("card_locked")
+            }) {
+                return Err(anyhow::Error::new(crate::lockcheck::Stopped(refusal)));
+            }
             let lines = failure.lines();
             if let Some(c) = ERROR_LINE.captures(&lines[0]) {
                 bail!("zt: {}", &c[1]);
@@ -452,6 +475,13 @@ impl Hub {
                 }
             }
             let root = all.iter().find(|c| ps::eq(&st(&c["edge"]), "root")).map(|c| c["excerpt"].clone()).unwrap_or(Value::Null);
+            // Tree Lock S16 (#139): the root's read carries the tree's active Lock, so the plan and
+            // the report name a Locked tree without another call.
+            let lock = all
+                .iter()
+                .find(|c| ps::eq(&st(&c["edge"]), "root"))
+                .map(|c| c["lock"].clone())
+                .unwrap_or(Value::Null);
             tree_sizes.push(content.len() as i64);
             let listing = content.iter().map(|c| format!("{}\t{}", st(&c["address"]), st(&c["title"]))).collect::<Vec<_>>().join("\n");
             let models = content.iter().filter(is_model).count();
@@ -460,6 +490,7 @@ impl Hub {
                 json!({
                     "tree": tree, "title": t["title"], "excerpt": root, "cards": content.len(), "models": models,
                     "hubs": hubs, "legacy": legacy, "branches": branches, "neighbours": neighbours, "hash": text::hash16(&listing),
+                    "lock": lock,
                 }),
             );
         }
@@ -469,8 +500,9 @@ impl Hub {
         let mut md = format!("# 代理工作区的主题（每行一个主题）{NL}{NL}");
         for s in survey_trees_of(&survey) {
             let near = ps::each(&s["neighbours"]).iter().take(4).map(|n| format!("{}({})", st(&n["tree"]), st(&n["links"]))).collect::<Vec<_>>().join(" ");
+            let locked = if s["lock"].is_object() { "（已锁定，只读：可作成员与链接目标，不能写入）" } else { "" };
             md.push_str(&format!(
-                "- {} {}（{} 张，模型 {}）：{} | 邻近：{near}{NL}",
+                "- {} {}{locked}（{} 张，模型 {}）：{} | 邻近：{near}{NL}",
                 st(&s["tree"]),
                 st(&s["title"]),
                 st(&s["cards"]),
@@ -480,6 +512,7 @@ impl Hub {
         }
         save(&ps::join(&self.work, "survey.md"), &md)?;
         let legacy: usize = survey_trees_of(&survey).iter().map(|s| ps::each(&s["legacy"]).into_iter().filter(|x| ps::truthy(x)).count()).sum();
+        let locked = survey_trees_of(&survey).iter().filter(|s| s["lock"].is_object()).count();
         util::print_line(&ps::json_compact(&json!({
             "topics": survey["trees"].as_object().map_or(0, Map::len),
             "tree_cards": text::quantiles(&tree_sizes),
@@ -487,6 +520,7 @@ impl Hub {
             "neighbour_links": text::quantiles(&pair_counts),
             "hubs": graph["counts"],
             "legacy": legacy,
+            "locked": locked,
             "register": survey["register"],
             "survey": survey_file,
         })))
@@ -552,9 +586,16 @@ impl Hub {
         let line_min = limits["line_min"].as_i64().unwrap_or(0);
         let required = |b: &&Value| ge(&b["cards"], line_min) || ge(&b["models"], 2);
         let mut picked: Vec<Value> = Vec::new();
+        let mut locked: Vec<String> = Vec::new();
         for s in survey_trees_of(&survey) {
             let tree = st(&s["tree"]);
             if !only.is_empty() && !ps::is_in(&tree, &only) {
+                continue;
+            }
+            // A Locked tree takes no hub write (R331): the plan does not send it to a writer, and
+            // names it instead of silently dropping it. Its Cards stay readable and linkable.
+            if s["lock"].is_object() {
+                locked.push(tree);
                 continue;
             }
             let needs = (ge(&s["cards"], topic_min) || ps::each(&s["branches"]).iter().any(required))
@@ -702,7 +743,10 @@ impl Hub {
         }
         self.save_state()?;
         let trees: Vec<String> = picked.iter().map(|s| st(&s["tree"])).collect();
-        util::print_line(&ps::json_compact(&json!({ "tree_count": picked.len(), "jobs": jobs, "trees": trees, "limits": limits })))
+        util::print_line(&ps::json_compact(&json!({
+            "tree_count": picked.len(), "jobs": jobs, "trees": trees, "limits": limits,
+            "locked": locked
+        })))
     }
 
     /// `$State.seq++`.
@@ -736,9 +780,19 @@ impl Hub {
         Ok(if self.exists(r)? { Some(r.to_string()) } else { None })
     }
 
-    fn step_apply(&mut self) -> Result<()> {
-        let summary = self.apply_run()?;
-        util::print_line(&ps::json_compact(&summary))
+    fn step_apply(&mut self) -> Result<i32> {
+        match self.apply_run() {
+            Ok(summary) => {
+                util::print_line(&ps::json_compact(&summary))?;
+                Ok(0)
+            }
+            // A Lock that appeared after the precheck: the archive's own refusal is the last line,
+            // the trees already written keep their receipts, and the stage exits with its code.
+            Err(error) => match crate::lockcheck::stopped_refusal(&error) {
+                Some(refusal) => crate::lockcheck::stop("hub", &refusal),
+                None => Err(error),
+            },
+        }
     }
 
     // --- stage: the same changes, without a write (S27, #119) ---------------------------------
@@ -797,6 +851,22 @@ impl Hub {
         let mut dropped: Vec<String> = Vec::new();
         let mut topic_hub = self.topic_hubs(&survey);
         let files: Vec<String> = ps::child_files(&self.out, "hub-", ".json").into_iter().filter(|n| HUB_FILE.is_match(n)).collect();
+        // Tree Lock S16 (#139): only a tree this plan would write must be unlocked (R331). The
+        // precheck reads the Lock of every planned tree root once; a Locked tree is left entirely
+        // alone and named as blocked, and every other tree keeps its hub work.
+        let mut planned: Vec<String> = files
+            .iter()
+            .filter_map(|name| name.strip_prefix("hub-").and_then(|n| n.strip_suffix(".json")).map(str::to_string))
+            .collect();
+        let register_now = st(&self.state["register"]);
+        if !register_now.is_empty() {
+            planned.push(crate::lockcheck::tree_id(&register_now));
+        }
+        planned.sort();
+        planned.dedup();
+        let roots: Vec<String> = planned.iter().map(|tree| format!("{tree}/0")).collect();
+        let locked = self.locked_trees(&roots)?;
+        let mut blocked: Vec<Value> = Vec::new();
         for name in &files {
             let plan = match read_json(&ps::join(&self.out, name)) {
                 Ok(plan) => plan,
@@ -810,6 +880,11 @@ impl Hub {
                 dropped.push(format!("{name}: unknown tree {tree}"));
                 continue;
             };
+            if let Some(lock) = locked.get(&tree) {
+                let known = self.state["trees"].as_object().and_then(|m| m.get(&tree)).is_some_and(|e| ps::truthy(&e["topic"]));
+                blocked.push(blocked_tree(&tree, if known { "edit" } else { "create-inside" }, "hubs", lock));
+                continue;
+            }
             let mut entry = match self.state["trees"].as_object().and_then(|m| m.get(&tree)) {
                 Some(e) => e.clone(),
                 None => json!({ "topic": null, "lines": {}, "hash": "" }),
@@ -979,6 +1054,11 @@ impl Hub {
             created += 2;
         }
         self.state["register"] = register.clone();
+        // A Locked register tree takes no field or register write either: the field hubs are its
+        // Side successors, so both wait for the owner's unlock and are named as blocked.
+        let register_tree = if ps::truthy(&register) { crate::lockcheck::tree_id(&st(&register)) } else { String::new() };
+        let register_lock = locked.get(&register_tree).cloned();
+        if register_lock.is_none() {
         let fields = if ps::exists(&fields_file) {
             match read_json(&fields_file) {
                 Ok(v) => v,
@@ -1086,13 +1166,18 @@ impl Hub {
         let count = edits.len() as i64;
         self.write(edits)?;
         updated += count;
+        } else if let Some(lock) = &register_lock {
+            blocked.push(blocked_tree(&register_tree, "edit", "fields", lock));
+        }
         self.save_state()?;
         let dropped: Vec<String> = dropped.into_iter().take(40).collect();
+        let complete = blocked.is_empty();
         Ok(json!({
             "created": created, "updated": updated,
             "trees": self.state["trees"].as_object().map_or(0, Map::len),
             "fields": self.state["fields"].as_object().map_or(0, Map::len),
             "register": register, "dropped": dropped,
+            "blocked": blocked, "complete": complete,
         }))
     }
 
@@ -1264,6 +1349,15 @@ fn survey_trees_of(survey: &Value) -> Vec<Value> {
     survey["trees"].as_object().map(|m| m.values().cloned().collect()).unwrap_or_default()
 }
 
+/// One Locked tree this plan would have written: its root, the action, and the archive's typed
+/// refusal vocabulary (a Locked tree takes no new hub, no edit and no field hub).
+fn blocked_tree(tree: &str, reason: &str, action: &str, lock: &Value) -> Value {
+    let refusal = crate::lockcheck::lock_in(lock)
+        .map(|fact| crate::lockcheck::blocked_destination(reason, &format!("{tree}/0"), &fact))
+        .unwrap_or(Value::Null);
+    json!({"tree": tree, "root": format!("{tree}/0"), "action": action, "refusal": refusal})
+}
+
 /// `ConvertFrom-Json -AsHashtable` of a parameter's text.
 fn read_json_text(text: &str) -> Result<Value> {
     ps::parse_json(text).map_err(|e| anyhow!("Conversion from JSON failed with error: {e}"))
@@ -1425,7 +1519,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     match hub.p.step.as_str() {
         "survey" => hub.step_survey()?,
         "plan" => hub.step_plan()?,
-        "apply" => hub.step_apply()?,
+        "apply" => return hub.step_apply(),
         "stage" => hub.step_stage()?,
         "check" => hub.step_check()?,
         "report" => hub.step_report()?,
