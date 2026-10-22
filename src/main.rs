@@ -4153,6 +4153,50 @@ mod tests {
         assert!(!is_tree_member("30/1", "3"));
     }
 
+    /// S11 (#134) S11-AC05: emptying a tree keeps the root's row identity, address, kind,
+    /// Workspace, BibTeX and authored fingerprint; only its generated Reverse section changes.
+    #[test]
+    fn keep_root_keeps_the_root_authored_fingerprint_and_bibtex() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        initialize_database(temp.path()).expect("initialize database");
+        let mut conn = open_db(temp.path()).expect("open database");
+        conn.execute(
+            "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text) VALUES\
+             (NULL, 'KeepMe', 0, 1, '@book{KeepMe, title={Keep Me}}',\
+              '# Keep Me\n\nbody\n\n<!-- zt:reverse-links -->\n'),\
+             ('KeepMe/1', NULL, 0, 0, NULL, '# Child\n\nback [[KeepMe]]\n\n<!-- zt:reverse-links -->\n')",
+            [],
+        )
+        .expect("insert the Literature tree");
+        let before = load_card(&conn, "KeepMe").expect("root");
+        let fingerprint = card::authored_fingerprint(&before).expect("fingerprint");
+
+        let plan = keep_root_delete_plan(&conn, "KeepMe").expect("keep-root plan");
+        let result = apply_delete_plan(&mut conn, plan).expect("empty the tree");
+
+        assert_eq!(result.deleted_count, 1);
+        assert_eq!(result.root_kept.as_deref(), Some("KeepMe"));
+        let after = load_card(&conn, "KeepMe").expect("the root stays");
+        assert_eq!(after.row_id, before.row_id);
+        assert_eq!(after.address, before.address);
+        assert_eq!(after.citation_key, before.citation_key);
+        assert_eq!(after.is_lit, before.is_lit);
+        assert_eq!(after.workspace, before.workspace);
+        assert_eq!(after.card_type, before.card_type);
+        assert_eq!(after.bibtex, before.bibtex);
+        assert_eq!(
+            card::authored_fingerprint(&after).expect("fingerprint"),
+            fingerprint,
+            "the root keeps its authored identity"
+        );
+        assert!(load_card(&conn, "KeepMe/1").is_err(), "the Regular Card goes");
+        assert!(
+            !after.text.contains("- [[KeepMe/1]] Child"),
+            "the generated Reverse section forgets the deleted child: {}",
+            after.text
+        );
+    }
+
     #[test]
     fn literature_roots_have_direct_successors_and_parent_their_first_card() {
         assert_eq!(direct_successor("Smith2024").unwrap(), "Smith2024/1");
