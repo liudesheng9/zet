@@ -610,28 +610,57 @@ pub(crate) fn restore_rebuilt_protection(
 // Refusals
 // ---------------------------------------------------------------------------------------------
 
-/// What kind of promise refused a change.
+/// The exact Card effect an active Lock refused (R184). The reason is the effect the caller asked
+/// for, so a client acts on it without reading English: `edit`, `delete`, `move`, `create-inside`,
+/// `move-inside`, `pinned-move` and `pinned-delete`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RefusalKind {
-    /// The Card is a member of an active Locked tree.
-    Locked,
-    /// The destination belongs to an active Locked tree.
-    LockedTree,
-    /// The Card is pinned by an active Locked tree.
-    Pinned,
-    /// The Link index and the authored bodies disagree, so pins cannot be trusted.
-    Index,
+pub(crate) enum Reason {
+    /// The Card is a member of an active Locked tree and its authored identity would change.
+    Edit,
+    /// The Card is a member of an active Locked tree and would be deleted.
+    Delete,
+    /// The Card is a member of an active Locked tree and would move or be renamed.
+    Move,
+    /// A new Card would be created inside an active Locked tree.
+    CreateInside,
+    /// A Card would be moved into an active Locked tree.
+    MoveInside,
+    /// The Card is pinned by an active Locked tree and would move, be renamed or compacted.
+    PinnedMove,
+    /// The Card is pinned by an active Locked tree and would be deleted.
+    PinnedDelete,
 }
 
-impl RefusalKind {
-    pub(crate) fn code(self) -> &'static str {
+impl Reason {
+    pub(crate) fn id(self) -> &'static str {
         match self {
-            RefusalKind::Locked => "locked",
-            RefusalKind::LockedTree => "locked_tree",
-            RefusalKind::Pinned => "pinned",
-            RefusalKind::Index => "index_integrity",
+            Reason::Edit => "edit",
+            Reason::Delete => "delete",
+            Reason::Move => "move",
+            Reason::CreateInside => "create-inside",
+            Reason::MoveInside => "move-inside",
+            Reason::PinnedMove => "pinned-move",
+            Reason::PinnedDelete => "pinned-delete",
         }
     }
+
+    /// The actionable sentence the shell and the Session append to the message (R185). Every Card
+    /// effect has an owner action: release the Lock, or write elsewhere and link the locked Card.
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            Reason::PinnedMove | Reason::PinnedDelete => {
+                "write a new Card in another tree and link the locked Card, or unlock the tree in the GUI first"
+            }
+            _ => "unlock the tree in the GUI first",
+        }
+    }
+}
+
+/// One active Lock that blocks a change: its numeric id and its Locked tree's root address.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct Blocker {
+    pub(crate) lock_id: i64,
+    pub(crate) tree: String,
 }
 
 /// One active Lock that pins a Card, with the locked source Cards holding the Links.
@@ -642,110 +671,261 @@ pub(crate) struct PinSource {
     pub(crate) sources: Vec<String>,
 }
 
-/// A typed refusal: a Card write the owner's Lock forbids. It carries enough facts for a client to
-/// name the Locked tree, the Lock and the pinning sources, and renders the same facts as JSON.
+impl PinSource {
+    fn blocker(&self) -> Blocker {
+        Blocker {
+            lock_id: self.lock_id,
+            tree: self.tree.clone(),
+        }
+    }
+}
+
+/// The structured `card_locked` refusal every writer shares (R182-R185): the blocking Locked tree's
+/// root address, the affected Card addresses, the exact reason and the actionable hint, sorted and
+/// deduplicated so equal facts always read the same. `tree` is the first blocking root and `locks`
+/// explains every blocking Lock. A pin refusal additionally names the locked source Cards.
 #[derive(Clone, Debug)]
 pub(crate) struct Refusal {
-    pub(crate) kind: RefusalKind,
+    pub(crate) reason: Reason,
     pub(crate) message: String,
-    pub(crate) card: Option<String>,
-    pub(crate) lock_id: Option<i64>,
-    pub(crate) tree: Option<String>,
-    pub(crate) pinned_by: Vec<PinSource>,
+    /// The affected Card addresses, sorted and deduplicated; empty when the whole archive was asked for.
+    pub(crate) cards: Vec<String>,
+    /// The blocking Locked trees' root addresses, sorted and deduplicated; `trees[0]` is `tree`.
+    pub(crate) trees: Vec<String>,
+    /// The locked source Cards whose Links pin an affected Card; empty for a membership refusal.
+    pub(crate) sources: Vec<String>,
+    /// Every blocking Lock, sorted by Lock id and deduplicated.
+    pub(crate) locks: Vec<Blocker>,
+}
+
+/// Sorted, deduplicated copy of `values`, so two refusals about the same facts read the same.
+fn sorted_unique(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn quoted(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| format!("`{value}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The grammatical forms a refusal message needs for one Card or several.
+fn noun(cards: &[String]) -> &'static str {
+    if cards.len() == 1 { "card" } else { "cards" }
+}
+
+fn verb(cards: &[String]) -> &'static str {
+    if cards.len() == 1 { "is" } else { "are" }
+}
+
+fn pronoun(cards: &[String]) -> &'static str {
+    if cards.len() == 1 { "it" } else { "they" }
+}
+
+fn source_noun(sources: &[String]) -> &'static str {
+    if sources.len() == 1 { "card" } else { "cards" }
+}
+
+fn source_verb(sources: &[String]) -> &'static str {
+    if sources.len() == 1 { "links" } else { "link" }
 }
 
 impl Refusal {
-    fn locked(card: &str, lock_id: i64, tree: &str) -> Self {
-        Self {
-            kind: RefusalKind::Locked,
-            message: format!(
-                "card `{card}` is in locked tree `{tree}` (lock {lock_id}); unlock the tree in the GUI first"
-            ),
-            card: Some(card.to_string()),
-            lock_id: Some(lock_id),
-            tree: Some(tree.to_string()),
-            pinned_by: Vec::new(),
-        }
-    }
-
-    fn locked_tree(destination: &str, lock_id: i64, tree: &str) -> Self {
-        Self {
-            kind: RefusalKind::LockedTree,
-            message: format!(
-                "`{destination}` is inside locked tree `{tree}` (lock {lock_id}); a locked tree takes no new cards"
-            ),
-            card: Some(destination.to_string()),
-            lock_id: Some(lock_id),
-            tree: Some(tree.to_string()),
-            pinned_by: Vec::new(),
-        }
-    }
-
-    fn pinned(card: &str, pins: &[PinSource]) -> Self {
-        let trees = pins
+    /// One refusal about Cards that would change, move or be deleted in their Locked trees.
+    /// `entries` are `(address, Lock)` facts; `reason` names the effect the caller asked for.
+    fn by_blockers(reason: Reason, entries: impl IntoIterator<Item = (String, Blocker)>) -> Self {
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        let cards = sorted_unique(entries.iter().map(|(card, _)| card.clone()));
+        let mut locks = entries
             .iter()
-            .map(|pin| format!("`{}` (lock {})", pin.tree, pin.lock_id))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sources = pins
-            .iter()
-            .flat_map(|pin| pin.sources.iter().cloned())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join(", ");
-        Self {
-            kind: RefusalKind::Pinned,
-            message: format!(
-                "card `{card}` is a pinned target of locked tree {trees}; locked source cards {sources} link it"
+            .map(|(_, blocker)| blocker.clone())
+            .collect::<Vec<_>>();
+        locks.sort();
+        locks.dedup();
+        let trees = sorted_unique(locks.iter().map(|blocker| blocker.tree.clone()));
+        let message = match reason {
+            Reason::Edit => format!(
+                "{} {} {} in locked tree {}; locked Cards can be linked but not changed",
+                noun(&cards),
+                quoted(&cards),
+                verb(&cards),
+                quoted(&trees)
             ),
-            card: Some(card.to_string()),
-            lock_id: pins.first().map(|pin| pin.lock_id),
-            tree: pins.first().map(|pin| pin.tree.clone()),
-            pinned_by: pins.to_vec(),
+            Reason::Delete => format!(
+                "{} {} cannot be deleted: {} {} in locked tree {}",
+                noun(&cards),
+                quoted(&cards),
+                pronoun(&cards),
+                verb(&cards),
+                quoted(&trees)
+            ),
+            Reason::Move => format!(
+                "{} {} cannot be moved: {} {} in locked tree {}",
+                noun(&cards),
+                quoted(&cards),
+                pronoun(&cards),
+                verb(&cards),
+                quoted(&trees)
+            ),
+            Reason::CreateInside => format!(
+                "{} {} inside locked tree {}; a locked tree takes no new Cards",
+                quoted(&cards),
+                verb(&cards),
+                quoted(&trees)
+            ),
+            Reason::MoveInside => format!(
+                "{} {} inside locked tree {}; a locked tree takes no moved-in Cards",
+                quoted(&cards),
+                verb(&cards),
+                quoted(&trees)
+            ),
+            Reason::PinnedMove | Reason::PinnedDelete => {
+                unreachable!("a pin refusal is built from the pinning Locks")
+            }
+        };
+        Self {
+            reason,
+            message,
+            cards,
+            trees,
+            sources: Vec::new(),
+            locks,
         }
     }
 
-    fn index(card: &str, tree: &str, detail: &str) -> Self {
+    /// One refusal about Cards an active Locked tree pins: `entries` are `(target, pinning Locks)`.
+    fn by_pins(
+        reason: Reason,
+        entries: impl IntoIterator<Item = (String, Vec<PinSource>)>,
+    ) -> Self {
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        let cards = sorted_unique(entries.iter().map(|(card, _)| card.clone()));
+        let pins = entries.iter().flat_map(|(_, pins)| pins.iter());
+        let mut locks = pins.clone().map(PinSource::blocker).collect::<Vec<_>>();
+        locks.sort();
+        locks.dedup();
+        let trees = sorted_unique(locks.iter().map(|blocker| blocker.tree.clone()));
+        let sources = sorted_unique(pins.flat_map(|pin| pin.sources.iter().cloned()));
+        let effect = match reason {
+            Reason::PinnedMove => "moved",
+            Reason::PinnedDelete => "deleted",
+            other => unreachable!("`{}` is not a pin reason", other.id()),
+        };
+        let message = format!(
+            "{} {} cannot be {effect}: {} {} a pinned target of locked tree {}; locked source {} {} {} {}",
+            noun(&cards),
+            quoted(&cards),
+            pronoun(&cards),
+            verb(&cards),
+            quoted(&trees),
+            source_noun(&sources),
+            quoted(&sources),
+            source_verb(&sources),
+            pronoun(&cards)
+        );
         Self {
-            kind: RefusalKind::Index,
-            message: format!(
-                "the Link index does not match the authored body of `{card}` in tree `{tree}`: {detail}"
-            ),
-            card: Some(card.to_string()),
-            lock_id: None,
-            tree: Some(tree.to_string()),
-            pinned_by: Vec::new(),
+            reason,
+            message,
+            cards,
+            trees,
+            sources,
+            locks,
+        }
+    }
+
+    /// The whole archive would be emptied while some Lock is still active (R181): no single Card is
+    /// named, and every blocking Lock is explained.
+    fn deleting_all(blockers: Vec<Blocker>) -> Self {
+        let mut locks = blockers;
+        locks.sort();
+        locks.dedup();
+        let trees = sorted_unique(locks.iter().map(|blocker| blocker.tree.clone()));
+        let message = format!(
+            "the archive holds {} active Lock{}, locked tree {}; unlocking every tree is required before deleting all Cards",
+            locks.len(),
+            if locks.len() == 1 { "" } else { "s" },
+            quoted(&trees)
+        );
+        Self {
+            reason: Reason::Delete,
+            message,
+            cards: Vec::new(),
+            trees,
+            sources: Vec::new(),
+            locks,
         }
     }
 
     pub(crate) fn value(&self) -> Value {
-        json!({
-            "error": self.message,
-            "code": self.kind.code(),
-            "card": self.card,
-            "lock_id": self.lock_id,
-            "locked_tree": self.tree,
-            "pinned_by": self
-                .pinned_by
-                .iter()
-                .map(|pin| json!({
-                    "tree": pin.tree,
-                    "lock_id": pin.lock_id,
-                    "sources": pin.sources,
-                }))
-                .collect::<Vec<_>>(),
-        })
+        let mut value = json!({
+            "error": "card_locked",
+            "message": self.message,
+            "tree": self.trees.first(),
+            "cards": self.cards,
+            "reason": self.reason.id(),
+            "hint": self.reason.hint(),
+        });
+        if !self.sources.is_empty() {
+            value["sources"] = json!(self.sources);
+        }
+        if !self.locks.is_empty() {
+            value["locks"] = Value::Array(
+                self.locks
+                    .iter()
+                    .map(|blocker| json!({"lock_id": blocker.lock_id, "tree": blocker.tree}))
+                    .collect(),
+            );
+        }
+        value
     }
 }
 
 impl std::fmt::Display for Refusal {
+    /// The one line the shell and the Session print: the message, then the owner's hint (R185).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
+        write!(f, "{}; {}", self.message, self.reason.hint())
     }
 }
 
 impl std::error::Error for Refusal {}
+
+/// A Lock plan refused because the derived Link index disagrees with the authored bodies (R144), so
+/// the pins it would capture cannot be trusted. It is its own outcome, not a `card_locked` refusal.
+#[derive(Clone, Debug)]
+pub(crate) struct IndexRefusal {
+    pub(crate) card: String,
+    pub(crate) tree: String,
+    pub(crate) detail: String,
+}
+
+impl IndexRefusal {
+    pub(crate) fn value(&self) -> Value {
+        json!({
+            "error": "index_integrity",
+            "message": self.to_string(),
+            "tree": self.tree,
+            "cards": [self.card],
+            "hint": self.detail,
+        })
+    }
+}
+
+impl std::fmt::Display for IndexRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the Link index does not match the authored body of `{}` in tree `{}`: {}",
+            self.card, self.tree, self.detail
+        )
+    }
+}
+
+impl std::error::Error for IndexRefusal {}
 
 // ---------------------------------------------------------------------------------------------
 // Stored state
@@ -1713,11 +1893,11 @@ fn verify_member_indexes(conn: &Connection, plan: &LockPlan) -> Result<()> {
             .query_map([&member.address], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         if authored != indexed {
-            return Err(anyhow::Error::new(Refusal::index(
-                &member.address,
-                &plan.root,
-                "run `zt reindex` before locking",
-            )));
+            return Err(anyhow::Error::new(IndexRefusal {
+                card: member.address.clone(),
+                tree: plan.root.clone(),
+                detail: "run `zt reindex` before locking".to_string(),
+            }));
         }
     }
     Ok(())
@@ -1758,7 +1938,7 @@ pub(crate) fn ensure_unlocked(conn: &Connection, change: Change<'_>) -> Result<(
 fn check_change(conn: &Connection, state: &State, change: Change<'_>) -> Result<()> {
     match change {
         Change::Edit(row_id) => {
-            if let Some((lock_id, root)) = state.member_by_row.get(&row_id) {
+            if let Some(blocker) = member_blocker(state, row_id) {
                 // The refused Card's own address, never another member's: the owner's refusal names
                 // the exact Card whose write the Lock stopped (R217, S05-AC04).
                 let address = state
@@ -1766,15 +1946,23 @@ fn check_change(conn: &Connection, state: &State, change: Change<'_>) -> Result<
                     .get(&row_id)
                     .cloned()
                     .unwrap_or_default();
-                return Err(anyhow::Error::new(Refusal::locked(
-                    &address, *lock_id, root,
+                return Err(anyhow::Error::new(Refusal::by_blockers(
+                    Reason::Edit,
+                    [(address, blocker)],
                 )));
             }
         }
         Change::CreateAt(address) => {
             if let Some((lock_id, root)) = active_root_of(state, address) {
-                return Err(anyhow::Error::new(Refusal::locked_tree(
-                    address, lock_id, &root,
+                return Err(anyhow::Error::new(Refusal::by_blockers(
+                    Reason::CreateInside,
+                    [(
+                        address.to_string(),
+                        Blocker {
+                            lock_id,
+                            tree: root,
+                        },
+                    )],
                 )));
             }
         }
@@ -1784,21 +1972,34 @@ fn check_change(conn: &Connection, state: &State, change: Change<'_>) -> Result<
                 .iter()
                 .map(|card| (card.address.as_str(), card))
                 .collect::<BTreeMap<_, _>>();
+            // Every affected Card of one category is named once: a refused delete never hides the
+            // other locked members of the same delete set (R184).
+            let mut members = Vec::new();
+            let mut pinned = Vec::new();
             for address in &plan.delete_set {
                 let Some(card) = by_address.get(address.as_str()) else {
                     continue;
                 };
-                if let Some((lock_id, root)) = state.member_by_row.get(&card.row_id) {
-                    return Err(anyhow::Error::new(Refusal::locked(
-                        &card.address,
-                        *lock_id,
-                        root,
-                    )));
+                if let Some(blocker) = member_blocker(state, card.row_id) {
+                    members.push((card.address.clone(), blocker));
+                    continue;
                 }
                 let pins = pins_of(state, card.row_id);
                 if !pins.is_empty() {
-                    return Err(anyhow::Error::new(Refusal::pinned(&card.address, &pins)));
+                    pinned.push((card.address.clone(), pins));
                 }
+            }
+            if !members.is_empty() {
+                return Err(anyhow::Error::new(Refusal::by_blockers(
+                    Reason::Delete,
+                    members,
+                )));
+            }
+            if !pinned.is_empty() {
+                return Err(anyhow::Error::new(Refusal::by_pins(
+                    Reason::PinnedDelete,
+                    pinned,
+                )));
             }
             check_mapping(conn, state, &plan.compaction())?;
             let repoint = plan.repoint_mapping();
@@ -1807,21 +2008,32 @@ fn check_change(conn: &Connection, state: &State, change: Change<'_>) -> Result<
         Change::Mapping(mapping) => check_mapping(conn, state, mapping)?,
         Change::LinkRewrites(mapping) => check_link_rewrites(conn, state, mapping)?,
         Change::DeleteAll => {
-            if let Some((root, lock_id)) = state.roots.iter().next() {
-                return Err(anyhow::Error::new(Refusal {
-                    kind: RefusalKind::Locked,
-                    message: format!(
-                        "the archive holds an active Lock on tree `{root}` (lock {lock_id}); unlocking every tree is required before deleting all cards"
-                    ),
-                    card: None,
-                    lock_id: Some(*lock_id),
-                    tree: Some(root.clone()),
-                    pinned_by: Vec::new(),
-                }));
+            if !state.roots.is_empty() {
+                return Err(anyhow::Error::new(Refusal::deleting_all(
+                    state
+                        .roots
+                        .iter()
+                        .map(|(root, lock_id)| Blocker {
+                            lock_id: *lock_id,
+                            tree: root.clone(),
+                        })
+                        .collect(),
+                )));
             }
         }
     }
     Ok(())
+}
+
+/// The active Lock that promises this Card row, if any.
+fn member_blocker(state: &State, row_id: i64) -> Option<Blocker> {
+    state
+        .member_by_row
+        .get(&row_id)
+        .map(|(lock_id, root)| Blocker {
+            lock_id: *lock_id,
+            tree: root.clone(),
+        })
 }
 
 fn check_mapping(
@@ -1832,28 +2044,60 @@ fn check_mapping(
     if mapping.is_empty() {
         return Ok(());
     }
+    let mut members = Vec::new();
+    let mut pinned = Vec::new();
+    let mut destinations = Vec::new();
     for (old, new) in mapping {
         if let Some((lock_id, root)) = state.member_by_address.get(old) {
-            return Err(anyhow::Error::new(Refusal::locked(old, *lock_id, root)));
+            members.push((
+                old.clone(),
+                Blocker {
+                    lock_id: *lock_id,
+                    tree: root.clone(),
+                },
+            ));
+            continue;
         }
         let cards = crate::load_cards(conn)?;
         if let Some(card) = cards.iter().find(|card| &card.address == old) {
             let pins = pins_of(state, card.row_id);
             if !pins.is_empty() {
-                return Err(anyhow::Error::new(Refusal::pinned(old, &pins)));
+                pinned.push((old.clone(), pins));
             }
         }
         if let Some((lock_id, root)) = active_root_of(state, new) {
-            return Err(anyhow::Error::new(Refusal::locked_tree(
-                new, lock_id, &root,
-            )));
+            destinations.push((
+                new.clone(),
+                Blocker {
+                    lock_id,
+                    tree: root,
+                },
+            ));
         }
+    }
+    if !members.is_empty() {
+        return Err(anyhow::Error::new(Refusal::by_blockers(
+            Reason::Move,
+            members,
+        )));
+    }
+    if !pinned.is_empty() {
+        return Err(anyhow::Error::new(Refusal::by_pins(
+            Reason::PinnedMove,
+            pinned,
+        )));
+    }
+    if !destinations.is_empty() {
+        return Err(anyhow::Error::new(Refusal::by_blockers(
+            Reason::MoveInside,
+            destinations,
+        )));
     }
     check_change(conn, state, Change::LinkRewrites(mapping))
 }
 
 /// A rewritten macro in a locked source would change that source's authored body, so it is refused
-/// even when the source itself does not move.
+/// even when the source itself does not move. Every locked source the rewrite would touch is named.
 fn check_link_rewrites(
     conn: &Connection,
     state: &State,
@@ -1863,8 +2107,9 @@ fn check_link_rewrites(
         return Ok(());
     }
     let cards = crate::load_cards(conn)?;
+    let mut touched = Vec::new();
     for card in &cards {
-        let Some((lock_id, root)) = state.member_by_row.get(&card.row_id) else {
+        let Some(blocker) = member_blocker(state, card.row_id) else {
             continue;
         };
         let parsed = crate::parse_card_text(&card.text)?;
@@ -1874,12 +2119,14 @@ fn check_link_rewrites(
             .iter()
             .any(|occurrence| mapping.contains_key(occurrence.target))
         {
-            return Err(anyhow::Error::new(Refusal::locked(
-                &card.address,
-                *lock_id,
-                root,
-            )));
+            touched.push((card.address.clone(), blocker));
         }
+    }
+    if !touched.is_empty() {
+        return Err(anyhow::Error::new(Refusal::by_blockers(
+            Reason::Edit,
+            touched,
+        )));
     }
     Ok(())
 }
@@ -3755,15 +4002,18 @@ mod tests {
             .downcast_ref::<Refusal>()
             .expect("typed refusal")
             .clone();
-        assert_eq!(refusal.code_string(), "locked");
-        assert_eq!(refusal.tree.as_deref(), Some(root.as_str()));
+        assert_eq!(refusal.reason, Reason::Edit);
+        assert_eq!(refusal.trees, vec![root.clone()]);
+        assert_eq!(refusal.cards, vec![first_address(&root)]);
 
         let pinned = crate::load_card(&conn, "2/1").expect("pinned");
         assert!(ensure_unlocked(&conn, Change::Edit(pinned.row_id)).is_ok());
         let mapping = BTreeMap::from([("2/1".to_string(), "2/3".to_string())]);
         let refusal = ensure_unlocked(&conn, Change::Mapping(&mapping)).expect_err("move pin");
         let refusal = refusal.downcast_ref::<Refusal>().expect("typed refusal");
-        assert_eq!(refusal.kind, RefusalKind::Pinned);
+        assert_eq!(refusal.reason, Reason::PinnedMove);
+        assert_eq!(refusal.cards, vec!["2/1".to_string()]);
+        assert!(!refusal.sources.is_empty());
 
         // An unlocked Card may still be edited, and a generated Reverse-link refresh passes.
         assert!(ensure_unlocked(&conn, Change::Edit(pinned.row_id)).is_ok());
@@ -3773,8 +4023,8 @@ mod tests {
         let refusal = ensure_unlocked(&conn, Change::CreateAt(&format!("{root}/2")))
             .expect_err("create inside");
         assert_eq!(
-            refusal.downcast_ref::<Refusal>().expect("typed").kind,
-            RefusalKind::LockedTree
+            refusal.downcast_ref::<Refusal>().expect("typed").reason,
+            Reason::CreateInside
         );
     }
 
@@ -3823,14 +4073,14 @@ mod tests {
         let member_plan = crate::delete_plan(&conn, &first_address(&root)).expect("plan member");
         let refusal = ensure_unlocked(&conn, Change::Delete(&member_plan)).expect_err("member");
         assert_eq!(
-            refusal.downcast_ref::<Refusal>().expect("typed").kind,
-            RefusalKind::Locked
+            refusal.downcast_ref::<Refusal>().expect("typed").reason,
+            Reason::Delete
         );
         let pinned_plan = crate::delete_plan(&conn, "2/1").expect("plan pinned");
         let refusal = ensure_unlocked(&conn, Change::Delete(&pinned_plan)).expect_err("pinned");
         let refusal = refusal.downcast_ref::<Refusal>().expect("typed");
-        assert_eq!(refusal.kind, RefusalKind::Pinned);
-        assert!(!refusal.pinned_by[0].sources.is_empty());
+        assert_eq!(refusal.reason, Reason::PinnedDelete);
+        assert!(!refusal.sources.is_empty());
         // An unrelated Card can still be deleted.
         let other_plan = crate::delete_plan(&conn, "2/2").expect("plan other");
         assert!(ensure_unlocked(&conn, Change::Delete(&other_plan)).is_ok());
@@ -3943,8 +4193,8 @@ mod tests {
         // Even a request that would change nothing is a Lock refusal (R082).
         let refusal = ensure_unlocked(&conn, Change::Edit(card.row_id)).expect_err("no-op edit");
         assert_eq!(
-            refusal.downcast_ref::<Refusal>().expect("typed").kind,
-            RefusalKind::Locked
+            refusal.downcast_ref::<Refusal>().expect("typed").reason,
+            Reason::Edit
         );
 
         // With the statement trigger removed, the same kind change is an exact integrity fault
@@ -4046,8 +4296,8 @@ mod tests {
         let mapping = BTreeMap::from([("2/1".to_string(), format!("{}/2", crate::tree_id(&root)))]);
         let error = crate::apply_location_mapping_tx(&conn, &mapping).expect_err("move in");
         assert_eq!(
-            error.downcast_ref::<Refusal>().expect("typed").kind,
-            RefusalKind::LockedTree
+            error.downcast_ref::<Refusal>().expect("typed").reason,
+            Reason::MoveInside
         );
         let moving: i64 = conn
             .query_row(
@@ -4200,10 +4450,10 @@ mod tests {
         ]);
         let error = ensure_unlocked(&conn, Change::Mapping(&mapping)).expect_err("ancestor move");
         let refusal = error.downcast_ref::<Refusal>().expect("typed refusal");
-        assert_eq!(refusal.kind, RefusalKind::Pinned);
-        assert_eq!(refusal.pinned_by[0].tree, plan.root);
+        assert_eq!(refusal.reason, Reason::PinnedMove);
+        assert_eq!(refusal.trees, vec![plan.root.clone()]);
         assert!(
-            refusal.pinned_by[0]
+            refusal
                 .sources
                 .iter()
                 .any(|source| source == &side.address)
@@ -4971,8 +5221,8 @@ mod tests {
         let refusal = ensure_unlocked(&conn, Change::Edit(member.row_id))
             .expect_err("a faulted Lock still refuses its member's write");
         assert_eq!(
-            refusal.downcast_ref::<Refusal>().expect("typed").kind,
-            RefusalKind::Locked
+            refusal.downcast_ref::<Refusal>().expect("typed").reason,
+            Reason::Edit
         );
         // The panel shows the broken seal beside the same seal the owner reviewed.
         let panel = export_with(&conn, &after).expect("export");
@@ -6009,12 +6259,5 @@ mod tests {
         assert_eq!(events, 1, "a pure check records nothing, even inside a transaction");
         tx.rollback().expect("rollback");
         assert!(check(&conn).expect("check after rollback").faults.is_empty());
-    }
-}
-
-impl Refusal {
-    #[cfg(test)]
-    fn code_string(&self) -> &'static str {
-        self.kind.code()
     }
 }

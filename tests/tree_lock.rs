@@ -319,6 +319,45 @@ fn first_address(root: &str) -> String {
     format!("{tree}/1")
 }
 
+/// The direct successor address of a main-line Card whose last component is its number.
+fn next_direct(address: &str) -> String {
+    let (head, last) = address.rsplit_once('/').expect("a numbered address");
+    let number: u64 = last.parse().expect("a numeric component");
+    format!("{head}/{}", number + 1)
+}
+
+/// S09-AC02: one structured `card_locked` refusal — the same object for every writer — with its
+/// exact reason, its blocking Locked tree's root address, its affected Cards and an actionable hint.
+fn assert_card_locked(refusal: &Value, reason: &str, tree: &str, cards: &[&str]) {
+    let said = format!("{refusal}");
+    assert_eq!(refusal["error"], json!("card_locked"), "{said}");
+    assert_eq!(refusal["reason"], json!(reason), "{said}");
+    assert_eq!(refusal["tree"], json!(tree), "{said}");
+    assert_eq!(
+        refusal["cards"],
+        json!(cards.iter().map(|card| card.to_string()).collect::<Vec<_>>()),
+        "{said}"
+    );
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|message| !message.trim().is_empty()),
+        "the object carries a message: {said}"
+    );
+    assert!(
+        refusal["hint"]
+            .as_str()
+            .is_some_and(|hint| !hint.trim().is_empty()),
+        "the object carries an actionable hint: {said}"
+    );
+    assert!(
+        refusal["locks"]
+            .as_array()
+            .is_some_and(|locks| locks.iter().any(|lock| lock["tree"] == json!(tree))),
+        "the object names the blocking Lock: {said}"
+    );
+}
+
 /// The tree id of one address: the text before the first `/`.
 fn tree_of(address: &str) -> String {
     address.split_once('/').map(|(tree, _)| tree).unwrap_or(address).to_string()
@@ -406,31 +445,24 @@ fn an_owner_lock_freezes_a_topic_tree_for_every_writer() {
         "edit_card",
         json!({ "at": first, "body": "changed by the agent" }),
     );
-    assert_eq!(refusal["code"], "locked", "{refusal}");
-    assert_eq!(refusal["locked_tree"], root);
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
     let refusal = mcp.refused(
         "create_successor",
         json!({ "at": first, "title": "New", "body": "new body" }),
     );
-    assert!(
-        refusal["code"] == "locked_tree" || refusal["code"] == "locked",
-        "{refusal}"
-    );
+    assert_card_locked(&refusal, "create-inside", &root, &[&next_direct(&first)]);
     let refusal = mcp.refused(
         "insert_card",
         json!({ "before": first, "title": "New", "body": "new body" }),
     );
-    assert!(
-        refusal["code"] == "locked_tree" || refusal["code"] == "locked",
-        "{refusal}"
-    );
+    assert_card_locked(&refusal, "move", &root, &[&first, &format!("{first}|a")]);
     let refusal = mcp.refused("delete_card", json!({ "at": first }));
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "delete", &root, &[&first, &format!("{first}|a")]);
     let refusal = mcp.refused(
         "move_card",
         json!({ "at": first, "to": format!("{}/2", other_root.split_once('/').unwrap().0) }),
     );
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "move", &root, &[&first, &format!("{first}|a")]);
 
     // The owner's own route is bound too: no Owner exemption, and the refusal is structured.
     let (status, refused) = gui.post_with(
@@ -439,8 +471,7 @@ fn an_owner_lock_freezes_a_topic_tree_for_every_writer() {
         &json!({ "at": first, "text": "# First\n\nchanged\n" }),
     );
     assert_eq!(status, 409, "a Lock refusal is a structured 409: {refused}");
-    assert_eq!(refused["refusal"]["code"], "locked");
-    assert_eq!(refused["refusal"]["locked_tree"], root);
+    assert_card_locked(&refused["refusal"], "edit", &root, &[&first]);
 
     // The pinned target keeps its body editable, but may not move or be deleted.
     mcp.ok(
@@ -451,11 +482,11 @@ fn an_owner_lock_freezes_a_topic_tree_for_every_writer() {
         "move_card",
         json!({ "at": pinned, "to": format!("{}/2", third_root.split_once('/').unwrap().0) }),
     );
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
-    assert_eq!(refusal["pinned_by"][0]["tree"], root);
-    assert_eq!(refusal["pinned_by"][0]["sources"][0], side);
+    assert_card_locked(&refusal, "pinned-move", &root, &[&pinned]);
+    assert_eq!(refusal["sources"], json!([side]));
     let refusal = mcp.refused("delete_card", json!({ "at": pinned }));
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_card_locked(&refusal, "pinned-delete", &root, &[&pinned]);
+    assert_eq!(refusal["sources"], json!([side]));
 
     // An incoming Link from an unlocked source is allowed and does not change the seal.
     let outside = side_card(&mut mcp, &pinned, "Outside", "outside body");
@@ -553,7 +584,7 @@ fn every_public_writer_path_is_refused_before_it_writes() {
         json!({ "at": first, "body": "changed body" }),
     ] {
         let refusal = mcp.refused("edit_card", change.clone());
-        assert_eq!(refusal["code"], "locked", "{change}: {refusal}");
+        assert_card_locked(&refusal, "edit", &root, &[&first]);
     }
     // An owned paragraph through the identified batch writer, with a receipt that still matches.
     let refusal = mcp.refused(
@@ -569,7 +600,7 @@ fn every_public_writer_path_is_refused_before_it_writes() {
             },
         }] }),
     );
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
     // A historical receipt still replays its earlier result without a Card write.
     let replayed = mcp.ok(
         "apply_batch",
@@ -583,42 +614,69 @@ fn every_public_writer_path_is_refused_before_it_writes() {
     );
     assert_eq!(replayed["results"][0]["replayed"], true, "{replayed}");
     assert_eq!(replayed["results"][1]["replayed"], true, "{replayed}");
-    // Creation, insertion, movement and deletion.
+    // Creation, insertion, movement and deletion: each path names its own effect.
     let refusal = mcp.refused(
         "create_successor",
         json!({ "at": first, "title": "Follower", "body": "body" }),
     );
-    assert!(refusal["code"] == "locked" || refusal["code"] == "locked_tree");
+    assert_card_locked(&refusal, "create-inside", &root, &[&next_direct(&first)]);
     let refusal = mcp.refused(
         "create_successor",
         json!({ "at": first, "kind": "side", "title": "Side", "body": "body" }),
     );
-    assert!(refusal["code"] == "locked" || refusal["code"] == "locked_tree");
+    assert_card_locked(&refusal, "create-inside", &root, &[&format!("{first}|a")]);
     let refusal = mcp.refused(
         "insert_card",
         json!({ "before": first, "title": "Inserted", "body": "body" }),
     );
-    assert!(refusal["code"] == "locked" || refusal["code"] == "locked_tree");
+    assert_card_locked(&refusal, "move", &root, &[&first]);
     let refusal = mcp.refused("move_card", json!({ "at": first, "to": format!("{target}|a") }));
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "move", &root, &[&first]);
     let refusal = mcp.refused("delete_card", json!({ "at": first }));
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "delete", &root, &[&first]);
 
     // The same paths through the GUI routes.
-    for (path, body) in [
-        ("/api/edit", json!({ "at": first, "text": "# First\n\nchanged\n" })),
-        ("/api/create", json!({ "kind": "direct", "at": first, "text": "# New\n\nnew\n" })),
-        ("/api/create", json!({ "kind": "side", "at": first, "text": "# New\n\nnew\n" })),
-        ("/api/insert", json!({ "before": first, "text": "# New\n\nnew\n" })),
-        ("/api/move", json!({ "at": first, "to": format!("{target}|a") })),
-        ("/api/delete", json!({ "at": first })),
+    for (path, body, reason, card) in [
+        (
+            "/api/edit",
+            json!({ "at": first, "text": "# First\n\nchanged\n" }),
+            "edit",
+            first.clone(),
+        ),
+        (
+            "/api/create",
+            json!({ "kind": "direct", "at": first, "text": "# New\n\nnew\n" }),
+            "create-inside",
+            next_direct(&first),
+        ),
+        (
+            "/api/create",
+            json!({ "kind": "side", "at": first, "text": "# New\n\nnew\n" }),
+            "create-inside",
+            format!("{first}|a"),
+        ),
+        (
+            "/api/insert",
+            json!({ "before": first, "text": "# New\n\nnew\n" }),
+            "move",
+            first.clone(),
+        ),
+        (
+            "/api/move",
+            json!({ "at": first, "to": format!("{target}|a") }),
+            "move",
+            first.clone(),
+        ),
+        (
+            "/api/delete",
+            json!({ "at": first }),
+            "delete",
+            first.clone(),
+        ),
     ] {
         let (status, refused) = gui.post_with(path, &gui.token, &body);
         assert_eq!(status, 409, "{path} {body}: {refused}");
-        assert!(
-            refused["refusal"]["code"] == "locked" || refused["refusal"]["code"] == "locked_tree",
-            "{path}: {refused}"
-        );
+        assert_card_locked(&refused["refusal"], reason, &root, &[&card]);
     }
 
     // The shell commands refuse before an editor, a prompt or a write.
@@ -712,15 +770,13 @@ fn a_literature_tree_and_a_root_only_tree_anchor_locks() {
         "edit_card",
         json!({ "at": chapter, "body": "changed chapter" }),
     );
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "edit", &key, &[&chapter]);
     let refusal = mcp.refused(
         "edit_literature_metadata",
         json!({ "at": key, "bibtex": "@book{Renamed2024, title={Book}}" }),
     );
-    assert!(
-        refusal["code"] == "locked" || refusal["error"].as_str().unwrap().contains("locked"),
-        "{refusal}"
-    );
+    // A Citation-key rename moves the whole tree, so it is a move refusal naming every member.
+    assert_card_locked(&refusal, "move", &key, &[&key, &chapter]);
 
     // A root-only Topic tree is a real tree and locks with one member.
     let empty = topic(&mut mcp, "EmptyTopic");
@@ -732,7 +788,7 @@ fn a_literature_tree_and_a_root_only_tree_anchor_locks() {
         "create_successor",
         json!({ "at": empty, "title": "First", "body": "body" }),
     );
-    assert_eq!(refusal["code"], "locked_tree", "{refusal}");
+    assert_card_locked(&refusal, "create-inside", &empty, &[&next_direct(&empty)]);
 
     // A Regular Card is never an anchor, and a second Lock on one tree is refused.
     let (status, refused) = gui.post_with(
@@ -1063,7 +1119,7 @@ fn a_lock_survives_a_service_restart_and_installs_once() {
         "edit_card",
         json!({ "at": first, "body": "after restart" }),
     );
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
     let locks: i64 = home
         .db()
         .query_row("SELECT COUNT(*) FROM locks", [], |row| row.get(0))
@@ -1300,8 +1356,7 @@ fn a_pinned_target_stays_editable_without_renaming_it() {
         "edit_literature_metadata",
         json!({ "at": book, "bibtex": "@book{Smith2025, title={Book}}" }),
     );
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
-    assert_eq!(refusal["pinned_by"][0]["tree"], root);
+    assert_card_locked(&refusal, "pinned-move", &root, &[&book]);
 
     // The locked source's promise did not move: same seal, same member fingerprints.
     let panel = gui.panel();
@@ -1358,14 +1413,26 @@ fn two_locks_pin_one_target_and_release_one_at_a_time() {
         "move_card",
         json!({ "at": shared, "to": format!("{a}|a") }),
     );
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
-    let trees = refusal["pinned_by"]
+    assert_eq!(refusal["error"], "card_locked", "{refusal}");
+    assert_eq!(refusal["reason"], "pinned-move", "{refusal}");
+    assert_eq!(refusal["cards"], json!([shared]), "{refusal}");
+    assert_eq!(refusal["tree"], json!(first_tree), "the first root is canonical");
+    let blockers = refusal["locks"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|pin| pin["lock_id"].as_i64().unwrap())
+        .map(|lock| lock["lock_id"].as_i64().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(trees, vec![id_a, id_b], "both Locks explain the refusal");
+    assert_eq!(
+        blockers,
+        vec![id_a, id_b],
+        "both Locks explain the refusal, sorted by id"
+    );
+    assert_eq!(
+        refusal["sources"],
+        json!([a, b]),
+        "both locked sources are named, sorted"
+    );
 
     // Releasing one Lock releases exactly its own pins.
     gui.unlock(id_a);
@@ -1373,11 +1440,11 @@ fn two_locks_pin_one_target_and_release_one_at_a_time() {
         "move_card",
         json!({ "at": shared, "to": format!("{a}|a") }),
     );
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
-    let remaining = refusal["pinned_by"].as_array().unwrap();
+    assert_eq!(refusal["reason"], "pinned-move", "{refusal}");
+    let remaining = refusal["locks"].as_array().unwrap();
     assert_eq!(remaining.len(), 1, "{refusal}");
     assert_eq!(remaining[0]["lock_id"].as_i64(), Some(id_b));
-    assert_eq!(remaining[0]["sources"][0], b);
+    assert_eq!(refusal["sources"], json!([b]));
     let left: i64 = home
         .db()
         .query_row(
@@ -1471,9 +1538,9 @@ fn an_incoming_link_and_a_reply_keep_a_locked_tree_untouched() {
         "edit_card",
         json!({ "at": first, "body": format!("now cites [[{source}]]") }),
     );
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
     let refusal = mcp.refused("edit_card", json!({ "at": first, "body": "first body" }));
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
 
     // A Reply writes one human Card and updates only the locked target's generated section.
     let reply = gui.post(
@@ -1574,8 +1641,8 @@ fn only_authored_link_macros_pin_a_target() {
 
     // The one authored Link is pinned.
     let refusal = mcp.refused("delete_card", json!({ "at": real }));
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
-    assert_eq!(refusal["pinned_by"][0]["sources"][0], member);
+    assert_card_locked(&refusal, "pinned-delete", &root, &[&real]);
+    assert_eq!(refusal["sources"], json!([member]));
 
     // Everything the parser does not read as a Link stays free.
     for target in [&fenced, &inline, &chart, &doc] {
@@ -1682,7 +1749,7 @@ fn a_broken_link_is_a_warning_that_a_relock_captures() {
     let relocked = gui.lock(&root, None);
     assert_ne!(relocked["lock_id"].as_i64(), Some(lock_id));
     let refusal = mcp.refused("delete_card", json!({ "at": revived }));
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_card_locked(&refusal, "pinned-delete", &root, &[&revived]);
     assert_eq!(gui.panel()["integrity"]["ok"], true);
 }
 
@@ -1756,7 +1823,12 @@ fn a_draft_into_a_locked_destination_leaves_no_partial_card() {
             .contains(&human),
         "the refusal names the locked destination: {refused}"
     );
-    assert_eq!(refused["refusal"]["code"], "locked_tree", "{refused}");
+    assert_card_locked(
+        &refused["refusal"],
+        "create-inside",
+        &human,
+        &[&format!("{locked_member}|a")],
+    );
     assert_eq!(refused["target"]["address"], agent_card);
 
     // Nothing was written: no partial Reply Card and no fallback Topic.
@@ -1807,7 +1879,12 @@ fn a_draft_into_a_locked_destination_leaves_no_partial_card() {
         }),
     );
     assert_eq!(status, 409, "a locked tree takes no filed draft: {refused}");
-    assert_eq!(refused["refusal"]["code"], "locked_tree", "{refused}");
+    assert_card_locked(
+        &refused["refusal"],
+        "create-inside",
+        &agent_topic,
+        &[&format!("{agent_member}|a")],
+    );
     assert_eq!(
         stored_addresses(&home),
         cards_before,
@@ -1819,7 +1896,12 @@ fn a_draft_into_a_locked_destination_leaves_no_partial_card() {
         &json!({ "kind": "side", "at": locked_member, "text": "# Draft inside\n\nbody\n" }),
     );
     assert_eq!(status, 409, "the locked human tree takes no Card: {refused}");
-    assert_eq!(refused["refusal"]["code"], "locked_tree", "{refused}");
+    assert_card_locked(
+        &refused["refusal"],
+        "create-inside",
+        &human,
+        &[&format!("{locked_member}|a")],
+    );
     assert_eq!(stored_addresses(&home), cards_before);
 
     // A Spread is not an authored Card change, so keeping one over locked Cards is allowed.
@@ -1904,9 +1986,8 @@ fn a_pin_is_cross_workspace_and_does_not_propagate() {
         &json!({ "at": human_card }),
     );
     assert_eq!(status, 409, "a pinned human Card cannot be deleted: {refused}");
-    assert_eq!(refused["refusal"]["code"], "pinned", "{refused}");
-    assert_eq!(refused["refusal"]["pinned_by"][0]["tree"], root);
-    assert_eq!(refused["refusal"]["pinned_by"][0]["sources"][0], member);
+    assert_card_locked(&refused["refusal"], "pinned-delete", &root, &[&human_card]);
+    assert_eq!(refused["refusal"]["sources"], json!([member]));
     // Its authored meaning still changes freely.
     gui.post(
         "/api/edit",
@@ -1919,7 +2000,7 @@ fn a_pin_is_cross_workspace_and_does_not_propagate() {
 
     // The bridge itself stays pinned.
     let refusal = mcp.refused("delete_card", json!({ "at": bridge }));
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
+    assert_card_locked(&refusal, "pinned-delete", &root, &[&bridge]);
     assert_eq!(
         gui.panel()["locks"]
             .as_array()
@@ -2105,16 +2186,16 @@ fn a_target_in_another_locked_tree_obeys_its_own_lock() {
         "edit_card",
         json!({ "at": target, "body": "the second promise refuses this" }),
     );
-    assert_eq!(refusal["code"], "locked", "{refusal}");
-    assert_eq!(refusal["locked_tree"], second_tree);
+    assert_card_locked(&refusal, "edit", &second_tree, &[&target]);
     assert_eq!(gui.panel()["integrity"]["ok"], true);
 
     // Once its own Lock ends, the pin still keeps the address and row: edits pass, moves do not.
     gui.unlock(second_lock["lock_id"].as_i64().expect("lock id"));
     mcp.ok("edit_card", json!({ "at": target, "body": "free to mean something else" }));
     let refusal = mcp.refused("delete_card", json!({ "at": target }));
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
-    assert_eq!(refusal["pinned_by"][0]["lock_id"], first_lock["lock_id"]);
+    assert_card_locked(&refusal, "pinned-delete", &first_tree, &[&target]);
+    assert_eq!(refusal["sources"], json!([member]));
+    assert_eq!(refusal["locks"][0]["lock_id"], first_lock["lock_id"]);
     assert_eq!(gui.panel()["integrity"]["ok"], true);
 }
 
@@ -2401,12 +2482,11 @@ fn a_refusal_names_the_card_it_refused_and_its_locked_tree() {
 
     // The last regular Card of the tree, through the MCP writer.
     let refusal = mcp.refused("edit_card", json!({ "at": beta, "body": "changed beta" }));
-    assert_eq!(refusal["code"], "locked", "{refusal}");
-    assert_eq!(refusal["card"], json!(beta), "the refusal names the Card it refused: {refusal}");
-    assert_eq!(refusal["locked_tree"], json!(root));
-    assert_eq!(refusal["lock_id"], json!(lock_id));
-    assert!(
-        refusal["error"].as_str().unwrap_or_default().contains(&beta),
+    assert_card_locked(&refusal, "edit", &root, &[&beta]);
+    assert_eq!(refusal["locks"][0]["lock_id"], json!(lock_id));
+    assert_eq!(
+        refusal["message"].as_str().map(|message| message.contains(&beta)),
+        Some(true),
         "the message names the Card it refused: {refusal}"
     );
 
@@ -2417,9 +2497,8 @@ fn a_refusal_names_the_card_it_refused_and_its_locked_tree() {
         &json!({ "at": beta, "text": "# Beta\n\nchanged\n" }),
     );
     assert_eq!(status, 409, "a Lock refusal is a structured 409: {refused}");
-    assert_eq!(refused["refusal"]["card"], json!(beta), "{refused}");
-    assert_eq!(refused["refusal"]["locked_tree"], json!(root));
-    assert_eq!(refused["refusal"]["lock_id"], json!(lock_id));
+    assert_card_locked(&refused["refusal"], "edit", &root, &[&beta]);
+    assert_eq!(refused["refusal"]["locks"][0]["lock_id"], json!(lock_id));
     assert!(
         refused["error"].as_str().unwrap_or_default().contains(&beta),
         "the desk reads one message that names the Card: {refused}"
@@ -2427,7 +2506,7 @@ fn a_refusal_names_the_card_it_refused_and_its_locked_tree() {
 
     // An earlier Card of the same tree names itself, not the root and not another member.
     let refusal = mcp.refused("edit_card", json!({ "at": alpha, "type": "event" }));
-    assert_eq!(refusal["card"], json!(alpha), "{refusal}");
+    assert_card_locked(&refusal, "edit", &root, &[&alpha]);
     // A Literature root inside its own Locked tree names itself too.
     let book = address(mcp.ok(
         "create_literature",
@@ -2440,8 +2519,7 @@ fn a_refusal_names_the_card_it_refused_and_its_locked_tree() {
         &json!({ "at": book, "bibtex": "@book{Smith2024, title={Book, second edition}}" }),
     );
     assert_eq!(status, 409, "{refused}");
-    assert_eq!(refused["refusal"]["card"], json!(book), "{refused}");
-    assert_eq!(refused["refusal"]["locked_tree"], json!(book));
+    assert_card_locked(&refused["refusal"], "edit", &book, &[&book]);
 
     // Nothing was written, and the Lock is intact.
     let stored = mcp.ok("get_card", json!({ "at": beta }));
@@ -2694,12 +2772,11 @@ fn a_pinned_target_takes_new_successors_but_cannot_be_moved_into_place() {
         "insert_card",
         json!({ "before": pinned, "title": "Before", "body": "body" }),
     );
-    assert_eq!(refusal["code"], "pinned", "{refusal}");
-    assert_eq!(refusal["pinned_by"][0]["tree"], root);
-    assert_eq!(refusal["pinned_by"][0]["sources"][0], side);
+    assert_card_locked(&refusal, "pinned-move", &root, &[&pinned]);
+    assert_eq!(refusal["sources"], json!([side]));
     assert!(
-        refusal["error"].as_str().unwrap_or_default().contains(&side),
-        "the refusal names the locked source Card: {refusal}"
+        refusal["message"].as_str().unwrap_or_default().contains(&side),
+        "the message names the locked source Card: {refusal}"
     );
     let after = home
         .db()
@@ -2715,8 +2792,8 @@ fn a_pinned_target_takes_new_successors_but_cannot_be_moved_into_place() {
         &json!({ "at": pinned, "to": format!("{}/1", tree_of(&targets)) }),
     );
     assert_eq!(status, 409, "{moved}");
-    assert_eq!(moved["refusal"]["code"], "pinned", "{moved}");
-    assert_eq!(moved["refusal"]["pinned_by"][0]["tree"], root);
+    assert_card_locked(&moved["refusal"], "pinned-move", &root, &[&pinned]);
+    assert_eq!(moved["refusal"]["sources"], json!([side]));
 }
 
 /// R212 / R230 / S05-AC08: the Lock has GUI routes only. The MCP server offers no Lock-control tool,
@@ -3041,6 +3118,7 @@ fn the_session_refuses_a_locked_literature_edit_before_the_part_choice() {
     let chapter = card(&mut mcp, &key, "Chapter", &format!("chapter of [[{key}]]"));
     let lock = gui.lock(&key, None);
     let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    assert!(lock_id > 0);
     let before = stored_texts(&home);
     let output = home
         .cmd()
@@ -3055,7 +3133,7 @@ fn the_session_refuses_a_locked_literature_edit_before_the_part_choice() {
     assert!(said.contains(&format!("citation key: {key} [locked]")), "{said}");
     assert_eq!(
         said.matches(&format!(
-            "card `{key}` is in locked tree `{key}` (lock {lock_id}); unlock the tree in the GUI first"
+            "card `{key}` is in locked tree `{key}`; locked Cards can be linked but not changed; unlock the tree in the GUI first"
         ))
         .count(),
         1,
@@ -3063,7 +3141,7 @@ fn the_session_refuses_a_locked_literature_edit_before_the_part_choice() {
     );
     assert_eq!(
         said.matches(&format!(
-            "card `{chapter}` is in locked tree `{key}` (lock {lock_id}); unlock the tree in the GUI first"
+            "card `{chapter}` is in locked tree `{key}`; locked Cards can be linked but not changed; unlock the tree in the GUI first"
         ))
         .count(),
         1,
@@ -3124,10 +3202,19 @@ fn the_session_allows_a_pinned_body_edit_and_refuses_its_move_or_delete() {
         "the pinned body edit landed: {edited}"
     );
     // Moving or deleting it is refused before the prompt, and the refusal explains the source.
-    let refusal = format!(
-        "card `{pinned}` is a pinned target of locked tree `{root}` (lock {lock_id}); locked source cards {first} link it"
+    let tail = format!(
+        "it is a pinned target of locked tree `{root}`; locked source card `{first}` links it; write a new Card in another tree and link the locked Card, or unlock the tree in the GUI first"
     );
-    assert_eq!(said.matches(&refusal).count(), 2, "{said}");
+    assert_eq!(
+        said.matches(&format!("card `{pinned}` cannot be moved: {tail}")).count(),
+        1,
+        "`mv before` names the move reason: {said}"
+    );
+    assert_eq!(
+        said.matches(&format!("card `{pinned}` cannot be deleted: {tail}")).count(),
+        1,
+        "`del` names the delete reason: {said}"
+    );
     assert!(!said.contains("to confirm"), "no prompt opened: {said}");
     // The promise is untouched: the Locked tree's seal still verifies.
     assert_eq!(gui.panel()["integrity"]["ok"], true);
@@ -3478,18 +3565,36 @@ fn the_session_refuses_locked_writes_before_any_editor_or_confirmation() {
         .clone();
     let said = String::from_utf8(output).expect("session output is UTF-8");
     // The owner's refusal names the exact Card, its Locked tree and the only way out (R217, R232).
-    let refusal = format!("card `{first}` is in locked tree `{root}` (lock {lock_id}); unlock the tree in the GUI first");
-    assert_eq!(said.matches(&refusal).count(), 7, "{said}");
+    let refusal = format!(
+        "card `{first}` is in locked tree `{root}`; locked Cards can be linked but not changed; unlock the tree in the GUI first"
+    );
+    assert_eq!(
+        said.matches(&refusal).count(),
+        4,
+        "`e`, `ty`, `lv` and `mf` all refuse that Card: {said}"
+    );
+    assert_eq!(
+        said.matches(&format!("card `{first}` cannot be deleted")).count(),
+        1,
+        "`del` names the delete reason: {said}"
+    );
+    assert_eq!(
+        said.matches(&format!("card `{first}` cannot be moved")).count(),
+        2,
+        "`ins` and `mv` both move the Card: {said}"
+    );
     // A new Card would land inside the Locked tree, and a Locked tree takes none.
     let next_direct = format!("{}/2", tree_of(&first));
     assert!(
         said.contains(&format!(
-            "`{next_direct}` is inside locked tree `{root}` (lock {lock_id})"
+            "`{next_direct}` is inside locked tree `{root}`; a locked tree takes no new Cards"
         )),
         "{said}"
     );
     assert!(
-        said.contains(&format!("`{first}|a` is inside locked tree `{root}`")),
+        said.contains(&format!(
+            "`{first}|a` is inside locked tree `{root}`; a locked tree takes no new Cards"
+        )),
         "{said}"
     );
     // No editor opened and no confirmation was asked, so no work was typed away and lost.
@@ -3542,14 +3647,15 @@ fn a_session_view_drawn_before_a_lock_refuses_the_later_write() {
     session.wait_for_text(&format!("location: {first}\n"));
     let lock = gui.lock(&root, None);
     let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    assert!(lock_id > 0, "the Lock answers its id: {lock}");
     // The editor never opens over the Card the later Lock froze.
     session.send_text("e");
     session.send_enter();
-    session.wait_for_text(&format!("is in locked tree `{root}` (lock {lock_id})"));
+    session.wait_for_text(&format!("is in locked tree `{root}`"));
     // A setter that needs no editor is refused by the transaction-time guard itself.
     session.send_text("ty event");
     session.send_enter();
-    session.wait_for_text_count(&format!("is in locked tree `{root}` (lock {lock_id})"), 2);
+    session.wait_for_text_count(&format!("is in locked tree `{root}`"), 2);
     session.send_text("q");
     session.send_enter();
     session.wait_for_exit();
@@ -3675,7 +3781,7 @@ fn a_service_start_records_a_lost_trigger_before_repairing_it() {
         "edit_card",
         json!({ "at": first_address(&root), "body": "x" }),
     );
-    assert_eq!(refused["code"], "locked", "{refused}");
+    assert_card_locked(&refused, "edit", &root, &[&first_address(&root)]);
     // The startup line is in the log, so an operator sees what happened.
     let log = fs::read_to_string(home.archive_root.join("zt.log")).unwrap_or_default();
     assert!(log.contains("tree lock startup:"), "{log}");
@@ -4119,7 +4225,7 @@ fn an_authorized_card_rebuild_keeps_the_promise_and_its_protection() {
     // The row ids really are the same Cards: the service still refuses the member's write.
     let mut mcp = home.mcp();
     let refusal = mcp.refused("edit_card", json!({ "at": first, "body": "x" }));
-    assert_eq!(refusal["code"], "locked", "{refusal}");
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
     // `zt status --check-locks` agrees with the panel and exits 0.
     let checked = home
         .cmd()
@@ -4149,3 +4255,556 @@ fn an_authorized_card_rebuild_keeps_the_promise_and_its_protection() {
     gui.unlock(lock_id);
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// S09 (#132): structured MCP refusals and safe identified receipt replay.
+// ---------------------------------------------------------------------------------------------
+
+/// Every row of one table, as JSON objects, so a fixture can compare complete stored state.
+fn table_rows(conn: &Connection, sql: &str) -> Value {
+    let mut stmt = conn.prepare(sql).expect("prepare state query");
+    let names = (0..stmt.column_count())
+        .map(|index| stmt.column_name(index).expect("column name").to_string())
+        .collect::<Vec<_>>();
+    let rows = stmt
+        .query_map([], |row| {
+            let mut object = serde_json::Map::new();
+            for (index, name) in names.iter().enumerate() {
+                let value = match row.get_ref(index)? {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(number) => json!(number),
+                    rusqlite::types::ValueRef::Real(number) => json!(number),
+                    rusqlite::types::ValueRef::Text(text) => {
+                        json!(String::from_utf8_lossy(text))
+                    }
+                    rusqlite::types::ValueRef::Blob(bytes) => json!(bytes.len()),
+                };
+                object.insert(name.clone(), value);
+            }
+            Ok(Value::Object(object))
+        })
+        .expect("state rows")
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("state rows");
+    Value::Array(rows)
+}
+
+/// The complete archive state a write can change: every Card row, every committed receipt, every
+/// derived Link row, the archive metadata (the revision and the Topic allocation) and the whole Lock
+/// baseline with its history. Two equal answers prove that a request changed nothing at all.
+fn archive_state(home: &TestHome) -> Value {
+    let conn = home.db();
+    let exists = |name: &str| -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("sqlite_master")
+            > 0
+    };
+    json!({
+        "cards": table_rows(
+            &conn,
+            "SELECT row_id, COALESCE(location, citation_key) AS address, workspace, card_type,
+                    is_topic, is_lit, text, COALESCE(bibtex, '') AS bibtex,
+                    COALESCE(model_facet, '') AS model_facet,
+                    COALESCE(model_emphasis, '') AS model_emphasis,
+                    COALESCE(model_level, '') AS model_level,
+                    COALESCE(hub_level, '') AS hub_level,
+                    COALESCE(math_form, '') AS math_form
+               FROM cards ORDER BY row_id",
+        ),
+        "links": table_rows(
+            &conn,
+            "SELECT source, target, ord FROM links ORDER BY source, ord",
+        ),
+        "receipts": if exists("applied_ops") {
+            table_rows(
+                &conn,
+                "SELECT op_key, request_hash, result_json FROM applied_ops ORDER BY op_key",
+            )
+        } else {
+            Value::Null
+        },
+        "metadata": table_rows(&conn, "SELECT key, value FROM metadata ORDER BY key"),
+        "locks": table_rows(
+            &conn,
+            "SELECT lock_id, root_row, root_address, tree, workspace, note, range_fingerprint,
+                    member_count, unlocked_at FROM locks ORDER BY lock_id",
+        ),
+        "lock_members": table_rows(
+            &conn,
+            "SELECT lock_id, row_id, address, authored_fp FROM lock_members ORDER BY lock_id, row_id",
+        ),
+        "lock_pins": table_rows(
+            &conn,
+            "SELECT lock_id, source_row, target_row, target_address FROM lock_pins
+              ORDER BY lock_id, target_row, source_row",
+        ),
+        "lock_events": table_rows(
+            &conn,
+            "SELECT event_id, lock_id, action, at, detail FROM lock_events ORDER BY event_id",
+        ),
+    })
+}
+
+/// The one Topic id the next `create_topic` will allocate, from the stored allocation counter.
+fn next_topic_id(home: &TestHome) -> i64 {
+    home.db()
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'next_topic_id'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("next_topic_id")
+}
+
+/// S09-AC05 / R188 / T14: an identical committed receipt replays after the owner locks its result,
+/// and the replay performs no Card write at all. A new operation key that asks for the same edit is
+/// refused even though its proposed text equals the Card's current text.
+#[test]
+fn a_committed_receipt_replays_after_the_owner_locks_its_result() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let create = json!({ "items": [
+        { "op_key": "s09/run-1/1/create/topic", "client_ref": "root",
+          "tool": "create_topic", "arguments": { "title": "Frozen" } },
+        { "op_key": "s09/run-1/1/create/first", "client_ref": "first",
+          "tool": "create_successor",
+          "arguments": { "at": "@@root", "title": "First", "body": "first body" } },
+    ] });
+    let created = mcp.ok("apply_batch", create.clone());
+    let root = created["results"][0]["result"]["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let first = created["results"][1]["result"]["address"]
+        .as_str()
+        .expect("card address")
+        .to_string();
+    let edit = json!({ "items": [{
+        "op_key": "s09/run-1/2/edit/first",
+        "client_ref": "applied",
+        "tool": "edit_card",
+        "arguments": {
+            "at": first,
+            "body": "second body",
+            "base_receipt": "s09/run-1/1/create/first",
+        },
+    }] });
+    let applied = mcp.ok("apply_batch", edit.clone());
+    assert_eq!(applied["results"][0]["replayed"], false, "{applied}");
+    let stored_result = applied["results"][0]["result"].clone();
+    assert_eq!(mcp.ok("get_card", json!({ "at": first }))["body"], "second body");
+
+    let lock = gui.lock(&root, None);
+    assert_eq!(lock["member_count"], 2, "the root and its one Card: {lock}");
+    let locked_state = archive_state(&home);
+
+    // The identical batch replays its stored results and writes no Card. The answer is the receipt's
+    // own result, not a re-execution and not a re-annotated copy of it (R188, R189).
+    let mut replay_items = create["items"].as_array().expect("items").clone();
+    replay_items.extend(edit["items"].as_array().expect("items").clone());
+    let replayed = mcp.ok("apply_batch", json!({ "items": replay_items }));
+    let results = replayed["results"].as_array().expect("results");
+    assert_eq!(results.len(), 3, "{replayed}");
+    assert!(results.iter().all(|result| result["replayed"] == true), "{replayed}");
+    assert_eq!(
+        results[2]["result"], stored_result,
+        "the stored result is answered verbatim: {replayed}"
+    );
+    assert_eq!(
+        archive_state(&home),
+        locked_state,
+        "a replay performs no Card, receipt, Link, revision or Lock write"
+    );
+
+    // A preview of the same replay keeps the freshness check: it projects today's Cards and commits
+    // nothing, so the receipt's earlier result is never presented as a fresh write.
+    let preview = mcp.ok(
+        "apply_batch",
+        json!({ "items": replay_items, "preview": true }),
+    );
+    assert_eq!(preview["preview"], true, "{preview}");
+    assert_eq!(preview["applied"], false, "{preview}");
+    assert_eq!(preview["complete"], true, "{preview}");
+    assert!(
+        preview["cards"]
+            .as_array()
+            .expect("draft Cards")
+            .iter()
+            .any(|card| card["address"] == json!(first) && card["body"] == "second body"),
+        "{preview}"
+    );
+    assert_eq!(archive_state(&home), locked_state, "a preview commits nothing");
+
+    // A new operation key that asks for the same edit is refused, even with an unchanged body.
+    let refusal = mcp.refused(
+        "apply_batch",
+        json!({ "items": [{
+            "op_key": "s09/run-1/3/edit/first",
+            "client_ref": "later",
+            "tool": "edit_card",
+            "arguments": {
+                "at": first,
+                "body": "second body",
+                "base_receipt": "s09/run-1/2/edit/first",
+            },
+        }] }),
+    );
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
+    assert_eq!(
+        archive_state(&home),
+        locked_state,
+        "a refused unseen item writes no receipt either"
+    );
+
+    // The existing key-conflict rule is unchanged: a different payload under a committed key fails.
+    let (conflict, is_error) = mcp.call(
+        "apply_batch",
+        json!({ "items": [{
+            "op_key": "s09/run-1/2/edit/first",
+            "client_ref": "applied",
+            "tool": "edit_card",
+            "arguments": {
+                "at": first,
+                "body": "a different body",
+                "base_receipt": "s09/run-1/2/edit/first",
+            },
+        }] }),
+    );
+    assert!(is_error, "{conflict}");
+    assert_card_locked_matches_nothing(&conflict);
+    assert_eq!(archive_state(&home), locked_state);
+
+    // The refusal came through the ordinary tool-result envelope, with `isError` and no protocol
+    // error (S09-AC01).
+    let reply = mcp.request(
+        "tools/call",
+        json!({ "name": "edit_card", "arguments": { "at": first, "body": "x" } }),
+    );
+    assert!(reply.get("error").is_none(), "{reply}");
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    assert_eq!(
+        reply["result"]["structuredContent"]["error"], "card_locked",
+        "{reply}"
+    );
+    assert!(
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("card_locked")),
+        "the text content carries the same structured object: {reply}"
+    );
+}
+
+/// The refusal is an ordinary non-Lock failure: it names no `card_locked` object at all.
+fn assert_card_locked_matches_nothing(value: &Value) {
+    assert_ne!(value["error"], json!("card_locked"), "{value}");
+    assert!(value["reason"].is_null(), "no Lock reason: {value}");
+    assert!(value["cards"].is_null(), "no affected Cards: {value}");
+}
+
+/// S09-AC06 / R187 / T15: a real batch whose earlier items are valid and whose later item is locked
+/// rolls back every unseen Card, receipt, Topic allocation, Link row and revision, and keeps the
+/// receipts committed before the batch.
+#[test]
+fn a_batch_with_a_locked_item_rolls_back_every_unseen_fact() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    // The locked tree is created through the identified writer, so its member has a receipt for the
+    // refused identified edit to name and no item is invalid for another reason.
+    let created = mcp.ok(
+        "apply_batch",
+        json!({ "items": [
+            { "op_key": "s09r/setup/1/create/topic", "client_ref": "root",
+              "tool": "create_topic", "arguments": { "title": "Frozen" } },
+            { "op_key": "s09r/setup/1/create/first", "client_ref": "first",
+              "tool": "create_successor",
+              "arguments": { "at": "@@root", "title": "First", "body": "first body" } },
+        ] }),
+    );
+    let root = created["results"][0]["result"]["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let first = created["results"][1]["result"]["address"]
+        .as_str()
+        .expect("card address")
+        .to_string();
+    let outside = topic(&mut mcp, "Outside");
+    // One receipt committed before the batch, which the refusal must keep.
+    let kept = mcp.ok(
+        "apply_batch",
+        json!({ "items": [{
+            "op_key": "s09r/rollback/1/create/card", "client_ref": "card",
+            "tool": "create_successor",
+            "arguments": { "at": outside, "title": "Kept", "body": "kept body" },
+        }] }),
+    );
+    let kept_address = kept["results"][0]["result"]["address"]
+        .as_str()
+        .expect("kept address")
+        .to_string();
+    gui.lock(&root, None);
+    let state = archive_state(&home);
+    let allocation = next_topic_id(&home);
+    // The earlier items of this batch are valid, and the last one is refused: the whole unseen batch
+    // is rolled back, so no Topic number is spent and no partial receipt survives.
+    let refusal = mcp.refused(
+        "apply_batch",
+        json!({ "items": [
+            { "op_key": "s09r/rollback/2/create/topic", "client_ref": "new",
+              "tool": "create_topic", "arguments": { "title": "Unseen Topic" } },
+            { "op_key": "s09r/rollback/2/create/card", "client_ref": "card",
+              "tool": "create_successor",
+              "arguments": { "at": "@@new", "title": "Unseen Card", "body": "unseen body" } },
+            { "op_key": "s09r/rollback/2/create/kept", "client_ref": "kept",
+              "tool": "create_successor",
+              "arguments": { "at": "@@card", "kind": "side", "title": "Unseen Side", "body": "side" } },
+            { "op_key": "s09r/rollback/2/edit/locked", "client_ref": "locked",
+              "tool": "edit_card",
+              "arguments": { "at": first, "body": "refused body",
+                             "base_receipt": "s09r/setup/1/create/first" } },
+        ] }),
+    );
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
+    assert_eq!(
+        archive_state(&home),
+        state,
+        "the refused batch rolled back every unseen Card, receipt, Link row and revision"
+    );
+    assert_eq!(next_topic_id(&home), allocation, "no Topic number was spent");
+    let refused_topics: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE text LIKE '%Unseen%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("unseen cards");
+    assert_eq!(refused_topics, 0, "no unseen Card exists");
+
+    // The receipt committed before the batch is untouched and still replays its own result.
+    let replay = mcp.ok(
+        "apply_batch",
+        json!({ "items": [{
+            "op_key": "s09r/rollback/1/create/card", "client_ref": "card",
+            "tool": "create_successor",
+            "arguments": { "at": outside, "title": "Kept", "body": "kept body" },
+        }] }),
+    );
+    assert_eq!(replay["results"][0]["replayed"], true, "{replay}");
+    assert_eq!(replay["results"][0]["result"]["address"], kept_address);
+    assert_eq!(archive_state(&home), state);
+
+    // The same items apply once the owner releases the Lock: the refused batch left nothing that
+    // blocks a retry, and the whole-request contract (item count and byte bounds) was preserved.
+    gui.unlock(gui.active_lock()["lock_id"].as_i64().expect("lock id"));
+    let applied = mcp.ok("apply_batch", json!({ "items": [
+        { "op_key": "s09r/rollback/3/create/topic", "client_ref": "new",
+          "tool": "create_topic", "arguments": { "title": "Unseen Topic" } },
+        { "op_key": "s09r/rollback/3/create/card", "client_ref": "card",
+          "tool": "create_successor",
+          "arguments": { "at": "@@new", "title": "Unseen Card", "body": "unseen body" } },
+        { "op_key": "s09r/rollback/3/create/kept", "client_ref": "kept",
+          "tool": "create_successor",
+          "arguments": { "at": "@@card", "kind": "side", "title": "Unseen Side", "body": "side" } },
+        { "op_key": "s09r/rollback/3/edit/locked", "client_ref": "locked",
+          "tool": "edit_card",
+          "arguments": { "at": first, "body": "refused body",
+                         "base_receipt": "s09r/setup/1/create/first" } },
+    ] }));
+    assert_eq!(applied["results"].as_array().map(Vec::len), Some(4), "{applied}");
+    let new_topic = applied["results"][0]["result"]["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    assert_eq!(
+        new_topic,
+        format!("{allocation}/0"),
+        "the rolled-back Topic number was not spent"
+    );
+}
+
+/// R052 / S09-AC04: a Lock seals the Card-format authored fingerprint that reads also answer, never
+/// the separately defined batch receipt fingerprint.
+#[test]
+fn a_lock_seals_the_shared_authored_fingerprint_not_the_receipt_fingerprint() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let created = mcp.ok(
+        "apply_batch",
+        json!({ "items": [
+            { "op_key": "s09s/seal/1/create/topic", "client_ref": "root",
+              "tool": "create_topic", "arguments": { "title": "Sealed" } },
+            { "op_key": "s09s/seal/1/create/first", "client_ref": "first",
+              "tool": "create_successor",
+              "arguments": { "at": "@@root", "title": "First", "body": "first body" } },
+        ] }),
+    );
+    let root = created["results"][0]["result"]["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let first = created["results"][1]["result"]["address"]
+        .as_str()
+        .expect("card address")
+        .to_string();
+    let receipt_fingerprint = created["results"][1]["result"]["after_fingerprint"]
+        .as_str()
+        .expect("the batch receipt fingerprint")
+        .to_string();
+
+    // The read answers the Card-format authored fingerprint; the plan seals exactly that value.
+    let read = gui.get(&format!("/api/card?at={first}"));
+    let authored = read["authored_fingerprint"]
+        .as_str()
+        .expect("authored fingerprint")
+        .to_string();
+    let plan = gui.post("/api/lock", &json!({ "root": root }));
+    let member = plan["plan"]["members"]
+        .as_array()
+        .expect("members")
+        .iter()
+        .find(|member| member["address"] == json!(first))
+        .expect("the member");
+    assert_eq!(
+        member["fingerprint"], json!(authored),
+        "the seal uses the shared Card-format fingerprint: {plan}"
+    );
+    assert_ne!(
+        authored, receipt_fingerprint,
+        "the batch receipt fingerprint is a separate value and never the seal"
+    );
+
+    // The stored baseline holds the same value, so the seal and the trigger share one algorithm.
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let stored: String = home
+        .db()
+        .query_row(
+            "SELECT authored_fp FROM lock_members WHERE lock_id = ?1 AND address = ?2",
+            rusqlite::params![lock_id, first],
+            |row| row.get(0),
+        )
+        .expect("the stored member fingerprint");
+    assert_eq!(stored, authored);
+    assert_eq!(gui.panel()["integrity"]["ok"], true);
+}
+
+/// S09-AC03: Workspace denials still come first, and `plan_changed`, `already_locked`, `not_locked`,
+/// invalid arguments and integrity faults stay distinct from a `card_locked` refusal.
+#[test]
+fn lock_outcomes_stay_distinct_from_a_card_locked_refusal() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    // A locked human tree: the agent may read it but never write it, whatever the Lock says.
+    let human = address(gui.post(
+        "/api/create",
+        &json!({ "kind": "topic", "text": "# HumanHome\n\nhuman body\n" }),
+    ));
+    let human_member = address(gui.post(
+        "/api/create",
+        &json!({ "kind": "direct", "at": human, "text": "# HumanFirst\n\nhuman card\n" }),
+    ));
+    let human_lock = gui.lock(&human, None);
+    let human_lock_id = human_lock["lock_id"].as_i64().expect("lock id");
+
+    // 1. Workspace denial first: the refusal is the existing Access error, not a Lock object.
+    let (denial, is_error) = mcp.call(
+        "edit_card",
+        json!({ "at": human_member, "body": "the agent may not write a human Card" }),
+    );
+    assert!(is_error, "{denial}");
+    assert_card_locked_matches_nothing(&denial);
+    assert!(
+        denial["error"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains("human"),
+        "the existing Workspace denial answers first: {denial}"
+    );
+
+    // 2. Already locked: locking a tree twice is its own error, with the existing Lock named.
+    let (status, already) = gui.post_with("/api/lock", &gui.token, &json!({ "root": human }));
+    assert_eq!(status, 400, "an already locked tree is not a Card refusal: {already}");
+    assert!(already["refusal"].is_null(), "{already}");
+    assert!(
+        already["error"].as_str().unwrap_or_default().contains("already locked"),
+        "{already}"
+    );
+
+    // 3. Not locked: an ended or unknown Lock is its own error too.
+    gui.unlock(human_lock_id);
+    let (status, ended) = gui.post_with(
+        "/api/unlock",
+        &gui.token,
+        &json!({ "lock_id": human_lock_id }),
+    );
+    assert_eq!(status, 400, "an ended Lock is its own error: {ended}");
+    assert!(ended["refusal"].is_null(), "{ended}");
+    let (status, unknown) = gui.post_with("/api/unlock", &gui.token, &json!({ "lock_id": 9_999 }));
+    assert_eq!(status, 400, "an unknown Lock is its own error: {unknown}");
+    assert!(
+        unknown["error"].as_str().unwrap_or_default().contains("does not exist"),
+        "{unknown}"
+    );
+
+    // 4. Invalid arguments keep the protocol's invalid-parameter outcome.
+    let unknown_tool = mcp.request(
+        "tools/call",
+        json!({ "name": "lock_tree", "arguments": { "root": human } }),
+    );
+    assert_eq!(unknown_tool["error"]["code"], -32602, "{unknown_tool}");
+    let bad_arguments = mcp.request(
+        "tools/call",
+        json!({ "name": "edit_card", "arguments": [] }),
+    );
+    assert_eq!(bad_arguments["error"]["code"], -32602, "{bad_arguments}");
+
+    // 5. An integrity fault is reported as a fault and does not unlock, refresh or rewrite anything:
+    // the member's write is still refused with the same structured Lock object afterwards.
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    home.db()
+        .execute_batch("DROP TRIGGER lock_no_change")
+        .expect("drop the trigger");
+    home.db()
+        .execute(
+            "UPDATE cards SET text = '# First\n\ntampered\n\n<!-- zt:reverse-links -->\n' WHERE location = ?1",
+            [&first],
+        )
+        .expect("tamper");
+    let panel = gui.panel();
+    assert_eq!(panel["integrity"]["ok"], false, "{panel}");
+    let kinds = panel["integrity"]["faults"]
+        .as_array()
+        .expect("faults")
+        .iter()
+        .map(|fault| fault["kind"].as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&"fingerprint-changed".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"trigger-missing".to_string()), "{kinds:?}");
+    let refusal = mcp.refused("edit_card", json!({ "at": first, "body": "still refused" }));
+    assert_card_locked(&refusal, "edit", &root, &[&first]);
+    let active = gui.active_lock();
+    assert_eq!(active["lock_id"], json!(lock_id), "the fault did not unlock the tree");
+    assert_eq!(active["seal"], lock["seal"], "the fault did not refresh the baseline");
+    let stored: String = home
+        .db()
+        .query_row(
+            "SELECT text FROM cards WHERE location = ?1",
+            [&first],
+            |row| row.get(0),
+        )
+        .expect("stored text");
+    assert!(stored.contains("tampered"), "the fault is evidence, not a repair");
+}

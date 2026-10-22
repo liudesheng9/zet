@@ -751,6 +751,12 @@ impl From<anyhow::Error> for ApiError {
                 refusal: Some(refusal.value()),
             };
         }
+        if let Some(refusal) = error.downcast_ref::<crate::tree_lock::IndexRefusal>() {
+            return Self {
+                message: refusal.to_string(),
+                refusal: Some(refusal.value()),
+            };
+        }
         Self::new(format!("{error:#}"))
     }
 }
