@@ -15,7 +15,7 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 - 在交互式终端 Session 中，通过 Location 或 Citation key 导航 Card。
 - 使用 `[[target]]` Link 连接 Card，并自动生成 Reverse link、检查 Broken link。
 - 在 Session 或 Shell 中安全地创建、编辑、移动和删除 Card 树。
-- 使用本地 SQLite 存储数据，并提供状态、统计、导出和清空命令。
+- 使用本地 SQLite 存储数据，并提供状态、统计、导出，以及一条删除命令：可清空一棵 Card 树、保留树根，或重置整个 archive。
 - 使用 `zt autostart on` 让服务在登录时启动、在机器关机时停止（Windows）。
 
 ## 安装

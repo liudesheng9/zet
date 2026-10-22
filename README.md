@@ -15,7 +15,7 @@ ZT is a local note system built around addressable Markdown Cards, with a termin
 - Navigate Cards by Location or Citation key in an interactive terminal Session.
 - Connect Cards with `[[target]]` Links, with generated Reverse links and Broken link checks.
 - Safely create, edit, move, and delete Card trees from the Session or shell.
-- Store everything locally in SQLite, with status, statistics, dump, and clear commands.
+- Store everything locally in SQLite, with status, statistics, dump, and one delete command that can empty a Card tree, keep a tree root, or reset the whole archive.
 - Start the service when you sign in and stop it when the machine goes down, with `zt autostart on` (Windows).
 
 ## Install
