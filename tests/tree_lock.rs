@@ -1687,6 +1687,40 @@ fn a_lock_change_mirrors_one_log_line_and_survives_a_log_failure() {
     assert_eq!(panel["integrity"]["ok"], true, "a log failure is not an integrity fault");
 }
 
+/// S04 (#127) verification seam: both owner routes are token-guarded exactly like every other GUI
+/// route, and a refused token reaches no plan, commits nothing and keeps the history as it was.
+#[test]
+fn the_lock_list_and_note_routes_need_the_gui_token() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Reviewed");
+    card(&mut mcp, &root, "First", "first");
+    let lock = gui.lock(&root, Some("kept"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let events = events_of(&gui.panel(), lock_id);
+    let revision = archive_revision(&home);
+
+    let (status, refused) = gui.get_with("/api/locks", "not-the-token");
+    assert_eq!(status, 403, "the lock list needs the token: {refused}");
+    assert_eq!(refused["error"], json!("missing or invalid GUI token"));
+    for (path, body) in [
+        ("/api/lock/note", json!({ "lock_id": lock_id, "note": "not from a token-less client" })),
+        ("/api/lock", json!({ "root": root, "note": "not from a token-less client" })),
+        ("/api/unlock", json!({ "lock_id": lock_id })),
+    ] {
+        let (status, refused) = gui.post_with(path, "not-the-token", &body);
+        assert_eq!(status, 403, "{path} needs the token: {refused}");
+        assert_eq!(refused["error"], json!("missing or invalid GUI token"), "{path}");
+    }
+
+    let panel = panel_lock(&gui.panel(), lock_id);
+    assert_eq!(panel["note"], "kept", "no refused request moved the note");
+    assert_eq!(panel["unlocked_at"], Value::Null, "the Lock is still active");
+    assert_eq!(events_of(&gui.panel(), lock_id), events, "no refused request wrote an event");
+    assert_eq!(archive_revision(&home), revision);
+}
+
 /// S12 (#135) S12-AC03 / D08: the whole-archive delete refuses every active Lock record before it
 /// prompts — the populated case here — lists the root addresses and their count with the GUI unlock
 /// hint, and leaves the Cards, the derived Links and the revision untouched. Once the trees are
