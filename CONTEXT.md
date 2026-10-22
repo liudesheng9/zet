@@ -112,6 +112,10 @@ _Avoid_: Read-only tree, frozen note, closed topic
 A Card outside a Locked tree that one or more of its Cards name with a Link. Its authored body and metadata stay editable, but its address, row identity, Workspace and Card kind are frozen while any active Lock pins it. A Link to a Card that was already broken when the owner accepted the Lock is a warning and pins nothing, so a target that resolves later joins the promise only when the owner unlocks and locks again.
 _Avoid_: Frozen Card, referenced note, dependent Card
 
+**Emptied tree**:
+A Topic or Literature tree the owner emptied with `zt del --at <root> --keep-root`: every Regular Card is deleted and the Tree root stays with its row identity, address, kind, Workspace, BibTeX and authored text unchanged. Links to the root from outside stay valid, the root's generated Reverse section forgets the deleted children, the next Direct successor is again `<tree>/1` or `<citation-key>/1`, and the global Topic allocation is untouched. An already empty unlocked tree can be emptied again, which writes nothing and advances no revision.
+_Avoid_: Cleared tree, truncated tree, deleted tree
+
 **Reply**:
 One human Card an owner writes to answer one agent Card. It opens with a relation word (`印证`, `反驳`, `放宽`, or `对应`) and a Link to that agent Card, carries the owner's own thought, and is filed in a human Topic, not beneath the agent Card. Its Link and the generated Reverse link carry the connection across the Workspaces; the agent Card's authored text never changes.
 _Avoid_: Comment, response Card, human note

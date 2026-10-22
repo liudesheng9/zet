@@ -503,6 +503,24 @@ really write: it tries every `tar`, `zip`, or `7z` on `PATH` and keeps the first
 archive carries the right format signature. On Windows a GNU tar from Git for Windows is passed
 over for the bundled `tar.exe`.
 
+## Deleting
+
+One command covers every delete. It asks for the exact confirmation word of the selection, and it
+refuses an active Locked tree before that prompt:
+
+```sh
+zt del --at <card>                  # the Card and its subtree (confirm: delete)
+zt del --at <root>                  # the whole tree, root included (confirm: the root address)
+zt del --at <root> --keep-root      # empty the tree, keep the root (confirm: the root address)
+zt del --all                        # every Card, reset Topic numbers (confirm: delete all)
+```
+
+`--keep-root` leaves an **Emptied tree**: the root keeps its row identity, address, kind,
+Workspace, BibTeX and text, Links to it from outside stay valid, the next Direct successor is
+again `<root>/1`, and the global Topic allocation is untouched. `zt del --all` is the old
+`zt clear`: for this release `zt clear` only prints a notice pointing to `zt del --all` and exits
+1, and the next release removes that notice handler.
+
 ## Create a Literature Card
 
 Run `l` inside a Session, or run `zt l` from the shell (using `$EDITOR`). Enter and save one complete BibTeX entry, then enter and save the Card body. The BibTeX entry key becomes the Citation key, and its `title` field becomes the Card title.

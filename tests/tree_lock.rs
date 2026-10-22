@@ -577,8 +577,9 @@ fn every_public_writer_path_is_refused_before_it_writes() {
     // revision and the Topic allocation, and the whole Lock baseline with its history (S09-AC07).
     let state = archive_state(&home);
 
-    // Every authored metadata field, through the MCP writer.
+    // Every authored metadata field, through the MCP writer, title and body included.
     for change in [
+        json!({ "at": first, "title": "a better title" }),
         json!({ "at": first, "type": "event" }),
         json!({ "at": first, "type": "model", "level": "formal" }),
         json!({ "at": first, "type": "model", "facet": "setting", "emphasis": "core" }),
@@ -780,6 +781,12 @@ fn a_literature_tree_and_a_root_only_tree_anchor_locks() {
         json!({ "at": chapter, "body": "changed chapter" }),
     );
     assert_card_locked(&refusal, "edit", &key, &[&chapter]);
+    // A BibTeX edit without renaming the Citation key is an authored edit of the locked root.
+    let refusal = mcp.refused(
+        "edit_literature_metadata",
+        json!({ "at": key, "bibtex": "@book{Smith2024, title={Book, second edition}}" }),
+    );
+    assert_card_locked(&refusal, "edit", &key, &[&key]);
     let refusal = mcp.refused(
         "edit_literature_metadata",
         json!({ "at": key, "bibtex": "@book{Renamed2024, title={Book}}" }),
@@ -819,6 +826,64 @@ fn a_literature_tree_and_a_root_only_tree_anchor_locks() {
     assert!(
         refused["error"].as_str().unwrap().contains("seal"),
         "the refusal names the existing seal: {refused}"
+    );
+}
+
+/// T04 / T06: a complete final plan that would move an unlocked subtree into a Locked tree, or
+/// delete a pinned target while `into` re-points a member's own authored Links, is refused before it
+/// writes a temporary Location or rewrites a body, and the whole archive stays as it was.
+#[test]
+fn a_move_into_the_tree_and_a_delete_that_repoints_a_pin_are_refused() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let first = card(&mut mcp, &root, "First", "first body");
+    let outside = topic(&mut mcp, "Outside");
+    let pinned = card(&mut mcp, &outside, "Pinned", "pinned body");
+    mcp.ok(
+        "edit_card",
+        json!({ "at": first, "body": format!("the member cites [[{pinned}]]") }),
+    );
+    let elsewhere = topic(&mut mcp, "Elsewhere");
+    let moving = card(&mut mcp, &elsewhere, "Moving", "an unlocked subtree");
+    let replacement = side_card(&mut mcp, &moving, "Replacement", "replacement body");
+    gui.lock(&root, None);
+    let state = archive_state(&home);
+
+    // T04: the destination of the move is inside the Locked tree, and the complete final plan names
+    // every destination row it would write, the moved Card and its successor.
+    let refusal = mcp.refused("move_card", json!({ "at": moving, "to": format!("{first}|a") }));
+    assert_card_locked(
+        &refusal,
+        "move-inside",
+        &root,
+        &[&format!("{first}|a"), &format!("{first}|a|a")],
+    );
+    // No temporary `__moving__` Location survives a refusal, and nothing else changed.
+    let moving_rows: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE location LIKE '__moving__%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("moving rows");
+    assert_eq!(moving_rows, 0, "no temporary Location was written");
+    assert_eq!(archive_state(&home), state, "a refused move-in changed nothing");
+
+    // T06: deleting the pinned target with `into` would rewrite the member's authored body, so the
+    // complete delete plan is refused and names the Locked source.
+    let refusal = mcp.refused(
+        "delete_card",
+        json!({ "at": pinned, "into": replacement }),
+    );
+    assert_card_locked(&refusal, "pinned-delete", &root, &[&pinned]);
+    assert_eq!(refusal["sources"], json!([first]), "{refusal}");
+    assert_eq!(
+        archive_state(&home),
+        state,
+        "a refused pinned delete with `into` changed no Card, Link, receipt or Lock fact"
     );
 }
 
@@ -888,6 +953,115 @@ fn a_stale_confirmation_never_commits_and_a_lost_answer_is_read_back() {
             .expect("revision")
             > revision_before
     );
+}
+
+/// T22 / S05-AC06: a Lock, a note change or an unlock whose own transaction fails before commit
+/// writes no partial record — no Lock row, member, pin or history event — and the archive keeps the
+/// state the last successful request left. A fixture-only trigger induces the failure; the owner's
+/// retry then commits exactly once, so one active root stays unique after an uncertain outcome.
+#[test]
+fn a_failed_lock_note_or_unlock_leaves_no_partial_record() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let _first = card(&mut mcp, &root, "First", "first body");
+    let before = archive_state(&home);
+
+    // The Lock's history insert fails inside the guarded transaction, so the Lock row, its members,
+    // its pins and its event must all be gone.
+    home.db()
+        .execute_batch(
+            "CREATE TRIGGER test_lock_event_failure BEFORE INSERT ON lock_events
+             BEGIN SELECT RAISE(ABORT, 'test lock event failure'); END",
+        )
+        .expect("an induced history failure");
+    let plan = gui.post("/api/lock", &json!({ "root": root }));
+    let (status, failed) = gui.post_with(
+        "/api/lock",
+        &gui.token,
+        &json!({
+            "root": root,
+            "confirm": "lock",
+            "plan_hash": plan["plan"]["plan_hash"],
+        }),
+    );
+    assert!(status >= 400, "the failed commit answers an error: {failed}");
+    assert!(
+        format!("{failed}").contains("test lock event failure"),
+        "{failed}"
+    );
+    assert_eq!(
+        archive_state(&home),
+        before,
+        "no partial Lock, member, pin or event row, and no revision"
+    );
+    // The uncertain outcome is resolved by reading: there is no Lock.
+    assert_eq!(gui.panel()["locks"].as_array().map(Vec::len), Some(0));
+    assert_eq!(gui.active_lock(), Value::Null);
+
+    // With the induced failure gone the owner's retry commits once and the Lock is unique.
+    home.db()
+        .execute_batch("DROP TRIGGER test_lock_event_failure")
+        .expect("drop the induced failure");
+    let lock = gui.lock(&root, Some("reviewed"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let locked = archive_state(&home);
+
+    // A note change whose history insert fails keeps the old note and adds no event.
+    home.db()
+        .execute_batch(
+            "CREATE TRIGGER test_note_event_failure BEFORE INSERT ON lock_events
+             BEGIN SELECT RAISE(ABORT, 'test note event failure'); END",
+        )
+        .expect("an induced note failure");
+    let plan = gui.post(
+        "/api/lock/note",
+        &json!({ "lock_id": lock_id, "note": "second note" }),
+    );
+    let (status, failed) = gui.post_with(
+        "/api/lock/note",
+        &gui.token,
+        &json!({
+            "lock_id": lock_id,
+            "note": "second note",
+            "confirm": "note",
+            "plan_hash": plan["plan"]["plan_hash"],
+        }),
+    );
+    assert!(status >= 400, "the failed note change answers an error: {failed}");
+    assert_eq!(
+        archive_state(&home),
+        locked,
+        "a failed note change keeps the old note, its history and the revision"
+    );
+
+    // An unlock whose history insert fails keeps the active Lock and its history.
+    let plan = gui.post("/api/unlock", &json!({ "lock_id": lock_id }));
+    let (status, failed) = gui.post_with(
+        "/api/unlock",
+        &gui.token,
+        &json!({
+            "lock_id": lock_id,
+            "confirm": "unlock",
+            "plan_hash": plan["plan"]["plan_hash"],
+        }),
+    );
+    assert!(status >= 400, "the failed unlock answers an error: {failed}");
+    assert_eq!(
+        archive_state(&home),
+        locked,
+        "a failed unlock keeps the active Lock, its members, its pins and its history"
+    );
+    assert_eq!(gui.active_lock()["lock_id"], json!(lock_id));
+    assert_eq!(
+        gui.panel()["integrity"]["ok"],
+        true,
+        "the retained promise still compares clean"
+    );
+    home.db()
+        .execute_batch("DROP TRIGGER test_note_event_failure")
+        .expect("drop the induced failure");
 }
 
 #[test]
@@ -3155,7 +3329,22 @@ fn the_lock_has_gui_routes_only_and_no_mcp_control_tool() {
             !lower.contains("lock") && !lower.contains("unlock"),
             "a Lock action is GUI only (R212): {name}"
         );
+        // D12: the one delete command gained no remote whole-archive authority.
+        assert!(
+            !lower.contains("delete_all") && !lower.contains("clear"),
+            "no remote delete-all authority (D12): {name}"
+        );
     }
+    // The GUI likewise gained no delete-all route: an unknown API path is refused.
+    let (status, refused) = gui.post_with("/api/delete-all", &gui.token, &json!({}));
+    assert_eq!(status, 400, "the GUI has no delete-all route (D12): {refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown"),
+        "{refused}"
+    );
 
     // The four routes keep the ordinary token check: without it they answer 403 and change nothing.
     let open = gui.post("/api/lock", &json!({ "root": root }));

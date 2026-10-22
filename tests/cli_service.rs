@@ -2168,6 +2168,121 @@ fn topic_delete_removes_topic_and_topic_ids_are_not_reused() {
     assert!(home.location_exists("1/0"));
 }
 
+/// D02 / R243 / S12-AC02: each of the four delete selections asks for its own word — `delete`, the
+/// root address, the root address with keep-root, and `delete all` — and a wrong word or EOF cancels
+/// without changing a Card, a Link or the archive revision. The exact word applies exactly that
+/// selection, so D10's Topic allocation keeps advancing as before.
+#[test]
+fn delete_confirmations_refuse_a_wrong_word_or_eof_for_every_selection() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    for title in ["Second", "Keep"] {
+        home.cmd_with_editor(&format!(
+            "# {title}\n\n{title} body\n\n<!-- zt:reverse-links -->\n"
+        ))
+        .args(["t", title])
+        .assert()
+        .success();
+    }
+    home.cmd_with_editor("# Second base\n\nsecond base\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "1/0"])
+        .assert()
+        .success();
+    home.cmd_with_editor("# Kept child\n\nkept child\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "2/0"])
+        .assert()
+        .success();
+
+    // 1. A Regular Card's subtree asks for `delete`.
+    let revision = home.revision();
+    for input in ["nope\n", ""] {
+        home.cmd()
+            .args(["del", "--at", "0/1"])
+            .write_stdin(input)
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("type `delete` to confirm:"))
+            .stderr(predicate::str::contains("confirmation did not match"));
+        assert!(home.location_exists("0/1"), "a cancelled delete keeps the Card");
+        assert_eq!(home.revision(), revision, "a cancelled delete moves no revision");
+    }
+    home.cmd()
+        .args(["del", "--at", "0/1"])
+        .write_stdin("delete\n")
+        .assert()
+        .success();
+    assert!(!home.location_exists("0/1"));
+    assert!(home.location_exists("0/0"), "the tree root stays");
+
+    // 2. A whole tree asks for its root address; `delete` alone is the wrong word here.
+    let revision = home.revision();
+    for input in ["delete\n", ""] {
+        home.cmd()
+            .args(["del", "--at", "1/0"])
+            .write_stdin(input)
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("type `1/0` to confirm:"))
+            .stderr(predicate::str::contains("confirmation did not match"));
+        assert!(home.location_exists("1/0") && home.location_exists("1/1"));
+        assert_eq!(home.revision(), revision, "a cancelled delete moves no revision");
+    }
+    home.cmd()
+        .args(["del", "--at", "1/0"])
+        .write_stdin("1/0\n")
+        .assert()
+        .success();
+    assert!(!home.location_exists("1/0") && !home.location_exists("1/1"));
+
+    // 3. Keep-root asks for the retained root's address; `delete` alone is the wrong word here too.
+    let revision = home.revision();
+    for input in ["delete\n", ""] {
+        home.cmd()
+            .args(["del", "--at", "2/0", "--keep-root"])
+            .write_stdin(input)
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("type `2/0` to confirm:"))
+            .stderr(predicate::str::contains("confirmation did not match"));
+        assert!(home.location_exists("2/0") && home.location_exists("2/1"));
+        assert_eq!(home.revision(), revision, "a cancelled delete moves no revision");
+    }
+    home.cmd()
+        .args(["del", "--at", "2/0", "--keep-root"])
+        .write_stdin("2/0\n")
+        .assert()
+        .success();
+    assert!(home.location_exists("2/0"), "keep-root retains the root");
+    assert!(!home.location_exists("2/1"), "keep-root deletes the Regular Cards");
+
+    // 4. The whole archive asks for `delete all`.
+    let revision = home.revision();
+    for input in ["delete\n", ""] {
+        home.cmd()
+            .args(["del", "--all"])
+            .write_stdin(input)
+            .assert()
+            .failure()
+            .stdout(predicate::str::contains("type `delete all` to confirm:"))
+            .stderr(predicate::str::contains("confirmation did not match"));
+        assert!(home.location_exists("0/0") && home.location_exists("2/0"));
+        assert_eq!(home.revision(), revision, "a cancelled delete moves no revision");
+    }
+    home.cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deleted: 2 cards; next topic id reset to 0"));
+    home.cmd()
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("total: 0"));
+    assert_eq!(home.next_topic_id(), 0);
+}
+
 /// S12 (#135) R237–R238, D01: `zt del` takes exactly one selector. Both or neither selector, a
 /// repeated selector or flag, an unknown argument, and `--keep-root` beside `--all` are refused by
 /// the one usage line before the service is asked, a plan is made or a prompt is printed.
@@ -2554,6 +2669,41 @@ fn keep_root_rolls_every_effect_back_when_the_delete_fails() {
     }
     assert_eq!(home.revision(), revision, "a failed delete moves no revision");
     assert_eq!(home.metadata("gui_spreads"), spreads, "the Spread is untouched");
+}
+
+/// D11 / S11-AC06: keep-root follows saved Spread positions, so the Spread keeps the retained
+/// root's position and loses the deleted Regular Card's; all-archive instead keeps the stored
+/// metadata bytes unchanged (see `delete_all_keeps_saved_spread_metadata_while_a_tree_delete_follows_positions`).
+#[test]
+fn keep_root_drops_a_deleted_card_from_saved_spread_positions() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    let spreads = r#"{"current":"s1","spreads":[{"id":"s1","name":"Spread","cards":[{"at":"0/0","x":0,"y":0},{"at":"0/1","x":10,"y":0}]}]}"#;
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    conn.execute(
+        "INSERT INTO metadata(key, value) VALUES('gui_spreads', ?1)",
+        [spreads],
+    )
+    .expect("seed a Spread");
+    drop(conn);
+
+    home.cmd()
+        .args(["del", "--at", "0/0", "--keep-root"])
+        .write_stdin("0/0\n")
+        .assert()
+        .success();
+
+    let stored = home.metadata("gui_spreads");
+    assert!(
+        !stored.contains("\"at\":\"0/1\""),
+        "the deleted Card's Spread position goes: {stored}"
+    );
+    assert!(
+        stored.contains("\"at\":\"0/0\""),
+        "the retained root's Spread position stays: {stored}"
+    );
+    assert!(home.location_exists("0/0"), "the retained root still exists");
 }
 
 #[test]

@@ -1,6 +1,9 @@
 #Requires -Version 7.5
 $ErrorActionPreference='Stop'
 $scratch=Join-Path ([IO.Path]::GetTempPath()) "bridge-attribution-test-$PID"
+# A recycled pid can find an archive an earlier run left behind; start from an empty scratch root so
+# the fixture's `create_literature` never meets its own earlier Card (S18-AC03 isolation).
+if(Test-Path -LiteralPath $scratch){Remove-Item -LiteralPath $scratch -Recurse -Force}
 $staging=Join-Path $scratch 'staging';New-Item -ItemType Directory -Force $staging|Out-Null
 $env:ZT_CONFIG_DIR=Join-Path $scratch 'config';$env:ZT_GUI_PORT='0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')

@@ -385,6 +385,22 @@ GUI 把它显示为带小页面图标的链接，并在卡片盒旁打开：PDF 
 `tar`、`zip` 或 `7z`，保留第一个其探测归档带有正确格式签名的工具。在 Windows 上，Git for Windows 自带的 GNU tar
 会被跳过，改用系统自带的 `tar.exe`。
 
+## 删除
+
+一条命令覆盖全部删除。它会要求该范围对应的确认词，并在提示之前拒绝仍在生效的 Locked tree：
+
+```sh
+zt del --at <card>                  # 删掉该 Card 及其子树（确认词：delete）
+zt del --at <root>                  # 删掉整棵树，含树根（确认词：树根地址）
+zt del --at <root> --keep-root      # 清空整棵树，保留树根（确认词：树根地址）
+zt del --all                        # 删掉全部 Card 并重置 Topic 编号（确认词：delete all）
+```
+
+`--keep-root` 留下的是 **Emptied tree**（清空的树）：树根保留其行身份、地址、类型、Workspace、
+BibTeX 与正文，来自外部的 Link 仍然有效，下一个 Direct successor 重新是 `<root>/1`，全局 Topic
+编号不变。`zt del --all` 就是原来的 `zt clear`：本版本中 `zt clear` 只打印一条指向 `zt del --all`
+的提示并以 1 退出，下一版本会移除这个提示处理器。
+
 ## 创建 Literature Card
 
 在 Session 中运行 `l`，或在 Shell 中使用 `$EDITOR` 运行 `zt l`。先输入并保存一个完整的 BibTeX 条目，再输入并保存 Card 正文。BibTeX 条目的 key 会成为 Citation key，其中的 `title` 字段会成为 Card 标题。
