@@ -1967,6 +1967,22 @@ fn check_change(conn: &Connection, state: &State, change: Change<'_>) -> Result<
             }
         }
         Change::Delete(plan) => {
+            // R030: a Lock forbids the requested tree operation even when its delete set is empty,
+            // so emptying a Locked tree is refused while its retained root is a promised member.
+            if let Some((root, _)) = plan.kept_root()
+                && let Some((lock_id, tree)) = state.member_by_address.get(root)
+            {
+                return Err(anyhow::Error::new(Refusal::by_blockers(
+                    Reason::Delete,
+                    [(
+                        root.to_string(),
+                        Blocker {
+                            lock_id: *lock_id,
+                            tree: tree.clone(),
+                        },
+                    )],
+                )));
+            }
             let cards = crate::load_cards(conn)?;
             let by_address = cards
                 .iter()

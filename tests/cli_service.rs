@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command as StdCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -163,6 +163,77 @@ impl TestHome {
         .expect("literature data")
     }
 
+    fn revision(&self) -> i64 {
+        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        conn.query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'archive_revision'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("archive revision")
+    }
+
+    fn next_topic_id(&self) -> i64 {
+        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        conn.query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'next_topic_id'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("next topic id")
+    }
+
+    /// A Card's stored identity: row identity, address, Citation key, kind flags, Card type,
+    /// BibTeX, Workspace.
+    fn card_row(
+        &self,
+        key: &str,
+    ) -> (i64, String, Option<String>, i64, i64, String, Option<String>, String) {
+        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        conn.query_row(
+            "SELECT row_id, COALESCE(location, citation_key), citation_key, is_topic, is_lit,\
+                    card_type, bibtex, workspace FROM cards WHERE location = ?1 OR citation_key = ?1",
+            [key],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .expect("card row")
+    }
+
+    fn metadata(&self, key: &str) -> String {
+        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        conn.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .expect("metadata value")
+    }
+
+    fn applied_ops(&self) -> i64 {
+        let conn = Connection::open(self.archive_root.join("zt.sqlite3")).expect("open db");
+        let created: i64 = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'applied_ops')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("applied_ops table");
+        if created == 0 {
+            return 0;
+        }
+        conn.query_row("SELECT COUNT(*) FROM applied_ops", [], |row| row.get(0))
+            .expect("applied ops")
+    }
+
     fn create_topic_and_base(&self) {
         self.cmd_with_editor("# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n")
             .args(["t", "Topic"])
@@ -190,6 +261,21 @@ impl Drop for TestHome {
     fn drop(&mut self) {
         let _ = fs::remove_file(self.archive_root.join("zt.pid"));
         thread::sleep(Duration::from_millis(80));
+    }
+}
+
+/// Read a live Session's output until `needle` has appeared anywhere in it, keeping everything
+/// read so a later wait can match text that arrived in the same chunk.
+fn wait_for_session_output(stdout: &mut impl BufRead, seen: &mut String, needle: &str) {
+    let mut line = String::new();
+    while !seen.contains(needle) {
+        line.clear();
+        let read = stdout.read_line(&mut line).expect("read session output");
+        assert!(
+            read > 0,
+            "the Session ended before {needle:?}; it printed:\n{seen}"
+        );
+        seen.push_str(&line);
     }
 }
 
@@ -2046,6 +2132,377 @@ fn topic_delete_removes_topic_and_topic_ids_are_not_reused() {
     assert!(home.location_exists("1/0"));
 }
 
+/// S11 (#134) D03: `zt del --at <root> --keep-root` removes the Regular Cards of one Topic tree
+/// and keeps its root Card, printing the exact success line.
+#[test]
+fn keep_root_empties_a_topic_tree_and_keeps_its_root() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    home.cmd()
+        .args(["del", "--at", "0/0", "--keep-root"])
+        .write_stdin("0/0\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deleted: 1; root kept: 0/0"));
+
+    assert!(home.location_exists("0/0"), "the root stays");
+    assert!(!home.location_exists("0/1"), "the Regular Card goes");
+    assert_eq!(
+        home.card_text("0/0"),
+        "# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n"
+    );
+}
+
+/// S11 (#134) S11-AC03: the keep-root verification names the root, its Workspace, the number of
+/// Regular Cards to remove, and the first 20 breaking-Link pairs with an exact remainder.
+#[test]
+fn keep_root_verification_names_the_root_workspace_count_and_breaking_links() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    // Twenty-four more Regular Cards (0/2 .. 0/25) through one Session process.
+    let mut input = String::from("go 0/1\n");
+    for _ in 0..24 {
+        input.push_str("n\n# Card\n\nbody\n\n<!-- zt:reverse-links -->\n");
+        input.push('\x13');
+    }
+    input.push_str("q\n");
+    home.cmd().write_stdin(input.as_bytes()).assert().success();
+    let links = (1..=25)
+        .map(|index| format!("[[0/{index}]]"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    home.cmd_with_editor(&format!(
+        "# Source\n\n{links}\n\n<!-- zt:reverse-links -->\n"
+    ))
+    .args(["t", "Source"])
+    .assert()
+    .success();
+
+    let out = home
+        .cmd()
+        .args(["del", "--at", "0/0", "--keep-root"])
+        .write_stdin("0/0\n")
+        .output()
+        .expect("zt del --keep-root");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "zt del failed: {out:?}");
+    for expected in [
+        "delete verification:",
+        "root kept: 0/0 (Topic, human workspace)",
+        "delete regular cards: 25",
+        "links that will break: 25",
+        "1/0 -> 0/1",
+        "1/0 -> 0/20",
+        "... and 5 more",
+        "deleted: 25; root kept: 0/0",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected:?} in:\n{stdout}");
+    }
+    assert!(
+        stdout.contains("1/0 -> 0/20"),
+        "a later pair is still inside the first 20:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("1/0 -> 0/").count(),
+        20,
+        "only the first 20 breaking pairs are printed:\n{stdout}"
+    );
+    assert!(home.location_exists("0/0"));
+    assert!(!home.location_exists("0/25"));
+}
+
+/// S11 (#134) R262: an already empty unlocked tree still shows its plan and asks for the root's
+/// address, then reports `deleted: 0` without a revision or a derived rebuild.
+#[test]
+fn keep_root_on_an_already_empty_tree_reports_zero_without_a_revision() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.cmd_with_editor("# Topic\n\ndescription\n\n<!-- zt:reverse-links -->\n")
+        .args(["t", "Topic"])
+        .assert()
+        .success();
+    let before = home.revision();
+    let text_before = home.card_text("0/0");
+
+    home.cmd()
+        .args(["del", "--at", "0/0", "--keep-root"])
+        .write_stdin("0/0\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("delete verification:"))
+        .stdout(predicate::str::contains(
+            "root kept: 0/0 (Topic, human workspace)",
+        ))
+        .stdout(predicate::str::contains("delete regular cards: 0"))
+        .stdout(predicate::str::contains("deleted: 0; root kept: 0/0"));
+
+    assert_eq!(home.revision(), before, "nothing changed, no revision");
+    assert_eq!(home.card_text("0/0"), text_before);
+    assert!(home.location_exists("0/0"));
+}
+
+/// S11 (#134) D03/D04/S11-AC05, S11-AC06, S11-AC09: emptying a Literature tree keeps the root's
+/// row identity, address, kind, Workspace and BibTeX, keeps incoming Links to the root valid,
+/// reports the root's and an outside Card's Links to the deleted children as breaking, drops the
+/// deleted Spread positions, leaves the Topic allocation alone, reuses `<root>/1` and advances the
+/// revision once.
+#[test]
+fn keep_root_keeps_the_literature_root_identity_links_and_allocation() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    let (mut literature, _) = home.cmd_with_editor_sequence(&[
+        "@book{KeepMe, title={Keep Me}}",
+        "# Work\n\nwork\n\n<!-- zt:reverse-links -->\n",
+    ]);
+    literature.arg("l").assert().success();
+    home.cmd_with_editor("# Child\n\nchild, back to [[KeepMe]]\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "KeepMe"])
+        .assert()
+        .success();
+    home.cmd_with_editor("# Grandchild\n\ngrandchild\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "KeepMe/1"])
+        .assert()
+        .success();
+    home.cmd_with_editor("continues [[KeepMe/1]]\n")
+        .args(["e", "--at", "KeepMe", "--part", "text"])
+        .assert()
+        .success();
+    home.cmd_with_editor("# Source\n\nroot [[KeepMe]] child [[KeepMe/1]]\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "0/1"])
+        .assert()
+        .success();
+    // A Spread holding the root and one of its Regular Cards.
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    conn.execute(
+        "INSERT INTO metadata(key, value) VALUES('gui_spreads', ?1)",
+        [r#"{"current":"s1","spreads":[{"id":"s1","name":"Spread","cards":[{"at":"KeepMe","x":0,"y":0},{"at":"KeepMe/1","x":40,"y":10}]}]}"#],
+    )
+    .expect("seed a Spread");
+    drop(conn);
+    let root_before = home.card_row("KeepMe");
+    let revision_before = home.revision();
+    let topics_before = home.next_topic_id();
+    let ops_before = home.applied_ops();
+    let text_before = home.literature_data("KeepMe").1;
+    assert!(text_before.contains("- [[KeepMe/1]] Child"), "{text_before}");
+
+    home.cmd()
+        .args(["del", "--at", "KeepMe", "--keep-root"])
+        .write_stdin("KeepMe\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("delete verification:"))
+        .stdout(predicate::str::contains(
+            "root kept: KeepMe (Literature, human workspace)",
+        ))
+        .stdout(predicate::str::contains("delete regular cards: 2"))
+        .stdout(predicate::str::contains("links that will break: 2"))
+        .stdout(predicate::str::contains("KeepMe -> KeepMe/1"))
+        .stdout(predicate::str::contains("0/2 -> KeepMe/1"))
+        .stdout(predicate::str::contains(
+            "deleted: 2; root kept: KeepMe",
+        ));
+
+    // The root keeps its row identity, address, kind, Workspace and BibTeX.
+    assert_eq!(home.card_row("KeepMe"), root_before);
+    assert!(!home.location_exists("KeepMe/1"));
+    assert!(!home.location_exists("KeepMe/2"));
+    // Its authored body is untouched and its generated Reverse section names only the Card that
+    // still links it, so the outside Link to the root stays valid while the child Link breaks.
+    let authored = |text: &str| {
+        text.split("<!-- zt:reverse-links -->")
+            .next()
+            .unwrap_or(text)
+            .to_string()
+    };
+    let text = home.literature_data("KeepMe").1;
+    assert_eq!(
+        authored(&text),
+        authored(&text_before),
+        "the root's authored identity is unchanged"
+    );
+    assert!(text.contains("continues [[KeepMe/1]]"), "{text}");
+    assert!(text.contains("- [[0/2]] Source"), "{text}");
+    assert!(!text.contains("- [[KeepMe/1]] Child"), "{text}");
+    home.cmd()
+        .arg("lsbk")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0/2 Source -> KeepMe/1"))
+        .stdout(predicate::str::contains("KeepMe Keep Me -> KeepMe/1"))
+        .stdout(predicate::str::contains("-> KeepMe:").not());
+    home.cmd()
+        .arg("status")
+        .args(["--check-links"])
+        .assert()
+        .success();
+    // The deleted positions left the Spread; the retained root kept its place.
+    let spreads = home.metadata("gui_spreads");
+    assert!(spreads.contains("\"at\":\"KeepMe\""), "{spreads}");
+    assert!(!spreads.contains("KeepMe/1"), "{spreads}");
+    // The global Topic allocation and the archive revision move once, exactly; the retained
+    // operation receipts are untouched, so a rerun needs a fresh prefix rather than a replay.
+    assert_eq!(home.next_topic_id(), topics_before);
+    assert_eq!(home.revision(), revision_before + 1);
+    assert_eq!(home.applied_ops(), ops_before);
+    // The existing successor rule puts the next Regular Card back at `<root>/1`.
+    home.cmd_with_editor("# Again\n\nagain\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "KeepMe"])
+        .assert()
+        .success()
+        .stdout("KeepMe/1\n");
+    assert!(home.location_exists("KeepMe/1"));
+}
+
+/// S11 (#134) D05 / S11-AC07: emptying a tree is allowed while a Session is open, and a live
+/// Session whose Pointer was on a removed Regular Card recovers to the retained root.
+#[test]
+fn keep_root_is_allowed_while_a_session_holds_a_pointer_on_a_removed_child() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start a line Session");
+    let mut stdin = child.stdin.take().expect("session stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("session stdout"));
+    let mut seen = String::new();
+    stdin.write_all(b"go 0/1\n").expect("send go");
+    stdin.flush().expect("flush");
+    wait_for_session_output(&mut stdout, &mut seen, "location: 0/1");
+
+    let emptied = home
+        .cmd()
+        .args(["del", "--at", "0/0", "--keep-root"])
+        .write_stdin("0/0\n")
+        .output()
+        .expect("zt del --keep-root");
+    assert!(
+        emptied.status.success(),
+        "allowed while a Session is open: {emptied:?}"
+    );
+    assert!(!home.location_exists("0/1"));
+    assert!(home.location_exists("0/0"));
+
+    stdin.write_all(b"stats\n").expect("send stats");
+    stdin.flush().expect("flush");
+    wait_for_session_output(&mut stdout, &mut seen, "card `0/1` no longer exists");
+    wait_for_session_output(&mut stdout, &mut seen, "location: 0/0");
+    stdin.write_all(b"q\n").expect("send q");
+    drop(stdin);
+    assert!(child.wait().expect("wait for the Session").success());
+}
+
+/// S11 (#134) S11-AC01: a wrong kind, a malformed selector, a wrong word or EOF change nothing.
+#[test]
+fn keep_root_refuses_a_regular_card_and_its_cancellations_change_nothing() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    let revision = home.revision();
+    let root_text = home.card_text("0/0");
+    let base_text = home.card_text("0/1");
+
+    // A Regular Card is not a Tree root: the root-kind error comes before any prompt.
+    home.cmd()
+        .args(["del", "--at", "0/1", "--keep-root"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "keep root takes a Tree root (a Topic like 3/0 or a Citation key); `0/1` is a Regular Card",
+        ));
+    // Malformed selectors are refused before the service is asked or a prompt is printed.
+    for args in [
+        vec!["--keep-root"],
+        vec!["--at", "0/0", "--keep-root", "--keep-root"],
+        vec!["--keep-root", "--at", "0/0"],
+        vec!["--at", "0/0", "--keep-root", "extra"],
+        vec!["--at"],
+    ] {
+        home.cmd()
+            .arg("del")
+            .args(&args)
+            .write_stdin("")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "expected --at <target> [--keep-root]",
+            ));
+    }
+    // A wrong word and an empty stdin cancel without a change.
+    home.cmd()
+        .args(["del", "--at", "0/0", "--keep-root"])
+        .write_stdin("delete\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("type `0/0` to confirm:"))
+        .stderr(predicate::str::contains("confirmation did not match"));
+    home.cmd()
+        .args(["del", "--at", "0/0", "--keep-root"])
+        .write_stdin("")
+        .assert()
+        .failure();
+
+    assert_eq!(home.revision(), revision, "no cancellation changed the archive");
+    assert_eq!(home.card_text("0/0"), root_text);
+    assert_eq!(home.card_text("0/1"), base_text);
+}
+
+/// S11 (#134) S11-AC04: a failure during the delete rolls every affected Card, Spread and revision
+/// back, so the tree is untouched.
+#[test]
+fn keep_root_rolls_every_effect_back_when_the_delete_fails() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    home.cmd_with_editor("# Second\n\nsecond\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "0/1"])
+        .assert()
+        .success();
+    let spreads = r#"{"current":"s1","spreads":[{"id":"s1","name":"Spread","cards":[{"at":"0/0","x":0,"y":0},{"at":"0/1","x":10,"y":0}]}]}"#;
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    conn.execute(
+        "INSERT INTO metadata(key, value) VALUES('gui_spreads', ?1)",
+        [spreads],
+    )
+    .expect("seed a Spread");
+    conn.execute(
+        "CREATE TRIGGER test_delete_failure BEFORE DELETE ON cards WHEN OLD.location = '0/2'\
+         BEGIN SELECT RAISE(ABORT, 'test delete failure'); END",
+        [],
+    )
+    .expect("a failing delete step");
+    drop(conn);
+    let revision = home.revision();
+
+    home.cmd()
+        .args(["del", "--at", "0/0", "--keep-root"])
+        .write_stdin("0/0\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("test delete failure"));
+
+    // The first DELETE had already run inside the transaction; the failure undid it.
+    for address in ["0/0", "0/1", "0/2"] {
+        assert!(home.location_exists(address), "{address} was not rolled back");
+    }
+    assert_eq!(home.revision(), revision, "a failed delete moves no revision");
+    assert_eq!(home.metadata("gui_spreads"), spreads, "the Spread is untouched");
+}
+
 #[test]
 fn side_successor_labels_roll_over_from_z_to_aa() {
     let home = TestHome::new();
@@ -3398,7 +3855,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     let stdout = String::from_utf8(output).expect("session output is UTF-8");
 
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | stats | status | lsbk | help | q\n"
     ));
     assert!(
         stdout.contains(
@@ -3406,7 +3863,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q\n"
     ));
     assert!(
         stdout.contains("  mv [alone] <new-location>                    move the current card")

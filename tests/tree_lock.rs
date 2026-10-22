@@ -1100,6 +1100,126 @@ fn the_all_archive_clear_refuses_while_a_tree_is_locked() {
     assert!(stdout.contains("cleared 2 cards"), "{stdout}");
 }
 
+/// S11 (#134) R030 / D07 / S11-AC01, S11-AC08: a Locked tree refuses emptying before the prompt
+/// even when no Regular Card is left; a pin on the retained root alone permits it while a pin on a
+/// Regular Card refuses it.
+#[test]
+fn keep_root_refuses_a_locked_tree_even_when_empty_and_obeys_pins() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Emptyable");
+    let regular = card(&mut mcp, &root, "Regular", "regular body");
+    let empty = topic(&mut mcp, "Empty");
+    let pinning_root = topic(&mut mcp, "PinningRoot");
+    card(
+        &mut mcp,
+        &pinning_root,
+        "RootSource",
+        &format!("see [[{root}]]"),
+    );
+    let pinning_child = topic(&mut mcp, "PinningChild");
+    card(
+        &mut mcp,
+        &pinning_child,
+        "ChildSource",
+        &format!("see [[{regular}]]"),
+    );
+    let revision = |home: &TestHome| -> i64 {
+        home.db()
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key='archive_revision'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("revision")
+    };
+    let keep_root = |home: &TestHome, at: &str, confirmation: &str| {
+        home.cmd()
+            .args(["del", "--at", at, "--keep-root"])
+            .write_stdin(format!("{confirmation}\n"))
+            .output()
+            .expect("zt del --keep-root")
+    };
+
+    // A populated Locked tree: refused before the plan is printed or the prompt is asked.
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    let before = revision(&home);
+    let refused = keep_root(&home, &root, &root);
+    assert!(!refused.status.success(), "a Locked tree refuses: {refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("locked tree"), "{stderr}");
+    assert!(
+        refused.stdout.is_empty(),
+        "no plan and no prompt before the refusal: {refused:?}"
+    );
+    assert_eq!(revision(&home), before, "a refused request writes nothing");
+    gui.unlock(lock_id);
+
+    // A Locked tree with no Regular Card left is refused too: an empty delete set is still a tree
+    // operation the Lock forbids (R030).
+    let empty_lock = gui.lock(&empty, None);
+    let empty_lock_id = empty_lock["lock_id"].as_i64().expect("lock id");
+    let before = revision(&home);
+    let refused = keep_root(&home, &empty, &empty);
+    assert!(!refused.status.success(), "an empty Locked tree refuses: {refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("locked tree"), "{stderr}");
+    assert!(
+        refused.stdout.is_empty(),
+        "no zero-delete plan is printed for a Locked tree: {refused:?}"
+    );
+    assert_eq!(revision(&home), before, "a refused request writes nothing");
+    gui.unlock(empty_lock_id);
+
+    // A pin on the Regular Card refuses emptying its tree; the same operation is permitted with
+    // only the retained root pinned.
+    let child_pin_lock = gui.lock(&pinning_child, None);
+    let child_pin_lock_id = child_pin_lock["lock_id"].as_i64().expect("lock id");
+    let refused = keep_root(&home, &root, &root);
+    assert!(!refused.status.success(), "a pinned Regular Card refuses: {refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("locked tree"), "{stderr}");
+    assert!(stderr.contains(&regular), "the pinned Card is named: {stderr}");
+    assert!(home.db().query_row(
+        "SELECT EXISTS(SELECT 1 FROM cards WHERE location = ?1)",
+        [&regular],
+        |row| row.get::<_, i64>(0)
+    ).expect("regular")
+        == 1);
+
+    let root_pin_lock = gui.lock(&pinning_root, None);
+    let root_pin_lock_id = root_pin_lock["lock_id"].as_i64().expect("lock id");
+    gui.unlock(child_pin_lock_id);
+    let done = keep_root(&home, &root, &root);
+    assert!(done.status.success(), "a root-only pin permits emptying: {done:?}");
+    let stdout = String::from_utf8_lossy(&done.stdout);
+    assert!(
+        stdout.contains(&format!("deleted: 1; root kept: {root}")),
+        "{stdout}"
+    );
+    assert!(home.db().query_row(
+        "SELECT EXISTS(SELECT 1 FROM cards WHERE location = ?1)",
+        [&root],
+        |row| row.get::<_, i64>(0)
+    ).expect("root")
+        == 1);
+    assert!(home.db().query_row(
+        "SELECT EXISTS(SELECT 1 FROM cards WHERE location = ?1)",
+        [&regular],
+        |row| row.get::<_, i64>(0)
+    ).expect("regular")
+        == 0);
+    // The pin promise still holds: the retained root resolves the Locked source's Link.
+    home.cmd()
+        .arg("status")
+        .args(["--check-locks"])
+        .assert()
+        .success();
+    gui.unlock(root_pin_lock_id);
+}
+
 #[test]
 fn a_lock_survives_a_service_restart_and_installs_once() {
     let home = TestHome::new();

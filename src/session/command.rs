@@ -69,8 +69,8 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
     ),
     ("e", "edit the current card", Availability::OnCard),
     (
-        "del",
-        "delete the current card and its successors",
+        "del [keep-root]",
+        "delete the current card and its successors; at a Topic or Literature Card, keep-root empties the tree and keeps its root",
         Availability::OnCard,
     ),
     (
@@ -706,18 +706,31 @@ fn execute_command(
             interaction.edit(&card.text, "edit mode", &mut save)?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["del"] => {
+        ["del", rest @ ..] => {
+            let keep_root = match rest {
+                [] => false,
+                ["keep-root"] => true,
+                _ => bail!("usage: del [keep-root]"),
+            };
             let at = state.current_card("del")?;
             let _lock = crate::acquire_edit_lock(root, "session del")?;
             let mut conn = crate::open_db(root)?;
-            let plan = crate::delete_plan(&conn, &at)?;
-            // R232 (S08-AC02): no confirmation is asked for a deletion the Lock forbids.
+            let plan = if keep_root {
+                crate::keep_root_delete_plan(&conn, &at)?
+            } else {
+                crate::delete_plan(&conn, &at)?
+            };
+            // R232 (S08-AC02): no confirmation is asked for a deletion the Lock forbids. R030: a
+            // Locked tree is refused even when its delete set is empty.
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Delete(&plan))?;
             interaction.confirm(&plan.confirmation, &crate::delete_verification_lines(&plan))?;
-            crate::apply_delete_plan(&mut conn, plan)?;
-            state.pointer = crate::parent_location(&at)
-                .map(Pointer::Card)
-                .unwrap_or(Pointer::Root);
+            let result = crate::apply_delete_plan(&mut conn, plan)?;
+            state.pointer = match result.root_kept {
+                Some(root_address) => Pointer::Card(root_address),
+                None => crate::parent_location(&at)
+                    .map(Pointer::Card)
+                    .unwrap_or(Pointer::Root),
+            };
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["mv", rest @ ..] if !rest.is_empty() => {
@@ -1370,6 +1383,56 @@ mod tests {
         assert_eq!(card_type("0/0"), crate::CardType::Idea);
     }
 
+    /// S11 (#134) R263: `del keep-root` empties a Tree and keeps the Pointer on its retained root.
+    #[test]
+    fn keep_root_empties_a_tree_and_keeps_the_pointer_on_its_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let mut state = SessionState::at("LitA");
+        let mut interaction = ScriptedInteraction {
+            edits: VecDeque::new(),
+            choices: VecDeque::new(),
+            confirmations: VecDeque::from(["LitA".to_string()]),
+        };
+
+        execute(temp.path(), &mut state, "del keep-root", &mut interaction).expect("empty the tree");
+        assert_eq!(state.pointer(), &Pointer::Card("LitA".to_string()));
+        let conn = crate::open_db(temp.path()).expect("open database");
+        crate::load_card(&conn, "LitA").expect("the root stays");
+        for address in ["LitA/1", "LitA/1|a"] {
+            assert!(crate::load_card(&conn, address).is_err(), "{address} remains");
+        }
+        crate::load_card(&conn, "LitB").expect("another Literature tree survives");
+        crate::load_card(&conn, "0/1").expect("a Topic tree survives");
+    }
+
+    /// S11 (#134) S11-AC01: only a Tree root may be emptied, and the word `keep-root` is fixed.
+    #[test]
+    fn keep_root_refuses_a_regular_card_and_any_other_argument() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        insert_literature_tree(temp.path());
+        let mut state = SessionState::at("LitA/1");
+
+        let error = execute_without_interaction(temp.path(), &mut state, "del keep-root")
+            .expect_err("a Regular Card cannot be emptied");
+        assert_eq!(
+            error.to_string(),
+            "keep root takes a Tree root (a Topic like 3/0 or a Citation key); `LitA/1` is a Regular Card"
+        );
+        assert_eq!(state.pointer(), &Pointer::Card("LitA/1".to_string()));
+        for line in ["del keep root", "del Keep-Root", "del --all"] {
+            let error = execute_without_interaction(temp.path(), &mut state, line)
+                .expect_err("another argument is not a delete scope");
+            assert_eq!(error.to_string(), "usage: del [keep-root]", "{line}");
+        }
+        let conn = crate::open_db(temp.path()).expect("open database");
+        for address in ["LitA", "LitA/1", "LitA/1|a"] {
+            crate::load_card(&conn, address).expect("a refused command changes nothing");
+        }
+    }
+
     #[test]
     fn missing_pointer_recovers_to_the_nearest_existing_ancestor() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1473,15 +1536,15 @@ mod tests {
             ),
             (
                 SessionState::at("0/0"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

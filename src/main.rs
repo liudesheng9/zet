@@ -138,8 +138,8 @@ fn run() -> Result<()> {
             shell_edit(&at, part)
         }
         [cmd, rest @ ..] if cmd == "del" => {
-            let at = parse_target_at(rest)?;
-            shell_delete(&at)
+            let (at, keep_root) = parse_delete_args(rest)?;
+            shell_delete(&at, keep_root)
         }
         [cmd, rest @ ..] if cmd == "mv" => {
             let (at, target, alone) = parse_mv_args(rest)?;
@@ -175,6 +175,24 @@ fn parse_target_at(args: &[String]) -> Result<String> {
         [flag, value] if flag == "--at" => Ok(value.clone()),
         _ => bail!("expected --at <target>"),
     }
+}
+
+/// `--at <target>`, and the optional `--keep-root` that empties a Tree and keeps its root
+/// (S11, #134).
+fn parse_delete_args(args: &[String]) -> Result<(String, bool)> {
+    let usage = "expected --at <target> [--keep-root]";
+    let [flag, at, rest @ ..] = args else {
+        bail!(usage);
+    };
+    if flag != "--at" {
+        bail!(usage);
+    }
+    let keep_root = match rest {
+        [] => false,
+        [only] if only == "--keep-root" => true,
+        _ => bail!(usage),
+    };
+    Ok((at.clone(), keep_root))
 }
 
 /// `--at <location>`, an optional `--alone`, then `<new-location>` or
@@ -2088,6 +2106,7 @@ fn cmd_help() -> Result<()> {
         println!("  zt e --at <citation-key> --part metadata");
         println!("  zt e --at <citation-key> --part text");
         println!("  zt del --at <target>");
+        println!("  zt del --at <tree-root> --keep-root");
         println!("  zt mv --at <location> [--alone] <new-location>");
         println!("  zt mv --at <location> [--alone] --before <location>");
         println!("  zt ins --at <location>");
@@ -3438,16 +3457,16 @@ fn replace_link_locations(text: &str, mapping: &BTreeMap<String, String>) -> Res
     Ok(compose_card_text(&parsed.title, &body, &parsed.reverse))
 }
 
-fn shell_delete(at: &str) -> Result<()> {
+fn shell_delete(at: &str, keep_root: bool) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root, "delete")?;
     let mut conn = open_db(&root)?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
-    let result = delete_card(&mut conn, at, |expected| {
+    let result = delete_card(&mut conn, at, keep_root, |expected| {
         read_confirmation(&mut input, expected)
     })?;
-    println!("deleted: {}", result.deleted_count);
+    println!("{}", delete_success_line(&result));
     if !result.moved.is_empty() {
         println!("compacted:");
         for (old, new) in result.moved {
@@ -3457,12 +3476,36 @@ fn shell_delete(at: &str) -> Result<()> {
     Ok(())
 }
 
+/// The exact success line of a delete: `deleted: N`, and for an emptied tree
+/// `deleted: N; root kept: <root>` (R261).
+fn delete_success_line(result: &DeleteResult) -> String {
+    match &result.root_kept {
+        Some(root) => format!("deleted: {}; root kept: {root}", result.deleted_count),
+        None => format!("deleted: {}", result.deleted_count),
+    }
+}
+
 struct DeleteResult {
     deleted_count: usize,
     moved: BTreeMap<String, String>,
+    /// The Tree root a keep-root delete retained.
+    root_kept: Option<String>,
+}
+
+/// What a delete selects: one Card's successors, a whole tree, or one tree's Regular Cards
+/// with its root kept (S11, #134).
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DeleteScope {
+    /// The Card and its successors.
+    Subtree,
+    /// Every Card of the tree, its root included.
+    Tree,
+    /// Every Card of the tree except its root, which keeps its address and authored identity.
+    KeepRoot { root: String, workspace: Workspace },
 }
 
 struct DeletePlan {
+    scope: DeleteScope,
     delete_set: BTreeSet<String>,
     confirmation: String,
     /// Links from Cards that stay to Cards that go, as (source, target): each breaks unless the
@@ -3475,6 +3518,14 @@ struct DeletePlan {
 }
 
 impl DeletePlan {
+    /// The root a keep-root plan retains, with its Workspace.
+    fn kept_root(&self) -> Option<(&str, Workspace)> {
+        match &self.scope {
+            DeleteScope::KeepRoot { root, workspace } => Some((root.as_str(), *workspace)),
+            DeleteScope::Subtree | DeleteScope::Tree => None,
+        }
+    }
+
     /// Re-point every Link into the deleted Cards to `into`, which must exist and stay.
     fn into(mut self, conn: &Connection, into: &str) -> Result<Self> {
         let target = load_card(conn, into)?;
@@ -3538,17 +3589,47 @@ fn links_into(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<(S
 /// Deleting a Tree root removes its whole tree and must be confirmed by
 /// typing the root's own address; any other Card is confirmed with `delete`.
 fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
+    plan_delete(conn, at, false)
+}
+
+/// Emptying a Tree keeps its root: every other member goes, and the root's own
+/// address confirms the request (S11, #134).
+fn keep_root_delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
+    plan_delete(conn, at, true)
+}
+
+fn plan_delete(conn: &Connection, at: &str, keep_root: bool) -> Result<DeletePlan> {
     let card = load_card(conn, at)?;
     let is_tree_root = is_tree_root(&card);
-    let delete_set = if is_tree_root {
-        let tree = tree_id(&card.address);
-        load_cards(conn)?
+    if keep_root && !is_tree_root {
+        bail!("keep root takes a Tree root (a Topic like 3/0 or a Citation key); `{at}` is a Regular Card");
+    }
+    let tree = tree_id(&card.address);
+    let members = |conn: &Connection| -> Result<Vec<String>> {
+        Ok(load_cards(conn)?
             .into_iter()
             .filter(|member| is_tree_member(&member.address, tree))
             .map(|member| member.address)
-            .collect::<BTreeSet<_>>()
+            .collect())
+    };
+    let (scope, delete_set) = if keep_root {
+        (
+            DeleteScope::KeepRoot {
+                root: card.address.clone(),
+                workspace: card.workspace,
+            },
+            members(conn)?
+                .into_iter()
+                .filter(|address| *address != card.address)
+                .collect::<BTreeSet<_>>(),
+        )
+    } else if is_tree_root {
+        (DeleteScope::Tree, members(conn)?.into_iter().collect())
     } else {
-        descendant_locations(conn, &card.address)?
+        (
+            DeleteScope::Subtree,
+            descendant_locations(conn, &card.address)?,
+        )
     };
     let confirmation = if is_tree_root {
         card.address.clone()
@@ -3562,6 +3643,7 @@ fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
         side_compaction_mapping(conn, &card.address, &delete_set)?
     };
     Ok(DeletePlan {
+        scope,
         delete_set,
         confirmation,
         inbound,
@@ -3571,6 +3653,9 @@ fn delete_plan(conn: &Connection, at: &str) -> Result<DeletePlan> {
 }
 
 fn delete_verification_lines(plan: &DeletePlan) -> Vec<String> {
+    if let Some((root, workspace)) = plan.kept_root() {
+        return keep_root_verification_lines(plan, root, workspace);
+    }
     let mut lines = vec!["delete verification:".to_string()];
     for location in &plan.delete_set {
         lines.push(format!("delete {location}"));
@@ -3607,6 +3692,42 @@ fn delete_verification_lines(plan: &DeletePlan) -> Vec<String> {
     lines
 }
 
+/// How many breaking-Link pairs the keep-root plan prints before it states the exact remainder.
+const BREAKING_LINK_PREVIEW: usize = 20;
+
+/// The keep-root plan identifies the retained root, its Workspace, how many Regular Cards go,
+/// and every Link from a staying Card that will break (R251).
+fn keep_root_verification_lines(
+    plan: &DeletePlan,
+    root: &str,
+    workspace: Workspace,
+) -> Vec<String> {
+    let kind = if is_valid_topic_location(root) {
+        "Topic"
+    } else {
+        "Literature"
+    };
+    let mut lines = vec![
+        "delete verification:".to_string(),
+        format!("root kept: {root} ({kind}, {workspace} workspace)"),
+        format!("delete regular cards: {}", plan.delete_set.len()),
+    ];
+    if plan.inbound.is_empty() {
+        return lines;
+    }
+    lines.push(format!("links that will break: {}", plan.inbound.len()));
+    for (source, target) in plan.inbound.iter().take(BREAKING_LINK_PREVIEW) {
+        lines.push(format!("{source} -> {target}"));
+    }
+    if plan.inbound.len() > BREAKING_LINK_PREVIEW {
+        lines.push(format!(
+            "... and {} more",
+            plan.inbound.len() - BREAKING_LINK_PREVIEW
+        ));
+    }
+    lines
+}
+
 fn print_delete_verification(plan: &DeletePlan) {
     for line in delete_verification_lines(plan) {
         println!("{line}");
@@ -3614,8 +3735,19 @@ fn print_delete_verification(plan: &DeletePlan) {
 }
 
 fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteResult> {
+    let root_kept = plan.kept_root().map(|(root, _)| root.to_string());
     let compaction = plan.compaction();
     let repoint = plan.repoint_mapping();
+    if plan.delete_set.is_empty() && repoint.is_empty() && compaction.is_empty() {
+        // An already empty unlocked Tree: the owner still confirmed the plan, and nothing is
+        // written, so no revision moves and no derived data is rebuilt (R262).
+        tree_lock::ensure_unlocked(&*conn, tree_lock::Change::Delete(&plan))?;
+        return Ok(DeleteResult {
+            deleted_count: 0,
+            moved: compaction,
+            root_kept,
+        });
+    }
     let tx = conn.transaction()?;
     tree_lock::ensure_unlocked(&tx, tree_lock::Change::Delete(&plan))?;
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
@@ -3646,14 +3778,24 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
     Ok(DeleteResult {
         deleted_count: plan.delete_set.len(),
         moved: compaction,
+        root_kept,
     })
 }
 
-fn delete_card<F>(conn: &mut Connection, at: &str, mut confirm: F) -> Result<DeleteResult>
+fn delete_card<F>(
+    conn: &mut Connection,
+    at: &str,
+    keep_root: bool,
+    mut confirm: F,
+) -> Result<DeleteResult>
 where
     F: FnMut(&str) -> Result<()>,
 {
-    let plan = delete_plan(conn, at)?;
+    let plan = if keep_root {
+        keep_root_delete_plan(conn, at)?
+    } else {
+        delete_plan(conn, at)?
+    };
     tree_lock::ensure_unlocked(&*conn, tree_lock::Change::Delete(&plan))?;
     print_delete_verification(&plan);
     confirm(&plan.confirmation)?;
