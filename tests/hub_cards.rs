@@ -717,3 +717,72 @@ fn a_line_hub_lists_the_line_hub_of_its_sub_branch_and_neighbours_do_not_count_t
     let found = faults(&mcp.ok("get_hub", json!({ "at": inner })));
     assert!(found.contains(&"upward".to_string()), "{found:?}");
 }
+
+/// The `missing` line rows of one tree, as anchors.
+fn missing_lines(graph: &Value, tree: &str) -> Vec<String> {
+    graph["missing"]
+        .as_array()
+        .expect("missing hubs")
+        .iter()
+        .filter(|row| row["level"] == "line" && row["tree"] == tree)
+        .map(|row| row["anchor"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn only_a_side_branch_requires_a_line_hub_and_the_doorway_line_does_not() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    // A Topic whose doorway `n/1` carries the lines of the tree as Side successors, as
+    // idea-grow builds it: the doorway's subtree is nearly the whole Topic.
+    let a = topic(&mut mcp, "逆向选择", 3);
+    let doorway = format!("{a}/1");
+    let long = address(mcp.ok(
+        "create_successor",
+        json!({ "at": doorway, "kind": "side", "title": "多重均衡" }),
+    ));
+    let mut at = long.clone();
+    for i in 1..=3 {
+        at = address(mcp.ok(
+            "create_successor",
+            json!({ "at": at, "title": format!("多重均衡 第 {i} 步") }),
+        ));
+    }
+    let short = address(mcp.ok(
+        "create_successor",
+        json!({ "at": doorway, "kind": "side", "title": "信号" }),
+    ));
+    mcp.ok(
+        "create_successor",
+        json!({ "at": doorway, "kind": "side", "type": "hub", "level": "topic", "title": "逆向选择的入口",
+                "body": format!("## 主线\n- [[{doorway}]]：市场为什么萎缩。\n\n## 分支\n- [[{long}]]：多重均衡这一支。\n- [[{short}]]：信号这一支。\n") }),
+    );
+    let limits = json!({ "workspace": "agent", "topic_min": 3, "line_min": 4 });
+    // The long Side branch (4 Cards) needs a line hub; the doorway line (6 Cards under `n/1`)
+    // and the Direct successors inside the branch are no branch starts.
+    let graph = mcp.ok("list_hubs", limits.clone());
+    assert_eq!(
+        missing_lines(&graph, &a),
+        vec![long.clone()],
+        "{}",
+        graph["missing"]
+    );
+    assert!(
+        !graph["missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["level"] == "topic" && row["tree"] == a.as_str()),
+        "the topic hub maps the tree: {}",
+        graph["missing"]
+    );
+
+    // Its line hub satisfies H2, and nothing else of the tree is reported.
+    mcp.ok(
+        "create_successor",
+        json!({ "at": long, "kind": "side", "type": "hub", "level": "line", "title": "多重均衡这一支",
+                "body": format!("## 均衡\n- [[{long}]]：逆向选择市场可以有多个均衡。\n") }),
+    );
+    let graph = mcp.ok("list_hubs", limits);
+    assert!(missing_lines(&graph, &a).is_empty(), "{}", graph["missing"]);
+}

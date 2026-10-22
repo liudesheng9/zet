@@ -2244,9 +2244,12 @@ impl<'a> Graph<'a> {
                     missing.push(row);
                 }
             }
-            // A branch: a Side successor that is not part of a model.
+            // A branch: a Side successor that is not part of a model. A Direct successor is no
+            // branch start: the doorway line `n/1, n/2, …` is mapped by the topic hub (H1), and
+            // a Direct chain inside a branch is part of that branch's range.
             for branch in members.iter().filter(|card| {
                 card.card_type == CardType::Idea
+                    && crate::valid_side_label(crate::last_segment(&card.address))
                     && !register_parts.contains(&card.address)
             }) {
                 let prefix = format!("{}|", branch.address);

@@ -280,7 +280,7 @@ compiler*), and `get_hub` and `list_hubs` take them as arguments. The defaults a
 | Rule | Statement | Fault in the hub report |
 | --- | --- | --- |
 | H1 Required topic hub | Every Topic tree with `topic_min` (7) or more Cards has exactly one topic hub. | `missing` (in `list_hubs`), `duplicate` |
-| H2 Required line hub | A branch with `line_min` (12) or more Cards, or with 2 or more Model Cards, has a line hub filed under the branch's first Card. | `missing` (in `list_hubs`) |
+| H2 Required line hub | A branch with `line_min` (12) or more Cards, or with 2 or more Model Cards, has a line hub filed under the branch's first Card. A branch starts at a Side successor (an Idea Card); a Direct successor starts none. | `missing` (in `list_hubs`) |
 | H3 Required field hub | A field hub or the register lists every topic hub. | `unanchored` |
 | H4 One register | A Workspace with hubs has one register. It lists every field hub. | `missing` (in `list_hubs`), `unanchored` |
 | H5 Size | A hub holds at most `max_groups` (7) groups and `max_lines` (25) lines. The `邻近` group does not count, because it points out of the subject. A hub of more than 8 lines has 2 or more groups. A register term names 1 to 3 hubs or Cards. | `oversize`, `flat` |
@@ -507,6 +507,19 @@ conversations. The pilot found two faults in the rules, which 0.16.1 fixes:
    hub. Now a line hub may list the line hub of a sub-branch.
 2. The `邻近` group counted toward the size limits, so both topic hubs were `oversize` although their
    subject groups fit. Now `邻近` does not count.
+
+## Line-hub branch starts (2026-10-22)
+
+The idea-grow hubs round (2.5.1) built the topic hub `412/1|j` and three line hubs for Topic `412`, but
+`list_hubs` still reported a line hub missing at `412/1` (38 Cards). `missing` took every Idea Card as a
+branch start, so the doorway, whose Side successors hold nearly the whole Topic, always needed a line
+hub of its own.
+
+Decision: only a Side successor starts a branch, as in Luhmann's box, where a branch is the `a`, `b`, …
+beside a Card. A Direct chain does not count. The doorway line `n/1, n/2, …` is the Topic's main line,
+which the topic hub maps (H1); a Direct chain inside a branch (`n/1|a|1`, …) is part of that branch and
+its line hub. A line hub at `n/1` would repeat the topic hub. `zt-digest hub`'s survey already counted
+only `edge: side` Cards, so the stage and `list_hubs` now agree. zt 0.26.2.
 
 ## Full run (2026-10-14)
 
