@@ -5,7 +5,7 @@ paths:
   - "src/session.rs"
   - "src/session/**"
   - "tests/pty_session.rs"
-synced: 7cca4efa9f2a
+synced: 58c6bbb4aba9
 updated: 2026-10-22
 ---
 
