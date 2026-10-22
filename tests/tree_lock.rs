@@ -4817,3 +4817,695 @@ fn lock_outcomes_stay_distinct_from_a_card_locked_refusal() {
         .expect("stored text");
     assert!(stored.contains("tampered"), "the fault is evidence, not a repair");
 }
+
+// ---------------------------------------------------------------------------------------------
+// S10 (#133): aggregate Lock refusals in rollback-only batch previews.
+// ---------------------------------------------------------------------------------------------
+
+/// The preview's refusal list, by the item that produced them.
+fn refusal_at<'a>(draft: &'a Value, index: i64) -> &'a Value {
+    draft["refusals"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no refusals: {draft}"))
+        .iter()
+        .find(|refusal| refusal["index"] == json!(index))
+        .unwrap_or_else(|| panic!("no refusal for item {index}: {draft}"))
+}
+
+/// The op_keys of the preview's simulated items, in plan order.
+fn previewed_keys(draft: &Value) -> Vec<String> {
+    draft["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no results: {draft}"))
+        .iter()
+        .map(|result| result["op_key"].as_str().expect("op_key").to_string())
+        .collect()
+}
+
+/// The stored receipt count of one operation-key prefix, read straight from the database.
+fn stored_receipts(home: &TestHome, prefix: &str) -> i64 {
+    home.db()
+        .query_row(
+            "SELECT COUNT(*) FROM applied_ops WHERE op_key LIKE ?1",
+            [format!("{prefix}%")],
+            |row| row.get(0),
+        )
+        .expect("stored receipts")
+}
+
+/// T16 / S10-AC01..S10-AC05: a preview reports every independently resolvable Lock refusal, rolls
+/// each refused item back, marks the items that needed a refused creation as blocked, keeps
+/// simulating the independent items around them, and then rolls the whole simulation back. A real
+/// application of the same plan stays fail-fast, so aggregation never authorizes a partial write.
+#[test]
+fn a_preview_reports_every_independent_locked_item_and_blocks_its_dependents() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let setup = mcp.ok(
+        "apply_batch",
+        json!({ "items": [
+            { "op_key": "s10/setup/1/create/frozen", "client_ref": "frozen",
+              "tool": "create_topic", "arguments": { "title": "Frozen" } },
+            { "op_key": "s10/setup/1/create/frozen-first", "client_ref": "frozenFirst",
+              "tool": "create_successor",
+              "arguments": { "at": "@@frozen", "title": "Frozen first", "body": "frozen body" } },
+            { "op_key": "s10/setup/1/create/sealed", "client_ref": "sealed",
+              "tool": "create_topic", "arguments": { "title": "Sealed" } },
+            { "op_key": "s10/setup/1/create/sealed-first", "client_ref": "sealedFirst",
+              "tool": "create_successor",
+              "arguments": { "at": "@@sealed", "title": "Sealed first", "body": "sealed body" } },
+            { "op_key": "s10/setup/1/create/open", "client_ref": "open",
+              "tool": "create_topic", "arguments": { "title": "Open" } },
+            { "op_key": "s10/setup/1/create/open-first", "client_ref": "openFirst",
+              "tool": "create_successor",
+              "arguments": { "at": "@@open", "title": "Open first", "body": "open body" } },
+        ] }),
+    );
+    let setup_address = |index: usize| {
+        setup["results"][index]["result"]["address"]
+            .as_str()
+            .expect("setup address")
+            .to_string()
+    };
+    let frozen = setup_address(0);
+    let frozen_first = setup_address(1);
+    let sealed = setup_address(2);
+    let sealed_first = setup_address(3);
+    let open_first = setup_address(5);
+    gui.lock(&frozen, None);
+    gui.lock(&sealed, None);
+    let revision =
+        mcp.ok("get_cards", json!({ "addresses": [], "view": "text" }))["archive_revision"].clone();
+    let state = archive_state(&home);
+    let items = json!([
+        { "op_key": "s10/draft/1/create/topic", "client_ref": "topic",
+          "tool": "create_topic", "arguments": { "title": "Previewed scope" } },
+        { "op_key": "s10/draft/1/create/inside", "client_ref": "inside",
+          "tool": "create_successor",
+          "arguments": { "at": frozen_first, "title": "Refused inside", "body": "refused body" } },
+        { "op_key": "s10/draft/1/create/dependent", "client_ref": "dependent",
+          "tool": "create_successor",
+          "arguments": { "at": "@@inside", "title": "Dependent", "body": "dependent body" } },
+        { "op_key": "s10/draft/1/edit/frozen", "client_ref": "frozenEdit", "tool": "edit_card",
+          "arguments": { "at": frozen_first, "body": "refused body",
+                         "base_receipt": "s10/setup/1/create/frozen-first" } },
+        { "op_key": "s10/draft/1/edit/sealed", "client_ref": "sealedEdit", "tool": "edit_card",
+          "arguments": { "at": sealed_first, "body": "refused body",
+                         "base_receipt": "s10/setup/1/create/sealed-first" } },
+        { "op_key": "s10/draft/1/edit/open", "client_ref": "openEdit", "tool": "edit_card",
+          "arguments": { "at": open_first, "body": "previewed body",
+                         "base_receipt": "s10/setup/1/create/open-first" } },
+        { "op_key": "s10/draft/1/create/after", "client_ref": "after",
+          "tool": "create_successor",
+          "arguments": { "at": "@@topic", "title": "After the Topic", "body": "after body" } },
+    ]);
+    let draft = mcp.ok("apply_batch", json!({ "preview": true, "items": items }));
+    assert_eq!(draft["preview"], json!(true), "{draft}");
+    assert_eq!(draft["applied"], json!(false), "{draft}");
+    assert_eq!(draft["complete"], json!(false), "a refused plan is not complete: {draft}");
+    assert_eq!(
+        draft["archive_revision"], revision,
+        "the preview reports the unchanged base revision: {draft}"
+    );
+    // Every independently resolvable locked item is reported, in plan order, with its identity and
+    // the structured refusal the single-Card writers answer.
+    let refusals = draft["refusals"].as_array().unwrap_or_else(|| panic!("{draft}"));
+    assert_eq!(refusals.len(), 3, "{draft}");
+    assert_eq!(
+        refusals
+            .iter()
+            .map(|refusal| refusal["index"].as_i64().expect("index"))
+            .collect::<Vec<_>>(),
+        [1, 3, 4],
+        "the refusals keep plan order: {draft}"
+    );
+    let inside = refusal_at(&draft, 1);
+    assert_eq!(inside["op_key"], json!("s10/draft/1/create/inside"), "{draft}");
+    assert_eq!(inside["client_ref"], json!("inside"), "{draft}");
+    assert_card_locked(
+        &inside["refusal"],
+        "create-inside",
+        &frozen,
+        &[&next_direct(&frozen_first)],
+    );
+    assert_card_locked(
+        &refusal_at(&draft, 3)["refusal"],
+        "edit",
+        &frozen,
+        &[&frozen_first],
+    );
+    assert_card_locked(
+        &refusal_at(&draft, 4)["refusal"],
+        "edit",
+        &sealed,
+        &[&sealed_first],
+    );
+    // A reference to a refused creation is blocked, never fabricated: no address, no claim that the
+    // dependent write was validated.
+    let blocked = draft["blocked"].as_array().unwrap_or_else(|| panic!("{draft}"));
+    assert_eq!(blocked.len(), 1, "{draft}");
+    assert_eq!(blocked[0]["index"], json!(2), "{draft}");
+    assert_eq!(blocked[0]["op_key"], json!("s10/draft/1/create/dependent"), "{draft}");
+    assert_eq!(blocked[0]["client_ref"], json!("dependent"), "{draft}");
+    assert_eq!(
+        blocked[0]["reason"],
+        json!("blocked_by_refusal"),
+        "a blocked item says why it was never checked: {draft}"
+    );
+    assert_eq!(
+        blocked[0]["blocked_by"],
+        json!([{ "index": 1, "op_key": "s10/draft/1/create/inside", "client_ref": "inside" }]),
+        "{draft}"
+    );
+    assert!(blocked[0].get("address").is_none(), "no address is invented: {draft}");
+    // The independent items on both sides of the refusals were really simulated.
+    assert_eq!(
+        previewed_keys(&draft),
+        [
+            "s10/draft/1/create/topic",
+            "s10/draft/1/edit/open",
+            "s10/draft/1/create/after"
+        ],
+        "{draft}"
+    );
+    assert!(
+        draft["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .all(|result| result["replayed"] == json!(false)),
+        "nothing was committed, so nothing replays: {draft}"
+    );
+    let cards = draft["cards"].as_array().unwrap_or_else(|| panic!("{draft}"));
+    assert_eq!(cards.len(), 3, "only the simulated items project Cards: {draft}");
+    let open_card = cards
+        .iter()
+        .find(|card| card["address"] == json!(open_first))
+        .unwrap_or_else(|| panic!("the previewed edit projects its Card: {draft}"));
+    assert_eq!(open_card["body"], json!("previewed body"), "{draft}");
+    assert_eq!(
+        draft["scan"],
+        json!({ "items": 7, "checked": 3, "refused": 3, "blocked": 1 }),
+        "the preview states exactly what it checked and what it could not: {draft}"
+    );
+    // The outer transaction rolled back before the reply: every Card, receipt, allocation, Link row,
+    // index revision and Lock fact is unchanged.
+    assert_eq!(archive_state(&home), state, "a refused preview commits nothing");
+    assert_eq!(
+        mcp.ok("get_cards", json!({ "addresses": [], "view": "text" }))["archive_revision"],
+        revision
+    );
+    assert_eq!(stored_receipts(&home, "s10/draft/"), 0, "no simulated item kept a receipt");
+    assert_eq!(
+        mcp.ok("list_trees", json!({}))["trees"]
+            .as_array()
+            .expect("trees")
+            .iter()
+            .filter(|tree| tree["title"] == json!("Previewed scope"))
+            .count(),
+        0,
+        "the previewed Topic was not created"
+    );
+
+    // Aggregation does not authorize a partial write: the same plan applied for real is refused, and
+    // the whole unseen batch rolls back.
+    let refusal = mcp.refused("apply_batch", json!({ "items": items }));
+    assert_card_locked(
+        &refusal,
+        "create-inside",
+        &frozen,
+        &[&next_direct(&frozen_first)],
+    );
+    assert_eq!(
+        archive_state(&home),
+        state,
+        "a real batch with a locked item stays fail-fast and atomic"
+    );
+    assert_eq!(stored_receipts(&home, "s10/draft/"), 0);
+}
+
+/// S10-AC03 / R196: a reference that a refused creation would have bound is blocked through every
+/// level of the chain, no address is invented for it, and an ordinary validation or unresolved
+/// reference keeps its existing whole-request failure contract instead of becoming a Lock report.
+#[test]
+fn a_refused_create_blocks_every_dependent_level_and_invents_no_address() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let frozen = topic(&mut mcp, "Frozen chain");
+    let frozen_first = card(&mut mcp, &frozen, "Frozen first", "frozen body");
+    gui.lock(&frozen, None);
+    let revision =
+        mcp.ok("get_cards", json!({ "addresses": [], "view": "text" }))["archive_revision"].clone();
+    let state = archive_state(&home);
+    let items = json!([
+        { "op_key": "s10/chain/1/create/refused", "client_ref": "refused",
+          "tool": "create_successor",
+          "arguments": { "at": frozen_first, "title": "Refused", "body": "refused body" } },
+        { "op_key": "s10/chain/1/create/child", "client_ref": "child",
+          "tool": "create_successor",
+          "arguments": { "at": "@@refused", "title": "Child", "body": "child body" } },
+        { "op_key": "s10/chain/1/create/grandchild", "client_ref": "grandchild",
+          "tool": "create_successor",
+          "arguments": { "at": "@@child", "title": "Grandchild", "body": "grandchild body" } },
+        { "op_key": "s10/chain/1/create/room", "client_ref": "room",
+          "tool": "create_topic", "arguments": { "title": "Chain scope" } },
+        { "op_key": "s10/chain/1/create/beside", "client_ref": "beside",
+          "tool": "create_successor",
+          "arguments": { "at": "@@room", "title": "Beside", "body": "beside body" } },
+        { "op_key": "s10/chain/1/create/after", "client_ref": "after",
+          "tool": "create_successor",
+          "arguments": { "at": "@@child", "title": "After the child", "body": "after body" } },
+    ]);
+    let draft = mcp.ok("apply_batch", json!({ "preview": true, "items": items }));
+    assert_eq!(draft["complete"], json!(false), "{draft}");
+    assert_eq!(draft["archive_revision"], revision, "{draft}");
+    assert_eq!(
+        draft["refusals"]
+            .as_array()
+            .expect("refusals")
+            .iter()
+            .map(|refusal| refusal["index"].as_i64().expect("index"))
+            .collect::<Vec<_>>(),
+        [0],
+        "{draft}"
+    );
+    let blocked = draft["blocked"].as_array().unwrap_or_else(|| panic!("{draft}"));
+    assert_eq!(
+        blocked
+            .iter()
+            .map(|item| (item["index"].as_i64().expect("index"), item["blocked_by"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                1,
+                json!([{ "index": 0, "op_key": "s10/chain/1/create/refused", "client_ref": "refused" }])
+            ),
+            (
+                2,
+                json!([{ "index": 1, "op_key": "s10/chain/1/create/child", "client_ref": "child" }])
+            ),
+            (
+                5,
+                json!([{ "index": 1, "op_key": "s10/chain/1/create/child", "client_ref": "child" }])
+            ),
+        ],
+        "a blocked item blocks its own dependents: {draft}"
+    );
+    assert_eq!(
+        previewed_keys(&draft),
+        ["s10/chain/1/create/room", "s10/chain/1/create/beside"],
+        "{draft}"
+    );
+    assert_eq!(
+        draft["scan"],
+        json!({ "items": 6, "checked": 2, "refused": 1, "blocked": 3 }),
+        "{draft}"
+    );
+    assert_eq!(archive_state(&home), state);
+    assert_eq!(
+        mcp.ok("list_trees", json!({}))["trees"]
+            .as_array()
+            .expect("trees")
+            .iter()
+            .filter(|tree| tree["title"] == json!("Chain scope"))
+            .count(),
+        0
+    );
+
+    // A reference no item would ever bind is the ordinary unresolved-reference failure, not a Lock
+    // report: preview aggregation does not become a general recovery engine (R197).
+    let unknown = json!([
+        { "op_key": "s10/unknown/1/create/topic", "client_ref": "topic",
+          "tool": "create_topic", "arguments": { "title": "Never applied" } },
+        { "op_key": "s10/unknown/1/create/lost", "client_ref": "lost",
+          "tool": "create_successor",
+          "arguments": { "at": "@@nowhere", "title": "Lost", "body": "lost body" } },
+    ]);
+    let (error, failed) = mcp.call("apply_batch", json!({ "preview": true, "items": unknown }));
+    assert!(failed, "an unbound reference still fails the whole request: {error}");
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unresolved earlier client reference `@@nowhere`"),
+        "{error}"
+    );
+    assert!(error["refusals"].is_null(), "an ordinary failure is not a Lock report: {error}");
+
+    // An ordinary validation failure after a refusal keeps its contract too, and writes nothing.
+    let mixed = json!([
+        { "op_key": "s10/mixed/1/create/refused", "client_ref": "refused",
+          "tool": "create_successor",
+          "arguments": { "at": frozen_first, "title": "Refused", "body": "refused body" } },
+        { "op_key": "s10/mixed/1/create/bad", "client_ref": "bad", "tool": "create_topic",
+          "arguments": { "title": "   " } },
+    ]);
+    let (error, failed) = mcp.call("apply_batch", json!({ "preview": true, "items": mixed }));
+    assert!(failed, "an ordinary validation failure still fails: {error}");
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("title must be non-empty single-line text"),
+        "{error}"
+    );
+    assert!(error["refusals"].is_null(), "{error}");
+    assert_eq!(archive_state(&home), state);
+}
+
+/// S10-AC06 / R200: `preview_items` aggregates the same way across its real 64-item and 1-MiB
+/// simulated chunk boundaries, keeps the whole-sequence bounds, and still rolls the whole sequential
+/// simulation back.
+#[test]
+fn a_sequence_preview_aggregates_across_count_and_byte_chunk_boundaries() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let frozen = topic(&mut mcp, "Frozen sequence");
+    let frozen_first = card(&mut mcp, &frozen, "Frozen first", "frozen body");
+    gui.lock(&frozen, None);
+    let revision =
+        mcp.ok("get_cards", json!({ "addresses": [], "view": "text" }))["archive_revision"].clone();
+    let state = archive_state(&home);
+
+    // A count-limited plan: 65 items fill the first 64-item chunk, the refusal opens the second,
+    // and both dependents and one successful cross-chunk reference follow it.
+    let key = |i: usize| format!("s10/seq/1/item/{i:04}");
+    let mut counts = vec![json!({
+        "op_key": key(0), "client_ref": "0", "tool": "create_topic",
+        "arguments": { "title": "Sequence scope" }
+    })];
+    for i in 1..=63 {
+        counts.push(json!({
+            "op_key": key(i), "client_ref": i.to_string(), "tool": "create_successor",
+            "arguments": { "at": format!("@@{}", i - 1), "title": format!("Step {i}"),
+                           "body": format!("step body {i}") }
+        }));
+    }
+    counts.push(json!({
+        "op_key": key(64), "client_ref": "64", "tool": "create_successor",
+        "arguments": { "at": frozen_first, "title": "Refused", "body": "refused body" }
+    }));
+    counts.push(json!({
+        "op_key": key(65), "client_ref": "65", "tool": "create_successor",
+        "arguments": { "at": "@@64", "title": "Child", "body": "child body" }
+    }));
+    counts.push(json!({
+        "op_key": key(66), "client_ref": "66", "tool": "create_successor",
+        "arguments": { "at": "@@63", "title": "Cross chunk", "body": "cross chunk body" }
+    }));
+    counts.push(json!({
+        "op_key": key(67), "client_ref": "67", "tool": "create_successor",
+        "arguments": { "at": "@@65", "title": "Grandchild", "body": "grandchild body" }
+    }));
+    let counted = mcp.ok(
+        "apply_batch",
+        json!({ "preview": true, "preview_items": counts }),
+    );
+    assert_eq!(counted["complete"], json!(false), "{counted}");
+    assert_eq!(counted["archive_revision"], revision, "{counted}");
+    assert_eq!(
+        counted["refusals"]
+            .as_array()
+            .expect("refusals")
+            .iter()
+            .map(|refusal| refusal["index"].as_i64().expect("index"))
+            .collect::<Vec<_>>(),
+        [64],
+        "{counted}"
+    );
+    assert_card_locked(
+        &refusal_at(&counted, 64)["refusal"],
+        "create-inside",
+        &frozen,
+        &[&next_direct(&frozen_first)],
+    );
+    assert_eq!(
+        counted["blocked"]
+            .as_array()
+            .expect("blocked")
+            .iter()
+            .map(|item| item["index"].as_i64().expect("index"))
+            .collect::<Vec<_>>(),
+        [65, 67],
+        "both the dependent and its grandchild stay blocked across the chunk boundary: {counted}"
+    );
+    assert_eq!(
+        counted["scan"],
+        json!({ "items": 68, "checked": 65, "refused": 1, "blocked": 2 }),
+        "{counted}"
+    );
+    let results = counted["results"].as_array().expect("results");
+    assert_eq!(results.len(), 65, "{counted}");
+    let scope = results[0]["result"]["address"]
+        .as_str()
+        .expect("scope address")
+        .to_string();
+    assert_eq!(
+        results.last().expect("last result")["result"]["address"],
+        json!(format!("{}/64", tree_of(&scope))),
+        "the cross-chunk reference to the last chunk-one Card still resolves: {counted}"
+    );
+    assert_eq!(archive_state(&home), state, "a refused sequence preview commits nothing");
+
+    // A byte-limited plan: two wide items fill the first 1-MiB chunk, so the refusal and its
+    // dependent sit in the second chunk and a third wide item opens the third, where a blocked
+    // grandchild and a successful reference back into the first chunk follow.
+    let wide = "wide ".repeat(80000);
+    let key = |i: usize| format!("s10/bytes/1/item/{i:04}");
+    let bytes = json!([
+        { "op_key": key(0), "client_ref": "0", "tool": "create_topic",
+          "arguments": { "title": "Byte scope", "body": wide } },
+        { "op_key": key(1), "client_ref": "1", "tool": "create_successor",
+          "arguments": { "at": "@@0", "title": "Wide one", "body": wide } },
+        { "op_key": key(2), "client_ref": "2", "tool": "create_successor",
+          "arguments": { "at": "@@1", "kind": "side", "title": "Wide two", "body": wide } },
+        { "op_key": key(3), "client_ref": "3", "tool": "create_successor",
+          "arguments": { "at": frozen_first, "title": "Refused", "body": wide } },
+        { "op_key": key(4), "client_ref": "4", "tool": "create_successor",
+          "arguments": { "at": "@@3", "title": "Child", "body": "child body" } },
+        { "op_key": key(5), "client_ref": "5", "tool": "create_successor",
+          "arguments": { "at": "@@1", "kind": "side", "title": "Wide three", "body": wide } },
+        { "op_key": key(6), "client_ref": "6", "tool": "create_successor",
+          "arguments": { "at": "@@4", "title": "Grandchild", "body": "grandchild body" } },
+        { "op_key": key(7), "client_ref": "7", "tool": "create_successor",
+          "arguments": { "at": "@@1", "kind": "side", "title": "Cross chunk",
+                         "body": "cross chunk body" } },
+    ]);
+    let wide_draft = mcp.ok(
+        "apply_batch",
+        json!({ "preview": true, "preview_items": bytes }),
+    );
+    assert_eq!(wide_draft["complete"], json!(false), "{wide_draft}");
+    assert_eq!(
+        wide_draft["refusals"]
+            .as_array()
+            .expect("refusals")
+            .iter()
+            .map(|refusal| refusal["index"].as_i64().expect("index"))
+            .collect::<Vec<_>>(),
+        [3],
+        "{wide_draft}"
+    );
+    assert_eq!(
+        wide_draft["blocked"]
+            .as_array()
+            .expect("blocked")
+            .iter()
+            .map(|item| item["index"].as_i64().expect("index"))
+            .collect::<Vec<_>>(),
+        [4, 6],
+        "a dependent chain in a later byte chunk stays blocked: {wide_draft}"
+    );
+    assert_eq!(
+        wide_draft["scan"],
+        json!({ "items": 8, "checked": 5, "refused": 1, "blocked": 2 }),
+        "{wide_draft}"
+    );
+    assert!(
+        wide_draft["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .all(|result| result["replayed"] == json!(false)),
+        "{wide_draft}"
+    );
+    assert_eq!(archive_state(&home), state, "a refused byte sequence commits nothing");
+    assert_eq!(
+        mcp.ok("get_cards", json!({ "addresses": [], "view": "text" }))["archive_revision"],
+        revision
+    );
+}
+
+/// S10-AC07 / R188: a refused preview still replays an identical committed plan's receipts, publishes
+/// their bindings, and never presents a simulation as a committed receipt.
+#[test]
+fn a_refused_preview_replays_an_identical_committed_plan_and_keeps_its_bindings() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let setup = json!({ "items": [
+        { "op_key": "s10/replay/1/create/open", "client_ref": "open",
+          "tool": "create_topic", "arguments": { "title": "Open" } },
+        { "op_key": "s10/replay/1/create/open-first", "client_ref": "openFirst",
+          "tool": "create_successor",
+          "arguments": { "at": "@@open", "title": "Open first", "body": "open body" } },
+        { "op_key": "s10/replay/1/create/frozen", "client_ref": "frozen",
+          "tool": "create_topic", "arguments": { "title": "Frozen" } },
+        { "op_key": "s10/replay/1/create/frozen-first", "client_ref": "frozenFirst",
+          "tool": "create_successor",
+          "arguments": { "at": "@@frozen", "title": "Frozen first", "body": "frozen body" } },
+    ] });
+    mcp.ok("apply_batch", setup.clone());
+    let trees = mcp.ok("list_trees", json!({}))["trees"].clone();
+    let root_of = |title: &str| {
+        trees
+            .as_array()
+            .expect("trees")
+            .iter()
+            .find(|tree| tree["title"] == json!(title))
+            .unwrap_or_else(|| panic!("no tree titled {title}: {trees}"))["root"]
+            .as_str()
+            .expect("root")
+            .to_string()
+    };
+    let frozen_root = root_of("Frozen");
+    let open_root = root_of("Open");
+    let frozen_first = first_address(&frozen_root);
+    gui.lock(&frozen_root, None);
+    let revision =
+        mcp.ok("get_cards", json!({ "addresses": [], "view": "text" }))["archive_revision"].clone();
+    let state = archive_state(&home);
+    // The identical committed plan replays its four receipts; the refused edit and one new write
+    // follow them in the same preview.
+    let mut plan = setup["items"].as_array().expect("items").clone();
+    plan.push(json!({
+        "op_key": "s10/replay/1/edit/locked", "client_ref": "locked", "tool": "edit_card",
+        "arguments": { "at": frozen_first, "body": "refused body",
+                       "base_receipt": "s10/replay/1/create/frozen-first" }
+    }));
+    plan.push(json!({
+        "op_key": "s10/replay/1/create/beside", "client_ref": "beside", "tool": "create_successor",
+        "arguments": { "at": "@@openFirst", "title": "Beside", "body": "beside body" }
+    }));
+    let draft = mcp.ok("apply_batch", json!({ "preview": true, "items": plan }));
+    assert_eq!(draft["complete"], json!(false), "{draft}");
+    assert_eq!(draft["archive_revision"], revision, "{draft}");
+    let results = draft["results"].as_array().expect("results");
+    assert_eq!(results.len(), 5, "four replayed receipts and one simulated write: {draft}");
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result["replayed"].clone())
+            .collect::<Vec<_>>(),
+        [json!(true), json!(true), json!(true), json!(true), json!(false)],
+        "{draft}"
+    );
+    assert_eq!(
+        refusal_at(&draft, 4)["refusal"]["reason"],
+        json!("edit"),
+        "{draft}"
+    );
+    assert_eq!(
+        draft["scan"],
+        json!({ "items": 6, "checked": 5, "refused": 1, "blocked": 0 }),
+        "{draft}"
+    );
+    // The new write resolved the replayed item's published binding.
+    let beside = draft["cards"]
+        .as_array()
+        .expect("cards")
+        .iter()
+        .find(|card| card["title"] == json!("Beside"))
+        .unwrap_or_else(|| panic!("the simulated Card projects: {draft}"));
+    assert_eq!(
+        beside["parent_address"],
+        json!(first_address(&open_root)),
+        "a replayed receipt publishes its address: {draft}"
+    );
+    assert_eq!(archive_state(&home), state, "a refused preview commits nothing");
+    assert_eq!(stored_receipts(&home, "s10/replay/"), 4, "no new receipt is stored");
+}
+
+/// S10-AC05 / R198: an oversized *unsuccessful* preview is rolled back before the encoded MCP reply
+/// limit replaces the answer, exactly as a successful one is.
+#[test]
+fn an_oversized_refused_preview_is_rolled_back_before_the_mcp_reply_limit() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let setup = mcp.ok(
+        "apply_batch",
+        json!({ "items": [
+            { "op_key": "s10-wide/setup/1/create/topic", "client_ref": "topic",
+              "tool": "create_topic", "arguments": { "title": "Wide draft" } },
+            { "op_key": "s10-wide/setup/1/create/source", "client_ref": "source",
+              "tool": "create_successor",
+              "arguments": { "at": "@@topic", "title": "Wide claim", "body": "wide body" } },
+            { "op_key": "s10-wide/setup/1/create/frozen", "client_ref": "frozen",
+              "tool": "create_topic", "arguments": { "title": "Wide frozen" } },
+            { "op_key": "s10-wide/setup/1/create/frozen-first", "client_ref": "frozenFirst",
+              "tool": "create_successor",
+              "arguments": { "at": "@@frozen", "title": "Wide frozen first",
+                             "body": "frozen body" } },
+        ] }),
+    );
+    let source = setup["results"][1]["result"]["address"]
+        .as_str()
+        .expect("source address")
+        .to_string();
+    let frozen = setup["results"][2]["result"]["address"]
+        .as_str()
+        .expect("frozen address")
+        .to_string();
+    let frozen_first = first_address(&frozen);
+    let mut base = "s10-wide/setup/1/create/source".to_string();
+    for i in 0..4 {
+        let key = format!("s10-wide/grow/1/paragraph/{i}");
+        mcp.ok(
+            "apply_batch",
+            json!({ "items": [{
+                "op_key": key, "client_ref": "source", "tool": "edit_card",
+                "arguments": { "at": source, "base_receipt": base,
+                               "owned_paragraph": { "text": format!("{i} {}", "x".repeat(1000000)) } }
+            }] }),
+        );
+        base = key;
+    }
+    gui.lock(&frozen, None);
+    let revision =
+        mcp.ok("get_cards", json!({ "addresses": [], "view": "text" }))["archive_revision"].clone();
+    let state = archive_state(&home);
+    // One simulated edit projects the whole wide Card and one locked item is refused, so the
+    // aggregated answer is far beyond the 8 MiB encoded reply bound.
+    let request = json!({ "preview": true, "items": [
+        { "op_key": "s10-wide/link/1/edit/paragraph", "client_ref": "source", "tool": "edit_card",
+          "arguments": { "at": source, "base_receipt": base,
+                         "owned_paragraph": { "text": "依赖 [[0/1]]，后者给出了共同的讨论范围。" } } },
+        { "op_key": "s10-wide/edit/1/edit/locked", "client_ref": "locked", "tool": "edit_card",
+          "arguments": { "at": frozen_first, "body": "refused body",
+                         "base_receipt": "s10-wide/setup/1/create/frozen-first" } },
+    ] });
+    let (error, failed) = mcp.call("apply_batch", request.clone());
+    assert!(failed, "the oversized refused preview is rejected: {error}");
+    assert_eq!(error["code"], json!("read_limit"), "{error}");
+    assert_eq!(error["limit_kind"], json!("reply_bytes"), "{error}");
+    assert_eq!(
+        archive_state(&home),
+        state,
+        "the outer transaction is rolled back before the reply limit answers"
+    );
+    assert_eq!(
+        mcp.ok("get_cards", json!({ "addresses": [], "view": "text" }))["archive_revision"],
+        revision
+    );
+    // The rejected preview retained no receipt: applying the same plan for real still starts at the
+    // ordinary fail-fast Lock refusal, not at a replayed receipt.
+    let mut actual = request;
+    actual.as_object_mut().unwrap().remove("preview");
+    let refusal = mcp.refused("apply_batch", actual);
+    assert_card_locked(&refusal, "edit", &frozen, &[&frozen_first]);
+    assert_eq!(archive_state(&home), state);
+}

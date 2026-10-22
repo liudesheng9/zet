@@ -27,8 +27,37 @@ impl Conflict {
     }
 }
 
-fn resolve(value: &Value, refs: &BTreeMap<String, String>) -> Result<Value> {
-    Ok(match value {
+/// One resolved argument tree and every reference name that no successful item bound, so a preview
+/// can tell a dependent item from an ordinary unresolved reference (R196).
+struct Resolved {
+    value: Value,
+    missing: BTreeSet<String>,
+}
+
+impl Resolved {
+    /// The ordinary failure contract: an unbound reference stops the request.
+    fn checked(self) -> Result<Value> {
+        match self.missing.into_iter().next() {
+            Some(name) => bail!("unresolved earlier client reference `@@{name}`"),
+            None => Ok(self.value),
+        }
+    }
+}
+
+fn resolve(value: &Value, refs: &BTreeMap<String, String>) -> Resolved {
+    let mut missing = BTreeSet::new();
+    let value = resolve_into(value, refs, &mut missing);
+    Resolved { value, missing }
+}
+
+/// Resolve every reference an earlier successful item bound; an unbound reference keeps its literal
+/// `@@name` and is reported, so nothing is ever fabricated for it.
+fn resolve_into(
+    value: &Value,
+    refs: &BTreeMap<String, String>,
+    missing: &mut BTreeSet<String>,
+) -> Value {
+    match value {
         Value::String(text) => {
             let mut rest = text.as_str();
             let mut out = String::new();
@@ -40,10 +69,14 @@ fn resolve(value: &Value, refs: &BTreeMap<String, String>) -> Result<Value> {
                     .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
                     .count();
                 let name = &rest[..end];
-                let address = refs
-                    .get(name)
-                    .with_context(|| format!("unresolved earlier client reference `@@{name}`"))?;
-                out.push_str(address);
+                match refs.get(name) {
+                    Some(address) => out.push_str(address),
+                    None => {
+                        missing.insert(name.to_string());
+                        out.push_str("@@");
+                        out.push_str(name);
+                    }
+                }
                 rest = &rest[end..];
             }
             out.push_str(rest);
@@ -52,17 +85,17 @@ fn resolve(value: &Value, refs: &BTreeMap<String, String>) -> Result<Value> {
         Value::Array(items) => Value::Array(
             items
                 .iter()
-                .map(|v| resolve(v, refs))
-                .collect::<Result<_>>()?,
+                .map(|v| resolve_into(v, refs, missing))
+                .collect(),
         ),
         Value::Object(fields) => Value::Object(
             fields
                 .iter()
-                .map(|(k, v)| Ok((k.clone(), resolve(v, refs)?)))
-                .collect::<Result<_>>()?,
+                .map(|(k, v)| (k.clone(), resolve_into(v, refs, missing)))
+                .collect(),
         ),
         other => other.clone(),
-    })
+    }
 }
 
 fn hash(value: &Value) -> String {
@@ -390,7 +423,22 @@ fn authored_bytes(arguments: &Value) -> usize {
 }
 
 /// Match the thin client's concrete bindings for references to earlier chunks.
-fn resolve_before(value: &Value, refs: &BTreeMap<String, String>, start: usize) -> Result<Value> {
+fn resolve_before(
+    value: &Value,
+    refs: &BTreeMap<String, String>,
+    start: usize,
+) -> Result<Resolved> {
+    let mut missing = BTreeSet::new();
+    let value = resolve_before_into(value, refs, start, &mut missing)?;
+    Ok(Resolved { value, missing })
+}
+
+fn resolve_before_into(
+    value: &Value,
+    refs: &BTreeMap<String, String>,
+    start: usize,
+    missing: &mut BTreeSet<String>,
+) -> Result<Value> {
     Ok(match value {
         Value::String(text) => {
             let mut rest = text.as_str();
@@ -408,9 +456,14 @@ fn resolve_before(value: &Value, refs: &BTreeMap<String, String>, start: usize) 
                     .parse::<usize>()
                     .context("invalid numeric sequence reference")?;
                 if n < start {
-                    out.push_str(refs.get(name).with_context(|| {
-                        format!("unresolved earlier client reference `@@{name}`")
-                    })?);
+                    match refs.get(name) {
+                        Some(address) => out.push_str(address),
+                        None => {
+                            missing.insert(name.to_string());
+                            out.push_str("@@");
+                            out.push_str(name);
+                        }
+                    }
                 } else {
                     out.push_str("@@");
                     out.push_str(name);
@@ -423,13 +476,13 @@ fn resolve_before(value: &Value, refs: &BTreeMap<String, String>, start: usize) 
         Value::Array(values) => Value::Array(
             values
                 .iter()
-                .map(|v| resolve_before(v, refs, start))
+                .map(|v| resolve_before_into(v, refs, start, missing))
                 .collect::<Result<_>>()?,
         ),
         Value::Object(values) => Value::Object(
             values
                 .iter()
-                .map(|(k, v)| Ok((k.clone(), resolve_before(v, refs, start)?)))
+                .map(|(k, v)| Ok((k.clone(), resolve_before_into(v, refs, start, missing)?)))
                 .collect::<Result<_>>()?,
         ),
         other => other.clone(),
@@ -517,13 +570,98 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
         "apply_batch",
     )?;
     let mut conn = crate::open_db(root)?;
-    let tx = conn.transaction()?;
+    let mut tx = conn.transaction()?;
     let archive_revision = crate::link_index::revision(&tx)?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS applied_ops(op_key TEXT NOT NULL PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at TEXT NOT NULL)")?;
+    let simulated = simulate(&mut tx, root, items, sequence, preview);
+    match simulated {
+        // R198: the outer transaction is rolled back before any response leaves this module, the
+        // ordinary failure contract's error included.
+        Err(error) => {
+            tx.rollback()?;
+            Err(error)
+        }
+        Ok(simulated) if preview => {
+            let value = simulated.value(archive_revision, true);
+            tx.rollback()?;
+            Ok(value)
+        }
+        Ok(simulated) => {
+            let value = simulated.value(archive_revision, false);
+            tx.commit()?;
+            Ok(value)
+        }
+    }
+}
+
+/// What one simulated item produced. Only a successful item publishes its facts (R194).
+enum ItemOutcome {
+    /// The operation key already holds this identical request, so its stored result answers again.
+    Replayed { address: String, result: Value },
+    /// The ordinary receipt and writer path ran and wrote this item.
+    Written {
+        address: String,
+        result: Value,
+        wrote: bool,
+    },
+}
+
+/// The facts one batch or preview gathered inside its transaction.
+struct Simulated {
+    results: Vec<Value>,
+    refusals: Vec<Value>,
+    blocked: Vec<Value>,
+    cards: Vec<Value>,
+    paragraphs: Vec<Value>,
+}
+
+impl Simulated {
+    /// The reply shape: a real batch answers only its results, and a preview states whether it
+    /// checked the whole plan, every ordered Lock refusal and every blocked item identity.
+    fn value(self, archive_revision: u64, preview: bool) -> Value {
+        if !preview {
+            return json!({"results":self.results});
+        }
+        let scan = json!({
+            "items": self.results.len() + self.refusals.len() + self.blocked.len(),
+            "checked": self.results.len(),
+            "refused": self.refusals.len(),
+            "blocked": self.blocked.len(),
+        });
+        let complete = self.refusals.is_empty() && self.blocked.is_empty();
+        json!({
+            "results": self.results,
+            "preview": true,
+            "applied": false,
+            "complete": complete,
+            "archive_revision": archive_revision,
+            "scan": scan,
+            "refusals": self.refusals,
+            "blocked": self.blocked,
+            "cards": self.cards,
+            "paragraphs": self.paragraphs,
+        })
+    }
+}
+
+/// Run the ordinary receipt and writer path over every item. Only a preview keeps going after a
+/// Lock refusal, and only a preview simulates an item inside its own savepoint (R190).
+fn simulate(
+    tx: &mut rusqlite::Transaction<'_>,
+    root: &Path,
+    items: &[Value],
+    sequence: bool,
+    preview: bool,
+) -> Result<Simulated> {
     let mut refs = BTreeMap::new();
     let mut chunk_refs = BTreeMap::new();
+    // The identities whose reference no later item may resolve: a refused item, or one this refusal
+    // already blocked (R196).
+    let mut failed: BTreeMap<String, Value> = BTreeMap::new();
     let mut changed = BTreeSet::new();
     let mut results = Vec::new();
+    let mut refusals = Vec::new();
+    let mut blocked = Vec::new();
     let mut chunk_start = 0usize;
     let mut chunk_bytes = 0usize;
     let mut sequence_bytes = 0usize;
@@ -532,19 +670,22 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
         let client_ref = item["client_ref"]
             .as_str()
             .context("missing item client_ref")?;
-        if refs.contains_key(client_ref) {
+        if refs.contains_key(client_ref) || failed.contains_key(client_ref) {
             bail!("duplicate client_ref `{client_ref}`");
         }
         let tool = item["tool"].as_str().context("missing item tool")?;
-        let normalized = if sequence {
-            let mut arguments = resolve_before(&item["arguments"], &refs, chunk_start)?;
-            if index - chunk_start >= 64 || chunk_bytes + authored_bytes(&arguments) > 1024 * 1024 {
+        // R192: resolve the earlier successful references, then begin the item's own savepoint.
+        let (raw, bindings, mut missing) = if sequence {
+            let mut normalized = resolve_before(&item["arguments"], &refs, chunk_start)?;
+            if index - chunk_start >= 64
+                || chunk_bytes + authored_bytes(&normalized.value) > 1024 * 1024
+            {
                 chunk_start = index;
                 chunk_bytes = 0;
                 chunk_refs.clear();
-                arguments = resolve_before(&item["arguments"], &refs, chunk_start)?;
+                normalized = resolve_before(&item["arguments"], &refs, chunk_start)?;
             }
-            let bytes = authored_bytes(&arguments);
+            let bytes = authored_bytes(&normalized.value);
             if bytes > 1024 * 1024 {
                 bail!("resolved sequence item {index} exceeds 1048576 authored bytes");
             }
@@ -553,100 +694,120 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
             if sequence_bytes > 8 * 1024 * 1024 {
                 bail!("resolved preview sequence exceeds 8388608 authored bytes");
             }
-            Some(arguments)
+            let Resolved { value, missing } = normalized;
+            (value, &chunk_refs, missing)
         } else {
-            None
+            (item["arguments"].clone(), &refs, BTreeSet::new())
         };
-        let raw = normalized.as_ref().unwrap_or(&item["arguments"]);
-        let bindings = if sequence { &chunk_refs } else { &refs };
-        let arguments = resolve(raw, bindings)?;
-        let canonical = request(tool, raw)?;
-        let resolved = resolve(&canonical, bindings)?;
-        let request_hash = hash(&json!({"request":canonical,"resolved":resolved}));
-        let prior: Option<(String, String)> = tx
-            .query_row(
-                "SELECT request_hash,result_json FROM applied_ops WHERE op_key=?1",
-                [op_key],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        if let Some((prior_hash, result_json)) = prior {
-            if prior_hash != request_hash {
-                bail!("operation key conflict: `{op_key}`");
+        let Resolved {
+            value: arguments,
+            missing: unresolved,
+        } = resolve(&raw, bindings);
+        missing.extend(unresolved);
+        let identity = json!({"index":index,"op_key":op_key,"client_ref":client_ref});
+        if !missing.is_empty() {
+            if preview {
+                let mut blocked_by = Vec::new();
+                let mut unbound = Vec::new();
+                for name in &missing {
+                    match failed.get(name) {
+                        Some(identity) => blocked_by.push(identity.clone()),
+                        None => unbound.push(name.clone()),
+                    }
+                }
+                // A reference an item that was refused or blocked would have bound is blocked, not
+                // an ordinary error; any other unbound reference keeps the existing contract.
+                if unbound.is_empty() {
+                    blocked.push(json!({
+                        "index":index,
+                        "op_key":op_key,
+                        "client_ref":client_ref,
+                        "reason":"blocked_by_refusal",
+                        "blocked_by":blocked_by,
+                    }));
+                    failed.insert(client_ref.to_string(), identity);
+                    continue;
+                }
             }
-            let result: Value =
-                serde_json::from_str(&result_json).context("invalid stored operation result")?;
-            let address = result["address"]
-                .as_str()
-                .context("stored operation result missing address")?;
-            refs.insert(client_ref.to_string(), address.to_string());
-            if sequence {
-                chunk_refs.insert(client_ref.to_string(), address.to_string());
-            }
-            results.push(
-                json!({"op_key":op_key,"client_ref":client_ref,"result":result,"replayed":true}),
+            bail!(
+                "unresolved earlier client reference `@@{}`",
+                missing.into_iter().next().expect("a missing reference")
             );
-            continue;
         }
-        let before = if tool == "edit_card" {
-            crate::Access::Agent.ensure_writable(
-                crate::load_card(&tx, arguments["at"].as_str().context("missing edit at")?)?
-                    .workspace,
-            )?;
-            Some(fingerprint(
-                &tx,
-                arguments["at"].as_str().context("missing edit at")?,
-            )?)
+        let canonical = request(tool, &raw)?;
+        let resolved = resolve(&canonical, bindings).checked()?;
+        let request_hash = hash(&json!({"request":canonical,"resolved":resolved}));
+        let outcome = if preview {
+            // S10-AC02 / R195: one savepoint per item, so a Lock refusal rolls back exactly this item
+            // and every independent item after it still runs.
+            let savepoint = tx.savepoint()?;
+            match apply_item(&savepoint, root, tool, &arguments, op_key, &request_hash) {
+                // R194: release the item into the outer temporary transaction, then publish it.
+                Ok(outcome) => {
+                    savepoint.commit()?;
+                    Ok(outcome)
+                }
+                Err(error) => {
+                    // `finish` rolls this item's savepoint back and releases it, so the outer
+                    // transaction — and every item released into it — stays usable.
+                    savepoint.finish()?;
+                    Err(error)
+                }
+            }
         } else {
-            None
+            apply_item(tx, root, tool, &arguments, op_key, &request_hash)
         };
-        if let Some(before) = &before {
-            guard_edit(&tx, &arguments, before)?;
+        match outcome {
+            Ok(ItemOutcome::Replayed { address, result }) => {
+                refs.insert(client_ref.to_string(), address.clone());
+                if sequence {
+                    chunk_refs.insert(client_ref.to_string(), address);
+                }
+                results.push(
+                    json!({"op_key":op_key,"client_ref":client_ref,"result":result,"replayed":true}),
+                );
+            }
+            Ok(ItemOutcome::Written {
+                address,
+                result,
+                wrote,
+            }) => {
+                refs.insert(client_ref.to_string(), address.clone());
+                if sequence {
+                    chunk_refs.insert(client_ref.to_string(), address.clone());
+                }
+                if wrote {
+                    changed.insert(address);
+                }
+                results.push(
+                    json!({"op_key":op_key,"client_ref":client_ref,"result":result,"replayed":false}),
+                );
+            }
+            Err(error) => match error.downcast_ref::<crate::tree_lock::Refusal>() {
+                // R195: record the refusal with its item identity and keep the plan going.
+                Some(refusal) if preview => {
+                    refusals.push(
+                        json!({"index":index,"op_key":op_key,"client_ref":client_ref,"refusal":refusal.value()}),
+                    );
+                    failed.insert(client_ref.to_string(), identity);
+                }
+                // R197: every non-Lock failure keeps its current fail-fast contract.
+                _ => return Err(error),
+            },
         }
-        let mut write_arguments = arguments.clone();
-        if tool == "edit_card" {
-            write_arguments
-                .as_object_mut()
-                .unwrap()
-                .remove("base_fingerprint");
-            write_arguments
-                .as_object_mut()
-                .unwrap()
-                .remove("base_receipt");
-        }
-        let (mut result, did_change) =
-            if tool == "edit_card" && arguments.get("owned_paragraph").is_some() {
-                owned_paragraph(root, &tx, &arguments, before.as_deref().expect("edit base"))?
-            } else {
-                crate::mcp::write_card_tx(root, &tx, tool, &write_arguments)?
-            };
-        let address = result["address"]
-            .as_str()
-            .context("write result missing address")?
-            .to_string();
-        result["before_fingerprint"] = json!(before);
-        result["after_fingerprint"] = json!(fingerprint(&tx, &address)?);
-        tx.execute("INSERT INTO applied_ops(op_key,request_hash,result_json,committed_at) VALUES(?1,?2,?3,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",rusqlite::params![op_key,request_hash,result.to_string()])?;
-        refs.insert(client_ref.to_string(), address.clone());
-        if sequence {
-            chunk_refs.insert(client_ref.to_string(), address.clone());
-        }
-        if did_change {
-            changed.insert(address);
-        }
-        results.push(
-            json!({"op_key":op_key,"client_ref":client_ref,"result":result,"replayed":false}),
-        );
     }
     if !changed.is_empty() {
-        crate::link_index::sync_sources(&tx, &changed)?;
+        crate::link_index::sync_sources(tx, &changed)?;
         if !preview {
-            crate::link_index::bump_revision(&tx)?;
+            crate::link_index::bump_revision(tx)?;
         }
     }
+    let mut cards = Vec::new();
+    let mut paragraphs = Vec::new();
     if preview {
+        // A preview projects its own simulation: it must still match the final receipt per address,
+        // so replaying a historical receipt after an independent edit is refused.
         let mut expected = BTreeMap::new();
-        let mut paragraphs = Vec::new();
         for receipt in &results {
             let result = &receipt["result"];
             let address = result["address"]
@@ -672,9 +833,9 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
         }
         let mut previewed = Vec::new();
         for (address, expected) in expected {
-            let observed = fingerprint(&tx, address)?;
+            let observed = fingerprint(tx, address)?;
             if observed != expected {
-                let card = crate::load_card(&tx, address)?;
+                let card = crate::load_card(tx, address)?;
                 return Err(anyhow::Error::new(Conflict {
                     address: address.to_string(),
                     reason: "current output differs from the final draft receipt".to_string(),
@@ -682,7 +843,7 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
                     observed_fingerprint: observed,
                 }));
             }
-            previewed.push(crate::load_card(&tx, address)?);
+            previewed.push(crate::load_card(tx, address)?);
         }
         // A preview's final projections carry the same Lock facts a committed read would show,
         // read from the same uncommitted transaction (R208, S03-AC04).
@@ -690,16 +851,84 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
             .iter()
             .map(|card| card.row_id)
             .collect::<Vec<_>>();
-        let lock = crate::tree_lock::LockView::read(&tx, Some(&rows))?;
-        let mut cards = Vec::new();
+        let lock = crate::tree_lock::LockView::read(tx, Some(&rows))?;
         for card in &previewed {
-            cards.push(crate::read::text_facts(&tx, card, &lock)?);
+            cards.push(crate::read::text_facts(tx, card, &lock)?);
         }
-        tx.rollback()?;
-        return Ok(
-            json!({"results":results,"preview":true,"applied":false,"complete":true,"archive_revision":archive_revision,"cards":cards,"paragraphs":paragraphs}),
-        );
     }
-    tx.commit()?;
-    Ok(json!({"results":results}))
+    Ok(Simulated {
+        results,
+        refusals,
+        blocked,
+        cards,
+        paragraphs,
+    })
+}
+
+/// One item through the ordinary receipt, guard and writer path, unchanged by preview aggregation.
+fn apply_item(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    tool: &str,
+    arguments: &Value,
+    op_key: &str,
+    request_hash: &str,
+) -> Result<ItemOutcome> {
+    let prior: Option<(String, String)> = conn
+        .query_row(
+            "SELECT request_hash,result_json FROM applied_ops WHERE op_key=?1",
+            [op_key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((prior_hash, result_json)) = prior {
+        if prior_hash != request_hash {
+            bail!("operation key conflict: `{op_key}`");
+        }
+        let result: Value =
+            serde_json::from_str(&result_json).context("invalid stored operation result")?;
+        let address = result["address"]
+            .as_str()
+            .context("stored operation result missing address")?
+            .to_string();
+        return Ok(ItemOutcome::Replayed { address, result });
+    }
+    let before = if tool == "edit_card" {
+        let at = arguments["at"].as_str().context("missing edit at")?;
+        crate::Access::Agent.ensure_writable(crate::load_card(conn, at)?.workspace)?;
+        Some(fingerprint(conn, at)?)
+    } else {
+        None
+    };
+    if let Some(before) = &before {
+        guard_edit(conn, arguments, before)?;
+    }
+    let mut write_arguments = arguments.clone();
+    if tool == "edit_card" {
+        write_arguments
+            .as_object_mut()
+            .unwrap()
+            .remove("base_fingerprint");
+        write_arguments
+            .as_object_mut()
+            .unwrap()
+            .remove("base_receipt");
+    }
+    let (mut result, wrote) = if tool == "edit_card" && arguments.get("owned_paragraph").is_some() {
+        owned_paragraph(root, conn, arguments, before.as_deref().expect("edit base"))?
+    } else {
+        crate::mcp::write_card_tx(root, conn, tool, &write_arguments)?
+    };
+    let address = result["address"]
+        .as_str()
+        .context("write result missing address")?
+        .to_string();
+    result["before_fingerprint"] = json!(before);
+    result["after_fingerprint"] = json!(fingerprint(conn, &address)?);
+    conn.execute("INSERT INTO applied_ops(op_key,request_hash,result_json,committed_at) VALUES(?1,?2,?3,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",rusqlite::params![op_key,request_hash,result.to_string()])?;
+    Ok(ItemOutcome::Written {
+        address,
+        result,
+        wrote,
+    })
 }
