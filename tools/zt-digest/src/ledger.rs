@@ -13373,6 +13373,12 @@ pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
     };
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
+    // R328 (§15.2): the claimed Terms plan allocates the one Terms job and its apply writes the
+    // table Card into the book's Literature tree. Both stop before their first file or Card when
+    // that tree is locked by the owner.
+    if let Some(refusal) = crate::lockcheck::preflight(&mut zt, "terms", &step, &field(&p.contract, "citation_key")?)? {
+        return crate::lockcheck::stop("terms", &refusal);
+    }
     let (_, progress, _, _) = finish_claim(&p, "terms/book@1", token)?;
     let config = &progress["terms_config"];
     let max_terms = if a.has("MaxTerms") {
@@ -16120,6 +16126,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, true)?;
+        // R328 (§15.2): a resume dispatches the retained run's work again, and that work writes this
+        // book's Literature tree. It stops before it resets a unit or claims anything when the tree
+        // is locked by the owner; the retained drafts, results and receipts stay exactly as they are.
+        if let Some(refusal) = crate::lockcheck::preflight(&mut zt, "ledger", "resume", &field(&p.contract, "citation_key")?)? {
+            return crate::lockcheck::stop("ledger resume", &refusal);
+        }
         resume_run(&p)?
     } else if command == "report" {
         // R331: the run report. It reads the ledger and verifies the current placeholder state

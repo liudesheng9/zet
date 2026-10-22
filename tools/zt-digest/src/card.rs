@@ -2204,13 +2204,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     };
     let out_dir = join_path(&p.work, "out");
     // precheck writes nothing, not even the folders.
+    let mut zt = None;
     if p.step != "precheck" {
+        // R328 (§15.2): `plan` allocates the cycle's jobs and `apply` writes their Cards. Both stop
+        // before their first file or Card when the book's Literature tree is locked by the owner;
+        // `check`, `report` and `precheck` are read-only (R327) and read a locked tree normally.
+        if p.step == "plan" || p.step == "apply" {
+            let key = if p.book.is_empty() { crate::lockcheck::key_from_staging(&p.staging) } else { p.book.clone() };
+            let mut client = crate::zt::start()?;
+            if let Some(refusal) = crate::lockcheck::preflight(&mut client, "card", &p.step, &key)? {
+                return crate::lockcheck::stop("card", &refusal);
+            }
+            zt = Some(client);
+        }
         std::fs::create_dir_all(&p.work)?;
         std::fs::create_dir_all(&out_dir)?;
     }
     let state_file = join_path(&p.work, "state.json");
     let state = if Path::new(&state_file).exists() { read_json_file(&state_file)? } else { Value::Null };
-    let mut compiler = Compiler { p, zt: None, state, state_file, out_dir, scripts: scripts_dir(), known: None };
+    let mut compiler = Compiler { p, zt, state, state_file, out_dir, scripts: scripts_dir(), known: None };
     match compiler.p.step.as_str() {
         "plan" => compiler.step_plan()?,
         "apply" => compiler.step_apply()?,

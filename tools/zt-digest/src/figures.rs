@@ -472,6 +472,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     }
 
     let mut zt = crate::zt::start()?;
+    // R328 (§15.2): attaching figures edits the book's Cards. The plan (no -Apply) writes only its
+    // report file; `-Apply` stops before the first Card when the book's Literature tree is locked.
+    if apply
+        && let Some(refusal) = crate::lockcheck::preflight(&mut zt, "figures", "apply", &key)?
+    {
+        return crate::lockcheck::stop("figures", &refusal);
+    }
     // One entry per label; a label two images share keeps the first.
     let mut ordered: Vec<(Figure, Vec<Mention>)> = figures
         .iter()

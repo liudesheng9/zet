@@ -1649,12 +1649,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     };
     // -CoreBudget is a parameter of the script that no step uses.
     a.int_or("CoreBudget", 3)?;
-    let work = join(&p.staging, "math");
-    std::fs::create_dir_all(&work)?;
     let manifest = read_json(&join(&p.staging, "manifest.json"))?;
     let key = field(&manifest, "citation_key");
     let title = field(&manifest, "book_title");
-    let mut compiler = Compiler { p, zt: None, manifest, key, title, work };
+    // R328 (§15.2): a math step that allocates a job or writes Cards in the book's Literature tree
+    // stops before its first file or Card when that tree is locked by the owner. `index` and `docs`
+    // read only the staging book and write prompt files (no Card and no archive read), and `check`
+    // is the read-only checker (R327): none of them asks.
+    let zt = if matches!(p.step.as_str(), "check" | "index" | "docs") {
+        None
+    } else {
+        let mut client = crate::zt::start()?;
+        if let Some(refusal) = crate::lockcheck::preflight(&mut client, "math", &p.step, &key)? {
+            return crate::lockcheck::stop("math", &refusal);
+        }
+        Some(client)
+    };
+    let work = join(&p.staging, "math");
+    std::fs::create_dir_all(&work)?;
+    let mut compiler = Compiler { p, zt, manifest, key, title, work };
     match compiler.p.step.as_str() {
         "index" => compiler.step_index()?,
         "docs" => compiler.step_docs()?,

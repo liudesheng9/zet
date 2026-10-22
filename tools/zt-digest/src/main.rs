@@ -38,6 +38,7 @@ mod gate;
 mod hub;
 mod ledger;
 mod link_gap;
+mod lockcheck;
 mod math;
 mod model;
 mod organize;

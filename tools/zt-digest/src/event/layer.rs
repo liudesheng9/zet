@@ -931,6 +931,17 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
 
 /// The steps of both tools, after the parameters.
 pub(crate) fn run(layer: &dyn Layer, step: &str, staging: &str, work: &str, job: &str, per_job: i64, write: bool) -> Result<i32> {
+    // R328 (§15.2): the plan allocates the layer's jobs and the apply writes its Cards into the
+    // book's Literature tree. Both stop before the first job file or Card when that tree is locked
+    // by the owner; `precheck` and `report` read the tree normally and never ask.
+    if step == "plan" || (step == "apply" && write) {
+        let spec = layer.spec();
+        let key = crate::lockcheck::key_from_staging(staging);
+        let mut zt = crate::zt::start()?;
+        if let Some(refusal) = crate::lockcheck::preflight(&mut zt, spec.tool, step, &key)? {
+            return crate::lockcheck::stop(spec.tool, &refusal);
+        }
+    }
     let mut ctx = Ctx::open(layer.spec(), staging, work)?;
     match step {
         "plan" => plan(layer, &mut ctx, per_job)?,

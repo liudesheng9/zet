@@ -450,6 +450,23 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "--max-sentences {} --max-chars {} --max-steps {} --max-explain-sentences {} --max-explain-chars {} --require-explain",
         p.max_sentences, p.max_chars, p.max_steps, p.max_explain_sentences, p.max_explain_chars
     );
+    // R328 (§15.2): the steps that allocate a model job or write Model Cards into the book's
+    // Literature tree stop before their first file or Card when that tree is locked by the owner.
+    // A read-only step (validate, close, defer, report, explain-check, explain-report) and a step
+    // without -Staging (no prepared book to name) never ask; the storage gate still protects them.
+    let zt = if matches!(
+        p.step.as_str(),
+        "brief" | "apply" | "derive" | "review" | "split" | "resume" | "explain" | "explain-apply"
+    ) {
+        let key = crate::lockcheck::key_from_staging(&p.staging);
+        let mut client = crate::zt::start()?;
+        if let Some(refusal) = crate::lockcheck::preflight(&mut client, "model", &p.step, &key)? {
+            return crate::lockcheck::stop("model", &refusal);
+        }
+        Some(client)
+    } else {
+        None
+    };
     std::fs::create_dir_all(&p.work)?;
     let state_file = ps::join(&p.work, "state.json");
     let state = if ps::exists(&state_file) {
@@ -461,7 +478,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         helper: scripts.helper.clone(),
         check: "zt-check".into(),
         p,
-        zt: None,
+        zt,
         state,
         state_file,
         docs,

@@ -21,6 +21,10 @@
 //       two-step transfer meets a changed old Card between its writes.
 //   ZT_SLOW_TOOL, ZT_SLOW_MS, ZT_SLOW_FLAG   every call of this tool waits ZT_SLOW_MS before it is
 //       forwarded, so a real command outlives a shortened ledger lease; the flag marks the wait.
+//   ZT_LOCK_TREE, ZT_LOCK_AFTER_TOOL, ZT_LOCK_FLAG   once (no flag file yet), after a forwarded call
+//       of this tool succeeded and before its reply is sent, the owner locks that whole tree through
+//       the real token-guarded GUI route and the flag file marks it. The earlier call's receipt is
+//       committed; every later write the same run sends meets a real `card_locked` refusal.
 // ZT_DRIFT_REVISION   a parallel writer that keeps committing: every read reply reports a higher
 //       archive revision than the one before it, so a caller that needs one view must retry once
 //       and then report its changing-view fault. `once` drifts on the first drifted read only.
@@ -35,7 +39,7 @@
 //       bytes the seam reads and hashes) and `errors` (`get_work`/`work_files`/`file` lists or a
 //       `list_works` flag) for the refusal paths. A bridge tool the file does not answer is a
 //       fault, so a test proves which calls the resolution made.
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import readline from 'node:readline'
@@ -127,6 +131,29 @@ const hangBatch = async filename => {
   if (relative.startsWith('..') || !relative.split(path.sep)[0].startsWith('mcp-lifecycle-test-')) throw new Error('hung batch must stay in the isolated lifecycle fixture')
   fs.writeFileSync(target, JSON.stringify({ proxy: process.pid, writer: real.pid }))
   await new Promise(() => {})
+}
+// ZT_LOCK_TREE: the owner freezes one whole tree through the real page-token route while this run
+// holds the receipt of its own earlier call. The seam acts as the owner here, exactly as a person
+// would in the browser: it reads the served page's token and confirms the plan the page would show.
+const ownerLock = async tree => {
+  const printed = execFileSync('zt', ['gui'], { encoding: 'utf8' })
+  const line = printed.split(/\r?\n/).find(text => text.startsWith('zt gui: http'))
+  if (!line) throw new Error('zt gui printed no URL')
+  const url = line.slice('zt gui: '.length).trim().replace(/\/+$/, '')
+  const page = await (await fetch(url)).text()
+  const token = (page.match(/name="zt-token" content="([^"]+)"/) || [])[1]
+  if (!token) throw new Error('the served page carries no token')
+  const post = async body => {
+    const reply = await fetch(url + '/api/lock', {
+      method: 'POST', headers: { 'X-ZT-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })
+    return reply.json()
+  }
+  const note = 'the owner locks this tree while the run writes'
+  const plan = await post({ root: tree, note })
+  if (!plan.plan || !plan.plan.plan_hash) throw new Error(`the lock plan of ${tree} has no plan_hash: ${JSON.stringify(plan)}`)
+  const done = await post({ root: tree, note, confirm: 'lock', plan_hash: plan.plan.plan_hash })
+  if (!done.applied) throw new Error(`the owner lock of ${tree} was not applied: ${JSON.stringify(done)}`)
 }
 
 async function handle(line) {
@@ -239,6 +266,11 @@ async function handle(line) {
     await call('edit_card', { at: env.ZT_RACE_TARGET, body: card.body.trimEnd() + '\n\n' + env.ZT_RACE_LINE })
   }
   if (tool === 'edit_card' && env.ZT_FAIL_AFTER_EDIT && at.at === env.ZT_FAIL_AFTER_EDIT && env.ZT_FAIL_FLAG && !failed(reply)) fs.writeFileSync(env.ZT_FAIL_FLAG, '')
+  if (env.ZT_LOCK_TREE && env.ZT_LOCK_FLAG && !flag(env.ZT_LOCK_FLAG) && !failed(reply)
+      && (!env.ZT_LOCK_AFTER_TOOL || tool === env.ZT_LOCK_AFTER_TOOL)) {
+    fs.writeFileSync(env.ZT_LOCK_FLAG, '')
+    await ownerLock(env.ZT_LOCK_TREE)
+  }
   send(reply)
 }
 

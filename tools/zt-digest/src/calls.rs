@@ -4,6 +4,11 @@
 //! and prints one compact line per call: `N ok <address>` for writes,
 //! `N <json>` for reads, `N error <message>` on failure, after which the last
 //! line is `resume: -From N -Addresses a0,a1,...` and the exit code is 1.
+//! A failure the archive answered with a typed refusal also prints one line
+//! before the resume line: `<code> <compact JSON>` (for example
+//! `card_locked {"error":"card_locked","tree":"K","reason":"create-inside",...}`),
+//! so a Lock refusal keeps its tree, Lock id, reason and hint across this
+//! helper boundary and is never retried as a provider or transient fault.
 //!
 //!   `@@N`      in any string argument: the address call N returned (0-based).
 //!   -From N -Addresses a0,...   skip the calls before N; their addresses still resolve `@@`.
@@ -85,14 +90,45 @@ pub struct Failure {
     pub index: usize,
     pub message: String,
     pub resolved: Vec<String>,
+    /// The typed refusal the MCP replied with, when it sent one (R183, R338). A `card_locked`
+    /// refusal keeps its tree, Lock id, reason and hint as JSON across this helper boundary, so a
+    /// caller recognizes a Lock without matching English text and never retries it as a fault.
+    pub refusal: Option<Value>,
 }
 
 impl Failure {
     pub fn lines(&self) -> Vec<String> {
-        vec![
-            format!("{} error {}", self.index, one_line(&self.message)),
-            format!("resume: -From {} -Addresses {}", self.index, self.resolved.join(",")),
-        ]
+        let mut lines = vec![format!("{} error {}", self.index, one_line(&self.message))];
+        if let Some(refusal) = &self.refusal {
+            lines.push(format!("{} {}", refusal_code(refusal), util::compact(refusal)));
+        }
+        lines.push(format!("resume: -From {} -Addresses {}", self.index, self.resolved.join(",")));
+        lines
+    }
+}
+
+/// The `error` code of a structured refusal (`card_locked`, a read limit, a batch conflict).
+fn refusal_code(refusal: &Value) -> &str {
+    refusal["error"].as_str().unwrap_or("refusal")
+}
+
+/// The structured refusal of an MCP error reply: the reply's `structuredContent` when it carries an
+/// `error` code. A transport-level error reply has none, and stays text only.
+pub(crate) fn refusal_of(reply: &Value) -> Option<Value> {
+    let structured = reply["result"]["structuredContent"].as_object()?;
+    structured.get("error").and_then(Value::as_str)?;
+    Some(Value::Object(structured.clone()))
+}
+
+/// The one message line of a typed refusal: its code and the sentence the archive wrote, so the
+/// text a person or an agent reads still explains what stopped and why.
+fn typed_message(message: &str, refusal: &Option<Value>) -> String {
+    match refusal {
+        Some(refusal) => match refusal["message"].as_str() {
+            Some(said) => format!("{}: {said}", refusal_code(refusal)),
+            None => message.to_string(),
+        },
+        None => message.to_string(),
     }
 }
 
@@ -200,7 +236,10 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
     let mut resolved: Vec<String> = (0..options.from).map(|i| options.addresses.get(i).cloned().unwrap_or_default()).collect();
     macro_rules! fail {
         ($i:expr, $message:expr) => {
-            return Ok((done, Some(Failure { index: $i, message: $message.to_string(), resolved })))
+            return Ok((done, Some(Failure { index: $i, message: $message.to_string(), resolved, refusal: None })))
+        };
+        ($i:expr, $message:expr, $refusal:expr) => {
+            return Ok((done, Some(Failure { index: $i, message: $message.to_string(), resolved, refusal: $refusal })))
         };
     }
     for (i, call) in calls.iter().enumerate().skip(options.from) {
@@ -286,7 +325,9 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
         drop(gate);
         let text = reply_text(&reply);
         if let Some(message) = reply_error(&reply) {
-            fail!(i, message);
+            let refusal = refusal_of(&reply);
+            let message = typed_message(&message, &refusal);
+            fail!(i, message, refusal);
         }
         let structured = &reply["result"]["structuredContent"];
         let address = structured["address"].as_str().map(str::to_string);
@@ -636,8 +677,21 @@ fn execute_identified(
         } else {
             json!({"items":items})
         };
-        let reply=zt.call("apply_batch",request).with_context(||format!("identified chunk starting at call {start}; repeat the same accepted input and OperationPrefix to recover"))?;
+        let raw=zt.request("apply_batch",request).with_context(||format!("identified chunk starting at call {start}; repeat the same accepted input and OperationPrefix to recover"))?;
         drop(concept_lock);
+        // R338: an atomic chunk that the archive refused keeps its typed refusal, so the stage stops
+        // on `card_locked` instead of reading a permission change or a provider fault into it. The
+        // chunk itself wrote nothing; the earlier chunks' receipts are already committed.
+        if let Some(message) = reply_error(&raw) {
+            let refusal = refusal_of(&raw);
+            let said = typed_message(&message, &refusal);
+            match &refusal {
+                Some(refusal) => bail!("zt: {said} {}", util::compact(refusal)),
+                None => bail!("zt: {said}"),
+            }
+        }
+        let reply: Value = serde_json::from_str(&reply_text(&raw))
+            .context("incomplete identified batch: the answer is not JSON")?;
         let results = reply["results"]
             .as_array()
             .context("incomplete identified batch: missing results")?;
@@ -973,6 +1027,42 @@ mod tests {
     fn card(address: &str, body: &str, workspace: &str) -> Value {
         json!({"address":address,"title":"A part","body":body,"bibtex":"","type":"model",
             "facet":"设定","emphasis":"","level":"formal","hub_level":"","form":"","workspace":workspace})
+    }
+
+    #[test]
+    fn a_typed_refusal_keeps_its_json_and_the_resume_line_ends_the_output() {
+        let refusal = json!({"error":"card_locked","message":"card `K/1` is inside locked tree `K`; a locked tree takes no new Cards",
+            "tree":"K","cards":["K/1"],"reason":"create-inside","hint":"unlock the tree in the GUI first",
+            "locks":[{"lock_id":2,"tree":"K"}]});
+        let reply = json!({"result":{"isError":true,"content":[{"type":"text","text":"..."}],"structuredContent":refusal}});
+        let got = refusal_of(&reply).expect("a structured refusal");
+        assert_eq!(got, refusal);
+        let failure = Failure {
+            index: 1,
+            message: typed_message("card_locked", &Some(got.clone())),
+            resolved: vec!["0/0".into()],
+            refusal: Some(got),
+        };
+        let lines = failure.lines();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0], "1 error card_locked: card `K/1` is inside locked tree `K`; a locked tree takes no new Cards");
+        assert!(lines[1].starts_with("card_locked {"), "{}", lines[1]);
+        let quoted = lines[1].strip_prefix("card_locked ").unwrap();
+        let parsed: Value = serde_json::from_str(quoted).expect("the structured line is JSON");
+        assert_eq!(parsed["tree"], json!("K"));
+        assert_eq!(parsed["reason"], json!("create-inside"));
+        assert_eq!(parsed["locks"][0]["lock_id"], json!(2));
+        assert_eq!(lines[2], "resume: -From 1 -Addresses 0/0");
+
+        // A transport-level error reply carries no structured refusal: its text is all there is.
+        let plain = json!({"error":{"code":-32602,"message":"unknown tool `nope`"}});
+        assert_eq!(refusal_of(&plain), None);
+        assert_eq!(
+            typed_message("unknown tool `nope`", &None),
+            "unknown tool `nope`"
+        );
+        let quiet = Failure { index: 0, message: "unknown tool `nope`".into(), resolved: vec![], refusal: None };
+        assert_eq!(quiet.lines(), vec!["0 error unknown tool `nope`", "resume: -From 0 -Addresses "]);
     }
 
     #[test]

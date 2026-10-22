@@ -530,6 +530,18 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if !variant.is_empty() && !apply {bail!("Variant requires Apply so the prepared run can bind its actual archive");}
     if a.has("RunOptions") && variant.is_empty() {bail!("RunOptions requires Variant and Apply");}
     if (a.has("MaxAttempts") || a.has("DshRunCap")) && variant.is_empty() {bail!("MaxAttempts and DshRunCap require Variant and Apply");}
+    // R329 (§15.2): a full digest that would write this Literature tree reads the tree normally and
+    // stops before the first skeleton or metadata write, and before it writes a group, a section or
+    // a ledger. The tree's Citation key is known here, so this is the first write-side step.
+    if apply {
+        if held.is_none() {
+            held = Some(crate::zt::start()?);
+        }
+        let z = held.as_mut().context("no zt mcp process for the Literature tree")?;
+        if let Some(refusal) = crate::lockcheck::preflight(z, "prepare", "apply", &key)? {
+            return crate::lockcheck::stop("prepare", &refusal);
+        }
+    }
     // R273: the managed run's bounded settings are validated here, at preparation,
     // and persisted in the immutable run contract. A resume reuses them.
     let settings = match crate::ledger::run_settings(
@@ -924,8 +936,16 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
     let key = s(&manifest["citation_key"]);
     let groups = ps::each(&manifest["groups"]);
 
-    // --- every tree, both Workspaces ---
+    // R328 (§15.2): the link pass allocates the Link jobs that write this book's Cards, so it stops
+    // before writing its first file when the book's Literature tree is locked by the owner. It
+    // still reads the locked tree while it asks, and it allocates nothing. One client does both that
+    // ask and the pass itself.
     let mut zt = crate::zt::start()?;
+    if let Some(refusal) = crate::lockcheck::preflight(&mut zt, "prepare-link", "plan", &key)? {
+        return crate::lockcheck::stop("prepare-link", &refusal);
+    }
+
+    // --- every tree, both Workspaces ---
     let details = snapshot::read_title_trees(&mut zt)?;
     let mut text = String::new();
     text.push_str("# 全部卡片快照（地址与标题；[模型] 为模型卡，[模型·假设] 等为模型分卡，[事件] 为事件卡）");

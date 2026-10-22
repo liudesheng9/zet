@@ -24,6 +24,14 @@
   input and run again with those two arguments; calls before N are skipped and their addresses
   still resolve `@@`.
 
+  A failure the archive answered with a typed refusal also prints one line just before the resume
+  line: `<code> <compact JSON>`. The owner's Lock therefore reads as
+  `card_locked {"error":"card_locked","tree":"K","reason":"create-inside",...}`: the tree, Lock id,
+  reason and hint survive as JSON, a Card with `lock` set stays readable and linkable, and a
+  `card_locked` answer is a planning/destination refusal. Do not retry it as a provider fault,
+  request another Access, call the GUI routes or write the database directly: ask the owner to
+  unlock the tree in the GUI, or continue the thought in another unlocked tree.
+
   -Log <file> appends the address of every Card a create call makes, one per line. -Allow <file>
   (one address per line) limits the run to those Cards: edit_card, append_card, and
   create_successor must target a listed address or a Card made earlier in the same run, and

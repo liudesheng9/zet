@@ -76,9 +76,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let key = pstr(&manifest, "citation_key");
     let title = pstr(&manifest, "book_title");
     let out = ps::join(&p.work, "out");
+    let mut zt = Lazy::new();
+    // R328 (§15.2): the plan allocates the one skeleton job and the apply writes the structure Card,
+    // the Literature Card index and the Topic bodies. Both read the locked tree normally, and both
+    // stop before their first file or Card when the book's Literature tree is locked by the owner.
+    if p.step == "plan" || p.apply {
+        if let Some(refusal) = crate::lockcheck::preflight(zt.get()?, "skeleton", &p.step, &key)? {
+            return crate::lockcheck::stop("skeleton", &refusal);
+        }
+    }
     std::fs::create_dir_all(&p.work)?;
     std::fs::create_dir_all(&out)?;
-    let mut zt = Lazy::new();
 
     // --- what the book holds ---
     if p.audit.is_empty() {

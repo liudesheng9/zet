@@ -91,6 +91,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let key = pstr(&manifest, "citation_key");
     let work = ps::join(&p.staging, "terms");
     let out = ps::join(&work, "out");
+    // R328 (§15.2): the plan allocates the one Terms job and the apply writes the table Card into
+    // the book's Literature tree. Both stop before their first file or Card when that tree is
+    // locked by the owner; `precheck`, `report` and a plan without `-Apply` never ask.
+    if p.step == "plan" || p.apply {
+        let mut zt = crate::zt::start()?;
+        if let Some(refusal) = crate::lockcheck::preflight(&mut zt, "terms", &p.step, &key)? {
+            return crate::lockcheck::stop("terms", &refusal);
+        }
+    }
     std::fs::create_dir_all(&work)?;
     std::fs::create_dir_all(&out)?;
     if p.step == "plan" {
