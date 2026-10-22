@@ -1,0 +1,49 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "name": "zt-idea-grow",
+  "version": "2.2.1",
+  "scope": "project",
+  "script": ".claude/workflows/zt-idea-grow.js",
+  "scriptRel": "workflows/zt-idea-grow.js",
+  "sha256": "bf5c38f2be35d0a0bdc6ff14993c5473ddf9784f1781a148f0141925c811ae98",
+  "fingerprint": "969446ac8ba4c1f3",
+  "blueprintSha256": "5e4d97f90e4b4c30fa85da39a64c11c69fece6eb94ede41cc5f2aef7074c4aee",
+  "modules": {
+    "value": "1",
+    "deepseek": "1",
+    "script": "1",
+    "zt-grow-cycle": "6"
+  },
+  "moduleFiles": {
+    "value": {
+      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\value.js",
+      "sha256": "91e330a4ee5a5bb46a58363fcaa7297d55ed60334dc2996d37424b54fc8fc5ce"
+    },
+    "deepseek": {
+      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\deepseek.js",
+      "sha256": "fb85edfb639a226e22031d98deaf3928ec699baa26f1e689f73723d639e206e4"
+    },
+    "script": {
+      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\script.js",
+      "sha256": "92fbec13df7ea00d3d65af7f01b85e077116df0d5560fb8bd95689eb3186fd99"
+    },
+    "zt-grow-cycle": {
+      "file": "scripts/idea-grow/workflow/modules/zt-grow-cycle.js",
+      "sha256": "5100729276bf0d7dc932c1ed70e97dede9d7f9e6e00ef333a7e7e1f76b69d66f"
+    }
+  },
+  "sources": [
+    {
+      "file": "scripts/idea-grow/workflow/zt-idea-grow.blueprint.json",
+      "sha256": "fcb6b512381fefe763833f600590894b3c16317b2f56895371a52409adf494e8"
+    }
+  ],
+  "installedAt": "2026-10-20T23:46:51.704Z",
+  "dryRun": {
+    "agents": 13,
+    "order": [
+      "grow",
+      "report"
+    ]
+  }
+}

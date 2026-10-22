@@ -9,6 +9,8 @@ paths:
   - "!.claude/workflow-framework/*/history/**"
   - "!.claude/workflows/zt-issue-dev.js"
   - "!.claude/workflow-framework/zt-issue-dev/**"
+  - "!.claude/workflows/zt-idea-grow.js"
+  - "!.claude/workflow-framework/zt-idea-grow/**"
 synced: ed303d24150d
 updated: 2026-10-21
 ---

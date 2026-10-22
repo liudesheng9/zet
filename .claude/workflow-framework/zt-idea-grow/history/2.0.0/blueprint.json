@@ -1,0 +1,162 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "name": "zt-idea-grow",
+  "version": "2.0.0",
+  "description": "Grow the ZET Topic trees from the Literature trees of the whole card box, as Luhmann wrote his main-box Cards from all his bibliographic notes: DeepSeek reads each section of every Literature tree against the whole box (the Topic Cards and the other books' notes) and keeps the core, related, useful, interesting and intuitive ideas as standalone Topic-tree Cards filed beside the Cards they continue, one concept gathering its ideas from several sources; zt-digest grow plans the run's Topics, checks, writes, links across trees, fixes and reports the Topic share per book",
+  "whenToUse": "When the box holds Literature trees (from the digests or written by hand, either Workspace): give a fresh work folder, and optionally book or books to narrow it; by default every Literature tree of the box is read, so the more books the box holds, the more each idea can relate to. Writes only agent Topic trees. Not for building a Literature tree.",
+  "preflight": {
+    "P1": "Goal and result: the reader's own ideas from the box's Literature trees, written as agent Topic-tree Cards that relate them to each other (docs/idea-grow-design.md; the Topic proposals P1-P7 of docs/topic-tree-ideas-proposals.md live here, not in the digests). The box is the unit (user, 2026-10-20): not one book at a time. Result: the plan line (books, sections, left for a rerun), the run Topics, rounds, the report line (Cards, Topics, Links, bridges across books, same, refused, duplicates, faults left, Topic share before and after) and the cleaned workspaces; grow-report.md (with the share per book) in the work folder.",
+    "P2": "Inputs: out (the work folder, required; also the DeepSeek workspace); books (Citation keys) or book (one key), both optional: without them every Literature tree of the box (both Workspaces); from/to (an optional anchor range); fixRounds (0-2, default 1); dshModel (default the official DeepSeek V4.1 Flash source, deepseek-official/deepseek-flash: the user wants the official source only); effort (high or max; never lower). At most 120 sections per run: the rest is reported as left and a rerun with the same out takes it.",
+    "P3": "Units of work: first one Topic-planning job over every section of every book (gt-001: the anchors grouped by book and the Topic catalogue; it reuses agent Topics and opens at most max(2, ceil(sections/2)) <= 8 new ones), then one section per DeepSeek job: an anchor of a Literature tree (Key/n) with its subtree, or a whole tree that has no anchor; each section file also lists the closest notes of the other books. zt-digest grow -Step plan writes gt-001 and the section files; -Step topics makes the run's Topics and writes jobs\\gw-NNN.md with them; each step prints only counts, and the module names the jobs gw-001..gw-N. Fix jobs are one per section with faults (fxR-NNN), from -Step check's count.",
+    "P4": "Roles: runner (Haiku, low) relays each zt-digest grow command and returns its last line; DSMP managers (Haiku, fixed by the protocol) run up to 8 DeepSeek conversations each, at most 8 at once, approve only the read-only helper, the precheck, reads under the work folder and JSON writes under out, and delete every conversation. DeepSeek (official source, high effort, skills zettelkasten and asd-ste100-zh) writes only its answer file. No Sonnet or Opus role: scripts plan, check and write.",
+    "P5": "Stage graph: grow (one module stage: plan -> DeepSeek topic plan -> topics -> DeepSeek ideas -> apply -> links -> DeepSeek link jobs -> apply -> check/fix rounds -> report -> cleanup) -> report (value). The rounds are sequential inside the module because each apply needs every answer of its round, and the section jobs need the run's Topics.",
+    "P6": "Modules: zt-grow-cycle v4 (project folder scripts/idea-grow/workflow/modules; requires the framework's script, deepseek and the DSMP block) and value. The prompt template is scripts/idea-grow/dsh-grow-instructions.zh.md, read by -Step plan from disk.",
+    "P7": "Checks: every DeepSeek job runs its SELF-CHECK (zt-digest grow -Step precheck: G1-G10, with Link kinds read as zt reads them, and zt-check on the drafts; the topic job: ids, existing agent roots, near names, sections, the bound) until faults: 0, and its answer must end OK or FLAG; apply validates every answer again and refuses each idea with a fault; check runs zt-check --cards with each Card's own book on every Card the run wrote and turns each hard fault into a fix job; the grow stage expects a report.",
+    "P8": "Failure policy, modes, checkpoints: grow retries 0 (a rerun with the same out resumes: applied sections are skipped, their answers kept) and halts; report always runs after grow. No modes, no checkpoints. The DeepSeek cleanup runs in a finally block.",
+    "P9": "Dry run and pilot: zt-idea-grow.sim.json stands in for plan (2 sections), the topic manager, topics (2 jobs), one manager, apply, check (one fix), report and cleanup. Pilot 1 (1.0.0, 2026-10-20): 8 sections of grossman2002integration, 53 Topic Cards, Topic share 1.6% -> 47.4%, 0 faults left, but 8 new Topics (4 on one concept) and every related idea branched off the one earlier Topic Card; 1.1.0 plans the run's Topics first, appends a root-direct idea to the main line, and reads Link kinds as zt does (G10). Pilot 2 (1.1.0): 4 run Topics (3 new, 379/0 reused), 58 Topic Cards, 0 faults, share 49.6%, 5 min; but the main-line append joined five parallel sections into one blind 20-step chain in 389. 1.2.0: a later root placement opens a line beside the doorway (n/1|a …), and the section chains its ideas in it. Pilot 3 (1.2.0): 4 run Topics, 56 Topic Cards, each Topic a doorway with one line per section (391/1|a..f), 0 faults, share 48.7%; but only 6 of 56 Cards linked another Topic tree, all to the one earlier Card 379/1. 1.3.0 adds the link round: one DeepSeek job per Topic tree the run wrote in (gl-NNN), Links to Cards of other trees, at most 2 per Card, each one sentence with its kind (G11), appended to the Card. 2.0.0 (user, 2026-10-20: not locked on one Literature tree): by default every Literature tree of the box; the topic plan groups sections by book; each section lists the closest notes of other books; checks use each section's own book; the report counts bridges (Topic Cards citing two or more books) and the share per book. Pilot 4: the whole box in a fresh folder, e.g. {out: \"D:\\zt-grow\\box-pilot4\"}; back up the archive first."
+  },
+  "roles": {
+    "runner": {
+      "model": "haiku",
+      "effort": "low",
+      "description": "relays one zt-digest grow command and returns its last stdout line"
+    }
+  },
+  "args": {
+    "out": {
+      "type": "string",
+      "required": true,
+      "description": "the work folder: plan files, answers, state, report; also the DeepSeek workspace"
+    },
+    "books": {
+      "type": "array",
+      "description": "the Literature trees to grow from (Citation keys); with neither books nor book, every Literature tree of the box"
+    },
+    "book": {
+      "type": "string",
+      "description": "one Literature tree to grow from (its Citation key)"
+    },
+    "from": {
+      "type": "number",
+      "min": 1,
+      "max": 100000,
+      "description": "the first section (anchor number) to grow"
+    },
+    "to": {
+      "type": "number",
+      "min": 1,
+      "max": 100000,
+      "description": "the last section (anchor number) to grow"
+    },
+    "fixRounds": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 2,
+      "description": "fix rounds after the first apply"
+    },
+    "dshModel": {
+      "type": "string",
+      "default": "deepseek-official/deepseek-flash",
+      "description": "the DeepSeek Harness model (the official source)"
+    },
+    "effort": {
+      "type": "string",
+      "default": "high",
+      "enum": [
+        "high",
+        "max"
+      ],
+      "description": "DeepSeek reasoning effort"
+    }
+  },
+  "consts": {
+    "instructions": "E:\\zet\\scripts\\idea-grow\\dsh-grow-instructions.zh.md"
+  },
+  "stages": [
+    {
+      "id": "grow",
+      "title": "Grow",
+      "detail": "plan the sections, DeepSeek keeps the ideas, write the Topic Cards, check, fix, report, clean up",
+      "module": "zt-grow-cycle",
+      "params": {
+        "book": {
+          "$ref": "args.book",
+          "default": null
+        },
+        "books": {
+          "$ref": "args.books",
+          "default": []
+        },
+        "work": "{{args.out}}",
+        "instructions": "{{consts.instructions}}",
+        "from": {
+          "$ref": "args.from",
+          "default": null
+        },
+        "to": {
+          "$ref": "args.to",
+          "default": null
+        },
+        "fixRounds": "{{args.fixRounds}}",
+        "model": "{{args.dshModel}}",
+        "effort": "{{args.effort}}"
+      },
+      "retries": 0,
+      "expect": [
+        {
+          "path": "report",
+          "op": "exists",
+          "message": "the grow stage wrote no report"
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "title": "Report",
+      "detail": "the run's result",
+      "after": [
+        "grow"
+      ],
+      "module": "value",
+      "params": {
+        "value": {
+          "book": {
+            "$ref": "args.book",
+            "default": null
+          },
+          "out": "{{args.out}}",
+          "plan": {
+            "$ref": "stages.grow.output.plan",
+            "default": null
+          },
+          "topics": {
+            "$ref": "stages.grow.output.topics",
+            "default": null
+          },
+          "rounds": {
+            "$ref": "stages.grow.output.rounds",
+            "default": []
+          },
+          "report": {
+            "$ref": "stages.grow.output.report",
+            "default": null
+          },
+          "workspaces": {
+            "$ref": "stages.grow.output.workspaces",
+            "default": []
+          },
+          "books": {
+            "$ref": "args.books",
+            "default": []
+          }
+        }
+      }
+    }
+  ],
+  "modes": {},
+  "checkpoints": [],
+  "result": {
+    "$ref": "stages.report.output"
+  }
+}

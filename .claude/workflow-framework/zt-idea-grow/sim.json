@@ -1,0 +1,170 @@
+{
+  "args": {
+    "out": "D:/zt-grow/box"
+  },
+  "answers": [
+    {
+      "label": "^grow: plan$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"topic_jobs\":1,\"pending\":2,\"left\":0,\"books\":2,\"sections\":2,\"cards\":12,\"box\":40,\"topics\":3,\"baseline\":{\"topic\":1,\"literature\":9,\"share\":0.1}}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow topics mgr",
+      "answer": {
+        "jobs": [
+          {
+            "id": "gt-001",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          }
+        ],
+        "started": [
+          "s0"
+        ],
+        "deleted": 1,
+        "not_deleted": []
+      }
+    },
+    {
+      "label": "^grow: topics$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"jobs\":2,\"topics\":2,\"created\":1,\"refused\":0}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow ideas mgr",
+      "answer": {
+        "jobs": [
+          {
+            "id": "gw-001",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          },
+          {
+            "id": "gw-002",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          }
+        ],
+        "started": [
+          "s1",
+          "s2"
+        ],
+        "deleted": 2,
+        "not_deleted": []
+      }
+    },
+    {
+      "label": "^grow: apply$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"applied\":2,\"created\":9,\"topics\":2,\"same\":1,\"refused\":1,\"duplicates\":0,\"edited\":0,\"unanswered\":0}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: links$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"link_jobs\":2}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow links mgr",
+      "answer": {
+        "jobs": [
+          {
+            "id": "gl-001",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          },
+          {
+            "id": "gl-002",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          }
+        ],
+        "started": [
+          "s4",
+          "s5"
+        ],
+        "deleted": 2,
+        "not_deleted": []
+      }
+    },
+    {
+      "label": "^grow: apply links$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"applied\":0,\"created\":0,\"topics\":0,\"same\":0,\"refused\":0,\"duplicates\":0,\"edited\":0,\"unanswered\":0,\"linked\":5}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: check 1$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"fix\":1,\"round\":1,\"faults\":2,\"cards\":1}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow fix1 mgr",
+      "answer": {
+        "jobs": [
+          {
+            "id": "fx1-001",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          }
+        ],
+        "started": [
+          "s3"
+        ],
+        "deleted": 1,
+        "not_deleted": []
+      }
+    },
+    {
+      "label": "^grow: apply fix1$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"applied\":0,\"created\":0,\"topics\":0,\"same\":0,\"refused\":0,\"duplicates\":0,\"edited\":1,\"unanswered\":0}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: report$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"created\":9,\"topics\":2,\"same\":1,\"refused\":1,\"duplicates\":0,\"faults_left\":0,\"share_before\":0.1,\"share_after\":0.53,\"report\":\"D:/zt-grow/Key/grow-report.md\"}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "cleanup",
+      "answer": {
+        "folders": [
+          {
+            "cwd": "D:/zt-grow/Key",
+            "removed": true,
+            "leftover": [],
+            "running": 0
+          }
+        ]
+      }
+    }
+  ]
+}
