@@ -1,6 +1,7 @@
 //! `zt-digest skeleton`: the port of `scripts/book-digest/book-skeleton.ps1`, the book's skeleton
-//! (docs/digest-card-layers-proposal.md, proposal 7): the Literature Card index, the structure Card,
-//! and the bodies of the book's Topics. The tool builds each frame from the manifest and the
+//! (docs/digest-card-layers-proposal.md, proposal 7): the Literature Card index and the structure
+//! Card. A digest writes only the Literature tree (docs/literature-only-digest-design.md); the
+//! Topic bodies are zt-idea-grow's. The tool builds each frame from the manifest and the
 //! trees; one DeepSeek job writes the short texts as JSON; Opus gives only the thesis.
 //!
 //!   zt-digest skeleton -Step plan|apply -Staging <folder> -Work <folder> [-Audit <audit.json>]
@@ -10,10 +11,10 @@
 //! <Work>\audit (the script ran digest-audit.ps1). Every step prints compact JSON as its last line.
 //!
 //!   plan   writes job.md (one section per group, the book's Model Cards with their levels, its
-//!          Event Cards, the Topics where the book holds most Cards, and the SELF-CHECK line
+//!          Event Cards, and the SELF-CHECK line
 //!          `zt-digest skeleton -Step apply …` without -Apply) and the instruction file.
 //!   apply  reads out\skeleton.json and checks it; with -Apply writes the structure Card, the
-//!          Literature Card index, and each Topic body (keeping every line that links a Hub Card).
+//!          Literature Card index. An answer that still carries `topics` is a problem.
 
 use crate::args::Args;
 use crate::organize::common::{self, Lazy, Sb, prop, pstr};
@@ -53,10 +54,8 @@ struct Book {
     groups: Vec<Value>,
     anchors: Vec<String>,
     known: HashSet<String>,
-    cards: Vec<Value>,
     models: Vec<Value>,
     events: Vec<Value>,
-    topic_rows: Vec<Value>,
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
@@ -107,13 +106,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let anchors: Vec<String> = groups.iter().map(|g| format!("{key}/{}", pstr(g, "n"))).collect();
     let models: Vec<Value> = ps::ps_items(&book["models"]["list"]).into_iter().filter(|m| ps::truthy(&m["address"])).collect();
     let events: Vec<Value> = cards.iter().filter(|c| eq(&field(c, "category"), "event") && eq(&field(c, "book"), &key)).cloned().collect();
-    let mut topic_rows = Vec::new();
-    for t in ps::ps_items(&book["topics"]["list"]) {
-        if ps::int(&t["cards"])? * 2 > ps::int(&t["size"])? {
-            topic_rows.push(t);
-        }
-    }
-    let b = Book { key, title, groups, anchors, known, cards, models, events, topic_rows };
+    let b = Book { key, title, groups, anchors, known, models, events };
     if p.step == "plan" { plan(&p, &b, &out, &mut zt) } else { apply(&mut p, &b, &out, &mut zt) }
 }
 
@@ -140,7 +133,7 @@ fn self_check(staging: &str, work: &str) -> String {
 
 fn plan(p: &Params, b: &Book, out: &str, zt: &mut Lazy) -> Result<i32> {
     let key = &b.key;
-    let addresses: Vec<String> = b.anchors.iter().cloned().chain(b.topic_rows.iter().map(|t| format!("{}/0", field(t, "tree")))).collect();
+    let addresses: Vec<String> = b.anchors.clone();
     let calls: Vec<(&str, Value)> = addresses.iter().map(|a| ("get_card", json!({ "at": a }))).collect();
     let read = if calls.is_empty() { Vec::new() } else { common::reads(zt.get()?, &calls)? };
     let mut by_address: CiMap<Value> = CiMap::new();
@@ -183,27 +176,7 @@ fn plan(p: &Params, b: &Book, out: &str, zt: &mut Lazy) -> Result<i32> {
     } else {
         sb.line("（没有）");
     }
-    sb.blank().line("## 本书为主的主题").blank();
-    for t in &b.topic_rows {
-        let root = format!("{}/0", field(t, "tree"));
-        let c = by_address.get(&root).unwrap_or(&none);
-        sb.line(format!("### `{root}` {}（{} 张卡）", field(t, "title"), field(t, "size")))
-            .blank()
-            .line(format!("现在的正文：{}", one_line(&pstr(c, "body"))))
-            .blank()
-            .line("树中的卡片：")
-            .blank();
-        let mut in_tree: Vec<&Value> = b
-            .cards
-            .iter()
-            .filter(|x| eq(&field(x, "tree"), &field(t, "tree")) && is_in(&field(x, "category"), &["idea", "event", "model"]))
-            .collect();
-        ps::ps_sort(&mut in_tree, |x, y| ps::culture_cmp(&field(x, "address"), &field(y, "address")));
-        for x in in_tree.into_iter().take(12) {
-            sb.line(format!("- `{}` {}", field(x, "address"), field(x, "title")));
-        }
-        sb.blank();
-    }
+    sb.blank();
     sb.line(self_check(&p.staging, &p.work));
     let job = ps::join(&p.work, "job.md");
     util::write_text(&job, &sb.0)?;
@@ -211,7 +184,7 @@ fn plan(p: &Params, b: &Book, out: &str, zt: &mut Lazy) -> Result<i32> {
     let doc_copy = ps::join(&p.work, DOC);
     util::write_text(&doc_copy, &doc.replace("{{KEY}}", key))?;
     let last = json!({
-        "groups": b.groups.len(), "models": b.models.len(), "events": b.events.len(), "topics": b.topic_rows.len(),
+        "groups": b.groups.len(), "models": b.models.len(), "events": b.events.len(),
         "jobs": [{ "id": "skeleton", "files": [doc_copy, job], "prompt": PROMPT }]
     });
     util::print_line(&ps::json_compact(&last))?;
@@ -236,9 +209,6 @@ struct Checked {
     argument: Vec<Argument>,
     model_lines: Vec<String>,
     event_lines: Vec<String>,
-    /// Topic root → its tree.
-    topic_set: CiMap<String>,
-    topic_bodies: CiMap<String>,
     problems: Vec<String>,
 }
 
@@ -282,7 +252,7 @@ fn check(sk: &Value, b: &Book) -> Checked {
             problems.push(format!("argument: `{anchor}` is no anchor"));
             continue;
         }
-        let key: Vec<String> = strings(a.get("key_cards").unwrap_or(&Value::Null)).into_iter().filter(|k| b.known.contains(k)).take(3).collect();
+        let key: Vec<String> = strings(a.get("key_cards").unwrap_or(&Value::Null)).into_iter().filter(|k| b.known.contains(k) && !zt_check::mcp::scope::is_topic_address(k)).take(3).collect();
         test_text(&mut problems, &anchor, &field(a, "adds"));
         argument.push(Argument { anchor, adds: field(a, "adds").trim().to_string(), key });
     }
@@ -317,7 +287,7 @@ fn check(sk: &Value, b: &Book) -> Checked {
             problems.push(format!("events: `{address}` is no Event Card of the book"));
             continue;
         }
-        let supports: Vec<String> = strings(e.get("supports").unwrap_or(&Value::Null)).into_iter().filter(|k| b.known.contains(k)).take(3).collect();
+        let supports: Vec<String> = strings(e.get("supports").unwrap_or(&Value::Null)).into_iter().filter(|k| b.known.contains(k) && !zt_check::mcp::scope::is_topic_address(k)).take(3).collect();
         let what = if supports.is_empty() {
             "本书的论证".to_string()
         } else {
@@ -325,26 +295,10 @@ fn check(sk: &Value, b: &Book) -> Checked {
         };
         event_lines.push(format!("- [[{address}]]：例示 {what} 的观点。"));
     }
-    let mut topic_set: CiMap<String> = CiMap::new();
-    for t in &b.topic_rows {
-        topic_set.insert(&format!("{}/0", field(t, "tree")), field(t, "tree"));
+    if ps::pipe(&sk["topics"]).iter().any(|t| ps::truthy(t)) {
+        problems.push("topics: a digest writes no Topic body; Topic trees are zt-idea-grow's".to_string());
     }
-    let mut topic_bodies: CiMap<String> = CiMap::new();
-    for t in ps::pipe(&sk["topics"]) {
-        let root = field(t, "root");
-        let Some(tree) = topic_set.get(&root).cloned() else {
-            problems.push(format!("topics: `{root}` is no Topic of the book"));
-            continue;
-        };
-        let body = field(t, "body").trim().to_string();
-        if !links(&body).iter().any(|l| eq(l.split('/').next().unwrap_or_default(), &tree)) {
-            problems.push(format!("topics: `{root}` links no entry Card of its tree"));
-            continue;
-        }
-        test_text(&mut problems, &root, &body);
-        topic_bodies.insert(&root, body);
-    }
-    Checked { says, argument, model_lines, event_lines, topic_set, topic_bodies, problems }
+    Checked { says, argument, model_lines, event_lines, problems }
 }
 
 /// The structure Card's body.
@@ -454,25 +408,13 @@ fn apply(p: &mut Params, b: &Book, out: &str, zt: &mut Lazy) -> Result<i32> {
         if !docs.is_empty() {
             index.blank().line(docs.join("\n"));
         }
-        let mut calls = vec![json!({ "tool": "edit_card", "arguments": { "at": key, "body": index.0.trim_end() } })];
-        // Topic bodies: keep every line that links a Hub Card of the tree.
-        for (r, new_body) in c.topic_bodies.iter() {
-            let tree_of = c.topic_set.get(r).cloned().unwrap_or_default();
-            let tc = common::read_first(zt.get()?, "get_tree", json!({ "tree": tree_of }))?;
-            let hubs: Vec<String> = ps::each(prop(&tc, "cards")).into_iter().filter(|x| eq(&pstr(x, "type"), "hub")).map(|x| pstr(x, "address")).collect();
-            let root_card = common::read_first(zt.get()?, "get_card", json!({ "at": r }))?;
-            let root_text = pstr(&root_card, "body");
-            let keep: Vec<&str> = root_text.split('\n').filter(|line| links(line).iter().any(|l| is_in(l, &hubs))).collect();
-            let body = if keep.is_empty() { new_body.clone() } else { format!("{new_body}\n\n{}", keep.join("\n")) };
-            calls.push(json!({ "tool": "edit_card", "arguments": { "at": r, "body": body } }));
-        }
+        let calls = vec![json!({ "tool": "edit_card", "arguments": { "at": key, "body": index.0.trim_end() } })];
         common::write_all(zt.get()?, &calls)?;
         written.insert("literature".into(), json!(key));
-        written.insert("topics".into(), json!(c.topic_bodies.keys()));
     }
     let last = json!({
         "ok": true, "thesis": p.thesis, "argument": c.argument.len(), "models": c.model_lines.len(), "events": c.event_lines.len(),
-        "topics": c.topic_bodies.len(), "problems": c.problems, "written": written
+        "problems": c.problems, "written": written
     });
     util::print_line(&ps::json_compact(&last))?;
     Ok(0)
@@ -488,11 +430,9 @@ mod tests {
             title: "书".into(),
             groups: vec![json!({ "n": 1, "chapter": "一", "headings": ["甲"] }), json!({ "n": 2, "chapter": "二", "headings": ["乙", "丙"] })],
             anchors: vec!["K/1".into(), "K/2".into()],
-            known: ["K/1", "K/2", "K/1|a", "K/2|a", "5/1", "5/2"].iter().map(|s| s.to_string()).collect(),
-            cards: Vec::new(),
+            known: ["K/1", "K/2", "K/1|a", "K/2|a", "K/1|b", "K/2|b", "5/1", "5/2"].iter().map(|s| s.to_string()).collect(),
             models: vec![json!({ "address": "K/1|a", "level": "concept", "title": "模型" })],
             events: vec![json!({ "address": "K/2|a", "category": "event", "book": "K" })],
-            topic_rows: vec![json!({ "tree": "5", "title": "主题", "size": 3, "cards": 2 })],
         }
     }
 
@@ -509,31 +449,30 @@ mod tests {
     fn skeleton_json_is_checked_as_the_script_checked_it() {
         let sk = json!({
             "chapters": [{ "anchor": "K/1", "says": "第一组。" }, { "anchor": "K/9", "says": "不是锚点。" }],
-            "argument": [{ "anchor": "K/2", "adds": "其次。", "key_cards": ["5/2", "99/9"] }, { "anchor": "K/1", "adds": "首先。", "key_cards": ["5/1"] }, { "anchor": "X/1", "adds": "x" }],
+            "argument": [{ "anchor": "K/2", "adds": "其次。", "key_cards": ["K/2|b", "5/2", "99/9"] }, { "anchor": "K/1", "adds": "首先。", "key_cards": ["5/1", "K/1|b"] }, { "anchor": "X/1", "adds": "x" }],
             "models": [{ "address": "K/1|a", "shows": "说明。", "built_on_by": ["K/1|a", "K/1|a"] }, { "address": "K/7", "shows": "x" }],
             "events": [{ "address": "k/2|a", "supports": [] }],
-            "topics": [{ "root": "5/0", "body": "依赖 [[5/1]]。" }, { "root": "6/0", "body": "x" }]
+            "topics": [{ "root": "5/0", "body": "依赖 [[5/1]]。" }]
         });
         let c = check(&sk, &book());
-        assert_eq!(c.problems, ["argument: `X/1` is no anchor", "models: `K/7` is no Model Card of the book", "topics: `6/0` is no Topic of the book"]);
+        assert_eq!(c.problems, ["argument: `X/1` is no anchor", "models: `K/7` is no Model Card of the book", "topics: a digest writes no Topic body; Topic trees are zt-idea-grow's"]);
         assert_eq!(c.model_lines, ["- [[K/1|a]]（概念模型）：说明。 依赖它的模型：[[K/1|a]]。"]);
         assert_eq!(c.event_lines, ["- [[k/2|a]]：例示 本书的论证 的观点。"]);
-        assert_eq!(c.topic_bodies.keys(), ["5/0"]);
         let body = structure_body("标记", "K", &c).unwrap();
         let nl = ps::NL;
-        assert!(body.starts_with(&format!("标记{nl}{nl}## 论证{nl}{nl}- [[K/1]]：首先。 关键卡片：[[5/1]]。{nl}- [[K/2]]：其次。 关键卡片：[[5/2]]。{nl}{nl}## 模型")));
+        assert!(body.starts_with(&format!("标记{nl}{nl}## 论证{nl}{nl}- [[K/1]]：首先。 关键卡片：[[K/1|b]]。{nl}- [[K/2]]：其次。 关键卡片：[[K/2|b]]。{nl}{nl}## 模型")));
         assert!(body.ends_with(&format!("{nl}{nl}来源：[[K]]")));
         // A Link to an unknown Card and a semicolon are the problems that stop apply. A list that
         // is missing is `@($null)`, one empty entry, as in the script.
-        let bad = check(&json!({ "topics": [{ "root": "5/0", "body": "依赖 [[5/1]]；见 [[5/9]]。" }] }), &book());
+        let bad = check(&json!({ "chapters": [{ "anchor": "K/1", "says": "依赖 [[K/1|b]]；见 [[K/9|z]]。" }] }), &book());
         assert_eq!(
             bad.problems,
             [
+                "K/1: [[K/9|z]] does not exist",
+                "K/1: a semicolon",
                 "argument: `` is no anchor",
                 "models: `` is no Model Card of the book",
-                "events: `` is no Event Card of the book",
-                "5/0: [[5/9]] does not exist",
-                "5/0: a semicolon"
+                "events: `` is no Event Card of the book"
             ]
         );
         assert_eq!(self_check("D:\\s", "D:\\s\\skeleton"), "SELF-CHECK: `zt-digest skeleton -Step apply -Staging \"D:\\s\" -Work \"D:\\s\\skeleton\"`（不要加 -Apply）");

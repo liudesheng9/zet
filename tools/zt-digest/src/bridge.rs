@@ -564,9 +564,8 @@ impl Bridge {
                 let Some(p) = priority.get(&address).filter(|_| answer::unit_head(card)) else { continue };
                 format!("{p:02}|{address}")
             } else {
-                if ceq(get(card, "type"), "idea") && index.book_set.contains(&field_of(card, "tree")) {
-                    continue;
-                }
+                // docs/literature-only-digest-design.md: a digest files its Idea Cards in the book's
+                // Literature tree, so they are Bridge sources there (no longer skipped as notes).
                 let inbound = if ceq(get(card, "type"), "idea") { i32::MAX as i64 - ps::int(get(card, "inbound"))? } else { 0 };
                 format!("{:02}|{inbound:010}|{address}", source_rank(card))
             };
@@ -621,6 +620,10 @@ impl Bridge {
                 let target_at = field_of(target, "address");
                 let target_book = book_of_card(target);
                 if target_at == source_at || target_book.as_deref() == Some(self.key.as_str()) || !substantive(target, &index) {
+                    continue;
+                }
+                // docs/literature-only-digest-design.md: the Bridge links Literature trees only.
+                if zt_check::mcp::scope::is_topic_address(&target_at) {
                     continue;
                 }
                 if ceq(get(source, "type"), "model") && truthy(get(target, "facet")) {

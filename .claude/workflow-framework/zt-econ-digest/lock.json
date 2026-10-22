@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "5.11.0",
+  "version": "6.0.0",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "2d931ac48799eb57f1aa7d472c83ca5fe5f9a3dae71ade2c8dcfa145a150d166",
-  "fingerprint": "aaca1f59554adff0",
-  "blueprintSha256": "d78f687cd2f66736f742f72109eb0a259d9213f61627e205abc129f0e8016d2f",
+  "sha256": "0ed55f9a01a2fe6e9e8a461a4b6a6f675602b07e360f0315988cac44ecd97b5f",
+  "fingerprint": "008298dd037e49d0",
+  "blueprintSha256": "d49672fd026397020ca0eaf4487a60add7ff1b4c9b98753b505241c0a6d02877",
   "modules": {
     "gate": "1",
     "zt-digest-lib": "31",
@@ -16,9 +16,8 @@
     "zt-bridge": "7",
     "zt-cards-book": "3",
     "zt-cards-layer": "1",
-    "zt-concepts": "1",
-    "zt-digest-prepare": "10",
-    "zt-digest-report": "14",
+    "zt-digest-prepare": "11",
+    "zt-digest-report": "15",
     "zt-dsh-cleanup": "9",
     "zt-dsh-source": "1",
     "zt-event-layer": "3",
@@ -28,13 +27,11 @@
     "zt-finalize": "2",
     "zt-finding-layer": "3",
     "zt-group-cycle": "6",
-    "zt-hubs": "4",
     "zt-link-check": "1",
     "zt-link-pass": "7",
     "zt-link-prepare": "5",
     "zt-model-layer": "5",
-    "zt-organize": "5",
-    "zt-review": "2"
+    "zt-organize": "6"
   },
   "moduleFiles": {
     "gate": {
@@ -65,17 +62,13 @@
       "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
       "sha256": "6b60475a64fd0c70c38915df0a56b8b02b87511e9789d8828e7c1044a8d80467"
     },
-    "zt-concepts": {
-      "file": "scripts/book-digest/workflow/modules/zt-concepts.js",
-      "sha256": "e6a3e5fda938a3fcc5daf577ef55d2e069134018c69d88093b62517783649ccb"
-    },
     "zt-digest-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-prepare.js",
-      "sha256": "100a6212be563cbcc58354ff60f93f4a341327a1e0580eb262194b4060d5cace"
+      "sha256": "899df42dffd8ec945ae30fe4fecb7fbfd2e49f37b006265b2d3fc3409d9701b2"
     },
     "zt-digest-report": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
-      "sha256": "50ad4c07502b9e9fb10727969803bcd3fc575d924d3b04945d0f90fa97d96f52"
+      "sha256": "29706a03e80730faa57a3eb51d1a657eb0d27459689ff7dc735f6519512755a6"
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
@@ -113,10 +106,6 @@
       "file": "scripts/book-digest/workflow/modules/zt-group-cycle.js",
       "sha256": "5424d03893fd817cf5658f9821a49423c99fefd01a593f5668cfb1d391fc1aab"
     },
-    "zt-hubs": {
-      "file": "scripts/book-digest/workflow/modules/zt-hubs.js",
-      "sha256": "6e39caa569b8b0dd59a0588cdc6b46a29c8fde830f0a5c65a8704848af70cdf7"
-    },
     "zt-link-check": {
       "file": "scripts/book-digest/workflow/modules/zt-link-check.js",
       "sha256": "210cbe3f078607cdc3ee2b34208212be8976998a592bcdb3af5788615c33a56e"
@@ -135,49 +124,41 @@
     },
     "zt-organize": {
       "file": "scripts/book-digest/workflow/modules/zt-organize.js",
-      "sha256": "c8f3a61a86b0b2b49c8afb1ab19cf533c852a601b105848084046558f61987aa"
-    },
-    "zt-review": {
-      "file": "scripts/book-digest/workflow/modules/zt-review.js",
-      "sha256": "75be7378d09aab14e2aab06179d2c60e6147dd786249953de409dd6b7f333915"
+      "sha256": "0c31a26ce1d1c49c24c21e43cc7b3c1998ea77f73409e272bbd5012990575498"
     }
   },
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "9e80b18c4fc6d9e0b4e104302468ec1fbbb922cdfe6aff655081585439d051d6"
+      "sha256": "8f81f6ffc0976631ea516d141d1c2a2c3d617945c151a0515a547268f81d3562"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "7800042d394c13933227502f46441e8ff05b3d422712e53636dd16902c5ef5bb"
+      "sha256": "12725055f09f10bacf80c7b939fa99dab9471413b66db7c4ae8cdc075b263513"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-22T04:07:12.471Z",
+  "installedAt": "2026-10-22T21:56:37.039Z",
   "dryRun": {
-    "agents": 50,
+    "agents": 39,
     "order": [
       "args",
       "source",
       "prepare",
       "terms",
-      "concepts",
       "events",
       "findings",
       "digest",
       "cards",
       "models",
       "explain",
-      "hubs-first",
       "cards-book",
-      "review",
       "link-prepare",
       "link",
       "link-check",
       "organize",
       "figures",
       "bridge",
-      "hubs",
       "audit",
       "finalize",
       "cleanup",

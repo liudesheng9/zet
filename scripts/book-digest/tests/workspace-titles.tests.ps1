@@ -11,7 +11,7 @@ $env:ZT_GUI_PORT = '0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message }; Write-Output "ok: $message" }
 function Write-Cards($calls) {
-    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "fixture create failed: $lines" }
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }

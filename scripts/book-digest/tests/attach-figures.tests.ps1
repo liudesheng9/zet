@@ -52,9 +52,11 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1'; kind = 'side'; title = '消费集可以不凸'; body = "图 2.C.1 画出几种消费集。`n`n第二段说明凸性。`n`n来源：[[Test2020]] §2.C" } },
         @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1|a'; title = '整数商品使消费集不凸'; body = "见图 2.C.10 与图 2.C.11。`n`n来源：[[Test2020]] §2.C" } },
         @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1|a|1'; title = '三种情形的比较'; body = "$table`n`n凸性排除第二种情形。" } },
+        # docs/literature-only-digest-design.md: the book's Cards are its Literature tree's; a Topic Card
+        # that cites the book belongs to no book and gets no figure.
+        @{ tool = 'create_successor'; arguments = @{ at = 'Test2020/1'; kind = 'side'; title = '替代弹性能反转外包的可行性'; body = "如图四所示，曲线呈倒 U 形。`n`n来源：[[Test2020]] §4" } },
         @{ tool = 'create_topic'; arguments = @{ title = '组织模式'; body = '追问企业边界。' } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@5'; title = '替代弹性能反转外包的可行性'; body = "如图四所示，曲线呈倒 U 形。`n`n来源：[[Test2020]] §4" } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@6'; title = '别的书也有图 2.C.1'; body = '这张卡不属于这本书，图 2.C.1 指别处。' } }
+        @{ tool = 'create_successor'; arguments = @{ at = '@@6'; title = '别的书也有图 2.C.1'; body = "这张主题卡也提到图 2.C.1，但它不属于这本书。`n`n来源：[[Test2020]] §2.C" } }
     )
 
     $run = { param([switch]$Apply)
@@ -71,13 +73,13 @@ try {
     $applied = (& $run -Apply) | ConvertFrom-Json
     Assert ($applied.applied -and $applied.shown -eq 3) "the run shows three figures: $($applied | ConvertTo-Json -Compress)"
     $cards = @{}
-    foreach ($c in @(Invoke-Zt @('Test2020/1', 'Test2020/1|a', 'Test2020/1|a|1', 'Test2020/1|a|2', '0/1', '0/2' | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))) { $cards[$c.address] = $c.body }
+    foreach ($c in @(Invoke-Zt @('Test2020/1', 'Test2020/1|a', 'Test2020/1|a|1', 'Test2020/1|a|2', 'Test2020/1|b', '0/1' | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))) { $cards[$c.address] = $c.body }
     $line1 = "![图 2.C.1](artifact:$($figs[0]))"
     Assert ($cards['Test2020/1|a'] -eq "图 2.C.1 画出几种消费集。`n`n$line1`n`n第二段说明凸性。`n`n来源：[[Test2020]] §2.C") "the figure follows the paragraph that names it: $($cards['Test2020/1|a'])"
     Assert ($cards['Test2020/1|a|1'] -notmatch 'artifact:') 'a longer number (图 2.C.10) is not a mention'
     Assert ($cards['Test2020/1|a|2'] -eq "$table`n`n$line1`n`n凸性排除第二种情形。") "a mention in a table puts the figure after the table: $($cards['Test2020/1|a|2'])"
-    Assert ($cards['0/1'] -match [regex]::Escape("![图 IV](artifact:$($figs[1]))")) 'a Topic Card of the book gets the figure its Chinese numeral names'
-    Assert ($cards['0/2'] -notmatch 'artifact:') 'a Card outside the book is left alone'
+    Assert ($cards['Test2020/1|b'] -match [regex]::Escape("![图 IV](artifact:$($figs[1]))")) 'a Card of the book gets the figure its Chinese numeral names'
+    Assert ($cards['0/1'] -notmatch 'artifact:') 'a Topic Card that cites the book is left alone'
     Assert ($cards['Test2020/1'] -notmatch 'artifact:') 'the anchor line is left alone'
 
     $again = (& $run -Apply) | ConvertFrom-Json

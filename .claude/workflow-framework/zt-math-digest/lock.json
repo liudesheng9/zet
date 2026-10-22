@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "4.11.0",
+  "version": "5.0.0",
   "scope": "project",
   "script": ".claude/workflows/zt-math-digest.js",
   "scriptRel": "workflows/zt-math-digest.js",
-  "sha256": "c6c432a75f98f866a421c1d798b1e5737eea1b13192afb34bdd062c1348d3cf2",
-  "fingerprint": "aed08b0dee06fc98",
-  "blueprintSha256": "3fabffa60f74f2baba21a13000ed1e91d85186c85ff813bc772c8c5f9e67ce01",
+  "sha256": "5995c8916884d66f7ab27ebd5d14ea4eecf2798ab962836a76927830ed6d133e",
+  "fingerprint": "165a575c702fee11",
+  "blueprintSha256": "4bae86805a79af7a7186186dc60b0b055cfb79d60093f04e38810f96cd54a9a9",
   "modules": {
     "gate": "1",
     "zt-digest-lib": "31",
@@ -16,9 +16,8 @@
     "zt-bridge": "7",
     "zt-cards-book": "3",
     "zt-cards-layer": "1",
-    "zt-concepts": "1",
-    "zt-digest-prepare": "10",
-    "zt-digest-report": "14",
+    "zt-digest-prepare": "11",
+    "zt-digest-report": "15",
     "zt-dsh-cleanup": "9",
     "zt-dsh-source": "1",
     "zt-model-lib": "8",
@@ -26,7 +25,6 @@
     "zt-figures": "4",
     "zt-finalize": "2",
     "zt-group-cycle": "6",
-    "zt-hubs": "4",
     "zt-link-check": "1",
     "zt-link-pass": "7",
     "zt-link-prepare": "5",
@@ -37,8 +35,7 @@
     "zt-math-skeleton": "1",
     "zt-math-theory": "1",
     "zt-model-layer": "5",
-    "zt-organize": "5",
-    "zt-review": "2"
+    "zt-organize": "6"
   },
   "moduleFiles": {
     "gate": {
@@ -69,17 +66,13 @@
       "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
       "sha256": "6b60475a64fd0c70c38915df0a56b8b02b87511e9789d8828e7c1044a8d80467"
     },
-    "zt-concepts": {
-      "file": "scripts/book-digest/workflow/modules/zt-concepts.js",
-      "sha256": "e6a3e5fda938a3fcc5daf577ef55d2e069134018c69d88093b62517783649ccb"
-    },
     "zt-digest-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-prepare.js",
-      "sha256": "100a6212be563cbcc58354ff60f93f4a341327a1e0580eb262194b4060d5cace"
+      "sha256": "899df42dffd8ec945ae30fe4fecb7fbfd2e49f37b006265b2d3fc3409d9701b2"
     },
     "zt-digest-report": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
-      "sha256": "50ad4c07502b9e9fb10727969803bcd3fc575d924d3b04945d0f90fa97d96f52"
+      "sha256": "29706a03e80730faa57a3eb51d1a657eb0d27459689ff7dc735f6519512755a6"
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
@@ -108,10 +101,6 @@
     "zt-group-cycle": {
       "file": "scripts/book-digest/workflow/modules/zt-group-cycle.js",
       "sha256": "5424d03893fd817cf5658f9821a49423c99fefd01a593f5668cfb1d391fc1aab"
-    },
-    "zt-hubs": {
-      "file": "scripts/book-digest/workflow/modules/zt-hubs.js",
-      "sha256": "6e39caa569b8b0dd59a0588cdc6b46a29c8fde830f0a5c65a8704848af70cdf7"
     },
     "zt-link-check": {
       "file": "scripts/book-digest/workflow/modules/zt-link-check.js",
@@ -155,43 +144,36 @@
     },
     "zt-organize": {
       "file": "scripts/book-digest/workflow/modules/zt-organize.js",
-      "sha256": "c8f3a61a86b0b2b49c8afb1ab19cf533c852a601b105848084046558f61987aa"
-    },
-    "zt-review": {
-      "file": "scripts/book-digest/workflow/modules/zt-review.js",
-      "sha256": "75be7378d09aab14e2aab06179d2c60e6147dd786249953de409dd6b7f333915"
+      "sha256": "0c31a26ce1d1c49c24c21e43cc7b3c1998ea77f73409e272bbd5012990575498"
     }
   },
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-math-digest.blueprint.json",
-      "sha256": "72b5ff056b08bde2f20fe3b33c5997a02e2be243862eafb2c2a84a2d548e0f0e"
+      "sha256": "7721611df88757ea6a24b12bd996c3da6f558690d38c7e7ba7957805c4601a39"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "7800042d394c13933227502f46441e8ff05b3d422712e53636dd16902c5ef5bb"
+      "sha256": "12725055f09f10bacf80c7b939fa99dab9471413b66db7c4ae8cdc075b263513"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-22T04:07:17.955Z",
+  "installedAt": "2026-10-22T21:56:38.930Z",
   "dryRun": {
-    "agents": 59,
+    "agents": 48,
     "order": [
       "args",
       "source",
       "prepare",
       "math-skeleton",
       "terms",
-      "concepts",
       "digest",
       "cards",
       "models",
       "math-boundary",
       "math-proof",
       "explain",
-      "hubs-first",
       "cards-book",
-      "review",
       "link-prepare",
       "link",
       "link-check",
@@ -199,7 +181,6 @@
       "organize",
       "figures",
       "bridge",
-      "hubs",
       "audit",
       "finalize",
       "math-check",

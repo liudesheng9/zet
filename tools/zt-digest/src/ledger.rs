@@ -220,6 +220,8 @@ pub(crate) fn run_options(variant: &str, no_figures: bool, input: Option<&Value>
         let applicable = match name {
             "events" | "findings" => variant == "econ",
             "notation" | "boundary" | "proof" | "theory" => variant == "math",
+            // docs/literature-only-digest-design.md: a digest builds no hubs; zt-idea-grow does.
+            "hubs" => false,
             _ => true,
         };
         options.insert(
@@ -247,6 +249,9 @@ pub(crate) fn run_options(variant: &str, no_figures: bool, input: Option<&Value>
             }
             if enabled && name == "figures" && no_figures {
                 bail!("run option figures conflicts with NoFigures");
+            }
+            if enabled && name == "hubs" {
+                bail!("run option hubs is not available: a digest builds only the Literature tree; zt-idea-grow builds the hubs and the register");
             }
             options.insert(name.clone(), json!(enabled));
         }
@@ -6326,7 +6331,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     }
     renew(p, &unit, token)?;
     let anchor = zt.cards(&[field(group, "anchor")?.to_string()], "text")?;
-    let trees = crate::snapshot::read_title_trees(zt)?;
+    let trees = crate::snapshot::read_literature_trees(zt)?;
     let revision = trees
         .first()
         .and_then(|t| t["archive_revision"].as_u64())
@@ -6338,6 +6343,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     {
         bail!("read_view_changed: group-start archive view changed; retry");
     }
+    // docs/literature-only-digest-design.md: the group reads and links Literature trees only.
     let (snapshot, _) = crate::snapshot::render(&trees, 40);
     let directory = p
         .out
@@ -6485,7 +6491,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         draft_path.display()
     );
     let prompt = format!(
-        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\nSELF-CHECK: {self_check_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n可续写的早前主题卡：`{}`（把独立主张挂在这些卡下时，用同一个 `-Beneath` 文件调用助手）\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
+        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\nSELF-CHECK: {self_check_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n全部卡片都写在本书的文献树里：不新建主题，不写主题树的卡，不写枢纽卡，不链接主题树的卡（主题树归 zt-idea-grow）。\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
         draft_path.display(),
         field(&inputs["prefix"], "path")?,
         snapshot_path.display(),
@@ -6496,7 +6502,6 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         },
         field(&earlier.1, "path")?,
         earlier.2.candidates,
-        field(&earlier.3, "path")?,
         inputs["anchor"]["fingerprint"].as_str().unwrap(),
         serde_json::to_string_pretty(&draft)?,
         field(anchor, "title")?,
@@ -8054,12 +8059,27 @@ fn group_finish(
             bail!("group call {i} must contain only tool and arguments");
         }
         let tool = call["tool"].as_str().unwrap_or_default();
+        // docs/literature-only-digest-design.md: a group writes only the book's Literature tree.
+        if let Some(why) = zt_check::mcp::scope::literature_refusal(tool, &call["arguments"]) {
+            bail!("group call {i}: {why}");
+        }
         let args = call["arguments"]
             .as_object()
             .context("group call arguments must be an object")?;
         let at = args.get("at").and_then(Value::as_str).unwrap_or_default();
         if tool == "create_literature" {
             bail!("group call cannot create another Literature root");
+        }
+        // docs/literature-only-digest-design.md: a group files its Cards in its own book's
+        // Literature tree only; another book's tree is a Link target, never a destination.
+        let book = field(&p.contract, "citation_key")?;
+        if tool == "create_successor"
+            && !at.starts_with("@@")
+            && at.split('/').next().unwrap_or_default() != book
+        {
+            bail!(
+                "group call {i}: a group files its Cards in the book's Literature tree `{book}`, not beside `{at}`; link that Card instead"
+            );
         }
         if tool == "edit_card" {
             let earlier = at
@@ -8130,13 +8150,6 @@ fn group_finish(
         "{}/digest-g{number:03}/1/apply",
         run.as_str().context("missing run id")?
     );
-    let _topic_guard = if calls.iter().any(|c| c["tool"] == "create_topic") {
-        Some(crate::calls::lock_gate(
-            &p.out.join("topic-gate.lock").to_string_lossy(),
-        )?)
-    } else {
-        None
-    };
     let preview = if calls.is_empty() {
         let read = zt.cards(&[anchor.to_string()], "text")?;
         json!({"results":[],"cards":read.cards,"archive_revision":read.archive_revision})
@@ -8169,43 +8182,6 @@ fn group_finish(
             bail!(
                 "new group Cards must use the anchor's Side branch; direct Literature anchor locations are reserved"
             );
-        }
-    }
-    // Replayed Topic roots do not compete with themselves. New roots use the
-    // same title normalization and Dice threshold as the existing helper gate.
-    if _topic_guard.is_some() {
-        let trees = crate::snapshot::read_title_trees(zt)?;
-        let mut titles = trees
-            .iter()
-            .filter(|t| t["workspace"] == "agent" && t["kind"] == "topic")
-            .flat_map(|t| {
-                t["cards"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|c| c["kind"] == "topic")
-            })
-            .map(|c| {
-                (
-                    c["address"].as_str().unwrap_or_default().to_string(),
-                    crate::calls::title_key(c["title"].as_str().unwrap_or_default()),
-                )
-            })
-            .collect::<Vec<_>>();
-        for (i, call) in calls
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c["tool"] == "create_topic")
-        {
-            let address = field(&preview["results"][i]["result"], "address")?;
-            let key =
-                crate::calls::title_key(call["arguments"]["title"].as_str().unwrap_or_default());
-            if titles.iter().any(|(at, other)| {
-                at != address && (other == &key || crate::calls::similarity(other, &key) >= 0.8)
-            }) {
-                bail!("Topic gate refuses duplicate/similar Topic title at call {i}");
-            }
-            titles.push((address.to_string(), key));
         }
     }
     let literature = HashSet::from([field(&p.contract, "citation_key")?.to_string()]);

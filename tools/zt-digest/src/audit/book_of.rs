@@ -1,10 +1,9 @@
 //! The parts of `scripts/book-digest/book-of.ps1` the audit uses: the category of each Card and
 //! the book a Card belongs to (inferred attribution). Comparisons are ordinal, as in the script.
 
-use crate::ps::{culture_cmp, field, ps_sort};
+use crate::ps::field;
 use regex::Regex;
 use serde_json::Value;
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -19,10 +18,6 @@ pub fn link_book<'a>(target: &'a str, books: &HashSet<String>) -> Option<&'a str
 /// `Test-SourceTarget`: a Link to a book's Literature Card or one of its anchors (a source line).
 pub fn source_target(target: &str, books: &HashSet<String>) -> bool {
     link_book(target, books).is_some() && (!target.contains('/') || ANCHOR.is_match(target))
-}
-
-fn links(card: &Value) -> Vec<String> {
-    crate::ps::ps_items(&card["links"]).iter().map(crate::ps::s).collect()
 }
 
 pub struct BookIndex {
@@ -68,32 +63,12 @@ pub fn book_index_with_parts(trees: &[Value], cards: &[Value], register_parts: &
         if field(card, "workspace") != "agent" {
             continue;
         }
+        // docs/literature-only-digest-design.md: a Card belongs to a book only when it is in that
+        // book's Literature tree. A Topic-tree Card is idea-grow's and belongs to no book, however
+        // many Links it has into one, so no digest step reviews, edits or bridges from it.
         let tree = field(card, "tree");
         if books.contains(&tree) {
             book_of.insert(address, tree);
-            continue;
-        }
-        let mut votes: Vec<(String, i64)> = Vec::new();
-        let mut seen = HashSet::new();
-        for target in links(card) {
-            if !seen.insert(target.clone()) {
-                continue;
-            }
-            if let Some(book) = link_book(&target, &books) {
-                let add = if source_target(&target, &books) { 10 } else { 1 };
-                match votes.iter_mut().find(|(k, _)| k == book) {
-                    Some((_, n)) => *n += add,
-                    None => votes.push((book.to_string(), add)),
-                }
-            }
-        }
-        // The highest vote wins; a tie goes to the first key in Sort-Object order.
-        if !votes.is_empty() {
-            ps_sort(&mut votes, |a, b| match b.1.cmp(&a.1) {
-                Ordering::Equal => culture_cmp(&a.0, &b.0),
-                other => other,
-            });
-            book_of.insert(address, votes[0].0.clone());
         }
     }
     let mut ordered: Vec<String> = books.iter().cloned().collect();
@@ -121,8 +96,8 @@ mod tests {
         ]);
         let index = book_index(&trees, &cards);
         assert_eq!(index.book_of["Alpha/1"], "Alpha");
-        assert_eq!(index.book_of["4/1"], "Beta");
-        assert_eq!(index.book_of["4/2"], "Alpha");
+        // A Topic-tree Card belongs to no book, whatever it links.
+        assert!(!index.book_of.contains_key("4/1") && !index.book_of.contains_key("4/2"));
         assert!(!index.book_of.contains_key("4/3"));
         trees.push(json!({ "tree": "Human", "kind": "literature", "workspace": "human" }));
         cards.extend([
@@ -145,8 +120,7 @@ mod tests {
         assert_eq!(index.category["Alpha/1|s"], "structure");
         assert!(!index.book_of.contains_key("4/4") && !index.book_of.contains_key("4/5"));
         assert!(!index.books.contains(&"Human".to_string()));
-        assert_eq!(index.book_of["Case/1"], "Beta");
-        assert_eq!(index.book_of["case/1"], "Alpha");
+        assert!(!index.book_of.contains_key("Case/1") && !index.book_of.contains_key("case/1"));
         let index = book_index(&trees, &cards);
         let mut rt = trees.clone();
         rt.reverse();

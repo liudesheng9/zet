@@ -127,7 +127,7 @@ try {
         @{ tool = 'create_topic'; arguments = @{ title = '企业边界'; body = '本主题追问：什么决定企业的边界。' } },
         @{ tool = 'create_successor'; arguments = @{ at = 'Locked2021/1'; kind = 'side'; title = '锁定树里的新卡'; body = '这张卡写不进去。' } }
     )
-    $said = @(($batch | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $helper - -Log $log | ForEach-Object { "$_" })
+    $said = @(($batch | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $helper - -Open -Log $log | ForEach-Object { "$_" })
     $saidExit = $LASTEXITCODE
     Assert ($saidExit -ne 0) "a write into the locked tree stops the helper (exit $saidExit): $($said -join ' | ')"
     Assert (@($said | Where-Object { $_ -match '^0 ok \d+/0$' }).Count -eq 1) "the earlier Card of the batch stays committed: $($said -join ' | ')"
@@ -161,7 +161,7 @@ try {
         @{ tool = 'create_topic'; arguments = @{ title = '锁定之后的新想法'; body = '本主题追问：锁定卡还能不能被引用。' } },
         @{ tool = 'create_successor'; arguments = @{ at = '@@0'; title = '锁定卡仍然可以链接'; body = "这张卡用 [[Locked2021/1]] 说明：锁定树里的卡片可以读、可以链接。`n`n来源：[[Locked2021]]" } }
     )
-    $linked = @(($thought | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $helper - | ForEach-Object { "$_" })
+    $linked = @(($thought | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $helper - -Open | ForEach-Object { "$_" })
     $linkedExit = $LASTEXITCODE
     Assert ($linkedExit -eq 0) "a new thought in another unlocked tree still links a locked Card: $($linked -join ' | ')"
 
@@ -260,7 +260,7 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = 'MidRun2023/1'; kind = 'side'; title = '锁定之前写入的卡片'; body = '这张卡片写入了。' } },
         @{ tool = 'create_successor'; arguments = @{ at = 'MidRun2023/1'; kind = 'side'; title = '锁定之后写入的卡片'; body = '这张卡片写不进去。' } }
     )
-    $raced = @(($race | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $helper - -Log $raceLog | ForEach-Object { "$_" })
+    $raced = @(($race | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $helper - -Open -Log $raceLog | ForEach-Object { "$_" })
     $racedExit = $LASTEXITCODE
     $env:ZT_CHECK_ZT = $null
     $env:ZT_LOCK_TREE = $null
@@ -280,7 +280,7 @@ try {
     $identified = Join-Path $scratch 'identified.json'
     [IO.File]::WriteAllText($identified, (@(@{ tool = 'create_successor'; arguments = @{ at = 'MidRun2023/1'; kind = 'side'; title = '整批回滚的卡片'; body = '这一批整体回滚。' } }) | ConvertTo-Json -Depth 8 -AsArray), $utf8)
     $env:ZT_CHECK_ZT = $seam
-    $rolled = Invoke-Tool @('call', $identified, '-OperationPrefix', 'run/race/1/step')
+    $rolled = Invoke-Tool @('call','-Open',$identified, '-OperationPrefix', 'run/race/1/step')
     $env:ZT_CHECK_ZT = $null
     Assert ($rolled.code -ne 0) "a refused identified chunk stops the run (exit $($rolled.code)): $($rolled.text)"
     Assert ($rolled.text.Contains('card_locked') -and $rolled.text.Contains('MidRun2023')) "the refused chunk keeps the typed refusal: $($rolled.text)"

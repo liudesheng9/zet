@@ -38,7 +38,7 @@ function Invoke-Tool([string[]]$arguments) {
 }
 function Last($lines) { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable }
 function Write-Calls($calls) {
-    $out = @(($calls | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $out = @(($calls | ConvertTo-Json -Depth 8 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -123,7 +123,9 @@ try {
 
     # --- the survey reads the locked tree and marks it (R332) ------------------------------------
     $survey = Last @(pwsh -NoProfile -File (Join-Path $dir 'organize-survey.ps1') -Staging $staging -Work $work 2>&1)
-    Assert ($survey.topics -ge 5 -and $survey.locked -eq 1) "survey: the locked Topic is counted ($($survey.topics) Topics, $($survey.locked) locked)"
+    # A digest's survey names no Topic as the book's (docs/literature-only-digest-design.md); it still
+    # marks every locked agent Topic as read-only context.
+    Assert ($survey.topics -eq 0 -and $survey.locked -eq 1) "survey: the locked Topic is counted ($($survey.topics) Topics, $($survey.locked) locked)"
     $surveyJson = Get-Content (Join-Path $work 'survey.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     Assert ($surveyJson.locks[$locked].lock_id -eq $lock.lock_id) "survey: the locked Topic carries its Lock facts ($($surveyJson.locks | ConvertTo-Json -Compress))"
     $surveyMd = Get-Content (Join-Path $work 'survey.md') -Raw -Encoding utf8
@@ -149,7 +151,7 @@ try {
         notes  = @()
     }
     $before = @(Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{ workspace = 'agent' } })).titles
-    $preview = Last @(& $Digest organize-apply -Work $work -DryRun 2>&1 | ForEach-Object { "$_" })
+    $preview = Last @(& $Digest organize-apply -Work $work -DryRun -Open 2>&1 | ForEach-Object { "$_" })
     Assert ($preview.merges -eq 1 -and $preview.moves -eq 1 -and $preview.blocked -eq 5) "preview: one merge, one move, five blocked decisions ($($preview.merges), $($preview.moves), $($preview.blocked))"
     $previewFile = Get-Content (Join-Path $work 'applied.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     Assert ($previewFile.dry_run -eq $true -and $previewFile.complete -eq $false) 'preview: the run is marked dry and incomplete'
@@ -178,7 +180,7 @@ try {
     Assert ((Get-Card "$d/0").title -eq '要合并的主题' -and (Get-Card $dCards[0]).title -eq '合并会搬走这张卡') 'preview: the blocked merge kept its Cards in place'
 
     # --- the real run: the permitted decisions apply, the blocked ones stay put -------------------
-    $applied = Last @(& $Digest organize-apply -Work $work 2>&1 | ForEach-Object { "$_" })
+    $applied = Last @(& $Digest organize-apply -Work $work -Open 2>&1 | ForEach-Object { "$_" })
     Assert ($applied.merges -eq 1 -and $applied.moves -eq 1 -and $applied.blocked -eq 5) "apply: the permitted decisions run and the blocked ones are reported ($($applied.merges), $($applied.moves), $($applied.blocked))"
     $runFile = Get-Content (Join-Path $work 'applied.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     Assert ($runFile.complete -eq $false -and -not $runFile.stopped) 'apply: the run is incomplete and did not stop'
@@ -220,7 +222,7 @@ try {
     $env:ZT_LOCK_AFTER_TOOL = 'move_card'
     $env:ZT_LOCK_AFTER_N = '3'
     $env:ZT_LOCK_FLAG = $flag
-    $race = Invoke-Tool @('organize-apply', '-Work', $raceWork)
+    $race = Invoke-Tool @('organize-apply', '-Work', $raceWork, '-Open')
     $env:ZT_CHECK_ZT = $null
     $env:ZT_LOCK_TREE = $null
     $env:ZT_LOCK_AFTER_TOOL = $null

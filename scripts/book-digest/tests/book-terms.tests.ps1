@@ -26,7 +26,7 @@ $failed = 0
 function Assert($condition, $message) { if (-not $condition) { Write-Output "FAIL: $message"; $script:failed++ } else { Write-Output "ok: $message" } }
 function Last($lines) { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable }
 function Write-Calls($calls) {
-    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -38,8 +38,8 @@ try {
         @{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = "@book{$key, title={Terms}, author={Hart, Oliver}, year={2024}}"; body = '全书索引。' } },
         @{ tool = 'create_successor'; arguments = @{ at = $key; kind = 'direct'; title = '第 1 组：所有权决定剩余控制权'; body = '§1 - 所有权' } }
     )
-    $topic = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '控制权'; body = '本主题追问：谁决定契约没写的事。' } }))[0] -replace '/0$', ''
-    $idea = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = "$topic/0"; title = '所有者在契约空白处决定资产用法'
+    # docs/literature-only-digest-design.md: the book's Idea Card is in its Literature tree (a Topic Card belongs to no book).
+    $idea = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'side'; title = '所有者在契约空白处决定资产用法'
                     body = "所有者掌握残余控制权。依赖 [[$key/1]]：契约不完全。`n`n来源：[[$key]] §1" } }))[0]
     [IO.File]::WriteAllText((Join-Path $staging 'sections\s01.md'), "# 第一章`n`n我们把契约没有写明时决定资产用法的权利称为**剩余控制权**。`n`n**敲竹杠**是专用投资之后的机会主义。`n", $utf8)
     [IO.File]::WriteAllText((Join-Path $staging 'manifest.json'), (@{ citation_key = $key; book_title = '术语测试'; groups = @(@{ n = 1; chapter = '第一章'; headings = @('所有权') }) } | ConvertTo-Json -Depth 5), $utf8)

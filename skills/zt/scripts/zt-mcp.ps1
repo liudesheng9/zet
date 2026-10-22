@@ -9,7 +9,7 @@
   directly when you can: it takes the same parameters and prints the same lines, and starts no pwsh.
 
     zt-digest call <file|-> [-From N -Addresses a0,a1,...] [-Log f] [-Allow f] [-Moves f] [-SrcLog f]
-                   [-TopicGate f] [-TopicSimilarity 0.8]
+                   [-Open] [-TopicGate f] [-TopicSimilarity 0.8]
     zt-digest call -Tool <tool> [-Json '{...}']
 
   -File takes a UTF-8 JSON file holding one call or an array of calls, or `-` to read the same
@@ -31,6 +31,11 @@
   `card_locked` answer is a planning/destination refusal. Do not retry it as a provider fault,
   request another Access, call the GUI routes or write the database directly: ask the owner to
   unlock the tree in the GUI, or continue the thought in another unlocked tree.
+
+  Scope (docs/literature-only-digest-design.md): without -Open the helper runs in the Literature
+  scope, as every ZT digest does: it refuses create_topic, any write to a Topic-tree Card, a Hub
+  Card, and authored text that links a Topic-tree Card. Pass -Open for hand work on Topic trees;
+  zt-idea-grow writes its Topic trees in-process and needs no -Open.
 
   -Log <file> appends the address of every Card a create call makes, one per line. -Allow <file>
   (one address per line) limits the run to those Cards: edit_card, append_card, and

@@ -27,7 +27,7 @@ function Last($lines) {
     try { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable } catch { throw "not JSON: $(@($lines) -join ' | ')" }
 }
 function Write-Calls($calls) {
-    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -41,11 +41,11 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'direct'; title = '第 2 组：契约可以替代一体化'; body = '§2 - 契约' } },
         @{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = '@book{Other2020, title={Other}, author={Coase, Ronald}, year={2020}}'; body = '另一本书。' } }
     )
-    $topic = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '纵向一体化'; body = '本主题追问：企业为什么买下供应商。' } }))[0] -replace '/0$', ''
+    # docs/literature-only-digest-design.md: each group's Idea Card is in the book's Literature tree, under its anchor.
     $ideas = Write-Calls @(
-        @{ tool = 'create_successor'; arguments = @{ at = "$topic/0"; title = '纵向一体化消除供应商的敲竹杠'
+        @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'side'; title = '纵向一体化消除供应商的敲竹杠'
                 body = "买方买下供应商后，供应商不再能抬价。依赖 [[$key/1]]：专用投资引出敲竹杠。`n`n来源：[[$key]] §1" } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@0'; kind = 'side'; title = '长期契约也能约束供应商的抬价'
+        @{ tool = 'create_successor'; arguments = @{ at = "$key/2"; kind = 'side'; title = '长期契约也能约束供应商的抬价'
                 body = "长期契约写明价格，供应商不能抬价。对照 [[$key/1]]：一体化不是唯一的办法。`n`n来源：[[$key]] §2" } }
     )
     $old = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = $ideas[1]; kind = 'side'; type = 'event'; title = '1919 年通用汽车与费雪车身公司签订长期合同'

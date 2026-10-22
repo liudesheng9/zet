@@ -38,7 +38,8 @@ const db=new DatabaseSync(p);db.prepare("update units set lease_until=? where id
     Remove-Item Env:ZT_FAIL_EXPORT_TITLES
     $stillOpen=Run-Digest @('ledger','status','-Out',$out,'-Layer','digest')
     Assert ($stillOpen.units[0].state -eq 'claimed' -and -not $stillOpen.units[0].progress.group_start -and -not $stillOpen.complete) 'a skeleton anchor plus a failed snapshot cannot establish group coverage'
-    $made=Invoke-Zt @(@{tool='create_topic';arguments=@{title='启动时新增主题';body='这是准备完成之后才写入的上下文。'}})
+    # docs/literature-only-digest-design.md: the startup snapshot lists Literature trees only, so the post-preparation context is another book.
+    $made=Invoke-Zt @(@{tool='create_literature';arguments=@{bibtex='@book{Later2021,title={启动时新增文献}}';body='这是准备完成之后才写入的上下文。'}})
     $env:ZT_TRACE_TOOLS=Join-Path $scratch 'trace.jsonl'
     $started=Run-Digest @('group-start','-Out',$out,'-Group','1','-Token',"$($claim.token)")
     Assert ($started.unit -eq $claim.id -and $started.token -eq $claim.token -and $started.input_hash -match '^[0-9a-f]{64}$' -and -not $started.reused) 'group-start binds the actual claim to a frozen job input hash'
@@ -46,7 +47,7 @@ const db=new DatabaseSync(p);db.prepare("update units set lease_until=? where id
     Assert ($started.lease_until -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+110 -and $active.units[0].lease_until -eq $started.lease_until -and $active.units[0].attempts -eq 1 -and $active.units[0].state -eq 'claimed' -and -not $active.complete) 'startup renews a nearly expired claim without spending another attempt or completing the group'
     $job=Get-Content -LiteralPath $started.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     Assert ($job.expected_jobs -eq 1 -and $job.jobs.Count -eq 1 -and $job.mode -eq 'draft_only' -and $job.jobs[0].output -eq $started.draft -and $job.jobs[0].permissions.archive_write -eq $false) 'the job manifest explicitly requests one draft file with no archive write permission'
-    Assert ([IO.File]::ReadAllText($started.snapshot).Contains('启动时新增主题') -and [IO.File]::ReadAllText($started.snapshot).Contains('人类工作区（只读')) 'the startup snapshot includes post-preparation context and marks human Cards read-only'
+    Assert ([IO.File]::ReadAllText($started.snapshot).Contains('启动时新增文献') -and [IO.File]::ReadAllText($started.snapshot).Contains('人类工作区（只读')) 'the startup snapshot includes post-preparation context and marks human Cards read-only'
     Assert ([IO.File]::ReadAllText($started.prompt).Contains('企业的融资约束影响生产选择') -and [IO.File]::ReadAllText($started.prompt).Contains($started.input_hash)) 'the prompt contains the selected source and exact draft binding'
     $trace=@(Get-Content $env:ZT_TRACE_TOOLS | ForEach-Object {$_ | ConvertFrom-Json -AsHashtable})
     Assert (@($trace | Where-Object tool -EQ export_titles).Count -eq 1 -and @($trace.process_id | Select-Object -Unique).Count -eq 1) 'one fresh title export shares the command MCP process'

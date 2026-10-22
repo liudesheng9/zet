@@ -141,6 +141,9 @@ fn main() {
     });
     // R318: the invocation's staging folder ties its archive active-run marker to one run.
     zt::note_invocation(&rest);
+    // docs/literature-only-digest-design.md: a digest step writes only the book's Literature tree.
+    // The Topic-tree, hub and register tools (idea-grow's) keep the open scope.
+    zt_check::mcp::scope::set_literature_only(literature_scope(&tool, &rest));
     let result = match tool.to_ascii_lowercase().as_str() {
         "call" => calls::cli(&rest),
         "service-wait" => service_wait_cli(&rest),
@@ -209,5 +212,47 @@ fn main() {
             eprintln!("zt-digest {tool}: {error:#}");
             std::process::exit(1);
         }
+    }
+}
+
+/// The tools that compose Topic trees, hubs and the register (zt-idea-grow's, and the hand tools
+/// beside them). Every other tool is a digest step and runs in the Literature scope, Organize's
+/// survey and apply included: a digest's Organize merges no Topic and moves no Topic Card.
+const OPEN_TOOLS: &[&str] = &[
+    "grow", "hub", "register", "gate", "join", "topic-home", "publish", "resolve", "pilot",
+    "restate", "snapshot-topics", "service-wait", "list-models", "version", "--version", "-v",
+];
+
+/// Whether this invocation runs in the Literature scope: every digest step, and `call` and
+/// `organize-apply` unless given `-Open` (a hand-run helper call, or a Topic merge run by hand or by
+/// a later idea-grow round, that may write a Topic tree).
+fn literature_scope(tool: &str, rest: &[String]) -> bool {
+    let tool = tool.to_ascii_lowercase();
+    if tool == "call" || tool == "organize-apply" {
+        return !rest.iter().any(|a| a.eq_ignore_ascii_case("-Open"));
+    }
+    !OPEN_TOOLS.contains(&tool.as_str())
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::literature_scope;
+
+    #[test]
+    fn digest_steps_run_in_the_literature_scope() {
+        for tool in ["group-finish", "link-finish", "card", "event", "finding", "bridge", "skeleton", "finalize", "prepare", "model", "math", "organize-apply", "organize-survey", "Card"] {
+            assert!(literature_scope(tool, &[]), "{tool}");
+        }
+        assert!(literature_scope("call", &["-".into(), "-Allow".into(), "x".into()]));
+    }
+
+    #[test]
+    fn idea_grow_and_hub_tools_keep_the_open_scope() {
+        for tool in ["grow", "hub", "register", "restate", "gate", "topic-home", "join", "publish"] {
+            assert!(!literature_scope(tool, &[]), "{tool}");
+        }
+        assert!(!literature_scope("call", &["-".into(), "-open".into()]));
+        assert!(literature_scope("organize-apply", &["-Work".into(), "w".into()]));
+        assert!(!literature_scope("organize-apply", &["-Work".into(), "w".into(), "-Open".into()]));
     }
 }

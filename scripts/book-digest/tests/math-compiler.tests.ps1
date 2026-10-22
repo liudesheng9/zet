@@ -32,7 +32,7 @@ function Run($step, [string[]]$more = @()) {
 }
 function Last($lines) { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable }
 function Write-Calls($calls) {
-    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }

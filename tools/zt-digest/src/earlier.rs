@@ -11,6 +11,7 @@
 //! again on their bodies. The result is frozen evidence in the group's startup job, so a resumed
 //! group reads the same pack, and nothing here writes a Card.
 
+use zt_check::mcp::scope::is_topic_address;
 use crate::canon;
 use crate::card::relatedness::Relatedness;
 use crate::ps::s;
@@ -229,9 +230,12 @@ pub(crate) fn build(
     identity: &Value,
     request: &Request,
 ) -> Result<Pack> {
-    let catalog = rows(trees);
+    // docs/literature-only-digest-design.md: a digest group reads Literature trees only, so the
+    // pack offers no Topic-tree Card, and a register term that points into a Topic tree is skipped.
+    let catalog: Vec<Value> = rows(trees).into_iter().filter(|row| !is_topic_address(&s(&row["address"]))).collect();
     let text = request.query.text();
-    let register = read_register(zt, &text);
+    let mut register = read_register(zt, &text);
+    register.targets.retain(|address, _| !is_topic_address(address));
     let ranked = rank_titles(&catalog, &text, &request.exclude, &register.targets);
     let mut attempt = 0;
     let cards = loop {

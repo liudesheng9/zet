@@ -81,7 +81,7 @@ const reportDone = { exit_code: 0, last_line: json({ report: 'grow-report.md', c
 // ================================================================================================================
 // The frozen build carries the seam
 // ================================================================================================================
-check(build.modules['zt-grow-cycle'] === '8', `frozen: the build carries zt-grow-cycle v8 (${build.modules['zt-grow-cycle']})`)
+check(build.modules['zt-grow-cycle'] === '9', `frozen: the build carries zt-grow-cycle v9 (${build.modules['zt-grow-cycle']})`)
 check(source.includes('const lockRefusal = (text) =>') && source.includes('card_locked at ${where}'), 'frozen: the built script carries the Lock reader and the stop')
 check(build.embedded.stages.filter((s) => s.id === 'grow').length === 1, 'frozen: the one grow stage is the module that owns the seam')
 
@@ -126,6 +126,39 @@ check(build.embedded.stages.filter((s) => s.id === 'grow').length === 1, 'frozen
   check(run3.report && run3.report.halted && run3.report.halted.stage === 'grow', 'typed code: a refusal with no sentence still stops the stage')
   check(/card_locked/.test(String(run3.report.halted.error)), 'typed code: the stop names the typed code')
 }
+
+// ================================================================================================================
+// 3.0.0 (docs/literature-only-digest-design.md): idea-grow owns every Topic tree, Topic Card, hub and the register
+// ================================================================================================================
+{
+  // Mode hubs: only the hubs round and the register, with the hub options the digests had.
+  const hubsPlan = { exit_code: 0, last_line: json({ hub_jobs: 0, topics: 3, trees: 2, limits: { line_min: 12 } }), tail: '' }
+  const hubsReport = { exit_code: 0, last_line: json({ hubs: { topic: 2 }, faults: {}, missing: 0, mirror: 0, register: { status: 'published', entries: 9 } }), tail: '' }
+  const r = await run({ out: 'D:/x/hubs', mode: 'hubs', hubTrees: '12,13', hubRebuild: true, hubLimits: { line_min: 12 } }, { '-Step hubs-plan': hubsPlan, '-Step hubs-report': hubsReport })
+  check(!r.thrown && r.report && !r.report.halted && r.report.stages.grow.status === 'done', `mode hubs: the run completes (${JSON.stringify(r.report && r.report.halted)})`)
+  check(!r.commands.some((c) => /grow -Step (plan|topics|apply|links|check|report|restate-cards) /.test(c)), `mode hubs: no Card is grown, checked or reviewed (${r.commands.join(' | ')})`)
+  const plan = r.commands.find((c) => /grow -Step hubs-plan/.test(c)) || ''
+  check(/-Trees '12,13'/.test(plan) && /-Rebuild/.test(plan) && plan.includes(`-Limits '{"line_min":12}'`), `mode hubs: the hub options reach the hub plan (${plan})`)
+  check(r.commands.some((c) => /grow -Step hubs-report .*-Register 'apply'/.test(c)), 'mode hubs: the register is rebuilt after the hubs')
+  check(r.report.result && r.report.result.mode === 'hubs' && r.report.result.report && r.report.result.report.mode === 'hubs', 'mode hubs: the result says it was a hubs run')
+}
+{
+  // The restatement review of the run's new Topic Cards, one review per source book.
+  const reviews = { exit_code: 0, last_line: json({ books: 1, reviews: [{ id: 'r01', book: 'Key', staging: 'D:/x/grow/restate/r01', cards: 3 }] }), tail: '' }
+  const prepared = { exit_code: 0, last_line: json({ ok: true, step: 'prepare', cards: 3, reviewable: 0, jobs: [] }), tail: '' }
+  const reported = { exit_code: 0, last_line: json({ ok: true, step: 'report', report_id: 'rr-1', status: 'resolved', complete: true, counts: { resolved_by_rewrite: 0, pending_existing_card_change: 0, unresolved: 0 } }), tail: '' }
+  // The restate keys come first: the stand-in answers the first key a command contains.
+  const answers = { '-Step restate-cards': reviews, 'restate -Step prepare': prepared, 'restate -Step report': reported, '-Step plan': plan, '-Step topics': topicsDone, '-Step check': checkDone, '-Step report': reportDone }
+  const r = await run(args, answers)
+  check(!r.thrown && r.report && !r.report.halted, `restate: the run completes (${JSON.stringify(r.report && r.report.halted)})`)
+  check(r.commands.some((c) => c.includes("restate -Step prepare -Staging 'D:/x/grow/restate/r01'") && /-Cards '[^']*cards\.txt'/.test(c)), `restate: the review reads the run's own new Topic Cards of each book (${r.commands.filter((c) => /restate/.test(c)).join(' | ')})`)
+  const at = (re) => r.commands.findIndex((c) => re.test(c))
+  check(at(/grow -Step check/) < at(/grow -Step restate-cards/) && at(/grow -Step restate-cards/) < at(/grow -Step hubs-plan/), 'restate: the review follows the fix rounds and comes before the hubs')
+  check(r.report.result && r.report.result.restate && r.report.result.restate.books === 1 && r.report.result.restate.reviews[0].status === 'resolved', `restate: the result reports each book's review (${JSON.stringify(r.report.result && r.report.result.restate)})`)
+  const off = await run({ ...args, restate: false }, answers)
+  check(!off.commands.some((c) => /restate/.test(c)), 'restate: restate false runs no review')
+}
+check((source.match(/\], p\.hubEffort\)\)/g) || []).length === 2, 'hub effort: the hub jobs and their fix jobs run at hubEffort')
 
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)

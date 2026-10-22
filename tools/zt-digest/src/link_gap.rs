@@ -127,6 +127,10 @@ impl Archive {
         let mut links = Vec::new();
         for row in ps::ps_items(&links_view["links"]) {
             let (source, target) = (s(&row["source"]), s(&row["target"]));
+            // A Link from or to a Topic tree is idea-grow's; it closes no gap of a Literature Card.
+            if zt_check::mcp::scope::is_topic_address(&source) || zt_check::mcp::scope::is_topic_address(&target) {
+                continue;
+            }
             if !source.is_empty() && !target.is_empty() {
                 links.push((source, target));
             }
@@ -442,7 +446,7 @@ pub(crate) fn position_paragraphs(body: &str) -> Vec<String> {
 /// The one archive read: the owned Cards' text facts, every authored Link, both registers, and the
 /// title catalogue that classifies anchors and Literature trees. A changing view is refused.
 pub(crate) fn read(zt: &mut Zt, book: &str, addresses: &[String]) -> Result<Facts> {
-    let trees = crate::snapshot::read_title_trees(zt)?;
+    let trees = crate::snapshot::read_literature_trees(zt)?;
     let revision = trees
         .first()
         .and_then(|tree| tree["archive_revision"].as_u64())

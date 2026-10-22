@@ -8,7 +8,7 @@ $env:ZT_CONFIG_DIR=Join-Path $scratch 'config';$env:ZT_GUI_PORT='0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 $compiler=Join-Path $PSScriptRoot '..\bridge-compiler.ps1'
 function Assert($ok,$text){if(-not $ok){throw $text};Write-Output "ok: $text"}
-function Calls($calls){$lines=@((ConvertTo-Json -InputObject @($calls) -Depth 20)|pwsh -NoProfile -File $script:ZtHelper -);if($LASTEXITCODE){throw "$lines"};,@($lines|Where-Object{$_ -match '^\d+ ok '}|ForEach-Object{($_ -split ' ok ',2)[1].Trim()})}
+function Calls($calls){$lines=@((ConvertTo-Json -InputObject @($calls) -Depth 20)|pwsh -NoProfile -File $script:ZtHelper - -Open);if($LASTEXITCODE){throw "$lines"};,@($lines|Where-Object{$_ -match '^\d+ ok '}|ForEach-Object{($_ -split ' ok ',2)[1].Trim()})}
 function Compile($a){$lines=@(pwsh -NoProfile -File $compiler @a);$script:Code=$LASTEXITCODE;$lines[-1]|ConvertFrom-Json -AsHashtable -DateKind String}
 function Save($path,$value){[IO.File]::WriteAllText($path,(ConvertTo-Json -InputObject $value -Depth 30),[Text.UTF8Encoding]::new($false))}
 try{

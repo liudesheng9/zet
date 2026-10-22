@@ -31,7 +31,7 @@ function Complete([string]$Layer,[string]$Unit,[string]$Outputs) {
     Run-Digest @('ledger','done','-Out',$out,'-Unit',$Unit,'-Token',$mine[0].token,'-Outputs',$Outputs)
 }
 function Write-Calls($calls) {
-    $lines = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $lines = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $($lines -join ' | ')" }
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }

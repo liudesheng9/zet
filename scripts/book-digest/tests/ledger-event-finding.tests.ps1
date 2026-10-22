@@ -32,7 +32,7 @@ function BodyOf($at) { (Invoke-Zt @(@{tool='get_card';arguments=@{at=$at}})).bod
 function Set-Body($at,$body) { $null=Invoke-Zt @(@{tool='edit_card';arguments=@{at=$at;body=$body}}) }
 # A write batch through the helper, as the compilers write: the addresses of its create calls.
 function Write-Zt($calls) {
-    $out=@(($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $out=@(($calls | ConvertTo-Json -Depth 10 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) {throw "zt: $($out -join ' | ')"}
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }

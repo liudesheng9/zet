@@ -6,7 +6,7 @@
 //! digest's -Staging folder, whose manifest names both):
 //!   1. keeps every figure of the Markdown in ZET's artifact store and reads its labels
 //!      (`2.C.1`, `IV`/`四`) from the caption next to the image;
-//!   2. finds the agent Cards of this book that name a figure (`图 2.C.1`, `图2.C.1`,
+//!   2. finds the agent Cards of this book's Literature tree that name a figure (`图 2.C.1`, `图2.C.1`,
 //!      `Figure 2.C.1`; never `图 2.C.10`);
 //!   3. puts each figure's `![图 2.C.1](artifact:<sha256>)` line into the Card, as its own
 //!      paragraph after the paragraph that first names it;
@@ -519,7 +519,6 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     }
     let anchor = Regex::new(&format!("(?i)^{}/\\d+$", regex::escape(&key)))?;
     let in_tree = Regex::new(&format!("(?i)^{}/", regex::escape(&key)))?;
-    let cites = format!("[[{key}");
     let addresses: Vec<&String> = candidates.iter().filter(|a| !eq(a, &key) && !anchor.is_match(a)).collect();
     let mut cards: Vec<Card> = Vec::new();
     for chunk in addresses.chunks(batch) {
@@ -530,7 +529,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             }
             let address = s(&card["address"]);
             let body = s(&card["body"]);
-            if !in_tree.is_match(&address) && !body.contains(&cites) {
+            // docs/literature-only-digest-design.md: the book's Cards are the Cards of its Literature
+            // tree; a Card elsewhere that cites the book (a Topic Card, another book) is not its to edit.
+            if !in_tree.is_match(&address) {
                 continue;
             }
             cards.push(Card { address, title: s(&card["title"]), body, text: s(&card["text"]) });

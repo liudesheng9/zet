@@ -70,18 +70,18 @@ $controlInfo=[Diagnostics.ProcessStartInfo]::new((Get-Command node -CommandType 
 $controlInfo.UseShellExecute=$false;$controlInfo.CreateNoWindow=$true;$controlInfo.ArgumentList.Add($server);$controlInfo.ArgumentList.Add('--child')
 $control=[Diagnostics.Process]::Start($controlInfo)
 try{
-    Run-Case 'request_hang' $Digest @('call','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')
-    Run-Case 'initialize_hang' $Digest @('call','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')
-    Run-Case 'noise_hang' $Digest @('call','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')
+    Run-Case 'request_hang' $Digest @('call','-Open','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')
+    Run-Case 'initialize_hang' $Digest @('call','-Open','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')
+    Run-Case 'noise_hang' $Digest @('call','-Open','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')
     $large=Join-Path $scratch 'large-calls.json'
     [IO.File]::WriteAllText($large,('[{"tool":"create_topic","arguments":{"workspace":"agent","title":"blocked pipe","body":"'+('a'*(2*1024*1024))+'"}}]'),$utf8)
-    Run-Case 'write_hang' $Digest @('call',$large)
-    Run-Case 'shutdown_hang' $Digest @('call','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')
+    Run-Case 'write_hang' $Digest @('call','-Open',$large)
+    Run-Case 'shutdown_hang' $Digest @('call','-Open','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')
     Run-Case 'request_hang' $Checker @('--addresses','MissingFixtureCard')
     $env:ZT_MCP_LIFECYCLE_MODE='request_hang';$env:ZT_MCP_TEST_TIMEOUT_MS='10000'
     $env:ZT_MCP_PID_FILE=Join-Path $scratch 'parent-death-pids.json'
     $deathInfo=[Diagnostics.ProcessStartInfo]::new($Digest);$deathInfo.UseShellExecute=$false;$deathInfo.CreateNoWindow=$true
-    foreach($arg in @('call','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')){$deathInfo.ArgumentList.Add($arg)}
+    foreach($arg in @('call','-Open','-Tool','get_cards','-Json','{"addresses":[],"view":"text"}')){$deathInfo.ArgumentList.Add($arg)}
     $owner=[Diagnostics.Process]::Start($deathInfo)
     try{
         $until=[DateTimeOffset]::UtcNow.AddSeconds(4)
@@ -106,7 +106,7 @@ try{
         $daemon=Get-Process -Id $daemonId
         Assert ([IO.Path]::GetFullPath($daemon.Path) -eq [IO.Path]::GetFullPath($Zt)) 'the stale-service fixture identifies its own candidate executable'
         $daemon.Kill();$daemon.WaitForExit(3000)|Out-Null;$daemon.Dispose()
-        $lines=@(& $Digest call -Tool get_cards -Json '{"addresses":[],"view":"text"}' 2>&1)
+        $lines=@(& $Digest call -Open -Tool get_cards -Json '{"addresses":[],"view":"text"}' 2>&1)
         Assert ($LASTEXITCODE -eq 0) "the owned real MCP restarts its disappeared isolated daemon [$($lines -join ' ')]"
         $restartedId=[int](Get-Content -LiteralPath (Join-Path $scratch 'archive/zt.pid') -Raw)
         Assert ($restartedId -ne $daemonId -and (Get-Process -Id $restartedId -ErrorAction SilentlyContinue)) 'the restarted daemon is still alive before any status call can repair it'
@@ -116,25 +116,25 @@ try{
             $calls=Join-Path $scratch "timeout-$point.json"
             [IO.File]::WriteAllText($calls,('[{"tool":"create_topic","arguments":{"workspace":"agent","title":"Timeout '+$point+'","body":"Actual receipt recovery."}}]'),$utf8)
             $prefix="qualification/timeout-$point/1/apply"
-            $view=@(& $Digest call -Tool get_cards -Json '{"addresses":[],"view":"text"}' 2>&1)
+            $view=@(& $Digest call -Open -Tool get_cards -Json '{"addresses":[],"view":"text"}' 2>&1)
             if($LASTEXITCODE){throw ($view -join ' ')}
             $beforeRevision=($view[-1].Substring(2)|ConvertFrom-Json).archive_revision
             $env:ZT_CHECK_ZT=Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
             $flag=Join-Path $scratch "hung-$point.flag"
             if($point -eq 'before'){$env:ZT_HANG_BATCH_BEFORE_WRITE_FLAG=$flag}else{$env:ZT_HANG_BATCH_REPLY_FLAG=$flag}
-            $lost=@(& $Digest call $calls -OperationPrefix $prefix 2>&1)
+            $lost=@(& $Digest call -Open $calls -OperationPrefix $prefix 2>&1)
             Assert ($LASTEXITCODE -ne 0 -and (Test-Path $flag) -and ($lost -join ' ').Contains('command_timeout') -and ($lost -join ' ').Contains('cleanup_confirmed=true')) "a real $point-commit batch timeout confirms owned cleanup"
             $owned=Get-Content -LiteralPath $flag -Raw|ConvertFrom-Json
             Assert (-not (Get-Process -Id $owned.proxy,$owned.writer -ErrorAction SilentlyContinue)) 'the real proxy and archive writer are both gone before retry'
             Remove-Item Env:ZT_CHECK_ZT,Env:ZT_HANG_BATCH_BEFORE_WRITE_FLAG,Env:ZT_HANG_BATCH_REPLY_FLAG -ErrorAction SilentlyContinue
-            $view=@(& $Digest call -Tool get_cards -Json '{"addresses":[],"view":"text"}' 2>&1)
+            $view=@(& $Digest call -Open -Tool get_cards -Json '{"addresses":[],"view":"text"}' 2>&1)
             $afterRevision=($view[-1].Substring(2)|ConvertFrom-Json).archive_revision
             Assert ($afterRevision -eq $beforeRevision+$(if($point -eq 'after'){1}else{0})) "$point-commit timeout retains the actual committed archive state"
-            $retry=@(& $Digest call $calls -OperationPrefix $prefix 2>&1)
+            $retry=@(& $Digest call -Open $calls -OperationPrefix $prefix 2>&1)
             Assert ($LASTEXITCODE -eq 0 -and ($retry -join ' ').Contains(' ok ')) 'the same accepted operation recovers its original receipt or performs the unseen write once'
-            $again=@(& $Digest call $calls -OperationPrefix $prefix 2>&1)
+            $again=@(& $Digest call -Open $calls -OperationPrefix $prefix 2>&1)
             Assert ($LASTEXITCODE -eq 0 -and ($again -join ' ') -eq ($retry -join ' ')) 'receipt replay preserves the allocated address after a timeout'
-            $view=@(& $Digest call -Tool get_cards -Json '{"addresses":[],"view":"text"}' 2>&1)
+            $view=@(& $Digest call -Open -Tool get_cards -Json '{"addresses":[],"view":"text"}' 2>&1)
             Assert (($view[-1].Substring(2)|ConvertFrom-Json).archive_revision -eq $beforeRevision+1) 'timeout recovery publishes exactly one archive revision'
             Assert (Get-Process -Id $restartedId -ErrorAction SilentlyContinue) 'archive writer cleanup preserves the independent daemon'
         }
@@ -162,7 +162,7 @@ if(process.argv.includes('--server')){
         $env:ZT_SCHOLAR_ARCHIVE=$archiveCommand;$env:ZT_MCP_TEST_TIMEOUT_MS='5000'
         $bridgeInfo=[Diagnostics.ProcessStartInfo]::new($Digest);$bridgeInfo.UseShellExecute=$false;$bridgeInfo.CreateNoWindow=$true
         $bridgeInfo.RedirectStandardOutput=$true;$bridgeInfo.RedirectStandardError=$true
-        foreach($arg in @('call','-Tool','scholar_archive_status','-Json','{}')){$bridgeInfo.ArgumentList.Add($arg)}
+        foreach($arg in @('call','-Open','-Tool','scholar_archive_status','-Json','{}')){$bridgeInfo.ArgumentList.Add($arg)}
         $bridge=[Diagnostics.Process]::Start($bridgeInfo);$bridgeOut=$bridge.StandardOutput.ReadToEndAsync();$bridgeErr=$bridge.StandardError.ReadToEndAsync()
         try{
             Assert ($bridge.WaitForExit(8000)) 'shared-service startup returns within its public deadline'

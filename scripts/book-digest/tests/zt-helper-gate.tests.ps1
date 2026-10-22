@@ -22,7 +22,7 @@ $env:ZT_GUI_PORT = '0'
 $helper = Join-Path $PSScriptRoot '..\..\..\skills\zt\scripts\zt-mcp.ps1' | Resolve-Path | ForEach-Object Path
 $failed = 0
 function Assert($condition, $message) { if (-not $condition) { Write-Output "FAIL: $message"; $script:failed++ } else { Write-Output "ok: $message" } }
-function Helper($calls, [string[]]$more = @()) { @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $helper - @more) }
+function Helper($calls, [string[]]$more = @()) { @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $helper - -Open @more) }
 $gate = Join-Path $scratch 'topic-gate.lock'
 $srcLog = Join-Path $scratch 'src-g01.txt'
 try {
@@ -49,8 +49,20 @@ try {
     $free = Helper @(@{ tool = 'create_topic'; arguments = @{ title = '剩余控制权'; body = '没有闸门时照常创建。' } })
     Assert ($LASTEXITCODE -eq 0) 'without -TopicGate the helper does not check'
 
+    # docs/literature-only-digest-design.md: without -Open the helper runs in the Literature scope, as
+    # every digest does, and refuses a Topic, a Topic-tree write and a Link to a Topic-tree Card.
+    $topicRoot = ($out[0] -split ' ok ', 2)[1].Trim()
+    $closed = @((@(@{ tool = 'create_topic'; arguments = @{ title = '闭合范围'; body = '不应创建。' } }) | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $helper - 2>&1 | ForEach-Object { [string]$_ })
+    Assert ($LASTEXITCODE -ne 0 -and ($closed -join ' ') -match 'literature_only: create_topic') "without -Open the helper refuses create_topic ($($closed -join ' | '))"
+    $inTopic = @((@(@{ tool = 'create_successor'; arguments = @{ at = $card; title = '主题树里的卡'; body = '不应创建。' } }) | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $helper - 2>&1 | ForEach-Object { [string]$_ })
+    Assert ($LASTEXITCODE -ne 0 -and ($inTopic -join ' ') -match "literature_only: create_successor: .*``$([regex]::Escape($card))`` is a Topic-tree Card") "without -Open the helper refuses a Card in a Topic tree ($($inTopic -join ' | '))"
+    $lit = @((@(@{ tool = 'create_literature'; arguments = @{ bibtex = '@book{Scope2026, title = {Scope}}'; body = "对照 [[$topicRoot]]。" } }) | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $helper - 2>&1 | ForEach-Object { [string]$_ })
+    Assert ($LASTEXITCODE -ne 0 -and ($lit -join ' ') -match 'links Topic-tree Cards') "without -Open the helper refuses a Link to a Topic-tree Card ($($lit -join ' | '))"
+    $book = @((@(@{ tool = 'create_literature'; arguments = @{ bibtex = '@book{Scope2026, title = {Scope}}'; body = '文献卡。' } }, @{ tool = 'create_successor'; arguments = @{ at = '@@0'; title = '文献树里的卡'; body = '依赖 [[@@0]]。' } }) | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $helper - 2>&1 | ForEach-Object { [string]$_ })
+    Assert ($LASTEXITCODE -eq 0 -and @($book | Where-Object { $_ -match '^\d+ ok ' }).Count -eq 2) "without -Open the helper still writes a Literature tree ($($book -join ' | '))"
+
     # Two helpers at once: the lock lets one through; the other sees its Topic and is refused.
-    $script = { param($helper, $gate) (@(@{ tool = 'create_topic'; arguments = @{ title = '纵向一体化'; body = '并发。' } }) | ConvertTo-Json -Depth 4 -AsArray) | pwsh -NoProfile -File $helper - -TopicGate $gate }
+    $script = { param($helper, $gate) (@(@{ tool = 'create_topic'; arguments = @{ title = '纵向一体化'; body = '并发。' } }) | ConvertTo-Json -Depth 4 -AsArray) | pwsh -NoProfile -File $helper - -Open -TopicGate $gate }
     $jobs = @(1, 2) | ForEach-Object { Start-ThreadJob -ScriptBlock $script -ArgumentList $helper, $gate }
     $results = @($jobs | Wait-Job | Receive-Job)
     $made = @($results | Where-Object { $_ -match '^0 ok ' }).Count

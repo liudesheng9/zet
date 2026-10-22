@@ -232,9 +232,9 @@ try {
     }))
     $callsFile = Join-Path $scratch 'gate-calls.json'
     [IO.File]::WriteAllText($callsFile, '[{"tool":"create_topic","arguments":{"title":"中央银行的最后贷款人职能","body":"中央银行在挤兑时如何充当最后贷款人？"}}]', $utf8)
-    $viaLines = @(& $Digest call $callsFile -OperationPrefix 'gate-run/topic/6/create' -ConceptGate (Join-Path $out 'gate/decision.json') 2>&1)
+    $viaLines = @(& $Digest call -Open $callsFile -OperationPrefix 'gate-run/topic/6/create' -ConceptGate (Join-Path $out 'gate/decision.json') 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and ($viaLines -join ' ') -match '0 ok ') 'the identified helper accepts the concept gate with OperationPrefix'
-    $viaAgain = @(& $Digest call $callsFile -OperationPrefix 'gate-run/topic/6/create' -ConceptGate (Join-Path $out 'gate/decision.json') 2>&1)
+    $viaAgain = @(& $Digest call -Open $callsFile -OperationPrefix 'gate-run/topic/6/create' -ConceptGate (Join-Path $out 'gate/decision.json') 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and ($viaAgain -join ' ') -eq ($viaLines -join ' ')) 'a replayed helper operation returns its committed Topic before any new decision'
     Assert (@((Invoke-Zt @(@{ tool='export_titles'; arguments=@{} })).titles | Where-Object { $_.title -eq '中央银行的最后贷款人职能' }).Count -eq 1) 'a lost helper response replays to one Topic, never two'
     $lender = Run-Digest @('gate','-Step','prepare','-Staging',$out,'-Title','最后贷款人','-Question','最后贷款人如何阻止挤兑？')
@@ -246,13 +246,13 @@ try {
     }))
     $otherCalls = Join-Path $scratch 'gate-calls-other.json'
     [IO.File]::WriteAllText($otherCalls, '[{"tool":"create_topic","arguments":{"title":"最后贷款人的道德风险","body":"最后贷款人为什么会引起道德风险？"}}]', $utf8)
-    $uncleared = Try-Digest @('call',$otherCalls,'-OperationPrefix','gate-run/topic/11/create','-ConceptGate',(Join-Path $out 'gate/decision.json'))
+    $uncleared = Try-Digest @('call','-Open',$otherCalls,'-OperationPrefix','gate-run/topic/11/create','-ConceptGate',(Join-Path $out 'gate/decision.json'))
     Assert ($uncleared.code -eq 1 -and $uncleared.text.Contains('did not clear')) 'a managed creation refuses a Topic title the concept decision did not clear'
-    $legacy = Try-Digest @('call',$callsFile,'-OperationPrefix','gate-run/topic/7/create','-TopicGate',$lock)
+    $legacy = Try-Digest @('call','-Open',$callsFile,'-OperationPrefix','gate-run/topic/7/create','-TopicGate',$lock)
     Assert ($legacy.code -eq 1 -and $legacy.text.Contains('cannot combine with legacy resume, logs, moves or Topic-gate options')) 'the legacy Topic-gate options stay refused beside OperationPrefix'
-    $legacyLog = Try-Digest @('call',$callsFile,'-OperationPrefix','gate-run/topic/7/create','-Log',(Join-Path $scratch 'owned.txt'))
+    $legacyLog = Try-Digest @('call','-Open',$callsFile,'-OperationPrefix','gate-run/topic/7/create','-Log',(Join-Path $scratch 'owned.txt'))
     Assert ($legacyLog.code -eq 1 -and $legacyLog.text.Contains('cannot combine with legacy resume, logs, moves or Topic-gate options')) 'the legacy log option stays refused beside OperationPrefix'
-    $orphan = Try-Digest @('call',$callsFile,'-ConceptGate',(Join-Path $out 'gate/decision.json'))
+    $orphan = Try-Digest @('call','-Open',$callsFile,'-ConceptGate',(Join-Path $out 'gate/decision.json'))
     Assert ($orphan.code -eq 1 -and $orphan.text.Contains('ConceptGate requires OperationPrefix')) 'the concept gate alone is refused: it owns receipts'
 
     # --- two concurrent managed writers create one Topic, not two ---

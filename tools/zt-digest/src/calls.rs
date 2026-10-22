@@ -19,7 +19,10 @@
 //!   -Moves f   append {"i":N,"moved":{...}} per call that renumbered Cards.
 //!   -SrcLog f  append `<address>\t<src>` per Card made from a call with a `src` field
 //!              (the helper removes `src` before the call reaches zt).
-//!   -TopicGate f   lock f around create_topic and refuse a Topic whose title equals or
+//!   -Open      the open scope: without it the helper runs in the Literature scope and refuses
+//!              every write to a Topic tree, a Hub Card, or a Link to a Topic-tree Card
+//!              (docs/literature-only-digest-design.md); idea-grow and hand Topic work pass it.
+//!   -TopicGate f   (with -Open) lock f around create_topic and refuse a Topic whose title equals or
 //!              resembles (character bigrams, -TopicSimilarity 0.8) an agent Topic.
 //!   append_card {at, text}: add a paragraph to the end of a Card (helper-only call).
 //!
@@ -934,7 +937,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(
         argv,
         &["File", "From", "Addresses", "Log", "Allow", "Beneath", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json", "OperationPrefix", "ConceptGate"],
-        &["CheckOnly"],
+        &["CheckOnly", "Open"],
     )?;
     let calls: Vec<Value> = if a.has("Tool") {
         let arguments: Value = serde_json::from_str(&a.str_or("Json", "{}")).context("-Json is not JSON")?;

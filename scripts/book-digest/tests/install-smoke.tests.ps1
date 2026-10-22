@@ -82,11 +82,11 @@ try {
     )
     [IO.File]::WriteAllText($callsFile, ($calls | ConvertTo-Json -Depth 8 -AsArray), $utf8)
     $prefix = 'install-smoke/scratch/1/build'
-    $first = @(& $Digest call $callsFile -OperationPrefix $prefix 2>&1 | ForEach-Object { [string]$_ })
+    $first = @(& $Digest call -Open $callsFile -OperationPrefix $prefix 2>&1 | ForEach-Object { [string]$_ })
     $okLines = @($first | Where-Object { $_ -match '^\d+ ok \S+$' })
     Assert ($LASTEXITCODE -eq 0 -and $okLines.Count -eq 3 -and @($okLines | ForEach-Object { ($_ -split ' ok ', 2)[1] } | Sort-Object -Unique).Count -eq 3) "zt-digest call commits the identified batch through zt mcp ($($first -join ' | '))"
     $committed = @($okLines | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
-    $replay = @(& $Digest call $callsFile -OperationPrefix $prefix 2>&1 | ForEach-Object { [string]$_ })
+    $replay = @(& $Digest call -Open $callsFile -OperationPrefix $prefix 2>&1 | ForEach-Object { [string]$_ })
     Assert ($LASTEXITCODE -eq 0 -and ($replay -join "`n") -eq ($first -join "`n")) 'a replay of the same accepted batch returns the original addresses and no new revision'
     $after = EmptyRead $ztExe
     Assert ($after.archive_revision -eq 1) "the batch publishes exactly one archive revision (revision $($after.archive_revision))"

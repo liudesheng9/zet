@@ -29,7 +29,7 @@ function Run($step, [string[]]$more = @()) {
 }
 function Last($lines) { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable }
 function Write-Calls($calls) {
-    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -44,15 +44,16 @@ try {
         @{ tool = 'create_successor'; arguments = @{ at = $key; kind = 'direct'; title = '第 1 组：契约不完全时所有权决定剩余控制权'; body = '§1.1 - 不完全契约' } },
         @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'direct'; title = '第 2 组：债务把控制权交给债权人'; body = '§2.1 - 债务' } }
     )
-    $topic = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '剩余控制权'; body = '本主题追问：谁决定契约没写的事。' } }))[0] -replace '/0$', ''
+    # docs/literature-only-digest-design.md: the card cycle reviews the book's Literature tree, so the
+    # digest's Idea Cards live there (Side successors of the section Cards), not in a Topic tree.
     $made = Write-Calls @(
-        @{ tool = 'create_successor'; arguments = @{ at = "$topic/0"; title = '所有者在契约空白处决定资产用法'
-                body = "契约无法写明所有情形。所有者决定空白处的资产用法。依赖 [[$key/1]] 的前提：契约不完全。`n`n来源：[[$key]] §1.1" } },
+        @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'side'; title = '所有者在契约空白处决定资产用法'
+                body = "契约无法写明所有情形。所有者决定空白处的资产用法。依赖 [[$key/1]] 的前提：契约不完全。对照 [[$key/2]]：那里是债务转移控制权。`n`n来源：[[$key]] §1.1" } },
         @{ tool = 'create_successor'; arguments = @{ at = '@@0'; title = '剩余控制权给所有者谈判地位'
                 body = "谈判地位被剩余控制权提高。这一点见 [[@@0]] 的论证，所有者可以拒绝合作。`n`n来源：[[$key]] §1.1" } },
         @{ tool = 'create_successor'; arguments = @{ at = '@@0'; kind = 'side'; title = '所有权的配置影响事前投资'
                 body = "所有权决定谈判地位。谈判地位决定事后剩余的分配。依赖 [[@@0]]：事前投资取决于这个分配。`n`n来源：[[$key]] §1.1" } },
-        @{ tool = 'create_successor'; arguments = @{ at = '@@1'; title = '债权人在违约时取得控制权'
+        @{ tool = 'create_successor'; arguments = @{ at = "$key/2"; kind = 'side'; title = '债权人在违约时取得控制权'
                 body = "债务规定一个还款额。违约时控制权转给债权人。这一点被很多人引用，见 [[@@1]]。`n`n来源：[[$key]] §2.1" } },
         @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'side'; type = 'event'; title = '通用汽车收购费雪车身公司'
                 body = "通用汽车买下了费雪车身公司。`n`n来源：[[$key]] §1.1" } }

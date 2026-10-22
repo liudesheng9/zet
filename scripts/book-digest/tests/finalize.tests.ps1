@@ -39,7 +39,7 @@ function Save-Json($path, $value) {
 }
 function Read-Json($path) { Get-Content -Raw -LiteralPath $path -Encoding utf8 | ConvertFrom-Json -AsHashtable }
 function Write-Calls($calls) {
-    $lines = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $lines = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "zt: $($lines -join ' | ')" }
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }

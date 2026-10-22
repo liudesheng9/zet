@@ -11,7 +11,7 @@ $env:ZT_GUI_PORT = '0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message }; Write-Output "ok: $message" }
 function Write-Cards($calls) {
-    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "fixture create failed: $lines" }
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -66,6 +66,11 @@ try {
     $notOwn = @($cards[4], $cards[5], $inBook[0])
     Assert (@($i7 | Where-Object { $notOwn -contains ($_ -split ' ')[0] }).Count -eq 0) 'an illustrative Link, another book, and a Card in that Literature tree raise no own-source fault'
     # The same rules through the scoped audit: advice apart from blocking style faults.
+    # docs/literature-only-digest-design.md: the audit reviews the Cards of the book's Literature tree
+    # only (a Topic-tree Card belongs to no book), so the advice Cards for it are filed there.
+    $null = Write-Cards @(
+        @{tool='create_successor';arguments=@{at=$anchor;kind='side';title='剩余控制权决定契约空白处的用法';body="式 (12) 有该项。`n`n该卡给出了结论。`n`n来源：[[$key]] §1"}}
+    )
     $out = Join-Path $scratch 'audit'
     $auditLines = @(pwsh -NoProfile -File (Join-Path $PSScriptRoot '..\digest-audit.ps1') -CitationKey Key2026 -Out $out -SkipModels 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "audit failed: $auditLines" }
@@ -74,13 +79,14 @@ try {
     $faults = [IO.File]::ReadAllText((Join-Path $out 'audit-faults.txt'))
     Assert ($book.style.advisory -ge 2 -and $book.style.advice_by_rule.R21 -ge 1 -and $book.style.advice_by_rule.R20 -ge 1) 'the audit counts the standalone advice apart by rule'
     Assert ($book.style.faults -eq 0) "the standalone advice is no blocking style fault: $($book.style | ConvertTo-Json -Compress)"
-    Assert ($book.layer.by_rule.I7 -ge 1 -and $faults -match ' I7 `rests-on` \[\[') 'the audit reports the own-source premise as a layer fault and in the readable fault list'
-    # I7's unknown-source line is advice (D138): the layer fault count holds only blocking
-    # lines, and the advisory count holds every published "(advisory)" line.
+    # A Card in its own book's Literature tree rests on it by design (no I7), and the Topic-tree
+    # Cards with own-source premises belong to no book, so the book audit has no I7 line.
+    Assert (-not $book.layer.by_rule.I7 -and $faults -notmatch ' I7 ') 'the book audit reports no own-source premise for the Cards of its Literature tree'
+    # The layer fault count holds only blocking lines, and the advisory count holds every
+    # published "(advisory)" line.
     $layerLines = @($faults -split "\r?\n" | Where-Object { $_ -match '^\S+ [RIELF]\d+ ' -and $_ -notmatch '^\S+ R\d+ ' })
     $layerAdvice = @($layerLines | Where-Object { $_ -match ' \(advisory\) ' })
     Assert ($book.layer.advisory -eq $layerAdvice.Count -and $book.layer.faults -eq ($layerLines.Count - $layerAdvice.Count)) "the layer report separates advice from blocking faults: $($book.layer | ConvertTo-Json -Compress)"
-    Assert (@($layerAdvice | Where-Object { $_ -match ' I7 \(advisory\) source evidence unknown' }).Count -eq 1) 'I7 unknown-source advice is counted as advice, never as a blocking layer fault'
     $md = Get-Content -LiteralPath (Join-Path $out 'audit.md') -Raw -Encoding utf8
     Assert ($md -match 'Standalone advice \(R20, R21\): \d+ by rule:.*R2[01]') 'audit.md names the standalone advice apart from the blocking language faults'
     # Read-only: the archive and every Card are exactly as they were.

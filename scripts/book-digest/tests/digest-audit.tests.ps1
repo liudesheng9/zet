@@ -7,7 +7,7 @@ $env:ZT_GUI_PORT = '0'
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message }; Write-Output "ok: $message" }
 function Write-Cards($calls) {
-    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
+    $lines = @(($calls | ConvertTo-Json -Depth 20 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
     if ($LASTEXITCODE -ne 0) { throw "fixture create failed: $lines" }
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -72,6 +72,11 @@ try {
     $baselineReport.workspace.cards_by_category = [ordered]@{root=4;anchor=3;idea=3;finding=1;hub=1;model=1;notation=1;part=1}
     $baselineReport.books[0].orphans = [ordered]@{count=1;by_category=[ordered]@{idea=1};list=@('Lone2030/1|a')}
     $baselineFaults = $baselineFaults.Replace('I5 no Card other than the parent links here','I5 no other Card has an authored Link here')
+    # docs/literature-only-digest-design.md: a Topic-tree Card belongs to no book, so the agent hub
+    # `0/1` that links the book is unattributed now, not attributed by its Link.
+    $baselineReport.workspace.unattributed.count = 2
+    $baselineReport.workspace.unattributed.by_category = [ordered]@{hub=1;root=1}
+    $baselineReport.workspace.unattributed.list = @('0/0','0/1')
     $env:ZT_CHECK_ZT = Join-Path $PSScriptRoot 'seam-zt-mcp.cmd'
     $env:ZT_TRACE_TOOLS = Join-Path $scratch 'bulk-audit-tools.jsonl'
     $env:ZT_FAIL_TREE = 'Earlier2020'

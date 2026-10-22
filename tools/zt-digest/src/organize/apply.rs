@@ -656,7 +656,7 @@ fn is_lock(refusal: &Value) -> bool {
 
 pub fn cli(argv: &[String]) -> Result<i32> {
     let names = ["Work"];
-    let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &["DryRun"])?;
+    let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &["DryRun", "Open"])?;
     let work = super::common::mandatory(&a, "Work")?;
     let dry_run = a.flag("DryRun");
     let decisions_file = ps::join(&work, "decisions.json");

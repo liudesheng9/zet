@@ -206,7 +206,7 @@ try {
     $partsFile = Join-Path $work 'out\parts-calls.json'
     [IO.File]::WriteAllText($partsFile, ($plan.calls | ConvertTo-Json -Depth 12 -AsArray), $utf8)
     # The parts batch alone: as if the process stopped right after it.
-    $lines = @(& $env:ZT_DIGEST call -File $partsFile -OperationPrefix 'register/parts-test/1/parts' 2>&1)
+    $lines = @(& $env:ZT_DIGEST call -Open -File $partsFile -OperationPrefix 'register/parts-test/1/parts' 2>&1)
     Assert ($LASTEXITCODE -eq 0) "the staged parts batch commits ($($lines -join ' | '))"
     $beforeRetry = (Titles)
     $half = @(Invoke-Zt @(@{ tool = 'get_register'; arguments = @{ workspace = 'agent' } }))[0]

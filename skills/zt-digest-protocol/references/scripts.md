@@ -10,11 +10,11 @@ Every base stage runs a `zt-digest <tool>` (`tools/zt-digest`, installed beside 
 | --- | --- | --- | --- | --- |
 | `zt-digest card` (`card-compiler.ps1`) | digest blocks, link-check, cards-book, Organize notes | `plan`, `precheck`, `apply`, `check`, `report` | Fix the Card language and layer faults of a book's Idea, Event, and Finding Cards and anchors; review a sample against the source; link orphan Cards; carry out Organize notes. DeepSeek writes JSON. Options: `-Book`, `-Staging`, `-Groups`, `-Sample`, `-Rules`, `-MaxCards`, `-NoOrphans`, `-Notes`, `-Compact`, `-MaxJobs`. | yes |
 | `zt-digest terms` (`book-terms.ps1`) | terms | `plan`, `apply` | The book term table (术语表) that rule R6 checks against. | the 术语表 Card |
-| `zt-digest skeleton` (`book-skeleton.ps1`) | organize | `plan`, `apply` (`-Apply` writes; without it, a dry check) | The Literature Card index, the structure Card, and the Topic bodies. | yes, with `-Apply` |
-| `zt-digest hub` (`hub-compiler.ps1`) | hubs, hubs-first | `survey`, `plan`, `precheck`, `apply`, `check`, `report` | The line, topic, and field Hub Cards and the register of the whole agent Workspace. State in `<hubWork>\state.json` (default `D:\zt-digest\hubs`). | yes |
-| `zt-digest register` (`register-compiler.ps1`) | hubs (final stage) | `plan`, `apply`, `check` | The concept register's 词条 plan (read-only: every agent book term table, the reviewed concept report through `-Review`, the accepted pinyin readings through `-Readings`), its publication (`apply`, replaying receipts and publishing parts before the root), and the page-by-page `check`. Report-first: the hub stage applies only the exact plan id in `args.registerPlan`. | `apply` only |
-| `zt-digest concepts` (`concept-compiler.ps1`) | concepts | `propose`, `prepare`, `judge`, `report`, `decision` | The frozen concept review of the run's own book term table: `propose` derives the proposals from `<Staging>\terms.md` (one per term row), `prepare` freezes the bounded candidate evidence and its one judge job, `judge` validates the answer, and `report` renders `concept-review.json`/`.md` from the frozen files alone. No Card is written. | no |
-| `zt-digest restate` (`restate-compiler.ps1`) | review | `prepare`, `judge`, `apply`, `report` | The scoped restatement review of the run's own new Cards: without `-Cards`, `prepare` reads the staged `owned-g*.txt` manifests, narrows and bounds the population and reports its omissions; `apply -OperationPrefix` carries each accepted rewrite through identified receipts, and `-Merges` counts a Card-cycle merge verdict as pending until a rewrite covers it. | `apply` only |
+| `zt-digest skeleton` (`book-skeleton.ps1`) | organize | `plan`, `apply` (`-Apply` writes; without it, a dry check) | The Literature Card index and the structure Card (no Topic body: an answer with `topics` is a problem). | yes, with `-Apply` |
+| `zt-digest hub` (`hub-compiler.ps1`) | none since base 5.0.0 (`zt-idea-grow` runs it through `grow -Step hubs-*`) | `survey`, `plan`, `precheck`, `apply`, `check`, `report` | The line, topic, and field Hub Cards and the register of the whole agent Workspace. State in `<hubWork>\state.json` (default `D:\zt-digest\hubs`). | yes |
+| `zt-digest register` (`register-compiler.ps1`) | none since base 5.0.0 (`zt-idea-grow` `grow -Step hubs-report`) | `plan`, `apply`, `check` | The concept register's 词条 plan (read-only: every agent book term table, the reviewed concept report through `-Review`, the accepted pinyin readings through `-Readings`), its publication (`apply`, replaying receipts and publishing parts before the root), and the page-by-page `check`. Report-first: the hub stage applies only the exact plan id in `args.registerPlan`. | `apply` only |
+| `zt-digest concepts` (`concept-compiler.ps1`) | none since base 5.0.0 (a follow-up may move it to `zt-idea-grow`) | `propose`, `prepare`, `judge`, `report`, `decision` | The frozen concept review of the run's own book term table: `propose` derives the proposals from `<Staging>\terms.md` (one per term row), `prepare` freezes the bounded candidate evidence and its one judge job, `judge` validates the answer, and `report` renders `concept-review.json`/`.md` from the frozen files alone. No Card is written. | no |
+| `zt-digest restate` (`restate-compiler.ps1`) | none since base 5.0.0 (`zt-idea-grow` reviews its new Topic Cards with it) | `prepare`, `judge`, `apply`, `report` | The scoped restatement review of the run's own new Cards: without `-Cards`, `prepare` reads the staged `owned-g*.txt` manifests, narrows and bounds the population and reports its omissions; `apply -OperationPrefix` carries each accepted rewrite through identified receipts, and `-Merges` counts a Card-cycle merge verdict as pending until a rewrite covers it. | `apply` only |
 | `zt-digest bridge` (`bridge-compiler.ps1`) | bridge | `plan`, `precheck`, `report`, `apply` | Freeze candidate endpoints, check BR1–BR9 and the Card rules, publish an immutable report, and apply only explicit report-bound ids. Options: `-Staging`, `-CitationKey`, `-Work`, `-Profile`, `-MaxSources`, `-Candidates`, `-Books`, `-Job`, `-ReportId`, `-Accept`, `-AcceptEarlier`, `-Apply`. Without `-Apply` it changes no Card or apply state. | only accepted agent carriers, with `-Apply` |
 
 ## Preparation and passes
@@ -22,10 +22,10 @@ Every base stage runs a `zt-digest <tool>` (`tools/zt-digest`, installed beside 
 | Tool (script) | Stage | Use it to | Writes |
 | --- | --- | --- | --- |
 | `zt-digest prepare` (`prepare-book-digest.ps1`) | prepare | Chinese-only text, section groups (`groups\gNN.md` with their write command and `SELF-CHECK` line), the shared DeepSeek prefixes from `-Instructions`, and with `-Apply` the agent Literature tree with one anchor per group. | anchors |
-| `zt-digest snapshot-topics` (`snapshot-topics.ps1`) | digest | A compact list of every Topic tree for one digest run, so it places and links Cards without searching. | no |
-| `zt-digest prepare-link` (`prepare-link-pass.ps1`) | link-prepare | A snapshot of every Card; per group, the receipt-owned Cards, the semantic gap set with its reasons and candidates, the gap-only allow list and the frozen `link-gap-gNN.json`; the scheduled, gap-free and blocked groups. | no |
-| `zt-digest organize-survey` (`organize-survey.ps1`) | organize | Everything Opus must decide: duplicate and small Topics, merge proposals, model faults, broken Links, missing hubs. Read-only. | no |
-| `zt-digest organize-apply` (`organize-apply.ps1`) | organize | Carry out Opus's `decisions.json`: Topic merges and Card moves, logged. | yes |
+| `zt-digest snapshot-topics` (`snapshot-topics.ps1`) | none (`group-start` writes each group's snapshot of the Literature trees itself) | A compact list of every tree. | no |
+| `zt-digest prepare-link` (`prepare-link-pass.ps1`) | link-prepare | A snapshot of every Literature-tree Card; per group, the receipt-owned Cards, the semantic gap set with its reasons and candidates, the gap-only allow list and the frozen `link-gap-gNN.json`; the scheduled, gap-free and blocked groups. | no |
+| `zt-digest organize-survey` (`organize-survey.ps1`) | organize | What Opus decides: merge proposals, model faults, broken Links (it also lists Topics and hubs, which a digest leaves alone). Read-only. | no |
+| `zt-digest organize-apply` (`organize-apply.ps1`) | organize | Record Opus's `decisions.json` (merges and moves are always empty in a digest; in the Literature scope it can move no Topic Card; `-Open` only for hand Topic merges). | no in a digest |
 | `zt-digest figures` (`attach-figures.ps1`) | figures | Show the book's figures (`artifact:`) in the Cards that name them; link the book's PDF and Markdown from the Literature Card. | yes |
 
 ## The helper, checks, and audit
@@ -43,13 +43,13 @@ Each opens the prompt of every job of its task, so DeepSeek caches it. Each has 
 
 | File | Task | Output |
 | --- | --- | --- |
-| `dsh-digest-base.zh.md` | Digest run: the Idea Cards of one group and its anchor. A variant adds supplements through `profile.instructions`; `dsh-instructions.zh.md` is only the default of `zt-digest prepare` without `-Instructions`. | Cards through the helper |
+| `dsh-digest-base.zh.md` | Digest run: the Idea Cards of one group and its anchor. A variant adds supplements through `profile.instructions`; without `-Instructions`, `zt-digest prepare` uses `dsh-digest-base.zh.md,dsh-model-cards.zh.md`. Every Card goes in the book's Literature tree. | a JSON draft that `group-finish` applies |
 | `dsh-link-instructions.zh.md` | Link run: only the semantic gap Cards, one reasoned Link sentence or a `no_link`/`none` reason each | One bound JSON draft, checked by `zt-digest link-finish -CheckOnly` |
 | `dsh-card-instructions.zh.md` | Card cycle fix and review | JSON |
 | `dsh-orphan-instructions.zh.md` | Links to orphan Cards | JSON |
 | `dsh-terms-instructions.zh.md` | Book term table | JSON |
-| `dsh-skeleton-instructions.zh.md` | Literature index, structure Card, Topic bodies | JSON |
-| `dsh-hub-instructions.zh.md` | Field and topic hubs | JSON |
+| `dsh-skeleton-instructions.zh.md` | Literature index and structure Card | JSON |
+| `dsh-hub-instructions.zh.md` | Field and topic hubs (`zt-idea-grow`'s hub jobs, not a digest's) | JSON |
 | `dsh-bridge-instructions.zh.md` | Bridge judge: read frozen candidate bodies; judge mechanism, scope, and direction; never edit Cards | the assigned `br-NNN.json` only |
 
 ## Workflow files
@@ -58,7 +58,7 @@ Each opens the prompt of every job of its task, so DeepSeek caches it. Each has 
 | --- | --- |
 | `scripts/book-digest/workflow/zt-digest-base.blueprint.json` | The base: stages, slots, args, roles, modes, checkpoint. |
 | `scripts/book-digest/workflow/modules/zt-digest-lib.js` | The shared library: settings from the args, `zdTool`, the digest and link managers, `drive`, the card cycle (`runCards`). |
-| `scripts/book-digest/workflow/modules/` (`zt-dsh-source`, `zt-digest-prepare`, `zt-book-terms`, `zt-cards-book`, `zt-digest-blocks`, `zt-hubs`, `zt-link-prepare`, `zt-link-pass`, `zt-link-check`, `zt-dsh-cleanup`, `zt-organize`, `zt-figures`, `zt-bridge`, `zt-audit`, `zt-digest-report`) | The base stage modules, one per stage. |
+| `scripts/book-digest/workflow/modules/` (`zt-dsh-source`, `zt-digest-prepare`, `zt-book-terms`, `zt-cards-book`, `zt-digest-blocks`, `zt-link-prepare`, `zt-link-pass`, `zt-link-check`, `zt-dsh-cleanup`, `zt-organize`, `zt-figures`, `zt-bridge`, `zt-audit`, `zt-digest-report`) | The base stage modules, one per stage. |
 | `.claude/workflows/<name>.js` | An installed, frozen variant build. Never edit it: change a blueprint or module and reinstall with `assemble.mjs install`. |
 
 ## Tests (`scripts/book-digest/tests/`)

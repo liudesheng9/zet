@@ -150,7 +150,7 @@ PARAGRAPH
     $draftFile = Join-Path $scratch 'link-draft.json'
     $draft = @(@{tool='edit_card';arguments=@{at='0/1';base_receipt='corruption/link/1/create/source';owned_paragraph=@{text="# $title"}}})
     [IO.File]::WriteAllText($draftFile,($draft | ConvertTo-Json -Depth 12 -AsArray),$utf8)
-    $linkCheck = @(& $Digest call $draftFile -OperationPrefix 'corruption/link/1/apply' -CheckOnly 2>&1)
+    $linkCheck = @(& $Digest call -Open $draftFile -OperationPrefix 'corruption/link/1/apply' -CheckOnly 2>&1)
     Assert ($LASTEXITCODE -ne 0 -and ($linkCheck -join ' ').Contains('0/1 R19')) 'Link draft checking retains the real Card title and the shared title-corruption rule'
 } finally {
     zt down 2>&1 | Out-Null
