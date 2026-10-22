@@ -1217,6 +1217,23 @@ fn keep_root_refuses_a_locked_tree_even_when_empty_and_obeys_pins() {
         .args(["--check-locks"])
         .assert()
         .success();
+    // MCP reads still serve the emptied tree exactly: the retained root alone, at one revision.
+    let tree = mcp.ok("get_tree", json!({ "tree": root, "bodies": true }));
+    let addresses = tree["cards"]
+        .as_array()
+        .expect("cards")
+        .iter()
+        .map(|card| card["address"].as_str().expect("address").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(addresses, [root.clone()], "{tree}");
+    assert_eq!(tree["root"], json!(root), "{tree}");
+    assert_eq!(tree["complete"], json!(true), "{tree}");
+    let retained = mcp.ok("get_card", json!({ "at": root }));
+    assert_eq!(retained["address"], json!(root), "{retained}");
+    assert!(
+        retained["lock"].is_null(),
+        "the emptied tree was never locked: {retained}"
+    );
     gui.unlock(root_pin_lock_id);
 }
 
