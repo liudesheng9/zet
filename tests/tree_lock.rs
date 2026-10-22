@@ -4038,6 +4038,28 @@ fn an_orphaned_faulted_lock_is_reported_and_released_from_the_panel() {
     assert!(fault_events(&panel, lock_id).len() >= 2);
 }
 
+/// A Literature tree's Regular Cards are stored like Topic Cards (`is_lit = 0`); only the root
+/// Literature Card carries `is_lit = 1`. A healthy Literature Lock reports no kind fault.
+#[test]
+fn a_healthy_literature_lock_checks_clean() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let key = address(mcp.ok(
+        "create_literature",
+        json!({ "bibtex": "@book{Smith2024, title={Book}}", "body": "该书。" }),
+    ));
+    let chapter = card(&mut mcp, &key, "Chapter", &format!("chapter of [[{key}]]"));
+    card(&mut mcp, &chapter, "Section", "section body");
+    gui.lock(&key, None);
+
+    let checked = home.cmd().args(["status", "--check-locks"]).output().unwrap();
+    let said = String::from_utf8_lossy(&checked.stdout);
+    assert!(checked.status.success(), "a healthy Literature Lock exits 0: {said}");
+    assert!(said.contains("integrity: ok"), "{said}");
+    assert!(!said.contains("member-changed"), "{said}");
+}
+
 /// R291/R295/S06-AC06: `zt status --check-locks` runs the full comparison, records its evidence
 /// once, and exits 1 on a current or latched fault.
 #[test]

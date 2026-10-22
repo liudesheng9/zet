@@ -154,3 +154,7 @@ The guarantee is local and policy based. It covers writes through the supported 
 - The same first run exposed a test-isolation defect in `scripts/book-digest/tests/bridge-attribution-retry.tests.ps1`: a recycled process id could find the archive an earlier run left in its scratch folder and then create its own Literature Card twice. The suite now clears its scratch root first, like the other fixtures do.
 - `cargo install` over a running service cannot replace an executable held by an open MCP client; the install procedure renames the held file aside first. The running service itself is stopped with `zt down` before the swap.
 - No real book digest, digest stage or owner Lock was run: the archive still has zero Locks, as it had before the release.
+
+## 11. Patch 0.26.1: the first owner Lock of a Literature tree
+
+The first owner Lock after the release (`grossman2002integration`, 143 members, 2026-10-22) reported 142 `member-changed` "changed its kind" faults at once. The member kind rule expected `is_lit = 1` on every Literature-tree member, but the cards table sets `is_lit` only on the Literature root; the qualification above never locked a Literature tree with Regular Cards on the live archive, and the tests built Literature Locks without running the integrity comparison on them. 0.26.1 expects `is_lit = 1` only on a Literature root and adds `a_healthy_literature_lock_checks_clean`. Faults latched before the fix stay recorded by design; the owner clears them by unlocking and relocking the tree in the GUI.

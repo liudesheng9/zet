@@ -2691,16 +2691,21 @@ fn latched_faults(conn: &Connection) -> Result<Vec<Latched>> {
 }
 
 /// The kind facts of one member row: the root is the Topic or Literature root of its own tree and
-/// every other member is a Regular Card of that tree kind.
+/// every other member is a Regular Card. Regular Cards carry neither flag in either tree kind:
+/// `is_lit` marks only the Literature root (the Citation-key row), as the cards table requires.
 fn member_kind_ok(lock: &StoredLock, card: &StoredCard) -> bool {
     let literature = crate::is_literature_tree_id(&lock.tree);
     let root = card.address == lock.root;
-    card.is_topic == i64::from(root && !literature) && card.is_lit == i64::from(literature)
+    card.is_topic == i64::from(root && !literature) && card.is_lit == i64::from(root && literature)
 }
 
 fn member_kind_expected(lock: &StoredLock, address: &str) -> &'static str {
     if crate::is_literature_tree_id(&lock.tree) {
-        "a Literature tree member"
+        if address == lock.root {
+            "the Literature root"
+        } else {
+            "a Literature tree member"
+        }
     } else if address == lock.root {
         "the Topic root"
     } else {
