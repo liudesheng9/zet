@@ -7,7 +7,7 @@ paths:
   - ".claude/workflow-framework/zt-idea-grow/**"
   - "!.claude/workflow-framework/*/history/**"
 synced: 5907479
-updated: 2026-10-20
+updated: 2026-10-22
 ---
 
 # Idea-grow workflow
@@ -39,6 +39,7 @@ updated: 2026-10-20
 - **Placement** (P2, P3, P6): `same` (an existing Card states it: append a sentence, or record it for a human Card); `at` an agent Topic Card (Direct successor = the next step, Side successor = a branch), with a first sentence that links it with a kind word (G6); `at` an earlier idea (a chain); `at` a Topic root (the doorway `n/1` when the Topic is empty, else a new line beside it: `n/1|a`, `n/1|b` …, in which the section chains its ideas); or a new Topic (`T1`) through the topic gate.
 - **Link round**: after the sections are written, `-Step links` writes one job per Topic tree the run wrote in (`gl-NNN`). Each job lists that tree's new Cards, the run's new Cards in the other trees, and the 20 box Topic Cards closest by title. DeepSeek proposes Links to Cards in other trees: at most 2 per Card, each one sentence with its kind (G11). `apply` writes each sentence into its Card before the source line (`before_source`, an edit with `base`) and skips a Link the Card already has. A job offers only candidates that share wording with the tree's new Cards (at least 2 title bigrams). A tree with no candidate gets no job.
 - **Topic share** (P5): the distinct Topic-tree Cards (either Workspace: the user's own Topic Cards count too) that link the book, divided by those Cards plus the book's Literature-tree Idea Cards (root and anchors left out). It is measured before and after the run.
+- **Locked trees** (S15): the owner may lock one whole Topic tree. A Locked source book is read normally — a Lock never refuses a grow run. A Locked Topic is related context and a Link target only. The plan keeps each Card's Lock facts in `titles.json`, prints `locked` and marks the tree in `topics.md` (`已锁定：只读，可链接，不能写入`); the section file lists its Cards apart (`## 用词最接近的已锁定主题卡（只读：可作相关语境，可链接，不能写入）`). The precheck and `topics` report G12 when an answer names a Locked destination, so the answer names another one: the tool never substitutes a tree or a placement. If a Topic locks after its answers, the archive's own refusal stops `apply`: the job keeps its answers and receipts, the stage prints the typed `card_locked` JSON and exits 2, and `grow-report.md` names the stop; the same `out` resumes after the owner unlocks.
 
 ## Architecture
 
@@ -142,8 +143,9 @@ Run it only when no digest is writing the same archive. After it, run the digest
 
 ## Testing
 
-- `pwsh -NoProfile -File scripts\book-digest\tests\grow.tests.ps1` (also in `run-all.ps1`) drives plan, the topic job, topics, precheck, apply, check, a fix round, a rerun and the report on a scratch archive. It covers G2, G3, G4, G6, G7, G8 and G10, a reused and a new run Topic, the doorway, a chain, a later root placement opening a line beside the doorway, a Side successor of an agent Card, `same`, and a share going from 1/4 to 5/8.
-- `cargo test --bin zt-digest grow` (8 unit tests: addresses, source citation, reverse links and share, Link kinds as zt reads them, the run Topics and their bound, the first sentence, a good answer, every fault code).
+- `pwsh -NoProfile -File scripts\book-digest\tests\grow.tests.ps1` (also in `run-all.ps1`) drives plan, the topic job, topics, precheck, apply, check, a fix round, a rerun and the report on a scratch archive. It covers G2, G3, G4, G6, G7, G8 and G10, a reused and a new run Topic, the doorway, a chain, a later root placement opening a line beside the doorway, a Side successor of an agent Card, `same`, and a share going from 1/4 to 5/8 (78 checks).
+- Its Lock phase (S15, #138) takes real owner Locks through the page-token `/api/lock` and `/api/unlock` routes: a Locked source book still plans, a Locked Topic is marked and listed as read-only context only, `titles.json` carries each Lock, a Locked `at`/`same`/`existing` and a new Topic named like a Locked one are G12, a new Topic and its Cards are written while the source and another Topic stay Locked, a Topic locked after its answers stops the apply with exit 2 and the typed refusal (tree, Lock, step, address, no bypass hint), keeps the answers and the stopped job, writes nothing into the Locked tree and is named by the report, and unlocking the same folder writes the same three Cards and clears the stop.
+- `cargo test --bin zt-digest grow` (14 unit tests: addresses, source citation, reverse links and share, Link kinds as zt reads them, the run Topics and their bound, the first sentence, a good answer, every fault code, a Locked destination, a Locked Topic in the topic answer, the typed refusal, the two closest blocks).
 - `node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs simulate scripts/idea-grow/workflow/zt-idea-grow.blueprint.json --sim scripts/idea-grow/workflow/zt-idea-grow.sim.json` (the dry run the install repeats).
 
 ## Decisions and pitfalls
@@ -161,6 +163,7 @@ Run it only when no digest is writing the same archive. After it, run the digest
 
 ## Change history
 
+- `2026-10-22` — Tree Lock S15 (#138): `zt-digest grow` reads and never writes a Locked tree. The plan keeps each Card's `lock` in `titles.json`, prints `locked`, marks a Locked Topic in `topics.md`, and lists its Cards apart as related context; the precheck and `topics` report the new G12 for a Locked destination instead of moving an idea; the archive's `card_locked` refusal stops the apply with the typed JSON and exit 2 while the answers, receipts and stopped job stay, and the report names the stop. The prompt gains a "已锁定的主题（只读）" section. `grow.tests.ps1` grows to 78 checks with real owner Locks, and `cargo test --bin zt-digest grow` to 14 unit tests.
 - `2026-10-20` — `grow.tests.ps1` without `-Digest` takes the newest zt-digest build among `D:zt-targetdebug`, `D:zt-grow-targetdebug` and the installed one, and prints which. A stale debug build in the digest session's folder had failed the instructions check.
 - `2026-10-20` — 2.2.1 (zt-grow-cycle v6): the steps set no working folder (the plan step ran before the folder existed); the share counts Topic Cards of both Workspaces, and the report says so. Pilot 5 on 2.2.0, on the copy of the box (8 min, 15 conversations, all deleted): 9 sections of 2 books, 5 run Topics, 54 Topic Cards, 42 Links across trees, written before the source line, 1 `same`, 0 faults, share 6.3% → 49.2%, 0 bridges (the two books share no mechanism). The public-credit Topic wrote 2 Links, one of them to the user's human Card, instead of pilot 4's 4 forced analogies.
 - `2026-10-20` — 2.2.0 (zt-grow-cycle v5): `ztConfig` and `tool` (`-ZtConfig`, `-Tool`, `retool` writes them into the job files and the helper line). The user asked that idea-grow be developed on a copy of the box while a separate session reruns the digest on the live box. The copy is `D:\zt-grow-box`, and its development build lives in `D:\zt-grow-target`.

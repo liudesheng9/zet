@@ -35,6 +35,7 @@
 use crate::args::Args;
 use crate::calls;
 use crate::check::Check;
+use crate::lockcheck;
 use crate::ps::join_path;
 use crate::snapshot;
 use crate::util;
@@ -294,6 +295,28 @@ fn share_of(cards: &[Value], key: &str) -> Value {
     json!({ "topic": topic.len(), "literature": literature, "share": share, "topic_cards": topic.into_iter().collect::<std::collections::BTreeSet<_>>() })
 }
 
+/// The two closest-Card blocks of one section file (Tree Lock S15): the Cards an idea may continue
+/// (an agent Card, or a human Card to link), and the Locked ones. A Locked Card stays related context
+/// and a Link target, and is never offered as a Card to continue.
+fn closest_blocks(open: &[(f64, Value)], locked: &[(f64, Value)]) -> String {
+    let mut md = String::new();
+    if !open.is_empty() {
+        md.push_str("## 用词最接近本节的已有主题卡\n\n");
+        for (_, t) in open.iter().take(CLOSEST) {
+            md.push_str(&format!("- [[{}]] {}（{}）\n", s(&t["address"]), s(&t["title"]), if s(&t["workspace"]) == "agent" { "代理，可接续" } else { "人类，只读，可链接" }));
+        }
+        md.push('\n');
+    }
+    if !locked.is_empty() {
+        md.push_str("## 用词最接近的已锁定主题卡（只读：可作相关语境，可链接，不能写入）\n\n");
+        for (_, t) in locked.iter().take(CLOSEST) {
+            md.push_str(&format!("- [[{}]] {}（已锁定：只读，可链接）\n", s(&t["address"]), s(&t["title"])));
+        }
+        md.push('\n');
+    }
+    md
+}
+
 fn read_book(zt: &mut Zt, key: &str) -> Result<(Value, Vec<Value>)> {
     let tree = zt.call("get_tree", json!({ "tree": key, "bodies": true }))?;
     if tree["complete"] != true {
@@ -386,7 +409,7 @@ fn plan(a: &Args) -> Result<()> {
     for t in &details {
         for card in t["cards"].as_array().into_iter().flatten() {
             let at = s(&card["address"]);
-            titles.push(json!({ "address": at, "title": card["title"], "workspace": t["workspace"], "type": card["type"], "facet": card["facet"] }));
+            titles.push(json!({ "address": at, "title": card["title"], "workspace": t["workspace"], "type": card["type"], "facet": card["facet"], "lock": card["lock"] }));
         }
     }
     work.write("titles.json", &Value::Array(titles.clone()))?;
@@ -395,11 +418,19 @@ fn plan(a: &Args) -> Result<()> {
     let mut topics_md = String::from("# 主题目录（代理与人类工作区；人类主题只读，可链接）\n\n");
     let mut literature_md = String::from("\n# 文献目录（卡片盒里的全部文献树）\n\n");
     let mut topic_count = 0;
+    let mut locked_topics = 0;
     for t in listed["trees"].as_array().into_iter().flatten() {
         let side = if s(&t["workspace"]) == "agent" { "代理" } else { "人类" };
         if s(&t["kind"]) == "topic" {
             topic_count += 1;
-            topics_md.push_str(&format!("- [[{}]] {}（{side}，{} 张）：{}\n", s(&t["root"]), s(&t["title"]), s(&t["count"]), cut(&s(&t["excerpt"]), 80)));
+            // A Locked Topic is readable context and a Link target only (Tree Lock S15).
+            let locked = if t["locked"] == true {
+                locked_topics += 1;
+                "，已锁定：只读，可链接，不能写入"
+            } else {
+                ""
+            };
+            topics_md.push_str(&format!("- [[{}]] {}（{side}，{} 张{locked}）：{}\n", s(&t["root"]), s(&t["title"]), s(&t["count"]), cut(&s(&t["excerpt"]), 80)));
         } else {
             literature_md.push_str(&format!("- [[{}]] 《{}》（{side}，{} 张）\n", s(&t["root"]), s(&t["title"]), s(&t["count"])));
         }
@@ -469,13 +500,10 @@ fn plan(a: &Args) -> Result<()> {
                 scored
             };
             let closest = rank(&topic_cards, &|t| linked.contains(&s(&t["address"])));
-            if !closest.is_empty() {
-                md.push_str("## 用词最接近本节的已有主题卡\n\n");
-                for (_, t) in closest.iter().take(CLOSEST) {
-                    md.push_str(&format!("- [[{}]] {}（{}）\n", s(&t["address"]), s(&t["title"]), if s(&t["workspace"]) == "agent" { "代理，可接续" } else { "人类，只读，可链接" }));
-                }
-                md.push('\n');
-            }
+            // The Locked Cards are context and Link targets only: they are listed apart from the Cards
+            // an idea may continue, so a planner never reads one as a destination (S15, AC01/AC02).
+            let (open_cards, locked_cards): (Vec<(f64, Value)>, Vec<(f64, Value)>) = closest.into_iter().partition(|(_, t)| t["lock"].is_null());
+            md.push_str(&closest_blocks(&open_cards, &locked_cards));
             // Other books: the notes of other Literature trees closest to this section, so an idea
             // can contrast, confirm or generalize what another source says.
             let others = rank(&literature_cards, &|t| tree_of(&s(&t["address"])).eq_ignore_ascii_case(key));
@@ -562,7 +590,7 @@ fn plan(a: &Args) -> Result<()> {
         &json!({ "key": key, "title": title, "tool": tools["tool"], "zt_config": tools["zt_config"], "books": book_rows, "sections": sections, "pending": pending, "left": left, "jobs": planned, "instructions": instructions_path, "snapshot": snapshot_path, "topics": topics_path, "allow": allow }),
     )?;
     util::print_last(&json!({
-        "topic_jobs": topic_jobs, "pending": pending.len(), "left": left, "books": books.len(), "sections": sections.len(), "cards": books.iter().map(|b| b.3.len()).sum::<usize>(), "box": count, "topics": topic_count,
+        "topic_jobs": topic_jobs, "pending": pending.len(), "left": left, "books": books.len(), "sections": sections.len(), "cards": books.iter().map(|b| b.3.len()).sum::<usize>(), "box": count, "topics": topic_count, "locked": locked_topics,
         "baseline": { "topic": baseline["topic"], "literature": baseline["literature"], "share": baseline["share"] },
     }))
 }
@@ -608,6 +636,13 @@ impl Ctx {
     fn exists(&self, address: &str) -> bool {
         self.title_of(address).is_some() || self.state["cards"].get(address).is_some() || self.run_topics().iter().any(|t| s(&t["root"]) == address)
     }
+    /// The active Lock of a Card's tree, as the plan's title export recorded it (Tree Lock S15): a
+    /// Locked Card stays readable context and a Link target, and is never a destination. A Card this
+    /// run wrote, or a Card with no Lock at plan time, answers `None`; the storage gate still decides
+    /// at the write.
+    fn lock_of(&self, address: &str) -> Option<lockcheck::Lock> {
+        self.title_of(address).and_then(lockcheck::lock_fact)
+    }
     fn workspace(&self, address: &str) -> String {
         if self.state["cards"].get(address).is_some() || self.run_topics().iter().any(|t| s(&t["root"]) == address) {
             return "agent".into();
@@ -618,6 +653,31 @@ impl Ctx {
 
 /// One fault: the idea or topic id, the code, the message.
 type Fault = (String, String, String);
+
+/// The G12 message of a Locked destination (Tree Lock S15, R330/R335): the Card, its Lock, and the
+/// ways out. It names the Lock, so no caller reads a Locked destination as a free one.
+fn locked_destination(at: &str, same: bool, lock: &lockcheck::Lock) -> String {
+    if same {
+        format!(
+            "`same`: `{at}` is locked by the owner (Lock {}, tree `{}`): it takes no appended sentence. Write the idea as a new Card under an unlocked agent Card instead",
+            lock.lock_id, lock.tree
+        )
+    } else {
+        format!(
+            "`{at}` is inside the locked tree `{}` (Lock {}): a locked Card stays readable and linkable but takes no write. Put the idea under an unlocked agent Card, or declare a new Topic",
+            lock.tree, lock.lock_id
+        )
+    }
+}
+
+/// The G12 message of a new Topic whose name would be filed in a Locked Topic.
+fn locked_topic(root: &str, title: &str, lock: &lockcheck::Lock) -> String {
+    let name = if title.trim().is_empty() { String::new() } else { format!(" {title}") };
+    format!(
+        "the Topic `{root}`{name} is locked by the owner (Lock {}, tree `{}`): it takes no new Cards. Name this concept differently, or plan an unlocked Topic",
+        lock.lock_id, lock.tree
+    )
+}
 
 fn answer_of(path: &str) -> std::result::Result<Value, String> {
     let raw = util::read_text(path).map_err(|e| format!("{e:#}"))?;
@@ -691,7 +751,11 @@ fn validate(ctx: &Ctx, section: &str, answer: &Value) -> Vec<Fault> {
             add(&id, "G1", "a new Topic needs title and body (2–3 sentences: the question it asks)".into());
         }
         if let Some(same) = agent_topics.iter().find(|x| near(&s(&x["title"]), &s(&t["title"]))) {
-            add(&id, "G8", format!("the Topic `{}` {} already exists: file the ideas under it (at its Cards) instead", s(&same["address"]), s(&same["title"])));
+            let root = s(&same["address"]);
+            match ctx.lock_of(&root) {
+                Some(lock) => add(&id, "G12", locked_topic(&root, &s(&same["title"]), &lock)),
+                None => add(&id, "G8", format!("the Topic `{root}` {} already exists: file the ideas under it (at its Cards) instead", s(&same["title"]))),
+            }
         }
     }
     let mut earlier: Vec<String> = Vec::new();
@@ -740,6 +804,8 @@ fn validate(ctx: &Ctx, section: &str, answer: &Value) -> Vec<Fault> {
                 add(&id, "G9", format!("`same`: `{same}` is not a Card of the box"));
             } else if !in_topic_tree(&same) {
                 add(&id, "G9", format!("`same`: `{same}` is not a Topic-tree Card; a Literature note is the source, not the same idea"));
+            } else if let Some(lock) = ctx.lock_of(&same) {
+                add(&id, "G12", locked_destination(&same, true, &lock));
             }
             earlier.push(id);
             continue;
@@ -769,6 +835,8 @@ fn validate(ctx: &Ctx, section: &str, answer: &Value) -> Vec<Fault> {
             add(&id, "G5", format!("`{at}` is a Literature-tree Card: this workflow files ideas in Topic trees only"));
         } else if ctx.workspace(&at) != "agent" {
             add(&id, "G5", format!("`{at}` is a human Card and takes no agent successor: file the idea in an agent Topic (a new one if needed) and open it with `延续 [[{at}]]：…`"));
+        } else if let Some(lock) = ctx.lock_of(&at) {
+            add(&id, "G12", locked_destination(&at, false, &lock));
         } else if !is_root(&at) && !link_kinds(&first_sentence(&body)).iter().any(|(t, _, k)| t == &at && *k != "refers") {
             add(&id, "G6", format!("the idea continues `{at}`: its first sentence says how, with a kind word before the Link ({KIND_WORDS}), e.g. `本卡放宽 [[{at}]] 的……假设。`"));
         }
@@ -889,6 +957,8 @@ fn validate_topics(ctx: &Ctx, answer: &Value) -> Vec<Fault> {
         if !existing.is_empty() {
             if !agent_topics.iter().any(|x| s(&x["address"]) == existing) {
                 add(&id, "G5", format!("`existing`: `{existing}` is not an agent Topic root (n/0); a human Topic takes no agent Card"));
+            } else if let Some(lock) = ctx.lock_of(&existing) {
+                add(&id, "G12", locked_topic(&existing, "", &lock));
             }
         } else {
             let title = s(&t["title"]);
@@ -896,7 +966,11 @@ fn validate_topics(ctx: &Ctx, answer: &Value) -> Vec<Fault> {
                 add(&id, "G1", "a new Topic needs title (the concept's name) and body (2–3 sentences: the question it asks)".into());
             }
             if let Some(same) = agent_topics.iter().find(|x| near(&s(&x["title"]), &title)) {
-                add(&id, "G8", format!("the Topic `{}` {} already exists: give \"existing\": \"{}\" instead", s(&same["address"]), s(&same["title"]), s(&same["address"])));
+                let root = s(&same["address"]);
+                match ctx.lock_of(&root) {
+                    Some(lock) => add(&id, "G12", locked_topic(&root, &s(&same["title"]), &lock)),
+                    None => add(&id, "G8", format!("the Topic `{root}` {} already exists: give \"existing\": \"{root}\" instead", s(&same["title"]))),
+                }
             }
             if let Some((other, _)) = new_titles.iter().find(|(_, x)| near(x, &title)) {
                 add(&id, "G8", format!("the new Topic is near {other} of this answer: one concept, one Topic"));
@@ -956,8 +1030,9 @@ fn write_section_jobs(work: &Work, plan: &mut Value, run_topics: &[Value]) -> Re
 
 /// `-Step topics`: the topic answer validated, its new Topics made through the topic gate (a
 /// near-name refusal reuses the existing Topic), the run's Topics recorded, and the section jobs
-/// written. A rerun keeps the recorded Topics.
-fn topics(a: &Args) -> Result<()> {
+/// written. A rerun keeps the recorded Topics. A gate that reuses a Topic another Lock froze stops
+/// the step with the typed refusal: it writes no Card inside the Locked tree.
+fn topics(a: &Args) -> Result<i32> {
     let work = Work::open(&a.required("Work")?)?;
     let write = a.flag("Apply");
     let mut ctx = Ctx::load(&work)?;
@@ -988,18 +1063,36 @@ fn topics(a: &Args) -> Result<()> {
                         if zt.is_none() {
                             zt = Some(crate::zt::start()?);
                         }
-                        match write_one(zt.as_mut().unwrap(), json!({ "tool": "create_topic", "arguments": { "title": s(&t["title"]), "body": s(&t["body"]) } }), &work.path("topic.gate"))? {
-                            Ok(root) => {
+                        let zt = zt.as_mut().unwrap();
+                        match write_one(zt, json!({ "tool": "create_topic", "arguments": { "title": s(&t["title"]), "body": s(&t["body"]) } }), &work.path("topic.gate"))? {
+                            Written::Made(root) => {
                                 created += 1;
                                 (root, s(&t["title"]), s(&t["body"]), true)
                             }
-                            Err(error) => match TOPIC_EXISTS.captures(&error) {
-                                Some(c) => (c[1].to_string(), s(&t["title"]), s(&t["body"]), false),
-                                None => {
-                                    refused.push(json!({ "id": id, "faults": [format!("create_topic failed: {error}")] }));
-                                    continue;
+                            Written::Refused { error, refusal } => {
+                                if let Some(lock) = refusal.as_ref().filter(|r| r["error"] == "card_locked") {
+                                    let totals = json!({ "jobs": 0, "topics": run.len(), "created": created, "refused": refused.len() });
+                                    return stop_stage(&totals, &archive_refusal("topics", "", lock));
                                 }
-                            },
+                                match TOPIC_EXISTS.captures(&error) {
+                                    Some(c) => {
+                                        let root = c[1].to_string();
+                                        // The gate reuses an existing Topic: the plan's title facts may be
+                                        // older than a Lock the owner took since, so read the fresh fact.
+                                        if let Some(lock) = lockcheck::lock_of(zt, &root)? {
+                                            let message = format!("the Topic `{root}` is locked by the owner (Lock {}): it takes no new Cards", lock.lock_id);
+                                            let refusal = locked_refusal("topics", &root, &lock.tree, lock.lock_id, &message, None);
+                                            let totals = json!({ "jobs": 0, "topics": run.len(), "created": created, "refused": refused.len() });
+                                            return stop_stage(&totals, &refusal);
+                                        }
+                                        (root, s(&t["title"]), s(&t["body"]), false)
+                                    }
+                                    None => {
+                                        refused.push(json!({ "id": id, "faults": [format!("create_topic failed: {error}")] }));
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                     };
                     run.push(json!({ "id": id, "root": root, "title": title, "body": body, "sections": t["sections"], "new": new }));
@@ -1007,7 +1100,8 @@ fn topics(a: &Args) -> Result<()> {
             }
         }
         if !write {
-            return util::print_last(&json!({ "jobs": 0, "topics": run.len(), "created": 0, "refused": refused.len() }));
+            util::print_last(&json!({ "jobs": 0, "topics": run.len(), "created": 0, "refused": refused.len() }))?;
+            return Ok(0);
         }
         ctx.state["run_topics"] = Value::Array(run);
         ctx.state["topics_refused"] = Value::Array(refused.clone());
@@ -1016,34 +1110,113 @@ fn topics(a: &Args) -> Result<()> {
     let run: Vec<Value> = ctx.state["run_topics"].as_array().cloned().unwrap_or_default();
     let mut plan = ctx.plan.clone();
     let jobs = write_section_jobs(&work, &mut plan, &run)?;
-    util::print_last(&json!({ "jobs": jobs, "topics": run.len(), "created": created, "refused": refused.len() }))
+    util::print_last(&json!({ "jobs": jobs, "topics": run.len(), "created": created, "refused": refused.len() }))?;
+    Ok(0)
 }
 
 // --- apply --------------------------------------------------------------------------------------
 
-/// One write through the helper; the address it made, or the error line.
-fn write_one(zt: &mut Zt, call: Value, gate: &str) -> Result<std::result::Result<String, String>> {
+// --- Locked destinations (Tree Lock S15) ---------------------------------------------------------
+
+/// The Lock facts of the archive's own `card_locked` refusal: its blocking tree and its first Lock id.
+fn archive_lock(refusal: &Value) -> Option<(String, i64)> {
+    let tree = refusal["tree"].as_str()?.to_string();
+    let lock_id = refusal["locks"]
+        .as_array()
+        .and_then(|locks| locks.first())
+        .and_then(|lock| lock["lock_id"].as_i64())
+        .or_else(|| refusal["lock_id"].as_i64())?;
+    Some((tree, lock_id))
+}
+
+/// The typed refusal a grow stage answers when its destination is Locked (S15, AC03/AC04): the S14
+/// preflight line's vocabulary (`ok`, `code`, `tree`, `lock_id`), so a caller recognizes a Lock
+/// without matching English text; the archive's own facts when its storage gate answered (`reason`,
+/// `cards`, `locks`, `sources`); and the grow context (`mode`, `step`, `at`). It names no bypass: the
+/// owner unlocks the tree in the GUI, and the Locked Cards stay readable as sources.
+fn locked_refusal(step: &str, at: &str, tree: &str, lock_id: i64, message: &str, archive: Option<&Value>) -> Value {
+    let mut value = json!({
+        "ok": false, "code": "card_locked", "error": "card_locked", "message": message,
+        "tree": tree, "lock_id": lock_id, "mode": "grow", "step": step, "at": at,
+        "hint": "unlock the tree in the GUI first; its Cards stay readable as sources",
+    });
+    if let Some(archive) = archive {
+        for key in ["reason", "cards", "locks", "sources"] {
+            if let Some(fact) = archive.get(key) {
+                value[key] = fact.clone();
+            }
+        }
+    }
+    value
+}
+
+/// The grow typed refusal built from the archive's own `card_locked` refusal: the archive sends its
+/// blocking tree and Lock ids, so this never loses them.
+fn archive_refusal(step: &str, at: &str, archive: &Value) -> Value {
+    let (tree, lock_id) = archive_lock(archive).unwrap_or_default();
+    let message = archive["message"].as_str().unwrap_or("the destination is locked by the owner");
+    locked_refusal(step, at, &tree, lock_id, message, Some(archive))
+}
+
+/// The `stopped` fact of a job the archive refused because its destination is Locked (S15, AC04):
+/// the address it tried, the Lock that stopped it and the archive's own sentence. A job with this
+/// fact wrote nothing after the refusal and keeps its answers, so a rerun after the unlock resumes.
+fn stopped_fact(at: &str, archive: &Value) -> Value {
+    let (tree, lock_id) = archive_lock(archive).unwrap_or_default();
+    json!({ "code": "card_locked", "at": at, "tree": tree, "lock_id": lock_id, "message": archive["message"].clone() })
+}
+
+/// The counters one job's partial record adds to the run totals (created, topics, same, refused,
+/// duplicates), so a stopped stage still reports what it already made.
+fn add_partial(totals: &mut Value, record: &Value) {
+    for (key, field) in [("created", "created"), ("topics", "topics"), ("same", "same"), ("refused", "refused"), ("duplicates", "duplicates")] {
+        let n = record[field].as_array().map_or(0, Vec::len);
+        totals[key] = json!(totals[key].as_u64().unwrap_or(0) + n as u64);
+    }
+}
+
+/// Stops a grow stage on a Locked destination: the totals line, then the typed refusal as the last
+/// stdout line, the sentence on stderr, and the refusal exit code. It writes no further Card and
+/// retries nothing.
+fn stop_stage(totals: &Value, refusal: &Value) -> Result<i32> {
+    util::print_line(&util::compact(totals))?;
+    util::print_line(&util::compact(refusal))?;
+    eprintln!("zt-digest grow: {}", refusal["message"].as_str().unwrap_or_default());
+    Ok(lockcheck::LOCKED_EXIT)
+}
+
+/// One write through the helper; the address it made, or the refusal the archive answered.
+enum Written {
+    Made(String),
+    Refused { error: String, refusal: Option<Value> },
+}
+
+fn write_one(zt: &mut Zt, call: Value, gate: &str) -> Result<Written> {
     let mut options = calls::Options::new();
     options.topic_gate = gate.to_string();
     let (done, failure) = calls::run(zt, &[call], &mut options)?;
     if let Some(f) = failure {
-        return Ok(Err(f.lines().first().cloned().unwrap_or_default()));
+        return Ok(Written::Refused { error: f.lines().first().cloned().unwrap_or_default(), refusal: f.refusal.clone() });
     }
     let line = done.first().map(|d| d.line.clone()).unwrap_or_default();
-    Ok(Ok(line.split_once(" ok ").map(|(_, a)| a.trim().to_string()).unwrap_or_default()))
+    Ok(Written::Made(line.split_once(" ok ").map(|(_, a)| a.trim().to_string()).unwrap_or_default()))
 }
 
 fn card_exists(zt: &mut Zt, address: &str) -> bool {
     calls::read(zt, "get_card", json!({ "at": address })).is_ok()
 }
 
-fn apply(a: &Args) -> Result<()> {
+/// `-Step apply`: writes the answered jobs in job order. `Written::Refused` with the archive's
+/// `card_locked` refusal stops the stage: the affected job keeps its answers and the receipts of the
+/// Cards it already made, and the run answers the typed refusal with the refusal exit code. No Lock
+/// is bypassed, no Card is placed elsewhere instead, and nothing is retried.
+fn apply(a: &Args) -> Result<i32> {
     let work = Work::open(&a.required("Work")?)?;
     let write = a.flag("Apply");
     let mut ctx = Ctx::load(&work)?;
     let gate = work.path("topic.gate");
     let mut zt: Option<Zt> = None;
-    let mut totals = json!({ "applied": 0, "created": 0, "topics": 0, "same": 0, "refused": 0, "duplicates": 0, "edited": 0, "unanswered": 0 });
+    let mut totals = json!({ "applied": 0, "created": 0, "topics": 0, "same": 0, "refused": 0, "duplicates": 0, "edited": 0, "unanswered": 0, "stopped": 0 });
     let bump = |t: &mut Value, k: &str, n: usize| t[k] = json!(t[k].as_u64().unwrap_or(0) + n as u64);
     let jobs = ctx.plan["jobs"].as_array().cloned().unwrap_or_default();
     for job in &jobs {
@@ -1097,18 +1270,43 @@ fn apply(a: &Args) -> Result<()> {
                 continue;
             }
             match write_one(zt, json!({ "tool": "create_topic", "arguments": { "title": s(&t["title"]), "body": s(&t["body"]) } }), &gate)? {
-                Ok(root) => {
+                Written::Made(root) => {
                     record["topics"].as_array_mut().unwrap().push(json!(root));
                     topic_root.insert(tid, root);
                 }
-                Err(error) => match TOPIC_EXISTS.captures(&error) {
-                    Some(c) => {
-                        topic_root.insert(tid, c[1].to_string());
+                Written::Refused { error, refusal } => {
+                    if let Some(archive) = refusal.as_ref().filter(|r| r["error"] == "card_locked") {
+                        add_partial(&mut totals, &record);
+                        record["applied"] = json!(false);
+                        record["stopped"] = stopped_fact(&tid, archive);
+                        ctx.state["sections"][&section] = record;
+                        work.write("state.json", &ctx.state)?;
+                        bump(&mut totals, "stopped", 1);
+                        return stop_stage(&totals, &archive_refusal("apply", &tid, archive));
                     }
-                    None => {
-                        bad.entry(tid.clone()).or_default().push(format!("G8 create_topic failed: {error}"));
+                    match TOPIC_EXISTS.captures(&error) {
+                        Some(c) => {
+                            let root = c[1].to_string();
+                            // The gate reuses an existing Topic: the plan's facts may be older than a
+                            // Lock, so read the fresh fact before filing the ideas under it.
+                            if let Some(lock) = lockcheck::lock_of(zt, &root)? {
+                                let message = format!("the Topic `{root}` is locked by the owner (Lock {}): it takes no new Cards", lock.lock_id);
+                                add_partial(&mut totals, &record);
+                                record["applied"] = json!(false);
+                                record["stopped"] = json!({ "code": "card_locked", "at": root, "tree": lock.tree, "lock_id": lock.lock_id, "message": message });
+                                ctx.state["sections"][&section] = record;
+                                work.write("state.json", &ctx.state)?;
+                                bump(&mut totals, "stopped", 1);
+                                let refusal = locked_refusal("apply", &root, &lock.tree, lock.lock_id, &message, None);
+                                return stop_stage(&totals, &refusal);
+                            }
+                            topic_root.insert(tid, root);
+                        }
+                        None => {
+                            bad.entry(tid.clone()).or_default().push(format!("G8 create_topic failed: {error}"));
+                        }
                     }
-                },
+                }
             }
         }
         let mut made: HashMap<String, String> = HashMap::new();
@@ -1138,8 +1336,19 @@ fn apply(a: &Args) -> Result<()> {
             if !same.is_empty() {
                 if ctx.workspace(&same) == "agent" {
                     match write_one(zt, json!({ "tool": "append_card", "arguments": { "at": same, "text": resolve(&s(&idea["body"]), &made, &topic_root) } }), &gate)? {
-                        Ok(_) => record["same"].as_array_mut().unwrap().push(json!({ "id": iid, "card": same, "appended": true })),
-                        Err(e) => record["refused"].as_array_mut().unwrap().push(json!({ "id": iid, "faults": [format!("append failed: {e}")] })),
+                        Written::Made(_) => record["same"].as_array_mut().unwrap().push(json!({ "id": iid, "card": same, "appended": true })),
+                        Written::Refused { error, refusal } => {
+                            if let Some(archive) = refusal.as_ref().filter(|r| r["error"] == "card_locked") {
+                                add_partial(&mut totals, &record);
+                                record["applied"] = json!(false);
+                                record["stopped"] = stopped_fact(&same, archive);
+                                ctx.state["sections"][&section] = record;
+                                work.write("state.json", &ctx.state)?;
+                                bump(&mut totals, "stopped", 1);
+                                return stop_stage(&totals, &archive_refusal("apply", &same, archive));
+                            }
+                            record["refused"].as_array_mut().unwrap().push(json!({ "id": iid, "faults": [format!("append failed: {error}")] }));
+                        }
                     }
                 } else {
                     record["same"].as_array_mut().unwrap().push(json!({ "id": iid, "card": same, "appended": false }));
@@ -1180,7 +1389,7 @@ fn apply(a: &Args) -> Result<()> {
             };
             let kind = if kind == "direct" && !is_root(&parent) && card_exists(zt, &next_direct(&parent)) { "side" } else { kind };
             match write_one(zt, json!({ "tool": "create_successor", "arguments": { "at": parent, "kind": kind, "type": "idea", "title": title, "body": body } }), &gate)? {
-                Ok(address) => {
+                Written::Made(address) => {
                     parent_of.insert(iid.clone(), (parent.clone(), kind.to_string()));
                     made.insert(iid.clone(), address.clone());
                     let k = s(&idea["kind"]);
@@ -1188,13 +1397,21 @@ fn apply(a: &Args) -> Result<()> {
                     record["created"].as_array_mut().unwrap().push(json!({ "id": iid, "card": address, "parent": parent, "as": kind, "kind": k }));
                     ctx.state["cards"][&address] = json!({ "job": id, "section": section, "book": key, "idea": iid, "title": title, "kind": k });
                 }
-                Err(e) => record["refused"].as_array_mut().unwrap().push(json!({ "id": iid, "faults": [format!("create failed: {e}")] })),
+                Written::Refused { error, refusal } => {
+                    if let Some(archive) = refusal.as_ref().filter(|r| r["error"] == "card_locked") {
+                        add_partial(&mut totals, &record);
+                        record["applied"] = json!(false);
+                        record["stopped"] = stopped_fact(&parent, archive);
+                        ctx.state["sections"][&section] = record;
+                        work.write("state.json", &ctx.state)?;
+                        bump(&mut totals, "stopped", 1);
+                        return stop_stage(&totals, &archive_refusal("apply", &parent, archive));
+                    }
+                    record["refused"].as_array_mut().unwrap().push(json!({ "id": iid, "faults": [format!("create failed: {error}")] }));
+                }
             }
         }
-        for (k, field) in [("created", "created"), ("topics", "topics"), ("same", "same"), ("refused", "refused"), ("duplicates", "duplicates")] {
-            let n = record[field].as_array().map_or(0, Vec::len);
-            bump(&mut totals, k, n);
-        }
+        add_partial(&mut totals, &record);
         bump(&mut totals, "applied", 1);
         ctx.state["sections"][&section] = record;
         work.write("state.json", &ctx.state)?;
@@ -1228,11 +1445,24 @@ fn apply(a: &Args) -> Result<()> {
             let key = ctx.book_of_card(&at);
             let call = json!({ "tool": "edit_card", "arguments": { "at": at, "title": s(&e["title"]), "body": with_source(&key, &s(&e["body"]), &[]), "base": current["text"] } });
             match write_one(zt, call, &gate)? {
-                Ok(_) => {
+                Written::Made(_) => {
                     edited.push(json!(at));
                     ctx.state["cards"][&at]["title"] = json!(s(&e["title"]));
                 }
-                Err(err) => refused.push(json!(format!("{at}: {err}"))),
+                Written::Refused { error, refusal } => {
+                    if let Some(archive) = refusal.as_ref().filter(|r| r["error"] == "card_locked") {
+                        bump(&mut totals, "edited", edited.len());
+                        let mut stopped = ctx.state["fixes"][&fid].clone();
+                        stopped["applied"] = json!(false);
+                        stopped["stopped"] = stopped_fact(&at, archive);
+                        stopped["edited"] = json!(edited);
+                        ctx.state["fixes"][&fid] = stopped;
+                        work.write("state.json", &ctx.state)?;
+                        bump(&mut totals, "stopped", 1);
+                        return stop_stage(&totals, &archive_refusal("apply", &at, archive));
+                    }
+                    refused.push(json!(format!("{at}: {error}")));
+                }
             }
         }
         bump(&mut totals, "edited", edited.len());
@@ -1273,8 +1503,21 @@ fn apply(a: &Args) -> Result<()> {
             // The source line stays the Card's last line (pilot 4: appended Links landed after it).
             let body = before_source(&s(&current["body"]), &s(&l["sentence"]));
             match write_one(zt, json!({ "tool": "edit_card", "arguments": { "at": from, "body": body, "base": current["text"] } }), &work.path("topic.gate"))? {
-                Ok(_) => added.push(json!({ "from": from, "to": to })),
-                Err(e) => refused.push(json!(format!("{from} -> {to}: {e}"))),
+                Written::Made(_) => added.push(json!({ "from": from, "to": to })),
+                Written::Refused { error, refusal } => {
+                    if let Some(archive) = refusal.as_ref().filter(|r| r["error"] == "card_locked") {
+                        bump(&mut totals, "linked", added.len());
+                        let mut stopped = ctx.state["links"][&lid].clone();
+                        stopped["applied"] = json!(false);
+                        stopped["stopped"] = stopped_fact(&from, archive);
+                        stopped["added"] = json!(added);
+                        ctx.state["links"][&lid] = stopped;
+                        work.write("state.json", &ctx.state)?;
+                        bump(&mut totals, "stopped", 1);
+                        return stop_stage(&totals, &archive_refusal("apply", &from, archive));
+                    }
+                    refused.push(json!(format!("{from} -> {to}: {error}")));
+                }
             }
         }
         bump(&mut totals, "linked", added.len());
@@ -1286,7 +1529,8 @@ fn apply(a: &Args) -> Result<()> {
     if write {
         work.write("state.json", &ctx.state)?;
     }
-    util::print_last(&totals)
+    util::print_last(&totals)?;
+    Ok(0)
 }
 
 // --- the link round -----------------------------------------------------------------------------
@@ -1561,13 +1805,30 @@ fn report(a: &Args) -> Result<()> {
     }
     let linked: usize = state["links"].as_object().map_or(0, |m| m.values().map(|v| v["added"].as_array().map_or(0, Vec::len)).sum());
     totals.insert("linked".into(), json!(linked));
+    // The jobs a Locked destination stopped (S15): each names the tree, the Lock and the address it
+    // tried, so the owner reads which destination is frozen and what to unlock.
+    let mut stopped: Vec<Value> = Vec::new();
+    let mut take_stopped = |record: &Value| {
+        if !record["stopped"].is_null() {
+            stopped.push(record["stopped"].clone());
+        }
+    };
+    for section in plan["sections"].as_array().into_iter().flatten() {
+        take_stopped(&state["sections"][&s(&section["anchor"])]);
+    }
+    for field in ["fixes", "links"] {
+        for record in state[field].as_object().into_iter().flatten().map(|(_, v)| v) {
+            take_stopped(record);
+        }
+    }
+    totals.insert("stopped".into(), json!(stopped.len()));
     let mut topics_made: Vec<Value> = state["run_topics"].as_array().into_iter().flatten().filter(|t| t["new"] == true).map(|t| t["root"].clone()).collect();
     topics_made.extend(plan["sections"].as_array().into_iter().flatten().flat_map(|x| state["sections"][&s(&x["anchor"])]["topics"].as_array().cloned().unwrap_or_default()));
     let run_topics: Vec<Value> = state["run_topics"].as_array().cloned().unwrap_or_default();
     totals.insert("topics".into(), json!(topics_made.len()));
     let report = json!({
         "key": key, "title": plan["title"], "sections": rows, "totals": totals, "kinds": kinds,
-        "topics_made": topics_made, "run_topics": run_topics, "faults_left": left, "bridges": bridges,
+        "topics_made": topics_made, "run_topics": run_topics, "faults_left": left, "bridges": bridges, "stopped": stopped,
         "share": { "before": baseline, "after": after },
     });
     work.write("grow-report.json", &report)?;
@@ -1600,26 +1861,47 @@ fn report(a: &Args) -> Result<()> {
             md.push_str(&format!("- [[{at}]]：{}\n", f.join("；")));
         }
     }
+    if !stopped.is_empty() {
+        md.push_str("\n## 已锁定而停下的写入（解锁后重跑同一个 out 继续）\n\n");
+        for stop in &stopped {
+            md.push_str(&format!("- [[{}]]：{}（Lock {}，树 `{}`）\n", s(&stop["at"]), s(&stop["message"]), s(&stop["lock_id"]), s(&stop["tree"])));
+        }
+    }
     util::write_text(work.path("grow-report.md"), &md)?;
     util::print_last(&json!({
         "created": report["totals"]["created"], "topics": report["totals"]["topics"], "linked": report["totals"]["linked"], "same": report["totals"]["same"],
-        "refused": report["totals"]["refused"], "duplicates": report["totals"]["duplicates"], "faults_left": left.len(),
+        "refused": report["totals"]["refused"], "duplicates": report["totals"]["duplicates"], "stopped": report["totals"]["stopped"], "faults_left": left.len(),
         "share_before": baseline["share"], "share_after": after["share"], "books": books.len(), "bridges": bridges.len(), "report": work.path("grow-report.md"),
     }))
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig"], &["Apply"])?;
-    match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report"])?.as_str() {
-        "plan" => plan(&a)?,
+    let code = match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report"])?.as_str() {
+        "plan" => {
+            plan(&a)?;
+            0
+        }
         "topics" => topics(&a)?,
-        "links" => links(&a)?,
-        "precheck" => precheck(&a)?,
+        "links" => {
+            links(&a)?;
+            0
+        }
+        "precheck" => {
+            precheck(&a)?;
+            0
+        }
         "apply" => apply(&a)?,
-        "check" => check(&a)?,
-        _ => report(&a)?,
-    }
-    Ok(0)
+        "check" => {
+            check(&a)?;
+            0
+        }
+        _ => {
+            report(&a)?;
+            0
+        }
+    };
+    Ok(code)
 }
 
 #[cfg(test)]
@@ -1736,6 +2018,99 @@ mod tests {
 
     fn codes(faults: &[Fault]) -> Vec<String> {
         faults.iter().map(|f| format!("{} {}", f.0, f.1)).collect()
+    }
+
+    #[test]
+    fn a_locked_topic_is_read_only_context_and_never_a_destination() {
+        let mut c = ctx();
+        // `12` is one whole Topic tree the owner has locked: 12/0 is its root, 12/1 a Card in it.
+        c.titles[2]["lock"] = json!({ "lock_id": 7, "tree": "12", "since": "2026-10-21T10:00:00.000Z" });
+        c.titles[3]["lock"] = json!({ "lock_id": 7, "tree": "12", "since": "2026-10-21T10:00:00.000Z" });
+        let idea = |at: &str, same: &str| {
+            json!({ "section": "K/3", "ideas": [{ "id": "I1", "kind": "关联", "title": "沉没投资削弱议价地位",
+                "body": "本卡推广 [[12/1]]：外包的供应商也先投资。例示 [[K/3|a]]：本书。", "sources": ["K/3|a"],
+                "at": at, "same": same }] })
+        };
+        // The Card is Locked: a successor would write inside the Locked tree.
+        let got = codes(&validate(&c, "K/3", &idea("12/1", "")));
+        assert!(got.contains(&"I1 G12".to_string()), "{got:?}");
+        // Its root is Locked too.
+        let got = codes(&validate(&c, "K/3", &idea("12/0", "")));
+        assert!(got.contains(&"I1 G12".to_string()), "{got:?}");
+        // A `same` sentence would append to a Locked Card.
+        let got = codes(&validate(&c, "K/3", &idea("", "12/1")));
+        assert!(got.contains(&"I1 G12".to_string()), "{got:?}");
+        // An unlocked Card in the same box stays a destination.
+        let got = codes(&validate(&c, "K/3", &idea("0/1", "")));
+        assert!(!got.contains(&"I1 G12".to_string()), "{got:?}");
+    }
+
+    #[test]
+    fn a_locked_topic_refuses_a_new_topic_that_would_be_filed_in_it() {
+        let mut c = ctx();
+        c.titles[2]["lock"] = json!({ "lock_id": 7, "tree": "12", "since": "2026-10-21T10:00:00.000Z" });
+        // `12/0` is titled 敲竹杠: a new Topic of that name is G12, never G8's "file under it".
+        let answer = json!({ "section": "K/3", "topics": [{ "id": "T1", "title": "敲竹杠", "body": "本主题追问。" }], "ideas": [
+            { "id": "I1", "kind": "核心", "title": "专用投资以后供应商被敲竹杠", "body": "例示 [[K/3|a]]：本书。", "sources": ["K/3|a"], "at": "T1" }
+        ] });
+        let got = codes(&validate(&c, "K/3", &answer));
+        assert!(got.contains(&"T1 G12".to_string()), "{got:?}");
+        assert!(!got.contains(&"T1 G8".to_string()), "{got:?}");
+        // The Topic plan: `existing` may name an unlocked agent Topic root only.
+        c.plan["pending"] = json!(["K/3"]);
+        let topics = json!({ "topics": [{ "id": "T1", "existing": "12/0", "sections": [3] }] });
+        let got = codes(&validate_topics(&c, &topics));
+        assert!(got.contains(&"T1 G12".to_string()), "{got:?}");
+    }
+
+    #[test]
+    fn the_archive_refusal_becomes_the_grow_typed_refusal() {
+        let archive = json!({
+            "error": "card_locked",
+            "message": "card `1/1` is inside locked tree `1`; a locked tree takes no new Cards",
+            "tree": "1", "cards": ["1/1"], "reason": "create-inside", "hint": "unlock the tree in the GUI first",
+            "locks": [{ "lock_id": 3, "tree": "1" }]
+        });
+        assert_eq!(archive_lock(&archive), Some(("1".to_string(), 3)));
+        assert_eq!(archive_lock(&json!({ "error": "card_locked" })), None);
+        let refusal = locked_refusal("apply", "1/1", "1", 3, "the destination is locked", Some(&archive));
+        assert_eq!(refusal["ok"], json!(false));
+        assert_eq!(refusal["code"], json!("card_locked"));
+        assert_eq!(refusal["mode"], json!("grow"));
+        assert_eq!(refusal["step"], json!("apply"));
+        assert_eq!(refusal["at"], json!("1/1"));
+        assert_eq!(refusal["tree"], json!("1"));
+        assert_eq!(refusal["lock_id"], json!(3));
+        assert_eq!(refusal["reason"], json!("create-inside"));
+        assert_eq!(refusal["cards"], json!(["1/1"]));
+        // A Lock read fresh (not a refused write) answers the same typed shape without archive facts.
+        let plain = locked_refusal("topics", "0/0", "0", 9, "the destination is locked", None);
+        assert_eq!(plain["code"], json!("card_locked"));
+        assert_eq!(plain["lock_id"], json!(9));
+        assert!(plain.get("reason").is_none(), "{plain}");
+        // The hint is an owner action: no route, no token, no Access bypass.
+        let hint = plain["hint"].as_str().unwrap();
+        assert!(hint.contains("unlock the tree in the GUI"), "{hint}");
+        assert!(!hint.contains("/api/") && !hint.contains("token") && !hint.contains("Access"), "{hint}");
+    }
+
+    #[test]
+    fn the_section_lists_locked_cards_as_context_only() {
+        let open = vec![
+            (0.9, json!({ "address": "12/1", "title": "事后议价", "workspace": "agent" })),
+            (0.5, json!({ "address": "0/1", "title": "信用", "workspace": "human" })),
+        ];
+        let locked = vec![(0.8, json!({ "address": "7/1", "title": "沉没投资", "workspace": "agent", "lock": { "lock_id": 4, "tree": "7" } }))];
+        let text = closest_blocks(&open, &locked);
+        assert!(text.contains("## 用词最接近本节的已有主题卡"), "{text}");
+        assert!(text.contains("- [[12/1]] 事后议价（代理，可接续）"), "{text}");
+        assert!(text.contains("- [[0/1]] 信用（人类，只读，可链接）"), "{text}");
+        assert!(text.contains("## 用词最接近的已锁定主题卡（只读：可作相关语境，可链接，不能写入）"), "{text}");
+        assert!(text.contains("- [[7/1]] 沉没投资（已锁定：只读，可链接）"), "{text}");
+        // A Locked Card is never offered as a Card to continue.
+        assert!(!text.contains("[[7/1]] 沉没投资（代理，可接续）"), "{text}");
+        // No Locked Card, no Locked block.
+        assert!(!closest_blocks(&open, &[]).contains("已锁定"), "{}", closest_blocks(&open, &[]));
     }
 
     #[test]

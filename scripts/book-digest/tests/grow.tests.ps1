@@ -31,13 +31,47 @@ function Last($lines) {
     try { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable } catch { throw "not JSON: $(@($lines) -join ' | ')" }
 }
 function Grow([string[]]$more) { @(& $Digest grow @more 2>&1 | ForEach-Object { [string]$_ }) }
+function Grow-Run([string[]]$more) {
+    $lines = @(& $Digest grow @more 2>&1 | ForEach-Object { [string]$_ })
+    [pscustomobject]@{ code = $LASTEXITCODE; lines = $lines; last = @($lines)[-1]; text = ($lines -join ' ') }
+}
+# The GUI of this scratch service: its URL and the token its page carries. The owner sets and releases
+# a Lock only here (Tree Lock S15 needs a real Lock the tool cannot take).
+function Get-Gui {
+    $line = @(@(zt gui 2>&1) | Where-Object { $_ -match '^zt gui: http' })[0]
+    if (-not $line) { throw 'zt gui printed no URL' }
+    $url = (($line -replace '^zt gui: ', '') -replace '/+$', '')
+    $page = (Invoke-WebRequest -UseBasicParsing -Uri $url).Content
+    $token = [regex]::Match($page, 'name="zt-token" content="([^"]+)"').Groups[1].Value
+    if (-not $token) { throw 'the served page carries no token' }
+    [pscustomobject]@{ url = $url; token = $token }
+}
+function Invoke-Gui($gui, [string]$path, $body) {
+    Invoke-RestMethod -Method Post -Uri "$($gui.url)$path" -Headers @{ 'X-ZT-Token' = $gui.token } -ContentType 'application/json' -Body ($body | ConvertTo-Json -Depth 8)
+}
+function Lock-Tree([string]$root, [string]$note = 'reviewed') {
+    $gui = Get-Gui
+    $plan = Invoke-Gui $gui '/api/lock' @{ root = $root; note = $note }
+    if (-not $plan.plan.plan_hash) { throw "the lock plan carries no plan_hash: $($plan | ConvertTo-Json -Depth 8 -Compress)" }
+    $done = Invoke-Gui $gui '/api/lock' @{ root = $root; note = $note; confirm = 'lock'; plan_hash = $plan.plan.plan_hash }
+    if (-not $done.applied) { throw "the owner lock was not applied: $($done | ConvertTo-Json -Depth 8 -Compress)" }
+    $done.lock
+}
+function Unlock-Tree([int]$lockId) {
+    $gui = Get-Gui
+    $plan = Invoke-Gui $gui '/api/unlock' @{ lock_id = $lockId }
+    if (-not $plan.plan.plan_hash) { throw "the unlock plan carries no plan_hash: $($plan | ConvertTo-Json -Depth 8 -Compress)" }
+    $done = Invoke-Gui $gui '/api/unlock' @{ lock_id = $lockId; confirm = 'unlock'; plan_hash = $plan.plan.plan_hash }
+    if (-not $done.applied) { throw "the owner unlock was not applied: $($done | ConvertTo-Json -Depth 8 -Compress)" }
+    $done
+}
 function Write-Calls($calls) {
     $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper -)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
 function Card($at) { @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $at } }))[0] }
-function Answer($id, $value) { $value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $work "out\$id.json") -Encoding utf8 }
+function Answer($id, $value, $folder = $work) { $value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $folder "out\$id.json") -Encoding utf8 }
 $key = 'Grow2024'
 try {
     zt config set archive_root $archive | Out-Null
@@ -198,9 +232,117 @@ try {
     Assert ($gt2.Contains('[[Other2020]]') -and $gt2.Contains('[[Solo2021]]') -and $gt2.Contains("[[$key]]")) 'plan: the topic job lists the sections of every book'
     $s1 = Get-Content (Join-Path $work2 'sections\s001.md') -Raw -Encoding utf8
     Assert ($s1.Contains('其他文献里用词接近的笔记') -and $s1.Contains('[[Other2020/1|a]] 市场越厚，找到交易伙伴越容易') -and $s1.Contains("来源：[[$key]]")) 'plan: a section lists the closest notes of other books and names its own book'
+
+    # --- Tree Lock (S15): a locked source stays readable, a locked Topic takes nothing -------------
+    # A Topic whose Card shares wording with section 2, so the read-only context list has a candidate
+    # the section does not already link.
+    $integrationTopic = (Write-Calls @(@{ tool = 'create_topic'; arguments = @{ title = '一体化'; body = '本主题追问：企业为什么把两个部门合在一起管理。' } }))[0] -replace '/0$', ''
+    $integrationCard = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = "$integrationTopic/0"; title = '一体化企业承担更高的管理成本'; body = '一体化企业要管理两个部门。管理成本高于专业化企业。' } }))[0]
+    # The owner locks the whole source Literature tree and two agent Topics through the GUI.
+    $sourceLock = Lock-Tree $key 'the source reviewed'
+    $topicRoot = "$topic/0"
+    $topicLock = Lock-Tree $topicRoot 'the Topic reviewed'
+    $contextLock = Lock-Tree "$integrationTopic/0" 'the related Topic reviewed'
+    Assert ($sourceLock.root -eq $key -and $topicLock.lock_id -gt 0 -and $topicLock.root -eq $topicRoot -and $contextLock.lock_id -gt 0) "lock: the owner locks the source tree, a Topic and a related Topic (locks $($sourceLock.lock_id), $($topicLock.lock_id), $($contextLock.lock_id))"
+    $lockWork = Join-Path $scratch 'work3'
+    $plan3Run = Grow-Run @('-Step', 'plan', '-Book', $key, '-Work', $lockWork)
+    $plan3 = Last $plan3Run.lines
+    Assert ($plan3Run.code -eq 0 -and $plan3.pending -eq 2 -and $plan3.sections -eq 2) "lock: the plan reads a locked source book normally (exit $($plan3Run.code); $($plan3 | ConvertTo-Json -Compress))"
+    Assert ($plan3.locked -eq 2) "lock: the plan reports the two locked Topics of the box ($($plan3.locked))"
+    $topics3 = Get-Content (Join-Path $lockWork 'topics.md') -Raw -Encoding utf8
+    Assert ($topics3 -match "\[\[$([regex]::Escape($topic))/0\]\] 敲竹杠（代理，\d+ 张，已锁定：只读，可链接，不能写入）") 'lock: the Topic catalogue marks the locked Topic read-only'
+    Assert ($topics3 -match "\[\[$([regex]::Escape($integrationTopic))/0\]\] 一体化（代理，\d+ 张，已锁定：只读，可链接，不能写入）") 'lock: the catalogue marks every locked Topic'
+    $titles3 = @(Get-Content (Join-Path $lockWork 'titles.json') -Raw -Encoding utf8 | ConvertFrom-Json)
+    $lockedRow = @($titles3 | Where-Object { $_.address -eq $door })
+    Assert ($lockedRow.Count -eq 1 -and $lockedRow[0].lock.lock_id -eq $topicLock.lock_id) "lock: titles.json carries the Lock of the locked Card ($($lockedRow[0].lock | ConvertTo-Json -Compress))"
+    $s3 = Get-Content (Join-Path $lockWork 'sections\s002.md') -Raw -Encoding utf8
+    $s3lists = @($s3 -split "`n" | Where-Object { $_ -match '用词最接近|已锁定|可接续' }) -join ' / '
+    Assert ($s3.Contains("[[$integrationCard]] 一体化企业承担更高的管理成本（已锁定：只读，可链接）")) "lock: the section lists the locked Card as read-only context ($s3lists)"
+    Assert (-not $s3.Contains("[[$integrationCard]] 一体化企业承担更高的管理成本（代理，可接续）")) "lock: the locked Card is never offered as a Card to continue ($s3lists)"
+
+    # A destination the answer names while it is locked: the precheck reports the conflict (G12).
+    Answer 'gt-001' @{ topics = @(
+            @{ id = 'T1'; existing = "$topic/0"; sections = @(1, 2) },
+            @{ id = 'T2'; title = '敲竹杠'; body = '本主题追问：谁拿到专用投资的回报。'; sections = @(1) }
+        ) } $lockWork
+    $pre = Grow @('-Step', 'precheck', '-Work', $lockWork, '-Job', 'gt-001')
+    Assert (@($pre | Where-Object { $_.StartsWith('T1 G12 ') }).Count -eq 1) "lock: an existing locked Topic root is a G12 conflict ($($pre -join ' | '))"
+    Assert (@($pre | Where-Object { $_.StartsWith('T2 G12 ') }).Count -eq 1) "lock: a new Topic named like a locked Topic is G12, not G8's 'file under it' ($($pre -join ' | '))"
+    Answer 'gt-001' @{ topics = @(@{ id = 'T1'; title = '外包与议价'; body = '本主题追问：外包以后价格怎样形成。专用投资怎样影响议价。'; sections = @(1, 2) }) } $lockWork
+    $pre = Grow @('-Step', 'precheck', '-Work', $lockWork, '-Job', 'gt-001')
+    Assert (@($pre)[-1].Trim() -eq 'faults: 0') "lock: a Topic away from the locked one passes ($($pre -join ' | '))"
+    $tp3 = Last (Grow @('-Step', 'topics', '-Work', $lockWork, '-Apply'))
+    $runTopic3 = [string](@((Get-Content (Join-Path $lockWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable).run_topics | Where-Object { $_.id -eq 'T1' })[0].root)
+    Assert ($tp3.created -eq 1 -and $tp3.jobs -eq 2) "lock: a new Topic is made while the source and another Topic are locked ($($tp3 | ConvertTo-Json -Compress))"
+
+    # The same answers without the locked destination: their Cards stand ready for a mid-run Lock.
+    Answer 'gw-001' @{ section = "$key/1"; ideas = @(
+            @{ id = 'I1'; kind = '核心'; title = '外包要先在市场上配对才能成交'; body = "外包要先在市场上找到供应商。找不到伙伴时，企业只能自己生产。例示 [[$key/1|a]]：本书用匹配概率刻画这一点。"; sources = @("$key/1|a"); at = $runTopic3 },
+            @{ id = 'I2'; kind = '直觉'; title = '厚市场让配对更快因此外包更多'; body = "市场两边的企业越多，每家企业越容易找到伙伴。因此外包在厚市场中更常见。对应 [[$key/1|a]]：本书的匹配函数。它推广了 [[@I1]] 的判断：伙伴越多，外包越可行。"; sources = @("$key/1|a"); at = 'I1' }
+        ) } $lockWork
+    Answer 'gw-002' @{ section = "$key/2"; ideas = @(
+            @{ id = 'I1'; kind = '有用'; title = '一体化多出一层管理成本'; body = "一体化企业要管理更多部门。它承担更高的固定成本。例示 [[$key/2|a]]：本书把这项成本写成固定成本。"; sources = @("$key/2|a"); at = $runTopic3 }
+        ) } $lockWork
+    foreach ($job in @('gw-001', 'gw-002')) {
+        $pre = Grow @('-Step', 'precheck', '-Work', $lockWork, '-Job', $job)
+        Assert (@($pre)[-1].Trim() -eq 'faults: 0') "lock: $job passes while its source book is locked ($(@($pre)[-1]))"
+    }
+
+    # The owner locks the run's own Topic after its answers: the storage gate stops the stage.
+    $runLock = Lock-Tree $runTopic3 'locked after its answers'
+    $stopped = Grow-Run @('-Step', 'apply', '-Work', $lockWork, '-Apply')
+    Assert ($stopped.code -eq 2) "lock: apply stops with the refusal exit code (exit $($stopped.code))"
+    $typed = $null
+    foreach ($line in $stopped.lines) {
+        $trimmed = $line.TrimStart()
+        if (-not $trimmed.StartsWith('{')) { continue }
+        try { $candidate = $trimmed | ConvertFrom-Json } catch { continue }
+        if ($candidate.code) { $typed = $candidate }
+    }
+    Assert ($typed -and $typed.code -eq 'card_locked' -and $typed.tree -eq $runTopic3 -and $typed.lock_id -eq $runLock.lock_id) "lock: the stop answers the typed card_locked JSON with the tree and Lock ($($stopped.lines -join ' | '))"
+    Assert ($typed.message -and $typed.step -eq 'apply' -and $typed.at) "lock: the typed refusal names the step and the address it tried ($($typed | ConvertTo-Json -Compress))"
+    Assert (-not ($typed.hint -match '/api/|token|Access')) "lock: the hint is no bypass: $($typed.hint)"
+    $st3 = Get-Content (Join-Path $lockWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    Assert ($st3.sections["$key/1"].applied -ne $true -and $st3.sections["$key/1"].stopped.lock_id -eq $runLock.lock_id) "lock: the stopped section keeps its place and names the Lock ($($st3.sections["$key/1"] | ConvertTo-Json -Compress))"
+    Assert (Test-Path -LiteralPath (Join-Path $lockWork 'out\gw-001.json')) 'lock: the stopped stage keeps its answers'
+    $runTree3 = $runTopic3 -replace '/0$', ''
+    $inLocked = @((Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{} })).titles | Where-Object { $_.address -like "$runTree3/*" })
+    Assert ($inLocked.Count -eq 1 -and @($inLocked | Where-Object { $_.title -eq '外包要先在市场上配对才能成交' }).Count -eq 0) "lock: nothing was written into the locked tree (only its root: $(@($inLocked | ForEach-Object { $_.address }) -join ', '))"
+    $report3 = Last (Grow @('-Step', 'report', '-Work', $lockWork))
+    Assert ($report3.stopped -eq 1) "lock: the report names the stopped write ($($report3 | ConvertTo-Json -Compress))"
+    Assert ((Get-Content (Join-Path $lockWork 'grow-report.md') -Raw -Encoding utf8) -match '已锁定而停下的写入') 'lock: grow-report.md names the stop and the unlock first'
+
+    # After the owner unlocks, the same answers are written: no bypass, no lost work.
+    $null = Unlock-Tree $runLock.lock_id
+    $applied3 = Last (Grow @('-Step', 'apply', '-Work', $lockWork, '-Apply'))
+    Assert ($applied3.applied -eq 2 -and $applied3.created -eq 3 -and $applied3.stopped -eq 0) "lock: after the unlock the same answers are written ($($applied3 | ConvertTo-Json -Compress))"
+    Assert (-not (Get-Content (Join-Path $lockWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable).sections["$key/1"].stopped) 'lock: the completed section carries no stop'
+    $report4 = Last (Grow @('-Step', 'report', '-Work', $lockWork))
+    Assert ($report4.stopped -eq 0 -and $report4.created -eq 3) "lock: the finished report counts three Cards and no stop, while the source book is still locked ($($report4 | ConvertTo-Json -Compress))"
+
+    # --- A destination the answer names while it is locked: a conflict, never a substitute ----------
+    $refuseWork = Join-Path $scratch 'work4'
+    $null = Last (Grow @('-Step', 'plan', '-Book', $key, '-Work', $refuseWork))
+    Answer 'gt-001' @{ topics = @(@{ id = 'T1'; title = '外包关系的价格形成'; body = '本主题追问：外包的价格由哪些条件决定。谁在议价中让步。'; sections = @(1) }) } $refuseWork
+    $tp4 = Last (Grow @('-Step', 'topics', '-Work', $refuseWork, '-Apply'))
+    Assert ($tp4.created -eq 1) "lock: a Topic is planned for the refused answer ($($tp4 | ConvertTo-Json -Compress))"
+    $before = @((Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{} })).titles | Where-Object { $_.address -like '0/*' }).Count
+    Answer 'gw-001' @{ section = "$key/1"; ideas = @(
+            @{ id = 'I1'; kind = '关联'; title = '报价在外包谈判里定下'; body = "本卡推广 [[$door]]：外包的供应商也先投资。例示 [[$key/1|b]]：本书的外包价格。"; sources = @("$key/1|b"); at = $door; as = 'side' },
+            @{ id = 'I2'; kind = '核心'; same = $door; body = "例示 [[$key/1|b]]：本书同样在投资之后议价。"; sources = @("$key/1|b") }
+        ) } $refuseWork
+    $pre = Grow @('-Step', 'precheck', '-Work', $refuseWork, '-Job', 'gw-001')
+    Assert (@($pre | Where-Object { $_.StartsWith('I1 G12 ') -and $_ -match 'Lock \d+' }).Count -eq 1) "lock: a locked Card takes no successor and the fault names its Lock ($($pre -join ' | '))"
+    Assert (@($pre | Where-Object { $_.StartsWith('I2 G12 ') }).Count -eq 1) "lock: a locked Card takes no appended sentence ($($pre -join ' | '))"
+    $refused = Last (Grow @('-Step', 'apply', '-Work', $refuseWork, '-Apply'))
+    Assert ($refused.created -eq 0 -and $refused.refused -eq 2 -and $refused.stopped -eq 0) "lock: both ideas are refused, neither is placed elsewhere ($($refused | ConvertTo-Json -Compress))"
+    $after = @((Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{} })).titles | Where-Object { $_.address -like '0/*' }).Count
+    $beside = @((Invoke-Zt @(@{ tool = 'export_titles'; arguments = @{} })).titles | Where-Object { $_.address -eq "$door|b" })
+    Assert ($after -eq $before -and $beside.Count -eq 0) "lock: the locked Topic keeps its $before Cards and nothing is placed beside $door"
 } finally {
     zt down 2>&1 | Out-Null
-    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    # GROW_TEST_KEEP=1 keeps the scratch archive for a look at the files a failure left.
+    if ($env:GROW_TEST_KEEP) { Write-Output "kept: $scratch" } else { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
 }
 Write-Output "failed: $failed"
 if ($failed) { exit 1 }

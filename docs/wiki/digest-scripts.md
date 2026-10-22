@@ -843,7 +843,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 
 ## Change history
 
-- `2026-10-20` — `tests/grow.tests.ps1`: `zt-digest grow` on a scratch archive (32 checks): plan files, the read-only allow file, precheck faults G3/G4/G6/G7/G8, apply (doorway, chain, Side successor, `same`, the topic gate), a rerun, check and one fix round, and the Topic share in the report. See [idea-grow-workflow](idea-grow-workflow.md).
+- `2026-10-22` — `tests/grow.tests.ps1` (S15, #138; 78 checks): `zt-digest grow` on a scratch archive with real owner Locks — plan files, the read-only allow file, precheck faults G3/G4/G6/G7/G8/G12, apply (doorway, chain, Side successor, `same`, the topic gate), a rerun, check and one fix round, the Topic share in the report, a Locked source book and a Locked Topic as read-only context, a Locked destination refused without substitution, and a mid-run Lock that stops the apply and resumes after the unlock. See [idea-grow-workflow](idea-grow-workflow.md).
 - `2026-10-22` — `tests/lock-preflight.tests.ps1` (#137, Tree Lock S14): the digest writing entry points and the helper against a real owner Lock of the book's Literature tree, including a mid-run Lock taken by the `ZT_LOCK_TREE` real-MCP seam. See [zt-digest](zt-digest.md#the-lock-precheck-of-a-writing-mode-r327r334-137).
 - `2026-10-20` — `event-compiler.tests.ps1`, `finding-compiler.tests.ps1` and `ledger-event-finding.tests.ps1` use the group-named job ids (`ev-g001-g002`, `fd-g001`, …).
 

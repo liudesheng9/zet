@@ -91,7 +91,29 @@ args (gate) → grow (zt-grow-cycle) → report (value)
 | G9 | A `same` target does not exist |
 | G10 | A Link outside the source line reads as a plain reference: zt's own kind table (a port of `RELATION_KINDS`) finds no kind word before it |
 | G11 | A link-round Link that does not start at a new Card of its job, ends in its own tree or at a root, is not the sentence's only Link, reads as a plain reference, or is the third Link from one Card |
+| G12 | The destination is Locked by the owner: `at` or `same` names a Card of a Locked tree, a new Topic's name would be filed in a Locked Topic, or `existing` names a Locked Topic root. The answer names another destination: the tool never substitutes a tree or a placement |
 | R…, I1–I4 | zt-check on the drafts (category idea): sentence length, semicolons, book-local numbers (R20), claim titles |
+
+## Locked trees (S15)
+
+The owner may lock one whole Topic tree: it takes no new Cards until the owner unlocks it in the GUI
+(Tree Lock, `CONTEXT.md`). Idea-grow reads a Locked tree and never writes it:
+
+- **A Locked source book is read normally.** A Lock can stop a digest writing mode; it is no reason to
+  refuse this workflow. The plan reads a Locked Literature tree like any other and keeps planning its
+  sections.
+- **A Locked Topic is related context only.** The plan reads the Lock facts with the title export it
+  already takes, keeps each Card's `lock` in `titles.json`, marks the tree in the topic catalogue
+  (`已锁定：只读，可链接，不能写入`), and lists its Cards in the section file apart from the Cards an
+  idea may continue (`用词最接近的已锁定主题卡`). A Locked Card stays a Link target: an idea may cite it.
+- **The precheck names the conflict.** A Locked destination is G12: the idea or Topic is reported with
+  the Lock id and the tree, and the answer must name another destination. Nothing is rewritten to
+  another tree behind the answer's back.
+- **The storage gate decides at the write.** A Topic locked after its answers stops the apply stage:
+  the affected job keeps its answers and the receipts of the Cards it already made, the stage prints
+  the typed `card_locked` refusal (`code`, `tree`, `lock_id`, `mode`, `step`, `at`) and exits 2, and no
+  Card is placed elsewhere. `grow-report.md` lists the stopped writes. After the owner unlocks, the
+  same `out` folder resumes the job; nothing is retried before that.
 
 ## Bounds
 
