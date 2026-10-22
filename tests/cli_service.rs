@@ -3796,6 +3796,46 @@ fn delete_all_refuses_an_open_session_without_changing_storage() {
     assert!(session.wait().expect("session exit").success());
 }
 
+/// S12 (#135) S12-AC05 / D06: a killed all-archive delete leaves no partial change and releases
+/// both guards, so a Session registers at once afterwards and the same command can run again.
+#[test]
+fn a_killed_delete_all_releases_both_guards_without_a_partial_delete() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    let revision = home.revision();
+    let mut delete = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .args(["del", "--all"])
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn zt del --all");
+    let mut delete_stdout = BufReader::new(delete.stdout.take().expect("delete stdout"));
+    let mut seen = String::new();
+    wait_for_session_output(&mut delete_stdout, &mut seen, "type `delete all` to confirm:");
+    delete.kill().expect("kill the waiting delete");
+    delete.wait().expect("reap the killed delete");
+
+    for address in ["0/0", "0/1"] {
+        assert!(home.location_exists(address), "`{address}` stays");
+    }
+    assert_eq!(home.revision(), revision, "a killed command changes nothing");
+
+    // Both guards are free: a Session registers and quits at once, then the delete can run.
+    home.cmd().write_stdin("q\n").assert().success();
+    home.cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "deleted: 2 cards; next topic id reset to 0\n",
+        ));
+}
+
 /// S12 (#135) S12-AC05 / D06: Session registration waits for the whole-archive delete's
 /// confirmation and commit, so a starting Session cannot interleave the protected check. Once the
 /// delete commits, the waiting Session registers on the emptied archive.
