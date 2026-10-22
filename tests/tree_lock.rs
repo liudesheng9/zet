@@ -1064,40 +1064,139 @@ fn unlock_releases_exactly_one_lock_and_keeps_its_history() {
     assert_eq!(relock["member_count"], 2);
 }
 
+/// S12 (#135) S12-AC03 / D08: the whole-archive delete refuses every active Lock record before it
+/// prompts — the populated case here — lists the root addresses and their count with the GUI unlock
+/// hint, and leaves the Cards, the derived Links and the revision untouched. Once the trees are
+/// unlocked the same command deletes everything and keeps the ended Lock and its history.
 #[test]
-fn the_all_archive_clear_refuses_while_a_tree_is_locked() {
+fn the_all_archive_delete_refuses_while_a_tree_is_locked_and_keeps_ended_lock_history() {
     let home = TestHome::new();
     let gui = home.gui();
     let mut mcp = home.mcp();
-    let root = topic(&mut mcp, "Frozen");
-    card(&mut mcp, &root, "First", "first");
-    let lock = gui.lock(&root, None);
-    let lock_id = lock["lock_id"].as_i64().expect("lock id");
-
+    let first = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &first, "First", "first body");
+    let second = topic(&mut mcp, "FrozenToo");
+    card(&mut mcp, &second, "Second", "second body");
+    let first_lock = gui.lock(&first, Some("keep the transcript"));
+    let first_lock_id = first_lock["lock_id"].as_i64().expect("lock id");
+    let second_lock = gui.lock(&second, None);
+    let second_lock_id = second_lock["lock_id"].as_i64().expect("lock id");
+    let revision = |home: &TestHome| -> i64 {
+        home.db()
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key='archive_revision'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("revision")
+    };
+    let before = revision(&home);
     let refused = home
         .cmd()
-        .arg("clear")
-        .write_stdin("clear\n")
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
         .output()
-        .expect("run clear");
-    assert!(!refused.status.success(), "clear refuses: {refused:?}");
+        .expect("run zt del --all");
+    assert!(!refused.status.success(), "an active Lock refuses: {refused:?}");
     let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(stderr.contains("locked tree"), "{stderr}");
+    assert!(stderr.contains("the archive holds 2 active Locks"), "{stderr}");
+    assert!(stderr.contains(&first), "the first root is named: {stderr}");
+    assert!(stderr.contains(&second), "the second root is named: {stderr}");
+    assert!(
+        stderr.contains("unlock the tree in the GUI first"),
+        "the GUI unlock hint is part of the refusal: {stderr}"
+    );
+    assert!(
+        refused.stdout.is_empty(),
+        "no verification and no prompt before the refusal: {refused:?}"
+    );
+    assert_eq!(revision(&home), before, "a refused request writes nothing");
     let cards: i64 = home
         .db()
         .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))
         .expect("cards");
-    assert_eq!(cards, 2, "nothing was deleted");
+    assert_eq!(cards, 4, "nothing was deleted");
 
-    gui.unlock(lock_id);
-    let cleared = home
+    gui.unlock(first_lock_id);
+    gui.unlock(second_lock_id);
+    let events_before: i64 = home
+        .db()
+        .query_row("SELECT COUNT(*) FROM lock_events", [], |row| row.get(0))
+        .expect("lock events");
+    let deleted = home
         .cmd()
-        .arg("clear")
-        .write_stdin("clear\n")
-        .assert()
-        .success();
-    let stdout = String::from_utf8_lossy(&cleared.get_output().stdout).to_string();
-    assert!(stdout.contains("cleared 2 cards"), "{stdout}");
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .output()
+        .expect("run zt del --all");
+    assert!(deleted.status.success(), "unlocked trees permit it: {deleted:?}");
+    let stdout = String::from_utf8_lossy(&deleted.stdout);
+    assert!(
+        stdout.contains("deleted: 4 cards; next topic id reset to 0"),
+        "{stdout}"
+    );
+    // R268: the ended Locks and their history survive the reset.
+    let ended: i64 = home
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM locks WHERE unlocked_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("ended locks");
+    assert_eq!(ended, 2, "the ended Lock rows stay");
+    let events_after: i64 = home
+        .db()
+        .query_row("SELECT COUNT(*) FROM lock_events", [], |row| row.get(0))
+        .expect("lock events");
+    assert_eq!(events_after, events_before, "the Lock history stays");
+}
+
+/// S12 (#135) S12-AC03 / D08: an active Lock whose root Card is missing still refuses the
+/// whole-archive delete, because the refusal is decided from the Lock records, not from the Cards
+/// it promised.
+#[test]
+fn the_all_archive_delete_refuses_an_orphaned_lock_record() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    card(&mut mcp, &root, "First", "first body");
+    let lock = gui.lock(&root, None);
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+
+    // Outside tampering: the protection triggers go first, then the whole tree, so the Lock keeps
+    // its record while its root Card is gone.
+    let raw = home.db();
+    raw.execute_batch(
+        "DROP TRIGGER lock_no_delete; DROP TRIGGER lock_no_change; DROP TRIGGER lock_no_insert;
+         DROP TRIGGER lock_no_move_in; DROP TRIGGER lock_pin_no_delete; DROP TRIGGER lock_pin_no_move;",
+    )
+    .expect("drop the protection triggers");
+    raw.execute("DELETE FROM cards WHERE location = ?1", [&root])
+        .expect("delete the root");
+
+    let refused = home
+        .cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .output()
+        .expect("run zt del --all");
+    assert!(!refused.status.success(), "the Lock record refuses: {refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("the archive holds 1 active Lock"), "{stderr}");
+    assert!(stderr.contains(&root), "the missing root is still named: {stderr}");
+    assert!(refused.stdout.is_empty(), "no prompt before the refusal: {refused:?}");
+
+    // The retained record can still be unlocked, and then the delete is permitted.
+    gui.unlock(lock_id);
+    let deleted = home
+        .cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .output()
+        .expect("run zt del --all");
+    assert!(deleted.status.success(), "{deleted:?}");
 }
 
 /// S11 (#134) R030 / D07 / S11-AC01, S11-AC08: a Locked tree refuses emptying before the prompt

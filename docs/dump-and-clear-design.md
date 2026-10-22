@@ -1,6 +1,7 @@
 # Dump and Clear Design
 
-Status: locked and complete.
+Status: locked and complete for `zt dp`; the `zt clear` decisions are superseded by the one `zt del`
+command of the Tree Lock feature (last section).
 
 ## Source Authority
 
@@ -83,28 +84,37 @@ Status: locked and complete.
 - On Unix-like systems, `7z` is detected through `7z` or `7zz`.
 - `zt dp` may run while interactive Sessions are open.
 - `zt dp` refuses to run while the edit lock exists.
-- Add a shell command named `zt clear`.
-- `zt clear` is a CLI-only command. It must not be callable from inside an interactive Session command bar.
-- `zt clear` requires the service to be up.
-- `zt clear` removes all Card storage from SQLite.
-- `zt clear` resets Topic root assignment so that the next new Topic after clear is `0/0`.
-- After `zt clear`, `zt stats` should report `total: 0`, `topics: 0`, and `regular: 0`.
-- After `zt clear`, creating a new Topic starts a fresh tree at Topic ID `0`; the Topic Card Location is `0/0` and the first regular Card remains `0/1` under the existing Location rules.
-- `zt clear` refuses to run while any interactive Session is open.
-- `zt clear` refuses to run while the edit lock exists.
-- `zt clear` requires an explicit confirmation prompt, and the user must type `clear` to confirm.
-- `zt clear` confirmation reads one line from stdin and does not require an interactive terminal.
-- If `zt clear` confirmation input is not exactly `clear`, `zt clear` aborts with no SQLite changes and prints `clear canceled`.
-- `zt clear` changes SQLite in one transaction.
-- The `zt clear` transaction deletes all rows from `cards` and resets `metadata.next_topic_id` to `0`.
-- Partial clear state must not persist.
-- On success, `zt clear` prints the deleted Card count and reset notice.
-- The success output shape is `cleared <count> cards; next topic id reset to 0`.
-- `zt clear` must not touch configuration.
-- `zt clear` must not delete or alter `<archive_root>/dump/`.
-- `zt clear` is independent from `zt dp`; clearing storage does not require making a dump first.
-- Shell `zt help` lists `zt dp` and `zt clear` while the service is up.
-- Session `help` does not list `zt dp` or `zt clear`.
+## Superseded delete decisions (`zt clear` → `zt del --all`)
+
+The Tree Lock feature folded `zt clear` into one delete command ([Tree Lock Implementation
+Design](tree-lock-implementation-design.md) §12, slices S11/S12, #134/#135). The decisions above
+about `zt dp` still hold; the `zt clear` block that used to sit here is replaced by this contract:
+
+- Shell `zt del` has exactly four forms: `--at <card>`, `--at <root>`, `--at <root> --keep-root`, and
+  `--all`. Exactly one selector is required; a repeated selector or flag, an unknown argument, both
+  selectors, and `--keep-root` beside `--all` are refused with
+  `usage: zt del --at <target> [--keep-root] | zt del --all` before the service, a plan or a prompt.
+- The confirmation words are `delete` (Regular Card subtree), the root's own address (whole tree and
+  keep root), and `delete all` (whole archive). Exactly one stdin line is read and only its line
+  terminator is removed; any other word or EOF cancels with no SQLite change.
+- `zt del --all` is the old clear: it deletes every row of `cards` and of the derived `links` index,
+  resets `metadata.next_topic_id` to `0`, and prints
+  `deleted: <count> cards; next topic id reset to 0` in one transaction. It refuses while a Session
+  is open — through the existing `zt.sessions.lock`, held from that check through the commit — and
+  it refuses while any Lock is active, from the Lock records alone, before the prompt.
+- `zt del --all` keeps configuration, `<archive_root>/dump/`, `artifacts/`, every other metadata row
+  (including the saved Spreads), the `applied_ops` receipts, and the ended Locks with their history.
+  Tree and keep-root deletes still let Spreads follow the deleted positions.
+- Only `zt del --all` reuses Topic numbers. An archive that already holds no Card but a nonzero
+  allocation still advances the archive revision once when it is reset; an archive with neither
+  succeeds and changes nothing.
+- `zt clear` is no longer a destructive command. For one release it prints
+  ``zt clear is now `zt del --all` `` and exits 1 without requiring the service, prompting or
+  deleting anything, and it is not listed by `zt help`. The next release removes the notice handler,
+  leaving an unknown command; this is a documented follow-up, not a working alias.
+- Shell `zt help` lists the delete forms while the service is up and no longer lists `zt clear`.
+  Session `help` lists `del [keep-root]` and no delete-all form; the Session refuses `clear` as an
+  unknown command.
 
 ## Open Decisions
 

@@ -51,7 +51,7 @@ Each block doc's **Testing** section names its own suites.
 | Block | Responsibility | Main paths |
 |---|---|---|
 | [Cards, Workspaces and Links](cards-and-links.md) | The stored Markdown Card format, Card types, Literature Cards and BibTeX, Workspaces, and Links with Reverse links and Broken links | `src/card.rs`, `src/card_type.rs`, `src/literature.rs`, `src/workspace.rs`, `src/link.rs` |
-| [Service, CLI and storage](service-and-cli.md) | `zt` commands, config, the daemon's life, autostart and shutdown, the SQLite schema and its migrations, Location rules, dump and clear | `src/main.rs`, `src/shutdown.rs`, `src/autostart.rs`, `src/bin/`, `src/dump.rs` |
+| [Service, CLI and storage](service-and-cli.md) | `zt` commands, config, the daemon's life, autostart and shutdown, the SQLite schema and its migrations, Location rules, dump and the one delete command | `src/main.rs`, `src/shutdown.rs`, `src/autostart.rs`, `src/bin/`, `src/dump.rs` |
 | [Card operations](card-operations.md) | The create, edit, retype, delete, move, and insert operations shared by the GUI and the MCP server, gated by Workspace access and two-step for destructive changes | `src/ops.rs`, `src/place.rs` |
 | [Terminal Session](session.md) | The interactive terminal Session: Pointer, views, commands, the editor, mouse selection and clipboard | `src/session.rs`, `src/session/` |
 | [Model structure and math units](models-and-math.md) | Model Cards and Model parts, levels, build order, model faults, mathematical units and Theory Cards | `src/model.rs`, `src/math.rs` |
@@ -65,6 +65,7 @@ Each block doc's **Testing** section names its own suites.
 | [Digest workflows](digest-workflows.md) | The book, econ, and math digest Workflows: stages, modes, modules, blueprints, and the frozen install | `scripts/book-digest/workflow/`, `.claude/workflows/`, `.claude/workflow-framework/` |
 | [Digest scripts](digest-scripts.md) | The PowerShell stage scripts and compilers (card, model, event, finding, math, hub, organize, figures, audit) and their tests | `scripts/book-digest/*.ps1`, `scripts/book-digest/tests/` |
 | [Digest prompts](digest-prompts.md) | The DeepSeek instruction files and the model-architect briefs that the digest stages send | `scripts/book-digest/*.md` |
+| [Idea-grow workflow](idea-grow-workflow.md) | The zt-idea-grow Workflow: a finished Literature tree read section by section against the whole box; DeepSeek keeps the core, related, useful, interesting and intuitive ideas as standalone agent Topic-tree Cards filed beside the Cards they continue (Luhmann's main box) | `scripts/idea-grow/`, `.claude/workflows/zt-idea-grow.js`, `tools/zt-digest/src/grow.rs` |
 | [Issue development workflow](issue-dev-workflow.md) | The zt-issue-dev Workflow: GitHub issues developed one at a time by DeepSeek agents through Haiku managers, with the main agent fulfilling their asks | `scripts/issue-dev/`, `.claude/workflows/zt-issue-dev.js` |
 
 ## Architecture
@@ -153,10 +154,10 @@ The digest tooling is a client of the binary. A [Digest workflow](digest-workflo
 4. Each Card is checked with `zt-check`, and faults go back to a fix cycle ([zt-check](zt-check.md)).
 5. Later stages build models, events, findings, links, figures, hubs, and the audit on the same path ([Digest workflows](digest-workflows.md)).
 
-### Dump and clear
+### Dump and delete
 
 1. `zt dp` takes the edit lock, loads every Card, and hands them to `src/dump.rs`, which writes one Markdown file per Card, the `archive.json` manifest, and the artifacts, and compresses the folder ([Service, CLI and storage](service-and-cli.md)).
-2. `zt clear` asks for confirmation and empties the Cards in one transaction ([Service, CLI and storage](service-and-cli.md)).
+2. `zt del --all` asks for `delete all` and empties every Card in one transaction, resetting the Topic allocation ([Service, CLI and storage](service-and-cli.md)).
 
 ## Glossary
 
@@ -171,3 +172,5 @@ node ~/.claude/skills/project-wiki/scripts/wiki.mjs check
 ```
 
 Change a block's doc in the same commit as its code. After you bring a doc up to date with earlier commits, run `wiki.mjs stamp <block>` to move its `synced` commit to HEAD.
+
+

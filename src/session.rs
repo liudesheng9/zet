@@ -492,6 +492,43 @@ fn active_session_pids(root: &Path, alive: impl Fn(u32) -> bool) -> Vec<u32> {
         .unwrap_or_default()
 }
 
+/// The Session-registration lock, held from the active-Session check through the commit that
+/// depends on it (S12, #135 R270–R271). Session registration takes the same lock, so a Session that
+/// starts while this guard is held waits before it records its pid. The edit lock is always taken
+/// before this one, and registration never waits for the edit lock while holding it.
+pub(crate) struct RegistrationGuard {
+    root: PathBuf,
+    _file: fs::File,
+}
+
+/// Take the Session-registration lock. Dropping the guard releases it.
+pub(crate) fn hold_registration(root: &Path) -> Result<RegistrationGuard> {
+    let path = sessions_lock_path(root);
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+    Ok(RegistrationGuard {
+        root: root.to_path_buf(),
+        _file: file,
+    })
+}
+
+impl RegistrationGuard {
+    /// The pids of the Sessions still open, pruning dead pids from `zt.sessions` while the guard is
+    /// held, so the check and the change it protects cannot interleave with a registration (R270).
+    pub(crate) fn prune(&self) -> Result<Vec<u32>> {
+        let active = active_session_pids(&self.root, process_exists);
+        write_session_pids(&self.root, &active)?;
+        Ok(active)
+    }
+}
+
 /// Reads `zt.sessions`, keeps the pids that are `alive`, applies `change`, and writes it back,
 /// all under the `zt.sessions.lock` OS lock, so Sessions that start or end at the same moment
 /// never drop each other's pid.
@@ -500,16 +537,7 @@ fn update_session_pids(
     alive: impl Fn(u32) -> bool,
     change: impl FnOnce(&mut Vec<u32>),
 ) -> Result<Vec<u32>> {
-    let path = sessions_lock_path(root);
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    lock.lock()
-        .with_context(|| format!("failed to lock {}", path.display()))?;
+    let _guard = hold_registration(root)?;
     let mut active = active_session_pids(root, alive);
     change(&mut active);
     write_session_pids(root, &active)?;

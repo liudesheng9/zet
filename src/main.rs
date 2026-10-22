@@ -138,8 +138,8 @@ fn run() -> Result<()> {
             shell_edit(&at, part)
         }
         [cmd, rest @ ..] if cmd == "del" => {
-            let (at, keep_root) = parse_delete_args(rest)?;
-            shell_delete(&at, keep_root)
+            let command = parse_delete_args(rest)?;
+            shell_delete(command)
         }
         [cmd, rest @ ..] if cmd == "mv" => {
             let (at, target, alone) = parse_mv_args(rest)?;
@@ -177,22 +177,48 @@ fn parse_target_at(args: &[String]) -> Result<String> {
     }
 }
 
-/// `--at <target>`, and the optional `--keep-root` that empties a Tree and keeps its root
-/// (S11, #134).
-fn parse_delete_args(args: &[String]) -> Result<(String, bool)> {
-    let usage = "expected --at <target> [--keep-root]";
-    let [flag, at, rest @ ..] = args else {
-        bail!(usage);
-    };
-    if flag != "--at" {
-        bail!(usage);
+/// The one delete command's selection (S12, #135 R237–R243): one Card or tree, one tree with its
+/// root kept, or the whole archive.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DeleteCommand {
+    At { address: String, keep_root: bool },
+    All,
+}
+
+const DELETE_USAGE: &str = "usage: zt del --at <target> [--keep-root] | zt del --all";
+
+/// Parse `--at <target> [--keep-root]` or `--all` into the one delete selection. Exactly one
+/// selector is required; a repeated selector or flag, an unknown argument, both selectors, and
+/// `--keep-root` beside `--all` are all refused by the one usage line (R238).
+fn parse_delete_args(args: &[String]) -> Result<DeleteCommand> {
+    let mut address: Option<String> = None;
+    let mut keep_root = false;
+    let mut all = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--at"
+                if address.is_none()
+                    && !all
+                    && args
+                        .get(index + 1)
+                        .is_some_and(|value| !value.starts_with("--")) =>
+            {
+                address = Some(args[index + 1].clone());
+                index += 2;
+                continue;
+            }
+            "--keep-root" if !keep_root => keep_root = true,
+            "--all" if !all => all = true,
+            _ => bail!(DELETE_USAGE),
+        }
+        index += 1;
     }
-    let keep_root = match rest {
-        [] => false,
-        [only] if only == "--keep-root" => true,
-        _ => bail!(usage),
-    };
-    Ok((at.clone(), keep_root))
+    match (address, all) {
+        (Some(address), false) => Ok(DeleteCommand::At { address, keep_root }),
+        (None, true) if !keep_root => Ok(DeleteCommand::All),
+        _ => bail!(DELETE_USAGE),
+    }
 }
 
 /// `--at <location>`, an optional `--alone`, then `<new-location>` or
@@ -2022,49 +2048,10 @@ fn cmd_dump() -> Result<()> {
     dump::run(&root, &cards, next_topic_id(&conn)?)
 }
 
+/// `zt clear` is now `zt del --all` (R245). The notice needs no service, asks nothing and deletes
+/// nothing; the next release removes the handler and leaves an unknown command.
 fn cmd_clear() -> Result<()> {
-    let root = require_service_up()?;
-    let sessions = session::session_count(&root);
-    if sessions > 0 {
-        bail!("cannot clear while {sessions} session(s) are open");
-    }
-    let _lock = acquire_edit_lock(&root, "clear")?;
-    let mut conn = open_db(&root)?;
-    let locked = tree_lock::active_roots(&conn)?;
-    if !locked.is_empty() {
-        bail!(
-            "cannot clear while a locked tree exists: {}; unlock it in the GUI first",
-            locked.join(", ")
-        );
-    }
-    print!("type clear to confirm: ");
-    io::stdout().flush()?;
-    let mut confirmation = String::new();
-    io::stdin().read_line(&mut confirmation)?;
-    if confirmation.trim_end_matches(['\r', '\n']) != "clear" {
-        println!("clear canceled");
-        return Ok(());
-    }
-    let tx = conn.transaction()?;
-    let count: i64 = tx.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
-    if count > 0 {
-        tree_lock::ensure_unlocked(&tx, tree_lock::Change::DeleteAll)?;
-    }
-    tx.execute("DELETE FROM cards", [])?;
-    if link_index::ready(&tx) {
-        link_index::rebuild(&tx)?;
-        if count > 0 {
-            link_index::bump_revision(&tx)?;
-        }
-    }
-    tx.execute(
-        "INSERT INTO metadata(key, value) VALUES('next_topic_id', '0')
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [],
-    )?;
-    tx.commit()?;
-    println!("cleared {count} cards; next topic id reset to 0");
-    Ok(())
+    bail!("zt clear is now `zt del --all`")
 }
 
 fn cmd_help() -> Result<()> {
@@ -2107,6 +2094,7 @@ fn cmd_help() -> Result<()> {
         println!("  zt e --at <citation-key> --part text");
         println!("  zt del --at <target>");
         println!("  zt del --at <tree-root> --keep-root");
+        println!("  zt del --all");
         println!("  zt mv --at <location> [--alone] <new-location>");
         println!("  zt mv --at <location> [--alone] --before <location>");
         println!("  zt ins --at <location>");
@@ -2115,7 +2103,6 @@ fn cmd_help() -> Result<()> {
         println!("  zt mcp");
         println!("  zt lsbk");
         println!("  zt dp");
-        println!("  zt clear");
     }
     Ok(())
 }
@@ -3457,15 +3444,35 @@ fn replace_link_locations(text: &str, mapping: &BTreeMap<String, String>) -> Res
     Ok(compose_card_text(&parsed.title, &body, &parsed.reverse))
 }
 
-fn shell_delete(at: &str, keep_root: bool) -> Result<()> {
+fn shell_delete(command: DeleteCommand) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root, "delete")?;
+    // R270–R271: the whole-archive delete holds the Session-registration lock from the active-Session
+    // check through its commit, so a Session that starts meanwhile waits to register. The edit lock
+    // is always taken first, and Session registration never waits for the edit lock.
+    let sessions = match command {
+        DeleteCommand::All => Some(session::hold_registration(&root)?),
+        DeleteCommand::At { .. } => None,
+    };
+    if let Some(guard) = &sessions {
+        let open = guard.prune()?;
+        if !open.is_empty() {
+            bail!("cannot delete all while {} session(s) are open", open.len());
+        }
+    }
     let mut conn = open_db(&root)?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
-    let result = delete_card(&mut conn, at, keep_root, |expected| {
-        read_confirmation(&mut input, expected)
-    })?;
+    let plan = match &command {
+        DeleteCommand::At { address, keep_root } => plan_delete(&conn, address, *keep_root)?,
+        DeleteCommand::All => plan_delete_all(&conn)?,
+    };
+    // R244: the Lock check happens before the prompt, so no confirmation word is typed for a
+    // deletion the archive already forbids.
+    tree_lock::ensure_unlocked(&conn, plan.gate())?;
+    print_delete_verification(&plan);
+    read_confirmation(&mut input, &plan.confirmation)?;
+    let result = apply_delete_plan(&mut conn, plan)?;
     println!("{}", delete_success_line(&result));
     if !result.moved.is_empty() {
         println!("compacted:");
@@ -3473,15 +3480,21 @@ fn shell_delete(at: &str, keep_root: bool) -> Result<()> {
             println!("{old} -> {new}");
         }
     }
+    // `sessions` stays held through the commit above and releases when this function returns.
     Ok(())
 }
 
-/// The exact success line of a delete: `deleted: N`, and for an emptied tree
-/// `deleted: N; root kept: <root>` (R261).
+/// The exact success line of a delete: `deleted: N`, for an emptied tree
+/// `deleted: N; root kept: <root>` (R261), and for the whole archive
+/// `deleted: N cards; next topic id reset to 0` (R274).
 fn delete_success_line(result: &DeleteResult) -> String {
-    match &result.root_kept {
-        Some(root) => format!("deleted: {}; root kept: {root}", result.deleted_count),
-        None => format!("deleted: {}", result.deleted_count),
+    match (&result.root_kept, result.next_topic_reset) {
+        (Some(root), _) => format!("deleted: {}; root kept: {root}", result.deleted_count),
+        (None, true) => format!(
+            "deleted: {} cards; next topic id reset to 0",
+            result.deleted_count
+        ),
+        (None, false) => format!("deleted: {}", result.deleted_count),
     }
 }
 
@@ -3490,10 +3503,12 @@ struct DeleteResult {
     moved: BTreeMap<String, String>,
     /// The Tree root a keep-root delete retained.
     root_kept: Option<String>,
+    /// Whether this delete reset the Topic allocation to zero (the whole-archive delete).
+    next_topic_reset: bool,
 }
 
-/// What a delete selects: one Card's successors, a whole tree, or one tree's Regular Cards
-/// with its root kept (S11, #134).
+/// What a delete selects: one Card's successors, a whole tree, one tree's Regular Cards with its
+/// root kept (S11, #134), or every Card of the archive (S12, #135).
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DeleteScope {
     /// The Card and its successors.
@@ -3502,6 +3517,8 @@ enum DeleteScope {
     Tree,
     /// Every Card of the tree except its root, which keeps its address and authored identity.
     KeepRoot { root: String, workspace: Workspace },
+    /// Every Card of the archive, with the Topic allocation the delete resets (R264–R275).
+    All { next_topic_id: u64 },
 }
 
 struct DeletePlan {
@@ -3518,11 +3535,23 @@ struct DeletePlan {
 }
 
 impl DeletePlan {
+    /// The application gate this plan must pass before it prompts and again inside its
+    /// transaction. The whole-archive delete refuses on any active Lock record, so an orphaned or
+    /// damaged Locked tree still protects its promise (R272).
+    fn gate(&self) -> tree_lock::Change<'_> {
+        match self.scope {
+            DeleteScope::All { .. } => tree_lock::Change::DeleteAll,
+            DeleteScope::Subtree | DeleteScope::Tree | DeleteScope::KeepRoot { .. } => {
+                tree_lock::Change::Delete(self)
+            }
+        }
+    }
+
     /// The root a keep-root plan retains, with its Workspace.
     fn kept_root(&self) -> Option<(&str, Workspace)> {
         match &self.scope {
             DeleteScope::KeepRoot { root, workspace } => Some((root.as_str(), *workspace)),
-            DeleteScope::Subtree | DeleteScope::Tree => None,
+            DeleteScope::Subtree | DeleteScope::Tree | DeleteScope::All { .. } => None,
         }
     }
 
@@ -3652,9 +3681,34 @@ fn plan_delete(conn: &Connection, at: &str, keep_root: bool) -> Result<DeletePla
     })
 }
 
+/// The whole-archive delete selects every Card and resets the Topic allocation to zero; its
+/// confirmation is `delete all` (S12, #135 R237–R243, R264–R275).
+fn plan_delete_all(conn: &Connection) -> Result<DeletePlan> {
+    Ok(DeletePlan {
+        scope: DeleteScope::All {
+            next_topic_id: next_topic_id(conn)?,
+        },
+        delete_set: load_cards(conn)?
+            .into_iter()
+            .map(|card| card.address)
+            .collect(),
+        confirmation: "delete all".to_string(),
+        inbound: Vec::new(),
+        into: None,
+        side_compaction: BTreeMap::new(),
+    })
+}
+
 fn delete_verification_lines(plan: &DeletePlan) -> Vec<String> {
     if let Some((root, workspace)) = plan.kept_root() {
         return keep_root_verification_lines(plan, root, workspace);
+    }
+    if let DeleteScope::All { next_topic_id } = plan.scope {
+        return vec![
+            "delete verification:".to_string(),
+            format!("cards: {}", plan.delete_set.len()),
+            format!("next topic id: {next_topic_id} -> 0"),
+        ];
     }
     let mut lines = vec!["delete verification:".to_string()];
     for location in &plan.delete_set {
@@ -3735,21 +3789,25 @@ fn print_delete_verification(plan: &DeletePlan) {
 }
 
 fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteResult> {
+    if let DeleteScope::All { next_topic_id } = plan.scope {
+        return apply_delete_all_plan(conn, plan, next_topic_id);
+    }
     let root_kept = plan.kept_root().map(|(root, _)| root.to_string());
     let compaction = plan.compaction();
     let repoint = plan.repoint_mapping();
     if plan.delete_set.is_empty() && repoint.is_empty() && compaction.is_empty() {
         // An already empty unlocked Tree: the owner still confirmed the plan, and nothing is
         // written, so no revision moves and no derived data is rebuilt (R262).
-        tree_lock::ensure_unlocked(&*conn, tree_lock::Change::Delete(&plan))?;
+        tree_lock::ensure_unlocked(&*conn, plan.gate())?;
         return Ok(DeleteResult {
             deleted_count: 0,
             moved: compaction,
             root_kept,
+            next_topic_reset: false,
         });
     }
     let tx = conn.transaction()?;
-    tree_lock::ensure_unlocked(&tx, tree_lock::Change::Delete(&plan))?;
+    tree_lock::ensure_unlocked(&tx, plan.gate())?;
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
     if !repoint.is_empty() {
         for card in load_cards(&tx)? {
@@ -3779,34 +3837,57 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
         deleted_count: plan.delete_set.len(),
         moved: compaction,
         root_kept,
+        next_topic_reset: false,
     })
 }
 
-fn delete_card<F>(
+/// The whole-archive delete keeps today's `clear` effects on Cards, derived Links and the Topic
+/// allocation, and leaves config, dumps, artifacts, other metadata, receipts, Spread metadata and
+/// the ended Locks' history alone (R264–R269, R275).
+fn apply_delete_all_plan(
     conn: &mut Connection,
-    at: &str,
-    keep_root: bool,
-    mut confirm: F,
-) -> Result<DeleteResult>
-where
-    F: FnMut(&str) -> Result<()>,
-{
-    let plan = if keep_root {
-        keep_root_delete_plan(conn, at)?
-    } else {
-        delete_plan(conn, at)?
-    };
-    tree_lock::ensure_unlocked(&*conn, tree_lock::Change::Delete(&plan))?;
-    print_delete_verification(&plan);
-    confirm(&plan.confirmation)?;
-    apply_delete_plan(conn, plan)
+    plan: DeletePlan,
+    next_topic_id_before: u64,
+) -> Result<DeleteResult> {
+    // Only an already empty archive whose allocation is already zero has nothing to change, so the
+    // confirmed request writes nothing and advances no revision (R275).
+    if plan.delete_set.is_empty() && next_topic_id_before == 0 {
+        tree_lock::ensure_unlocked(&*conn, tree_lock::Change::DeleteAll)?;
+        return Ok(DeleteResult {
+            deleted_count: 0,
+            moved: BTreeMap::new(),
+            root_kept: None,
+            next_topic_reset: true,
+        });
+    }
+    let tx = conn.transaction()?;
+    tree_lock::ensure_unlocked(&tx, tree_lock::Change::DeleteAll)?;
+    let deleted_count = tx.execute("DELETE FROM cards", [])?;
+    if link_index::ready(&tx) {
+        link_index::rebuild(&tx)?;
+        link_index::bump_revision(&tx)?;
+    }
+    tx.execute(
+        "INSERT INTO metadata(key, value) VALUES('next_topic_id', '0')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(DeleteResult {
+        deleted_count,
+        moved: BTreeMap::new(),
+        root_kept: None,
+        next_topic_reset: true,
+    })
 }
 
+/// Read exactly one confirmation line and remove only its line terminator, so a pipe, a wrong word
+/// and EOF all cancel without a change (R244).
 fn read_confirmation<R: BufRead>(input: &mut R, expected: &str) -> Result<()> {
     println!("type `{expected}` to confirm:");
     let mut line = String::new();
     input.read_line(&mut line)?;
-    if line.trim() != expected {
+    if line.trim_end_matches(['\r', '\n']) != expected {
         bail!("confirmation did not match");
     }
     Ok(())

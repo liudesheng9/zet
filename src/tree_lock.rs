@@ -1084,19 +1084,6 @@ fn load_state(conn: &Connection) -> Result<Option<State>> {
     }))
 }
 
-/// The active Locked Tree root addresses, for a whole-archive delete that must refuse before it
-/// prompts, even on a damaged archive.
-pub(crate) fn active_roots(conn: &Connection) -> Result<Vec<String>> {
-    let Some(state) = load_state(conn)? else {
-        bail!(
-            "the Tree Lock schema is not installed or is not a supported generation; restart the service before deleting cards"
-        );
-    };
-    let mut roots = state.roots.keys().cloned().collect::<Vec<_>>();
-    roots.sort();
-    Ok(roots)
-}
-
 fn active_lock(conn: &Connection, root: &str) -> Result<Option<Lock>> {
     Ok(conn
         .query_row(

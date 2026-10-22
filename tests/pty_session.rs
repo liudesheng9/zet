@@ -199,7 +199,7 @@ impl Drop for ClipboardTextRestore {
 
 #[cfg(windows)]
 #[test]
-fn terminal_clear_accepts_confirmation_after_session_returns_to_shell() {
+fn terminal_delete_all_accepts_confirmation_after_session_returns_to_shell() {
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
@@ -220,17 +220,22 @@ fn terminal_clear_accepts_confirmation_after_session_returns_to_shell() {
     shell.send_enter();
     shell.wait_for_text_count("PS ", 2);
 
-    shell.send_text(&format!("{zt_command} clear"));
+    shell.send_text(&format!("{zt_command} del --all"));
     shell.send_enter();
-    shell.wait_for_text("type clear to confirm: ");
-    shell.send_text("clear");
+    shell.wait_for_text("type `delete all` to confirm:");
+    shell.send_text("delete all");
     shell.send_enter();
-    shell.wait_for_text("cleared 2 cards; next topic id reset to 0");
+    shell.wait_for_text("deleted: 2 cards; next topic id reset to 0");
 
     let output = shell.plain_output();
     assert!(
-        output.contains("type clear to confirm: clear"),
-        "confirmation input was not visible:\n{}",
+        output.contains("type `delete all` to confirm:"),
+        "the prompt was drawn:\n{}",
+        output.escape_debug()
+    );
+    assert!(
+        output.contains("delete all\ndeleted: 2 cards"),
+        "confirmation input was accepted and echoed:\n{}",
         output.escape_debug()
     );
 

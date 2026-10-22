@@ -245,6 +245,17 @@ impl TestHome {
             .success();
     }
 
+    /// The pids recorded in `zt.sessions`: one line per registered Session process.
+    fn session_count(&self) -> usize {
+        fs::read_to_string(self.archive_root.join("zt.sessions"))
+            .map(|body| {
+                body.lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     fn wait_until<F: Fn() -> bool>(&self, condition: F) {
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
@@ -2132,6 +2143,41 @@ fn topic_delete_removes_topic_and_topic_ids_are_not_reused() {
     assert!(home.location_exists("1/0"));
 }
 
+/// S12 (#135) R237–R238, D01: `zt del` takes exactly one selector. Both or neither selector, a
+/// repeated selector or flag, an unknown argument, and `--keep-root` beside `--all` are refused by
+/// the one usage line before the service is asked, a plan is made or a prompt is printed.
+#[test]
+fn delete_takes_exactly_one_selector_and_refuses_every_other_form() {
+    // No configuration and no service: the syntax is decided by the command line alone.
+    let home = TestHome::new();
+    for args in [
+        vec![],
+        vec!["--at"],
+        vec!["--at", "--all"],
+        vec!["--at", "0/0", "--all"],
+        vec!["--all", "--at", "0/0"],
+        vec!["--all", "--all"],
+        vec!["--at", "0/0", "--at", "0/1"],
+        vec!["--keep-root"],
+        vec!["--all", "--keep-root"],
+        vec!["--at", "0/0", "--keep-root", "--keep-root"],
+        vec!["--at", "0/0", "--keep-root", "extra"],
+        vec!["--all", "extra"],
+        vec!["--at", "0/0", "--force"],
+    ] {
+        home.cmd()
+            .arg("del")
+            .args(&args)
+            .write_stdin("")
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "usage: zt del --at <target> [--keep-root] | zt del --all",
+            ));
+    }
+}
+
 /// S11 (#134) D03: `zt del --at <root> --keep-root` removes the Regular Cards of one Topic tree
 /// and keeps its root Card, printing the exact success line.
 #[test]
@@ -2424,24 +2470,6 @@ fn keep_root_refuses_a_regular_card_and_its_cancellations_change_nothing() {
         .stderr(predicate::str::contains(
             "keep root takes a Tree root (a Topic like 3/0 or a Citation key); `0/1` is a Regular Card",
         ));
-    // Malformed selectors are refused before the service is asked or a prompt is printed.
-    for args in [
-        vec!["--keep-root"],
-        vec!["--at", "0/0", "--keep-root", "--keep-root"],
-        vec!["--keep-root", "--at", "0/0"],
-        vec!["--at", "0/0", "--keep-root", "extra"],
-        vec!["--at"],
-    ] {
-        home.cmd()
-            .arg("del")
-            .args(&args)
-            .write_stdin("")
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains(
-                "expected --at <target> [--keep-root]",
-            ));
-    }
     // A wrong word and an empty stdin cancel without a change.
     home.cmd()
         .args(["del", "--at", "0/0", "--keep-root"])
@@ -3390,9 +3418,23 @@ fn preexisting_dump_archive_is_never_overwritten_or_cleaned_up() {
     assert!(!home.archive_root.join("zt.edit.lock").exists());
 }
 
+
+
+/// S12 (#135) S12-AC01, S12-AC08 / D12: the shell advertises only the one supported delete command,
+/// the legacy `zt clear` prints its one-release notice and exits 1 without the service, a prompt or
+/// a deletion, and the whole-archive form reads exactly `delete all`.
 #[test]
-fn clear_is_shell_only_service_gated_and_exact_confirmation_cancels_safely() {
+fn delete_all_needs_the_exact_word_and_clear_is_only_a_migration_notice() {
     let home = TestHome::new();
+    // `zt clear` needs no configuration and no service: it prints the notice and exits 1.
+    home.cmd()
+        .arg("clear")
+        .write_stdin("clear\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("zt clear is now `zt del --all`"));
+    // The whole-archive delete needs the archive: while the service is down nothing is deleted.
     home.cmd()
         .args([
             "config",
@@ -3403,15 +3445,11 @@ fn clear_is_shell_only_service_gated_and_exact_confirmation_cancels_safely() {
         .assert()
         .success();
     home.cmd()
-        .arg("help")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("zt clear").not());
-    home.cmd()
-        .arg("clear")
-        .write_stdin("clear\n")
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
         .assert()
         .failure()
+        .stdout(predicate::str::contains("to confirm").not())
         .stderr(predicate::str::contains("service is not up"));
 
     home.cmd().arg("up").assert().success();
@@ -3420,60 +3458,93 @@ fn clear_is_shell_only_service_gated_and_exact_confirmation_cancels_safely() {
         .arg("help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("  zt clear\n"))
+        .stdout(predicate::str::contains("  zt del --all\n"))
+        .stdout(predicate::str::contains("  zt clear\n").not())
         .stdout(predicate::str::contains("zt clean").not());
     home.cmd()
         .arg("clean")
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown command"));
-    for confirmation in ["CLEAR\n", " clear\n", "clear \n"] {
+    // Every other word and EOF cancel with no change. Only the line terminator is removed, so a
+    // padded or recased word is not the confirmation.
+    for input in [
+        "",
+        "delete\n",
+        "DELETE ALL\n",
+        "delete all \n",
+        " delete all\n",
+        "delete  all\n",
+        "clear\n",
+    ] {
         home.cmd()
-            .arg("clear")
-            .write_stdin(confirmation)
+            .args(["del", "--all"])
+            .write_stdin(input)
             .assert()
-            .success()
-            .stdout(predicate::str::contains("clear canceled\n"))
-            .stdout(predicate::str::contains("compression options").not());
+            .failure()
+            .stdout(predicate::str::contains("type `delete all` to confirm:"))
+            .stderr(predicate::str::contains("confirmation did not match"));
     }
     assert!(home.location_exists("0/0"));
     assert!(home.location_exists("0/1"));
+    // The Session offers no delete-all form and no `clear`.
     home.cmd()
-        .write_stdin("help\nclear\nq\n")
+        .write_stdin("help\ndel all\nclear\nq\n")
         .assert()
         .success()
         .stdout(predicate::str::contains("unknown session command: clear"))
-        .stdout(predicate::str::contains("zt clear").not());
+        .stdout(predicate::str::contains("usage: del [keep-root]"))
+        .stdout(predicate::str::contains("--all").not());
 }
 
+/// S12 (#135) S12-AC02, S12-AC06, S12-AC07 / D11: `zt del --all` deletes every Card of both
+/// Workspaces and resets the Topic allocation to zero, printing the exact success line. Only the
+/// Cards and their derived Links change: configuration, saved dumps and artifacts stay, and the
+/// next Topic is again `0/0` with its first Regular Card at `0/1`.
 #[test]
-fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives() {
+fn delete_all_empties_both_workspaces_resets_allocation_and_keeps_config_dumps_and_artifacts() {
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
     home.cmd_with_editor("# Other\n\nother\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Other"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("1/0"));
-    let (mut create_literature, _) = home.cmd_with_editor_sequence(&[
-        "@book{ClearLit, title={Clear Literature}}",
-        "# Clear Literature\n\nclear me too\n\n<!-- zt:reverse-links -->\n",
-    ]);
-    create_literature.arg("l").assert().success();
+        .success();
+    home.cmd_with_editor("# Agent Topic\n\nagent\n\n<!-- zt:reverse-links -->\n")
+        .args(["t", "--ws", "agent", "Agent Topic"])
+        .assert()
+        .success();
+    home.cmd_with_editor("# Linked\n\nsee [[0/0]]\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "0/1"])
+        .assert()
+        .success();
     let config_path = home.config_dir.join("config.toml");
     let config_before = fs::read(&config_path).expect("config bytes");
     let dump_marker = home.archive_root.join("dump").join("existing.dump");
     fs::create_dir_all(dump_marker.parent().unwrap()).expect("dump root");
     fs::write(&dump_marker, b"keep this dump").expect("dump marker");
+    let artifact = home.archive_root.join("artifacts").join("figure.png");
+    fs::create_dir_all(artifact.parent().unwrap()).expect("artifact root");
+    fs::write(&artifact, b"keep this figure").expect("artifact marker");
+    // A receipt that survives the reset (R267, R277): old keys are never replayed to recreate Cards.
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS applied_ops(op_key TEXT NOT NULL PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at TEXT NOT NULL);
+         INSERT INTO applied_ops(op_key, request_hash, result_json, committed_at)
+         VALUES('run1:op1', 'hash', '{\"at\":\"0/2\"}', '2026-10-21T00:00:00.000Z');",
+    )
+    .expect("seed a receipt");
+    drop(conn);
 
     home.cmd()
-        .arg("clear")
-        .write_stdin("clear\n")
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
         .assert()
         .success()
+        .stdout(predicate::str::contains("type `delete all` to confirm:"))
+        .stdout(predicate::str::contains("delete verification:\ncards: 5\nnext topic id: 3 -> 0\n"))
         .stdout(predicate::str::contains(
-            "cleared 4 cards; next topic id reset to 0\n",
+            "deleted: 5 cards; next topic id reset to 0\n",
         ));
     home.cmd().arg("stats").assert().success().stdout(
         predicate::str::is_match(r"^total: 0\ntopics: 0\nregular: 0\nliterature: 0\n$").unwrap(),
@@ -3482,6 +3553,12 @@ fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives
     let cards: i64 = conn
         .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))
         .unwrap();
+    let links: i64 = conn
+        .query_row("SELECT COUNT(*) FROM links", [], |row| row.get(0))
+        .unwrap();
+    let receipt: String = conn
+        .query_row("SELECT op_key FROM applied_ops", [], |row| row.get(0))
+        .expect("the receipt survives");
     let next_topic_id: String = conn
         .query_row(
             "SELECT value FROM metadata WHERE key = 'next_topic_id'",
@@ -3489,11 +3566,22 @@ fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives
             |row| row.get(0),
         )
         .unwrap();
+    let archive_id: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'archive_id'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the archive identity survives");
     drop(conn);
     assert_eq!(cards, 0);
+    assert_eq!(links, 0, "the derived Link index is emptied too");
+    assert_eq!(receipt, "run1:op1");
     assert_eq!(next_topic_id, "0");
+    assert_eq!(archive_id.len(), 32);
     assert_eq!(fs::read(&config_path).unwrap(), config_before);
     assert_eq!(fs::read(&dump_marker).unwrap(), b"keep this dump");
+    assert_eq!(fs::read(&artifact).unwrap(), b"keep this figure");
 
     home.cmd_with_editor("# Fresh\n\nfresh\n\n<!-- zt:reverse-links -->\n")
         .args(["t", "Fresh"])
@@ -3507,87 +3595,104 @@ fn confirmed_clear_resets_storage_and_topic_allocation_without_touching_archives
         .stdout(predicate::str::is_match(r"^0/1\n$").unwrap());
 }
 
+/// S12 (#135) S12-AC07 / R275: the all-archive delete advances the revision once for any real
+/// change, including an allocation reset on an archive that holds no Card, and advances nothing
+/// when the Card table is already empty and the allocation is already zero.
 #[test]
-fn clear_refuses_edit_lock_without_changing_storage() {
+fn delete_all_advances_one_revision_for_a_change_and_none_for_an_empty_zero_archive() {
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
-    fs::write(home.archive_root.join("zt.edit.lock"), "held").expect("edit lock");
-
+    let before = home.revision();
     home.cmd()
-        .arg("clear")
-        .write_stdin("clear\n")
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
         .assert()
-        .failure()
-        .stdout(predicate::str::contains("type clear to confirm").not())
-        .stderr(predicate::str::contains("edit in progress"));
-    assert!(home.location_exists("0/0"));
-    assert!(home.location_exists("0/1"));
+        .success();
+    assert_eq!(home.revision(), before + 1);
+
+    // No Card left and the allocation is zero: the confirmed request succeeds and writes nothing.
+    let before = home.revision();
+    home.cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "deleted: 0 cards; next topic id reset to 0\n",
+        ));
+    assert_eq!(home.revision(), before);
+
+    // A nonzero allocation alone is still a state change, so it resets and advances once.
     let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
-    let next_topic_id: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'next_topic_id'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(next_topic_id, "1");
+    conn.execute(
+        "UPDATE metadata SET value = '7' WHERE key = 'next_topic_id'",
+        [],
+    )
+    .expect("a nonzero allocation");
+    drop(conn);
+    let before = home.revision();
+    home.cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "deleted: 0 cards; next topic id reset to 0\n",
+        ));
+    assert_eq!(home.revision(), before + 1);
+    assert_eq!(home.next_topic_id(), 0);
+    home.cmd_with_editor("# Fresh\n\nfresh\n\n<!-- zt:reverse-links -->\n")
+        .args(["t", "Fresh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"^0/0\n$").unwrap());
 }
 
+/// S12 (#135) S12-AC06 / D11: the all-archive delete keeps today's `clear` handling of saved
+/// Spreads, so their metadata remains while tree deletes still follow the deleted positions
+/// (R269).
 #[test]
-fn clear_refuses_open_sessions_without_changing_storage() {
+fn delete_all_keeps_saved_spread_metadata_while_a_tree_delete_follows_positions() {
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
-    let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
-        .env("ZT_CONFIG_DIR", &home.config_dir)
-        .env("ZT_GUI_PORT", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn session");
-    home.wait_until(|| {
-        fs::read_to_string(home.archive_root.join("zt.sessions"))
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
-    });
-
-    home.cmd()
-        .arg("clear")
-        .write_stdin("clear\n")
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("type clear to confirm").not())
-        .stderr(predicate::str::contains(
-            "cannot clear while 1 session(s) are open",
-        ));
-    assert!(home.location_exists("0/0"));
-    assert!(home.location_exists("0/1"));
+    let spreads = r#"{"current":"s1","spreads":[{"id":"s1","name":"Spread","cards":[{"at":"0/0","x":0,"y":0},{"at":"0/1","x":10,"y":0}]}]}"#;
     let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
-    let next_topic_id: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'next_topic_id'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(next_topic_id, "1");
+    conn.execute(
+        "INSERT INTO metadata(key, value) VALUES('gui_spreads', ?1)",
+        [spreads],
+    )
+    .expect("seed a Spread");
     drop(conn);
 
-    session
-        .stdin
-        .as_mut()
-        .expect("session stdin")
-        .write_all(b"q\n")
-        .expect("quit session");
-    assert!(session.wait().expect("session exit").success());
+    home.cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .assert()
+        .success();
+
+    let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+    let stored: String = conn
+        .query_row("SELECT value FROM metadata WHERE key = 'gui_spreads'", [], |row| {
+            row.get(0)
+        })
+        .expect("spread metadata stays");
+    drop(conn);
+    assert_eq!(stored, spreads, "the all-archive delete keeps Spread metadata");
 }
 
+/// S12 (#135) D09 / S12-AC05: a failure during the all-archive delete rolls the Cards, the derived
+/// Links and the allocation reset back together, and releases both guards.
 #[test]
-fn clear_rolls_back_card_deletion_when_topic_reset_fails() {
+fn delete_all_rolls_back_cards_links_and_allocation_when_the_reset_fails() {
     let home = TestHome::new();
     home.configure_and_up();
     home.create_topic_and_base();
+    home.cmd_with_editor("# Linked\n\nsee [[0/0]]\n\n<!-- zt:reverse-links -->\n")
+        .args(["n", "--at", "0/1"])
+        .assert()
+        .success();
     let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
     conn.execute_batch(
         "CREATE TRIGGER fail_topic_reset
@@ -3598,20 +3703,25 @@ fn clear_rolls_back_card_deletion_when_topic_reset_fails() {
          END;",
     )
     .expect("failure trigger");
+    let links_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM links", [], |row| row.get(0))
+        .expect("links");
     drop(conn);
+    assert!(links_before > 0, "the fixture holds authored Links");
 
     home.cmd()
-        .arg("clear")
-        .write_stdin("clear\n")
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
         .assert()
         .failure()
         .stderr(predicate::str::contains("forced topic reset failure"));
-    assert!(home.location_exists("0/0"));
-    assert!(home.location_exists("0/1"));
+    for address in ["0/0", "0/1", "0/2"] {
+        assert!(home.location_exists(address), "`{address}` stays");
+    }
     let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
-    let card_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))
-        .unwrap();
+    let links_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM links", [], |row| row.get(0))
+        .expect("links");
     let next_topic_id: String = conn
         .query_row(
             "SELECT value FROM metadata WHERE key = 'next_topic_id'",
@@ -3619,10 +3729,146 @@ fn clear_rolls_back_card_deletion_when_topic_reset_fails() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(card_count, 2);
-    assert_eq!(next_topic_id, "1");
+    drop(conn);
+    assert_eq!(links_after, links_before, "the derived Links come back");
+    assert_eq!(next_topic_id, "1", "the allocation comes back");
     assert!(!home.archive_root.join("zt.edit.lock").exists());
+    // Both guards are released: a new Session registers at once and quits.
+    home.cmd().write_stdin("q\n").assert().success();
 }
+
+/// S12 (#135) S12-AC04: the all-archive delete refuses the edit lock before the prompt, so a live
+/// write is never interrupted and no confirmation word is asked for nothing.
+#[test]
+fn delete_all_refuses_the_edit_lock_without_changing_storage() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    fs::write(home.archive_root.join("zt.edit.lock"), "held").expect("edit lock");
+
+    home.cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("type `delete all` to confirm").not())
+        .stderr(predicate::str::contains("edit in progress"));
+    assert!(home.location_exists("0/0"));
+    assert!(home.location_exists("0/1"));
+    assert_eq!(home.next_topic_id(), 1);
+}
+
+/// S12 (#135) S12-AC04, S12-AC05 / D06: an open Session refuses the all-archive delete outright,
+/// and nothing changes.
+#[test]
+fn delete_all_refuses_an_open_session_without_changing_storage() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn session");
+    home.wait_until(|| home.session_count() > 0);
+
+    home.cmd()
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("type `delete all` to confirm").not())
+        .stderr(predicate::str::contains(
+            "cannot delete all while 1 session(s) are open",
+        ));
+    assert!(home.location_exists("0/0"));
+    assert!(home.location_exists("0/1"));
+    assert_eq!(home.next_topic_id(), 1);
+
+    session
+        .stdin
+        .as_mut()
+        .expect("session stdin")
+        .write_all(b"q\n")
+        .expect("quit session");
+    assert!(session.wait().expect("session exit").success());
+}
+
+/// S12 (#135) S12-AC05 / D06: Session registration waits for the whole-archive delete's
+/// confirmation and commit, so a starting Session cannot interleave the protected check. Once the
+/// delete commits, the waiting Session registers on the emptied archive.
+#[test]
+fn delete_all_holds_session_registration_through_confirmation_and_commit() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    home.create_topic_and_base();
+    let mut delete = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .args(["del", "--all"])
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn zt del --all");
+    let mut delete_stdout = BufReader::new(delete.stdout.take().expect("delete stdout"));
+    let mut seen = String::new();
+    wait_for_session_output(&mut delete_stdout, &mut seen, "type `delete all` to confirm:");
+
+    // A Session starts while the delete waits for its confirmation. Its registration is blocked:
+    // it has not written its pid and has not drawn ROOT.
+    let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
+        .env("ZT_CONFIG_DIR", &home.config_dir)
+        .env("ZT_GUI_PORT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn session");
+    thread::sleep(Duration::from_millis(700));
+    assert_eq!(
+        home.session_count(),
+        0,
+        "the starting Session waits to register until the delete ends"
+    );
+
+    delete
+        .stdin
+        .as_mut()
+        .expect("delete stdin")
+        .write_all(b"delete all\n")
+        .expect("confirm");
+    wait_for_session_output(
+        &mut delete_stdout,
+        &mut seen,
+        "deleted: 2 cards; next topic id reset to 0",
+    );
+    assert!(delete.wait().expect("delete exit").success());
+
+    // The waiting Session registers now and finds the emptied archive.
+    let mut session_stdout = BufReader::new(session.stdout.take().expect("session stdout"));
+    let mut session_seen = String::new();
+    wait_for_session_output(&mut session_stdout, &mut session_seen, "ROOT");
+    wait_for_session_output(
+        &mut session_stdout,
+        &mut session_seen,
+        "(none yet; create one with t <title>)",
+    );
+    assert!(
+        session_seen.contains("topics:"),
+        "the Session registered after the deletion: {session_seen}"
+    );
+    assert_eq!(home.session_count(), 1, "the Session registered after the delete");
+    session
+        .stdin
+        .as_mut()
+        .expect("session stdin")
+        .write_all(b"q\n")
+        .expect("quit session");
+    assert!(session.wait().expect("session exit").success());
+}
+
 
 #[test]
 fn session_exits_when_service_disconnects() {
@@ -4719,3 +4965,4 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     assert_eq!(report["ok"], true, "{report}");
     home.cmd().arg("down").assert().success();
 }
+

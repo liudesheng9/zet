@@ -370,14 +370,14 @@ fn a_ledger_can_distinguish_archive_replacement_from_a_consistent_restore_at_the
         "Retained archive"
     );
     home.cmd()
-        .arg("clear")
-        .write_stdin("clear\n")
+        .args(["del", "--all"])
+        .write_stdin("delete all\n")
         .assert()
         .success();
     assert_eq!(
         restored.ok("get_cards", json!({"addresses":[],"view":"text"}))["archive_identity"],
         identity,
-        "clearing Cards keeps the archive identity"
+        "deleting every Card keeps the archive identity"
     );
     let conn = Connection::open(home.archive_root.join("zt.sqlite3")).unwrap();
     conn.execute("DELETE FROM metadata WHERE key='archive_id'", [])

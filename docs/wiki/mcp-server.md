@@ -6,8 +6,8 @@ paths:
   - "src/read.rs"
   - "tests/workspaces_mcp.rs"
   - ".mcp.json"
-synced: 3dabf189198c
-updated: 2026-10-21
+synced: 7cca4efa9f2a
+updated: 2026-10-22
 ---
 
 # MCP server
@@ -102,7 +102,7 @@ A pure receipt replay is not a write. `apply_batch` checks the stored receipt be
 
 ### Indexed and bulk read views
 
-`get_cards` also returns `archive_identity: {id, path}` from the same read transaction. `id` is the existing random 128-bit `metadata.archive_id`, retained as its original 32 hexadecimal characters; `path` is the resolved archive directory. An empty address list provides identity/revision without Card bodies. Reads validate the stored identity and refuse a missing/malformed value rather than generating one. Replacing the database at the same path produces a different identity; a consistent SQLite restore preserves it. Ledger binding must compare identity as well as path and verify actual outputs after restoration. No second identifier or new metadata table is introduced.
+`get_cards` also returns `archive_identity: {id, path}` from the same read transaction. `id` is the existing random 128-bit `metadata.archive_id`, retained as its original 32 hexadecimal characters; `path` is the resolved archive directory. An empty address list provides identity/revision without Card bodies. Reads validate the stored identity and refuse a missing/malformed value rather than generating one. Replacing the database at the same path produces a different identity; a consistent SQLite restore preserves it, and deleting every Card still keeps it (	ests/workspaces_mcp.rs proves it through zt del --all, the command that replaced zt clear). Ledger binding must compare identity as well as path and verify actual outputs after restoration. No second identifier or new metadata table is introduced.
 
 `src/read.rs` owns per-request SQLite read transactions for `get_card`, `get_cards`, `get_tree`, `get_model`, `list_trees`, `list_links`, `list_broken_links`, `list_workspaces`, `get_hub`, `list_hubs`, and `get_register`. The module has no persistent cache. It supplies a selected context to `Snapshot::from_cards`, reusing the existing model/build/math calculations; the GUI and Session keep their full Snapshot lifecycle and remain the independent oracle.
 
@@ -525,3 +525,4 @@ Gaps: no test for JSON-RPC batches, for `-32600`, for `resources/*` and `prompts
 - `2026-10-10` `09f7e46`, `4e990a0` — Event and Model Cards with `type` (zt 0.5.0); the five read-only `scholar_archive_*` tools through the Scholar Archive bridge.
 - `2026-10-10` `1f0db11`, `db67049`, `d52b4ae` — The first server: Workspaces, agent Access, the Card tools, `.mcp.json`, and `tests/workspaces_mcp.rs`; dump tests for Workspaces.
 - `2026-10-16` — Wiki doc created.
+

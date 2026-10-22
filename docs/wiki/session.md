@@ -5,8 +5,8 @@ paths:
   - "src/session.rs"
   - "src/session/**"
   - "tests/pty_session.rs"
-synced: 5b0cdd96748b
-updated: 2026-10-21
+synced: 7cca4efa9f2a
+updated: 2026-10-22
 ---
 
 # Terminal Session
@@ -23,7 +23,7 @@ The Terminal Session is the interactive terminal view of the slip-box that plain
 
 | | |
 |---|---|
-| Entry points | `session::run_session(root)` (called by `src/main.rs` when `zt` gets no arguments, after `require_service_up()`); `command::execute(root, state, line, interaction)` for every command line; `session::session_count`, `session::process_exists` (called by `src/main.rs` for `zt status`, `zt down`, `zt clear`, and the stale-service check) |
+| Entry points | `session::run_session(root)` (called by `src/main.rs` when `zt` gets no arguments, after `require_service_up()`); `command::execute(root, state, line, interaction)` for every command line; `session::session_count`, `session::process_exists` (called by `src/main.rs` for `zt status`, `zt down`, `zt del --all`, and the stale-service check), and `session::hold_registration` with its `RegistrationGuard` (held by `zt del --all` from its Session check through its commit) |
 | Key files | `src/session.rs` — the two front ends (TUI and line), views, panels, rendering, scrolling, mouse selection, clipboard, TUI editor (`EditorModel`), confirmation and Literature-part prompts, Session registration; `src/session/command.rs` — the command table and help, `Pointer`, `SessionState` (Pointer, Workspace, history), `Interaction` trait, `CommandResult`, `execute`, `recover_missing_pointer`; `tests/pty_session.rs` — end-to-end TUI tests through a real pseudo-terminal |
 | Depends on | [Service, CLI and storage](service-and-cli.md) (`open_db`, `load_card(s)`, `is_service_up`, `acquire_edit_lock`, `card_counts`, `delete_plan`/`apply_delete_plan`, `apply_move_plan`, `read_confirmation`, `sessions_path`, `service_path`, `db_path`, `create_topic`, `insert_card`, `update_card_text`, Literature updates); [Cards, Workspaces and Links](cards-and-links.md) (`parse_card_text`, templates, `CardType`, `Workspace`, `workspace::counts`, `literature::parse_metadata`, `link::LinkLifecycle`, `link::fenced_code_ranges`); [Card operations](card-operations.md) (`place::move_plan`, `place::insert_plan`, `place::apply_insert_plan`); [Models and math](models-and-math.md) (`model::set`, `model::set_level`, `math::set_form`); [Hub Cards](hub-cards.md) (`hub::set_level`); crates `crossterm` 0.28 (raw mode, events, drawing), `arboard` 3.6 (OS clipboard), `rusqlite`, `anyhow`; dev crates `portable-pty` 0.9 and `assert_cmd` |
 | Used by | [Service, CLI and storage](service-and-cli.md) (`src/main.rs` starts the Session and counts open Sessions) |
@@ -90,7 +90,7 @@ flowchart TD
 | `tui_select_literature_edit_part`, `tui_read_confirmation` | `src/session.rs` | TUI modal prompts (with screen selection and copy) |
 | `COMMANDS`, `help_for`, `pointer_context` | `src/session/command.rs` | the command table, availability, help |
 | `SessionState`, `execute`, `execute_command`, `recover_missing_pointer` | `src/session/command.rs` | command semantics and Pointer moves |
-| `register_session`, `session_count`, `update_session_pids`, `process_exists` | `src/session.rs` | the open-Session record `zt.sessions`, changed only under the `zt.sessions.lock` OS lock |
+| `register_session`, `session_count`, `update_session_pids`, `process_exists`, `hold_registration` | `src/session.rs` | the open-Session record `zt.sessions`, changed only under the `zt.sessions.lock` OS lock |
 
 ## Interfaces
 
@@ -101,9 +101,11 @@ flowchart TD
 | `run_session` | `pub(crate) fn run_session(root: PathBuf) -> Result<()>` | Starts the TUI if `io::stdin().is_terminal() && io::stdout().is_terminal()`, else the line Session. Returns when the human quits or the service goes down. Errors: terminal setup failures, `register_session` I/O errors, database errors while drawing. |
 | `session_count` | `pub(crate) fn session_count(root: &Path) -> i64` | Under the `zt.sessions.lock` OS lock (`update_session_pids`): reads `zt.sessions`, keeps only pids for which `process_exists` is true, writes the pruned list back (side effect), returns the count. Never fails: if the lock cannot be taken it counts the file without writing. |
 | `register_session` | `pub(crate) fn register_session(root: &Path) -> Result<()>` | Adds this process's pid to `zt.sessions` (after pruning dead pids), under the lock. |
-| `update_session_pids` | `fn update_session_pids(root, alive: impl Fn(u32) -> bool, change: impl FnOnce(&mut Vec<u32>)) -> Result<Vec<u32>>` | The one read-change-write of `zt.sessions`: takes the `zt.sessions.lock` OS lock (blocking), keeps the pids that are `alive`, applies `change`, writes the file, returns the list. `register_session`, `unregister_session`, and `session_count` all go through it. |
+| `update_session_pids` | `fn update_session_pids(root, alive: impl Fn(u32) -> bool, change: impl FnOnce(&mut Vec<u32>)) -> Result<Vec<u32>>` | The one read-change-write of `zt.sessions`: takes the `zt.sessions.lock` OS lock through `hold_registration` (blocking), keeps the pids that are `alive`, applies `change`, writes the file, returns the list. `register_session`, `unregister_session`, and `session_count` all go through it. |
+| `hold_registration` | `pub(crate) fn hold_registration(root: &Path) -> Result<RegistrationGuard>` | Takes the `zt.sessions.lock` OS lock and keeps it until the guard drops. `RegistrationGuard::prune` then reads `zt.sessions`, prunes dead pids and writes the pruned list back under that lock. `zt del --all` holds the guard from its Session check through its commit, so a Session that starts meanwhile blocks in `register_session` instead of registering between the check and the delete (S12, #135). The edit lock is always taken first; registration never waits for the edit lock while holding this guard. |
 | `process_exists` | `pub(crate) fn process_exists(pid: u32) -> bool` | Windows: runs `tasklist /FI "PID eq <pid>" /NH` and looks for the pid in its output. Elsewhere: `sh -c "kill -0 <pid>"`. Also used by `src/main.rs` to detect a stale legacy service record. |
 | `SessionGuard` | `pub(crate) struct SessionGuard { pub(crate) root: PathBuf }` | Unregisters the pid on drop (line Session). |
+| `RegistrationGuard` | `pub(crate) struct RegistrationGuard` | Holds the `zt.sessions.lock` file lock; dropping it releases the lock. No public field. |
 
 ### Command module (`src/session/command.rs`, `pub(super)`)
 
@@ -302,7 +304,7 @@ A **Lock** is the owner's promise about a whole tree, and only the GUI takes or 
 2. While it is held, every other writer fails: a shell command (`zt n --at ...`) and another Session at once with `edit in progress`; the GUI and MCP server (`acquire_edit_lock_within`) wait a short patience and then fail the same way (`src/main.rs`).
 3. Read-only commands take no lock, so several Sessions can read while one edits. A Session sees another process's changes on its next redraw; a Card that disappears under the Pointer is handled by `recover_missing_pointer`.
 4. Each Session has its own Pointer, Workspace and history; nothing about them is shared or stored.
-5. Open Sessions block `zt down` (`cannot stop service while N session(s) are open`) and `zt clear` (`src/main.rs`); `zt dp` runs with an open Session but refuses while the edit lock is held (`tests/cli_service.rs`).
+5. Open Sessions block `zt down` (`cannot stop service while N session(s) are open`) and `zt del --all` (`cannot delete all while N session(s) are open`, `src/main.rs`); `zt dp` runs with an open Session but refuses while the edit lock is held (`tests/cli_service.rs`).
 
 ### Service disconnect
 
@@ -409,7 +411,7 @@ assert!(session.wait_for_exit().success());
 |---|---|---|
 | Unit tests, front ends | `cargo test --bin zt session::tests` | result presentation per front end, panels, scroll arithmetic, command-bar tail, clipping by cells, key filters (release, `Ctrl+Shift+C` vs `Ctrl+C`, `Ctrl+Shift+V`), Link hit-testing (half-open spans), screen selection over wraps and wide characters, clipboard copy/paste normalization and atomic failure, `EditorModel` movement, editing, selection, paste, viewport offsets, mouse-cell mapping, drag direction, the `[locked]`/`[pinned]` title-row marks for a member, a pinned target and a Card that is both |
 | Unit tests, commands | `cargo test --bin zt session::command::tests` | `go`/bare `go`/`root`, `q`, unknown commands, `ls` at ROOT and in a Literature tree, `up`, `back`/`fwd`, Literature `n`, Tree-root refusals, tree boundary on `mv`, `del` with confirmation (and a Tree root's own address), `del keep-root` on a Literature tree keeping the root and the Pointer while another tree survives, its root-kind refusal and its `usage: del [keep-root]` forms, Citation-key rename, `ty`, missing-Pointer recovery, `stats`, `status`, `lsbk`, `help` per context, `t`/`n`/`b`/`l`/`e` with scripted edits, `ins` and `mv alone before` |
-| PTY tests | `cargo test --test pty_session` | the real TUI: start/quit, drag highlight, fake-clipboard copy (and resize clearing the selection), command-bar paste without running, editor copy and plain `Ctrl+C` cancel, editor paste over a selection, drag auto-scroll on both axes and selection across resize, Chinese titles and body, Literature tree growth with panels, PgUp/PgDn and `lines a-b of N`, Literature creation, retry and atomic cancel, edit lock seen by a shell write (the live Session's lock file survives it), Link and citation clicks, Tree-root refusals, Literature part choice and rename, quotes in titles, bare `go`, `go` usage, read-only commands, `n`/`b` with caret keys, service disconnect, `mv`/`del` confirmations, `del keep-root` at a Tree root (its plan, its root-address confirmation and the kept root), no duplicated delete prompt, save retry, `status --check-links` after the Session's own writes; on Windows, `zt clear` confirmation after a Session returns to PowerShell |
+| PTY tests | `cargo test --test pty_session` | the real TUI: start/quit, drag highlight, fake-clipboard copy (and resize clearing the selection), command-bar paste without running, editor copy and plain `Ctrl+C` cancel, editor paste over a selection, drag auto-scroll on both axes and selection across resize, Chinese titles and body, Literature tree growth with panels, PgUp/PgDn and `lines a-b of N`, Literature creation, retry and atomic cancel, edit lock seen by a shell write (the live Session's lock file survives it), Link and citation clicks, Tree-root refusals, Literature part choice and rename, quotes in titles, bare `go`, `go` usage, read-only commands, `n`/`b` with caret keys, service disconnect, `mv`/`del` confirmations, `del keep-root` at a Tree root (its plan, its root-address confirmation and the kept root), no duplicated delete prompt, save retry, `status --check-links` after the Session's own writes; on Windows, `zt del --all` confirmation after a Session returns to PowerShell |
 | Manual clipboard smoke | `cargo test --test pty_session -- --ignored manual_real_windows_clipboard_copy_and_paste_smoke` | the real Windows clipboard (seeds and restores it) |
 | Line Session | `cargo test --test cli_service session` | owned by [Service, CLI and storage](service-and-cli.md) |
 | Session Lock tests | `cargo test --test tree_lock` | owned by [Service, CLI and storage](service-and-cli.md), which carries `tests/tree_lock.rs`: the line and TUI `[locked]`/`[pinned]` marks, a mark clearing on navigation, the refusal before an editor or a confirmation for `e`/`n`/`b`/`del`/`ins`/`mv` and both Literature edit parts, an editable pinned body with its move and delete refused on the pin, the unchanged archive after a refusal, the `ty`/`lv`/`mf` writer refusals, a view drawn before a Lock refusing the later write, the same work after an unlock, and the Session `status` `locks:` line |
@@ -450,11 +452,13 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 - The editor treats `Ctrl+<other>` as nothing (only `Ctrl+S`, `Ctrl+C`), and `Ctrl+Shift+S` (`KeyCode::Char('S')`) does not save.
 - The test shortcut remap (`\` → copy, `]` → paste) is active whenever `ZT_TEST_CLIPBOARD_TEXT` or `ZT_TEST_SHORTCUTS` is set in a debug build, so tests cannot type `\` or `]`.
 - Mouse rows in edit mode start at screen row 2 (header and error rows); the drag auto-scroll triggers at row 2 or below the last text row, and at column 0 or the last column. Change `draw_tui_editor` and `editor_point_from_mouse`/`scroll_for_drag` together.
-- The `TuiGuard` order matters on Windows: leave the alternate screen and disable mouse capture before `disable_raw_mode`, or a later `zt clear` in the same console cannot read its confirmation (covered by `terminal_clear_accepts_confirmation_after_session_returns_to_shell`).
+- The `TuiGuard` order matters on Windows: leave the alternate screen and disable mouse capture before `disable_raw_mode`, or a later `zt del --all` in the same console cannot read its confirmation (covered by `terminal_delete_all_accepts_confirmation_after_session_returns_to_shell`).
 - Confirmation prompts must redraw only on change; an unconditional redraw duplicated the prompt in the PTY output (covered by `terminal_delete_confirmation_does_not_duplicate_prompt_or_append_to_command_bar`).
 - PTY tests match against all frames ever drawn: wait for "one more" occurrence than before a key, never only for a string that an earlier frame already showed.
 
 ## Change history
+
+- `2026-10-21` — Tree Lock S12 (#135): the `zt.sessions.lock` lock is now a holdable guard (`hold_registration` / `RegistrationGuard`), and `update_session_pids` is built on it instead of opening and locking its own file. `zt del --all` holds the guard from its Session check through its commit, so a Session that starts during the confirmation blocks in `register_session` and registers only on the emptied archive; every other Session command and key is unchanged, and the Session still offers no delete-all form and refuses `clear` as an unknown command.
 
 - `2026-10-18` — Reverify [issue #65](https://github.com/liudesheng9/zet/issues/65) at the Session boundary: after a Session `mv`/`del`, `status --check-links` confirms the derived Link index; a competing shell write is refused as busy while the live Session's lock file survives, and the next writer recovers the stale file after the Session quits.
 
@@ -481,3 +485,5 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 - `2026-07-14` `bff673b`, `b7bf74d` — mouse selection with `Ctrl+Shift+C`/`Ctrl+Shift+V` clipboard; Literature Cards (`l`, the metadata/text choice, Citation-key rename).
 - `2026-07-08` to `2026-07-13` `28e1319`, `9f2a5f7`, `66d3538`, `2e2f420` — Session split into `src/session.rs` with the PTY suite and the TUI Edit caret; no duplicated delete prompt; bare subcommands without the `zt` prefix; raw mode restored after leaving the TUI so a later `zt clear` works on Windows.
 - `2026-10-16` — Wiki doc created.
+
+
