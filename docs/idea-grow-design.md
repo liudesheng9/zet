@@ -21,7 +21,7 @@ He did the two acts apart. While reading, he wrote the bibliographic notes. Late
 | Write it in your own words, standalone | Title as a claim, with no book-local numbers (R20). The body carries its own conditions (P4) and cites its source notes with 例示/对应/对照, never 依赖 into its own book (I7, P1) |
 | File it behind the Card it continues | `at`: an existing agent Topic Card (Direct successor = the next step, Side successor = a branch or objection, P3/P6), an earlier idea of the same answer (a chain), or a new Topic (P2) |
 | Link distant Cards | At least one Link besides the parent and the source is asked for; a Link across trees is the valuable one |
-| Hub and structure Cards | Out of scope here: run the digest's `hubs` mode afterwards |
+| Hub and structure Cards | The hubs round (2.5.0): topic, line and field hubs through the hub compiler, and the register's terms pointing at the Cards that carry them |
 
 ## The proposals, and where they live
 
@@ -133,6 +133,6 @@ The owner may lock one whole Topic tree: it takes no new Cards until the owner u
 
 ## Not in this version
 
-- Hubs and the register: run `zt-econ-digest` mode `hubs` afterwards.
+- (Since 2.5.0 the hubs round builds the hubs and the register; see the wiki block doc.)
 - Pairing across books: the snapshot and the closest-Cards list find related Cards from any book, but no Bridge review runs.
 - A second pass that re-files whole branches (join, topic-home): `zt-digest join` and `topic-home` remain separate review tools.

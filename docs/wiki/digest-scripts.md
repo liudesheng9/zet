@@ -851,6 +851,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 
 ## Change history
 
+- `2026-10-22` — `tests/grow.tests.ps1` (idea-grow 2.5.0): the hubs round on a scratch archive. `hubs-plan` gives hub jobs and limits from the survey, and a grow hub job holds the hub instructions and the hub task with its SELF-CHECK. The gh precheck reports a missing hub JSON file. `hubs-report -Register plan` stages a register plan and publishes nothing.
 - `2026-10-22` — `tests/grow.tests.ps1` (idea-grow 2.4.0; 84 checks): the plan's run-topics block asks one root placement per Topic; a second idea of one answer at the same Topic root is G13 and its message names the idea to chain from; a doorway with seven lines (`n/1|a…g`) takes no eighth line, so the next root placement becomes `n/1|g|a`, the section chains in it, its receipt records `full`, and the report counts `deeper` and names the doorway.
 - `2026-10-22` — `tests/agent-lock-guidance.tests.ps1` (Tree Lock S17, #140): the first test of the agent-facing Lock material. It spawns a real `zt mcp`, sends one `initialize` over stdio, and checks the answer's `instructions` for the policy phrases and against every Lock route, token field and unlock tool; it then reads the two skills and requires the same rule in their Lock paragraphs, with no route, token, shell command or direct database write. It writes no Card and needs no archive.
 

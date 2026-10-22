@@ -146,6 +146,63 @@
       }
     },
     {
+      "label": "^grow: hubs plan$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"hub_jobs\":2,\"trees\":3,\"topics\":7,\"limits\":{\"topic_min\":5}}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow hubs mgr",
+      "answer": {
+        "jobs": [
+          {
+            "id": "gh-001",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          },
+          {
+            "id": "gh-002",
+            "ok": true,
+            "reply": "OK",
+            "attempts": 1
+          }
+        ],
+        "started": [
+          "s6",
+          "s7"
+        ],
+        "deleted": 2,
+        "not_deleted": []
+      }
+    },
+    {
+      "label": "^grow: hubs apply$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"ok\":true}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: hubs check 1$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"fix\":0,\"round\":1,\"hubs\":5,\"faults\":0}",
+        "tail": ""
+      }
+    },
+    {
+      "label": "^grow: hubs report$",
+      "answer": {
+        "exit_code": 0,
+        "last_line": "{\"hubs\":{\"topic\":3,\"field\":1,\"register\":1},\"faults\":{},\"missing\":0,\"mirror\":0,\"register\":{\"status\":\"published\",\"entries\":93}}",
+        "tail": ""
+      }
+    },
+    {
       "label": "^grow: report$",
       "answer": {
         "exit_code": 0,

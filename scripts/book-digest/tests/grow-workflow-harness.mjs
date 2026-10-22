@@ -81,7 +81,7 @@ const reportDone = { exit_code: 0, last_line: json({ report: 'grow-report.md', c
 // ================================================================================================================
 // The frozen build carries the seam
 // ================================================================================================================
-check(build.modules['zt-grow-cycle'] === '7', `frozen: the build carries zt-grow-cycle v7 (${build.modules['zt-grow-cycle']})`)
+check(build.modules['zt-grow-cycle'] === '8', `frozen: the build carries zt-grow-cycle v8 (${build.modules['zt-grow-cycle']})`)
 check(source.includes('const lockRefusal = (text) =>') && source.includes('card_locked at ${where}'), 'frozen: the built script carries the Lock reader and the stop')
 check(build.embedded.stages.filter((s) => s.id === 'grow').length === 1, 'frozen: the one grow stage is the module that owns the seam')
 

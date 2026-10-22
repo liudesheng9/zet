@@ -1580,7 +1580,7 @@ for (const kind of ['econ', 'math']) {
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '7', `lock: the idea-grow build carries zt-grow-cycle v7 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '8', `lock: the idea-grow build carries zt-grow-cycle v8 (${grow.modules['zt-grow-cycle']})`)
   check(grow.script.includes('const lockRefusal = (text) =>') && grow.script.includes('card_locked at ${where}') && grow.script.includes('stopOnLock'), 'lock: the idea-grow build carries its own seam')
 }
 

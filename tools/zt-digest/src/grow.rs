@@ -883,6 +883,9 @@ fn print_faults(faults: &[Fault], checked: &[String]) -> Result<()> {
 fn precheck(a: &Args) -> Result<()> {
     let work = Work::open(&a.required("Work")?)?;
     let id = a.required("Job")?;
+    if id.starts_with("gh") {
+        return hubs_precheck(&work, &id);
+    }
     let ctx = Ctx::load(&work)?;
     let path = work.path(&format!("out\\{id}.json"));
     let answer = match answer_of(&path) {
@@ -1125,6 +1128,263 @@ fn topics(a: &Args) -> Result<i32> {
     let jobs = write_section_jobs(&work, &mut plan, &run)?;
     util::print_last(&json!({ "jobs": jobs, "topics": run.len(), "created": created, "refused": refused.len() }))?;
     Ok(0)
+}
+
+// --- the hubs round ------------------------------------------------------------------------------
+//
+// The grown Topics need ways in: a topic hub for each large Topic tree, a line hub for each long
+// branch, field hubs over related Topics, and the register's terms pointing at the Cards that carry
+// them (Luhmann's structure Cards and keyword register). The live box of 2026-10-22 had one field hub
+// and a register whose 37 terms all pointed at Topic roots; the three Topics the run grew (412–414)
+// were in no hub. This round runs the hub compiler (`zt-digest hub`) and the register compiler
+// (`zt-digest register`) as child processes in `<Work>\hubs` and `<Work>\register`, wraps each hub
+// job as a grow job (`gh-NNN`, fix jobs `gh<round>-NNN`), and prints counts only.
+
+/// One step of a sibling zt-digest tool (hub, register) as a child process of this binary: its exit
+/// code, its stdout, and its stderr. The child inherits ZT_CONFIG_DIR, so it reads the same box.
+fn sibling(args: &[&str]) -> Result<(i32, String, String)> {
+    let exe = std::env::current_exe().context("the zt-digest binary")?;
+    let out = std::process::Command::new(exe).args(args).output().with_context(|| format!("zt-digest {}", args.join(" ")))?;
+    Ok((out.status.code().unwrap_or(1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned()))
+}
+
+/// The last stdout line that is a JSON object.
+fn last_object(text: &str) -> Value {
+    text.lines().rev().find_map(|l| serde_json::from_str::<Value>(l.trim()).ok().filter(Value::is_object)).unwrap_or(Value::Null)
+}
+
+/// A sibling step that must succeed; a typed `card_locked` refusal is printed and ends the step
+/// with exit 2 (the owner's Lock is a stop, never a fault to work around).
+fn sibling_ok(args: &[&str]) -> Result<Value> {
+    let (code, out, err) = sibling(args)?;
+    let last = last_object(&out);
+    if last["code"] == json!("card_locked") || last["error"] == json!("card_locked") {
+        util::print_last(&last)?;
+        std::process::exit(2);
+    }
+    if code != 0 {
+        let tail: String = format!("{out}{err}").chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+        bail!("zt-digest {} exited {code}: {tail}", args[..3.min(args.len())].join(" "));
+    }
+    Ok(last)
+}
+
+/// A fault count that a tool prints as a number or as a list of faults (the register check prints
+/// a list): its count, or None when it is neither.
+fn fault_count(v: &Value) -> Option<usize> {
+    v.as_u64().map(|n| n as usize).or_else(|| v.as_array().map(Vec::len))
+}
+
+/// The box's field hubs as the hub compiler's `fields` state (name → address), so its field writer
+/// keeps and updates them instead of writing a second field hub beside each (the live run of
+/// 2026-10-22 left 411/1|a unanchored beside a new 411/1|b). The name is the hub's title.
+fn seed_fields(hw: &str, zt: &mut Zt) -> Result<usize> {
+    let graph = zt.call("list_hubs", json!({ "workspace": "agent" }))?;
+    let file = join_path(hw, "state.json");
+    let mut state = util::read_json(&file).unwrap_or_else(|_| json!({ "trees": {}, "fields": {}, "register": null, "jobs": {}, "seq": 0 }));
+    if !state["fields"].is_object() {
+        state["fields"] = json!({});
+    }
+    let known: HashSet<String> = state["fields"].as_object().map(|m| m.values().map(s).collect()).unwrap_or_default();
+    let mut added = 0;
+    for hub in graph["hubs"].as_array().into_iter().flatten().filter(|h| s(&h["level"]) == "field") {
+        let at = s(&hub["address"]);
+        if at.is_empty() || known.contains(&at) {
+            continue;
+        }
+        state["fields"][&s(&hub["title"])] = json!(at);
+        added += 1;
+    }
+    util::write_text(&file, &serde_json::to_string_pretty(&state)?)?;
+    Ok(added)
+}
+
+fn quantile(values: &[i64], q: f64) -> Option<i64> {
+    let mut v = values.to_vec();
+    v.sort();
+    if v.is_empty() {
+        return None;
+    }
+    let last = v.len() - 1;
+    Some(v[last.min((q * last as f64 + 0.5).floor() as usize)])
+}
+
+/// The hub limits from the hub survey, by the rules the digest's hub manager follows (zt-hubs.js):
+/// a Topic tree smaller than most trees needs no map; a branch longer than nine in ten branches
+/// needs its own line hub; one hub holds at most about 25 references (Luhmann's collective cards).
+fn hub_limits(survey: &Value) -> Value {
+    let trees: Vec<&Value> = survey["trees"].as_object().map(|m| m.values().collect()).unwrap_or_default();
+    let sizes: Vec<i64> = trees.iter().filter_map(|t| t["cards"].as_i64()).collect();
+    let branches: Vec<i64> = trees.iter().flat_map(|t| t["branches"].as_array().cloned().unwrap_or_default()).filter_map(|b| b["cards"].as_i64()).collect();
+    let pairs: Vec<i64> = trees.iter().flat_map(|t| t["neighbours"].as_array().cloned().unwrap_or_default()).filter_map(|n| n["links"].as_i64()).collect();
+    let topic_min = quantile(&sizes, 0.25).unwrap_or(7).clamp(5, 12);
+    let line_min = quantile(&branches, 0.9).unwrap_or(12).clamp(6, 20).max(topic_min);
+    let max_lines = quantile(&sizes, 0.75).unwrap_or(25).clamp(15, 25);
+    let neighbour_links = if pairs.is_empty() { 3 } else { quantile(&pairs, 0.5).unwrap_or(3).clamp(2, 6) };
+    let field_max = ((trees.len() as f64).sqrt().round() as i64).clamp(6, 15);
+    let median = quantile(&sizes, 0.5).unwrap_or(0);
+    json!({
+        "topic_min": topic_min, "line_min": line_min, "max_lines": max_lines, "max_groups": if max_lines < 18 { 5 } else { 7 },
+        "min_reason": 8, "neighbour_links": neighbour_links, "field_min": 3, "field_max": field_max,
+        "per_job": if median <= 15 { 6 } else if median <= 30 { 4 } else { 2 },
+    })
+}
+
+/// The hub writer's instructions (the digest's own dsh-hub-instructions.zh.md).
+fn hub_doc() -> String {
+    let dir = match std::env::var("ZT_DIGEST_SCRIPTS") {
+        Ok(dir) if !dir.is_empty() => dir,
+        _ => crate::model::Scripts::find().dir,
+    };
+    join_path(&dir, "dsh-hub-instructions.zh.md")
+}
+
+/// A hub job's text for a run with its own zt-digest binary: the hub job files name `zt-digest`.
+fn retool_hub(plan: &Value, text: &str) -> String {
+    let tool = s(&plan["tool"]);
+    if tool.is_empty() {
+        return text.to_string();
+    }
+    text.replace("zt-digest hub -Step precheck", &format!("& '{tool}' hub -Step precheck")).replace("zt-digest call", &format!("& '{tool}' call"))
+}
+
+/// `-Step hubs-plan`: the hub survey, the limits, the hub plan, and one grow job per hub job.
+fn hubs_plan(a: &Args) -> Result<()> {
+    let work = Work::open(&a.required("Work")?)?;
+    let plan = work.read("plan.json").unwrap_or(json!({}));
+    let hw = work.path("hubs");
+    let survey = sibling_ok(&["hub", "-Step", "survey", "-Work", &hw])?;
+    let limits = hub_limits(&util::read_json(join_path(&hw, "survey.json"))?);
+    let seeded = seed_fields(&hw, &mut crate::zt::start()?)?;
+    let planned = sibling_ok(&["hub", "-Step", "plan", "-Work", &hw, "-Limits", &serde_json::to_string(&limits)?])?;
+    let hstate = util::read_json(join_path(&hw, "state.json"))?;
+    let doc = util::read_text(hub_doc())?;
+    let mut state = work.state()?;
+    let mut jobs = Map::new();
+    let mut listed: Vec<(String, Value)> = hstate["jobs"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+    listed.sort_by(|x, y| x.0.cmp(&y.0));
+    for (i, (hub_id, job)) in listed.iter().enumerate() {
+        let id = job_id("gh", i + 1);
+        let text = format!(
+            "# 枢纽任务 {id}（{hub_id}）\n\n先读下面的枢纽写作说明，再完成本任务。任务里的 SELF-CHECK 命令逐个检查你写的 JSON 文件。\n\n{doc}\n\n---\n\n{}",
+            util::read_text(s(&job["file"]))?
+        );
+        util::write_text(work.path(&format!("jobs\\{id}.md")), &retool_hub(&plan, &text))?;
+        jobs.insert(id, json!({ "hub_id": hub_id, "kind": job["kind"], "trees": job["trees"] }));
+    }
+    let n = jobs.len();
+    state["hubs"] = json!({ "jobs": jobs, "fixes": {}, "limits": limits, "survey": { "topics": survey["topics"], "hubs": survey["hubs"] } });
+    work.write("state.json", &state)?;
+    util::print_last(&json!({ "hub_jobs": n, "trees": planned["tree_count"], "topics": survey["topics"], "fields_kept": seeded, "limits": limits }))
+}
+
+/// The JSON files a hub job writes: one per Topic tree of a topic job, fields.json for the field job.
+fn hub_files(work: &Work, job: &Value) -> Vec<String> {
+    let out = join_path(&work.path("hubs"), "out");
+    if s(&job["kind"]) == "field" {
+        return vec![join_path(&out, "fields.json")];
+    }
+    job["trees"].as_array().into_iter().flatten().map(|t| join_path(&out, &format!("hub-{}.json", s(t)))).collect()
+}
+
+/// The precheck of a hub job: the hub compiler's own precheck on each of its files, one total.
+fn hubs_precheck(work: &Work, id: &str) -> Result<()> {
+    let state = work.state()?;
+    let hub_id = state["hubs"]["jobs"][id]["hub_id"].as_str().or_else(|| state["hubs"]["fixes"][id]["hub_id"].as_str()).map(str::to_string);
+    let Some(hub_id) = hub_id else { bail!("no hub job `{id}` in state.json (run -Step hubs-plan first)") };
+    let job = state["hubs"]["jobs"].as_object().and_then(|m| m.values().find(|j| s(&j["hub_id"]) == hub_id)).cloned().unwrap_or(Value::Null);
+    let hw = work.path("hubs");
+    let mut lines = Vec::new();
+    let mut total = 0;
+    for file in hub_files(work, &job) {
+        if !std::path::Path::new(&file).exists() {
+            lines.push(format!("{file} G1 the file is missing: write it as the task says"));
+            total += 1;
+            continue;
+        }
+        let (_, out, _) = sibling(&["hub", "-Step", "precheck", "-Work", &hw, "-File", &file])?;
+        for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            match line.strip_prefix("faults: ") {
+                Some(n) => total += n.trim().parse::<usize>().unwrap_or(0),
+                None => lines.push(line.to_string()),
+            }
+        }
+    }
+    lines.push(format!("faults: {total}"));
+    util::print_lines(&lines)
+}
+
+/// `-Step hubs-apply`: the hub compiler's apply.
+fn hubs_apply(a: &Args) -> Result<()> {
+    let work = Work::open(&a.required("Work")?)?;
+    let applied = sibling_ok(&["hub", "-Step", "apply", "-Work", &work.path("hubs")])?;
+    let mut keys = Map::new();
+    for (k, v) in applied.as_object().into_iter().flatten() {
+        if v.is_number() || v.is_boolean() {
+            keys.insert(k.clone(), v.clone());
+        }
+    }
+    keys.insert("ok".into(), json!(true));
+    util::print_last(&Value::Object(keys))
+}
+
+/// `-Step hubs-check -Round R`: get_hub on every hub; each writer with faults gets a fix job
+/// (`gh<R>-NNN`: the instructions, its original task, and the faults).
+fn hubs_check(a: &Args) -> Result<()> {
+    let work = Work::open(&a.required("Work")?)?;
+    let round = a.int_or("Round", 1)?;
+    let plan = work.read("plan.json").unwrap_or(json!({}));
+    let checked = sibling_ok(&["hub", "-Step", "check", "-Work", &work.path("hubs")])?;
+    let doc = util::read_text(hub_doc())?;
+    let mut state = work.state()?;
+    let mut n = 0;
+    for j in checked["jobs"].as_array().into_iter().flatten() {
+        let hub_id = s(&j["continue"]);
+        let original = state["hubs"]["jobs"].as_object().and_then(|m| m.values().find(|x| s(&x["hub_id"]) == hub_id)).cloned();
+        let Some(original) = original else { continue };
+        let first = j["files"].as_array().and_then(|f| f.first()).map(s).unwrap_or_default();
+        let fallback: Vec<String> = j["fallback"].as_array().into_iter().flatten().map(s).collect();
+        let task = fallback.get(1).map(|f| util::read_text(f).unwrap_or_default()).unwrap_or_default();
+        n += 1;
+        let id = job_id(&format!("gh{round}"), n);
+        let text = format!(
+            "# 枢纽修正任务 {id}（{hub_id}）\n\n先读下面的枢纽写作说明和原来的任务，再按最后列出的问题修正你写的 JSON 文件。\n\n{doc}\n\n---\n\n## 原来的任务\n\n{task}\n\n---\n\n## 要修正的问题\n\n{}",
+            util::read_text(&first)?
+        );
+        util::write_text(work.path(&format!("jobs\\{id}.md")), &retool_hub(&plan, &text))?;
+        state["hubs"]["fixes"][&id] = json!({ "hub_id": hub_id, "kind": original["kind"], "round": round });
+    }
+    work.write("state.json", &state)?;
+    util::print_last(&json!({ "fix": n, "round": round, "hubs": checked["hubs"], "faults": checked["faults"] }))
+}
+
+/// `-Step hubs-report [-Register apply|plan|off]`: the hub report, then the register: planned from
+/// the box's term tables (read-only), and with `apply` published and read back when the plan has no
+/// fault. The register's terms then point at the Cards that carry them, the grown Topic Cards among
+/// them, not at Topic roots.
+fn hubs_report(a: &Args) -> Result<()> {
+    let work = Work::open(&a.required("Work")?)?;
+    let mode = a.str_or("Register", "apply");
+    let reported = sibling_ok(&["hub", "-Step", "report", "-Work", &work.path("hubs")])?;
+    let mut register = json!({ "status": "off" });
+    if mode != "off" {
+        let rw = work.path("register");
+        let planned = sibling_ok(&["register", "-Step", "plan", "-Work", &rw])?;
+        register = json!({ "status": "planned", "plan_id": planned["plan_id"], "entries": planned["entries"], "unresolved": planned["unresolved"], "faults": planned["faults"], "before": planned["register"]["entries"] });
+        if mode == "apply" && planned["ok"] == true && fault_count(&planned["faults"]) == Some(0) {
+            let applied = sibling_ok(&["register", "-Step", "apply", "-Work", &rw])?;
+            let checked = sibling_ok(&["register", "-Step", "check", "-Work", &rw])?;
+            // The check prints its faults and missing rows as lists (2.5.0 read them as numbers and
+            // called a clean publication partial).
+            let verified = checked["complete"] == true && fault_count(&checked["faults"]) == Some(0) && fault_count(&checked["missing"]).unwrap_or(0) == 0;
+            register["status"] = json!(if verified { "published" } else if applied["ok"] == true { "partial" } else { "pending" });
+            register["missing"] = checked["missing"].clone();
+        }
+    }
+    let mut state = work.state()?;
+    state["hubs"]["report"] = json!({ "counts": reported["counts"], "faults": reported["faults"], "missing": reported["missing_count"], "mirror": reported["mirror"], "register": register });
+    work.write("state.json", &state)?;
+    util::print_last(&json!({ "hubs": reported["counts"], "faults": reported["faults"], "missing": reported["missing_count"], "mirror": reported["mirror"], "register": register }))
 }
 
 // --- apply --------------------------------------------------------------------------------------
@@ -1904,6 +2164,22 @@ fn report(a: &Args) -> Result<()> {
         s(&report["totals"]["created"]), s(&report["totals"]["topics"]), s(&report["totals"]["linked"]), s(&report["totals"]["same"]), s(&report["totals"]["refused"]), s(&report["totals"]["duplicates"]), left.len()
     ));
     md.push_str(&format!("- 按种类：{}。\n\n", kinds.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join("，")));
+    // The hubs round (2.5.0): the hub counts, the hubs the policy still misses, and the register.
+    let hubs = &state["hubs"]["report"];
+    if hubs.is_object() {
+        let counts = hubs["counts"].as_object().map(|m| m.iter().map(|(k, v)| format!("{k} {}", s(v))).collect::<Vec<_>>().join("，")).unwrap_or_default();
+        let reg = &hubs["register"];
+        md.push_str(&format!(
+            "## 枢纽与索引\n\n- 枢纽卡：{}；政策仍缺的枢纽 {}，镜像枢纽 {}。\n- 索引（register）：{}，{} 个词条（之前 {}），{} 个没有可靠目标。\n\n",
+            if counts.is_empty() { "无".to_string() } else { counts },
+            s(&hubs["missing"]),
+            s(&hubs["mirror"]),
+            s(&reg["status"]),
+            s(&reg["entries"]),
+            s(&reg["before"]),
+            s(&reg["unresolved"])
+        ));
+    }
     md.push_str("| 小节 | 新卡 | 新主题 | same | 拒绝 | 重复 |\n| --- | --- | --- | --- | --- | --- |\n");
     for r in report["sections"].as_array().into_iter().flatten() {
         md.push_str(&format!("| [[{}]] | {} | {} | {} | {} | {} |\n", s(&r["section"]), s(&r["created"]), s(&r["topics"]), s(&r["same"]), s(&r["refused"]), s(&r["duplicates"])));
@@ -1930,13 +2206,30 @@ fn report(a: &Args) -> Result<()> {
     util::print_last(&json!({
         "created": report["totals"]["created"], "topics": report["totals"]["topics"], "linked": report["totals"]["linked"], "same": report["totals"]["same"],
         "refused": report["totals"]["refused"], "duplicates": report["totals"]["duplicates"], "stopped": report["totals"]["stopped"], "deeper": report["totals"]["deeper"], "faults_left": left.len(),
-        "share_before": baseline["share"], "share_after": after["share"], "books": books.len(), "bridges": bridges.len(), "report": work.path("grow-report.md"),
+        "share_before": baseline["share"], "share_after": after["share"], "books": books.len(), "bridges": bridges.len(),
+        "hubs_missing": state["hubs"]["report"]["missing"], "register": state["hubs"]["report"]["register"]["status"], "report": work.path("grow-report.md"),
     }))
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig"], &["Apply"])?;
-    let code = match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report"])?.as_str() {
+    let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig", "Register"], &["Apply"])?;
+    let code = match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report", "hubs-plan", "hubs-apply", "hubs-check", "hubs-report"])?.as_str() {
+        "hubs-plan" => {
+            hubs_plan(&a)?;
+            0
+        }
+        "hubs-apply" => {
+            hubs_apply(&a)?;
+            0
+        }
+        "hubs-check" => {
+            hubs_check(&a)?;
+            0
+        }
+        "hubs-report" => {
+            hubs_report(&a)?;
+            0
+        }
         "plan" => {
             plan(&a)?;
             0
@@ -2048,6 +2341,36 @@ mod tests {
         let copy = retool(&json!({ "tool": "D:\\t\\zt-digest.exe", "zt_config": "D:\\box\\config" }), text);
         assert!(copy.starts_with("SELF-CHECK: & 'D:\\t\\zt-digest.exe' grow -Step precheck"));
         assert!(copy.contains("$env:ZT_CONFIG_DIR='D:\\box\\config'\n@'") && copy.ends_with("'@ | & 'D:\\t\\zt-digest.exe' call - -Allow x"));
+    }
+
+    // The hub limits follow the hub manager's rules from the survey's sizes.
+    #[test]
+    fn the_hub_limits_come_from_the_survey() {
+        let survey = json!({ "trees": {
+            "1": { "cards": 40, "branches": [{ "cards": 38 }, { "cards": 5 }], "neighbours": [{ "links": 4 }] },
+            "2": { "cards": 9, "branches": [], "neighbours": [{ "links": 4 }] },
+            "3": { "cards": 6, "branches": [], "neighbours": [] },
+            "4": { "cards": 5, "branches": [], "neighbours": [] },
+        } });
+        let l = hub_limits(&survey);
+        assert_eq!(l["topic_min"], json!(6));
+        assert_eq!(l["line_min"], json!(20));
+        assert_eq!(l["max_lines"], json!(15));
+        assert_eq!(l["max_groups"], json!(5));
+        assert_eq!(l["neighbour_links"], json!(4));
+        assert_eq!(l["field_max"], json!(6));
+        assert_eq!(l["per_job"], json!(6));
+        assert_eq!(hub_limits(&json!({ "trees": {} }))["neighbour_links"], json!(3));
+        assert_eq!(last_object("x\n{\"a\":1}\nfaults: 0\n"), json!({ "a": 1 }));
+        assert_eq!(retool_hub(&json!({ "tool": "D:\\t.exe" }), "SELF-CHECK: zt-digest hub -Step precheck -File f\nHELPER: zt-digest call"), "SELF-CHECK: & 'D:\\t.exe' hub -Step precheck -File f\nHELPER: & 'D:\\t.exe' call");
+    }
+
+    #[test]
+    fn a_fault_list_counts_as_its_length() {
+        assert_eq!(fault_count(&json!(0)), Some(0));
+        assert_eq!(fault_count(&json!([])), Some(0));
+        assert_eq!(fault_count(&json!(["a", "b"])), Some(2));
+        assert_eq!(fault_count(&json!(null)), None);
     }
 
     #[test]

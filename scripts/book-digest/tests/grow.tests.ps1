@@ -232,6 +232,16 @@ try {
     Assert ($report.share_before -eq 0.25 -and $report.share_after -eq 0.625) "report: the Topic share before and after (1/4 → 5/8) ($($report.share_before) → $($report.share_after))"
     $md = Get-Content (Join-Path $work 'grow-report.md') -Raw -Encoding utf8
     Assert ($md -match '主题份额' -and $md -match '核心 1' -and $md -match '直觉 1' -and $report.topics -eq 1) "report: grow-report.md shows the share and the kinds; one Topic made ($($report.topics))"
+    # --- the hubs round (2.5.0): the hub compiler and the register, wrapped as grow jobs ---
+    $hp = Last (Grow @('-Step', 'hubs-plan', '-Work', $work))
+    Assert ($hp.hub_jobs -ge 1 -and $hp.limits.topic_min -ge 5 -and $hp.limits.max_lines -le 25) "hubs-plan: the hub jobs and the limits from the survey ($($hp | ConvertTo-Json -Compress))"
+    $gh = Get-Content (Join-Path $work 'jobs\gh-001.md') -Raw -Encoding utf8
+    Assert ($gh.Contains('# 枢纽任务 gh-001') -and $gh.Contains('SELF-CHECK: zt-digest hub -Step precheck')) 'hubs-plan: a grow hub job holds the hub instructions and the hub task with its SELF-CHECK'
+    $pre = Grow @('-Step', 'precheck', '-Work', $work, '-Job', 'gh-001')
+    Assert (@($pre)[-1] -match '^faults: [1-9]' -and ($pre -join ' ') -match 'missing') "precheck: a hub job whose JSON file is missing has a fault ($($pre -join ' | '))"
+    $hr = Last (Grow @('-Step', 'hubs-report', '-Work', $work, '-Register', 'plan'))
+    Assert ($hr.register.status -eq 'planned' -and $null -ne $hr.missing) "hubs-report: the hub report and a staged register plan, nothing published ($($hr | ConvertTo-Json -Compress -Depth 4))"
+
     # --- the whole box: every Literature tree, no -Book ---
     $work2 = Join-Path $scratch 'work2'
     $box = Last (Grow @('-Step', 'plan', '-Work', $work2))
