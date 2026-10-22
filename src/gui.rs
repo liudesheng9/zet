@@ -2851,6 +2851,10 @@ mod tests {
                  planPins: ZtLock.pinGroups({ pins: [{ target: '5/1', target_row: 51, sources: ['3/0', '3/1'] }] }),
                  lockEvent: ZtLock.eventLine({ action: 'lock', at: '2026-10-21T09:00:00.123Z', detail: { member_count: 2, seal: 'c'.repeat(64) } }),
                  noteEvent: ZtLock.eventLine({ action: 'note', at: '2026-10-21T09:05:00Z', detail: { previous_note: null, note: 'final' } }),
+                 lockOne: ZtLock.eventLine({ action: 'lock', at: '2026-10-21T09:00:00Z', detail: { member_count: 1, seal: 'c'.repeat(64) } }),
+                 unlockOne: ZtLock.eventLine({ action: 'unlock', at: '2026-10-21T10:00:00Z', detail: { member_count: 1, pin_count: 1 } }),
+                 unlockMany: ZtLock.eventLine({ action: 'unlock', at: '2026-10-21T10:00:00Z', detail: { member_count: 2, pin_count: 3 } }),
+                 unlockUnknown: ZtLock.eventLine({ action: 'unlock', at: '2026-10-21T10:00:00Z', detail: {} }),
                };
              })()",
         ) else {
@@ -2879,6 +2883,10 @@ mod tests {
         assert_eq!(value["planPins"], json!([{"target": "5/1", "target_row": 51, "sources": ["3/0", "3/1"]}]));
         assert_eq!(value["lockEvent"], "2026-10-21 09:00:00Z · locked 2 cards · seal cccccccccccc");
         assert_eq!(value["noteEvent"], "2026-10-21 09:05:00Z · note: none → final");
+        assert_eq!(value["lockOne"], "2026-10-21 09:00:00Z · locked 1 card · seal cccccccccccc", "a count of one is singular");
+        assert_eq!(value["unlockOne"], "2026-10-21 10:00:00Z · unlocked · released 1 card and 1 pinned target");
+        assert_eq!(value["unlockMany"], "2026-10-21 10:00:00Z · unlocked · released 2 cards and 3 pinned targets");
+        assert_eq!(value["unlockUnknown"], "2026-10-21 10:00:00Z · unlocked · released ? cards and ? pinned targets");
     }
 
     /// S06 (#129, S06-AC08, AC05): a latched fault breaks its tree's seal exactly as a current one

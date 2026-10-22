@@ -223,15 +223,20 @@
     return [...groups.values()];
   }
 
+  /** `1 card`, `2 cards`, `? cards`: a count with its noun, singular only at exactly one. */
+  function counted(count, noun) {
+    return `${count ?? '?'} ${noun}${count === 1 ? '' : 's'}`;
+  }
+
   /** One history line for a Lock event: its time, its action and the facts that matter. */
   function eventLine(event) {
     const detail = (event && event.detail && typeof event.detail === 'object') ? event.detail : {};
     const at = String((event && event.at) || '').replace('T', ' ').replace(/\.\d+Z$/, 'Z');
     switch (event && event.action) {
       case 'lock':
-        return `${at} · locked ${detail.member_count ?? '?'} cards · seal ${sealShort(detail.seal)}`;
+        return `${at} · locked ${counted(detail.member_count, 'card')} · seal ${sealShort(detail.seal)}`;
       case 'unlock':
-        return `${at} · unlocked · released ${detail.member_count ?? '?'} cards and ${detail.pin_count ?? '?'} pinned targets`;
+        return `${at} · unlocked · released ${counted(detail.member_count, 'card')} and ${counted(detail.pin_count, 'pinned target')}`;
       case 'note':
         return `${at} · note: ${detail.previous_note ?? 'none'} → ${detail.note ?? 'none'}`;
       case 'reseal':
