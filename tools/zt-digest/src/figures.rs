@@ -60,6 +60,8 @@ pub(crate) struct Figure {
     pub labels: Vec<String>,
     pub alt: String,
     pub line: String,
+    /// Where the image first appears in the book's text (0, 1, …); an image the text never holds sorts last.
+    pub position: usize,
 }
 
 /// `Get-FigureImageName`: the file name an image line refers to, or None for a line that is not
@@ -189,12 +191,14 @@ pub(crate) fn figures_from_text(text: &str, kept: &Value) -> Result<CiMap<Figure
             Figure {
                 sha256: figure["sha256"].clone(),
                 path: figure["path"].clone(),
+                position: usize::MAX,
                 ..Figure::default()
             },
         );
     }
     let text = text.replace("\r\n", "\n");
     let blocks: Vec<&str> = BLOCKS.split(&text).collect();
+    let mut images_seen = 0usize;
     for i in 0..blocks.len() {
         let lines: Vec<&str> = blocks[i].split('\n').collect();
         for k in 0..lines.len() {
@@ -236,15 +240,18 @@ pub(crate) fn figures_from_text(text: &str, kept: &Value) -> Result<CiMap<Figure
                 }
             }
             // No caption below: a figure whose title is the heading above it (`# 图 1.1. …`, then its
-            // text and panels) takes that heading's label. The nearest heading decides; one that names
-            // no figure gives none (ebrill2001modern: the two maps of 图 1.1 were never shown).
+            // text and panels) takes that heading's label. The nearest heading decides, however far up:
+            // the image belongs to that section, and one that names no figure gives none
+            // (ebrill2001modern: the second map of 图 1.1 sat more than eight blocks below its heading).
             if found.is_empty() {
-                let above = lines[..k].iter().rev().copied().chain(blocks[i.saturating_sub(8)..i].iter().rev().flat_map(|block| block.trim().split('\n').rev()));
+                let above = lines[..k].iter().rev().copied().chain(blocks[..i].iter().rev().flat_map(|block| block.trim().split('\n').rev()));
                 if let Some(heading) = above.map(str::trim).find(|line| line.starts_with('#')) {
                     found = labels(heading.trim_start_matches('#'));
                 }
             }
             let mut figure = figures.get(&name).cloned().unwrap_or_default();
+            figure.position = figure.position.min(images_seen);
+            images_seen += 1;
             for label in found {
                 if !figure.labels.contains(&label) {
                     figure.labels.push(label);
@@ -337,6 +344,27 @@ struct Card {
     text: String,
 }
 
+/// The figures in the book's order (their first appearance in the text, then their path), and one entry per
+/// label and image: a figure of several panels (图 1.1 as two maps) names every panel under its label, in order.
+/// The attach step had kept one image per label, the first by file path (a hash), so later panels were lost.
+fn attach_order(figures: &CiMap<Figure>) -> (Vec<(Figure, Vec<Mention>)>, Vec<(String, usize)>) {
+    let mut ordered: Vec<(Figure, Vec<Mention>)> = figures
+        .iter()
+        .map(|(_, f)| {
+            let patterns = f.labels.iter().map(|l| Mention::new(l)).collect();
+            (f.clone(), patterns)
+        })
+        .collect();
+    ps::ps_sort(&mut ordered, |a, b| a.0.position.cmp(&b.0.position).then_with(|| ps::culture_cmp(&s(&a.0.path), &s(&b.0.path))));
+    let mut by_label: Vec<(String, usize)> = Vec::new();
+    for (i, (figure, _)) in ordered.iter().enumerate() {
+        for label in &figure.labels {
+            by_label.push((label.clone(), i));
+        }
+    }
+    (ordered, by_label)
+}
+
 /// `Get-MentionText`: image alt text and Link targets are not mentions.
 fn mention_text(block: &str) -> String {
     let t = ALT_OR_LINK.replace_all(block, "");
@@ -371,8 +399,17 @@ fn add_figures(card: &Card, by_label: &[(String, usize)], figures: &[(Figure, Ve
             continue;
         }
         let named = |t: &str| patterns.iter().any(|p| p.is_in(t));
-        let mut at: Option<i64> = None;
+        // A later panel of a figure the Card already shows goes right after the last earlier panel there.
+        let earlier: Vec<String> = figures[..*at_figure]
+            .iter()
+            .filter(|(other, _)| other.labels.iter().any(|label| figure.labels.contains(label)))
+            .map(|(other, _)| format!("artifact:{}", s(&other.sha256)))
+            .collect();
+        let mut at: Option<i64> = (0..blocks.len()).rev().find(|b| earlier.iter().any(|artifact| blocks[*b].contains(artifact.as_str()))).map(|b| b as i64);
         for b in 0..blocks.len() {
+            if at.is_some() {
+                break;
+            }
             let open_before = b > 0 && open[b - 1];
             if !open_before && named(&mention_text(blocks[b])) {
                 at = Some(b as i64);
@@ -477,7 +514,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let mut figures: CiMap<Figure> = CiMap::new();
     if !figures_file.is_empty() {
         let listed = ps::parse_json(&util::read_text(&figures_file)?)?;
-        for f in ps::each(&listed["figures"]) {
+        for (index, f) in ps::each(&listed["figures"]).into_iter().enumerate() {
             figures.insert(
                 &s(&f["name"]),
                 Figure {
@@ -486,6 +523,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     labels: ps::ps_items(&f["labels"]).iter().map(s).collect(),
                     alt: s(&f["alt"]),
                     line: s(&f["line"]),
+                    // A figures file keeps its list order unless it names each figure's place in the text.
+                    position: f["position"].as_u64().map(|n| n as usize).unwrap_or(index),
                 },
             );
         }
@@ -508,28 +547,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     {
         return crate::lockcheck::stop("figures", &refusal);
     }
-    // One entry per label; a label two images share keeps the first.
-    let mut ordered: Vec<(Figure, Vec<Mention>)> = figures
-        .iter()
-        .map(|(_, f)| {
-            let patterns = f.labels.iter().map(|l| Mention::new(l)).collect();
-            (f.clone(), patterns)
-        })
-        .collect();
-    ps::ps_sort(&mut ordered, |a, b| ps::culture_cmp(&s(&a.0.path), &s(&b.0.path)));
-    let mut by_label: CiMap<usize> = CiMap::new();
-    for (i, (figure, _)) in ordered.iter().enumerate() {
-        for label in &figure.labels {
-            if !by_label.contains(label) {
-                by_label.insert(label, i);
-            }
-        }
-    }
-    let by_label: Vec<(String, usize)> = by_label.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let (ordered, by_label) = attach_order(&figures);
 
     // --- the Cards of this book that name a figure ---
     let mut queries: Vec<(&str, Value)> = Vec::new();
+    let mut asked: HashSet<String> = HashSet::new();
     for (label, _) in &by_label {
+        if !asked.insert(label.to_lowercase()) {
+            continue;
+        }
         for q in [format!("图 {label}"), format!("图{label}")] {
             queries.push(("search_cards", json!({ "query": q, "workspace": "agent", "limit": 200 })));
         }
@@ -726,6 +752,42 @@ mod tests {
         assert_eq!(figures.get("m1.jpg").unwrap().labels, vec!["1.1"]);
         assert_eq!(figures.get("m2.jpg").unwrap().labels, vec!["1.1"], "a later panel under the same heading");
         assert!(figures.get("c.jpg").unwrap().labels.is_empty(), "a heading that names no figure gives no label");
+        // In the bilingual source the second map sits more than eight blocks below its heading (English and
+        // Chinese text, an image description); the nearest heading still decides.
+        let filler = (0..12).map(|n| format!("Paragraph {n}.\n\n段落 {n}。")).collect::<Vec<_>>().join("\n\n");
+        let far = format!("# Figure 1.1. The Spread of the VAT\n\n# 图 1.1. 增值税的传播\n\n![](images/m1.jpg)\n\n{filler}\n\n![](images/m2.jpg)\n\n# 第二章\n\n![](images/c.jpg)");
+        let figures = figures_from_text(&far, &kept).unwrap();
+        assert_eq!(figures.get("m2.jpg").unwrap().labels, vec!["1.1"], "a panel far below its figure heading");
+        assert!(figures.get("c.jpg").unwrap().labels.is_empty());
+    }
+
+    /// ebrill2001modern: 图 1.1 is two map panels under one heading. The attach step kept one image per label
+    /// (the first by file path, a hash), so the second map was never shown.
+    #[test]
+    fn every_panel_of_a_figure_is_attached_in_source_order() {
+        // The panels' file names sort the other way round from the book's order.
+        let kept = json!({ "figures": [
+            { "name": "zz-first.jpg", "sha256": "11", "path": "B/images/zz-first.jpg" },
+            { "name": "aa-second.jpg", "sha256": "22", "path": "B/images/aa-second.jpg" },
+            { "name": "chart.jpg", "sha256": "33", "path": "B/images/chart.jpg" },
+        ]});
+        let text = "# 图 1.1. 增值税的传播\n\n正文。\n\n![](images/zz-first.jpg)\n\n说明。\n\n![](images/aa-second.jpg)\n\n# 第二章\n\n![](images/chart.jpg)\n图 2.1 税率";
+        let figures = figures_from_text(text, &kept).unwrap();
+        let (ordered, by_label) = attach_order(&figures);
+        let names: Vec<String> = by_label.iter().map(|(label, i)| format!("{label}:{}", s(&ordered[*i].0.sha256))).collect();
+        assert_eq!(names, vec!["1.1:11", "1.1:22", "2.1:33"], "every image of a label, in the book's order");
+        let card = Card { address: "K/2|b".into(), title: "增值税的传播".into(), body: "图 1.1 标出各国引入增值税的年代。\n\n来源：[[K]]".into(), text: String::new() };
+        let (body, added) = add_figures(&card, &by_label, &ordered).unwrap();
+        assert_eq!(added.len(), 2, "both panels are attached");
+        let first = body.find("artifact:11").unwrap();
+        let second = body.find("artifact:22").unwrap();
+        assert!(body.find("图 1.1 标出").unwrap() < first && first < second && second < body.find("来源").unwrap(), "{body}");
+        assert!(!body.contains("artifact:33"), "a figure the Card does not name is not attached");
+        // A Card that already shows the first panel gains only the second.
+        let shown = Card { body: "图 1.1 见下。\n\n![图 1.1](artifact:11)".into(), ..card };
+        let (body, added) = add_figures(&shown, &by_label, &ordered).unwrap();
+        assert_eq!(added.len(), 1);
+        assert!(body.find("artifact:11").unwrap() < body.find("artifact:22").unwrap());
     }
 
     #[test]

@@ -32,7 +32,7 @@ try {
     # Two figures ZET holds: the bytes sit in the archive's artifact store under their SHA-256.
     $store = Join-Path $archive 'artifacts'
     New-Item -ItemType Directory -Force $store | Out-Null
-    $figs = foreach ($n in 'a', 'b') {
+    $figs = foreach ($n in 'a', 'b', 'c') {
         $bytes = [byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) + [Text.Encoding]::ASCII.GetBytes("fixture-$n")
         $sha = -join ([Security.Cryptography.SHA256]::HashData($bytes) | ForEach-Object { $_.ToString('x2') })
         [IO.File]::WriteAllBytes((Join-Path $store "$sha.png"), $bytes)
@@ -41,7 +41,9 @@ try {
     $figuresFile = Join-Path $scratch 'figures.json'
     $figureList = @(
         [ordered]@{ name = 'a.jpg'; labels = @('2.C.1'); alt = '图 2.C.1'; line = "![图 2.C.1](artifact:$($figs[0]))"; sha256 = $figs[0]; path = 'B/images/a.jpg' },
-        [ordered]@{ name = 'b.jpg'; labels = @('IV', '四'); alt = '图 IV'; line = "![图 IV](artifact:$($figs[1]))"; sha256 = $figs[1]; path = 'B/images/b.jpg' }
+        [ordered]@{ name = 'b.jpg'; labels = @('IV', '四'); alt = '图 IV'; line = "![图 IV](artifact:$($figs[1]))"; sha256 = $figs[1]; path = 'B/images/b.jpg' },
+        # The second panel of 图 IV; its path sorts before the first panel's (ebrill2001modern: 图 1.1's two maps).
+        [ordered]@{ name = 'c.jpg'; labels = @('IV', '四'); alt = '图 IV'; line = "![图 IV](artifact:$($figs[2]))"; sha256 = $figs[2]; path = 'B/images/0-panel.jpg' }
     )
     [IO.File]::WriteAllText($figuresFile, ([ordered]@{ file_id = 0; figures = $figureList } | ConvertTo-Json -Depth 5), $utf8)
 
@@ -71,7 +73,7 @@ try {
     Assert ($before.body -notmatch 'artifact:') 'the dry run writes nothing'
 
     $applied = (& $run -Apply) | ConvertFrom-Json
-    Assert ($applied.applied -and $applied.shown -eq 3) "the run shows three figures: $($applied | ConvertTo-Json -Compress)"
+    Assert ($applied.applied -and $applied.shown -eq 4) "the run shows four figures: $($applied | ConvertTo-Json -Compress)"
     $cards = @{}
     foreach ($c in @(Invoke-Zt @('Test2020/1', 'Test2020/1|a', 'Test2020/1|a|1', 'Test2020/1|a|2', 'Test2020/1|b', '0/1' | ForEach-Object { @{ tool = 'get_card'; arguments = @{ at = $_ } } }))) { $cards[$c.address] = $c.body }
     $line1 = "![图 2.C.1](artifact:$($figs[0]))"
@@ -79,6 +81,8 @@ try {
     Assert ($cards['Test2020/1|a|1'] -notmatch 'artifact:') 'a longer number (图 2.C.10) is not a mention'
     Assert ($cards['Test2020/1|a|2'] -eq "$table`n`n$line1`n`n凸性排除第二种情形。") "a mention in a table puts the figure after the table: $($cards['Test2020/1|a|2'])"
     Assert ($cards['Test2020/1|b'] -match [regex]::Escape("![图 IV](artifact:$($figs[1]))")) 'a Card of the book gets the figure its Chinese numeral names'
+    $panel1 = $cards['Test2020/1|b'].IndexOf("artifact:$($figs[1])"); $panel2 = $cards['Test2020/1|b'].IndexOf("artifact:$($figs[2])")
+    Assert ($panel2 -gt $panel1 -and $panel1 -ge 0) "every panel of a figure is shown, in the book's order: $($cards['Test2020/1|b'])"
     Assert ($cards['0/1'] -notmatch 'artifact:') 'a Topic Card that cites the book is left alone'
     Assert ($cards['Test2020/1'] -notmatch 'artifact:') 'the anchor line is left alone'
 
