@@ -450,8 +450,8 @@ impl Prepared {
             }
             _ => bail!("incompatible workflow contract: unknown variant {variant}"),
         })?;
-        if contract["contracts"]["base_version"] != base["version"]
-            || contract["contracts"]["variant_version"] != profile["version"]
+        if !patch_compatible(&contract["contracts"]["base_version"], &base["version"])
+            || !patch_compatible(&contract["contracts"]["variant_version"], &profile["version"])
         {
             bail!("incompatible workflow contract: base/variant versions differ");
         }
@@ -632,6 +632,25 @@ impl Prepared {
             contract,
             hash,
         })
+    }
+}
+
+/// Whether this tool's blueprint version can drive a run prepared under `run`: the same major and minor
+/// version, and a patch no older than the run's. A patch release fixes how the work is driven, never what
+/// a run froze, so a run prepared under 6.1.1 is resumed and repaired by the fixed 6.1.2 tools
+/// (ebrill2001modern: every fix landed as a patch, and the exact match left the run readable only by the
+/// binary that had the bugs). A newer run is never read by an older tool.
+fn patch_compatible(run: &Value, tool: &Value) -> bool {
+    let parts = |value: &Value| -> Option<(u64, u64, u64)> {
+        let mut numbers = value.as_str()?.split('.').map(|part| part.parse::<u64>().ok());
+        let version = (numbers.next()??, numbers.next()??, numbers.next()??);
+        numbers.next().is_none().then_some(version)
+    };
+    match (parts(run), parts(tool)) {
+        (Some((major, minor, patch)), Some((tool_major, tool_minor, tool_patch))) => {
+            major == tool_major && minor == tool_minor && patch <= tool_patch
+        }
+        _ => run == tool,
     }
 }
 
@@ -2684,8 +2703,8 @@ fn verify_coverage(
                         }
                     }
                 }
-                "unmatched" | "unresolved" if !reason.is_empty() => {}
-                "unmatched" | "unresolved" => {
+                "unmatched" | "unresolved" | "outside" if !reason.is_empty() => {}
+                "unmatched" | "unresolved" | "outside" => {
                     bail!("figure coverage must give a reason for `{reference}`")
                 }
                 _ => bail!("unknown figure coverage outcome `{outcome}`"),
@@ -5013,6 +5032,40 @@ fn close_enumerations(tx: &Transaction) -> Result<()> {
                     canon::utc_now_o(),
                     "sealed_enumeration",
                     canon::canonical_json(&json!({"layer":layer,"producer":Value::Null,"cause":"every unit that can register a resource is terminal"}))
+                ],
+            )?;
+            continue;
+        }
+        if *layer == "notes" {
+            // Organize registers its note suggestions and disposes them before it publishes, so the notes
+            // enumeration closes once the latest Organize publication is terminal and no note is open.
+            // Nothing closed it before: no run was ever settled (ebrill2001modern, acemoglu2025nobel).
+            if meta(tx, "barrier/notes")?["sealed"] == true {
+                continue;
+            }
+            let organize: Option<String> = tx
+                .query_row(
+                    "SELECT state FROM units WHERE layer='organize' AND logical_key='book' ORDER BY revision DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let open: i64 = tx.query_row(
+                "SELECT count(*) FROM units WHERE layer='notes' AND state NOT IN ('done','failed','blocked')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !organize.is_some_and(|state| ["done", "failed", "blocked"].contains(&state.as_str())) || open > 0 {
+                continue;
+            }
+            seal(tx, layer)?;
+            tx.execute(
+                "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(NULL,?1,?2,?3,?4)",
+                params![
+                    meta(tx, "invocation")?.as_i64().context("invalid invocation number")?,
+                    canon::utc_now_o(),
+                    "sealed_enumeration",
+                    canon::canonical_json(&json!({"layer":layer,"producer":"organize","cause":"the Organize publication that disposes every note suggestion is terminal"}))
                 ],
             )?;
             continue;
@@ -15541,6 +15594,64 @@ fn cleanup_finish(p: &Prepared, unit: &str, token: i64, check_only: bool) -> Res
     Ok(result)
 }
 
+/// A cleanup unit completed as a reconciliation (`cleanup_complete: false`: an unrecorded workspace member, an
+/// unrecovered creation response) waits for a human. Once the recorded facts show the human resolved it, the
+/// same verifier finds nothing left and the unit's completion is recorded again, with a `reconciled` event
+/// that keeps the earlier result. Before this nothing recorded the resolution, so such a run could never be
+/// cleanup-complete (ebrill2001modern: a stray conversation that was deleted later). A unit someone holds is
+/// left alone; the unit's state stays done.
+fn reverify_reconciliations(p: &Prepared) -> Result<Vec<String>> {
+    let candidates: Vec<(String, String)> = {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let mut statement = conn.prepare("SELECT id,result_json FROM units WHERE layer='cleanup' AND state='done' AND result_json IS NOT NULL ORDER BY id")?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let mut reconciled = Vec::new();
+    for (unit, raw) in candidates {
+        let prior: Value = serde_json::from_str(&raw)?;
+        if prior["cleanup_complete"] == json!(true) {
+            continue;
+        }
+        let _guard = unit_guard(p, &unit)?;
+        let assessment = cleanup_assessment(p, &unit, false)?;
+        if assessment["cleanup_complete"] != json!(true)
+            || assessment["issues"].as_array().is_some_and(|issues| !issues.is_empty())
+        {
+            continue;
+        }
+        let mut result = prior.clone();
+        for key in ["status", "content_complete", "cleanup_complete", "reconciliation", "resources"] {
+            result[key] = assessment[key].clone();
+        }
+        result["partial_reasons"] = json!([]);
+        result["reconciled_at"] = json!(canon::utc_now_o());
+        let mut conn = writer(p)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        verify_binding(&tx, p)?;
+        let changed = tx.execute(
+            "UPDATE units SET result_json=?2 WHERE id=?1 AND state='done' AND result_json=?3",
+            params![unit, canon::canonical_json(&result), raw],
+        )?;
+        if changed != 1 {
+            continue;
+        }
+        event(
+            &tx,
+            &unit,
+            None,
+            None,
+            "reconciled",
+            &json!({"prior_status":prior["status"],"prior_reasons":prior["partial_reasons"],"status":result["status"],"cleanup_complete":true}),
+        )?;
+        tx.commit()?;
+        reconciled.push(unit);
+    }
+    Ok(reconciled)
+}
+
 /// `cleanup-finish -Ready`: claims every ready cleanup unit and settles each through its checked verifier
 /// in one process, the run-level unit last; a unit that cannot settle gets its retryable fault with the
 /// claim's own hash and is claimed again within the run's attempt budget. ebrill2001modern trial 1 spent one
@@ -15604,6 +15715,7 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
             break;
         }
     }
+    let reconciled = reverify_reconciliations(p)?;
     let list = |wanted: &dyn Fn(&str) -> bool| -> Vec<Value> {
         open.iter().filter(|(_, (state, _))| wanted(state)).take(8).map(|(unit, (state, cause))| json!({"unit":unit,"state":state,"cause":cause})).collect()
     };
@@ -15612,6 +15724,7 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
         "schema_version":1,"kind":"cleanup_ready","rounds":rounds,"claimed":claimed,"done":done,"partial":partial,
         "retry_count":count(&|state| state == "retry"),"failed_count":count(&|state| state != "retry"),
         "retry":list(&|state| state == "retry"),"failed":list(&|state| state != "retry"),
+        "reconciled":reconciled,
         "book":book
     }))
 }
@@ -16328,6 +16441,18 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_patch_release_drives_a_run_of_an_earlier_patch_only() {
+        let v = |text: &str| json!(text);
+        assert!(patch_compatible(&v("6.1.2"), &v("6.1.2")));
+        assert!(patch_compatible(&v("6.1.1"), &v("6.1.2")), "the fixed patch drives an earlier patch's run");
+        assert!(!patch_compatible(&v("6.1.3"), &v("6.1.2")), "an older tool never reads a newer run");
+        assert!(!patch_compatible(&v("6.0.9"), &v("6.1.2")), "a minor release is a new contract");
+        assert!(!patch_compatible(&v("5.1.2"), &v("6.1.2")));
+        assert!(!patch_compatible(&v("999.0.0"), &v("5.1.2")));
+        assert!(!patch_compatible(&v("6.1"), &v("6.1.2")), "a version that is not major.minor.patch must match exactly");
+    }
 
     // A card split appends the new Card to its group's owned manifest (`add_owned`): a manifest whose leading
     // lines still hash to the frozen value is the frozen enumeration plus split Cards; any other change is not

@@ -243,6 +243,10 @@ try {
     $after = Run-Digest @('ledger','gate','-Out',$out,'-Layer','cleanup')
     Assert ($after.sealed -and $after.settled -and $after.counts.done -eq 3) 'the cleanup layer settles on its three completed units once every other unit is terminal'
     Assert ($after.cleanup.content_complete -eq $false -and $after.cleanup.cleanup_complete -eq $true -and $after.cleanup.run_complete -eq $false) 'the run reports content_complete and cleanup_complete as separate facts'
+    # ebrill2001modern: no stage registers note suggestions and nothing closed the notes enumeration, so no run
+    # was ever settled. It closes once Organize's publication is terminal and no note unit is open.
+    $whole = Run-Digest @('ledger','status','-Out',$out)
+    Assert ($whole.settled -eq $true) 'the whole run settles: the notes enumeration closes once Organize is terminal'
 
     # --- R327: an unrecovered lost creation response is a reported reconciliation, not a silent success ---
     $reconcileOut = Join-Path $scratch 'reconcile'
@@ -269,6 +273,16 @@ try {
     $partial = Run-Digest @('cleanup-finish','-Out',$reconcileOut,'-Unit',$lostUnit.id,'-Token',"$($lostUnit.token)")
     Assert ($partial.cleanup_complete -eq $false -and $partial.status -eq 'partial' -and @($partial.reconciliation)[0].code -eq 'lost_creation_response') 'an unrecovered creation response completes as a reported reconciliation rather than a silent success'
     Assert ($partial.reconciliation[0].workspace -eq $workspace -and $partial.reconciliation[0].cleanup_unit -eq $lost.cleanup_unit) 'the reconciliation names the exact workspace and cleanup unit a human must reconcile'
+    # ebrill2001modern: a reconciliation waits for a human, but nothing recorded that the human resolved it, so the
+    # run could never be cleanup-complete. `cleanup-finish -Ready` verifies a reconciled unit again from the facts.
+    $reconcileRun = (Run-Digest @('ledger','status','-Out',$reconcileOut)).run_id
+    $null = Observe ([ordered]@{ schema_version = 1; op = 'recovered'; resource = $lost.resources[0].id; conversation = 'conv-lost'; label = "zet-$reconcileRun-digest-g001-1-t$($claims[0].token)" })
+    Finish-Conversation $reconcileOut $lost.resources[0].id 'conv-lost'
+    $ready = Run-Digest @('cleanup-finish','-Out',$reconcileOut,'-Ready','-Owner','cleanup-ready')
+    $settledLost = @((Run-Digest @('ledger','status','-Out',$reconcileOut,'-Layer','cleanup')).units | Where-Object { $_.id -eq $lost.cleanup_unit })[0]
+    Assert (@($ready.reconciled) -contains $lost.cleanup_unit -and $settledLost.state -eq 'done' -and $settledLost.result.cleanup_complete -eq $true -and @($settledLost.result.reconciliation).Count -eq 0) 'a reconciliation a human resolved is verified again and recorded complete'
+    $still = @((Run-Digest @('ledger','status','-Out',$reconcileOut,'-Layer','cleanup')).units | Where-Object { $_.id -eq $guardedUnit.id })[0]
+    Assert ($still.state -eq 'claimed') 'a unit another agent holds is left to it'
 
     # --- ebrill2001modern trial 1: the plain record commands take the claim's fence, and an ended run's
     # expired claim does not block them (the resume's agents met claim_active on every -SettleWorkspace) ---
@@ -329,6 +343,7 @@ try {
     Assert ($ready.book.unit -eq 'cleanup/book@1' -and $ready.book.ok -eq $false) 'the run-level unit is reported apart, settled last'
     $again = Run-Digest @('cleanup-finish','-Out',$readyOut,'-Ready','-Owner','cleanup-ready')
     Assert ($again.claimed -eq 0) 'a second call finds nothing ready'
+
     Write-Output 'ok: owned resources, cleanup evidence and scratch removal verified'
 } finally {
     if (Test-Path $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }

@@ -1064,6 +1064,10 @@ fn run_refresh(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
 /// otherwise `unmatched` with its reason. The prepared figures file and the stage's own report are the
 /// only sources; nothing is asserted by a caller.
 fn figures_coverage(recognized: &[Value], report: &Value) -> Vec<Value> {
+    // A figure some Card of the book already shows, and one outside the digested range, as the stage's
+    // report lists them by sha256 (ebrill2001modern: four figures reported unmatched, three of them shown).
+    let already: BTreeSet<String> = ps::ps_items(&report["shown"]).iter().map(ps::s).collect();
+    let outside: BTreeSet<String> = ps::ps_items(&report["outside"]).iter().map(ps::s).collect();
     let shown: BTreeSet<String> = ps::ps_items(&report["cards"])
         .into_iter()
         .flat_map(|card| ps::ps_items(&card["figures"]).into_iter().map(|label| ps::s(&label).trim().to_string()))
@@ -1079,7 +1083,11 @@ fn figures_coverage(recognized: &[Value], report: &Value) -> Vec<Value> {
             for label in ps::ps_items(&figure["labels"]) {
                 names.push(format!("图 {}", ps::s(&label).trim()));
             }
-            let is_shown = names.iter().any(|name| shown.contains(name));
+            let sha = ps::s(&figure["sha256"]);
+            let is_shown = names.iter().any(|name| shown.contains(name)) || already.contains(&sha);
+            if outside.contains(&sha) && !is_shown {
+                return json!({"ref": figure["name"], "outcome": "outside", "reason": "the image lies outside the digested range of the source"});
+            }
             if is_shown {
                 json!({"ref": figure["name"], "outcome": "shown", "path": figure["path"], "sha256": figure["sha256"]})
             } else {
@@ -1091,6 +1099,14 @@ fn figures_coverage(recognized: &[Value], report: &Value) -> Vec<Value> {
             }
         })
         .collect()
+}
+
+/// The scope of a stage publication: its layer and the hash of its checked coverage. A stage run again on
+/// unchanged inputs with the same coverage reuses its revision; one whose coverage changed publishes a new
+/// revision that supersedes the old. With no scope the old revision was always reused, so a Figures stage run
+/// again after its gaps were fixed kept reporting them (ebrill2001modern: four figures unmatched, three shown).
+fn stage_scope(layer: &str, coverage: &[Value]) -> Value {
+    json!({"stage": layer, "coverage_sha256": crate::canon::sha256_hex(crate::canon::canonical_json(&json!(coverage)).as_bytes())})
 }
 
 /// `-Step stage`: a stage-owned publication (Organize, the skeleton, Figures, Bridge) completed by its own
@@ -1135,7 +1151,7 @@ fn run_stage(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
     };
     // The stage reads this line through a relay, so the checked coverage comes back as counts per
     // outcome; the evidence file and the ledger keep every entry.
-    let mut done = complete_publication(p, zt, &layer, Value::Null, &artifacts, &coverage)?;
+    let mut done = complete_publication(p, zt, &layer, stage_scope(&layer, &coverage), &artifacts, &coverage)?;
     let mut counts = BTreeMap::<String, u64>::new();
     for entry in ps::ps_items(&done["coverage"]) {
         *counts.entry(ps::s(&entry["outcome"])).or_default() += 1;
@@ -1444,7 +1460,16 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
 #[cfg(test)]
 mod stage_tests {
-    use super::figures_coverage;
+    use super::{figures_coverage, stage_scope};
+
+    #[test]
+    fn a_stage_scope_changes_with_its_coverage_only() {
+        let unmatched = vec![json!({"ref":"a.jpg","outcome":"unmatched","reason":"no label"})];
+        let shown = vec![json!({"ref":"a.jpg","outcome":"shown","path":"p","sha256":"aa"})];
+        assert_eq!(stage_scope("figures", &unmatched), stage_scope("figures", &unmatched.clone()));
+        assert_ne!(stage_scope("figures", &unmatched), stage_scope("figures", &shown));
+        assert_ne!(stage_scope("figures", &shown), stage_scope("bridge", &shown));
+    }
     use serde_json::json;
 
     // A stage publication's Figures coverage: a figure a Card names is shown (by its alt text or a label),
@@ -1465,6 +1490,14 @@ mod stage_tests {
         assert!(coverage[2]["reason"].as_str().unwrap().contains("no label"));
         assert_eq!(coverage[3]["outcome"], json!("unmatched"));
         assert!(coverage[3]["reason"].as_str().unwrap().contains("图 IV"));
+        // ebrill2001modern: a figure a Card already shows is shown, and one outside the digested range is
+        // not a gap, whatever its labels.
+        let report = json!({"cards":[], "shown":["cc","dd"], "outside":["bb"]});
+        let coverage = figures_coverage(&recognized, &report);
+        assert_eq!(coverage[0]["outcome"], json!("unmatched"));
+        assert_eq!(coverage[1], json!({"ref":"b.jpg","outcome":"outside","reason":"the image lies outside the digested range of the source"}));
+        assert_eq!(coverage[2]["outcome"], json!("shown"));
+        assert_eq!(coverage[3]["outcome"], json!("shown"));
     }
 }
 

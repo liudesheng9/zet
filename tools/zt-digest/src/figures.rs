@@ -422,6 +422,26 @@ fn write_batch(zt: &mut Zt, edits: &[Value]) -> Result<()> {
     Ok(())
 }
 
+/// The figures a Card body shows (its artifact sha256 appears there), and the figures the digested text
+/// never holds (when the run's digested text is known), each by sha256 in the figures' order.
+fn figure_presence(figures: &CiMap<Figure>, bodies: &[String], digested: Option<&str>) -> (Vec<String>, Vec<String>) {
+    let mut shown = Vec::new();
+    let mut outside = Vec::new();
+    for (_, figure) in figures.iter() {
+        let sha = s(&figure.sha256);
+        if sha.is_empty() {
+            continue;
+        }
+        let artifact = format!("artifact:{sha}");
+        if bodies.iter().any(|body| body.contains(&artifact)) {
+            shown.push(sha);
+        } else if digested.is_some_and(|text| !text.contains(&artifact)) {
+            outside.push(sha);
+        }
+    }
+    (shown, outside)
+}
+
 /// `zt-digest figures` (attach-figures.ps1).
 pub fn cli(argv: &[String]) -> Result<i32> {
     let params = ["CitationKey", "FileId", "Staging", "Source", "MinFigureBytes", "Report", "Batch", "FiguresFile"];
@@ -585,8 +605,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
     }
 
+    // Which figures a Card of the book already shows (a Card the writer gave the image, or an earlier
+    // attach), and which lie outside the digested range: the stage publication counts neither as a gap.
+    // ebrill2001modern: 图 12.1 sat in 45|d and the two maps of 图 1.1 in 2|b, and the back cover's barcode
+    // lies after the end heading, yet all four were reported unmatched.
+    let tree = read_calls(&mut zt, &[("get_tree", json!({ "tree": key, "bodies": true }))])?.into_iter().next().unwrap_or(Value::Null);
+    let mut bodies: Vec<String> = ps::each(&tree["cards"]).into_iter().map(|card| s(&card["body"])).collect();
+    bodies.extend(plan.iter().map(|p| s(&p["body"])));
+    let digested = if staging.is_empty() { None } else { util::read_text(ps::join_path(&staging, "book.zh.md")).ok() };
+    let (already, outside) = figure_presence(&figures, &bodies, digested.as_deref());
     if !report.is_empty() {
-        let value = json!({ "citation_key": key, "file_id": file_id, "cards": plan, "literature": root_change });
+        let value = json!({ "citation_key": key, "file_id": file_id, "cards": plan, "literature": root_change, "shown": already, "outside": outside });
         std::fs::write(&report, ps::json_pretty(&value)).with_context(|| format!("failed to write {report}"))?;
     }
     let labelled = figures.iter().filter(|(_, f)| !f.labels.is_empty()).count();
@@ -606,6 +635,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "book_cards": cards.len(),
         "cards": plan.len(),
         "shown": shown,
+        "already_shown": already.len(),
+        "outside": outside.len(),
         "documents": documents,
         "literature": !root_change.is_null(),
         "sample": sample,
@@ -616,6 +647,21 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_figure_is_shown_by_any_card_body_and_outside_when_the_digest_never_holds_it() {
+        let mut figures: CiMap<Figure> = CiMap::new();
+        for (name, sha) in [("map.jpg", "aa"), ("chart.jpg", "bb"), ("barcode.jpg", "cc"), ("new.jpg", "dd")] {
+            figures.insert(name, Figure { sha256: json!(sha), ..Figure::default() });
+        }
+        let bodies = vec!["图 1.1 ![图 1.1](artifact:aa)".to_string(), "planned ![图 2](artifact:bb)".to_string()];
+        let digested = "![](artifact:aa)\n![](artifact:bb)\n![](artifact:dd)";
+        let (shown, outside) = figure_presence(&figures, &bodies, Some(digested));
+        assert_eq!(shown, vec!["aa", "bb"]);
+        assert_eq!(outside, vec!["cc"], "the barcode after the end heading is outside; the unshown in-range figure is not");
+        let (_, unknown) = figure_presence(&figures, &bodies, None);
+        assert!(unknown.is_empty(), "with no digested text nothing is called outside");
+    }
 
     #[test]
     fn caption_labels() {
