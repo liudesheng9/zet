@@ -7,7 +7,7 @@ This proposal looks at the Claude Code tokens (not the DeepSeek tokens) that one
 - the workflow's own agents: trial 1 (`wf_c39c27e9-d1c`, 876 agents), its resume (`wf_a36a082e-c62`, 129 agents), and the later single-stage repair runs (modes `figures`, `bridge` and `audit`);
 - the main session that started, watched and repaired the run.
 
-It names the work an agent did that a script can do, and proposes a non-agent method for each part.
+It names the work an agent did that a script can do, and proposes a non-agent method for each part. No proposal may change the digest's quality or robustness: the section "Quality and robustness" states what may not change, the risk of each proposal, and the gates each must pass.
 
 ## Method
 
@@ -193,6 +193,47 @@ On a book of this size (trial 1: 68.7M weighted, 876 agents):
 
 P1 to P4 need only zt-digest and workflow module changes of the kind already made for cleanup, and together they remove about 460 of trial 1's 613 relays. P6 is the largest saving among the managers but needs a bridge release. The estimates overlap where proposals touch the same agents (P2 and P5, P1 and P5), so the totals are not additive.
 
+## Quality and robustness
+
+A token saving is accepted only when it leaves the digest's output and its fault handling exactly as they are. This section states what may not change, what each proposal could put at risk, and the gate it must pass before it ships. A proposal that fails its gate is dropped, not weakened.
+
+### What may not change
+
+1. **What DeepSeek is asked and how.** The same prompt files, model (DeepSeek V4.1 Flash, official source), reasoning effort, skills, working folder and wait limits per job. No proposal edits a prompt or a job list.
+2. **Who decides a unit's outcome.** The ledger's checked verifiers (`group-finish`, `cards-finish`, `events-finish`, `findings-finish`, `link-finish`, `model-finish`, `explain-finish`, `cleanup-finish`, the publications) stay the only judges. No agent and no new tool may mark a unit done, and every check they run today still runs.
+3. **The rules a manager follows.** Approval is an allow-list (the zt helper, the zt-check self-check, read-only reads under the run's folders, JSON writes under the job's folder; reject any other write). A question gets the fixed answer 「按任务说明自行决定，不需要询问。」. A failed job is continued once in the same conversation with the fixed resume prompt, then marked failed. These are fixed rules today; a tool that takes over must apply the same rules, word for word, and nothing else.
+4. **Fault handling per unit.** A fault stays the fault of its own unit, with its class (retryable, content, operator) and the claim's hash. One unit's fault never stops the others in a batch, never stops a layer, and a retryable fault is claimed again within the frozen attempt budget.
+5. **Fences and resume.** Every write keeps its claim token fence. A resume and every single-stage mode work exactly as before: each step stays idempotent, and an interrupted batch leaves each unit either finished or still claimed and retryable, never half-recorded.
+6. **The owner's Lock and the Literature scope.** A `card_locked` refusal still stops the stage with its typed refusal; the Literature write scope still refuses Topic-tree and Hub writes.
+7. **What a watcher can see.** Monitoring may report less often, but it may never miss a failure, a refusal, a failed unit or a stall.
+
+### Risk per proposal
+
+| Proposal | Quality risk | Robustness risk | Safeguard |
+|---|---|---|---|
+| P1 batch finishes | none: the same verifiers run on the same drafts | a long batch could pass the 10-minute command limit; one unit's error could stop the rest | per-unit transaction and fault, as `cleanup_ready` does; a block is at most 8 units; measure the slowest finish and bound the batch so it ends well inside the limit |
+| P2 claim and finish in the manager | none | a manager may cut or rewrite a claim line (grossman2002integration trials 3, 4, 17) | the driver still decides from the ledger (`ledger status -Held`), as the digest and Link blocks do now; units a dead manager held are settled from the ledger |
+| P3 lease keeper | none | a keeper that outlives its owner would keep a dead claim alive, and the unit would never be claimed again | **no detached keeper**: renewal only inside commands the manager runs, or the manager runs `ledger hold` itself; a keeper process, if ever used, needs a hard lifetime and ends with its owner. Low saving (1.6M); drop it if the safeguard is not simple |
+| P4 short lines | none | a caller that reads a field the short line dropped | every field a module reads stays in the line; the full result is a file; harness checks per command |
+| P5 minimal relay type | none | a relay without a tool it needs; a relay without the run-step guard the prompt gives | the relay prompt is unchanged; the type keeps PowerShell; one relay of each command kind runs in the harness and in a pilot before adoption |
+| P6 bridge job runner | the jobs must run exactly as now (rule 1, rule 3) | approvals, questions, the one resume retry, a provider error, a timeout | the tool implements rule 3 from one written policy; every `needs_response` it cannot decide by that policy goes back to a manager; failure-injection tests for each case (error, no JSON answer, question, a write outside the allow-list, timeout) |
+| P7 merged script steps | none | a merged step must stay resumable at each former step | each merged step keeps its own idempotent output file, so a resume restarts at the first unfinished one |
+| P8 one architect context file | **possible**: a planner that reads one prepared file may miss context it now reads on demand | none | adopt only if an A/B run on the same model batch gives plans whose review finds no more faults and whose models are as complete (parts, links, self-sufficiency); otherwise drop it |
+| P9 filtered monitoring | none | a filter can hide an abnormal behaviour nobody anticipated | report every failure, refusal, failed unit and stall; a short progress summary at a fixed interval (for example 30 minutes) so an unknown problem still shows |
+| P10 small watching session | none | none for the workflow | repairs still follow the fix-test-reinstall rule in their own session |
+
+P1, P2, P4, P5, P7 and P10 change how a command is reached, not what it does. P3, P6, P8 and P9 carry the real risk and have the strictest gates; P3 and P8 are dropped if their safeguards cannot be met.
+
+### Acceptance gates
+
+Every proposal passes all of these before its blueprint version is installed:
+
+1. **Tests.** All `scripts/book-digest/tests/*.tests.ps1` files, both harnesses and the zt-digest unit tests pass. Each proposal adds failure-injection cases for the risks in its row above (the framework harness already injects garbled relay lines, failed claims, failing cleanup units and lock refusals).
+2. **Same outcome on the same input.** A short source digested by the current and the proposed version, from fresh staging folders, must give: every unit in the same final state; the same number of Cards per type and per group (the DeepSeek text may differ run to run, as it does today); an audit with no more faults by rule; every model self-sufficient; the same refusals for injected faults; a run report that is complete in both.
+3. **Fault behaviour.** On that pilot, inject one provider error, one content fault and one stale claim into a batch; each must be recorded against its own unit and the run must finish as it does today.
+4. **Resume.** Stop the proposed version mid-stage, resume it, and require the same final state as an uninterrupted run.
+5. **Measured saving.** Run the usage analysis on the pilot. A proposal that does not save what it claims is not adopted, whatever its other results.
+
 ## Order and checks
 
 1. P4 (short lines), then P1 and P2, in one blueprint version: they change how the layer drivers call commands.
@@ -201,4 +242,4 @@ P1 to P4 need only zt-digest and workflow module changes of the kind already mad
 4. P9 and P10 for the next monitored run; they need no workflow change.
 5. P6 and P7, then P8, each with its own bridge or compiler release.
 
-For every step, the check is the same one this document used: run the usage script on the next digest's transcripts and compare agents and weighted tokens per kind with the table above. A change that saves tokens must not change a unit's outcome: the ledger's verifiers stay the only judges of a finish, as they are now.
+Every step passes the acceptance gates of the section above before it ships, and the token check is the same one this document used: run the usage script on the pilot's transcripts and compare agents and weighted tokens per kind with the table above. A change that saves tokens but fails a quality or robustness gate is not adopted.
