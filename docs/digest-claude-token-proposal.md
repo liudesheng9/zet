@@ -1,0 +1,204 @@
+# Digest Claude Token Use: Proposal
+
+Status (2026-10-23): proposal only. No change in this document is built. One related change, the deterministic cleanup run (`cleanup-run` with the bridge tool `deepseek_settle`, zt-digest 0.11.7, commit 5ace03b), was built in another session while this analysis ran. It is shown below as done, with its measured effect.
+
+This proposal looks at the Claude Code tokens (not the DeepSeek tokens) that one economics digest spent: *The Modern VAT* (`ebrill2001modern`, zt-econ-digest 6.1.1, 2026-10-23). It covers two parts:
+
+- the workflow's own agents: trial 1 (`wf_c39c27e9-d1c`, 876 agents), its resume (`wf_a36a082e-c62`, 129 agents), and the later single-stage repair runs (modes `figures`, `bridge` and `audit`);
+- the main session that started, watched and repaired the run.
+
+It names the work an agent did that a script can do, and proposes a non-agent method for each part.
+
+## Method
+
+Every workflow agent has a transcript (`subagents/workflows/<run>/agent-<id>.jsonl`) and a meta file with its label, model and phase. Every API request in a transcript records its usage. The analysis sums the usage of each agent once per request id. It then puts each agent into one of four kinds:
+
+| Kind | How it is recognized | What it does |
+|---|---|---|
+| relay | its task text starts with `Run this PowerShell command once` (`zdMake().runScript`) | runs one script command and returns its last output line |
+| manager | every other Haiku agent | runs a compiler step and its DeepSeek jobs, or a block of units |
+| architect / organizer | Sonnet / Opus | plans the models / makes the Organize decisions |
+| cleanup agent | `cleanup chunk`, `cleanup workspaces`, `cleanup: settle the run` | deletes DeepSeek conversations and records the facts |
+
+Raw token counts mix four prices. Cache reads are cheap and cache writes and output are expensive, so this document compares **weighted tokens**: input + 1.25 × cache write + 0.1 × cache read + 5 × output. A weighted token is in units of that model's own input price. Across models, Sonnet costs about 3× and Opus about 5× Haiku per token (the 4.5-generation list-price ratio; the exact current prices are not part of this analysis).
+
+The main session's usage comes from its own transcript (`598e46fa-….jsonl`), split by time window: before the run, while trial 1 ran, during the resume and hand cleanup, and after.
+
+The two analysis scripts sit in the session scratchpad (`usage.js`, `main.js`). They read only the transcripts and change nothing.
+
+## Findings
+
+### 1. The workflow agents
+
+| Run | Agents | Weighted (M) | Relay | Haiku manager | Sonnet architect | Cleanup agents | Opus |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| trial 1 | 876 | 68.7 | 613 agents, 32.4 (47%) | 226, 28.8 (42%) | 12, 4.8 (7%) | 24, 2.5 (4%) | 1, 0.2 |
+| resume | 129 | 8.1 | 94, 5.1 (64%) | 30, 2.4 (29%) | — | 5, 0.6 (7%) | — |
+| mode audit (6.1.2) | 7 | ≈0.6 | 4 | — | — | 3 | — |
+| mode audit (6.1.3, `cleanup-run`) | 3 | ≈0.2 | 2 | — | — | 1 | — |
+
+**A relay is almost all fixed cost.** A relay runs one command in about two requests. Its visible task is about 2,400 characters, but its first request carries about 61k tokens of context: about 40k of a prefix shared with other agents (read from cache) and about 20k written new for this agent alone. That context is Claude Code's subagent system prompt, the tool definitions and deferred-tool list of every connected MCP server (Slack, Chrome, computer use, Scholar Archive, zt, DeepSeek), the server instructions, and the project instructions. None of it is needed to run one command. The weighted cost is about 53k per relay, whatever the command does. Returning the command's line costs about 1k output tokens more (×5 weight).
+
+**Which commands the relays ran** (weighted M, all runs together):
+
+| Command | Relays | Weighted (M) | Why it is an agent today |
+|---|---:|---:|---|
+| `cleanup-finish` | 158 | 8.3 | one checked finish per cleanup unit — **replaced** by `cleanup-run` (0.11.7) |
+| `ledger next` (claims) | 103 | 5.3 | each layer round claims through a relay before its managers start |
+| `findings-finish` | 77 | 4.3 | one checked finish per unit, after the block's managers ended |
+| `events-finish` | 73 | 4.0 | the same |
+| `cards-finish` | 73 | 3.7 | the same |
+| `ledger status` | 57 | 2.9 | a second read of a unit's state when a relay may have cut the finish line |
+| `model-finish` | 44 | 2.5 | one per model |
+| `model-deps` | 44 | 2.1 | one per planned model, before its fill |
+| `ledger hold` | 24 | 1.6 | one per nine minutes per held block, to renew its leases |
+| `ledger fail`, `gate`, `report`, `finalize`, `resource`, others | 60 | 3.2 | single facts |
+
+The per-unit finishes and `model-deps` (311 relays, 16.5M weighted) are the largest group still in the workflow. Each runs a deterministic, idempotent command whose answer the ledger already holds.
+
+**Managers.** The 226 Haiku managers cost 28.8M weighted (42%). They drive DeepSeek through the MCP bridge: start jobs, poll `deepseek_wait`, record ids and answers, delete conversations. Their context grows with every poll result, and their cost scales with the number of requests (1,203 requests in trial 1). The labels with the largest totals are the digest and Link lane blocks (38 agents, 35M raw) and the model chain's steps (`brief`, `fill`, `derive`, `review`, `split`, `close`, `report`; about 120 agents). About a dozen of the model-chain step agents (among them `close`, `report`, `review` and `fill` steps) started no DeepSeek run at all: they ran a script step only. The Sonnet planners start none by design.
+
+**The Sonnet architect** (12 agents, 4.8M weighted, about 400k each) reads its context files with 16 requests per agent on average. This is model work, but the file reading is not.
+
+**Cleanup** cost 158 relays plus 29 agents in trial 1 and its resume (about 11M weighted). With `cleanup-run` (0.11.7) a cleanup stage is one agent around one bridge call. The measured mode-audit run went from 7 agents to 3.
+
+### 2. The main session (monitoring and repair)
+
+| Window | Requests | Weighted Opus tokens (M) | Largest context |
+|---|---:|---:|---:|
+| before trial 1 | 15 | 0.25 | 113k |
+| trial 1 running (4.5 h) | 177 | 3.96 | 279k |
+| resume and hand cleanup | 66 | 2.39 | 370k |
+| after (fixes, repair runs, this analysis) | 373 | 18.2 | 691k |
+
+While trial 1 ran:
+
+- 13 `Monitor` watches were started. Each watch expired after 30 minutes and had to be armed again, and each new watch replayed the journal from its start, so it reported the earlier phases again.
+- The watches woke the session 82 times. **55 wake-ups (67%) needed no action.** Each wake-up re-reads the whole session context (about 200k tokens at that time) at Opus prices.
+- The session also polled the ledger by hand with 75 Bash calls.
+
+After the run, the main session did the repair and development work in the same conversation. Its context reached 691k tokens, and every request re-read most of it: 162M cache-read tokens, 16M of the 18M weighted.
+
+At the 5:1 Opus-to-Haiku ratio, the main session's monitoring and repair (about 24M weighted Opus) cost more than all of trial 1's relays.
+
+## Proposals
+
+Each proposal names the work, the non-agent method, the evidence, and an estimate of the weighted tokens it saves on a book of this size (73 groups, 44 models). The estimates use the measured cost per agent and assume the work itself stays the same.
+
+### P1. Finish a block's units with one command (largest relay group)
+
+**Work:** `cards-finish`, `events-finish`, `findings-finish`, `model-finish`, `model-deps`: one relay per unit.
+
+**Method:** a batch form of each finish, as `cleanup-finish -Ready` and `cleanup-run` are for cleanup: `zt-digest <layer>-finish -Out <out> -Units <id:token,…>` (or `-Ready -Owner <label>`). It runs each checked verifier in one process, records a fault with the claim's own hash for a unit that cannot finish, and prints one short line of counts and the open units. The layer driver calls it once per block. `model-deps` takes the batch's whole plan in one call.
+
+**Evidence:** 311 relays, 16.5M weighted. Every finish is already idempotent and fenced by its claim token, so running several in one process changes no rule.
+
+**Estimate:** 311 relays become about 25 (one per block), saving about 15M weighted (about 22% of trial 1).
+
+### P2. Let the agent that already holds the claim run the commands
+
+**Work:** `ledger next` relays before managers start (103), the defensive `ledger status` reads (57), `ledger fail` (17).
+
+**Method:** for the event, finding, cards, model and explain layers, give the claim and the finish to the block manager's prompt, as the digest and Link block managers already do (`block`, `blockFinish`): the manager claims, works and finishes, and the driver reads one `ledger status -Held` line afterwards. The defensive state read exists because a relay could cut a long finish line. P4 makes every line short, so it can go.
+
+**Estimate:** about 150 relays fewer, about 8M weighted.
+
+### P3. Renew leases without an agent
+
+**Work:** `ledger hold` relays (24 in trial 1), one each nine minutes per held block, during long model builds.
+
+**Method:** a detached lease keeper started once per block (`zt-digest ledger hold -Units … -Detach`, ended by the block's finish), or lease renewal inside the zt-digest commands the managers run while they wait. zt-digest already renews a claim in-process (`start_heartbeat`) while a command runs; the gap is only the time between commands.
+
+**Estimate:** 24 relays, about 1.6M weighted.
+
+### P4. Short output lines everywhere
+
+**Work:** relays re-type long JSON lines (about 1k output tokens each, ×5 weight), and a summarized line makes the driver read the ledger again (P2) or lose the result (the 138 KB `ledger report` line, fixed in 0.11.6 with `report_line`).
+
+**Method:** every command a relay reads prints one bounded line: counts, the first eight open items, and the path of the full file. The full result goes to a file in the staging folder, as `run-report.json` does.
+
+**Estimate:** about 3M weighted in output, plus the follow-up reads it removes. It is also a reliability fix: on grossman2002integration trials 5, 10, 12 and 17 a relay cut or rewrote a long line.
+
+### P5. A minimal agent type for relays
+
+**Work:** every relay loads about 61k tokens of context it does not use.
+
+**Method:** run relays with `agent(..., {agentType: 'zt-relay'})`, a custom subagent type (`.claude/agents/zt-relay.md`) whose only tool is PowerShell (or Bash) and whose system prompt is a few lines. The Workflow runtime supports `agentType`. Two points need a measurement before this is adopted: whether a custom type still loads the MCP tool listing and server instructions, and whether it still receives the project instructions and memory index. Measure the first request's cache write of one relay of each kind; adopt the type if the per-agent write falls well below the present 20k.
+
+**Estimate:** if the context falls from about 61k to about 10k, a relay costs about 10k weighted instead of 53k: about 25M weighted on trial 1's 613 relays, or about 4M on the roughly 90 relays left after P1 to P3. Do P1 to P3 first; P5 then makes the rest cheap.
+
+### P6. One bridge call per DeepSeek job set (managers)
+
+**Work:** a Haiku manager polls DeepSeek (`deepseek_run`, `deepseek_wait`, record commands, `deepseek_delete`), and its context grows with each poll; 226 managers, 28.8M weighted.
+
+**Method:** the same pattern as `deepseek_settle`. A bridge tool `deepseek_run_jobs` takes a job file a script wrote (the jobs with their prompt files, model, effort, cwd and the record rules), starts and waits for every job itself, writes each answer and its usage to files, and returns counts. A script step then records ids, evidence and usage in the ledger from those files (`ledger resource -SweepEvidence` already does part of this). The manager becomes one agent with about three calls: run the step command, call the bridge tool, run the record command. Approval questions a job raises (`needs_response`) keep a manager path: the tool returns them and the manager answers only those.
+
+**Evidence:** cleanup went from 158 relays and 29 agents to one agent with this pattern (0.11.7). The block managers' answers are already files (`<out>\answers\<session>.txt`), so no model judgment is lost: a manager only relays.
+
+**Estimate:** about half the manager cost, 12–15M weighted. This needs a bridge release (dsh-mcp-bridge) and the largest change of all the proposals; do it after P1 to P5.
+
+### P7. Merge the script-only steps of the model chain
+
+**Work:** model-chain steps that start no DeepSeek run (`close` and `report` often, the skeleton step always) each take a step agent.
+
+**Method:** one step command runs the consecutive script-only steps (for example `model -Step close` and `-Step report` together), and the chain asks for an agent only for steps that print jobs.
+
+**Estimate:** about 20–30 agents per book, about 2–3M weighted.
+
+### P8. Give the architect one prepared context file
+
+**Work:** the Sonnet planner reads its context with about 16 requests per batch.
+
+**Method:** the `model -Step brief` output already gathers the context; write it as one file of known size that the planner reads once, and ask for the plan in one structured answer.
+
+**Estimate:** about half of the architect's 4.8M weighted (Sonnet prices, about 3× Haiku).
+
+### P9. Monitor with a filter, not with the main session
+
+**Work:** 82 wake-ups of a 200k-token Opus session, 55 of them with no action; 75 hand polls.
+
+**Method:**
+
+1. A watch script that remembers what it reported (a state file next to the journal), so a new watch never replays old phases, and that emits only actionable events: a stage failure, a refused finish or claim, a unit in `failed`, a stall with no journal event for N minutes, the run's end. Progress lines go to a file the user can read.
+2. One watch per run that does not expire every 30 minutes (re-armed by the script itself, or a longer timeout).
+3. One status command for hand checks (`zt-digest ledger status -Summary`, plus the watch's own progress file) instead of ad-hoc Bash and node reads.
+
+**Estimate:** about two thirds of the 4M weighted Opus during the run, about 2.7M Opus (about 13M Haiku-equivalent).
+
+### P10. Keep the watching session small
+
+**Work:** the repair work after the run made the main session's context grow to 691k tokens; most of the 18M weighted Opus was re-reading that context.
+
+**Method:** the main session only starts and watches the run, and every repair goes to its own session (a fork or a fresh session with a short brief), which ends with a commit. The monitoring session's context then stays near its starting size. Long investigations (transcript reads, test logs) go to a subagent that returns its conclusion, not its file dumps.
+
+**Estimate:** not a fixed number; on this run the repair phase's context re-reads were about 16M weighted Opus.
+
+## Summary of the estimates
+
+On a book of this size (trial 1: 68.7M weighted, 876 agents):
+
+| Proposal | Agents removed | Weighted tokens saved (M) | Change |
+|---|---:|---:|---|
+| done: `cleanup-run` (0.11.7) | about 180 | about 11 | zt-digest + bridge |
+| P1 batch finishes | about 285 | about 15 | zt-digest + layer driver |
+| P2 claim and finish in the manager | about 150 | about 8 | layer driver |
+| P3 lease keeper | 24 | about 1.6 | zt-digest |
+| P4 short lines | — | about 3 | zt-digest |
+| P5 minimal relay type | — | about 4 after P1–P3 | agent definition |
+| P6 bridge job runner | — | about 12–15 | bridge + driver |
+| P7 merged script steps | about 25 | about 2–3 | model compiler |
+| P8 one architect context file | — | about 2.4 (Sonnet) | model compiler |
+| P9 filtered monitoring | — | about 2.7 Opus | watch script |
+| P10 small watching session | — | up to about 16 Opus | practice |
+
+P1 to P4 need only zt-digest and workflow module changes of the kind already made for cleanup, and together they remove about 460 of trial 1's 613 relays. P6 is the largest saving among the managers but needs a bridge release. The estimates overlap where proposals touch the same agents (P2 and P5, P1 and P5), so the totals are not additive.
+
+## Order and checks
+
+1. P4 (short lines), then P1 and P2, in one blueprint version: they change how the layer drivers call commands.
+2. P3 with P1, because the batched finish ends the leases it keeps.
+3. Measure P5 on one relay of each kind; adopt it if the context falls.
+4. P9 and P10 for the next monitored run; they need no workflow change.
+5. P6 and P7, then P8, each with its own bridge or compiler release.
+
+For every step, the check is the same one this document used: run the usage script on the next digest's transcripts and compare agents and weighted tokens per kind with the table above. A change that saves tokens must not change a unit's outcome: the ledger's verifiers stay the only judges of a finish, as they are now.
