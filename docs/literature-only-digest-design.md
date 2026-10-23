@@ -1,6 +1,6 @@
 # Literature-only digests
 
-Status: in development (2026-10-22). Owner decision: a digest builds the book's Literature tree and
+Status: in place (2026-10-22; the `-Open` approval gap closed in base 5.0.1). Owner decision: a digest builds the book's Literature tree and
 nothing else. Composing ideas into Topic trees, composing Topic trees, and composing hubs and the
 concept register belong to zt-idea-grow alone (docs/idea-grow-design.md).
 
@@ -27,9 +27,10 @@ Literature tree stays allowed (Link, Bridge).
    the archive, every write that names a Topic-tree Card, `create_topic`, a Hub type, and any
    authored text that links a Topic-tree Card. `apply_batch` items are checked one by one. The idea-grow,
    hub, register, organize, gate, join, topic-home and publish tools keep the open scope.
-2. **The prompts and stages.** The digest prompts file every Card in the Literature tree. The
+2. **The approvals.** The Haiku managers approve a DeepSeek job's zt helper command only without `-Open` (`ZD_NO_OPEN` in every approval rule, `zt-digest-lib` v32, base 5.0.1, econ 6.0.1, math 5.0.1): a job that added the flag would run in the open scope.
+3. **The prompts and stages.** The digest prompts file every Card in the Literature tree. The
    blueprints lose the stages that only served Topics and hubs.
-3. **The reads.** A digest reads Topic trees no more: the group snapshot, the earlier-Card pack,
+4. **The reads.** A digest reads Topic trees no more: the group snapshot, the earlier-Card pack,
    place-beside, the Link candidates and the Bridge candidates come from Literature trees only, and
    a Card belongs to a book only when it is in that book's Literature tree (`book_of`, no Link votes).
 
@@ -80,6 +81,6 @@ The two follow-ups moved in idea-grow 3.1.0 (zt-grow-cycle v10, zt-digest 0.11.0
 - [x] 1. write scope in zt-check mcp (`mcp::scope`) + zt-digest main (`literature_scope`) + `call` (Literature by default, `-Open` for hand Topic work); group-finish checks each draft call; run option `hubs` always off
 - [x] 2. Literature-only reads: book_of (no Link votes), `snapshot::read_literature_trees` in group-start, prepare-link, link_gap, card cycle; earlier pack and register targets; Bridge targets; skeleton (no Topic bodies, no Topic key Cards)
 - [x] 3. digest prompts (dsh-digest-base, dsh-card, dsh-fill, dsh-link, dsh-model-cards, dsh-skeleton; legacy dsh-instructions.zh.md deleted, prepare's default is dsh-digest-base + dsh-model-cards); zt skill and zt-mcp.ps1 document `-Open`
-- [ ] 4. base 5.0.0 / econ 6.0.0 / math 5.0.0 blueprints, modules (zt-organize v6, zt-digest-report v15, zt-digest-prepare v11), sims and framework harness done (harness passes); PowerShell tests: fixtures pass `-Open`, remaining failures being triaged
+- [x] 4. base 5.0.0 / econ 6.0.0 / math 5.0.0 blueprints, modules (zt-organize v6, zt-digest-report v15, zt-digest-prepare v11), sims and framework harness done (harness passes); PowerShell tests: fixtures pass `-Open`, all pass (2026-10-22: 91 test files)
 - [x] 5. idea-grow 3.0.0 (zt-grow-cycle v9): mode hubs, hub options (`grow -Step hubs-plan -Limits/-Trees/-Rebuild`), restatement review (`grow -Step restate-cards`, one `zt-digest restate` chain per source book); sim and grow harness updated; zt-digest 0.10.0
-- [ ] 6. wiki block docs, reinstall zt-digest and the three workflows, verify, tests, commit
+- [x] 6. wiki block docs, reinstall zt-digest and the three workflows, verify, tests, commit

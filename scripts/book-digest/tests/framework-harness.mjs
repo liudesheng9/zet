@@ -1510,10 +1510,10 @@ for (const which of ['econ', 'math']) {
 }
 
 {
-  // zt-digest-lib v31 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
+  // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '31' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v31 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
+  check(modules['zt-digest-lib'] === '32' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v32 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -1521,6 +1521,20 @@ for (const which of ['econ', 'math']) {
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
   check(grow.modules['zt-grow-cycle'] === '10', `lock: the idea-grow build carries zt-grow-cycle v10 (${grow.modules['zt-grow-cycle']})`)
   check(grow.script.includes('const lockRefusal = (text) =>') && grow.script.includes('card_locked at ${where}') && grow.script.includes('stopOnLock'), 'lock: the idea-grow build carries its own seam')
+}
+
+{
+  // The Literature scope (docs/literature-only-digest-design.md) holds only while the helper runs without
+  // -Open, so every approval rule that lets a DeepSeek job run the zt helper refuses a helper command with
+  // -Open: a job could otherwise add the flag and write Topic trees or hubs.
+  for (const which of ['econ', 'math']) {
+    const { calls, pool } = await run(which, { ...base, figures: false })
+    const rules = [...calls.map((c) => c.prompt), ...pool.prompts]
+      .flatMap((p) => String(p).split('\n'))
+      .filter((l) => /"needs_response": approve/.test(l) && /runs the zt helper/.test(l))
+    const open = rules.filter((l) => !/refuse a zt helper command that carries -Open/.test(l))
+    check(rules.length > 0 && !open.length, `scope: every ${which} approval rule that allows the zt helper refuses -Open (${rules.length} rules, ${open.length} without: ${open.slice(0, 1).map((l) => l.slice(0, 160)).join('')})`)
+  }
 }
 
 console.log(`failed: ${failed}`)
