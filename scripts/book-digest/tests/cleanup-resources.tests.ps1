@@ -344,6 +344,49 @@ try {
     $again = Run-Digest @('cleanup-finish','-Out',$readyOut,'-Ready','-Owner','cleanup-ready')
     Assert ($again.claimed -eq 0) 'a second call finds nothing ready'
 
+    # --- cleanup-run: the whole DeepSeek cleanup from ledger facts and one provider batch, no agent per id ---
+    $runOut = Join-Path $scratch 'run'
+    $script:currentOut = $runOut
+    $null = Run-Digest (@('prepare') + (Common-Args 'CleanupRun') + @('-Out',$runOut))
+    $claims = @((Run-Digest @('ledger','next','-Out',$runOut,'-Layer','digest','-Take','2','-Owner','cleanup-manager')).units)
+    $runWorkspace = Join-Path $runOut 'group-jobs'
+    New-Item -ItemType Directory -Force $runWorkspace | Out-Null
+    $p1 = Register-Resource $runOut $claims[0].id $claims[0].token $runWorkspace @(@{ id = 'conv-p1' })
+    $p2 = Register-Resource $runOut $claims[1].id $claims[1].token $runWorkspace @(@{ id = 'conv-p2' }, @{ id = 'conv-p3' })
+    $null = Observe ([ordered]@{ schema_version = 1; op = 'terminal'; resource = $p2.resources[0].id; conversation = 'conv-p3'; state = 'error'; outcome = 'the provider failed' })
+    $answers = Join-Path $runOut 'answers'; New-Item -ItemType Directory -Force $answers | Out-Null
+    [IO.File]::WriteAllText((Join-Path $answers 'conv-p1.txt'),'{"group":1,"cards":2}',$utf8)
+    $null = Fail-Unit $claims[0].id $claims[0].token 'digest'
+    $null = Fail-Unit $claims[1].id $claims[1].token 'digest'
+    $audit = @((Run-Digest @('ledger','next','-Out',$runOut,'-Layer','audit','-Take','1','-Owner','cleanup-fixture')).units)[0]
+    $null = Fail-Unit $audit.id $audit.token 'audit'
+    $plan = Run-Digest @('cleanup-run','-Out',$runOut,'-Step','plan')
+    $ops = Get-Content -LiteralPath $plan.plan_file -Raw | ConvertFrom-Json
+    Assert ($plan.kind -eq 'cleanup_plan' -and $plan.deletes -eq 3 -and $plan.workspaces -eq 1 -and $plan.evidence_recorded -eq 1) 'the plan names every recorded id still to delete and the workspace once, after the evidence sweep'
+    Assert (@($ops | Where-Object op -EQ 'delete').session_id -join ',' -eq 'conv-p1,conv-p2,conv-p3') 'the plan file holds exactly the recorded ids'
+    # The bridge answers each op in order; a results file for another plan is refused.
+    $wrong = @{ ok = $true; results = @(@{ op = 'delete'; session_id = 'conv-zz'; status = 'deleted' }) }
+    Save-Json $plan.results_file $wrong
+    $bad = Fail-Digest @('cleanup-run','-Out',$runOut,'-Step','apply')
+    Assert ($bad.code -eq 1 -and $bad.text.Contains('do not answer the plan')) 'results that do not answer the plan op for op are refused'
+    $results = @{ ok = $true; results = @(
+        @{ op = 'delete'; session_id = 'conv-p1'; status = 'deleted' },
+        @{ op = 'delete'; session_id = 'conv-p2'; status = 'absent' },
+        @{ op = 'delete'; session_id = 'conv-p3'; status = 'failed'; error = 'still open, nothing deleted: conv-p3' },
+        @{ op = 'settle_workspace'; cwd = $runWorkspace; status = 'kept'; listed = @(@{ id = 'conv-p3'; title = 'job' }, @{ id = 'user-9'; title = 'the user''s own' }) }
+    ) }
+    Save-Json $plan.results_file $results
+    $applied = Run-Digest @('cleanup-run','-Out',$runOut,'-Step','apply','-Owner','cleanup-run')
+    Assert ($applied.kind -eq 'cleanup_run' -and $applied.deleted -eq 1 -and $applied.absent -eq 1 -and $applied.failed_count -eq 1 -and $applied.workspaces_kept -eq 1 -and $applied.unrecorded_count -eq 0) 'apply records every provider fact with no agent in between'
+    Assert ($applied.unknown_count -eq 1 -and $applied.unknown[0].id -eq 'user-9') 'a member the run did not record is reported as the user''s'
+    $convs = @((Run-Digest @('ledger','resource','-Out',$runOut,'-List')).resources | ForEach-Object { $_.conversations })
+    $c3 = @($convs | Where-Object id -EQ 'conv-p3')[0]
+    Assert ($c3.delete -eq 'failed' -and $c3.terminal) 'a conversation already terminal keeps its outcome and gets only its failed deletion'
+    $units = @((Run-Digest @('ledger','status','-Out',$runOut,'-Layer','cleanup')).units)
+    Assert (@($units | Where-Object { $_.id -eq $p1.cleanup_unit -and $_.state -eq 'done' }).Count -eq 1) 'the unit whose conversation is gone settles in the same command'
+    Assert (@($units | Where-Object { $_.state -eq 'claimed' }).Count -eq 0 -and $applied.ready.claimed -ge 2) 'every ready cleanup unit was tried and none is left claimed'
+    $replan = Run-Digest @('cleanup-run','-Out',$runOut,'-Step','plan')
+    Assert ($replan.deletes -eq 1 -and -not (Test-Path -LiteralPath $replan.results_file)) 'a new plan names only the id still owed and drops the old results'
     Write-Output 'ok: owned resources, cleanup evidence and scratch removal verified'
 } finally {
     if (Test-Path $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }

@@ -199,7 +199,7 @@ const finalizeFinal = (name) => {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = []
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = []
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
   // A resumed run reads the units its prepared run retained; the stand-in re-adds exactly those, so the
@@ -473,6 +473,41 @@ function runtime(kind, opts = {}) {
         return { ok: true, output: json({ schema_version: 1, action: 'observe', op: record ? record.op : null, resources: [...state.resources.values()] }) }
       }
       return null
+    }
+    // zt-digest 0.11.7 `cleanup-run`: plan (the evidence sweep, then every recorded id not yet deleted and every
+    // recorded workspace not yet removed), and apply (the bridge's results recorded, then `cleanup-finish -Ready`).
+    const planStep = cmd.match(/zt-digest cleanup-run -Out "([^"]+)" -Step plan/)
+    if (planStep) {
+      cleanupRunCalls.push('plan')
+      const bare = []
+      for (const r of state.resources.values()) for (const c of r.conversations) if (!c.lost && c.id && !(c.evidence && typeof c.evidence === 'object')) { c.evidence = { answer: { path: `${planStep[1]}\\answers\\${c.id}.txt`, sha256: 'a'.repeat(64) } }; bare.push(c.id) }
+      sweeps.push(bare)
+      const ops = []
+      for (const r of state.resources.values()) for (const c of r.conversations) if (!c.lost && c.id && c.deleted !== true && !ops.some((o) => o.session_id === c.id)) ops.push({ op: 'delete', session_id: c.id })
+      for (const r of state.resources.values()) if (r.workspace_removed !== true && !ops.some((o) => o.cwd === r.workspace.path)) ops.push({ op: 'settle_workspace', cwd: r.workspace.path })
+      state.settlePlan = ops
+      state.settleResults = null
+      return { ok: true, output: json({ schema_version: 1, kind: 'cleanup_plan', plan_file: `${planStep[1]}\\cleanup\\settle-plan.json`, results_file: `${planStep[1]}\\cleanup\\settle-results.json`, deletes: ops.filter((o) => o.op === 'delete').length, workspaces: ops.filter((o) => o.op === 'settle_workspace').length, evidence_recorded: bare.length, evidence_missing: 0 }) }
+    }
+    const applyStep = cmd.match(/zt-digest cleanup-run -Out "([^"]+)" -Step apply/)
+    if (applyStep) {
+      cleanupRunCalls.push('apply')
+      if (!state.settleResults) return { ok: false, exit: 1, output: 'zt-digest cleanup-run: no settle results: the bridge\'s deepseek_settle has not run on this plan' }
+      let deleted = 0, removed = 0
+      const failed = []
+      for (const r of state.settleResults) {
+        if (r.op === 'delete') {
+          const target = [...state.resources.values()].find((x) => x.conversations.some((c) => c.id === r.session_id))
+          for (const c of target.conversations) if (c.id === r.session_id) { c.terminal = true; c.deleted = r.status !== 'failed' }
+          settleRecords.push({ id: r.session_id, state: 'finished', deleted: r.status === 'failed' ? 'failed' : 'confirmed', via: 'cleanup-run' })
+          if (r.status === 'failed') failed.push({ id: r.session_id, error: r.error }); else deleted += 1
+        } else {
+          for (const x of state.resources.values()) if (x.workspace.path === r.cwd) x.workspace_removed = r.status === 'removed'
+          if (r.status === 'removed') removed += 1
+        }
+      }
+      const ready = JSON.parse(ledgerAnswer(`zt-digest cleanup-finish -Out "${applyStep[1]}" -Ready -Owner "cleanup-run"`).output)
+      return { ok: true, output: json({ schema_version: 1, kind: 'cleanup_run', deleted, absent: 0, workspaces_removed: removed, workspaces_kept: 0, failed_count: failed.length, failed, unknown_count: 0, unknown: [], unrecorded_count: 0, unrecorded: [], ready }) }
     }
     // One cleanup unit's checked completion (zt-digest `cleanup_finish`).
     const cleanupCompletion = (id) => {
@@ -831,22 +866,22 @@ function runtime(kind, opts = {}) {
     }
     if (/^audit cards$/.test(label)) return { ok: true, output: json(CANNED.audit()) }
     if (/^prepare link pass$/.test(label)) return { ok: true, ...(opts.linkBlocked ? { pending: [], blocked: opts.linkBlocked, groups: [], unowned: 0, cards_all: '' } : CANNED['prepare-link']()) }
-    if (/^cleanup chunk /.test(label)) {
-      // The stand-in agent reads its workspace's ids from the ledger itself, keeps its share, deletes exactly those and
-      // records each (zt-dsh-cleanup v8: no id list passes through a relay).
-      const listCmd = (text.match(/zt-digest ledger resource -Out "[^"]+" -List -Workspace "[^"]+"/) || [])[0]
-      const share = text.match(/keep only the entries (\d+) to (\d+)/)
-      const view = listCmd ? JSON.parse(commandAnswer(listCmd).output) : { workspace: { open: [] } }
-      const ids = share ? view.workspace.open.slice(Number(share[1]), Number(share[2]) + 1) : []
-      chunkShares.push(...ids)
-      const out = (text.match(/resource -Out "([^"]+)" -Settle/) || [])[1]
-      const failed = ids.filter((id) => !commandAnswer(`zt-digest ledger resource -Out "${out}" -Settle ${id} -State finished -Deleted confirmed`).ok)
-      return { settled: ids.length - failed.length, unrecorded: failed }
-    }
-    if (/^cleanup workspaces /.test(label)) {
-      const listed = JSON.parse((text.match(/Workspaces \(JSON\): (\[[^\n]*\])/) || [])[1] || '[]')
-      const out = (text.match(/resource -Out "([^"]+)" -SettleWorkspace/) || [])[1]
-      return { workspaces: listed.map((path) => ({ id: path, removed: true, unknown: [], remaining: [], recorded: commandAnswer(`zt-digest ledger resource -Out "${out}" -SettleWorkspace "${path}" -Removed true -Remaining '' -Unknown ''`).ok })) }
+    // zt-dsh-cleanup v11: one agent, three calls; the stand-in bridge runs the plan the script wrote.
+    if (label === 'cleanup: settle the run') {
+      const plan = (text.match(/zt-digest cleanup-run -Out "[^"]+" -Step plan/) || [])[0]
+      const apply = (text.match(/zt-digest cleanup-run -Out "[^"]+" -Step apply -Owner "[^"]+"/) || [])[0]
+      const fallback = (text.match(/zt-digest cleanup-finish -Out "[^"]+" -Ready -Owner "[^"]+"/) || [])[0]
+      const planned = commandAnswer(plan)
+      if (opts.settleMissing) {
+        const r = commandAnswer(fallback)
+        return { plan: planned.output, settle: 'tool not found: mcp__deepseek__deepseek_settle', ok: r.ok, output: r.output }
+      }
+      settleCalls.push(state.settlePlan.slice())
+      state.settleResults = state.settlePlan.map((op) => op.op === 'delete'
+        ? (opts.refuseDelete && opts.refuseDelete.test(op.session_id) ? { ...op, status: 'failed', error: 'still open, nothing deleted' } : { ...op, status: 'deleted' })
+        : { ...op, status: 'removed', listed: [] })
+      const r = commandAnswer(apply)
+      return { plan: planned.output, settle: json({ ops: state.settleResults.length }), ok: r.ok, output: r.output }
     }
     if (/^cleanup model managers/.test(label)) return { late_deleted: 0, folders: 1 }
     if (/^show figures$/.test(label)) return { ok: true, output: json(CANNED.figures()) }
@@ -866,7 +901,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1187,10 +1222,11 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(!labels.some((l) => /^organize: (decisions|survey)|^hubs write|^audit cards|^bridge: plan|^finalize plan/.test(l)), `resume reuse: completed later layers are not redone (${labels.filter((l) => /^organize|^hubs|^audit|^bridge|^finalize/.test(l)).join(', ')})`)
 }
 {
-  // trial 20: the relayed counts listing dropped each workspace's `path` (its `id` is the same folder), and the stage
-  // settled nothing, so the run-level cleanup refused every unit as not terminal. A workspace is known by path or id.
-  const { workspaceLists } = await run('econ', { ...base, figures: false }, { listNoPath: true })
-  check(workspaceLists.length > 0, `listing without path: the cleanup agents still read their workspaces (${workspaceLists.length})`)
+  // zt-dsh-cleanup v11: when the bridge has no deepseek_settle (an old bridge, the Desktop down), the agent settles the
+  // units whose conversations are already gone and the stage reports the provider batch as not run.
+  const { logs, cleanupRunCalls, cleanupReadyCalls, result } = await run('econ', { ...base, figures: false }, { settleMissing: true })
+  check(cleanupRunCalls.join() === 'plan' && cleanupReadyCalls.length === 1 && logs.some((l) => /the provider batch did not run \(tool not found/.test(l)), `settle missing: the stage falls back to cleanup-finish -Ready and says why (${cleanupRunCalls.join()})`)
+  check(result.cleanup && result.cleanup.provider === null, 'settle missing: no provider facts are reported as recorded')
 }
 {
   // A model claim whose relayed line has no `units` field (grossman2002integration trial 17: `units_claimed`
@@ -1256,11 +1292,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // verifier does not refuse the conversation for missing evidence.
   const { commands, sweeps, cleanups } = await run('econ', { ...base, figures: false }, { skipEvidence: /^s-/ })
   const swept = sweeps.flat()
-  const firstSweep = commands.findIndex((c) => / ledger resource -Out \S+ -SweepEvidence /.test(c))
-  const lastList = commands.reduce((at, c, i) => (/ ledger resource -Out \S+ -List( -Brief| -Counts)?$/.test(c) && i < firstSweep ? i : at), -1)
-  const cleanupDeletes = commands.map((c, i) => [c, i]).filter(([c, i]) => i > lastList && / -Settle(Workspace)? /.test(c)).map(([, i]) => i)
-  check(swept.length > 0 && swept.every((id) => /^s-/.test(id)), `evidence sweep: the cleanup stage records the missing evidence from the answer files (${swept.length} ids)`)
-  check(firstSweep > lastList && lastList >= 0 && cleanupDeletes.length > 0 && cleanupDeletes.every((i) => i > firstSweep), `evidence sweep: the cleanup stage records the evidence after reading the resources and before it settles any of them (list ${lastList}, sweep ${firstSweep}, first settle ${cleanupDeletes[0]})`)
+  const plan = commands.findIndex((c) => /zt-digest cleanup-run -Out \S+ -Step plan/.test(c))
+  const apply = commands.findIndex((c) => /zt-digest cleanup-run -Out \S+ -Step apply/.test(c))
+  check(swept.length > 0 && swept.every((id) => /^s-/.test(id)), `evidence sweep: the cleanup plan records the missing evidence from the answer files (${swept.length} ids)`)
+  check(plan >= 0 && apply > plan, `evidence sweep: the evidence is recorded in the plan step, before apply records any deletion (plan ${plan}, apply ${apply})`)
 }
 {
   // trial 6: model-finish refused every model for build faults no step sent back. The model chain runs
@@ -1315,8 +1350,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(missing.length === 0, `cleanup rounds: every cleanup unit is tried although nine of them keep failing (${missing.length} never tried)`)
   const most = Math.max(...extras.map((u) => cleanupFinishes.filter((c) => c === u).length))
   check(most <= 3, `cleanup rounds: a failing unit is tried at most three times in the stage (${most})`)
-  const settleAgents = calls.filter((c) => /^cleanup: settle the ready units/.test(c.label)).length
-  check(cleanupReadyCalls.length === 1 && settleAgents === 1 && !calls.some((c) => /^cleanup (cleanup|extra)\/|^cleanup: claim round|^cleanup: .* fault$/.test(c.label)), `cleanup rounds: one agent runs one cleanup-finish -Ready for every unit (${settleAgents} agent(s), ${cleanupReadyCalls.length} call(s))`)
+  const settleAgents = calls.filter((c) => /^cleanup: /.test(c.label)).length
+  check(cleanupReadyCalls.length === 1 && settleAgents === 1 && !calls.some((c) => /^cleanup (cleanup|extra)\/|^cleanup: claim round|^cleanup: .* fault$/.test(c.label)), `cleanup rounds: one cleanup agent settles every unit through one cleanup-finish -Ready (${settleAgents} agent(s), ${cleanupReadyCalls.length} call(s))`)
   check(result.cleanup && result.cleanup.settled && result.cleanup.settled.failed === 9 && result.cleanup.units.filter((u) => u.status === 'failed').length === 8, `cleanup rounds: the stage reports the units that could not settle (${JSON.stringify(result.cleanup && result.cleanup.settled)})`)
 }
 {
@@ -1334,8 +1369,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const { calls } = await run('econ', { ...base, figures: false })
   const managers = calls.filter((c) => /-RegisterId <session_id>/.test(c.prompt || ''))
   check(managers.length > 0 && managers.every((c) => /never a word in its place/.test(c.prompt) && /starts no run: never send a placeholder prompt/.test(c.prompt)), `prompts: every manager registers only a returned session_id and starts no run for an empty job list (${managers.length})`)
-  const spaces = calls.filter((c) => /^cleanup workspaces /.test(c.label))
-  check(spaces.length > 0 && spaces.every((c) => /no Desktop workspace exists for that path, the workspace is already gone: remaining and unknown are empty, removed = true/.test(c.prompt)), 'prompts: a workspace the provider no longer knows is recorded removed')
+  const settle = calls.filter((c) => c.label === 'cleanup: settle the run')
+  check(settle.length === 1 && /deepseek_settle once with plan_file "[^"]+\\cleanup\\settle-plan\.json" and results_file "[^"]+\\cleanup\\settle-results\.json"/.test(settle[0].prompt) && /never call deepseek_delete or deepseek_remove_workspace/.test(settle[0].prompt), 'prompts: the cleanup agent hands two paths to deepseek_settle and deletes nothing itself')
 }
 {
   // trial 8: no stage published its own book revision, so organize/skeleton/figures book@1 stayed ready and the run
@@ -1353,10 +1388,13 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // stage reads the brief listing and still settles every recorded conversation.
   // trial 11: the relay abridged even the brief listing's id arrays and left out two model workspaces. The stage reads
   // counts only; each deletion agent reads its own workspace's ids from the ledger.
-  const { commands, briefLists, settleRecords, workspaceLists, chunkShares, resourceRecords } = await run('econ', { ...base, figures: false })
-  check(briefLists.length === 1 && briefLists.every((c) => /-List -Counts$/.test(c)) && !commands.some((c) => / ledger resource -Out \S+ -List( -Brief)?$/.test(c)), `cleanup brief: the cleanup stage reads the counts listing only (${briefLists.join(' | ')})`)
-  check(workspaceLists.length > 0 && chunkShares.length > 0, `cleanup brief: each deletion agent reads its own workspace's ids (${workspaceLists.length} reads, ${chunkShares.length} ids)`)
-  check(settleRecords.length > 0, `cleanup brief: the recorded conversations are still settled (${settleRecords.length})`)
+  // 2026-10-23 (zt-dsh-cleanup v11): no model reads, relays or decides a cleanup fact. One agent runs the plan, the
+  // bridge batch and apply; every conversation the managers left open is deleted in that one batch.
+  const { calls, briefLists, settleRecords, settleCalls, resourceRecords } = await run('econ', { ...base, figures: false })
+  const cleanupAgents = calls.filter((c) => c.phase === 'Cleanup').map((c) => c.label)
+  check(cleanupAgents.join() === 'cleanup: settle the run,report the run from the ledger' && briefLists.length === 0, `cleanup agents: one settle agent and the report, no listing relay (${cleanupAgents.join(', ')})`)
+  const batched = (settleCalls[0] || []).filter((o) => o.op === 'delete').map((o) => o.session_id)
+  check(settleCalls.length === 1 && batched.length > 0 && batched.every((id) => settleRecords.some((r) => r.id === id && r.via === 'cleanup-run')), `cleanup agents: one provider batch deletes every open recorded id and apply records each (${batched.length})`)
 }
 {
   // A content failure keeps the unit failed and the stage result partial, never complete.
@@ -1412,7 +1450,7 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
 // ================================================================================================================
 for (const kind of ['econ', 'math']) {
   const mbase = { ...base, figures: false }
-  const { commands, calls, result, led, resourceRecords, evidenceRecords, settleRecords, chunkShares } = await run(kind, { ...mbase, mode: 'full' })
+  const { commands, calls, result, led, resourceRecords, evidenceRecords, settleRecords, settleCalls } = await run(kind, { ...mbase, mode: 'full' })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   const at = (pattern) => labels.findIndex((l) => pattern.test(l))
@@ -1441,14 +1479,11 @@ for (const kind of ['econ', 'math']) {
   check(records.some((r) => r.unit !== 'run') && registers.some((c) => /-Unit "?digest\/g\d{3}@1"? -Token \d+ -RegisterId/.test(c)), `${kind} full: a claimed unit owns its conversations`)
   const blockSessions = records.filter((r) => /^(digest|link)\//.test(r.unit)).map((r) => r.conversations[0].id)
   check(blockSessions.length > 0 && blockSessions.every((id) => settleRecords.some((x) => x.id === id && x.deleted === 'confirmed')), `${kind} full: a block manager deletes each group conversation once its answer is retained, and records it`)
-  const listed = at(/^cleanup: list the recorded resources$/)
-  const chunked = at(/^cleanup chunk /)
-  check(listed >= 0 && chunked > listed, `${kind} full: the cleanup reads the recorded ids before it asks the provider (${listed} < ${chunked})`)
-  const chunkPrompts = calls.filter((c) => /^cleanup chunk /.test(c.label)).map((c) => c.prompt).join('\n')
-  check(!/Recorded ids: \[/.test(chunkPrompts), `${kind} full: no cleanup prompt carries an id list`)
-  const chunkIds = chunkShares
-  check(chunkIds.length > 0 && chunkIds.every((id) => records.some((r) => r.conversations[0].id === id)) && !chunkIds.some((id) => blockSessions.includes(id)), `${kind} full: the cleanup agents touch only recorded ids that no manager settled (${chunkIds.length})`)
-  check(cmds.some((c) => / ledger resource .*-SettleWorkspace /.test(c)) && cmds.some((c) => /zt-digest cleanup-finish -Out .* -Ready -Owner/.test(c)), `${kind} full: the cleanup records each workspace itself and the run-level cleanup is settled by its verifier`)
+  const settlePrompt = (calls.find((c) => c.label === 'cleanup: settle the run') || {}).prompt || ''
+  check(!records.some((r) => settlePrompt.includes(r.conversations[0].id)), `${kind} full: no cleanup prompt carries a conversation id`)
+  const batchIds = (settleCalls[0] || []).filter((o) => o.op === 'delete').map((o) => o.session_id)
+  check(batchIds.length > 0 && batchIds.every((id) => records.some((r) => r.conversations[0].id === id)) && !batchIds.some((id) => blockSessions.includes(id)), `${kind} full: the provider batch names only recorded ids that no manager settled (${batchIds.length})`)
+  check(cmds.some((c) => /zt-digest cleanup-run -Out .* -Step plan/.test(c)) && cmds.some((c) => /zt-digest cleanup-run -Out .* -Step apply/.test(c)) && result.cleanup && result.cleanup.settled && result.cleanup.settled.claimed > 0, `${kind} full: the cleanup plans, applies the bridge's results and settles every unit by its verifier`)
   // #110: the Link units now settle through link-finish, so content is complete while the cleanup
   // still reports its own half: the two are still reported apart.
   check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.status === (result.cleanup.content_complete ? 'complete' : 'partial'), `${kind} full: the cleanup reports its own half apart from content completeness (${JSON.stringify(result.cleanup && { units: result.cleanup.units, status: result.cleanup.status, cleanup_complete: result.cleanup.cleanup_complete })})`)
@@ -1464,11 +1499,11 @@ for (const kind of ['econ', 'math']) {
   check(cmds.some((c) => /-Sample 0\.1/.test(c)) && cmds.some((c) => /-ModelReview/.test(c)), 'econ cards: the cycle covers the deterministic Idea sample and reviews the Model drafts no chain owns')
 }
 {
-  const { commands, calls, result } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
+  const { commands, calls, result, settleCalls: auditSettles } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'audit' && result.audit.status === 'done', 'econ audit: runs to its end without a citation key')
-  check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup|^report the run/.test(l)) && labels.includes('cleanup: list the recorded resources') && labels.includes('report the run from the ledger'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
-  check(!calls.some((c) => /^cleanup (chunk|workspaces) /.test(c.label)) && !commands.some((c) => /deepseek_delete/.test(c)), 'econ audit: a run with no recorded resource deletes no conversation and no workspace')
+  check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup|^report the run/.test(l)) && labels.includes('cleanup: settle the run') && labels.includes('report the run from the ledger'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
+  check(!commands.some((c) => /deepseek_delete/.test(c)) && auditSettles.every((ops) => ops.length === 0), 'econ audit: a run with no recorded resource deletes no conversation and no workspace')
 }
 {
   const { commands, calls, result } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'explain', only: ['Key/3|a'], explainMax: 5 })

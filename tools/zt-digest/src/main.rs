@@ -187,6 +187,7 @@ fn main() {
         "model-finish" => ledger::model_finish_cli(&rest),
         "explain-finish" => ledger::explain_finish_cli(&rest),
         "cleanup-finish" => ledger::cleanup_finish_cli(&rest),
+        "cleanup-run" => ledger::cleanup_run_cli(&rest),
         "model-deps" => ledger::model_deps_cli(&rest),
         "prepare-link" => prepare::link_cli(&rest),
         "snapshot-topics" => snapshot::cli(&rest),
@@ -196,7 +197,7 @@ fn main() {
         }
         _ => {
             eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, card, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,
-       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, model-deps");
+       terms, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps");
             Ok(2)
         }
     };

@@ -1,5 +1,6 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
 mod adopt;
+mod cleanup_run;
 use crate::event::layer::prop;
 use crate::link_gap;
 use crate::ps::{self, list, pipe, s, truthy};
@@ -15760,6 +15761,35 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
         "reconciled":reconciled,
         "book":book
     }))
+}
+
+/// `cleanup-run -Out <out> -Step plan|apply [-Owner <label>]`: the run's DeepSeek cleanup from ledger facts,
+/// around one bridge call (`deepseek_settle`); see `ledger/cleanup_run.rs`.
+pub fn cleanup_run_cli(argv: &[String]) -> Result<i32> {
+    let parsed = (|| -> Result<(String, String, String)> {
+        let a = Args::parse(argv, &["Out", "Step", "Owner"], &[])?;
+        if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+            bail!("explicit -Out is required");
+        }
+        let step = a.choice("Step", &["plan", "apply"])?;
+        let owner = if a.has("Owner") { a.str("Owner") } else { "cleanup-run".to_string() };
+        if owner.trim().is_empty() {
+            bail!("-Owner must not be empty");
+        }
+        Ok((a.str("Out"), step, owner))
+    })();
+    let (out, step, owner) = match parsed {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("zt-digest cleanup-run: {error}");
+            return Ok(2);
+        }
+    };
+    let mut zt = crate::zt::start()?;
+    let p = Prepared::read(&out, &mut zt)?;
+    let result = if step == "plan" { cleanup_run::plan(&p)? } else { cleanup_run::apply(&p, &owner)? };
+    util::print_line(&serde_json::to_string(&result)?)?;
+    Ok(0)
 }
 
 pub fn cleanup_finish_cli(argv: &[String]) -> Result<i32> {
