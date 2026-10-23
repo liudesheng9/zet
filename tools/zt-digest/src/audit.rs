@@ -54,6 +54,28 @@ pub struct Fault {
 }
 
 static FAULT_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\S+ [RIEL]\d+ ").unwrap());
+/// The figure labels an image alt shows: `![图 2.C.1、2.C.2](artifact:…)` (the attach format) and a writer's
+/// captioned alt `![图 1.1：增值税的传播](artifact:…)`. ebrill2001modern's 2|b showed 图 1.1 with a caption, and the
+/// audit read the label as `1.1：增值税…` and reported 图 1.1 named but not shown.
+fn alt_labels(body: &str) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for m in SHOWN.captures_iter(body) {
+        let alt = m[1].trim();
+        let mut found = figure_labels(&format!("图{alt}"));
+        if found.is_empty() {
+            found.push(alt.to_string());
+        }
+        // The attach format writes 图 once and joins the later labels with 、.
+        found.extend(alt.split('、').skip(1).map(|part| part.trim().to_string()).filter(|part| !part.is_empty()));
+        for label in found {
+            if !labels.contains(&label) {
+                labels.push(label);
+            }
+        }
+    }
+    labels
+}
+
 static SHOWN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[图\s?([^\]]+)\]\(artifact:").unwrap());
 static IMAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[[^\]]*\]\([^)]*\)").unwrap());
 static TERMS_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
@@ -658,8 +680,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
                 continue;
             }
             let Some((_, body)) = bodies.get(&ci(&field(c, "address"))) else { continue };
-            for m in SHOWN.captures_iter(body) {
-                let label = m[1].trim().to_string();
+            for label in alt_labels(body) {
                 if shown_set.insert(ci(&label)) {
                     shown_labels.push(label);
                 }
@@ -672,9 +693,9 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             }
             let Some((title, body)) = bodies.get(&ci(&field(c, "address"))) else { continue };
             let plain = IMAGE.replace_all(&format!("{title}\n{body}"), "").into_owned();
+            let shown_here: HashSet<String> = alt_labels(body).iter().map(|label| ci(label)).collect();
             for label in ps_sort_unique(&figure_labels(&plain)) {
-                let shown_here = Regex::new(&format!(r"(?i)!\[图\s?{}\]\(artifact:", regex::escape(&label))).unwrap();
-                if shown_here.is_match(body) {
+                if shown_here.contains(&ci(&label)) {
                     continue;
                 }
                 named.push(json!({ "address": field(c, "address"), "figure": label, "known": shown_set.contains(&ci(&label)) }));
@@ -974,6 +995,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_captioned_alt_shows_its_figure_label() {
+        assert_eq!(alt_labels("![图 1.1：增值税的传播](artifact:aa)\n![图 1.1（续）：图例](artifact:bb)"), vec!["1.1"]);
+        assert_eq!(alt_labels("![图 2.C.1、2.C.2](artifact:cc)"), vec!["2.C.1", "2.C.2"]);
+        assert_eq!(alt_labels("![图 IV](artifact:dd) ![](artifact:ee)"), vec!["IV"]);
+    }
 
     #[test]
     fn figure_names_follow_the_dotnet_pattern() {

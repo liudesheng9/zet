@@ -654,6 +654,25 @@ fn patch_compatible(run: &Value, tool: &Value) -> bool {
     }
 }
 
+/// The line `ledger report` prints: the facts it wrote to run-report.json, with the two long lists cut to their
+/// first eight entries and the rest counted (`missing_omitted`, `units_omitted`). A relay reads this line; on
+/// ebrill2001modern it was 138 KB (97 KB of runs without usage), the relay summarized it, and the cleanup stage
+/// reported no run report. The files keep every entry.
+fn report_line(facts: &Value) -> Value {
+    const KEEP: usize = 8;
+    let mut line = facts.clone();
+    for (section, list, omitted) in [("usage", "missing", "missing_omitted"), ("cleanup", "units", "units_omitted")] {
+        if let Some(entries) = line[section][list].as_array_mut()
+            && entries.len() > KEEP
+        {
+            let rest = entries.len() - KEEP;
+            entries.truncate(KEEP);
+            line[section][omitted] = json!(rest);
+        }
+    }
+    line
+}
+
 /// How often the prepared-run check reads its archive view before a moving revision fails it.
 const PREPARED_VIEW_READS: u32 = 5;
 
@@ -4288,9 +4307,21 @@ fn gaps_of(units: &[Value], coverage_faults: &[Value], placeholders: &Value) -> 
         }));
     }
     // A publication names the exact work it could not resolve, and the exact coverage it
-    // checked as a gap, an unmatched figure or an unresolved entry.
+    // checked as a gap, an unmatched figure or an unresolved entry. Only the latest revision of a
+    // publication speaks for it: a done revision a later one replaced is history (ebrill2001modern:
+    // figures/book@3 showed every figure, and the report still listed @2's four unmatched figures).
+    let mut latest: BTreeMap<(String, String), i64> = BTreeMap::new();
+    for unit in units {
+        let key = (ps::s(&unit["layer"]), ps::s(&unit["logical_key"]));
+        let revision = unit["revision"].as_i64().unwrap_or(0);
+        let entry = latest.entry(key).or_insert(revision);
+        *entry = (*entry).max(revision);
+    }
     for unit in units {
         if unit["state"] != json!("done") || is_superseded(unit) {
+            continue;
+        }
+        if latest.get(&(ps::s(&unit["layer"]), ps::s(&unit["logical_key"]))).is_some_and(|newest| unit["revision"].as_i64().unwrap_or(0) < *newest) {
             continue;
         }
         let layer = unit["layer"].as_str().unwrap_or_default();
@@ -4928,9 +4959,11 @@ fn status(out: &Path, layer: &str, placeholders: Option<Value>) -> Result<Value>
         }),
     };
     let gaps = gaps_of(&units, &coverage_faults, &placeholders);
+    // An open Bridge proposal is a review decision, never a missing digest write (R339): it stays listed
+    // and leaves quality alone.
     let content_gaps = gaps
         .iter()
-        .filter(|gap| gap["kind"] != json!("cleanup"))
+        .filter(|gap| gap["kind"] != json!("cleanup") && !(gap["layer"] == json!("bridge") && gap["code"] == json!("open")))
         .count();
     // The layer's own completion keeps the pre-existing meaning the gates and their callers use: the
     // enumeration settled, nothing failed or blocked, and every required publication current.
@@ -16395,7 +16428,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let verified = report::placeholders(&mut zt, field(&p.contract, "citation_key")?);
         let mut facts = run_report(&p, verified)?;
         facts["report"] = report::publish(&p.out, &facts)?;
-        util::print_line(&serde_json::to_string(&facts)?)?;
+        util::print_line(&serde_json::to_string(&report_line(&facts))?)?;
         return Ok(0);
     } else {
         let verified = if command == "status" && a.flag("Verify") {
@@ -16441,6 +16474,20 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_report_line_cuts_the_long_lists_and_counts_the_rest() {
+        let missing: Vec<Value> = (0..438).map(|n| json!({"conversation":format!("c{n}"),"reason":"none"})).collect();
+        let units: Vec<Value> = (0..3).map(|n| json!({"id":format!("cleanup/u{n}@1")})).collect();
+        let facts = json!({"usage":{"known_runs":13,"missing_runs":438,"missing":missing},"cleanup":{"units":units},"completeness":{"complete":true}});
+        let line = report_line(&facts);
+        assert_eq!(line["usage"]["missing"].as_array().unwrap().len(), 8);
+        assert_eq!(line["usage"]["missing_omitted"], json!(430));
+        assert_eq!(line["usage"]["missing_runs"], json!(438));
+        assert_eq!(line["cleanup"]["units"].as_array().unwrap().len(), 3, "a short list stays whole");
+        assert!(line["cleanup"].get("units_omitted").is_none());
+        assert_eq!(line["completeness"], facts["completeness"]);
+    }
 
     #[test]
     fn a_patch_release_drives_a_run_of_an_earlier_patch_only() {
@@ -16861,6 +16908,20 @@ mod tests {
         assert_eq!(total["noop"], json!(1));
         assert_eq!(total["refused"], json!(1));
         assert_eq!(total["open"], json!(0));
+    }
+
+    #[test]
+    fn only_the_latest_publication_revision_names_coverage_gaps() {
+        let figures = |revision: i64, outcome: &str| json!({
+            "id":format!("figures/book@{revision}"),"layer":"figures","logical_key":"book","revision":revision,"state":"done",
+            "fault":Value::Null,"progress":{},"result":{"coverage":[{"ref":"a.jpg","outcome":outcome,"reason":"no Card names 图 1"}]}
+        });
+        let placeholders = json!({"status":"verified","count":0,"models":[]});
+        let gaps = gaps_of(&[figures(2, "unmatched"), figures(3, "shown")], &[], &placeholders);
+        assert!(gaps.is_empty(), "a replaced revision's unmatched figure is history: {gaps:?}");
+        let gaps = gaps_of(&[figures(2, "shown"), figures(3, "unmatched")], &[], &placeholders);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0]["unit"], json!("figures/book@3"));
     }
 
     #[test]

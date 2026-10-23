@@ -824,7 +824,14 @@ impl Bridge {
                 // The script also read the preview's context here and did not use it with -Apply:
                 // apply reads its own context under the lock, so the tool reads the trees once less.
                 let state = self.apply_selected(&chosen, &published)?;
-                lines.push(ps::json_compact(&self.report_summary(&published, &state, "apply")));
+                let mut summary = self.report_summary(&published, &state, "apply");
+                // A prepared run records the accepted proposals in a new Bridge revision.
+                if ps::exists(&ps::join_path(&self.staging, "ledger.sqlite3")) {
+                    let report = ps::join_path(&self.work, "proposals.json");
+                    let published = crate::finalize::publish_bridge_stage(&self.staging, &report)?;
+                    summary["publication"] = json!({"unit": published["unit"], "revision": published["revision"], "coverage": published["coverage"]});
+                }
+                lines.push(ps::json_compact(&summary));
                 return Ok(0);
             }
             let mut wanted: Vec<String> = Vec::new();

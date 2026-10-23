@@ -1101,6 +1101,37 @@ fn figures_coverage(recognized: &[Value], report: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// The Bridge coverage: every proposal of the report once, `accepted` when the apply state of this report
+/// accepted it (new or earlier carrier), else `open`. An apply state of another report accepts nothing.
+fn bridge_coverage(report: &Value, state: &Value) -> Vec<Value> {
+    let same = !state.is_null() && ps::s(&state["report_id"]) == ps::s(&report["report_id"]);
+    let accepted: BTreeSet<String> = if same {
+        ["new", "earlier"].iter().flat_map(|section| ps::ps_items(&state["accepted"][*section]).into_iter().map(|id| ps::s(&id))).collect()
+    } else {
+        BTreeSet::new()
+    };
+    ps::ps_items(&report["proposals"])
+        .into_iter()
+        .map(|proposal| {
+            let outcome = if accepted.contains(&ps::s(&proposal["id"])) { "accepted" } else { "open" };
+            json!({"ref": proposal["id"], "outcome": outcome})
+        })
+        .collect()
+}
+
+/// Publish the Bridge stage revision of a prepared run after an apply (`zt-digest bridge -Step apply -Apply`),
+/// so the ledger records the proposals now accepted. Before this an apply wrote its Links and the run kept
+/// reporting every proposal open.
+pub(crate) fn publish_bridge_stage(out: &str, report: &str) -> Result<Value> {
+    let mut zt = crate::zt::start()?;
+    let prepared = Prepared::read(out, &mut zt)?;
+    let a = Params {
+        step: "stage".into(), out: out.into(), report: report.into(), fix_work: String::new(), layer: "bridge".into(),
+        changes: String::new(), coverage: String::new(), scope: String::new(), decisions: String::new(), applied: String::new(), skeleton: String::new(),
+    };
+    run_stage(&prepared, &mut zt, &a)
+}
+
 /// The scope of a stage publication: its layer and the hash of its checked coverage. A stage run again on
 /// unchanged inputs with the same coverage reuses its revision; one whose coverage changed publishes a new
 /// revision that supersedes the old. With no scope the old revision was always reused, so a Figures stage run
@@ -1137,14 +1168,17 @@ fn run_stage(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
                 let report = util::read_json(&a.report).context("the figures report is not readable")?;
                 figures_coverage(&recognized, &report)
             }
-            // Every proposal of the immutable Bridge report stays open: accepting one is the user's
-            // review decision (mode bridge with -bridgeApply), never digest work left undone.
+            // A proposal of the immutable Bridge report is open until it is applied: accepting one is the
+            // review decision (mode bridge with -bridgeApply), never digest work left undone. The apply
+            // state beside the report names the accepted ones.
             "bridge" => {
                 let report = util::read_json(&a.report).context("the Bridge report is not readable")?;
-                ps::ps_items(&report["proposals"])
-                    .into_iter()
-                    .map(|proposal| json!({"ref": proposal["id"], "outcome": "open"}))
-                    .collect()
+                let state = Path::new(&a.report).parent().map(|work| work.join("state.json")).filter(|path| path.is_file());
+                let state = match state {
+                    Some(path) => util::read_json(&path).context("the Bridge apply state is not readable")?,
+                    None => Value::Null,
+                };
+                bridge_coverage(&report, &state)
             }
             _ => Vec::new(),
         }
@@ -1460,7 +1494,20 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
 #[cfg(test)]
 mod stage_tests {
-    use super::{figures_coverage, stage_scope};
+    use super::{bridge_coverage, figures_coverage, stage_scope};
+
+    #[test]
+    fn bridge_coverage_names_the_accepted_proposals_of_this_report() {
+        let report = json!({"report_id":"r-1","proposals":[{"id":"b001"},{"id":"b002"},{"id":"b003"}]});
+        let state = json!({"report_id":"r-1","accepted":{"new":["b002"],"earlier":["b003"]}});
+        let coverage = bridge_coverage(&report, &state);
+        assert_eq!(coverage[0], json!({"ref":"b001","outcome":"open"}));
+        assert_eq!(coverage[1], json!({"ref":"b002","outcome":"accepted"}));
+        assert_eq!(coverage[2], json!({"ref":"b003","outcome":"accepted"}));
+        let other = json!({"report_id":"r-2","accepted":{"new":["b001"]}});
+        assert!(bridge_coverage(&report, &other).iter().all(|entry| entry["outcome"] == json!("open")));
+        assert!(bridge_coverage(&report, &serde_json::Value::Null).iter().all(|entry| entry["outcome"] == json!("open")));
+    }
 
     #[test]
     fn a_stage_scope_changes_with_its_coverage_only() {
