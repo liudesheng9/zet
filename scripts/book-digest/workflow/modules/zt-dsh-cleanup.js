@@ -1,4 +1,4 @@
-// ==== module zt-dsh-cleanup v9 ====
+// ==== module zt-dsh-cleanup v10 ====
 // R231/R322–R330: the run's cleanup is settled from ledger evidence, never from a workspace listing's
 // titles. The module reads every resource this run recorded and hands the conversations not yet settled to
 // cleanup agents in chunks (at most eight agents at once). Each agent deletes exactly its recorded ids and
@@ -9,12 +9,16 @@
 // retained when the ids were recorded; a disposable model folder is removed by the verifier only after
 // its accepted plan sits under the durable evidence path. A partial cleanup keeps the run partial; a
 // provider fault stays retryable and rebuilds no content.
+// v10 (ebrill2001modern trial 1): one command, `zt-digest cleanup-finish -Ready`, claims and settles every ready
+// cleanup unit (the stage had spent one Haiku agent per unit, about 150 one after another, and its faults went
+// out with an empty input hash, so every failed unit stayed claimed); a workspace the provider no longer knows
+// is recorded removed (the resume recorded the workspaces trial 1 had removed as not removed).
 // The run report (#85, R331–R346) is rendered here, after cleanup settles: every stage of the run has
 // finished, so the report describes the whole invocation. Its usage section is the exact per-run usage
 // the ledger recorded from each run's own result; this module never reads or differences the account-wide
 // usage ledger, because the difference of two rolling totals is not a run's cost (R344).
 defineModule({
-  id: 'zt-dsh-cleanup', version: '9', requires: ['zt-digest-lib'],
+  id: 'zt-dsh-cleanup', version: '10', requires: ['zt-digest-lib'],
   summary: 'ZT digest: settle every recorded DeepSeek conversation and workspace from ledger evidence, then render the verified run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -95,48 +99,39 @@ Workspaces (JSON): ${JSON.stringify(batch)}
 For each workspace:
 0. Run this command (it changes nothing): ${LEDGER} resource -Out "${OUT}" -List -Workspace "<path>". Its last line is JSON; workspace.recorded holds the ids this run recorded there.
 1. deepseek_list with cwd = that path. remaining = the recorded ids still listed; unknown = every listed conversation that is NOT recorded there (id and title): those belong to the user and must stay.
+   When deepseek_list answers that no Desktop workspace exists for that path, the workspace is already gone: remaining and unknown are empty, removed = true, and you skip step 2.
 2. When remaining and unknown are both empty: deepseek_remove_workspace with cwd = that path and delete_conversations true. removed = true only when it succeeded. Otherwise do not remove it; removed = false.
 3. Record it with this command (it changes no Card): ${LEDGER} resource -Out "${OUT}" -SettleWorkspace "<path>" -Removed <true or false> -Remaining '<remaining ids, comma-separated>' -Unknown '<unknown ids, comma-separated>'
 Return workspaces: one entry per workspace with id (its path), removed, unknown, remaining and recorded (true when the record command succeeded). Do not read or sum account-wide usage totals.`,
       { label: `cleanup workspaces ${k + 1} of ${batches.length}`, phase: 'Cleanup', model: 'haiku', schema: WORKSPACES },
     ))))
     report = { workspaces: listedBatches.flatMap((got) => (got && got.workspaces) || []) }
-    // Every cleanup unit this run recorded: claim the ready ones in bounded rounds, settle each through
-    // its own checked verifier, and record a retryable fault when a provider fact still blocks it.
-    // The rounds go on until no ready unit is left or every unit a claim offers has already failed three times
-    // here: on grossman2002integration trial 10 three rounds of eight claims went to the same failing units and the
-    // eight link cleanup units were never claimed. The book unit settles last, after the units it reports on.
+    // Every cleanup unit this run recorded, in one command per call: `cleanup-finish -Ready` claims the ready units,
+    // settles each through its own checked verifier (the run-level unit last), records a retryable fault with the
+    // claim's own hash when a provider fact still blocks one, and claims those again within the run's attempt budget.
+    // A second call runs only when the first gave no readable line.
     const settled = []
-    const tries = new Map()
-    for (let round = 0; round < 60; round++) {
-      const claimed = await Z.claim(`cleanup: claim round ${round + 1}`, 'cleanup', 8, 0)
-      const units = (claimed.units || []).slice().sort((a, b) => (a.id === 'cleanup/book@1') - (b.id === 'cleanup/book@1'))
-      if (!units.length || units.every((u) => (tries.get(u.id) || 0) >= 3)) break
-      for (const unit of units) {
-        tries.set(unit.id, (tries.get(unit.id) || 0) + 1)
-        const done = await Z.finishCleanup(`cleanup ${unit.id}`, unit.id, unit.token)
-        if (done.ok) {
-          settled.push({ unit: unit.id, status: (done.json && done.json.status) || 'done', json: done.json })
-          continue
-        }
-        await Z.failUnit(`cleanup: ${unit.id} fault`, unit.id, unit.token, 'retryable', {
-          schema_version: 1, unit: unit.id, input_hash: unit.input_hash || '', code: 'provider_transient',
-          cause: String(done.error || 'the checked cleanup did not complete').slice(0, 800),
-        })
-        settled.push({ unit: unit.id, status: 'retry', error: done.error })
-      }
+    let ready = null
+    for (let call = 1; call <= 2 && !ready; call++) {
+      const out = await Z.runScript(`cleanup: settle the ready units${call > 1 ? ' (again)' : ''}`, 'Cleanup', `${Z.DIGEST} cleanup-finish -Out "${OUT}" -Ready -Owner "cleanup-ready"`, ' (it settles every ready cleanup unit through its checked verifier and prints one line; never retry it with other options)')
+      ready = out.json && out.json.kind === 'cleanup_ready' ? out.json : null
+      if (!ready) log(`Cleanup: the settle command gave no readable line (${String((out.run && out.run.output) || 'no output').slice(0, 200)}).`)
     }
-    const last = [...new Map(settled.map((s) => [s.unit, s])).values()]
-    settled.length = 0
-    settled.push(...last)
+    if (ready) {
+      const open = (ready.retry || []).concat(ready.failed || [])
+      log(`Cleanup: ${ready.done} of ${ready.claimed} claimed unit(s) settled (${ready.partial} partial); ${ready.retry_count} retryable, ${ready.failed_count} failed${open.length ? `: ${JSON.stringify(open.slice(0, 4))}` : ''}.`)
+      for (const unit of open) settled.push({ unit: unit.unit, status: unit.state === 'retry' ? 'retry' : 'failed', error: unit.cause })
+      if (ready.book && ready.book.unit) settled.push(ready.book.ok ? { unit: ready.book.unit, status: ready.book.status || 'done', json: ready.book } : { unit: ready.book.unit, status: 'retry', error: ready.book.cause })
+    }
     const run = settled.find((s) => s.unit === 'cleanup/book@1' && s.json) || settled.find((s) => s.json) || null
     const cleanup = {
       resources: brief.resources,
       workspaces: workspaces.length,
-      units: settled.map((s) => ({ unit: s.unit, status: s.status, cleanup_complete: s.json ? s.json.cleanup_complete : null, content_complete: s.json ? s.json.content_complete : null, reconciliation: s.json ? s.json.reconciliation : null })),
+      settled: ready ? { claimed: ready.claimed, done: ready.done, partial: ready.partial, retry: ready.retry_count, failed: ready.failed_count } : null,
+      units: settled.map((s) => ({ unit: s.unit, status: s.status, cleanup_complete: s.json ? s.json.cleanup_complete : null, content_complete: s.json ? s.json.content_complete : null, reconciliation: s.json ? s.json.reconciliation : null, error: s.error })),
       workspace_removed: (report.workspaces || []).every((w) => w.removed === true),
       late_deleted: (report.workspaces || []).reduce((n, w) => n + (w.conversations || []).filter((c) => c.deleted === 'confirmed').length, 0),
-      files_removed: run && run.json && run.json.scratch ? (run.json.scratch.removed || []).length : 0,
+      files_removed: run && run.json ? Number(run.json.scratch_removed) || 0 : 0,
       content_complete: run ? run.json.content_complete : null,
       cleanup_complete: run ? run.json.cleanup_complete : null,
       status: run ? run.json.status : 'unsettled',

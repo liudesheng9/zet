@@ -269,6 +269,66 @@ try {
     $partial = Run-Digest @('cleanup-finish','-Out',$reconcileOut,'-Unit',$lostUnit.id,'-Token',"$($lostUnit.token)")
     Assert ($partial.cleanup_complete -eq $false -and $partial.status -eq 'partial' -and @($partial.reconciliation)[0].code -eq 'lost_creation_response') 'an unrecovered creation response completes as a reported reconciliation rather than a silent success'
     Assert ($partial.reconciliation[0].workspace -eq $workspace -and $partial.reconciliation[0].cleanup_unit -eq $lost.cleanup_unit) 'the reconciliation names the exact workspace and cleanup unit a human must reconcile'
+
+    # --- ebrill2001modern trial 1: the plain record commands take the claim's fence, and an ended run's
+    # expired claim does not block them (the resume's agents met claim_active on every -SettleWorkspace) ---
+    $staleOut = Join-Path $scratch 'stale'
+    $script:currentOut = $staleOut
+    $null = Run-Digest (@('prepare') + (Common-Args 'CleanupStale') + @('-Out',$staleOut))
+    $claim = @((Run-Digest @('ledger','next','-Out',$staleOut,'-Layer','digest','-Take','1','-Owner','cleanup-manager')).units)[0]
+    $staleWorkspace = Join-Path $staleOut 'dsh'
+    New-Item -ItemType Directory -Force $staleWorkspace | Out-Null
+    $stale = Register-Resource $staleOut $claim.id $claim.token $staleWorkspace @(@{ id = 'conv-7' })
+    $null = Fail-Unit $claim.id $claim.token 'digest'
+    $held = @((Run-Digest @('ledger','next','-Out',$staleOut,'-Layer','cleanup','-Take','8','-Owner','cleanup-agent')).units | Where-Object { $_.id -eq $stale.cleanup_unit })[0]
+    $bad = Fail-Digest @('ledger','resource','-Out',$staleOut,'-SettleWorkspace',$staleWorkspace,'-Removed','false')
+    Assert ($bad.code -eq 1 -and $bad.text.Contains('claim_active')) 'an unfenced workspace record is refused while a live claim holds the unit'
+    $fenced = Run-Digest @('ledger','resource','-Out',$staleOut,'-SettleWorkspace',$staleWorkspace,'-Removed','false','-Unit',$held.id,'-Token',"$($held.token)")
+    Assert ($fenced.recorded -eq $true) 'the claim holder records the workspace with -Unit and -Token'
+    $fenced = Run-Digest @('ledger','resource','-Out',$staleOut,'-Settle','conv-7','-State','finished','-Deleted','confirmed','-Unit',$held.id,'-Token',"$($held.token)")
+    Assert ($fenced.recorded -eq $true) 'the claim holder records a deletion with -Unit and -Token'
+    $answer = Evidence $staleOut 'answer-conv-7.txt' 'the answer'
+    $fenced = Run-Digest @('ledger','resource','-Out',$staleOut,'-EvidenceFor','conv-7','-Evidence',$answer,'-Unit',$held.id,'-Token',"$($held.token)")
+    Assert ($fenced.recorded -eq $true) 'the claim holder records evidence with -Unit and -Token'
+    $bad = Fail-Digest @('ledger','resource','-Out',$staleOut,'-SettleWorkspace',$staleWorkspace,'-Removed','true','-Unit',$held.id,'-Token',"$($held.token + 1)")
+    Assert ($bad.code -eq 1 -and $bad.text.Contains('stale_claim')) 'a record command with a superseded token is refused'
+    $staleRun = Join-Path $scratch 'stale-run'
+    $script:currentOut = $staleRun
+    $null = Run-Digest (@('prepare') + (Common-Args 'CleanupEnded') + @('-Out',$staleRun))
+    $claim = @((Run-Digest @('ledger','next','-Out',$staleRun,'-Layer','digest','-Take','1','-Owner','cleanup-manager')).units)[0]
+    $ended = Register-Resource $staleRun $claim.id $claim.token $staleWorkspace @(@{ id = 'conv-8' })
+    $null = Fail-Unit $claim.id $claim.token 'digest'
+    $env:ZT_LEDGER_LEASE_SECONDS = '1'
+    try { $null = Run-Digest @('ledger','next','-Out',$staleRun,'-Layer','cleanup','-Take','8','-Owner','ended-run') } finally { Remove-Item Env:ZT_LEDGER_LEASE_SECONDS }
+    Start-Sleep -Seconds 3
+    $recorded = Run-Digest @('ledger','resource','-Out',$staleRun,'-SettleWorkspace',$staleWorkspace,'-Removed','true')
+    Assert ($recorded.recorded -eq $true) 'an expired claim of an ended run does not block an unfenced record'
+
+    # --- ebrill2001modern trial 1: one command claims and settles every ready cleanup unit (the stage spent one
+    # agent per unit, about 150 in turn); a unit that cannot settle gets its retryable fault with the claim's hash ---
+    $readyOut = Join-Path $scratch 'ready'
+    $script:currentOut = $readyOut
+    $null = Run-Digest (@('prepare') + (Common-Args 'CleanupReady') + @('-Out',$readyOut))
+    $claims = @((Run-Digest @('ledger','next','-Out',$readyOut,'-Layer','digest','-Take','2','-Owner','cleanup-manager')).units)
+    $readyWorkspace = Join-Path $readyOut 'dsh'
+    New-Item -ItemType Directory -Force $readyWorkspace | Out-Null
+    $settles = Register-Resource $readyOut $claims[0].id $claims[0].token $readyWorkspace @(@{ id = 'conv-r1' })
+    $open = Register-Resource $readyOut $claims[1].id $claims[1].token $readyWorkspace @(@{ id = 'conv-r2' })
+    Finish-Conversation $readyOut $settles.resources[0].id 'conv-r1'
+    $null = Fail-Unit $claims[0].id $claims[0].token 'digest'
+    $null = Fail-Unit $claims[1].id $claims[1].token 'digest'
+    $audit = @((Run-Digest @('ledger','next','-Out',$readyOut,'-Layer','audit','-Take','1','-Owner','cleanup-fixture')).units)[0]
+    $null = Fail-Unit $audit.id $audit.token 'audit'
+    $ready = Run-Digest @('cleanup-finish','-Out',$readyOut,'-Ready','-Owner','cleanup-ready')
+    Assert ($ready.kind -eq 'cleanup_ready' -and $ready.claimed -eq 3 -and $ready.done -eq 1) 'one command claims every ready cleanup unit and settles the one that can'
+    Assert ((@($ready.failed) + @($ready.retry)).Count -eq 2 -and @(@($ready.failed) + @($ready.retry) | Where-Object { $_.unit -eq $open.cleanup_unit -and $_.cause -match 'not terminal' }).Count -eq 1) 'a unit that cannot settle is reported with its cause'
+    $units = @((Run-Digest @('ledger','status','-Out',$readyOut,'-Layer','cleanup')).units)
+    Assert (@($units | Where-Object { $_.state -eq 'claimed' }).Count -eq 0) 'no cleanup unit is left claimed'
+    $faulted = @($units | Where-Object { $_.id -eq $open.cleanup_unit })[0]
+    Assert ($faulted.state -in @('failed','retry') -and $faulted.fault.input_hash -eq $faulted.input_hash -and $faulted.fault.code -eq 'provider_transient') 'its fault carries the claim''s own input hash and stays a provider fault'
+    Assert ($ready.book.unit -eq 'cleanup/book@1' -and $ready.book.ok -eq $false) 'the run-level unit is reported apart, settled last'
+    $again = Run-Digest @('cleanup-finish','-Out',$readyOut,'-Ready','-Owner','cleanup-ready')
+    Assert ($again.claimed -eq 0) 'a second call finds nothing ready'
     Write-Output 'ok: owned resources, cleanup evidence and scratch removal verified'
 } finally {
     if (Test-Path $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }

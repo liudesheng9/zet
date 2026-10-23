@@ -614,9 +614,11 @@ impl Prepared {
                 bail!("prepared Literature metadata mismatch");
             }
             let after = zt.archive_view()?;
-            if after["archive_identity"] != contract["archive_identity"]
-                || after["archive_revision"].as_u64() != Some(cards.archive_revision)
-            {
+            // Only a moving revision is read again; an archive replaced during the check refuses at once.
+            if after["archive_identity"] != contract["archive_identity"] {
+                bail!("archive changed while checking preparation; retry without publishing work");
+            }
+            if after["archive_revision"].as_u64() != Some(cards.archive_revision) {
                 if attempt < PREPARED_VIEW_READS {
                     continue;
                 }
@@ -6206,6 +6208,14 @@ fn fail(p: &Prepared, unit: &str, token: i64, class: &str, fault: &Value) -> Res
     if fault_class(field(fault, "code")?)? != class {
         bail!("fault classification mismatch: code does not permit class {class}");
     }
+    // A fault without its input hash takes the claim's own: the token already fences the attempt
+    // (ebrill2001modern trial 1: the cleanup stage sent its faults with an empty hash, every one was
+    // refused, and the failed cleanup units stayed claimed). A hash that names another input is refused.
+    let mut fault = fault.clone();
+    if fault["input_hash"].as_str().is_none_or(|hash| hash.trim().is_empty()) {
+        fault["input_hash"] = json!(claim.input_hash);
+    }
+    let fault = &fault;
     if field(fault, "unit")? != unit || field(fault, "input_hash")? != claim.input_hash {
         bail!("fault unit/input hash mismatch");
     }
@@ -14100,6 +14110,10 @@ fn resource_register_id(p: &Prepared, unit: &str, token: Option<i64>, id: &str, 
     if workspace.is_empty() {
         bail!("-RegisterId needs -Workspace, the DeepSeek workspace (cwd) of the run");
     }
+    let id = id.trim();
+    if placeholder_id(id) {
+        bail!("`{id}` is not a conversation id: register only the session_id that deepseek_run returned, after it returned");
+    }
     let mut input = json!({
         "schema_version": 1,
         "unit": unit,
@@ -14112,11 +14126,21 @@ fn resource_register_id(p: &Prepared, unit: &str, token: Option<i64>, id: &str, 
     resource_register_input(p, input)
 }
 
+/// A word a manager writes before it has a run (ebrill2001modern trial 1: an explain manager "checked" the
+/// command with `-RegisterId PENDING`, and cleanup could neither delete nor evidence that id). A provider
+/// id is one token without spaces or angle brackets and is never one of these words.
+fn placeholder_id(id: &str) -> bool {
+    const WORDS: [&str; 10] = ["pending", "placeholder", "tbd", "todo", "unknown", "none", "null", "undefined", "session_id", "id"];
+    id.is_empty()
+        || id.chars().any(|c| c.is_whitespace() || "<>{}".contains(c))
+        || WORDS.contains(&id.to_ascii_lowercase().as_str())
+}
+
 /// `ledger resource -EvidenceFor <id> [-Evidence <file>] [-Usage <json>]`: the facts of one recorded
 /// conversation, named by the manager that ran it. The answer is a file inside the prepared output
 /// directory (the job's own output, or the answer text the manager saved); zt-digest copies it into
 /// the retained evidence with its hash (R325). The usage is the provider's own numbers for the run.
-fn resource_evidence_for(p: &Prepared, id: &str, evidence: Option<&str>, usage: Option<&str>) -> Result<Value> {
+fn resource_evidence_for(p: &Prepared, id: &str, evidence: Option<&str>, usage: Option<&str>, unit: &str, token: Option<i64>) -> Result<Value> {
     let id = id.trim();
     let key = resource_holding(p, id)?;
     let mut result = Value::Null;
@@ -14130,17 +14154,17 @@ fn resource_evidence_for(p: &Prepared, id: &str, evidence: Option<&str>, usage: 
             bail!("evidence file {file} is empty");
         }
         let input = json!({"schema_version":1,"op":"evidence","resource":key,"conversation":id,"text":text,"name":id});
-        result = resource_observe_input(p, input, "", None)?;
+        result = resource_observe_input(p, input, unit, token)?;
     }
     if let Some(usage) = usage {
         let numbers: Value = serde_json::from_str(usage).context("-Usage is a JSON object of numbers")?;
         let input = json!({"schema_version":1,"op":"usage","resource":key,"conversation":id,"usage":numbers});
-        result = resource_observe_input(p, input, "", None)?;
+        result = resource_observe_input(p, input, unit, token)?;
     } else if evidence.is_some() && conversation_usage(p, id)?.is_null() {
         // Evidence without usage: the run's result stated no token usage, so the usage is recorded as
         // unavailable (R345) instead of left absent; the report counts the run as missing.
         let input = json!({"schema_version":1,"op":"usage_unavailable","resource":key,"conversation":id,"reason":"the run's result stated no token usage"});
-        result = resource_observe_input(p, input, "", None)?;
+        result = resource_observe_input(p, input, unit, token)?;
     }
     if result.is_null() {
         bail!("-EvidenceFor needs -Evidence, -Usage, or both");
@@ -14168,6 +14192,11 @@ fn record_brief(result: &Value) -> Value {
     }
     brief.insert("recorded".into(), json!(true));
     Value::Object(brief)
+}
+
+/// The claim token a record command names with `-Token` (only beside `-Unit`, the cleanup unit it holds).
+fn record_token(a: &Args) -> Result<Option<i64>> {
+    a.has("Token").then(|| a.str("Token").parse::<i64>()).transpose().context("-Token must be a positive integer")
 }
 
 /// The usage record one recorded conversation retains, or null.
@@ -14213,7 +14242,7 @@ fn usage_retained(resource: &Value) -> bool {
 /// records, with plain arguments and right after it acted, the provider's terminal state of one
 /// recorded conversation and the result of its deletion (R323, R326). A conversation that is already
 /// gone (`absent`) is recorded as finished with the outcome `absent`.
-fn resource_settle(p: &Prepared, id: &str, state: &str, deleted: &str, message: &str) -> Result<Value> {
+fn resource_settle(p: &Prepared, id: &str, state: &str, deleted: &str, message: &str, unit: &str, token: Option<i64>) -> Result<Value> {
     let id = id.trim();
     let key = resource_holding(p, id)?;
     let state = state.trim().to_ascii_lowercase();
@@ -14222,19 +14251,19 @@ fn resource_settle(p: &Prepared, id: &str, state: &str, deleted: &str, message: 
         "absent" => ("finished".to_string(), "absent".to_string()),
         _ => bail!("-State is finished, error, cancelled, failed or absent, not `{state}`"),
     };
-    resource_observe_input(p, json!({"schema_version":1,"op":"terminal","resource":key,"conversation":id,"state":terminal,"outcome":outcome}), "", None)?;
+    resource_observe_input(p, json!({"schema_version":1,"op":"terminal","resource":key,"conversation":id,"state":terminal,"outcome":outcome}), unit, token)?;
     match deleted.trim().to_ascii_lowercase().as_str() {
         result @ ("confirmed" | "already_absent") => resource_observe_input(
             p,
             json!({"schema_version":1,"op":"deleted","resource":key,"conversation":id,"result":result}),
-            "",
-            None,
+            unit,
+            token,
         ),
         "failed" => resource_observe_input(
             p,
             json!({"schema_version":1,"op":"delete_failed","resource":key,"conversation":id,"code":"provider","message":message.chars().take(300).collect::<String>()}),
-            "",
-            None,
+            unit,
+            token,
         ),
         other => bail!("-Deleted is confirmed, already_absent or failed, not `{other}`"),
     }
@@ -14243,7 +14272,7 @@ fn resource_settle(p: &Prepared, id: &str, state: &str, deleted: &str, message: 
 /// `ledger resource -SettleWorkspace <path> -Removed true|false [-Remaining <ids>] [-Unknown <ids>]`: the
 /// cleanup agent's own listing of one workspace after its deletions (the recorded ids still present,
 /// the ids no resource recorded) and whether it removed the workspace, for every resource there.
-fn resource_settle_workspace(p: &Prepared, path: &str, removed: bool, remaining: &str, unknown: &str) -> Result<Value> {
+fn resource_settle_workspace(p: &Prepared, path: &str, removed: bool, remaining: &str, unknown: &str, unit: &str, token: Option<i64>) -> Result<Value> {
     let path = path.trim();
     let keys: Vec<String> = {
         let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
@@ -14263,8 +14292,8 @@ fn resource_settle_workspace(p: &Prepared, path: &str, removed: bool, remaining:
     let strays: Vec<Value> = ids(unknown).into_iter().map(|id| json!({"id":id,"title":""})).collect();
     let mut result = Value::Null;
     for key in keys {
-        resource_observe_input(p, json!({"schema_version":1,"op":"listing","resource":key,"conversations":listed,"unknown":strays}), "", None)?;
-        result = resource_observe_input(p, json!({"schema_version":1,"op":"workspace","resource":key,"removed":removed}), "", None)?;
+        resource_observe_input(p, json!({"schema_version":1,"op":"listing","resource":key,"conversations":listed,"unknown":strays}), unit, token)?;
+        result = resource_observe_input(p, json!({"schema_version":1,"op":"workspace","resource":key,"removed":removed}), unit, token)?;
     }
     Ok(result)
 }
@@ -14518,7 +14547,7 @@ fn resource_sweep_evidence(p: &Prepared, answers: &str) -> Result<Value> {
     let mut missing = Vec::new();
     for id in &bare {
         let file = Path::new(answers.trim()).join(format!("{id}.txt"));
-        if file.is_file() && resource_evidence_for(p, id, Some(file.to_string_lossy().as_ref()), None).is_ok() {
+        if file.is_file() && resource_evidence_for(p, id, Some(file.to_string_lossy().as_ref()), None, "", None).is_ok() {
             recorded += 1;
         } else {
             missing.push(id.clone());
@@ -14679,12 +14708,14 @@ fn resource_observe_input(p: &Prepared, input: Value, unit: &str, token: Option<
             claim(&tx, &fence, token)?;
         }
         None => {
-            let (state, owner): (String, Option<String>) = tx.query_row(
-                "SELECT state,owner FROM units WHERE id=?1",
+            let (state, owner, lease_until): (String, Option<String>, Option<i64>) = tx.query_row(
+                "SELECT state,owner,lease_until FROM units WHERE id=?1",
                 [&cleanup_unit],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?;
-            if state == "claimed" {
+            // Only a live claim fences: a claim whose lease ran out belongs to a run that ended (the
+            // ebrill2001modern resume met claim_active on every record of a unit its first run had held).
+            if state == "claimed" && lease_until.is_some_and(|until| until > now_seconds()) {
                 bail!(
                     "claim_active: {cleanup_unit} is claimed by {}; pass -Unit and -Token",
                     owner.unwrap_or_default()
@@ -15510,11 +15541,96 @@ fn cleanup_finish(p: &Prepared, unit: &str, token: i64, check_only: bool) -> Res
     Ok(result)
 }
 
+/// `cleanup-finish -Ready`: claims every ready cleanup unit and settles each through its checked verifier
+/// in one process, the run-level unit last; a unit that cannot settle gets its retryable fault with the
+/// claim's own hash and is claimed again within the run's attempt budget. ebrill2001modern trial 1 spent one
+/// agent per unit (about 150, one after another), and every failed finish left its unit claimed. Prints one
+/// short line: counts, the first open causes, and the run-level unit's completeness.
+fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
+    const ROUNDS: usize = 6;
+    let mut claimed = 0usize;
+    let mut done = 0usize;
+    let mut partial = 0usize;
+    let mut open: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut book = Value::Null;
+    let mut rounds = 0usize;
+    for round in 0..ROUNDS {
+        // A unit faulted in an earlier round becomes ready after its short retry delay.
+        let wait = if round > 0 && open.values().any(|(state, _)| state == "retry") { 30 } else { 0 };
+        let mut units = next(p, "cleanup", 64, owner, wait, 0)?["units"].as_array().cloned().unwrap_or_default();
+        if units.is_empty() {
+            break;
+        }
+        rounds += 1;
+        units.sort_by_key(|unit| unit["id"] == json!("cleanup/book@1"));
+        for unit in units {
+            claimed += 1;
+            let id = field(&unit, "id")?.to_string();
+            let token = unit["token"].as_i64().context("a claimed unit carries its token")?;
+            let outcome = match cleanup_finish(p, &id, token, false) {
+                Ok(result) => {
+                    done += 1;
+                    if result["status"] == json!("partial") {
+                        partial += 1;
+                    }
+                    open.remove(&id);
+                    Ok(result)
+                }
+                Err(error) => {
+                    let cause: String = format!("{error:#}").chars().take(300).collect();
+                    let fault = json!({"schema_version":1,"unit":id,"input_hash":unit["input_hash"],"code":"provider_transient","cause":cause});
+                    let state = match fail(p, &id, token, "retryable", &fault) {
+                        Ok(failed) => failed["state"].as_str().unwrap_or("failed").to_string(),
+                        Err(refused) => format!("claimed: {refused:#}").chars().take(200).collect(),
+                    };
+                    open.insert(id.clone(), (state, cause.clone()));
+                    Err(cause)
+                }
+            };
+            if id == "cleanup/book@1" {
+                book = match outcome {
+                    Ok(result) => json!({
+                        "unit":id,"ok":true,"status":result["status"],
+                        "content_complete":result["content_complete"],"cleanup_complete":result["cleanup_complete"],
+                        "partial_reasons":result["partial_reasons"].as_array().map(|list| list.iter().take(8).map(|r| json!({"code":r["code"],"cause":r["cause"].as_str().map(|c| c.chars().take(160).collect::<String>())})).collect::<Vec<_>>()),
+                        "reconciliation":result["reconciliation"].as_array().map(Vec::len).unwrap_or(0),
+                        "scratch_removed":result["scratch"]["removed"].as_array().map(Vec::len).unwrap_or(0)
+                    }),
+                    Err(cause) => json!({"unit":id,"ok":false,"cause":cause}),
+                };
+            }
+        }
+        if !open.values().any(|(state, _)| state == "retry") {
+            break;
+        }
+    }
+    let list = |wanted: &dyn Fn(&str) -> bool| -> Vec<Value> {
+        open.iter().filter(|(_, (state, _))| wanted(state)).take(8).map(|(unit, (state, cause))| json!({"unit":unit,"state":state,"cause":cause})).collect()
+    };
+    let count = |wanted: &dyn Fn(&str) -> bool| open.values().filter(|(state, _)| wanted(state)).count();
+    Ok(json!({
+        "schema_version":1,"kind":"cleanup_ready","rounds":rounds,"claimed":claimed,"done":done,"partial":partial,
+        "retry_count":count(&|state| state == "retry"),"failed_count":count(&|state| state != "retry"),
+        "retry":list(&|state| state == "retry"),"failed":list(&|state| state != "retry"),
+        "book":book
+    }))
+}
+
 pub fn cleanup_finish_cli(argv: &[String]) -> Result<i32> {
-    let parsed = (|| -> Result<(String, String, i64, bool)> {
-        let a = Args::parse(argv, &["Out", "Unit", "Token"], &["CheckOnly"])?;
+    let parsed = (|| -> Result<(String, String, i64, bool, Option<String>)> {
+        let a = Args::parse(argv, &["Out", "Unit", "Token", "Owner"], &["CheckOnly", "Ready"])?;
         if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
             bail!("explicit -Out is required");
+        }
+        if a.flag("Ready") {
+            if a.has("Unit") || a.has("Token") || a.flag("CheckOnly") {
+                bail!("-Ready claims its own units; it takes no -Unit, -Token or -CheckOnly");
+            }
+            let owner = if a.has("Owner") { a.str("Owner") } else { "cleanup-ready".to_string() };
+            if owner.trim().is_empty() {
+                bail!("-Owner must not be empty");
+            }
+            return Ok((a.str("Out"), String::new(), 0, false, Some(owner)));
         }
         if a.required("Unit")?.trim().is_empty() {
             bail!("-Unit is required");
@@ -15525,9 +15641,9 @@ pub fn cleanup_finish_cli(argv: &[String]) -> Result<i32> {
             .ok()
             .filter(|number| *number > 0)
             .context("-Token must be positive")?;
-        Ok((a.str("Out"), a.str("Unit"), token, a.flag("CheckOnly")))
+        Ok((a.str("Out"), a.str("Unit"), token, a.flag("CheckOnly"), None))
     })();
-    let (out, unit, token, check_only) = match parsed {
+    let (out, unit, token, check_only, ready) = match parsed {
         Ok(value) => value,
         Err(error) => {
             eprintln!("zt-digest cleanup-finish: {error}");
@@ -15536,7 +15652,10 @@ pub fn cleanup_finish_cli(argv: &[String]) -> Result<i32> {
     };
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
-    let result = cleanup_finish(&p, &unit, token, check_only)?;
+    let result = match ready {
+        Some(owner) => cleanup_ready(&p, &owner)?,
+        None => cleanup_finish(&p, &unit, token, check_only)?,
+    };
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(0)
 }
@@ -15746,6 +15865,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     a.required("Token")?;
                 }
             }
+            // A cleanup claim holder fences its records with -Unit and -Token, always both.
+            if ["EvidenceFor", "Settle", "SettleWorkspace"].iter().any(|name| a.has(name)) && a.has("Unit") != a.has("Token") {
+                bail!("-Unit and -Token go together: the cleanup unit you hold and its claim token");
+            }
             if a.has("EvidenceFor") && !a.has("Evidence") && !a.has("Usage") {
                 bail!("-EvidenceFor needs -Evidence, -Usage, or both");
             }
@@ -15833,13 +15956,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             let token = a.has("Token").then(|| a.str("Token").parse::<i64>()).transpose()?;
             resource_register_id(&p, &a.str("Unit"), token, &a.str("RegisterId"), &a.str("Workspace"))?
         } else if a.has("Settle") {
-            resource_settle(&p, &a.str("Settle"), &a.str("State"), &a.str("Deleted"), &a.str("Message"))?
+            resource_settle(&p, &a.str("Settle"), &a.str("State"), &a.str("Deleted"), &a.str("Message"), &a.str("Unit"), record_token(&a)?)?
         } else if a.has("SettleWorkspace") {
-            resource_settle_workspace(&p, &a.str("SettleWorkspace"), a.str("Removed").trim() == "true", &a.str("Remaining"), &a.str("Unknown"))?
+            resource_settle_workspace(&p, &a.str("SettleWorkspace"), a.str("Removed").trim() == "true", &a.str("Remaining"), &a.str("Unknown"), &a.str("Unit"), record_token(&a)?)?
         } else {
             let evidence = a.has("Evidence").then(|| a.str("Evidence"));
             let usage = a.has("Usage").then(|| a.str("Usage"));
-            resource_evidence_for(&p, &a.str("EvidenceFor"), evidence.as_deref(), usage.as_deref())?
+            resource_evidence_for(&p, &a.str("EvidenceFor"), evidence.as_deref(), usage.as_deref(), &a.str("Unit"), record_token(&a)?)?
         };
         let (key, value) = if a.has("RegisterId") {
             ("conversation", a.str("RegisterId"))
@@ -15866,17 +15989,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         } else if a.has("Settle") {
             let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
-            resource_settle(&p, &a.str("Settle"), &a.str("State"), &a.str("Deleted"), &a.str("Message"))?
+            resource_settle(&p, &a.str("Settle"), &a.str("State"), &a.str("Deleted"), &a.str("Message"), &a.str("Unit"), record_token(&a)?)?
         } else if a.has("SettleWorkspace") {
             let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
-            resource_settle_workspace(&p, &a.str("SettleWorkspace"), a.str("Removed").trim() == "true", &a.str("Remaining"), &a.str("Unknown"))?
+            resource_settle_workspace(&p, &a.str("SettleWorkspace"), a.str("Removed").trim() == "true", &a.str("Remaining"), &a.str("Unknown"), &a.str("Unit"), record_token(&a)?)?
         } else if a.has("EvidenceFor") {
             let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
             let evidence = a.has("Evidence").then(|| a.str("Evidence"));
             let usage = a.has("Usage").then(|| a.str("Usage"));
-            resource_evidence_for(&p, &a.str("EvidenceFor"), evidence.as_deref(), usage.as_deref())?
+            resource_evidence_for(&p, &a.str("EvidenceFor"), evidence.as_deref(), usage.as_deref(), &a.str("Unit"), record_token(&a)?)?
         } else if a.has("Observe") {
             let mut zt = crate::zt::start()?;
             let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;

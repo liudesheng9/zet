@@ -1011,6 +1011,8 @@ pub(crate) struct Check {
     /// The Workspace title context I6 compares with; empty means one tree only.
     context: TitleContext,
     terms: Terms,
+    /// Every term the table keeps (its left column, rows without a rejected word too), longest first.
+    kept: Vec<String>,
     shared: Vec<String>,
 }
 
@@ -1022,6 +1024,7 @@ impl Check {
             level: level.to_string(),
             context: TitleContext::default(),
             terms: Vec::new(),
+            kept: Vec::new(),
             shared: Vec::new(),
         }
     }
@@ -1037,6 +1040,11 @@ impl Check {
         self.terms = setting_body
             .map(|body| read_terms(&utf16_form(body)))
             .unwrap_or_default();
+        let mut kept: Vec<String> = setting_body
+            .map(|body| term_table(&utf16_form(body)).into_iter().map(|row| row.term).collect())
+            .unwrap_or_default();
+        kept.sort_by_key(|term| std::cmp::Reverse(term.chars().count()));
+        self.kept = kept;
         self
     }
 
@@ -1327,9 +1335,17 @@ impl Check {
             faults.add(address, "R5", sentence);
         }
         if !shared {
+            // A rejected word inside a term the table keeps is that term, not the word: 税率差 is
+            // rejected for 幅度, and 税率差异化 is a term of its own (ebrill2001modern: 66 of 100 R6
+            // faults read 税率差 inside 税率差异化). Each kept term becomes one mark, so no word forms
+            // across the gap it leaves.
+            let mut masked = plain.clone();
+            for kept in &self.kept {
+                masked = masked.replace(kept.as_str(), "");
+            }
             for (term, words) in &self.terms {
                 // A rejected word inside the term itself is the term, not the word.
-                let rest = plain.replace(term.as_str(), "");
+                let rest = masked.replace(term.as_str(), "");
                 for word in words {
                     if rest.contains(word.as_str()) {
                         faults.add(
@@ -3171,6 +3187,30 @@ mod tests {
         assert!(read_terms(plain).is_empty());
         assert_eq!(term_table(plain).len(), 1);
         assert!(term_table("没有术语表的卡").is_empty());
+    }
+
+    /// R6 reads a rejected word inside another kept term as that term: 税率差 is rejected for 幅度, and
+    /// 税率差异化 and 税率档数 are terms of their own (ebrill2001modern: 66 of its 100 R6 faults).
+    #[test]
+    fn a_rejected_word_inside_another_kept_term_is_that_term() {
+        let body = "术语表
+
+| 术语 | 不用 | 意思 | 首次定义 |
+| --- | --- | --- | --- |
+| 幅度 | 税率差、税率差距 | 最高与最低税率之差 | §4.2 |
+| 税率差异化 | 差别税率 | 不同商品适用不同税率 | §7 |
+| 税率差额 | — | 两个税率相减 | §7 |
+";
+        let check = Check::new(Limits::default(), false, "").with_terms(Some(body));
+        let r6 = |sentence: &str| {
+            let mut faults = Faults { lines: Vec::new() };
+            check.sentence(&mut faults, "K/1", false, sentence, false);
+            faults.lines.into_iter().filter(|line| line.contains(" R6 ")).collect::<Vec<_>>()
+        };
+        assert!(r6("税率差异化提高了征收成本。").is_empty(), "a kept term with a rejected word in it");
+        assert!(r6("两档税率的税率差额是五个百分点。").is_empty(), "a kept term without rejected words of its own");
+        assert_eq!(r6("税率差扩大以后，税率差异化的成本上升。").len(), 1, "the rejected word on its own is still a fault");
+        assert_eq!(r6("差别税率提高了征收成本。").len(), 1);
     }
 
     /// R20 and R21: a local label that stands in for its content, and a deictic

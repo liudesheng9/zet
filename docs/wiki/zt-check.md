@@ -5,7 +5,7 @@ paths:
   - "tools/zt-check/**"
   - "scripts/install-zt-check.ps1"
 synced: 7dfaf5f
-updated: 2026-10-19
+updated: 2026-10-23
 ---
 
 # zt-check
@@ -48,7 +48,7 @@ updated: 2026-10-19
 - `Category` — what a Card is for the layer rules: `idea`, `anchor`, `event`, `finding` get layer rules; `root`, `hub`, `part`, `model`, `terms`, `structure` get the R rules only. `--cards` mode computes it as `digest-audit.ps1` (`Get-Category`) does (`check_cards`).
 - `Model part` / `Model Card` — read from `get_model`; a Card with a `facet` is a part. A part whose facet starts with `推导` (or `derivation`, any case) is a `Derivation part`, which gets the step and explanation rules R14 to R17 (`Check::language`).
 - `Elaboration level` — `concept` or `formal`. A concept model skips R13 to R17; a model with no level gets the formal rules (`Check::language`).
-- `Term table` — the table under the line holding `术语表` in the setting Card's body (a model's setting, or the Book term table): `| term | words not to use | 意思 | 首次定义 |`. R6 reads the first two columns (`read_terms`, `Check::with_terms`); `term_table` is the public parser the digest uses for all four (`zt_check::check::term_table`, `TermRow`; #97, D063). Both share one row parse, so R6 and the digest never disagree about a row: `不用` splits on `、,，/`, allows the `—`/`无` of "none", and a later row naming the same term (case ignored) replaces the earlier one. R6 still skips a row with no rejected word, exactly as before, and the four-column reader reports such a row with an empty `avoid`.
+- `Term table` — the table under the line holding `术语表` in the setting Card's body (a model's setting, or the Book term table): `| term | words not to use | 意思 | 首次定义 |`. R6 reads the first two columns (`read_terms`, `Check::with_terms`); every left-column term, rows without a rejected word too, is kept longest first in `Check::kept` and masked before R6 matches; `term_table` is the public parser the digest uses for all four (`zt_check::check::term_table`, `TermRow`; #97, D063). Both share one row parse, so R6 and the digest never disagree about a row: `不用` splits on `、,，/`, allows the `—`/`无` of "none", and a later row naming the same term (case ignored) replaces the earlier one. R6 still skips a row with no rejected word, exactly as before, and the four-column reader reports such a row with an empty `avoid`.
 - `Shared part` — a part whose `build.order` item (or `--json` entry) has `line: shared`. It follows its home model's term table, so R6 skips it; `--skip-shared` drops it from a `--model` run (`check_model`, `Check::with_shared`).
 - `Limits` — the size numbers of R13, R14, R17, I2, L2 (`Limits` struct; defaults in "Configuration").
 - `Literature scope` — a process-wide write scope of the `zt mcp` client (`mcp::scope`), off by default (the open scope). A process that turns it on (every [zt-digest](zt-digest.md) digest step) can write only Literature trees: `Zt::request` refuses `create_topic`, a write that names a Topic-tree Card, a Hub Card, and authored text that links a Topic-tree Card, before the call reaches the archive (`docs/literature-only-digest-design.md`). Reads always pass.
@@ -182,7 +182,7 @@ The default column is the default rule set of `--cards` (`DEFAULT_RULES`). The o
 | R3 | No `；` or `;` | every sentence | yes | `<sentence>` |
 | R4 | No `被` passive, except `被告`, `被保险`, `被动`, `被子`, and a party (`被收购方`: one or two CJK characters then `方`) | every sentence | yes | `<sentence>` |
 | R5 | No light verb + CJK (`进行`, `加以`, `予以`, `作出`, `做出`) | every sentence | yes | `<sentence>` |
-| R6 | No word the term table rejects for a term (the term's own text is removed first) | every sentence of a non-shared Card, when a term table is known | no | ``uses `<word>` for `<term>`: <sentence>`` |
+| R6 | No word the term table rejects for a term (every term the table keeps, its left column, is masked first, so a rejected word inside another kept term is that term) | every sentence of a non-shared Card, when a term table is known | no | ``uses `<word>` for `<term>`: <sentence>`` |
 | R7 | At most two `的` in one noun phrase (three `的` with at most 7 non-punctuation characters between) | every sentence | yes | `<sentence>` |
 | R9 | No hedge or praise word (18 listed in `HEDGES`, such as `值得注意的是`, `精妙`) | every sentence | yes | `` `<word>`: <sentence>`` |
 | R12 | Title at most 40 characters (25 words), and no `；`/`;` (two claims) | every title | yes | `(N characters > 40) <title>` or `two claims: <title>` |
@@ -485,6 +485,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **R16 does not report an empty 思路 or 解读**, although [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) lists "an empty section" as an R16 fault; only too many sentences are reported.
 
 ## Change history
+- `2026-10-23` — R6 masks every term the table keeps before it matches a rejected word, each as one mark so no word forms across the gap (`Check::kept`, test `a_rejected_word_inside_another_kept_term_is_that_term`). On ebrill2001modern 66 of 100 R6 faults read `税率差` (rejected for `幅度`) inside `税率差异化`, a term of its own; the old check removed only the row's own term.
 - `2026-10-22` — The Literature write scope (`docs/literature-only-digest-design.md`): new `tools/zt-check/src/mcp/scope.rs` (`set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal`, with four unit tests), and `Zt::request` refuses a refused call with `literature_only: <tool>: <reason>` before it reaches the archive. In the scope, `create_topic`, a write that names a Topic-tree Card, a Hub Card, authored text that links a Topic-tree Card, and an `apply_batch` holding any of them are refused; reads pass. zt-digest turns it on for every digest step; the `zt-check` binary keeps the open scope.
 - `2026-10-20` — The list lines of a Model Card's `**结构**` section (`structure_lines`: each a facet, a Link and the part's title, written by the model compiler) are navigation that no prose rule reads; each title is checked as its part's own title. On grossman2002integration trials 10 and 11 a long Derivation facet made a 结构 line an R2 fault in a done Model Card (`7|a`) that the bounded correction may not reopen. Test `the_structure_list_of_a_model_card_is_not_prose`.
 - `2026-10-20` — R2 and R12 count a book title in 《…》 as one name (`BOOK_TITLE` in `measure`), and the Literature Card's document line (`原书文档：[原书 PDF](scholar:78) · …`, `DOCUMENT_LINE`) is a locator that no prose rule reads. On grossman2002integration trial 10 the Literature Card's index line and document line and the structure Card's marker sentence `本卡是《Integration versus Outsourcing in Industry Equilibrium》的结构卡：…` were three residual R2 faults the bounded correction may not reopen (a root and a structure Card). The term table therefore names even a very long title in full. Test `a_book_title_and_the_document_line_do_not_make_r2`.

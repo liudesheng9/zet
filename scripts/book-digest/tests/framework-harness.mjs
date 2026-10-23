@@ -199,7 +199,7 @@ const finalizeFinal = (name) => {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = []
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = []
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
   // A resumed run reads the units its prepared run retained; the stand-in re-adds exactly those, so the
@@ -262,6 +262,11 @@ function runtime(kind, opts = {}) {
       }) }
     }
     if (/ ledger next /.test(cmd)) {
+      // ebrill2001modern trial 1: one claim of the events layer refused while parallel lanes changed the archive.
+      if (opts.failingClaim && opts.failingClaim.layer === layer && (state.claimFailures || 0) < opts.failingClaim.times) {
+        state.claimFailures = (state.claimFailures || 0) + 1
+        return { ok: false, exit: 1, output: 'zt-digest ledger: archive changed while checking preparation' }
+      }
       const take = Number((cmd.match(/-Take (\d+)/) || [])[1])
       const owner = (cmd.match(/-Owner "([^"]*)"/) || [])[1] || ''
       const claimed = led.next(layer, take, owner)
@@ -469,15 +474,55 @@ function runtime(kind, opts = {}) {
       }
       return null
     }
-    if (/zt-digest cleanup-finish /.test(cmd)) {
-      const id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
-      cleanupFinishes.push(id)
-      if (opts.failingCleanup && opts.failingCleanup.test(id)) return { ok: false, exit: 1, output: 'zt-digest cleanup-finish: cleanup_evidence_missing: no per-run usage was retained for this resource' }
+    // One cleanup unit's checked completion (zt-digest `cleanup_finish`).
+    const cleanupCompletion = (id) => {
       led.finish(id)
       const resources = [...state.resources.values()].filter((r) => id === 'cleanup/book@1' || r.cleanup_unit === id)
       const cleanupComplete = resources.every((r) => r.conversations.every((c) => c.terminal && c.deleted) && (id !== 'cleanup/book@1' || r.workspace_removed === true))
       const contentComplete = [...led.units.values()].filter((u) => u.layer !== 'cleanup').every((u) => u.state === 'done')
-      return { ok: true, output: json({ schema_version: 1, kind: 'cleanup_completion', unit: id, state: 'done', status: cleanupComplete && contentComplete ? 'complete' : 'partial', content_complete: contentComplete, cleanup_complete: cleanupComplete, reconciliation: [], partial_reasons: [], resources, scratch: { removed: [], retained: [] } }) }
+      return { schema_version: 1, kind: 'cleanup_completion', unit: id, state: 'done', status: cleanupComplete && contentComplete ? 'complete' : 'partial', content_complete: contentComplete, cleanup_complete: cleanupComplete, reconciliation: [], partial_reasons: [], resources, scratch: { removed: [], retained: [] } }
+    }
+    const failingCleanup = 'cleanup_evidence_missing: no per-run usage was retained for this resource'
+    // ebrill2001modern trial 1 (zt-digest 0.11.4): `cleanup-finish -Ready` claims every ready cleanup unit, settles each
+    // (the run-level unit last), faults the ones that cannot settle with the claim's hash and claims them again
+    // within the attempt budget, and prints one line.
+    if (/zt-digest cleanup-finish .*-Ready\b/.test(cmd)) {
+      cleanupReadyCalls.push(cmd)
+      let claimed = 0, done = 0, partial = 0, rounds = 0, book = null
+      const open = new Map()
+      for (let round = 0; round < 6; round++) {
+        const units = led.next('cleanup', 64, 'cleanup-ready').sort((a, b) => (a.id === 'cleanup/book@1') - (b.id === 'cleanup/book@1'))
+        if (!units.length) break
+        rounds += 1
+        for (const u of units) {
+          claimed += 1
+          cleanupFinishes.push(u.id)
+          state.cleanupTries = state.cleanupTries || {}
+          const tries = (state.cleanupTries[u.id] = (state.cleanupTries[u.id] || 0) + 1)
+          if (opts.failingCleanup && opts.failingCleanup.test(u.id)) {
+            const st = tries < led.settings.max_attempts ? 'retry' : 'failed'
+            led.fail(u.id, st === 'retry' ? 'ready' : 'failed')
+            open.set(u.id, { state: st, cause: failingCleanup })
+            if (u.id === 'cleanup/book@1') book = { unit: u.id, ok: false, cause: failingCleanup }
+            continue
+          }
+          const r = cleanupCompletion(u.id)
+          done += 1
+          if (r.status === 'partial') partial += 1
+          open.delete(u.id)
+          if (u.id === 'cleanup/book@1') book = { unit: u.id, ok: true, status: r.status, content_complete: r.content_complete, cleanup_complete: r.cleanup_complete, partial_reasons: [], reconciliation: 0, scratch_removed: 0 }
+        }
+        if (![...open.values()].some((o) => o.state === 'retry')) break
+      }
+      const list = (want) => [...open.entries()].filter(([, o]) => want(o.state)).slice(0, 8).map(([unit, o]) => ({ unit, state: o.state, cause: o.cause }))
+      const count = (want) => [...open.values()].filter((o) => want(o.state)).length
+      return { ok: true, output: json({ schema_version: 1, kind: 'cleanup_ready', rounds, claimed, done, partial, retry_count: count((x) => x === 'retry'), failed_count: count((x) => x !== 'retry'), retry: list((x) => x === 'retry'), failed: list((x) => x !== 'retry'), book }) }
+    }
+    if (/zt-digest cleanup-finish /.test(cmd)) {
+      const id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
+      cleanupFinishes.push(id)
+      if (opts.failingCleanup && opts.failingCleanup.test(id)) return { ok: false, exit: 1, output: `zt-digest cleanup-finish: ${failingCleanup}` }
+      return { ok: true, output: json(cleanupCompletion(id)) }
     }
     return null
   }
@@ -725,6 +770,8 @@ function runtime(kind, opts = {}) {
       if (lines.length) {        let r = await commandAnswer(lines[0])
         if (/ ledger next .* -Wait \d+/.test(lines[0])) {
           for (let i = 0; i < 200; i++) {
+            // A command that failed answers its failure; only an empty claim waits.
+            if (!r.ok) break
             const view = lastJson(r.output)
             if (view && Array.isArray(view.units) && view.units.length) break
             const producer = led.gate((lines[0].match(/-Layer (\w[\w-]*)/) || [])[1])
@@ -819,7 +866,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1260,12 +1307,35 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 {
   // trial 10: three rounds of eight cleanup claims went to the same failing units, and eight link cleanup units were
   // never claimed. The cleanup claims until every ready unit was tried, and stops a unit after three failures.
-  const { cleanupFinishes } = await run('econ', { ...base, figures: false }, { extraCleanupUnits: 24, failingCleanup: /extra-g00[1-9]@1/ })
+  // ebrill2001modern trial 1: the stage spent one Haiku agent per cleanup unit (about 150, one after another) and sent
+  // its faults with an empty input hash; one `cleanup-finish -Ready` now settles them all.
+  const { cleanupFinishes, cleanupReadyCalls, calls, result } = await run('econ', { ...base, figures: false }, { extraCleanupUnits: 24, failingCleanup: /extra-g00[1-9]@1/ })
   const extras = Array.from({ length: 24 }, (_, i) => `cleanup/extra-g${String(i + 1).padStart(3, '0')}@1`)
   const missing = extras.filter((u) => !cleanupFinishes.includes(u))
   check(missing.length === 0, `cleanup rounds: every cleanup unit is tried although nine of them keep failing (${missing.length} never tried)`)
   const most = Math.max(...extras.map((u) => cleanupFinishes.filter((c) => c === u).length))
   check(most <= 3, `cleanup rounds: a failing unit is tried at most three times in the stage (${most})`)
+  const settleAgents = calls.filter((c) => /^cleanup: settle the ready units/.test(c.label)).length
+  check(cleanupReadyCalls.length === 1 && settleAgents === 1 && !calls.some((c) => /^cleanup (cleanup|extra)\/|^cleanup: claim round|^cleanup: .* fault$/.test(c.label)), `cleanup rounds: one agent runs one cleanup-finish -Ready for every unit (${settleAgents} agent(s), ${cleanupReadyCalls.length} call(s))`)
+  check(result.cleanup && result.cleanup.settled && result.cleanup.settled.failed === 9 && result.cleanup.units.filter((u) => u.status === 'failed').length === 8, `cleanup rounds: the stage reports the units that could not settle (${JSON.stringify(result.cleanup && result.cleanup.settled)})`)
+}
+{
+  // ebrill2001modern trial 1: one refused `ledger next` ended the events layer with 40 of its 73 units unclaimed.
+  // A failed claim is tried again (three times in all) before its layer hears of it.
+  const { led, calls, logs } = await run('econ', { ...base, figures: false }, { failingClaim: { layer: 'events', times: 2 } })
+  check(led.gate('events').complete === true && calls.some((c) => /^events claim 1 \(try 3\)$/.test(c.label)) && logs.some((l) => /the claim failed .*it is tried again/.test(l)), 'claim retry: two refused claims are tried again and the events layer still completes')
+  const failed = await run('econ', { ...base, figures: false }, { failingClaim: { layer: 'events', times: 3 } })
+  check(!failed.calls.some((c) => /^events claim 1 \(try 4\)$/.test(c.label)), 'claim retry: a claim is tried three times, never more')
+}
+{
+  // ebrill2001modern trial 1: an explain manager registered the id PENDING to try the command, a findings manager sent
+  // DeepSeek the prompt "placeholder" for a step with no job, and the resume recorded the workspaces trial 1 had
+  // removed as not removed. The prompts now say what each of those cases is.
+  const { calls } = await run('econ', { ...base, figures: false })
+  const managers = calls.filter((c) => /-RegisterId <session_id>/.test(c.prompt || ''))
+  check(managers.length > 0 && managers.every((c) => /never a word in its place/.test(c.prompt) && /starts no run: never send a placeholder prompt/.test(c.prompt)), `prompts: every manager registers only a returned session_id and starts no run for an empty job list (${managers.length})`)
+  const spaces = calls.filter((c) => /^cleanup workspaces /.test(c.label))
+  check(spaces.length > 0 && spaces.every((c) => /no Desktop workspace exists for that path, the workspace is already gone: remaining and unknown are empty, removed = true/.test(c.prompt)), 'prompts: a workspace the provider no longer knows is recorded removed')
 }
 {
   // trial 8: no stage published its own book revision, so organize/skeleton/figures book@1 stayed ready and the run
@@ -1378,7 +1448,7 @@ for (const kind of ['econ', 'math']) {
   check(!/Recorded ids: \[/.test(chunkPrompts), `${kind} full: no cleanup prompt carries an id list`)
   const chunkIds = chunkShares
   check(chunkIds.length > 0 && chunkIds.every((id) => records.some((r) => r.conversations[0].id === id)) && !chunkIds.some((id) => blockSessions.includes(id)), `${kind} full: the cleanup agents touch only recorded ids that no manager settled (${chunkIds.length})`)
-  check(cmds.some((c) => / ledger resource .*-SettleWorkspace /.test(c)) && cmds.some((c) => /zt-digest cleanup-finish -Out .* -Unit "?cleanup\/book@1"?/.test(c)), `${kind} full: the cleanup records each workspace itself and the run-level cleanup is settled by its verifier`)
+  check(cmds.some((c) => / ledger resource .*-SettleWorkspace /.test(c)) && cmds.some((c) => /zt-digest cleanup-finish -Out .* -Ready -Owner/.test(c)), `${kind} full: the cleanup records each workspace itself and the run-level cleanup is settled by its verifier`)
   // #110: the Link units now settle through link-finish, so content is complete while the cleanup
   // still reports its own half: the two are still reported apart.
   check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.status === (result.cleanup.content_complete ? 'complete' : 'partial'), `${kind} full: the cleanup reports its own half apart from content completeness (${JSON.stringify(result.cleanup && { units: result.cleanup.units, status: result.cleanup.status, cleanup_complete: result.cleanup.cleanup_complete })})`)
@@ -1516,7 +1586,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '33' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v33 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
+  check(modules['zt-digest-lib'] === '34' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v34 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

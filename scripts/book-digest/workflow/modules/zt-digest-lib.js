@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v33 ====
+// ==== module zt-digest-lib v34 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -191,7 +191,8 @@ function zdMake(ctx, p) {
   const recordRules = (unit, token, dsh, settleNow = false) => {
     const owner = unit === 'run' ? '-Unit run' : `-Unit "${unit}" -Token ${token}`
     return `Records (each record command changes no Card; run it at the moment named, in the same message as your next call when you can):
-- The moment deepseek_run returns a session_id: ${ZD_LEDGER} resource -Out "${OUT}" ${owner} -RegisterId <session_id> -Workspace "${dsh}"
+- The moment deepseek_run returns a session_id: ${ZD_LEDGER} resource -Out "${OUT}" ${owner} -RegisterId <session_id> -Workspace "${dsh}". Use the session_id that deepseek_run returned, never a word in its place, and never run this command to try it out before a run exists (the ledger refuses a placeholder).
+- Start a DeepSeek run only for a job a step's list names. A step whose job list is empty starts no run: never send a placeholder prompt.
 - When that job ends: write its final answer text, unchanged, to "${ANSWERS}\\<session_id>.txt" (the line "no answer: <status>" when it gave none), then run ${ZD_LEDGER} resource -Out "${OUT}" -EvidenceFor <session_id> -Evidence "${ANSWERS}\\<session_id>.txt". When the run's own result or its last turn report states its token usage, add -Usage '<those numbers as one JSON object>' (numbers only, for example {"input_tokens":1200,"output_tokens":300}). Never call deepseek_usage and never subtract account-wide totals.${settleNow ? `
 - Then delete the conversation (deepseek_delete, never archive) and record it: ${ZD_LEDGER} resource -Out "${OUT}" -Settle <session_id> -State finished -Deleted confirmed (-State error when the job ended in an error; -Deleted failed -Message '<the error>' when the delete fails).` : `
 - Do not close, archive, or delete the conversation: later rounds may continue it, and the run's cleanup deletes it.`}
@@ -726,8 +727,17 @@ Copy each of those output lines character for character: never summarize, abbrev
   const HASHES = new Map()
   const remember = (units) => { for (const u of units) if (u && u.id && u.input_hash) HASHES.set(u.id, u.input_hash); return units }
   const hashOf = (unit, inputs) => (inputs && inputs.input_hash) || HASHES.get(unit) || ''
+  // A claim command that fails is tried again, three times in all, before the caller hears of it: on
+  // ebrill2001modern trial 1 one `ledger next` refused while parallel lanes changed the archive, and the
+  // events layer ended with 40 of its 73 units never claimed.
+  const CLAIM_TRIES = 3
   const claim = async (label, layer, take, wait = 0) => {
-    const out = await runScript(label, LEDGER_PHASE, ledgerCommand(`next -Out "${OUT}" -Layer ${layer} -Take ${take} -Owner "${label}"${wait ? ` -Wait ${wait}` : ''} -Lease ${CLAIM_LEASE} -Brief`))
+    let out
+    for (let attempt = 1; attempt <= CLAIM_TRIES; attempt++) {
+      out = await runScript(attempt === 1 ? label : `${label} (try ${attempt})`, LEDGER_PHASE, ledgerCommand(`next -Out "${OUT}" -Layer ${layer} -Take ${take} -Owner "${label}"${wait ? ` -Wait ${wait}` : ''} -Lease ${CLAIM_LEASE} -Brief`))
+      if (out.json || (out.run && out.run.ok)) break
+      log(`${label}: the claim failed (${String((out.run && out.run.output) || 'no output').slice(0, 200)})${attempt < CLAIM_TRIES ? '; it is tried again' : ''}.`)
+    }
     const parsed = out.json
     // A line without a `units` array is unreadable, never an empty claim: a relay replaced it with its own
     // `units_claimed` id list (grossman2002integration trial 17), and the layer ended with four models held.
@@ -1039,7 +1049,7 @@ Copy each of those output lines character for character: never summarize, abbrev
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '33', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '34', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

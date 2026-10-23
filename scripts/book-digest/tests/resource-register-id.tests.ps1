@@ -76,6 +76,13 @@ try {
     Assert ($bad.code -eq 1 -and $bad.text.Contains('inside the prepared output directory')) 'an evidence file outside the run is refused'
     $bad = Fail-Digest @('ledger','resource','-Out',$out,'-Unit',$unit.id,'-Token',"$($unit.token + 1)",'-RegisterId','conv-c','-Workspace',$workspace)
     Assert ($bad.code -eq 1 -and $bad.text.Contains('stale_claim')) 'a superseded token cannot register an id'
+    # ebrill2001modern trial 1: an explain manager "checked" the command with -RegisterId PENDING before any run
+    # existed, and the cleanup verifier refused the placeholder as a conversation without evidence.
+    foreach ($placeholder in @('PENDING','placeholder','<session_id>','TBD','conv a')) {
+        $bad = Fail-Digest @('ledger','resource','-Out',$out,'-Unit',$unit.id,'-Token',"$($unit.token)",'-RegisterId',$placeholder,'-Workspace',$workspace)
+        Assert ($bad.code -eq 1 -and $bad.text.Contains('not a conversation id')) "a placeholder id ($placeholder) is refused"
+    }
+    Assert (@((View $workspace).conversations).Count -eq 2) 'a refused placeholder records nothing'
     # The cleanup agent records what it did itself, with plain arguments, right after it acted.
     $settled = Run-Digest @('ledger','resource','-Out',$out,'-Settle','conv-a','-State','finished','-Deleted','confirmed')
     $conv = @((View $workspace).conversations | Where-Object { $_.id -eq 'conv-a' })[0]
@@ -91,6 +98,11 @@ try {
     Assert ($res.workspace_removed -eq $true -and @($res.listing.conversations).Count -eq 1 -and $res.listing.conversations[0].id -eq 'conv-b' -and $res.unknown[0].id -eq 'stray-1') 'the workspace listing and its removal are recorded by one plain command'
     $bad = Fail-Digest @('ledger','resource','-Out',$out,'-SettleWorkspace',(Join-Path $out 'nowhere'),'-Removed','true')
     Assert ($bad.code -eq 1 -and $bad.text.Contains('no recorded resource')) 'a workspace no resource recorded is refused'
+    # ebrill2001modern trial 1: the cleanup stage sent its faults with an empty input_hash and `ledger fail` refused
+    # them, so the failed cleanup units stayed claimed. The token fences the attempt; the ledger names the hash.
+    $hash = @((Run-Digest @('ledger','status','-Out',$out,'-Layer','digest')).units | Where-Object id -EQ $unit.id)[0].input_hash
+    $faulted = Run-Digest @('ledger','fail','-Out',$out,'-Unit',$unit.id,'-Token',"$($unit.token)",'-Class','retryable','-Fault','{"schema_version":1,"unit":"digest/g001@1","input_hash":"","code":"provider_transient","cause":"a fault without its hash"}')
+    Assert ($faulted.fault.input_hash -eq $hash -and $faulted.state -in @('retry','failed')) 'a fault without its input hash takes the claim''s own hash'
     Write-Output 'ok: id registration and file evidence verified'
 } finally {
     zt down 2>&1 | Out-Null

@@ -235,6 +235,15 @@ pub(crate) fn figures_from_text(text: &str, kept: &Value) -> Result<CiMap<Figure
                     found.push(label);
                 }
             }
+            // No caption below: a figure whose title is the heading above it (`# 图 1.1. …`, then its
+            // text and panels) takes that heading's label. The nearest heading decides; one that names
+            // no figure gives none (ebrill2001modern: the two maps of 图 1.1 were never shown).
+            if found.is_empty() {
+                let above = lines[..k].iter().rev().copied().chain(blocks[i.saturating_sub(8)..i].iter().rev().flat_map(|block| block.trim().split('\n').rev()));
+                if let Some(heading) = above.map(str::trim).find(|line| line.starts_with('#')) {
+                    found = labels(heading.trim_start_matches('#'));
+                }
+            }
             let mut figure = figures.get(&name).cloned().unwrap_or_default();
             for label in found {
                 if !figure.labels.contains(&label) {
@@ -655,6 +664,22 @@ mod tests {
         let b = figures.get("b.jpg").unwrap();
         assert!(b.labels.is_empty());
         assert_eq!(b.line, "![](artifact:bb)");
+    }
+
+    /// ebrill2001modern: 图 1.1 has its title as a heading above its two map panels and no caption below
+    /// them, so neither map was labelled and no Card showed them.
+    #[test]
+    fn a_figure_without_a_caption_takes_the_figure_heading_above_it() {
+        let kept = json!({ "figures": [
+            { "name": "m1.jpg", "sha256": "11", "path": "B/images/m1.jpg" },
+            { "name": "m2.jpg", "sha256": "22", "path": "B/images/m2.jpg" },
+            { "name": "c.jpg", "sha256": "33", "path": "B/images/c.jpg" },
+        ]});
+        let text = "# 图 1.1. 增值税的传播\n\n增值税这一税种在不到 50 年前首次引入。\n\n![](images/m1.jpg)\n\n<details>\n<summary>natural_image</summary>\n\n世界地图\n\n</details>\n\n本图由地图设计部制作。\n\n![](images/m2.jpg)\n\n无增值税\n\n# 第二章 设计\n\n正文。\n\n![](images/c.jpg)\n\n正文继续。";
+        let figures = figures_from_text(text, &kept).unwrap();
+        assert_eq!(figures.get("m1.jpg").unwrap().labels, vec!["1.1"]);
+        assert_eq!(figures.get("m2.jpg").unwrap().labels, vec!["1.1"], "a later panel under the same heading");
+        assert!(figures.get("c.jpg").unwrap().labels.is_empty(), "a heading that names no figure gives no label");
     }
 
     #[test]
