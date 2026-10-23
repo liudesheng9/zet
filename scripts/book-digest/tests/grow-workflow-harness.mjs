@@ -84,7 +84,7 @@ const reportDone = { exit_code: 0, last_line: json({ report: 'grow-report.md', c
 // ================================================================================================================
 // The frozen build carries the seam
 // ================================================================================================================
-check(build.modules['zt-grow-cycle'] === '10', `frozen: the build carries zt-grow-cycle v10 (${build.modules['zt-grow-cycle']})`)
+check(build.modules['zt-grow-cycle'] === '11', `frozen: the build carries zt-grow-cycle v11 (${build.modules['zt-grow-cycle']})`)
 check(source.includes('const lockRefusal = (text) =>') && source.includes('card_locked at ${where}'), 'frozen: the built script carries the Lock reader and the stop')
 check(build.embedded.stages.filter((s) => s.id === 'grow').length === 1, 'frozen: the one grow stage is the module that owns the seam')
 
@@ -184,7 +184,7 @@ check((source.match(/\], p\.hubEffort\)\)/g) || []).length === 2, 'hub effort: t
     '-Step hubs-plan': line({ hub_jobs: 0, topics: 3, trees: 2, limits: {} }),
     '-Step hubs-report': line({ hubs: { topic: 2 }, faults: {}, missing: 0, mirror: 0, register: { status: 'published', entries: 9, reviews: 1 } }),
     '-Step plan': plan, '-Step topics': topicsDone, '-Step check': checkDone, '-Step report': reportDone,
-    __agents: [['organize mgr', mgr('go-001', 'OK')], ['concepts c01 mgr', mgr('c01-cj', '{"judged":3}')], ['cleanup', cleanup]],
+    __agents: [['organize mgr', mgr('go-001', 'OK')], ['concepts mgr', mgr('c01-cj', '{"judged":3}')], ['cleanup', cleanup]],
   }
   const r = await run({ ...args, organize: true }, answers)
   check(!r.thrown && r.report && !r.report.halted, `rounds: the run completes (${JSON.stringify(r.report && r.report.halted)} ${r.thrown && r.thrown.message})`)
@@ -195,7 +195,7 @@ check((source.match(/\], p\.hubEffort\)\)/g) || []).length === 2, 'hub effort: t
   check(r.commands.some((c) => c.includes(`concepts -Step judge -Staging '${staging}'`) && c.includes(`-File '${staging}/work/out/cj-01.json'`)), 'concepts: the judge step validates the judge job\'s own answer file')
   const go = r.prompts.find((x) => /organize mgr/.test(x.label))
   check(go && go.text.includes('go-001') && go.text.includes('-Job go-001') && go.text.includes('jobs\\\\go-001.md'), 'organize: one DeepSeek decision job go-001 with its SELF-CHECK and its job file')
-  const cj = r.prompts.find((x) => /concepts c01 mgr/.test(x.label))
+  const cj = r.prompts.find((x) => /concepts mgr/.test(x.label))
   check(cj && cj.text.includes('c01-cj') && cj.text.includes('concepts -Step judge'), 'concepts: one DeepSeek judge job per book, approved only for the concept self-check')
   const res = r.report && r.report.result
   check(res && res.organize && res.organize.applied && res.organize.applied.merges === 1 && res.organize.plan.pairs === 1, `organize: the result reports the survey and the merges and moves (${JSON.stringify(res && res.organize)})`)
@@ -218,6 +218,55 @@ check((source.match(/\], p\.hubEffort\)\)/g) || []).length === 2, 'hub effort: t
   const locked = await run({ ...args, organize: true }, { ...answers, '-Step organize-apply': { exit_code: 2, last_line: json(refusal), tail: json(refusal) } })
   check(locked.report && locked.report.halted && locked.report.halted.stage === 'grow' && /card_locked/.test(String(locked.report.halted.error)), 'organize: a Lock refusal stops the stage with card_locked')
   check(!locked.commands.some((c) => /-Step hubs-plan/.test(c)), 'organize: nothing after the Lock stop runs')
+}
+
+// ================================================================================================================
+// 3.2.0 (zt-grow-cycle v11): the per-book reviews send all their judge jobs in one dispatch; a box copy logs
+// the rounds it does not run
+// ================================================================================================================
+{
+  const line = (o) => ({ exit_code: 0, last_line: json(o), tail: '' })
+  const mgr = (ids) => ({ jobs: ids.map((id) => ({ id, ok: true, reply: '{"judged":1}', attempts: 1 })), started: ids, deleted: ids.length, not_deleted: [] })
+  const cleanup = { folders: [{ cwd: 'D:\\x\\grow', removed: true, leftover: [], running: 0 }] }
+  const job = (id) => ({ id, files: [`D:/x/${id}.md`], prompt: 'judge' })
+  const answers = {
+    'restate -Step prepare': line({ ok: true, step: 'prepare', cards: 2, reviewable: 2, jobs: [job('rj-01')] }),
+    'restate -Step judge': line({ ok: true, step: 'judge' }),
+    'restate -Step apply': line({ ok: true, step: 'apply', written: 1 }),
+    'restate -Step report': line({ ok: true, step: 'report', report_id: 'rr', status: 'resolved', counts: {} }),
+    'concepts -Step propose': line({ ok: true, step: 'propose', proposals: 2 }),
+    'concepts -Step prepare': line({ ok: true, step: 'prepare', jobs: [job('cj-01')] }),
+    'concepts -Step judge': line({ ok: true, step: 'judge', judged: 2 }),
+    'concepts -Step report': line({ ok: true, step: 'report', report_id: 'cr', status: 'complete', findings: 1 }),
+    '-Step restate-cards': line({ books: 3, reviews: ['r01', 'r02', 'r03'].map((id, i) => ({ id, book: `B${i}`, staging: `D:/x/grow/restate/${id}`, cards: 2 })) }),
+    '-Step concept-books': line({ books: 3, reviews: ['c01', 'c02', 'c03'].map((id, i) => ({ id, book: `B${i}`, staging: `D:/x/grow/concepts/${id}` })), skipped: [] }),
+    '-Step hubs-plan': line({ hub_jobs: 0, topics: 3, limits: {} }),
+    '-Step hubs-report': line({ hubs: {}, faults: {}, missing: 0, mirror: 0, register: { status: 'published', entries: 3 } }),
+    '-Step plan': plan, '-Step topics': topicsDone, '-Step check': checkDone, '-Step report': reportDone,
+    __agents: [['restate mgr', mgr(['r01-rj', 'r02-rj', 'r03-rj'])], ['concepts mgr', mgr(['c01-cj', 'c02-cj', 'c03-cj'])], ['cleanup', cleanup]],
+  }
+  const r = await run(args, answers)
+  check(!r.thrown && r.report && !r.report.halted, `batched: the run completes (${JSON.stringify(r.report && r.report.halted)} ${r.thrown && r.thrown.message})`)
+  for (const [what, prefix, suffix] of [['restate', 'r0', 'rj'], ['concepts', 'c0', 'cj']]) {
+    const managers = r.prompts.filter((x) => new RegExp(`${what} mgr`).test(x.label))
+    check(managers.length === 1 && [1, 2, 3].every((i) => managers[0].text.includes(`${prefix}${i}-${suffix}`)), `batched: the three books' ${what} judge jobs go to one manager side by side (${managers.length} managers)`)
+    const at = (re) => r.commands.findIndex((c) => re.test(c))
+    const lastPrepare = Math.max(...r.commands.map((c, i) => (new RegExp(`${what} -Step prepare`).test(c) ? i : -1)))
+    check(lastPrepare >= 0 && lastPrepare < at(new RegExp(`${what} -Step judge`)), `batched: every ${what} prepare runs before the first judge`)
+  }
+  const res = r.report && r.report.result
+  check(res && res.restate.reviews.map((x) => x.id).join() === 'r01,r02,r03' && res.restate.reviews.every((x) => x.status === 'resolved' && x.written === 1), `batched: the restate result keeps the books' order and each book's outcome (${JSON.stringify(res && res.restate)})`)
+  check(res && res.concepts.reviews.map((x) => x.id).join() === 'c01,c02,c03' && res.concepts.reviews.every((x) => x.report_id === 'cr'), 'batched: the concept result keeps the books\' order and each report')
+  // One book whose prepare fails is reported for that book; the other books' jobs still go out together.
+  // The stand-in answers the first key a command contains, so the one book's key comes first.
+  const failing = { "restate -Step prepare -Staging 'D:/x/grow/restate/r02'": { exit_code: 1, last_line: 'boom', tail: 'boom' }, ...answers }
+  const f = await run(args, failing)
+  const rs = f.report && f.report.result && f.report.result.restate
+  check(!f.thrown && rs && rs.reviews.map((x) => `${x.id}:${x.status}`).join() === 'r01:resolved,r02:skipped,r03:resolved', `batched: a failed prepare skips only its book (${JSON.stringify(rs && rs.reviews.map((x) => x.status))})`)
+  // A copy of the box: the live-box rounds are named in the log and the result, not skipped silently.
+  const copy = await run({ ...args, ztConfig: 'D:\\box-copy' }, answers)
+  check(!copy.thrown && copy.logs.some((l) => /on the box copy .*restatement review.*concept review.*hubs and the register/.test(l)), `box copy: the log names the rounds that do not run (${copy.logs.filter((l) => /box copy/.test(l)).join(' | ')})`)
+  check(copy.report.result.skipped_on_copy.length === 3 && !copy.commands.some((c) => /restate-cards|concept-books|hubs-plan/.test(c)), `box copy: no live-box round runs (${JSON.stringify(copy.report.result.skipped_on_copy)})`)
 }
 
 console.log(`failed: ${failed}`)

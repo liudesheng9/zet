@@ -163,7 +163,7 @@
       }
     },
     {
-      "label": "^grow restate r01 mgr",
+      "label": "^grow restate mgr",
       "answer": {
         "jobs": [
           {
@@ -263,7 +263,7 @@
       }
     },
     {
-      "label": "^grow concepts c01 mgr",
+      "label": "^grow concepts mgr",
       "answer": {
         "jobs": [
           {

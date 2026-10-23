@@ -74,7 +74,9 @@ The two follow-ups moved in idea-grow 3.1.0 (zt-grow-cycle v10, zt-digest 0.11.0
 - The book's own Literature Idea Cards are Bridge sources (before, the Bridge's Idea sources were Topic Cards given to the book by Link votes).
 - The card cycle and the Link gaps count no Link from or to a Topic-tree Card; the read-only audit still reports the box's Topic inbound Links and hubs as information. After zt-idea-grow cites a Literature Card, the two may count its orphan state differently.
 - Figures edit only Cards of the book's own Literature tree.
-- Left in the code but unreachable from a digest: `earlier::Pack::place_beside` (always empty), the `hubs` ledger layer and its publication scope, the Topic sections of `organize-survey`, and the modules `zt-concepts`, `zt-review`, `zt-hubs`. A later cleanup may remove them.
+- Left in the code but unreachable from a digest: `earlier::Pack::place_beside` (always empty), the `hubs` ledger layer and its publication scope, and the Topic sections of `organize-survey` (idea-grow's Topic maintenance uses them, through `organize-survey -Topics`). The modules `zt-concepts`, `zt-review` and `zt-hubs` and the library's hub settings were deleted in base 5.1.0 (`zt-digest-lib` v33).
+- A digest's report names its follow-up: `next` is the zt-idea-grow run for the book (base 5.1.0, `zt-digest-report` v16), because the book has no Topic Card, Hub Card or register entry until that run.
+- Idea-grow 3.2.0 (`zt-grow-cycle` v11) sends the per-book restatement and concept judge jobs in one dispatch, logs the live-box rounds a box-copy run does not run, and guides the sections of mathematics textbooks.
 
 ## Checklist
 

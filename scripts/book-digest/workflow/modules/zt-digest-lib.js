@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v32 ====
+// ==== module zt-digest-lib v33 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -33,13 +33,15 @@ const ZD_SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 const ZD_DIGEST = 'zt-digest'
 const ZD_TOOLS = {
   'digest-audit': 'audit', 'card-compiler': 'card', 'model-compiler': 'model', 'model-context': 'model-context', 'list-models': 'list-models',
-  'hub-compiler': 'hub', 'bridge-compiler': 'bridge', 'math-compiler': 'math', 'event-compiler': 'event', 'finding-compiler': 'finding',
+  'bridge-compiler': 'bridge', 'math-compiler': 'math', 'event-compiler': 'event', 'finding-compiler': 'finding',
   'book-terms': 'terms', 'book-skeleton': 'skeleton', 'organize-survey': 'organize-survey', 'organize-apply': 'organize-apply',
   'attach-figures': 'figures', 'prepare-book-digest': 'prepare', 'prepare-link-pass': 'prepare-link', 'snapshot-topics': 'snapshot-topics',
 }
 const ZD_CALL = `${ZD_DIGEST} call`
 // 32 (docs/literature-only-digest-design.md): the helper runs in the Literature scope only without -Open, so
 // every approval rule that lets a DeepSeek job run it refuses a helper command that carries -Open.
+// 33: the hub settings (hubWork, the hub compiler, hubEffort, hubFixRounds) and the hub compiler's self-check in the
+// approval rules leave the library with the unreachable zt-concepts, zt-review and zt-hubs modules: hubs are zt-idea-grow's.
 const ZD_NO_OPEN = 'refuse a zt helper command that carries -Open, in any letter case: it leaves the digest\x27s Literature scope'
 const ZD_LEDGER = `${ZD_DIGEST} ledger`
 // R265: every manager's compiler command carries this explicit timeout (milliseconds).
@@ -156,11 +158,6 @@ function zdMake(ctx, p) {
   const FILL_SKILLS = ['asd-ste100-zh']
   const DSH_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_delete'
   const DRIVE_TOOLS = `${DSH_TOOLS},mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_remove_workspace`
-  const HUB_WORK = A.hubWork || 'D:\\zt-digest\\hubs'
-  const HUB_COMPILER = zdTool('hub-compiler', SCRIPTS)
-  const HUB_EFFORT = atLeastHigh(A.hubEffort, 'hubEffort')
-  const HUB_FIX_ROUNDS = Math.max(0, A.hubFixRounds ?? 1)
-  const HUB_SKILLS = ['asd-ste100-zh']
   const CARD_CHECKS = MODE === 'cards' || ((MODE === 'full' || MODE === 'link') && A.cardChecks !== false)
   const CARD_COMPILER = zdTool('card-compiler', SCRIPTS)
   const CARD_FIX_ROUNDS = Math.max(0, A.cardFixRounds ?? 1)
@@ -367,7 +364,7 @@ ${table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), or the check zt-check (read-only); a read-only self-check of a draft: the card, hub, event, or finding compiler (${ZD_DIGEST} card, hub, event, or finding, or card-compiler.ps1, hub-compiler.ps1, event-compiler.ps1, finding-compiler.ps1) with -Step precheck, the model compiler (${ZD_DIGEST} model, or model-compiler.ps1) with -Step explain-check, or the book skeleton (${ZD_DIGEST} skeleton, or book-skeleton.ps1) with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), or the check zt-check (read-only); a read-only self-check of a draft: the card, event, or finding compiler (${ZD_DIGEST} card, event, or finding, or card-compiler.ps1, event-compiler.ps1, finding-compiler.ps1) with -Step precheck, the model compiler (${ZD_DIGEST} model, or model-compiler.ps1) with -Step explain-check, or the book skeleton (${ZD_DIGEST} skeleton, or book-skeleton.ps1) with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 ${(() => { const owner = resourceOwner(o); return owner === 'run' ? recordRules('run', 1, o.dsh) : recordRules(owner.unit, owner.token, o.dsh) })()}
@@ -500,7 +497,7 @@ Jobs (for every step that prints them):
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start independent jobs in one message and start the next job when one ends.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 90), then start the next waiting job and keep polling; never wait longer than 90 seconds at once.${renewLine}
-- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), or the check zt-check (read-only); a read-only self-check of a draft: the card, hub, event, or finding compiler (${ZD_DIGEST} card, hub, event, or finding, or card-compiler.ps1, hub-compiler.ps1, event-compiler.ps1, finding-compiler.ps1) with -Step precheck, the model compiler (${ZD_DIGEST} model, or model-compiler.ps1) with -Step explain-check, or the book skeleton (${ZD_DIGEST} skeleton, or book-skeleton.ps1) with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), or the check zt-check (read-only); a read-only self-check of a draft: the card, event, or finding compiler (${ZD_DIGEST} card, event, or finding, or card-compiler.ps1, event-compiler.ps1, finding-compiler.ps1) with -Step precheck, the model compiler (${ZD_DIGEST} model, or model-compiler.ps1) with -Step explain-check, or the book skeleton (${ZD_DIGEST} skeleton, or book-skeleton.ps1) with -Step apply and without -Apply; a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}; and ${o.writes ? `writing JSON files under "${o.writes}"` : `writing the one file under "${o.dsh}" that the job's prompt names`}`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
 ${o.unit ? recordRules(o.unit, o.token, o.dsh) : steps.some((s) => s.claim) ? recordRules('{{unit}}', '{{token}}', o.dsh) : recordRules('run', 1, o.dsh)}
@@ -1021,7 +1018,7 @@ Copy each of those output lines character for character: never summarize, abbrev
   }
   return {
     A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS,
-    HUB_WORK, HUB_COMPILER, HUB_EFFORT, HUB_FIX_ROUNDS, HUB_SKILLS, PER_MANAGER, LINK_PER_MANAGER, raised,
+    PER_MANAGER, LINK_PER_MANAGER, raised,
     MAX_ATTEMPTS, DSH_RUN_CAP, CLAIM_LEASE, RUNNER, COMMAND_TIMEOUT_MS: ZD_COMMAND_TIMEOUT_MS,
     // The command prefixes and skills a stage module builds a chain with.
     LEDGER: ZD_LEDGER, DIGEST: ZD_DIGEST, CALL: ZD_CALL, DSH_SKILLS,
@@ -1042,7 +1039,7 @@ Copy each of those output lines character for character: never summarize, abbrev
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '32', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '33', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

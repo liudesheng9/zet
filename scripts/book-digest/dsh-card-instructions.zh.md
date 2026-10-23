@@ -12,12 +12,12 @@
 
 ```json
 {"cards": [
-  {"address": "40/1|a", "verdict": "fix", "title": "……", "body": "……"},
-  {"address": "40/1|b", "verdict": "split", "title": "……", "body": "……",
+  {"address": "Smith2024/4|a", "verdict": "fix", "title": "……", "body": "……"},
+  {"address": "Smith2024/4|b", "verdict": "split", "title": "……", "body": "……",
    "split": [{"title": "……", "body": "……"}]},
-  {"address": "40/2", "verdict": "ok", "note": "问题是误报：……"},
-  {"address": "40/3", "verdict": "merge", "merge_with": "40/1", "note": "两张卡说同一个观点。"},
-  {"address": "40/4", "verdict": "unfaithful", "title": "……", "body": "……", "note": "原书没有说……"}
+  {"address": "Smith2024/5", "verdict": "ok", "note": "问题是误报：……"},
+  {"address": "Smith2024/6", "verdict": "merge", "merge_with": "Smith2024/4", "note": "两张卡说同一个观点。"},
+  {"address": "Smith2024/7", "verdict": "unfaithful", "title": "……", "body": "……", "note": "原书没有说……"}
 ]}
 ```
 
@@ -28,7 +28,7 @@
   3. `ok`：不需要改。在 `note` 中用一句话说明理由，例如问题是误报。
   4. `merge`：这张卡与另一张卡说同一个观点。写出 `merge_with`（那张卡的地址）。不写 `title` 和 `body`。整理阶段决定是否合并。
   5. `unfaithful`：原书没有说这个观点，或说的不同。写出按原书改正后的 `title` 和 `body`，在 `note` 中说明差别。只在任务给出原文时使用。
-- 自查完成后，只回复一行 JSON：`{"job":"任务编号","cards":卡片数,"fix":改写数,"split":拆分数,"ok":不改数,"merge":合并建议数,"unfaithful":不忠实数}`。自查后仍有问题时，在这一行加字段 `"left"`，列出剩下的问题行，例如 `"left":["40/1|a R2 (45 characters > 40) ……"]`。
+- 自查完成后，只回复一行 JSON：`{"job":"任务编号","cards":卡片数,"fix":改写数,"split":拆分数,"ok":不改数,"merge":合并建议数,"unfaithful":不忠实数}`。自查后仍有问题时，在这一行加字段 `"left"`，列出剩下的问题行，例如 `"left":["Smith2024/4|a R2 (45 characters > 40) ……"]`。
 
 ## 自查
 
@@ -52,7 +52,7 @@
 3. **保留公式和图。** `$...$`、`$$...$$` 和 `![图 …](artifact:…)` 行原样保留，不改动其中的字符。
 4. **保留来源行。** `来源：[[{{KEY}}]] §n` 原样保留。缺少来源行时（问题 I3），按任务文件给出的小节补上一行。
 5. 正文不要以 `# 标题` 开头。
-6. 拆分出的新卡也要有来源行，并用一句话链接原卡，关系词放在 Link 前，例如 `依赖 [[40/1|b]]：……`。
+6. 拆分出的新卡也要有来源行，并用一句话链接原卡，关系词放在 Link 前，例如 `依赖 [[Smith2024/4|b]]：……`。
 
 ## 各类问题怎样改
 

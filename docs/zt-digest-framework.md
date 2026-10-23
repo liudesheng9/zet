@@ -1,6 +1,6 @@
 # ZT digests on the Workflow Framework Protocol
 
-> **2026-10-22: the digests build only Literature trees** (base 5.0.0, econ 6.0.0, math 5.0.0; `docs/literature-only-digest-design.md`). Topic trees, Topic Cards, Hub Cards and the register are written only by zt-idea-grow 3.0.0 (`docs/idea-grow-design.md`). Where this document describes a digest stage that writes them (concepts, review, hubs, mode hubs, Topic placement, Organize merges and Topic bodies), that stage is gone from the digests.
+> **2026-10-22: the digests build only Literature trees** (base 5.0.0, econ 6.0.0, math 5.0.0; since base 5.1.0 the report names the zt-idea-grow follow-up and the hub modules are deleted; `docs/literature-only-digest-design.md`). Topic trees, Topic Cards, Hub Cards and the register are written only by zt-idea-grow 3.0.0 (`docs/idea-grow-design.md`). Where this document describes a digest stage that writes them (concepts, review, hubs, mode hubs, Topic placement, Organize merges and Topic bodies), that stage is gone from the digests.
 
 The ZT digests are built by the Workflow Framework Protocol (global skill `workflow-framework-protocol`): one **base** holds every stage that all book types share, and each book type is a **variant** that installs its own **module set** (its layers and its prompts) into the base's slots. The assembler composes a variant with the base, builds one self-contained Workflow script, and installs it frozen: while it runs, its stages, their order, the roles and their models, the retries, checks, and modes cannot change; only data moves.
 
@@ -27,14 +27,14 @@ args → source → prepare → [after-prepare] → terms → cards-book → dig
 | terms | `zt-book-terms` | mode full, `terms` not false | continue |
 | cards-book | `zt-cards-book` | mode cards | — |
 | digest | `zt-digest-blocks` | mode full: the digest blocks (Idea Cards and anchors, plus what the type's prompt supplements ask for); each block's card cycle as soon as it finishes | halt when no group is done |
-| hubs-first | `zt-hubs` | mode hubs | — |
+| hubs-first | ~~`zt-hubs`~~ | removed in base 5.0.0 (the module was deleted in 5.1.0); zt-idea-grow mode `hubs` | — |
 | link-prepare, link | `zt-link-prepare`, `zt-link-pass` | modes full, link | halt (prepare) |
 | link-check | `zt-link-check` | modes full, link; `cardChecks` not false | — |
 | cleanup | `zt-dsh-cleanup` | modes full, link | — |
 | organize | `zt-organize` | mode full, or `organize` true or "legacy" | continue |
 | figures | `zt-figures` | mode figures, or full with `figures` not false | — |
 | bridge | `zt-bridge` | full unless `bridge: false`; mode bridge discovers or applies an identified selection | continue; expects a status other than `failed`, and the result keeps `{status: failed}` |
-| hubs | `zt-hubs` | full with `hubs` not false, or link with `hubs` true | — |
+| hubs | ~~`zt-hubs`~~ | removed in base 5.0.0 (the module was deleted in 5.1.0); zt-idea-grow builds the hubs and the register | — |
 | audit | `zt-audit` | mode audit, or full with `audit` not false | — |
 | report | `zt-digest-report` | always: the result per mode (the shape the removed zt-book-digest.js returned) | — |
 

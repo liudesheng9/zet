@@ -452,6 +452,22 @@ try {
     Assert ($mstate.cards.ContainsKey($movedTo) -and -not $mstate.cards.ContainsKey($stray)) "organize-apply: the run's state follows the move ($(@($mstate.cards.Keys) -join ', '))"
     $oa2 = Last (Grow @('-Step', 'organize-apply', '-Work', (Join-Path $scratch 'work7')))
     Assert (-not $oa2.applied -and $oa2.skipped) "organize-apply: no answer applies nothing ($($oa2 | ConvertTo-Json -Compress))"
+
+    # --- a mathematics textbook (zt-grow-cycle v11): its units are notes of a section like any other ---
+    $mk = 'Algebra2024'
+    $null = Write-Calls @(
+        @{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = "@book{$mk, title={Algebra}, author={Artin, Michael}, year={2024}}"; body = '全书索引。' } },
+        @{ tool = 'create_successor'; arguments = @{ at = $mk; kind = 'direct'; title = '第 1 组：群与子群'; body = '§1 - 群' } },
+        @{ tool = 'create_successor'; arguments = @{ at = "$mk/1"; kind = 'side'; type = 'model'; form = 'theorem'; title = '有限群的子群阶数整除群的阶'
+                body = '（H1）$G$ 是有限群。（H2）$H$ 是 $G$ 的子群。则（C1）$|H|$ 整除 $|G|$。' } }
+    )
+    $mathWork = Join-Path $scratch 'work-math'
+    $mplan = Last (Grow @('-Step', 'plan', '-Book', $mk, '-Work', $mathWork))
+    Assert ($mplan.sections -eq 1 -and $mplan.pending -eq 1) "math: the textbook's anchor plans as one section ($($mplan | ConvertTo-Json -Compress))"
+    $msec = Get-Content (Join-Path $mathWork 'sections\s001.md') -Raw -Encoding utf8
+    Assert ($msec.Contains("## [[$mk/1|a]] 有限群的子群阶数整除群的阶（模型卡）") -and $msec.Contains('（C1）$|H|$ 整除 $|G|$')) 'math: the section lists the theorem unit as a Model Card with its statement'
+    $minstr = Get-Content (Join-Path $mathWork 'instructions.zh.md') -Raw -Encoding utf8
+    Assert ($minstr.Contains('**数学教材的小节**') -and $minstr.Contains('单元的陈述、前提和证明都留在文献树里')) 'math: the instructions keep a unit''s statement and proof in the Literature tree'
 } finally {
     zt down 2>&1 | Out-Null
     # GROW_TEST_KEEP=1 keeps the scratch archive for a look at the files a failure left.

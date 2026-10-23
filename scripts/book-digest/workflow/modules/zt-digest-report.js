@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v15 ====
+// ==== module zt-digest-report v16 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -16,9 +16,10 @@
 // counts, so the integrated digest path reports what it reviewed and what it left pending (S23/#115).
 // 15 (docs/literature-only-digest-design.md): a digest builds only the Literature tree, so the concept review,
 // the restatement review of new Topic Cards, the hubs, the register and mode hubs leave the report; zt-idea-grow
-// reports them.
+// reports them. 16 adds next: the digest built the Literature tree only, so the whole report (and the log) names
+// the follow-up run that grows its Topic Cards, hubs and register: zt-idea-grow with this book and a fresh folder.
 defineModule({
-  id: 'zt-digest-report', version: '15', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '16', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -86,6 +87,8 @@ defineModule({
       ? { scheduled: p.link.scheduled ?? 0, skipped: p.link.skipped ?? 0, gaps: p.link.gap ?? 0, skipped_cards: p.link.skipped_cards ?? 0, linked: p.link.linked ?? 0, linked_from: p.link.linked_from ?? 0, already_linked: p.link.already_linked ?? 0, no_link: p.link.no_link ?? 0, provider_runs: p.link.provider_runs ?? 0, quality: p.link.quality || null }
       : null
     const groupCount = p.groups || 0
+    const next = { workflow: 'zt-idea-grow', script: '.claude/workflows/zt-idea-grow.js', args: { book: KEY, out: '<a fresh work folder>' }, why: 'this digest built only the Literature tree; zt-idea-grow grows its Topic Cards, hubs and register' }
+    ctx.log(`Next: run zt-idea-grow with book "${KEY}" and a fresh out folder: the digest wrote no Topic Card, Hub Card or register entry.`)
     return {
       mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: Z.toBlocks(Z.groupsOf(groupCount)).length,
       digest: digestReports.map(r => ({ group: r.group, status: r.status, unit: r.unit || null, disposition: r.disposition || null, owned: r.owned ?? null, errors: r.errors || null })),
@@ -98,6 +101,7 @@ defineModule({
       deepseek_usage: runUsage, cleanup: (p.cleanup && p.cleanup.cleanup) || null, run_report: runReport,
       organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), audit: or(p.audit, null), finalize: or(p.finalize, null),
       schedule,
+      next,
       ...extra,
     }
   },

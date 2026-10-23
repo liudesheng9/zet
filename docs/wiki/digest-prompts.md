@@ -221,8 +221,8 @@ The output formats each prompt demands are listed in the Interfaces table. They 
 
 ```json
 {"cards": [
-  {"address": "40/1|a", "verdict": "fix", "title": "……", "body": "……"},
-  {"address": "40/3", "verdict": "merge", "merge_with": "40/1", "note": "两张卡说同一个观点。"}
+  {"address": "Smith2024/4|a", "verdict": "fix", "title": "……", "body": "……"},
+  {"address": "Smith2024/6", "verdict": "merge", "merge_with": "Smith2024/4", "note": "两张卡说同一个观点。"}
 ]}
 ```
 
@@ -343,6 +343,7 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 
 ## Change history
 
+- `2026-10-22` — The digest prompts' examples use Literature-tree addresses (`Smith2024/…`), not Topic-tree ones (`40/1|a`, `12/1|a`): `dsh-card-instructions.zh.md` (the answer format and the split Link), `dsh-fill-instructions.zh.md` (rule 19), `dsh-event-instructions.zh.md` and `dsh-finding-instructions.zh.md` (`supports`, `role`), `dsh-orphan-instructions.zh.md` (`to`, `from`, `none`). A digest files every Card in its own Literature tree and the Literature scope refuses a Link to a Topic-tree Card, so an example that taught a Topic address invited a refused write. The idea-grow prompt `scripts/idea-grow/dsh-grow-instructions.zh.md` adds the guidance for mathematics textbooks ([Idea-grow workflow](idea-grow-workflow.md)).
 - `2026-10-22` — Literature-only digests (`docs/literature-only-digest-design.md`). `dsh-instructions.zh.md` is deleted; `prepare-book-digest.ps1` (`zt-digest prepare`) defaults `-Instructions` to `dsh-digest-base.zh.md,dsh-model-cards.zh.md`. `dsh-digest-base.zh.md` files every Card in the book's Literature tree: the `create_topic` example and tool, the Topic gate, the five-step Topic placement order, the `-Beneath` continuation and item 14 (a Topic claim must not rest on its own source) are gone; the snapshot lists Literature trees; a Card that continues another Literature Card names it in its first sentence; the reply drops `topics`; and the prompt names the helper's `literature_only` refusal. `dsh-card-instructions.zh.md` drops I7's first-case recipe and the old item 11, and its sampling placement rule is Literature-only; `dsh-fill-instructions.zh.md` drops row 20 (the table has 20 rows); `dsh-link-instructions.zh.md` links Literature-tree Cards only; `dsh-model-cards.zh.md` says the discussing Cards are in the Literature tree; `dsh-skeleton-instructions.zh.md` writes the Literature index and the structure Card only (no `topics` field). The group file's write line carries no `-TopicGate`. The hub and restatement prompts now serve `zt-idea-grow` only.
 
 - `2026-10-20` — `dsh-card-instructions.zh.md`: D1, an Idea Card that repeats a Model part. The writer gives the Idea Card the angle the part does not have (intuition, implication, conditions, an example) and writes `对应 [[part]]` in the sentence that states the relation, or judges `merge` with the part named in `note`; the part itself is not changed (slip-box practice: one idea, one Card).

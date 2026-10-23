@@ -340,7 +340,7 @@ function runtime(kind, opts = {}) {
       return { ok: true, output: json({ schema_version: 1, units: ids.map((id) => { const u = led.find(id); return u ? { id, state: stateOf(u), token: u.token, input_hash: `ih-${id}`, attempts: u.token, fault_class: null, disposition: u.state === 'done' ? 'verified' : null } : { id, state: 'unknown' } }) }) }
     }
     if (/ ledger status /.test(cmd)) {
-      if (opts.rewrittenSummary && / -Summary/.test(cmd)) { const { layers, ...rest } = statusSummary(kind, led); return { ok: true, output: json({ ...rest, layers_open: Object.fromEntries(Object.entries(layers || {}).map(([k, v]) => [k, v.open || 0])) }) } }
+      if (opts.rewrittenSummary && / -Summary\b/.test(cmd)) { const { layers, ...rest } = statusSummary(kind, led); return { ok: true, output: json({ ...rest, layers_open: Object.fromEntries(Object.entries(layers || {}).map(([k, v]) => [k, v.open || 0])) }) } }
       return { ok: true, output: / -Summary\b/.test(cmd) ? json(statusSummary(kind, led)) : json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
     }
     // R331/R343: the verified run report the cleanup stage renders after every stage settles. Its usage is
@@ -1513,13 +1513,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '32' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v32 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
+  check(modules['zt-digest-lib'] === '33' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v33 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '10', `lock: the idea-grow build carries zt-grow-cycle v10 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '11', `lock: the idea-grow build carries zt-grow-cycle v11 (${grow.modules['zt-grow-cycle']})`)
   check(grow.script.includes('const lockRefusal = (text) =>') && grow.script.includes('card_locked at ${where}') && grow.script.includes('stopOnLock'), 'lock: the idea-grow build carries its own seam')
 }
 
@@ -1534,7 +1534,19 @@ for (const which of ['econ', 'math']) {
       .filter((l) => /"needs_response": approve/.test(l) && /runs the zt helper/.test(l))
     const open = rules.filter((l) => !/refuse a zt helper command that carries -Open/.test(l))
     check(rules.length > 0 && !open.length, `scope: every ${which} approval rule that allows the zt helper refuses -Open (${rules.length} rules, ${open.length} without: ${open.slice(0, 1).map((l) => l.slice(0, 160)).join('')})`)
+    // base 5.1.0: hubs are zt-idea-grow's, so no approval rule offers the hub compiler's self-check.
+    const all = [...calls.map((c) => c.prompt), ...pool.prompts].flatMap((p) => String(p).split('\n')).filter((l) => /"needs_response": approve/.test(l))
+    check(all.length > 0 && !all.some((l) => /hub-compiler|zt-digest hub\b|card, hub, event/.test(l)), `literature only: no ${which} approval rule offers the hub compiler`)
   }
+}
+
+{
+  // base 5.1.0 (zt-digest-report v16): the digest built only the Literature tree, so the whole report names the
+  // follow-up run that grows the book's Topic Cards, hubs and register, and the log says it.
+  const { result, logs } = await run('econ', { ...base, figures: false })
+  const next = result && result.next
+  check(next && next.workflow === 'zt-idea-grow' && next.script === '.claude/workflows/zt-idea-grow.js' && next.args && next.args.book === result.citation_key && /fresh/.test(next.args.out), `literature only: the report names the zt-idea-grow follow-up for this book (${JSON.stringify(next)})`)
+  check((logs || []).some((l) => /Next: run zt-idea-grow with book/.test(l)), 'literature only: the report stage logs the zt-idea-grow follow-up')
 }
 
 console.log(`failed: ${failed}`)
