@@ -106,6 +106,17 @@ try {
     $doneBefore = Unit 'digest/g001@1'
     $revisionBefore = Revision
 
+    # Concurrent lanes move the archive revision while a command checks its preparation: the check reads
+    # its view again instead of failing, and refuses only when every read raced.
+    # A renew of a token nobody holds passes the check and is refused for the token alone.
+    $probe = @('ledger', 'renew', '-Out', $out, '-Unit', 'digest/g002@1', '-Token', '999')
+    $env:ZT_LEDGER_VIEW_RACE = '4'
+    $raced = @(& $Digest @probe 2>&1) -join ' '
+    Assert ($LASTEXITCODE -ne 0 -and -not $raced.Contains('archive changed')) "a preparation check that races four times reads its view again and passes [$raced]"
+    $env:ZT_LEDGER_VIEW_RACE = '5'
+    Refused $probe 'archive changed while checking preparation' 'a preparation check whose every read races is refused'
+    Remove-Item Env:ZT_LEDGER_VIEW_RACE
+
     # Group 2 accepts its plan and commits its Cards, then the ledger completion is lost.
     $lostClaim = (Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'digest', '-Take', '1', '-Owner', 'lost-manager')).units[0]
     Assert ($lostClaim.id -eq 'digest/g002@1') 'the second group is claimed next'
@@ -113,7 +124,7 @@ try {
     $lostJob = Get-Content -LiteralPath $lostStart.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $lostDraft = Group-Draft $lostClaim $lostStart @(
         @{ tool = 'edit_card'; arguments = @{ at = "$key/2"; title = '贷款收紧减少设备投入'; body = '贷款收紧使企业减少设备投入，融资成本决定投入规模。'; base_fingerprint = $lostJob.inputs.anchor.fingerprint } },
-        @{ tool = 'create_successor'; arguments = @{ at = "$key/2"; kind = 'side'; title = '融资成本决定投入规模'; body = '融资成本上升使企业缩小设备投资。投入规模随融资成本下降。来源：[[ResumeBook/2]]' } }
+        @{ tool = 'create_successor'; arguments = @{ at = "$key/2"; kind = 'side'; title = '融资成本决定投入规模'; body = '融资成本上升使企业缩小设备投资。投入规模随融资成本下降。来源：[[ResumeBook/2]]'; src = '第二节：融资成本与设备投资' } }
     )
     Save-Json $lostStart.draft $lostDraft
     $env:ZT_LEDGER_COMPLETE_FAULT = 'before_commit'
@@ -178,6 +189,7 @@ try {
     Assert ($recoveredJob.recovery.reason -eq 'receipts_committed' -and @($recoveredJob.recovery.receipts).Count -eq 2 -and (Split-Path -Leaf $recoveredJob.recovery.plan) -eq 'accepted-g002.json' -and (Test-Path -LiteralPath $recoveredJob.recovery.plan)) 'the recovery names the retained plan and every committed receipt it reconciles'
     $recoveredDraft = Get-Content -LiteralPath $recoveredStart.draft -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     Assert ($recoveredDraft.token -eq $recoveredClaim.token -and $recoveredDraft.input_hash -eq $recoveredStart.input_hash -and $recoveredDraft.calls.Count -eq 2) 'the rebound draft carries the current claim token and the retained calls'
+    Assert ($recoveredDraft.calls[1].arguments.src -eq '第二节：融资成本与设备投资') 'the rebound draft restores the source note the accepted plan keeps apart from its calls'
     $recovered = Run-Digest @('group-finish', '-Out', $out, '-Group', '2', '-Token', "$($recoveredClaim.token)", '-Draft', $recoveredStart.draft)
     Assert ($recovered.state -eq 'done' -and @($recovered.owned).Count -eq 2 -and (Revision) -eq $receiptRevision) 'the recovered group completes from its committed receipts without writing another Card'
     $tree = Invoke-Zt @(@{ tool = 'get_tree'; arguments = @{ tree = $key } })

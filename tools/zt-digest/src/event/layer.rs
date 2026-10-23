@@ -695,7 +695,7 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
             .unwrap_or_default();
         let previous = state["applied"].get(&id).cloned();
         if let Some(entry) = &previous {
-            if entry["answer"]["sha256"].as_str() == Some(answer_hash.as_str()) {
+            if entry["answer"]["sha256"].as_str() == Some(answer_hash.as_str()) && !refused_by_advice(entry) {
                 continue;
             }
             // A revised answer is a new attempt at the same job: its Cards are reused by
@@ -715,15 +715,7 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
         let mut faults = layer.test(ctx, &items)?;
         let drafts = layer.drafts(ctx, &items)?;
         faults.extend(ctx.draft_faults(drafts, &id)?);
-        let mut bad: Vec<(usize, String)> = Vec::new();
-        for f in &faults {
-            if let Some(m) = PLACE.captures(f) {
-                let place: usize = m[1].parse().unwrap_or(usize::MAX);
-                if !bad.iter().any(|(p, _)| *p == place) {
-                    bad.push((place, f.clone()));
-                }
-            }
-        }
+        let bad = refusing_faults(&faults);
         let keys: Vec<i64> = bad.iter().map(|(p, _)| *p as i64).collect();
         let bad_values: Vec<String> = int_hashtable_order(&keys).into_iter().map(|i| bad[i].1.clone()).collect();
         for b in &bad_values {
@@ -955,6 +947,29 @@ pub(crate) fn run(layer: &dyn Layer, step: &str, staging: &str, work: &str, job:
     Ok(0)
 }
 
+/// The first rule fault of each entry place, in fault order. An "(advisory)" line is advice, never a
+/// fault (as in the audit), so it refuses no entry.
+fn refusing_faults(faults: &[String]) -> Vec<(usize, String)> {
+    let mut bad: Vec<(usize, String)> = Vec::new();
+    for f in faults.iter().filter(|f| !f.contains("(advisory)")) {
+        if let Some(m) = PLACE.captures(f) {
+            let place: usize = m[1].parse().unwrap_or(usize::MAX);
+            if !bad.iter().any(|(p, _)| *p == place) {
+                bad.push((place, f.clone()));
+            }
+        }
+    }
+    bad
+}
+
+/// An applied job whose recorded refusals include an advisory line was refused by an older rule
+/// (`refusing_faults`): it is applied again like a revised answer, its made Cards reused by place.
+fn refused_by_advice(entry: &Value) -> bool {
+    entry["refused"]
+        .as_array()
+        .is_some_and(|refused| refused.iter().any(|r| ps::s(prop(r, "fault")).contains("(advisory)")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -971,6 +986,32 @@ mod tests {
         assert_eq!(order(&(1..=20).collect::<Vec<_>>()), "20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1");
         assert_eq!(order(&[15, 3, 8, 22, 1, 4, 9, 10, 11, 40, 2]), "15,11,10,9,8,40,22,4,3,2,1");
         assert_eq!(order(&[]), "");
+    }
+
+    // ebrill2001modern trial 1: an advisory L3 line refused finding:1, so the group's unit failed and a
+    // new DeepSeek attempt was spent on a draft that broke no rule.
+    #[test]
+    fn only_rule_faults_refuse_an_entry() {
+        let faults = [
+            "finding:1 L3 (advisory) [[K/57]] is linked in 2 paragraphs".to_string(),
+            "finding:2 F1 the result names no size or direction".to_string(),
+            "finding:2 F3 the source line is missing".to_string(),
+            "faults: 2".to_string(),
+        ];
+        assert_eq!(
+            refusing_faults(&faults),
+            vec![(2, "finding:2 F1 the result names no size or direction".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_job_refused_by_advice_is_applied_again() {
+        let advised = json!({ "refused": [{ "place": 1, "fault": "finding:1 L3 (advisory) [[K/57]] is linked in 2 paragraphs" }] });
+        let faulted = json!({ "refused": [{ "place": 1, "fault": "finding:1 F1 the result names no size" }] });
+        assert!(refused_by_advice(&advised));
+        assert!(!refused_by_advice(&faulted));
+        assert!(!refused_by_advice(&json!({ "refused": [] })));
+        assert!(!refused_by_advice(&json!({})));
     }
 
     #[test]

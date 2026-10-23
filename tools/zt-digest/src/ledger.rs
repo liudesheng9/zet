@@ -556,53 +556,73 @@ impl Prepared {
             }
             check_file(setup, "setup")?;
         }
-        let observed = zt.archive_view()?;
-        if observed["archive_identity"] != contract["archive_identity"] {
-            bail!("archive identity mismatch; use the original archive or a new output directory");
-        }
-        if !require_cards {
-            let hash = canon::hash_value(&contract);
-            return Ok(Self {
-                out,
-                contract,
-                hash,
-            });
-        }
-        let mut addresses = vec![field(&contract, "citation_key")?.to_string()];
-        addresses.extend(
-            groups
-                .iter()
-                .map(|g| g["anchor"].as_str().unwrap().to_string()),
-        );
-        // T21: a prepared root or anchor that no longer sits at its frozen address is a precise
-        // conflict, never a silently re-selected Card. A structural move of a published Card has
-        // its own recorded mapping (`ledger relocate`); the prepared anchors themselves cannot move
-        // without a new preparation.
-        let cards = zt.cards(&addresses, "text").with_context(|| {
-            format!(
-                "anchor_moved: the prepared Literature root or a group anchor is no longer at its frozen address ({}); a published Card move needs `zt-digest ledger relocate`, a prepared anchor move needs a new preparation",
-                addresses.join(", ")
-            )
-        })?;
-        if cards.archive_revision != observed["archive_revision"].as_u64().unwrap() {
-            bail!("archive changed while checking preparation; retry");
-        }
-        if cards.cards.iter().any(|c| c["workspace"] != "agent")
-            || cards.cards[0]["kind"] != "literature"
-            || cards.cards[1..].iter().any(|c| c["kind"] != "regular")
-        {
-            bail!("prepared Literature/anchor ownership mismatch");
-        }
-        if canon::sha256_hex(field(&cards.cards[0], "bibtex")?.as_bytes())
-            != contract["options"]["bibtex_sha256"]
-        {
-            bail!("prepared Literature metadata mismatch");
-        }
-        let after = zt.archive_view()?;
-        if after["archive_identity"] != contract["archive_identity"]
-            || after["archive_revision"].as_u64() != Some(cards.archive_revision)
-        {
-            bail!("archive changed while checking preparation; retry without publishing work");
+        // Concurrent lanes write Cards while this read runs, so a moved revision is re-read (each
+        // attempt is a pure read) instead of failing the command: a refused `ledger next` ended a whole
+        // layer on ebrill2001modern trial 1.
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let raced = |attempt: u32| {
+                std::env::var("ZT_LEDGER_VIEW_RACE")
+                    .ok()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| attempt <= n)
+            };
+            let observed = zt.archive_view()?;
+            if observed["archive_identity"] != contract["archive_identity"] {
+                bail!("archive identity mismatch; use the original archive or a new output directory");
+            }
+            if !require_cards {
+                let hash = canon::hash_value(&contract);
+                return Ok(Self {
+                    out,
+                    contract,
+                    hash,
+                });
+            }
+            let mut addresses = vec![field(&contract, "citation_key")?.to_string()];
+            addresses.extend(
+                groups
+                    .iter()
+                    .map(|g| g["anchor"].as_str().unwrap().to_string()),
+            );
+            // T21: a prepared root or anchor that no longer sits at its frozen address is a precise
+            // conflict, never a silently re-selected Card. A structural move of a published Card has
+            // its own recorded mapping (`ledger relocate`); the prepared anchors themselves cannot move
+            // without a new preparation.
+            let cards = zt.cards(&addresses, "text").with_context(|| {
+                format!(
+                    "anchor_moved: the prepared Literature root or a group anchor is no longer at its frozen address ({}); a published Card move needs `zt-digest ledger relocate`, a prepared anchor move needs a new preparation",
+                    addresses.join(", ")
+                )
+            })?;
+            if cards.archive_revision != observed["archive_revision"].as_u64().unwrap() || raced(attempt) {
+                if attempt < PREPARED_VIEW_READS {
+                    continue;
+                }
+                bail!("archive changed while checking preparation; retry");
+            }
+            if cards.cards.iter().any(|c| c["workspace"] != "agent")
+                || cards.cards[0]["kind"] != "literature"
+                || cards.cards[1..].iter().any(|c| c["kind"] != "regular")
+            {
+                bail!("prepared Literature/anchor ownership mismatch");
+            }
+            if canon::sha256_hex(field(&cards.cards[0], "bibtex")?.as_bytes())
+                != contract["options"]["bibtex_sha256"]
+            {
+                bail!("prepared Literature metadata mismatch");
+            }
+            let after = zt.archive_view()?;
+            if after["archive_identity"] != contract["archive_identity"]
+                || after["archive_revision"].as_u64() != Some(cards.archive_revision)
+            {
+                if attempt < PREPARED_VIEW_READS {
+                    continue;
+                }
+                bail!("archive changed while checking preparation; retry without publishing work");
+            }
+            break;
         }
         let hash = canon::hash_value(&contract);
         Ok(Self {
@@ -612,6 +632,9 @@ impl Prepared {
         })
     }
 }
+
+/// How often the prepared-run check reads its archive view before a moving revision fails it.
+const PREPARED_VIEW_READS: u32 = 5;
 
 pub(crate) fn connect(path: &Path, writable: bool) -> Result<Connection> {
     let flags = if writable {
@@ -6471,9 +6494,22 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     let recovery = recover_group(p, zt, number, &unit, &run, &claimed.input_hash)?;
     let recovered = recovery["status"] == json!("recovered");
     let (disposition, calls) = if recovered {
+        // The accepted plan keeps each call's `src` apart in `source_notes`; the rebound draft puts
+        // it back, so `group-finish` rebuilds the very plan it accepted.
+        let mut calls = recovery["plan"]["calls"].clone();
+        if let Some(notes) = recovery["plan"]["source_notes"].as_object() {
+            for (i, note) in notes {
+                let i: usize = i.parse().context("accepted plan source note index")?;
+                calls
+                    .get_mut(i)
+                    .and_then(|call| call["arguments"].as_object_mut())
+                    .context("accepted plan source note names no call")?
+                    .insert("src".to_string(), note.clone());
+            }
+        }
         (
             field(&recovery["plan"], "disposition")?.to_string(),
-            recovery["plan"]["calls"].clone(),
+            calls,
         )
     } else {
         ("cards".to_string(), json!([]))
