@@ -9623,6 +9623,9 @@ fn link_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Valu
     let prefix = p.out.join("link-prefix.md");
     let gap_doc = p.out.join(format!("link-{id}.md"));
     let job_file = p.out.join(format!("link-job-g{number:03}.md"));
+    // The Link pass runs this group's DeepSeek job with cwd `<out>\link-jobs`; create it here, as
+    // group-start creates `group-jobs` (acemoglu2025nobel trial 1: every Link job failed to start).
+    std::fs::create_dir_all(p.out.join("link-jobs"))?;
     let empty = gaps.is_empty();
     // A group with no gap still completes its Link unit: the empty draft is bound to this claim
     // and checked by the same `link-finish`, which records every owned Card as already linked.

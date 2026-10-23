@@ -2293,7 +2293,10 @@ impl Compiler {
         }
         let jobs = self.follow_jobs(&follow)?;
         self.save_state()?;
-        self.out_last(&json!({ "jobs": jobs, "faults": faults, "unowned": unowned, "refreshed": refreshed }))
+        // `status` names the outcome, so a relay never reads the clean line (no jobs, no faults) as a failed
+        // no-op (acemoglu2025nobel trial 1, close 2 of the formal batch).
+        let status = if !jobs.is_empty() { "follow_up" } else if faults > 0 || !unowned.is_empty() { "unresolved" } else { "clean" };
+        self.out_last(&json!({ "status": status, "jobs": jobs, "faults": faults, "unowned": unowned, "refreshed": refreshed }))
     }
 
     /// Rebuilds the 共用 lines of every Model Card of the batch from its plan's taken parts and the

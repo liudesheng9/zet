@@ -610,7 +610,10 @@ pub(crate) fn plan(layer: &dyn Layer, ctx: &mut Ctx, per_job: i64) -> Result<()>
     let candidates = candidate_manifest(&by_group);
     let source = layer.candidate_source(ctx)?;
     let manifest = write_plan(ctx, spec, &source, &candidates, &planned)?;
-    util::print_line(&ps::json_compact(&json!({ "candidates": count, "groups": groups.len(), "jobs": jobs, "expected_jobs": planned.len(), "manifest": manifest })))
+    // `applied_jobs` says why `jobs` can be shorter than `expected_jobs`: a later claim's plan lists only the
+    // jobs still to run (acemoglu2025nobel trial 1: a relay read `jobs: []` as an inconsistent plan).
+    let applied_jobs = planned.len() - jobs.len();
+    util::print_line(&ps::json_compact(&json!({ "candidates": count, "groups": groups.len(), "jobs": jobs, "expected_jobs": planned.len(), "applied_jobs": applied_jobs, "manifest": manifest })))
 }
 
 /// `<step> precheck`: the faults of out\<Job>.json, then `faults: N`.

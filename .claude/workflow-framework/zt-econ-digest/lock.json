@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.1.0",
+  "version": "6.1.1",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "9e3ce8d49975d90a2e22df65687796ade37b12ee0e26bf655f6197854c89a502",
-  "fingerprint": "e1da2c7c6cd810d1",
-  "blueprintSha256": "2a1144ec48cc7b2497ca1fadd29800673f981f9c6a6727de21674d21ae72e6ee",
+  "sha256": "1b54bed183bac3a7fc88c68d234fcbf947fdc2ad003592ecc984595b546bdc9a",
+  "fingerprint": "a95612074ad391c2",
+  "blueprintSha256": "58dee93260ec20451bbd86819ee6ad5ab009e7c0f555a1a57a907754a07af9db",
   "modules": {
     "gate": "1",
     "zt-digest-lib": "33",
@@ -27,7 +27,7 @@
     "zt-finalize": "2",
     "zt-finding-layer": "3",
     "zt-group-cycle": "6",
-    "zt-link-check": "1",
+    "zt-link-check": "2",
     "zt-link-pass": "7",
     "zt-link-prepare": "5",
     "zt-model-layer": "5",
@@ -108,7 +108,7 @@
     },
     "zt-link-check": {
       "file": "scripts/book-digest/workflow/modules/zt-link-check.js",
-      "sha256": "210cbe3f078607cdc3ee2b34208212be8976998a592bcdb3af5788615c33a56e"
+      "sha256": "3d73faa74a8dade076405d9c770120329b127db1108b8e4d9995181349975fe9"
     },
     "zt-link-pass": {
       "file": "scripts/book-digest/workflow/modules/zt-link-pass.js",
@@ -130,15 +130,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "4bc54bf3219077d08299cf28820fd941e9933f030d9b0f52e0c29e49bf0a4b54"
+      "sha256": "3b2cce9657a89f2de428aa3e4b7792c58195460a7b92c4e3ce3c2b33876dee37"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "1f9a7921f0dec134978df601e4a080d10113254d433b2be2d2aa621481f1e65c"
+      "sha256": "ef48560ec29efe5a43cd64dee88de654719ab449ffbe538c8e4b207c540c8319"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-23T02:51:35.988Z",
+  "installedAt": "2026-10-23T07:02:51.578Z",
   "dryRun": {
     "agents": 39,
     "order": [

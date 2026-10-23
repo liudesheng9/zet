@@ -102,6 +102,8 @@ try {
     Assert ($again.applied_jobs -eq 0 -and $again.created -eq 0) 'apply: a rerun skips the applied job'
     $replan = Last @(pwsh -NoProfile -File $compiler -Step plan -Staging $staging 2>&1)
     Assert (@($replan.jobs).Count -eq 0) 'plan: a rerun plans no applied job'
+    # acemoglu2025nobel trial 1: a relay read `jobs: []` beside `expected_jobs: 1` as an inconsistent plan and skipped apply.
+    Assert ($replan.applied_jobs -eq $replan.expected_jobs -and $replan.expected_jobs -ge 1) "plan: a rerun names the jobs already applied ($($replan.applied_jobs) of $($replan.expected_jobs))"
     $report = Last @(pwsh -NoProfile -File $compiler -Step report -Staging $staging 2>&1)
     Assert ($report.jobs -eq 1 -and $report.created -eq 1 -and $report.merged -eq 1 -and $report.linked -eq 2 -and $report.refused -eq 2) "report: the counts ($($report | ConvertTo-Json -Compress))"
 

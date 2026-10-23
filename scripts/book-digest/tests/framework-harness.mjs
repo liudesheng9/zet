@@ -1274,6 +1274,9 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const layers = stagePublications.map((c) => (c.match(/-Layer ([a-z-]+)/) || [])[1])
   check(['organize', 'skeleton', 'figures'].every((l) => layers.includes(l)), `stage publish: Organize, the skeleton and Figures publish their own revisions (${layers.join(', ')})`)
   check(stagePublications.some((c) => /-Layer organize -Decisions "[^"]*\\organize\\decisions\.json" -Applied "[^"]*\\organize\\applied\.json"/.test(c)) && stagePublications.some((c) => /-Layer skeleton -Skeleton "[^"]*\\skeleton\\out\\skeleton\.json"/.test(c)) && stagePublications.some((c) => /-Layer figures -Report "[^"]*\\figures-report\.json"/.test(c)), 'stage publish: each publication names its declared artifacts')
+  // acemoglu2025nobel trial 1: the final audit found nothing to correct, so no refresh published link-check/book@1
+  // and the run stayed content-incomplete. The Link check stage publishes its own revision from its cycle report.
+  check(stagePublications.some((c) => /-Layer link-check -Report "[^"]*\\cards-link\\report\.json"/.test(c)), `stage publish: the Link check publishes its own revision from its cycle report (${layers.join(', ')})`)
 }
 {
   // trial 8: the full resource listing (about 52 KB) came back as prose and the cleanup settled nothing. The cleanup

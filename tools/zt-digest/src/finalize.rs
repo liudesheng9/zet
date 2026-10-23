@@ -1098,11 +1098,13 @@ fn figures_coverage(recognized: &[Value], report: &Value) -> Vec<Value> {
 /// its coverage is derived from what the run recorded. Before this step nothing completed these
 /// revisions: finalize leaves them to their stages, and no stage published, so every run kept
 /// `organize/book@1`, `skeleton/book@1`, `figures/book@1` and `bridge/book@1` ready and could never be
-/// content-complete (grossman2002integration trial 8).
+/// content-complete (grossman2002integration trial 8). The Link check publishes its first revision
+/// here too: the finalization refreshes it only when its one correction cycle changed a Card, so a run
+/// whose final audit found nothing to correct kept `link-check/book@1` ready (acemoglu2025nobel trial 1).
 fn run_stage(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
     let layer = a.layer.trim().to_string();
-    if !["organize", "skeleton", "figures", "bridge"].contains(&layer.as_str()) {
-        bail!("`{layer}` is not a stage-owned publication (organize, skeleton, figures, bridge)");
+    if !["link-check", "organize", "skeleton", "figures", "bridge"].contains(&layer.as_str()) {
+        bail!("`{layer}` is not a stage-owned publication (link-check, organize, skeleton, figures, bridge)");
     }
     if !prepared_layers(p)?.contains(&layer) {
         return Ok(json!({"layer": layer, "state": "excluded", "reason": "the prepared run excluded this layer"}));

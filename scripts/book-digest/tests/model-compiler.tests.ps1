@@ -225,6 +225,8 @@ try {
     )
     $closed = Last (Run 'close')
     Assert ($closed.faults -eq 0 -and @($closed.jobs).Count -eq 0) "close: a model with no build faults gets no follow-up ($($closed | ConvertTo-Json -Compress -Depth 4))"
+    # acemoglu2025nobel trial 1: a relay reported the clean close line (no jobs, no faults) as a failed no-op.
+    Assert ($closed.status -ceq 'clean') "close: a close with nothing to send back says it is clean ($($closed.status))"
     # close also repairs what a split or a writer left behind (trial 7): a 共用 line with an old address
     # is rebuilt from the plan, a malformed supplied-step marker goes back to its part, and report puts
     # back a 结构 list that a close writer re-sent from an older copy.

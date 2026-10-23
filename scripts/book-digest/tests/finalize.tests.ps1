@@ -271,11 +271,15 @@ try {
     # book@1 stayed ready and no run could be content-complete.
     $stageKey = 'FinalizeStage'
     $stageOut = New-Prepared $stageKey
-    Complete-Upstream $stageOut 'organize,skeleton'
+    Complete-Upstream $stageOut 'link-check,organize,skeleton'
     $stageWork = Join-Path $stageOut 'stage-artifacts'
     Save-Json (Join-Path $stageWork 'decisions.json') @{ thesis = '所有权决定剩余控制权'; merges = @(); moves = @(); notes = @() }
     Save-Json (Join-Path $stageWork 'applied.json') @{ merges = 0; moves = 0; refused = 0 }
     Save-Json (Join-Path $stageWork 'skeleton.json') @{ thesis = '所有权决定剩余控制权' }
+    # acemoglu2025nobel trial 1: the final correction changed no Card, so no refresh published link-check/book@1
+    # and the run stayed content-incomplete; the Link check stage publishes its own first revision.
+    $stageLinkCheck = Finalize 'stage' $stageOut @('-Layer', 'link-check', '-Report', (Join-Path $stageWork 'applied.json'))
+    Assert ($stageLinkCheck.unit -match '^link-check/book@\d+$' -and $stageLinkCheck.state -ceq 'done') "stage: the Link check publishes its own revision ($($stageLinkCheck.unit) $($stageLinkCheck.state))"
     $stageOrganize = Finalize 'stage' $stageOut @('-Layer', 'organize', '-Decisions', (Join-Path $stageWork 'decisions.json'), '-Applied', (Join-Path $stageWork 'applied.json'))
     Assert ($stageOrganize.unit -match '^organize/book@\d+$' -and $stageOrganize.state -ceq 'done') "stage: Organize publishes its own revision ($($stageOrganize.unit) $($stageOrganize.state))"
     $stageSkeleton = Finalize 'stage' $stageOut @('-Layer', 'skeleton', '-Skeleton', (Join-Path $stageWork 'skeleton.json'))
@@ -284,7 +288,7 @@ try {
     Assert ($stageAgain.revision -eq $stageSkeleton.revision -and $stageAgain.reused -eq $true) 'stage: publishing the same stage again reuses its revision'
     $stageFigures = Finalize 'stage' $stageOut @('-Layer', 'figures', '-Report', (Join-Path $stageWork 'applied.json'))
     Assert ($stageFigures.state -ceq 'excluded') "stage: an excluded layer publishes nothing ($($stageFigures.state))"
-    $stageWrong = Try-Digest @('finalize', '-Step', 'stage', '-Out', $stageOut, '-Layer', 'link-check', '-Report', (Join-Path $stageWork 'applied.json'))
+    $stageWrong = Try-Digest @('finalize', '-Step', 'stage', '-Out', $stageOut, '-Layer', 'audit', '-Report', (Join-Path $stageWork 'applied.json'))
     Assert ($stageWrong.code -eq 1 -and $stageWrong.text -match 'not a stage-owned publication') "stage: a layer no stage owns is refused ($($stageWrong.code))"
     $stageStatus = Run-Digest @('ledger', 'status', '-Out', $stageOut, '-Layer', 'skeleton')
     $stageRow = @($stageStatus.publications | Where-Object { $_.layer -eq 'skeleton' })[0]

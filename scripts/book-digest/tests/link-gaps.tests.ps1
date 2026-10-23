@@ -129,6 +129,8 @@ try {
     Assert ($linkClaim.units[0].id -eq 'link/g001@1') "the completed group releases its Link unit ($($linkClaim.units[0].id))"
     $linkStart = Run-Digest @('link-start', '-Out', $out, '-Group', '1', '-Token', "$($linkClaim.units[0].token)")
     Assert ($linkStart.expected_jobs -eq 1 -and @($linkStart.gap).Count -eq 3 -and $null -eq $linkStart.no_op) 'link-start publishes one job for the three gaps'
+    # acemoglu2025nobel trial 1: the Link jobs run with cwd <out>\link-jobs, which nothing created.
+    Assert (Test-Path -LiteralPath (Join-Path $out 'link-jobs') -PathType Container) 'link-start creates the link-jobs folder its DeepSeek job runs in'
     $startManifest = Get-Content -LiteralPath $linkStart.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $linkJob = Get-Content -LiteralPath $startManifest.artifacts.job.path -Raw -Encoding utf8
     $gapLines = @((($linkJob -split '## 缺口卡片')[-1] -split "`n") | Where-Object { $_ -match 'base_fingerprint=' })
