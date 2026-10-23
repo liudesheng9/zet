@@ -199,7 +199,7 @@ const finalizeFinal = (name) => {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = []
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = []
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
   // A resumed run reads the units its prepared run retained; the stand-in re-adds exactly those, so the
@@ -303,6 +303,18 @@ function runtime(kind, opts = {}) {
       const unit = `cards-book/book@1`
       led.add(unit, 'cards-book', {})
       return { ok: true, output: json({ schema_version: 1, layer: 'cards-book', logical_key: 'book', unit, revision: 1, input_hash: 'ih-pub', reused: false }) }
+    }
+    if (/^zt-digest model-deps .*-Units /.test(cmd)) {
+      // zt-digest 0.12: every planned model of a batch in one command, one short entry per unit.
+      const listed = ((cmd.match(/ -Units "([^"]*)"/) || [])[1] || '').split(',').filter(Boolean).map((e) => e.slice(0, e.lastIndexOf(':')))
+      depsBatches.push(listed)
+      if (opts.garbledDeps) return { ok: true, output: 'model-deps registered every model (abridged)' }
+      return { ok: true, output: json({ schema_version: 1, kind: 'model_deps_batch', units: listed.length, results: listed.map((unit) => {
+        const model = ((led.find(unit) || {}).inputs || {}).header || ''
+        const waiting = !!(opts.depsWaiting && opts.depsWaiting.test(model))
+        if (waiting) { const u = led.find(unit); if (u) u.state = 'registered' }
+        return { unit, ok: true, waiting, state: waiting ? 'registered' : 'claimed' }
+      }) }) }
     }
     if (/^zt-digest model-deps /.test(cmd)) {
       // R233: the producer of a referenced part is done (resolved) or not yet (waiting), per scenario.
@@ -570,6 +582,62 @@ function runtime(kind, opts = {}) {
   }
 
   // One script command, as a step agent would run it.
+  // The stand-in of `zt-digest finish-batch`: per unit the verifier's own answer (its single finish command under
+  // the scenario), the ledger's state before any fault, and a fault recorded against that unit alone.
+  const RETRYABLE = /stale_claim|read_view_changed|lock_busy|sharing_violation|sqlite_busy|transport_closed|command_timeout|service_unavailable|provider_|missing_result|pending_jobs|cleanup_transient/
+  const finishBatchAnswer = (cmd) => {
+    const out = (cmd.match(/-Out "([^"]+)"/) || [])[1]
+    const listed = (cmd.match(/ -Units "([^"]*)"/) || [])[1]
+    let targets
+    let claimed = null
+    if (listed !== undefined) {
+      targets = listed.split(',').filter(Boolean).map((e) => { const i = e.lastIndexOf(':'); return { unit: e.slice(0, i), token: Number(e.slice(i + 1)) } })
+    } else {
+      const layer = (cmd.match(/-Layer (\w[\w-]*)/) || [])[1]
+      const take = Number((cmd.match(/-Take (\d+)/) || [])[1])
+      const owner = (cmd.match(/-Owner "([^"]*)"/) || [])[1] || ''
+      targets = led.next(layer, take, owner).map((u) => ({ unit: u.id, token: u.token }))
+      claimed = { layer, ...led.gate(layer) }
+    }
+    batchCalls.push({ cmd, units: targets.map((t) => t.unit) })
+    const results = []
+    let lock = null
+    for (const t of targets) {
+      if (lock) { results.push({ unit: t.unit, token: t.token, status: 'not_run' }); continue }
+      const layer = t.unit.split('/')[0]
+      const group = Number((t.unit.match(/\/g(\d+)@1$/) || [])[1])
+      const u0 = led.find(t.unit)
+      const model = (u0 && u0.inputs && (u0.inputs.header || u0.inputs.model)) || ''
+      const one = layer === 'models' ? `zt-digest model-finish -Out "${out}" -Model '${model}' -Token ${t.token}`
+        : layer === 'explain' ? `zt-digest explain-finish -Out "${out}" -Model '${model}' -Token ${t.token}`
+          : `zt-digest ${layer}-finish -Out "${out}" -Group ${group} -Token ${t.token}`
+      let answer
+      if (opts.lockCommand && opts.lockCommand.test(one) && !state.locked) {
+        state.locked = one
+        answer = { ok: false, json: { ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', tree: 'Key' } }
+      } else if (opts.retryWhen && opts.retryWhen.test(one)) answer = { ok: false, text: 'zt-digest: read_view_changed: the archive changed while the completion was checked' }
+      else if (opts.failWhen && opts.failWhen.test(one)) answer = { ok: false, text: 'stand-in crash' }
+      else if (opts.contentWhen && opts.contentWhen.test(one)) answer = { ok: true, json: { schema_version: 1, state: 'failed', error: 'the checked completion refused the draft', disposition: 'failed' } }
+      else { const r = ledgerAnswer(one); answer = { ok: r.ok, json: lastJson(r.output), text: r.output } }
+      batchFinishes.push(one)
+      const j = answer.json
+      if (answer.ok && j && (j.state === 'done' || j.complete === true)) { results.push({ unit: t.unit, token: t.token, status: j.status === 'partial' ? 'partial' : 'done', disposition: j.disposition || null }); continue }
+      if (j && j.code === 'card_locked') { led.fail(t.unit, 'failed'); lock = j; results.push({ unit: t.unit, token: t.token, status: 'failed', code: 'card_locked', recorded: true }); continue }
+      const u = led.find(t.unit)
+      if (u && u.state === 'done') { results.push({ unit: t.unit, token: t.token, status: 'done', disposition: 'verified', from: 'ledger' }); continue }
+      if (!u || u.state !== 'claimed' || u.token !== t.token) { results.push({ unit: t.unit, token: t.token, status: u && u.state === 'failed' ? 'failed' : 'retry', recorded: false }); continue }
+      const cause = (j && (j.fault || j.error)) || answer.text || 'the checked completion did not complete'
+      const retryable = RETRYABLE.test(cause)
+      led.fail(t.unit, retryable ? 'retry' : 'failed')
+      batchFaults.push({ unit: t.unit, class: retryable ? 'retryable' : 'content' })
+      results.push({ unit: t.unit, token: t.token, status: retryable ? 'retry' : 'failed', code: retryable ? 'provider_transient' : 'check_failed', cause, recorded: true })
+    }
+    const count = (s) => results.filter((r) => r.status === s).length
+    const line = { schema_version: 1, kind: 'finish_batch', units: results.length, done: count('done'), partial: count('partial'), retry: count('retry'), failed: count('failed'), not_run: count('not_run'), results, file: `${out}\\finish\\batch.json` }
+    if (claimed) Object.assign(line, { layer: claimed.layer, settled: claimed.settled, complete: claimed.complete, counts: claimed.counts, claimed: targets.length })
+    if (lock) return { ok: false, exit: 2, output: json({ ...line, code: 'card_locked', error: 'card_locked', message: lock.error, refusal: lock }) }
+    return { ok: true, exit: 0, output: json(line) }
+  }
   const commandAnswer = (raw, extraRecord = null) => {
     const cmd = String(raw).trim()
     if (process.env.DBG83 && /resource|cleanup/.test(cmd)) console.log('DBG', cmd.slice(0, 160))
@@ -588,6 +656,15 @@ function runtime(kind, opts = {}) {
         return { ok: false, exit: 2, output: json({ ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', mode: tool, step: 'apply', tree: state.lockTree || 'Key', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z', hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' }) }
       }
     } else if (state.locked && opts.lockCommand && opts.lockCommand.test(cmd)) state.lockedRetries = (state.lockedRetries || 0) + 1
+    // zt-digest 0.12 `finish-batch` (docs/digest-claude-token-proposal.md P1/P2): each unit's own verifier in one
+    // process. The scenarios' failWhen/contentWhen/lockCommand describe that verifier through the unit's single
+    // finish command; cutFinish/proseFinish distort only the relayed batch line.
+    if (/^zt-digest finish-batch /.test(cmd)) {
+      const r = finishBatchAnswer(cmd)
+      if (opts.cutFinish && opts.cutFinish.test(cmd)) return { ...r, output: String(r.output).slice(0, 60) }
+      if (opts.proseFinish && opts.proseFinish.test(cmd)) return { ...r, output: 'finish-batch finished every listed unit; all done.' }
+      return r
+    }
     const denied = opts.failWhen && opts.failWhen.test(cmd) ? cmd : null
     if (opts.contentWhen && opts.contentWhen.test(cmd)) return { ok: true, exit: 0, output: json({ schema_version: 1, state: 'failed', error: 'the checked completion refused the draft', disposition: 'failed' }) }
     // A crashed command changes nothing: the stand-in refuses before the ledger applies it.
@@ -607,7 +684,7 @@ function runtime(kind, opts = {}) {
       // verdict no rewrite covers, and an interrupted register publication whose accepted plan stays
       // staged. Each is a real refusal of the delivered tool, answered here instead of by a live run.
       // trials 17-19: a close round whose writers answer but leave faults; the next close round sees fewer.
-      if (key === 'model close' && opts.closeFaults) { state.closeRounds = (state.closeRounds || 0) + 1; const left = Math.max(0, opts.closeFaults - state.closeRounds + 1); return { ok: true, output: json({ jobs: left ? [{ id: 'Key_2_c:f01+9', continue: 'Key_2_c:f01', files: ['D:/x/follow.md'] }] : [], faults: left, unowned: [], refreshed: 0 }) } }
+      if (key === 'model close' && opts.closeFaults) { state.closeRounds = (state.closeRounds || 0) + 1; const left = Math.max(0, opts.closeFaults - state.closeRounds + 1); return { ok: true, output: json({ jobs: left ? [{ id: 'Key_2_c:f01+9', continue: 'Key_2_c:f01', files: ['D:/x/follow.md'] }] : [], faults: left, unowned: [], refreshed: 0, ...(!left && / -Report\b/.test(cmd) ? { report: CANNED['model report']() } : {}) }) } }
       if (key === 'restate apply' && opts.staleDecision) return { ok: false, exit: 1, output: 'endpoint_changed: Key/3|a changed after the review' }
       if (key === 'restate report' && opts.staleDecision) {
         return { ok: true, exit: 0, output: json({ ok: true, step: 'report', report_id: 'rr-s2', status: 'partial', complete: false, counts: { pairs: 3, recommended: 1, resolved_by_rewrite: 0, pending_existing_card_change: 0, unverified: 0, different: 0, unresolved: 1, unjudged: 0 }, written: [] }) }
@@ -621,6 +698,8 @@ function runtime(kind, opts = {}) {
       }
       if (fn) {
         const value = fn()
+        // zt-digest 0.12: a close round that sends nothing back writes the batch report too (-Report).
+        if (key === 'model close' && / -Report\b/.test(cmd) && !(value.jobs || []).length) value.report = CANNED['model report']()
         if (tool[1] === 'card' && tool[2] === 'apply' && state.applyPending > 0) { value.pending_jobs = state.applyPending - 1 }
         if (tool[1] === 'card' && tool[2] === 'plan' && state.planJobs !== 21) value.jobs = Array.from({ length: state.planJobs }, (_, i) => ({ id: `fix-${i + 1}`, kind: 'fix', file: `fix-${i + 1}.md` }))
         if (tool[1] === 'terms' && tool[2] === 'apply') led.finish('terms/book@1')
@@ -901,7 +980,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1075,6 +1154,26 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(m.stages.some((s) => s.id === 'finalize'), 'schedule: the mathematics variant holds the finalization stage its base declares')
 }
 
+{
+  // docs/digest-claude-token-proposal.md gate 3 (fault behaviour): a batch finish records each unit's fault
+  // against that unit alone, with the class finishOrFault gave it, and goes on with the next unit.
+  const content = await run('econ', { ...base, figures: false }, { contentWhen: /findings-finish -Out "D:\\x\\Key" -Group 1 / })
+  check(content.led.find('findings/g001@1').state === 'failed' && content.led.find('findings/g002@1').state === 'done', 'batch fault: a content fault fails its own unit and the next unit of the batch still finishes')
+  check(content.batchFaults.some((x) => x.unit === 'findings/g001@1' && x.class === 'content') && !content.commands.some((x) => /ledger fail /.test(x) && /findings\/g001/.test(x)), 'batch fault: the content fault is recorded by the batch itself, not by a relayed ledger fail')
+  const retry = await run('econ', { ...base, figures: false }, { retryWhen: /events-finish -Out "D:\\x\\Key" -Group 2 / })
+  check(retry.batchFaults.some((x) => x.unit === 'events/g002@1' && x.class === 'retryable') && retry.led.find('events/g001@1').state === 'done', 'batch fault: a transient fault is recorded retryable against its own unit')
+  check(retry.report && !retry.report.halted, 'batch fault: a unit fault never halts the run')
+}
+{
+  // R326/R337: the owner's Lock inside a batch finish is that unit's content fault, the batch starts no later
+  // unit, and the stage stops with the typed refusal.
+  const rt = await run('econ', { ...base, figures: false }, { lockCommand: /events-finish -Out "D:\\x\\Key" -Group 1 / })
+  const halted = rt.report && rt.report.halted
+  check(halted && halted.stage === 'events' && /card_locked/.test(String(halted.error || '')), `batch lock: the events stage stops with the typed refusal (${JSON.stringify(halted).slice(0, 200)})`)
+  check(rt.led.find('events/g001@1').state === 'failed' && rt.led.find('events/g002@1').state === 'claimed', 'batch lock: the locked unit keeps its content fault and the batch starts no later unit')
+  check(rt.batchFinishes.filter((x) => /events-finish .* -Group 1 /.test(x)).length === 1, 'batch lock: the refused finish is never retried')
+}
+
 // ================================================================================================================
 // The runner and the step inputs (T26)
 // ================================================================================================================
@@ -1100,7 +1199,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 // The group cycle and the ready-work layers (R250-R258)
 // ================================================================================================================
 {
-  const { commands, calls, led, result, logs, report, managers, driveFiles } = await run('econ', { ...base, figures: false })
+  const { commands, calls, led, result, logs, report, managers, driveFiles, batchCalls, batchFinishes, depsBatches } = await run('econ', { ...base, figures: false })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'full', 'full: the run reaches its report')
@@ -1114,12 +1213,21 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const digestUnits = [...led.units.values()].filter((u) => u.layer === 'digest')
   check(digestUnits.length === 2 && digestUnits.every((u) => u.state === 'done'), 'group cycle: both claimed group units are complete in the ledger')
   const cards = [...led.units.values()].filter((u) => u.layer === 'cards')
-  check(cards.length === 2 && cards.every((u) => u.state === 'done') && cmds.filter((c) => /(?<!book-)cards-finish/.test(c)).length === 2, 'cards: the per-group offline checks are claimed and recorded by cards-finish')
+  check(cards.length === 2 && cards.every((u) => u.state === 'done') && batchFinishes.filter((c) => /(?<!book-)cards-finish/.test(c)).length === 2, 'cards: the per-group offline checks are claimed and recorded by cards-finish')
+  // docs/digest-claude-token-proposal.md P1/P2: the Cards layer claims and finishes a block in ONE command, and no
+  // layer spends a relay per unit finish.
+  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 4 -Owner "cards claim 1" -Lease 1500$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
+  check(!cmds.some((c) => /^zt-digest (cards|events|findings|model|explain)-finish /.test(c)), 'layers: no layer relays one command per unit finish')
+  check(batchCalls.every((b) => b.units.length <= 8), 'layers: a batch finish holds at most eight units')
   const models = [...led.units.values()].filter((u) => u.layer === 'models')
-  check(models.length > 0 && models.every((u) => u.state === 'done') && cmds.some((c) => /model-finish/.test(c)), 'models: each registered Model unit is built and recorded by model-finish')
-  check(cmds.some((c) => /explain-finish/.test(c)), 'explain: the explanation units are recorded by explain-finish in mode full')
-  check(cmds.some((c) => /event-compiler/.test(c) || /zt-digest event /.test(c)) && cmds.some((c) => /events-finish/.test(c)), 'events: the Event layer claims its units and records events-finish')
-  check(cmds.some((c) => /finding-compiler/.test(c) || /zt-digest finding /.test(c)) && cmds.some((c) => /findings-finish/.test(c)), 'findings: the Finding layer claims its units and records findings-finish')
+  check(models.length > 0 && models.every((u) => u.state === 'done') && batchFinishes.some((c) => /model-finish/.test(c)), 'models: each registered Model unit is built and recorded by model-finish')
+  check(depsBatches.length > 0 && !cmds.some((c) => /model-deps .*-Model /.test(c)), 'models: a batch registers its references with one model-deps command, not one per model')
+  check(!cmds.some((c) => /zt-digest model -Step report /.test(c)) && cmds.some((c) => /zt-digest model -Step close .* -Report\b/.test(c)), `models: a close round that sends nothing back writes the batch report, so no report step runs (${labels.filter((l) => /^(close|report)/.test(l)).join(', ')})`)
+  check(batchFinishes.some((c) => /explain-finish/.test(c)), 'explain: the explanation units are recorded by explain-finish in mode full')
+  check(cmds.some((c) => /event-compiler/.test(c) || /zt-digest event /.test(c)) && batchFinishes.some((c) => /events-finish/.test(c)), 'events: the Event layer claims its units and records events-finish')
+  check(cmds.some((c) => /finding-compiler/.test(c) || /zt-digest finding /.test(c)) && batchFinishes.some((c) => /findings-finish/.test(c)), 'findings: the Finding layer claims its units and records findings-finish')
+  check(['events', 'findings', 'explain'].every((l) => batchCalls.some((b) => b.units.some((u) => u.startsWith(l + '/'))) && !calls.some((c) => new RegExp('^' + l + ' .*: finish$').test(c.label))), 'events, findings, explain: each chain ends with the block finish in its own manager, so no finish relay runs')
+  check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && /Run this one PowerShell command/.test(c.prompt) && /ToolSearch/.test(c.prompt)), 'drive: a compiler step\'s command agent loads no DeepSeek tool')
   const gateCmds = cmds.filter((c) => /ledger gate/.test(c))
   const teed = cmds.filter((c) => /\| Tee-Object -Variable zdLines; .* Set-Content -LiteralPath "D:\\x\\Key\\jobs\\[^"]+\.json"/.test(c))
   check(teed.length > 0 && driveFiles.length > 0 && driveFiles.every((f) => teed.some((c) => c.includes(f))), `drive: each step command saves its own job line, and every job manager reads that file instead of a retyped list (${teed.length} steps, ${driveFiles.length} managers)`)
@@ -1182,11 +1290,11 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // A layer claim whose relayed line lost its units array (grossman2002integration trial 3: "(4 units claimed:
   // cards/g005@1, ...)"): the driver reads the units its claim holds from the ledger by owner, finishes each
   // with its own token, and never records a fault against an undefined unit.
-  const { commands, led, heldReads } = await run('econ', { ...base, figures: false }, { summarizedClaim: 'cards' })
+  const { commands, led, heldReads } = await run('econ', { ...base, figures: false }, { summarizedClaim: 'explain' })
   const cmds = commands
-  check(heldReads.length > 0 && heldReads.every((o) => /^cards claim [0-9]+$/.test(o)), `summarized layer claim: the driver reads its held units from the ledger by owner (${heldReads.join(', ')})`)
+  check(heldReads.length > 0 && heldReads.every((o) => /^explain claim [0-9]+$/.test(o)), `summarized layer claim: the driver reads its held units from the ledger by owner (${heldReads.join(', ')})`)
   check(!cmds.some((c) => /undefined/.test(c)), 'summarized layer claim: no command names an undefined unit or token')
-  check(led.layer('cards').length > 0 && led.layer('cards').every((u) => u.state === 'done'), `summarized layer claim: every card check is finished (${led.layer('cards').filter((u) => u.state === 'done').length}/${led.layer('cards').length})`)
+  check(led.layer('explain').length > 0 && led.layer('explain').every((u) => u.state === 'done'), `summarized layer claim: every explain unit is finished (${led.layer('explain').filter((u) => u.state === 'done').length}/${led.layer('explain').length})`)
 }
 {
   // Every relay prompt says its command is a step of the run the user started, so a later user message about the
@@ -1249,25 +1357,42 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 {
   // A layer unit's fault carries the claim's input hash, so the ledger records it (trial 4: every layer fault was
   // refused for an empty input_hash, because the hash was read from the unit's inputs).
-  const { commands, faultRefusals } = await run('econ', { ...base, figures: false }, { failWhen: /cards-finish -Out "D:\\x\\Key" -Group 1 / })
-  check(commands.some((c) => /ledger fail .*-Unit "?cards\/g001@1"?/.test(c)) && faultRefusals.length === 0, `layer faults: a failed card check is recorded with its claim's input hash (${faultRefusals.length} refused)`)
+  const { commands, faultRefusals, batchFaults, led } = await run('econ', { ...base, figures: false }, { failWhen: /cards-finish -Out "D:\\x\\Key" -Group 1 / })
+  check(batchFaults.some((f) => f.unit === 'cards/g001@1') && faultRefusals.length === 0 && !commands.some((c) => /ledger fail .*-Unit "?cards\/g001@1"?/.test(c)), `layer faults: a failed card check is recorded by the batch against its own unit (${faultRefusals.length} refused)`)
+  check(led.find('cards/g002@1') && led.find('cards/g002@1').state === 'done', 'layer faults: one unit\'s failed finish never stops the other units of its batch')
 }
 {
   // A finish whose relayed line came back cut (trial 5: a 2.5 KB cards completion): the ledger holds the unit done,
   // so the driver records it done and never sends a fault for it.
-  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { cutFinish: /cards-finish -Out "D:\\x\\Key" -Group 1 / })
-  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units cards\/g001@1$/.test(c)), 'cut finish: the driver reads the unit state from the ledger')
-  check(!commands.some((c) => /ledger fail .*-Unit "?cards\/g001@1"?/.test(c)), 'cut finish: a unit the ledger holds done is never faulted')
-  check(led.find('cards/g001@1') && led.find('cards/g001@1').state === 'done' && logs.some((l) => /finish line came back cut/.test(l)), 'cut finish: the unit stays done and the log says why')
+  // zt-digest 0.12: the batch line is short, but a relay can still cut it. The unanswered unit runs the batch again
+  // (one relay), then its own finish, whose cut line sends the driver to the ledger.
+  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { cutFinish: /finish-batch -Out "D:\\x\\Key" -Units "events\/g001@1|events-finish -Out "D:\\x\\Key" -Group 1 / })
+  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units events\/g001@1$/.test(c)), 'cut finish: the driver reads the unit state from the ledger')
+  check(!commands.some((c) => /ledger fail .*-Unit "?events\/g001@1"?/.test(c)), 'cut finish: a unit the ledger holds done is never faulted')
+  check(led.find('events/g001@1') && led.find('events/g001@1').state === 'done' && logs.some((l) => /finish line came back cut/.test(l)) && logs.some((l) => /no readable batch outcome/.test(l)), 'cut finish: the unit stays done and the log says why')
+}
+{
+  // A cut claim-and-finish line of the Cards layer is never an empty claim: the layer claims again, and every
+  // unit ends done with no fault.
+  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { cutFinish: /finish-batch .*-Layer cards / })
+  check(led.layer('cards').length === 2 && led.layer('cards').every((u) => u.state === 'done') && !commands.some((c) => /ledger fail .*cards\//.test(c)), 'cut claim-and-finish: every card check ends done and none is faulted')
+  check(commands.filter((c) => /finish-batch .*-Layer cards /.test(c)).length >= 2 && commands.some((c) => /ledger status .* -Held "cards claim 1"/.test(c)), 'cut claim-and-finish: the layer reads what its owner holds and claims again')
 }
 {
   // trial 10: the relay rewrote the end of a done cards completion as prose, the line still held a nested file
   // record, and the driver faulted the done unit (the ledger refused the fault as stale). Every finish that is not
   // plainly done asks the ledger first.
-  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { proseFinish: /cards-finish -Out "D:\\x\\Key" -Group 1 / })
-  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units cards\/g001@1$/.test(c)), 'prose finish: the driver reads the unit state from the ledger')
-  check(!commands.some((c) => /ledger fail .*-Unit "?cards\/g001@1"?/.test(c)), 'prose finish: a unit the ledger holds done is never faulted')
-  check(led.find('cards/g001@1') && led.find('cards/g001@1').state === 'done' && logs.some((l) => /finish line came back cut/.test(l)), 'prose finish: the unit stays done and the log says why')
+  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { proseFinish: /finish-batch -Out "D:\\x\\Key" -Units "models\/|model-finish / })
+  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units models\/g001-m0000@1$/.test(c)), 'prose finish: the driver reads the unit state from the ledger')
+  check(!commands.some((c) => /ledger fail .*-Unit "?models\//.test(c)), 'prose finish: a unit the ledger holds done is never faulted')
+  check(led.layer('models').every((u) => u.state === 'done') && logs.some((l) => /finish line came back cut/.test(l)), 'prose finish: the unit stays done and the log says why')
+}
+{
+  // A model-deps batch line no relay returned whole is never read as "resolved": the ledger decides each model, and
+  // only a unit still claimed under its token runs model-deps on its own.
+  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { garbledDeps: true })
+  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units models\//.test(c)) && commands.some((c) => /model-deps -Out .* -Model 'Key\/2\|c' -Token \d+/.test(c)), 'garbled model-deps: the ledger decides each model and a claimed one registers on its own')
+  check(led.layer('models').every((u) => u.state === 'done') && logs.some((l) => /no readable batch line/.test(l)), 'garbled model-deps: the model is still built and recorded')
 }
 {
   // The model compiler's chains outlive a claim's lease (trial 5: four model claims expired mid-build): the model
@@ -1302,8 +1427,13 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // `-Step close` after its last fill, derive or split and before its report.
   const { commands } = await run('econ', { ...base, figures: false })
   const at = (re) => commands.findIndex((c) => re.test(c))
-  const close = at(/zt-digest model -Step close /), report = at(/zt-digest model -Step report /), apply = at(/zt-digest model -Step apply /)
-  check(close >= 0 && apply < close && close < report, `close: the model chain sends its build faults back before the report (apply ${apply}, close ${close}, report ${report})`)
+  // zt-model-lib v9: a close round that sends nothing back writes the report itself (-Report), so the report
+  // follows the close in the same command; with build faults left (closeFaults) the report step runs after it.
+  const close = at(/zt-digest model -Step close .* -Report\b/), report = at(/zt-digest model -Step report /), apply = at(/zt-digest model -Step apply /)
+  check(close >= 0 && apply < close && report === -1, `close: the model chain sends its build faults back, and its clean close round writes the report (apply ${apply}, close ${close}, report ${report})`)
+  const stuck = await run('econ', { ...base, figures: false }, { closeFaults: 9 })
+  const sAt = (re) => stuck.commands.findIndex((x) => re.test(x))
+  check(sAt(/zt-digest model -Step report /) > sAt(/zt-digest model -Step close /), 'close: a batch whose last close round still sends follow-ups runs the report step after it')
 }
 {
   // trials 17-19: close sent each fault back once, a writer left one in place, and model-finish refused the
@@ -1320,7 +1450,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // planned model registers its references with `zt-digest model-deps` before the fill; a model that waits
   // for its producer gets no model-finish, and the others are finished as usual.
   const resolved = await run('econ', { ...base, figures: false })
-  const deps = resolved.commands.filter((c) => /^zt-digest model-deps -Out "D:\\x\\Key" -Model '[^']+' -Token \d+$/.test(c))
+  // zt-digest 0.12: the batch's planned models register in ONE command, `model-deps -Units <unit:token,...>`.
+  const deps = resolved.commands.filter((c) => /^zt-digest model-deps -Out "D:\\x\\Key" -Units "models\/g\d{3}-m\d{4}@1:\d+(,models\/g\d{3}-m\d{4}@1:\d+)*"$/.test(c))
   const fill = resolved.commands.findIndex((c) => /zt-digest model -Step apply /.test(c))
   check(deps.length > 0 && resolved.commands.indexOf(deps[0]) < fill, `model-deps: each planned model registers its references before the fill (${deps.length} calls, fill at ${fill})`)
   check(!resolved.commands.some((c) => /zt-digest model -Step defer /.test(c)), 'model-deps: a batch whose models all resolved defers nothing')
@@ -1621,7 +1752,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '34' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v34 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
+  check(modules['zt-digest-lib'] === '35' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v35 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

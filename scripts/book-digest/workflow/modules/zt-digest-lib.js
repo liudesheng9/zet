@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v34 ====
+// ==== module zt-digest-lib v35 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -26,6 +26,10 @@
 // checked finish, or a refused chain step — while the drafts and the receipts already committed stay. The
 // unit keeps the refusal as its content fault (`code: card_locked`), never a retryable one, and nothing is
 // retried, unlocked, or re-pointed through another Access (R338).
+// 35 (docs/digest-claude-token-proposal.md, P1/P2/P4): a block's checked finishes run in one command
+// (`zt-digest finish-batch`, one short line) instead of one relay per unit; the Cards layer claims and finishes
+// in that one command; the events, findings and explain chains end with it in their own manager; and a compiler
+// step's command agent loads no DeepSeek tool. Every finish keeps its own verifier, token and fault class.
 const ZD_SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 // The digest scripts ported to zt-digest (tools/zt-digest, one fast binary): script name → tool. zdTool(name)
 // is the command that runs a script: `zt-digest <tool>` once it is ported, else pwsh with the script. The
@@ -336,12 +340,15 @@ Return reports: one entry per group in this block with group, status, ${S.fields
   // workspace), skills, effort, sessions (continued jobs), cleanup (the last round), phase, writes, keep.
   const driveAgent = (label, o, part) => {
     const table = Object.entries(o.sessions || {}).map(([job, session]) => `${job} ${session}`).join('\n')
-    const head = `You drive DeepSeek Harness (DSH) jobs for a ZET compiler script. You do not read the book and you do not write Cards: a script and DSH do. Keep your messages short.
+    const lead = `You drive DeepSeek Harness (DSH) jobs for a ZET compiler script. You do not read the book and you do not write Cards: a script and DSH do. Keep your messages short.
 ${RUNNER}
-Load the tools with one ToolSearch call: query "${DRIVE_TOOLS}".
+`
+    const head = `${lead}Load the tools with one ToolSearch call: query "${DRIVE_TOOLS}".
 `
     if (part === 'command') {
-      return zAgent(`${head}
+      // 35: the step command needs no DeepSeek tool, so its agent loads none (one request and the tool
+      // schemas less per compiler step; docs/digest-claude-token-proposal.md).
+      return zAgent(`${lead}
 Run this one PowerShell command in the foreground with timeout_ms: ${ZD_COMMAND_TIMEOUT_MS} and wait for it:
 ${o.jobsFile ? `${o.command} | Tee-Object -Variable zdLines; $zdExit = $LASTEXITCODE; [void][System.IO.Directory]::CreateDirectory("${OUT}\\jobs"); ($zdLines | Select-Object -Last 1) | Set-Content -LiteralPath "${o.jobsFile}" -Encoding utf8; if ($zdExit) { exit $zdExit }` : o.command}
 Its last output line is compact JSON; it may be long (tens of kilobytes). Put that line, unchanged and whole, in output: never shorten it, summarize it, or save it to a file instead. Do not run the jobs it lists: other managers run them. If the command fails, return ok=false with the error text; do not retry it with other options. Return ok, output, and results=[].`,
@@ -483,13 +490,14 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
       else lines.push(`   It starts no DeepSeek job by itself.`)
       if (s.repeat) lines.push(`   Repeat this same command while its JSON still reports ${s.repeat.path} ${s.repeat.op || '>'} ${s.repeat.value}, at most ${s.repeat.max || 100} times, and record the last JSON in this step's output.`)
       if (s.optional) lines.push(`   A failure here is recorded and the chain goes on with the next step.`)
+      if (s.always) lines.push(`   Run this step even when an earlier step failed or printed no JSON.`)
       return lines.join('\n')
     }).join('\n')
     return `You run one compiler chain of a ZET book digest: ${label}. A script and DeepSeek Harness (DSH) do the work; you only run the bounded commands and the DSH jobs they print. Keep your messages short.
 ${RUNNER}
 Load the DSH tools with one ToolSearch call: query "${DRIVE_TOOLS}".
 The chain is fixed. Run every step in this order and nothing else. A command may contain {{unit}}, {{token}}, {{group}} or {{draft}}: replace each with the value the chain has already read (the claim's unit id, its token, the digits of that id's gNNN, and a start step's "draft").
-CHAIN PLAN: ${JSON.stringify({ dsh: o.dsh, steps: steps.map(s => ({ name: s.name, command: s.command, claim: !!s.claim, jobs: !!s.jobs, repeat: s.repeat || null, optional: !!s.optional })) })}
+CHAIN PLAN: ${JSON.stringify({ dsh: o.dsh, steps: steps.map(s => ({ name: s.name, command: s.command, claim: !!s.claim, jobs: !!s.jobs, repeat: s.repeat || null, optional: !!s.optional, ...(s.always ? { always: true } : {}) })) })}
 ${listed}
 Jobs (for every step that prints them):
 - A compact list (the card compiler's -Compact) is { dir, lead: { fix, orphans }, prompts: { fix, orphans, follow }, jobs: [{ id, kind, file, continue? }] }. Expand each entry: kind "fix" → files [lead.fix, dir\file], prompt prompts.fix; kind "orphans" → files [lead.orphans, dir\file], prompt prompts.orphans; kind "follow" → files [dir\file], prompt prompts.follow, and continue = its "continue" id. Any other entry already names files and prompt.
@@ -840,6 +848,82 @@ Copy each of those output lines character for character: never summarize, abbrev
     await failUnit(`${at} fault`, unit, token, retryable ? 'retryable' : 'content', fault)
     return { unit, status: retryable ? 'retry' : 'failed', error: cause, command: got.command }
   }
+  // --- A block's checked finishes in one command (35; docs/digest-claude-token-proposal.md P1/P2/P4) ----
+  // `zt-digest finish-batch` runs each claimed unit's own verifier in turn in one process, records a unit that
+  // cannot finish against that unit alone (`ledger fail`, the classes finishOrFault gives), and prints one
+  // short line: counts and one entry per unit (unit, token, status, disposition or cause). On
+  // ebrill2001modern trial 1 one relay per unit finish was 311 agents and the largest relay group.
+  // The ledger stays the judge: a batch line no relay returned whole is run again for the units it does not
+  // answer (every finish is idempotent and fenced by its token), and a unit still unanswered then is finished
+  // on its own by finishOrFault, which asks the ledger before any fault.
+  const BATCH_MAX = ZD_PER_MANAGER_MAX
+  const FINISHED = ['done', 'partial', 'retry', 'failed']
+  const finishBatchCommand = (units) => `${ZD_DIGEST} finish-batch -Out "${OUT}" -Units "${units.map((u) => `${u.id}:${u.token}`).join(',')}"`
+  // The per-unit outcomes one finish_batch line answers, by unit id (only the units asked for).
+  const batchOutcomes = (line, units) => {
+    const got = new Map()
+    if (!line || line.kind !== 'finish_batch' || !Array.isArray(line.results)) return got
+    for (const r of line.results) {
+      if (r && FINISHED.includes(r.status) && units.some((u) => u.id === r.unit)) got.set(r.unit, r)
+    }
+    return got
+  }
+  const asDisposition = (r) => (r.status === 'done' || r.status === 'partial'
+    ? { unit: r.unit, status: r.status, result: { unit: r.unit, state: 'done', disposition: r.disposition || null, ...(r.from ? { from: r.from } : {}) } }
+    : { unit: r.unit, status: r.status, error: r.cause || r.code || r.status })
+  // The checked finishes of claimed units. `given` is the line of a finish step a chain manager already ran
+  // (the events, findings and explain chains end with it); without one, the batch runs as one relay.
+  const finishUnits = async (label, units, given) => {
+    const list = (units || []).filter((u) => u && typeof u.id === 'string' && Number(u.token) > 0)
+    if (!list.length) return []
+    const settled = batchOutcomes(given, list)
+    const open = () => list.filter((u) => !settled.has(u.id))
+    if (given !== undefined && open().length) log(`${label}: the chain's finish line answers ${settled.size} of ${list.length} unit(s); the rest are finished in one command.`)
+    for (let i = 0; open().length && i < list.length; i += BATCH_MAX) {
+      const share = open().slice(0, BATCH_MAX)
+      const out = await runScript(`${label}: finish`, LEDGER_PHASE, finishBatchCommand(share), ' (the checked completions of these claims, one after another; never retry it with other options)')
+      const got = batchOutcomes(out.json, share)
+      for (const [id, r] of got) settled.set(id, r)
+      if (!got.size) break
+    }
+    const out = []
+    for (const u of list) {
+      if (settled.has(u.id)) { out.push(asDisposition(settled.get(u.id))); continue }
+      log(`${label}: ${u.id} has no readable batch outcome; it is finished on its own.`)
+      out.push(await finishOrFault(label, u.id, u.token, u.inputs))
+    }
+    return out
+  }
+  // The Cards layer's claim and checked finishes in one command (P2): its work is the finish alone, so
+  // `finish-batch -Layer cards -Take -Owner` claims the ready units and finishes each in the same process.
+  // A line no relay returned whole is never read as an empty claim: the units this owner still holds come
+  // from the ledger (`ledger status -Held`) and are finished as above.
+  const claimFinish = async (label, layerName, take, wait = 0) => {
+    let out
+    for (let attempt = 1; attempt <= CLAIM_TRIES; attempt++) {
+      out = await runScript(attempt === 1 ? label : `${label} (try ${attempt})`, LEDGER_PHASE,
+        `${ZD_DIGEST} finish-batch -Out "${OUT}" -Layer ${layerName} -Take ${Math.min(BATCH_MAX, take)} -Owner "${label}"${wait ? ` -Wait ${wait}` : ''} -Lease ${CLAIM_LEASE}`,
+        ' (it claims the ready units and records each one\'s checked completion; never retry it with other options)')
+      const line = out.json
+      if (line && line.kind === 'finish_batch' && Array.isArray(line.results)) {
+        const answered = line.results.filter((r) => r && FINISHED.includes(r.status))
+        // A unit the time budget left unstarted is still claimed under this owner, with its token in the line.
+        const left = line.results.filter((r) => r && r.status === 'not_run' && Number(r.token) > 0).map((r) => ({ id: r.unit, token: Number(r.token) }))
+        const dispositions = [...answered.map(asDisposition), ...(left.length ? await finishUnits(label, left) : [])]
+        return { ok: true, claimed: Number(line.claimed) || line.results.length, empty: !line.results.length, dispositions, gate: line }
+      }
+      const held = await runScript(`${label}: held units`, LEDGER_PHASE, ledgerCommand(`status -Out "${OUT}" -Held "${label}"`))
+      const units = held.json && heldUnits(held.json.units, layerName) ? remember(held.json.units) : null
+      if (units && units.length) {
+        log(`${label}: the claim-and-finish line came back unreadable; the ${units.length} unit(s) it still holds are finished from the ledger.`)
+        return { ok: true, claimed: units.length, empty: false, dispositions: await finishUnits(label, units) }
+      }
+      // Nothing held: the command finished every unit it claimed, claimed none, or failed before its claim.
+      if (out.run && out.run.ok) return { ok: true, claimed: 0, empty: false, dispositions: [] }
+      log(`${label}: the claim failed (${String((out.run && out.run.output) || 'no output').slice(0, 200)})${attempt < CLAIM_TRIES ? '; it is tried again' : ''}.`)
+    }
+    return { ok: false, error: (out && out.run && out.run.output) || 'no output from finish-batch', dispositions: [] }
+  }
   // --- Owned DeepSeek resources (R322–R330) -----------------------------------------------------------
   // Every created conversation is recorded the moment the provider returns its id, by the manager that
   // started it (recordRules), against the work that created it: the unit it holds, or the run-level cleanup
@@ -945,16 +1029,32 @@ Copy each of those output lines character for character: never summarize, abbrev
     let claimedCount = 0
     let gateResult = null
     let idle = 0
+    let blind = 0
     for (let round = 1; round <= MAX_CLAIMS && idle < rounds; round++) {
-      const got = await claim(`${name} claim ${round}`, layerName, take, o.wait === undefined ? 0 : o.wait)
-      if (!got.ok) return { status: 'failed', layer: layerName, error: got.error, dispositions }
-      const units = got.units || []
-      if (units.length) {
-        idle = 0
-        claimedCount += units.length
-        const results = o.hold ? await holding(`${name} claim ${round}`, units, () => o.work(units)) : await o.work(units)
-        for (const r of results) dispositions.push(r)
-        continue
+      // o.claimFinish (35, the Cards layer): one command claims the ready units and records their checked
+      // finishes. A round whose line was unreadable while the owner holds nothing is "blind": it may have
+      // finished units or claimed none, so the layer claims again, at most CLAIM_TRIES times in a row.
+      if (o.claimFinish) {
+        const done = await claimFinish(`${name} claim ${round}`, layerName, take, o.wait === undefined ? 0 : o.wait)
+        if (!done.ok) return { status: 'failed', layer: layerName, error: done.error, dispositions }
+        for (const r of done.dispositions) dispositions.push(r)
+        blind = !done.empty && !done.claimed ? blind + 1 : 0
+        if (!done.empty && (done.claimed || blind < CLAIM_TRIES)) {
+          idle = 0
+          claimedCount += done.claimed
+          continue
+        }
+      } else {
+        const got = await claim(`${name} claim ${round}`, layerName, take, o.wait === undefined ? 0 : o.wait)
+        if (!got.ok) return { status: 'failed', layer: layerName, error: got.error, dispositions }
+        const units = got.units || []
+        if (units.length) {
+          idle = 0
+          claimedCount += units.length
+          const results = o.hold ? await holding(`${name} claim ${round}`, units, () => o.work(units)) : await o.work(units)
+          for (const r of results) dispositions.push(r)
+          continue
+        }
       }
       idle += 1
       // Nothing ready: settle only on the gate's own facts, never on an empty queue.
@@ -1035,6 +1135,8 @@ Copy each of those output lines character for character: never summarize, abbrev
     zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines,
     // The ready-work driver (9.3): one manager per declared chain, plus the ledger adapter.
     chain, block, blockFinish, blockSettle, BLOCK_TAKE, ANSWERS, stepOf, jsonOf, resultLine, claim, gate, settledOnResume, renew, holding, failUnit, jobOf, finishOf, finishOrFault, drain, layer, psQuote,
+    // 35: a block's checked finishes in one command, and its outcomes.
+    finishBatchCommand, finishUnits, batchOutcomes,
     // The command that runs a digest script: zt-digest <tool> once ported, else pwsh with the script.
     tool: name => zdTool(name, SCRIPTS),
     // Tree Lock (#140): the owner's typed refusal, its sentence and the stop a stage throws with it.
@@ -1049,7 +1151,7 @@ Copy each of those output lines character for character: never summarize, abbrev
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '34', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '35', library: true, requires: ['@dsmp'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

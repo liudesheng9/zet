@@ -1,4 +1,4 @@
-// ==== module zt-event-layer v3 ====
+// ==== module zt-event-layer v4 ====
 // The Event layer of the economics set: the ledger's ready event work, worked while the digest groups are
 // still running. `event-compiler` plans one job per few groups from the book's dated sentences and each
 // group's own Idea Cards; DeepSeek writes the events as JSON and runs the job's SELF-CHECK; the compiler
@@ -7,8 +7,10 @@
 // `events/gNNN@1` units in bounded blocks, runs that compiler chain once per block in one manager (R250), then
 // records each group through `events-finish`, so a group whose job has not been applied stays open instead of
 // being claimed complete. The layer gate is the stage's result (R257).
+// 4: the chain ends with the block's checked finishes in one command (`zt-digest finish-batch`), run by the chain's own
+// manager; a unit its line does not answer is finished by one relay, then on its own (docs/digest-claude-token-proposal.md P1/P2).
 defineModule({
-  id: 'zt-event-layer', version: '3', requires: ['zt-digest-lib'],
+  id: 'zt-event-layer', version: '4', requires: ['zt-digest-lib'],
   summary: 'ZT digest event layer: the ledger\'s ready Event work, plan → DeepSeek JSON → apply → per-group checked completion.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -31,17 +33,14 @@ defineModule({
             { name: 'plan', command: estep('plan'), jobs: true },
             { name: 'apply', command: estep('apply', ' -Apply'), optional: true },
             { name: 'report', command: estep('report'), optional: true },
+            { name: 'finish', command: Z.finishBatchCommand(units), always: true },
           ],
           cleanup: true, keep: true,
         })
         const applied = Z.jsonOf(chained, 'apply')
         const plan = Z.jsonOf(chained, 'plan')
         log(`Events: ${plan ? `${plan.candidates || 0} dated sentences in ${plan.groups || 0} groups, ${(plan.jobs || []).length} DeepSeek jobs` : 'plan gave no output'}; ${applied ? `${applied.created} Event Cards made, ${applied.merged} merged, ${applied.linked} Links, ${(applied.refused || []).length} refused` : 'apply gave no output'}.`)
-        const out = []
-        for (const unit of units) {
-          out.push(await Z.finishOrFault(`events ${unit.id}`, unit.id, unit.token, unit.inputs))
-        }
-        return out
+        return Z.finishUnits(`events ${units.map(u => u.id).join(', ')}`, units, Z.jsonOf(chained, 'finish'))
       },
     })
     log(`Events: ${result.status} — ${result.dispositions.filter(d => d.status === 'done').length} groups checked${result.gate && result.gate.counts ? `, ${result.gate.counts.open || 0} open` : ''}.`)

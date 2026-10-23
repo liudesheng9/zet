@@ -1,6 +1,6 @@
 # Digest Claude Token Use: Proposal
 
-Status (2026-10-23): proposal only. No change in this document is built. One related change, the deterministic cleanup run (`cleanup-run` with the bridge tool `deepseek_settle`, zt-digest 0.11.7, commit 5ace03b), was built in another session while this analysis ran. It is shown below as done, with its measured effect.
+Status (2026-10-23, later): P1, P2, P4 (for the finish lines), P7 and P9 are built in zt-digest 0.12.0 and base 5.2.0 (econ 6.2.0, math 5.2.0); P3 is dropped by its own rule; P5 waits for its measurement; P6 and P8 are not built. The section "Implementation status" at the end says what each one became and which gates it has passed. The deterministic cleanup run (`cleanup-run` with the bridge tool `deepseek_settle`, zt-digest 0.11.7, commit 5ace03b) was built in another session while this analysis ran. It is shown below as done, with its measured effect.
 
 This proposal looks at the Claude Code tokens (not the DeepSeek tokens) that one economics digest spent: *The Modern VAT* (`ebrill2001modern`, zt-econ-digest 6.1.1, 2026-10-23). It covers two parts:
 
@@ -243,3 +243,27 @@ Every proposal passes all of these before its blueprint version is installed:
 5. P6 and P7, then P8, each with its own bridge or compiler release.
 
 Every step passes the acceptance gates of the section above before it ships, and the token check is the same one this document used: run the usage script on the pilot's transcripts and compare agents and weighted tokens per kind with the table above. A change that saves tokens but fails a quality or robustness gate is not adopted.
+
+## Implementation status
+
+Built on 2026-10-23 in zt-digest 0.12.0 with base 5.2.0, econ 6.2.0 and math 5.2.0 (`zt-digest-lib` v35, `zt-cards-layer` v2, `zt-event-layer` v4, `zt-finding-layer` v4, `zt-explain` v6, `zt-model-lib` v9, `zt-model-layer` v6). The developer wiki has the details: [zt-digest](wiki/zt-digest.md) ("The batch finish") and [Digest workflows](wiki/digest-workflows.md) ("Checked finishes in one command", "Watch a run").
+
+| Proposal | State | What was built | Relays removed per block (estimate on trial 1) |
+|---|---|---|---|
+| P1 batch finishes | built | `zt-digest finish-batch -Units "<unit>:<token>,…"`: each unit's own verifier in turn in one process; a unit that cannot finish is decided by the ledger first, then recorded against that unit alone with the class `finishOrFault` gave it; at most 8 units; no unit starts after 420 s; full results in `<out>/finish/`. `model-deps -Units` does the same for a model batch. | one per unit finish and per model-deps (about 300 of 311) |
+| P2 claim and finish in the manager | built, two forms | Cards: one `finish-batch -Layer cards -Take -Owner` command claims and finishes (no manager needed). Events, findings, explain: the block's chain ends with the batch finish as a step its own manager runs (`always`). The claim relay of these chain layers stays: the driver needs the units before it builds the chain, and a claim inside the manager would put the units list back into a relayed line. | about 19 Cards claims and one finish relay per chain block |
+| P3 lease keeper | dropped | Its rule: no detached keeper, and drop it if the safe form is not simple. Renewal inside the commands alone cannot cover the gaps between them (a DeepSeek job may run its 1200 s cap twice with the one resume, and the architect's plan has no command), so `ledger hold` stays. | 0 |
+| P4 short lines | built for the finish lines | The batch line is about 300 characters per unit (the single finishes were 2–18 KB, all relayed whole). The other long lines (`list-models`, `prepare-link`, `ledger publish`) are relayed once per run and were left as they are. | output tokens of every finish |
+| P5 minimal relay type | waiting for its measurement | `.claude/agents/zt-relay.md` (PowerShell only, a short prompt) is written. A session loads agent types when it starts, so this session could not run it, and the CLI is not logged in. Measure in a fresh session (one relay of each kind, the first request's cache write against the present ~58k), then give the blueprint's relay calls their own role with `agentType: "zt-relay"` only if the context falls well below 20k. | — |
+| P6 bridge job runner | not built | Needs a dsh-mcp-bridge release and the failure-injection tests its row names. | — |
+| P7 merged script steps | built | `model -Step close -Report`: a close round that sends nothing back writes the batch report in the same process, so the report step runs only after a close round that still sent follow-ups. A compiler step's command agent no longer loads the DeepSeek tools. | one report agent per model batch, one tool-load request per compiler step |
+| P8 one architect context file | not built | Its gate is an A/B run on the same model batch; without that run it is not adopted. | — |
+| P9 filtered monitoring | built | `scripts/book-digest/watch-run.mjs`: only ABNORMAL, FAILED, EXPIRED, STALL, a SUMMARY every 30 minutes and END reach the session; progress goes to `<out>/watch/progress.log`; its place is kept in `<out>/watch/state.json`. Replayed over trial 1's journal (876 agents) it prints 19 ABNORMAL lines and END, where the watching session woke 82 times. | — (main-session tokens) |
+| P10 small watching session | practice | Written into the wiki's "Watch a run": repairs go to their own session. | — (main-session tokens) |
+
+What did not change (rule 1 to 7 above): every prompt, job list, model, effort, skill, working folder and wait limit; every verifier and the checks it runs; the manager rules; the fault classes; the claim tokens, leases and attempt budget; the Lock refusal, which still stops the stage (a batch starts no unit after a `card_locked` one); and what a watcher reports (every failure, refusal, failed unit, expired claim and stall, plus a periodic summary).
+
+Gates passed so far:
+
+1. Tests: the framework harness (fault injection added: content and transient batch faults, a Lock inside a batch, a cut and a rewritten batch line, a cut claim-and-finish line, a garbled model-deps line), the Bridge and grow harnesses, the zt-digest unit tests (376), `finish-batch.tests.ps1` against a real scratch archive, and the whole `run-all.ps1` suite.
+2. Gates 2 to 5 (the same outcome on a pilot book, fault behaviour on the pilot, resume, and the measured saving) need a digest run with DeepSeek and are not yet run. The pilot is a short book (grossman2002integration) digested by 6.2.0 from a fresh staging folder, compared with its last clean run, with `scripts/book-digest/token-usage.mjs` (the usage script of this analysis, now in the repository) run on its transcripts.

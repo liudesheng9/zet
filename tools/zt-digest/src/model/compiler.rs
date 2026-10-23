@@ -75,6 +75,8 @@ struct Params {
     need: String,
     changed: bool,
     rebuild: bool,
+    /// close only: when nothing goes back to a writer, the batch report runs in the same process.
+    report: bool,
     level: String,
     max_sentences: i64,
     max_chars: i64,
@@ -410,7 +412,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             "Job",
             "File",
         ],
-        &["Changed", "Rebuild"],
+        &["Changed", "Rebuild", "Report"],
     )?;
     let step = a.choice("Step", &STEPS)?;
     let work = a.required("Work")?;
@@ -425,6 +427,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         plan: a.str("Plan"),
         need: a.str("Need"),
         changed: a.flag("Changed"),
+        report: a.flag("Report"),
         rebuild: a.flag("Rebuild"),
         level: a.str("Level"),
         max_sentences: a.int_or("MaxSentences", 12)?,
@@ -2296,7 +2299,14 @@ impl Compiler {
         // `status` names the outcome, so a relay never reads the clean line (no jobs, no faults) as a failed
         // no-op (acemoglu2025nobel trial 1, close 2 of the formal batch).
         let status = if !jobs.is_empty() { "follow_up" } else if faults > 0 || !unowned.is_empty() { "unresolved" } else { "clean" };
-        self.out_last(&json!({ "status": status, "jobs": jobs, "faults": faults, "unowned": unowned, "refreshed": refreshed }))
+        let mut line = json!({ "status": status, "jobs": jobs, "faults": faults, "unowned": unowned, "refreshed": refreshed });
+        // -Report: a close round that sends nothing back is the batch's last round, so its report runs here
+        // and needs no step of its own (P7 of docs/digest-claude-token-proposal.md). A round that sends
+        // follow-ups reports nothing yet: the workflow runs close again, or the report step after its last round.
+        if self.p.report && line["jobs"].as_array().is_some_and(Vec::is_empty) {
+            line["report"] = self.report_line()?;
+        }
+        self.out_last(&line)
     }
 
     /// Rebuilds the 共用 lines of every Model Card of the batch from its plan's taken parts and the
@@ -2422,6 +2432,12 @@ impl Compiler {
     }
 
     fn step_report(&mut self) -> Result<()> {
+        let line = self.report_line()?;
+        self.out_last(&line)
+    }
+
+    /// The batch report: report.json with every part, and the short line a relay reads.
+    fn report_line(&mut self) -> Result<Value> {
         // A close writer may have re-sent a whole Model Card from an older copy: its 结构 list goes back
         // to the one the compiler wrote, and the 共用 lines follow the current addresses.
         self.restore_structures()?;
@@ -2535,7 +2551,7 @@ impl Compiler {
         let file = ps::join(&self.p.work, "report.json");
         util::write_text(&file, &ps::json_pretty(&json!({ "models": reports })))?;
         let brief: Vec<Value> = reports.iter().map(Self::brief_report).collect();
-        self.out_last(&json!({ "models": brief, "file": file }))
+        Ok(json!({ "models": brief, "file": file }))
     }
 
     /// One model's report line for the relay: the part list becomes its count and its core count,

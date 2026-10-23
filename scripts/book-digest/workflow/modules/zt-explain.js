@@ -1,12 +1,14 @@
-// ==== module zt-explain v5 ====
+// ==== module zt-explain v6 ====
 // Explanations of finished Derivation parts (R219/R301/R302): the ledger's ready `explain/<model-key>@1` work,
 // which a checked Model completion registers. Each claimed block is written by the existing explanation chain
 // (plan one job per chain, DeepSeek JSON, the script writes 思路/说明/解读 and refuses a changed 起点/step/结果,
 // one refused part going back to its own conversation once); every unit is then recorded through
 // `explain-finish`, which re-reads the parts and refuses a part that still lacks text. Runs in mode explain and
 // after the model layer in mode full.
+// 6: the chain ends with the block's checked finishes in one command (`zt-digest finish-batch`), run by the chain's own
+// manager; a unit its line does not answer is finished by one relay, then on its own (docs/digest-claude-token-proposal.md P1/P2).
 defineModule({
-  id: 'zt-explain', version: '5', requires: ['zt-model-lib'],
+  id: 'zt-explain', version: '6', requires: ['zt-model-lib'],
   summary: 'ZT digest: the ledger\'s ready explanations of finished Derivation parts, written by the explanation chain and recorded by explain-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -33,6 +35,7 @@ defineModule({
             { name: 'apply 1', command: xstep('explain-apply'), jobs: true },
             { name: 'apply 2', command: xstep('explain-apply'), jobs: true, optional: true },
             { name: 'report', command: xstep('explain-report'), optional: true },
+            { name: 'finish', command: Z.finishBatchCommand(units), always: true },
           ],
           cleanup: true, keep: true,
         })
@@ -40,12 +43,7 @@ defineModule({
         const reported = Z.jsonOf(chained, 'report')
         const refused = (Z.jsonOf(chained, 'apply 1') || {}).refused || []
         log(`Explain: ${planned ? `${planned.parts || 0} Derivation parts in ${(planned.jobs || []).length} DeepSeek jobs` : 'plan gave no output'}; ${reported ? `${(reported.models || []).length} models reported` : 'no report'}; ${refused.length} refused.`)
-        const out = []
-        for (const unit of units) {
-          const at = (unit.inputs && unit.inputs.model) || ''
-          out.push(await Z.finishOrFault(`explain ${at}`, unit.id, unit.token, unit.inputs, { model: at }))
-        }
-        return out
+        return Z.finishUnits(`explain ${models.join(', ')}`, units, Z.jsonOf(chained, 'finish'))
       },
     })
     log(`Explain: ${result.status} — ${result.dispositions.filter(d => d.status === 'done').length} models checked${result.gate && result.gate.counts ? `, ${result.gate.counts.open || 0} open` : ''}.`)

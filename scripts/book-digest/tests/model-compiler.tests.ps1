@@ -227,6 +227,12 @@ try {
     Assert ($closed.faults -eq 0 -and @($closed.jobs).Count -eq 0) "close: a model with no build faults gets no follow-up ($($closed | ConvertTo-Json -Compress -Depth 4))"
     # acemoglu2025nobel trial 1: a relay reported the clean close line (no jobs, no faults) as a failed no-op.
     Assert ($closed.status -ceq 'clean') "close: a close with nothing to send back says it is clean ($($closed.status))"
+    # zt-digest 0.12.0 (docs/digest-claude-token-proposal.md P7): with -Report, a close round that sends nothing back
+    # writes the batch report in the same process, so the workflow runs no report step after it.
+    $closedReport = Last (Run 'close' @('-Report'))
+    $reportFile = [string]$closedReport.report.file
+    Assert ($closedReport.status -ceq 'clean' -and @($closedReport.jobs).Count -eq 0 -and @($closedReport.report.models | Where-Object { $_.model -eq $model }).Count -eq 1 -and (Test-Path -LiteralPath $reportFile)) "close -Report: a clean close round carries the batch report and writes report.json ($($closedReport.report | ConvertTo-Json -Compress -Depth 3))"
+    Assert ($null -eq $closed.report) 'close: without -Report the close line carries no report'
     # close also repairs what a split or a writer left behind (trial 7): a 共用 line with an old address
     # is rebuilt from the plan, a malformed supplied-step marker goes back to its part, and report puts
     # back a 结构 list that a close writer re-sent from an older copy.

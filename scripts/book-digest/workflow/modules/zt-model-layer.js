@@ -1,12 +1,14 @@
-// ==== module zt-model-layer v5 ====
+// ==== module zt-model-layer v6 ====
 // The model layer: the ledger's ready `models/gNNN-mIIII@1` work, released as the digest groups settle. Each
 // claimed block of Model units is built by the existing model compiler chain (one Sonnet architect per batch,
 // DeepSeek writers, the late clean-up sweep) and every unit is then recorded through `model-finish`, which
 // re-derives the build from the compiler's own state and the authored Cards. A model the compiler could not
 // finish stays open with its own fault, so the next attempt works only that unit (R235/R258). The layer gate
 // is the stage's result.
+// 6: the built units of a block are recorded through `model-finish` in ONE command (`zt-digest finish-batch`) instead of one
+// relay per model; a unit its line does not answer is finished on its own (docs/digest-claude-token-proposal.md P1).
 defineModule({
-  id: 'zt-model-layer', version: '5', requires: ['zt-model-lib'],
+  id: 'zt-model-layer', version: '6', requires: ['zt-model-lib'],
   summary: 'ZT digest model layer: the ledger\'s ready Model units built by the model compiler chain and recorded by model-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -47,6 +49,7 @@ defineModule({
         const built = models.length ? await M.elaborateAll(models, `models ${units.map(u => u.id).join(', ')}`, claims) : []
         M.logModels(built)
         const out = []
+        const finish = []
         for (const unit of units) {
           const at = (unit.inputs && (unit.inputs.header || unit.inputs.model)) || ''
           // A model released to wait for its producer (or refused by model-deps) is not finished here: the ledger
@@ -56,9 +59,9 @@ defineModule({
             out.push({ unit: unit.id, status: state === 'waiting' ? 'deferred' : 'failed', error: state })
             continue
           }
-          out.push(await Z.finishOrFault(`model ${at}`, unit.id, unit.token, unit.inputs, { model: at }))
+          finish.push(unit)
         }
-        return out
+        return [...out, ...await Z.finishUnits(`models ${finish.map(u => u.id).join(', ')}`, finish)]
       },
     })
     const modelCleanup = await M.modelCleanup()

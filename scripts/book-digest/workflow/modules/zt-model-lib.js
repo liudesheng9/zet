@@ -1,9 +1,12 @@
-// ==== module zt-model-lib v8 ====
+// ==== module zt-model-lib v9 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list
 // (list-models.ps1) and the model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill,
 // derive, review, split → report and clean-up (model-compiler.ps1 does every structural step). A book type
 // installs the model layer with its profile (economics: the economic architect; mathematics: the math
 // supplements and no Theory Card). zmlMake(ctx, params) returns listModels, elaborateAll, logModels, modelCleanup.
+// 9 (docs/digest-claude-token-proposal.md P1/P7): a batch registers its models' references with ONE `model-deps -Units`
+// command instead of one relay per model, and a close round that sends nothing back writes the batch report in the
+// same process (`-Step close -Report`), so such a batch needs no report step of its own.
 function zmlMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const { A, KEY, OUT, SCRIPTS, DSH_EFFORT, LIMITS, COMPILER, FILL_SKILLS, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET,
@@ -34,6 +37,31 @@ If it fails, return ok=false with the error text and models=[]; do not retry wit
       }, required: ['model', 'status'] } },
     },
     required: ['plans'],
+  }
+  // The model-deps lines of a batch's planned models, in their order (null where none is readable), from ONE
+  // `model-deps -Units` command. A batch line no relay returned whole is never read as "resolved": the ledger
+  // says which units model-deps already registered to wait (registered) or refused (failed), and only a unit
+  // still claimed under its token runs model-deps again on its own.
+  const depsOf = async (planned, claims, tag) => {
+    const units = planned.map((m) => claims[m.address])
+    const r = await Z.runScript(`model-deps: ${tag}`, 'Models',
+      `${Z.DIGEST} model-deps -Out "${OUT}" -Units "${units.map((u) => `${u.unit}:${u.token}`).join(',')}"`,
+      ' (it registers the models\' references to parts of other models; it writes no Card)')
+    const rows = r.json && r.json.kind === 'model_deps_batch' && Array.isArray(r.json.results) ? r.json.results : null
+    if (rows) return units.map((u) => { const row = rows.find((x) => x && x.unit === u.unit); return row && row.ok !== undefined ? row : null })
+    log(`model-deps ${tag}: no readable batch line (${String((r.run && r.run.output) || 'no output').slice(0, 200)}); the ledger decides each model.`)
+    const read = await Z.runScript(`model-deps: ${tag}: states`, 'Models', `${Z.LEDGER} status -Out "${OUT}" -Units ${units.map((u) => u.unit).join(',')}`, ' (it reads the units\' states; it changes nothing)')
+    const states = read.json && Array.isArray(read.json.units) ? read.json.units : []
+    return Promise.all(units.map(async (u, i) => {
+      const held = states.find((x) => x && x.id === u.unit)
+      if (held && held.state === 'registered') return { ok: true, waiting: true, state: 'registered' }
+      // A unit this batch no longer holds (model-deps recorded its refused reference) is not filled here.
+      if (held && (held.state !== 'claimed' || Number(held.token) !== Number(u.token))) return { ok: false, state: held.state }
+      const one = await Z.runScript(`model-deps: ${planned[i].address}`, 'Models',
+        `${Z.DIGEST} model-deps -Out "${OUT}" -Model ${Z.psQuote(planned[i].address)} -Token ${u.token}`,
+        ' (it registers the model\'s references to parts of other models; it writes no Card)')
+      return one.json || null
+    }))
   }
   const slug = (address) => String(address).replace(/[\/|]/g, '_')
   const managerFolders = []
@@ -98,15 +126,12 @@ Return plans: one entry per model, in this order.`,
     const deferred = new Map()
     if (claims) {
       const planned = todo.filter(m => (plans.find(p => p.model === m.address) || {}).status === 'planned' && claims[m.address])
-      const registered = await Promise.all(planned.map(m => Z.runScript(`model-deps: ${m.address}`, 'Models',
-        `${Z.DIGEST} model-deps -Out "${OUT}" -Model ${Z.psQuote(m.address)} -Token ${claims[m.address].token}`,
-        ' (it registers the model\'s references to parts of other models; it writes no Card)')))
-      registered.forEach((r, i) => {
+      const registered = await depsOf(planned, claims, tag)
+      registered.forEach((line, i) => {
         const at = planned[i].address
-        const line = r.json
         if (line && line.ok && line.waiting) deferred.set(at, 'waiting')
         else if (line && line.ok === false) deferred.set(at, 'refused')
-        else if (!line) log(`model-deps ${at}: no readable line (${String((r.run && r.run.output) || 'no output').slice(0, 200)})`)
+        else if (!line) log(`model-deps ${at}: no readable line${line === null ? '' : ` (${line})`}`)
       })
       if (deferred.size) log(`${tag}: ${[...deferred].map(([at, why]) => `${at} ${why === 'waiting' ? 'waits for the model it takes a part from' : 'has a reference the ledger refused'}`).join('; ')}.`)
     }
@@ -148,15 +173,19 @@ Return plans: one entry per model, in this order.`,
     // can answer a note and leave the fault in place (trials 17-19: 6|a kept a rests-on sentence to another model,
     // 7|a a malformed marker, and model-finish refused both after the one close round).
     const CLOSE_ROUNDS = 3
+    // A close round that sends nothing back also writes the batch report (-Report); the report step runs only when
+    // the last close round still sent follow-ups or its line came back unreadable.
+    let closeReport = null
     for (let round = 0; round < CLOSE_ROUNDS; round++) {
-      const closed = await run(round ? `close ${round + 1}` : 'close', step('close'), FILL_SKILLS, DERIVE_EFFORT, { continues: true })
+      const closed = await run(round ? `close ${round + 1}` : 'close', step('close', ' -Report'), FILL_SKILLS, DERIVE_EFFORT, { continues: true })
       const closeLine = zdLastJson(closed && closed.output)
+      closeReport = closeLine && closeLine.report && Array.isArray(closeLine.report.models) ? closeLine.report : null
       if (!closeLine || !closeLine.faults) break
       log(`close ${round + 1} ${tag}: ${closeLine.faults} build fault(s) sent back in ${(closeLine.jobs || []).length} follow-up(s)${(closeLine.unowned || []).length ? `, ${closeLine.unowned.length} in Cards no job of this batch wrote` : ''}`)
       if (!(closeLine.jobs || []).length) break
     }
     // 7. Report (script) and clean-up.
-    const reported = zdLastJson((await run('report', step('report'), [], DSH_EFFORT, { cleanup: true }) || {}).output)
+    const reported = closeReport || zdLastJson((await run('report', step('report'), [], DSH_EFFORT, { cleanup: true }) || {}).output)
     const reports = (reported && reported.models) || []
     return batch.map(m => {
       const r = reports.find(x => x.model === m.address)
@@ -220,7 +249,7 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '8', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '9', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model list and the model compiler (brief, architect plan, fill, derive, review, split) for the model layer.',
 })
 // ==== end module zt-model-lib ====

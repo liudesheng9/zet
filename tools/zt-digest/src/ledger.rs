@@ -1,6 +1,7 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
 mod adopt;
 mod cleanup_run;
+pub(crate) mod finish_batch;
 use crate::event::layer::prop;
 use crate::link_gap;
 use crate::ps::{self, list, pipe, s, truthy};
@@ -12449,6 +12450,33 @@ fn model_deps(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
 }
 
 pub fn model_deps_cli(argv: &[String]) -> Result<i32> {
+    // The batch form: every planned model of a batch in one process (finish_batch::model_deps_batch).
+    if argv.iter().any(|x| x.eq_ignore_ascii_case("-Units")) {
+        let parsed = (|| -> Result<(String, Vec<(String, i64)>)> {
+            let a = Args::parse(argv, &["Out", "Units"], &[])?;
+            if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
+                bail!("explicit -Out is required");
+            }
+            let targets = hold_targets(&a.required("Units")?)?;
+            if targets.iter().any(|(unit, _)| !unit.starts_with("models/")) || targets.len() > 8 {
+                bail!("-Units names at most eight Model units (models/...)");
+            }
+            Ok((a.str("Out"), targets))
+        })();
+        let (out, targets) = match parsed {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("zt-digest model-deps: {error}");
+                return Ok(2);
+            }
+        };
+        let mut zt = crate::zt::start()?;
+        let p = Prepared::read(&out, &mut zt)?;
+        drop(zt);
+        let result = finish_batch::model_deps_batch(&p, &targets)?;
+        util::print_line(&serde_json::to_string(&result)?)?;
+        return Ok(0);
+    }
     let parsed = (|| -> Result<(String, String, i64)> {
         let a = Args::parse(argv, &["Out", "Model", "Token"], &[])?;
         if !a.positional.is_empty() || a.required("Out")?.trim().is_empty() {
