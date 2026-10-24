@@ -82,6 +82,7 @@ pub struct Applicability {
     derivation: bool,
     shared: bool,
     book: String,
+    term: String,
 }
 
 impl Applicability {
@@ -97,6 +98,9 @@ impl Applicability {
             derivation: crate::core::is_derivation_facet(&facet),
             shared: ps_eq(&text(prop(entry, "line")), "shared"),
             book: ps_string(prop(entry, "book")),
+            // The future Term rules decide their role from this authored name;
+            // keeping it here makes an unnamed term rule follow a term change.
+            term: ps_string(prop(entry, "term")),
         }
     }
 
@@ -149,12 +153,19 @@ impl Applicability {
                     "restatement-entry",
                 ])
             ),
-            // A rule this policy does not name keeps the old conservative
-            // treatment: it is compared only when the Card's metadata is
-            // unchanged. Term rules join the catalog with their own signatures.
+            // A rule this policy does not name keeps the conservative treatment:
+            // it is compared only when every metadata fact is unchanged, so a new
+            // rule cannot inherit across a retype, a shared-list, book or term
+            // transition before its own signature is named here.
             _ => format!(
-                "other:{}:{}:{}:{}",
-                self.category, self.level, self.part, self.derivation
+                "other:{}:{}:{}:{}:{}:{}:{}",
+                self.category,
+                self.level,
+                self.part,
+                self.derivation,
+                self.shared,
+                self.book,
+                self.term
             ),
         }
     }
@@ -387,6 +398,26 @@ mod tests {
         });
         assert!(!report.diagnostics[0].legacy);
         assert_eq!(report.blockers, 1);
+    }
+
+    /// S02-AC05 (R0146/R0151): a rule the catalog does not name yet keeps the
+    /// conservative treatment: every metadata fact a future rule could read must
+    /// be unchanged, so a shared-list, book or term transition never grandfathers
+    /// an unnamed rule. The named rules keep their own narrower signatures.
+    #[test]
+    fn an_unnamed_rule_compares_every_metadata_fact() {
+        let own = Applicability::of(&json!({ "category": "part", "facet": "推导" }));
+        let shared = Applicability::of(&json!({ "category": "part", "facet": "推导", "line": "shared" }));
+        assert!(!own.comparable(&shared, "T9"), "a shared transition is no comparison");
+        let book_a = Applicability::of(&json!({ "category": "idea", "book": "A" }));
+        let book_b = Applicability::of(&json!({ "category": "idea", "book": "B" }));
+        assert!(!book_a.comparable(&book_b, "T9"), "another book is no comparison");
+        let term = Applicability::of(&json!({ "category": "part", "facet": "推导", "term": "替代弹性" }));
+        assert!(!own.comparable(&term, "T9"), "a term transition is no comparison");
+        assert!(own.comparable(&own, "T9"));
+        // A named rule keeps its own narrower signature.
+        assert!(!book_a.comparable(&book_b, "I3"));
+        assert!(own.comparable(&shared, "R13"));
     }
 
     #[test]

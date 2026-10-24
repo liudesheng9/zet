@@ -1050,15 +1050,124 @@ mod tests {
         );
     }
 
+    /// S02-AC05/R0146: a role change compares only rules that still apply. A
+    /// regular Card promoted to a Model part must meet the part size rule even
+    /// though its body did not change; the reverse change drops the rule instead
+    /// of inheriting it, and a facet change between two part roles keeps the size
+    /// fault that still means the same thing as advice.
+    #[test]
+    fn a_role_change_grandfathers_only_the_rules_that_still_apply() {
+        let long = |sentences: usize| {
+            (1..=sentences)
+                .map(|n| format!("第 {n} 句说明这一步的推理。"))
+                .collect::<String>()
+        };
+        let promoted = json!({ "cards": [{
+            "address": "K/17|a", "category": "part", "facet": "设定", "title": "设定", "body": long(13),
+            "before": { "address": "K/17|a", "category": "idea", "title": "设定", "body": long(13) }
+        }]});
+        assert_eq!(
+            run_json(&promoted, "", Limits::default(), false, ""),
+            [
+                "K/17|a R13 (13 sentences > 12) split the part into two or more parts",
+                "faults: 1",
+            ]
+        );
+        let demoted = json!({ "cards": [{
+            "address": "K/17|b", "category": "idea", "title": "均衡稳定提高社会福利", "body": long(13),
+            "before": { "address": "K/17|b", "category": "part", "facet": "设定", "title": "设定", "body": long(13) }
+        }]});
+        assert_eq!(
+            run_json(&demoted, "", Limits::default(), false, ""),
+            ["faults: 0"]
+        );
+        let refaceted = json!({ "cards": [{
+            "address": "K/17|c", "category": "part", "facet": "设定", "title": "设定", "body": long(13),
+            "before": {
+                "address": "K/17|c", "category": "part", "facet": "推导：参与约束",
+                "title": "推导：参与约束", "body": long(13)
+            }
+        }]});
+        assert_eq!(
+            run_json(&refaceted, "", Limits::default(), false, "formal"),
+            [
+                "K/17|c R13 (advisory) (13 sentences > 12) split the part into two or more parts",
+                "faults: 0",
+            ]
+        );
+    }
+
+    /// S02-AC03: moving an unchanged faulty sentence or paragraph within the body
+    /// keeps its semantic identity, so the retained fault stays advice.
+    #[test]
+    fn moving_a_faulty_paragraph_keeps_its_legacy_advice() {
+        let bundle = json!({ "cards": [{
+            "address": "K/18|a", "title": "均衡稳定提高社会福利",
+            "body": "新的一段说明背景。\n\n甲；乙。",
+            "before": {
+                "address": "K/18|a", "title": "均衡稳定提高社会福利",
+                "body": "甲；乙。\n\n新的一段说明背景。"
+            }
+        }]});
+        assert_eq!(
+            run_json(&bundle, "", Limits::default(), false, ""),
+            ["K/18|a R3 (advisory) 甲；乙。", "faults: 0"]
+        );
+    }
+
+    /// S02-AC03/AC04: two long sentences that clip to the same prefix stay
+    /// distinct occurrences, so a changed fragment that still faults blocks and
+    /// never hides behind the old clipped line.
+    #[test]
+    fn a_changed_long_fragment_sharing_the_clipped_prefix_is_a_new_fault() {
+        let head = "甲".repeat(80);
+        let bundle = json!({ "cards": [{
+            "address": "K/18|b", "title": "均衡稳定提高社会福利",
+            "body": format!("{head}丙。"),
+            "before": {
+                "address": "K/18|b", "title": "均衡稳定提高社会福利",
+                "body": format!("{head}乙。")
+            }
+        }]});
+        let lines = run_json(&bundle, "", Limits::default(), false, "");
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert!(lines[0].starts_with("K/18|b R2 ("), "{}", lines[0]);
+        assert!(lines[0].ends_with('…'), "the familiar line is clipped: {}", lines[0]);
+        assert_eq!(lines[1], "faults: 1");
+    }
+
+    /// S02-AC02: the multiset is per Card. One Card's old occurrence never
+    /// excuses a duplicate on another Card that carries the same sentence.
+    #[test]
+    fn the_ratchet_never_consumes_another_cards_old_occurrence() {
+        let bundle = json!({ "cards": [
+            { "address": "K/19|a", "title": "均衡稳定提高社会福利", "body": "甲；乙。",
+              "before": { "address": "K/19|a", "title": "均衡稳定提高社会福利", "body": "甲；乙。" } },
+            { "address": "K/19|b", "title": "均衡稳定提高收入", "body": "甲；乙。\n\n起头说明。甲；乙。",
+              "before": { "address": "K/19|b", "title": "均衡稳定提高收入", "body": "甲；乙。" } }
+        ]});
+        assert_eq!(
+            run_json(&bundle, "", Limits::default(), false, ""),
+            [
+                "K/19|a R3 (advisory) 甲；乙。",
+                "K/19|b R3 (advisory) 甲；乙。",
+                "K/19|b R3 甲；乙。",
+                "faults: 1",
+            ]
+        );
+    }
+
     /// S02-AC06: a new Card in a bundle has no legacy allowance; it blocks beside
-    /// a retained fault from an edited Card.
+    /// a retained fault from an edited Card. An explicit `before: null` is a new
+    /// Card too.
     #[test]
     fn a_new_card_in_the_bundle_has_no_legacy_allowance() {
         let bundle = json!({
             "cards": [
                 { "address": "K/1", "title": "均衡稳定", "body": "甲；乙。",
                   "before": { "title": "均衡稳定", "body": "甲；乙。" } },
-                { "address": "K/2", "title": "均衡唯一", "body": "丙；丁。" }
+                { "address": "K/2", "title": "均衡唯一", "body": "丙；丁。" },
+                { "address": "K/3", "title": "均衡稳定提高收入", "body": "戊；己。", "before": null }
             ]
         });
         assert_eq!(
@@ -1066,7 +1175,8 @@ mod tests {
             [
                 "K/1 R3 (advisory) 甲；乙。",
                 "K/2 R3 丙；丁。",
-                "faults: 1",
+                "K/3 R3 戊；己。",
+                "faults: 2",
             ]
         );
     }

@@ -456,6 +456,22 @@ impl Diagnostic {
     pub fn blocking(&self) -> bool {
         self.severity == Severity::Block
     }
+
+    /// The published structured contract (design 5.4/R0111): the eight fields
+    /// with the policy names of the severity and the scope, so the service gate,
+    /// an MCP reply, a batch result and the CLI report carry one shape.
+    pub fn to_json(&self) -> Value {
+        serde_json::json!({
+            "address": self.address,
+            "rule": self.rule,
+            "fault": self.fault,
+            "key": self.key,
+            "message": self.message,
+            "severity": self.severity.as_str(),
+            "legacy": self.legacy,
+            "scope": self.scope.as_str(),
+        })
+    }
 }
 
 /// One run of card-style-check.ps1: the limits, the level, the term table, and
@@ -1734,6 +1750,40 @@ mod tests {
             e2("经过：双方签约。"),
             "two missing labels are another requirement"
         );
+    }
+
+    /// S02-AC01/R0111: the structured public contract is the design's example
+    /// document, field for field, including the policy names of the severity and
+    /// the scope and the legacy flag. A caller that returns check data over MCP,
+    /// the GUI or a batch result reads this one projection.
+    #[test]
+    fn a_diagnostic_serialises_the_published_contract() {
+        let cards = json!([{
+            "address": "K/14", "category": "event", "title": "1999 年的一笔交易",
+            "body": "时间：1999 年。\n地点：上海。\n经过：双方签约。"
+        }]);
+        let report = Check::new(Limits::default(), false, "").report(cards.as_array().unwrap());
+        assert_eq!(
+            report[0].to_json(),
+            json!({
+                "address": "K/14",
+                "rule": "E2",
+                "fault": "missing_labels",
+                "key": "labels:参与者,来源",
+                "message": "missing labels: 参与者、来源",
+                "severity": "block",
+                "legacy": false,
+                "scope": "local",
+            })
+        );
+        // A retained occurrence is advice in the same projection.
+        let mut legacy = report[0].clone();
+        legacy.legacy = true;
+        legacy.severity = Severity::Advise;
+        let value = legacy.to_json();
+        assert_eq!(value["legacy"], json!(true));
+        assert_eq!(value["severity"], json!("advise"));
+        assert_eq!(value["key"], json!("labels:参与者,来源"));
     }
 
     /// S02-AC01: one structured diagnostic carries the address, the rule, the
