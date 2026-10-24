@@ -757,11 +757,18 @@ fn split_sentences(line: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut index = 0;
+    // A book title in 《…》 is one name: its own ? or ! ends no sentence.
+    let mut in_title = 0usize;
     while index < chars.len() {
         let ch = chars[index];
         current.push(ch);
         index += 1;
-        if matches!(ch, '。' | '！' | '？' | '!' | '?') {
+        if ch == '《' {
+            in_title += 1;
+        } else if ch == '》' {
+            in_title = in_title.saturating_sub(1);
+        } else if in_title > 0 {
+        } else if matches!(ch, '。' | '！' | '？' | '!' | '?') {
             parts.push(std::mem::take(&mut current));
         } else if ch == '.' && chars.get(index).is_some_and(|next| next.is_whitespace()) {
             parts.push(std::mem::take(&mut current));
@@ -3432,6 +3439,14 @@ mod tests {
         assert_eq!(
             faults.lines[0],
             format!("A/1 R2 {}\u{FFFD}…", "x".repeat(88))
+        );
+    }
+
+    #[test]
+    fn a_book_title_keeps_its_end_marks_inside_one_sentence() {
+        assert_eq!(
+            split_sentences("本卡是《When does labor scarcity encourage innovation?》的术语表。下一句。"),
+            ["本卡是《When does labor scarcity encourage innovation?》的术语表。", "下一句。"]
         );
     }
 

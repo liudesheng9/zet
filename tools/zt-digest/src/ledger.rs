@@ -16140,7 +16140,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             }
         }
         if command == "fail" {
-            a.choice("Class", &["retryable", "operator", "content"])?;
+            // S5: -Class is optional; without it the ledger classifies the fault from its code.
+            if a.has("Class") {
+                a.choice("Class", &["retryable", "operator", "content"])?;
+            }
             a.required("Fault")?;
         }
         if command == "done" && !a.str("Unit").starts_with("cleanup/") {
@@ -17296,3 +17299,23 @@ mod tests {
 
 
 
+
+#[cfg(test)]
+mod fail_class_tests {
+    // acemoglu2010labor trial 1: the workflow leaves -Class out (S5, the ledger classifies), but the argument check
+    // still required it, so every fault was refused and a relay made up `-Class x`.
+    #[test]
+    fn a_fault_without_its_class_passes_the_argument_check() {
+        let dir = std::env::temp_dir().join(format!("zt-ledger-fail-class-{}", std::process::id()));
+        let argv: Vec<String> = ["fail", "-Out", dir.to_str().unwrap(), "-Unit", "terms/book@1", "-Token", "1", "-Fault", r#"{"schema_version":1,"unit":"terms/book@1","input_hash":"x","cause":"boom"}"#]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let said = match super::cli(&argv) {
+            Ok(code) => format!("exit {code}"),
+            Err(e) => format!("{e:#}"),
+        };
+        // An argument fault exits 2 before the ledger reads anything; a missing run folder fails later.
+        assert_ne!(said, "exit 2", "the argument check refused a fault without -Class");
+    }
+}
