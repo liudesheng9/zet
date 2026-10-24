@@ -16,7 +16,9 @@ updated: 2026-10-23
 
 Since #143 the same crate is also a process-free library. `core` (the rules), `text` (the text semantics and the term-table parse), and `policy` (the rule catalog) build without the `cli` feature and hold no file reader, no `zt mcp` client, no process launcher, and no platform binding. The zt service links that core as a path dependency with `default-features = false` (`Cargo.toml`), so one definition of Card legality serves the standalone tool, zt-digest, and the service's in-process check. A change to a shared rule is therefore a service change too: rebuild and redeploy `zt` as well as `zt-check`/`zt-digest`.
 
-**Owns:** the rule definitions and their fault text, the order of fault lines, the default rule set of `--cards`, the size limits and their defaults, the Card categories of `--cards` mode, the `--json` entry format, the pure rule core (`tools/zt-check/src/core.rs`), the pure text operations (`tools/zt-check/src/text.rs`), the rule catalog (`tools/zt-check/src/policy.rs`), the `zt mcp` client in `tools/zt-check/src/mcp.rs`, the process-wide Literature write scope that client enforces (`tools/zt-check/src/mcp/scope.rs`), the library entry points (`tools/zt-check/src/lib.rs`: `core::Check`, `text`, `policy` always; `check::run_lines`, `graph`, `mcp::Zt` with the `cli` feature), and the build and install of `zt-check.exe`.
+Since #144 every fault is a structured `core::Diagnostic`: the address, the rule, a rule-specific fault code, an unclipped semantic key, the full message, the severity, the legacy flag, and the scope. The familiar line is formatted from it at the boundary. `policy::ratchet` compares the report of a Card's old authored version with the report of its proposed version under the same rules and policy, consumes old occurrences in multiplicity, and turns a retained fault into legacy advice; only an unmatched blocking fault still blocks. A draft bundle therefore carries `before` beside each proposed entry (design 5.4 and 6.3 of the Term Cards and shared Card check implementation design, 2026-10-24).
+
+**Owns:** the rule definitions and their fault text, the order of fault lines, the default rule set of `--cards`, the size limits and their defaults, the Card categories of `--cards` mode, the `--json` entry and `before` bundle format, the pure rule core (`tools/zt-check/src/core.rs`), the pure text operations (`tools/zt-check/src/text.rs`), the rule catalog and the legacy ratchet (`tools/zt-check/src/policy.rs`), the `zt mcp` client in `tools/zt-check/src/mcp.rs`, the process-wide Literature write scope that client enforces (`tools/zt-check/src/mcp/scope.rs`), the library entry points (`tools/zt-check/src/lib.rs`: `core::Check`, `text`, `policy` always; `check::run_lines`, `graph`, `mcp::Zt` with the `cli` feature), and the build and install of `zt-check.exe`.
 
 **Does not own:** the MCP tools it calls (`get_card`, `get_model`, `get_tree`, `list_trees`; see [MCP server](mcp-server.md)), the ZT service that `zt mcp` needs (see [Service, CLI and storage](service-and-cli.md)), Relation kinds and Link parsing inside zt (see [Cards, Workspaces and Links](cards-and-links.md)), the build report and Elaboration level (see [Models and math](models-and-math.md)), the PowerShell wrapper `Invoke-ZtCheck` and the compilers and audit that build its input (see [Digest scripts](digest-scripts.md)), the SELF-CHECK lines in the agent prompts (see [Digest prompts](digest-prompts.md)), the approval rules in the workflows (see [Digest workflows](digest-workflows.md)), and the `zt-digest-protocol` skill that documents it for agents (see [Agent skills](agent-skills.md)).
 
@@ -29,27 +31,32 @@ Since #143 the same crate is also a process-free library. `core` (the rules), `t
 | | `tools/zt-check/Cargo.lock` — pinned versions (regex 1.13.1, anyhow 1.0.104, serde_json) |
 | | `tools/zt-check/src/lib.rs` — exports `VERSION`, `core`, `text`, `policy` always; `check`, `graph`, `mcp` only with `cli` |
 | | `tools/zt-check/src/main.rs` — collects the arguments, calls `zt_check::check::run_cli`, prints `zt-check: <error>` and exits 1 on an error |
-| | `tools/zt-check/src/core.rs` — the rule core: `Check` (the language, layer, and title rules), `Faults` (the fault lines), `Limits`, the corruption scan, and the orphan predicate; its unit tests |
+| | `tools/zt-check/src/core.rs` — the rule core: `Check` (the language, layer, and title rules), `Diagnostic`/`Severity`/`Scope` (the structured fault contract), `Faults` (the diagnostics a run raises), `Limits`, the corruption scan, the derivation-facet predicate, and the orphan predicate; its unit tests |
 | | `tools/zt-check/src/text.rs` — the PowerShell text semantics (UTF-16 form and lengths, culture comparisons, JSON conversions), the prose projection, sentence splitting, the term-table parse, the title context, and the lexical Link and envelope operations; its unit tests |
-| | `tools/zt-check/src/policy.rs` — `DEFAULT_RULES` and `filter_rules` (which rules a `--cards` report prints and counts); its unit test |
+| | `tools/zt-check/src/policy.rs` — the rule catalog (`DEFAULT_RULES`, `ADVISORY_RULES`, `GRAPH_RULES`, `severity`, `scope`), `CheckReport` (diagnostics and blockers), `Applicability` (the per-rule signature a metadata change compares), and `ratchet` (the legacy comparison); its unit tests |
 | | `tools/zt-check/src/check.rs` — the CLI input adapter: the four input modes, the option parser, the output, and the compatibility re-exports (`check::run_lines`, `check::term_table`, ...) |
 | | `tools/zt-check/src/graph.rs` — the whole-archive classification and orphan report (`cli`); re-exports the core's `is_orphan`, `SUBSTANTIVE`, `EXCLUDED` |
 | | `tools/zt-check/src/mcp.rs` — `Zt`, a minimal JSON-RPC client that starts `zt mcp` and makes `tools/call` requests |
 | | `tools/zt-check/src/mcp/owned.rs` — owned process-tree containment, bounded exit observation and termination |
 | | `tools/zt-check/src/mcp/scope.rs` — the process-wide Literature write scope: `set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal` |
-| | `tools/zt-check/tests/check_parity.rs` — the executable, the library adapter, and the process-free core print the same ordered lines for both recorded fixtures; the envelope error and the version are the same too |
-| | `tools/zt-check/tests/fixtures/` — the recorded ordered lines of both fixtures and the `--json` envelope fixtures (single object, BOM, bundle context, case-folded names, shared line, not JSON) |
+| | `tools/zt-check/tests/check_parity.rs` — the executable, the library adapter, and the process-free core print the same ordered lines for both recorded fixtures, and the executable and the library print the same ratcheted `before` bundle; the envelope error and the version are the same too |
+| | `tools/zt-check/tests/fixtures/` — the recorded ordered lines of both fixtures, the `before` bundle (`legacy-bundle.json` with `legacy-expected.txt`), and the `--json` envelope fixtures (single object, BOM, bundle context, case-folded names, shared line, not JSON) |
 | | `scripts/install-zt-check.ps1` — `cargo build --release` into `D:\zt-check-target`, then copies `zt-check.exe` beside `zt.exe` |
 | Depends on | [MCP server](mcp-server.md) (`zt mcp`, read tools only; `cli` feature); [Service, CLI and storage](service-and-cli.md) (the service must be up for `zt mcp` tool calls); the answer shapes of [Models and math](models-and-math.md) (`get_model` `head`, `parts`, `level`, `build.setting`, `build.order`) and [Cards, Workspaces and Links](cards-and-links.md) (`get_tree` `links`, `kinds`); Rust crates `regex`, `serde_json`, `anyhow` |
 | Used by | [zt-digest](zt-digest.md) (a path dependency with the default `cli` feature: `Check::run` calls `run_lines` on the step's own `zt mcp`; `main` sets the Literature scope for every digest step through `mcp::scope::set_literature_only`); the zt service (a path dependency with `default-features = false`: `src/main.rs` links the crate and `tests/check_core.rs` checks a Card through `core::Check` in-process); [Digest scripts](digest-scripts.md) (`Invoke-ZtCheck` in `scripts/book-digest/zt-calls.ps1`, for PowerShell callers and the tests; every digest script now forwards to a `zt-digest` tool that runs the check in-process); [Digest prompts](digest-prompts.md) (DeepSeek SELF-CHECK commands); [Digest workflows](digest-workflows.md) (managers approve `zt-check` as read-only); [Agent skills](agent-skills.md) (`skills/zt-digest-protocol/SKILL.md`, `skills/zettelkasten/SKILL.md`) |
-| Tests | `mod tests` in `tools/zt-check/src/core.rs` (the rules), `src/text.rs` (the text semantics and term table), `src/policy.rs` (the rule filter), and `src/mcp/scope.rs`; `tests/check_parity.rs` (the CLI, the library, and the core on both recorded fixtures); `scripts/book-digest/tests/zt-check.tests.ps1` with `card-style-fixture.json`; `scripts/book-digest/tests/card-layer.tests.ps1` with `card-layer-fixture.json`; the root crate's `tests/check_core.rs` (the service link) |
+| Tests | `mod tests` in `tools/zt-check/src/core.rs` (the rules and the structured diagnostics), `src/text.rs` (the text semantics and term table), `src/policy.rs` (the rule filter, `CheckReport`, `Applicability`, and the ratchet), and `src/mcp/scope.rs`; `tests/check_parity.rs` (the CLI, the library, and the core on both recorded fixtures, plus the `before` bundle); `scripts/book-digest/tests/zt-check.tests.ps1` with `card-style-fixture.json`; `scripts/book-digest/tests/card-layer.tests.ps1` with `card-layer-fixture.json`; the root crate's `tests/check_core.rs` (the service link) |
 
 ## Concepts
 
 - `Card language` — the plain-text rules for Card titles and bodies (ASD-STE100 adapted for Chinese). zt-check checks rules 2 to 7, 9, 12 to 17, and the standalone pilot rules 20 and 21 of the list in [docs/self-sufficient-models-proposal.md](../self-sufficient-models-proposal.md) and [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md); rules 1, 8, 10, and 11 are not mechanical and are not checked (`Check::language`, `Check::sentence`, `local_reference`, `unnamed_referent` in `tools/zt-check/src/check.rs`).
 - `Card layer rules` — the checks on Cards outside models: I (Idea Cards), E (Event Cards), F (Finding Cards), L (Links). They run only on entries that carry a `category` (`Check::layer`, `finding_rules`).
-- `Fault line` — `<address> <rule> <text>`: the text on one line, white space collapsed, clipped to 90 UTF-16 units with `…` (`Faults::add`). A run ends with `faults: N`.
-- `Advisory` — a fault line whose text starts with `(advisory)` (I1, I6, L3, E5, R20, R21, and I7's unknown-source line). In `--cards` mode it is printed but not counted (`filter_rules`); in the other modes every line counts (`digest-audit` splits the two).
+- `Diagnostic` — one fault under the structured contract (`core::Diagnostic`, design 5.4): `address`, `rule`, `fault`, `key`, `message`, `severity`, `legacy`, `scope`. `fault` is a rule-specific code (`sentence_length`, `missing_labels`, ...); `key` is the rule-specific semantic identity, built from the full offending fragment or missing requirement, never from a line number or the clipped display; `message` is the full text. `Diagnostic::line` formats the familiar line at the boundary.
+- `Fault line` — `<address> <rule> [(advisory) ]<message>`: the text on one line, white space collapsed, clipped to 90 UTF-16 units with `…` (`Diagnostic::line`). A run ends with `faults: N`.
+- `Severity` / `Scope` — `block` or `advise`, and `local` (the Card and its bounded context) or `graph` (whole-archive evidence: I5, I6, E4, E5, F4, L3). `policy::severity` and `policy::scope` hold the default catalog; I7's unknown-source subcase is marked by the core (`Faults::advise`). A `graph` fault is audit evidence, not a per-write decision (design 6.2). S03 adds archive overrides on this catalog.
+- `Advisory` — a diagnostic whose severity is `advise`: its line carries `(advisory)`. The default advisory rules are `R20`, `R21`, `I1`, `I6`, `L3`, `E5`, plus I7's unknown-source subcase (`policy::ADVISORY_RULES`). In `--cards` mode it is printed but not counted (`filter_rules`); in `--json`, `--model`, `--addresses` every line counts; in a `before` bundle the count is the number of blockers.
+- `Legacy fault` — a diagnostic the old authored version of the same Card already carried, matched by `(rule, fault, key)` in multiplicity under the same rules and policy (`policy::ratchet`); the CLI pairs each `before` entry with its proposed Card, so a Card that moves to another address still keeps an unchanged fault. It becomes `legacy: true` advice and stops blocking. The same identity appearing more often than before is a new occurrence and blocks.
+- `Applicability` — the facts a metadata change can alter, grouped into a per-rule signature (`policy::Applicability`): category, level, facet/derivation, shared term table, book. A rule is compared only when its signature is unchanged, so a Card retyped from Idea to Event must meet the Event format, a concept model promoted to formal must meet R13–R17, and a term-table or book change is a new requirement. Rules the catalog does not name keep a conservative metadata-only comparison.
+- `CheckReport` — the assembled result of one check (`policy::CheckReport`): every diagnostic in the core's traversal order and `blockers`, the number that still block. `lines()` formats the report. It holds no saved baseline: both versions are computed on every run (design 6.4).
 - `Standalone rule` — R20 and R21, the pilot's text heuristics for a Card that must stand alone (D125–D134). They are advice in the pilot: they name the matched fragment, the text and the reason, and a semantic review still decides.
 - `Source evidence` — the Citation keys a Card's claim comes from, as I7 reads them: an explicit `sources` set, else the `来源` line's Literature Links, else the Literature tree the Card is filed in. Empty is unknown, never a pass (D069–D073).
 - `Entry` — one Card as zt-check reads it: a JSON object with `address`, `title`, `body`, `facet`, and optional layer fields (see "Data and storage"). Property names ignore case (`prop`).
@@ -65,7 +72,7 @@ Since #143 the same crate is also a process-free library. `core` (the rules), `t
 
 ## Architecture
 
-The crate has a library and a binary (`main.rs`). The library is layered by feature. `core`, `text`, and `policy` are always available and are the process-free part: `text` owns the PowerShell text semantics, the prose projection, the term-table parse, the title context, and the lexical Link and envelope operations; `core` owns `Check` (the language rules per Card, then the layer rules across Cards), `Faults` (the fault lines), the corruption scan, and the orphan predicate; `policy` owns the rule catalog and the filter that counts a `--cards` report. `check`, `graph`, and `mcp` need the `cli` feature: `check` reads the four inputs, materializes the term table, level, shared list, and Workspace title context, calls the core, filters, and prints; `graph` classifies a whole archive for the audit; `mcp` is the `zt mcp` client and its process containment. `run_lines(args, zt)` takes an open `Zt` or, given `None`, starts one only when the mode reads the archive (`--json` and an empty `--cards` start none).
+The crate has a library and a binary (`main.rs`). The library is layered by feature. `core`, `text`, and `policy` are always available and are the process-free part: `text` owns the PowerShell text semantics, the prose projection, the term-table parse, the title context, and the lexical Link and envelope operations; `core` owns `Check` (the language rules per Card, then the layer rules across Cards), `Diagnostic`/`Severity`/`Scope` and `Faults` (the structured faults and their line format), the corruption scan, and the orphan predicate; `policy` owns the rule catalog (`severity`, `scope`, `DEFAULT_RULES`), `CheckReport`, `Applicability`, the legacy `ratchet`, and the filter that counts a `--cards` report. `check`, `graph`, and `mcp` need the `cli` feature: `check` reads the four inputs, materializes the term table, level, shared list, and Workspace title context, calls the core, applies the ratchet when a bundle carries `before`, filters, and prints; `graph` classifies a whole archive for the audit; `mcp` is the `zt mcp` client and its process containment. `run_lines(args, zt)` takes an open `Zt` or, given `None`, starts one only when the mode reads the archive (`--json` and an empty `--cards` start none).
 
 ```mermaid
 flowchart TD
@@ -77,13 +84,17 @@ flowchart TD
     cli -->|--cards / --log| cc["check_cards"]
     ca & cm & cc --> zt["mcp::Zt (spawns zt mcp)"]
     zt -->|get_cards, get_model| server[("zt mcp → ZT service archive")]
-    cj & ca & cm & cc --> run["core::Check::run (always available)"]
+    cj & ca & cm & cc --> run["core::Check::report (always available)"]
     run --> lang["Check::language + Check::sentence (R2–R22)"]
     run --> layer["Check::layer + finding_rules (I, E, F, L)"]
-    lang & layer --> faults["Faults::add (fault lines)"]
+    lang & layer --> faults["Faults::add → Diagnostic"]
     lang & layer --> txt["text: prose, term table, titles, Links"]
+    faults --> lines["Diagnostic::line (clip, advisory prefix)"]
+    cj -->|before bundle| ratchet["policy::ratchet (old vs proposed)"]
+    ratchet --> report["policy::CheckReport (diagnostics, blockers)"]
+    report --> cj
     cc --> filter["policy::filter_rules (--rules / DEFAULT_RULES)"]
-    faults --> out["write_lines + faults: N"]
+    lines --> out["write_lines + faults: N"]
     filter --> out
     svc["zt service (root crate)"] -->|"path dep, default-features = false"| run
 ```
@@ -94,10 +105,10 @@ flowchart TD
 | `Options`, `run_cli`, `write_lines` | `tools/zt-check/src/check.rs` | Parse flags, pick one mode, run, filter, print UTF-8 with CRLF on Windows |
 | `check_json`, `check_addresses`, `check_model`, `check_cards` | `tools/zt-check/src/check.rs` | Build the entries, the term table, the level, the shared list, and the title context for one mode |
 | `Check` (`new`, `with_terms`, `with_shared`, `with_context`, `run`, `language`, `sentence`, `layer`) | `tools/zt-check/src/core.rs` | The rules; `run` returns the ordered fault lines |
-| `Faults`, `Limits`, `corruption`, `source_evidence`, `is_orphan` | `tools/zt-check/src/core.rs` | The fault line format and clip, the limit defaults, the R18/R19 scan, I7's source evidence, and the orphan predicate I5 and the audit share |
+| `Diagnostic`, `Severity`, `Scope`, `Check::report`, `Faults`, `Limits`, `corruption`, `source_evidence`, `is_orphan` | `tools/zt-check/src/core.rs` | The structured fault contract and its line format, the limit defaults, the R18/R19 scan, I7's source evidence, and the orphan predicate I5 and the audit share |
 | Text helpers (a `?` or `!` inside 《…》 ends no sentence in `split_sentences`; the Bridge label `跨书关联：` (`BRIDGE_LABEL`) is stripped before a line's sentences are measured; `plain`, `measure`, `prose_lines`, `split_sentences`, `passive`, `read_terms`, `leads_to`, `book_place`, `bigrams`, `similarity`) | `tools/zt-check/src/text.rs` | What text the rules see and how it is counted |
 | PowerShell semantics (`ps_eq`, `ps_in`, `culture`, `culture_starts_with`, `culture_cmp`, `ps_string`, `truthy`, `strings`, `ps_int`, `key`, `utf16_form`) | `tools/zt-check/src/text.rs` | Reproduce the deleted PowerShell checkers' comparisons and conversions |
-| `DEFAULT_RULES`, `filter_rules` | `tools/zt-check/src/policy.rs` | The rule catalog and the report filter |
+| `DEFAULT_RULES`, `ADVISORY_RULES`, `GRAPH_RULES`, `severity`, `scope`, `CheckReport`, `Applicability`, `ratchet`, `filter_rules` | `tools/zt-check/src/policy.rs` | The rule catalog (severity and scope per rule), the assembled report, the applicability signature, the legacy ratchet, and the report filter |
 | `Zt` (`start`, `call`, `request`, `Drop`) | `tools/zt-check/src/mcp.rs` | The `zt mcp` client (`cli`) |
 | `scope` (`set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal`) | `tools/zt-check/src/mcp/scope.rs` | The Literature write scope `Zt::request` checks before each tool call (`cli`) |
 
@@ -106,6 +117,21 @@ flowchart TD
 `tools/zt-check/Cargo.toml` declares `default = ["cli"]` and `cli = ["dep:windows-sys", "dep:libc"]`; the binary has `required-features = ["cli"]`. Building with `--no-default-features --lib` therefore compiles only `core`, `text`, and `policy`, and `cargo tree --no-default-features -e normal` names no `windows-sys`, no `libc`, and no archive client. `check.rs` keeps the existing public surface as re-exports (`check::run_lines`, `check::run_cli`, `check::term_table`, `check::TermRow`, `check::source_evidence`, `check::title_key`, `check::title_bigrams`, `check::title_similarity`, `check::TITLE_SIMILARITY`, `check::title_fits`, `check::sentence_fits`), so zt-digest and the digest reports keep their calls while the implementation lives in `core` and `text`.
 
 The root crate (`Cargo.toml`) adds `zt-check = { path = "tools/zt-check", default-features = false }`. There is no dependency cycle: zt-check depends only on `anyhow`, `regex`, and `serde_json`, and zt-digest's `zt-check` path dependency keeps the default `cli` feature. The root's `tests/check_core.rs` proves the link with an in-process check through `zt_check::core::Check`, with no service, no `zt mcp`, and no gate process. Because the rules now ship in the service binary too, a shared-rule change is a deployment of the service (see [Service, CLI and storage](service-and-cli.md)): rebuild and reinstall `zt`, stop and start the daemon, and rebuild `zt-check`/`zt-digest`. A running old service would keep checking with the old rules.
+
+### Structured diagnostics and the legacy ratchet (S02)
+
+`core::Check::report(cards) -> Vec<Diagnostic>` is the rule evaluation; `Check::run` stays the compatibility wrapper that formats the same list (`Diagnostic::line`), so zt-digest's `run_lines` and every fixture keep their bytes. A `Diagnostic` is `address`, `rule`, `fault`, `key`, `message`, `severity`, `legacy`, `scope`; the `--json` envelope represents it as:
+
+```json
+{ "address": "K/14", "rule": "E2", "fault": "missing_labels", "key": "labels:参与者,来源",
+  "message": "missing labels: 参与者、来源", "severity": "block", "legacy": false, "scope": "local" }
+```
+
+`policy::CheckReport { diagnostics, blockers }` assembles one check; `CheckReport::of` counts `severity == block`, and `CheckReport::lines()` formats the familiar text. `policy::ratchet(before, proposed, comparable)` consumes the paired old report's `(rule, fault, key)` multiset one occurrence at a time in the proposed report's order, marks a consumed diagnostic `legacy: true` with `Severity::Advise`, and returns the proposed report with its remaining blockers. It never reads a clipped line, a line number, or a set of identities, so moving an unchanged faulty paragraph keeps its fault, a second copy of a known faulty sentence is a new occurrence, and a different fragment that clips to the same prefix stays distinct.
+
+`policy::Applicability::of(entry)` reads `category`, `level`, `facet`, `line`, and `book`; `comparable(proposed, rule)` compares the rule's own signature. The text rules (R2–R5, R7, R9, R12, R18–R22) mean the same for every type; R6 follows the shared term table; R13–R17 follow the facet, derivation, and formal level; I1/I2/I4/I7 follow the Idea role, I3/F2 also the book; the E/F rules follow the Event/Finding role; L follows the layer role; an unnamed rule falls back to the whole metadata, so a term rule added later is not grandfathered across a term transition until its signature is named.
+
+A `--json` entry may carry `before`: the old authored version as an entry object (its own `title`, `body`, `category`, `facet`, `level`, `line`, `book`), or `null`/absent for a new Card. When at least one entry has a non-null `before`, `check_json` checks the old entries and the proposed entries with one `Check` (same limits, term table, title context), ratchets the proposed report, and returns `faults: N` as the number of remaining blockers; a bundle with no `before` keeps the old output and count. A `before` that is not an object is refused. The old entry's own metadata is what its report is checked with, so a concept→formal or Idea→Event change is evaluated under the old metadata and compared only under the signatures that did not change. There is no persistent baseline table: both sides are computed on every run (design 6.4), and a rule-version change applies to both sides at once.
 
 ## Interfaces
 
@@ -235,6 +261,45 @@ The default column is the default rule set of `--cards` (`DEFAULT_RULES`). The o
 
 Rules R1, R8, R10, R11, and E3 exist in the design docs but zt-check does not check them.
 
+### Fault codes and semantic keys (`core::Faults::add` call sites)
+
+Every diagnostic names a rule-specific `fault` and a `key` built from the full offending fragment or missing requirement. The key never contains a source line number or the clipped display, so it is safe for the legacy comparison.
+
+| Rule | `fault` | `key` |
+|---|---|---|
+| R2 | `sentence_length` | `<measured> <unit> > <limit>: <sentence>` |
+| R3 / R4 / R5 / R7 | `semicolon` / `passive` / `light_verb` / `noun_phrase` | the full sentence |
+| R6 | `forbidden_word` | `<term>\|<word>\|<sentence>` |
+| R9 | `hedge` | `<word>\|<sentence>` |
+| R12 | `title_size` / `two_claims` | `<measured> <unit> > <limit>: <title>` / the title |
+| R13 | `part_size` | `sentences:<n>/<limit>` or `characters:<n>/<limit>` |
+| R14 | `steps` | `steps:<n>/<limit>` |
+| R15 | `sections` | the found section order (`思路,步骤`) |
+| R16 | `thought_sentences` / `reading_sentences` | `<n> sentences > 5` / `> 6` |
+| R17 | `note_before_step` / `second_note` / `note_sentences` / `explanation_size` | the 说明 line; the 说明 line; `<step>:<n> sentences > 2`; `sentences:<n>/<limit>` or `characters:<n>/<limit>` |
+| R18 | `repeated_prose` | the repeated paragraph text |
+| R19 | `repeated_title` | `heading:<occurrence>` (1-based, so a moved heading keeps its fault) |
+| R20 | `local_reference` | `<label>\|<full text>` |
+| R21 | `unnamed_referent` | `<word>\|<full text>` |
+| R22 | `open_formula` | `title:<full title>` or `body:<full body>` |
+| I1 | `no_claim_title` | the title |
+| I2 | `idea_size` | `<n> characters > <max>` or `<n> characters < <min>` |
+| I3 | `no_source` | the book key |
+| I4 / I5 | `no_kinded_link` / `no_inbound` | empty |
+| I6 | `similar_title` / `context_incomplete` / `workspace_scope_unknown` | `[[other address]]` / `known:<n>` / empty |
+| I7 | `own_source` / `own_source_unknown` | the offending target |
+| E1 | `no_date` | the title |
+| E2 / F1 | `missing_labels` | `labels:<missing labels, comma-joined in rule order>` |
+| E4 / F4 | `no_kinded_inbound` | empty |
+| E5 | `same_event` | `[[other address]]\|<year>` |
+| F2 | `source_wrong_book` / `source_missing` | the book key / empty |
+| F3 | `result_labels` / `result_items` | `<n> labels` / `<n> items` |
+| L1 | `unkinded_links` | the `refers` targets, comma-joined |
+| L2 | `no_reason` | `<measured> characters < <limit>: <sentence>` |
+| L3 | `repeated_paragraph_link` | the target address |
+
+`policy::severity` and `policy::scope` (`ADVISORY_RULES`, `GRAPH_RULES`) give each rule its default severity and scope; the core asks them in `Faults::add`, and only I7's unknown-source subcase overrides the severity itself (`Faults::advise`). A new rule must add its catalog entry and its `Applicability` signature (see "Adding a rule").
+
 ### `zt mcp` client (`tools/zt-check/src/mcp.rs`)
 
 zt-check has no MCP server mode of its own. It is an MCP client: `Zt::start()` runs `zt mcp` (the program in `ZT_CHECK_ZT`, default `zt` on PATH) with piped stdin and stdout and stderr discarded, sends `initialize` (`protocolVersion` `2025-06-18`), waits for the reply with id 0, and sends `notifications/initialized`. `Zt::call(tool, arguments)` sends one `tools/call` per line with a rising id, skips reply lines that are not JSON or have another id, joins the `text` parts of `result.content`, and parses them as JSON. A JSON-RPC `error` or `result.isError: true` becomes `zt: <message>` (the `error` field of a JSON message when there is one). `Zt::request(tool, arguments)` returns the whole reply instead, an error reply included; `reply_text` and `reply_error` read it (the zt-digest helper uses them). `call` goes through `request`, and `request` is the only path that sends `tools/call`, so the Literature scope (below) covers every tool call of the client. It mirrors the protocol of `skills/zt/scripts/zt-mcp.ps1`.
@@ -311,8 +376,8 @@ R19 reports every authored level-one heading that repeats the Card title, with i
 
 1. `run_cli` reads the file; `check_json` strips a BOM and parses an array (or wraps one object).
 2. Entries with `line: shared` form the shared list. When `--setting` is given, the entry with that address gives the term table (`read_terms`); a setting that is not in the file gives no table (no `get_card`).
-3. `Check::run` runs `language` on each entry in input order, keeping each Card's prose character count, then `layer` on the entries that carry a truthy `category`.
-4. `run_cli` appends `faults: <number of lines>` and `write_lines` prints.
+3. Without `before`, `Check::report` runs `language` on each entry in input order, keeping each Card's prose character count, then `layer` on the entries that carry a truthy `category`; `run_cli` appends `faults: <number of lines>` (every line, advisory included) and `write_lines` prints.
+4. With a non-null `before` on at least one entry, `before_entries` pairs each old entry with its proposed Card (the old entry keeps its own metadata; a missing `address` is filled from the proposed entry). The old entries and all proposed entries are checked by the same `Check`; `policy::ratchet` marks the inherited occurrences `legacy`, and `faults: N` is the number of remaining blockers. `run_cli` prints the proposed report's lines, so a retained fault shows `(advisory)` and an unmatched one keeps its blocking text.
 
 ### A `--model` run
 
@@ -375,10 +440,22 @@ entries or from the mode's own bulk reader:
   "titles": [ { "address": "5/1", "title": "税", "workspace": "agent" } ] } }
 ```
 
+An edit bundle adds `before` to each edited entry (the fixture `tools/zt-check/tests/fixtures/legacy-bundle.json` is one):
+
+```json
+{ "cards": [
+  { "address": "K/10|c", "category": "event", "title": "通用汽车收购费雪车身公司",
+    "body": "通用汽车收购了费雪车身公司。",
+    "before": { "category": "idea", "title": "通用汽车收购费雪车身公司",
+                "body": "通用汽车收购了费雪车身公司。" } }
+] }
+```
+
 | Field | Meaning | Used by |
 |---|---|---|
 | `address`, `title`, `body` | The Card | all rules |
 | `facet` | Makes the entry a Model part; `推导…` makes it a Derivation part | R13–R17 |
+| `level` | `concept` or `formal` for this entry, overriding the run's level; a `before` entry carries its old level so the old version is checked as it was | R13–R17 and `Applicability` |
 | `line` | `shared` puts the entry in the shared list | R6 |
 | `category` | `idea`, `anchor`, `event`, `finding`, `restatement-entry`; anything else (or none) skips the layer rules (`register-part` is navigation: it takes none of the substantive claim or size rules; `restatement-entry` keeps only the source and Link checks) | I, E, F, L |
 | `parent` | The parent's address | I4, I5 |
@@ -391,6 +468,7 @@ entries or from the mode's own bulk reader:
 | `workspace` | `agent` or `human`; I6 compares only inside one Workspace | I6 |
 | `inbound` | Addresses that link here | I5 |
 | `inbound_kinded` | How many Idea Cards link here with a kind word | E4, F4 |
+| `before` | The old authored version of this Card, as another entry object; absent or `null` means a new Card with no legacy allowance | the ratchet (`check_json`) |
 
 The term table in a setting body (R6 needs the first two columns; the digest's concept review reads all four):
 
@@ -450,11 +528,13 @@ The compilers check drafts by writing `--json` entries with a `category` so the 
 
 ### Adding a rule
 
-1. Add the check in `Check::sentence` (per sentence), `Check::language` (per Card), `Check::layer` or `finding_rules` (layer, by category) in `tools/zt-check/src/core.rs`, and report it with `faults.add(address, "<Rule>", text)`. Prefix an advisory text with `(advisory)`. A text helper belongs in `tools/zt-check/src/text.rs`.
-2. Keep the rule id matching `FAULT_LINE` (`[RIELF]\d+`) in `tools/zt-check/src/policy.rs`; a new letter needs that pattern changed, or `--cards` drops its lines.
-3. Add it to `DEFAULT_RULES` in `tools/zt-check/src/policy.rs` if `--cards` should report it by default.
-4. Add a unit test in the module's `mod tests` with the exact lines, then check that `tools/zt-check/tests/fixtures/card-style-expected.txt` (and `card-layer-expected.txt` if it changes) matches the new order, and update the PowerShell fixture tests if the `--json` output of their fixtures changes.
-5. Run `cargo test`, then `cargo build --no-default-features --lib` (the core must stay process-free), then `pwsh -NoProfile -File scripts\install-zt-check.ps1`, then the PowerShell tests. Rebuild and redeploy `zt` too: a shared rule change changes the service's in-process check. Tell callers that filter rule letters (see pitfalls).
+1. Add the check in `Check::sentence` (per sentence), `Check::language` (per Card), `Check::layer` or `finding_rules` (layer, by category) in `tools/zt-check/src/core.rs`, and report it with `faults.add(address, "<Rule>", "<fault code>", "<semantic key>", text)`. The message carries no `(advisory)` prefix: the line adds it from the severity. An advisory subcase of an otherwise blocking rule calls `faults.advise(...)`. A text helper belongs in `tools/zt-check/src/text.rs`.
+2. Choose the `fault` code and the `key` deliberately (see "Fault codes and semantic keys"): the key must identify the requirement, not the printed line, so an unchanged fault keeps its identity while an added occurrence does not. Add the rule's signature to `policy::Applicability::signature` when its applicability depends on type, role, level, term table, or book; an unnamed rule falls back to metadata equality.
+3. Give the rule its default `severity` and `scope` in `tools/zt-check/src/policy.rs` (`ADVISORY_RULES`, `GRAPH_RULES`, `severity`, `scope`). A `graph` rule is audit evidence and is not decided per write (design 6.2).
+4. Keep the rule id matching `FAULT_LINE` (`[RIELF]\d+`) in `tools/zt-check/src/policy.rs`; a new letter needs that pattern changed, or `--cards` drops its lines.
+5. Add it to `DEFAULT_RULES` in `tools/zt-check/src/policy.rs` if `--cards` should report it by default.
+6. Add a unit test in the module's `mod tests` with the exact lines and the diagnostic's `fault`/`key`, then check that `tools/zt-check/tests/fixtures/card-style-expected.txt` (and `card-layer-expected.txt` if it changes) matches the new order, and update the PowerShell fixture tests if the `--json` output of their fixtures changes. A rule that can block an edit needs a `--json` `before` test for the retained and the newly introduced case.
+7. Run `cargo test` and `cargo test --no-default-features --lib`, then `cargo build --no-default-features --lib` (the core must stay process-free), then `pwsh -NoProfile -File scripts\install-zt-check.ps1`, then the PowerShell tests. Rebuild and redeploy `zt` too: a shared rule change changes the service's in-process check. Tell callers that filter rule letters (see pitfalls).
 
 ### Adding an input field
 
@@ -464,12 +544,12 @@ Read it with `prop(card, "<name>")` and the PowerShell conversions (`text`, `str
 
 | Test | Command | Covers |
 |---|---|---|
-| Unit tests, `mod tests` in `tools/zt-check/src/core.rs` (18 tests; they run with `--no-default-features --lib` too) | `cd tools/zt-check; cargo test` and `cargo test --no-default-features --lib` | The recorded ordered lines of `card-style-fixture.json` through `core::Check` (one fault per rule, with the shared part's term table skipped), R22's open formula, card size, R15–R17, the position line, the I/E/L rules, the F rules, the standalone rules R20/R21 (content-bearing label, name, source locator, code/quote/formula exclusion, a book-local model number in a title, a Literature root's bibliographic body, same-sentence and preceding-sentence referents), I7 (own source, other book, `illustrates`/`corresponds`/`contrasts`, own Literature tree, unknown evidence, `来源` line, several named sources), I6 (Workspace context, one line per pair, an incomplete context marked unknown, an unscoped entry marked unknown, and an exact copy that differs only in case or in a trailing mark found without a scan of the context), UTF-16 lengths and clipping, and the Bridge label |
+| Unit tests, `mod tests` in `tools/zt-check/src/core.rs` (21 tests; they run with `--no-default-features --lib` too) | `cd tools/zt-check; cargo test` and `cargo test --no-default-features --lib` | The recorded ordered lines of `card-style-fixture.json` through `core::Check` (one fault per rule, with the shared part's term table skipped), R22's open formula, card size, R15–R17, the position line, the I/E/L rules, the F rules, the standalone rules R20/R21 (content-bearing label, name, source locator, code/quote/formula exclusion, a book-local model number in a title, a Literature root's bibliographic body, same-sentence and preceding-sentence referents), I7 (own source, other book, `illustrates`/`corresponds`/`contrasts`, own Literature tree, unknown evidence, `来源` line, several named sources), I6 (Workspace context, one line per pair, an incomplete context marked unknown, an unscoped entry marked unknown, and an exact copy that differs only in case or in a trailing mark found without a scan of the context), UTF-16 lengths and clipping, the Bridge label, the structured diagnostic (`address`/`rule`/`fault`/`key`/`message`/`severity`/`legacy`/`scope` and the unchanged line), two long faults that clip to the same prefix keeping distinct full-fragment keys, and the measured value/limit and missing-label keys of a size or label fault |
 | Unit tests, `mod tests` in `tools/zt-check/src/text.rs` (5 tests) | the same `cargo test` | The four-column term table against R6's own view, a book title's end marks inside one sentence, sentence splitting that keeps formulas whole, culture order and starts-with, and title identity and similarity |
-| Unit tests, `mod tests` in `tools/zt-check/src/policy.rs` (1 test) | the same `cargo test` | The rule filter keeps the asked rules and counts only hard faults |
+| Unit tests, `mod tests` in `tools/zt-check/src/policy.rs` (7 tests) | the same `cargo test` | The rule filter; a retained fault becoming legacy advice and a new Card getting no allowance; occurrence multiplicity (a second copy is new, a removed copy is not); semantic keys over printed lines (a moved paragraph, a same-prefix fragment); `Applicability` signatures for category, concept/formal, term-table, and book changes; `CheckReport` blockers and lines; a changed fault code not being inherited |
 | Unit tests, `mod tests` in `tools/zt-check/src/mcp/scope.rs` (4 tests) | the same `cargo test` | Topic addresses are numbered trees; authored Topic Links are found outside the Reverse links section; the scope refuses `create_topic`, a Topic-tree `at`/`to`/`into`/`before`, a Hub Card, a Topic Link in `body` or `text`, and the offending `apply_batch` item by index; Literature writes, Literature Links, `create_literature` without Topic Links, reads and a clean batch pass |
-| Integration test, `tools/zt-check/tests/check_parity.rs` (4 tests) | the same `cargo test` | The executable, `check::run_lines`, and the process-free `core::Check` print the same ordered lines for `card-style-fixture.json` and `card-layer-fixture.json`, all equal to the recorded `tests/fixtures/*-expected.txt`; the binary states `zt_check::VERSION`; the not-JSON envelope error is the same in the binary and the library |
-| CLI adapter tests, `mod tests` in `tools/zt-check/src/check.rs` (10 tests) | the same `cargo test` | The recorded fixture lines through `check_json` and `run_lines`; a single object, a BOM'd array, and case-folded property names; a bundle's title context; the setting lookup and a shared part; the not-JSON and unreadable-file messages; two inputs refused; an empty Card list |
+| Integration test, `tools/zt-check/tests/check_parity.rs` (5 tests) | the same `cargo test` | The executable, `check::run_lines`, and the process-free `core::Check` print the same ordered lines for `card-style-fixture.json` and `card-layer-fixture.json`, all equal to the recorded `tests/fixtures/*-expected.txt`; the executable and the library print the same ratcheted `before` bundle (`legacy-bundle.json`); the binary states `zt_check::VERSION`; the not-JSON envelope error is the same in the binary and the library |
+| CLI adapter tests, `mod tests` in `tools/zt-check/src/check.rs` (20 tests) | the same `cargo test` | The recorded fixture lines through `check_json` and `run_lines`; a single object, a BOM'd array, and case-folded property names; a bundle's title context; the setting lookup and a shared part; the not-JSON and unreadable-file messages; two inputs refused; an empty Card list; the `before` bundle (retained fault advice, a second copy blocking, a new Card with no allowance, Idea→Event and concept→formal changes, a larger size fault, a wider missing-label set, a non-object `before` refused, a Card's own address change keeping its unchanged fault as advice, and no saved baseline across repeated runs) |
 | Core-only build | `cd tools/zt-check; cargo build --no-default-features --lib; cargo tree --no-default-features -e normal` | The pure core builds alone and its dependency tree names no `windows-sys`, no `libc`, and no archive client |
 | Root service link | `cargo test --test check_core` (root) | The zt binary links `zt-check` with `default-features = false` and checks a Card in-process through `zt_check::core::Check` |
 | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` | `pwsh -NoProfile -File scripts\book-digest\tests\zt-helper-gate.tests.ps1` | The scope end to end through `zt-digest call` on a scratch archive: without `-Open` the helper refuses `create_topic`, a Card in a Topic tree and a Literature Card that links a Topic root, and still writes a Literature tree |
@@ -485,6 +565,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 
 ### Decisions
 
+- **Stable fault identity, printed lines as the interface.** A fault's identity for the legacy comparison is its unclipped semantic key, never the clipped line or a source line number (design 3.1 and 5.4). The familiar line stays the human interface, so the digest's readers and fixtures see no change.
 - **One checker, the only source of truth.** zt-check replaced `card-style-check.ps1` and `self-check.ps1` (deleted 2026-10-15) with the same faults, in the same order, in the same words, so every agent and script gets one fault format (`tools/zt-check/src/check.rs` header; [docs/digest-card-layers-proposal.md](../digest-card-layers-proposal.md) D4 and its note; `skills/zt-digest-protocol/SKILL.md`).
 - **PowerShell semantics in Rust.** To keep the old output exactly, lengths count UTF-16 units, matches ignore case, string comparisons drop culture-ignorable characters, hashtable keys ignore case, and sorts use an approximation of ICU collation (`weight`, `culture_cmp`).
 - **A crate of its own, read through `zt mcp`, with one process-free core.** It needs none of zt's code and sees the same answers as every other zt client; building or installing it never touches the running service (`tools/zt-check/src/mcp.rs`, `tools/zt-check/Cargo.toml`). The rules themselves live in `core`/`text`/`policy`, which the zt service links with `default-features = false` and calls in-process (#143), so one implementation serves the tool, zt-digest, and the service; a rule change therefore needs both binaries redeployed. Build into `D:` because E: is nearly full (`scripts/install-zt-check.ps1`).
@@ -500,7 +581,9 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **I6 reads a Workspace title context, and only advice comes of it.** `--cards` builds it from one complete `export_titles` read (the same read that classifies the Cards) and refuses a partial or changing catalogue; `--json` accepts it as the bundle's `context` object. Rows are comparisons only: I6 reports on the checked Card, never on a context Card, and never edits, merges, or deletes. A pair is reported once, on the later checked Card. A supplied context that is not complete marks I6 unknown with one `(advisory)` line per checked Idea Card before its pair lines, naming how many known titles were compared: the reader could not supply the whole Workspace, so the run says so instead of claiming a Workspace-wide check. A supplied context with an entry that names no `workspace` is unknown the other way round: the pair cannot be kept inside one Workspace, so the Card is not compared at all. Without a context the comparison is limited to the entries the run holds, which is why a digest's scoped review passes the catalogue through its own reader.
 - **The candidate index folds case, the Dice function does not.** `bigrams` keeps case, so two spellings of one title that differ only in case have no common bigram; the index keys are lower-cased instead, which makes the exact copy a candidate while the decision stays the existing function (an exact normalized equality or Dice 0.8). A title of one character has no bigram at all and is compared with the other short titles.
 - **`anchor-title` is a hub fault, not similarity.** `src/hub.rs` normalizes whitespace and case only and refuses an exact match with an anchor's title; a differently worded navigation title is no fault, and an existing hub is reported read-only until its correction is authorized. A topic hub has two anchors: the Card it hangs under (`<n>/1` for one the compiler creates) and its tree's Topic Card `<n>/0`; a line hub has the Card where the line starts. `zt-digest hub -Step precheck` refuses a new draft that copies either.
-- **`faults: N` means different things.** In `--cards` it counts hard lines of the selected rules; in `--json`, `--model`, `--addresses` it counts every line, advisory included. A `--json` run on layer entries can report `faults: N > 0` with only advisory lines.
+- **`faults: N` means different things.** In `--cards` it counts hard lines of the selected rules; in `--json` without `before`, `--model`, `--addresses` it counts every line, advisory included; in a `--json` bundle with `before` it counts the blockers the ratchet leaves, so a retained fault is not counted. A `--json` run on layer entries can report `faults: N > 0` with only advisory lines. The coordinated switch of every mode belongs to S06 (#148).
+- **The ratchet is only as faithful as the old entry.** A `before` entry that omits its old `category`, `level`, `facet`, `line`, or `book` declares different metadata, so its rules are not comparable and cannot be inherited; a `before` without `title`/`body` finds no old fault. A bundle that carries only a subset of the Cards also evaluates pairwise rules (I6, E5) on that subset, on both sides. The bundle's `--setting` term table is one table for both sides, so editing the term-table Card itself is not yet modelled as two tables; the Term slices add that. The service gate will read the old version from the archive, not trust a bundle.
+- **A duplicate-title envelope refusal is not a diagnostic.** The repeated leading title and the multiple Reverse markers are storage envelope invariants in the service (`validate_card_text`, `parse_card_text`), so the ratchet cannot inherit them; `src/main.rs` keeps the `authored_changed` allowance and the test `the_leading_title_allowance_follows_the_authored_change` pins it.
 - **`--cards` never fires I5, E4, F4.** `check_cards` sets no `inbound` or `inbound_kinded`, so those rules need `--json` entries that carry them (as `digest-audit.ps1` writes). They are also outside `DEFAULT_RULES`.
 - **I7 needs the relationship evidence.** `get_card` returns `kinds` as a `{target: kind}` object; `check_cards` passes it as `relations` and `digest-audit` writes it into every entry. An entry without `relations` reports nothing for I7 — it is not a silent pass, because the published-Card path always carries it, and the audit and card cycle both use that path.
 - **R20 and R21 are advice.** They start in the pilot as `(advisory)` lines inside `DEFAULT_RULES` and `DEFAULT_CARD_RULES`: visible in every check, counted as no fault by `--cards`, and split out by the audit (`style.advisory`, `style.advice_by_rule`). Promoting an unambiguous case to a blocking fault is a later frozen change with its own fixtures.
@@ -520,6 +603,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **R16 does not report an empty 思路 or 解读**, although [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) lists "an empty section" as an R16 fault; only too many sentences are reported.
 
 ## Change history
+- `2026-10-24` — #144 S02: structured diagnostics and the legacy ratchet. `core::Diagnostic` (address, rule, `fault`, unclipped `key`, full `message`, `severity`, `legacy`, `scope`) is the new fault contract; `Check::report` returns diagnostics, and `Check::run`/`Diagnostic::line` format the same bytes as before (advisory lines get their `(advisory)` prefix from the severity). Every rule site names a rule-specific fault code and a semantic key built from the full fragment, measured value and limit, or missing-label set. `policy::severity`/`scope` and the `ADVISORY_RULES`/`GRAPH_RULES` catalog give defaults (I5/I6/E4/E5/F4/L3 are `graph`). `policy::Applicability` compares a per-rule signature (category, level, facet/derivation, shared term table, book) so a retype or concept→formal change cannot inherit newly applicable rules. `policy::ratchet` consumes the paired old report's `(rule, fault, key)` multiset and turns a retained fault into legacy advice; `policy::CheckReport` carries the diagnostics and the remaining blockers. `--json` entries may carry `before` (the old authored version with its old metadata), and an entry may name its own `level`; `check_json` then checks both sides with one `Check`, ratchets, and counts only blockers, while a bundle without `before` keeps the old lines and count. No baseline is stored. Verification: `cargo test` 62 lib + 5 parity tests, `cargo test --no-default-features --lib` 33 tests, both recorded fixture outputs byte-identical, the new `legacy-bundle.json` fixture identical through the executable and the library, and the service-side envelope allowance test `the_leading_title_allowance_follows_the_authored_change`.
 - `2026-10-24` — #143 S01: run the checker as a process-free library. `check.rs` is split, without a rule change, into `core.rs` (the rules, `Faults`, `Limits`, the corruption scan, I7's source evidence, and the orphan predicate), `text.rs` (the PowerShell text semantics, the prose projection, the term-table parse, the title context, and the lexical Link and envelope operations), `policy.rs` (`DEFAULT_RULES`, `filter_rules`), and the CLI adapter `check.rs`. `Cargo.toml` gains `default = ["cli"]`, `cli = ["dep:windows-sys", "dep:libc"]`, and `required-features = ["cli"]` on the binary; `lib.rs` exports `core`/`text`/`policy` always and `check`/`graph`/`mcp` with `cli`; `check` re-exports the old public names; `graph` re-exports the core's orphan predicate. The root crate links `zt-check` with `default-features = false` (no cycle; `tests/check_core.rs` checks a Card in-process), and zt-digest keeps the default `cli`. Verification: `cargo test` 43 lib + 4 parity tests, `cargo test --no-default-features --lib` 24 tests, `cargo build --no-default-features --lib` and `cargo tree --no-default-features -e normal` naming no process or archive dependency, both PowerShell fixture suites, and both recorded `tests/fixtures/*-expected.txt` lists byte-identical to the pre-extraction binary.
 - `2026-10-23` — The box pin: new `tools/zt-check/src/mcp/boxpin.rs` (`find`, `apply`, `PIN = "zt-box.txt"`); `main` applies it before the check. A run on a copy of the box names the box in its staging folder and every zt-check and zt-digest process of the run serves that box. Tests: four `boxpin` unit tests (a pin found from a nested file argument, from the working folder, none, two boxes and an empty pin refused); `cargo test` 32 passed.
 - `2026-10-23` — R6 masks every term the table keeps before it matches a rejected word, each as one mark so no word forms across the gap (`Check::kept`, test `a_rejected_word_inside_another_kept_term_is_that_term`). On ebrill2001modern 66 of 100 R6 faults read `税率差` (rejected for `幅度`) inside `税率差异化`, a term of its own; the old check removed only the row's own term.

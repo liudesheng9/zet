@@ -1,0 +1,33 @@
+{
+  "cards": [
+    {
+      "address": "K/10|a",
+      "title": "均衡的稳定性",
+      "body": "甲；乙。",
+      "before": {
+        "title": "均衡的稳定性",
+        "body": "甲；乙。"
+      }
+    },
+    {
+      "address": "K/10|b",
+      "title": "均衡的唯一性",
+      "body": "丙；丁。",
+      "before": {
+        "title": "均衡的唯一性",
+        "body": "丙；丁。\n\n戊；己。"
+      }
+    },
+    {
+      "address": "K/10|c",
+      "category": "event",
+      "title": "通用汽车收购费雪车身公司",
+      "body": "通用汽车收购了费雪车身公司。",
+      "before": {
+        "category": "idea",
+        "title": "通用汽车收购费雪车身公司",
+        "body": "通用汽车收购了费雪车身公司。"
+      }
+    }
+  ]
+}

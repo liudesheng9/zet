@@ -1,0 +1,5 @@
+K/10|a R3 (advisory) 甲；乙。
+K/10|b R3 (advisory) 丙；丁。
+K/10|c E1 no date in the title: 通用汽车收购费雪车身公司
+K/10|c E2 missing labels: 时间、地点、参与者、经过、来源
+faults: 2

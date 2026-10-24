@@ -20,6 +20,11 @@ const CARD_LAYER: &str = concat!(
     "/../../scripts/book-digest/tests/card-layer-fixture.json"
 );
 const CARD_LAYER_EXPECTED: &str = include_str!("fixtures/card-layer-expected.txt");
+const LEGACY_BUNDLE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/legacy-bundle.json"
+);
+const LEGACY_EXPECTED: &str = include_str!("fixtures/legacy-expected.txt");
 
 /// The installed executable's lines, as the digest scripts read them.
 fn binary(args: &[&str]) -> Vec<String> {
@@ -107,6 +112,18 @@ fn the_executable_states_the_library_version() {
         binary(&["--version"]),
         [format!("zt-check {}", zt_check::VERSION)]
     );
+}
+
+/// S02 (#144): a draft bundle that carries both versions prints the same ordered
+/// report through the executable and the library adapter. The retained faults
+/// are advice, the duplicate occurrence is gone, and the two newly applicable
+/// Event formats count as the only blocking faults.
+#[test]
+fn the_legacy_bundle_reports_the_same_ordered_lines_everywhere() {
+    let expected = LEGACY_EXPECTED.lines().collect::<Vec<_>>();
+    let args = ["--json", LEGACY_BUNDLE];
+    assert_eq!(binary(&args), expected);
+    assert_eq!(library(&args), expected);
 }
 
 #[test]

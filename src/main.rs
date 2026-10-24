@@ -4204,6 +4204,40 @@ fn cmd_lsbk() -> Result<()> {
 mod tests {
     use super::*;
 
+    /// S02-AC08 / R0148: the repeated-leading-title allowance stays tied to
+    /// `authored_changed`, so an unchanged old body does not become newly illegal
+    /// merely because a metadata edit reaches the validator, while a real authored
+    /// change must remove the duplicate title. A malformed envelope with multiple
+    /// Reverse markers keeps its existing refusal in both cases.
+    #[test]
+    fn the_leading_title_allowance_follows_the_authored_change() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        initialize_database(temp.path()).expect("initialize database");
+        let conn = open_db(temp.path()).expect("open database");
+        let old = card::compose_card_text("标题", "标题\n\n正文。", "");
+        let changed = card::compose_card_text("标题", "标题\n\n改过的正文。", "");
+        validate_card_text(&conn, "0/1", &old, Some(&old))
+            .expect("a metadata-only edit keeps the unchanged body legal");
+        let error = validate_card_text(&conn, "0/1", &changed, Some(&old)).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate leading title"),
+            "a real authored change must remove the repeated title: {error}"
+        );
+        let error = validate_card_text(&conn, "0/1", &old, None).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate leading title"),
+            "a new Card has no allowance: {error}"
+        );
+        let malformed = "# 标题\n\n正文。\n\n<!-- zt:reverse-links -->\n<!-- zt:reverse-links -->\n";
+        for old_text in [None, Some(malformed)] {
+            let error = validate_card_text(&conn, "0/1", malformed, old_text).unwrap_err();
+            assert!(
+                error.to_string().contains("at most one"),
+                "multiple Reverse markers keep refusing: {error}"
+            );
+        }
+    }
+
     #[test]
     fn literature_tree_locations_use_the_citation_key_as_tree_id() {
         for valid in [

@@ -105,6 +105,12 @@ static FINDING_LABELS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
 
 const SECTIONS: [&str; 5] = ["思路", "起点", "步骤", "结果", "解读"];
 
+/// Whether a facet marks a Derivation part (R14 to R17 read it, and the
+/// applicability signature compares the same fact).
+pub fn is_derivation_facet(facet: &str) -> bool {
+    culture_starts_with(facet, "推导") || DERIVATION.is_match(facet)
+}
+
 /// R20's named constant: the characters of content a sentence must carry beside
 /// a local label. `式 (12) 的加成项来自需求弹性` states content; `式 (12) 有该项`
 /// does not. It is calibrated on annotated examples before it can block (D294).
@@ -174,6 +180,8 @@ fn corruption(body: &str, title: &str, address: &str, faults: &mut Faults) {
             faults.add(
                 address,
                 "R18",
+                "repeated_prose",
+                &text,
                 &format!("repeated prose paragraph at lines {first}-{last} and {start}-{end}"),
             );
         } else {
@@ -194,6 +202,7 @@ fn corruption(body: &str, title: &str, address: &str, faults: &mut Faults) {
     }
     let mut paragraph = Vec::new();
     let mut seen = HashMap::new();
+    let mut repeated_titles = 0usize;
     let mut fence: Option<(char, usize)> = None;
     let mut math: Option<String> = None;
     let mut html_quote = 0usize;
@@ -300,9 +309,12 @@ fn corruption(body: &str, title: &str, address: &str, faults: &mut Faults) {
         }
         if !title.is_empty() && heading(trim) == Some(title) {
             flush(&mut paragraph, &mut seen, address, faults);
+            repeated_titles += 1;
             faults.add(
                 address,
                 "R19",
+                "repeated_title",
+                &format!("heading:{repeated_titles}"),
                 &format!("repeated Card title at body line {}", index + 1),
             );
             continue;
@@ -341,6 +353,108 @@ impl Default for Limits {
             max_idea_chars: 300,
             min_reason: 8,
         }
+    }
+}
+
+/// What one diagnostic does if the policy enforces its rule for the Card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Severity {
+    /// A configured blocking rule: the gate refuses while the fault is not inherited.
+    Block,
+    /// Advice: the line is reported, never refused.
+    Advise,
+}
+
+impl Severity {
+    /// The policy name, as the published contract spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Block => "block",
+            Severity::Advise => "advise",
+        }
+    }
+}
+
+/// What evidence one diagnostic reads: the Card and its bounded context, or a
+/// whole-archive graph fact that stays an audit path (design 6.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The Card's own text and the bounded context a caller materialized for it.
+    Local,
+    /// Other Cards' Links or titles: reported by the audit, not decided per write.
+    Graph,
+}
+
+impl Scope {
+    /// The policy name, as the published contract spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::Local => "local",
+            Scope::Graph => "graph",
+        }
+    }
+}
+
+/// One fault under the structured contract (design 5.4): the human line is
+/// formatted from it, and the legacy comparison uses `rule`, `fault`, and `key`
+/// rather than the clipped line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// The Card the fault belongs to.
+    pub address: String,
+    /// The rule id, as the existing reports spell it (`R2`, `E2`, ...).
+    pub rule: String,
+    /// The rule-specific fault code (`sentence_length`, `missing_labels`, ...).
+    pub fault: String,
+    /// The rule-specific semantic key, built from the full offending fragment or
+    /// missing requirement and never from a line number or the clipped display.
+    pub key: String,
+    /// The full message, before the display clip.
+    pub message: String,
+    /// The severity the rule's default policy gives this fault.
+    pub severity: Severity,
+    /// Whether an old version of the same Card already carried this occurrence.
+    pub legacy: bool,
+    /// What evidence the diagnostic read.
+    pub scope: Scope,
+}
+
+impl Diagnostic {
+    /// `<address> <rule> [(advisory) ]<message>`, the text on one line, white
+    /// space collapsed and clipped to 90 UTF-16 units with `…`.
+    pub fn line(&self) -> String {
+        let mut display = String::new();
+        if self.severity == Severity::Advise {
+            display.push_str("(advisory) ");
+        }
+        display.push_str(&self.message);
+        let units = utf16_form(&display);
+        let collapsed = SPACES.replace_all(&units, " ");
+        let trimmed = collapsed.trim();
+        let units = trimmed.chars().collect::<Vec<_>>();
+        let clip = if units.len() > 90 {
+            let mut kept = units[..89].iter().collect::<String>();
+            // A cut through a surrogate pair leaves half a character; .NET writes U+FFFD for it.
+            if is_high_stand_in(units[88]) && is_low_stand_in(units[89]) {
+                kept.pop();
+                kept.push('\u{FFFD}');
+            }
+            kept.push('…');
+            kept
+        } else {
+            trimmed.to_string()
+        };
+        from_utf16_form(&format!(
+            "{} {} {}",
+            utf16_form(&self.address),
+            self.rule,
+            clip
+        ))
+    }
+
+    /// Whether this diagnostic blocks a write under its current severity.
+    pub fn blocking(&self) -> bool {
+        self.severity == Severity::Block
     }
 }
 
@@ -395,9 +509,12 @@ impl Check {
         self
     }
 
-    /// Every fault of the Cards (`{"address","title","body","facet",...}`), in
-    /// the order card-style-check.ps1 writes them.
-    pub fn run(&self, cards: &[Value]) -> Vec<String> {
+    /// Every fault of the Cards (`{"address","title","body","facet",...}`) as
+    /// structured diagnostics, in the order card-style-check.ps1 writes them.
+    /// An entry may name its own `level`: the old authored version is checked
+    /// with its old metadata, the proposed version with the proposed metadata
+    /// (design 6.3). Without one, the run's level applies.
+    pub fn report(&self, cards: &[Value]) -> Vec<Diagnostic> {
         let mut faults = Faults::default();
         let mut prose_chars = HashMap::new();
         for card in cards {
@@ -406,15 +523,42 @@ impl Check {
             prose_chars.insert(key(&address), chars);
         }
         self.layer(cards, &prose_chars, &mut faults);
-        faults.lines
+        faults.diagnostics
+    }
+
+    /// Every fault of the Cards, in the order card-style-check.ps1 writes them.
+    pub fn run(&self, cards: &[Value]) -> Vec<String> {
+        self.report(cards)
+            .iter()
+            .map(Diagnostic::line)
+            .collect::<Vec<_>>()
+    }
+
+    /// The level this Card is checked at: its own metadata when the entry names
+    /// it, otherwise the run's level.
+    fn level_of(&self, card: &Value) -> String {
+        let own = text(prop(card, "level"));
+        if own.is_empty() {
+            self.level.clone()
+        } else {
+            own
+        }
     }
 
     /// R2 to R19 for one Card; returns its prose characters (I2 reads them).
     fn language(&self, card: &Value, address: &str, faults: &mut Faults) -> i64 {
+        let level = self.level_of(card);
         let title = text(prop(card, "title"));
-        corruption(&text(prop(card,"body")),&title,address,faults);
-        if open_math(&text(prop(card, "body"))) {
-            faults.add(address, "R22", "the body leaves an inline formula open (an odd number of $; write a currency as 美元 or \\$)");
+        let authored_body = text(prop(card, "body"));
+        corruption(&authored_body, &title, address, faults);
+        if open_math(&authored_body) {
+            faults.add(
+                address,
+                "R22",
+                "open_formula",
+                &format!("body:{authored_body}"),
+                "the body leaves an inline formula open (an odd number of $; write a currency as 美元 or \\$)",
+            );
         }
         let facet = text(prop(card, "facet"));
         // A root, an anchor's section index, a hub's navigation list, and a register part's term
@@ -425,7 +569,7 @@ impl Check {
             &["anchor", "root", "hub", "register-part", "restatement-entry"],
         );
         let shared = ps_in(address, &self.shared);
-        let derivation = culture_starts_with(&facet, "推导") || DERIVATION.is_match(&facet);
+        let derivation = is_derivation_facet(&facet);
         if !title.is_empty() {
             let measure = measure(&title);
             let limit = if measure.words { 25 } else { 40 };
@@ -433,14 +577,22 @@ impl Check {
                 faults.add(
                     address,
                     "R12",
+                    "title_size",
+                    &format!("{} {} > {limit}: {title}", measure.size, measure.unit()),
                     &format!("({} {} > {limit}) {title}", measure.size, measure.unit()),
                 );
             }
             if SEMICOLON.is_match(&plain(&title)) {
-                faults.add(address, "R12", &format!("two claims: {title}"));
+                faults.add(address, "R12", "two_claims", &title, &format!("two claims: {title}"));
             }
             if open_math(&title) {
-                faults.add(address, "R22", &format!("the title leaves an inline formula open (an odd number of $): {title}"));
+                faults.add(
+                    address,
+                    "R22",
+                    "open_formula",
+                    &format!("title:{title}"),
+                    &format!("the title leaves an inline formula open (an odd number of $): {title}"),
+                );
             }
             // A title names its content, so a bare local number is the same fault there.
             local_reference(faults, address, &title);
@@ -495,12 +647,16 @@ impl Check {
                     faults.add(
                         address,
                         "R17",
+                        "note_before_step",
+                        &line_text,
                         &format!("a 说明 line before the first step: {line_text}"),
                     );
                 } else if notes.contains_key(&steps) {
                     faults.add(
                         address,
                         "R17",
+                        "second_note",
+                        &line_text,
                         &format!("a second 说明 line under step {steps}: {line_text}"),
                     );
                 }
@@ -544,7 +700,7 @@ impl Check {
             }
         }
         // R15 to R17: a formal model's Derivation part with an explanation, or any one with --require-explain.
-        if derivation && !ps_eq(&self.level, "concept") {
+        if derivation && !ps_eq(&level, "concept") {
             let has = order.iter().any(|name| name == "思路" || name == "解读");
             if has || self.require_explain {
                 if order.join(",") != SECTIONS.join(",") {
@@ -556,6 +712,8 @@ impl Check {
                     faults.add(
                         address,
                         "R15",
+                        "sections",
+                        &order.join(","),
                         &format!("sections {found}; want {}", SECTIONS.join(", ")),
                     );
                 }
@@ -563,6 +721,8 @@ impl Check {
                     faults.add(
                         address,
                         "R16",
+                        "thought_sentences",
+                        &format!("{thought} sentences > 5"),
                         &format!("(思路 has {thought} sentences > 5)"),
                     );
                 }
@@ -570,6 +730,8 @@ impl Check {
                     faults.add(
                         address,
                         "R16",
+                        "reading_sentences",
+                        &format!("{reading} sentences > 6"),
                         &format!("(解读 has {reading} sentences > 6)"),
                     );
                 }
@@ -578,6 +740,8 @@ impl Check {
                         faults.add(
                             address,
                             "R17",
+                            "note_sentences",
+                            &format!("{step}:{count} sentences > 2"),
                             &format!("(说明 under step {step} has {count} sentences > 2)"),
                         );
                     }
@@ -587,6 +751,8 @@ impl Check {
                     faults.add(
                         address,
                         "R17",
+                        "explanation_size",
+                        &format!("sentences:{explain_sentences}/{}", limits.max_explain_sentences),
                         &format!(
                             "({explain_sentences} explanation sentences > {}) shorten the explanation",
                             limits.max_explain_sentences
@@ -596,6 +762,8 @@ impl Check {
                     faults.add(
                         address,
                         "R17",
+                        "explanation_size",
+                        &format!("characters:{explain_chars}/{}", limits.max_explain_chars),
                         &format!(
                             "({explain_chars} explanation characters > {}) shorten the explanation",
                             limits.max_explain_chars
@@ -606,7 +774,7 @@ impl Check {
         }
         // Card size: only a Model part of a formal model; the Model Card is the model's entry
         // point, and a concept model keeps its few parts whole.
-        if ps_eq(&self.level, "concept") {
+        if ps_eq(&level, "concept") {
             return chars;
         }
         let limits = &self.limits;
@@ -615,6 +783,8 @@ impl Check {
                 faults.add(
                     address,
                     "R13",
+                    "part_size",
+                    &format!("sentences:{sentences}/{}", limits.max_sentences),
                     &format!(
                         "({sentences} sentences > {}) split the part into two or more parts",
                         limits.max_sentences
@@ -624,6 +794,8 @@ impl Check {
                 faults.add(
                     address,
                     "R13",
+                    "part_size",
+                    &format!("characters:{chars}/{}", limits.max_chars),
                     &format!(
                         "({chars} characters > {}) split the part into two or more parts",
                         limits.max_chars
@@ -635,6 +807,8 @@ impl Check {
             faults.add(
                 address,
                 "R14",
+                "steps",
+                &format!("steps:{steps}/{}", limits.max_steps),
                 &format!(
                     "({steps} steps > {}) split the derivation into a chain of Derivation parts",
                     limits.max_steps
@@ -665,18 +839,20 @@ impl Check {
             faults.add(
                 address,
                 "R2",
+                "sentence_length",
+                &format!("{} {} > {limit}: {sentence}", measure.size, measure.unit()),
                 &format!("({} {} > {limit}) {sentence}", measure.size, measure.unit()),
             );
         }
         if SEMICOLON.is_match(&plain) {
-            faults.add(address, "R3", sentence);
+            faults.add(address, "R3", "semicolon", sentence, sentence);
         }
         // `被收购方`, `被投资方`: a party, not a passive (and a 被 that names the party has its actor).
         if passive(&plain) {
-            faults.add(address, "R4", sentence);
+            faults.add(address, "R4", "passive", sentence, sentence);
         }
         if LIGHT_VERB.is_match(&plain) {
-            faults.add(address, "R5", sentence);
+            faults.add(address, "R5", "light_verb", sentence, sentence);
         }
         if !shared {
             // A rejected word inside a term the table keeps is that term, not the word: 税率差 is
@@ -695,6 +871,8 @@ impl Check {
                         faults.add(
                             address,
                             "R6",
+                            "forbidden_word",
+                            &format!("{term}|{word}|{sentence}"),
                             &format!("uses `{word}` for `{term}`: {sentence}"),
                         );
                     }
@@ -702,10 +880,16 @@ impl Check {
             }
         }
         if NOUN_PHRASE.is_match(&plain) {
-            faults.add(address, "R7", sentence);
+            faults.add(address, "R7", "noun_phrase", sentence, sentence);
         }
         if let Some(word) = HEDGES.iter().find(|word| plain.contains(*word)) {
-            faults.add(address, "R9", &format!("`{word}`: {sentence}"));
+            faults.add(
+                address,
+                "R9",
+                "hedge",
+                &format!("{word}|{sentence}"),
+                &format!("`{word}`: {sentence}"),
+            );
         }
     }
 
@@ -773,7 +957,9 @@ impl Check {
                 faults.add(
                     &row.address,
                     "I6",
-                    "(advisory) Workspace scope unknown: the entry names no Workspace, so nothing is compared",
+                    "workspace_scope_unknown",
+                    "",
+                    "Workspace scope unknown: the entry names no Workspace, so nothing is compared",
                 );
                 continue;
             }
@@ -784,8 +970,10 @@ impl Check {
                 faults.add(
                     &row.address,
                     "I6",
+                    "context_incomplete",
+                    &format!("known:{known}"),
                     &format!(
-                        "(advisory) Workspace title context incomplete: {known} known {} compared, others unknown",
+                        "Workspace title context incomplete: {known} known {} compared, others unknown",
                         if known == 1 { "title" } else { "titles" }
                     ),
                 );
@@ -823,7 +1011,9 @@ impl Check {
                 faults.add(
                     &row.address,
                     "I6",
-                    &format!("(advisory) a title very similar to [[{}]]", other.address),
+                    "similar_title",
+                    &format!("[[{}]]", other.address),
+                    &format!("a title very similar to [[{}]]", other.address),
                 );
             }
         }
@@ -859,7 +1049,9 @@ impl Check {
                 faults.add(
                     &address,
                     "I1",
-                    &format!("(advisory) the title states no claim: {title}"),
+                    "no_claim_title",
+                    &title,
+                    &format!("the title states no claim: {title}"),
                 );
             }
             if is(&["idea"]) {
@@ -868,6 +1060,8 @@ impl Check {
                     faults.add(
                         &address,
                         "I2",
+                        "idea_size",
+                        &format!("{size} characters > {}", limits.max_idea_chars),
                         &format!(
                             "({size} characters > {}) split candidate",
                             limits.max_idea_chars
@@ -877,6 +1071,8 @@ impl Check {
                     faults.add(
                         &address,
                         "I2",
+                        "idea_size",
+                        &format!("{size} characters < {}", limits.min_idea_chars),
                         &format!(
                             "({size} characters < {}) merge candidate",
                             limits.min_idea_chars
@@ -901,6 +1097,8 @@ impl Check {
                     faults.add(
                         &address,
                         "I3",
+                        "no_source",
+                        &book,
                         &format!("no source line: no Link to [[{book}]] or one of its anchors"),
                     );
                 }
@@ -909,6 +1107,8 @@ impl Check {
                 faults.add(
                     &address,
                     "I4",
+                    "no_kinded_link",
+                    "",
                     "no kinded Link to a Card other than the parent",
                 );
             }
@@ -921,12 +1121,24 @@ impl Check {
                     .map(str::to_string)
                     .collect::<Vec<_>>();
                 if is_orphan(&address, &text(prop(card, "category")), &inbound) {
-                    faults.add(&address, "I5", "no other Card has an authored Link here");
+                    faults.add(
+                        &address,
+                        "I5",
+                        "no_inbound",
+                        "",
+                        "no other Card has an authored Link here",
+                    );
                 }
             }
             if is(&["event"]) {
                 if !DATE.is_match(&title_plain) {
-                    faults.add(&address, "E1", &format!("no date in the title: {title}"));
+                    faults.add(
+                        &address,
+                        "E1",
+                        "no_date",
+                        &title,
+                        &format!("no date in the title: {title}"),
+                    );
                 }
                 let missing = EVENT_LABELS
                     .iter()
@@ -937,11 +1149,19 @@ impl Check {
                     faults.add(
                         &address,
                         "E2",
+                        "missing_labels",
+                        &format!("labels:{}", missing.join(",")),
                         &format!("missing labels: {}", missing.join("、")),
                     );
                 }
                 if has("inbound_kinded") && ps_int(prop(card, "inbound_kinded")) == 0 {
-                    faults.add(&address, "E4", "no Idea Card links it with a kind word");
+                    faults.add(
+                        &address,
+                        "E4",
+                        "no_kinded_inbound",
+                        "",
+                        "no Idea Card links it with a kind word",
+                    );
                 }
             }
             if is(&["finding"]) {
@@ -975,9 +1195,14 @@ impl Check {
                         .map(|link| format!("[[{link}]]"))
                         .collect::<Vec<_>>()
                         .join(" ");
+                    // The identity is the set of unkinded Links, so reordering them is no new fault.
+                    let mut identity = refers.clone();
+                    identity.sort();
                     faults.add(
                         &address,
                         "L1",
+                        "unkinded_links",
+                        &identity.join(","),
                         &format!("({} Links read as refers) {shown}", refers.len()),
                     );
                 }
@@ -1019,6 +1244,12 @@ impl Check {
                         faults.add(
                             &address,
                             "L2",
+                            "no_reason",
+                            &format!(
+                                "{} characters < {}: {sentence}",
+                                length(&reason),
+                                limits.min_reason
+                            ),
                             &format!(
                                 "({} characters < {}) a Link with no reason: {sentence}",
                                 length(&reason),
@@ -1034,10 +1265,9 @@ impl Check {
                     faults.add(
                         &address,
                         "L3",
-                        &format!(
-                            "(advisory) [[{target}]] is linked in {} paragraphs",
-                            seen.len()
-                        ),
+                        "repeated_paragraph_link",
+                        target,
+                        &format!("[[{target}]] is linked in {} paragraphs", seen.len()),
                     );
                 }
             }
@@ -1070,7 +1300,9 @@ impl Check {
                     faults.add(
                         &events[j].0,
                         "E5",
-                        &format!("(advisory) the same event as [[{}]]?", events[i].0),
+                        "same_event",
+                        &format!("[[{}]]|{}", events[i].0, events[i].1),
+                        &format!("the same event as [[{}]]?", events[i].0),
                     );
                 }
             }
@@ -1123,7 +1355,9 @@ fn local_reference(faults: &mut Faults, address: &str, text: &str) {
         faults.add(
             address,
             "R20",
-            &format!("(advisory) local reference `{label}` names no content: {text}"),
+            "local_reference",
+            &format!("{label}|{text}"),
+            &format!("local reference `{label}` names no content: {text}"),
         );
     }
 }
@@ -1142,7 +1376,9 @@ fn unnamed_referent(faults: &mut Faults, address: &str, text: &str) {
     faults.add(
         address,
         "R21",
-        &format!("(advisory) unnamed referent `{word}` with no named Link in its sentence: {text}"),
+        "unnamed_referent",
+        &format!("{word}|{text}"),
+        &format!("unnamed referent `{word}` with no named Link in its sentence: {text}"),
     );
 }
 
@@ -1202,17 +1438,19 @@ fn own_source_dependency(card: &Value, address: &str, faults: &mut Faults) {
             continue;
         }
         if sources.is_empty() {
-            faults.add(
+            faults.advise(
                 address,
                 "I7",
-                &format!(
-                    "(advisory) source evidence unknown, so [[{target}]] may be an own-source premise"
-                ),
+                "own_source_unknown",
+                target,
+                &format!("source evidence unknown, so [[{target}]] may be an own-source premise"),
             );
         } else if sources.iter().any(|source| key(source) == key(&book)) {
             faults.add(
                 address,
                 "I7",
+                "own_source",
+                target,
                 &format!("`rests-on` [[{target}]] enters its own source `{book}`"),
             );
         }
@@ -1255,6 +1493,8 @@ fn finding_rules(card: &Value, address: &str, body: &str, faults: &mut Faults) {
         faults.add(
             address,
             "F1",
+            "missing_labels",
+            &format!("labels:{}", missing.join(",")),
             &format!("missing labels: {}", missing.join("、")),
         );
     }
@@ -1274,11 +1514,13 @@ fn finding_rules(card: &Value, address: &str, body: &str, faults: &mut Faults) {
                 faults.add(
                     address,
                     "F2",
+                    "source_wrong_book",
+                    &book,
                     &format!("the source line links neither [[{book}]] nor one of its anchors"),
                 );
             }
         } else if sources.iter().all(|(_, rest)| rest.is_empty()) {
-            faults.add(address, "F2", "the source line names no source");
+            faults.add(address, "F2", "source_missing", "", "the source line names no source");
         }
     }
     let results = labelled("结果");
@@ -1286,6 +1528,8 @@ fn finding_rules(card: &Value, address: &str, body: &str, faults: &mut Faults) {
         faults.add(
             address,
             "F3",
+            "result_labels",
+            &format!("{} labels", results.len()),
             &format!(
                 "({} 结果 labels) one result per Card: split it",
                 results.len()
@@ -1301,40 +1545,75 @@ fn finding_rules(card: &Value, address: &str, body: &str, faults: &mut Faults) {
             faults.add(
                 address,
                 "F3",
+                "result_items",
+                &format!("{items} items"),
                 &format!("({items} results under 结果) one result per Card: split it"),
             );
         }
     }
     if prop(card, "inbound_kinded").is_some() && ps_int(prop(card, "inbound_kinded")) == 0 {
-        faults.add(address, "F4", "no Idea Card links it with a kind word");
+        faults.add(
+            address,
+            "F4",
+            "no_kinded_inbound",
+            "",
+            "no Idea Card links it with a kind word",
+        );
     }
 }
 
 #[derive(Default)]
 pub(crate) struct Faults {
-    pub(crate) lines: Vec<String>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
 impl Faults {
-    /// `<address> <rule> <text>`, the text on one line and clipped to 90 characters.
-    pub(crate) fn add(&mut self, address: &str, rule: &str, text: &str) {
-        let collapsed = SPACES.replace_all(text, " ");
-        let trimmed = collapsed.trim();
-        let units = trimmed.chars().collect::<Vec<_>>();
-        let clip = if units.len() > 90 {
-            let mut kept = units[..89].iter().collect::<String>();
-            // A cut through a surrogate pair leaves half a character; .NET writes U+FFFD for it.
-            if is_high_stand_in(units[88]) && is_low_stand_in(units[89]) {
-                kept.pop();
-                kept.push('\u{FFFD}');
-            }
-            kept.push('…');
-            kept
-        } else {
-            trimmed.to_string()
-        };
-        self.lines
-            .push(from_utf16_form(&format!("{address} {rule} {clip}")));
+    /// One fault at the rule's default severity and scope.
+    pub(crate) fn add(&mut self, address: &str, rule: &str, fault: &str, key: &str, message: &str) {
+        self.push(
+            address,
+            rule,
+            fault,
+            key,
+            message,
+            crate::policy::severity(rule),
+            crate::policy::scope(rule),
+        );
+    }
+
+    /// One advisory subcase of a rule whose default severity is otherwise blocking.
+    pub(crate) fn advise(&mut self, address: &str, rule: &str, fault: &str, key: &str, message: &str) {
+        self.push(
+            address,
+            rule,
+            fault,
+            key,
+            message,
+            Severity::Advise,
+            crate::policy::scope(rule),
+        );
+    }
+
+    fn push(
+        &mut self,
+        address: &str,
+        rule: &str,
+        fault: &str,
+        key: &str,
+        message: &str,
+        severity: Severity,
+        scope: Scope,
+    ) {
+        self.diagnostics.push(Diagnostic {
+            address: from_utf16_form(address),
+            rule: rule.to_string(),
+            fault: fault.to_string(),
+            key: from_utf16_form(key),
+            message: from_utf16_form(message),
+            severity,
+            legacy: false,
+            scope,
+        });
     }
 }
 
@@ -1373,6 +1652,111 @@ mod tests {
     const CARD_STYLE_FIXTURE: &str =
         include_str!("../../../scripts/book-digest/tests/card-style-fixture.json");
     const CARD_STYLE_EXPECTED: &str = include_str!("../tests/fixtures/card-style-expected.txt");
+
+    /// S02-AC03/AC04: the display clips two long faults to the same prefix, but
+    /// their semantic keys keep the full offending fragment, so they stay two
+    /// distinct occurrences. A duplicate fault is not hidden behind an old one.
+    #[test]
+    fn faults_sharing_a_clipped_line_keep_distinct_semantic_keys() {
+        let head = "甲".repeat(80);
+        let cards = json!([{
+            "address": "K/5", "title": "均衡稳定",
+            "body": format!("{head}乙。\n\n{head}丙。")
+        }]);
+        let report = Check::new(Limits::default(), false, "").report(cards.as_array().unwrap());
+        let r2 = report.iter().filter(|d| d.rule == "R2").collect::<Vec<_>>();
+        assert_eq!(r2.len(), 2, "{report:#?}");
+        assert_eq!(r2[0].line(), r2[1].line(), "both lines clip to the same prefix");
+        assert_ne!(r2[0].key, r2[1].key, "the keys keep the full fragment");
+        assert!(
+            r2[0].key.contains('乙') && r2[1].key.contains('丙'),
+            "the full sentence is the identity: {:?}",
+            [&r2[0].key, &r2[1].key]
+        );
+        assert!(r2[0].message.len() > 90, "the message is not clipped either");
+        let retained = crate::policy::ratchet(&[r2[0].clone()], report, |_| true);
+        assert!(retained.diagnostics.iter().any(|d| d.rule == "R2" && d.legacy));
+        assert_eq!(retained.blockers, 1, "the second occurrence is new");
+    }
+
+    /// S02-AC04: a size fault's identity is the measured value and the limit, not
+    /// the clipped line; a missing-label fault names the whole missing set.
+    #[test]
+    fn size_and_label_faults_identify_their_measured_requirement() {
+        let part = |sentences: usize| {
+            let body = (1..=sentences)
+                .map(|n| format!("第 {n} 句说明这一步的推理。"))
+                .collect::<String>();
+            json!({ "address": "K/6|a", "facet": "设定", "title": "设定", "body": body })
+        };
+        let key = |sentences: usize| {
+            let cards = json!([part(sentences)]);
+            let report = Check::new(Limits::default(), false, "").report(cards.as_array().unwrap());
+            report
+                .iter()
+                .find(|d| d.rule == "R13")
+                .map(|d| d.key.clone())
+                .expect("R13")
+        };
+        assert_eq!(key(13), "sentences:13/12");
+        assert_eq!(key(14), "sentences:14/12");
+        assert_ne!(key(13), key(14), "a larger part is a new fault");
+
+        let event = |labels: &str| {
+            json!({ "address": "K/6|b", "category": "event", "title": "1999 年的一笔交易",
+                "body": format!("时间：1999 年。\n地点：上海。\n{labels}") })
+        };
+        let e2 = |labels: &str| {
+            let cards = json!([event(labels)]);
+            let report = Check::new(Limits::default(), false, "").report(cards.as_array().unwrap());
+            report
+                .iter()
+                .find(|d| d.rule == "E2")
+                .map(|d| d.key.clone())
+                .expect("E2")
+        };
+        let full = "参与者：甲。\n经过：双方签约。\n来源：[[K]]。";
+        assert_eq!(
+            {
+                let cards = json!([event(full)]);
+                let report =
+                    Check::new(Limits::default(), false, "").report(cards.as_array().unwrap());
+                report.iter().filter(|d| d.rule == "E2").count()
+            },
+            0,
+            "all five labels are present"
+        );
+        assert_eq!(e2("参与者：甲。\n经过：双方签约。"), "labels:来源");
+        assert_eq!(e2("经过：双方签约。\n来源：[[K]]。"), "labels:参与者");
+        assert_eq!(e2("经过：双方签约。"), "labels:参与者,来源");
+        assert_ne!(
+            e2("经过：双方签约。\n来源：[[K]]。"),
+            e2("经过：双方签约。"),
+            "two missing labels are another requirement"
+        );
+    }
+
+    /// S02-AC01: one structured diagnostic carries the address, the rule, the
+    /// rule-specific fault code, the unclipped semantic identity, the full
+    /// message, the severity, the legacy flag, and the scope; the familiar line
+    /// is formatted from it at the boundary.
+    #[test]
+    fn a_diagnostic_carries_its_structured_identity_and_formats_the_familiar_line() {
+        let cards = json!([{ "address": "K/1", "title": "均衡稳定", "body": "甲；乙。" }]);
+        let cards = cards.as_array().expect("entries");
+        let report = Check::new(Limits::default(), false, "").report(cards);
+        assert_eq!(report.len(), 1);
+        let diagnostic = &report[0];
+        assert_eq!(diagnostic.address, "K/1");
+        assert_eq!(diagnostic.rule, "R3");
+        assert_eq!(diagnostic.fault, "semicolon");
+        assert_eq!(diagnostic.key, "甲；乙。");
+        assert_eq!(diagnostic.message, "甲；乙。");
+        assert_eq!(diagnostic.severity, Severity::Block);
+        assert!(!diagnostic.legacy);
+        assert_eq!(diagnostic.scope, Scope::Local);
+        assert_eq!(diagnostic.line(), "K/1 R3 甲；乙。");
+    }
 
     /// The in-process adapter the service check uses: the process-free core over
     /// the entries and the context the caller already materialized. `--json`
@@ -1448,14 +1832,26 @@ mod tests {
             .filter(|card| ps_eq(&text(prop(card, "line")), "shared"))
             .map(|card| ps_string(prop(card, "address")))
             .collect::<Vec<_>>();
-        let lines = faulted(
-            Check::new(Limits::default(), false, "")
-                .with_terms(setting_body.as_deref())
-                .with_shared(shared)
-                .run(cards),
-        );
+        let check = Check::new(Limits::default(), false, "")
+            .with_terms(setting_body.as_deref())
+            .with_shared(shared);
+        let report = check.report(cards);
+        // S02-AC01: every fault carries the structured contract, its severity and
+        // scope come from the rule catalog, and the familiar lines are exactly
+        // the formatted report, in the same order.
+        for diagnostic in &report {
+            assert!(!diagnostic.address.is_empty(), "{diagnostic:?}");
+            assert!(!diagnostic.rule.is_empty(), "{diagnostic:?}");
+            assert!(!diagnostic.fault.is_empty(), "{diagnostic:?}");
+            assert!(!diagnostic.message.is_empty(), "{diagnostic:?}");
+            assert!(!diagnostic.legacy);
+            assert_eq!(diagnostic.severity, crate::policy::severity(&diagnostic.rule));
+            assert_eq!(diagnostic.scope, crate::policy::scope(&diagnostic.rule));
+        }
+        let lines = faulted(report.iter().map(Diagnostic::line).collect());
         let expected = CARD_STYLE_EXPECTED.lines().collect::<Vec<_>>();
         assert_eq!(lines, expected, "the fixture lines, in order: {lines:#?}");
+        assert_eq!(check.run(cards), report.iter().map(Diagnostic::line).collect::<Vec<_>>());
         // The setting's own tables, the quotation, chart, and formulas, and a shared
         // part's words under another model's term table raise nothing. The shared
         // part's one bare deictic is the pilot's advice, which its own text earns.
@@ -1467,6 +1863,16 @@ mod tests {
                 "checked text it must skip: {line}"
             );
         }
+        // A graph rule's diagnostic says so; a text rule's stays local.
+        let graph = json!([{
+            "address": "K/2", "category": "idea", "workspace": "agent",
+            "title": "剩余控制权决定契约空白处", "body": "所有者能拒绝合作，所以契约的空白处由所有者决定。",
+            "inbound": []
+        }]);
+        let report = Check::new(Limits::default(), false, "").report(graph.as_array().unwrap());
+        let i5 = report.iter().find(|diagnostic| diagnostic.rule == "I5").expect("I5");
+        assert_eq!(i5.scope, Scope::Graph);
+        assert_eq!(i5.severity, Severity::Block);
     }
 
 
@@ -1704,9 +2110,14 @@ mod tests {
 ";
         let check = Check::new(Limits::default(), false, "").with_terms(Some(body));
         let r6 = |sentence: &str| {
-            let mut faults = Faults { lines: Vec::new() };
+            let mut faults = Faults::default();
             check.sentence(&mut faults, "K/1", false, sentence, false);
-            faults.lines.into_iter().filter(|line| line.contains(" R6 ")).collect::<Vec<_>>()
+            faults
+                .diagnostics
+                .iter()
+                .map(Diagnostic::line)
+                .filter(|line| line.contains(" R6 "))
+                .collect::<Vec<_>>()
         };
         assert!(r6("税率差异化提高了征收成本。").is_empty(), "a kept term with a rejected word in it");
         assert!(r6("两档税率的税率差额是五个百分点。").is_empty(), "a kept term without rejected words of its own");
@@ -1933,9 +2344,9 @@ mod tests {
         assert_eq!(from_utf16_form(&utf16_form("a😀b")), "a😀b");
         let mut faults = Faults::default();
         let long = format!("{}😀tail", "x".repeat(88));
-        faults.add("A/1", "R2", &utf16_form(&long));
+        faults.add("A/1", "R2", "sentence_length", &utf16_form(&long), &utf16_form(&long));
         assert_eq!(
-            faults.lines[0],
+            faults.diagnostics[0].line(),
             format!("A/1 R2 {}\u{FFFD}…", "x".repeat(88))
         );
     }

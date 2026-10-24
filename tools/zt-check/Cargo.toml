@@ -1,6 +1,6 @@
 [package]
 name = "zt-check"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "The book digest's Card quality check (Card language rules R2–R17, Card layer rules I, E, L), as one fast binary for every agent"
 publish = false

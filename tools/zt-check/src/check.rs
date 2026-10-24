@@ -10,7 +10,9 @@
 
 use crate::core::{Check, Limits};
 use crate::mcp::Zt;
-use crate::policy::{DEFAULT_RULES, LIST_SPLIT, filter_rules};
+use crate::policy::{
+    Applicability, DEFAULT_RULES, LIST_SPLIT, filter_rules, ratchet,
+};
 use crate::text::{
     TitleContext, BOOK_ANCHOR, BOOK_CARD, culture, key, prop, ps_eq, ps_in, ps_string, text,
     utf16_form,
@@ -43,13 +45,19 @@ limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences
 /// `--json`: a JSON array of entries (or one entry), as card-style-check.ps1 -Json reads
 /// it, or a bundle `{"cards": [...], "context": {"titles": [...], "complete": true}}`
 /// whose context is the read-only Workspace title comparison I6 needs (D135).
+///
+/// An entry may carry `before`: the old authored version with its old metadata.
+/// When any entry does, the old and proposed versions are checked by the same
+/// core and policy, the legacy ratchet applies (design 6.3), and the returned
+/// fault count is the number of unmatched blocking diagnostics. A bundle with no
+/// `before` keeps the established output and count.
 pub(crate) fn check_json(
     raw: &str,
     setting: &str,
     limits: Limits,
     require_explain: bool,
     level: &str,
-) -> Result<Vec<String>> {
+) -> Result<(Vec<String>, usize)> {
     let raw = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
     let (cards, context) = match serde_json::from_str::<Value>(raw).context("the file is not JSON")? {
         Value::Object(map) if map.contains_key("cards") => {
@@ -82,7 +90,77 @@ pub(crate) fn check_json(
         .with_terms(setting_body.as_deref())
         .with_shared(shared)
         .with_context(context);
-    Ok(check.run(&cards))
+    let before = before_entries(&cards)?;
+    if before.is_empty() {
+        let lines = check.run(&cards);
+        let faults = lines.len();
+        return Ok((lines, faults));
+    }
+    let old_cards = before
+        .iter()
+        .map(|(_, entry)| entry.clone())
+        .collect::<Vec<_>>();
+    let paired = before
+        .iter()
+        .map(|(proposed, entry)| (ps_string(prop(entry, "address")), proposed.clone()))
+        .collect::<Vec<_>>();
+    let mut old_report = check.report(&old_cards);
+    // A `before` entry is this Card's own old version even when the proposed Card
+    // moves to another address: pair the old diagnostics by the bundle's pairing,
+    // so a pure move does not make unchanged faults new (design 6.3, R0149).
+    for diagnostic in &mut old_report {
+        if let Some((_, proposed)) = paired
+            .iter()
+            .find(|(old, _)| ps_eq(old, &diagnostic.address))
+            && !ps_eq(&diagnostic.address, proposed)
+        {
+            diagnostic.address = proposed.clone();
+        }
+    }
+    let proposed_report = check.report(&cards);
+    let applicability = before
+        .iter()
+        .filter_map(|(address, entry)| {
+            let proposed = cards
+                .iter()
+                .find(|card| ps_eq(&ps_string(prop(card, "address")), address))?;
+            Some((
+                address.clone(),
+                (Applicability::of(entry), Applicability::of(proposed)),
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+    let report = ratchet(&old_report, proposed_report, |diagnostic| {
+        applicability
+            .get(&diagnostic.address)
+            .is_some_and(|(before, proposed)| before.comparable(proposed, &diagnostic.rule))
+    });
+    Ok((report.lines(), report.blockers))
+}
+
+/// The old authored version each entry declares under `before`, paired with the
+/// address of the Card it edits. A `before` that is absent or null means a new
+/// Card, which has no legacy allowance.
+fn before_entries(cards: &[Value]) -> Result<Vec<(String, Value)>> {
+    let mut entries = Vec::new();
+    for card in cards {
+        let Some(before) = card.get("before") else {
+            continue;
+        };
+        if before.is_null() {
+            continue;
+        }
+        let mut entry = before
+            .as_object()
+            .cloned()
+            .with_context(|| "the bundle's `before` must be an entry object")?;
+        let address = ps_string(prop(card, "address"));
+        entry
+            .entry("address".to_string())
+            .or_insert_with(|| json!(address.clone()));
+        entries.push((address, Value::Object(entry)));
+    }
+    Ok(entries)
 }
 
 fn text_of(card: &Value, name: &str) -> String {
@@ -529,15 +607,14 @@ pub fn run_lines(args: &[String], zt: Option<&mut Zt>) -> Result<Vec<String>> {
     let (mut out, count) = if let Some(path) = &options.json {
         let raw =
             std::fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
-        let lines = check_json(
+        let (lines, faults) = check_json(
             &raw,
             &setting,
             options.limits.clone(),
             options.require_explain,
             &level,
         )?;
-        let count = lines.len();
-        (lines, count)
+        (lines, faults)
     } else if let Some(list) = &options.addresses {
         let list = LIST_SPLIT
             .split(list)
@@ -647,14 +724,14 @@ mod tests {
 
     /// The CLI adapter adds the `faults:` count to the core's lines; the helper
     /// does the same so one recorded list compares against the adapter directly.
-    fn printed(mut lines: Vec<String>) -> Vec<String> {
-        let count = lines.len();
-        lines.push(format!("faults: {count}"));
+    fn printed(mut lines: Vec<String>, faults: usize) -> Vec<String> {
+        lines.push(format!("faults: {faults}"));
         lines
     }
 
     fn json_lines(raw: &str, setting: &str, limits: Limits, require_explain: bool, level: &str) -> Vec<String> {
-        printed(check_json(raw, setting, limits, require_explain, level).unwrap())
+        let (lines, faults) = check_json(raw, setting, limits, require_explain, level).unwrap();
+        printed(lines, faults)
     }
 
     fn run_json(cards: &Value, setting: &str, limits: Limits, require_explain: bool, level: &str) -> Vec<String> {
@@ -870,5 +947,250 @@ mod tests {
         assert_eq!(version(), format!("zt-check {}", env!("CARGO_PKG_VERSION")));
         // Any other argument set is still a check, never a version answer.
         assert!(run_lines(&["--version".to_string(), "--json".to_string()], None).is_err());
+    }
+
+    /// S02-AC02/US005: the bundle carries the old authored version, so a fault
+    /// both versions carry is reported as legacy advice and does not count.
+    #[test]
+    fn the_before_bundle_keeps_a_retained_fault_as_advisory() {
+        let bundle = json!({
+            "cards": [{
+                "address": "K/1", "title": "均衡稳定", "body": "甲；乙。",
+                "before": { "title": "均衡稳定", "body": "甲；乙。" }
+            }]
+        });
+        assert_eq!(
+            run_json(&bundle, "", Limits::default(), false, ""),
+            ["K/1 R3 (advisory) 甲；乙。", "faults: 0"]
+        );
+    }
+
+    /// S02-AC03: one retained occurrence does not excuse a second copy of the
+    /// same faulty sentence; the duplicate keeps its blocking severity.
+    #[test]
+    fn a_second_copy_of_a_faulty_sentence_blocks_in_the_before_bundle() {
+        let bundle = json!({
+            "cards": [{
+                "address": "K/1", "title": "均衡稳定", "body": "甲；乙。\n\n丙；丁。",
+                "before": { "title": "均衡稳定", "body": "甲；乙。" }
+            }]
+        });
+        assert_eq!(
+            run_json(&bundle, "", Limits::default(), false, ""),
+            [
+                "K/1 R3 (advisory) 甲；乙。",
+                "K/1 R3 丙；丁。",
+                "faults: 1",
+            ]
+        );
+    }
+
+    /// S02-AC05/US007: a Card retyped from Idea to Event must satisfy the Event
+    /// format, even though the authored body did not change.
+    #[test]
+    fn a_retyped_card_must_satisfy_the_newly_applicable_event_rules() {
+        let bundle = json!({
+            "cards": [{
+                "address": "K/3|a", "category": "event",
+                "title": "通用汽车收购费雪车身公司", "body": "通用汽车收购了费雪车身公司。",
+                "before": {
+                    "category": "idea",
+                    "title": "通用汽车收购费雪车身公司", "body": "通用汽车收购了费雪车身公司。"
+                }
+            }]
+        });
+        let lines = run_json(&bundle, "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "E1"),
+            ["K/3|a E1 no date in the title: 通用汽车收购费雪车身公司"]
+        );
+        assert_eq!(of_rule(&lines, "E2").len(), 1, "{lines:#?}");
+        assert_eq!(lines.last().map(String::as_str), Some("faults: 2"));
+    }
+
+    /// S02-AC05: promoting a concept model to a formal one makes the formal
+    /// Derivation rules newly applicable; old membership in a concept model does
+    /// not grandfather the sections the formal part must now carry.
+    #[test]
+    fn a_concept_to_formal_change_blocks_the_newly_relevant_model_rules() {
+        let bundle = json!({
+            "cards": [{
+                "address": "K/9/1|a", "category": "part", "facet": "推导", "level": "formal",
+                "title": "推导", "body": "**思路**\n\n一个想法。",
+                "before": {
+                    "category": "part", "facet": "推导", "level": "concept",
+                    "title": "推导", "body": "**思路**\n\n一个想法。"
+                }
+            }]
+        });
+        assert_eq!(
+            run_json(&bundle, "", Limits::default(), false, ""),
+            [
+                "K/9/1|a R15 sections 思路; want 思路, 起点, 步骤, 结果, 解读",
+                "faults: 1",
+            ]
+        );
+        // The same Card and body already formal on both sides keeps the fault as advice.
+        let retained = json!({
+            "cards": [{
+                "address": "K/9/1|a", "category": "part", "facet": "推导", "level": "formal",
+                "title": "推导", "body": "**思路**\n\n一个想法。",
+                "before": {
+                    "category": "part", "facet": "推导", "level": "formal",
+                    "title": "推导", "body": "**思路**\n\n一个想法。"
+                }
+            }]
+        });
+        assert_eq!(
+            run_json(&retained, "", Limits::default(), false, ""),
+            [
+                "K/9/1|a R15 (advisory) sections 思路; want 思路, 起点, 步骤, 结果, 解读",
+                "faults: 0",
+            ]
+        );
+    }
+
+    /// S02-AC06: a new Card in a bundle has no legacy allowance; it blocks beside
+    /// a retained fault from an edited Card.
+    #[test]
+    fn a_new_card_in_the_bundle_has_no_legacy_allowance() {
+        let bundle = json!({
+            "cards": [
+                { "address": "K/1", "title": "均衡稳定", "body": "甲；乙。",
+                  "before": { "title": "均衡稳定", "body": "甲；乙。" } },
+                { "address": "K/2", "title": "均衡唯一", "body": "丙；丁。" }
+            ]
+        });
+        assert_eq!(
+            run_json(&bundle, "", Limits::default(), false, ""),
+            [
+                "K/1 R3 (advisory) 甲；乙。",
+                "K/2 R3 丙；丁。",
+                "faults: 1",
+            ]
+        );
+    }
+
+    /// S02-AC03: an unchanged fault survives the Card's own address change, so a
+    /// move does not make prose rules newly blocking (design 6.3, R0149).
+    #[test]
+    fn a_moved_card_keeps_its_unchanged_fault_as_advice() {
+        let bundle = json!({
+            "cards": [{
+                "address": "K/8|b", "title": "均衡稳定", "body": "甲；乙。",
+                "before": { "address": "K/8|a", "title": "均衡稳定", "body": "甲；乙。" }
+            }]
+        });
+        assert_eq!(
+            run_json(&bundle, "", Limits::default(), false, ""),
+            ["K/8|b R3 (advisory) 甲；乙。", "faults: 0"]
+        );
+    }
+
+    /// S02-AC07: the ratchet saves no baseline. Both versions are checked by the
+    /// current core on every run, so repeated runs agree and a rule-version
+    /// change needs no migration of stored fault records.
+    #[test]
+    fn the_ratchet_keeps_no_saved_baseline() {
+        let bundle = json!({
+            "cards": [{
+                "address": "K/1", "title": "均衡稳定", "body": "甲；乙。",
+                "before": { "title": "均衡稳定", "body": "甲；乙。" }
+            }]
+        });
+        let first = check_json(&bundle.to_string(), "", Limits::default(), false, "").unwrap();
+        let again = check_json(&bundle.to_string(), "", Limits::default(), false, "").unwrap();
+        assert_eq!(first, again);
+        // A bundle with no `before` keeps the existing count of every printed line.
+        let plain = json!({ "cards": [{ "address": "K/1", "title": "均衡稳定", "body": "甲；乙。" }] });
+        assert_eq!(
+            check_json(&plain.to_string(), "", Limits::default(), false, "").unwrap(),
+            (vec!["K/1 R3 甲；乙。".to_string()], 1)
+        );
+        let advisory = json!({ "cards": [{ "address": "K/1", "title": "税", "category": "anchor" }] });
+        assert_eq!(
+            check_json(&advisory.to_string(), "", Limits::default(), false, "")
+                .unwrap()
+                .1,
+            1,
+            "the plain bundle keeps counting advisory lines until the coordinated switch"
+        );
+    }
+
+    /// A `before` that is not an entry cannot stand for an authored version.
+    #[test]
+    fn a_before_that_is_not_an_entry_is_refused() {
+        let bundle = json!({ "cards": [{ "address": "K/1", "title": "均衡稳定", "body": "甲；乙。", "before": "old" }] });
+        let error = check_json(&bundle.to_string(), "", Limits::default(), false, "").unwrap_err();
+        assert!(format!("{error:#}").contains("before"), "{error:#}");
+    }
+
+    /// S02-AC04: a size fault's identity is the measured value and the limit. An
+    /// unchanged measurement is inherited; making an oversized part larger is a
+    /// new fault and blocks.
+    #[test]
+    fn a_larger_size_fault_is_new_while_the_same_measurement_is_inherited() {
+        let part = |sentences: usize| {
+            (1..=sentences)
+                .map(|n| format!("第 {n} 句说明这一步。"))
+                .collect::<String>()
+        };
+        let bundle = |before: usize, proposed: usize| {
+            json!({ "cards": [{
+                "address": "K/6|a", "facet": "设定", "title": "设定", "body": part(proposed),
+                "before": { "address": "K/6|a", "facet": "设定", "title": "设定", "body": part(before) }
+            }]})
+        };
+        assert_eq!(
+            run_json(&bundle(13, 14), "", Limits::default(), false, ""),
+            [
+                "K/6|a R13 (14 sentences > 12) split the part into two or more parts",
+                "faults: 1",
+            ]
+        );
+        assert_eq!(
+            run_json(&bundle(13, 13), "", Limits::default(), false, ""),
+            [
+                "K/6|a R13 (advisory) (13 sentences > 12) split the part into two or more parts",
+                "faults: 0",
+            ]
+        );
+    }
+
+    /// S02-AC04: a missing-label fault's identity is the missing-label set, so a
+    /// wider set is another requirement even when the old fault is still present.
+    #[test]
+    fn a_wider_missing_label_set_is_a_new_event_fault() {
+        let body = |labels: &str| format!("时间：1999 年。\n地点：上海。\n{labels}");
+        let bundle = |before: &str, proposed: &str| {
+            json!({ "cards": [{
+                "address": "K/7|a", "category": "event", "title": "1999 年的一笔交易",
+                "body": body(proposed),
+                "before": {
+                    "category": "event", "title": "1999 年的一笔交易", "body": body(before)
+                }
+            }]})
+        };
+        assert_eq!(
+            run_json(
+                &bundle("参与者：甲。\n经过：双方签约。", "经过：双方签约。"),
+                "",
+                Limits::default(),
+                false,
+                ""
+            ),
+            ["K/7|a E2 missing labels: 参与者、来源", "faults: 1"]
+        );
+        // The same missing set, after an edit elsewhere in the body, stays advice.
+        assert_eq!(
+            run_json(
+                &bundle("参与者：甲。\n经过：双方签约。", "参与者：甲。\n经过：双方签约并交割。"),
+                "",
+                Limits::default(),
+                false,
+                ""
+            ),
+            ["K/7|a E2 (advisory) missing labels: 来源", "faults: 0"]
+        );
     }
 }
