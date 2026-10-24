@@ -55,6 +55,7 @@ mod snapshot;
 mod terms;
 mod topic_home;
 mod grow;
+mod grow_next;
 mod topic_join;
 mod util;
 mod zt;
@@ -131,6 +132,12 @@ fn main() {
     let mut argv = std::env::args().skip(1);
     let tool = argv.next().unwrap_or_default();
     let rest: Vec<String> = argv.collect();
+    // A run on a copy of the box names it in its staging folder (zt-box.txt, zt_check::mcp::boxpin):
+    // every child `zt mcp` of this process then serves that box, never the live one.
+    if let Err(error) = zt_check::mcp::boxpin::apply(&rest) {
+        eprintln!("zt-digest {tool}: {error:#}");
+        std::process::exit(1);
+    }
     // R269: a write-capable step gives its child `zt mcp` long edit patience; a read
     // or a precheck keeps the ordinary short bound. Set once, before the one client
     // of this process starts.

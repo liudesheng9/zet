@@ -7,7 +7,7 @@ paths:
   - ".claude/workflow-framework/zt-idea-grow/**"
   - "!.claude/workflow-framework/*/history/**"
 synced: 7ef99bd606f8
-updated: 2026-10-22
+updated: 2026-10-23
 ---
 
 # Idea-grow workflow
@@ -23,11 +23,11 @@ Since 3.0.0 this is the **only** workflow that writes Topic trees, Topic Cards, 
 | | |
 |---|---|
 | Installed script | `.claude/workflows/zt-idea-grow.js` (project scope, frozen; registry `.claude/workflow-framework/zt-idea-grow/`) |
-| Blueprint | `scripts/idea-grow/workflow/zt-idea-grow.blueprint.json` (3.2.0), dry run `zt-idea-grow.sim.json` |
+| Blueprint | `scripts/idea-grow/workflow/zt-idea-grow.blueprint.json` (4.0.1), dry run `zt-idea-grow.sim.json` |
 | Modes | full (every stage: grow, report) and `hubs` (the concept review, the hubs round and the register alone) |
-| Module | `scripts/idea-grow/workflow/modules/zt-grow-cycle.js` (v11) |
+| Module | `scripts/idea-grow/workflow/modules/zt-grow-cycle.js` (v12), and the shared library `scripts/workflow-shared/modules/zt-workflow-lib.js` (v1: the Lock reader and the relay the digests use too) |
 | Prompt | `scripts/idea-grow/dsh-grow-instructions.zh.md`, read from disk by `-Step plan` |
-| Compiler | `zt-digest grow` (`tools/zt-digest/src/grow.rs`, block [zt-digest](zt-digest.md)) |
+| Compiler | `zt-digest grow` (`tools/zt-digest/src/grow.rs`; the run as one command, `-Step next` and `-Step status`, in `grow_next.rs`; block [zt-digest](zt-digest.md)) |
 | Writes | agent Topic trees, their Hub Cards and the register; never a Literature-tree Card or a human Card. Only the optional Topic maintenance round (`organize: true`) moves agent Topic Cards and deletes an emptied agent Topic root |
 
 ## Concepts
@@ -87,13 +87,15 @@ The result carries `concepts: {books, skipped, reviews: [{id, book, status, repo
 
 ## Architecture
 
+Since 4.0.0 (`docs/workflow-simplicity-proposal.md` S3) the stage is one loop. `zt-digest grow -Step next` runs every deterministic step below in this order, stops at each DeepSeek job set, and prints one line: `{"next":"jobs",…}` (the module hands the jobs to DSMP `dsDispatch` and runs `next -After <token>`), `{"next":"done",…}` (the stage's report) or `{"next":"fault",…}` (the stage stops). The order of the rounds lives in `grow_next.rs` (`rounds()`); the module decides nothing.
+
 ```
-args → grow (zt-grow-cycle) → report (value)
-grow: zt-digest grow plan → DeepSeek gt-001 (the run's Topics) → grow topics → DeepSeek gw-001..N (SELF-CHECK = grow precheck) → apply → grow links → DeepSeek gl-001..M → apply → [check → DeepSeek fxR-001..M → apply] × fixRounds → restate-cards → [restate prepare → DeepSeek rNN-rj → judge → apply → report] per book → (organize: organize-plan → DeepSeek go-001 → organize-apply) → concept-books → [concepts propose → prepare → DeepSeek cNN-cj → judge → report] per book → hubs-plan → DeepSeek gh-001..K → hubs-apply → [hubs-check → DeepSeek gh<R>-NNN → hubs-apply] × hubFixRounds → hubs-report -Concepts (register) → report → DeepSeek cleanup
+args → grow (zt-grow-cycle: loop over grow -Step next) → report (value)
+grow: zt-digest grow plan → DeepSeek gt-001 (the run's Topics) → grow topics → DeepSeek gw-001..N (SELF-CHECK = grow precheck) → apply → grow links → DeepSeek gl-001..M → apply → restate-cards → [restate prepare → DeepSeek rNN-rj → judge → apply → report] per book → check → DeepSeek fx1-001..M → apply (4.0.1: after the restatement review) → (organize: organize-plan → DeepSeek go-001 → organize-apply) → concept-books → [concepts propose → prepare → DeepSeek cNN-cj → judge → report] per book → hubs-plan → DeepSeek gh-001..K → hubs-apply → [hubs-check → DeepSeek gh<R>-NNN → hubs-apply] × hubFixRounds → hubs-report -Concepts (register) → report → DeepSeek cleanup
 mode hubs, grow: concept-books → [concepts … report] per book → hubs-plan → DeepSeek gh-001..K → hubs-apply → [hubs-check → fix] × hubFixRounds → hubs-report -Concepts (register) → DeepSeek cleanup
 ```
 
-The module builds the job ids from the counts the steps print (`{"topic_jobs":1,"pending":P}`, `{"jobs":N}`, `{"fix":M}`), so no id list passes through a relay agent. The runner (Haiku) relays each `zt-digest grow` command. DSMP managers (Haiku) run the DeepSeek jobs at most 8 per manager and 8 managers at once, and approve only:
+A jobs line carries the round, a token, the job ids, one job template (`cwd`, `files` and `prompt` with `{id}`, `skills`, `model`, `effort`, `expect`, the approval rule) and `sum`, an FNV-1a checksum over the ids and the template; the module checks the sum before it dispatches, so a line a relay cut or rewrote is never dispatched (it is read again from `grow -Step status`, once). The relay (Haiku, the `zt-relay` agent type) runs each `zt-digest grow` command. DSMP managers (Haiku) run the DeepSeek jobs at most 8 per manager and 8 managers at once, and approve only what each template's rule names, for a section job:
 - the read-only helper (`zt-digest call - -Allow <work>\read-only.allow.txt`, an empty allow-list);
 - the precheck;
 - reads under the work folder;
@@ -109,35 +111,33 @@ Args (`Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-idea-grow.js", ar
 | `book` | string | — | one Citation key (instead of `books`) |
 | `out` | string | required | work folder; also the DeepSeek workspace |
 | `from`, `to` | number | all | anchor range, applied in every book; at most 120 sections per run, the rest `left` for a rerun with the same `out` |
-| `fixRounds` | 0–2 | 1 | fix rounds after the first apply |
-| `ztConfig` | string | (the live box) | the `ZT_CONFIG_DIR` of the box to grow. A copy of the box runs its own zt service; every step and the DeepSeek helper line set it, so the run reads and writes only that copy |
+| `ztConfig` | string | (the live box) | the `ZT_CONFIG_DIR` of the box to grow. A copy of the box runs its own zt service; the first `next` writes the box pin `zt-box.txt` into `out`, so every step and every DeepSeek job of the run reads and writes only that copy, and every round runs there (4.0.0) |
 | `tool` | string | `zt-digest` | the zt-digest command, or the path of a zt-digest binary (a development build, so the installed one is never replaced under another run) |
-| `dshModel` | string | `deepseek-official/deepseek-flash` | the official DeepSeek source (the user's rule) |
-| `effort` | high, max | high | DeepSeek effort |
+| `effort` | high, max | high | DeepSeek effort of every job, the hub jobs included (the model is frozen: `consts.model`, the official source) |
 | `hubs` | boolean | true | run the hubs round (mode full) |
-| `register` | apply, plan, off | apply | publish the rebuilt register, stage its plan only, or leave it |
+| `register` | apply, off | apply | publish the rebuilt register, or leave it |
 | `hubTrees` | string | all | only these Topic trees get hubs (comma-separated Topic numbers; a pilot) |
 | `hubRebuild` | boolean | false | rewrite every hub |
 | `hubLimits` | object | the survey's | hub limits that replace the survey's, key by key |
-| `hubEffort` | high, max | high | DeepSeek effort of the hub jobs |
-| `hubFixRounds` | 0–2 | 1 | hub check/fix rounds |
 | `restate` | boolean | true | the restatement review of the run's new Topic Cards |
 | `concepts` | boolean | true | the concept review of each source book's term table, read by the register plan as `-Review` |
 | `organize` | boolean | false | the Topic maintenance round (duplicate-Topic merges, misplaced-Card moves) before the hubs |
-| `organizeTrees` | string | the run's Topics | the Topic trees the maintenance round surveys (comma-separated Topic numbers) |
 
-Mode `hubs` (`args.mode: "hubs"`) takes `out` (a fresh work folder), the hub args, and optionally `book` or `books` (the books whose concept review feeds the register; without them every agent book with a term table, at most 24); it runs on the live box only.
+4.0.0 froze `fixRounds` and `hubFixRounds` at 1, merged `hubEffort` into `effort`, froze `dshModel`, and dropped `register: plan` and `organizeTrees` (no run used them; proposal S9). A rerun with the same `out` and the same args resumes a stopped run; other args are refused (`options_changed`).
 
-Result: `{ book, books, out, mode, plan, topics, rounds, restate, organize, concepts, hubs, report, workspaces, skipped_on_copy }`. `skipped_on_copy` (3.2.0) names the live-box rounds a run on a box copy (`ztConfig`) did not run; the log says the same. `plan` names `books`, `sections`, `pending` and `left`. `report` adds `books` and `bridges`. `report` is the last line of `-Step report`: `created`, `topics`, `same`, `refused`, `duplicates`, `faults_left`, `share_before`, `share_after`, and `report` (the path of `grow-report.md`).
+Mode `hubs` (`args.mode: "hubs"`) takes `out` (a fresh work folder), the hub args, and optionally `book` or `books` (the books whose concept review feeds the register; without them every agent book with a term table, at most 24); since 4.0.0 it also runs on a box copy (the pin).
 
-Result also carries `topics` (the topics step's line: `jobs`, `topics`, `created`, `refused`).
+Result (4.0.0): `{ book, books, out, mode, rounds, report, workspaces }`. `rounds` lists each dispatched job set (`round`, `jobs`, `ok`, `failed`). `report` is the done line of `-Step next`: in mode full `created`, `topics`, `linked`, `same`, `refused`, `duplicates`, `stopped`, `deeper`, `faults_left`, `share_before`, `share_after`, `books`, `bridges`, `sections`, `left` and `report` (the path of `grow-report.md`); and, for the rounds that ran, `restate` (`books`, `resolved`, `pending`, `unresolved`), `concepts` (`books`, `findings`, `judged`), `organize` (`merges`, `moves`, `refused`, `invalid`), `hubs`, `hubs_missing`, `register` and `register_entries`. The per-book review results are in `next.json` and in `grow-report.md` (`## 复核与整理`).
 
-Module `zt-grow-cycle` v11 params: `book`, `books`, `work`, `instructions`, `tool` (default `zt-digest`), `ztConfig`, `from`, `to`, `model`, `effort` (high/max), `skills` (default `zettelkasten`, `asd-ste100-zh`), `fixRounds`, `hubs`, `register`, `mode`, `hubTrees`, `hubRebuild`, `hubLimits`, `hubEffort`, `hubFixRounds`, `restate`, `concepts`, `organize`, `organizeTrees`, `runner`.
+Module `zt-grow-cycle` v12 params: `book`, `books`, `work`, `instructions`, `tool` (default `zt-digest`), `ztConfig`, `from`, `to`, `model`, `effort` (high/max), `hubs`, `register`, `mode`, `hubTrees`, `hubRebuild`, `hubLimits`, `restate`, `concepts`, `organize`, `relay` (the role, default `relay`).
+
+`zt-digest grow -Step next -Work <out> -Options <json> [-After <token>]` (4.0.0): the options are the module's (`mode`, `books`, `book`, `instructions`, `tool`, `zt_config`, `model`, `effort`, `restate`, `concepts`, `organize`, `hubs`, `register`, `hub_trees`, `hub_rebuild`, `hub_limits`, `from`, `to`), frozen in `next.json` at the first call. `-Step status -Work <out>` prints the last line `next` printed. Both exit 0 for every printed line. Fault codes: `card_locked` (with `tree`, `lock_id`), `step_failed` (a child step's exit and tail), `options_changed`, `bad_options`.
 
 `zt-digest grow` steps added in 3.1.0: `concept-books [-Book|-Books]`, `organize-plan [-Trees]`, `organize-apply` (exit 2 on a Lock stop), `precheck -Job go-NNN`, and the `-Concepts` flag of `hubs-report`.
 
 ## Behaviour
 
+0. **next** (4.0.0) runs the steps below as child processes of the same binary, in order, recording each round done in `next.json` with its line. A round that needs DeepSeek prints its job set and stops; the next call with `-After` confirms it. A call without `-After` (a rerun after a stop) prints the pending set again for the jobs whose answer file is missing, under a new token. The restatement and concept rounds record a failed book and go on; any other failed step prints a `step_failed` fault; a Lock prints `card_locked`. Before the report, the review rounds' results go into `state.json` (`rounds`), so `grow-report.md` renders them.
 1. **plan** reads the Literature tree and the box, and writes:
    - the section files and the job files;
    - `snapshot.md` and `titles.json` (every title in the box);
@@ -173,7 +173,9 @@ The work folder (`out`) holds everything:
 - the rounds' folders: `restate\rNN\`, `organize\` (`survey.md`, `survey.json`, `decisions.json`, `applied.json`, `moves.jsonl`), `concepts\cNN\` (`manifest.json`, `terms.md`, `work\`, `concept-review.json`, `concept-review.md`), `hubs\`, `register\`;
 - the report: `grow-report.json` and `grow-report.md`.
 
-A rerun with the same folder resumes: applied sections are skipped.
+- since 4.0.0, `next.json` (the frozen options, the rounds done with their lines, the pending job set, the last line) and, on a box copy, `zt-box.txt` (the box pin).
+
+A rerun with the same folder and args resumes: the rounds done are skipped, and applied sections are skipped.
 
 ## Configuration
 
@@ -216,6 +218,8 @@ Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-idea-grow.js",
 
 ## Testing
 
+- 4.0.0: `cargo test --bin zt-digest grow_next` (5 tests: the rounds per options and their order, the job templates and answer files, the options' checks and canonical form, the pending job set confirmed or printed again, and the checksum, pinned to the value the JavaScript driver computes). `grow.tests.ps1` runs `grow -Step next` on a scratch archive to the end with canned answers: the first job set, the checksum computed a third way (PowerShell), the box pin, `status`, a rerun before the answers (the same set under a new token), a rerun with other options (`options_changed`), the done line with the restatement review, `next.json`'s rounds, a finished run that redoes nothing, and unknown options (`bad_options`). `grow-workflow-harness.mjs` (35 checks) drives the v12 loop: dispatch and `-After`, the filled templates, only relays and DSMP managers, the zt-relay role, the options, a cut line and a rewritten line read again from the status, a second unreadable line stopping the stage, a repeated job set dispatched once, the Lock fault with its tree and Lock id (never retried; the cleanup still runs), a step failure, the frozen args, and the build's modules and its one Lock check.
+
 - `pwsh -NoProfile -File scripts\book-digest\tests\grow.tests.ps1` (also in `run-all.ps1`) drives plan, the topic job, topics, precheck, apply, check, a fix round, a rerun and the report on a scratch archive. It covers G2, G3, G4, G6, G7, G8 and G10, a reused and a new run Topic, the doorway, a chain, a later root placement opening a line beside the doorway, G13 for a second idea at one Topic root, a doorway with 7 lines sending the next root placement beside its last line (with `deeper` and the report line), a Side successor of an agent Card, `same`, and a share going from 1/4 to 5/8 (108 checks). Since 3.1.0 it also runs the concept review's input (`concept-books`: a book without a term table skipped with its reason, a named book's folder with `manifest.json` and `terms.md`; `concepts` propose, prepare and an unjudged report on it; `hubs-report -Concepts` reading that report and without the flag reading none) and the Topic maintenance round on fresh Topics (`organize-plan -Trees` finding a near-named pair and a Card that links another Topic more than its own; the go precheck naming O1 and O6, then passing; `organize-apply` merging the Topics, moving the Card, deleting the emptied root and renaming the run's Card in `state.json`; no answer applying nothing).
 - Its Lock phase (S15, #138) takes real owner Locks through the page-token `/api/lock` and `/api/unlock` routes: a Locked source book still plans, a Locked Topic is marked and listed as read-only context only, `titles.json` carries each Lock, a Locked `at`/`same`/`existing` and a new Topic named like a Locked one are G12, a new Topic and its Cards are written while the source and another Topic stay Locked, a Topic locked after its answers stops the apply with exit 2 and the typed refusal (tree, Lock, step, address, no bypass hint), keeps the answers and the stopped job, writes nothing into the Locked tree and is named by the report, and unlocking the same folder writes the same three Cards and clears the stop.
 - `cargo test --bin zt-digest grow` (26 unit tests: addresses, source citation, reverse links and share, Link kinds as zt reads them, the run Topics and their bound, the first sentence, a good answer, every fault code, a Locked destination, a Locked Topic in the topic answer, the typed refusal, the two closest blocks, the hub limits, the grown Cards by book; since 3.1.0 the term table of each book, the reviewed books, the surveyed Topics, a good and a faulty maintenance answer (O1–O8) and the run's addresses after the moves). Beside them `register::tests::several_reviews_combine_their_meanings_and_keep_each_report_id` and `organize::survey::tests::a_card_that_links_another_topic_more_than_its_own_is_a_move_candidate`.
@@ -224,16 +228,19 @@ Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-idea-grow.js",
 
 ## Decisions and pitfalls
 
+- **One command decides (4.0.0).** v11 had 28 branches in JavaScript; v12 has three (jobs, done, fault), and the order of the steps is typed and tested in Rust. The steps themselves did not change: `next` calls them in v11's order. Its memory is `next.json`, so a stop at any point resumes by rerunning the same folder.
+- **A checksum on the job line (4.0.0).** A relay that cut or rewrote a long line was the cause of most digest incidents (trials 3, 5, 10, 12, 17). The job set is checked before any dispatch; a line that fails is read again from `status`, and a second failure stops the stage instead of guessing.
+- **Every round on a box copy (4.0.0).** 3.2.0 skipped the live-box rounds on a copy because the hub jobs named no zt config. The box pin in the work folder points every child step and every DeepSeek job (they run in the work folder and name paths under it) at the copy, so a pilot on a copy tests every round.
 - **Judge jobs side by side (3.2.0).** The restatement and concept reviews ran one book at a time, so a box of many books (up to 24 concept reviews) waited for one judge job after another. Every book is now prepared first and all judge jobs go out in one dispatch; the judge, apply and report steps stay in the books' order, so the result and the archive writes keep one order.
 - **Mathematics textbooks (3.2.0).** A math Literature tree is sections of units (Model Cards with a `form`). The prompt keeps a unit's statement, hypotheses and proof in the Literature tree; a Topic Card states the idea behind the unit (its problem, its intuition, its use, its relations) and links the unit with `例示`/`对应`/`对照`/`特例`, never `依赖`. `grow.tests.ps1` plans a theorem unit as a section note.
-- **Say what a box copy skips (3.2.0).** On a copy of the box the restatement review, the Topic maintenance, the concept review and the hubs do not run (the hub jobs' helper lines name no zt config). Before 3.2.0 they were skipped silently.
+- **Say what a box copy skips (3.2.0, superseded in 4.0.0).** On a copy of the box the restatement review, the Topic maintenance, the concept review and the hubs did not run (the hub jobs' helper lines named no zt config). 4.0.0 pins the work folder instead, and every round runs.
 
 - **No forced Links.** In pilot 4 a public-credit Topic (from the Hamilton notes), offered only outsourcing Cards, wrote analogies such as `对照 [[394/1]]：沉没投资的供应商议价力下降，国家先持有资产则立起信用`. The candidates now must share wording, and the prompt asks an analogy to name the shared mechanism. An empty answer is often the right one.
 - **The box, not one book.** 1.x read one Literature tree, so a section's ideas could only relate to Topic Cards. 2.0.0 reads every Literature tree by default. The Topic plan sees the sections of every book, each section sees the closest notes of other books, and the prompt asks how this note bears on what other books said. A Topic Card that brings two sources together is what Luhmann's main box was for.
 - **Not in the digests.** The user said the Topic proposals belong to this workflow, not to the digests (2026-10-20), and then that the digests write no Topic, Topic Card, hub or register at all (2026-10-22, `docs/literature-only-digest-design.md`): every Topic-side compose is here.
 - **Moved in 3.1.0: the concept review, one per source book.** `zt-digest concepts` reads a digest staging folder (`manifest.json`, `terms.md`); a grow run has none, so `concept-books` stages one from the book's term-table Card. The register reads every agent term table at once, so it reads every book's report at once: `-Review` takes several files, and `merge_reviews` unions the accepted entries and the distinct senses (one report is read exactly as before, so a one-review plan keeps its id). The book is reviewed only when it has a term table: proposing concepts from anything else would invent evidence (S23).
 - **Moved in 3.1.0: Topic maintenance, opt-in.** It moves Cards and deletes emptied Topic roots, so it runs only with `organize: true`, and never in mode hubs. DeepSeek decides (the model roles: DeepSeek reviews, scripts build), not Opus as in the old Organize; the precheck and `organize-apply`'s own archive plan both check each decision before a write. The book survey of `organize-survey` finds no Topic since 3.0.0 (a Topic-tree Card belongs to no book), so the tool gained `-Topics`, a survey of named Topics. Card notes (the old Organize's third list) are not taken: they would need a card cycle, which writes Literature Cards in a digest.
-- **Counts through relays, never lists.** The digest trials showed relays abridging long lines (trial 12: model part lists). The steps print counts, and the module names the jobs.
+- **Counts through relays, never lists (until 4.0.0).** The digest trials showed relays abridging long lines (trial 12: model part lists). The steps printed counts and the module named the jobs. Since 4.0.0 `next` prints the job ids itself (the link round's unapplied ids on a rerun were not a count: S0), guarded by the checksum.
 - **Read Link kinds as zt does.** A hand-written list was too short (it missed `承接` and `依据`) and too long (it counted `引出`). The port of zt's table keeps G3, G4, G6 and G10 in step with the archive and with zt-check L1. When zt's table changes, change `RELATION_CUES` too.
 - **A link round, not only section Links.** In pilot 3 (1.2.0) only 6 of 56 new Cards linked another Topic tree, all to 379/1, because a section job sees no Card that another job writes at the same time. The link round runs after every section is written, so it sees them all. A Link joins two trees, and a Card gets at most two in this round.
 - **Plan the Topics before the sections.** In pilot 1 (1.0.0) eight parallel section jobs each opened a Topic, and four of them were on one concept. Each job also branched its "related" idea off the one earlier Topic Card it could see (379/1|a…e). The gt-001 job is the fix: Luhmann's Topics are few.
@@ -243,6 +250,9 @@ Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-idea-grow.js",
 - **Launch only after a matching user request.** Workflow subagents judge each command against the session's latest user message (see the digest trial 13 note in memory).
 
 ## Change history
+
+- `2026-10-24` — **4.0.1** (zt-digest 0.13.3): the restatement review runs before the check and fix round, so the fix round also sees the Cards the review's accepted rewrites changed. On the 4.0.0 pilot (the test box, both books) five rewrites with the remedy `distinct-implication` began `本卡依赖 [[<own book>/n]]`, so the run ended with five I7 faults after a check that had found none. Also from the pilot: zt-digest 0.13.2 (the register staged an empty `root_before` for an existing register, so its first plan with parts stopped half-published; a step failure's cause keeps the child's own error sentence). Pilot: 16 sections, 8 Topics, 113 Topic Cards, 74 Links across trees, 9 bridges, share 0 → 44%, 37 restatements resolved by rewrite, 688 concept findings, 6 topic and 3 field hubs, register published (152 terms); a deliberate stop in the section jobs (7 of 16 answered) and a rerun that dispatched only the other 9.
+- `2026-10-23` — **4.0.0** (zt-grow-cycle v12, zt-workflow-lib v1, zt-digest 0.13.0; `docs/workflow-simplicity-proposal.md` S0–S4, S6, S7, S9): `zt-digest grow -Step next` and `-Step status` (`grow_next.rs`) run the whole cycle as one command with `next.json` as its memory; the module is one loop over its jobs, done and fault lines; every DeepSeek job set goes through `dsDispatch` with the command's job template and approval rule; the relay is the `zt-relay` agent type (the runner role leaves); a checksum guards each jobs line and `status` is the one recovery; resume is a rerun of the same folder (other args refused); the box pin lets every round run on a box copy; frozen args (`fixRounds`, `hubFixRounds`, `hubEffort`, `dshModel`, `register: plan`, `organizeTrees`). S0 repairs: the restatement round's `\w`/`\c`/`\o` paths (3.x lost the separators, so restate prepare found no Cards file and every book was skipped), the link round printing its unapplied job ids on a rerun, the Lock check on DeepSeek replies (it read `answer`, which DSMP results do not carry). The report renders the review rounds. Tests: 5 Rust tests, `grow.tests.ps1` (the next run, its stop and rerun), the harness rewritten (35 checks).
 
 - `2026-10-22` — **3.2.0** (zt-grow-cycle v11, zt-digest 0.11.2): the restatement and concept reviews prepare every book, then send all the books' judge jobs in one DeepSeek dispatch, then judge, apply and report each book in order (a failed prepare skips only its book); a run on a box copy logs and returns the rounds it does not run (`skipped_on_copy`); the prompt adds the guidance for mathematics textbooks. Tests: grow harness (three books in one manager, prepare before judge, order, a failed prepare, the box copy), grow.tests.ps1 (a theorem unit as a section note).
 - `2026-10-22` — **3.1.0** (zt-grow-cycle v10, zt-digest 0.11.0): the two Topic-side jobs the digests had left. The concept review of each source book's term table (`grow -Step concept-books`, then `zt-digest concepts` propose/prepare/judge/report with one DeepSeek judge job `cNN-cj` per book) runs before the hubs in mode full and mode hubs, and `hubs-report -Concepts` hands the rendered reports to the register plan (`register -Review a.json;b.json`, `merge_reviews`); arg `concepts` (default true). The optional Topic maintenance round (`organize: true`, `organizeTrees`) runs after the restatement review: `grow -Step organize-plan` (`organize-survey -Topics`), one DeepSeek decision job go-001 with the O1–O8 precheck, and `grow -Step organize-apply` (the valid decisions through `organize-apply -Open`, the run's addresses renamed). The result carries `organize` and `concepts`. Tests: 7 new grow unit tests and 2 beside them, `grow.tests.ps1` 108 checks, the harness 46 checks, the sim with both rounds.

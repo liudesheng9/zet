@@ -1,4 +1,5 @@
-// ==== module zt-book-terms v3 ====
+// ==== module zt-book-terms v4 ====
+// v4 (S5): a fault names its code and leaves the class to the ledger.
 // The book term table, as ready ledger work: the `terms/book@1` unit that every digest group waits for. The
 // chain claims it, plans the candidates (book-terms finds the bold terms, definition sentences, bracketed
 // original-language terms and frequent word groups), runs the one DeepSeek job that chooses the terms and the
@@ -6,7 +7,7 @@
 // through archive receipts, and completes the unit itself with its checked evidence. A failure is recorded
 // against the unit, so the groups that depend on it stay waiting instead of digesting without the table.
 defineModule({
-  id: 'zt-book-terms', version: '3', requires: ['zt-digest-lib'],
+  id: 'zt-book-terms', version: '4', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the claimed Term table (terms/book@1): plan → DeepSeek → apply, completing the unit.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -38,7 +39,7 @@ defineModule({
     const ok = report && (report.ok === true || report.state === 'done')
     if (!ok) {
       const cause = String((Z.stepOf(chained, 'apply') || {}).error || (Z.stepOf(chained, 'plan') || {}).error || 'no output from the Term table steps').slice(0, 800)
-      await Z.failUnit('terms fault', unit.id, token, 'content', { schema_version: 1, unit: unit.id, input_hash: unit.input_hash || '', code: 'check_failed', cause })
+      await Z.failUnit('terms fault', unit.id, token, { schema_version: 1, unit: unit.id, input_hash: unit.input_hash || '', code: 'check_failed', cause })
       log(`Term table failed: ${cause}; the digest groups stay waiting on it.`)
       return { status: 'failed', report, error: cause }
     }

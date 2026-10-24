@@ -69,6 +69,9 @@ try {
     Assert ($survey.topics -eq 0 -and $survey.pairs -eq 0) "survey: no Topic and no duplicate pair is the book's ($($survey.topics), $($survey.pairs))"
     $md = Get-Content (Join-Path $work 'survey.md') -Raw -Encoding utf8
     Assert ($md -notmatch "``$a/0``" -and $md -notmatch "``$b/0``") 'survey: survey.md names neither Topic'
+    # The decision agent's helper reads carry -Allow on this empty list: reads only, and a staging path for the box pin.
+    $allow = Join-Path $work 'read-only.allow.txt'
+    Assert ((Test-Path -LiteralPath $allow) -and (Get-Item -LiteralPath $allow).Length -eq 0) 'survey: writes an empty read-only.allow.txt for the decision reads'
 
     # --- a hand Topic merge (-Open): merge B into A, move a Card, and three moves that must be refused ---
     Save-Json (Join-Path $work 'decisions.json') @{

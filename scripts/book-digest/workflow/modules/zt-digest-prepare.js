@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v11 ====
+// ==== module zt-digest-prepare v12 ====
 // Prepare (mode full): prepare-book-digest.ps1 -Apply writes the Chinese text, the section groups, the
 // Literature tree with one anchor per group, and the shared prefixes, then binds the immutable run contract with
 // the effective settings (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the
@@ -14,7 +14,7 @@
 // typed `card_locked` refusal (R326/R337), never as a generic preparation failure.
 // 11 (docs/literature-only-digest-design.md): no hubs switch is frozen; the prepared run never has a hubs layer.
 defineModule({
-  id: 'zt-digest-prepare', version: '11', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '12', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume) or take args.groups; output {groups, groupList}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -74,21 +74,14 @@ defineModule({
         if (typeof A[name] === 'boolean') switches[name] = A[name]
       }
       const runOptions = Object.keys(switches).length ? ` -RunOptions '${JSON.stringify(switches)}'` : ''
-      const prep = await Z.zAgent(
-        `You prepare a book for a ZET digest. Do exactly these steps and nothing else.
-1. Run this PowerShell command (one call) in the foreground with timeout_ms: 600000 and read its last output line, a compact JSON manifest:
-${Z.tool('prepare-book-digest')} ${book} -Out "${Z.OUT}" -CitationKey ${Z.KEY} -MaxChars ${A.maxChars || 20000} -MaxUnits ${A.maxUnits || 3}${A.startHeading ? ` -StartHeading '${A.startHeading}'` : ''}${A.endHeading ? ` -EndHeading '${A.endHeading}'` : ''}${A.skipHeadings ? ` -SkipHeadings '${A.skipHeadings}'` : ''}${A.fileId ? ` -FileId ${A.fileId}` : ''}${p.instructions ? ` -Instructions '${p.instructions}'` : ''}${p.noEventCandidates ? ' -NoEventCandidates' : ''} -Variant ${p.profile && p.profile.book === 'mathematics' ? 'math' : 'econ'} -MaxAttempts ${Z.MAX_ATTEMPTS} -DshRunCap ${Z.DSH_RUN_CAP}${runOptions} -Apply
-If it fails, return ok=false with the error text; do not retry with other options and do not delete anything. Exit code 3 with needs_selection means the last line names the Works or files to choose from: put that line in error, and the run halts for the choice; pass one Work id as args.book (or one file id as args.fileId) and run again.
-Return groups = the number of entries in manifest.groups.`,
-        {
-          label: 'prepare book', phase: 'Prepare', model: 'haiku',
-          schema: {
-            type: 'object',
-            properties: { ok: { type: 'boolean' }, error: { type: 'string' }, groups: { type: 'number' } },
-            required: ['ok', 'groups'],
-          },
-        },
-      )
+      // v12 (S1): one relay runs the prepare command; -Brief ends it with one short line (the group count), which
+      // a Haiku agent had counted out of the whole manifest. Exit 3 with needs_selection names the Works or files
+      // to choose from: the run halts for the choice (pass one Work id as args.book, or one file id as args.fileId).
+      const prepared = await Z.runScript('prepare book', 'Prepare', `${Z.tool('prepare-book-digest')} ${book} -Out "${Z.OUT}" -CitationKey ${Z.KEY} -MaxChars ${A.maxChars || 20000} -MaxUnits ${A.maxUnits || 3}${A.startHeading ? ` -StartHeading '${A.startHeading}'` : ''}${A.endHeading ? ` -EndHeading '${A.endHeading}'` : ''}${A.skipHeadings ? ` -SkipHeadings '${A.skipHeadings}'` : ''}${A.fileId ? ` -FileId ${A.fileId}` : ''}${p.instructions ? ` -Instructions '${p.instructions}'` : ''}${p.noEventCandidates ? ' -NoEventCandidates' : ''} -Variant ${p.profile && p.profile.book === 'mathematics' ? 'math' : 'econ'} -MaxAttempts ${Z.MAX_ATTEMPTS} -DshRunCap ${Z.DSH_RUN_CAP}${runOptions} -Apply -Brief`, ' (it prepares the book; never retry it with other options)', { always: true })
+      const line = prepared.json
+      const prep = line && line.ok === true && Number(line.groups) > 0
+        ? { ok: true, groups: Number(line.groups) }
+        : { ok: false, error: line ? JSON.stringify(line) : String((prepared.run && prepared.run.output) || 'no output') }
       if (!prep || !prep.ok || !prep.groups) {
         log(`Preparation failed: ${prep && prep.error}`)
         // R326/R329/R337: preparation writes the Literature tree first, so a Lock on that tree stops the

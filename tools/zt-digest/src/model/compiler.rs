@@ -54,8 +54,8 @@ pattern!(REFUSED, r"(?i)^(\S+): ");
 pattern!(LIST_ITEM, r"(?i)^\s*-");
 pattern!(COMMA, r",");
 
-const STEPS: [&str; 14] = [
-    "brief", "validate", "apply", "derive", "review", "split", "close", "defer", "report", "resume", "explain", "explain-check",
+const STEPS: [&str; 15] = [
+    "brief", "validate", "plan-status", "apply", "derive", "review", "split", "close", "defer", "report", "resume", "explain", "explain-check",
     "explain-apply", "explain-report",
 ];
 /// One model's folder and artifact stem: the address with `\`, `/` and `|` replaced by `_`.
@@ -501,6 +501,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "split" => c.step_split(),
         "close" => c.step_close(),
         "defer" => c.step_defer(),
+        "plan-status" => c.step_plan_status(),
         "report" => c.step_report(),
         "resume" => c.step_resume(),
         "explain" => c.step_explain(),
@@ -2229,6 +2230,30 @@ impl Compiler {
         }
         self.save_state()?;
         self.out_last(&json!({"ok": true, "step": "defer", "deferred": deferred, "order": self.state["order"]}))
+    }
+
+    /// `-Step plan-status` (docs/workflow-simplicity-proposal.md S10): read-only. What the architect planned,
+    /// read from the files it wrote: one entry per model of the batch, in order, with `status` (planned when its
+    /// plan.json exists, skipped when the brief skipped it, else failed), `level`, `parts` and `derivations` (the
+    /// parts with `derive: true`). The model layer chooses fill-only or derive-and-review from this line, never
+    /// from the architect's answer.
+    fn step_plan_status(&mut self) -> Result<()> {
+        let mut plans = Vec::new();
+        for model in self.order() {
+            let path = ps::join(&self.dir(&model), "plan.json");
+            let status = s(&self.m(&model)["status"]);
+            if ps::exists(&path) {
+                let plan = util::read_json(&path).with_context(|| format!("{model}: plan.json is not JSON"))?;
+                let parts = list(&plan["parts"]);
+                let derivations = parts.iter().filter(|p| truthy(&p["derive"])).count();
+                plans.push(json!({"model": model, "status": "planned", "level": plan["level"], "parts": parts.len(), "derivations": derivations}));
+            } else {
+                plans.push(json!({"model": model, "status": if ps::eq(&status, "skipped") { "skipped" } else { "failed" }, "parts": 0, "derivations": 0}));
+            }
+        }
+        let planned = plans.iter().filter(|p| p["status"] == json!("planned")).count();
+        let derive = plans.iter().any(|p| p["derivations"].as_u64().unwrap_or(0) > 0);
+        self.out_last(&json!({"ok": true, "step": "plan-status", "planned": planned, "derive": derive, "plans": plans}))
     }
 
     fn step_close(&mut self) -> Result<()> {

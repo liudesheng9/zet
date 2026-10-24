@@ -714,10 +714,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     };
     let count = |what: &str| o.done.iter().filter(|d| eq(&field(d, "decision"), what)).count();
     let complete = o.stopped.is_none() && o.blocked.is_empty();
+    // S10 (docs/workflow-simplicity-proposal.md): the decider's product is read from its file, never from its
+    // answer: the count of notes (whether the notes cycle runs) and whether the thesis is there.
     let summary = json!({
         "merges": count("merge"), "moves": count("move"),
         "refused": o.refused.len(), "blocked": o.blocked.len(),
         "renamed": o.map.len(), "complete": complete,
+        "notes": ps::ps_count(&decisions["notes"]),
+        "thesis": !field(&decisions, "thesis").trim().is_empty(),
     });
     let result = json!({
         "schema_version": 1,

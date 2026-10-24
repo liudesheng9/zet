@@ -125,7 +125,7 @@ const CANNED = {
   'register apply': () => ({ ok: true, step: 'apply', plan_id: 'rp-c1', register: '12', created: 1, changed: 1, entries: 4, read_only: 0, unresolved: 0, complete: true, archive_revision: 7, verified: true, replayed: false }),
   'register check': () => ({ ok: true, step: 'check', plan_id: 'rp-c1', register: '12', register_missing: false, entries: 4, read_only: 0, unresolved: 0, complete: true, faults: 0, missing: 0, diverged: 0, extra: 0, archive_revision: 7 }),
   'organize-survey': () => ({ survey: 'x', topics: 1, pairs: 0 }),
-  'organize-apply': () => ({ merges: 0, moves: 0, refused: 0, renamed: 0 }),
+  'organize-apply': () => ({ merges: 0, moves: 0, refused: 0, renamed: 0, notes: 1, thesis: true }),
   'skeleton plan': () => ({ groups: 2, jobs: [{ id: 'skeleton', files: ['a'], prompt: 'p' }] }),
   'skeleton apply': () => ({ ok: true, thesis: '论点', argument: 2, models: 0, events: 0, topics: 1, written: { structure: 'Key/1|b' } }),
   'bridge plan': () => ({ ok: true, step: 'plan', status: 'done', plan_id: 'p-fixture', report_id: 'r-fixture', counts: { selected: 1, new: 1, earlier: 0 }, jobs: [{ id: 'br-001', files: ['a'], prompt: 'p' }] }),
@@ -199,7 +199,7 @@ const finalizeFinal = (name) => {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = []
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = []
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
   // A resumed run reads the units its prepared run retained; the stand-in re-adds exactly those, so the
@@ -335,7 +335,12 @@ function runtime(kind, opts = {}) {
       // The real ledger refuses a fault with no input hash (trial 4: "incomplete prepared contract: input_hash").
       const fault = (cmd.match(/ -Fault '(.*)'$/) || [])[1]
       if (fault !== undefined) { try { if (!JSON.parse(fault.replace(/''/g, "'")).input_hash) { faultRefusals.push(id); return { ok: false, exit: 1, output: 'zt-digest ledger: incomplete prepared contract: input_hash' } } } catch {} }
-      const klass = (cmd.match(/-Class (\w+)/) || [])[1]
+      let parsed = null
+      try { parsed = JSON.parse(String(fault || '{}').replace(/''/g, "'")) } catch {}
+      const given = (cmd.match(/-Class (\w+)/) || [])[1]
+      const read = classOf(parsed)
+      const klass = given || read.class
+      failClasses.push({ unit: id, class: klass, code: read.code, given: !!given })
       led.fail(id, klass === 'retryable' ? 'retry' : 'failed')
       return { ok: true, output: json({ schema_version: 1, unit: id, state: klass === 'retryable' ? 'retry' : 'failed', class: klass }) }
     }
@@ -848,7 +853,7 @@ function runtime(kind, opts = {}) {
     const text = String(prompt)
     const label = callOpts.label || ''
     const cmd = text.match(/zt-digest [a-z-]+ -[A-Za-z][^\n]*/) || text.match(/pwsh -NoProfile -File[^\n]*/)
-    calls.push({ label, phase: callOpts.phase, model: callOpts.model, cmd: cmd ? cmd[0] : '', prompt: text })
+    calls.push({ label, phase: callOpts.phase, model: callOpts.model, agentType: callOpts.agentType, cmd: cmd ? cmd[0] : '', prompt: text })
     // The finite finalization (#86): the plan's branch decides whether the one correction cycle
     // runs, and the final audit reports the fresh revision.
     if (/^finalize plan$/.test(label)) return { ok: true, output: json(finalizePlan(opts.finalize || 'fix')) }
@@ -870,6 +875,34 @@ function runtime(kind, opts = {}) {
       const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
       if (lines.length) { const r = commandAnswer(lines[0]); return { ok: r.ok, output: r.output, results: [], deleted: 0 } }
       return { ok: true, output: '', results: [], deleted: 0 }
+    }
+    // zt-digest-lib v37 (S1): these commands run through the relay; the stand-in answers them by label, in the
+    // relay's shape (ok and the last line), before the generic command path.
+    if (/^Run this PowerShell command once/.test(text) && label === 'prepare book') {
+      if (opts.lockPrepare) return { ok: false, output: `the Literature tree Key is locked by the owner\nthe command failed (exit 2)\n${json({ ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', mode: 'prepare', step: 'apply', tree: state.lockTree || 'Key', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z', hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' })}` }
+      state.groups = 2
+      led.add('prepare/book@1', 'prepare').state = 'done'
+      if (layerEnabled('terms')) led.add('terms/book@1', 'terms')
+      led.add('cleanup/book@1', 'cleanup')
+      for (let n = 1; n <= (opts.extraCleanupUnits || 0); n++) led.add(`cleanup/extra-g${String(n).padStart(3, '0')}@1`, 'cleanup')
+      for (let n = 1; n <= 2; n++) led.add(`digest/g${String(n).padStart(3, '0')}@1`, 'digest', { n, group: { n } })
+      if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
+      return { ok: true, output: json({ ok: true, groups: 2, citation_key: 'Key', out: 'D:\\x\\Key' }) }
+    }
+    if (/^Run this PowerShell command once/.test(text) && /^prepare link pass$/.test(label)) {
+      const full = opts.linkBlocked ? { pending: [], no_gap: [], blocked: opts.linkBlocked, groups: [], unowned: 0 } : CANNED['prepare-link']()
+      const gaps = Object.fromEntries((full.groups || []).map((g) => [String(g.n), g.gaps]))
+      return { ok: true, output: json({ pending: full.pending, no_gap: full.no_gap || [], blocked: (full.blocked || []).map((b) => ({ n: b.n, unit: b.unit, state: b.state, reason: b.reason })), gaps, owned_total: full.owned_total || 0, gap_total: full.gap_total || 0, skipped_total: full.skipped_total || 0, unowned: full.unowned || 0, digest_state: full.digest_state || null }) }
+    }
+    if (/^Run this PowerShell command once/.test(text) && (label === 'find models: whole book' || label === 'find models: explain')) {
+      return { ok: true, output: json({ models: kind === 'math'
+        ? [{ address: 'Key/2|e', title: '理论', form: 'theory', level: null, parts: 0 }, { address: 'Key/2|c', title: '介值定理', form: 'theorem', level: 'formal', parts: 0 }]
+        : [{ address: 'Key/2|c', title: '模型', form: null, level: 'formal', parts: 0 }] }) }
+    }
+    if (/^Run this PowerShell command once/.test(text) && /^plan status: /.test(label)) {
+      // S10: the compiler reads the plans the architect wrote (model -Step plan-status).
+      if (opts.noPlanFile) return { ok: true, output: json({ ok: true, step: 'plan-status', planned: 0, derive: false, plans: [{ model: 'Key/2|c', status: 'failed', parts: 0, derivations: 0 }] }) }
+      return { ok: true, output: json({ ok: true, step: 'plan-status', planned: 1, derive: true, plans: [{ model: 'Key/2|c', status: 'planned', level: 'formal', parts: 4, derivations: 1 }] }) }
     }
     if (/^Run this PowerShell command once/.test(text)) {
       const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
@@ -980,7 +1013,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1012,6 +1045,14 @@ function runtime(kind, opts = {}) {
       return value
     })),
   }
+}
+// S5: the stand-in reads a fault as zt-digest's ledger does: a code names its class; a fault without a code takes
+// the one reading of its cause (ledger.rs TRANSIENT_CAUSES).
+const TRANSIENT = ['stale_claim', 'read_view_changed', 'lock_busy', 'sharing_violation', 'sqlite_busy', 'transport_closed', 'command_timeout', 'service_unavailable', 'provider_', 'missing_result', 'pending_jobs', 'cleanup_transient']
+const RETRYABLE_CODES = ['lock_busy', 'sharing_violation', 'sqlite_busy', 'transport_closed', 'command_timeout', 'service_unavailable', 'provider_cap', 'provider_transient', 'missing_result', 'missing_jobs', 'pending_jobs', 'read_view_changed', 'lease_lost']
+const classOf = (fault) => {
+  const code = fault && fault.code ? fault.code : (TRANSIENT.some((w) => String((fault && fault.cause) || '').includes(w)) ? 'provider_transient' : 'check_failed')
+  return { code, class: RETRYABLE_CODES.includes(code) ? 'retryable' : 'content' }
 }
 const textHasStep = (prompt) => /Run this PowerShell command once|Run this one PowerShell command|Run this PowerShell command \(one call\)/.test(prompt)
 
@@ -1052,7 +1093,7 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   }
   // PowerShell's New-Item has no -LiteralPath: a resource registration that used it never recorded a run id.
   for (const which of ['econ', 'math']) check(!/New-Item\b[^;`\n]*-LiteralPath/.test(sources[which]), `${which}: no command passes -LiteralPath to New-Item`)
-  const tampered = sources.econ.replace('"perManager"', '"perManagerX"')
+  const tampered = sources.econ.replace('"dshPerBatch"', '"dshPerBatchX"')
   const rt = runtime('book')
   let err = null
   try { await new AsyncFunction('args', 'agent', 'phase', 'log', 'parallel', 'pipeline', tampered)({ out: 'D:\\x\\Key', mode: 'audit' }, rt.agent, rt.phase, rt.log, rt.parallel, rt.pipeline) } catch (x) { err = x }
@@ -1260,18 +1301,19 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 }
 {
   // A transient group failure is recorded against its own unit and claimed again by a later attempt.
-  const { commands, calls, led } = await run('econ', { ...base, figures: false, until: 'digest' }, { failWhen: /group-finish/ })
+  const { commands, calls, led, failClasses } = await run('econ', { ...base, figures: false, until: 'digest' }, { failWhen: /group-finish/ })
   const cmds = commands
-  const fails = cmds.filter((c) => /ledger fail .* -Class retryable/.test(c))
+  const fails = failClasses.filter((f) => f.class === 'retryable')
+  check(failClasses.every((f) => !f.given), 'S5: no fault names its class; the ledger classifies')
   check(fails.length >= 1, `retries: a failed group is recorded against its own unit as retryable (${fails.length} faults)`)
   check(cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length >= 2, 'retries: a later block claims again after a failure, not a rerun of the stage')
 }
 {
   // A block manager that summarizes its claim line in prose: the lane still knows the units it held from
   // the manager's own unit reports, records a failed unit against its own attempt, and keeps claiming.
-  const { commands, logs, faultRefusals } = await run('econ', { ...base, figures: false, until: 'digest' }, { proseClaim: true, failWhen: /group-finish -Out "D:\\x\\Key" -Group 2 / })
+  const { commands, logs, faultRefusals, failClasses } = await run('econ', { ...base, figures: false, until: 'digest' }, { proseClaim: true, failWhen: /group-finish -Out "D:\\x\\Key" -Group 2 / })
   const cmds = commands
-  check(cmds.some((c) => /ledger fail .*-Unit "?digest\/g002@1"? .*-Class retryable/.test(c)), 'prose claim: a failed unit of a summarized claim is still recorded against its own attempt')
+  check(failClasses.some((f) => f.unit === 'digest/g002@1' && f.class === 'retryable'), 'prose claim: a failed unit of a summarized claim is still recorded against its own attempt')
   check(faultRefusals.length === 0, 'prose claim: the fault carries the unit input hash the ledger holds (' + faultRefusals.length + ' refused)')
   check(cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length >= 2, `prose claim: the lane keeps claiming after a summarized claim (${cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length} claims)`)
   check(!logs.some((l) => /the claim did not run/.test(l)), 'prose claim: a summarized claim is not mistaken for a failed claim')
@@ -1279,11 +1321,11 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 {
   // A manager that drops its unit reports (run 6: one of eight, or none): the ledger decides each unit. A done
   // unit is never faulted; a unit the block still holds (its finish failed) gets its fault.
-  const { commands, result } = await run('econ', { ...base, figures: false, until: 'digest' }, { dropUnits: true, failWhen: /group-finish -Out "D:\\x\\Key" -Group 2 / })
+  const { commands, result, failClasses } = await run('econ', { ...base, figures: false, until: 'digest' }, { dropUnits: true, failWhen: /group-finish -Out "D:\\x\\Key" -Group 2 / })
   const cmds = commands
   check(cmds.some((c) => /ledger status -Out "D:\\x\\Key" -Units digest\/g001@1,digest\/g002@1/.test(c)), 'dropped reports: the block reads its held units\' states from the ledger')
   check(!cmds.some((c) => /ledger fail .*-Unit "?digest\/g001@1"?/.test(c)), 'dropped reports: a unit the ledger holds done is never faulted')
-  check(cmds.some((c) => /ledger fail .*-Unit "?digest\/g002@1"? .*-Class retryable/.test(c)), 'dropped reports: a unit the block still holds gets its retryable fault')
+  check(failClasses.some((f) => f.unit === 'digest/g002@1' && f.class === 'retryable'), 'dropped reports: a unit the block still holds gets its retryable fault')
   check(cmds.every((c) => !/-Layer digest -Take 8 /.test(c) || / -Brief /.test(c)), 'brief claim: a block claims with -Brief, so its claim line stays short')
 }
 {
@@ -1303,6 +1345,19 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const relays = calls.filter((c) => /Run this PowerShell command once|^You run one block|You run one compiler chain/.test(c.prompt))
   const missing = relays.filter((c) => !/never cancels its steps/.test(c.prompt))
   check(relays.length > 0 && !missing.length, `run step: every relay prompt names its command a step of the user's run (${relays.length} relays, ${missing.length} without: ${missing.slice(0, 2).map((c) => c.label).join(', ')})`)
+}
+{
+  // P5 (docs/digest-claude-token-proposal.md): a one-command relay runs as the zt-relay agent type (PowerShell only, a
+  // short prompt: about 9k tokens of first-request context instead of about 59k). Every other agent keeps its role.
+  for (const variant of ['econ', 'math']) {
+    const { calls } = await run(variant, { ...base, figures: false })
+    const one = (c) => /^Run this PowerShell command once/.test(c.prompt)
+    const relays = calls.filter(one)
+    const wrong = relays.filter((c) => c.agentType !== 'zt-relay' || c.model !== 'haiku')
+    const others = calls.filter((c) => !one(c) && c.agentType === 'zt-relay')
+    check(relays.length > 0 && !wrong.length, `relay role (${variant}): every one-command relay runs as zt-relay on Haiku (${relays.length} relays, ${wrong.length} not: ${wrong.slice(0, 2).map((c) => c.label).join(', ')})`)
+    check(!others.length, `relay role (${variant}): no manager, architect or organizer runs as zt-relay (${others.slice(0, 2).map((c) => c.label).join(', ')})`)
+  }
 }
 {
   // The model layer claims a block of up to eight Model units (the protocol's eight per manager), and one architect
@@ -1529,16 +1584,16 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 }
 {
   // A content failure keeps the unit failed and the stage result partial, never complete.
-  const { commands, calls } = await run('econ', { ...base, figures: false, until: 'digest' }, { contentWhen: /group-finish/ })
+  const { commands, calls, failClasses } = await run('econ', { ...base, figures: false, until: 'digest' }, { contentWhen: /group-finish/ })
   const cmds = commands
-  check(cmds.some((c) => /ledger fail .* -Class content/.test(c)), 'partial results: a content failure is recorded as content (no silent retry)')
+  check(failClasses.some((f) => f.class === 'content' && f.code === 'check_failed'), 'partial results: a content failure is recorded as content (no silent retry)')
 }
 
 {
   // A JSON line followed by a remark is still read (a relay that appends "(abridged)" or a note).
-  const lib = fs.readFileSync(path.join(workflowDir, 'modules', 'zt-digest-lib.js'), 'utf8')
+  const lib = fs.readFileSync(path.join(root, 'scripts', 'workflow-shared', 'modules', 'zt-workflow-lib.js'), 'utf8').replace(/\r\n/g, '\n')
   const take = (name) => lib.slice(lib.indexOf(`function ${name}(`), lib.indexOf('\n}\n', lib.indexOf(`function ${name}(`)) + 2)
-  const zdJsonIn = new Function(`${take('zdJsonIn')}; return zdJsonIn`)()
+  const zdJsonIn = new Function(`${take('ztJsonIn')}; return ztJsonIn`)()
   check(JSON.stringify(zdJsonIn('{"state":"done","unit":"digest/g001@1"} (abridged)')) === '{"state":"done","unit":"digest/g001@1"}', 'json: a JSON line with a trailing remark is still read')
   check(JSON.stringify(zdJsonIn('done: {"a":{"b":1}} and more {x')) === '{"a":{"b":1}}', 'json: prose before and after the object is ignored')
   check(zdJsonIn('no json here') === null, 'json: a line without an object reads as nothing')
@@ -1671,6 +1726,8 @@ for (const kind of ['econ', 'math']) {
   check(report && report.stages && !report.stages.hubs && !report.stages.concepts && !report.stages.review, 'literature only: the run has no hub, concept or review stage')
   const decide = calls.find((c) => c.label === 'organize: decisions')
   check(decide && /"merges": \[\] \(always empty/.test(decide.prompt) && /"moves": \[\] \(always empty/.test(decide.prompt) && !/Topic merges, \[/.test(decide.prompt), 'literature only: Organize decides no Topic merge and no move')
+  // pilot 2026-10-23: a helper read with no path argument reached the live box, not the run's box copy (zt-box.txt).
+  check(decide && /'@ \| zt-digest call - -Allow "[^"]*\\organize\\read-only\.allow\.txt"/.test(decide.prompt) && /always with -Allow/.test(decide.prompt), "organize: the decision reads run the helper with -Allow on the survey's read-only list (reads only; a staging path for the box pin)")
   const prep = calls.find((c) => c.label === 'prepare book')
   check(prep && !/"hubs"/.test(prep.cmd), 'literature only: the prepared run freezes no hubs switch (the ledger excludes the hubs layer)')
 }
@@ -1734,7 +1791,8 @@ for (const which of ['econ', 'math']) {
   const refusals = rt.commands.filter((c) => /zt-digest group-finish /.test(c))
   check(refusals.length >= 1 && !rt.state.lockedRetries, `lock mid-run: the refused finish is never retried (${refusals.length} finishes, ${rt.state.lockedRetries || 0} retries)`)
   const fault = rt.commands.filter((c) => / ledger fail /.test(c) && /card_locked/.test(c))
-  check(fault.length === 1 && /-Class content/.test(fault[0]) && !/-Class retryable/.test(fault[0]), `lock mid-run: the refused unit keeps the Lock as its content fault (${fault.map((c) => c.slice(0, 120)).join(' | ')})`)
+  const lockFault = rt.failClasses.filter((x) => x.code === 'card_locked')
+  check(fault.length === 1 && lockFault.length === 1 && lockFault[0].class === 'content' && !/-Class /.test(fault[0]), `lock mid-run: the refused unit keeps the Lock as its content fault (${fault.map((c) => c.slice(0, 120)).join(' | ')})`)
   check(!(rt.report && rt.report.result), 'lock mid-run: a halted run reports no completed result')
 }
 
@@ -1752,14 +1810,16 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '35' && modules['zt-digest-prepare'] === '11', `lock: the frozen build carries zt-digest-lib v35 and zt-digest-prepare v11 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
+  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '12' && modules['zt-workflow-lib'] === '1', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v12 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '11', `lock: the idea-grow build carries zt-grow-cycle v11 (${grow.modules['zt-grow-cycle']})`)
-  check(grow.script.includes('const lockRefusal = (text) =>') && grow.script.includes('card_locked at ${where}') && grow.script.includes('stopOnLock'), 'lock: the idea-grow build carries its own seam')
+  check(grow.modules['zt-grow-cycle'] === '12' && grow.modules['zt-workflow-lib'] === '1', `lock: the idea-grow build carries zt-grow-cycle v12 and the shared zt-workflow-lib v1 (${grow.modules['zt-grow-cycle']})`)
+  // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
+  check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
+  check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
 }
 
 {
@@ -1786,6 +1846,40 @@ for (const which of ['econ', 'math']) {
   const next = result && result.next
   check(next && next.workflow === 'zt-idea-grow' && next.script === '.claude/workflows/zt-idea-grow.js' && next.args && next.args.book === result.citation_key && /fresh/.test(next.args.out), `literature only: the report names the zt-idea-grow follow-up for this book (${JSON.stringify(next)})`)
   check((logs || []).some((l) => /Next: run zt-idea-grow with book/.test(l)), 'literature only: the report stage logs the zt-idea-grow follow-up')
+}
+
+// ================================================================================================================
+// docs/workflow-simplicity-proposal.md steps 1-3 and S10 (base 5.4.0, zt-digest-lib v37)
+// ================================================================================================================
+for (const which of ['econ', 'math']) {
+  const { calls, result } = await run(which, { ...base, figures: false })
+  const commandCalls = calls.filter((c) => /^Run this PowerShell command once/.test(c.prompt))
+  check(commandCalls.length > 10 && commandCalls.every((c) => c.agentType === 'zt-relay' && c.model === 'haiku'), `S1 ${which}: every command runs through the relay role, the zt-relay agent type (${commandCalls.filter((c) => c.agentType !== 'zt-relay').map((c) => c.label).slice(0, 3).join(', ')})`)
+  check(!calls.some((c) => /^You prepare a book|^List the Model Cards|^Prepare the receipt-owned|^You check which DeepSeek Harness source/.test(c.prompt)), `S1 ${which}: no Haiku agent runs prepare, prepare-link, the model list or a source probe`)
+  check(!calls.some((c) => c.label === 'choose DeepSeek source') && result && result.dsh_model === 'deepseek-official/deepseek-flash', `S1 ${which}: the DeepSeek source is the frozen official one (${result && result.dsh_model})`)
+  check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && !/Run every job below|Run the jobs with these ids/.test(c.prompt)), `S1 ${which}: a drive agent only runs DeepSeek jobs; its step command is a relay`)
+  const prep = calls.find((c) => c.label === 'prepare book')
+  check(prep && / -Apply -Brief\b/.test(prep.prompt), `S1 ${which}: prepare ends with its brief line`)
+  const link = calls.find((c) => c.label === 'prepare link pass')
+  check(link && / -Brief\b/.test(link.prompt), `S1 ${which}: prepare-link ends with its brief line`)
+  const status = calls.filter((c) => /^plan status: /.test(c.label))
+  check(status.length >= 1 && status.every((c) => / -Step plan-status /.test(c.prompt)), `S10 ${which}: each model batch reads the plans the architect wrote (model -Step plan-status)`)
+}
+{
+  // S10: the architect answers "planned", but no plan.json was written: the batch builds nothing.
+  const { calls, logs } = await run('econ', { ...base, figures: false }, { noPlanFile: true })
+  check(!calls.some((c) => /^fill: /.test(c.label) || /^derive: /.test(c.label)), 'S10: a plan the architect only claimed (no plan.json) starts no fill and no derivation')
+  check(calls.some((c) => /^plan: /.test(c.label)) && !logs.some((l) => /^Build: [1-9]/.test(l)), 'S10: the architect still ran; its answer decided nothing')
+}
+{
+  // S10: whether the notes cycle runs is read from decisions.json (organize-apply's notes), not from the answer.
+  const { calls } = await run('econ', { ...base, figures: false })
+  check(calls.some((c) => /^cards organize notes/.test(c.label)), 'S10: organize-apply\'s notes count starts the notes cycle')
+}
+{
+  // S5: no workflow command names a fault class; the ledger reads each fault.
+  const { commands } = await run('econ', { ...base, figures: false, until: 'digest' }, { failWhen: /group-finish/ })
+  check(commands.some((c) => / ledger fail /.test(c)) && !commands.some((c) => / ledger fail .*-Class /.test(c)), 'S5: ledger fail carries no -Class: the ledger is the one classifier')
 }
 
 console.log(`failed: ${failed}`)

@@ -70,7 +70,7 @@ pub(super) fn plan(p: &Prepared) -> Result<Value> {
         "schema_version":1,"kind":"cleanup_plan",
         "plan_file":plan.to_string_lossy(),"results_file":results.to_string_lossy(),
         "deletes":count("delete"),"workspaces":count("settle_workspace"),
-        "evidence_recorded":swept["recorded"],"evidence_missing":swept["missing"]
+        "evidence_recorded":swept["recorded"],"evidence_fenced":swept["fenced"],"evidence_missing":swept["missing"]
     }))
 }
 

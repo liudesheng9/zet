@@ -1,4 +1,4 @@
-// ==== module zt-explain v6 ====
+// ==== module zt-explain v7 ====
 // Explanations of finished Derivation parts (R219/R301/R302): the ledger's ready `explain/<model-key>@1` work,
 // which a checked Model completion registers. Each claimed block is written by the existing explanation chain
 // (plan one job per chain, DeepSeek JSON, the script writes 思路/说明/解读 and refuses a changed 起点/step/结果,
@@ -8,7 +8,7 @@
 // 6: the chain ends with the block's checked finishes in one command (`zt-digest finish-batch`), run by the chain's own
 // manager; a unit its line does not answer is finished by one relay, then on its own (docs/digest-claude-token-proposal.md P1/P2).
 defineModule({
-  id: 'zt-explain', version: '6', requires: ['zt-model-lib'],
+  id: 'zt-explain', version: '7', requires: ['zt-model-lib'],
   summary: 'ZT digest: the ledger\'s ready explanations of finished Derivation parts, written by the explanation chain and recorded by explain-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -27,7 +27,8 @@ defineModule({
       layer: 'explain', take: 4, rounds: Z.MAX_ATTEMPTS, phase: 'Models', hold: true,
       work: async (units) => {
         const models = units.map(u => (u.inputs && u.inputs.model) || '').filter(Boolean)
-        const only = Array.isArray(A.only) && A.only.length ? ` -Models "${models.join(',')}"` : ` -Models "${models.join(',')}"`
+        // v7 (S8): the claimed models, whatever args.only says (the two branches were identical).
+        const only = ` -Models "${models.join(',')}"`
         const chained = await Z.chain(`explain ${models.join(', ')}`, {
           dsh: work, unit: units[0].id, token: units[0].token, skills: Z.FILL_SKILLS, effort: Z.DSH_EFFORT, phase: 'Models', writes: `${work}\\out`,
           steps: [

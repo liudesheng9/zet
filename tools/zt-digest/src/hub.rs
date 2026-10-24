@@ -1,6 +1,6 @@
 //! `zt-digest hub`: the port of `scripts/book-digest/hub-compiler.ps1`, the deterministic half of
-//! the book digest's hub stage (docs/hub-cards-design.md). A Haiku hub manager chooses the limits
-//! from the survey; DeepSeek plans the fields and writes every hub as a JSON file; this tool does
+//! zt-idea-grow's hubs round (docs/hub-cards-design.md). The limits come from the survey by fixed rules
+//! (`zt-digest grow` hub_limits: quantiles of the tree and branch sizes, then clamped here); DeepSeek plans the fields and writes every hub as a JSON file; this tool does
 //! everything between them without a model: it surveys the agent Workspace, writes the job files,
 //! builds and updates the Hub Cards, checks them with get_hub, and reports. No step writes hub
 //! prose of its own except fixed lines (范围, the register's lists).

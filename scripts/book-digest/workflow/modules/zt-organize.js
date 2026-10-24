@@ -1,12 +1,16 @@
-// ==== module zt-organize v6 ====
+// ==== module zt-organize v8 ====
 // Organize: organize-survey.ps1 lists what to decide; Opus writes only decisions.json (the thesis and Card
 // notes); organize-apply.ps1 records that no merge or move is decided; a card cycle hands the notes to DeepSeek;
 // book-skeleton.ps1 and one DeepSeek job write the Literature Card index and the structure Card.
 // v6 (docs/literature-only-digest-design.md): a digest writes only the book's Literature tree. Topic merges,
 // Topic Card moves and Topic bodies are zt-idea-grow's, so Opus decides none of them, the skeleton writes no
 // Topic body, and the old single Opus job (args.organize "legacy") is gone.
+// v7 (pilot 2026-10-23): the decision reads run the helper with -Allow on the survey's empty read-only list:
+// reads only, and a path in the staging folder, so a run on a box copy (zt-box.txt) reads that box, not the live one.
+// v8 (S10): whether the notes cycle runs is read from decisions.json by organize-apply (its `notes` count), never from
+// the decider's answer; the unread option remove: 'delete' leaves.
 defineModule({
-  id: 'zt-organize', version: '6', requires: ['zt-digest-lib'],
+  id: 'zt-organize', version: '8', requires: ['zt-digest-lib'],
   summary: 'ZT digest: Organize on the Literature tree only (survey → Opus thesis and notes → apply → notes card cycle → skeleton: the Literature index and the structure Card).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -43,10 +47,10 @@ defineModule({
     // 2. Opus decides; it writes decisions.json and nothing else.
     const decided = survey ? await Z.zAgent(
       `You decide the structure of the ZET digest of 《${A.bookTitle}》 (Literature Card [[${KEY}]], anchors [[${KEY}/1]] … [[${KEY}/${groupCount}]]). Scripts and DeepSeek do every edit; you only decide. You make no zt write.
-Read ${ORG}\\survey.md first (Read tool). It lists the Card merge proposals, the models with faults, and broken Links (it may also list Topics and hubs: they are not yours; ignore them). The digest writes only the book's Literature tree: Topic trees, Topic bodies, hubs and the register belong to the zt-idea-grow workflow. When a decision needs a Card's text, read it through the helper (read-only calls only: get_card, get_tree, get_model, search_cards), e.g.
+Read ${ORG}\\survey.md first (Read tool). It lists the Card merge proposals, the models with faults, and broken Links (it may also list Topics and hubs: they are not yours; ignore them). The digest writes only the book's Literature tree: Topic trees, Topic bodies, hubs and the register belong to the zt-idea-grow workflow. When a decision needs a Card's text, read it through the helper (read-only calls only: get_card, get_tree, get_model, search_cards), always with -Allow "${ORG}\\read-only.allow.txt" (the survey's empty list: reads only), e.g.
 @'
 [{"tool":"get_tree","arguments":{"tree":"${KEY}"}},{"tool":"get_card","arguments":{"at":"${KEY}/1"}}]
-'@ | ${ZD_CALL} -
+'@ | ${ZD_CALL} - -Allow "${ORG}\\read-only.allow.txt"
 ${modelLines ? `The architect's notes on the book's models (Cards outside a model that should link a part of it):\n${modelLines}\n` : ''}
 Decide, then write ${ORG}\\decisions.json (UTF-8, Write tool) with exactly these fields:
 - "thesis": the book's central thesis as one Chinese sentence of at most 40 characters. It becomes the title of the structure Card.
@@ -63,15 +67,15 @@ Return thesis, notes (the count), and report: a short Chinese report of what you
     // 3. The apply script records the (empty) merges and moves; in the Literature scope it could move no Topic Card.
     const applied = decided ? await Z.runScript('organize: apply', 'Organize', `${Z.tool('organize-apply')} -Work "${ORG}"`) : null
     const moved = applied ? applied.json : null
-    if (decided) log(`Organize: thesis "${decided.thesis}"; ${moved ? `${moved.merges} merges, ${moved.moves} moves, ${moved.refused} refused` : `apply failed (${applied && applied.run && applied.run.output})`}; ${decided.notes || 0} notes.`)
+    if (decided) log(`Organize: thesis "${decided.thesis}"; ${moved ? `${moved.merges} merges, ${moved.moves} moves, ${moved.refused} refused, ${moved.notes || 0} notes in decisions.json${moved.thesis === false ? ' (no thesis written)' : ''}` : `apply failed (${applied && applied.run && applied.run.output})`}.`)
     // 4. The notes go to DeepSeek as a card cycle: every hard rule in mode "full" (the script adds N1), else N1.
-    const notes = decided && decided.notes ? await Z.runCards('organize notes', `${OUT}\\cards-notes`, ` -Notes "${ORG}\\decisions.json" -NoOrphans`, MODE === 'full' ? '' : 'N1') : null
+    const notes = moved && Number(moved.notes) > 0 ? await Z.runCards('organize notes', `${OUT}\\cards-notes`, ` -Notes "${ORG}\\decisions.json" -NoOrphans`, MODE === 'full' ? '' : 'N1') : null
     // 4a. Organize publishes its revision once its decisions are applied and its notes are disposed.
     const organizePublished = moved ? await publish('organize', ` -Decisions "${ORG}\\decisions.json" -Applied "${ORG}\\applied.json"`) : null
     // 5. The skeleton: the Literature Card index and the structure Card.
     const SK = `${OUT}\\skeleton`
     const kstep = (s, more = '') => `${Z.tool('book-skeleton')} -Step ${s} -Staging "${OUT}" -Work "${SK}"${more}`
-    const kopts = { dsh: SK, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, phase: 'Organize', writes: `${SK}\\out`, remove: 'delete', keep: true }
+    const kopts = { dsh: SK, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, phase: 'Organize', writes: `${SK}\\out`, keep: true }
     await Z.drive('organize: skeleton', { ...kopts, command: kstep('plan') })
     const sk = zdLastJson(((await Z.drive('organize: skeleton apply', { ...kopts, command: kstep('apply', ` -Decisions "${ORG}\\decisions.json" -Apply`), cleanup: true })) || {}).output)
     log(sk && sk.ok ? `Organize: structure Card ${sk.written && sk.written.structure} ("${sk.thesis}"), ${sk.argument} argument lines, ${sk.models} models, ${sk.events} events.` : `Organize: the skeleton failed: ${JSON.stringify((sk && sk.problems) || 'no output')}`)

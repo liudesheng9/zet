@@ -18,21 +18,6 @@ const BATCH_MAX: usize = 8;
 /// many seconds, so the command ends well inside the workflow's 600-second command timeout. A unit that
 /// did not start stays claimed and is reported `not_run`; the workflow finishes it on its own.
 const BUDGET_SECONDS: u64 = 420;
-/// The causes the workflow's `finishOrFault` treats as transient (a retry within the attempt budget).
-const RETRYABLE: &[&str] = &[
-    "stale_claim",
-    "read_view_changed",
-    "lock_busy",
-    "sharing_violation",
-    "sqlite_busy",
-    "transport_closed",
-    "command_timeout",
-    "service_unavailable",
-    "provider_",
-    "missing_result",
-    "pending_jobs",
-    "cleanup_transient",
-];
 const LAYERS: &[&str] = &["cards", "events", "findings", "models", "explain"];
 
 fn short(text: &str, n: usize) -> String {
@@ -154,8 +139,10 @@ fn settle_one(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> (Value, Valu
         }
         _ => {}
     }
-    let retryable = RETRYABLE.iter().any(|word| cause.contains(word));
-    let (class, code, status) = if retryable { ("retryable", "provider_transient", "retry") } else { ("content", "check_failed", "failed") };
+    // S5: the ledger's one reading of the cause (ledger.rs cause_code, fault_class).
+    let code = super::cause_code(&cause);
+    let class = super::fault_class(code).unwrap_or("content");
+    let status = if class == "retryable" { "retry" } else { "failed" };
     let fault = json!({"schema_version": 1, "unit": unit, "input_hash": "", "code": code, "cause": cause});
     let (recorded, refused) = match fail(p, unit, token, class, &fault) {
         Ok(_) => (true, Value::Null),
@@ -331,10 +318,20 @@ mod tests {
     }
 
     #[test]
-    fn the_transient_causes_are_the_workflows_own() {
-        for cause in ["stale_claim: x", "read_view_changed", "provider_cap", "cleanup_transient"] {
-            assert!(RETRYABLE.iter().any(|w| cause.contains(w)), "{cause}");
+    // S5: the causes the trial logs recorded, read by the ledger's one classifier, give the outcome the four
+    // copies gave (the JavaScript regexes, this file's list); cleanup_transient is retryable everywhere now.
+    fn the_trial_causes_keep_their_outcome() {
+        let table = [
+            ("stale_claim: the claim moved on", "retryable"), ("read_view_changed: group completion evidence changed before ledger commit", "retryable"),
+            ("provider_cap: run cap reached", "retryable"), ("cleanup_transient: delete refused, still open", "retryable"),
+            ("lock_busy", "retryable"), ("sharing_violation on ledger.sqlite3", "retryable"), ("sqlite_busy", "retryable"),
+            ("transport_closed: zt mcp ended", "retryable"), ("command_timeout after 600 s", "retryable"), ("service_unavailable", "retryable"),
+            ("missing_result: no answer file", "retryable"), ("pending_jobs: 2", "retryable"),
+            ("check_failed: R3 a semicolon", "content"), ("plan faults: id A is used twice", "content"), ("the checked completion did not complete", "content"),
+            ("model 5|a has no part DA yet", "content"),
+        ];
+        for (cause, class) in table {
+            assert_eq!(super::super::fault_class(super::super::cause_code(cause)).unwrap(), class, "{cause}");
         }
-        assert!(!RETRYABLE.iter().any(|w| "check_failed: a hard fault".contains(w)));
     }
 }

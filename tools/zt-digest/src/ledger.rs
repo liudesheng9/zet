@@ -6255,7 +6255,21 @@ fn hold(p: &Prepared, targets: &[(String, i64)], seconds: u64, every: u64) -> Re
     }))
 }
 
-fn fault_class(code: &str) -> Result<&'static str> {
+/// S5 (docs/workflow-simplicity-proposal.md): the one reading of a free-text cause. A cause that names a transient
+/// condition (a stale claim, a busy store, a cut transport, a provider fault, a missing result, pending jobs, a
+/// transient cleanup) is `provider_transient`, a retry within the attempt budget; any other cause is a checked
+/// content failure (`check_failed`). The workflow scripts and `finish-batch` kept their own copies of this list
+/// (one lacked `cleanup_transient`); they now leave the code out and the ledger reads the cause here.
+const TRANSIENT_CAUSES: &[&str] = &[
+    "stale_claim", "read_view_changed", "lock_busy", "sharing_violation", "sqlite_busy", "transport_closed",
+    "command_timeout", "service_unavailable", "provider_", "missing_result", "pending_jobs", "cleanup_transient",
+];
+
+pub(crate) fn cause_code(cause: &str) -> &'static str {
+    if TRANSIENT_CAUSES.iter().any(|word| cause.contains(word)) { "provider_transient" } else { "check_failed" }
+}
+
+pub(crate) fn fault_class(code: &str) -> Result<&'static str> {
     Ok(match code {
         "lock_busy"
         | "sharing_violation"
@@ -14649,26 +14663,66 @@ fn resource_brief_of(brief: &Value, path: &str) -> Value {
 /// none yet, from `<folder>\<id>.txt` where the manager wrote it; the ledger reads the ids itself, so no id list
 /// passes through a relay. Prints how many it recorded and how many have no answer file (with the first eight).
 fn resource_sweep_evidence(p: &Prepared, answers: &str) -> Result<Value> {
-    let bare: Vec<String> = {
+    // Each bare conversation with what decides a fenced attempt: the attempt token its label names and the
+    // owning unit's current claim token.
+    let bare: Vec<(String, Option<i64>, Option<i64>)> = {
         let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
-        recorded_resources(&conn, None)?
-            .iter()
-            .flat_map(|resource| resource["conversations"].as_array().cloned().unwrap_or_default())
-            .filter(|c| c["lost"] != json!(true) && !c["id"].is_null() && !c["evidence"].is_object())
-            .map(|c| ps::s(&c["id"]))
-            .collect()
+        let mut out = Vec::new();
+        for resource in recorded_resources(&conn, None)? {
+            let owner = ps::s(&resource["owner"]);
+            let current: Option<i64> = if owner.is_empty() || owner == "run" {
+                None
+            } else {
+                conn.query_row("SELECT claim_token FROM units WHERE id=?1", [&owner], |row| row.get::<_, Option<i64>>(0)).ok().flatten()
+            };
+            for c in resource["conversations"].as_array().cloned().unwrap_or_default() {
+                if c["lost"] == json!(true) || c["id"].is_null() || c["evidence"].is_object() {
+                    continue;
+                }
+                out.push((ps::s(&c["id"]), attempt_token(&ps::s(&c["label"])), current));
+            }
+        }
+        out
     };
     let mut recorded = 0;
+    let mut fenced = 0;
     let mut missing = Vec::new();
-    for id in &bare {
+    for (id, attempt, current) in &bare {
         let file = Path::new(answers.trim()).join(format!("{id}.txt"));
+        // A conversation whose starting attempt lost its claim (a stopped run, its claims released and claimed
+        // again under a newer token) never gets an answer: no manager of that attempt is left to write one. Its
+        // evidence is that fact, recorded once (the deliberate stop of the 2026-10-24 pilot left eight Link
+        // conversations bare, and cleanup could never settle them).
+        if !file.is_file()
+            && let Some(note) = fenced_note(*attempt, *current)
+        {
+            let _ = std::fs::create_dir_all(answers.trim());
+            if crate::util::write_text(&file, &note).is_ok() && resource_evidence_for(p, id, Some(file.to_string_lossy().as_ref()), None, "", None).is_ok() {
+                fenced += 1;
+                continue;
+            }
+        }
         if file.is_file() && resource_evidence_for(p, id, Some(file.to_string_lossy().as_ref()), None, "", None).is_ok() {
             recorded += 1;
         } else {
             missing.push(id.clone());
         }
     }
-    Ok(json!({"schema_version": 1, "action": "sweep_evidence", "recorded": recorded, "missing": missing.len(), "first_missing": missing.iter().take(8).collect::<Vec<_>>()}))
+    Ok(json!({"schema_version": 1, "action": "sweep_evidence", "recorded": recorded, "fenced": fenced, "missing": missing.len(), "first_missing": missing.iter().take(8).collect::<Vec<_>>()}))
+}
+
+/// The attempt token a recorded conversation's label names (`zet-<run>-<unit>-t<token>`), if any.
+fn attempt_token(label: &str) -> Option<i64> {
+    let (_, tail) = label.rsplit_once("-t")?;
+    tail.parse().ok()
+}
+
+/// The evidence of a conversation whose attempt was fenced: its owner now holds a newer claim token, so the
+/// attempt that started it can never record its answer. None when the attempt is still the current one or
+/// either token is unknown.
+fn fenced_note(attempt: Option<i64>, current: Option<i64>) -> Option<String> {
+    let (attempt, current) = (attempt?, current?);
+    (current > attempt).then(|| format!("no answer: fenced — the attempt that started this conversation (token {attempt}) lost its claim before its answer was retained; the owner now holds token {current}, and its new attempt ran its own conversation"))
 }
 
 fn resource_list(p: &Prepared, unit: &str, brief: bool) -> Result<Value> {
@@ -16432,14 +16486,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             if size > 65536 {
                 bail!("fault evidence exceeds 64 KiB");
             }
-            let fault = crate::canon::read_json_arg(&given)?;
-            fail(
-                &p,
-                &a.str("Unit"),
-                a.str("Token").parse()?,
-                &a.choice("Class", &["retryable", "operator", "content"])?,
-                &fault,
-            )?
+            let mut fault = crate::canon::read_json_arg(&given)?;
+            // S5: a fault without its code takes the one reading of its cause; without -Class the ledger classifies.
+            if fault["code"].as_str().is_none_or(|c| c.trim().is_empty()) {
+                let code = cause_code(fault["cause"].as_str().unwrap_or_default());
+                fault["code"] = json!(code);
+            }
+            let class = if a.has("Class") { a.choice("Class", &["retryable", "operator", "content"])? } else { fault_class(field(&fault, "code")?)?.to_string() };
+            fail(&p, &a.str("Unit"), a.str("Token").parse()?, &class, &fault)?
         } else {
             {
                 let mut claimed = next(&p, &a.str("Layer"), a.str("Take").parse()?, &a.str("Owner"), a.int_or("Wait", 0)?, a.int_or("Lease", 0)?)?;
@@ -16632,6 +16686,11 @@ mod tests {
         // content -Fault {code: card_locked}`). An unknown code is refused, so the refusal has to be a known
         // content fault: it is a destination decision, never a retryable provider fault.
         assert_eq!(fault_class("card_locked").unwrap(), "content");
+        // A fenced attempt's conversation gets the fenced note; the current attempt's does not.
+        assert_eq!(attempt_token("zet-76d4-link-g001-1-t1"), Some(1));
+        assert_eq!(attempt_token("zet-76d4-cards-notes"), None);
+        assert!(fenced_note(Some(1), Some(2)).is_some_and(|n| n.starts_with("no answer: fenced")));
+        assert!(fenced_note(Some(2), Some(2)).is_none() && fenced_note(None, Some(2)).is_none() && fenced_note(Some(1), None).is_none());
         for code in ["provider_transient", "lock_busy", "check_failed", "invalid_plan"] {
             assert!(fault_class(code).is_ok(), "{code} is a known code");
         }

@@ -86,7 +86,9 @@ function readLedger(summary) {
   }
   const now = Date.now() / 1000
   const units = Array.isArray(v.units) ? v.units : []
-  const failed = units.filter((u) => u.state === 'failed').map((u) => u.id)
+  // A publication revision replaced by a newer one is recorded failed with code superseded: by design, not a failure.
+  const superseded = (u) => u.state === 'failed' && u.fault && u.fault.code === 'superseded'
+  const failed = units.filter((u) => u.state === 'failed' && !superseded(u)).map((u) => u.id)
   const fresh = failed.filter((id) => !state.failed.includes(id))
   if (fresh.length) say('FAILED', `${fresh.length} unit(s): ${fresh.slice(0, 8).join(', ')}${fresh.length > 8 ? ', ...' : ''}`)
   state.failed = failed
@@ -99,6 +101,7 @@ function readLedger(summary) {
     for (const u of units) {
       const l = (layers[u.layer] = layers[u.layer] || { done: 0, open: 0, failed: 0 })
       if (u.state === 'done') l.done++
+      else if (superseded(u)) continue
       else if (u.state === 'failed') l.failed++
       else if (u.state !== 'registered') l.open++
     }

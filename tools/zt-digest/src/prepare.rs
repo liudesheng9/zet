@@ -456,7 +456,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "MaxAttempts",
         "DshRunCap",
     ];
-    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply"])?;
+    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply", "Brief"])?;
+    // S1 (docs/workflow-simplicity-proposal.md): -Brief ends with one short line a relay carries whole (the group
+    // count and the key) instead of the whole manifest, which a Haiku agent had to count.
+    let brief = a.flag("Brief");
+    let emit = |manifest: &Value| -> Result<()> {
+        if brief {
+            util::print_line(&ps::json_compact(&json!({"ok": true, "groups": ps::ps_count(&manifest["groups"]), "citation_key": manifest["citation_key"], "out": manifest["out"]})))
+        } else {
+            util::print_line(&ps::json_compact(manifest))
+        }
+    };
     let out = mandatory(&a, "Out")?;
     if Path::new(&out).join("ledger.sqlite3").exists() {
         bail!("output directory is already initialized; use ledger resume operations or a new output directory");
@@ -849,7 +859,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             crate::faults::render(&staging, &identity)?;
             crate::ledger::prepare_setup(&staging, z)?;
             let complete = crate::util::read_json(join_path(&staging, "manifest.json"))?;
-            util::print_line(&ps::json_compact(&complete))?;
+            emit(&complete)?;
             return Ok(0);
         }
         let (done, failure) = calls::run(z, &setup, &mut calls::Options::new())?;
@@ -866,7 +876,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     // The report was rendered before the manifest existed; render it once more so the file the
     // person reads names the book.
     crate::faults::render(&staging, &identity)?;
-    util::print_line(&ps::json_compact(&manifest))?;
+    emit(&manifest)?;
     Ok(0)
 }
 
@@ -928,7 +938,7 @@ fn digest_states(staging: &str) -> Result<Option<std::collections::BTreeMap<i64,
 /// is a preparation fault, and so is a receipt that names a Card the archive does not hold.
 pub fn link_cli(argv: &[String]) -> Result<i32> {
     let params = ["Staging", "TitleChars"];
-    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &[])?;
+    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["Brief"])?;
     let staging = mandatory(&a, "Staging")?;
     let title_chars = a.int_or("TitleChars", 40)?.max(0) as usize;
     let manifest = ps::parse_json(&read_raw(&join_path(&staging, "manifest.json"))?)?;
@@ -1194,6 +1204,16 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
         .filter(|card| !eq(&s(&card["kind"]), "topic"))
         .filter(|card| !owned_keys.contains(&ps::key(&s(&card["address"]))))
         .count();
+    // S1: -Brief keeps the line short enough for a relay: the per-group summary becomes a map of gap counts.
+    if a.flag("Brief") {
+        let gaps: Map<String, Value> = summary.iter().map(|g| (s(&g["n"]), g["gaps"].clone())).collect();
+        let blocked_brief: Vec<Value> = ps::ps_items(&json!(blocked)).iter().map(|b| json!({"n": b["n"], "unit": b["unit"], "state": b["state"]})).collect();
+        util::print_line(&ps::json_compact(&json!({
+            "pending": pending, "no_gap": no_gap, "blocked": blocked_brief, "gaps": gaps,
+            "owned_total": owned_total, "gap_total": gap_total, "skipped_total": skipped_total, "unowned": unowned, "digest_state": digest_state,
+        })))?;
+        return Ok(0);
+    }
     util::print_line(&ps::json_compact(&json!({
         "pending": pending,
         "no_gap": no_gap,

@@ -1,6 +1,6 @@
 # Digest Claude Token Use: Proposal
 
-Status (2026-10-23, later): P1, P2, P4 (for the finish lines), P7 and P9 are built in zt-digest 0.12.0 and base 5.2.0 (econ 6.2.0, math 5.2.0); P3 is dropped by its own rule; P5 waits for its measurement; P6 and P8 are not built. The section "Implementation status" at the end says what each one became and which gates it has passed. The deterministic cleanup run (`cleanup-run` with the bridge tool `deepseek_settle`, zt-digest 0.11.7, commit 5ace03b) was built in another session while this analysis ran. It is shown below as done, with its measured effect.
+Status (2026-10-23, later): P1, P2, P4 (for the finish lines), P7 and P9 are built in zt-digest 0.12.0 and base 5.2.0 (econ 6.2.0, math 5.2.0), and a pilot on grossman2002integration measured them: the same outcome as its last clean run at 39% fewer weighted workflow tokens (17.0M to 10.3M) and 94 agents instead of 258. P3 is dropped by its own rule. P5 is measured (first-request context 9.2k instead of 59.2k) and adopted in base 5.3.0 (econ 6.3.0, math 5.3.0), not yet run on a book. P6 and P8 are not built. The section "Implementation status" at the end says what each one became and which gates it has passed. The deterministic cleanup run (`cleanup-run` with the bridge tool `deepseek_settle`, zt-digest 0.11.7, commit 5ace03b) was built in another session while this analysis ran. It is shown below as done, with its measured effect.
 
 This proposal looks at the Claude Code tokens (not the DeepSeek tokens) that one economics digest spent: *The Modern VAT* (`ebrill2001modern`, zt-econ-digest 6.1.1, 2026-10-23). It covers two parts:
 
@@ -254,7 +254,7 @@ Built on 2026-10-23 in zt-digest 0.12.0 with base 5.2.0, econ 6.2.0 and math 5.2
 | P2 claim and finish in the manager | built, two forms | Cards: one `finish-batch -Layer cards -Take -Owner` command claims and finishes (no manager needed). Events, findings, explain: the block's chain ends with the batch finish as a step its own manager runs (`always`). The claim relay of these chain layers stays: the driver needs the units before it builds the chain, and a claim inside the manager would put the units list back into a relayed line. | about 19 Cards claims and one finish relay per chain block |
 | P3 lease keeper | dropped | Its rule: no detached keeper, and drop it if the safe form is not simple. Renewal inside the commands alone cannot cover the gaps between them (a DeepSeek job may run its 1200 s cap twice with the one resume, and the architect's plan has no command), so `ledger hold` stays. | 0 |
 | P4 short lines | built for the finish lines | The batch line is about 300 characters per unit (the single finishes were 2–18 KB, all relayed whole). The other long lines (`list-models`, `prepare-link`, `ledger publish`) are relayed once per run and were left as they are. | output tokens of every finish |
-| P5 minimal relay type | waiting for its measurement | `.claude/agents/zt-relay.md` (PowerShell only, a short prompt) is written. A session loads agent types when it starts, so this session could not run it, and the CLI is not logged in. Measure in a fresh session (one relay of each kind, the first request's cache write against the present ~58k), then give the blueprint's relay calls their own role with `agentType: "zt-relay"` only if the context falls well below 20k. | — |
+| P5 minimal relay type | adopted in base 5.3.0 (econ 6.3.0, math 5.3.0), not yet run on a book | `.claude/agents/zt-relay.md` (PowerShell only, a short prompt). Measured 2026-10-23 in a fresh session, one relay of each type on the same task (`zt-digest --version`, Haiku; both answered `zt-digest 0.12.0` correctly): see "P5 measurement" below. The first request's context fell from 59.2k to 9.2k, well below the 20k bar. Adopted: the blueprint's `relay` role (Haiku, effort low, `agentType: "zt-relay"`) runs every one-command relay (`runScript`, and the math stages' `runMathScript`; zt-digest-lib v36, zt-math-lib v3). | about 2.3M weighted on grossman, about 4M on a book of ebrill's size after P1 |
 | P6 bridge job runner | not built | Needs a dsh-mcp-bridge release and the failure-injection tests its row names. | — |
 | P7 merged script steps | built | `model -Step close -Report`: a close round that sends nothing back writes the batch report in the same process, so the report step runs only after a close round that still sent follow-ups. A compiler step's command agent no longer loads the DeepSeek tools. | one report agent per model batch, one tool-load request per compiler step |
 | P8 one architect context file | not built | Its gate is an A/B run on the same model batch; without that run it is not adopted. | — |
@@ -266,4 +266,63 @@ What did not change (rule 1 to 7 above): every prompt, job list, model, effort, 
 Gates passed so far:
 
 1. Tests: the framework harness (fault injection added: content and transient batch faults, a Lock inside a batch, a cut and a rewritten batch line, a cut claim-and-finish line, a garbled model-deps line), the Bridge and grow harnesses, the zt-digest unit tests (376), `finish-batch.tests.ps1` against a real scratch archive, and the whole `run-all.ps1` suite.
-2. Gates 2 to 5 (the same outcome on a pilot book, fault behaviour on the pilot, resume, and the measured saving) need a digest run with DeepSeek and are not yet run. The pilot is a short book (grossman2002integration) digested by 6.2.0 from a fresh staging folder, compared with its last clean run, with `scripts/book-digest/token-usage.mjs` (the usage script of this analysis, now in the repository) run on its transcripts.
+2. Gate 2 (the same outcome) and gate 5 (the measured saving): passed on the pilot, see "Pilot: grossman2002integration on 6.2.0" below.
+3. Gate 3 (fault behaviour on the pilot) and gate 4 (resume): not exercised. The pilot met no unit fault (its only failed units were publication revisions superseded by design) and needed no resume, so these two rest on the harness's fault injection and resume cases alone.
+
+### Pilot: grossman2002integration on 6.2.0 (2026-10-23)
+
+The summary report for readers (tokens, speed, quality) is [digest-token-pilot-report.md](digest-token-pilot-report.md).
+
+Run `wf_6d9c5c29-c4c`: zt-econ-digest 6.2.0, zt-digest 0.12.1 (0.12.0 plus the box pin), DeepSeek `deepseek-official/deepseek-flash`, staging `D:\zt-digest\grossman2002integration-tok`, the same source, heading range and settings as grossman's last clean run (trial 20, zt-econ-digest 5.10.0, a run and one resume). At the user's direction it ran on a copy of the box, not the live archive. The box `D:\zt-pilot-box` has its own zt service and holds an exact copy of acemoglu2025nobel, which the user locked, so the Bridge stage had a locked earlier book to work against. A `zt-box.txt` in the staging folder (the box pin, zt-check `boxpin.rs`) pointed every zt-digest and zt-check process of the run at the box. The live archive's trees were the same before and after.
+
+**Outcome.** Every stage was done, the run had 94 agents with 0 errors, and it took 79 minutes (trial 20: 128 minutes for the first run, then a resume). The run report: `complete`, `content_complete`, `quality_complete` and `cleanup_complete` all true (trial 20: `content_complete` false, six figures named by no Card). Of 82 units, 0 failed and 7 superseded (by design). Cleanup deleted 78 DeepSeek conversations, 1 was already gone, and all 9 workspaces were removed.
+
+**Gate 2, the same outcome as trial 20.**
+
+| | trial 20 (5.10.0) | pilot (6.2.0) |
+|---|---:|---:|
+| Cards in the Literature tree | 143 | 152 |
+| Idea Cards (with root and anchors) / anchors | 61 / 8 | 72 / 8 |
+| models (Model Cards) | 7 (6 formal, 1 concept) | 6 (formal) |
+| Model parts / derivation parts (all with 思路 and 解读) | 75 / 28 | 74 / 34 |
+| model build faults (closure, forward, reach-in, unanchored), issues | 0, 0 | 0, 0 |
+| Event Cards / Finding Cards (the paper has none) | 0 / 0 | 0 / 0 |
+| Cards with a figure | 19 | 19 |
+| Links in the tree | 579 | 634 |
+| audit faults | 2 (one R6; one I7 on an old Topic Card) | 5 (all R6, the soft term rule, which the cycle does not fix by default) |
+| Bridge proposals | 0 (no other book) | 19 open to the locked copy (optional review; none applied) |
+
+The six formal models sit at the same addresses (2|a, 3|a, 4|a, 5|a, 7|a, 8|a) with nearly the same part counts; trial 20's extra model is the concept model 1|b. The pilot registered no explain unit because every derivation part already carries its 思路, 说明 and 解读 (trial 20 had three explain units). The differences are within run-to-run variation of the DeepSeek writers. None of them comes from the batch finishes, which change no prompt, verifier or fault class.
+
+One deviation, found and fixed (not a token change): Organize's Opus agent read the tree with a helper call that had no path argument (`… | zt-digest call -` from `E:\zet`), so the box pin did not apply. It read the live archive's locked trial-20 tree, nothing was written, and the agent left the notes empty on the belief that the tree was locked. It also quoted the latest chat message in this session as the user's request. zt-organize v7 (base 5.2.1, econ 6.2.1, math 5.2.1, zt-digest `organize-survey` writes an empty `read-only.allow.txt`) makes those reads pass `-Allow` on that list: reads only, and a staging path for the pin. `watch-run.mjs` reported the seven superseded revisions as FAILED. It now leaves them out.
+
+**Gate 5, the measured saving.** `node scripts/book-digest/token-usage.mjs` on each run's transcripts (weighted tokens, M):
+
+| | ebrill2001modern trial 1 (6.1.1) | grossman trial 20 (5.10.0, run + resume) | grossman pilot (6.2.0) |
+|---|---:|---:|---:|
+| agents / weighted | 876 / 68.7 | 258 / 17.0 | 94 / 10.3 |
+| relays: agents / weighted | 613 / 32.4 | 165 / 7.6 | 46 / 2.8 |
+| relays per ledger unit | 1.23 (with its resume: 707 / 575) | 1.92 (165 / 86) | 0.56 (46 / 82) |
+| weighted per relay / first-request context | 52.8k / 61.0k | 46.4k / 58.4k | 60.2k / 61.2k |
+| unit-finish relays (cards, events, findings, model, explain, model-deps) | 271 | 42 | 6 (4 `finish-batch`, 1 `book-cards-finish`, 1 `model-deps -Units`) |
+| cleanup: relays + agents / weighted | 151 + 24 / about 10.5 | 26 + 16 / about 2.5 | 0 + 1 / 0.12 |
+| Haiku managers: agents / weighted | 226 / 28.8 | 73 / 6.9 | 45 / 6.0 |
+| Sonnet architect / Opus | 12, 4.8 / 1, 0.2 | 2, 0.95 / 2, 0.23 | 1, 1.28 / 1, 0.13 |
+
+On the same book the workflow agents fell from 17.0M to 10.3M weighted (−39%) and from 258 to 94 agents. The relays fell from 165 to 46 (−4.9M), and the cleanup agents (0.11.7, `cleanup-run`) fell from 42 to 1 (−2.4M with their relays). The remaining relays are mostly `ledger next` (13), `ledger gate` (5), `finalize` steps (10) and `ledger hold` (5). Each still costs about 60k weighted: the per-relay cost rose a little, because fewer relays share a warm cache prefix. That is what P5's `zt-relay` type (9.2k first-request context) would cut, by about 2.3M on this book. The Haiku managers are now the largest group (58%), the target of P6. The single Sonnet batch for all six models (perSonnet 8) cost more than trial 20's two batches (1.28M against 0.95M).
+
+### P5 measurement (2026-10-23)
+
+Both relays ran in the same fresh session, one after the other in one message, with the task text `runScript` sends (`Run this PowerShell command once … zt-digest --version …`). Both were the first agents of their type in the session, so each wrote its whole context to the cache (no shared prefix was warm yet).
+
+| Request | general-purpose: input / cache write / cache read / output | zt-relay: input / cache write / cache read / output |
+|---|---|---|
+| 1 (the task) | 2 / 59,162 / 0 / 241 — context 59.2k | 2 / 9,193 / 0 / 108 — context 9.2k |
+| 2 (after the tool result) | 2 / 7,528 / 59,162 / 121 — context 66.7k | 2 / 5,590 / 9,193 / 54 — context 14.8k |
+| weighted, both requests (cold) | 91.1k | 20.2k |
+
+What the zt-relay context still holds: the short agent prompt and the PowerShell tool (about 1.9k), the project instructions and the memory index (one reminder, 6.4k characters), the user context reminder (3.4k characters), the environment block, and the task. It no longer holds the deferred-tool listing of every MCP server (41k characters) or the agent-type list (21k characters). The MCP server instructions (16k characters, about 5.6k tokens) still arrive, as an attachment on the second request; this is most of request 2's cache write.
+
+Estimate for a workflow, where the static prefix is warm: request 1 reads the shared prefix (system prompt, tools and the two reminders before the task) and writes only the task and environment (under 1k); request 2 writes the server instructions (about 5.6k). That is about 10k weighted per relay against the present about 53k, which matches P5's estimate. The memory index still reaches the relay, so the zt-relay type does not remove the relay-refusal risk of trials 13–15 (a memory line read as a rule); it does not add one either.
+
+Adopted (2026-10-23, base 5.3.0, econ 6.3.0, math 5.3.0): a `relay` role in `zt-digest-base.blueprint.json` (`model: "haiku"`, `effort: "low"`, `agentType: "zt-relay"`). `zAgent` takes `role: 'relay'` from `runScript` and from the math stages' `runMathScript`. Every other agent keeps its role. The compiler-step command agents (they relay a line of tens of kilobytes) and the link-prepare agent (it may run `zt up` and its command again) stay `manager`. The task text, the schema and the result handling are unchanged. The Workflow runtime composes `agentType` with `schema` (it appends the StructuredOutput instruction to the custom type's prompt), so the typed answer is unchanged. Gate passed: the framework harness checks that every one-command relay of both variants runs as `zt-relay` on Haiku and that no other agent does (329 checks), and `run-all.ps1` passes. Gate open: the next real run, whose relays must all return their lines; its `token-usage.mjs` output should show a first-request context near 9k per relay.

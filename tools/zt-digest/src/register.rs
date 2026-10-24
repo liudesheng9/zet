@@ -1608,8 +1608,10 @@ fn stage_register(
     let missing = current["missing"] == json!(true);
     let current_body = crate::ps::s(&current["body"]);
     let declared = crate::ps::pipe(&current["parts"]);
+    // apply compares the root it reads back with this body before it publishes the root: an existing register's
+    // is its current body (left empty, every first plan with parts over an existing root stopped half-published).
     let mut stage = Stage {
-        root_before: String::new(),
+        root_before: if missing { String::new() } else { current_body.clone() },
         ..Stage::default()
     };
     let mut calls: Vec<Value> = Vec::new();
@@ -2941,6 +2943,31 @@ mod tests {
         assert!(staged.root_body.contains("{{part:0}}"), "{}", staged.root_body);
         assert!(staged.root_call.is_object(), "the root is published last");
         assert!(!staged.terms_on_root);
+    }
+
+    // The 2026-10-24 idea-grow pilot: the hub compiler had just written the register root (its 领域 and 关键词), and
+    // the first register plan needed parts. Its root_before stayed empty, so apply wrote both parts, read the
+    // root back, called it "changed while its parts were published" and stopped before the root edit, leaving
+    // two undeclared parts that every later plan refused as an obstructed layout.
+    #[test]
+    fn an_existing_register_that_gains_parts_stages_its_current_root_as_root_before() {
+        let terms = vec![draft("信用"), draft("学习")];
+        let mut readings = BTreeMap::new();
+        readings.insert("学习".to_string(), reading("xué xí", Some('x')));
+        readings.insert("信用".to_string(), reading("xìn yòng", Some('x')));
+        let parts = bucket_parts(&terms, &readings);
+        let root = "范围：代理工作区的全部入口。
+
+## 领域
+- 市场：[[8/1|a]]
+
+## 关键词
+- 信用：[[8/1|a]]";
+        let current = current_register(json!("8/1"), root, vec![]);
+        let staged = stage_register(&current, &terms, &parts, &readings).unwrap();
+        assert_eq!(staged.parts.len(), 1);
+        assert!(staged.root_call.is_object(), "the root is published last");
+        assert_eq!(staged.root_before, root, "apply compares the root it reads with the root the plan read");
     }
 
     #[test]

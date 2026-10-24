@@ -276,7 +276,8 @@ to three entry Cards. Its last line links the topic hub. This is the current rul
 ### Fixed policy
 
 These rules are fixed. The hub compiler applies them, and ZT reports each break as a fault. The
-numbers are limits. The Haiku hub manager chooses them for each run from the survey (see *The hub
+numbers are limits. `zt-digest grow -Step hubs-plan` derives them for each run from the survey's
+distributions by fixed rules (`hub_limits`: quantiles of the tree and branch sizes; see *The hub
 compiler*), and `get_hub` and `list_hubs` take them as arguments. The defaults are in brackets.
 
 | Rule | Statement | Fault in the hub report |
@@ -359,8 +360,9 @@ The user decided (2026-10-14) how the stage divides the work:
   topic and line hub.
 - The DeepSeek Harness control follows the model compiler: the stage has its own DeepSeek workspace,
   and when the stage finishes, its conversations are **deleted**, not archived.
-- The thresholds are not fixed numbers. The **Haiku hub manager chooses them** for each run from the
-  survey's distributions, with written rules.
+- The thresholds are not fixed numbers. They come for each run from the survey's distributions by
+  fixed rules (`hub_limits` in `zt-digest grow`, then clamped by the hub compiler); no model chooses
+  them (2026-10-23: the Haiku hub manager this design began with no longer exists).
 
 The hub stage runs last in a full digest, after Organize, so it sees the trees as Organize left them
 (merged Topics, rewritten Topic bodies). `mode: "hubs"` runs it alone. Field hubs cross books, so the
@@ -371,7 +373,7 @@ faulty, mirrors, or legacy Idea Cards, or whose Cards changed since the last run
 
 | Role | Model | Does | Never does |
 | --- | --- | --- | --- |
-| Hub manager | Haiku, one call | Runs `survey`. Reads the distributions of tree sizes, branch sizes, and Links between trees. Chooses the limits by the rules below and gives a reason for each. | read Cards, write Cards |
+| Limits | `zt-digest grow -Step hubs-plan` (no model) | Runs `survey`. Derives the limits from the distributions of tree sizes, branch sizes, and Links between trees by the rules below (`hub_limits`); a run's `hubLimits` replaces single keys. | read Cards, write Cards |
 | Compiler | `hub-compiler.ps1` (no model) | `survey`: reads every tree and the hub graph, finds legacy hubs, writes `survey.json` and `survey.md`. `plan`: clamps the limits, picks the trees, writes the job files. `apply`: builds or rewrites the Hub Cards, links each topic hub from its Topic body, writes the field hubs and the register. `check`: `get_hub` on every hub, one fix job per writer. `report`: `list_hubs`. | write prose, except fixed lines |
 | Driver | Haiku, one call per step | Runs one compiler step, starts the DeepSeek jobs it prints, waits, approves, retries once. The last driver deletes the conversations and the workspace entry in the DeepSeek sidebar. | read the book or a Card, decide anything |
 | Topic writer | DeepSeek (`hubEffort`, high), one run per `per_job` trees | Reads its trees from the job file, and a Card when it needs one (read-only helper). Writes `out\hub-<tree>.json`: the topic hub, the required line hubs, and the `邻近` group. | create, move, or delete Cards |
@@ -482,8 +484,8 @@ The user approved the design on 2026-10-14 and decided:
 1. **Type or convention.** Option C: a Card type, a stored level, and the ZT report.
 2. **Who manages the stage.** A Haiku hub manager and Haiku drivers, not Sonnet. DeepSeek plans the
    fields and writes every hub.
-3. **Thresholds.** The hub manager chooses them for each run from the survey. The numbers in this
-   document are defaults and bounds.
+3. **Thresholds.** They come for each run from the survey by fixed rules (`hub_limits`). The numbers in
+   this document are defaults and bounds.
 4. **DeepSeek control.** One workspace for the stage. When the stage finishes, its conversations are
    deleted.
 

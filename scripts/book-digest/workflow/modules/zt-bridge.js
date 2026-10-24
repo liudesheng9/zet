@@ -1,6 +1,7 @@
-// ==== module zt-bridge v7 ====
+// ==== module zt-bridge v8 ====
+// v8 (S8): the no-op cleanupDsh call leaves; the run-level cleanup settles the recorded conversations.
 defineModule({
-  id: 'zt-bridge', version: '7', requires: ['zt-digest-lib'],
+  id: 'zt-bridge', version: '8', requires: ['zt-digest-lib'],
   summary: 'Bounded cross-book discovery publishes a report; an identified accepted selection applies through guarded script edits.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -52,9 +53,7 @@ defineModule({
       if(!plan||plan.ok===false)error=`Bridge planning failed: ${(plan&&(plan.errors||plan.error))?JSON.stringify(plan.errors||plan.error):((planned&&(planned.error||planned.output))||'no output')}`
       else if(failedJobs.length)error=`Bridge judge jobs failed: ${failedJobs.join(', ')}. The report is not published; rerun mode bridge with the same out to resume.`
       else reported=await Z.drive('bridge: report',{...opts,command:step('report')})
-    }catch(e){error=error||String(e)}finally{
-      try{await Z.cleanupDsh('bridge: clean up',opts)}catch(e){log(`bridge: clean up failed: ${e}`)}
-    }
+    }catch(e){error=error||String(e)}
     const summary=zdLastJson((reported&&reported.output)||'')
     if(error)return {status:'failed',error}
     if(!summary||!summary.step||!summary.report_id)return {status:'failed',error:'No Bridge report summary (step and report_id missing).'}

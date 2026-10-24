@@ -132,24 +132,10 @@
       }
     },
     {
-      "label": "^choose DeepSeek source$",
-      "answer": {
-        "source": "official",
-        "errors": ""
-      }
-    },
-    {
       "label": "^prepare book$",
       "answer": {
         "ok": true,
-        "groups": 2,
-        "usage_before": {
-          "input_cache_miss": 0,
-          "cached_read": 0,
-          "output": 0,
-          "cost": 0,
-          "calls": 0
-        }
+        "output": "{\"ok\":true,\"groups\":2,\"citation_key\":\"sim\"}"
       }
     },
     {
@@ -183,19 +169,14 @@
       "label": "^find models",
       "answer": {
         "ok": true,
-        "models": []
+        "output": "{\"models\":[]}"
       }
     },
     {
       "label": "^prepare link pass$",
       "answer": {
         "ok": true,
-        "pending": [
-          1,
-          2
-        ],
-        "owned_total": 6,
-        "unowned": 0
+        "output": "{\"pending\":[1,2],\"no_gap\":[],\"blocked\":[],\"gaps\":{\"1\":2,\"2\":1},\"owned_total\":6,\"gap_total\":3,\"skipped_total\":0,\"unowned\":0}"
       }
     },
     {

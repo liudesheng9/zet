@@ -1,4 +1,4 @@
-// ==== module zt-cards-book v3 ====
+// ==== module zt-cards-book v4 ====
 // The whole-book Card cycle as ready ledger work (modes cards and full, R296/R247): publish the current
 // `cards-book` revision from the settled digest, Model and Cards contributions, claim it, run the one cycle in
 // ONE manager chain (plan → DeepSeek JSON → apply in shares → check → one fix round → report), and record it
@@ -6,7 +6,7 @@
 // draft. The cycle's coverage gate waits for the delegated Model reviews to settle while model compilation
 // never waits for it (R248). In full it also reviews the source of a Model draft no model chain owns.
 defineModule({
-  id: 'zt-cards-book', version: '3', requires: ['zt-digest-lib'],
+  id: 'zt-cards-book', version: '4', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the claimed whole-book card cycle (modes cards and full), recorded by book-cards-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -30,7 +30,8 @@ defineModule({
     log(`Cards whole book: one cycle over ${Z.KEY} on ${claimed.id}${modelReview ? ', reviewing the source of every Model draft no model chain owns' : ''}.`)
     const cycle = await Z.runCards('whole book', `${Z.OUT}\\cards`, sample, '', { modelReview })
     if (cycle.status !== 'done') {
-      await Z.failUnit('cards-book fault', claimed.id, claimed.token, 'retryable', {
+      // v4 (S5): the code is the fact (no result); the ledger classifies it.
+      await Z.failUnit('cards-book fault', claimed.id, claimed.token, {
         schema_version: 1, unit: claimed.id, input_hash: claimed.input_hash || '',
         code: 'missing_result', cause: String(cycle.error || 'the whole-book card cycle did not complete').slice(0, 800),
       })

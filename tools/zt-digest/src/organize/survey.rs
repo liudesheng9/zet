@@ -6,7 +6,8 @@
 //! book's, whose titles are similar (character bigrams, -Similar) or one inside the other, or that
 //! link each other -CrossLinks times); small Topics (-Small Cards or fewer); merge proposals of the
 //! card cycles and the audit (I6, I2); models with faults and the architect's notes (-Notes);
-//! broken Links and missing hubs. Prints one compact JSON summary line last.
+//! broken Links and missing hubs, and an empty read-only.allow.txt for the decision agent's helper
+//! reads. Prints one compact JSON summary line last.
 //!
 //! With `-Topics <n,m,…>` (zt-idea-grow 3.1.0, its Topic maintenance round) it surveys those agent
 //! Topics instead of a book and needs no -Staging: duplicate candidates among all agent Topics,
@@ -56,6 +57,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         small: a.int_or("Small", 3)?,
     };
     std::fs::create_dir_all(&p.work)?;
+    // The decision agent's helper reads carry `-Allow <Work>\read-only.allow.txt`: an empty list
+    // (reads only) and a path in the staging folder, so a run on a box copy reads that box.
+    std::fs::write(ps::join(&p.work, "read-only.allow.txt"), "")?;
     if !p.topics.trim().is_empty() {
         return topic_survey(&p);
     }

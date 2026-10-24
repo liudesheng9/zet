@@ -261,6 +261,17 @@ The scope is one process-wide `AtomicBool`, off at start. The `zt-check` binary 
 
 Each reason starts `the digest writes only the book's Literature tree` and names what was refused (a Topic tree, a Topic-tree Card, a Hub Card, or the linked Topic-tree Cards). When the scope is on, `Zt::request` checks `literature_refusal` first and fails with `literature_only: <tool>: <reason>` without sending the call, so the archive sees nothing and no id is spent. A Link to another book's Literature tree, a Literature Card's own edits, and every read pass.
 
+### The box pin (`tools/zt-check/src/mcp/boxpin.rs`)
+
+A digest run on a copy of the box (a box with its own zt service, named by its `ZT_CONFIG_DIR`) names that box once: the first line of `zt-box.txt` in its staging folder is the box's `ZT_CONFIG_DIR`. `boxpin::apply(argv)` runs first in the `main` of both `zt-check` and [zt-digest](zt-digest.md). It looks for the pin above every absolute path argument (`D:…`, `D:/…`, `\server…`; a file path's folders, then each parent) and above the working folder. When it finds one and `ZT_CONFIG_DIR` is unset, it sets `ZT_CONFIG_DIR` to the pinned folder (and `ZT_GUI_PORT=0` when that is unset), so the process's `zt mcp` and every child serve that box. A relay's command carries `-Out` or another path in the staging folder, and a DeepSeek job runs in the staging folder, so every command of the run reaches the box without an environment line, and a frozen workflow script needs no change. A pin that names no folder, two pins that name different boxes, and a `ZT_CONFIG_DIR` that names another box are errors (exit 1, before any archive call). Without a pin nothing changes: the live box.
+
+| Function | Signature | Effect |
+|---|---|---|
+| `find` | `(argv: &[String], cwd: Option<&Path>) -> Result<Option<Pin>>` | the one pin above the absolute path arguments and `cwd`; refuses two different boxes (paths compared without case, separator or trailing slash) and an empty pin |
+| `apply` | `(argv: &[String]) -> Result<Option<Pin>>` | `find` with the process's working folder, then sets the environment as above |
+
+Making a box: `$env:ZT_CONFIG_DIR='D:zt-pilot-boxconfig'; $env:ZT_GUI_PORT='<port or 0>'; zt config set archive_root D:zt-pilot-boxarchive; zt up` (copy `scholar-bridge.json` from the live config folder into the box config when the run's Figures stage needs the Scholar Archive), then write `zt-box.txt` into the staging folder before the run starts.
+
 ### Install script (`scripts/install-zt-check.ps1`)
 
 ```powershell
@@ -485,6 +496,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **R16 does not report an empty 思路 or 解读**, although [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) lists "an empty section" as an R16 fault; only too many sentences are reported.
 
 ## Change history
+- `2026-10-23` — The box pin: new `tools/zt-check/src/mcp/boxpin.rs` (`find`, `apply`, `PIN = "zt-box.txt"`); `main` applies it before the check. A run on a copy of the box names the box in its staging folder and every zt-check and zt-digest process of the run serves that box. Tests: four `boxpin` unit tests (a pin found from a nested file argument, from the working folder, none, two boxes and an empty pin refused); `cargo test` 32 passed.
 - `2026-10-23` — R6 masks every term the table keeps before it matches a rejected word, each as one mark so no word forms across the gap (`Check::kept`, test `a_rejected_word_inside_another_kept_term_is_that_term`). On ebrill2001modern 66 of 100 R6 faults read `税率差` (rejected for `幅度`) inside `税率差异化`, a term of its own; the old check removed only the row's own term.
 - `2026-10-22` — The Literature write scope (`docs/literature-only-digest-design.md`): new `tools/zt-check/src/mcp/scope.rs` (`set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal`, with four unit tests), and `Zt::request` refuses a refused call with `literature_only: <tool>: <reason>` before it reaches the archive. In the scope, `create_topic`, a write that names a Topic-tree Card, a Hub Card, authored text that links a Topic-tree Card, and an `apply_batch` holding any of them are refused; reads pass. zt-digest turns it on for every digest step; the `zt-check` binary keeps the open scope.
 - `2026-10-20` — The list lines of a Model Card's `**结构**` section (`structure_lines`: each a facet, a Link and the part's title, written by the model compiler) are navigation that no prose rule reads; each title is checked as its part's own title. On grossman2002integration trials 10 and 11 a long Derivation facet made a 结构 line an R2 fault in a done Model Card (`7|a`) that the bounded correction may not reopen. Test `the_structure_list_of_a_model_card_is_not_prose`.

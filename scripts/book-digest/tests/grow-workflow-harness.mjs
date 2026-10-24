@@ -1,18 +1,21 @@
 // Run: node scripts/book-digest/tests/grow-workflow-harness.mjs
-// The frozen-workflow fixture of the idea-grow Tree Lock seam (#140, R326/R337/R338). It builds
-// zt-idea-grow from its blueprint with the workflow-framework-protocol assembler and runs the built
-// script against a stand-in runtime: the growth tool answers from a canned table, so no model,
-// DeepSeek, zt or archive call runs.
+// The frozen-workflow fixture of zt-idea-grow 4.0.0 (zt-grow-cycle v12, docs/workflow-simplicity-proposal.md S1-S4,
+// S6, S7). It builds zt-idea-grow from its blueprint with the workflow-framework-protocol assembler and runs the
+// built script against a stand-in runtime: `zt-digest grow -Step next` answers from a canned sequence of lines, so
+// no model, DeepSeek, zt or archive call runs. The order of the rounds is zt-digest's (grow_next.rs, tested by
+// cargo test and grow.tests.ps1); this harness checks the driver.
 //
 // What it checks:
-//  - the grow stage stops with the tool's typed `card_locked` refusal when the owner's Lock refuses its
-//    destination write, and reports the refusal (with its tree and Lock id) as the stage's error —
-//    never as a content failure of one section and never retried;
-//  - a stage that stops this way leaves no completed result behind, so the run is not described as
-//    complete;
-//  - a normal grow run (plan, no section job, check, report) still completes, and a refusal the tool
-//    prints as its last line on stdout is recognized without matching English text.
-import fs from 'node:fs'
+//  - one loop with three branches: a jobs line goes to DSMP dsDispatch with `{id}` filled per job, and `next`
+//    runs again with `-After <token>`; a done line ends the stage as its report; a fault line stops it;
+//  - every command runs through the relay role (the zt-relay agent type), every DeepSeek job through a DSMP
+//    manager, and no other agent kind runs (the DeepSeek workspace cleanup is the protocol's own);
+//  - S2: a jobs line a relay cut or rewrote (its checksum fails) is read again from `grow -Step status`; a status
+//    line that repeats the job set already dispatched starts no second dispatch; a second unreadable line stops;
+//  - S6: a `card_locked` fault stops the stage with the owner's refusal (tree, Lock id), never retried, and the
+//    report stage does not run;
+//  - the options reach `next` as one JSON object (the box copy, the mode, the frozen model, high effort);
+//  - the built script carries zt-grow-cycle v12 and zt-workflow-lib v1, and reads a Lock in one place.
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -26,248 +29,154 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const loaded = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
 const build = lib.build(loaded.bp, lib.loadModules(loaded.dirs))
 const source = build.script.replace(/^export /m, '')
-const json = (o) => JSON.stringify(o)
 
 let failed = 0
 const check = (cond, message) => { console.log(`${cond ? 'ok' : 'FAIL'}: ${message}`); if (!cond) failed++ }
 
-// The refusal the growth tool prints as its last stdout line when the owner locked the destination.
-const refusal = {
-  ok: false, code: 'card_locked', error: 'the agent Topic 4/0 is locked by the owner', mode: 'grow',
-  step: 'topics', tree: '4/0', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z',
-  hint: 'unlock the tree in the GUI first; its Cards stay readable as sources',
+const W = 'D:\\x\\grow'
+const fnv = (t) => { let h = 0x811c9dc5; for (const ch of String(t)) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0 } return h.toString(16).padStart(8, '0') }
+const template = (family) => ({
+  family, cwd: W, files: family === 'grow' ? [`${W}\\instructions.zh.md`, `${W}\\jobs\\{id}.md`] : [`${W}\\jobs\\{id}.md`],
+  prompt: `完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work "${W}" -Job {id}`, skills: ['zettelkasten', 'asd-ste100-zh'],
+  model: 'deepseek-official/deepseek-flash', effort: 'high', expect: '(^|\\n)(OK|FLAG:)', approve: `allow only: the precheck for {id}; reads under "${W}"`,
+})
+const jobs = (round, token, ids, family = 'grow') => {
+  const job = template(family)
+  return { next: 'jobs', round, token, ids, job, sum: fnv([ids.join(','), job.cwd, job.files.join('\n'), job.prompt, job.approve, job.expect].join('\n')) }
 }
+const done = { next: 'done', mode: 'full', created: 4, topics: 1, linked: 2, faults_left: 0, share_before: 0.1, share_after: 0.5, report: `${W}\\grow-report.md`, hubs: { topic: 1 }, register: 'published' }
+const lockFault = { next: 'fault', code: 'card_locked', round: 'apply', cause: 'the agent Topic 4/0 is locked by the owner', tree: '4/0', lock_id: 3 }
 
-// One grow command as the framework's `script` module relays it.
-function scriptAnswer(command, answers) {
-  const key = Object.keys(answers).find((k) => k !== '__agents' && command.includes(k))
-  const answer = key ? answers[key] : { exit_code: 0, last_line: json({ ok: true }), tail: '' }
-  return {
-    exit_code: answer.exit_code,
-    last_line: answer.last_line,
-    tail: answer.exit_code === 0 ? answer.last_line : `${answer.last_line}\n${answer.last_line}`,
-  }
-}
-
-function runtime(answers) {
-  const commands = [], labels = [], logs = [], prompts = []
-  const agent = async (prompt, opts = {}) => {
-    const text = String(prompt)
-    labels.push(opts.label || '')
-    if (/^Run one command and report its output\./.test(text)) {
-      const command = (text.match(/^COMMAND:\n(.+)$/m) || [])[1] || ''
-      commands.push(command)
-      return scriptAnswer(command, answers)
+// The stand-in runtime. `lines` answers the relays in order: a `next` relay takes the next entry; a `status` relay
+// takes the entry from `status` (or repeats the last `next` line). An entry may be { output } to send raw text.
+function runtime(lines, status = []) {
+  const commands = [], labels = [], logs = [], managers = [], kinds = [], opts = []
+  let n = 0, s = 0, last = null
+  const relay = (text) => {
+    const command = (text.match(/^Run this PowerShell command once[^\n]*\n(.+)$/m) || [])[1] || ''
+    commands.push(command)
+    if (/ -Step status /.test(command)) {
+      const e = s < status.length ? status[s++] : last
+      return e && e.output !== undefined ? { ok: true, output: e.output } : { ok: true, output: JSON.stringify(e) }
     }
-    // 3.1.0: a DSMP manager or the cleanup agent, answered by its label (as the sim answers them).
-    const managed = (answers.__agents || []).find(([re]) => new RegExp(re).test(opts.label || ''))
-    if (managed) { prompts.push({ label: opts.label || '', text }); return managed[1] }
+    const e = lines[n++]
+    if (e === undefined) return { ok: true, output: 'no more lines' }
+    if (e.output !== undefined) return { ok: true, output: e.output }
+    last = e
+    return { ok: true, output: JSON.stringify(e) }
+  }
+  const agent = async (prompt, o = {}) => {
+    const text = String(prompt)
+    labels.push(o.label || '')
+    opts.push(o)
+    if (/^Run this PowerShell command once/.test(text)) { kinds.push('relay'); return relay(text) }
+    if (/^You are a DeepSeek subagent manager\./.test(text)) {
+      kinds.push('manager')
+      const list = JSON.parse(text.slice(text.indexOf('JOBS ('), text.indexOf('\n\n1. Start')).replace(/^JOBS \(\d+\):\n/, ''))
+      managers.push({ label: o.label, jobs: list })
+      return { jobs: list.map((j) => ({ id: j.id, ok: true, reply: 'OK', attempts: 1 })), started: list.map((j) => `s-${j.id}`), deleted: list.length, not_deleted: [] }
+    }
+    if (/^Remove finished DeepSeek workspaces/.test(text)) { kinds.push('cleanup'); return { folders: [{ cwd: W, removed: true, leftover: [], running: 0 }] } }
     throw new Error(`the stand-in runtime answers no other agent: ${text.slice(0, 120)}`)
   }
-  return { agent, commands, labels, logs, prompts, phase: () => {}, log: (m) => logs.push(m), parallel: async (fns) => Promise.all(fns.map((f) => f())), pipeline: async (items, ...stages) => Promise.all(items.map(async (item, i) => { let v = item; for (const s of stages) v = await s(v, item, i); return v })) }
+  return { agent, commands, labels, logs, managers, kinds, opts, phase: () => {}, log: (m) => logs.push(m), parallel: async (fns) => Promise.all(fns.map((f) => f())), pipeline: async (items, ...st) => Promise.all(items.map(async (item, i) => { let v = item; for (const x of st) v = await x(v, item, i); return v })) }
 }
 
-async function run(args, answers) {
-  const rt = runtime(answers)
+async function run(args, lines, status) {
+  const rt = runtime(lines, status)
   const fn = new AsyncFunction('args', 'agent', 'phase', 'log', 'parallel', 'pipeline', source)
   let report, thrown
   try { report = await fn(args, rt.agent, rt.phase, rt.log, rt.parallel, rt.pipeline) } catch (error) { thrown = error }
   return { report, thrown, ...rt }
 }
+// The kernel records a stage that threw as halted, with the error text (the run itself does not throw).
+const halted = (r) => (r.report && r.report.halted && r.report.halted.stage === 'grow' ? String(r.report.halted.error) : '')
+const nexts = (r) => r.commands.filter((c) => / -Step next /.test(c))
+const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')*)'/) || [])[1].replace(/''/g, "'"))
 
-const args = { out: 'D:\\x\\grow', from: 1, to: 1 }
-const plan = { exit_code: 0, last_line: json({ ok: true, pending: 1, topic_jobs: 0, books: 1, sections: 1, cards: 3, box: 10, topics: 2, baseline: { share: 0.1 }, left: 0 }), tail: '' }
-const topicsDone = { exit_code: 0, last_line: json({ jobs: 0, topics: 0, created: 0, refused: 0 }), tail: '' }
-const checkDone = { exit_code: 0, last_line: json({ faults: 0, fix: 0 }), tail: '' }
-const reportDone = { exit_code: 0, last_line: json({ report: 'grow-report.md', created: 0, share_before: 0.1, share_after: 0.1, faults_left: 0 }), tail: '' }
-
-// ================================================================================================================
-// The frozen build carries the seam
-// ================================================================================================================
-check(build.modules['zt-grow-cycle'] === '11', `frozen: the build carries zt-grow-cycle v11 (${build.modules['zt-grow-cycle']})`)
-check(source.includes('const lockRefusal = (text) =>') && source.includes('card_locked at ${where}'), 'frozen: the built script carries the Lock reader and the stop')
-check(build.embedded.stages.filter((s) => s.id === 'grow').length === 1, 'frozen: the one grow stage is the module that owns the seam')
-
-// ================================================================================================================
-// A normal run still completes (the seam reads only refusals)
-// ================================================================================================================
+// 1. A normal run: three job sets, then done.
 {
-  const run1 = await run(args, { '-Step plan': plan, '-Step topics': topicsDone, '-Step check': checkDone, '-Step report': reportDone })
-  check(!run1.thrown && run1.report && !run1.report.halted, `normal: the grow stage and the report stage complete (${JSON.stringify(run1.report && run1.report.halted)})`)
-  check(run1.report && run1.report.stages.grow.status === 'done' && run1.report.result && run1.report.result.report && run1.report.result.report.report === 'grow-report.md', 'normal: the run reports its grow result')
-  check(run1.commands.some((c) => /grow -Step plan/.test(c)), 'normal: the plan step runs')
+  const r = await run({ out: W }, [jobs('topics-jobs', 1, ['gt-001']), jobs('ideas-jobs', 2, ['gw-001', 'gw-002']), jobs('fix-jobs', 3, ['fx1-001'], 'plain'), done])
+  check(!r.thrown, `a normal run completes (${r.thrown && r.thrown.message})`)
+  const n = nexts(r)
+  check(n.length === 4, `next runs once per line (${n.length})`)
+  check(!/ -After /.test(n[0]) && / -After 1$/.test(n[1]) && / -After 2$/.test(n[2]) && / -After 3$/.test(n[3]), 'each next after a dispatch names the token of the job set it confirms')
+  check(r.managers.length === 3 && r.managers.map((m) => m.jobs.length).join() === '1,2,1', 'every job set goes to one DSMP manager')
+  const gw = r.managers[1].jobs[1]
+  check(gw.id === 'gw-002' && gw.run.prompt_files[1] === `${W}\\jobs\\gw-002.md` && /-Job gw-002/.test(gw.run.prompt) && /for gw-002|precheck for gw-002/.test(gw.approve), 'the job template is filled with each job id (files, prompt, approval rule)')
+  check(gw.run.cwd === W && gw.run.model === 'deepseek-official/deepseek-flash' && gw.run.reasoning_effort === 'high' && gw.expect === '(^|\\n)(OK|FLAG:)', 'the job carries the cwd, the official model, high effort and the expected reply')
+  check(r.managers[2].jobs[0].run.prompt_files.length === 1, 'a plain family job reads only its job file')
+  check(r.kinds.every((k) => ['relay', 'manager', 'cleanup'].includes(k)) && r.kinds.filter((k) => k === 'cleanup').length === 1, `only relays, DSMP managers and one protocol cleanup run (${[...new Set(r.kinds)].join(', ')})`)
+  const relayOpts = r.opts.filter((o, i) => r.kinds[i] === 'relay')
+  check(relayOpts.length === 4 && relayOpts.every((o) => o.agentType === 'zt-relay' && o.model === 'haiku'), 'every command runs through the relay role (the zt-relay agent type)')
+  check(r.report && r.report.result.report.created === 4 && r.report.result.report.register === 'published', 'the done line is the run\'s report')
+  check(r.report && r.report.result.rounds.length === 3 && r.report.result.rounds[1].ok === 2, 'the result lists the dispatched rounds')
+  const o = optionsOf(n[0])
+  check(o.mode === 'full' && o.model === 'deepseek-official/deepseek-flash' && o.effort === 'high' && o.zt_config === '' && o.restate === true && o.hubs === true && o.organize === false, 'the options reach next as one JSON object with the frozen model and the defaults')
+  check(n.every((c) => optionsOf(c).instructions === o.instructions), 'every next names the same options')
 }
 
-// ================================================================================================================
-// The owner's Lock refuses the destination: the stage stops with the typed refusal
-// ================================================================================================================
+// 2. S2: a jobs line a relay cut, and one it rewrote (the checksum fails): the status is read once, then the run goes on.
 {
-  const refused = { exit_code: 2, last_line: json(refusal), tail: json(refusal) }
-  const run2 = await run(args, { '-Step plan': plan, '-Step topics': refused })
-  const halted = run2.report && run2.report.halted
-  check(halted && halted.stage === 'grow', `lock: the grow stage stops (${JSON.stringify(halted && halted.stage)})`)
-  const said = String((halted && halted.error) || '')
-  check(/card_locked/.test(said), `lock: the stage error names card_locked (${said.slice(0, 160)})`)
-  check(/agent Topic 4\/0 is locked by the owner/.test(said), `lock: the error keeps the tool's own sentence (${said.slice(0, 160)})`)
-  check(/"tree":"4\/0"/.test(said) && /"lock_id":3/.test(said), 'lock: the error keeps the refusal JSON (tree and Lock id)')
-  check(!/script: exit code/.test(said) || /card_locked/.test(said), 'lock: the refusal is not reported as a bare exit code')
-  check(!(run2.report && run2.report.result), 'lock: a stopped run reports no completed result')
-  check(!(run2.report && run2.report.stages.report && run2.report.stages.report.status === 'done'), 'lock: the report stage does not run after the stop')
-  const retried = run2.commands.filter((c) => /-Step topics -Work/.test(c))
-  check(retried.length === 1, `lock: the refused step runs once, never retried (${retried.length} runs)`)
-  check(!run2.commands.some((c) => /-Step apply/.test(c)), 'lock: no Topic Card write is attempted after the refusal')
-  check(run2.logs.some((l) => /Grow: 1 sections/.test(l)), 'lock: the work done before the Lock stays reported (the plan line is kept)')
+  const good = jobs('ideas-jobs', 1, ['gw-001'])
+  const rewritten = { ...good, ids: ['gw-001', 'gw-009'] }
+  const r = await run({ out: W }, [{ output: JSON.stringify(good).slice(0, 120) + ' (abridged)' }, done], [good])
+  check(!r.thrown && r.managers.length === 1 && r.managers[0].jobs[0].id === 'gw-001', `a cut jobs line is read again from the status (${r.thrown && r.thrown.message})`)
+  check(r.commands.filter((c) => / -Step status /.test(c)).length === 1 && / -After 1$/.test(nexts(r)[1]), 'the status read happens once and the run confirms its job set')
+  const r2 = await run({ out: W }, [rewritten, done], [good])
+  check(!r2.thrown && r2.managers.length === 1 && r2.managers[0].jobs.length === 1, 'a rewritten jobs line (its checksum fails) is never dispatched; the status line is')
+  const r3 = await run({ out: W }, [{ output: 'Command ran fine.' }], [{ output: 'still prose' }])
+  check(/no readable line/.test(halted(r3)) && r3.managers.length === 0, 'a second unreadable line stops the stage')
+  check(r3.report.stages.report.status !== 'done' && !(r3.report.result && r3.report.result.report), 'a stopped stage reports no completed result')
 }
 
-// ================================================================================================================
-// The refusal is read from its JSON, not from an English sentence
-// ================================================================================================================
+// 3. S2: an unreadable confirmation whose status repeats the dispatched set starts no second dispatch.
 {
-  // The same refusal without its sentence: only the typed code is left, and the stage still stops.
-  const bare = { ...refusal, error: '', message: '' }
-  const run3 = await run(args, { '-Step plan': plan, '-Step topics': { exit_code: 2, last_line: json(bare), tail: json(bare) } })
-  check(run3.report && run3.report.halted && run3.report.halted.stage === 'grow', 'typed code: a refusal with no sentence still stops the stage')
-  check(/card_locked/.test(String(run3.report.halted.error)), 'typed code: the stop names the typed code')
+  const set = jobs('ideas-jobs', 1, ['gw-001'])
+  const r = await run({ out: W }, [set, { output: 'garbled' }, done], [set])
+  check(!r.thrown && r.managers.length === 1, `the repeated job set is not dispatched twice (${r.thrown && r.thrown.message})`)
+  check(nexts(r).filter((c) => / -After 1$/.test(c)).length === 2, 'next -After runs again for the repeated set')
 }
 
-// ================================================================================================================
-// 3.0.0 (docs/literature-only-digest-design.md): idea-grow owns every Topic tree, Topic Card, hub and the register
-// ================================================================================================================
+// 4. S6: the owner's Lock stops the stage with the typed refusal; nothing is retried.
 {
-  // Mode hubs: only the hubs round and the register, with the hub options the digests had.
-  const hubsPlan = { exit_code: 0, last_line: json({ hub_jobs: 0, topics: 3, trees: 2, limits: { line_min: 12 } }), tail: '' }
-  const hubsReport = { exit_code: 0, last_line: json({ hubs: { topic: 2 }, faults: {}, missing: 0, mirror: 0, register: { status: 'published', entries: 9 } }), tail: '' }
-  const r = await run({ out: 'D:/x/hubs', mode: 'hubs', hubTrees: '12,13', hubRebuild: true, hubLimits: { line_min: 12 } }, { '-Step hubs-plan': hubsPlan, '-Step hubs-report': hubsReport })
-  check(!r.thrown && r.report && !r.report.halted && r.report.stages.grow.status === 'done', `mode hubs: the run completes (${JSON.stringify(r.report && r.report.halted)})`)
-  check(!r.commands.some((c) => /grow -Step (plan|topics|apply|links|check|report|restate-cards) /.test(c)), `mode hubs: no Card is grown, checked or reviewed (${r.commands.join(' | ')})`)
-  const plan = r.commands.find((c) => /grow -Step hubs-plan/.test(c)) || ''
-  check(/-Trees '12,13'/.test(plan) && /-Rebuild/.test(plan) && plan.includes(`-Limits '{"line_min":12}'`), `mode hubs: the hub options reach the hub plan (${plan})`)
-  check(r.commands.some((c) => /grow -Step hubs-report .*-Register 'apply'/.test(c)), 'mode hubs: the register is rebuilt after the hubs')
-  check(r.report.result && r.report.result.mode === 'hubs' && r.report.result.report && r.report.result.report.mode === 'hubs', 'mode hubs: the result says it was a hubs run')
-}
-{
-  // The restatement review of the run's new Topic Cards, one review per source book.
-  const reviews = { exit_code: 0, last_line: json({ books: 1, reviews: [{ id: 'r01', book: 'Key', staging: 'D:/x/grow/restate/r01', cards: 3 }] }), tail: '' }
-  const prepared = { exit_code: 0, last_line: json({ ok: true, step: 'prepare', cards: 3, reviewable: 0, jobs: [] }), tail: '' }
-  const reported = { exit_code: 0, last_line: json({ ok: true, step: 'report', report_id: 'rr-1', status: 'resolved', complete: true, counts: { resolved_by_rewrite: 0, pending_existing_card_change: 0, unresolved: 0 } }), tail: '' }
-  // The restate keys come first: the stand-in answers the first key a command contains.
-  const answers = { '-Step restate-cards': reviews, 'restate -Step prepare': prepared, 'restate -Step report': reported, '-Step plan': plan, '-Step topics': topicsDone, '-Step check': checkDone, '-Step report': reportDone }
-  const r = await run(args, answers)
-  check(!r.thrown && r.report && !r.report.halted, `restate: the run completes (${JSON.stringify(r.report && r.report.halted)})`)
-  check(r.commands.some((c) => c.includes("restate -Step prepare -Staging 'D:/x/grow/restate/r01'") && /-Cards '[^']*cards\.txt'/.test(c)), `restate: the review reads the run's own new Topic Cards of each book (${r.commands.filter((c) => /restate/.test(c)).join(' | ')})`)
-  const at = (re) => r.commands.findIndex((c) => re.test(c))
-  check(at(/grow -Step check/) < at(/grow -Step restate-cards/) && at(/grow -Step restate-cards/) < at(/grow -Step hubs-plan/), 'restate: the review follows the fix rounds and comes before the hubs')
-  check(r.report.result && r.report.result.restate && r.report.result.restate.books === 1 && r.report.result.restate.reviews[0].status === 'resolved', `restate: the result reports each book's review (${JSON.stringify(r.report.result && r.report.result.restate)})`)
-  const off = await run({ ...args, restate: false }, answers)
-  check(!off.commands.some((c) => /restate/.test(c)), 'restate: restate false runs no review')
-}
-check((source.match(/\], p\.hubEffort\)\)/g) || []).length === 2, 'hub effort: the hub jobs and their fix jobs run at hubEffort')
-
-// ================================================================================================================
-// 3.1.0: the concept review of each source book (the register plan's -Review) and the Topic maintenance round
-// ================================================================================================================
-{
-  const line = (o) => ({ exit_code: 0, last_line: json(o), tail: '' })
-  const mgr = (id, reply) => ({ jobs: [{ id, ok: true, reply, attempts: 1 }], started: ['s1'], deleted: 1, not_deleted: [] })
-  const cleanup = { folders: [{ cwd: 'D:\\x\\grow', removed: true, leftover: [], running: 0 }] }
-  const staging = 'D:/x/grow/concepts/c01'
-  // The concept keys come first: the stand-in answers the first key a command contains.
-  const answers = {
-    'concepts -Step propose': line({ ok: true, step: 'propose', book: 'Key', term_rows: 2, proposals: 2 }),
-    'concepts -Step prepare': line({ ok: true, step: 'prepare', evidence_id: 'e-1', jobs: [{ id: 'cj-01', files: [`${staging}/work/dsh-concept-instructions.zh.md`, `${staging}/work/cj-01.md`], prompt: 'judge', answer: `${staging}/work/out/cj-01.json` }] }),
-    'concepts -Step judge': line({ ok: true, step: 'judge', judged: 3, pairs: 3, unjudged: 0 }),
-    'concepts -Step report': line({ ok: true, step: 'report', report_id: 'r-1', status: 'complete', complete: true, findings: 3, judged: 3, unjudged: 0 }),
-    '-Step concept-books': line({ books: 1, reviews: [{ id: 'c01', book: 'Key', staging, table: 'Key/1|t' }], skipped: [{ book: 'Other', reason: 'no term-table Card' }] }),
-    '-Step organize-plan': line({ organize_jobs: 1, topics: 2, pairs: 1, small: 0, moves: 1, locked: 0 }),
-    '-Step organize-apply': line({ applied: true, merges: 1, moves: 1, refused: 0, blocked: 0, renamed: 2, complete: true, invalid: 0 }),
-    '-Step restate-cards': line({ books: 0, reviews: [] }),
-    '-Step hubs-plan': line({ hub_jobs: 0, topics: 3, trees: 2, limits: {} }),
-    '-Step hubs-report': line({ hubs: { topic: 2 }, faults: {}, missing: 0, mirror: 0, register: { status: 'published', entries: 9, reviews: 1 } }),
-    '-Step plan': plan, '-Step topics': topicsDone, '-Step check': checkDone, '-Step report': reportDone,
-    __agents: [['organize mgr', mgr('go-001', 'OK')], ['concepts mgr', mgr('c01-cj', '{"judged":3}')], ['cleanup', cleanup]],
-  }
-  const r = await run({ ...args, organize: true }, answers)
-  check(!r.thrown && r.report && !r.report.halted, `rounds: the run completes (${JSON.stringify(r.report && r.report.halted)} ${r.thrown && r.thrown.message})`)
-  const at = (re) => r.commands.findIndex((c) => re.test(c))
-  const order = [/-Step restate-cards/, /-Step organize-plan/, /-Step organize-apply/, /-Step concept-books/, /concepts -Step propose/, /concepts -Step report/, /-Step hubs-plan/, /-Step hubs-report/].map(at)
-  check(order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])), `rounds: restate, then the Topic maintenance, then the concept review, then the hubs (${order.join(',')})`)
-  check(r.commands.some((c) => /-Step hubs-report .*-Concepts/.test(c)), 'concepts: the register plan reads the rendered concept reports (hubs-report -Concepts)')
-  check(r.commands.some((c) => c.includes(`concepts -Step judge -Staging '${staging}'`) && c.includes(`-File '${staging}/work/out/cj-01.json'`)), 'concepts: the judge step validates the judge job\'s own answer file')
-  const go = r.prompts.find((x) => /organize mgr/.test(x.label))
-  check(go && go.text.includes('go-001') && go.text.includes('-Job go-001') && go.text.includes('jobs\\\\go-001.md'), 'organize: one DeepSeek decision job go-001 with its SELF-CHECK and its job file')
-  const cj = r.prompts.find((x) => /concepts mgr/.test(x.label))
-  check(cj && cj.text.includes('c01-cj') && cj.text.includes('concepts -Step judge'), 'concepts: one DeepSeek judge job per book, approved only for the concept self-check')
-  const res = r.report && r.report.result
-  check(res && res.organize && res.organize.applied && res.organize.applied.merges === 1 && res.organize.plan.pairs === 1, `organize: the result reports the survey and the merges and moves (${JSON.stringify(res && res.organize)})`)
-  check(res && res.concepts && res.concepts.books === 1 && res.concepts.reviews[0].report_id === 'r-1' && res.concepts.skipped.length === 1, `concepts: the result reports each book's review and the skipped books (${JSON.stringify(res && res.concepts)})`)
-  check(r.labels.some((l) => /cleanup/.test(l)), 'rounds: the DeepSeek cleanup runs after the rounds')
-
-  // The defaults: no maintenance round unless asked; concepts false runs no review and no -Concepts.
-  const quiet = await run({ ...args, concepts: false }, answers)
-  check(!quiet.thrown && !quiet.commands.some((c) => /organize-|concept-books|concepts -Step/.test(c)), 'defaults: organize is off by default, and concepts false runs no concept review')
-  check(quiet.commands.some((c) => /-Step hubs-report/.test(c) && !/-Concepts/.test(c)), 'defaults: without a review the register plan reads none')
-  // A book whose term table proposes nothing is skipped: no evidence, no judge job, no -Concepts.
-  const none = await run(args, { ...answers, 'concepts -Step propose': line({ ok: true, step: 'propose', proposals: 0, reason: 'no row' }) })
-  check(!none.thrown && !none.commands.some((c) => /concepts -Step prepare/.test(c)) && !none.prompts.some((x) => /concepts/.test(x.label)), 'concepts: a term table with no concept starts no judge job')
-  check(none.report.result.concepts.reviews[0].status === 'skipped' && none.commands.some((c) => /-Step hubs-report/.test(c) && !/-Concepts/.test(c)), 'concepts: the skipped review is reported and the register reads no report')
-  // Mode hubs: the concept review of the named books still feeds the register.
-  const hubs = await run({ out: 'D:/x/hubs', mode: 'hubs', books: ['Key'] }, answers)
-  check(!hubs.thrown && hubs.commands.some((c) => /-Step concept-books .*-Books 'Key'/.test(c)) && hubs.commands.some((c) => /-Step hubs-report .*-Concepts/.test(c)), 'mode hubs: the named books\' concept review feeds the register')
-  check(!hubs.commands.some((c) => /organize-/.test(c)), 'mode hubs: no Topic maintenance (it moves Cards)')
-  // The owner's Lock refuses a maintenance write: the stage stops with the typed refusal.
-  const locked = await run({ ...args, organize: true }, { ...answers, '-Step organize-apply': { exit_code: 2, last_line: json(refusal), tail: json(refusal) } })
-  check(locked.report && locked.report.halted && locked.report.halted.stage === 'grow' && /card_locked/.test(String(locked.report.halted.error)), 'organize: a Lock refusal stops the stage with card_locked')
-  check(!locked.commands.some((c) => /-Step hubs-plan/.test(c)), 'organize: nothing after the Lock stop runs')
+  const r = await run({ out: W }, [jobs('ideas-jobs', 1, ['gw-001']), lockFault, done])
+  const said = halted(r)
+  check(said.includes('"tree":"4/0"') && said.includes('"lock_id":3') && said.includes('locked by the owner'), `a card_locked fault stops the stage with its tree and Lock id (${said})`)
+  check(said.startsWith('card_locked at grow: apply') && r.report.stages.report.status !== 'done', 'the stop names the round the Lock refused; the report stage does not run')
+  check(nexts(r).length === 2 && r.managers.length === 1, 'the refused round is never retried')
+  check(r.kinds.includes('cleanup'), 'the DeepSeek workspace cleanup still runs')
 }
 
-// ================================================================================================================
-// 3.2.0 (zt-grow-cycle v11): the per-book reviews send all their judge jobs in one dispatch; a box copy logs
-// the rounds it does not run
-// ================================================================================================================
+// 5. A fault that is not a Lock stops the stage with its code and cause.
 {
-  const line = (o) => ({ exit_code: 0, last_line: json(o), tail: '' })
-  const mgr = (ids) => ({ jobs: ids.map((id) => ({ id, ok: true, reply: '{"judged":1}', attempts: 1 })), started: ids, deleted: ids.length, not_deleted: [] })
-  const cleanup = { folders: [{ cwd: 'D:\\x\\grow', removed: true, leftover: [], running: 0 }] }
-  const job = (id) => ({ id, files: [`D:/x/${id}.md`], prompt: 'judge' })
-  const answers = {
-    'restate -Step prepare': line({ ok: true, step: 'prepare', cards: 2, reviewable: 2, jobs: [job('rj-01')] }),
-    'restate -Step judge': line({ ok: true, step: 'judge' }),
-    'restate -Step apply': line({ ok: true, step: 'apply', written: 1 }),
-    'restate -Step report': line({ ok: true, step: 'report', report_id: 'rr', status: 'resolved', counts: {} }),
-    'concepts -Step propose': line({ ok: true, step: 'propose', proposals: 2 }),
-    'concepts -Step prepare': line({ ok: true, step: 'prepare', jobs: [job('cj-01')] }),
-    'concepts -Step judge': line({ ok: true, step: 'judge', judged: 2 }),
-    'concepts -Step report': line({ ok: true, step: 'report', report_id: 'cr', status: 'complete', findings: 1 }),
-    '-Step restate-cards': line({ books: 3, reviews: ['r01', 'r02', 'r03'].map((id, i) => ({ id, book: `B${i}`, staging: `D:/x/grow/restate/${id}`, cards: 2 })) }),
-    '-Step concept-books': line({ books: 3, reviews: ['c01', 'c02', 'c03'].map((id, i) => ({ id, book: `B${i}`, staging: `D:/x/grow/concepts/${id}` })), skipped: [] }),
-    '-Step hubs-plan': line({ hub_jobs: 0, topics: 3, limits: {} }),
-    '-Step hubs-report': line({ hubs: {}, faults: {}, missing: 0, mirror: 0, register: { status: 'published', entries: 3 } }),
-    '-Step plan': plan, '-Step topics': topicsDone, '-Step check': checkDone, '-Step report': reportDone,
-    __agents: [['restate mgr', mgr(['r01-rj', 'r02-rj', 'r03-rj'])], ['concepts mgr', mgr(['c01-cj', 'c02-cj', 'c03-cj'])], ['cleanup', cleanup]],
-  }
-  const r = await run(args, answers)
-  check(!r.thrown && r.report && !r.report.halted, `batched: the run completes (${JSON.stringify(r.report && r.report.halted)} ${r.thrown && r.thrown.message})`)
-  for (const [what, prefix, suffix] of [['restate', 'r0', 'rj'], ['concepts', 'c0', 'cj']]) {
-    const managers = r.prompts.filter((x) => new RegExp(`${what} mgr`).test(x.label))
-    check(managers.length === 1 && [1, 2, 3].every((i) => managers[0].text.includes(`${prefix}${i}-${suffix}`)), `batched: the three books' ${what} judge jobs go to one manager side by side (${managers.length} managers)`)
-    const at = (re) => r.commands.findIndex((c) => re.test(c))
-    const lastPrepare = Math.max(...r.commands.map((c, i) => (new RegExp(`${what} -Step prepare`).test(c) ? i : -1)))
-    check(lastPrepare >= 0 && lastPrepare < at(new RegExp(`${what} -Step judge`)), `batched: every ${what} prepare runs before the first judge`)
-  }
-  const res = r.report && r.report.result
-  check(res && res.restate.reviews.map((x) => x.id).join() === 'r01,r02,r03' && res.restate.reviews.every((x) => x.status === 'resolved' && x.written === 1), `batched: the restate result keeps the books' order and each book's outcome (${JSON.stringify(res && res.restate)})`)
-  check(res && res.concepts.reviews.map((x) => x.id).join() === 'c01,c02,c03' && res.concepts.reviews.every((x) => x.report_id === 'cr'), 'batched: the concept result keeps the books\' order and each report')
-  // One book whose prepare fails is reported for that book; the other books' jobs still go out together.
-  // The stand-in answers the first key a command contains, so the one book's key comes first.
-  const failing = { "restate -Step prepare -Staging 'D:/x/grow/restate/r02'": { exit_code: 1, last_line: 'boom', tail: 'boom' }, ...answers }
-  const f = await run(args, failing)
-  const rs = f.report && f.report.result && f.report.result.restate
-  check(!f.thrown && rs && rs.reviews.map((x) => `${x.id}:${x.status}`).join() === 'r01:resolved,r02:skipped,r03:resolved', `batched: a failed prepare skips only its book (${JSON.stringify(rs && rs.reviews.map((x) => x.status))})`)
-  // A copy of the box: the live-box rounds are named in the log and the result, not skipped silently.
-  const copy = await run({ ...args, ztConfig: 'D:\\box-copy' }, answers)
-  check(!copy.thrown && copy.logs.some((l) => /on the box copy .*restatement review.*concept review.*hubs and the register/.test(l)), `box copy: the log names the rounds that do not run (${copy.logs.filter((l) => /box copy/.test(l)).join(' | ')})`)
-  check(copy.report.result.skipped_on_copy.length === 3 && !copy.commands.some((c) => /restate-cards|concept-books|hubs-plan/.test(c)), `box copy: no live-box round runs (${JSON.stringify(copy.report.result.skipped_on_copy)})`)
+  const r = await run({ out: W }, [{ next: 'fault', code: 'step_failed', round: 'check', cause: 'zt-digest grow -Step exited 1: boom' }])
+  check(/^grow stopped at check: step_failed: .*boom/.test(halted(r)), 'a step failure stops the stage with its code and cause')
+  check(!r.kinds.includes('cleanup'), 'no cleanup runs when no DeepSeek job started')
 }
 
-console.log(`failed: ${failed}`)
+// 6. The options: a box copy, mode hubs, the hub options; frozen args leave the list.
+{
+  const r = await run({ out: W, ztConfig: 'D:\\box\\config', hubTrees: '4,5', hubRebuild: true, hubLimits: { line_min: 12 }, organize: true, books: ['a', 'b'] }, [done])
+  const c = nexts(r)[0]
+  const o = optionsOf(c)
+  check(/^\$env:ZT_CONFIG_DIR='D:\\box\\config'; & 'zt-digest' grow -Step next /.test(c), 'a box copy names its config before the command')
+  check(o.zt_config === 'D:\\box\\config' && o.hub_trees === '4,5' && o.hub_rebuild === true && o.hub_limits.line_min === 12 && o.organize === true && o.books.join() === 'a,b', 'the box copy and the hub, organize and book options reach next')
+  const h = await run({ out: W }, [{ ...done, mode: 'hubs' }])
+  check(!h.thrown, 'mode full is the default')
+  const bp = loaded.bp
+  check(!['fixRounds', 'hubFixRounds', 'hubEffort', 'dshModel', 'organizeTrees'].some((k) => k in bp.args), 'fixRounds, hubFixRounds, hubEffort, dshModel and organizeTrees left the arguments (S9)')
+  check(JSON.stringify(bp.args.register.enum) === '["apply","off"]', 'register takes apply or off')
+  check(bp.roles.relay && bp.roles.relay.agentType === 'zt-relay' && !bp.roles.runner, 'the relay role replaces the runner role (S1)')
+}
+
+// 7. The frozen build.
+{
+  check(build.modules['zt-grow-cycle'] === '12' && build.modules['zt-workflow-lib'] === '1', `the build carries zt-grow-cycle v12 and zt-workflow-lib v1 (${JSON.stringify(build.modules)})`)
+  const cycle = source.slice(source.indexOf('// ==== module zt-grow-cycle'), source.indexOf('// ==== end module zt-grow-cycle'))
+  check((cycle.match(/ZT_LOCK/g) || []).length === 1 && !/JSON\.parse/.test(cycle) && (source.match(/function ztLockRefusal/g) || []).length === 1, 'the cycle checks the Lock once, on the typed fault line; the one reader is the shared library\'s')
+  check(!/You run one compiler chain|You drive DeepSeek Harness|You manage \d+ DeepSeek/.test(source) && /dsDispatch\(line\.ids/.test(cycle), 'every DeepSeek job goes through dsDispatch; no hand-written manager prompt')
+}
+
+console.log(failed ? `${failed} check(s) FAILED` : 'all checks passed')
 process.exit(failed ? 1 : 0)

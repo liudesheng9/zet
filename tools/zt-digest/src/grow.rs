@@ -2336,8 +2336,10 @@ fn links(a: &Args) -> Result<()> {
     let work = Work::open(&a.required("Work")?)?;
     let mut state = work.state()?;
     if state["links"].is_object() {
-        let n = state["links"].as_object().map_or(0, |m| m.values().filter(|v| v["applied"] != true).count());
-        return util::print_last(&json!({ "link_jobs": n, "kept": true }));
+        // S0 (docs/workflow-simplicity-proposal.md): a rerun names the unapplied jobs themselves; numbering
+        // gl-001 onward from their count named jobs that need not be the unapplied ones.
+        let ids: Vec<String> = state["links"].as_object().map(|m| m.iter().filter(|(_, v)| v["applied"] != true).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
+        return util::print_last(&json!({ "link_jobs": ids.len(), "ids": ids, "kept": true }));
     }
     let titles = work.read("titles.json")?.as_array().cloned().unwrap_or_default();
     let plan = work.read("plan.json")?;
@@ -2414,9 +2416,10 @@ fn links(a: &Args) -> Result<()> {
         util::write_text(work.path(&format!("jobs\\{id}.md")), &retool(&plan, &md))?;
         jobs.insert(id, json!({ "tree": tree, "cards": cards, "applied": false }));
     }
+    let ids: Vec<String> = jobs.keys().cloned().collect();
     state["links"] = Value::Object(jobs);
     work.write("state.json", &state)?;
-    util::print_last(&json!({ "link_jobs": n }))
+    util::print_last(&json!({ "link_jobs": n, "ids": ids }))
 }
 
 /// The faults of a link answer (G11): each Link starts at a new Card of the job, ends at a Card of
@@ -2654,6 +2657,24 @@ fn report(a: &Args) -> Result<()> {
             s(&reg["unresolved"])
         ));
     }
+    // 4.0.0: the review rounds `-Step next` ran before the report (restatement, concepts, Topic maintenance).
+    let rounds = &state["rounds"];
+    if rounds.is_object() {
+        let mut lines = Vec::new();
+        for r in rounds["restate"]["reviews"].as_array().into_iter().flatten() {
+            lines.push(format!("- 重述复核 {}（[[{}]]）：{}；改写解决 {}，待定 {}，未解决 {}。", s(&r["id"]), s(&r["book"]), s(&r["status"]), s(&r["resolved_by_rewrite"]), s(&r["pending"]), s(&r["unresolved"])));
+        }
+        for r in rounds["concepts"]["reviews"].as_array().into_iter().flatten() {
+            lines.push(format!("- 概念复核 {}（[[{}]]）：{}；发现 {}，已判 {}，未判 {}。", s(&r["id"]), s(&r["book"]), s(&r["status"]), s(&r["findings"]), s(&r["judged"]), s(&r["unjudged"])));
+        }
+        let o = &rounds["organize"];
+        if o.is_object() && o["skipped"].is_null() {
+            lines.push(format!("- 主题整理：合并 {}，移动 {}，拒绝 {}，未通过检查 {}。", s(&o["merges"]), s(&o["moves"]), s(&o["refused"]), s(&o["invalid"])));
+        }
+        if !lines.is_empty() {
+            md.push_str(&format!("## 复核与整理\n\n{}\n\n", lines.join("\n")));
+        }
+    }
     md.push_str("| 小节 | 新卡 | 新主题 | same | 拒绝 | 重复 |\n| --- | --- | --- | --- | --- | --- |\n");
     for r in report["sections"].as_array().into_iter().flatten() {
         md.push_str(&format!("| [[{}]] | {} | {} | {} | {} | {} |\n", s(&r["section"]), s(&r["created"]), s(&r["topics"]), s(&r["same"]), s(&r["refused"]), s(&r["duplicates"])));
@@ -2686,8 +2707,10 @@ fn report(a: &Args) -> Result<()> {
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig", "Register", "Limits", "Trees"], &["Apply", "Rebuild", "Concepts"])?;
-    let code = match a.choice("Step", &["plan", "topics", "links", "precheck", "apply", "check", "report", "hubs-plan", "hubs-apply", "hubs-check", "hubs-report", "restate-cards", "concept-books", "organize-plan", "organize-apply"])?.as_str() {
+    let a = Args::parse(argv, &["Step", "Book", "Books", "Work", "Instructions", "From", "To", "Job", "Round", "Tool", "ZtConfig", "Register", "Limits", "Trees", "Options", "After"], &["Apply", "Rebuild", "Concepts"])?;
+    let code = match a.choice("Step", &["next", "status", "plan", "topics", "links", "precheck", "apply", "check", "report", "hubs-plan", "hubs-apply", "hubs-check", "hubs-report", "restate-cards", "concept-books", "organize-plan", "organize-apply"])?.as_str() {
+        // 4.0.0 (docs/workflow-simplicity-proposal.md S3): the run as one command that decides what comes next.
+        step @ ("next" | "status") => crate::grow_next::cli(step, &a)?,
         "concept-books" => {
             concept_books(&a)?;
             0

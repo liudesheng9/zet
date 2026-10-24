@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v9 ====
+// ==== module zt-model-lib v10 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list
 // (list-models.ps1) and the model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill,
 // derive, review, split → report and clean-up (model-compiler.ps1 does every structural step). A book type
@@ -7,6 +7,9 @@
 // 9 (docs/digest-claude-token-proposal.md P1/P7): a batch registers its models' references with ONE `model-deps -Units`
 // command instead of one relay per model, and a close round that sends nothing back writes the batch report in the
 // same process (`-Step close -Report`), so such a batch needs no report step of its own.
+// 10 (docs/workflow-simplicity-proposal.md S1, S10): the model list runs through the relay (a Haiku agent had copied the
+// array back and once dropped `form`), and whether a batch fills only or derives and reviews is read from the plans the
+// architect wrote (`model -Step plan-status`), never from its answer; the answer keeps only its notes and summary.
 function zmlMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const { A, KEY, OUT, SCRIPTS, DSH_EFFORT, LIMITS, COMPILER, FILL_SKILLS, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET,
@@ -20,12 +23,10 @@ function zmlMake(ctx, p) {
     },
     required: ['ok', 'models'],
   }
-  const listModels = (selector, label) => zAgent(
-    `List the Model Cards of a ZET book digest. Run this one PowerShell command in the foreground with timeout_ms: 600000 and read its last output line, a compact JSON object {"models":[{"address","title","group","level","parts","issues","faults"}]}:
-${Z.tool('list-models')} -Staging "${OUT}" ${selector}
-If it fails, return ok=false with the error text and models=[]; do not retry with other options. Otherwise return ok=true and the models array exactly.`,
-    { label, phase: 'Models', model: 'haiku', schema: MODEL_LIST },
-  )
+  const listModels = async (selector, label) => {
+    const { run, json } = await Z.runScript(label, 'Models', `${Z.tool('list-models')} -Staging "${OUT}" ${selector}`, ' (it lists the Model Cards; it writes no Card)')
+    return json && Array.isArray(json.models) ? { ok: true, models: json.models } : { ok: false, models: [], error: String((run && run.output) || 'no output') }
+  }
 
   const PLANS = {
     type: 'object',
@@ -110,7 +111,13 @@ ${todo.map(entry).join('\n\n')}
 Return plans: one entry per model, in this order.`,
       { label: `plan: ${tag}`, phase: 'Models', model: 'sonnet', schema: PLANS },
     )
-    const plans = (planned && planned.plans) || []
+    // S10: the plans as the architect wrote them (plan.json per model), read by the compiler; the answer adds notes.
+    const status = await Z.runScript(`plan status: ${tag}`, 'Models', step('plan-status'), ' (it reads the plans the architect wrote; it changes nothing)')
+    const said = (planned && planned.plans) || []
+    const plans = status.json && Array.isArray(status.json.plans)
+      ? status.json.plans.map((x) => ({ ...(said.find((y) => y.model === x.model) || {}), model: x.model, status: x.status, level: x.level, parts: x.parts, derivations: x.derivations }))
+      : todo.map((m) => ({ model: m.address, status: 'failed', notes: [], summary: '' }))
+    if (!status.json) log(`plan status ${tag}: no readable line (${String((status.run && status.run.output) || 'no output').slice(0, 200)}); the batch builds nothing.`)
     if (!plans.some(p => p.status === 'planned')) {
       await run('clean up', step('report'), [], DSH_EFFORT, { cleanup: true })
       return batch.map(m => skipped.has(m.address) ? { model: m.address, status: 'skipped', parts: [], charts: 0, issues: [] }
@@ -249,7 +256,7 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '9', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '10', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model list and the model compiler (brief, architect plan, fill, derive, review, split) for the model layer.',
 })
 // ==== end module zt-model-lib ====

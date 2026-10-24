@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v35 ====
+// ==== module zt-digest-lib v37 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -30,6 +30,15 @@
 // (`zt-digest finish-batch`, one short line) instead of one relay per unit; the Cards layer claims and finishes
 // in that one command; the events, findings and explain chains end with it in their own manager; and a compiler
 // step's command agent loads no DeepSeek tool. Every finish keeps its own verifier, token and fault class.
+// 36 (P5): a one-command relay (runScript) runs as the blueprint's relay role, the zt-relay agent type (PowerShell
+// only, a short prompt): its first request carries about 9k tokens of context instead of about 59k.
+// 37 (docs/workflow-simplicity-proposal.md S1, S5, S6, S8): the JSON line reader, the Lock reader and the relay are the
+// shared library's (zt-workflow-lib, which zt-idea-grow loads too); a compiler step's command runs through the relay
+// (no manager prompt runs a command); the DeepSeek source is frozen at the official one (no probe); the ledger is the
+// one fault classifier (a fault leaves out its class and, where only a cause text says it, its code); and the dead code
+// (the stage managers, runStage, drain, jobOf, renew, resourceList, finishCleanup, cleanupDsh, CARD_CHECKS,
+// LINK_PER_MANAGER) and the unused or alias args (perManager, linkPerManager, dshPerSonnet, redoModels, dshSource,
+// dshModel) leave.
 const ZD_SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 // The digest scripts ported to zt-digest (tools/zt-digest, one fast binary): script name → tool. zdTool(name)
 // is the command that runs a script: `zt-digest <tool>` once it is ported, else pwsh with the script. The
@@ -57,7 +66,6 @@ function zdTool(name, scripts = ZD_SCRIPTS) {
 }
 const ZD_DSH_SOURCES = {
   official: 'deepseek-official/deepseek-flash',
-  opencode: 'opencode-go/deepseek-v4.1-flash',
 }
 const ZD_PER_MANAGER_MAX = 8
 const ZD_MAX_MANAGERS = 8
@@ -65,21 +73,10 @@ const ZD_MAX_MANAGERS = 8
 // reads the account-wide usage ledger: the difference of two rolling totals is not a run's cost (I22/R344).
 const ZD_RUN_SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] }
 
-// The JSON object in a line, also after prose on the same line ("…保留原样。{"address":…}").
-function zdJsonIn(line) {
-  for (let i = line.indexOf('{'); i >= 0; i = line.indexOf('{', i + 1)) {
-    // The longest object from this brace: a relay may add a remark after the line ("(abridged)").
-    for (let j = line.lastIndexOf('}'); j > i; j = line.lastIndexOf('}', j - 1)) {
-      try { const v = JSON.parse(line.slice(i, j + 1)); if (v && typeof v === 'object') return v } catch (e) { }
-    }
-  }
-  return null
-}
-// The compiler's JSON line: the last line holding a JSON object.
-function zdLastJson(text) {
-  for (const line of String(text || '').trim().split('\n').reverse()) { const v = zdJsonIn(line); if (v) return v }
-  return null
-}
+// The JSON line reader of the shared library (zt-workflow-lib).
+// (thin wrappers: a module file is loaded alone to read its manifest, so it names no other library at load time)
+function zdJsonIn(line) { return ztJsonIn(line) }
+function zdLastJson(text) { return ztLastJson(text) }
 
 // --- Tree Lock: the owner's refusal is a planning error, not a provider fault (#140, R326/R337) ------
 // A write into a tree the owner locked is refused by the storage gate with its typed `card_locked`
@@ -87,39 +84,15 @@ function zdLastJson(text) {
 // prints `{error:"card_locked", …}`). The stage reads that JSON, never an English sentence (R338):
 // it stops with the refusal as its error, keeps the drafts and the receipts it already committed,
 // and never retries the refused write or asks for another Access (R326).
+// S6: the one Lock reader is the shared library's (zt-workflow-lib); these names keep the stage modules' calls.
 const ZD_LOCK = 'card_locked'
-// The typed refusal inside one relayed line, answer or error text, or null.
-function zdLockRefusal(text) {
-  const said = String(text || '')
-  for (const line of said.split('\n')) {
-    for (let i = line.indexOf('{'); i >= 0; i = line.indexOf('{', i + 1)) {
-      for (let j = line.lastIndexOf('}'); j > i; j = line.lastIndexOf('}', j - 1)) {
-        try {
-          const v = JSON.parse(line.slice(i, j + 1))
-          if (v && typeof v === 'object' && (v.code === ZD_LOCK || v.error === ZD_LOCK)) return v
-        } catch (e) { }
-      }
-    }
-  }
-  return null
-}
-// The archive's own sentence about the refusal, for the stage's error line.
-function zdLockSaid(refusal) {
-  const said = refusal && (refusal.message || refusal.error)
-  return typeof said === 'string' && said.trim() ? said.trim() : ZD_LOCK
-}
-// The stop one stage throws: the archive's refusal, its sentence and its JSON. `lock_refusal` lets a
-// caller that records unit faults keep the code instead of reading it as a content or provider fault.
-function zdLockStop(where, refusal) {
-  const error = new Error(`card_locked at ${where}: ${zdLockSaid(refusal)} ${JSON.stringify(refusal)}`)
-  error.lock_refusal = refusal
-  return error
-}
+function zdLockRefusal(text) { return ztLockRefusal(text) }
+function zdLockSaid(refusal) { return ztLockSaid(refusal) }
+function zdLockStop(where, refusal) { return ztLockStop(where, refusal) }
 
-// The DeepSeek source model before (or without) the probe: the given model, the given source, or the official one.
-function zdDefaultModel(A) {
-  const source = A.dshModel ? 'model' : (['official', 'opencode'].includes(A.dshSource) ? A.dshSource : 'auto')
-  return { source, model: A.dshModel || ZD_DSH_SOURCES[source] || ZD_DSH_SOURCES.official }
+// The DeepSeek source is frozen at the official one (the user's rule, 2026-10-20; S1): no probe, no argument.
+function zdDefaultModel() {
+  return { source: 'official', model: ZD_DSH_SOURCES.official }
 }
 
 function zdMake(ctx, p) {
@@ -129,13 +102,13 @@ function zdMake(ctx, p) {
   const OUT = A.out
   const profile = p.profile || {}
   const SCRIPTS = ZD_SCRIPTS
-  const DSH_MODEL = p.model || zdDefaultModel(A).model
+  const DSH_MODEL = p.model || zdDefaultModel().model
   const DIGEST_PREFIX = `${OUT}\\${profile.digestPrefix || 'shared-prefix.md'}`
   const LINK_PREFIX = `${OUT}\\${profile.linkPrefix || 'link-prefix.md'}`
   // Extra instruction files of the model compiler (math: -BriefDoc, -FillDoc, -ReviewDoc), in the order given.
   const COMPILER_DOCS = Object.entries(profile.compilerDocs || {}).map(([k, f]) => ` -${k} "${OUT}\\${f}"`).join('')
   const SKIP_FORMS = profile.skipForms || []
-  const PER_MANAGER = Math.min(ZD_PER_MANAGER_MAX, A.perManager || 5)
+  const PER_MANAGER = ZD_PER_MANAGER_MAX
   const raised = []
   const atLeastHigh = (value, name) => {
     if (value === 'high' || value === 'max') return value
@@ -149,8 +122,8 @@ function zdMake(ctx, p) {
   const COMPILER = zdTool('model-compiler', SCRIPTS)
   const MODEL_WORK = `${OUT}\\models`
   const PER_SONNET = Math.max(1, A.perSonnet || 8)
-  const DSH_PER_BATCH = Math.min(ZD_PER_MANAGER_MAX, Math.max(1, A.dshPerBatch || A.dshPerSonnet || 8))
-  const REBUILD = !!(A.rebuild || A.redoModels)
+  const DSH_PER_BATCH = Math.min(ZD_PER_MANAGER_MAX, Math.max(1, A.dshPerBatch || 8))
+  const REBUILD = !!A.rebuild
   const LEVEL = ['concept', 'formal'].includes(A.level) ? A.level : null
   const PER_CONCEPT = Math.max(1, A.perConcept || 10)
   const BRIEF_EFFORT = atLeastHigh(A.briefEffort, 'briefEffort')
@@ -162,7 +135,6 @@ function zdMake(ctx, p) {
   const FILL_SKILLS = ['asd-ste100-zh']
   const DSH_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_delete'
   const DRIVE_TOOLS = `${DSH_TOOLS},mcp__deepseek__deepseek_list,mcp__deepseek__deepseek_remove_workspace`
-  const CARD_CHECKS = MODE === 'cards' || ((MODE === 'full' || MODE === 'link') && A.cardChecks !== false)
   const CARD_COMPILER = zdTool('card-compiler', SCRIPTS)
   const CARD_FIX_ROUNDS = Math.max(0, A.cardFixRounds ?? 1)
   // R297: the deterministic Idea sample of the one whole-book card cycle (modes cards and full).
@@ -172,7 +144,6 @@ function zdMake(ctx, p) {
   const CARD_SKILLS = ['asd-ste100-zh']
   const APPLY_SHARE = Math.max(1, A.applyShare || 30)
   const DSH_MANAGERS = Math.min(ZD_MAX_MANAGERS, Math.max(1, A.dshManagers || 8))
-  const LINK_PER_MANAGER = Math.min(ZD_PER_MANAGER_MAX, Math.max(PER_MANAGER, A.linkPerManager || 8))
   // R273: only the two bounded run settings are exposed; the tool keeps leases, batch
   // sizes and heartbeat intervals as versioned defaults. Both are persisted at
   // preparation, so a resume reuses the frozen effective values.
@@ -203,33 +174,19 @@ function zdMake(ctx, p) {
 - A record command that fails does not stop the work: put registered/evidence false on that job and go on.`
   }
 
-  // Every agent through the blueprint's roles: Haiku is "manager", Sonnet "architect", Opus "organizer".
+  // Every agent through the blueprint's roles: Haiku is "manager", Sonnet "architect", Opus "organizer"; a
+  // one-command relay asks for "relay" (o.role).
   const zAgent = (prompt, o) => ctx.agent(prompt, {
-    role: o.model === 'sonnet' ? 'architect' : o.model === 'opus' ? 'organizer' : 'manager',
+    role: o.role || (o.model === 'sonnet' ? 'architect' : o.model === 'opus' ? 'organizer' : 'manager'),
     label: o.label, phase: o.phase, schema: o.schema,
   })
-  // One Haiku agent runs one script command and returns its last JSON line (or null).
-  const runScript = async (label, phaseName, command, note = '', o = {}) => {
-    const run = await zAgent(
-      `Run this PowerShell command once in the foreground with timeout_ms: ${ZD_COMMAND_TIMEOUT_MS} and wait for it${note}; do nothing else:
-${command}
-${RUN_STEP}
-Return ok (true when it exits without an error) and output = its last output line exactly (a compact JSON object), or the error text when it fails. Do not retry.`,
-      { label, phase: phaseName, model: 'haiku', schema: ZD_RUN_SCHEMA },
-    )
-    // A gate prints its JSON and then exits 3 while the layer still has open work, so a caller that asked
-    // for it still reads a typed result instead of only prose.
-    const json = run && (run.ok || o.always) ? zdLastJson(run.output) : null
-    // R326/R337: a failed command whose answer carries the owner's typed refusal stops the stage here.
-    // A successful read that merely names a retained fault keeps going: only a refusal stops work.
-    const refused = !!(json && (json.code === ZD_LOCK || json.error === ZD_LOCK))
-    const lock = zdLockRefusal(run && run.output) || (refused ? json : null)
-    if (lock && (!(run && run.ok) || refused)) {
-      log(`${label}: the owner locked the destination tree; the stage stops and keeps its drafts and receipts.`)
-      throw zdLockStop(label, lock)
-    }
-    return { run, json }
-  }
+  // One relay (the zt-relay agent type, the blueprint's role relay) runs one script command and returns its last JSON
+  // line (or null). A gate prints its JSON and then exits 3 while the layer still has open work, so a caller that
+  // asks (o.always) still reads a typed result. R326/R337: a command whose answer carries the owner's typed refusal
+  // stops the stage here (the shared ztRelay); a read that merely names a retained fault keeps going.
+  const runScript = (label, phaseName, command, note = '', o = {}) => ztRelay(ctx, {
+    command, note, label, phase: phaseName, role: 'relay', always: !!o.always, run: `the digest run the user started for "${OUT}"`,
+  })
 
   const groupsOf = (count) => Array.from({ length: count || 0 }, (_, i) => {
     const n = i + 1
@@ -240,90 +197,6 @@ Return ok (true when it exits without an error) and output = its last output lin
     const out = []
     for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size))
     return out
-  }
-
-  // --- one Haiku manager per block -----------------------------------------------------------------
-  const REPORT = {
-    type: 'object',
-    properties: {
-      group: { type: 'number' }, status: { type: 'string', enum: ['done', 'failed'] },
-      cards: { type: 'number' }, models: { type: 'number' }, events: { type: 'number' }, links: { type: 'number' }, topics: { type: 'array', items: { type: 'string' } },
-      errors: { type: 'string' }, deleted: { type: 'boolean' },
-      tool_calls: { type: 'number' }, context_used: { type: 'number' },
-      usage: { type: 'object', description: 'the numbers the run\'s own result reported for its tokens or cost' },
-    },
-    required: ['group', 'status', 'errors', 'deleted'],
-  }
-  const STAGES = {
-    digest: {
-      phase: 'Digest',
-      steps: g => `Group ${g.n}:
-  a. Snapshot the slip-box (one PowerShell call): ${zdTool('snapshot-topics', SCRIPTS)} -Out "${g.snapshot}"
-  b. deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${DIGEST_PREFIX}", "${g.file}"] (the book, its index and the snapshot stay on disk; DSH reads what it needs); prompt "按以上说明完成你的组，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 900.`,
-      answer: '{"group","cards","models","events","topics","anchor","errors"}',
-      fields: 'cards (Cards written), models (Model Cards), events (Event Cards), topics (as "地址 主题名")',
-    },
-    link: {
-      phase: 'Link',
-      parallel: true,
-      steps: g => `Group ${g.n}:
-  deepseek_run with exactly: cwd "${OUT}"; prompt_files ["${LINK_PREFIX}", "${g.link}"]; prompt "按以上说明完成你的组的连接，只回复一行 JSON。"; skills ${JSON.stringify(DSH_SKILLS)}; model "${DSH_MODEL}"; reasoning_effort "${DSH_EFFORT}"; wait_seconds 0.
-  When it finished with status "done", mark it (one PowerShell call): Set-Content -LiteralPath "${OUT}\\linked-g${g.nn}.txt" -Value done`,
-      answer: '{"group","cards_linked","links_added","errors"}',
-      fields: 'cards (= cards_linked), links (= links_added)',
-    },
-  }
-  const manage = (block, b, stage) => {
-    const S = STAGES[stage]
-    return dsmpSlot(() => zAgent(
-      `You manage ${block.length} DeepSeek Harness (DSH) runs of a ZET book digest (${stage} pass), ${S.parallel ? 'all at the same time' : 'one after another'}. DSH reads the book and changes the Cards; you only start, supervise, and clean up each run. Keep your messages short.
-${RUNNER}
-Load all tools with one ToolSearch call: query "${DSH_TOOLS}".
-
-${S.parallel ? 'Run the groups below at the same time: start every run in one message (all deepseek_run calls together), then follow each one until it ends. The runs do not depend on each other.' : 'For each group below, in order, finish it completely before starting the next:'}
-${block.map(S.steps).join('\n')}
-
-Keep at most ${S.parallel ? Math.min(ZD_PER_MANAGER_MAX, block.length) : 1} DeepSeek run(s) going at a time; never start more than ${ZD_PER_MANAGER_MAX} in one manager. Pass every deepseek_run value unchanged: the identical leading prompt files, prompt, skills, model and effort keep the DSH prompt cache warm. You send the skills: put them in the "skills" field of the call, exactly as given. Do not paste a skill's text into the prompt and do not write it to a prompt file. If a call fails because a skill is not found, stop and mark the group "failed" with that error; do not start the run without its skills.
-Then follow "status" until the run ends:
-  - "running": deepseek_wait (session_id, wait_seconds 900).
-  - "needs_response": approve (decision "allow") a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), the self-check command zt-check (read-only), and read-only reads or searches (Read, Get-Content, Select-String) of files under "${OUT}" or of "${A.source}"; reject anything that writes, moves or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
-  - "error", or "finished" without a one-line JSON answer: once, deepseek_prompt (same session, wait_seconds 900, the same skills as the run) with "按 resume 行修正失败的调用后重跑，最后只回复一行 JSON。"; if it still fails, mark the group "failed".
-  - "finished": parse its JSON ${S.answer}.
-  Then clean up: after you have its answer (or its error), deepseek_delete (session_id); deleted=true when the delete succeeds. Never archive a conversation, and never delete one whose status is "running".
-  Record tool_calls = the sum of the counts in the last turn report's tools_used, and context_used = context.used.
-  When the last turn report or the run's own result states this run's token usage or cost, copy those numbers into the result's usage object (for example {"input_tokens": 1200, "output_tokens": 300}). Never call deepseek_usage or subtract account-wide totals: a difference of two rolling totals is not this run's cost.
-
-Return reports: one entry per group in this block with group, status, ${S.fields}, errors, deleted, tool_calls, context_used.`,
-      {
-        label: `${stage} manager ${b + 1}: groups ${block[0].n}-${block[block.length - 1].n}`, phase: S.phase, model: 'haiku',
-        schema: { type: 'object', properties: { reports: { type: 'array', items: REPORT } }, required: ['reports'] },
-      },
-    ))
-  }
-  // A stage runs its blocks in parallel; with `after`, each block goes on to `after` as soon as its
-  // own manager returns (a pipeline, not a barrier), so later stages overlap slower blocks.
-  const runStage = async (stage, stageBlocks, after) => {
-    const stages = [(block, _item, b) => manage(block, b, stage)]
-    if (after) {
-      stages.push((managed, block) => Promise.resolve(after(block, managed))
-        .catch(error => { log(`${stage}: follow-up of groups ${block[0].n}-${block[block.length - 1].n} failed: ${error}`); return [] })
-        .then(extra => ({ managed, extra })))
-    }
-    const results = await pipeline(stageBlocks, ...stages)
-    const managed = results.map(r => (after ? r && r.managed : r))
-    const extras = after ? results.flatMap(r => (r && r.extra) || []) : []
-    const reports = []
-    stageBlocks.forEach((block, b) => {
-      const got = (managed[b] && managed[b].reports) || []
-      for (const g of block) {
-        reports.push(got.find(r => r.group === g.n) ||
-          { group: g.n, status: 'failed', cards: 0, links: 0, topics: [], errors: 'no report from its manager', deleted: false })
-      }
-    })
-    const failed = reports.filter(r => r.status !== 'done').map(r => r.group)
-    const calls = reports.map(r => r.tool_calls).filter(x => typeof x === 'number')
-    log(`${stage}: ${reports.reduce((s, r) => s + (r.cards || 0), 0)} cards, ${reports.reduce((s, r) => s + (r.links || 0), 0)} links; tool calls per group ${calls.join(', ') || 'n/a'}; failed ${failed.join(', ') || 'none'}`)
-    return { reports, extras }
   }
 
   // --- The compiler-step driver (drive): one Haiku agent runs a step, managers run its DeepSeek jobs ---
@@ -346,19 +219,11 @@ ${RUNNER}
     const head = `${lead}Load the tools with one ToolSearch call: query "${DRIVE_TOOLS}".
 `
     if (part === 'command') {
-      // 35: the step command needs no DeepSeek tool, so its agent loads none (one request and the tool
-      // schemas less per compiler step; docs/digest-claude-token-proposal.md).
-      return zAgent(`${lead}
-Run this one PowerShell command in the foreground with timeout_ms: ${ZD_COMMAND_TIMEOUT_MS} and wait for it:
-${o.jobsFile ? `${o.command} | Tee-Object -Variable zdLines; $zdExit = $LASTEXITCODE; [void][System.IO.Directory]::CreateDirectory("${OUT}\\jobs"); ($zdLines | Select-Object -Last 1) | Set-Content -LiteralPath "${o.jobsFile}" -Encoding utf8; if ($zdExit) { exit $zdExit }` : o.command}
-Its last output line is compact JSON; it may be long (tens of kilobytes). Put that line, unchanged and whole, in output: never shorten it, summarize it, or save it to a file instead. Do not run the jobs it lists: other managers run them. If the command fails, return ok=false with the error text; do not retry it with other options. Return ok, output, and results=[].`,
-        { label, phase: o.phase || 'Models', model: 'haiku', schema: DRIVE })
-    }
-    if (part === 'cleanup') {
-      // R323/R327: a step no longer deletes its conversations. Every created conversation was recorded
-      // when the provider returned its id, and the run's cleanup stage deletes exactly those ids after
-      // the owning work settled. Nothing is removed on a title match or on an agent's guess.
-      return { ok: true, results: [], deleted: 0, deferred: true }
+      // S1 (37): the step command runs through the relay, like every other command; the command itself saves its
+      // last line as the step's job list, which the job managers read (a relay never retypes a job list).
+      const command = o.jobsFile ? `${o.command} | Tee-Object -Variable zdLines; $zdExit = $LASTEXITCODE; [void][System.IO.Directory]::CreateDirectory("${OUT}\\jobs"); ($zdLines | Select-Object -Last 1) | Set-Content -LiteralPath "${o.jobsFile}" -Encoding utf8; if ($zdExit) { exit $zdExit }` : o.command
+      return ztRelay(ctx, { command, label, phase: o.phase || 'Models', role: 'relay', lockStops: false, run: `the digest run the user started for "${OUT}"` })
+        .then(({ run }) => ({ ok: !!(run && run.ok), output: (run && run.output) || '', error: run && !run.ok ? run.output : undefined, results: [] }))
     }
     const jobs = o.jobs || []
     return dsmpSlot(() => zAgent(`${head}
@@ -652,7 +517,6 @@ Copy each of those output lines character for character: never summarize, abbrev
   // One block unit's outcome. The ledger decides: done is done (whatever the manager reported), a unit some
   // other path already settled or reclaimed is left alone, and only a unit this block still holds gets a
   // fault, classified from the manager's report (a refused or checked content failure, else retryable).
-  const RETRYABLE = /stale_claim|read_view_changed|lock_busy|sharing_violation|sqlite_busy|transport_closed|command_timeout|service_unavailable|provider_|missing_result|pending_jobs/
   const blockSettle = async (u, label) => {
     const finish = blockFinish(u)
     const said = u.ledger
@@ -665,7 +529,7 @@ Copy each of those output lines character for character: never summarize, abbrev
       || zdLockRefusal((u.finish && (u.finish.error || u.finish.output)) || '')
       || ((finish.parsed && (finish.parsed.code === ZD_LOCK || finish.parsed.error === ZD_LOCK)) ? finish.parsed : null)
     if (lock) {
-      await failUnit(`${label}: ${u.unit} locked`, u.unit, u.token, 'content', {
+      await failUnit(`${label}: ${u.unit} locked`, u.unit, u.token, {
         schema_version: 1, unit: u.unit, input_hash: u.input_hash || (u.ledger && u.ledger.input_hash) || '',
         code: ZD_LOCK, cause: `${zdLockSaid(lock)} ${JSON.stringify(lock)}`.slice(0, 800),
       })
@@ -673,16 +537,15 @@ Copy each of those output lines character for character: never summarize, abbrev
       throw zdLockStop(`${label}: ${u.unit}`, lock)
     }
     const cause = (finish.faults[0] || (u.start && u.start.error) || 'the unit did not complete').slice(0, 800)
+    // S5: the block states the facts it saw (a start or finish that never answered is a missing result; a finish
+    // the verifier refused is a checked failure); a cause it cannot type goes to the ledger, which reads it.
     const transport = !u.start || u.start.ok === false || !u.finish || u.finish.ok === false
     const refused = !transport && finish.parsed && finish.parsed.state === 'failed'
-    const klass = refused || (!transport && !RETRYABLE.test(cause) && finish.faults.length) ? 'content' : 'retryable'
-    const fault = {
-      schema_version: 1, unit: u.unit, input_hash: u.input_hash || (u.ledger && u.ledger.input_hash) || '',
-      code: klass === 'retryable' ? (RETRYABLE.test(cause) ? 'provider_transient' : 'missing_result') : 'check_failed', cause,
-    }
-    await failUnit(`${label}: ${u.unit} fault`, u.unit, u.token, klass, fault)
-    log(`${label}: ${u.unit} ${klass} failure: ${cause}`)
-    return { status: klass === 'content' ? 'failed' : 'retry', error: cause }
+    const code = refused ? 'check_failed' : transport ? 'missing_result' : (finish.faults.length ? undefined : 'missing_result')
+    const fault = { schema_version: 1, unit: u.unit, input_hash: u.input_hash || (u.ledger && u.ledger.input_hash) || '', ...(code ? { code } : {}), cause }
+    const status = await failUnit(`${label}: ${u.unit} fault`, u.unit, u.token, fault)
+    log(`${label}: ${u.unit} ${status === 'failed' ? 'content' : 'retryable'} failure: ${cause}`)
+    return { status, error: cause }
   }
   // One block unit's checked finish line, with the same checks as a chain step (R271/R272).
   const blockFinish = (u) => resultLine({ steps: u.finish ? [{ name: 'finish', ok: u.finish.ok !== false, output: u.finish.output, error: u.finish.error }] : [] }, 'finish', { unit: u.unit, token: u.token })
@@ -773,11 +636,13 @@ Copy each of those output lines character for character: never summarize, abbrev
     log(`${label}: the retained run completed its ${layers.join(', ')} work; the resume reuses it.`)
     return true
   }
-  const renew = (label, unit, token) => runScript(label, LEDGER_PHASE, ledgerCommand(`renew -Out "${OUT}" -Unit "${unit}" -Token ${token}`))
-  const failUnit = (label, unit, token, klass, fault) => runScript(label, LEDGER_PHASE,
-    `${ZD_LEDGER} fail -Out "${OUT}" -Unit "${unit}" -Token ${token} -Class ${klass} -Fault ${psQuote(JSON.stringify(fault))}`)
-  // The registered provider run of one unit: register (with the frozen cap), observe, cancel, list (R267/R268).
-  const jobOf = (label, unit, action, more = '') => runScript(label, LEDGER_PHASE, ledgerCommand(`job -Out "${OUT}" -Unit "${unit}" ${action}${more}`))
+  // S5: one fault of a claimed unit, classified by the ledger (fault_class of its code; a fault without a code takes
+  // the ledger's one reading of its cause). Its answer is the unit's state after the fault: 'failed' when the unit
+  // stays failed (a content fault, or its attempts are spent), else 'retry'.
+  const failUnit = async (label, unit, token, fault) => {
+    const out = await runScript(label, LEDGER_PHASE, `${ZD_LEDGER} fail -Out "${OUT}" -Unit "${unit}" -Token ${token} -Fault ${psQuote(JSON.stringify(fault))}`)
+    return out.json && out.json.state === 'failed' ? 'failed' : out.json ? 'retry' : (fault.code === 'check_failed' || fault.code === ZD_LOCK ? 'failed' : 'retry')
+  }
   // A PowerShell single-quoted literal (the tool's -Fault and -Json values are JSON text).
   function psQuote(text) {
     return `'${String(text).replace(/'/g, "''")}'`
@@ -814,7 +679,7 @@ Copy each of those output lines character for character: never summarize, abbrev
       // R326/R337: a checked finish the archive refused because the owner locked the destination keeps
       // the archive's typed refusal as the unit's content fault, then stops the stage.
       if (error && error.lock_refusal) {
-        await failUnit(`${at} locked`, unit, token, 'content', {
+        await failUnit(`${at} locked`, unit, token, {
           schema_version: 1, unit, input_hash: hashOf(unit, inputs), code: ZD_LOCK,
           cause: `${zdLockSaid(error.lock_refusal)} ${JSON.stringify(error.lock_refusal)}`.slice(0, 800),
         })
@@ -839,14 +704,11 @@ Copy each of those output lines character for character: never summarize, abbrev
       }
     }
     const cause = String((got.error && got.error.message) || got.error || (got.json && (got.json.fault || got.json.error)) || 'the checked completion did not complete').slice(0, 800)
-    const retryable = /stale_claim|read_view_changed|lock_busy|sharing_violation|sqlite_busy|transport_closed|command_timeout|service_unavailable|provider_|missing_result|pending_jobs|cleanup_transient/.test(cause)
-    const fault = {
-      // The claim's hash, or the ledger's own (trial 19: a cards-book fault went out with an empty hash and was refused).
-      schema_version: 1, unit, input_hash: hashOf(unit, inputs) || ledgerHash,
-      code: retryable ? 'provider_transient' : 'check_failed', cause,
-    }
-    await failUnit(`${at} fault`, unit, token, retryable ? 'retryable' : 'content', fault)
-    return { unit, status: retryable ? 'retry' : 'failed', error: cause, command: got.command }
+    // S5: the ledger reads the cause (cause_code, fault_class); the claim's hash or the ledger's own (trial 19: a
+    // cards-book fault went out with an empty hash and was refused).
+    const fault = { schema_version: 1, unit, input_hash: hashOf(unit, inputs) || ledgerHash, cause }
+    const status = await failUnit(`${at} fault`, unit, token, fault)
+    return { unit, status, error: cause, command: got.command }
   }
   // --- A block's checked finishes in one command (35; docs/digest-claude-token-proposal.md P1/P2/P4) ----
   // `zt-digest finish-batch` runs each claimed unit's own verifier in turn in one process, records a unit that
@@ -939,50 +801,6 @@ Copy each of those output lines character for character: never summarize, abbrev
     const out = await runScript(label, CLEANUP_PHASE, ledgerCommand(`report -Out "${OUT}"`), ' (it writes run-report.json and run-report.md)')
     if (!out.json) return { ok: false, error: String((out.run && out.run.output) || 'no output from ledger report') }
     return { ok: true, json: out.json }
-  }
-  // The recorded resources of this run, exactly as the ledger holds them (never a workspace listing alone).
-  const resourceList = async (label, unit = '') => {
-    const out = await runScript(label, LEDGER_PHASE, ledgerCommand(`resource -Out "${OUT}" -List${unit ? ` -Unit "${unit}"` : ''}`))
-    if (!out.json) return { ok: false, error: String((out.run && out.run.output) || 'no output from ledger resource'), resources: [] }
-    return { ok: true, resources: out.json.resources || [] }
-  }
-  // Record one provider fact about a recorded resource. A claimed cleanup unit fences the observation
-  // with its own token, so a late fact cannot apply to another attempt (T13).
-  // The checked completion of one cleanup unit; a partial completion records what a human must reconcile.
-  const finishCleanup = async (label, unit, token, checkOnly = false) => {
-    const command = `${ZD_DIGEST} cleanup-finish -Out "${OUT}" -Unit "${unit}" -Token ${token}${checkOnly ? ' -CheckOnly' : ''}`
-    const out = await runScript(label, CLEANUP_PHASE, command, ' (the checked cleanup completion; never retry it with other options)')
-    return { ok: !!(out.run && out.run.ok), json: out.json, command, error: String((out.run && out.run.output) || '') }
-  }
-  // One unit's full attempt: claim is done by the caller; the work runs; the family finish records it.
-  const drain = async (layerName, unit, token, inputs, work) => {
-    let outcome
-    try {
-      outcome = await work({ unit, token, inputs, at: `${layerName}: ${unit}` })
-    } catch (error) {
-      // R326/R337: the owner's Lock is not a retryable fault. The unit keeps it as its content fault
-      // and the stage stops, with its drafts and its already committed receipts left where they are.
-      if (error && error.lock_refusal) {
-        await failUnit(`${layerName}: ${unit} locked`, unit, token, 'content', {
-          schema_version: 1, unit, input_hash: hashOf(unit, inputs), code: ZD_LOCK,
-          cause: `${zdLockSaid(error.lock_refusal)} ${JSON.stringify(error.lock_refusal)}`.slice(0, 800),
-        })
-        throw error
-      }
-      outcome = { ok: false, retryable: true, error: String((error && error.message) || error) }
-    }
-    if (outcome && outcome.ok) {
-      const finished = await finishOrFault(`${layerName} ${unit}`, unit, token, inputs, outcome.extra || {})
-      return { ...finished, result: (finished.result || outcome.result) }
-    }
-    const retryable = outcome ? outcome.retryable !== false : true
-    const fault = {
-      schema_version: 1, unit, input_hash: hashOf(unit, inputs),
-      code: (outcome && outcome.code) || (retryable ? 'provider_transient' : 'check_failed'),
-      cause: String((outcome && outcome.error) || 'the unit did not complete').slice(0, 800),
-    }
-    await failUnit(`${layerName}: ${unit} fault`, unit, token, retryable ? 'retryable' : 'content', fault)
-    return { unit, status: retryable ? 'retry' : 'failed', error: fault.cause }
   }
   // Keeps a block's claims current while its work runs: `ledger hold` renews every listed claim each minute for
   // up to nine minutes and returns as soon as none is still held (finished, failed or reclaimed), and the next
@@ -1127,31 +945,29 @@ Copy each of those output lines character for character: never summarize, abbrev
     return { status: reported && !applyFailed ? 'done' : 'failed', label, plan, applied, report: reported, ...(applyFailed ? { error: 'apply failed: no output from the card compiler -Step apply' } : {}) }
   }
   return {
-    A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, CARD_CHECKS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS,
-    PER_MANAGER, LINK_PER_MANAGER, raised,
+    A, MODE, KEY, OUT, SCRIPTS, DSH_MODEL, DSH_EFFORT, MODELS, IDEA_SAMPLE, LIMITS, COMPILER, FILL_SKILLS,
+    PER_MANAGER, raised,
     MAX_ATTEMPTS, DSH_RUN_CAP, CLAIM_LEASE, RUNNER, COMMAND_TIMEOUT_MS: ZD_COMMAND_TIMEOUT_MS,
     // The command prefixes and skills a stage module builds a chain with.
     LEDGER: ZD_LEDGER, DIGEST: ZD_DIGEST, CALL: ZD_CALL, DSH_SKILLS,
-    zAgent, runScript, groupsOf, toBlocks, runStage, drive, expandJobs, answerLines,
+    zAgent, runScript, groupsOf, toBlocks, drive, expandJobs, answerLines,
     // The ready-work driver (9.3): one manager per declared chain, plus the ledger adapter.
-    chain, block, blockFinish, blockSettle, BLOCK_TAKE, ANSWERS, stepOf, jsonOf, resultLine, claim, gate, settledOnResume, renew, holding, failUnit, jobOf, finishOf, finishOrFault, drain, layer, psQuote,
+    chain, block, blockFinish, blockSettle, BLOCK_TAKE, ANSWERS, stepOf, jsonOf, resultLine, claim, gate, settledOnResume, holding, failUnit, finishOf, finishOrFault, layer, psQuote,
     // 35: a block's checked finishes in one command, and its outcomes.
     finishBatchCommand, finishUnits, batchOutcomes,
     // The command that runs a digest script: zt-digest <tool> once ported, else pwsh with the script.
     tool: name => zdTool(name, SCRIPTS),
     // Tree Lock (#140): the owner's typed refusal, its sentence and the stop a stage throws with it.
     LOCK: ZD_LOCK, lockRefusal: zdLockRefusal, lockSaid: zdLockSaid, lockStop: zdLockStop,
-    // The cleanup round alone: delete every conversation of o.dsh and its workspace, even when no command ran.
-    cleanupDsh: () => ({ ok: true, results: [], deleted: 0, deferred: true }),
-    // Owned provider resources (R322-R330): record the returned ids, observe the provider's facts, settle the unit.
-    resourceList, finishCleanup, resourceOwner, CLEANUP_PHASE, ledgerReport,
+    // Owned provider resources (R322-R330): the owner of each recorded id, the cleanup phase, the run report.
+    resourceOwner, CLEANUP_PHASE, ledgerReport,
     runCards, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
     BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS,
   }
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '35', library: true, requires: ['@dsmp'],
+  id: 'zt-digest-lib', version: '37', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, one-manager chains, the ledger ready-work driver, the model compiler, the card cycle) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

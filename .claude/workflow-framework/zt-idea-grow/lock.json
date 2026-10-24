@@ -1,18 +1,18 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-idea-grow",
-  "version": "3.2.0",
+  "version": "4.0.1",
   "scope": "project",
   "script": ".claude/workflows/zt-idea-grow.js",
   "scriptRel": "workflows/zt-idea-grow.js",
-  "sha256": "cbc96db4c1e28183a6f6bbd05e3e58c032dc8ce6c912396fa417b13af45231c2",
-  "fingerprint": "0e6ade103be4d8db",
-  "blueprintSha256": "2b204764d960b9c08e1265fa6ef3cc3356363d13e6db094fa2dfb8d68755e692",
+  "sha256": "aeae280f9569d072f68504fa1d50bb352f6f1285c1e44282989a371df3a0f477",
+  "fingerprint": "a7eb41743a938ac3",
+  "blueprintSha256": "ad97970894db103a4f6c2248ef4119b1d5f1ecc4485c1b0b253e8480ac61c6db",
   "modules": {
     "value": "1",
     "deepseek": "1",
-    "script": "1",
-    "zt-grow-cycle": "11"
+    "zt-workflow-lib": "1",
+    "zt-grow-cycle": "12"
   },
   "moduleFiles": {
     "value": {
@@ -23,24 +23,24 @@
       "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\deepseek.js",
       "sha256": "fb85edfb639a226e22031d98deaf3928ec699baa26f1e689f73723d639e206e4"
     },
-    "script": {
-      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\script.js",
-      "sha256": "92fbec13df7ea00d3d65af7f01b85e077116df0d5560fb8bd95689eb3186fd99"
+    "zt-workflow-lib": {
+      "file": "scripts/workflow-shared/modules/zt-workflow-lib.js",
+      "sha256": "a64cd928538a7fcaf41bcca231368b862ea37c1231dde7f60e4aebfcded1fa2f"
     },
     "zt-grow-cycle": {
       "file": "scripts/idea-grow/workflow/modules/zt-grow-cycle.js",
-      "sha256": "c0cb252dc2071814f50ce8155ae987af5b8d051ed11323cd79832ba8bb39cc06"
+      "sha256": "98d8651a423b9da209313602b9c4db1856397f4e29e86b329361e5d85be34203"
     }
   },
   "sources": [
     {
       "file": "scripts/idea-grow/workflow/zt-idea-grow.blueprint.json",
-      "sha256": "2f0f90b6e1c5dcc3dd5d03ef622745eec3b1232e07a8c9982f74fcc22df7796c"
+      "sha256": "00e0afcca99a0c6b4a9a3c77a876622c02b496aa49a1522449be02887f53ea25"
     }
   ],
-  "installedAt": "2026-10-23T02:51:38.511Z",
+  "installedAt": "2026-10-24T05:58:34.785Z",
   "dryRun": {
-    "agents": 33,
+    "agents": 18,
     "order": [
       "grow",
       "report"

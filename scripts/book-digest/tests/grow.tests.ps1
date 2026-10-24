@@ -468,6 +468,61 @@ try {
     Assert ($msec.Contains("## [[$mk/1|a]] 有限群的子群阶数整除群的阶（模型卡）") -and $msec.Contains('（C1）$|H|$ 整除 $|G|$')) 'math: the section lists the theorem unit as a Model Card with its statement'
     $minstr = Get-Content (Join-Path $mathWork 'instructions.zh.md') -Raw -Encoding utf8
     Assert ($minstr.Contains('**数学教材的小节**') -and $minstr.Contains('单元的陈述、前提和证明都留在文献树里')) 'math: the instructions keep a unit''s statement and proof in the Literature tree'
+    # --- 4.0.0: the run as one command (grow -Step next, docs/workflow-simplicity-proposal.md S2/S3/S7) -----
+    # The driver's loop by hand: each jobs line is answered (or not) and confirmed with -After; a call without
+    # -After is a rerun after a stop. The checksum is computed here a third way (PowerShell) and must match.
+    function Fnv([string]$text) {
+        [uint32]$h = 2166136261
+        for ($i = 0; $i -lt $text.Length; $i++) {
+            $cp = [char]::ConvertToUtf32($text, $i)
+            if ([char]::IsHighSurrogate($text[$i])) { $i++ }
+            $h = [uint32](($h -bxor [uint32]$cp) * [uint64]16777619 % 4294967296)
+        }
+        '{0:x8}' -f $h
+    }
+    function Next-Line([string]$opts, [int]$after = -1, [string]$folder = $workNext) {
+        $more = @('-Step', 'next', '-Work', $folder, '-Options', $opts)
+        if ($after -ge 0) { $more += @('-After', [string]$after) }
+        $r = Grow-Run $more
+        if ($r.code -ne 0) { throw "next exited $($r.code): $($r.text)" }
+        Last $r.lines
+    }
+    $workNext = Join-Path $scratch 'work-next'
+    $opts = (@{ book = 'Other2020'; tool = $Digest; zt_config = $env:ZT_CONFIG_DIR; restate = $true; concepts = $false; hubs = $false } | ConvertTo-Json -Compress)
+    $n1 = Next-Line $opts
+    Assert ($n1.next -eq 'jobs' -and $n1.round -eq 'topics-jobs' -and @($n1.ids) -join ',' -eq 'gt-001' -and $n1.token -eq 1) "next: the first job set is the Topic plan ($($n1 | ConvertTo-Json -Compress -Depth 4))"
+    $sumText = ([string](@($n1.ids) -join ','), $n1.job.cwd, (@($n1.job.files) -join "`n"), $n1.job.prompt, $n1.job.approve, $n1.job.expect) -join "`n"
+    Assert ((Fnv $sumText) -eq $n1.sum) "next: the checksum matches an independent FNV-1a ($(Fnv $sumText) vs $($n1.sum))"
+    Assert (@($n1.job.files)[1] -eq (Join-Path $workNext 'jobs\{id}.md') -and $n1.job.prompt.Contains("-Job {id}") -and $n1.job.model -eq 'deepseek-official/deepseek-flash' -and $n1.job.effort -eq 'high') 'next: the job template names its files, its SELF-CHECK and the frozen model'
+    Assert ((Get-Content (Join-Path $workNext 'zt-box.txt') -Raw).Trim() -eq $env:ZT_CONFIG_DIR) 'next: a run on a box copy pins its work folder to that box'
+    $st = Last (Grow @('-Step', 'status', '-Work', $workNext))
+    Assert ($st.sum -eq $n1.sum -and $st.token -eq 1) 'status: repeats the last line next printed'
+    # A rerun before the job set was answered (a stop mid-dispatch) prints the same jobs again, under a new token.
+    $n2 = Next-Line $opts
+    Assert ($n2.next -eq 'jobs' -and $n2.round -eq 'topics-jobs' -and $n2.token -eq 2) "next: a rerun prints the unanswered job set again ($($n2.round) $($n2.token))"
+    $other = Next-Line (@{ book = 'Solo2021'; tool = $Digest } | ConvertTo-Json -Compress)
+    Assert ($other.next -eq 'fault' -and $other.code -eq 'options_changed') "next: a rerun with other options is refused ($($other | ConvertTo-Json -Compress))"
+    Answer 'gt-001' @{ topics = @(@{ id = 'T1'; title = '交易伙伴的搜寻'; body = '本主题追问：交易双方怎样找到彼此，市场的厚度怎样改变这件事。'; sections = @(1) }) } $workNext
+    $n3 = Next-Line $opts 2
+    Assert ($n3.next -eq 'jobs' -and $n3.round -eq 'ideas-jobs' -and @($n3.ids) -join ',' -eq 'gw-001') "next -After: the Topics are made and the section jobs follow ($($n3 | ConvertTo-Json -Compress -Depth 2))"
+    $root3 = [string](@((Get-Content (Join-Path $workNext 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable).run_topics)[0].root)
+    Answer 'gw-001' @{ section = 'Other2020/1'; ideas = @(
+            @{ id = 'I1'; kind = '核心'; title = '交易伙伴越多搜寻越快'; body = '市场两边的参与者越多，每一方越快找到伙伴。所以厚市场降低搜寻的成本。例示 [[Other2020/1|a]]：本书用市场厚度说明这一点。'; sources = @('Other2020/1|a'); at = $root3 }
+        ) } $workNext
+    $pre = Grow @('-Step', 'precheck', '-Work', $workNext, '-Job', 'gw-001')
+    Assert (@($pre)[-1].Trim() -eq 'faults: 0') "precheck: the next run's section answer has no fault ($($pre -join ' | '))"
+    $n4 = Next-Line $opts $n3.token
+    $guard = 0
+    while ($n4.next -eq 'jobs' -and $guard -lt 6) { $guard++; $n4 = Next-Line $opts $n4.token }
+    Assert ($n4.next -eq 'done' -and $n4.created -ge 1 -and $n4.report -like '*grow-report.md' -and $null -ne $n4.restate) "next: the run ends done with the report and the restatement review ($($n4 | ConvertTo-Json -Compress -Depth 3))"
+    $mem = Get-Content (Join-Path $workNext 'next.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    Assert (@($mem.done) -contains 'restate-finish' -and @($mem.done) -contains 'report' -and -not (@($mem.done) -contains 'hubs-plan')) "next.json records every round done, and no hubs round with hubs off ($(@($mem.done) -join ','))"
+    $reportTime = (Get-Item (Join-Path $workNext 'grow-report.md')).LastWriteTimeUtc
+    $n5 = Next-Line $opts
+    Assert ($n5.next -eq 'done' -and $n5.created -eq $n4.created -and (Get-Item (Join-Path $workNext 'grow-report.md')).LastWriteTimeUtc -eq $reportTime) 'next: a rerun of a finished run redoes nothing and answers the same done line'
+    $bad = Next-Line '{"mode":"cards"}' -1 (Join-Path $scratch 'work-next-bad')
+    Assert ($bad.next -eq 'fault' -and $bad.code -eq 'bad_options') "next: options it does not know are a typed fault ($($bad | ConvertTo-Json -Compress))"
+
 } finally {
     zt down 2>&1 | Out-Null
     # GROW_TEST_KEEP=1 keeps the scratch archive for a look at the files a failure left.
