@@ -79,6 +79,8 @@ pattern!(POSITION, r"^第 \d+ 张，共 \d+ 张");
 pattern!(NOTE, r"^说明\s*[：:]");
 pattern!(NOTE_LABEL, r"^说明\s*[：:]\s*");
 pattern!(SOURCE_LABEL, r"^来源\s*[：:]");
+// The label a Bridge apply puts before its sentence (`跨书关联：对照 [[x]]：…`): navigation, not prose.
+pattern!(BRIDGE_LABEL, r"^跨书关联\s*[：:]\s*");
 // The term table.
 pattern!(TABLE_RULE, r"^-+$|^:?-+:?$");
 pattern!(AVOID_SPLIT, r"[、,，/]");
@@ -1176,6 +1178,8 @@ impl Check {
             if DOCUMENT_LINE.is_match(&line_text) {
                 continue;
             }
+            // acemoglu2007equilibrium: the Bridge judge measured its sentence without the label it is applied under.
+            let line_text = BRIDGE_LABEL.replace(&line_text, "").into_owned();
             for sentence in split_sentences(&line_text) {
                 self.sentence(faults, address, shared, &sentence, is_step);
                 // A source locator (`来源：[[book]] §11.D`) may carry the number.
@@ -3448,6 +3452,21 @@ mod tests {
             split_sentences("本卡是《When does labor scarcity encourage innovation?》的术语表。下一句。"),
             ["本卡是《When does labor scarcity encourage innovation?》的术语表。", "下一句。"]
         );
+    }
+
+    /// acemoglu2007equilibrium: the Bridge apply writes `跨书关联：<sentence>`, and the judge's precheck had
+    /// measured the sentence without its label, so 16 applied sentences of 36 to 40 characters failed R2.
+    #[test]
+    fn the_bridge_label_is_not_part_of_the_sentence_length() {
+        let sentence = format!("对照 [[41/1|b]]：{}。", "甲".repeat(35));
+        let card = |body: String| json!({ "cards": [{ "address": "12/1|a", "category": "idea", "workspace": "agent",
+            "tree": "12", "title": "剩余控制权决定契约空白处", "body": body }] });
+        let bridged = run_json(&card(format!("所有者决定空白处。\n\n跨书关联：{sentence}")), "", Limits::default(), false, "");
+        assert!(of_rule(&bridged, "R2").is_empty(), "{bridged:#?}");
+        let unlabelled = run_json(&card(format!("所有者决定空白处。\n\n跨书关联：{sentence}{sentence}")), "", Limits::default(), false, "");
+        assert_eq!(of_rule(&unlabelled, "R2").len(), 0, "two sentences are measured one by one: {unlabelled:#?}");
+        let long = run_json(&card(format!("所有者决定空白处。\n\n跨书关联：对照 [[41/1|b]]：{}。", "甲".repeat(41))), "", Limits::default(), false, "");
+        assert_eq!(of_rule(&long, "R2").len(), 1, "a sentence over the limit still fails without its label");
     }
 
     #[test]

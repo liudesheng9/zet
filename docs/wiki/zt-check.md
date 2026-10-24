@@ -84,7 +84,7 @@ flowchart TD
 | `Options`, `run_cli`, `write_lines` | `tools/zt-check/src/check.rs` | Parse flags, pick one mode, run, filter, print UTF-8 with CRLF on Windows |
 | `check_json`, `check_addresses`, `check_model`, `check_cards` | `tools/zt-check/src/check.rs` | Build the entries, the term table, the level, and the shared list for one mode |
 | `Check` (`new`, `with_terms`, `with_shared`, `run`, `language`, `sentence`, `layer`) | `tools/zt-check/src/check.rs` | The rules |
-| Text helpers (a `?` or `!` inside 《…》 ends no sentence in `split_sentences`; `plain`, `measure`, `prose_lines`, `split_sentences`, `passive`, `read_terms`, `leads_to`, `book_place`, `bigrams`, `similarity`) | `tools/zt-check/src/check.rs` | What text the rules see and how it is counted |
+| Text helpers (a `?` or `!` inside 《…》 ends no sentence in `split_sentences`; the Bridge label `跨书关联：` (`BRIDGE_LABEL`) is stripped before a line's sentences are measured; `plain`, `measure`, `prose_lines`, `split_sentences`, `passive`, `read_terms`, `leads_to`, `book_place`, `bigrams`, `similarity`) | `tools/zt-check/src/check.rs` | What text the rules see and how it is counted |
 | PowerShell semantics (`ps_eq`, `ps_in`, `culture`, `culture_starts_with`, `culture_cmp`, `ps_string`, `truthy`, `strings`, `ps_int`, `key`) | `tools/zt-check/src/check.rs` | Reproduce the deleted PowerShell checkers' comparisons and conversions |
 | `Zt` (`start`, `call`, `request`, `Drop`) | `tools/zt-check/src/mcp.rs` | The `zt mcp` client |
 | `scope` (`set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal`) | `tools/zt-check/src/mcp/scope.rs` | The Literature write scope `Zt::request` checks before each tool call |
