@@ -1870,7 +1870,7 @@ dependencies = [
 
 [[package]]
 name = "zt"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1891,4 +1891,14 @@ dependencies = [
  "ureq",
  "windows-sys 0.61.2",
  "zip",
+ "zt-check",
+]
+
+[[package]]
+name = "zt-check"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "regex",
+ "serde_json",
 ]

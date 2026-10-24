@@ -1,6 +1,6 @@
 [package]
 name = "zt"
-version = "0.26.2"
+version = "0.26.3"
 edition = "2024"
 default-run = "zt"
 
@@ -18,6 +18,9 @@ sha2 = "0.10"
 tempfile = "3.14"
 tiny_http = "0.12"
 ureq = { version = "2.12", default-features = false }
+# The checker's process-free rule core (core, text, policy). No `cli` feature, so
+# the service links no archive client, no gate process, and no platform binding.
+zt-check = { path = "tools/zt-check", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

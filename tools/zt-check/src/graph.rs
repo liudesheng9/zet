@@ -8,23 +8,15 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::LazyLock;
 
+// The orphan rule vocabulary is the core's, shared with I5; this module keeps
+// the whole-archive classification and report that the audit path calls.
+pub use crate::core::{EXCLUDED, SUBSTANTIVE, is_orphan};
+
 static ANCHOR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^/]+/\d+$").unwrap());
 static TERMS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
 static NOTATION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(符号表|notation)").unwrap());
 static STRUCTURE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^本卡是《.*》的结构卡").unwrap());
-
-pub const SUBSTANTIVE: &[&str] = &["idea", "event", "finding", "model", "part"];
-pub const EXCLUDED: &[&str] = &[
-    "root",
-    "anchor",
-    "structure",
-    "terms",
-    "notation",
-    "hub",
-    "register-part",
-    "restatement-entry",
-];
 
 /// Whether a Card body holds the `## 同述入口` section: the derived navigation role of an accepted
 /// restatement entry (§4.5, D086). The role is derived from the written text on every read, never
@@ -145,15 +137,6 @@ pub fn category_with_parts(
     "idea".into()
 }
 
-/// Filing, outbound citations and Reverse text are not inbound authored Links.
-/// An actual authored Link from a parent is evidence; a self-Link is not.
-pub fn is_orphan(address: &str, category: &str, inbound: &[String]) -> bool {
-    SUBSTANTIVE.contains(&category)
-        && !inbound
-            .iter()
-            .any(|from| !from.is_empty() && from != address)
-}
-
 /// Complete explicit agent target scope. Missing inbound facts are an error,
 /// never a fabricated zero. Strong kinded inbound remains a separate layer rule.
 pub fn orphan_report(cards: &[Value], revision: u64, changed: &[String]) -> Result<Value> {
@@ -209,4 +192,46 @@ pub fn orphan_report(cards: &[Value], revision: u64, changed: &[String]) -> Resu
     Ok(
         json!({"complete":true,"archive_revision":revision,"definition":"substantive_regular_without_other_authored_inbound","source_workspaces":["human","agent"],"target_workspace":"agent","eligible_categories":SUBSTANTIVE,"excluded_categories":EXCLUDED,"targets":targets,"eligible":eligible,"excluded":excluded,"list":list,"count":list.len(),"inbound_from_idea_with_kind":kinded,"changed_cards":changed,"changed_cards_scope":"authored_targets_only"}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The graph classifier derives the same navigation role from the authored section, from the
+    /// flag the archive derives from it, and from nothing else.
+    #[test]
+    fn the_entry_role_is_derived_from_the_section_or_the_archive_flag() {
+        let literature = HashSet::new();
+        let anchors = HashMap::new();
+        let by_body = json!({
+            "address": "1/1", "type": "idea", "title": "入口",
+            "body": "陈述。\n\n## 同述入口\n\n- [[1/2]] 定义。\n",
+        });
+        assert_eq!(
+            crate::graph::category(&by_body, &literature, &anchors),
+            "restatement-entry"
+        );
+        let by_flag = json!({
+            "address": "1/1", "type": "idea", "title": "入口", "restatement": true,
+        });
+        assert_eq!(
+            crate::graph::category(&by_flag, &literature, &anchors),
+            "restatement-entry"
+        );
+        let prose = json!({
+            "address": "1/1", "type": "idea", "title": "入口",
+            "body": "这张卡是 [[1/2]] 的同述入口。\n",
+        });
+        assert_eq!(crate::graph::category(&prose, &literature, &anchors), "idea");
+        assert!(crate::graph::EXCLUDED.contains(&"restatement-entry"));
+        assert!(!crate::graph::SUBSTANTIVE.contains(&"restatement-entry"));
+        assert!(crate::graph::is_restatement_entry(
+            "## 同述入口\n\n- [[1/2]] 定义。\n"
+        ));
+        assert!(!crate::graph::is_restatement_entry(
+            "```\n## 同述入口\n- [[1/2]]\n```\n"
+        ));
+    }
 }

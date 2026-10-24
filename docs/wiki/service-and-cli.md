@@ -13,6 +13,7 @@ paths:
   - "tests/tree_lock.rs"
   - "tests/autostart.rs"
   - "tests/closed_stdout.rs"
+  - "tests/check_core.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
 synced: 9607f0cc718a
@@ -676,6 +677,8 @@ cargo install --path . --locked   # installs zt and zt-boot side by side
 zt autostart on
 zt autostart                      # shows the command and the last login start
 ```
+
+The `zt` binary links the checker's process-free core (`tools/zt-check`, a path dependency with `default-features = false`; see [zt-check](zt-check.md#feature-boundary-and-the-service-link-s01-143)). The Card check rules therefore ship in the service binary too, so a shared-rule change is deployed by `zt down`, `cargo install --path . --locked`, `zt up`, and rebuilt `zt-check`/`zt-digest` — never by replacing only the tools, because a running old daemon would keep checking with the old rules. The link adds no process, no archive client, and no platform binding to the service's dependency tree.
 
 Drive the CLI from a test, as `tests/cli_service.rs` does:
 

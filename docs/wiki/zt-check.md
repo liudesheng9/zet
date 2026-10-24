@@ -14,7 +14,9 @@ updated: 2026-10-23
 
 `zt-check` is the Card quality check of the book digest, built as one fast Rust binary. It reads Cards (from a JSON file of drafts, or from the live archive through `zt mcp`) and prints one line per fault against the Card language and structural rules (R2 to R19) and the Card layer rules (I, E, F, L). Every agent that writes digest Cards calls it: Claude sessions, workflow agents, Haiku managers, DeepSeek Harness runs, and the digest scripts through `Invoke-ZtCheck`. It is the only source of truth for Card quality (`tools/zt-check/src/main.rs`, `tools/zt-check/src/check.rs`). It exists as a crate of its own so that it builds and installs without building zt or stopping the ZT service (`tools/zt-check/Cargo.toml`, `scripts/install-zt-check.ps1`).
 
-**Owns:** the rule definitions and their fault text, the order of fault lines, the default rule set of `--cards`, the size limits and their defaults, the Card categories of `--cards` mode, the `--json` entry format, the `zt mcp` client in `tools/zt-check/src/mcp.rs`, the process-wide Literature write scope that client enforces (`tools/zt-check/src/mcp/scope.rs`), the library entry points (`tools/zt-check/src/lib.rs`: `check::run_lines`, `mcp::Zt`), and the build and install of `zt-check.exe`.
+Since #143 the same crate is also a process-free library. `core` (the rules), `text` (the text semantics and the term-table parse), and `policy` (the rule catalog) build without the `cli` feature and hold no file reader, no `zt mcp` client, no process launcher, and no platform binding. The zt service links that core as a path dependency with `default-features = false` (`Cargo.toml`), so one definition of Card legality serves the standalone tool, zt-digest, and the service's in-process check. A change to a shared rule is therefore a service change too: rebuild and redeploy `zt` as well as `zt-check`/`zt-digest`.
+
+**Owns:** the rule definitions and their fault text, the order of fault lines, the default rule set of `--cards`, the size limits and their defaults, the Card categories of `--cards` mode, the `--json` entry format, the pure rule core (`tools/zt-check/src/core.rs`), the pure text operations (`tools/zt-check/src/text.rs`), the rule catalog (`tools/zt-check/src/policy.rs`), the `zt mcp` client in `tools/zt-check/src/mcp.rs`, the process-wide Literature write scope that client enforces (`tools/zt-check/src/mcp/scope.rs`), the library entry points (`tools/zt-check/src/lib.rs`: `core::Check`, `text`, `policy` always; `check::run_lines`, `graph`, `mcp::Zt` with the `cli` feature), and the build and install of `zt-check.exe`.
 
 **Does not own:** the MCP tools it calls (`get_card`, `get_model`, `get_tree`, `list_trees`; see [MCP server](mcp-server.md)), the ZT service that `zt mcp` needs (see [Service, CLI and storage](service-and-cli.md)), Relation kinds and Link parsing inside zt (see [Cards, Workspaces and Links](cards-and-links.md)), the build report and Elaboration level (see [Models and math](models-and-math.md)), the PowerShell wrapper `Invoke-ZtCheck` and the compilers and audit that build its input (see [Digest scripts](digest-scripts.md)), the SELF-CHECK lines in the agent prompts (see [Digest prompts](digest-prompts.md)), the approval rules in the workflows (see [Digest workflows](digest-workflows.md)), and the `zt-digest-protocol` skill that documents it for agents (see [Agent skills](agent-skills.md)).
 
@@ -22,19 +24,25 @@ updated: 2026-10-23
 
 | | |
 |---|---|
-| Entry points | `zt-check` command line (`main` in `tools/zt-check/src/main.rs` → `check::run_cli`); the library (`zt_check::check::run_lines(args, Some(&mut zt))`, `zt_check::mcp::Zt`), which [zt-digest](zt-digest.md) runs in-process; `scripts/install-zt-check.ps1` (build and install) |
-| Key files | `tools/zt-check/Cargo.toml` — a crate with its own `[workspace]`, so it never builds zt; `anyhow`, `regex`, `serde_json`, plus platform process bindings (`windows-sys` on Windows, `libc` on Unix) |
+| Entry points | `zt-check` command line (`main` in `tools/zt-check/src/main.rs` → `check::run_cli`); the library (`zt_check::check::run_lines(args, Some(&mut zt))`, `zt_check::mcp::Zt`), which [zt-digest](zt-digest.md) runs in-process; the process-free core (`zt_check::core::Check`, `zt_check::text`, `zt_check::policy`), which the zt service links and calls in-process; `scripts/install-zt-check.ps1` (build and install) |
+| Key files | `tools/zt-check/Cargo.toml` — a crate with its own `[workspace]`, so it never builds zt; features `default = ["cli"]` and `cli = ["dep:windows-sys", "dep:libc"]`; the binary has `required-features = ["cli"]`; `anyhow`, `regex`, `serde_json` are the pure core's only dependencies |
 | | `tools/zt-check/Cargo.lock` — pinned versions (regex 1.13.1, anyhow 1.0.104, serde_json) |
-| | `tools/zt-check/src/lib.rs` — the library: `pub mod check; pub mod graph; pub mod mcp;` |
+| | `tools/zt-check/src/lib.rs` — exports `VERSION`, `core`, `text`, `policy` always; `check`, `graph`, `mcp` only with `cli` |
 | | `tools/zt-check/src/main.rs` — collects the arguments, calls `zt_check::check::run_cli`, prints `zt-check: <error>` and exits 1 on an error |
-| | `tools/zt-check/src/check.rs` — the rules, the PowerShell text semantics, the four input modes, the option parser, the output, and the unit tests |
+| | `tools/zt-check/src/core.rs` — the rule core: `Check` (the language, layer, and title rules), `Faults` (the fault lines), `Limits`, the corruption scan, and the orphan predicate; its unit tests |
+| | `tools/zt-check/src/text.rs` — the PowerShell text semantics (UTF-16 form and lengths, culture comparisons, JSON conversions), the prose projection, sentence splitting, the term-table parse, the title context, and the lexical Link and envelope operations; its unit tests |
+| | `tools/zt-check/src/policy.rs` — `DEFAULT_RULES` and `filter_rules` (which rules a `--cards` report prints and counts); its unit test |
+| | `tools/zt-check/src/check.rs` — the CLI input adapter: the four input modes, the option parser, the output, and the compatibility re-exports (`check::run_lines`, `check::term_table`, ...) |
+| | `tools/zt-check/src/graph.rs` — the whole-archive classification and orphan report (`cli`); re-exports the core's `is_orphan`, `SUBSTANTIVE`, `EXCLUDED` |
 | | `tools/zt-check/src/mcp.rs` — `Zt`, a minimal JSON-RPC client that starts `zt mcp` and makes `tools/call` requests |
 | | `tools/zt-check/src/mcp/owned.rs` — owned process-tree containment, bounded exit observation and termination |
 | | `tools/zt-check/src/mcp/scope.rs` — the process-wide Literature write scope: `set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal` |
+| | `tools/zt-check/tests/check_parity.rs` — the executable, the library adapter, and the process-free core print the same ordered lines for both recorded fixtures; the envelope error and the version are the same too |
+| | `tools/zt-check/tests/fixtures/` — the recorded ordered lines of both fixtures and the `--json` envelope fixtures (single object, BOM, bundle context, case-folded names, shared line, not JSON) |
 | | `scripts/install-zt-check.ps1` — `cargo build --release` into `D:\zt-check-target`, then copies `zt-check.exe` beside `zt.exe` |
-| Depends on | [MCP server](mcp-server.md) (`zt mcp`, read tools only); [Service, CLI and storage](service-and-cli.md) (the service must be up for `zt mcp` tool calls); the answer shapes of [Models and math](models-and-math.md) (`get_model` `head`, `parts`, `level`, `build.setting`, `build.order`) and [Cards, Workspaces and Links](cards-and-links.md) (`get_tree` `links`, `kinds`); Rust crates `regex`, `serde_json`, `anyhow` |
-| Used by | [zt-digest](zt-digest.md) (a path dependency: `Check::run` calls `run_lines` on the step's own `zt mcp`; `main` sets the Literature scope for every digest step through `mcp::scope::set_literature_only`); [Digest scripts](digest-scripts.md) (`Invoke-ZtCheck` in `scripts/book-digest/zt-calls.ps1`, for PowerShell callers and the tests; every digest script now forwards to a `zt-digest` tool that runs the check in-process); [Digest prompts](digest-prompts.md) (DeepSeek SELF-CHECK commands); [Digest workflows](digest-workflows.md) (managers approve `zt-check` as read-only); [Agent skills](agent-skills.md) (`skills/zt-digest-protocol/SKILL.md`, `skills/zettelkasten/SKILL.md`) |
-| Tests | `mod tests` in `tools/zt-check/src/check.rs`; `mod tests` in `tools/zt-check/src/mcp/scope.rs`; `scripts/book-digest/tests/zt-check.tests.ps1` with `card-style-fixture.json`; `scripts/book-digest/tests/card-layer.tests.ps1` with `card-layer-fixture.json` |
+| Depends on | [MCP server](mcp-server.md) (`zt mcp`, read tools only; `cli` feature); [Service, CLI and storage](service-and-cli.md) (the service must be up for `zt mcp` tool calls); the answer shapes of [Models and math](models-and-math.md) (`get_model` `head`, `parts`, `level`, `build.setting`, `build.order`) and [Cards, Workspaces and Links](cards-and-links.md) (`get_tree` `links`, `kinds`); Rust crates `regex`, `serde_json`, `anyhow` |
+| Used by | [zt-digest](zt-digest.md) (a path dependency with the default `cli` feature: `Check::run` calls `run_lines` on the step's own `zt mcp`; `main` sets the Literature scope for every digest step through `mcp::scope::set_literature_only`); the zt service (a path dependency with `default-features = false`: `src/main.rs` links the crate and `tests/check_core.rs` checks a Card through `core::Check` in-process); [Digest scripts](digest-scripts.md) (`Invoke-ZtCheck` in `scripts/book-digest/zt-calls.ps1`, for PowerShell callers and the tests; every digest script now forwards to a `zt-digest` tool that runs the check in-process); [Digest prompts](digest-prompts.md) (DeepSeek SELF-CHECK commands); [Digest workflows](digest-workflows.md) (managers approve `zt-check` as read-only); [Agent skills](agent-skills.md) (`skills/zt-digest-protocol/SKILL.md`, `skills/zettelkasten/SKILL.md`) |
+| Tests | `mod tests` in `tools/zt-check/src/core.rs` (the rules), `src/text.rs` (the text semantics and term table), `src/policy.rs` (the rule filter), and `src/mcp/scope.rs`; `tests/check_parity.rs` (the CLI, the library, and the core on both recorded fixtures); `scripts/book-digest/tests/zt-check.tests.ps1` with `card-style-fixture.json`; `scripts/book-digest/tests/card-layer.tests.ps1` with `card-layer-fixture.json`; the root crate's `tests/check_core.rs` (the service link) |
 
 ## Concepts
 
@@ -57,11 +65,11 @@ updated: 2026-10-23
 
 ## Architecture
 
-The crate has a library (`lib.rs`: the checker `check.rs` and the zt client `mcp.rs`) and a binary (`main.rs`). `check.rs` is itself layered: input readers build a list of entries, `Check::run` applies the language rules per Card and then the layer rules across Cards, `run_lines` filters and returns the lines with `faults: N` last, and `run_cli` prints them. `run_lines(args, zt)` takes an open `Zt` or, given `None`, starts one only when the mode reads the archive (`--json` and an empty `--cards` start none).
+The crate has a library and a binary (`main.rs`). The library is layered by feature. `core`, `text`, and `policy` are always available and are the process-free part: `text` owns the PowerShell text semantics, the prose projection, the term-table parse, the title context, and the lexical Link and envelope operations; `core` owns `Check` (the language rules per Card, then the layer rules across Cards), `Faults` (the fault lines), the corruption scan, and the orphan predicate; `policy` owns the rule catalog and the filter that counts a `--cards` report. `check`, `graph`, and `mcp` need the `cli` feature: `check` reads the four inputs, materializes the term table, level, shared list, and Workspace title context, calls the core, filters, and prints; `graph` classifies a whole archive for the audit; `mcp` is the `zt mcp` client and its process containment. `run_lines(args, zt)` takes an open `Zt` or, given `None`, starts one only when the mode reads the archive (`--json` and an empty `--cards` start none).
 
 ```mermaid
 flowchart TD
-    main["main.rs: main()"] --> cli["check::run_cli"]
+    main["main.rs: main()"] --> cli["check::run_cli (cli)"]
     cli --> parse["Options::parse"]
     cli -->|--json| cj["check_json (file, offline)"]
     cli -->|--addresses| ca["check_addresses"]
@@ -69,25 +77,35 @@ flowchart TD
     cli -->|--cards / --log| cc["check_cards"]
     ca & cm & cc --> zt["mcp::Zt (spawns zt mcp)"]
     zt -->|get_cards, get_model| server[("zt mcp → ZT service archive")]
-    cj & ca & cm & cc --> run["Check::run"]
-    run --> lang["Check::language + Check::sentence (R2–R19)"]
+    cj & ca & cm & cc --> run["core::Check::run (always available)"]
+    run --> lang["Check::language + Check::sentence (R2–R22)"]
     run --> layer["Check::layer + finding_rules (I, E, F, L)"]
     lang & layer --> faults["Faults::add (fault lines)"]
-    cc --> filter["filter_rules (--rules / DEFAULT_RULES)"]
+    lang & layer --> txt["text: prose, term table, titles, Links"]
+    cc --> filter["policy::filter_rules (--rules / DEFAULT_RULES)"]
     faults --> out["write_lines + faults: N"]
     filter --> out
+    svc["zt service (root crate)"] -->|"path dep, default-features = false"| run
 ```
 
 | Component | File | Role |
 |---|---|---|
 | `main` | `tools/zt-check/src/main.rs` | Arguments in; on `Err`, `zt-check: {error:#}` on stderr and exit code 1 |
 | `Options`, `run_cli`, `write_lines` | `tools/zt-check/src/check.rs` | Parse flags, pick one mode, run, filter, print UTF-8 with CRLF on Windows |
-| `check_json`, `check_addresses`, `check_model`, `check_cards` | `tools/zt-check/src/check.rs` | Build the entries, the term table, the level, and the shared list for one mode |
-| `Check` (`new`, `with_terms`, `with_shared`, `run`, `language`, `sentence`, `layer`) | `tools/zt-check/src/check.rs` | The rules |
-| Text helpers (a `?` or `!` inside 《…》 ends no sentence in `split_sentences`; the Bridge label `跨书关联：` (`BRIDGE_LABEL`) is stripped before a line's sentences are measured; `plain`, `measure`, `prose_lines`, `split_sentences`, `passive`, `read_terms`, `leads_to`, `book_place`, `bigrams`, `similarity`) | `tools/zt-check/src/check.rs` | What text the rules see and how it is counted |
-| PowerShell semantics (`ps_eq`, `ps_in`, `culture`, `culture_starts_with`, `culture_cmp`, `ps_string`, `truthy`, `strings`, `ps_int`, `key`) | `tools/zt-check/src/check.rs` | Reproduce the deleted PowerShell checkers' comparisons and conversions |
-| `Zt` (`start`, `call`, `request`, `Drop`) | `tools/zt-check/src/mcp.rs` | The `zt mcp` client |
-| `scope` (`set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal`) | `tools/zt-check/src/mcp/scope.rs` | The Literature write scope `Zt::request` checks before each tool call |
+| `check_json`, `check_addresses`, `check_model`, `check_cards` | `tools/zt-check/src/check.rs` | Build the entries, the term table, the level, the shared list, and the title context for one mode |
+| `Check` (`new`, `with_terms`, `with_shared`, `with_context`, `run`, `language`, `sentence`, `layer`) | `tools/zt-check/src/core.rs` | The rules; `run` returns the ordered fault lines |
+| `Faults`, `Limits`, `corruption`, `source_evidence`, `is_orphan` | `tools/zt-check/src/core.rs` | The fault line format and clip, the limit defaults, the R18/R19 scan, I7's source evidence, and the orphan predicate I5 and the audit share |
+| Text helpers (a `?` or `!` inside 《…》 ends no sentence in `split_sentences`; the Bridge label `跨书关联：` (`BRIDGE_LABEL`) is stripped before a line's sentences are measured; `plain`, `measure`, `prose_lines`, `split_sentences`, `passive`, `read_terms`, `leads_to`, `book_place`, `bigrams`, `similarity`) | `tools/zt-check/src/text.rs` | What text the rules see and how it is counted |
+| PowerShell semantics (`ps_eq`, `ps_in`, `culture`, `culture_starts_with`, `culture_cmp`, `ps_string`, `truthy`, `strings`, `ps_int`, `key`, `utf16_form`) | `tools/zt-check/src/text.rs` | Reproduce the deleted PowerShell checkers' comparisons and conversions |
+| `DEFAULT_RULES`, `filter_rules` | `tools/zt-check/src/policy.rs` | The rule catalog and the report filter |
+| `Zt` (`start`, `call`, `request`, `Drop`) | `tools/zt-check/src/mcp.rs` | The `zt mcp` client (`cli`) |
+| `scope` (`set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal`) | `tools/zt-check/src/mcp/scope.rs` | The Literature write scope `Zt::request` checks before each tool call (`cli`) |
+
+### Feature boundary and the service link (S01 / #143)
+
+`tools/zt-check/Cargo.toml` declares `default = ["cli"]` and `cli = ["dep:windows-sys", "dep:libc"]`; the binary has `required-features = ["cli"]`. Building with `--no-default-features --lib` therefore compiles only `core`, `text`, and `policy`, and `cargo tree --no-default-features -e normal` names no `windows-sys`, no `libc`, and no archive client. `check.rs` keeps the existing public surface as re-exports (`check::run_lines`, `check::run_cli`, `check::term_table`, `check::TermRow`, `check::source_evidence`, `check::title_key`, `check::title_bigrams`, `check::title_similarity`, `check::TITLE_SIMILARITY`, `check::title_fits`, `check::sentence_fits`), so zt-digest and the digest reports keep their calls while the implementation lives in `core` and `text`.
+
+The root crate (`Cargo.toml`) adds `zt-check = { path = "tools/zt-check", default-features = false }`. There is no dependency cycle: zt-check depends only on `anyhow`, `regex`, and `serde_json`, and zt-digest's `zt-check` path dependency keeps the default `cli` feature. The root's `tests/check_core.rs` proves the link with an in-process check through `zt_check::core::Check`, with no service, no `zt mcp`, and no gate process. Because the rules now ship in the service binary too, a shared-rule change is a deployment of the service (see [Service, CLI and storage](service-and-cli.md)): rebuild and reinstall `zt`, stop and start the daemon, and rebuild `zt-check`/`zt-digest`. A running old service would keep checking with the old rules.
 
 ## Interfaces
 
@@ -407,7 +425,7 @@ The wire format to `zt mcp` is one JSON-RPC 2.0 message per line (see "Interface
 | `-BinDir` | `install-zt-check.ps1` | folder of `zt` on PATH | Where `zt-check.exe` goes |
 | `[profile.release]` | `tools/zt-check/Cargo.toml` | `opt-level = 3`, `codegen-units = 16` | Release build |
 
-The fixed limits R2 (40/30 characters, 25/20 words), R12 (40/25), R16 (5 and 6), R17 (2 per 说明), I1 (6 characters), I6 (0.8), and E5 (0.5) are constants in `tools/zt-check/src/check.rs`.
+The fixed limits R2 (40/30 characters, 25/20 words), R12 (40/25), R16 (5 and 6), R17 (2 per 说明), I1 (6 characters), I6 (0.8), and E5 (0.5) are constants in `tools/zt-check/src/core.rs` and `tools/zt-check/src/text.rs`.
 
 ## Usage
 
@@ -432,11 +450,11 @@ The compilers check drafts by writing `--json` entries with a `category` so the 
 
 ### Adding a rule
 
-1. Add the check in `Check::sentence` (per sentence), `Check::language` (per Card), `Check::layer` or `finding_rules` (layer, by category), and report it with `faults.add(address, "<Rule>", text)`. Prefix an advisory text with `(advisory)`.
-2. Keep the rule id matching `FAULT_LINE` (`[RIELF]\d+`); a new letter needs that pattern changed, or `--cards` drops its lines.
-3. Add it to `DEFAULT_RULES` if `--cards` should report it by default.
-4. Add a unit test in `mod tests` with the exact lines, and update the PowerShell fixture tests if the `--json` output of their fixtures changes.
-5. Run `cargo test`, then `pwsh -NoProfile -File scripts\install-zt-check.ps1`, then the PowerShell tests. Tell callers that filter rule letters (see pitfalls).
+1. Add the check in `Check::sentence` (per sentence), `Check::language` (per Card), `Check::layer` or `finding_rules` (layer, by category) in `tools/zt-check/src/core.rs`, and report it with `faults.add(address, "<Rule>", text)`. Prefix an advisory text with `(advisory)`. A text helper belongs in `tools/zt-check/src/text.rs`.
+2. Keep the rule id matching `FAULT_LINE` (`[RIELF]\d+`) in `tools/zt-check/src/policy.rs`; a new letter needs that pattern changed, or `--cards` drops its lines.
+3. Add it to `DEFAULT_RULES` in `tools/zt-check/src/policy.rs` if `--cards` should report it by default.
+4. Add a unit test in the module's `mod tests` with the exact lines, then check that `tools/zt-check/tests/fixtures/card-style-expected.txt` (and `card-layer-expected.txt` if it changes) matches the new order, and update the PowerShell fixture tests if the `--json` output of their fixtures changes.
+5. Run `cargo test`, then `cargo build --no-default-features --lib` (the core must stay process-free), then `pwsh -NoProfile -File scripts\install-zt-check.ps1`, then the PowerShell tests. Rebuild and redeploy `zt` too: a shared rule change changes the service's in-process check. Tell callers that filter rule letters (see pitfalls).
 
 ### Adding an input field
 
@@ -446,8 +464,14 @@ Read it with `prop(card, "<name>")` and the PowerShell conversions (`text`, `str
 
 | Test | Command | Covers |
 |---|---|---|
-| Unit tests, `mod tests` in `tools/zt-check/src/check.rs` (17 tests) | `cd tools/zt-check; $env:CARGO_TARGET_DIR='D:\zt-check-target'; cargo test` | One fault per rule on `card-style-fixture.json` (included with `include_str!`), card size, R15–R17, the position line, the I/E/L rules, the F rules, the standalone rules R20/R21 (content-bearing label, name, source locator, code/quote/formula exclusion, a book-local model number in a title, a Literature root's bibliographic body, same-sentence and preceding-sentence referents), I7 (own source, other book, `illustrates`/`corresponds`/`contrasts`, own Literature tree, unknown evidence, `来源` line, several named sources), I6 (Workspace context, one line per pair, an incomplete context marked unknown, an unscoped entry marked unknown, and an exact copy that differs only in case or in a trailing mark found without a scan of the context), UTF-16 lengths and clipping, sentence splitting, culture order, the rule filter |
+| Unit tests, `mod tests` in `tools/zt-check/src/core.rs` (18 tests; they run with `--no-default-features --lib` too) | `cd tools/zt-check; cargo test` and `cargo test --no-default-features --lib` | The recorded ordered lines of `card-style-fixture.json` through `core::Check` (one fault per rule, with the shared part's term table skipped), R22's open formula, card size, R15–R17, the position line, the I/E/L rules, the F rules, the standalone rules R20/R21 (content-bearing label, name, source locator, code/quote/formula exclusion, a book-local model number in a title, a Literature root's bibliographic body, same-sentence and preceding-sentence referents), I7 (own source, other book, `illustrates`/`corresponds`/`contrasts`, own Literature tree, unknown evidence, `来源` line, several named sources), I6 (Workspace context, one line per pair, an incomplete context marked unknown, an unscoped entry marked unknown, and an exact copy that differs only in case or in a trailing mark found without a scan of the context), UTF-16 lengths and clipping, and the Bridge label |
+| Unit tests, `mod tests` in `tools/zt-check/src/text.rs` (5 tests) | the same `cargo test` | The four-column term table against R6's own view, a book title's end marks inside one sentence, sentence splitting that keeps formulas whole, culture order and starts-with, and title identity and similarity |
+| Unit tests, `mod tests` in `tools/zt-check/src/policy.rs` (1 test) | the same `cargo test` | The rule filter keeps the asked rules and counts only hard faults |
 | Unit tests, `mod tests` in `tools/zt-check/src/mcp/scope.rs` (4 tests) | the same `cargo test` | Topic addresses are numbered trees; authored Topic Links are found outside the Reverse links section; the scope refuses `create_topic`, a Topic-tree `at`/`to`/`into`/`before`, a Hub Card, a Topic Link in `body` or `text`, and the offending `apply_batch` item by index; Literature writes, Literature Links, `create_literature` without Topic Links, reads and a clean batch pass |
+| Integration test, `tools/zt-check/tests/check_parity.rs` (4 tests) | the same `cargo test` | The executable, `check::run_lines`, and the process-free `core::Check` print the same ordered lines for `card-style-fixture.json` and `card-layer-fixture.json`, all equal to the recorded `tests/fixtures/*-expected.txt`; the binary states `zt_check::VERSION`; the not-JSON envelope error is the same in the binary and the library |
+| CLI adapter tests, `mod tests` in `tools/zt-check/src/check.rs` (10 tests) | the same `cargo test` | The recorded fixture lines through `check_json` and `run_lines`; a single object, a BOM'd array, and case-folded property names; a bundle's title context; the setting lookup and a shared part; the not-JSON and unreadable-file messages; two inputs refused; an empty Card list |
+| Core-only build | `cd tools/zt-check; cargo build --no-default-features --lib; cargo tree --no-default-features -e normal` | The pure core builds alone and its dependency tree names no `windows-sys`, no `libc`, and no archive client |
+| Root service link | `cargo test --test check_core` (root) | The zt binary links `zt-check` with `default-features = false` and checks a Card in-process through `zt_check::core::Check` |
 | `scripts/book-digest/tests/zt-helper-gate.tests.ps1` | `pwsh -NoProfile -File scripts\book-digest\tests\zt-helper-gate.tests.ps1` | The scope end to end through `zt-digest call` on a scratch archive: without `-Open` the helper refuses `create_topic`, a Card in a Topic tree and a Literature Card that links a Topic root, and still writes a Literature tree |
 | `scripts/book-digest/tests/zt-check.tests.ps1` | `pwsh -NoProfile -File scripts\book-digest\tests\zt-check.tests.ps1` | The same fixture, card size, and R15–R17 through `Invoke-ZtCheck` |
 | `scripts/book-digest/tests/card-layer.tests.ps1` | `pwsh -NoProfile -File scripts\book-digest\tests\card-layer.tests.ps1` | I, E, L rules on `card-layer-fixture.json`, plus formulas and table pipes |
@@ -455,7 +479,7 @@ Read it with `prop(card, "<name>")` and the PowerShell conversions (`text`, `str
 
 The PowerShell tests run the `zt-check` found on PATH (`$script:ZtCheck` in `zt-calls.ps1`), not the source: install first. `finding-compiler.tests.ps1` copies the debug builds from `D:\zt-target` and `D:\zt-check-target` into a scratch `bin` at the front of PATH and sets `ZT_CONFIG_DIR`, so zt-check's `zt mcp` reaches the scratch archive.
 
-Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` is covered only end to end by `zt-helper-gate.tests.ps1`); no unit test of `--model`, `--addresses`, or `--cards` (they need a live `zt mcp`; the compiler tests exercise `--addresses` and `scripts/book-digest/tests/workspace-titles.tests.ps1` exercises `--cards` with its Workspace context); no test of `Options::parse` errors; I5, I6, E4, F4 are tested only through `--json` fields apart from that I6 test, and `--addresses` sets no layer category, so it checks no layer rule at all (including I6 and I7).
+Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` is covered only end to end by `zt-helper-gate.tests.ps1`); no unit test of `--model`, `--addresses`, or `--cards` (they need a live `zt mcp`; the compiler tests exercise `--addresses` and `scripts/book-digest/tests/workspace-titles.tests.ps1` exercises `--cards` with its Workspace context); no test of `Options::parse` errors beyond the two-input refusal; I5, I6, E4, F4 are tested only through `--json` fields apart from that I6 test, and `--addresses` sets no layer category, so it checks no layer rule at all (including I6 and I7).
 
 ## Decisions and pitfalls
 
@@ -463,7 +487,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 
 - **One checker, the only source of truth.** zt-check replaced `card-style-check.ps1` and `self-check.ps1` (deleted 2026-10-15) with the same faults, in the same order, in the same words, so every agent and script gets one fault format (`tools/zt-check/src/check.rs` header; [docs/digest-card-layers-proposal.md](../digest-card-layers-proposal.md) D4 and its note; `skills/zt-digest-protocol/SKILL.md`).
 - **PowerShell semantics in Rust.** To keep the old output exactly, lengths count UTF-16 units, matches ignore case, string comparisons drop culture-ignorable characters, hashtable keys ignore case, and sorts use an approximation of ICU collation (`weight`, `culture_cmp`).
-- **A crate of its own, read through `zt mcp`.** It needs none of zt's code and sees the same answers as every other zt client; building or installing it never touches the running service (`tools/zt-check/src/mcp.rs`, `tools/zt-check/Cargo.toml`). Build into `D:` because E: is nearly full (`scripts/install-zt-check.ps1`).
+- **A crate of its own, read through `zt mcp`, with one process-free core.** It needs none of zt's code and sees the same answers as every other zt client; building or installing it never touches the running service (`tools/zt-check/src/mcp.rs`, `tools/zt-check/Cargo.toml`). The rules themselves live in `core`/`text`/`policy`, which the zt service links with `default-features = false` and calls in-process (#143), so one implementation serves the tool, zt-digest, and the service; a rule change therefore needs both binaries redeployed. Build into `D:` because E: is nearly full (`scripts/install-zt-check.ps1`).
 - **The Literature scope lives in the shared client.** A digest builds only the book's Literature tree (owner decision, `docs/literature-only-digest-design.md`). Every zt-digest step and the helper reach the archive through `mcp::Zt`, so one check in `Zt::request` covers them all, before the archive, with no second process and no archive read: a Topic tree is recognised by its all-digit id.
 - **R6 is not a default rule.** A book term table may name different concepts as synonyms, so a fix by it changes meaning; the audit reports R6, and the card cycle fixes it only on request ([docs/digest-card-layers-proposal.md](../digest-card-layers-proposal.md) D13).
 - **Concept models keep their parts whole.** R13 to R17 apply only to formal models and models with no level; a concept model has no derivation to split ([docs/self-sufficient-models-proposal.md](../self-sufficient-models-proposal.md) "Card language", [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) section 4, [docs/model-elaboration-levels-design.md](../model-elaboration-levels-design.md)).
@@ -496,6 +520,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **R16 does not report an empty 思路 or 解读**, although [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) lists "an empty section" as an R16 fault; only too many sentences are reported.
 
 ## Change history
+- `2026-10-24` — #143 S01: run the checker as a process-free library. `check.rs` is split, without a rule change, into `core.rs` (the rules, `Faults`, `Limits`, the corruption scan, I7's source evidence, and the orphan predicate), `text.rs` (the PowerShell text semantics, the prose projection, the term-table parse, the title context, and the lexical Link and envelope operations), `policy.rs` (`DEFAULT_RULES`, `filter_rules`), and the CLI adapter `check.rs`. `Cargo.toml` gains `default = ["cli"]`, `cli = ["dep:windows-sys", "dep:libc"]`, and `required-features = ["cli"]` on the binary; `lib.rs` exports `core`/`text`/`policy` always and `check`/`graph`/`mcp` with `cli`; `check` re-exports the old public names; `graph` re-exports the core's orphan predicate. The root crate links `zt-check` with `default-features = false` (no cycle; `tests/check_core.rs` checks a Card in-process), and zt-digest keeps the default `cli`. Verification: `cargo test` 43 lib + 4 parity tests, `cargo test --no-default-features --lib` 24 tests, `cargo build --no-default-features --lib` and `cargo tree --no-default-features -e normal` naming no process or archive dependency, both PowerShell fixture suites, and both recorded `tests/fixtures/*-expected.txt` lists byte-identical to the pre-extraction binary.
 - `2026-10-23` — The box pin: new `tools/zt-check/src/mcp/boxpin.rs` (`find`, `apply`, `PIN = "zt-box.txt"`); `main` applies it before the check. A run on a copy of the box names the box in its staging folder and every zt-check and zt-digest process of the run serves that box. Tests: four `boxpin` unit tests (a pin found from a nested file argument, from the working folder, none, two boxes and an empty pin refused); `cargo test` 32 passed.
 - `2026-10-23` — R6 masks every term the table keeps before it matches a rejected word, each as one mark so no word forms across the gap (`Check::kept`, test `a_rejected_word_inside_another_kept_term_is_that_term`). On ebrill2001modern 66 of 100 R6 faults read `税率差` (rejected for `幅度`) inside `税率差异化`, a term of its own; the old check removed only the row's own term.
 - `2026-10-22` — The Literature write scope (`docs/literature-only-digest-design.md`): new `tools/zt-check/src/mcp/scope.rs` (`set_literature_only`, `literature_only`, `is_topic_address`, `topic_links`, `literature_refusal`, with four unit tests), and `Zt::request` refuses a refused call with `literature_only: <tool>: <reason>` before it reaches the archive. In the scope, `create_topic`, a write that names a Topic-tree Card, a Hub Card, authored text that links a Topic-tree Card, and an `apply_batch` holding any of them are refused; reads pass. zt-digest turns it on for every digest step; the `zt-check` binary keeps the open scope.

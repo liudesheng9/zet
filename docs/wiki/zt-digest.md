@@ -23,7 +23,7 @@ updated: 2026-10-23
 | | |
 |---|---|
 | Entry points | `zt-digest <tool> [-Name value ...]` (`main` in `tools/zt-digest/src/main.rs`); `skills/zt/scripts/zt-mcp.ps1` (forwards to `zt-digest call`); every digest script in `scripts/book-digest/` (forwards to its tool, table under Concepts); `scripts/install-zt-digest.ps1` (build and install) |
-| Key files | `tools/zt-digest/Cargo.toml` — version 0.10.0; a crate with its own `[workspace]`; depends on `zt-check` (path), `anyhow`, `regex`, `serde_json` with `preserve_order` |
+| Key files | `tools/zt-digest/Cargo.toml` — version 0.10.0; a crate with its own `[workspace]`; depends on `zt-check` (path, default `cli` feature: the digest keeps the archive client and the binary adapter), `anyhow`, `regex`, `serde_json` with `preserve_order` |
 | | `tools/zt-digest/src/main.rs` — the tool dispatch; sets the process's write scope before the tool runs (`literature_scope`, `OPEN_TOOLS`); prints `zt-digest <tool>: <error>` and exits 1 on an error |
 | | `tools/zt-digest/src/args.rs` — `Args`: `-Name value`, `-Name:value`, switches, positional values |
 | | `tools/zt-digest/src/calls.rs` — the helper (`run`, `cli`) and `invoke`/`read` for the other tools; `run` keeps a typed refusal's JSON in `Failure.refusal` |

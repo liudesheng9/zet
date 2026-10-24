@@ -59,7 +59,7 @@ Each block doc's **Testing** section names its own suites.
 | [MCP server](mcp-server.md) | `zt mcp`: the JSON-RPC stdio server and its tools, with writes only to the agent Workspace | `src/mcp.rs` |
 | [GUI](gui.md) | The loopback HTTP server inside the daemon and the browser front end: cabinet, map, Table and Spreads, Constellation, writing desk, charts, source documents | `src/gui.rs`, `src/gui/`, `src/spread.rs` |
 | [Scholar Archive bridge and artifacts](scholar-bridge.md) | The signed, read-only connection to the Scholar Archive and the content-addressed artifact store for Card images | `src/scholar.rs`, `src/artifact.rs` |
-| [zt-check](zt-check.md) | The standalone Card quality checker (rules R, I, E, F, L) used by every digest stage | `tools/zt-check/` |
+| [zt-check](zt-check.md) | The standalone Card quality checker (rules R, I, E, F, L) used by every digest stage, and the process-free rule core the zt service links | `tools/zt-check/` |
 | [zt-digest](zt-digest.md) | The digest tools as one Rust binary: the zt helper (`call`) and the ported compilers, with zt-check in-process | `tools/zt-digest/`, `skills/zt/scripts/zt-mcp.ps1` |
 | [Agent skills and integrations](agent-skills.md) | The `zt`, `zettelkasten`, and `zt-digest-protocol` skills, the `zt-mcp.ps1` helper, and the installer for Claude Code, Codex, and DeepSeek Harness | `skills/`, `scripts/install-agent-integrations.ps1` |
 | [Digest workflows](digest-workflows.md) | The book, econ, and math digest Workflows: stages, modes, modules, blueprints, and the frozen install | `scripts/book-digest/workflow/`, `.claude/workflows/`, `.claude/workflow-framework/` |
@@ -120,7 +120,7 @@ Control enters the binary at `run` in `src/main.rs` ([Service, CLI and storage](
 
 All data is stored under the archive root: `zt.sqlite3` holds every Card, and its `metadata` table holds Spreads. The `artifacts/` folder holds Card images, keyed by content. Logs and the service, session, and lock files sit beside them. Source books and figures stay in the Scholar Archive and come through the [bridge](scholar-bridge.md).
 
-The digest tooling is a client of the binary. A [Digest workflow](digest-workflows.md) runs stages that send [prompts](digest-prompts.md) to DeepSeek and call [scripts](digest-scripts.md). The scripts call the `zt mcp` server through the `zt-mcp.ps1` helper of the [zt skill](agent-skills.md) and check every Card with [zt-check](zt-check.md), which also reads Cards through `zt mcp`.
+The digest tooling is a client of the binary. A [Digest workflow](digest-workflows.md) runs stages that send [prompts](digest-prompts.md) to DeepSeek and call [scripts](digest-scripts.md). The scripts call the `zt mcp` server through the `zt-mcp.ps1` helper of the [zt skill](agent-skills.md) and check every Card with [zt-check](zt-check.md), which also reads Cards through `zt mcp`. The zt binary itself links zt-check's process-free core (a path dependency with `default-features = false`), so the service and the tools share one rule implementation; a shared-rule change rebuilds and redeploys both.
 
 ## Cross-block flows
 
