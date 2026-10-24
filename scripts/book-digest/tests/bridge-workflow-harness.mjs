@@ -22,7 +22,9 @@ async function run(kind,args,options={}){
   if(/bridge-compiler|zt-digest bridge/.test(cmd)){
    const plan=/-Step plan/.test(cmd)
    if(options.failPlan&&plan)return {ok:false,output:'read failure',results:[]}
-   return {ok:true,output:JSON.stringify({ok:true,step:plan?'plan':(/-Apply\b/.test(cmd)?'apply':'report'),status:'done',citation_key:'Key',plan_id:'p-frozen',report_id:'r-frozen',counts:{selected:1,new:1,earlier:0},jobs:plan?[{id:'br-001',files:['prompt','job'],prompt:'judge'}]:[],outcomes:[],report:'D:\\work\\bridge\\report.md'}),results:[]}
+   const applied=/-Apply\b/.test(cmd)
+   // The apply step publishes the Bridge revision itself (zt-digest bridge -Step apply -Apply in a prepared run).
+   return {ok:true,output:JSON.stringify({ok:true,step:plan?'plan':(applied?'apply':'report'),status:'done',citation_key:'Key',plan_id:'p-frozen',report_id:'r-frozen',counts:{selected:1,new:options.newCount??1,earlier:1},jobs:plan?[{id:'br-001',files:['prompt','job'],prompt:'judge'}]:[],outcomes:[],...(applied?{publication:{unit:'bridge/book@3',revision:3,coverage:{accepted:1,open:1}}}:{}),report:'D:\\work\\bridge\\report.md'}),results:[]}
   }
   throw Error(`unexpected stage ${opts.label}: ${cmd}`)
  }
@@ -36,8 +38,17 @@ for(const kind of ['econ','math']){
  assert(!discovery.error,`${kind} supports bridge mode: ${discovery.error}`)
  assert.equal(discovery.result?.bridge?.status,'done',`${kind} returns its Bridge summary: ${JSON.stringify(discovery.result)} ${discovery.calls.map(c=>c.label)}`)
  assert(discovery.calls.some(c=>/-Step plan/.test(c.cmd)))
- assert(!discovery.calls.some(c=>/-Apply\b/.test(c.cmd)))
- assert.equal(discovery.result?.bridge?.publication?.state,'done',`${kind} publishes its Bridge revision after the report`)
+ // A discovery applies every new-carrier proposal of its own report at once: no review waits for the user.
+ // Earlier-carrier proposals write into another book's tree (usually locked) and stay for an explicit apply.
+ const auto=discovery.calls.filter(c=>/-Step apply/.test(c.cmd))
+ assert.equal(auto.length,1,`${kind} applies the new proposals once after the report`)
+ assert(/-ReportId 'r-frozen' -Accept 'all' -Apply/.test(auto[0].cmd)&&!/-AcceptEarlier/.test(auto[0].cmd),`${kind} accepts all new-carrier proposals only: ${auto[0].cmd}`)
+ assert(discovery.calls.findIndex(c=>/-Step report/.test(c.cmd))<discovery.calls.indexOf(auto[0]),`${kind} applies after the report`)
+ assert(!discovery.calls.some(c=>/finalize -Step stage .*-Layer bridge/.test(c.prompt)),`${kind} lets the apply publish the Bridge revision`)
+ assert.equal(discovery.result?.bridge?.applied?.publication?.revision,3,`${kind} returns the apply summary: ${JSON.stringify(discovery.result?.bridge)}`)
+ const none=await run(kind,args,{newCount:0})
+ assert(!none.calls.some(c=>/-Step apply/.test(c.cmd)),`${kind} applies nothing when the report has no new proposal`)
+ assert.equal(none.result?.bridge?.publication?.state,'done',`${kind} publishes its Bridge revision after a report with nothing to apply`)
  assert(discovery.calls.some(c=>/ledger resource .*-Register/.test(c.prompt)),`${kind} records the judge conversation for the run-level cleanup`)
  const apply=await run(kind,{...args,bridgeReport:'r-frozen',bridgeApply:['b001']})
  assert(!apply.error,`${kind} apply succeeds: ${apply.error}`)
@@ -67,5 +78,5 @@ for(const kind of ['econ','math']){
  assert(!failedPlan.calls.some(c=>/-Step report/.test(c.cmd)),`${kind} publishes no report after failed planning`)
  const missing=await run(kind,{...args,bridgeApply:'all'})
  assert(missing.error||missing.halted||missing.result?.stage==='args'||missing.result?.bridge?.status==='failed',`${kind} refuses acceptance without report: ${JSON.stringify(missing.result)}`)
- console.log(`ok: ${kind} discovery and explicit apply are separate, bounded paths`)
+ console.log(`ok: ${kind} discovery applies its new proposals; explicit apply stays a separate, bounded path`)
 }

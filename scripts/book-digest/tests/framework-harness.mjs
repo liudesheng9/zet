@@ -1708,8 +1708,10 @@ for (const kind of ['econ', 'math']) {
   const cmds = commands
   const labels = calls.map((c) => c.label)
   const at = (s) => labels.indexOf(s)
-  check(result.bridge && result.bridge.status === 'done' && at('show figures') < at('bridge: plan') && at('audit cards') > at('bridge: plan'), 'full: Figures, then the report-only Bridge, then the audit')
-  check(!cmds.some((c) => /zt-digest bridge/.test(c) && /-Apply\b/.test(c)), 'full: discovery never applies proposals')
+  check(result.bridge && result.bridge.status === 'done' && at('show figures') < at('bridge: plan') && at('audit cards') > at('bridge: plan'), 'full: Figures, then the Bridge, then the audit')
+  // Base 5.5.0: the Bridge stage applies its own report's new-carrier proposals, never the earlier ones.
+  const applies = cmds.filter((c) => /zt-digest bridge/.test(c) && /-Apply\b/.test(c))
+  check(applies.length <= 1 && applies.every((c) => /-Accept 'all'/.test(c) && !/-AcceptEarlier/.test(c)) && (applies.length === 0 || at('bridge: apply new') > at('bridge: plan')), 'full: discovery applies only its new-carrier proposals, after the report')
 }
 
 // ================================================================================================================

@@ -1,8 +1,9 @@
-// ==== module zt-bridge v8 ====
+// ==== module zt-bridge v9 ====
+// v9: a discovery applies every new-carrier proposal of its report itself (no user review); earlier carriers stay explicit.
 // v8 (S8): the no-op cleanupDsh call leaves; the run-level cleanup settles the recorded conversations.
 defineModule({
-  id: 'zt-bridge', version: '8', requires: ['zt-digest-lib'],
-  summary: 'Bounded cross-book discovery publishes a report; an identified accepted selection applies through guarded script edits.',
+  id: 'zt-bridge', version: '9', requires: ['zt-digest-lib'],
+  summary: 'Bounded cross-book discovery publishes a report and applies its new-carrier proposals; an identified selection (earlier carriers too) applies through guarded script edits in mode bridge.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'run arguments' },
@@ -57,7 +58,15 @@ defineModule({
     const summary=zdLastJson((reported&&reported.output)||'')
     if(error)return {status:'failed',error}
     if(!summary||!summary.step||!summary.report_id)return {status:'failed',error:'No Bridge report summary (step and report_id missing).'}
-    // The report's proposals stay open for the user's review; the publication records the report itself.
+    // v9: the stage applies every new-carrier proposal of its own report at once, so no review waits for the
+    // user (acemoglu2007equilibrium: 67 proposals left open). The apply publishes the Bridge revision itself.
+    // Earlier-carrier proposals write into another book's tree, usually locked: they stay for an explicit apply.
+    if(Number((summary.counts||{}).new)>0){
+      const applied=await Z.runScript('bridge: apply new','Bridge',step('apply',` -ReportId ${q(summary.report_id)} -Accept 'all' -Apply`),'; filing must stay quiet: no insertion, movement, deletion, key rename, retype, or Organize during apply')
+      const result=applied.json||{status:'failed',error:(applied.run&&applied.run.output)||'no output'}
+      if(result.status==='failed')return {...summary,status:'failed',error:`Bridge apply failed: ${result.error||'no detail'}`,applied:result}
+      return {...summary,applied:result,publication:result.publication}
+    }
     const publication=await publish('bridge',` -Report "${work}\\proposals.json"`)
     return {...summary,publication}
   },

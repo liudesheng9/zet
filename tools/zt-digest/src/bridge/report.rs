@@ -219,7 +219,7 @@ impl Bridge {
         if truthy(get(published, "empty_reason")) {
             lines.push(field_of(published, "empty_reason"));
         }
-        lines.push("Acceptance is for these exact sentences and this report id. New and earlier carriers require separate selections. No acceptance is inferred from this report or a timer.".into());
+        lines.push("Acceptance is for these exact sentences and this report id. New and earlier carriers require separate selections. A digest run applies every new-carrier proposal of its own report at once; earlier carriers write into another book and need an explicit selection.".into());
         lines.push(String::new());
         lines.push("## 按目标书".into());
         lines.push(String::new());

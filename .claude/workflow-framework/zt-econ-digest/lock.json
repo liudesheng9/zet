@@ -1,20 +1,20 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.4.0",
+  "version": "6.5.0",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "7f01d2c2f984f99ad80a199fb9754617fae72301757c3e98032cf429f232a780",
-  "fingerprint": "ab0b972786618d8a",
-  "blueprintSha256": "25ab611814041f974ad756c2a18d1f0acc5c93d5a5db637f7b00cfcd95a2f948",
+  "sha256": "aab19a1a051b4a4a9bbeaf829dd2f634ee8ec9329131550f95c2b221792cdd6a",
+  "fingerprint": "dbd45650a70f30a1",
+  "blueprintSha256": "d43b9e43f62dc6e5297c42548408227e7092e3cfdd08dae80cc7a17b71d49551",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "1",
     "zt-digest-lib": "37",
     "zt-audit": "3",
     "zt-book-terms": "4",
-    "zt-bridge": "8",
+    "zt-bridge": "9",
     "zt-cards-book": "4",
     "zt-cards-layer": "2",
     "zt-digest-prepare": "12",
@@ -57,7 +57,7 @@
     },
     "zt-bridge": {
       "file": "scripts/book-digest/workflow/modules/zt-bridge.js",
-      "sha256": "1554644fc9f8227fcce912551b91d1610b9172643f95d68f261247e6db1917de"
+      "sha256": "4b95da72f498eceb478e43964f33df186796812027c6226715fd79358f710af6"
     },
     "zt-cards-book": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-book.js",
@@ -135,15 +135,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "c09d92ca21221810f68a3e4fd17ac948499f70fa75bad38f2d44e4ad466e487c"
+      "sha256": "134cf8b4453a6f605b8d402086c623acfcdc2d95d5ffde2a541fa0a16af3de82"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "75417001828e519bc84ceb5a84a3cc2cb117a90564d1f889149f746bdc2f6f13"
+      "sha256": "dae8c792f79bd933882d645daa388c836ad67334d279ff2a79b89a0403bee99d"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-24T03:26:21.634Z",
+  "installedAt": "2026-10-24T19:08:58.983Z",
   "dryRun": {
     "agents": 44,
     "order": [

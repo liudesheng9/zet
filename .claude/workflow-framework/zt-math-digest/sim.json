@@ -40,6 +40,13 @@
       }
     },
     {
+      "label": "^bridge: apply new$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"step\":\"apply\",\"status\":\"done\",\"citation_key\":\"Key\",\"plan_id\":\"p-sim\",\"report_id\":\"r-sim\",\"counts\":{\"selected\":1,\"new\":1,\"earlier\":0},\"outcome_counts\":{\"verified\":1},\"publication\":{\"unit\":\"bridge/book@2\",\"revision\":2,\"coverage\":{\"accepted\":1}}}"
+      }
+    },
+    {
       "label": "^math: index$",
       "answer": {
         "ok": true,
