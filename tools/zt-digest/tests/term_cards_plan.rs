@@ -359,13 +359,7 @@ fn the_term_cards_plan_reads_a_real_list_and_writes_no_card() {
         String::from_utf8_lossy(&missing.stderr)
     );
     std::fs::rename(&backup, &sections).unwrap();
-    for (step, slice, issue) in [
-        ("check", "S19", 162),
-        ("review-plan", "S19", 162),
-        ("fix-plan", "S19", 162),
-        ("apply", "S21", 165),
-        ("report", "S21", 165),
-    ] {
+    for (step, slice, issue) in [("apply", "S21", 165), ("report", "S21", 165)] {
         let mut args = vec!["term-cards", "-Step", step, "-Staging", stage];
         if step == "apply" {
             args.push("-Apply");
@@ -379,7 +373,7 @@ fn the_term_cards_plan_reads_a_real_list_and_writes_no_card() {
     }
     assert!(
         std::fs::read_dir(staged.join("term-cards").join("check")).unwrap().next().is_none(),
-        "an unimplemented check step wrote into check/"
+        "an unimplemented step wrote into check/"
     );
 
     // --- the same frozen content keeps revision 1 and the exact plan bytes ---------------------

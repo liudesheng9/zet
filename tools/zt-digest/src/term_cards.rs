@@ -1,4 +1,4 @@
-//! `zt-digest term-cards`: the Term Card compiler (design 12.1–12.6, S18 / #159).
+//! `zt-digest term-cards`: the Term Card compiler (design 12.1–12.6, S18 / #159 and S19 / #162).
 //!
 //!   zt-digest term-cards -Step plan|jobs|check|review-plan|fix-plan|apply|report
 //!                        -Staging <folder> [-PerJob 4] [-MathPerJob 1]
@@ -19,9 +19,13 @@
 //!   plan.json    frozen rows, list/source fingerprints, notation, limits, jobs, plan revision,
 //!                compiler/checker/rule versions and the plan hash
 //!   jobs/        one source-bound job file per job
-//!   out/         writer JSON, one stable output per job (written by the writer)
-//!   check/       diagnostics (S19)
-//!   review/      hash-bound review answers (S19)
+//!   out/         writer JSON, one stable output per job (written by the writer, rewritten by its
+//!                one permitted fix)
+//!   check/       one diagnostics artifact per job, and `check/readiness.json`, the structured
+//!                readiness result with its per-term hashes
+//!   review/      `requests/` with every bound review request, and `answers/` with the reviewers'
+//!                hash-named verdicts
+//!   fix/         the one finite fix prompt per writer job
 //!   state.json   derived local progress, plan revisions and the ledger unit ids
 //!   report.json, report.md   publication coverage (S21)
 //!
@@ -31,9 +35,13 @@
 //! revision>` unit; the existing run ledger remains the scheduler and `state.json` is never a
 //! second queue. `jobs` reads one claimed job unit and prints the DeepSeek job for that writer.
 //!
-//! `check`, `review-plan`, `fix-plan`, `apply` and `report` are declared and dispatched here but
-//! belong to S19 (#162) and S21 (#165); until those slices fill them this tool answers one
-//! compact `not_implemented` line and exits 2, writing nothing.
+//! `check`, `review-plan` and `fix-plan` are the S19 (#162) steps: the exact writer JSON is checked
+//! against the draft schema, rendered by zt-check's deterministic renderer and checked by the same
+//! T rules the service applies; every mathematical draft is reviewed in a fresh conversation bound
+//! to its exact term/source/draft/render hashes; and one finite fix prompt goes back to the writer's
+//! own conversation through the existing `continue`/`fallback` job fields. `apply` and `report`
+//! belong to S21 (#165); until that slice fills them this tool answers one compact `not_implemented`
+//! line and exits 2, writing nothing.
 
 use crate::args::Args;
 use crate::canon;
@@ -89,8 +97,8 @@ static NOTATION_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^符�
 /// The compact answer of a step whose implementation belongs to a later slice.
 fn not_implemented(step: &str) -> (i32, Value) {
     let (slice, issue) = match step {
-        "check" | "review-plan" | "fix-plan" => ("S19", 162),
         "apply" | "report" => ("S21", 165),
+        "check" | "review-plan" | "fix-plan" => ("S19", 162),
         _ => ("S18", 159),
     };
     (
@@ -186,8 +194,8 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
     if (step == "apply") != apply {
         bail!("term-cards apply requires -Apply; no other step accepts it");
     }
-    if token.is_some() && step == "plan" {
-        bail!("term-cards plan is not a claimed step; remove -Token");
+    if token.is_some() && step != "jobs" {
+        bail!("term-cards {step} does not claim a job unit; remove -Token");
     }
     if !jobs.is_empty() && matches!(step.as_str(), "plan" | "apply" | "report") {
         bail!("term-cards {step} is not job-scoped; remove -Jobs");
@@ -226,6 +234,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     match p.step.as_str() {
         "plan" => plan(&p),
         "jobs" => jobs(&p),
+        "check" => check_step(&p),
+        "review-plan" => review_plan_step(&p),
+        "fix-plan" => fix_plan_step(&p),
         other => {
             let (code, value) = not_implemented(other);
             util::print_line(&canon::canonical_json(&value))?;
@@ -805,6 +816,14 @@ fn state_of(
     } else {
         json!([])
     };
+    let fixes = if same {
+        existing
+            .and_then(|old| old.get("fixes"))
+            .cloned()
+            .unwrap_or_else(|| json!([]))
+    } else {
+        json!([])
+    };
     json!({
         "schema_version": 1,
         "kind": "term_cards_state",
@@ -815,6 +834,7 @@ fn state_of(
         "jobs": job_state,
         "units": if same { existing.and_then(|old| old.get("units")).cloned().unwrap_or(Value::Null) } else { Value::Null },
         "promotions": promotions,
+        "fixes": fixes,
         "receipts": if same { existing.and_then(|old| old.get("receipts")).cloned().unwrap_or(json!({})) } else { json!({}) },
     })
 }
@@ -1403,21 +1423,11 @@ fn read_settings(
 }
 
 fn jobs(p: &Params) -> Result<i32> {
-    let work = p.work();
-    let plan_path = ps::join(&work, "plan.json");
-    if !std::path::Path::new(&plan_path).is_file() {
-        bail!("no term-cards plan at `{plan_path}`; run -Step plan first");
-    }
-    let plan = util::read_json(&plan_path)?;
-    if plan["schema_version"] != 1 || plan["kind"] != "term_cards_plan" {
-        bail!("`{plan_path}` is not a term-cards plan");
-    }
-    let frozen = frozen_of(&plan)?;
-    let plan_hash = pstr(&plan, "plan_hash");
-    if canon::hash_value(&frozen) != plan_hash {
-        bail!("`{plan_path}` changed since it was frozen; rerun -Step plan");
-    }
-    let all = plan["jobs"].as_array().context("incomplete plan jobs")?;
+    let compiled = Compiled::load(p)?;
+    let work = compiled.work.clone();
+    let plan = compiled.plan.clone();
+    let plan_hash = compiled.plan_hash.clone();
+    let all: Vec<Value> = compiled.jobs()?.clone();
     let selected: Vec<&Value> = if p.jobs.is_empty() {
         all.iter().collect()
     } else {
@@ -1922,6 +1932,1501 @@ pub(crate) struct RowCoverage<'a> {
     pub(crate) formula_candidates: usize,
 }
 
+// --- the check, review and fix steps (S19, #162) -------------------------------------------------
+
+/// The reviewer's instruction file beside the writer's (design 1.1: two prompt files).
+const REVIEW_INSTRUCTION: &str = "dsh-term-review-instructions.zh.md";
+
+/// A review job runs in a fresh conversation and writes one bound answer file.
+const REVIEW_PROMPT: &str =
+    "按审查说明和任务文件审查这一张数学术语卡草稿，只写任务文件指定的答案文件，最后只回复一行 JSON。";
+
+/// A fix job returns to the writer's own conversation through `continue`/`fallback`.
+const FIX_PROMPT: &str =
+    "按修复任务只改任务文件列出的问题，重写你负责的那一份 JSON 草稿，只写任务文件指定的输出文件，最后只回复一行 JSON。";
+
+/// The head a rendered continuation part links to. A draft has no address yet, so the draft check
+/// binds the same batch reference that publication substitutes (design 12.5).
+const HEAD_REFERENCE: &str = "@@term_head";
+
+/// The plan a later step reads back, with its frozen hash verified exactly as `jobs` verifies it.
+struct Compiled {
+    plan: Value,
+    work: String,
+    plan_hash: String,
+    revision: i64,
+}
+
+impl Compiled {
+    fn load(p: &Params) -> Result<Self> {
+        let work = p.work();
+        let path = ps::join(&work, "plan.json");
+        if !std::path::Path::new(&path).is_file() {
+            bail!("no term-cards plan at `{path}`; run -Step plan first");
+        }
+        let plan = util::read_json(&path)?;
+        if plan["schema_version"] != 1 || plan["kind"] != "term_cards_plan" {
+            bail!("`{path}` is not a term-cards plan");
+        }
+        let plan_hash = pstr(&plan, "plan_hash");
+        if canon::hash_value(&frozen_of(&plan)?) != plan_hash {
+            bail!("`{path}` changed since it was frozen; rerun -Step plan");
+        }
+        let revision = plan["revision"]
+            .as_i64()
+            .context("the plan carries no revision; rerun -Step plan")?;
+        Ok(Self {
+            plan,
+            work,
+            plan_hash,
+            revision,
+        })
+    }
+
+    fn jobs(&self) -> Result<&Vec<Value>> {
+        self.plan["jobs"].as_array().context("incomplete plan jobs")
+    }
+
+    /// The jobs `-Jobs` names, in the order given, or every job.
+    fn selected(&self, p: &Params) -> Result<Vec<&Value>> {
+        let all = self.jobs()?;
+        if p.jobs.is_empty() {
+            return Ok(all.iter().collect());
+        }
+        let mut out = Vec::new();
+        for id in &p.jobs {
+            let job = all
+                .iter()
+                .find(|job| pstr(job, "id") == *id)
+                .with_context(|| format!("the plan has no job `{id}`"))?;
+            out.push(job);
+        }
+        Ok(out)
+    }
+
+    fn rows(&self) -> &[Value] {
+        self.plan["rows"].as_array().map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn row(&self, number: u64) -> Option<&Value> {
+        self.rows()
+            .iter()
+            .find(|row| row["row"].as_u64() == Some(number))
+    }
+
+    /// Every exact table-row spelling, as the draft schema validates distinctions against.
+    fn row_terms(&self) -> Vec<String> {
+        self.rows()
+            .iter()
+            .map(|row| pstr(row, "term"))
+            .filter(|term| !term.is_empty())
+            .collect()
+    }
+
+    fn book(&self) -> String {
+        pstr(&self.plan["book"], "citation_key")
+    }
+
+    fn source_fingerprint(&self) -> String {
+        pstr(&self.plan["source"], "fingerprint")
+    }
+
+    /// The checker's limits, from the limits the plan froze (a raised per-book limit is what the
+    /// renderer already used, so the T rules must read the same numbers).
+    fn checker_limits(&self) -> Result<zt_check::core::Limits> {
+        let number = |key: &str| -> Result<i64> {
+            self.plan["limits"][key]
+                .as_i64()
+                .with_context(|| format!("the plan freezes no `{key}` limit; rerun -Step plan"))
+        };
+        let mut limits = zt_check::core::Limits::default();
+        limits.max_term_steps = number("max_steps_per_card")?;
+        limits.max_term_prose = number("max_prose")?;
+        Ok(limits)
+    }
+
+    fn check_path(&self, id: &str) -> String {
+        ps::join(&ps::join(&self.work, "check"), &format!("{id}.json"))
+    }
+
+    fn readiness_path(&self) -> String {
+        ps::join(&ps::join(&self.work, "check"), "readiness.json")
+    }
+
+    fn instruction(&self) -> String {
+        ps::join(&self.work, INSTRUCTION)
+    }
+
+    fn review_dir(&self) -> String {
+        ps::join(&self.work, "review")
+    }
+
+    fn request_dir(&self) -> String {
+        ps::join(&self.review_dir(), "requests")
+    }
+
+    fn answer_dir(&self) -> String {
+        ps::join(&self.review_dir(), "answers")
+    }
+
+    fn fix_dir(&self) -> String {
+        ps::join(&self.work, "fix")
+    }
+
+    fn state_path(&self) -> String {
+        ps::join(&self.work, "state.json")
+    }
+
+    /// The compiler's version set, the same one `plan.json` freezes.
+    fn versions(&self) -> Value {
+        json!({
+            "compiler": env!("CARGO_PKG_VERSION"),
+            "checker": zt_check::VERSION,
+            "rule": zt_check::contract::RULE_VERSION,
+        })
+    }
+}
+
+/// The derived local progress. A lost or foreign `state.json` is rebuilt from the plan: the file
+/// is progress, never the authority (design 12.1).
+fn local_state(compiled: &Compiled) -> Result<Value> {
+    let path = compiled.state_path();
+    if std::path::Path::new(&path).is_file()
+        && let Ok(state) = util::read_json(&path)
+        && state["plan_hash"] == json!(compiled.plan_hash)
+        && state["plan_revision"] == json!(compiled.revision)
+    {
+        return Ok(state);
+    }
+    let mut jobs = Map::new();
+    for job in compiled.jobs()? {
+        jobs.insert(
+            pstr(job, "id"),
+            json!({
+                "state": "planned",
+                "file": job["file"],
+                "output": job["output"],
+                "started_at": Value::Null,
+            }),
+        );
+    }
+    Ok(json!({
+        "schema_version": 1,
+        "kind": "term_cards_state",
+        "book": compiled.book(),
+        "plan_revision": compiled.revision,
+        "plan_hash": compiled.plan_hash,
+        "revisions": [{
+            "revision": compiled.revision,
+            "plan_hash": compiled.plan_hash,
+            "list_sha256": compiled.plan["list"]["body_sha256"],
+            "source_fingerprint": compiled.plan["source"]["fingerprint"],
+            "at": canon::utc_now_o(),
+        }],
+        "jobs": jobs,
+        "units": Value::Null,
+        "promotions": [],
+        "receipts": {},
+        "fixes": [],
+    }))
+}
+
+fn save_state(compiled: &Compiled, state: &Value) -> Result<()> {
+    util::write_atomic(compiled.state_path(), &ps::json_pretty(state))
+}
+
+/// One check artifact as `check/<job>.json`: the writer's exact file, every term the job owns,
+/// and what the draft schema, the renderer and the T rules said about it (S19-AC01).
+fn check_job(compiled: &Compiled, job: &Value) -> Result<Value> {
+    let id = pstr(job, "id");
+    let output = pstr(job, "output");
+    let numbers: Vec<u64> = job["rows"]
+        .as_array()
+        .context("incomplete plan job rows")?
+        .iter()
+        .filter_map(Value::as_u64)
+        .collect();
+    let terms_of_job: Vec<String> = numbers
+        .iter()
+        .filter_map(|number| compiled.row(*number))
+        .map(|row| pstr(row, "term"))
+        .collect();
+    let limits = compiled.checker_limits()?;
+    let contract = zt_check::contract::Contract::built_in(&limits);
+    let rows = compiled.row_terms();
+
+    let mut document = json!({
+        "schema_version": 1,
+        "kind": "term_cards_check",
+        "book": compiled.book(),
+        "plan_revision": compiled.revision,
+        "plan_hash": compiled.plan_hash,
+        "job": id,
+        "job_kind": job["kind"],
+        "output": output,
+        "output_sha256": Value::Null,
+        "checked_at": canon::utc_now_o(),
+        "versions": compiled.versions(),
+        "contract": {
+            "checker": zt_check::VERSION,
+            "rule_version": zt_check::contract::RULE_VERSION,
+            "policy_hash": contract.policy_hash,
+            "limits": limits.to_json(),
+        },
+        "ok": false,
+        "terms": [],
+        "unexpected": [],
+        "duplicates": [],
+        "missing": [],
+    });
+
+    // The writer's file is read as it is. A missing or unparsable file is a per-term fault, not a
+    // step failure: the chain must reach its one fix instead of stopping here.
+    let text = if std::path::Path::new(&output).is_file() {
+        Some(util::read_text(&output)?)
+    } else {
+        None
+    };
+    let parsed = text
+        .as_deref()
+        .map(|text| ps::parse_json(text).map_err(|error| error.to_string()));
+    if let Some(text) = &text {
+        document["output_sha256"] = json!(canon::sha256_hex(text.as_bytes()));
+    }
+    let (items, whole_fault) = match &parsed {
+        None => (Vec::new(), Some("the writer wrote no output file".to_string())),
+        Some(Err(error)) => (Vec::new(), Some(format!("the output is not JSON: {error}"))),
+        Some(Ok(value)) => match value.get("terms").and_then(Value::as_array) {
+            None => (
+                Vec::new(),
+                Some("the output is no `{\"terms\":[…]}` document".to_string()),
+            ),
+            Some(items) => (items.clone(), None),
+        },
+    };
+
+    let mut checks: Vec<Value> = Vec::new();
+    let mut duplicates: Vec<String> = Vec::new();
+    let mut unexpected: Vec<String> = Vec::new();
+    for item in &items {
+        let spell = item.get("term").and_then(Value::as_str).map(str::to_string);
+        match spell {
+            None => unexpected.push("<no term>".to_string()),
+            Some(term) if !terms_of_job.iter().any(|known| *known == term) => unexpected.push(term),
+            Some(_) => {}
+        }
+    }
+    for term in &terms_of_job {
+        // The first item that names the term owns it; a second one is a duplicated draft.
+        let found: Vec<&Value> = items
+            .iter()
+            .filter(|item| item.get("term").and_then(Value::as_str) == Some(term.as_str()))
+            .collect();
+        if found.len() > 1 {
+            duplicates.push(term.clone());
+        }
+        let row = numbers
+            .iter()
+            .filter_map(|number| compiled.row(*number))
+            .find(|row| pstr(row, "term") == *term)
+            .with_context(|| format!("the plan holds no row for `{term}`"))?;
+        let mut check = term_check_document(compiled, row, &id)?;
+        if let Some(reason) = whole_fault.clone().filter(|_| found.is_empty()) {
+            check["status"] = json!("missing");
+            check["reason"] = json!(reason);
+            check["schema_faults"] = json!([]);
+            check["render_faults"] = json!([]);
+            check["diagnostics"] = json!([]);
+            check["blocking"] = json!(0);
+            check["advisory"] = json!(0);
+            check["cards"] = json!([]);
+            check["draft"] = Value::Null;
+            check["draft_sha256"] = Value::Null;
+            check["render_sha256"] = Value::Null;
+        } else if let Some(item) = found.first() {
+            check = check_draft_item(compiled, &limits, &contract, &rows, row, &id, item)?;
+            if duplicates.iter().any(|duplicate| duplicate == term) {
+                let mut faults = check["schema_faults"].as_array().cloned().unwrap_or_default();
+                faults.push(json!({
+                    "path": "terms",
+                    "message": format!("`{term}` is written twice; one job writes one draft per term"),
+                }));
+                check["schema_faults"] = json!(faults);
+                check["status"] = json!("faulty");
+            }
+        } else {
+            check["status"] = json!("missing");
+            check["reason"] = json!("the writer's output holds no draft for this row");
+        }
+        checks.push(check);
+    }
+
+    let ok = checks.iter().all(|check| check["status"] == json!("ok"))
+        && unexpected.is_empty()
+        && duplicates.is_empty();
+    document["terms"] = json!(checks);
+    document["unexpected"] = json!(unexpected);
+    document["duplicates"] = json!(duplicates);
+    document["missing"] = json!(checks
+        .iter()
+        .filter(|check| check["status"] == json!("missing"))
+        .map(|check| check["term"].clone())
+        .collect::<Vec<_>>());
+    document["ok"] = json!(ok);
+    Ok(document)
+}
+
+/// One term's entry of a check artifact before its draft is read: the frozen identity and the
+/// hashes every later review binds.
+fn term_check_document(compiled: &Compiled, row: &Value, job: &str) -> Result<Value> {
+    let number = row["row"].as_u64().unwrap_or(0);
+    Ok(json!({
+        "row": number,
+        "term": pstr(row, "term"),
+        "job": job,
+        "planned_category": row["classification"]["kind"],
+        "promoted": false,
+        "category": Value::Null,
+        "status": "missing",
+        "reason": Value::Null,
+        "draft_sha256": Value::Null,
+        "render_sha256": Value::Null,
+        "source_sha256": canon::hash_value(&json!({
+            "source": compiled.source_fingerprint(),
+            "row": row,
+        })),
+        "cards": [],
+        "draft": Value::Null,
+        "schema_faults": [],
+        "render_faults": [],
+        "diagnostics": [],
+        "blocking": 0,
+        "advisory": 0,
+        "supplements": [],
+        "verification": Value::Null,
+    }))
+}
+
+/// One written draft's schema, render and T-rule result (S19-AC01). Every fault the checker finds
+/// is kept per term, so readiness can report the exact rejected requirement.
+fn check_draft_item(
+    compiled: &Compiled,
+    limits: &zt_check::core::Limits,
+    contract: &zt_check::contract::Contract,
+    rows: &[String],
+    row: &Value,
+    job: &str,
+    item: &Value,
+) -> Result<Value> {
+    let number = row["row"].as_u64().unwrap_or(0);
+    let term = pstr(row, "term");
+    let planned = pstr(&row["classification"], "kind");
+    let mut check = term_check_document(compiled, row, job)?;
+    check["draft"] = item.clone();
+    check["draft_sha256"] = json!(canon::hash_value(item));
+    let draft = match zt_check::term::parse_draft(item, rows) {
+        Ok(draft) => draft,
+        Err(faults) => {
+            check["status"] = json!("faulty");
+            check["schema_faults"] = json!(draft_faults_json(&faults));
+            return Ok(check);
+        }
+    };
+    check["category"] = json!(match draft.category {
+        zt_check::term::Category::Math => "math",
+        zt_check::term::Category::Concept => "concept",
+    });
+    // A plan-classified mathematical term cannot clear its required independent review by
+    // declaring itself a concept; a concept row written as math is the promotion S18 allowed.
+    if planned == "math" && draft.category == zt_check::term::Category::Concept {
+        check["status"] = json!("faulty");
+        check["schema_faults"] = json!([{
+            "path": "category",
+            "message": format!(
+                "the plan classified `{term}` as math (the book gives formal notation); a concept draft cannot clear the required review"
+            ),
+        }]);
+        return Ok(check);
+    }
+    let promoted = planned != "math" && draft.category == zt_check::term::Category::Math;
+    check["promoted"] = json!(promoted);
+    let term_row = zt_check::text::TermRow {
+        term: term.clone(),
+        avoid: row["avoid"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        meaning: pstr(row, "meaning"),
+        defined: pstr(row, "defined"),
+    };
+    let rendered = match zt_check::term::render(&draft, &term_row, &compiled.book(), HEAD_REFERENCE, limits)
+    {
+        Ok(rendered) => rendered,
+        Err(faults) => {
+            check["status"] = json!("faulty");
+            check["render_faults"] = json!(draft_faults_json(&faults));
+            return Ok(check);
+        }
+    };
+    let category = match draft.category {
+        zt_check::term::Category::Math => "math",
+        zt_check::term::Category::Concept => "concept",
+    };
+    let (entries, cards) = term_entries(job, number, &term, category, rows, &rendered);
+    let diagnostics: Vec<zt_check::core::Diagnostic> = zt_check::core::Check::new(
+        limits.clone(),
+        false,
+        "",
+    )
+    .with_policies(contract.policy.clone())
+    .report(&entries);
+    let blocking = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.blocking())
+        .count();
+    let grouped: Vec<Value> = cards
+        .iter()
+        .map(|card| {
+            let address = pstr(card, "address");
+            json!({
+                "address": address,
+                "role": card["role"],
+                "title": card["title"],
+                "steps": card["steps"],
+                "prose": card["prose"],
+                "sha256": card["sha256"],
+                "diagnostics": diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic.address == address)
+                    .map(zt_check::core::Diagnostic::to_json)
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let supplements = supplements_of(&grouped, &rendered.cards());
+    check["cards"] = json!(grouped);
+    check["supplements"] = json!(supplements);
+    check["verification"] = json!({
+        "numerical_checks": [],
+        "note": "the draft records no executed numerical check as machine evidence; the independent review recomputes the example",
+        "proof": "format checks and the independent review are evidence of review, not proof of mathematical truth",
+    });
+    check["render_sha256"] = json!(render_sha256(&rendered));
+    check["diagnostics"] = json!(diagnostics
+        .iter()
+        .map(zt_check::core::Diagnostic::to_json)
+        .collect::<Vec<_>>());
+    check["blocking"] = json!(blocking);
+    check["advisory"] = json!(diagnostics.len() - blocking);
+    check["status"] = json!(if blocking == 0 { "ok" } else { "faulty" });
+    Ok(check)
+}
+
+fn draft_faults_json(faults: &zt_check::term::DraftFaults) -> Vec<Value> {
+    faults
+        .0
+        .iter()
+        .map(|fault| json!({"path": fault.path, "message": fault.message}))
+        .collect()
+}
+
+/// The two established source-fidelity markers of a supplied step (design 11.1). The check keeps
+/// them verbatim in the rendered text and reports where they are, so readiness names what the book
+/// does not state (S19-AC06).
+const SUPPLEMENTS: [&str; 2] = ["（补：书中未写）", "（补：书中略去）"];
+
+fn supplements_of(cards: &[Value], rendered: &[&zt_check::term::RenderedCard]) -> Vec<Value> {
+    let mut out = Vec::new();
+    for (card, rendered) in cards.iter().zip(rendered) {
+        for marker in SUPPLEMENTS {
+            for _ in 0..rendered.body.matches(marker).count() {
+                out.push(json!({
+                    "marker": marker,
+                    "card": card["address"],
+                }));
+            }
+        }
+    }
+    out
+}
+
+/// The exact rendered chain hash: every Card's role, title and body, in order (R0321).
+fn render_sha256(rendered: &zt_check::term::Rendered) -> String {
+    canon::hash_value(&json!(rendered
+        .cards()
+        .iter()
+        .map(|card| json!({"role": card.role, "title": card.title, "body": card.body}))
+        .collect::<Vec<_>>()))
+}
+
+/// The exact entries the checker reads and the metadata a reader can compare: one head and its
+/// continuation parts, each with its deterministic draft address (`<job>/r<row>[/p<n>]`).
+fn term_entries(
+    job: &str,
+    row: u64,
+    term: &str,
+    category: &str,
+    rows: &[String],
+    rendered: &zt_check::term::Rendered,
+) -> (Vec<Value>, Vec<Value>) {
+    let mut entries = Vec::new();
+    let mut cards = Vec::new();
+    for (index, card) in rendered.cards().iter().enumerate() {
+        let address = if index == 0 {
+            format!("{job}/r{row:03}")
+        } else {
+            format!("{job}/r{row:03}/p{index}")
+        };
+        let mut entry = json!({
+            "address": address,
+            "title": card.title,
+            "body": card.body,
+            "type": "term",
+            "term": term,
+            "term_role": card.role,
+            "term_rows": rows,
+        });
+        if card.role == "part" {
+            entry["term_head"] = json!(HEAD_REFERENCE);
+            entry["term_head_category"] = json!(match category {
+                "math" => zt_check::term::CATEGORY_MATH,
+                _ => zt_check::term::CATEGORY_CONCEPT,
+            });
+        }
+        cards.push(json!({
+            "address": address,
+            "role": card.role,
+            "title": card.title,
+            "steps": card.steps,
+            "prose": card.prose,
+            "sha256": canon::hash_value(&json!({"title": card.title, "body": card.body})),
+        }));
+        entries.push(entry);
+    }
+    (entries, cards)
+}
+
+/// The check step: check the selected writers' outputs against the draft schema, the deterministic
+/// renderer and the T rules, write one artifact per job, and publish the readiness result.
+///
+/// Content faults are the step's answer, not its failure: it exits 0 and names them, so the chain
+/// reaches its one fix. An invalid invocation, a stale plan, or an unreadable artifact fails.
+fn check_step(p: &Params) -> Result<i32> {
+    let compiled = Compiled::load(p)?;
+    let selected = compiled.selected(p)?;
+    std::fs::create_dir_all(ps::join(&compiled.work, "check"))?;
+    std::fs::create_dir_all(compiled.answer_dir())?;
+    let mut state = local_state(&compiled)?;
+    let mut printed = Vec::new();
+    for job in &selected {
+        let id = pstr(job, "id");
+        let document = check_job(&compiled, job)?;
+        let path = compiled.check_path(&id);
+        util::write_atomic(&path, &ps::json_pretty(&document))?;
+        let sha = canon::sha256_hex(&std::fs::read(&path)?);
+        record_check(&mut state, &compiled, job, &document, &path, &sha);
+        printed.push(json!({
+            "id": id,
+            "kind": document["job_kind"],
+            "output": document["output"],
+            "ok": document["ok"],
+            "terms": document["terms"].as_array().map_or(0, Vec::len),
+            "faults": document["terms"].as_array().map(|terms| terms.iter()
+                .filter(|term| term["status"] == json!("faulty")).count()).unwrap_or(0),
+            "missing": document["missing"],
+            "check": path,
+        }));
+    }
+    save_state(&compiled, &state)?;
+    let checks = current_checks(&compiled)?;
+    let readiness = readiness_of(&compiled, &checks, &state, &[]);
+    let published = publish_readiness(&compiled, &readiness)?;
+    let summary = json!({
+        "schema_version": 1,
+        "ok": true,
+        "step": "check",
+        "book": compiled.book(),
+        "plan_revision": compiled.revision,
+        "plan_hash": compiled.plan_hash,
+        "work": compiled.work,
+        "jobs": printed,
+        "readiness": published,
+        "counts": readiness["counts"],
+        "complete": readiness["complete"],
+        "terms": readiness["terms"].as_array().map(|terms| terms.iter().map(|term| json!({
+            "row": term["row"], "term": term["term"], "job": term["job"],
+            "status": term["status"], "category": term["category"],
+        })).collect::<Vec<_>>()).unwrap_or_default(),
+    });
+    util::print_line(&canon::canonical_json(&summary))?;
+    Ok(0)
+}
+
+/// Record one job's checked result in the derived state: its progress, and every promotion the
+/// writer made so a grouped concept job cannot hide a term that now needs the mathematics review.
+fn record_check(
+    state: &mut Value,
+    compiled: &Compiled,
+    job: &Value,
+    document: &Value,
+    path: &str,
+    sha: &str,
+) {
+    let id = pstr(job, "id");
+    if !state["jobs"].is_object() {
+        state["jobs"] = json!({});
+    }
+    let entry = state["jobs"]
+        .as_object_mut()
+        .map(|jobs| jobs.entry(id.clone()).or_insert(Value::Null));
+    if let Some(entry) = entry {
+        *entry = json!({
+            "state": if document["output_sha256"].is_string() { "checked" } else { "missing_output" },
+            "file": job["file"],
+            "output": job["output"],
+            "check": {"path": path, "sha256": sha, "ok": document["ok"]},
+        });
+    }
+    let mut promotions = state["promotions"].as_array().cloned().unwrap_or_default();
+    for term in document["terms"].as_array().cloned().unwrap_or_default() {
+        if term["promoted"] != json!(true) {
+            continue;
+        }
+        let row = term["row"].as_u64().unwrap_or(0);
+        if promotions
+            .iter()
+            .any(|known| known["row"].as_u64() == Some(row))
+        {
+            continue;
+        }
+        promotions.push(json!({
+            "row": row,
+            "term": term["term"],
+            "job": term["job"],
+            "from": term["planned_category"],
+            "to": term["category"],
+            "draft_sha256": term["draft_sha256"],
+            "at": canon::utc_now_o(),
+        }));
+    }
+    state["promotions"] = json!(promotions);
+    state["plan_hash"] = json!(compiled.plan_hash);
+    state["plan_revision"] = json!(compiled.revision);
+}
+
+/// Every job's check artifact that still describes the current plan, output bytes and checker.
+fn current_checks(compiled: &Compiled) -> Result<BTreeMap<String, Value>> {
+    let mut checks = BTreeMap::new();
+    for job in compiled.jobs()? {
+        let id = pstr(job, "id");
+        if let Some(document) = current_check(compiled, job)? {
+            checks.insert(id, document);
+        }
+    }
+    Ok(checks)
+}
+
+fn current_check(compiled: &Compiled, job: &Value) -> Result<Option<Value>> {
+    let path = compiled.check_path(&pstr(job, "id"));
+    if !std::path::Path::new(&path).is_file() {
+        return Ok(None);
+    }
+    let document = util::read_json(&path)?;
+    if document["schema_version"] != 1
+        || document["kind"] != "term_cards_check"
+        || document["plan_hash"] != json!(compiled.plan_hash)
+        || document["plan_revision"] != json!(compiled.revision)
+        || pstr(&document, "job") != pstr(job, "id")
+    {
+        return Ok(None);
+    }
+    if document["versions"] != compiled.versions() {
+        return Ok(None);
+    }
+    let output = pstr(job, "output");
+    let current = if std::path::Path::new(&output).is_file() {
+        let text = util::read_text(&output)?;
+        Some(canon::sha256_hex(text.as_bytes()))
+    } else {
+        None
+    };
+    let recorded = document["output_sha256"].as_str().map(str::to_string);
+    if current != recorded {
+        return Ok(None);
+    }
+    Ok(Some(document))
+}
+
+/// One term's review binding: the plan, source evidence, exact draft and exact rendered chain. A
+/// changed content, rendering, source or plan produces another binding, so an old answer can never
+/// approve it (R0321).
+fn review_binding(
+    compiled: &Compiled,
+    job: &str,
+    row: u64,
+    term: &str,
+    draft_sha: &str,
+    render_sha: &str,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "kind": "term_card_review_binding",
+        "plan_hash": compiled.plan_hash,
+        "plan_revision": compiled.revision,
+        "source_fingerprint": compiled.source_fingerprint(),
+        "job": job,
+        "row": row,
+        "term": term,
+        "draft_sha256": draft_sha,
+        "render_sha256": render_sha,
+    })
+}
+
+/// The stable file stem a review's request and answer share: the job, the row and the first eight
+/// hex digits of each exact hash. The hashes decide the name, so a changed draft or rendering looks
+/// for an answer that cannot exist yet.
+fn review_stem(job: &str, row: u64, draft_sha: &str, render_sha: &str) -> String {
+    format!(
+        "{job}-r{row:03}-{}-{}",
+        &draft_sha[..8.min(draft_sha.len())],
+        &render_sha[..8.min(render_sha.len())]
+    )
+}
+
+/// What one review answer says, as the compiler reads it.
+enum Answer {
+    Absent,
+    Invalid(String),
+    Verdict { ok: bool, faults: Vec<Value> },
+}
+
+fn read_answer(path: &str) -> Answer {
+    if !std::path::Path::new(path).is_file() {
+        return Answer::Absent;
+    }
+    let text = match util::read_text(path) {
+        Ok(text) => text,
+        Err(error) => return Answer::Invalid(format!("{error:#}")),
+    };
+    let value = match ps::parse_json(&text) {
+        Ok(value) => value,
+        Err(error) => return Answer::Invalid(format!("the answer is not JSON: {error}")),
+    };
+    let Some(object) = value.as_object() else {
+        return Answer::Invalid("the answer is no JSON object".to_string());
+    };
+    let Some(ok) = object.get("ok").and_then(Value::as_bool) else {
+        return Answer::Invalid("the answer has no `ok` boolean".to_string());
+    };
+    let mut faults = Vec::new();
+    if !ok {
+        let Some(items) = object.get("faults").and_then(Value::as_array) else {
+            return Answer::Invalid("a refused review names its `faults` array".to_string());
+        };
+        for (index, item) in items.iter().enumerate() {
+            for field in ["where", "what", "fix"] {
+                let present = item
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty());
+                if !present {
+                    return Answer::Invalid(format!("fault {} has no `{field}`", index + 1));
+                }
+            }
+            faults.push(item.clone());
+        }
+        if faults.is_empty() {
+            return Answer::Invalid("a refused review names at least one fault".to_string());
+        }
+    }
+    Answer::Verdict { ok, faults }
+}
+
+/// A file's SHA-256, or null when it cannot be read.
+fn file_sha256(path: &str) -> Value {
+    match std::fs::read(path) {
+        Ok(bytes) => json!(canon::sha256_hex(&bytes)),
+        Err(_) => Value::Null,
+    }
+}
+
+/// Every review answer file that was written for another binding of this row: the visible evidence
+/// that a changed draft invalidated its old review.
+fn stale_answers(compiled: &Compiled, job: &str, row: u64, current: &str) -> Vec<String> {
+    let dir = compiled.answer_dir();
+    let prefix = format!("{job}-r{row:03}-");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(&prefix) && name.ends_with(".json") && name != format!("{current}.json") {
+            out.push(entry.path().to_string_lossy().into_owned());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// One row's review facts: whether the exact current draft has an answer, and what it says.
+fn review_of(
+    compiled: &Compiled,
+    job: &str,
+    row: u64,
+    term: &str,
+    draft_sha: &str,
+    render_sha: &str,
+) -> Value {
+    let stem = review_stem(job, row, draft_sha, render_sha);
+    let answer_path = ps::join(&compiled.answer_dir(), &format!("{stem}.json"));
+    let request_path = ps::join(&compiled.request_dir(), &format!("{stem}.md"));
+    let answer = read_answer(&answer_path);
+    let stale = stale_answers(compiled, job, row, &stem);
+    match answer {
+        Answer::Absent => json!({
+            "required": true,
+            "status": if stale.is_empty() { "pending" } else { "stale" },
+            "binding": canon::hash_value(&review_binding(compiled, job, row, term, draft_sha, render_sha)),
+            "stem": stem,
+            "request": request_path,
+            "answer": answer_path,
+            "faults": [],
+            "stale": stale,
+        }),
+        Answer::Invalid(reason) => json!({
+            "required": true,
+            "status": "invalid",
+            "reason": reason,
+            "binding": canon::hash_value(&review_binding(compiled, job, row, term, draft_sha, render_sha)),
+            "stem": stem,
+            "request": request_path,
+            "answer": answer_path,
+            "faults": [],
+            "stale": stale,
+        }),
+        Answer::Verdict { ok, faults } => json!({
+            "required": true,
+            "status": if ok { "approved" } else { "refused" },
+            "binding": canon::hash_value(&review_binding(compiled, job, row, term, draft_sha, render_sha)),
+            "stem": stem,
+            "request": request_path,
+            "answer": answer_path,
+            "answer_sha256": file_sha256(&answer_path),
+            "faults": faults,
+            "stale": stale,
+        }),
+    }
+}
+
+/// The readiness result: per row its check, its review and its one permitted fix, reported
+/// separately from publication (S19-AC07).
+fn readiness_of(
+    compiled: &Compiled,
+    checks: &BTreeMap<String, Value>,
+    state: &Value,
+    notices: &[Value],
+) -> Value {
+    let fixes: Vec<Value> = state["fixes"].as_array().cloned().unwrap_or_default();
+    let mut terms = Vec::new();
+    for row in compiled.rows() {
+        let number = row["row"].as_u64().unwrap_or(0);
+        let term = pstr(row, "term");
+        let job = pstr(row, "job");
+        let planned = pstr(&row["classification"], "kind");
+        let fix = fixes
+            .iter()
+            .find(|fix| fix["row"].as_u64() == Some(number))
+            .cloned();
+        let mut value = json!({
+            "row": number,
+            "term": term,
+            "job": job,
+            "planned_category": planned,
+            "category": Value::Null,
+            "promoted": false,
+            "status": "unchecked",
+            "reason": Value::Null,
+            "draft_sha256": Value::Null,
+            "render_sha256": Value::Null,
+            "source_sha256": Value::Null,
+            "check": Value::Null,
+            "review": Value::Null,
+            "fix": Value::Null,
+            "cards": [],
+            "supplements": [],
+            "verification": Value::Null,
+        });
+        if let Some(record) = fix {
+            let baseline = pstr(&record, "baseline_draft_sha256");
+            value["fix"] = json!({
+                "planned": true,
+                "job": pstr(&record, "job_id"),
+                "planned_at": record["planned_at"],
+                "baseline_draft_sha256": baseline,
+            });
+        } else {
+            value["fix"] = json!({"planned": false});
+        }
+        let Some(check) = checks.get(&job) else {
+            value["reason"] = json!("this job has no current check artifact");
+            terms.push(value);
+            continue;
+        };
+        value["check"] = json!({
+            "ok": check["ok"],
+            "path": compiled.check_path(&job),
+            "contract": check["contract"],
+        });
+        let Some(term_check) = check["terms"]
+            .as_array()
+            .and_then(|terms| terms.iter().find(|entry| entry["row"].as_u64() == Some(number)))
+        else {
+            value["status"] = json!("missing");
+            value["reason"] = json!("the check artifact holds no entry for this row");
+            terms.push(value);
+            continue;
+        };
+        for key in ["category", "promoted", "draft_sha256", "render_sha256", "source_sha256"] {
+            value[key] = term_check[key].clone();
+        }
+        value["supplements"] = term_check["supplements"].clone();
+        value["verification"] = term_check["verification"].clone();
+        value["cards"] = json!(term_check["cards"]
+            .as_array()
+            .map(|cards| cards.iter().map(|card| json!({
+                "address": card["address"], "role": card["role"], "title": card["title"],
+                "steps": card["steps"], "prose": card["prose"], "sha256": card["sha256"],
+            })).collect::<Vec<_>>())
+            .unwrap_or_default());
+        let fix_planned = value["fix"]["planned"] == json!(true);
+        let draft_sha = pstr(term_check, "draft_sha256");
+        let applied = fix_planned && match value["fix"]["baseline_draft_sha256"].as_str() {
+            Some(baseline) => !draft_sha.is_empty() && draft_sha != baseline,
+            None => false,
+        };
+        match pstr(term_check, "status").as_str() {
+            "missing" => {
+                value["status"] = json!("missing");
+                value["reason"] = term_check["reason"].clone();
+            }
+            "faulty" => {
+                if !fix_planned {
+                    value["status"] = json!("needs_fix");
+                } else if !applied {
+                    value["status"] = json!("refused");
+                    value["reason"] = json!("fix_not_applied");
+                } else {
+                    value["status"] = json!("refused");
+                    value["reason"] = json!("check_failed_after_fix");
+                }
+            }
+            _ => {
+                let math = pstr(term_check, "category") == "math";
+                if !math {
+                    value["status"] = json!("ready");
+                    value["review"] = json!({"required": false, "status": "not_required"});
+                    terms.push(value);
+                    continue;
+                }
+                let render_sha = pstr(term_check, "render_sha256");
+                let review = review_of(compiled, &job, number, &term, &draft_sha, &render_sha);
+                let status = pstr(&review, "status");
+                value["review"] = review.clone();
+                match status.as_str() {
+                    "approved" => {
+                        value["status"] = json!("ready");
+                    }
+                    "refused" => {
+                        if !fix_planned {
+                            value["status"] = json!("needs_fix");
+                        } else if !applied {
+                            value["status"] = json!("refused");
+                            value["reason"] = json!("fix_not_applied");
+                        } else {
+                            value["status"] = json!("refused");
+                            value["reason"] = json!("review_refused_after_fix");
+                        }
+                    }
+                    _ => {
+                        // Pending, stale or invalid: the independent review of this exact draft is
+                        // still owed before publication.
+                        value["status"] = json!("needs_review");
+                        if status == "invalid" {
+                            value["reason"] = json!("invalid_answer");
+                        }
+                    }
+                }
+            }
+        }
+        terms.push(value);
+    }
+    let mut counts = BTreeMap::new();
+    for status in [
+        "ready",
+        "needs_fix",
+        "needs_review",
+        "refused",
+        "missing",
+        "unchecked",
+    ] {
+        counts.insert(
+            status.to_string(),
+            json!(terms.iter().filter(|term| term["status"] == json!(status)).count()),
+        );
+    }
+    let complete = !terms.is_empty() && terms.iter().all(|term| term["status"] == json!("ready"));
+    json!({
+        "schema_version": 1,
+        "kind": "term_cards_readiness",
+        "book": compiled.book(),
+        "plan_revision": compiled.revision,
+        "plan_hash": compiled.plan_hash,
+        "list": {
+            "address": compiled.plan["list"]["address"],
+            "body_sha256": compiled.plan["list"]["body_sha256"],
+        },
+        "source": {"fingerprint": compiled.source_fingerprint()},
+        "versions": compiled.versions(),
+        "at": canon::utc_now_o(),
+        "complete": complete,
+        "counts": counts,
+        "publication": {
+            "state": "unverified",
+            "reason": "readiness is not publication: -Step apply rechecks every Card through the service",
+        },
+        "notices": notices,
+        "terms": terms,
+    })
+}
+
+/// Publish the readiness artifact and describe it: the path, the hash and the counts.
+fn publish_readiness(compiled: &Compiled, readiness: &Value) -> Result<Value> {
+    let path = compiled.readiness_path();
+    util::write_atomic(&path, &ps::json_pretty(readiness))?;
+    Ok(json!({
+        "path": path,
+        "sha256": canon::sha256_hex(&std::fs::read(&path)?),
+        "complete": readiness["complete"],
+        "counts": readiness["counts"],
+    }))
+}
+
+/// One row's promotion or fault notice, as `review-plan` and `fix-plan` report it.
+fn term_notice(term: &Value, status: &str, reason: &str) -> Value {
+    json!({
+        "row": term["row"],
+        "term": term["term"],
+        "job": term["job"],
+        "status": status,
+        "reason": reason,
+    })
+}
+
+/// The review step: for every mathematical draft that passed the check and has no answer bound to
+/// its exact content, write the request and the fresh-conversation job (R0321, S19-AC02).
+fn review_plan_step(p: &Params) -> Result<i32> {
+    let compiled = Compiled::load(p)?;
+    let selected = compiled.selected(p)?;
+    let checks = current_checks(&compiled)?;
+    for job in &selected {
+        let id = pstr(job, "id");
+        if !std::path::Path::new(&compiled.check_path(&id)).is_file() {
+            bail!("no check artifact for job `{id}`; run -Step check first");
+        }
+        if !checks.contains_key(&id) {
+            bail!(
+                "the check artifact of job `{id}` no longer describes this plan or its writer output; run -Step check again"
+            );
+        }
+    }
+    let instruction = ensure_review_instruction(&compiled)?;
+    std::fs::create_dir_all(compiled.request_dir())?;
+    std::fs::create_dir_all(compiled.answer_dir())?;
+    let mut jobs = Vec::new();
+    let mut reviews = Vec::new();
+    for job in &selected {
+        let id = pstr(job, "id");
+        let check = checks.get(&id).cloned().unwrap_or(Value::Null);
+        for term in check["terms"].as_array().cloned().unwrap_or_default() {
+            if term["status"] != json!("ok") || term["category"] != json!("math") {
+                continue;
+            }
+            let row = term["row"].as_u64().unwrap_or(0);
+            let name = pstr(&term, "term");
+            let draft_sha = pstr(&term, "draft_sha256");
+            let render_sha = pstr(&term, "render_sha256");
+            let review = review_of(&compiled, &id, row, &name, &draft_sha, &render_sha);
+            let status = pstr(&review, "status");
+            if matches!(status.as_str(), "approved" | "refused") {
+                reviews.push(term_notice(&term, &status, ""));
+                continue;
+            }
+            let request = pstr(&review, "request");
+            let request_text = review_request_text(
+                &compiled,
+                job,
+                &term,
+                &review,
+                &instruction,
+            )?;
+            util::write_atomic(&request, &request_text)?;
+            let answer = pstr(&review, "answer");
+            let job_id = format!("{id}-r{row:03}-review");
+            jobs.push(json!({
+                "id": job_id,
+                "kind": "review",
+                "row": row,
+                "term": name,
+                "files": [instruction, request],
+                "prompt": REVIEW_PROMPT,
+                "answer": answer,
+                "writes": compiled.answer_dir(),
+                "binding": review["binding"],
+                "request": request,
+            }));
+            reviews.push(term_notice(&term, "planned", ""));
+        }
+    }
+    let state = local_state(&compiled)?;
+    let readiness = readiness_of(&compiled, &checks, &state, &[]);
+    let published = publish_readiness(&compiled, &readiness)?;
+    let summary = json!({
+        "schema_version": 1,
+        "ok": true,
+        "step": "review-plan",
+        "book": compiled.book(),
+        "plan_revision": compiled.revision,
+        "plan_hash": compiled.plan_hash,
+        "instruction": instruction,
+        "jobs": jobs,
+        "reviews": reviews,
+        "readiness": published,
+        "counts": readiness["counts"],
+        "complete": readiness["complete"],
+    });
+    util::print_line(&canon::canonical_json(&summary))?;
+    Ok(0)
+}
+
+/// The shared review instruction, copied into the work folder so a run keeps the exact text its
+/// reviews were asked against.
+fn ensure_review_instruction(compiled: &Compiled) -> Result<String> {
+    let source = util::read_text(ps::join(&common::scripts_dir(), REVIEW_INSTRUCTION))
+        .with_context(|| format!("missing the Term-card review instruction file {REVIEW_INSTRUCTION}"))?;
+    let dest = ps::join(&compiled.work, REVIEW_INSTRUCTION);
+    util::write_atomic(&dest, &source)?;
+    Ok(dest)
+}
+
+/// One review request: the exact term, its source evidence, every bound hash, the draft JSON and
+/// the one answer file the reviewer owns.
+fn review_request_text(
+    compiled: &Compiled,
+    job: &Value,
+    term: &Value,
+    review: &Value,
+    instruction: &str,
+) -> Result<String> {
+    let id = pstr(job, "id");
+    let row = term["row"].as_u64().unwrap_or(0);
+    let name = pstr(term, "term");
+    let meta = compiled.row(row).cloned().unwrap_or(Value::Null);
+    let mut sb = Sb::new();
+    sb.line(format!("# 术语卡审查任务 {id}-r{row:03}"))
+        .blank();
+    sb.line(format!(
+        "- 本书：`[[{}]]`《{}》",
+        compiled.book(),
+        pstr(&compiled.plan["book"], "title")
+    ));
+    sb.line(format!(
+        "- 术语：`{name}`（术语表第 {row} 行；任务 {id}；计划分类：{}）",
+        if pstr(&meta["classification"], "kind") == "math" { "数学概念" } else { "概念（已提升为数学概念）" }
+    ));
+    sb.line(format!("- 审查说明（先读它）：`{instruction}`"));
+    sb.line(format!(
+        "- 原任务文件（定义句、出现小节、符号表）：`{}`",
+        pstr(job, "file")
+    ));
+    sb.line(format!(
+        "- 原文小节：`{}`",
+        ps::join(&compiled.plan["source"]["staging"].as_str().unwrap_or_default(), "sections")
+    ))
+    .line(format!(
+        "- 渲染出的卡：{} 张（1 张正文卡，{} 张续卡）",
+        term["cards"].as_array().map_or(0, Vec::len),
+        term["cards"].as_array().map_or(0, Vec::len).saturating_sub(1)
+    ))
+    .blank();
+    sb.line("## 绑定（草稿或渲染一变，这个审查就作废）").blank();
+    sb.line(format!("- plan_revision={} plan_hash=`{}`", compiled.revision, compiled.plan_hash));
+    sb.line(format!("- source_fingerprint=`{}`", compiled.source_fingerprint()));
+    sb.line(format!("- draft_sha256=`{}`", pstr(term, "draft_sha256")));
+    sb.line(format!("- render_sha256=`{}`", pstr(term, "render_sha256")));
+    sb.line(format!(
+        "- 审查绑定=`{}`",
+        review["binding"].as_str().unwrap_or_default()
+    ))
+    .blank();
+    sb.line("## 草稿 JSON").blank();
+    sb.line("```json");
+    sb.line(ps::json_pretty(&term["draft"]));
+    sb.line("```").blank();
+    sb.line("## 来源证据").blank();
+    sb.line(format!(
+        "任务文件里的定义句与出现小节是你要核对的原文依据：`{}`。原文在 `{}`。",
+        pstr(job, "file"),
+        ps::join(&compiled.plan["source"]["staging"].as_str().unwrap_or_default(), "sections")
+    ))
+    .blank();
+    sb.line("## 答案").blank();
+    sb.line(format!(
+        "把审查结果写入：`{}`（UTF-8，只写这一个文件）。",
+        pstr(review, "answer")
+    ));
+    sb.line("通过：`{\"ok\":true}`。不通过：`{\"ok\":false,\"faults\":[{\"where\":\"derivations[0].steps[4]\",\"what\":\"一句话说错在哪\",\"fix\":\"一句话说怎么改\"}]}`。")
+        .blank();
+    sb.line(format!(
+        "再次强调：你只按 `{}` 逐项核对这张草稿，不改草稿，不写卡。",
+        instruction
+    ));
+    Ok(sb.0)
+}
+
+/// The fix step: one finite fix prompt per writer job, sent back to the writer's own conversation.
+/// A term whose permitted fix is already planned gets no second prompt (R0321, S19-AC04/AC05).
+fn fix_plan_step(p: &Params) -> Result<i32> {
+    let compiled = Compiled::load(p)?;
+    let selected = compiled.selected(p)?;
+    let checks = current_checks(&compiled)?;
+    for job in &selected {
+        let id = pstr(job, "id");
+        if !std::path::Path::new(&compiled.check_path(&id)).is_file() {
+            bail!("no check artifact for job `{id}`; run -Step check first");
+        }
+        if !checks.contains_key(&id) {
+            bail!(
+                "the check artifact of job `{id}` no longer describes this plan or its writer output; run -Step check again"
+            );
+        }
+    }
+    let mut state = local_state(&compiled)?;
+    let mut fixes: Vec<Value> = state["fixes"].as_array().cloned().unwrap_or_default();
+    let mut jobs = Vec::new();
+    let mut planned = Vec::new();
+    let mut final_terms = Vec::new();
+    std::fs::create_dir_all(compiled.fix_dir())?;
+    for job in &selected {
+        let id = pstr(job, "id");
+        let check = checks.get(&id).cloned().unwrap_or(Value::Null);
+        let mut need: Vec<Value> = Vec::new();
+        let mut keep: Vec<String> = Vec::new();
+        for term in check["terms"].as_array().cloned().unwrap_or_default() {
+            let row = term["row"].as_u64().unwrap_or(0);
+            let name = pstr(&term, "term");
+            let already = fixes
+                .iter()
+                .find(|fix| fix["row"].as_u64() == Some(row))
+                .cloned();
+            let math = pstr(&term, "category") == "math";
+            let review = if math && term["status"] == json!("ok") {
+                Some(review_of(
+                    &compiled,
+                    &id,
+                    row,
+                    &name,
+                    &pstr(&term, "draft_sha256"),
+                    &pstr(&term, "render_sha256"),
+                ))
+            } else {
+                None
+            };
+            let refused = review
+                .as_ref()
+                .is_some_and(|review| review["status"] == json!("refused"));
+            let faulty = pstr(&term, "status") == "faulty";
+            if pstr(&term, "status") == "missing" {
+                final_terms.push(term_notice(&term, "missing", "the writer wrote no draft; retry the writer job"));
+                continue;
+            }
+            if !faulty && !refused {
+                keep.push(name);
+                continue;
+            }
+            if let Some(already) = already {
+                let baseline = pstr(&already, "baseline_draft_sha256");
+                let current = pstr(&term, "draft_sha256");
+                let reason = if current == baseline {
+                    "fix_not_applied"
+                } else if faulty {
+                    "check_failed_after_fix"
+                } else {
+                    "review_refused_after_fix"
+                };
+                final_terms.push(term_notice(&term, "refused", reason));
+                continue;
+            }
+            need.push(json!({"term": term, "review": review}));
+        }
+        if need.is_empty() {
+            continue;
+        }
+        let fix_id = format!("{id}-fix");
+        let fix_file = ps::join(&compiled.fix_dir(), &format!("{fix_id}.md"));
+        let text = fix_text(&compiled, job, &check, &need, &keep)?;
+        util::write_atomic(&fix_file, &text)?;
+        for item in &need {
+            let term = &item["term"];
+            let row = term["row"].as_u64().unwrap_or(0);
+            fixes.push(json!({
+                "row": row,
+                "term": term["term"],
+                "job": id,
+                "job_id": fix_id,
+                "baseline_draft_sha256": term["draft_sha256"],
+                "planned_at": canon::utc_now_o(),
+            }));
+            planned.push(term_notice(term, "planned", ""));
+        }
+        jobs.push(json!({
+            "id": fix_id,
+            "kind": "fix",
+            "continue": id,
+            "files": [compiled.instruction(), fix_file],
+            "fallback": [
+                compiled.instruction(),
+                pstr(job, "file"),
+                pstr(job, "output"),
+                fix_file,
+            ],
+            "prompt": FIX_PROMPT,
+            "output": pstr(job, "output"),
+            "permissions": {"archive_read": false, "archive_write": false},
+            "fix": fix_file,
+        }));
+    }
+    state["fixes"] = json!(fixes);
+    save_state(&compiled, &state)?;
+    let readiness = readiness_of(&compiled, &checks, &state, &[]);
+    let published = publish_readiness(&compiled, &readiness)?;
+    let summary = json!({
+        "schema_version": 1,
+        "ok": true,
+        "step": "fix-plan",
+        "book": compiled.book(),
+        "plan_revision": compiled.revision,
+        "plan_hash": compiled.plan_hash,
+        "jobs": jobs,
+        "planned": planned,
+        "final": final_terms,
+        "readiness": published,
+        "counts": readiness["counts"],
+        "complete": readiness["complete"],
+    });
+    util::print_line(&canon::canonical_json(&summary))?;
+    Ok(0)
+}
+
+/// One fix prompt: every rejected requirement of the job's terms, the terms that passed and must
+/// stay as they are, and the one output file the writer rewrites (S19-AC04).
+fn fix_text(
+    compiled: &Compiled,
+    job: &Value,
+    check: &Value,
+    need: &[Value],
+    keep: &[String],
+) -> Result<String> {
+    let id = pstr(job, "id");
+    let rows: Vec<String> = need
+        .iter()
+        .map(|item| format!("第 {} 行 `{}`", item["term"]["row"].as_u64().unwrap_or(0), pstr(&item["term"], "term")))
+        .collect();
+    let mut sb = Sb::new();
+    sb.line(format!("# 术语卡修复任务 {id}-fix（{}）", rows.join("、")))
+        .blank();
+    sb.line("这是本组唯一一次修复。只改下面列出的问题，写出完整的 JSON 文件，不新建文件。")
+        .line("不要改其他术语，不要改写作格式，不要调用 zt。")
+        .blank();
+    sb.line(format!("- 共享说明（重读它）：`{}`", compiled.instruction()));
+    sb.line(format!("- 原任务文件（术语与原文证据）：`{}`", pstr(job, "file")));
+    sb.line(format!("- 你上一版草稿：`{}`", pstr(job, "output")));
+    sb.line(format!("- 只写这个文件（整份 JSON）：`{}`", pstr(job, "output")));
+    sb.line(format!(
+        "- 任务绑定：plan_revision={} plan_hash=`{}` job={id}",
+        compiled.revision, compiled.plan_hash
+    ))
+    .blank();
+    for item in need {
+        let term = &item["term"];
+        let row = term["row"].as_u64().unwrap_or(0);
+        sb.line(format!("## 第 {row} 行 `{}`", pstr(term, "term"))).blank();
+        let schema = term["schema_faults"].as_array().cloned().unwrap_or_default();
+        let render = term["render_faults"].as_array().cloned().unwrap_or_default();
+        let diagnostics = term["diagnostics"].as_array().cloned().unwrap_or_default();
+        if !schema.is_empty() || !render.is_empty() || !diagnostics.is_empty() {
+            sb.line("### 格式与检查").blank();
+            for fault in schema.iter().chain(render.iter()) {
+                sb.line(format!(
+                    "- `{}`：{}",
+                    pstr(fault, "path"),
+                    pstr(fault, "message")
+                ));
+            }
+            for diagnostic in &diagnostics {
+                if pstr(diagnostic, "severity") != "block" {
+                    continue;
+                }
+                sb.line(format!(
+                    "- `{}` {} {}：{}",
+                    pstr(diagnostic, "address"),
+                    pstr(diagnostic, "rule"),
+                    pstr(diagnostic, "fault"),
+                    pstr(diagnostic, "message")
+                ));
+            }
+            sb.blank();
+        }
+        if let Some(review) = item.get("review").filter(|review| review["status"] == json!("refused")) {
+            sb.line("### 独立审查").blank();
+            for fault in review["faults"].as_array().cloned().unwrap_or_default() {
+                sb.line(format!(
+                    "- `{}`：{} 修法：{}",
+                    pstr(&fault, "where"),
+                    pstr(&fault, "what"),
+                    pstr(&fault, "fix")
+                ));
+            }
+            sb.blank();
+        }
+    }
+    sb.line("## 本组其他术语（已通过检查，原样保留内容）").blank();
+    if keep.is_empty() {
+        sb.line("（没有）");
+    } else {
+        for name in keep {
+            sb.line(format!("- `{name}`"));
+        }
+    }
+    sb.blank();
+    sb.line("## 输出").blank();
+    sb.line(format!(
+        "重写 `{}`，UTF-8，只写这一个文件，格式同前（`{{\"terms\":[…]}}`，本组 {} 个术语都要在）。",
+        pstr(job, "output"),
+        check["terms"].as_array().map_or(0, Vec::len)
+    ));
+    sb.line("写完每个术语后自己核对上面每条问题都已修掉。");
+    sb.line("写完后只回复一行 JSON：`{\"terms\":术语数,\"fixed\":true}`。");
+    Ok(sb.0)
+}
+
 /// Assemble the evidence and classification of one row from its source sections.
 #[cfg(test)]
 mod tests {
@@ -1982,6 +3487,12 @@ mod tests {
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Apply"])).is_err());
         assert!(params(&argv(&["-Step", "apply", "-Staging", "s"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Token", "3"])).is_err());
+        for step in ["check", "review-plan", "fix-plan"] {
+            assert!(
+                params(&argv(&["-Step", step, "-Staging", "s", "-Token", "3"])).is_err(),
+                "{step} claims no job unit"
+            );
+        }
         assert!(params(&argv(&["-Step", "jobs", "-Staging", "s", "-Token", "0"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Jobs", "t001"])).is_err());
         assert!(
@@ -2084,12 +3595,14 @@ mod tests {
 
     #[test]
     fn steps_owned_by_later_slices_answer_compactly_and_write_nothing() {
-        for step in ["check", "review-plan", "fix-plan", "apply", "report"] {
+        for step in ["apply", "report"] {
             let (code, value) = not_implemented(step);
             assert_eq!(code, 2);
             assert_eq!(value["ok"], false);
             assert_eq!(value["code"], "not_implemented");
             assert_eq!(value["step"], step);
+            assert_eq!(value["slice"], "S21");
+            assert_eq!(value["issue"], 165);
         }
     }
 
@@ -2703,5 +4216,564 @@ mod tests {
         assert_eq!(book_inputs["kind"], "term_cards_book");
         assert_eq!(book_inputs["jobs"][0]["unit"], "termcards/t001@1");
         assert_eq!(book_inputs["rows"], 1);
+    }
+
+    // --- the check, review and fix steps (S19, #162) ----------------------------------------
+
+    fn s19_row(number: u64, term: &str, job: &str, kind: &str) -> Value {
+        json!({
+            "row": number,
+            "term": term,
+            "avoid": [],
+            "meaning": "双方都不改变选择",
+            "defined": "§1.1",
+            "snippets": [],
+            "occurrences": [],
+            "notation": [],
+            "neighbors": [],
+            "planning_artifact": Value::Null,
+            "classification": {"kind": kind, "evidence": [], "candidates": {}, "promoted": false},
+            "job": job,
+        })
+    }
+
+    fn s19_jobs(work: &str, rows: &[Value]) -> Vec<Value> {
+        let mut ids: Vec<String> = rows.iter().map(|row| pstr(row, "job")).collect();
+        ids.sort();
+        ids.dedup();
+        ids.iter()
+            .map(|id| {
+                let owned: Vec<Value> = rows
+                    .iter()
+                    .filter(|row| pstr(row, "job") == *id)
+                    .cloned()
+                    .collect();
+                json!({
+                    "id": id,
+                    "kind": if owned.iter().all(|row| row["classification"]["kind"] == json!("math")) {
+                        "math"
+                    } else {
+                        "concept"
+                    },
+                    "rows": owned.iter().map(|row| row["row"].clone()).collect::<Vec<_>>(),
+                    "terms": owned.iter().map(|row| row["term"].clone()).collect::<Vec<_>>(),
+                    "file": ps::join(&ps::join(work, "jobs"), &format!("{id}.md")),
+                    "output": ps::join(&ps::join(work, "out"), &format!("{id}.json")),
+                })
+            })
+            .collect()
+    }
+
+    /// A frozen plan shaped and hashed exactly as `plan` freezes one.
+    fn s19_plan(work: &str, rows: Vec<Value>) -> Value {
+        let jobs = s19_jobs(work, &rows);
+        let mut frozen = json!({
+            "schema_version": 1,
+            "kind": "term_cards_plan",
+            "book": {"citation_key": "Test2026", "title": "Test Book", "variant": ""},
+            "list": {
+                "address": "Test2026/1|a",
+                "type": "term",
+                "legacy": false,
+                "title": "术语表：《Test Book》的 2 个术语",
+                "title_sha256": "title",
+                "body_sha256": "body",
+                "row_count": rows.len(),
+            },
+            "source": {"staging": work, "sections": [], "fingerprint": "source-fingerprint"},
+            "notation": {"rows": [], "sources": []},
+            "planning_artifact": Value::Null,
+            "limits": {"per_job": 4, "math_per_job": 1, "max_steps_per_card": 12, "max_prose": 1600},
+            "rows": rows,
+            "jobs": jobs,
+            "versions": {"compiler": "test", "checker": "test", "rule": "test", "instruction": {"file": "x", "sha256": "y"}},
+        });
+        let hash = canon::hash_value(&frozen);
+        frozen["revision"] = json!(1);
+        frozen["plan_hash"] = json!(hash);
+        frozen["created_at"] = json!("2026-01-01T00:00:00Z");
+        frozen
+    }
+
+    /// The compiled plan a step reads: `plan.json` under `<staging>/term-cards`.
+    fn s19_compiled(dir: &std::path::Path, rows: Vec<Value>) -> Compiled {
+        s19_compiled_with(dir, rows, 1600)
+    }
+
+    fn s19_compiled_with(dir: &std::path::Path, rows: Vec<Value>, max_prose: i64) -> Compiled {
+        let work = ps::join(dir.to_str().unwrap(), WORK);
+        std::fs::create_dir_all(ps::join(&work, "out")).unwrap();
+        std::fs::create_dir_all(ps::join(&work, "check")).unwrap();
+        let mut plan = s19_plan(&work, rows);
+        plan["limits"]["max_prose"] = json!(max_prose);
+        let hash = canon::hash_value(&frozen_of(&plan).unwrap());
+        plan["plan_hash"] = json!(hash);
+        util::write_atomic(ps::join(&work, "plan.json"), &ps::json_pretty(&plan)).unwrap();
+        Compiled {
+            plan_hash: pstr(&plan, "plan_hash"),
+            revision: 1,
+            plan,
+            work,
+        }
+    }
+
+    fn s19_params(step: &str, staging: &str) -> Params {
+        Params {
+            step: step.to_string(),
+            staging: staging.to_string(),
+            per_job: DEFAULT_PER_JOB,
+            math_per_job: DEFAULT_MATH_PER_JOB,
+            max_steps: DEFAULT_MAX_STEPS,
+            max_prose: DEFAULT_MAX_PROSE,
+            jobs: Vec::new(),
+            token: None,
+            apply: step == "apply",
+        }
+    }
+
+    /// The draft zt-check's own Term tests use: a complete mathematical head.
+    fn s19_math_draft() -> Value {
+        json!({
+            "term": "均衡",
+            "original": "equilibrium",
+            "category": "math",
+            "first_defined": "§1.1",
+            "explanation": [
+                "均衡是双方都不改变选择的状态。",
+                "本书用它说明市场的稳定点。",
+                "均衡不等于最优。"
+            ],
+            "book_definition": { "text": ["§1.1 把均衡定义为一个不动点。"], "section": "§1.1", "quote": "" },
+            "hypotheses": [ { "id": "H1", "text": "策略集是紧凸集。" } ],
+            "definition": {
+                "formula": "x^* \\in \\arg\\max_{x} u(x) \\tag{T1}",
+                "reading": ["$x^*$ 是没有人愿意偏离的策略。"]
+            },
+            "symbols": [
+                { "symbol": "$x^*$", "meaning": "均衡策略", "type": "紧凸集", "auxiliary": false }
+            ],
+            "equivalent_forms": [ { "formula": "u(x^*)\\ge u(x)", "reason": "由 (T1) 直接得到。" } ],
+            "derivations": [ {
+                "claim": "均衡是纳什均衡",
+                "steps": [
+                    { "text": "起点是定义 (T1)。", "basis": "定义 (T1)", "formula": "x^*=x" },
+                    { "text": "两边比较收益。", "basis": "H1", "formula": "u(x^*)\\ge u(x)" }
+                ],
+                "result": "均衡是纳什均衡。"
+            } ],
+            "limits": [ { "case": "无", "text": "本定义没有需要说明的极限情形。", "formula": "" } ],
+            "example": ["取 $u(x)=-x^2$。", "唯一均衡是 $x^*=0$。"],
+            "intuition": ["没有人愿意单方面偏离。", "均衡是相互一致的选择。"],
+            "distinctions": [ { "term": "剩余控制权", "text": "剩余控制权说的是决定权。" } ],
+            "misreadings": ["均衡不是最优。"],
+            "role_in_book": ["本书第一章用均衡定义市场结果。"]
+        })
+    }
+
+    fn s19_concept_draft(term: &str, distinction: &str) -> Value {
+        json!({
+            "term": term,
+            "category": "concept",
+            "first_defined": "§2",
+            "explanation": [
+                "这个词指对资产用途的决定权。",
+                "本书用它区分所有权与控制。",
+                "这个概念不等于日常的经营权。"
+            ],
+            "book_definition": { "text": ["§2 把这个词定义为合同没有写明的决定权。"], "section": "§2", "quote": "" },
+            "distinctions": [ { "term": distinction, "text": "均衡指双方都不改变选择。" } ],
+            "misreadings": ["这个概念不是剩余收益。"],
+            "role_in_book": ["本书第二章用它解释企业边界。"]
+        })
+    }
+
+    fn s19_two_rows() -> Vec<Value> {
+        vec![
+            s19_row(1, "均衡", "t001", "math"),
+            s19_row(2, "剩余控制权", "t002", "concept"),
+        ]
+    }
+
+    fn s19_write_output(compiled: &Compiled, job: &str, items: &[Value]) {
+        let path = ps::join(&ps::join(&compiled.work, "out"), &format!("{job}.json"));
+        util::write_atomic(&path, &ps::json_pretty(&json!({"terms": items}))).unwrap();
+    }
+
+    fn s19_readiness(compiled: &Compiled) -> Value {
+        util::read_json(compiled.readiness_path()).unwrap()
+    }
+
+    fn s19_read(compiled: &Compiled, name: &str) -> Value {
+        util::read_json(ps::join(&compiled.work, name)).unwrap()
+    }
+
+    #[test]
+    fn a_check_reports_each_terms_schema_fault_and_ready_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let compiled = s19_compiled(dir.path(), s19_two_rows());
+        let mut broken = s19_math_draft();
+        broken["explanation"] = json!(["只有一句话。"]);
+        s19_write_output(&compiled, "t001", &[broken]);
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+        assert_eq!(check_step(&p).unwrap(), 0);
+
+        let math = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert_eq!(math["kind"], "term_cards_check");
+        assert_eq!(math["ok"], false);
+        assert_eq!(math["terms"][0]["status"], "faulty");
+        assert_eq!(math["terms"][0]["schema_faults"][0]["path"], "term.explanation");
+        assert_eq!(math["terms"][0]["draft_sha256"].is_string(), true);
+        let concept = s19_read(&compiled, &ps::join("check", "t002.json"));
+        assert_eq!(concept["ok"], true, "{concept}");
+        assert_eq!(concept["terms"][0]["status"], "ok");
+        assert!(concept["terms"][0]["render_sha256"].is_string());
+        assert_eq!(concept["terms"][0]["cards"].as_array().unwrap().len(), 1);
+
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["kind"], "term_cards_readiness");
+        assert_eq!(readiness["complete"], false);
+        assert_eq!(readiness["terms"][0]["status"], "needs_fix");
+        assert_eq!(readiness["terms"][1]["status"], "ready");
+        assert_eq!(readiness["publication"]["state"], "unverified");
+        assert_eq!(readiness["counts"]["needs_fix"], 1);
+        assert_eq!(readiness["counts"]["ready"], 1);
+        // The state records the checked progress, never a publication claim.
+        let state = s19_read(&compiled, "state.json");
+        assert_eq!(state["jobs"]["t001"]["state"], "checked");
+        assert_eq!(state["jobs"]["t002"]["state"], "checked");
+    }
+
+    #[test]
+    fn a_plan_math_row_cannot_be_demoted_to_a_concept_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let compiled = s19_compiled(dir.path(), s19_two_rows());
+        s19_write_output(&compiled, "t001", &[s19_concept_draft("均衡", "剩余控制权")]);
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+        check_step(&p).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert_eq!(check["terms"][0]["status"], "faulty");
+        assert_eq!(check["terms"][0]["schema_faults"][0]["path"], "category");
+        assert!(
+            pstr(&check["terms"][0]["schema_faults"][0], "message").contains("cannot clear"),
+            "{}",
+            check["terms"][0]
+        );
+    }
+
+    #[test]
+    fn a_promoted_concept_draft_is_recorded_and_waits_for_its_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rows = s19_two_rows();
+        rows[0] = s19_row(1, "均衡", "t001", "concept");
+        let compiled = s19_compiled(dir.path(), rows);
+        // A concept-classified row may promote itself by writing `math`.
+        s19_write_output(&compiled, "t001", &[s19_math_draft()]);
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+        check_step(&p).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert_eq!(check["terms"][0]["status"], "ok");
+        assert_eq!(check["terms"][0]["promoted"], true);
+        assert_eq!(check["terms"][0]["category"], "math");
+        let state = s19_read(&compiled, "state.json");
+        assert_eq!(state["promotions"][0]["row"], 1);
+        assert_eq!(state["promotions"][0]["from"], "concept");
+        assert_eq!(state["promotions"][0]["to"], "math");
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["terms"][0]["status"], "needs_review");
+        assert_eq!(readiness["terms"][0]["review"]["required"], true);
+    }
+
+    #[test]
+    fn a_review_is_bound_to_the_exact_draft_and_render_and_a_change_invalidates_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let compiled = s19_compiled(dir.path(), s19_two_rows());
+        s19_write_output(&compiled, "t001", &[s19_math_draft()]);
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+        check_step(&p).unwrap();
+        let review = s19_params("review-plan", dir.path().to_str().unwrap());
+        assert_eq!(review_plan_step(&review).unwrap(), 0);
+
+        // The request names the exact draft and render hashes, and carries the draft JSON.
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        let term = &check["terms"][0];
+        let draft_sha = pstr(term, "draft_sha256");
+        let render_sha = pstr(term, "render_sha256");
+        let stem = review_stem("t001", 1, &draft_sha, &render_sha);
+        let request = ps::join(
+            &ps::join(&compiled.review_dir(), "requests"),
+            &format!("{stem}.md"),
+        );
+        let text = util::read_text(&request).unwrap();
+        assert!(text.contains(&draft_sha), "{text}");
+        assert!(text.contains(&render_sha), "{text}");
+        assert!(text.contains("\"均衡\""), "{text}");
+        assert!(text.contains("source-fingerprint"), "{text}");
+
+        // An approval bound to this exact content makes the term ready.
+        let answer = ps::join(
+            &ps::join(&compiled.review_dir(), "answers"),
+            &format!("{stem}.json"),
+        );
+        util::write_atomic(&answer, "{\"ok\":true}").unwrap();
+        assert_eq!(review_plan_step(&review).unwrap(), 0);
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["terms"][0]["status"], "ready");
+        assert_eq!(readiness["terms"][0]["review"]["status"], "approved");
+        assert_eq!(readiness["terms"][1]["review"]["status"], "not_required");
+        assert_eq!(readiness["complete"], true);
+
+        // A changed mathematical draft keeps the old answer as visible stale evidence and owes a
+        // fresh review; the approval does not travel to the new content.
+        let mut changed = s19_math_draft();
+        changed["explanation"] = json!([
+            "均衡是双方都不改变选择的状态。",
+            "本书用它说明市场的稳定点。",
+            "均衡不等于社会最优。"
+        ]);
+        s19_write_output(&compiled, "t001", &[changed]);
+        check_step(&p).unwrap();
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["terms"][0]["status"], "needs_review");
+        assert_eq!(readiness["terms"][0]["review"]["status"], "stale");
+        assert_eq!(readiness["terms"][0]["review"]["stale"][0], json!(answer));
+        assert_eq!(readiness["complete"], false);
+        assert_eq!(review_plan_step(&review).unwrap(), 0);
+        let fresh = s19_readiness(&compiled);
+        let new_render = pstr(&fresh["terms"][0], "render_sha256");
+        assert_ne!(new_render, render_sha, "the changed draft renders other bytes");
+    }
+
+    #[test]
+    fn one_finite_fix_returns_to_the_writer_and_a_second_refusal_is_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let compiled = s19_compiled(dir.path(), s19_two_rows());
+        let mut faulty = s19_math_draft();
+        faulty["derivations"][0]["steps"][0]["text"] = json!("显然成立。");
+        s19_write_output(&compiled, "t001", &[faulty]);
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+        check_step(&p).unwrap();
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["terms"][0]["status"], "needs_fix");
+        let t6 = readiness["terms"][0]["check"]["ok"].clone();
+        assert_eq!(t6, false, "{}", readiness["terms"][0]);
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert!(
+            check["terms"][0]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["rule"] == json!("T6")),
+            "{}",
+            check["terms"][0]["diagnostics"]
+        );
+
+        // One fix prompt goes back to the writer's own conversation through continue/fallback.
+        let fix = s19_params("fix-plan", dir.path().to_str().unwrap());
+        assert_eq!(fix_plan_step(&fix).unwrap(), 0);
+        let state = s19_read(&compiled, "state.json");
+        assert_eq!(state["fixes"][0]["row"], 1);
+        assert_eq!(state["fixes"][0]["job_id"], "t001-fix");
+        let fix_file = ps::join(&ps::join(&compiled.work, "fix"), "t001-fix.md");
+        let text = util::read_text(&fix_file).unwrap();
+        assert!(text.contains("显然"), "{text}");
+        assert!(text.contains("唯一一次修复"), "{text}");
+
+        // A second attempt without a changed draft is final for the run.
+        assert_eq!(fix_plan_step(&fix).unwrap(), 0);
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["terms"][0]["status"], "refused");
+        assert_eq!(readiness["terms"][0]["reason"], "fix_not_applied");
+
+        // The writer's fix changes the draft: the check passes and a fresh review is owed.
+        s19_write_output(&compiled, "t001", &[s19_math_draft()]);
+        check_step(&p).unwrap();
+        let review = s19_params("review-plan", dir.path().to_str().unwrap());
+        review_plan_step(&review).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        let term = &check["terms"][0];
+        let stem = review_stem(
+            "t001",
+            1,
+            &pstr(term, "draft_sha256"),
+            &pstr(term, "render_sha256"),
+        );
+        let answer = ps::join(
+            &ps::join(&compiled.review_dir(), "answers"),
+            &format!("{stem}.json"),
+        );
+        util::write_atomic(
+            &answer,
+            &json!({"ok": false, "faults": [{"where": "derivations[0].steps[1]", "what": "这一步的符号不对。", "fix": "按 H1 重写这一步。"}]})
+                .to_string(),
+        )
+        .unwrap();
+        // The refused re-review is final: no second fix prompt.
+        assert_eq!(fix_plan_step(&fix).unwrap(), 0);
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["terms"][0]["status"], "refused");
+        assert_eq!(readiness["terms"][0]["reason"], "review_refused_after_fix");
+        assert_eq!(readiness["terms"][0]["review"]["faults"][0]["where"], "derivations[0].steps[1]");
+    }
+
+    #[test]
+    fn a_missing_output_is_reported_without_a_fix_or_a_publication_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let compiled = s19_compiled(dir.path(), s19_two_rows());
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+        check_step(&p).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert_eq!(check["terms"][0]["status"], "missing");
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["terms"][0]["status"], "missing");
+        assert_eq!(readiness["complete"], false);
+        assert_eq!(readiness["publication"]["state"], "unverified");
+        let fix = s19_params("fix-plan", dir.path().to_str().unwrap());
+        assert_eq!(fix_plan_step(&fix).unwrap(), 0);
+        let state = s19_read(&compiled, "state.json");
+        assert_eq!(state["fixes"], json!([]), "a missing draft is no content fix");
+    }
+
+    #[test]
+    fn a_changed_writer_file_makes_an_old_check_stale_before_review_or_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        let compiled = s19_compiled(dir.path(), s19_two_rows());
+        s19_write_output(&compiled, "t001", &[s19_math_draft()]);
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+        check_step(&p).unwrap();
+        let mut changed = s19_math_draft();
+        changed["explanation"] = json!([
+            "均衡是双方都不改变选择的状态。",
+            "本书用它说明市场的稳定点。",
+            "均衡不等于社会最优。"
+        ]);
+        s19_write_output(&compiled, "t001", &[changed]);
+        let review = s19_params("review-plan", dir.path().to_str().unwrap());
+        let refused = review_plan_step(&review).unwrap_err().to_string();
+        assert!(refused.contains("run -Step check again"), "{refused}");
+        let fix = s19_params("fix-plan", dir.path().to_str().unwrap());
+        assert!(fix_plan_step(&fix).is_err());
+    }
+
+    #[test]
+    fn a_check_carries_the_exact_row_autolink_delimiter_and_per_card_bound_faults() {
+        let dir = tempfile::tempdir().unwrap();
+        let compiled = s19_compiled(dir.path(), s19_two_rows());
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+
+        // The exact row spelling: another spelling is no draft for the row.
+        let mut wrong_term = s19_math_draft();
+        wrong_term["term"] = json!("均衡 ");
+        s19_write_output(&compiled, "t001", &[wrong_term]);
+        check_step(&p).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert_eq!(check["unexpected"], json!(["均衡 "]));
+        assert_eq!(check["terms"][0]["status"], "missing");
+
+        // A duplicated draft for one row is refused rather than silently taking one.
+        s19_write_output(&compiled, "t001", &[s19_math_draft(), s19_math_draft()]);
+        check_step(&p).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert_eq!(check["duplicates"], json!(["均衡"]));
+        assert!(
+            check["terms"][0]["schema_faults"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|fault| pstr(fault, "message").contains("written twice")),
+            "{}",
+            check["terms"][0]
+        );
+
+        // The automatic-link opt-out names its exact missing reason.
+        let mut no_reason = s19_math_draft();
+        no_reason["link"] = json!(false);
+        no_reason["link_reason"] = json!("");
+        s19_write_output(&compiled, "t001", &[no_reason]);
+        check_step(&p).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert_eq!(
+            check["terms"][0]["schema_faults"][0]["path"],
+            "term.link_reason"
+        );
+
+        // The unbalanced delimiter reaches the check artifact as the T10 rule.
+        let mut open = s19_math_draft();
+        open["intuition"] = json!(["价格是 $5 元。", "均衡是相互一致的选择。"]);
+        s19_write_output(&compiled, "t001", &[open]);
+        check_step(&p).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert!(
+            check["terms"][0]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["rule"] == json!("T10")),
+            "{}",
+            check["terms"][0]["diagnostics"]
+        );
+
+        // A frozen prose bound the head's mandatory material cannot meet is a refused render, never
+        // a truncation (per-Card bounds).
+        let bound_dir = tempfile::tempdir().unwrap();
+        let bounded = s19_compiled_with(bound_dir.path(), s19_two_rows(), 80);
+        s19_write_output(&bounded, "t001", &[s19_math_draft()]);
+        s19_write_output(&bounded, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", bound_dir.path().to_str().unwrap());
+        check_step(&p).unwrap();
+        let check = s19_read(&bounded, &ps::join("check", "t001.json"));
+        assert_eq!(check["terms"][0]["status"], "faulty");
+        assert_eq!(check["terms"][0]["render_faults"][0]["path"], "render.head");
+        assert_eq!(check["terms"][0]["draft_sha256"].is_string(), true);
+    }
+
+    #[test]
+    fn a_check_retains_the_source_fidelity_markers_and_claims_no_unperformed_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let compiled = s19_compiled(dir.path(), s19_two_rows());
+        let mut draft = s19_math_draft();
+        draft["derivations"][0]["steps"][1]["basis"] = json!("（补：书中略去）由 H1 代入。");
+        s19_write_output(&compiled, "t001", &[draft]);
+        s19_write_output(&compiled, "t002", &[s19_concept_draft("剩余控制权", "均衡")]);
+        let p = s19_params("check", dir.path().to_str().unwrap());
+        check_step(&p).unwrap();
+        let check = s19_read(&compiled, &ps::join("check", "t001.json"));
+        assert_eq!(check["terms"][0]["status"], "ok", "{}", check["terms"][0]);
+        let supplements = check["terms"][0]["supplements"].as_array().unwrap();
+        assert_eq!(supplements.len(), 1, "{supplements:?}");
+        assert_eq!(supplements[0]["marker"], "（补：书中略去）");
+        assert_eq!(supplements[0]["card"], "t001/r001");
+        // The report never claims a numerical check or a proof that was not performed.
+        assert_eq!(check["terms"][0]["verification"]["numerical_checks"], json!([]));
+        assert!(
+            pstr(&check["terms"][0]["verification"], "note").contains("no executed numerical check"),
+            "{}",
+            check["terms"][0]["verification"]
+        );
+        assert!(
+            pstr(&check["terms"][0]["verification"], "proof").contains("not proof"),
+            "{}",
+            check["terms"][0]["verification"]
+        );
+        let readiness = s19_readiness(&compiled);
+        assert_eq!(readiness["terms"][0]["supplements"][0]["marker"], "（补：书中略去）");
+        // The rendered text itself keeps the marker verbatim: the review request embeds it.
+        let review = s19_params("review-plan", dir.path().to_str().unwrap());
+        review_plan_step(&review).unwrap();
+        let request = std::fs::read_dir(compiled.request_dir())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let text = util::read_text(request).unwrap();
+        assert!(text.contains("（补：书中略去）"), "{text}");
     }
 }
