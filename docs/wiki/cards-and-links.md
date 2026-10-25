@@ -11,7 +11,7 @@ paths:
   - "tests/card_types.rs"
   - "tests/term_links.rs"
   - "tests/term_lifecycle.rs"
-synced: 21b1184b757b
+synced: 27db91186fdb
 updated: 2026-10-25
 ---
 
