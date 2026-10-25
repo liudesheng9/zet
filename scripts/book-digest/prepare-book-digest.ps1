@@ -56,10 +56,18 @@
     the explicit arguments as the fallback.
   Prints the manifest as compact JSON.
 
+  - -Validate and -Sections prepare one already digested book for its Term backfill through the same
+    tool: -Validate inspects the prepared run (Workspace, Term list, its published children, the
+    staged source and the owner's Lock) and -Sections also reuses or reconstructs only the staged
+    source slices sections/sNN.md and book.zh.md. Neither writes a Card and both read the book, its
+    source and its limits from <-Out>\manifest.json; use them with the prepared run's own -Out.
+  Prints the manifest as compact JSON.
+
   Parameters: -Source, -Out, -CitationKey, -BibTeX (required unless -Book resolves them); -Book,
   -BookTitle '', -StartHeading 导论, -EndHeading 参考, -SkipHeadings '', -MaxChars 20000,
   -MaxUnits 3, -MinUnitChars 1000, -FileId 0, -MinFigureBytes 3000, -MaxEventCandidates 12,
-  -NoteMaxChars 6000, -Instructions dsh-digest-base.zh.md,dsh-model-cards.zh.md, -NoEventCandidates, -NoFigures, -Apply.
+  -NoteMaxChars 6000, -Instructions dsh-digest-base.zh.md,dsh-model-cards.zh.md, -NoEventCandidates, -NoFigures, -Apply,
+  -Validate, -Sections.
 
   This script forwards every argument to `zt-digest prepare` (tools/zt-digest/src/prepare.rs),
   which does the work in one process with one `zt mcp`; callers should call the tool directly. It

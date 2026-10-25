@@ -198,6 +198,23 @@ const finalizeFinal = (name) => {
   }
 }
 
+// S25 (#168): the backfill preparation's own answer line, exactly the shape `zt-digest prepare
+// -Validate|-Sections` prints: the selected book, its Term list, occupancy, staged source slices and
+// bound fingerprints. It is read by the prepare and report stages, never by a full digest.
+function backfillLine(mode) {
+  return {
+    schema_version: 1, kind: 'backfill_preparation', ok: true,
+    step: mode === 'term-cards' ? 'sections' : 'validate',
+    book: 'Key', tree_address: 'Key', workspace: 'agent',
+    tree: { cards: 9, heads: 0, parts: 0, occupying: [] },
+    list: { address: 'Key/1|a', type: 'term', title: '术语表：《书》的 2 个术语', legacy: true, rows: 2, terms: ['均衡', '机会主义'], sha256: '1'.repeat(64) },
+    list_sha256: '1'.repeat(64),
+    source: { path: 'S.md', sha256: '2'.repeat(64), sections: 2, book_sha256: '3'.repeat(64), reused: true, rebuilt: [], bound: true },
+    drafts: null, contract: '5.5.5/6.5.5', archive_revision: 7, conflicts: [], complete: true,
+    record: 'D:\\x\\Key\\backfill.json',
+  }
+}
+
 function runtime(kind, opts = {}) {
   const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = [], termCalls = [], termManagers = []
   // S24 (#167): the Term-card branch's fixed two-job plan (both concept jobs, so no review is owed).
@@ -975,6 +992,19 @@ function runtime(kind, opts = {}) {
       if (opts.noPlanFile) return { ok: true, output: json({ ok: true, step: 'plan-status', planned: 0, derive: false, plans: [{ model: 'Key/2|c', status: 'failed', parts: 0, derivations: 0 }] }) }
       return { ok: true, output: json({ ok: true, step: 'plan-status', planned: 1, derive: true, plans: [{ model: 'Key/2|c', status: 'planned', level: 'formal', parts: 4, derivations: 1 }] }) }
     }
+    // S25 (#168): the backfill's own preparation. It is one relayed `zt-digest prepare` command; a
+    // Lock stops the run with the typed refusal and a conflict with the backfill_conflict line, both
+    // before any Term writer or provider job is dispatched.
+    if (/^Run this PowerShell command once/.test(text) && /^prepare backfill: /.test(label)) {
+      const mode = label.replace('prepare backfill: ', '')
+      if (opts.backfillLock) {
+        return { ok: false, output: `${json({ ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', mode: 'prepare', step: mode === 'term-cards' ? 'sections' : 'validate', tree: 'Key', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z', hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' })}` }
+      }
+      if (opts.backfillConflict) {
+        return { ok: false, output: json({ ok: false, code: 'backfill_conflict', error: 'the Term list Key/1|a already holds 1 conflicting Side child', book: 'Key', conflicts: [{ code: 'occupying_children', message: 'the Term list Key/1|a already holds 1 conflicting Side child: `Key/1|a|b` is a idea Card, not a named Term Card of slot 1' }], complete: false }) }
+      }
+      return { ok: true, output: json(backfillLine(mode)) }
+    }
     if (/^Run this PowerShell command once/.test(text)) {
       const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
       // An owned-resource command writes its JSON first and runs one ledger command on the same line.
@@ -1369,6 +1399,77 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(settled.result && settled.result.term_cards && settled.result.term_cards.status === 'done' && settled.result.term_link && settled.result.term_link.status === 'skipped' && settled.termCalls.every((c) => c.step !== 'apply'), 'S24: a settled Term branch runs no plan/apply work on resume and reports itself complete')
   const mathFull = await run('math', { ...base, figures: false })
   check(mathFull.report.stages['term-cards'].status === 'done' && mathFull.report.stages['term-link'].status === 'done', 'S24 (math): the inherited Term stages run in the mathematics variant')
+}
+
+// ================================================================================================================
+// S25 (#168): the dedicated Term backfill modes of one selected book
+// ================================================================================================================
+{
+  const TERM = { termCards: true, termLink: true }
+  // The declaration: both variants inherit the two modes, and each mode runs only its own work.
+  for (const which of ['econ', 'math']) {
+    const modes = builds[which].bp.modes
+    const tc = modes['term-cards'] || []
+    const tl = modes['term-link'] || []
+    check(tc.join(',') === 'args,source,prepare,term-cards,term-link,audit,cleanup,report', `S25 (${which}): mode term-cards runs args, source, prepare, both Term stages, the audit, the settlement and the report (${tc.join(',')})`)
+    check(tl.join(',') === 'args,prepare,term-link,audit,cleanup,report', `S25 (${which}): mode term-link runs args, prepare, the deterministic pass, the audit, the settlement and the report (${tl.join(',')})`)
+    const downstream = ['digest', 'cards', 'models', 'explain', 'events', 'findings', 'link', 'link-prepare', 'link-check', 'organize', 'figures', 'bridge', 'finalize', 'terms', 'math-skeleton', 'math-boundary', 'math-proof', 'math-theory', 'math-check']
+    check(downstream.every((id) => !tc.includes(id) && !tl.includes(id)), `S25 (${which}): neither backfill mode reruns a digest, Card, model, Link, Organize, Figure, Bridge or finalization stage`)
+    check(!tl.includes('source'), `S25 (${which}): the deterministic term-link mode takes no source stage and starts no source probe`)
+    check(tc.includes('source') && tl.includes('term-link'), `S25 (${which}): term-cards carries its source and term-link carries the deterministic pass`)
+    const prepare = builds[which].bp.stages.find((s) => s.id === 'prepare')
+    check(prepare && /term-cards|term-link/.test(JSON.stringify(prepare.when || [])) === false, `S25 (${which}): the shared prepare stage runs unchanged and branches inside its module (${JSON.stringify(prepare && prepare.when)})`)
+  }
+  // The args gate: the backfill reads its book from the prepared run, so a new identity is refused,
+  // and a mode's own switch cannot contradict it.
+  const newSource = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link', source: 'S.md' })
+  check(newSource.result.stage === 'args' && /accepts only out/.test(newSource.result.error), `S25: mode term-link refuses a new source before any stage (${newSource.result.error})`)
+  const newKey = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards', citationKey: 'Other', ...TERM })
+  check(newKey.result.stage === 'args', 'S25: mode term-cards refuses a new Citation key instead of reinterpreting the prepared run')
+  const noCards = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards', termCards: false })
+  check(noCards.result.stage === 'args' && /contradicts the mode/.test(noCards.result.error), `S25: mode term-cards refuses args.termCards false (${noCards.result.error})`)
+  const noLink = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link', termLink: false })
+  check(noLink.result.stage === 'args' && /contradicts the mode/.test(noLink.result.error), `S25: mode term-link refuses args.termLink false (${noLink.result.error})`)
+  // A run keyed by out alone is the mode's own interface.
+  const plain = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards' })
+  check(!plain.report.halted && plain.result && plain.result.mode === 'term-cards', `S25: mode term-cards needs only out (${plain.report.halted ? plain.report.halted.error : plain.result && plain.result.mode})`)
+
+  // Mode term-cards: the backfill preparation, the Term-card branch, the deterministic pass and the audit.
+  const cards = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards' })
+  check(!cards.report.halted && cards.result && cards.result.mode === 'term-cards', `S25 term-cards: the run reaches its report (${cards.report.halted ? cards.report.halted.error : cards.result && cards.result.mode})`)
+  const cardsPrepare = cards.calls.find((c) => c.label === 'prepare backfill: term-cards')
+  check(!!cardsPrepare && /zt-digest prepare -Out "D:\\x\\Key" -Sections -Brief/.test(cardsPrepare.cmd || ''), `S25 term-cards: prepare runs the sections-only branch on the prepared run (${cardsPrepare && cardsPrepare.cmd})`)
+  check(cards.calls.every((c) => !/prepare book/.test(c.label || '')), 'S25 term-cards: the book is never prepared again')
+  check(cards.report.stages.source && cards.report.stages.source.status !== 'failed', 'S25 term-cards: its declared source stage runs (the source passages the Term cards need)')
+  check(cards.report.stages['term-cards'].status === 'done' && cards.result.term_cards.status === 'done' && cards.result.term_cards.unit === 'termcards/book@1', `S25 term-cards: the Term-card branch completes from its publication (${JSON.stringify(cards.result.term_cards)})`)
+  check(cards.result.term_link && cards.result.term_link.status === 'done' && cards.result.term_link.unit === 'termlink/book@1', `S25 term-cards: the Term-link pass follows the publication (${JSON.stringify(cards.result.term_link)})`)
+  check(cards.termCalls.some((c) => c.tool === 'term-cards' && c.step === 'plan') && cards.termCalls.some((c) => c.tool === 'term-link' && c.step === 'apply'), 'S25 term-cards: the two Term compilers plan, publish and link in the one run')
+  check(cards.result.backfill && cards.result.backfill.list && cards.result.backfill.list.rows === 2 && cards.result.backfill.source.reused === true && cards.result.backfill.conflicts.length === 0, `S25 term-cards: the report carries the validation it bound (${JSON.stringify(cards.result.backfill && cards.result.backfill.list)})`)
+  check(cards.result.audit && cards.report.stages.audit.status === 'done', 'S25 term-cards: the read-only audit still describes the book')
+  check(!cards.calls.some((c) => /^finalize /.test(c.label || '') || /zt-digest organize-|zt-digest figures|zt-digest bridge|model-compiler/.test(c.cmd || '')), 'S25 term-cards: no finalization, Organize, Figures, Bridge or model command runs')
+
+  // Mode term-link: deterministic only. No source stage, no Term-card branch, no provider job.
+  const link = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link' })
+  check(!link.report.halted && link.result && link.result.mode === 'term-link', `S25 term-link: the run reaches its report (${link.report.halted ? link.report.halted.error : link.result && link.result.mode})`)
+  const linkPrepare = link.calls.find((c) => c.label === 'prepare backfill: term-link')
+  check(!!linkPrepare && /zt-digest prepare -Out "D:\\x\\Key" -Validate -Brief/.test(linkPrepare.cmd || ''), `S25 term-link: prepare validates the existing book and staging (${linkPrepare && linkPrepare.cmd})`)
+  check(link.report.stages.source && link.report.stages.source.status === 'not-in-mode', `S25 term-link: the source stage never runs (${link.report.stages.source && link.report.stages.source.status})`)
+  check(link.report.stages['term-cards'].status === 'not-in-mode' && link.termCalls.every((c) => c.tool !== 'term-cards'), 'S25 term-link: the Term-card branch is not dispatched')
+  check(link.termCalls.some((c) => c.tool === 'term-link' && c.step === 'plan') && link.termCalls.some((c) => c.tool === 'term-link' && c.step === 'apply'), `S25 term-link: the deterministic plan and apply run (${link.termCalls.map((c) => `${c.tool}:${c.step}`).join(',')})`)
+  check(link.result.term_link && link.result.term_link.status === 'done' && link.result.term_link.unit === 'termlink/book@1', `S25 term-link: the pass completes from its apply report (${JSON.stringify(link.result.term_link)})`)
+  check(link.result.term_cards && link.result.term_cards.status === 'skipped', `S25 term-link: the report names the Term-card branch as not run, never as a success (${JSON.stringify(link.result.term_cards)})`)
+  check(link.termManagers.length === 0 && link.calls.every((c) => !/DeepSeek subagent manager/.test(c.prompt || '')), 'S25 term-link: no DeepSeek manager or provider job starts in the deterministic mode')
+  check(link.result.audit && link.result.backfill && link.result.backfill.tree.heads === 0, 'S25 term-link: the audit and the bound validation are in the result')
+
+  // A Lock or a conflict stops the backfill at prepare, before any Term compiler or provider job.
+  const locked = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link' }, { backfillLock: true })
+  const lockHalt = locked.report.halted
+  check(lockHalt && lockHalt.stage === 'prepare' && /card_locked/.test(String(lockHalt.error)) && /unlock the tree in the GUI/.test(String(lockHalt.error)), `S25: a Locked book stops the backfill at prepare with the owner action (${JSON.stringify(lockHalt && lockHalt.error)})`)
+  check(locked.termCalls.length === 0 && locked.termManagers.length === 0, 'S25: a Locked backfill dispatches no Term compiler command and no provider job')
+  const conflicted = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards' }, { backfillConflict: true })
+  const conflictHalt = conflicted.report.halted
+  check(conflictHalt && conflictHalt.stage === 'prepare' && /conflicting Side child/.test(String(conflictHalt.error)) && /not a named Term Card/.test(String(conflictHalt.error)), `S25: an occupying child stops the backfill before dispatch with its reason (${JSON.stringify(conflictHalt && conflictHalt.error)})`)
+  check(conflicted.termCalls.length === 0 && conflicted.termManagers.length === 0, 'S25: a conflicting backfill dispatches no Term compiler command and no provider job')
 }
 
 {
@@ -1991,7 +2092,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '13' && modules['zt-workflow-lib'] === '1', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v13 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
+  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '14' && modules['zt-digest-report'] === '18' && modules['zt-workflow-lib'] === '1', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v14, zt-digest-report v18 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -2065,7 +2166,6 @@ for (const which of ['econ', 'math']) {
 
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
-
 
 
 

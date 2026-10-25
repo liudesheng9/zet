@@ -16924,6 +16924,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 // The term-card compiler's own job units (S18, #159). They are registered by
                 // `term-cards -Step plan` and claimed by the workflow layer that drives them.
                 "termcards",
+                // The deterministic Term-link pass's own unit (S24, #167), claimed by the
+                // `term-link` stage (S25, #168): `ledger next|gate -Layer termlink`.
+                "termlink",
             ]
             .contains(&a.str("Layer").as_str())
         {

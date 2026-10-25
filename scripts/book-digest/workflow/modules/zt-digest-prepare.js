@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v13 ====
+// ==== module zt-digest-prepare v14 ====
 // Prepare (mode full): prepare-book-digest.ps1 -Apply writes the Chinese text, the section groups, the
 // Literature tree with one anchor per group, and the shared prefixes, then binds the immutable run contract with
 // the effective settings (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the
@@ -15,9 +15,14 @@
 // 11 (docs/literature-only-digest-design.md): no hubs switch is frozen; the prepared run never has a hubs layer.
 // 13 (S24, #167): the Term-card branch and the Term-link pass freeze their switches too (termCards, termLink),
 // so a layer this run disables is excluded in the prepared target and no unit waits for work that will not come (R0430).
+// 14 (S25, #168): modes term-cards and term-link are the backfill's own preparation. They run the one
+// existing zt-digest prepare with -Sections (reuse or reconstruct the staged source slices) or -Validate
+// (inspect the book and the staging only), read the book's Citation key from the prepared run's manifest
+// and stop before any provider work on a Lock or a conflict. -Sections creates no root, anchor, group,
+// model or narrative Card (R0435); neither mode reruns an ordinary digest or model stage (R0436).
 defineModule({
-  id: 'zt-digest-prepare', version: '13', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume) or take args.groups; output {groups, groupList}.',
+  id: 'zt-digest-prepare', version: '14', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume), validate or re-stage one already digested book for a Term backfill (modes term-cards and term-link) or take args.groups; output {groups, groupList, citation_key, backfill?}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
@@ -63,6 +68,31 @@ defineModule({
         log(`Resume: invocation ${facts.invocation}, resume_count ${facts.resume_count}; ${reset} unresolved unit(s) reset, ${reevaluated} blocked dependant(s) back to dependency evaluation, ${(facts.reclaimed || []).length} lost claim(s) reclaimed, ${((facts.closure && facts.closure.downstream) || []).length} unit(s) in the closure to drain. ${groups} retained groups, variant ${view.variant}, settings maxAttempts ${settings.max_attempts}, dshRunCap ${settings.dsh_run_cap} s.`)
       }
       return { groups, groupList: groupList(groups), resumed: facts.status === 'resumed', resume: facts, settings, citation_key: view.citation_key }
+    }
+    if (p.mode === 'term-cards' || p.mode === 'term-link') {
+      // S25 (#168): the backfill's own preparation. `-Sections` reuses or reconstructs the staged source
+      // slices the Term-card branch reads; `-Validate` only inspects the already digested book, because
+      // the deterministic Term-link pass needs no source and starts no provider probe (R0436). Both
+      // write no Card, read the Citation key from the prepared run's own manifest, and stop before any
+      // provider work on a Lock (the relay throws the typed refusal) or a conflict.
+      const flag = p.mode === 'term-cards' ? '-Sections' : '-Validate'
+      const got = await Z.runScript(
+        `prepare backfill: ${p.mode}`,
+        'Prepare',
+        `${Z.DIGEST} prepare -Out "${Z.OUT}" ${flag} -Brief`,
+        ' (the backfill branch: it validates the book and reuses or reconstructs its staged source slices; it writes no Card)',
+        { always: true },
+      )
+      const line = got.json
+      if (!line || line.ok !== true) {
+        const conflicts = (line && line.conflicts) || []
+        const said = conflicts.length
+          ? conflicts.map((conflict) => conflict.message).join('; ')
+          : ((line && line.error) || (got.run && got.run.output) || 'no output')
+        throw new Error(`the backfill of ${(line && line.book) || 'the book'} cannot start: ${said}`)
+      }
+      log(`Backfill (${line.step}): ${line.book} — ${line.source.sections} section(s) ${line.source.reused ? 'reused' : 'reconstructed'}${line.source.rebuilt && line.source.rebuilt.length ? ` (${line.source.rebuilt.join(', ')})` : ''}; ${line.list ? `${line.list.rows} Term row(s)${line.list.legacy ? ' in the legacy table' : ''}` : 'no Term list'}; ${line.tree.heads} published head(s), ${line.tree.parts} part(s), ${line.tree.occupying.length} occupying; ${line.conflicts.length} conflict(s).`)
+      return { groups: 0, groupList: [], citation_key: line.book, backfill: line }
     }
     if (p.mode === 'full') {
       // args.book names the book in the Scholar Archive; the tool resolves its Markdown, BibTeX and

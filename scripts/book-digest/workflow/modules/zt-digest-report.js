@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v17 ====
+// ==== module zt-digest-report v18 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -21,8 +21,11 @@
 // 17 (S24, #167) adds term_cards and term_link: each stage's truthful complete/degraded/skipped status with its
 // ledger unit, plan, readiness/publication or apply counts and the reason it stopped, so a failed Term-card job or
 // a blocked Term-link pass is visible coverage debt in the run's own result (R0428).
+// 18 (S25, #168) adds the backfill modes term-cards and term-link: the pre-dispatch validation (Workspace, list,
+// occupancy, source/sections fingerprints, Lock and conflicts) plus the Term stages' own result and the read-only
+// audit, so one selected book's Term backfill reports its coverage and debt without a fresh digest.
 defineModule({
-  id: 'zt-digest-report', version: '17', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '18', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -36,6 +39,7 @@ defineModule({
     termLink: { type: 'any', description: 'the deterministic Term-link pass output: its unit, plan, counts and no_op (S24, #167)' },
     models: { type: 'any', description: 'the output of the model layer (the models stage of a book type)' },
     terms: { type: 'any', description: 'the term table stage output' },
+    prepare: { type: 'any', description: 'the prepare stage output: the backfill validation of modes term-cards and term-link (S25, #168)' },
     cardsBook: { type: 'any', description: 'the whole-book card cycle (mode cards)' },
     explain: { type: 'any', description: 'the explain stage output (mode explain)' },
     link: { type: 'any', description: 'the link pass output' },
@@ -106,6 +110,26 @@ defineModule({
     if (MODE === 'figures') return { mode: MODE, citation_key: KEY, figures: or(p.figures, null), run_report: runReport }
     if (MODE === 'audit') return { mode: MODE, citation_key: KEY || null, audit: or(p.audit, null), run_report: runReport }
     if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, models: (p.models && p.models.models) || [], model_cleanup: (p.models && p.models.model_cleanup) || null, schedule, run_report: runReport }
+    // S25 (#168): one selected book's Term backfill. The result carries the pre-dispatch validation it ran
+    // (Workspace, list, occupancy, source/sections fingerprints, Lock and conflicts), each Term stage's own
+    // truthful result and the read-only audit; it is never a fresh digest's report.
+    if (MODE === 'term-cards' || MODE === 'term-link') {
+      const backfill = (p.prepare && p.prepare.backfill) || null
+      const tc = termSummary(p.termCards, 'the Term-card branch')
+      const tl = termSummary(p.termLink, 'the Term-link pass')
+      const conflicts = (backfill && backfill.conflicts) || []
+      ctx.log(`Backfill ${MODE}: ${tc.status} term-cards, ${tl.status} term-link${backfill ? `; ${backfill.list ? backfill.list.rows : 0} Term row(s), ${backfill.tree.heads} published head(s)` : ''}${conflicts.length ? `, ${conflicts.length} conflict(s)` : ''}.`)
+      return {
+        mode: MODE,
+        citation_key: KEY,
+        backfill,
+        term_cards: tc,
+        term_link: tl,
+        audit: or(p.audit, null),
+        schedule,
+        run_report: runReport,
+      }
+    }
     if (!['full', 'link', 'models', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule }
     const modelReports = (p.models && p.models.models) || []
     const linkReports = (p.link && p.link.groups) || []

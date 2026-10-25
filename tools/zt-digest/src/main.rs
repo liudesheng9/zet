@@ -24,6 +24,7 @@
 
 mod args;
 mod audit;
+mod backfill;
 mod bridge;
 mod calls;
 mod canon;

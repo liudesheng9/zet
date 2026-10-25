@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.5.4",
+  "version": "6.5.5",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree with Idea, Event, Finding, and Model Cards (economic models at concept or formal level). It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those from the Literature trees afterwards. Modes link, models, cards, explain, events, findings, figures, audit and bridge re-run single stages on an existing digest.",
   "preflight": {
@@ -343,7 +343,7 @@
               {
                 "path": "mode",
                 "op": "matches",
-                "value": "^(audit|resume)$"
+                "value": "^(audit|resume|term-cards|term-link)$"
               },
               {
                 "path": "args.citationKey",
@@ -468,9 +468,24 @@
             "op": "or",
             "value": [
               {
-                "path": "mode",
-                "op": "!=",
-                "value": "resume"
+                "op": "and",
+                "value": [
+                  {
+                    "path": "mode",
+                    "op": "!=",
+                    "value": "resume"
+                  },
+                  {
+                    "path": "mode",
+                    "op": "!=",
+                    "value": "term-cards"
+                  },
+                  {
+                    "path": "mode",
+                    "op": "!=",
+                    "value": "term-link"
+                  }
+                ]
               },
               {
                 "op": "and",
@@ -518,7 +533,39 @@
                 ]
               }
             ],
-            "message": "mode resume reads the retained identity, source, Citation key, enabled layers and settings from its ledger and accepts only out: a new identity, source, group count, model list or Bridge selection needs its own preparation"
+            "message": "modes resume, term-cards and term-link read the retained book, its source and its staging from the prepared run and accepts only out (with the Term settings): a new identity, source, group count, model list or Bridge selection needs its own preparation"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "!=",
+                "value": "term-cards"
+              },
+              {
+                "path": "args.termCards",
+                "op": "!=",
+                "value": false
+              }
+            ],
+            "message": "mode term-cards is the Term-card branch: args.termCards false contradicts the mode"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "!=",
+                "value": "term-link"
+              },
+              {
+                "path": "args.termLink",
+                "op": "!=",
+                "value": false
+              }
+            ],
+            "message": "mode term-link is the deterministic Term-link pass: args.termLink false contradicts the mode"
           }
         ]
       }
@@ -628,7 +675,7 @@
             {
               "path": "mode",
               "op": "matches",
-              "value": "^(full|resume)$"
+              "value": "^(full|resume|term-cards)$"
             },
             {
               "path": "args.termCards",
@@ -1142,7 +1189,7 @@
             {
               "path": "mode",
               "op": "matches",
-              "value": "^(full|resume)$"
+              "value": "^(full|resume|term-cards|term-link)$"
             },
             {
               "path": "args.termLink",
@@ -1306,6 +1353,10 @@
             "$ref": "stages.findings.output"
           }
         },
+        "prepare": {
+          "$ref": "stages.prepare.output",
+          "default": null
+        },
         "bridge": {
           "$ref": "stages.bridge.output"
         },
@@ -1368,6 +1419,24 @@
       "args",
       "source",
       "bridge",
+      "report"
+    ],
+    "term-cards": [
+      "args",
+      "source",
+      "prepare",
+      "term-cards",
+      "term-link",
+      "audit",
+      "cleanup",
+      "report"
+    ],
+    "term-link": [
+      "args",
+      "prepare",
+      "term-link",
+      "audit",
+      "cleanup",
       "report"
     ],
     "models": [
@@ -1456,6 +1525,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.5.4"
+    "version": "5.5.5"
   }
 }

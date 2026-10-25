@@ -341,7 +341,7 @@ pub(crate) struct ListRead {
 
 /// The list cards of one tree: Term Cards with no name are lists by role; a legacy table is an
 /// uncompiled `术语表` Card whose type is not `term`. The two kinds are never mixed silently.
-fn list_candidates(cards: &[Value]) -> (Vec<Value>, Vec<Value>) {
+pub(crate) fn list_candidates(cards: &[Value]) -> (Vec<Value>, Vec<Value>) {
     let mut lists = Vec::new();
     let mut legacy = Vec::new();
     for card in cards {

@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.5.4",
+  "version": "5.5.5",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -379,7 +379,7 @@
               {
                 "path": "mode",
                 "op": "matches",
-                "value": "^(audit|resume)$"
+                "value": "^(audit|resume|term-cards|term-link)$"
               },
               {
                 "path": "args.citationKey",
@@ -504,9 +504,24 @@
             "op": "or",
             "value": [
               {
-                "path": "mode",
-                "op": "!=",
-                "value": "resume"
+                "op": "and",
+                "value": [
+                  {
+                    "path": "mode",
+                    "op": "!=",
+                    "value": "resume"
+                  },
+                  {
+                    "path": "mode",
+                    "op": "!=",
+                    "value": "term-cards"
+                  },
+                  {
+                    "path": "mode",
+                    "op": "!=",
+                    "value": "term-link"
+                  }
+                ]
               },
               {
                 "op": "and",
@@ -554,7 +569,39 @@
                 ]
               }
             ],
-            "message": "mode resume reads the retained identity, source, Citation key, enabled layers and settings from its ledger and accepts only out: a new identity, source, group count, model list or Bridge selection needs its own preparation"
+            "message": "modes resume, term-cards and term-link read the retained book, its source and its staging from the prepared run and accepts only out (with the Term settings): a new identity, source, group count, model list or Bridge selection needs its own preparation"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "!=",
+                "value": "term-cards"
+              },
+              {
+                "path": "args.termCards",
+                "op": "!=",
+                "value": false
+              }
+            ],
+            "message": "mode term-cards is the Term-card branch: args.termCards false contradicts the mode"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "!=",
+                "value": "term-link"
+              },
+              {
+                "path": "args.termLink",
+                "op": "!=",
+                "value": false
+              }
+            ],
+            "message": "mode term-link is the deterministic Term-link pass: args.termLink false contradicts the mode"
           }
         ]
       }
@@ -690,7 +737,7 @@
             {
               "path": "mode",
               "op": "matches",
-              "value": "^(full|resume)$"
+              "value": "^(full|resume|term-cards)$"
             },
             {
               "path": "args.termCards",
@@ -1234,7 +1281,7 @@
             {
               "path": "mode",
               "op": "matches",
-              "value": "^(full|resume)$"
+              "value": "^(full|resume|term-cards|term-link)$"
             },
             {
               "path": "args.termLink",
@@ -1460,6 +1507,10 @@
             }
           }
         },
+        "prepare": {
+          "$ref": "stages.prepare.output",
+          "default": null
+        },
         "bridge": {
           "$ref": "stages.bridge.output"
         },
@@ -1522,6 +1573,24 @@
       "args",
       "source",
       "bridge",
+      "report"
+    ],
+    "term-cards": [
+      "args",
+      "source",
+      "prepare",
+      "term-cards",
+      "term-link",
+      "audit",
+      "cleanup",
+      "report"
+    ],
+    "term-link": [
+      "args",
+      "prepare",
+      "term-link",
+      "audit",
+      "cleanup",
       "report"
     ],
     "models": [
@@ -1605,6 +1674,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.5.4"
+    "version": "5.5.5"
   }
 }

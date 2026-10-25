@@ -121,7 +121,7 @@ fn names_a_year(text: &str) -> bool {
 /// The Chinese-only blocks: a block without CJK characters is dropped when the next block is its
 /// translation; formulas, tables, and unpaired blocks stay. A kept figure's image line becomes its
 /// `artifact:` line, once (its bilingual copy in the next blocks is dropped); other images go.
-fn chinese_blocks(raw: &str, figures: &CiMap<Figure>) -> Vec<String> {
+pub(crate) fn chinese_blocks(raw: &str, figures: &CiMap<Figure>) -> Vec<String> {
     let blocks: Vec<&str> = BLOCKS.split(raw).map(str::trim).filter(|b| !b.is_empty()).collect();
     let mut kept: Vec<String> = Vec::new();
     // Where each figure was last written: the bilingual copy right after it is not written again.
@@ -162,11 +162,11 @@ fn chinese_blocks(raw: &str, figures: &CiMap<Figure>) -> Vec<String> {
 }
 
 #[derive(Clone, Debug)]
-struct Unit {
-    chapter: String,
-    heading: String,
-    headings: Vec<String>,
-    text: String,
+pub(crate) struct Unit {
+    pub(crate) chapter: String,
+    pub(crate) heading: String,
+    pub(crate) headings: Vec<String>,
+    pub(crate) text: String,
 }
 
 /// Units at `#` and `##` headings from -StartHeading up to -EndHeading; a unit under a heading of
@@ -282,6 +282,48 @@ fn merge_units(units: Vec<Unit>, min: i64) -> Result<Vec<Unit>> {
         }
     }
     Ok(merged)
+}
+
+/// The Chinese text's source slices, computed without writing: the units after merging, the section
+/// files `s01.md…` and the whole-book text. `prepare` writes them; the sections-only backfill branch
+/// (S25, #168) recomputes them to reuse or reconstruct a prepared run's staged source.
+pub(crate) struct Staged {
+    pub(crate) merged: Vec<Unit>,
+    pub(crate) files: Vec<(String, String)>,
+    pub(crate) book: String,
+}
+
+/// Split the Chinese blocks into the selected units, merge tiny ones, and render the section files
+/// and the whole-book text. `empty` is the caller's own sentence for a document whose start heading
+/// selects no text (a resolved book and an explicit source word that fault differently).
+pub(crate) fn staged_sections(
+    kept: &[String],
+    start: &str,
+    end: &str,
+    skip: &[String],
+    min_unit_chars: i64,
+    empty: &str,
+) -> Result<Staged> {
+    let units = split_units(kept, start, end, skip);
+    if units.is_empty() {
+        bail!("{empty}");
+    }
+    let merged = merge_units(units, min_unit_chars)?;
+    let mut book = if end.is_empty() {
+        format!("# 全书正文（中文译本，{start} 起）{NL}{NL}")
+    } else {
+        format!("# 全书正文（中文译本，{start} 至 {end} 之前）{NL}{NL}")
+    };
+    let mut files = Vec::new();
+    for (index, unit) in merged.iter().enumerate() {
+        files.push((format!("s{:02}.md", index + 1), unit.text.clone()));
+        book.push_str(&unit.text);
+    }
+    Ok(Staged {
+        merged,
+        files,
+        book,
+    })
 }
 
 /// Groups of up to `max_units` consecutive units of one chapter, at most `max_chars` characters
@@ -456,7 +498,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "MaxAttempts",
         "DshRunCap",
     ];
-    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply", "Brief"])?;
+    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply", "Brief", "Validate", "Sections"])?;
     // S1 (docs/workflow-simplicity-proposal.md): -Brief ends with one short line a relay carries whole (the group
     // count and the key) instead of the whole manifest, which a Haiku agent had to count.
     let brief = a.flag("Brief");
@@ -468,6 +510,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         }
     };
     let out = mandatory(&a, "Out")?;
+    // S25 (#168): the sections-only branch for one already digested book. It validates the book
+    // and rebuilds or reuses the staged source slices; it allocates no group, creates no root,
+    // anchor, group, model or narrative Card and never runs the preparation's Card setup.
+    if a.flag("Validate") || a.flag("Sections") {
+        if a.flag("Apply") {
+            bail!("-Validate and -Sections prepare a backfill and write no Card; remove -Apply");
+        }
+        return crate::backfill::run(&a);
+    }
     if Path::new(&out).join("ledger.sqlite3").exists() {
         bail!("output directory is already initialized; use ledger resume operations or a new output directory");
     }
@@ -590,16 +641,15 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
     // --- units and groups ---
     let skip: Vec<String> = skip_headings.split(',').map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect();
-    let units = split_units(&kept, &start, &end, &skip);
-    if units.is_empty() {
-        if resolved.is_some() {
-            bail!(
-                "the start heading \"{start}\" is not in the Chinese text of {source} (the bilingual filter drops an English-only heading whose next block is its translation); pass -StartHeading with a heading of the Chinese text"
-            );
-        }
-        bail!("no heading \"{start}\" found in {source}");
-    }
-    let merged = merge_units(units, min_unit_chars)?;
+    let empty = if resolved.is_some() {
+        format!(
+            "the start heading \"{start}\" is not in the Chinese text of {source} (the bilingual filter drops an English-only heading whose next block is its translation); pass -StartHeading with a heading of the Chinese text"
+        )
+    } else {
+        format!("no heading \"{start}\" found in {source}")
+    };
+    let staged = staged_sections(&kept, &start, &end, &skip, min_unit_chars, &empty)?;
+    let merged = staged.merged;
     let groups = group_units(&merged, max_units, max_chars);
 
     for dir in ["groups", "sections", "notes"] {
@@ -644,17 +694,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
     // The book stays on disk: one file per unit plus an index. A resolved run that found no
     // back matter has no end heading, so its header names only the start.
-    let mut book = if end.is_empty() {
-        format!("# 全书正文（中文译本，{start} 起）{NL}{NL}")
-    } else {
-        format!("# 全书正文（中文译本，{start} 至 {end} 之前）{NL}{NL}")
-    };
-    let unit_file: Vec<String> = (0..merged.len()).map(|u| format!("s{:02}.md", u + 1)).collect();
-    for (u, unit) in merged.iter().enumerate() {
-        write(&join_path(&staging, &format!("sections\\{}", unit_file[u])), &unit.text)?;
-        book.push_str(&unit.text);
+    for (name, text) in &staged.files {
+        write(&join_path(&staging, &format!("sections\\{name}")), text)?;
     }
-    write(&join_path(&staging, "book.zh.md"), &book)?;
+    write(&join_path(&staging, "book.zh.md"), &staged.book)?;
+    let unit_file: Vec<String> = (0..merged.len()).map(|u| format!("s{:02}.md", u + 1)).collect();
 
     // Which other units each group should look at first, so its run needs fewer searches.
     let mut unit_group: HashMap<String, usize> = HashMap::new();
