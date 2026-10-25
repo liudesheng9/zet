@@ -39,9 +39,14 @@
 //! against the draft schema, rendered by zt-check's deterministic renderer and checked by the same
 //! T rules the service applies; every mathematical draft is reviewed in a fresh conversation bound
 //! to its exact term/source/draft/render hashes; and one finite fix prompt goes back to the writer's
-//! own conversation through the existing `continue`/`fallback` job fields. `apply` and `report`
-//! belong to S21 (#165); until that slice fills them this tool answers one compact `not_implemented`
-//! line and exits 2, writing nothing.
+//! own conversation through the existing `continue`/`fallback` job fields.
+//!
+//! Every printed writer, review and fix job carries its managed contract (S20 / #164, design 12.4):
+//! the frozen official DeepSeek model at high effort, the job's own `skills`, and whether the
+//! conversation ends once its answer is collected. The Haiku manager role stays the workflow's; the
+//! job never picks a model and no skill text is copied. `apply` and `report` belong to S21 (#165);
+//! until that slice fills them this tool answers one compact `not_implemented` line and exits 2,
+//! writing nothing.
 
 use crate::args::Args;
 use crate::canon;
@@ -81,6 +86,29 @@ const PER_JOB_RANGE: (i64, i64) = (1, 8);
 const MATH_PER_JOB_RANGE: (i64, i64) = (1, 8);
 const MAX_STEPS_RANGE: (i64, i64) = (1, 64);
 const MAX_PROSE_RANGE: (i64, i64) = (1, 20_000);
+
+/// The managed content role (design 12.4, R0326; S20 / #164): DeepSeek V4.1 Flash from the official
+/// source at high effort writes, reviews and fixes the drafts. The Haiku manager stays the
+/// blueprint's low-effort role, so a job never picks a model of its own.
+pub const JOB_MODEL: &str = "deepseek-official/deepseek-flash";
+pub const JOB_EFFORT: &str = "high";
+/// The skills a content job receives through its own field (R0333), never copied skill text: the
+/// writer composes ZT Cards in Chinese, the reviewer reads and answers in Chinese.
+pub const WRITER_SKILLS: [&str; 2] = ["zettelkasten", "asd-ste100-zh"];
+pub const REVIEWER_SKILLS: [&str; 1] = ["asd-ste100-zh"];
+
+/// Add the managed contract to one printed job (S20, #164). `delete_after_collect` is true for a
+/// conversation that ends once its answer is durably collected (a review); a writer job keeps it
+/// false because its wave retains the writer through the review/fix opportunity and deletes it
+/// when that opportunity is complete.
+fn managed_job(job: Value, skills: &[&str], delete_after_collect: bool) -> Value {
+    let mut job = job.as_object().cloned().unwrap_or_default();
+    job.insert("model".into(), json!(JOB_MODEL));
+    job.insert("effort".into(), json!(JOB_EFFORT));
+    job.insert("skills".into(), json!(skills));
+    job.insert("delete_after_collect".into(), json!(delete_after_collect));
+    Value::Object(job)
+}
 
 /// A definition sentence, as the term table's own `terms` stage looked for it.
 static DEFINES: LazyLock<Regex> =
@@ -1471,7 +1499,7 @@ fn jobs(p: &Params) -> Result<i32> {
             if !std::path::Path::new(&file).is_file() {
                 bail!("the job file `{file}` is missing; rerun -Step plan");
             }
-            Ok(json!({
+            Ok(managed_job(json!({
                 "id": job["id"],
                 "kind": job["kind"],
                 "rows": job["rows"],
@@ -1480,7 +1508,7 @@ fn jobs(p: &Params) -> Result<i32> {
                 "prompt": PROMPT,
                 "output": job["output"],
                 "permissions": {"archive_read": true, "archive_write": false},
-            }))
+            }), &WRITER_SKILLS, false))
         })
         .collect::<Result<Vec<_>>>()?;
     let summary = json!({
@@ -3080,7 +3108,7 @@ fn review_plan_step(p: &Params) -> Result<i32> {
             util::write_atomic(&request, &request_text)?;
             let answer = pstr(&review, "answer");
             let job_id = format!("{id}-r{row:03}-review");
-            jobs.push(json!({
+            jobs.push(managed_job(json!({
                 "id": job_id,
                 "kind": "review",
                 "row": row,
@@ -3091,7 +3119,7 @@ fn review_plan_step(p: &Params) -> Result<i32> {
                 "writes": compiled.answer_dir(),
                 "binding": review["binding"],
                 "request": request,
-            }));
+            }), &REVIEWER_SKILLS, true));
             reviews.push(term_notice(&term, "planned", ""));
         }
     }
@@ -3296,7 +3324,7 @@ fn fix_plan_step(p: &Params) -> Result<i32> {
             }));
             planned.push(term_notice(term, "planned", ""));
         }
-        jobs.push(json!({
+        jobs.push(managed_job(json!({
             "id": fix_id,
             "kind": "fix",
             "continue": id,
@@ -3311,7 +3339,7 @@ fn fix_plan_step(p: &Params) -> Result<i32> {
             "output": pstr(job, "output"),
             "permissions": {"archive_read": false, "archive_write": false},
             "fix": fix_file,
-        }));
+        }), &WRITER_SKILLS, false));
     }
     state["fixes"] = json!(fixes);
     save_state(&compiled, &state)?;
@@ -4775,5 +4803,25 @@ mod tests {
             .path();
         let text = util::read_text(request).unwrap();
         assert!(text.contains("（补：书中略去）"), "{text}");
+    }
+
+    #[test]
+    fn every_content_job_carries_its_managed_role_effort_and_skills() {
+        // S20 (#164), R0326/R0333: the writer, the reviewer and the fix name the frozen official
+        // model and high effort, and the Chinese language skill travels in the job's own field.
+        let writer = managed_job(json!({"id": "t001", "kind": "math"}), &WRITER_SKILLS, false);
+        assert_eq!(writer["model"], json!(JOB_MODEL));
+        assert_eq!(writer["effort"], json!("high"));
+        assert_eq!(writer["skills"], json!(["zettelkasten", "asd-ste100-zh"]));
+        assert_eq!(writer["delete_after_collect"], json!(false));
+        assert_eq!(writer["id"], json!("t001"), "the job's own fields stay: {writer}");
+        let review = managed_job(json!({"id": "t001-r001-review"}), &REVIEWER_SKILLS, true);
+        assert_eq!(review["model"], json!("deepseek-official/deepseek-flash"));
+        assert_eq!(review["effort"], json!("high"));
+        assert_eq!(review["skills"], json!(["asd-ste100-zh"]));
+        assert_eq!(review["delete_after_collect"], json!(true));
+        // The protocol's role is frozen: the same model and the same effort everywhere.
+        assert_eq!(JOB_MODEL, "deepseek-official/deepseek-flash");
+        assert_eq!(JOB_EFFORT, "high");
     }
 }

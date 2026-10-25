@@ -1,0 +1,37 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "name": "zt-term-cards-fixture",
+  "version": "1.0.0",
+  "description": "The provider-contract fixture of the Term-card branch (S20, #164): one stage that schedules the compiler's writer, reviewer and fix jobs on the shared DSMP pool. The stand-in runtime of ../tests/term-cards-harness.mjs answers the compiler commands and the DeepSeek managers; no model, provider, zt or archive call runs. The real stage graph belongs to S24 (#167).",
+  "whenToUse": "Not run by itself: tests/term-cards-harness.mjs builds it to check manager roles, wave size, continuation, deletion and workspace cleanup",
+  "modules": ["../workflow/modules", "../../workflow-shared/modules"],
+  "preflight": {
+    "P1": "Goal: prove the Term-card managed contract (design 12.4, S20 / #164) before the stage graph of S24 (#167) exists.",
+    "P2": "Inputs: out and citationKey only. The harness passes a temporary staging folder and replaces every compiler command and manager with a stand-in.",
+    "P3": "Units of work: none. The fixture writes no ledger unit; the module returns the branch report.",
+    "P4": "Roles: manager = Haiku, effort low (the DSMP manager); relay = Haiku low, the zt-relay agent type (the compiler commands).",
+    "P5": "Stage graph: one stage. The pool case adds ten identical stages so the shared dsmpSlot pool's eight-manager cap is observable.",
+    "P6": "Modules: zt-term-cards (the branch driver) and the shared zt-workflow-lib plus the installed DSMP block.",
+    "P7": "Checks: the harness checks that only the shared pool is used, that a manager holds at most eight conversations, that writers are retained only through their wave, and that every conversation is deleted and the workspace registration removed while the staging files stay.",
+    "P8": "Failure policy: a failed writer job, a failed manager and a failed deletion each leave the branch report failed; the wave's conversations are still settled and the workspace registration is still removed. A deletion the provider refuses stays registered for the run cleanup.",
+    "P9": "Dry run: term-cards-harness.mjs runs one book, a ten-branch pool case and a failed-job case against the stand-in runtime."
+  },
+  "roles": {
+    "manager": { "model": "haiku", "effort": "low", "description": "Haiku: runs the DeepSeek job managers (writer, reviewer, fix, settle waves); it writes no Card" },
+    "relay": { "model": "haiku", "effort": "low", "agentType": "zt-relay", "description": "Haiku as the zt-relay agent type: runs one compiler command and returns its last line" }
+  },
+  "args": {
+    "out": { "type": "string", "required": true, "description": "the prepared run's staging folder" },
+    "citationKey": { "type": "string", "required": true, "description": "the book's Citation key" }
+  },
+  "stages": [
+    {
+      "id": "term-cards",
+      "title": "Term cards",
+      "detail": "wave writers, review the mathematical drafts, one fix, delete the wave, clean the workspace registration",
+      "module": "zt-term-cards",
+      "params": { "out": "{{args.out}}", "key": "{{args.citationKey}}" }
+    }
+  ],
+  "result": { "$ref": "stages.term-cards.output" }
+}

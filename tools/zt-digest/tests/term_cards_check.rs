@@ -395,6 +395,12 @@ fn the_term_drafts_become_ready_only_after_their_exact_review_and_never_publish(
     assert_eq!(said["jobs"].as_array().unwrap().len(), 1, "{said}");
     assert_eq!(said["jobs"][0]["id"], "t001-fix");
     assert_eq!(said["jobs"][0]["continue"], "t001");
+    // The fix runs in the writer's own conversation with the writer's managed contract; the writer
+    // stays retained until the wave's fix/review opportunity is complete (S20, #164).
+    assert_eq!(said["jobs"][0]["model"], "deepseek-official/deepseek-flash");
+    assert_eq!(said["jobs"][0]["effort"], "high");
+    assert_eq!(said["jobs"][0]["skills"], json!(["zettelkasten", "asd-ste100-zh"]));
+    assert_eq!(said["jobs"][0]["delete_after_collect"], false);
     assert_eq!(said["jobs"][0]["output"], work(&staged).join("out").join("t001.json").to_str().unwrap());
     let fallback = said["jobs"][0]["fallback"].as_array().unwrap();
     assert!(
@@ -432,6 +438,12 @@ fn the_term_drafts_become_ready_only_after_their_exact_review_and_never_publish(
         "the review must run in a fresh conversation: {said}"
     );
     assert_eq!(said["jobs"][0]["row"], 1);
+    // A review conversation is deleted once its answer is durably collected; it runs with the
+    // reviewer's managed contract (S20, #164).
+    assert_eq!(said["jobs"][0]["model"], "deepseek-official/deepseek-flash");
+    assert_eq!(said["jobs"][0]["effort"], "high");
+    assert_eq!(said["jobs"][0]["skills"], json!(["asd-ste100-zh"]));
+    assert_eq!(said["jobs"][0]["delete_after_collect"], true);
 
     // A stand-in reviewer approves the exact draft.
     std::fs::write(

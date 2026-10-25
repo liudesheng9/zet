@@ -337,6 +337,13 @@ fn the_term_cards_plan_reads_a_real_list_and_writes_no_card() {
         staged.join("term-cards").join("out").join("t001.json").to_str().unwrap()
     );
     assert_eq!(said["jobs"][0]["permissions"]["archive_write"], false);
+    // The managed contract travels with the job (S20, #164): the official DeepSeek model at high
+    // effort, the Chinese language skill through the job's own field, and no deletion after the
+    // answer because the wave keeps its writers through the review/fix opportunity.
+    assert_eq!(said["jobs"][0]["model"], "deepseek-official/deepseek-flash");
+    assert_eq!(said["jobs"][0]["effort"], "high");
+    assert_eq!(said["jobs"][0]["skills"], json!(["zettelkasten", "asd-ste100-zh"]));
+    assert_eq!(said["jobs"][0]["delete_after_collect"], false);
     let selected = zt.digest(&[
         "term-cards", "-Step", "jobs", "-Staging", stage, "-Jobs", "t002",
     ]);
