@@ -10,18 +10,20 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
-/// The rules self-check.ps1 reports by default: every hard rule but R6.
+/// The rules self-check.ps1 reports by default: every hard rule but R6. The Term rules are
+/// reported where they apply, which is only on a Term Card (S09, #152).
 pub const DEFAULT_RULES: &str =
-    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3";
+    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3,T1,T2,T3,T4,T5,T6,T7,T9,T10";
 
 /// The advisory rules of the current default policy: every line they raise is
 /// advice. I7 is not here: it has one advisory subcase (`own_source_unknown`)
 /// and one blocking one, so the core marks that subcase itself.
-pub const ADVISORY_RULES: &[&str] = &["R20", "R21", "I1", "I6", "L3", "E5"];
+pub const ADVISORY_RULES: &[&str] = &["R20", "R21", "I1", "I6", "L3", "E5", "T4"];
 
 /// The whole-archive graph rules: reported by the audit, not decided per write
 /// (design 6.2). Their scope names that boundary in every structured report.
-pub const GRAPH_RULES: &[&str] = &["I5", "I6", "E4", "E5", "F4", "L3"];
+/// T8 is the book audit of one Term list (`get_terms`, S09).
+pub const GRAPH_RULES: &[&str] = &["I5", "I6", "E4", "E5", "F4", "L3", "T8"];
 
 /// The default severity of one rule before an archive policy overrides it (S03).
 pub fn severity(rule: &str) -> Severity {
@@ -244,26 +246,26 @@ static CATALOG: &[RuleSpec] = &[
     spec("L1", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("L2", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("L3", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
-    // The Term rules (S08-S10 of the Term design) are catalogued with their
-    // design defaults; none is mechanically implemented, so none is enforced or
-    // settable. A slice that implements one flips its state to Configurable.
-    spec("T1", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
-    spec("T2", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
-    spec("T3", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
-    spec("T4", Setting::Advise, Setting::Advise, Scope::Local, RuleState::Pending),
-    spec("T5", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
-    spec("T6", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
+    // The Term rules (S09, #152): T1, T2, T3, T5, T6, T9 and T10 enforce the applicable Term
+    // format; T4 is the approximate symbol scan and stays advice; T8 is the book audit of one
+    // Term list, so it keeps the graph scope and never blocks one write.
+    spec("T1", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("T2", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("T3", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("T4", Setting::Advise, Setting::Advise, Scope::Local, RuleState::Configurable),
+    spec("T5", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("T6", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
     // T7's wrong/nonexistent Link target is the existing Link write invariant.
     spec("T7", Setting::Block, Setting::Block, Scope::Local, RuleState::Mandatory),
     // Computed term structure is audit advice.
-    spec("T8", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Pending),
-    spec("T9", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
+    spec("T8", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
+    spec("T9", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
     RuleSpec {
         rule: "T10",
         human: Setting::Block,
         agent: Setting::Block,
         scope: Scope::Local,
-        state: RuleState::Pending,
+        state: RuleState::Configurable,
         alias_of: Some("R22"),
     },
 ];
@@ -721,6 +723,10 @@ pub struct Applicability {
     shared: bool,
     book: String,
     term: String,
+    /// The Card's type is `term` (S09): a Term Card's content rules apply to it alone.
+    term_type: bool,
+    /// The computed Term role (`card`, `part`, `list`, `unfiled`) when the entry names one.
+    term_role: String,
 }
 
 impl Applicability {
@@ -736,9 +742,11 @@ impl Applicability {
             derivation: crate::core::is_derivation_facet(&facet),
             shared: ps_eq(&text(prop(entry, "line")), "shared"),
             book: ps_string(prop(entry, "book")),
-            // The future Term rules decide their role from this authored name;
+            // The Term rules decide their role from this authored name;
             // keeping it here makes an unnamed term rule follow a term change.
             term: ps_string(prop(entry, "term")),
+            term_type: ps_eq(&text(prop(entry, "type")), "term"),
+            term_role: ps_string(prop(entry, "term_role")).to_lowercase(),
         }
     }
 
@@ -791,19 +799,32 @@ impl Applicability {
                     "restatement-entry",
                 ])
             ),
+            // The Term content rules apply by the authored name and the computed role: a Card
+            // that is retyped away, renamed, or moved between a head and a part is a different
+            // requirement (S09, design 11.2).
+            "T1" | "T2" | "T3" | "T5" | "T6" | "T9" => format!(
+                "term:{}:{}:{}",
+                self.term_type, self.term, self.term_role
+            ),
+            "T4" => format!("term-symbols:{}:{}", self.term_type, self.term),
+            "T7" => format!("term-links:{}:{}", self.term_type, self.term),
+            "T8" => "graph".to_string(),
+            "T10" => format!("text-term:{}", self.term_type),
             // A rule this policy does not name keeps the conservative treatment:
             // it is compared only when every metadata fact is unchanged, so a new
             // rule cannot inherit across a retype, a shared-list, book or term
             // transition before its own signature is named here.
             _ => format!(
-                "other:{}:{}:{}:{}:{}:{}:{}",
+                "other:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 self.category,
                 self.level,
                 self.part,
                 self.derivation,
                 self.shared,
                 self.book,
-                self.term
+                self.term,
+                self.term_type,
+                self.term_role
             ),
         }
     }
@@ -857,7 +878,7 @@ fn identity(diagnostic: &Diagnostic) -> (String, String, String, String) {
 }
 
 // self-check.ps1.
-pattern!(FAULT_LINE, r"^\S+ ([RIELF]\d+) ");
+pattern!(FAULT_LINE, r"^\S+ ([RIELFT]\d+) ");
 
 pattern!(LIST_SPLIT, r"[,\s]+");
 
@@ -1059,15 +1080,20 @@ mod tests {
     /// an unnamed rule. The named rules keep their own narrower signatures.
     #[test]
     fn an_unnamed_rule_compares_every_metadata_fact() {
+        // A rule id the catalog does not name keeps the whole-metadata signature.
         let own = Applicability::of(&json!({ "category": "part", "facet": "推导" }));
         let shared = Applicability::of(&json!({ "category": "part", "facet": "推导", "line": "shared" }));
-        assert!(!own.comparable(&shared, "T9"), "a shared transition is no comparison");
+        assert!(!own.comparable(&shared, "T99"), "a shared transition is no comparison");
         let book_a = Applicability::of(&json!({ "category": "idea", "book": "A" }));
         let book_b = Applicability::of(&json!({ "category": "idea", "book": "B" }));
-        assert!(!book_a.comparable(&book_b, "T9"), "another book is no comparison");
+        assert!(!book_a.comparable(&book_b, "T99"), "another book is no comparison");
         let term = Applicability::of(&json!({ "category": "part", "facet": "推导", "term": "替代弹性" }));
-        assert!(!own.comparable(&term, "T9"), "a term transition is no comparison");
+        assert!(!own.comparable(&term, "T99"), "a term transition is no comparison");
+        // A Term rule follows the authored name and the computed role, not a model facet.
+        let head = Applicability::of(&json!({ "type": "term", "term": "替代弹性", "term_role": "card" }));
+        let part = Applicability::of(&json!({ "type": "term", "term": "替代弹性", "term_role": "part" }));
         assert!(own.comparable(&own, "T9"));
+        assert!(!head.comparable(&part, "T9"), "a head and a part are different requirements");
         // A named rule keeps its own narrower signature.
         assert!(!book_a.comparable(&book_b, "I3"));
         assert!(own.comparable(&shared, "R13"));
@@ -1139,16 +1165,17 @@ mod tests {
             assert_eq!(default(rule, Workspace::Agent), Setting::Advise, "{rule} agent");
             assert_eq!(scope(rule), Scope::Graph, "{rule} is a graph rule");
         }
-        // The Term rules are catalogued with their design defaults for the later
-        // slices; they are not mechanically implemented yet.
+        // The Term rules are mechanically implemented since S09 (#152); T1, T2, T3, T5, T6,
+        // T9 and T10 enforce the applicable format in both Workspaces.
         for rule in ["T1", "T2", "T3", "T5", "T6", "T9"] {
             assert_eq!(default(rule, Workspace::Human), Setting::Block, "{rule} human");
             assert_eq!(default(rule, Workspace::Agent), Setting::Block, "{rule} agent");
-            assert_eq!(rule_of(rule).unwrap().state, RuleState::Pending, "{rule}");
+            assert_eq!(rule_of(rule).unwrap().state, RuleState::Configurable, "{rule}");
         }
         for rule in ["T4", "T8"] {
             assert_eq!(default(rule, Workspace::Human), Setting::Advise, "{rule} human");
             assert_eq!(default(rule, Workspace::Agent), Setting::Advise, "{rule} agent");
+            assert_eq!(rule_of(rule).unwrap().state, RuleState::Configurable, "{rule}");
         }
         assert_eq!(scope("T8"), Scope::Graph, "T8 structure facts are audit advice");
         // T10 is the Term-facing label of the open-formula predicate R22.
@@ -1170,7 +1197,8 @@ mod tests {
         for rule in [
             "R2", "R3", "R4", "R5", "R6", "R7", "R9", "R12", "R13", "R14", "R15", "R16",
             "R17", "R18", "R19", "R20", "R21", "R22", "I1", "I2", "I3", "I4", "I5", "I6",
-            "I7", "E1", "E2", "E4", "E5", "F1", "F2", "F3", "F4", "L1", "L2", "L3",
+            "I7", "E1", "E2", "E4", "E5", "F1", "F2", "F3", "F4", "L1", "L2", "L3", "T1",
+            "T2", "T3", "T4", "T5", "T6", "T8", "T9",
         ] {
             assert_eq!(
                 rule_of(rule).map(|spec| spec.state),
@@ -1185,8 +1213,8 @@ mod tests {
     }
 
     /// S03-AC01/AC02/R0117-R0119: one declared key names a Workspace and a rule,
-    /// and every typo, invariant, mandatory rule, pending rule, alias, and
-    /// graph-only blocking override is refused with an explanation.
+    /// and every typo, invariant, mandatory rule, alias, and graph-only blocking
+    /// override is refused with an explanation.
     #[test]
     fn a_gate_key_and_its_change_are_validated_before_they_reach_a_policy() {
         assert_eq!(gate_key(Workspace::Agent, "R2"), "gate.agent.R2");
@@ -1230,11 +1258,13 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("T7 is a mandatory rule"), "{error}");
         assert!(error.contains("cannot be configured"), "{error}");
+        // T4 is implemented and configurable since S09; T8 stays a graph audit rule.
+        assert!(agent.change("T4", Change::Set(Setting::Block)).is_ok());
+        assert!(agent.change("T4", Change::Reset).is_ok());
         let error = agent
-            .change("T4", Change::Set(Setting::Block))
+            .change("T8", Change::Set(Setting::Block))
             .unwrap_err();
-        assert!(error.contains("T4 is not mechanically implemented yet"), "{error}");
-        assert!(error.contains("its default is advise"), "{error}");
+        assert!(error.contains("graph-only audit rule"), "{error}");
         let error = agent
             .change("T10", Change::Set(Setting::Advise))
             .unwrap_err();

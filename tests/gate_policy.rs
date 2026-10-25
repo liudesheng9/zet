@@ -184,7 +184,7 @@ fn one_archive_policy_is_configured_validated_and_reset_while_another_stays_defa
     assert!(shown.contains("overrides: 1"), "{shown}");
 
     // The full table makes the defaults as visible as the override, and names
-    // the graph-only, pending and mandatory rules.
+    // the graph-only and mandatory rules.
     let table = a.run(&["config", "policy"]);
     let row = |rule: &str| {
         table
@@ -199,7 +199,12 @@ fn one_archive_policy_is_configured_validated_and_reset_while_another_stays_defa
     assert!(row("R6").contains("off") && row("R6").contains("advise"), "{}", row("R6"));
     assert!(row("I1").contains("advise"), "{}", row("I1"));
     assert!(row("I5").contains("graph"), "{}", row("I5"));
-    assert!(row("T4").contains("pending"), "{}", row("T4"));
+    assert!(
+        row("T4").contains("advise") && row("T4").contains("configurable"),
+        "{}",
+        row("T4")
+    );
+    assert!(row("T1").contains("block"), "{}", row("T1"));
     assert!(row("T7").contains("mandatory"), "{}", row("T7"));
     assert!(
         table.contains("invariants: envelope, fields, address, links, targets, access, locks"),
@@ -215,7 +220,8 @@ fn one_archive_policy_is_configured_validated_and_reset_while_another_stays_defa
         ("gate.human.access", "off", "mandatory service invariant"),
         ("gate.human.envelope", "off", "mandatory service invariant"),
         ("gate.agent.I5", "block", "graph-only audit rule"),
-        ("gate.agent.T4", "block", "not mechanically implemented"),
+        ("gate.agent.T7", "block", "mandatory rule"),
+        ("gate.agent.T8", "block", "graph-only audit rule"),
         ("gate.agent.T10", "block", "Term-facing label of R22"),
     ] {
         let out = a

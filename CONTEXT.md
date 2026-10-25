@@ -13,7 +13,7 @@ A non-root Card in a Topic tree or Literature tree.
 _Avoid_: Normal Card
 
 **Card type**:
-What a Card holds: `idea` (the default), `event`, `finding`, `model`, or `hub`. Only Regular Cards can be Event, Finding, Model, or Hub Cards; Topic and Literature Cards are always Idea Cards. The type stays with the Card when it moves.
+What a Card holds: `idea` (the default), `event`, `finding`, `model`, `hub`, or `term`. Only Regular Cards can be Event, Finding, Model, Hub, or Term Cards; Topic and Literature Cards are always Idea Cards. The type stays with the Card when it moves.
 _Avoid_: Card kind (kind means Topic, Literature, or Regular), tag, category
 
 **Idea Card**:
@@ -293,7 +293,7 @@ The severity the Card check gives each mechanically implemented rule in one arch
 _Avoid_: Lint settings, per-archive config file, feature switch
 
 **Write gate**:
-The one Card-check decision every authoring route makes inside its existing write transaction: it resolves the final proposed Card (text and metadata), enforces the mandatory envelope, Link, Access and Lock rules, gathers bounded context (parent and model level, the model or book term table, distinct targets), runs the checker's rules under the archive's Card-check policy and the legacy ratchet, and either stores the Card with its warnings or refuses with a typed `card_check` without storing anything.
+The one Card-check decision every authoring route makes inside its existing write transaction: it resolves the final proposed Card (text and metadata), enforces the mandatory envelope, Link, Access and Lock rules, gathers bounded context (parent and model level, the model or book term table, distinct targets, and a Term Card's role, list rows, head and Term-link targets), runs the checker's rules under the archive's Card-check policy and the legacy ratchet, and either stores the Card with its warnings or refuses with a typed `card_check` without storing anything.
 _Avoid_: Pre-commit hook, second writer, gate service
 
 **Gate stage**:
@@ -303,6 +303,38 @@ _Avoid_: Feature flag, global switch
 **Book term table**:
 The terms of one digested book, with the words not to use for each: a Card titled `术语表…`, a Side successor of the book's first anchor. Rule R6 checks the book's Cards against it, as a model's term table checks its parts. A word not to use is another name for the same concept, never a different concept.
 _Avoid_: Glossary, vocabulary
+
+**Term Card type**:
+The Card type `term`: a Card that belongs to the terminology of one text. A `term` Card has one of three roles, computed from its stored term name and its Location: Term list Card, Term Card, or Term part. Only Regular Cards can be `term` Cards.
+_Avoid_: Glossary card, definition card, vocabulary card
+
+**Term list Card**:
+A Regular Card of type `term` with no term name: the Book term table of one digested book. Its body keeps the four-column table that R6 and `get_terms` read. Its immediate Side successors are its Term Cards, in table row order.
+_Avoid_: Glossary, term index
+
+**Term Card**:
+A Regular Card of type `term` with a term name, filed as an immediate Side successor of a Term list Card. It states one term: its exact name, its original wording, the words not to use, a plain explanation, the book's own definition, and, for a mathematical term, the labelled hypotheses, the tagged definition with its reading, a symbol table with domains, equivalent forms with reasons, numbered derivations with a basis per step, limits, a computed example, intuition, distinctions, misreadings, and its role in the book. Its title is the exact name, and it ends with a `来源：` line naming the book. A `自动链接：否` line with its required `自动链接理由：` line records that the term must stay unlinked; absence means automatic linking is enabled.
+_Avoid_: Definition card, entry
+
+**Term part**:
+A Regular Card of type `term` with the same term name as a Term Card, filed as a Direct successor of it or of another of its parts. It continues the Term Card when the derivation or the remaining sections do not fit one Card. Its title is `推导（续 k/n）：…`, it starts with its `类别：` and a `续：` line naming the head, and it inherits the head's definition and notation.
+_Avoid_: Sub-term, term chain
+
+**Term name**:
+The stored term name of a Term Card or Term part: the exact spelling of the term in its Term list Card row, at most 40 characters on one line, without `[`, `]`, `@`, `|` or a backtick.
+_Avoid_: Term id, keyword
+
+**Term link**:
+A Link written `[[<label>@<address>]]` that points from a word in a Card body to the Term Card of that term. Its label is the word as it stands in the sentence. A reader sees only the label.
+_Avoid_: Glossary link, keyword link
+
+**Term use**:
+A Card that holds a Term link to a Term Card. The Term Card's generated `## Term uses` section lists them.
+_Avoid_: Backlink (that is a Reverse link), occurrence
+
+**Term rule**:
+One of the T1–T10 checks on a Term Card's authored template: known ordered head lines and sections, title/name/row identity, the mathematical content a math head needs, symbol-table coverage, numbered derivation steps with bases and a result, no unexpanded skipped step, Term-link target and label agreement, one head per row, the measured prose size, and balanced formulas. The checker owns the rules; a rendered draft and a stored Card go through the same evaluator.
+_Avoid_: Term lint, glossary check
 
 **Structure Card**:
 The Card that orders one book's argument: a Side successor of its first anchor whose title is the book's thesis and whose body starts with `本卡是《…》的结构卡`. It lists the parts in reading order, the book's models, and its Event Cards.

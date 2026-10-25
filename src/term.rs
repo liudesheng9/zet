@@ -549,6 +549,7 @@ pub(crate) fn structure(conn: &Connection, at: &str) -> Result<Value> {
                 format!("{:010}", index + 1),
                 json!({
                     "fault": "term_row_without_card",
+                    "rule": "T8",
                     "row": index + 1,
                     "term": row.term,
                 }),
@@ -574,6 +575,7 @@ pub(crate) fn structure(conn: &Connection, at: &str) -> Result<Value> {
                 address.clone(),
                 json!({
                     "fault": "term_card_without_row",
+                    "rule": "T8",
                     "address": address,
                     "term": name,
                 }),
@@ -591,6 +593,7 @@ pub(crate) fn structure(conn: &Connection, at: &str) -> Result<Value> {
                 term.clone(),
                 json!({
                     "fault": "term_duplicate",
+                    "rule": "T8",
                     "term": term,
                     "heads": addresses,
                 }),
@@ -730,6 +733,7 @@ pub(crate) fn structure(conn: &Connection, at: &str) -> Result<Value> {
             })
         })
         .collect::<Vec<_>>();
+    table_shape_faults(&parsed.body, &mut faults);
     faults.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
     Ok(json!({
@@ -757,6 +761,70 @@ pub(crate) fn structure(conn: &Connection, at: &str) -> Result<Value> {
         "complete": true,
     }))
 }
+
+/// The table-shape faults of one Term list (R0233, T8): a row with more than the four template
+/// columns, and an HTML comment in the body other than the generated Reverse marker. The list's
+/// four-column table stays the table R6 reads; no fifth column or hidden comment rides in it.
+fn table_shape_faults(body: &str, faults: &mut Vec<(u8, String, Value)>) {
+    let mut fenced = false;
+    let mut data_row = 0usize;
+    for (index, raw) in body.lines().enumerate() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if trimmed.starts_with('|') {
+            let cells = trimmed
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect::<Vec<_>>();
+            let rule = !cells.is_empty()
+                && cells
+                    .iter()
+                    .all(|cell| !cell.is_empty() && cell.chars().all(|ch| ch == '-' || ch == ':'));
+            let header = cells.first().is_some_and(|cell| *cell == "术语");
+            if !rule && !header && cells.len() > 4 {
+                data_row += 1;
+                faults.push((
+                    7,
+                    format!("column:{:010}", index + 1),
+                    json!({
+                        "fault": "extra_column",
+                        "rule": "T8",
+                        "row": data_row,
+                        "columns": cells.len(),
+                    }),
+                ));
+            } else if !rule && !header {
+                data_row += 1;
+            }
+        }
+        // An HTML comment is not authored content; only the generated Reverse marker is known.
+        if let Some(start) = raw.find("<!--")
+            && let Some(end) = raw[start + 4..].find("-->")
+        {
+            let comment = raw[start + 4..start + 4 + end].trim();
+            if comment != "zt:reverse-links" {
+                faults.push((
+                    7,
+                    format!("comment:{:010}", index + 1),
+                    json!({
+                        "fault": "hidden_comment",
+                        "rule": "T8",
+                        "line": index + 1,
+                        "comment": comment,
+                    }),
+                ));
+            }
+        }
+    }
+}
+
 
 /// The stored Term uses of one head, one row per source Card with its occurrence count.
 fn uses_of(conn: &Connection, target: &str) -> Result<Vec<Use>> {

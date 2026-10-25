@@ -7,11 +7,11 @@
 use crate::text::{
     TitleContext, TitleRow, Terms, bigrams, book_place, culture, culture_cmp,
     culture_starts_with, entry_section, from_utf16_form, is_high_stand_in, is_low_stand_in, key,
-    leads_to, length, literature_tree, measure, open_math, passive, plain, prop, prose_lines,
-    ps_eq, ps_in, ps_int, ps_string, read_terms, similarity, split_sentences, strings,
-    structure_lines, term_table, text, truthy, utf16_form, BOLD, CJK, CODE, DOCUMENT_LINE,
-    HEADING, INLINE_MATH, LINK, LINK_TARGET, PLACEHOLDERS, REASON_STRIP, SOURCE_LINE, SPACE,
-    SPACES, WORD, pattern,
+    leads_to, length, link_occurrences, literature_tree, measure, open_math, passive, plain, prop,
+    prose_lines, ps_eq, ps_in, ps_int, ps_string, read_terms, similarity, split_sentences,
+    strings, structure_lines, term_table, text, truthy, utf16_form, LinkForm, BOLD, CJK, CODE,
+    DOCUMENT_LINE, HEADING, INLINE_MATH, LINK, LINK_TARGET, PLACEHOLDERS, REASON_STRIP,
+    SOURCE_LINE, SPACE, SPACES, WORD, pattern,
 };
 use regex::Regex;
 use serde_json::Value;
@@ -44,6 +44,21 @@ pattern!(NOTE_LABEL, r"^说明\s*[：:]\s*");
 pattern!(SOURCE_LABEL, r"^来源\s*[：:]");
 // The label a Bridge apply puts before its sentence (`跨书关联：对照 [[x]]：…`): navigation, not prose.
 pattern!(BRIDGE_LABEL, r"^跨书关联\s*[：:]\s*");
+
+// The Term content rules (S09, #152, design 11.3).
+// A skipped derivation step names its shortcut instead of the step it skips (R0296, AC12).
+pattern!(SKIPPED_STEP, r"易知|显然|不难看出|容易证明|同理可得");
+// A named earlier step or tagged definition: `步骤 3`, `第 2 步`, `同步骤 2–3`, `(T1)`, `式 (4)`.
+pattern!(
+    NAMED_STEP,
+    r"步骤\s*\d|第\s*\d+\s*步|同步骤|[(（]\s*[A-Z]\d+\s*[)）]|式\s*[(（]\s*[0-9A-Za-z][0-9A-Za-z.\-]*\s*[)）]"
+);
+// A continuation title: `推导（续 k/n）：<what continues>` (D14, R0047).
+pattern!(CONTINUATION_TITLE, r"^推导（续 (\d+)/(\d+)）：(.+)$");
+// A labelled hypothesis line: `- (H1) …`.
+pattern!(HYPOTHESIS_LINE, r"^[-*]\s*\(H\d+\)\s*\S");
+// A quotation is exempt from the Card language (T6 does not read inside it).
+pattern!(QUOTED, r"「[^」]*」|“[^”]*”");
 
 // The Card layer rules.
 pattern!(
@@ -339,6 +354,10 @@ pub struct Limits {
     pub min_idea_chars: i64,
     pub max_idea_chars: i64,
     pub min_reason: i64,
+    /// The most derivation steps one Term Card holds (design 11.2, R0289).
+    pub max_term_steps: i64,
+    /// The most measured prose units one Term Card holds, formulas and tables excluded.
+    pub max_term_prose: i64,
 }
 
 impl Default for Limits {
@@ -352,6 +371,8 @@ impl Default for Limits {
             min_idea_chars: 40,
             max_idea_chars: 300,
             min_reason: 8,
+            max_term_steps: 12,
+            max_term_prose: 1600,
         }
     }
 }
@@ -369,6 +390,8 @@ impl Limits {
             "min_idea_chars": self.min_idea_chars,
             "max_idea_chars": self.max_idea_chars,
             "min_reason": self.min_reason,
+            "max_term_steps": self.max_term_steps,
+            "max_term_prose": self.max_term_prose,
         })
     }
 
@@ -390,6 +413,8 @@ impl Limits {
             min_idea_chars: number("min_idea_chars")?,
             max_idea_chars: number("max_idea_chars")?,
             min_reason: number("min_reason")?,
+            max_term_steps: number("max_term_steps")?,
+            max_term_prose: number("max_term_prose")?,
         })
     }
 }
@@ -588,6 +613,17 @@ impl Check {
         for card in cards {
             let address = text(prop(card, "address"));
             let chars = self.language(card, &address, &mut faults);
+            // The Term content rules read the same authored text a draft renderer wrote or a
+            // hand edit stored, so both go through one evaluator (design 11.3, S09-AC08).
+            self.term_rules(card, &address, &mut faults);
+            // T7's label and retained-role advice applies to a Term use on any Card, not only a
+            // Term Card; the bounded target facts travel with the entry.
+            self.term_link_advice(
+                &address,
+                &text(prop(card, "body")),
+                card,
+                &mut faults,
+            );
             prose_chars.insert(key(&address), chars);
         }
         self.layer(cards, &prose_chars, &mut faults);
@@ -621,11 +657,15 @@ impl Check {
         let level = self.level_of(card);
         let title = text(prop(card, "title"));
         let authored_body = text(prop(card, "body"));
+        // A Term Card reports its balanced-formula fault as T10, the Term-facing label of R22
+        // (design 11.3): one fault, not two labels for one predicate.
+        let is_term = ps_eq(&text(prop(card, "type")), "term");
+        let formula_rule = if is_term { "T10" } else { "R22" };
         corruption(&authored_body, &title, address, faults);
         if open_math(&authored_body) {
             faults.add(
                 address,
-                "R22",
+                formula_rule,
                 "open_formula",
                 &format!("body:{authored_body}"),
                 "the body leaves an inline formula open (an odd number of $; write a currency as 美元 or \\$)",
@@ -634,11 +674,12 @@ impl Check {
         let facet = text(prop(card, "facet"));
         // A root, an anchor's section index, a hub's navigation list, and a register part's term
         // rows are not claims; the standalone rules read the authored prose that states one
-        // (D126's Literature prose excludes a locator, and an index line is a locator).
+        // (D126's Literature prose excludes a locator, and an index line is a locator). A Term
+        // Card's `首次定义：§3` line is a locator too, and the pilot rules never covered it.
         let navigation = ps_in(
             &text(prop(card, "category")),
             &["anchor", "root", "hub", "register-part", "restatement-entry"],
-        );
+        ) || is_term;
         let shared = ps_in(address, &self.shared);
         let derivation = is_derivation_facet(&facet);
         if !title.is_empty() {
@@ -659,7 +700,7 @@ impl Check {
             if open_math(&title) {
                 faults.add(
                     address,
-                    "R22",
+                    formula_rule,
                     "open_formula",
                     &format!("title:{title}"),
                     &format!("the title leaves an inline formula open (an odd number of $): {title}"),
@@ -687,6 +728,12 @@ impl Check {
         let structure = structure_lines(&text(prop(card, "body")));
         for line in prose_lines(&text(prop(card, "body"))) {
             if structure.contains(line.text.trim()) {
+                continue;
+            }
+            // A Term Card's `术语：`, `不用：`, `首次定义：` … lines are authored metadata, not
+            // prose: the language rules read the explanation and sections, and T1/T2 read the
+            // head lines. Without this, R6 would reject the term's own `不用：` list.
+            if is_term && crate::term::head_line(&line.text).is_some() {
                 continue;
             }
             if derivation && let Some(caps) = SECTION.captures(&line.text) {
@@ -887,6 +934,731 @@ impl Check {
             );
         }
         chars
+    }
+
+    /// The Term content rules T1–T10 for one named Term Card (design 11.3, S09 / #152). A Term
+    /// list has no term content template; the book audit (`get_terms`) reports its coverage.
+    fn term_rules(&self, card: &Value, address: &str, faults: &mut Faults) {
+        if !ps_eq(&text(prop(card, "type")), "term") {
+            return;
+        }
+        let term = text(prop(card, "term"));
+        if term.is_empty() {
+            return;
+        }
+        let title = text(prop(card, "title"));
+        let body = text(prop(card, "body"));
+        let role = {
+            let role = ps_string(prop(card, "term_role")).to_lowercase();
+            if role.is_empty() { "card".to_string() } else { role }
+        };
+        let template = crate::term::parse_template(&body);
+        self.term_template(address, &role, &template, card, faults);
+        self.term_identity(address, &role, &title, &term, &template, card, faults);
+        self.term_math(address, &role, &template, card, faults);
+        self.term_steps(address, &template, faults);
+        self.term_symbols(address, &template, faults);
+        self.term_skipped_steps(address, &body, faults);
+        let prose = crate::term::prose_units(&body);
+        if prose > self.limits.max_term_prose {
+            faults.add(
+                address,
+                "T9",
+                "prose_size",
+                &format!("prose:{prose}/{}", self.limits.max_term_prose),
+                &format!(
+                    "({prose} prose units > {}) split the term into a head and continuation parts",
+                    self.limits.max_term_prose
+                ),
+            );
+        }
+    }
+
+    /// T1: the known ordered labels and sections, the required common fields, and the
+    /// role-specific template (R0291, R0292, R0298, R0302).
+    fn term_template(
+        &self,
+        address: &str,
+        role: &str,
+        template: &crate::term::Template,
+        card: &Value,
+        faults: &mut Faults,
+    ) {
+        for (line, text) in &template.unknown_lines {
+            faults.add(
+                address,
+                "T1",
+                "unknown_line",
+                text,
+                &format!("line {line} is no Term head line: {text}"),
+            );
+        }
+        for (line, heading) in &template.unknown_sections {
+            faults.add(
+                address,
+                "T1",
+                "unknown_section",
+                heading,
+                &format!("line {line} is no Term section: ## {heading}"),
+            );
+        }
+        // A repeated label is ambiguous: the reader cannot tell which value decides.
+        let mut labels: BTreeMap<&str, usize> = BTreeMap::new();
+        for line in &template.lines {
+            *labels.entry(line.label.as_str()).or_default() += 1;
+        }
+        for (label, count) in &labels {
+            if *count > 1 {
+                faults.add(
+                    address,
+                    "T1",
+                    "duplicate_label",
+                    label,
+                    &format!("{count} `{label}：` lines in one Term Card"),
+                );
+            }
+        }
+        let mut positions = Vec::new();
+        for line in &template.lines {
+            if let Some(position) = head_position(&line.label) {
+                positions.push((line.label.clone(), position));
+            }
+        }
+        if positions
+            .windows(2)
+            .any(|pair| pair[0].1 > pair[1].1)
+        {
+            let found = positions
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            faults.add(
+                address,
+                "T1",
+                "label_order",
+                &found,
+                &format!("head lines out of template order: {found}"),
+            );
+        }
+        let required: &[&str] = if role == "part" {
+            &["类别", crate::term::CONTINUATION_LABEL]
+        } else {
+            &["术语", "不用", "类别", "首次定义"]
+        };
+        for label in required {
+            if template.line(label).is_none() {
+                faults.add(
+                    address,
+                    "T1",
+                    "missing_label",
+                    label,
+                    &format!("missing the `{label}：` line"),
+                );
+            }
+        }
+        if let Some(line) = template.line("类别")
+            && crate::term::Category::from_label(&line.value).is_none()
+        {
+            faults.add(
+                address,
+                "T1",
+                "category",
+                &line.value,
+                &format!(
+                    "`类别：{}` is no Term category; expected `{}` or `{}`",
+                    line.value,
+                    crate::term::CATEGORY_CONCEPT,
+                    crate::term::CATEGORY_MATH
+                ),
+            );
+        }
+        // The authored opt-out: absence means enabled, and the two lines travel together.
+        let off = template.line(crate::term::AUTO_LINK_LABEL);
+        let reason = template.line(crate::term::AUTO_LINK_REASON_LABEL);
+        match (off, reason) {
+            (Some(line), _) if line.value != crate::term::AUTO_LINK_OFF => faults.add(
+                address,
+                "T1",
+                "auto_link_value",
+                &line.value,
+                &format!(
+                    "`{}：{}` is no opt-out; absence means enabled and only `{}` disables it",
+                    crate::term::AUTO_LINK_LABEL,
+                    line.value,
+                    crate::term::AUTO_LINK_OFF
+                ),
+            ),
+            (Some(_), None) => faults.add(
+                address,
+                "T1",
+                "auto_link_reason",
+                crate::term::AUTO_LINK_REASON_LABEL,
+                "a disabled automatic link needs its `自动链接理由：` line",
+            ),
+            (Some(_), Some(line)) if line.value.is_empty() => faults.add(
+                address,
+                "T1",
+                "auto_link_reason",
+                crate::term::AUTO_LINK_REASON_LABEL,
+                "the `自动链接理由：` line is empty",
+            ),
+            (None, Some(_)) => faults.add(
+                address,
+                "T1",
+                "auto_link_reason_orphan",
+                crate::term::AUTO_LINK_REASON_LABEL,
+                "an `自动链接理由：` line without `自动链接：否` decides nothing",
+            ),
+            _ => {}
+        }
+        // A part's `续：` line names the head it continues and says what it inherits (R0283).
+        if role == "part"
+            && let Some(line) = template.line(crate::term::CONTINUATION_LABEL)
+        {
+            let head = text(prop(card, "term_head"));
+            match link_occurrences(&line.value)
+                .into_iter()
+                .find(|occurrence| occurrence.form == LinkForm::Ordinary)
+            {
+                None => faults.add(
+                    address,
+                    "T1",
+                    "continuation_link",
+                    crate::term::CONTINUATION_LABEL,
+                    "the `续：` line carries no Link to the head it continues",
+                ),
+                Some(occurrence) if !head.is_empty() && occurrence.target != head => faults.add(
+                    address,
+                    "T1",
+                    "continuation_target",
+                    occurrence.target,
+                    &format!(
+                        "the `续：` line names `{}`, not the head `{head}`",
+                        occurrence.target
+                    ),
+                ),
+                Some(_) => {}
+            }
+        }
+        // Sections: known order, no repeat outside 推导, and the common section.
+        let mut section_positions = Vec::new();
+        let mut section_counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for section in &template.sections {
+            let Some(position) = section_position(&section.name) else {
+                continue;
+            };
+            section_positions.push((section.name.clone(), position));
+            *section_counts.entry(section.name.as_str()).or_default() += 1;
+        }
+        if section_positions
+            .windows(2)
+            .any(|pair| pair[0].1 > pair[1].1)
+        {
+            let found = section_positions
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            faults.add(
+                address,
+                "T1",
+                "section_order",
+                &found,
+                &format!("sections out of template order: {found}"),
+            );
+        }
+        for (name, count) in &section_counts {
+            if *count > 1 && *name != "推导" {
+                faults.add(
+                    address,
+                    "T1",
+                    "duplicate_section",
+                    name,
+                    &format!("{count} `## {name}` sections in one Term Card"),
+                );
+            }
+        }
+        if role == "part" {
+            if template.sections.is_empty() {
+                faults.add(
+                    address,
+                    "T1",
+                    "missing_section",
+                    "续",
+                    "a continuation part carries at least one section",
+                );
+            }
+        } else if !template.sections.iter().any(|section| section.name == "释义") {
+            faults.add(
+                address,
+                "T1",
+                "missing_section",
+                "释义",
+                "a Term Card carries the `## 释义` section",
+            );
+        }
+        for section in &template.sections {
+            if section.content.iter().all(|line| line.trim().is_empty()) {
+                faults.add(
+                    address,
+                    "T1",
+                    "empty_section",
+                    &section.name,
+                    &format!("`## {}` holds no content; leave an empty section out", section.heading),
+                );
+            }
+        }
+        // The source trailer is the last line and names a book Card.
+        match &template.trailer {
+            None => {
+                faults.add(
+                    address,
+                    "T1",
+                    "missing_source",
+                    crate::term::SOURCE_LABEL,
+                    "a Term Card ends with its `来源：[[book]] locator` line",
+                );
+                if template.misplaced_trailer {
+                    faults.add(
+                        address,
+                        "T1",
+                        "source_not_last",
+                        crate::term::SOURCE_LABEL,
+                        "the `来源：` line must be the last line of the Card",
+                    );
+                }
+            }
+            Some(line) => {
+                if template.misplaced_trailer || template.after_trailer {
+                    faults.add(
+                        address,
+                        "T1",
+                        "source_not_last",
+                        crate::term::SOURCE_LABEL,
+                        "the `来源：` line must be the last line of the Card",
+                    );
+                }
+                if !link_occurrences(&line.value)
+                    .iter()
+                    .any(|occurrence| occurrence.form == LinkForm::Ordinary)
+                {
+                    faults.add(
+                        address,
+                        "T1",
+                        "source_link",
+                        &line.value,
+                        &format!("the `来源：` line names no book Link: {}", line.value),
+                    );
+                }
+            }
+        }
+    }
+
+    /// T2: the head title, stored name, `术语：` line and table row agree; a part title uses the
+    /// continuation format and keeps the same stored term (R0292, R0285).
+    fn term_identity(
+        &self,
+        address: &str,
+        role: &str,
+        title: &str,
+        term: &str,
+        template: &crate::term::Template,
+        card: &Value,
+        faults: &mut Faults,
+    ) {
+        if let Some(line) = template.line("术语")
+            && line.value != term
+        {
+            faults.add(
+                address,
+                "T2",
+                "term_line",
+                &line.value,
+                &format!("`术语：{}` differs from the stored term `{term}`", line.value),
+            );
+        }
+        if role == "part" {
+            if !continuation_title(title) {
+                faults.add(
+                    address,
+                    "T2",
+                    "part_title",
+                    title,
+                    &format!(
+                        "`{title}` is no continuation title; expected `推导（续 k/n）：…`"
+                    ),
+                );
+            }
+            return;
+        }
+        if title != term {
+            faults.add(
+                address,
+                "T2",
+                "title",
+                title,
+                &format!("the title `{title}` is not the exact term `{term}`"),
+            );
+        }
+        if role == "list" {
+            return;
+        }
+        let rows = strings(prop(card, "term_rows"));
+        if !rows.is_empty() && !rows.iter().any(|row| row == term) {
+            faults.add(
+                address,
+                "T2",
+                "row",
+                term,
+                &format!("`{term}` is no row of this list's term table"),
+            );
+        }
+    }
+
+    /// T3: a math head establishes its hypotheses, displayed definition, symbol table and
+    /// derivation; a concept term carries no formal derivation section (R0293, R0286, AC07).
+    fn term_math(
+        &self,
+        address: &str,
+        role: &str,
+        template: &crate::term::Template,
+        card: &Value,
+        faults: &mut Faults,
+    ) {
+        let Some(line) = template.line("类别") else {
+            return;
+        };
+        let Some(category) = crate::term::Category::from_label(&line.value) else {
+            return;
+        };
+        match category {
+            crate::term::Category::Concept => {
+                for name in crate::term::FORMAL_SECTIONS {
+                    if !template.named(name).is_empty() {
+                        faults.add(
+                            address,
+                            "T3",
+                            "formal_section_on_concept",
+                            name,
+                            &format!("a concept term carries no formal `## {name}` section"),
+                        );
+                    }
+                }
+                let symbol_table = template
+                    .sections
+                    .iter()
+                    .any(|section| section.content.iter().any(|line| is_symbol_table_line(line)));
+                if symbol_table {
+                    faults.add(
+                        address,
+                        "T3",
+                        "formal_section_on_concept",
+                        "符号表",
+                        "a concept term carries no symbol table",
+                    );
+                }
+            }
+            crate::term::Category::Math => {
+                let definitions = template.named("数学定义");
+                if definitions.is_empty() {
+                    if role != "part" {
+                        faults.add(
+                            address,
+                            "T3",
+                            "missing_section",
+                            "数学定义",
+                            "a mathematical term carries the `## 数学定义` section",
+                        );
+                    }
+                } else {
+                    let definition = definitions[0];
+                    if !definition
+                        .content
+                        .iter()
+                        .any(|line| HYPOTHESIS_LINE.is_match(line.trim()))
+                    {
+                        faults.add(
+                            address,
+                            "T3",
+                            "missing_hypotheses",
+                            "前提",
+                            "a mathematical definition lists labelled hypotheses `- (H1) …`",
+                        );
+                    }
+                    if !definition.content.iter().any(|line| display_formula(line)) {
+                        faults.add(
+                            address,
+                            "T3",
+                            "missing_definition",
+                            "$$",
+                            "a mathematical definition is a display formula",
+                        );
+                    }
+                    if template.symbol_table().is_empty() {
+                        faults.add(
+                            address,
+                            "T3",
+                            "missing_symbols",
+                            "符号表",
+                            "a mathematical definition carries its `符号表` table",
+                        );
+                    }
+                }
+                if template.named("推导").is_empty() {
+                    faults.add(
+                        address,
+                        "T3",
+                        "missing_derivation",
+                        "推导",
+                        "a mathematical term carries its `## 推导：…` section",
+                    );
+                }
+            }
+        }
+        // A continuation part inherits its head's category; a different one is a chain fault,
+        // whichever of the two categories the part itself claims (R0286, R0288).
+        let head_category = crate::term::Category::from_label(&text(prop(
+            card,
+            "term_head_category",
+        )));
+        if role == "part"
+            && let Some(head) = head_category
+            && head != category
+        {
+            faults.add(
+                address,
+                "T3",
+                "chain_category",
+                &line.value,
+                &format!(
+                    "this part says `类别：{}` but its head says `{}`",
+                    line.value,
+                    head.label()
+                ),
+            );
+        }
+    }
+
+    /// T5: numbered steps, a basis per step, a final result line, and the per-Card step bound
+    /// (R0295, R0289).
+    fn term_steps(&self, address: &str, template: &crate::term::Template, faults: &mut Faults) {
+        let mut total = 0i64;
+        for section in template.named("推导") {
+            let claim = section
+                .heading
+                .strip_prefix("推导：")
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if claim.is_empty() {
+                faults.add(
+                    address,
+                    "T5",
+                    "missing_claim",
+                    &section.heading,
+                    "a derivation heading names what it derives: `## 推导：<claim>`",
+                );
+            }
+            let steps = crate::term::step_blocks(section);
+            if steps.is_empty() {
+                faults.add(
+                    address,
+                    "T5",
+                    "no_steps",
+                    &section.heading,
+                    &format!("`## {}` holds no numbered step", section.heading),
+                );
+                continue;
+            }
+            let numbers = steps.iter().map(|step| step.number).collect::<Vec<_>>();
+            let expected = (1..=steps.len() as i64).collect::<Vec<_>>();
+            if numbers != expected {
+                faults.add(
+                    address,
+                    "T5",
+                    "step_numbering",
+                    &numbers
+                        .iter()
+                        .map(i64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    &format!(
+                        "the steps of `## {}` are numbered {:?}; expected 1…{}",
+                        section.heading,
+                        numbers,
+                        steps.len()
+                    ),
+                );
+            }
+            for step in &steps {
+                total += 1;
+                if basis_missing(step.basis()) {
+                    faults.add(
+                        address,
+                        "T5",
+                        "missing_basis",
+                        &format!("step:{}", step.number),
+                        &format!("step {} names no `依据：` basis", step.number),
+                    );
+                }
+                if step.text().trim().is_empty() {
+                    faults.add(
+                        address,
+                        "T5",
+                        "empty_step",
+                        &format!("step:{}", step.number),
+                        &format!("step {} holds no text", step.number),
+                    );
+                }
+            }
+            if crate::term::result_line(section).is_none()
+                && !section
+                    .content
+                    .iter()
+                    .any(|line| line.trim() == crate::term::CONTINUES)
+            {
+                faults.add(
+                    address,
+                    "T5",
+                    "missing_result",
+                    &section.heading,
+                    &format!("`## {}` ends without a `结果：` line", section.heading),
+                );
+            }
+        }
+        if total > self.limits.max_term_steps {
+            faults.add(
+                address,
+                "T5",
+                "steps",
+                &format!("steps:{total}/{}", self.limits.max_term_steps),
+                &format!(
+                    "({total} derivation steps > {}) split the derivation into continuation parts",
+                    self.limits.max_term_steps
+                ),
+            );
+        }
+    }
+
+    /// T4 (advice): every formula identifier is covered by the head's symbol table. The LaTeX
+    /// scan is approximate, so the fault never blocks a write (R0294).
+    fn term_symbols(&self, address: &str, template: &crate::term::Template, faults: &mut Faults) {
+        let Some(line) = template.line("类别") else {
+            return;
+        };
+        if crate::term::Category::from_label(&line.value) != Some(crate::term::Category::Math) {
+            return;
+        }
+        let symbols = template.symbol_table();
+        if symbols.is_empty() {
+            return;
+        }
+        let mut known = BTreeSet::new();
+        for (symbol, _, _) in &symbols {
+            known.extend(crate::term::latex_identifiers(symbol));
+        }
+        let mut formulas = Vec::new();
+        for section in template.named("数学定义") {
+            formulas.extend(math_formulas(&section.content));
+        }
+        for section in template.named("推导") {
+            formulas.extend(math_formulas(&section.content));
+        }
+        let mut reported = BTreeSet::new();
+        for formula in formulas {
+            for identifier in crate::term::latex_identifiers(&formula) {
+                if known.contains(&identifier) || !reported.insert(identifier.clone()) {
+                    continue;
+                }
+                faults.advise(
+                    address,
+                    "T4",
+                    "symbol_uncovered",
+                    &identifier,
+                    &format!(
+                        "the formula symbol `{identifier}` is not in the symbol table; a LaTeX scan is approximate"
+                    ),
+                );
+            }
+        }
+    }
+
+    /// T6: no unexpanded `易知`, `显然`, `不难看出`, `容易证明` or `同理可得` without a named
+    /// step; a named earlier-step reference is allowed (R0296, AC12).
+    fn term_skipped_steps(&self, address: &str, body: &str, faults: &mut Faults) {
+        for line in prose_lines(body) {
+            if SOURCE_LINE.is_match(&line.text) {
+                continue;
+            }
+            let masked = QUOTED.replace_all(&line.text, "");
+            for sentence in split_sentences(&masked) {
+                let plain = plain(&sentence);
+                if NAMED_STEP.is_match(&plain) {
+                    continue;
+                }
+                for phrase in SKIPPED_STEP.find_iter(&plain) {
+                    faults.add(
+                        address,
+                        "T6",
+                        "skipped_step",
+                        &format!("{}|{sentence}", phrase.as_str()),
+                        &format!(
+                            "`{}` without the named step it skips: {sentence}",
+                            phrase.as_str()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// T7 (advice): a Term link's label agrees with the head's name, and a retained legacy
+    /// target is not a head. A new invalid target is already a mandatory Link invariant (R0297).
+    fn term_link_advice(&self, address: &str, body: &str, card: &Value, faults: &mut Faults) {
+        let invalid = strings(prop(card, "term_invalid_targets"));
+        let targets = prop(card, "term_targets").and_then(Value::as_object);
+        if invalid.is_empty() && targets.is_none() {
+            return;
+        }
+        for occurrence in link_occurrences(body) {
+            if occurrence.form != LinkForm::Term {
+                continue;
+            }
+            if invalid.iter().any(|target| target == occurrence.target) {
+                faults.advise(
+                    address,
+                    "T7",
+                    "target_role",
+                    occurrence.target,
+                    &format!(
+                        "the retained Term link target `{}` is no Term head",
+                        occurrence.target
+                    ),
+                );
+                continue;
+            }
+            let Some(name) = targets
+                .and_then(|targets| targets.get(occurrence.target))
+                .map(|value| text(Some(value)))
+            else {
+                continue;
+            };
+            let Some(label) = occurrence.label.filter(|label| !label.is_empty()) else {
+                continue;
+            };
+            if label != name {
+                faults.advise(
+                    address,
+                    "T7",
+                    "label_mismatch",
+                    &format!("{label}|{}", occurrence.target),
+                    &format!(
+                        "the Term link label `{label}` differs from the term `{name}`"
+                    ),
+                );
+            }
+        }
     }
 
     /// R2 to R9 for one sentence.
@@ -1381,6 +2153,72 @@ impl Check {
     }
 }
 
+/// The template position of a Term head label, or `None` for a label outside the template.
+fn head_position(label: &str) -> Option<usize> {
+    crate::term::HEAD_LABELS.iter().position(|known| *known == label)
+}
+
+/// The template position of a Term section; every derivation shares one position (a term may
+/// carry more than one derivation, design 11.1).
+fn section_position(name: &str) -> Option<usize> {
+    crate::term::SECTIONS.iter().position(|known| *known == name)
+}
+
+/// Whether a title is a continuation title: `推导（续 k/n）：<what continues>` with `2 ≤ k ≤ n`.
+fn continuation_title(title: &str) -> bool {
+    let Some(captures) = CONTINUATION_TITLE.captures(title) else {
+        return false;
+    };
+    let Ok(k) = captures[1].parse::<i64>() else {
+        return false;
+    };
+    let Ok(n) = captures[2].parse::<i64>() else {
+        return false;
+    };
+    k >= 2 && n >= k && !captures[3].trim().is_empty()
+}
+
+/// A line that opens the `符号表` table: the plain label or a bold one.
+fn is_symbol_table_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed == "符号表" || trimmed == "**符号表**"
+}
+
+/// A display formula line: `$$…$$` with content between the delimiters.
+fn display_formula(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("$$") && trimmed.ends_with("$$") && trimmed.len() > 4
+}
+
+/// Whether a derivation step names no basis: absent, or only whitespace and end marks.
+fn basis_missing(basis: Option<&str>) -> bool {
+    basis.is_none_or(|basis| {
+        basis
+            .trim_matches(|ch: char| ch.is_whitespace() || "。．.；;，,、".contains(ch))
+            .is_empty()
+    })
+}
+
+/// Every math span of one section: its display formulas and the inline formulas on its lines.
+/// Tables and prose are not formulas, so a word there is no symbol (T4 stays approximate).
+fn math_formulas(content: &[String]) -> Vec<String> {
+    let mut formulas = Vec::new();
+    for line in content {
+        let trimmed = line.trim();
+        if trimmed.starts_with('|') {
+            continue;
+        }
+        if display_formula(trimmed) {
+            formulas.push(trimmed.trim_matches('$').to_string());
+            continue;
+        }
+        for found in INLINE_MATH.find_iter(trimmed) {
+            formulas.push(found.as_str().trim_matches('$').to_string());
+        }
+    }
+    formulas
+}
+
 /// R20: a local label that stands in for its content (`式 (12) 有该项`). The
 /// content is what the rest of the text says once the labels are taken out, so
 /// `式 (12) 的加成项来自需求弹性` passes and a source locator is tested by its
@@ -1511,6 +2349,16 @@ pub fn category_with_parts(
         return "root".into();
     }
     match text(prop(card, "type")).as_str() {
+        // A Term Card is terminology, not a claim: its list is navigation and its named Cards
+        // take the T rules instead of the Idea rules (S09, #152; design 11.3).
+        "term" => {
+            return if text(prop(card, "term")).is_empty() {
+                "terms"
+            } else {
+                "term"
+            }
+            .into();
+        }
         "finding" => return "finding".into(),
         "event" => return "event".into(),
         "hub" => return "hub".into(),
@@ -1828,6 +2676,7 @@ pub const EXCLUDED: &[&str] = &[
     "anchor",
     "structure",
     "terms",
+    "term",
     "notation",
     "hub",
     "register-part",
@@ -2700,5 +3549,324 @@ mod tests {
             1,
             "the same part at the formal level meets the blocking rule: {lines:#?}"
         );
+    }
+
+    // --- the Term content rules (S09, #152) ---------------------------------------------------
+
+    fn term_rows() -> Vec<String> {
+        vec!["均衡".to_string(), "弹性".to_string()]
+    }
+
+    fn term_row() -> crate::text::TermRow {
+        crate::text::TermRow {
+            term: "均衡".to_string(),
+            avoid: vec!["平衡".to_string()],
+            meaning: "双方都不改变策略".to_string(),
+            defined: "§1.1".to_string(),
+        }
+    }
+
+    fn term_draft() -> Value {
+        json!({
+            "term": "均衡",
+            "original": "equilibrium",
+            "category": "math",
+            "first_defined": "§1.1",
+            "explanation": [
+                "均衡是双方都不改变选择的状态。",
+                "本书用它说明市场的稳定点。",
+                "均衡不等于最优。"
+            ],
+            "book_definition": { "text": ["§1.1 把均衡定义为一个不动点。"], "section": "§1.1", "quote": "" },
+            "hypotheses": [ { "id": "H1", "text": "策略集是紧凸集。" } ],
+            "definition": {
+                "formula": "x^* \\in \\arg\\max_{x} u(x) \\tag{T1}",
+                "reading": ["$x^*$ 是没有人愿意偏离的策略。"]
+            },
+            "symbols": [
+                { "symbol": "$x^*$", "meaning": "均衡策略", "type": "紧凸集", "auxiliary": false }
+            ],
+            "equivalent_forms": [ { "formula": "u(x^*)\\ge u(x)", "reason": "由 (T1) 直接得到。" } ],
+            "derivations": [ {
+                "claim": "均衡是纳什均衡",
+                "steps": [
+                    { "text": "起点是定义 (T1)。", "basis": "定义 (T1)", "formula": "x^*=x" },
+                    { "text": "两边比较收益。", "basis": "H1", "formula": "u(x^*)\\ge u(x)" }
+                ],
+                "result": "均衡是纳什均衡。"
+            } ],
+            "limits": [ { "case": "无", "text": "本定义没有需要说明的极限情形。", "formula": "" } ],
+            "example": ["取 $u(x)=-x^2$。", "唯一均衡是 $x^*=0$。"],
+            "intuition": ["没有人愿意单方面偏离。", "均衡是相互一致的选择。"],
+            "distinctions": [ { "term": "弹性", "text": "弹性度量反应程度。" } ],
+            "misreadings": ["均衡不是最优。"],
+            "role_in_book": ["本书第一章用均衡定义市场结果。"]
+        })
+    }
+
+    fn render_math() -> crate::term::Rendered {
+        let rows = term_rows();
+        let draft = crate::term::parse_draft(&term_draft(), &rows).expect("a valid draft");
+        crate::term::render(
+            &draft,
+            &term_row(),
+            "Test2026",
+            "Test2026/1|a|a",
+            &Limits::default(),
+        )
+        .expect("renders")
+    }
+
+    fn term_entry(title: &str, body: &str) -> Value {
+        json!({
+            "address": "Test2026/1|a|a",
+            "type": "term",
+            "term": "均衡",
+            "term_role": "card",
+            "title": title,
+            "body": body,
+            "term_rows": term_rows(),
+        })
+    }
+
+    fn term_lines(cards: &[Value]) -> Vec<String> {
+        Check::new(Limits::default(), false, "")
+            .run(cards)
+            .into_iter()
+            .filter(|line| {
+                [" T1 ", " T2 ", " T3 ", " T4 ", " T5 ", " T6 ", " T7 ", " T9 ", " T10 "]
+                    .iter()
+                    .any(|rule| line.contains(rule))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_rendered_math_head_passes_the_term_rules_and_a_manual_edit_gets_the_same_fault() {
+        let rendered = render_math();
+        let entry = term_entry(&rendered.head.title, &rendered.head.body);
+        let lines = term_lines(std::slice::from_ref(&entry));
+        assert!(
+            lines.iter().all(|line| line.contains("T4")),
+            "a rendered head passes T1/T2/T3/T5/T6/T7/T9/T10: {lines:#?}"
+        );
+        assert!(
+            lines.iter().all(|line| line.contains("(advisory)")),
+            "the only remaining line is the approximate T4 advice: {lines:#?}"
+        );
+        // A manual edit that drops a step's basis is the same evaluator: the same fault, whether
+        // the entry is a rendered draft or a stored Card.
+        let body = rendered.head.body.replace("依据：定义 (T1)", "依据：");
+        let manual = term_entry(&rendered.head.title, &body);
+        let draft_lines = term_lines(std::slice::from_ref(&manual));
+        assert_eq!(
+            of_rule(&draft_lines, "T5").len(),
+            1,
+            "{draft_lines:#?}"
+        );
+        assert!(
+            draft_lines.iter().any(|line| line.contains("step 1 names no `依据：` basis")),
+            "{draft_lines:#?}"
+        );
+    }
+
+    #[test]
+    fn the_term_template_reports_unknown_and_misordered_content_and_a_title_mismatch() {
+        let body = "术语：均衡\n不用：平衡\n类别：数学概念\n首次定义：§1.1\n\n## 释义\n\n说明。\n\n## 神秘\n\n内容。\n\n## 在本书中的作用\n\n作用。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n";
+        let entry = term_entry("另一个词", body);
+        let lines = term_lines(std::slice::from_ref(&entry));
+        assert!(of_rule(&lines, "T1").iter().any(|line| line.contains("is no Term section: ## 神秘")), "{lines:#?}");
+        assert!(of_rule(&lines, "T1").iter().any(|line| line.contains("out of template order")), "{lines:#?}");
+        assert!(of_rule(&lines, "T2").iter().any(|line| line.contains("is not the exact term")), "{lines:#?}");
+        // The `术语：` line disagreeing with the stored name is its own T2 fault.
+        let body = body.replace("术语：均衡", "术语：平衡");
+        let lines = term_lines(&[term_entry("均衡", &body)]);
+        assert!(of_rule(&lines, "T2").iter().any(|line| line.contains("differs from the stored term")), "{lines:#?}");
+    }
+
+    #[test]
+    fn a_concept_term_refuses_a_formal_section_but_allows_inline_formulas() {
+        let concept = "术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n均衡是 $x^*=x$ 的状态。\n均衡是双方都不改变选择的状态。\n均衡不等于最优。\n\n## 区别\n\n- 与 弹性：不同。\n\n## 在本书中的作用\n\n作用。\n\n来源：[[Test2026]] §1.1\n";
+        let lines = term_lines(&[term_entry("均衡", concept)]);
+        assert!(of_rule(&lines, "T3").is_empty(), "inline math is legitimate: {lines:#?}");
+        let formal = concept.replace("## 区别", "## 推导：均衡\n\n1. 起点。依据：定义。\n\n结果：均衡。\n\n## 区别");
+        let lines = term_lines(&[term_entry("均衡", &formal)]);
+        assert!(
+            of_rule(&lines, "T3").iter().any(|line| line.contains("carries no formal `## 推导`")),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_math_head_without_hypotheses_symbols_or_derivation_reports_t3() {
+        let body = "术语：均衡\n不用：平衡\n类别：数学概念\n首次定义：§1.1\n\n## 释义\n\n说明。\n均衡是稳定的状态。\n均衡不等于最优。\n\n## 数学定义\n\n$$x=1 \\tag{T1}$$\n\n读法。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n";
+        let lines = term_lines(&[term_entry("均衡", body)]);
+        let t3 = of_rule(&lines, "T3");
+        assert!(t3.iter().any(|line| line.contains("labelled hypotheses")), "{lines:#?}");
+        assert!(t3.iter().any(|line| line.contains("`符号表` table")), "{lines:#?}");
+        assert!(t3.iter().any(|line| line.contains("`## 推导")), "{lines:#?}");
+    }
+
+    #[test]
+    fn derivation_steps_report_numbering_basis_result_and_the_bound() {
+        let mut steps = String::new();
+        for number in [1, 3] {
+            steps.push_str(&format!("{number}. 第 {number} 步做一次变换。依据：代数。\n\n"));
+        }
+        let body = format!("术语：均衡\n不用：平衡\n类别：数学概念\n首次定义：§1.1\n\n## 释义\n\n说明。\n均衡是稳定的状态。\n均衡不等于最优。\n\n## 推导：均衡是纳什均衡\n\n{steps}来源：[[Test2026]] §1.1\n");
+        let lines = term_lines(&[term_entry("均衡", &body)]);
+        assert!(of_rule(&lines, "T5").iter().any(|line| line.contains("are numbered")), "{lines:#?}");
+        assert!(of_rule(&lines, "T5").iter().any(|line| line.contains("ends without a `结果：`")), "{lines:#?}");
+        // More than 12 steps in one Card is the per-Card bound.
+        let mut long = String::new();
+        for number in 1..=13 {
+            long.push_str(&format!("{number}. 第 {number} 步。依据：代数。\n\n"));
+        }
+        let body = format!("术语：均衡\n不用：平衡\n类别：数学概念\n首次定义：§1.1\n\n## 释义\n\n说明。\n均衡是稳定的状态。\n均衡不等于最优。\n\n## 推导：均衡是纳什均衡\n\n{long}结果：均衡。\n\n来源：[[Test2026]] §1.1\n");
+        let lines = term_lines(&[term_entry("均衡", &body)]);
+        assert!(
+            of_rule(&lines, "T5").iter().any(|line| line.contains("13 derivation steps > 12")),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn skipped_step_phrases_report_t6_and_a_named_step_is_allowed() {
+        let allowed = "术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n由步骤 2，同理可得结论。\n均衡是双方都不改变选择的状态。\n均衡不等于最优。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n";
+        let lines = term_lines(&[term_entry("均衡", allowed)]);
+        assert!(of_rule(&lines, "T6").is_empty(), "a named earlier step is allowed: {lines:#?}");
+        let skipped = allowed.replace(
+            "由步骤 2，同理可得结论。",
+            "显然均衡成立。",
+        );
+        let lines = term_lines(&[term_entry("均衡", &skipped)]);
+        assert!(
+            of_rule(&lines, "T6").iter().any(|line| line.contains("`显然` without the named step")),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn the_auto_link_opt_out_lines_are_validated_by_t1() {
+        let base = "术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n均衡是双方都不改变选择的状态。\n均衡不等于最优。\n均衡是稳定的状态。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n";
+        let with_off = base.replace(
+            "首次定义：§1.1\n",
+            "首次定义：§1.1\n自动链接：否\n自动链接理由：这是过于一般的词。\n",
+        );
+        let lines = term_lines(&[term_entry("均衡", &with_off)]);
+        assert!(of_rule(&lines, "T1").is_empty(), "a complete opt-out passes T1: {lines:#?}");
+        let without_reason = base.replace("首次定义：§1.1\n", "首次定义：§1.1\n自动链接：否\n");
+        let lines = term_lines(&[term_entry("均衡", &without_reason)]);
+        assert!(of_rule(&lines, "T1").iter().any(|line| line.contains("needs its")), "{lines:#?}");
+        let orphan = base.replace("首次定义：§1.1\n", "首次定义：§1.1\n自动链接理由：太一般。\n");
+        let lines = term_lines(&[term_entry("均衡", &orphan)]);
+        assert!(of_rule(&lines, "T1").iter().any(|line| line.contains("decides nothing")), "{lines:#?}");
+        let enabled = base.replace("首次定义：§1.1\n", "首次定义：§1.1\n自动链接：是\n");
+        let lines = term_lines(&[term_entry("均衡", &enabled)]);
+        assert!(of_rule(&lines, "T1").iter().any(|line| line.contains("is no opt-out")), "{lines:#?}");
+    }
+
+    #[test]
+    fn a_formula_symbol_outside_the_table_is_advice_only() {
+        let rendered = render_math();
+        let body = rendered.head.body.replace(
+            "两边比较收益。依据：H1",
+            "两边比较收益。依据：H1",
+        );
+        let body = body.replace("u(x^*)\\ge u(x)$$", "\\zeta(x^*)\\ge u(x)$$");
+        let lines = term_lines(&[term_entry(&rendered.head.title, &body)]);
+        let t4 = of_rule(&lines, "T4");
+        assert!(t4.iter().any(|line| line.contains("\\zeta")), "{lines:#?}");
+        // The archive policy keeps T4 advisory in both Workspaces.
+        let policies = crate::policy::PolicySet::new();
+        let check = Check::new(Limits::default(), false, "").with_policies(policies);
+        let report = check.report(&[term_entry(&rendered.head.title, &body)]);
+        assert!(
+            report
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == "T4")
+                .all(|diagnostic| diagnostic.severity == Severity::Advise),
+            "{report:#?}"
+        );
+    }
+
+    #[test]
+    fn a_term_part_uses_the_continuation_template_and_inherits_the_definition() {
+        let part = "类别：数学概念\n续：[[Test2026/1|a|a]] 本卡沿用该卡的符号表。\n\n## 推导：均衡是纳什均衡\n\n1. 结果逐项比较。依据：步骤 1。\n\n   $$x=1$$\n\n结果：均衡是纳什均衡。\n\n来源：[[Test2026]] §1.1\n";
+        let mut entry = term_entry("推导（续 2/2）：均衡是纳什均衡", part);
+        entry["term_role"] = json!("part");
+        let lines = term_lines(std::slice::from_ref(&entry));
+        assert!(of_rule(&lines, "T1").is_empty(), "{lines:#?}");
+        assert!(of_rule(&lines, "T2").is_empty(), "{lines:#?}");
+        assert!(of_rule(&lines, "T3").is_empty(), "{lines:#?}");
+        // A part without the continuation format and the head reference is refused.
+        let mut wrong = entry.clone();
+        wrong["title"] = json!("均衡");
+        let lines = term_lines(&[wrong]);
+        assert!(of_rule(&lines, "T2").iter().any(|line| line.contains("is no continuation title")), "{lines:#?}");
+        let mut missing = term_entry("推导（续 2/2）：均衡是纳什均衡", &part.replace("续：[[Test2026/1|a|a]] 本卡沿用该卡的符号表。\n", ""));
+        missing["term_role"] = json!("part");
+        let lines = term_lines(&[missing]);
+        assert!(of_rule(&lines, "T1").iter().any(|line| line.contains("missing the `续：` line")), "{lines:#?}");
+    }
+
+    #[test]
+    fn an_open_formula_is_t10_for_a_term_card_and_r22_elsewhere() {
+        let body = "术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n价格是 $5 美元。\n均衡是稳定的状态。\n均衡不等于最优。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n";
+        let lines = term_lines(&[term_entry("均衡", body)]);
+        assert!(of_rule(&lines, "T10").len() == 1, "{lines:#?}");
+        assert!(of_rule(&lines, "R22").is_empty(), "one predicate, one label: {lines:#?}");
+        let plain = json!({ "address": "5/1", "title": "税", "body": "价格是 $5 美元。" });
+        let lines = Check::new(Limits::default(), false, "").run(&[plain]);
+        assert_eq!(of_rule(&lines, "R22").len(), 1, "{lines:#?}");
+    }
+
+    #[test]
+    fn a_term_list_is_not_checked_against_the_content_template() {
+        let list = json!({
+            "address": "Test2026/1|a",
+            "type": "term",
+            "term": serde_json::Value::Null,
+            "title": "术语表：测试",
+            "body": "## 术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 均衡 | 平衡 | 双方都不改变策略 | §1.1 |\n",
+        });
+        let lines = term_lines(std::slice::from_ref(&list));
+        assert!(lines.is_empty(), "a Term list is audited by T8, not T1: {lines:#?}");
+    }
+
+    #[test]
+    fn a_term_use_on_an_ordinary_card_reports_label_advice() {
+        // T7 is a Card check for a Term use on any Card, not only a Term Card: the bounded target
+        // facts travel with the entry, so an Idea or Model Card gets the same advice.
+        let entry = json!({
+            "address": "Test2026/2",
+            "title": "均衡模型",
+            "type": "model",
+            "body": "说明 [[平衡@Test2026/1|a|a]] 的用法。",
+            "term_targets": { "Test2026/1|a|a": "均衡" },
+        });
+        let report = Check::new(Limits::default(), false, "").report(std::slice::from_ref(&entry));
+        let t7 = report.iter().filter(|diagnostic| diagnostic.rule == "T7").collect::<Vec<_>>();
+        assert_eq!(t7.len(), 1, "{report:#?}");
+        assert_eq!(t7[0].fault, "label_mismatch");
+        assert_eq!(t7[0].severity, Severity::Advise);
+        // The matching label raises nothing.
+        let entry = json!({
+            "address": "Test2026/2",
+            "title": "均衡模型",
+            "type": "model",
+            "body": "说明 [[均衡@Test2026/1|a|a]] 的用法。",
+            "term_targets": { "Test2026/1|a|a": "均衡" },
+        });
+        let report = Check::new(Limits::default(), false, "").report(std::slice::from_ref(&entry));
+        assert!(report.iter().all(|diagnostic| diagnostic.rule != "T7"), "{report:#?}");
+    }
+
+    #[test]
+    fn term_prose_over_the_limit_reports_t9() {
+        let long = "甲".repeat(1700);
+        let body = format!("术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n{long}。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n");
+        let lines = term_lines(&[term_entry("均衡", &body)]);
+        assert!(of_rule(&lines, "T9").iter().any(|line| line.contains("prose units > 1600")), "{lines:#?}");
     }
 }

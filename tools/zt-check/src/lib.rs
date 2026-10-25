@@ -13,6 +13,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod contract;
 pub mod core;
 pub mod policy;
+pub mod term;
 pub mod text;
 
 #[cfg(feature = "cli")]

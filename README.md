@@ -106,6 +106,15 @@ and that address must name a Term head (an immediate Side successor of a Term li
 rewrites only the address bytes, never the label. The terminal never renders Markdown: the
 Session shows and edits the stored Markdown exactly as written.
 
+A named Term Card follows one authored template, checked by the T1–T10 rules on every write:
+the `术语：`, optional `原文：`, `不用：`, `类别：` and `首次定义：` head lines; the fixed sections
+`释义`, `书中的说法`, the math sections for `数学概念`, `区别`, optional `常见误读`, and
+`在本书中的作用`; and a final `来源：[[book]] locator` line. A math Card also needs the labelled
+hypotheses, a tagged definition, a symbol table, numbered derivation steps with a basis and a
+result, limits, a computed example, intuition and misreadings. `自动链接：否` with a required
+`自动链接理由：` line records that the term must stay unlinked. A long explanation continues in
+Term parts titled `推导（续 k/n）：…`, which keep the same term name and link back to the head.
+
 Archives created before 0.2.0 are converted automatically on `zt up`; the original database
 is first copied to `zt.sqlite3.pre-markdown-<time>.bak` in the archive root.
 
@@ -389,7 +398,7 @@ Reverse links to the human Card.
 | `list_trees` | tree roots, filtered by Workspace and Zone |
 | `get_tree`, `get_card` | one tree, or one Card with its neighbors and Links in and out |
 | `get_cards` | ordered full/text Card reads, up to 200 addresses, with missing addresses and one archive revision |
-| `get_terms` | one Term list's computed structure: its four-column rows, heads, parts and unfiled Cards, its stored term uses, its coverage, and its seven faults, with the archive revision it was read at |
+| `get_terms` | one Term list's computed structure: its four-column rows, heads, parts and unfiled Cards, its stored term uses, its coverage, and its faults (the seven placement/coverage facts plus the T8 table-shape facts and a hidden comment), with the archive revision it was read at |
 | `get_tree` with `bodies: true` | complete tree bodies, stored text and BibTeX in one read view |
 | `export_titles` | one title/metadata pass, filtered by Workspace and Zone, with count and revision |
 | `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, neighbours outside it, and its `build` report (build order and self-sufficiency faults) |

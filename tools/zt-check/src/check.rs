@@ -17,7 +17,7 @@ use crate::text::{
 };
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
@@ -233,6 +233,10 @@ fn draft_entry(card: &Value, index: usize) -> Result<Value> {
     }
     if !kind.trim().is_empty() {
         entry.insert(
+            "type".into(),
+            json!(kind.trim().to_ascii_lowercase()),
+        );
+        entry.insert(
             "category".into(),
             json!(draft_category(&kind).with_context(|| format!("draft Card `{address}`"))?),
         );
@@ -253,6 +257,13 @@ fn draft_entry(card: &Value, index: usize) -> Result<Value> {
         "inbound",
         "inbound_kinded",
         "term",
+        "term_role",
+        "term_list",
+        "term_rows",
+        "term_head",
+        "term_head_category",
+        "term_targets",
+        "term_invalid_targets",
         "before",
     ] {
         if let Some(value) = prop(card, name) {
@@ -281,8 +292,8 @@ fn split_card_text(text: &str) -> Result<(String, String)> {
     Ok((title, body))
 }
 
-/// The layer role a draft's type names. The Term type is the design's own example;
-/// its T rules are pending, so it takes the R rules like a Hub Card does.
+/// The layer role a draft's type names. A Term Card takes no Idea layer rule; its T rules run
+/// from its `type` and its exact name (S09, #152).
 fn draft_category(kind: &str) -> Result<&'static str> {
     match kind.trim().to_ascii_lowercase().as_str() {
         "idea" => Ok("idea"),
@@ -492,7 +503,9 @@ fn text_of(card: &Value, name: &str) -> String {
 
 /// A Card as card-style-check.ps1 reads it from get_card: address, title, body, facet.
 /// The stored Workspace travels with it: a live check decides each Card under its own
-/// Workspace's policy, and no flag may reclassify it (design 8.1, R0186).
+/// Workspace's policy, and no flag may reclassify it (design 8.1, R0186). A Term Card's type,
+/// name, computed role and list travel too, so the T rules read the same facts as the gate
+/// (S09, #152).
 fn card_entry(card: &Value) -> Value {
     let mut entry = json!({
         "address": card.get("address").cloned().unwrap_or(Value::Null),
@@ -504,6 +517,11 @@ fn card_entry(card: &Value) -> Value {
         && !workspace.is_empty()
     {
         entry["workspace"] = json!(workspace);
+    }
+    for name in ["type", "term", "term_role", "term_list"] {
+        if card.get(name).is_some_and(|value| !value.is_null()) {
+            entry[name] = card[name].clone();
+        }
     }
     entry
 }
@@ -696,6 +714,191 @@ pub(crate) fn declared_register_parts(zt: &mut Zt) -> Result<HashSet<String>> {
     Ok(parts)
 }
 
+/// The Term context one `--cards` run materializes (S09, #152): the exact rows of each checked
+/// list, the head of each checked part, the head's category, and the name or wrong role of each
+/// Term-link target. The gate gathers the same facts inside its write transaction.
+#[derive(Default)]
+struct TermContext {
+    rows: HashMap<String, Vec<String>>,
+    head: HashMap<String, String>,
+    head_category: HashMap<String, String>,
+    targets: HashMap<String, String>,
+    invalid_targets: BTreeSet<String>,
+}
+
+/// One list read through `get_terms` (complete: rows, heads, parts and faults in one answer),
+/// plus one batch read for a part's head and for the Term-link targets outside the checked set.
+fn term_context(zt: &mut Zt, cards: &[Value], revision: u64) -> Result<TermContext> {
+    let mut context = TermContext::default();
+    let mut by_address: HashMap<String, Value> = cards
+        .iter()
+        .filter_map(|card| {
+            card["address"]
+                .as_str()
+                .map(|address| (address.to_string(), card.clone()))
+        })
+        .collect();
+    let mut lists = BTreeSet::new();
+    for card in cards {
+        if ps_eq(&ps_string(card.get("type")), "term")
+            && !ps_string(card.get("term")).is_empty()
+            && let Some(list) = card["term_list"].as_str()
+        {
+            lists.insert(list.to_string());
+        }
+    }
+    for list in &lists {
+        let terms = zt.call("get_terms", json!({ "at": list }))?;
+        let rows = terms["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row["term"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        context.rows.insert(list.clone(), rows);
+        for part in terms["parts"].as_array().into_iter().flatten() {
+            if let (Some(address), Some(head)) = (part["address"].as_str(), part["head"].as_str()) {
+                context.head.insert(address.to_string(), head.to_string());
+            }
+        }
+    }
+    // A part's head category is the head Card's authored `类别：` line. Read the heads that this
+    // run did not select in one batch.
+    let heads = context
+        .head
+        .values()
+        .cloned()
+        .collect::<BTreeSet<String>>();
+    let missing_heads = heads
+        .iter()
+        .filter(|head| !by_address.contains_key(*head))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_heads.is_empty() {
+        let read = zt.cards(&missing_heads, "text")?;
+        if read.archive_revision != revision {
+            bail!("incomplete Term context: changing read view");
+        }
+        for card in &read.cards {
+            if let Some(address) = card["address"].as_str() {
+                by_address.insert(address.to_string(), card.clone());
+            }
+        }
+    }
+    for head in &heads {
+        if let Some(card) = by_address.get(head) {
+            let body = ps_string(card.get("body"));
+            if let Some(line) = crate::term::parse_template(&body).line("类别") {
+                context.head_category.insert(head.clone(), line.value.clone());
+            }
+        }
+    }
+    // A Term use's target: its exact name when it is a head, its address when it is not. A
+    // missing legacy target is no head either; it is reported, never silently read as one. The
+    // target facts belong to a Term use on any Card, not only a Term Card (T7).
+    let mut missing_targets = BTreeSet::new();
+    for card in cards {
+        for occurrence in crate::text::link_occurrences(&ps_string(card.get("body"))) {
+            if occurrence.form != crate::text::LinkForm::Term {
+                continue;
+            }
+            let target = occurrence.target.to_string();
+            if context.targets.contains_key(&target) || context.invalid_targets.contains(&target) {
+                continue;
+            }
+            match by_address.get(&target) {
+                Some(known) => {
+                    if ps_eq(&ps_string(known.get("term_role")), "card") {
+                        if let Some(name) = known["term"].as_str() {
+                            context.targets.insert(target, name.to_string());
+                        }
+                    } else {
+                        context.invalid_targets.insert(target);
+                    }
+                }
+                None => {
+                    missing_targets.insert(target);
+                    context.invalid_targets.insert(occurrence.target.to_string());
+                }
+            }
+        }
+    }
+    if !missing_targets.is_empty() {
+        let view = zt.call(
+            "get_cards",
+            json!({ "addresses": missing_targets.iter().cloned().collect::<Vec<_>>(), "view": "text" }),
+        )?;
+        if view["archive_revision"].as_u64() != Some(revision) {
+            bail!("incomplete Term context: changing read view");
+        }
+        for card in view["cards"].as_array().into_iter().flatten() {
+            let Some(address) = card["address"].as_str() else {
+                continue;
+            };
+            if ps_eq(&ps_string(card.get("term_role")), "card")
+                && let Some(name) = card["term"].as_str()
+            {
+                context.targets.insert(address.to_string(), name.to_string());
+                context.invalid_targets.remove(address);
+            }
+        }
+    }
+    Ok(context)
+}
+
+/// Put the Term facts one checked Card carries onto its entry: its exact type and name, the
+/// computed role and list, the list's rows, a part's head and head category, and the Term-link
+/// targets T7 reads. The target facts are attached for a Term use on any Card; the identity facts
+/// only for a Term Card (S09, #152).
+fn term_entry_fields(
+    item: &mut Map<String, Value>,
+    card: &Value,
+    address: &str,
+    body: &str,
+    context: &TermContext,
+) {
+    if ps_eq(&ps_string(card.get("type")), "term") {
+        for name in ["type", "term", "term_role"] {
+            if card.get(name).is_some_and(|value| !value.is_null()) {
+                item.insert(name.to_string(), card[name].clone());
+            }
+        }
+        if let Some(list) = card["term_list"].as_str() {
+            item.insert("term_list".into(), json!(list));
+            if let Some(rows) = context.rows.get(list) {
+                item.insert("term_rows".into(), json!(rows));
+            }
+        }
+        if let Some(head) = context.head.get(address) {
+            item.insert("term_head".into(), json!(head));
+            if let Some(category) = context.head_category.get(head) {
+                item.insert("term_head_category".into(), json!(category));
+            }
+        }
+    }
+    let mut targets = Map::new();
+    let mut invalid = BTreeSet::new();
+    for occurrence in crate::text::link_occurrences(body) {
+        if occurrence.form != crate::text::LinkForm::Term {
+            continue;
+        }
+        if let Some(name) = context.targets.get(occurrence.target) {
+            targets.insert(occurrence.target.to_string(), json!(name));
+        } else if context.invalid_targets.contains(occurrence.target) {
+            invalid.insert(occurrence.target.to_string());
+        }
+    }
+    if !targets.is_empty() {
+        item.insert("term_targets".into(), Value::Object(targets));
+    }
+    if !invalid.is_empty() {
+        item.insert(
+            "term_invalid_targets".into(),
+            json!(invalid.into_iter().collect::<Vec<_>>()),
+        );
+    }
+}
+
 /// `--cards`: self-check.ps1. Each Card as digest-audit.ps1 sees it: a Model
 /// part or Model Card with its model (setting, level, and every Derivation
 /// part with an explanation); an Idea Card, an anchor, an Event Card, or a
@@ -753,6 +956,9 @@ fn check_cards(
     // The parts a register declares under 词条分册 are navigation Cards, not substantive Ideas
     // (§8.5, D188): the root declaration is the one source of that category.
     let register_parts = declared_register_parts(zt)?;
+    // The Term context (S09, #152): each distinct list's rows, the head of every checked part,
+    // the head's category, and the exact name or wrong role of every Term-link target.
+    let term = term_context(zt, &cards, revision)?;
     let mut owners: HashMap<String, Option<String>> = HashMap::new();
     let mut models: HashMap<String, Value> = HashMap::new();
     for card in &mut cards {
@@ -844,6 +1050,9 @@ fn check_cards(
                 item.insert("book".into(), json!(key));
             }
         }
+        // A Term use on any Card brings its target facts (T7); a Term Card also brings its
+        // identity, list rows and head.
+        term_entry_fields(&mut item, card, &address, &body, &term);
         plain.push(Value::Object(item));
     }
     let mut diagnostics = Vec::new();
@@ -2063,6 +2272,69 @@ mod tests {
         assert!(outcome.contract.archive.is_none(), "a draft has no archive");
         assert_eq!(outcome.workspace, "agent", "a draft defaults to the agent Workspace");
         assert_eq!(outcome.report.blockers, 3, "R3, I2 and E1 block; I1 is advice");
+    }
+
+    /// S09-AC08: a rendered Term draft goes through the same T rules in the exact-draft bundle,
+    /// and an absent basis is the T5 fault the live gate also refuses.
+    #[test]
+    fn a_term_draft_checks_its_rendered_text_with_the_t_rules() {
+        let rows = vec!["均衡".to_string(), "弹性".to_string()];
+        let draft_json = json!({
+            "term": "均衡", "category": "math", "first_defined": "§1.1",
+            "explanation": ["均衡是双方都不改变选择的状态。", "本书用它说明市场的稳定点。", "均衡不等于最优。"],
+            "book_definition": { "text": ["§1.1 把均衡定义为一个不动点。"], "section": "§1.1", "quote": "" },
+            "hypotheses": [{ "id": "H1", "text": "策略集是紧凸集。" }],
+            "definition": { "formula": "x^* \\in \\arg\\max_{x} u(x) \\tag{T1}", "reading": ["$x^*$ 是没有人愿意偏离的策略。"] },
+            "symbols": [{ "symbol": "$x^*$", "meaning": "均衡策略", "type": "紧凸集", "auxiliary": false }],
+            "equivalent_forms": [{ "formula": "u(x^*)\\ge u(x)", "reason": "由 (T1) 直接得到。" }],
+            "derivations": [{
+                "claim": "均衡是纳什均衡",
+                "steps": [{ "text": "起点是定义 (T1)。", "basis": "定义 (T1)", "formula": "x^*=x" }],
+                "result": "均衡是纳什均衡。"
+            }],
+            "limits": [{ "case": "无", "text": "本定义没有需要说明的极限情形。", "formula": "" }],
+            "example": ["取 $u(x)=-x^2$。"],
+            "intuition": ["没有人愿意单方面偏离。", "均衡是相互一致的选择。"],
+            "distinctions": [{ "term": "弹性", "text": "弹性度量反应程度。" }],
+            "misreadings": ["均衡不是最优。"],
+            "role_in_book": ["本书第一章用均衡定义市场结果。"]
+        });
+        let parsed = crate::term::parse_draft(&draft_json, &rows).expect("a valid draft");
+        let rendered = crate::term::render(
+            &parsed,
+            &crate::text::TermRow {
+                term: "均衡".to_string(),
+                avoid: vec!["平衡".to_string()],
+                meaning: "双方都不改变策略".to_string(),
+                defined: "§1.1".to_string(),
+            },
+            "K",
+            "K/1|a|a",
+            &Limits::default(),
+        )
+        .expect("renders");
+        let faulty = rendered.head.body.replace("依据：定义 (T1)", "依据：");
+        let raw = json!({
+            "workspace": "agent",
+            "rule_version": crate::contract::RULE_VERSION,
+            "cards": [{
+                "address": "K/1|a|a",
+                "type": "term",
+                "term": "均衡",
+                "term_role": "card",
+                "term_rows": rows,
+                "text": format!("# {}\n\n{}", rendered.head.title, faulty),
+            }]
+        });
+        let outcome = draft(&raw, &Options::default());
+        let t5 = outcome
+            .report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.rule == "T5")
+            .collect::<Vec<_>>();
+        assert_eq!(t5.len(), 1, "{:#?}", outcome.report.diagnostics);
+        assert_eq!(t5[0].fault, "missing_basis");
     }
 
     /// S06-AC02/AC07: a bundle that declares every family and binds the built-in

@@ -16,7 +16,7 @@ use crate::{Card, CardType, Workspace};
 use anyhow::{Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use zt_check::core::{Check, Diagnostic, Limits, Severity};
 use zt_check::policy::{self, Applicability, Change, CheckReport, PolicySet, Workspace as GateWorkspace};
@@ -648,8 +648,9 @@ impl std::fmt::Display for Incomplete {
 impl std::error::Error for Incomplete {}
 
 /// The bounded context one proposed Card needs: its parent and tree, the book it belongs to and
-/// that book's term table, its model's setting and level, and the distinct targets it names
-/// (R0098–R0108). Each family is either present or legitimately absent.
+/// that book's term table, its model's setting and level, the distinct targets it names, and the
+/// Term facts the T rules read (R0098–R0108; design 11.3). Each family is either present or
+/// legitimately absent.
 #[derive(Clone, Debug)]
 struct Facts {
     tree: String,
@@ -659,6 +660,21 @@ struct Facts {
     level: String,
     terms: Option<String>,
     targets: BTreeSet<String>,
+    term: TermFacts,
+}
+
+/// The Term facts of one proposed Card (S09, #152): its computed role and list, the exact rows of
+/// that list, the head and the head's category for a part, and the names or wrong roles of the
+/// Term-link targets its body names.
+#[derive(Clone, Debug, Default)]
+struct TermFacts {
+    role: Option<String>,
+    list: Option<String>,
+    rows: Vec<String>,
+    head: Option<String>,
+    head_category: Option<String>,
+    targets: BTreeMap<String, String>,
+    invalid_targets: Vec<String>,
 }
 
 impl Facts {
@@ -671,6 +687,7 @@ impl Facts {
             level: String::new(),
             terms: None,
             targets: BTreeSet::new(),
+            term: TermFacts::default(),
         }
     }
 }
@@ -809,6 +826,28 @@ fn entry(candidate: &Candidate, parsed: &crate::ParsedCard, facts: &Facts) -> Va
     if let Some(term) = &candidate.term {
         value["term"] = json!(term);
     }
+    // The bounded Term context the T rules read (S09, #152).
+    if let Some(role) = &facts.term.role {
+        value["term_role"] = json!(role);
+    }
+    if let Some(list) = &facts.term.list {
+        value["term_list"] = json!(list);
+    }
+    if !facts.term.rows.is_empty() {
+        value["term_rows"] = json!(facts.term.rows);
+    }
+    if let Some(head) = &facts.term.head {
+        value["term_head"] = json!(head);
+    }
+    if let Some(category) = &facts.term.head_category {
+        value["term_head_category"] = json!(category);
+    }
+    if !facts.term.targets.is_empty() {
+        value["term_targets"] = json!(facts.term.targets);
+    }
+    if !facts.term.invalid_targets.is_empty() {
+        value["term_invalid_targets"] = json!(facts.term.invalid_targets);
+    }
     value
 }
 
@@ -869,7 +908,80 @@ fn gather(
         (None, _) => candidate.level.map(Level::id).unwrap_or_default().to_string(),
     };
     facts.terms = term_table(conn, candidate, parsed, head.as_deref(), facts.book.as_deref())?;
+    facts.term = term_facts(conn, candidate, parsed)?;
     facts.category = category(conn, candidate, parsed, &facts)?;
+    Ok(facts)
+}
+
+/// Gather the bounded Term context of one proposed Card (design 11.2–11.3): the computed role
+/// and list, the list's exact rows, the head and its category for a part, and the name or role
+/// of every Term-link target the body names. A Card of another type gathers nothing.
+fn term_facts(
+    conn: &Connection,
+    candidate: &Candidate,
+    parsed: &crate::ParsedCard,
+) -> Result<TermFacts> {
+    let mut facts = TermFacts::default();
+    if candidate.card_type == CardType::Term {
+        if let Some(name) = candidate.term.as_deref() {
+            let lookup = |at: &str| -> Result<Option<(CardType, Option<String>)>> {
+                Ok(load_optional(conn, at)?.map(|card| (card.card_type, card.term_name)))
+            };
+            let placed = crate::term::place(&candidate.address, name, &lookup)?;
+            facts.role = Some(
+                placed
+                    .as_ref()
+                    .map(|placed| placed.role.id())
+                    .unwrap_or("unfiled")
+                    .to_string(),
+            );
+            if let Some(placed) = &placed {
+                facts.list = Some(placed.list.clone());
+                let list_body = if placed.list == candidate.address {
+                    parsed.body.clone()
+                } else {
+                    let list = crate::load_card(conn, &placed.list)?;
+                    crate::parse_card_text(&list.text)?.body
+                };
+                facts.rows = zt_check::text::term_table(&list_body)
+                    .into_iter()
+                    .map(|row| row.term)
+                    .collect();
+                if placed.role == crate::term::Role::Part {
+                    facts.head = Some(placed.head.clone());
+                    let head = crate::load_card(conn, &placed.head)?;
+                    let head_body = crate::parse_card_text(&head.text)?.body;
+                    facts.head_category = zt_check::term::parse_template(&head_body)
+                        .line("类别")
+                        .map(|line| line.value.clone());
+                }
+            }
+        } else {
+            facts.role = Some("list".to_string());
+        }
+    }
+    // The Term-link targets the proposed body names (S09, #152; T7): their exact names when they
+    // are heads, and the retained legacy targets that are not. A new invalid target was already
+    // refused by the Link write invariant; this context only lets the checker report advice. It
+    // applies to a Term use on any Card, not only a Term Card.
+    let mut seen = BTreeSet::new();
+    for occurrence in crate::link::LinkBody::for_rendering(&parsed.body).occurrences() {
+        if occurrence.form != crate::link::LinkForm::Term {
+            continue;
+        }
+        let target = occurrence.target.to_string();
+        if !seen.insert(target.clone()) {
+            continue;
+        }
+        if crate::term::is_head(conn, &target)? {
+            let card = crate::load_card(conn, &target)?;
+            if let Some(name) = card.term_name {
+                facts.targets.insert(target, name);
+            }
+        } else {
+            facts.invalid_targets.push(target);
+        }
+    }
     Ok(facts)
 }
 
@@ -985,6 +1097,7 @@ fn category(
         "address": candidate.address,
         "kind": candidate.kind.id(),
         "type": candidate.card_type.id(),
+        "term": candidate.term,
         "facet": candidate.facet.as_ref().map(Facet::id),
         "tree": facts.tree,
         "title": parsed.title,
@@ -1087,8 +1200,9 @@ mod tests {
             ("gate.human.R1", "block"),
             ("gate.human.access", "off"),
             ("gate.human.envelope", "off"),
-            ("gate.human.T4", "block"),
+            ("gate.human.T7", "block"),
             ("gate.human.T10", "block"),
+            ("gate.human.T8", "block"),
             ("gate.aliens.R2", "block"),
             ("gate.agent.I5", "block"),
         ];
@@ -1191,7 +1305,7 @@ mod tests {
 
     /// S03-AC01/R0118: the config output names the archive, the policy hash, the
     /// revision, and every effective override; the full table shows the defaults,
-    /// the pending Term rules, the mandatory rule, and the graph scope.
+    /// the implemented Term rules, the mandatory rule, and the graph scope.
     #[test]
     fn the_policy_output_names_the_archive_its_overrides_and_the_defaults() {
         let (_temp, mut conn) = archive();
@@ -1238,7 +1352,12 @@ mod tests {
         assert!(row("E2").contains("block") && !row("E2").contains('*'), "{}", row("E2"));
         assert!(row("R6").contains("off") && row("R6").contains("advise"), "{}", row("R6"));
         assert!(row("I5").contains("graph"), "{}", row("I5"));
-        assert!(row("T4").contains("pending"), "{}", row("T4"));
+        assert!(
+            row("T4").contains("advise") && row("T4").contains("configurable"),
+            "{}",
+            row("T4")
+        );
+        assert!(row("T1").contains("block"), "{}", row("T1"));
         assert!(row("T7").contains("mandatory") && !row("T7").contains("block"), "{}", row("T7"));
         assert!(row("T10").contains("alias R22") && !row("T10").contains('*'), "{}", row("T10"));
         assert!(table.iter().any(|line| line.starts_with("invariants: ")), "{table:#?}");

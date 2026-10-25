@@ -100,6 +100,13 @@ Topic 和 Regular Card 必须以 `# 标题` 开头。`<!-- zt:reverse-links -->`
 （术语表的直接侧后继）。移动只改写地址字节，从不改动标签。终端不会渲染 Markdown：Session 会原样显示和编辑
 存储的 Markdown。
 
+有名字的 Term Card 按一套固定模板书写，T1–T10 规则在每次写入时检查：`术语：`、可选的 `原文：`、
+`不用：`、`类别：`、`首次定义：` 这些头部行；固定顺序的 `释义`、`书中的说法`、数学概念所需的数学各节、
+`区别`、可选的 `常见误读` 和 `在本书中的作用`；最后一行 `来源：[[书]] 定位`。数学卡还要有编号前提、
+带标签的定义、符号表、带依据与结果的编号推导、极限、算例、直觉和常见误读。写 `自动链接：否` 并附
+必需的 `自动链接理由：` 行，表示该术语保持不自动链接。很长的说明续写在标题为 `推导（续 k/n）：…`
+的 Term part 中，续卡保留同一术语名并链接回 head。
+
 0.2.0 之前创建的档案会在 `zt up` 时自动转换；转换前会先把原数据库备份为档案目录中的
 `zt.sqlite3.pre-markdown-<时间>.bak`。
 
@@ -296,7 +303,7 @@ Claude Code 工作流 `zt-econ-digest`（经济学书）和 `zt-math-digest`（�
 | `list_workspaces` | 两个 Workspace、各自的 Zone、Card 数量以及你的权限 |
 | `list_trees` | 按 Workspace 和 Zone 筛选的树根 |
 | `get_tree`、`get_card` | 一整棵树，或一张 Card 及其相邻 Card 与出入 Link |
-| `get_terms` | 一张术语表的计算结构：四列行、各 head、part 与 unfiled Card、已存的 term use、覆盖率，以及七种结构问题；同时给出读取时的归档 revision |
+| `get_terms` | 一张术语表的计算结构：四列行、各 head、part 与 unfiled Card、已存的 term use、覆盖率，以及结构问题（七种放置/覆盖问题，加上 T8 的表格形状问题和隐藏注释）；同时给出读取时的归档 revision |
 | `get_model` | 整个模型：Model Card 与各 part（归档在其下或被它链接）的正文、facet 和 emphasis，带类型的关系、松散的 part、模型外的邻居，以及 `build` 报告（构建顺序与自足性问题） |
 | `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`；`mode: entry` 先给出登记簿词条及其入口卡、hub 成员行和模型入口，再给普通标题与正文命中；已确认的同述入口，或两张陈述指纹完全相同的 Idea Card，合成一行，并给出规范陈述卡与全部成员）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
