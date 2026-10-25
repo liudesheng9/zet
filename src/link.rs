@@ -151,6 +151,40 @@ pub(crate) struct CardSnapshot {
     pub(crate) address: String,
     pub(crate) title: String,
     pub(crate) body: String,
+    /// Whether this Card is a currently valid Term head: the only role a new Term use may name
+    /// (S11, #153). It is computed by the caller from the same stored identities `term::is_head`
+    /// reads, so a Term use to another role is a semantic fault even though the row exists.
+    pub(crate) term_head: bool,
+}
+
+impl CardSnapshot {
+    /// A snapshot of a Card that is not (or not known to be) a Term head.
+    #[cfg(test)]
+    pub(crate) fn card(
+        address: impl Into<String>,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            address: address.into(),
+            title: title.into(),
+            body: body.into(),
+            term_head: false,
+        }
+    }
+
+    /// A snapshot of a currently valid Term head.
+    #[cfg(test)]
+    pub(crate) fn term_head(
+        address: impl Into<String>,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            term_head: true,
+            ..Self::card(address, title, body)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,24 +200,73 @@ pub(crate) struct ClassifiedLink<'a> {
     pub(crate) status: LinkStatus,
 }
 
+/// Why a Link occurrence is Broken (S11, #153; design 10.3).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BrokenReason {
+    /// The target address holds no Card.
+    Missing,
+    /// The target row exists, but it is not a currently valid Term head.
+    NotHead,
+}
+
+impl BrokenReason {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            BrokenReason::Missing => "missing",
+            BrokenReason::NotHead => "not_head",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BrokenLink {
     pub(crate) source_address: String,
     pub(crate) source_title: String,
     pub(crate) target: String,
+    /// The authored word of a Term use; `None` for an ordinary Link.
+    pub(crate) label: Option<String>,
+    pub(crate) reason: BrokenReason,
     pub(crate) source_line: String,
+}
+
+impl BrokenLink {
+    /// The target part of the one line `lsbk` prints in the shell and in the Session (S11, #153):
+    /// an ordinary Broken link keeps its address alone, while a Broken Term use names the authored
+    /// label and why the use is invalid, without changing the earlier `source title -> target`
+    /// shape.
+    pub(crate) fn detail(&self) -> String {
+        match (self.label.as_deref(), self.reason) {
+            (Some(label), BrokenReason::Missing) => {
+                format!("{} (term `{label}`, missing)", self.target)
+            }
+            (Some(label), BrokenReason::NotHead) => {
+                format!("{} (term `{label}`, not a Term head)", self.target)
+            }
+            (None, _) => self.target.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LinkLifecycle {
     cards: Vec<CardSnapshot>,
     addresses: BTreeSet<String>,
+    term_heads: BTreeSet<String>,
 }
 
 impl LinkLifecycle {
     pub(crate) fn from_cards(cards: Vec<CardSnapshot>) -> Self {
         let addresses = cards.iter().map(|card| card.address.clone()).collect();
-        Self { cards, addresses }
+        let term_heads = cards
+            .iter()
+            .filter(|card| card.term_head)
+            .map(|card| card.address.clone())
+            .collect();
+        Self {
+            cards,
+            addresses,
+            term_heads,
+        }
     }
 
     pub(crate) fn classify_for_rendering<'a>(&self, body: &'a str) -> Vec<ClassifiedLink<'a>> {
@@ -193,16 +276,29 @@ impl LinkLifecycle {
             .map(|occurrence| ClassifiedLink {
                 target: occurrence.target,
                 macro_range: occurrence.macro_range.clone(),
-                status: if (crate::is_valid_location(occurrence.target)
-                    || crate::literature::validate_citation_key(occurrence.target).is_ok())
-                    && self.addresses.contains(occurrence.target)
-                {
+                status: if self.reaches_valid_target(occurrence) {
                     LinkStatus::Valid
                 } else {
                     LinkStatus::Broken
                 },
             })
             .collect()
+    }
+
+    /// Whether one authored occurrence reaches the target its form requires (design 10.3): an
+    /// ordinary Link needs the stored row, while a Term use also needs that row to be a Term head.
+    fn reaches_valid_target(&self, occurrence: &LinkOccurrence) -> bool {
+        let grammar_valid = match occurrence.form {
+            LinkForm::Ordinary => {
+                crate::is_valid_location(occurrence.target)
+                    || crate::literature::validate_citation_key(occurrence.target).is_ok()
+            }
+            LinkForm::Term => crate::is_valid_regular_location(occurrence.target),
+        };
+        grammar_valid
+            && self.addresses.contains(occurrence.target)
+            && (occurrence.form == LinkForm::Ordinary
+                || self.term_heads.contains(occurrence.target))
     }
 
     #[cfg(test)]
@@ -216,57 +312,95 @@ impl LinkLifecycle {
         LinkBody::parse(body)
     }
 
+    /// The generated tail of every snapshot Card (S11, #153; design 10.3): ordinary Reverse links
+    /// and Term uses are separate sections, each deduplicated by source and ordered by address,
+    /// and a source that holds both forms to one target appears once in each section. Generated
+    /// text is never parsed here: only each Card's authored body is scanned.
     pub(crate) fn reverse_sections(&self) -> Result<BTreeMap<String, String>> {
         let titles: BTreeMap<&str, &str> = self
             .cards
             .iter()
             .map(|card| (card.address.as_str(), card.title.as_str()))
             .collect();
-        let mut inbound: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        let mut ordinary: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        let mut term_uses: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for source in &self.cards {
             let body = LinkBody::parse(&source.body)?;
             let mut seen = BTreeSet::new();
             for occurrence in body.occurrences() {
-                // A Term use is no reasoning Link: its own "Term uses" section is design 10.3's
-                // later slice (S11, #153), so the ordinary Reverse links ignore it here.
-                if occurrence.form != LinkForm::Ordinary {
+                if !self.addresses.contains(occurrence.target) {
                     continue;
                 }
-                if self.addresses.contains(occurrence.target) && seen.insert(occurrence.target) {
-                    inbound
-                        .entry(occurrence.target)
-                        .or_default()
-                        .insert(&source.address);
+                // Deduplicate by (form, target) within one source, so the same source may appear
+                // once in each section when it writes both an ordinary Link and a Term use.
+                let is_term = occurrence.form == LinkForm::Term;
+                if !seen.insert((is_term, occurrence.target)) {
+                    continue;
                 }
+                let bucket = if is_term { &mut term_uses } else { &mut ordinary };
+                bucket
+                    .entry(occurrence.target)
+                    .or_default()
+                    .insert(&source.address);
             }
         }
         Ok(self
             .cards
             .iter()
             .map(|card| {
-                let sources = inbound
-                    .get(card.address.as_str())
-                    .into_iter()
-                    .flat_map(|sources| sources.iter())
-                    .map(|source| (*source, titles.get(*source).copied().unwrap_or_default()));
-                (card.address.clone(), crate::card::reverse_section(sources))
+                let sources = |inbound: &BTreeMap<&str, BTreeSet<&str>>| {
+                    inbound
+                        .get(card.address.as_str())
+                        .into_iter()
+                        .flat_map(|sources| sources.iter())
+                        .map(|source| {
+                            (
+                                source.to_string(),
+                                titles.get(*source).copied().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let ordinary = sources(&ordinary);
+                let term_uses = sources(&term_uses);
+                (
+                    card.address.clone(),
+                    crate::card::reverse_section(
+                        ordinary.iter().map(|(a, t)| (a.as_str(), t.as_str())),
+                        term_uses.iter().map(|(a, t)| (a.as_str(), t.as_str())),
+                    ),
+                )
             })
             .collect())
     }
 
+    /// Every Broken occurrence (S11, #153): a missing target for either form, plus a Term use whose
+    /// existing target row is not a Term head. The term label is carried so `lsbk`, the MCP report
+    /// and the GUI can name the authored word rather than only the address.
     pub(crate) fn broken_links(&self) -> Result<Vec<BrokenLink>> {
         let mut broken = Vec::new();
         for card in &self.cards {
             for occurrence in LinkBody::parse(&card.body)?.occurrences() {
-                if !self.addresses.contains(occurrence.target) {
-                    broken.push(BrokenLink {
-                        source_address: card.address.clone(),
-                        source_title: card.title.clone(),
-                        target: occurrence.target.to_string(),
-                        source_line: line_around(&card.body, occurrence.macro_range.start)
-                            .to_string(),
-                    });
-                }
+                let reason = if !self.addresses.contains(occurrence.target) {
+                    Some(BrokenReason::Missing)
+                } else if occurrence.form == LinkForm::Term
+                    && !self.term_heads.contains(occurrence.target)
+                {
+                    Some(BrokenReason::NotHead)
+                } else {
+                    None
+                };
+                let Some(reason) = reason else {
+                    continue;
+                };
+                broken.push(BrokenLink {
+                    source_address: card.address.clone(),
+                    source_title: card.title.clone(),
+                    target: occurrence.target.to_string(),
+                    label: occurrence.label.map(str::to_string),
+                    reason,
+                    source_line: line_around(&card.body, occurrence.macro_range.start).to_string(),
+                });
             }
         }
         Ok(broken)
@@ -357,15 +491,16 @@ mod tests {
         assert!(LinkBody::parse("[[均衡@Book1990/1|a]]").is_ok());
     }
 
-    /// R0254/S10-AC07: the tolerant scan classifies a Term use by its address, an ordinary
-    /// Reverse section ignores it (its own section is S11), and a missing Term target is Broken.
+    /// S11-AC02/S11-AC03/S11-AC06/R0264-R0266: a valid Term use gets its own generated section,
+    /// a source that writes both forms appears once in each section, and a Term use whose target
+    /// is missing or is not a Term head is Broken with its authored label.
     #[test]
-    fn rendering_broken_reads_and_reverse_links_see_a_term_use_by_its_address() {
-        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot {
-            address: "0/1".to_string(),
-            title: "Target".to_string(),
-            body: "target".to_string(),
-        }]);
+    fn term_uses_get_their_own_reverse_section_and_broken_uses_carry_the_label() {
+        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot::term_head(
+            "0/1",
+            "Target",
+            "target",
+        )]);
         assert_eq!(
             lifecycle.classify_for_rendering("见 [[均衡@0/1]] 与 [[幽灵@0/9]]"),
             [
@@ -383,30 +518,83 @@ mod tests {
         );
 
         let lifecycle = LinkLifecycle::from_cards(vec![
-            CardSnapshot {
-                address: "0/1".to_string(),
-                title: "Target".to_string(),
-                body: "target".to_string(),
-            },
-            CardSnapshot {
-                address: "0/2".to_string(),
-                title: "User".to_string(),
-                body: "见 [[均衡@0/1]] 与 [[幽灵@0/9]]".to_string(),
-            },
+            CardSnapshot::term_head("0/1", "Target", "target"),
+            CardSnapshot::card(
+                "0/2",
+                "User",
+                "见 [[均衡@0/1]] 与 [[幽灵@0/9]] and [[0/1]]",
+            ),
+            CardSnapshot::card("0/3", "Not a head", "term row"),
+            CardSnapshot::card("0/4", "Non-head user", "见 [[均衡@0/3]]"),
         ]);
+        let reverse = lifecycle.reverse_sections().expect("reverse links");
         assert_eq!(
-            lifecycle.reverse_sections().expect("reverse links")["0/1"],
-            "",
-            "a Term use is no ordinary Reverse link"
+            reverse["0/1"],
+            "## Reverse links\n\n- [[0/2]] User\n\n## Term uses\n\n- [[0/2]] User\n",
+            "one source with both forms appears once in each section"
+        );
+        assert_eq!(
+            reverse["0/3"],
+            "## Term uses\n\n- [[0/4]] Non-head user\n",
+            "a use of an existing non-head row is still listed under the Card it names"
+        );
+        assert_eq!(
+            reverse["0/2"], "",
+            "a source with no inbound Links ends at the marker"
         );
         assert_eq!(
             lifecycle.broken_links().expect("broken links"),
-            [BrokenLink {
-                source_address: "0/2".to_string(),
-                source_title: "User".to_string(),
-                target: "0/9".to_string(),
-                source_line: "见 [[均衡@0/1]] 与 [[幽灵@0/9]]".to_string(),
+            [
+                BrokenLink {
+                    source_address: "0/2".to_string(),
+                    source_title: "User".to_string(),
+                    target: "0/9".to_string(),
+                    label: Some("幽灵".to_string()),
+                    reason: BrokenReason::Missing,
+                    source_line: "见 [[均衡@0/1]] 与 [[幽灵@0/9]] and [[0/1]]".to_string(),
+                },
+                BrokenLink {
+                    source_address: "0/4".to_string(),
+                    source_title: "Non-head user".to_string(),
+                    target: "0/3".to_string(),
+                    label: Some("均衡".to_string()),
+                    reason: BrokenReason::NotHead,
+                    source_line: "见 [[均衡@0/3]]".to_string(),
+                },
+            ]
+        );
+
+        // A Term use to an existing row that is no Term head is Broken for rendering too.
+        assert_eq!(
+            lifecycle.classify_for_rendering("[[均衡@0/3]]"),
+            [ClassifiedLink {
+                target: "0/3",
+                macro_range: 0..14,
+                status: LinkStatus::Broken,
             }]
+        );
+    }
+
+    /// S11-AC06: the shell and Session line keeps its old shape for an ordinary Broken Link and
+    /// names the authored label and the reason for a Broken Term use.
+    #[test]
+    fn a_broken_term_use_detail_names_its_label_and_reason() {
+        let broken = |label: Option<&str>, reason| BrokenLink {
+            source_address: "0/2".to_string(),
+            source_title: "User".to_string(),
+            target: "0/1".to_string(),
+            label: label.map(str::to_string),
+            reason,
+            source_line: "line".to_string(),
+        };
+        assert_eq!(broken(None, BrokenReason::Missing).detail(), "0/1");
+        assert_eq!(
+            broken(Some("均衡"), BrokenReason::Missing).detail(),
+            "0/1 (term `均衡`, missing)"
+        );
+        assert_eq!(
+            broken(Some("均衡"), BrokenReason::NotHead).detail(),
+            "0/1 (term `均衡`, not a Term head)"
         );
     }
 
@@ -425,11 +613,7 @@ mod tests {
 
     #[test]
     fn lifecycle_classifies_links_against_immutable_card_snapshots() {
-        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot {
-            address: "0/1".to_string(),
-            title: "Target".to_string(),
-            body: "target body".to_string(),
-        }]);
+        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot::card("0/1", "Target", "target body")]);
 
         assert_eq!(
             lifecycle.classify_for_rendering("valid [[0/1]], broken [[Missing]]"),
@@ -450,11 +634,7 @@ mod tests {
 
     #[test]
     fn edit_validation_preserves_old_broken_targets_but_rejects_new_ones() {
-        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot {
-            address: "0/2".to_string(),
-            title: "Valid Target".to_string(),
-            body: "target body".to_string(),
-        }]);
+        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot::card("0/2", "Valid Target", "target body")]);
 
         lifecycle
             .validate_edit(
@@ -471,11 +651,7 @@ mod tests {
 
     #[test]
     fn rendering_classification_keeps_valid_prefixes_and_marks_invalid_targets_broken() {
-        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot {
-            address: "0/1".to_string(),
-            title: "Target".to_string(),
-            body: "target body".to_string(),
-        }]);
+        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot::card("0/1", "Target", "target body")]);
 
         assert_eq!(
             lifecycle.classify_for_rendering("ok [[0/1]] bad [[0/01]] tail [[open"),
@@ -515,21 +691,9 @@ mod tests {
     #[test]
     fn reverse_sections_deduplicate_each_source_and_order_sources_deterministically() {
         let lifecycle = LinkLifecycle::from_cards(vec![
-            CardSnapshot {
-                address: "0/2".to_string(),
-                title: "Later Source".to_string(),
-                body: "[[0/1]] and again [[0/1]]".to_string(),
-            },
-            CardSnapshot {
-                address: "0/1".to_string(),
-                title: "Target".to_string(),
-                body: "target".to_string(),
-            },
-            CardSnapshot {
-                address: "0/0".to_string(),
-                title: "Earlier Source".to_string(),
-                body: "[[0/1]] and broken [[Missing]]".to_string(),
-            },
+            CardSnapshot::card("0/2", "Later Source", "[[0/1]] and again [[0/1]]"),
+            CardSnapshot::card("0/1", "Target", "target"),
+            CardSnapshot::card("0/0", "Earlier Source", "[[0/1]] and broken [[Missing]]"),
         ]);
 
         assert_eq!(
@@ -566,17 +730,12 @@ mod tests {
     #[test]
     fn broken_links_preserve_each_occurrence_and_its_exact_source_line() {
         let lifecycle = LinkLifecycle::from_cards(vec![
-            CardSnapshot {
-                address: "0/0".to_string(),
-                title: "Source".to_string(),
-                body: "first [[Missing]] and [[Missing]]\nvalid [[0/1]]\nsecond [[Other]]"
-                    .to_string(),
-            },
-            CardSnapshot {
-                address: "0/1".to_string(),
-                title: "Target".to_string(),
-                body: "target".to_string(),
-            },
+            CardSnapshot::card(
+                "0/0",
+                "Source",
+                "first [[Missing]] and [[Missing]]\nvalid [[0/1]]\nsecond [[Other]]",
+            ),
+            CardSnapshot::card("0/1", "Target", "target"),
         ]);
 
         assert_eq!(
@@ -586,18 +745,24 @@ mod tests {
                     source_address: "0/0".to_string(),
                     source_title: "Source".to_string(),
                     target: "Missing".to_string(),
+                    label: None,
+                    reason: BrokenReason::Missing,
                     source_line: "first [[Missing]] and [[Missing]]".to_string(),
                 },
                 BrokenLink {
                     source_address: "0/0".to_string(),
                     source_title: "Source".to_string(),
                     target: "Missing".to_string(),
+                    label: None,
+                    reason: BrokenReason::Missing,
                     source_line: "first [[Missing]] and [[Missing]]".to_string(),
                 },
                 BrokenLink {
                     source_address: "0/0".to_string(),
                     source_title: "Source".to_string(),
                     target: "Other".to_string(),
+                    label: None,
+                    reason: BrokenReason::Missing,
                     source_line: "second [[Other]]".to_string(),
                 },
             ]

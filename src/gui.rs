@@ -1306,6 +1306,10 @@ impl App {
             "direct": snapshot.nav(crate::direct_successor(&card.address).ok()),
             "sides": snapshot.sides(card),
             "inbound": snapshot.inbound_refs(&card.address),
+            // Ordinary Reverse links and Term uses are separate lists, as their generated sections
+            // are (S11, #153; design 10.3). `inbound` keeps both for existing navigation.
+            "reverse_links": snapshot.reverse_links(&card.address),
+            "term_uses": snapshot.term_uses(&card.address),
             "outbound": snapshot.outbound(&card.address),
         });
         // The Card's own Lock facts (R201-R204, S03-AC01): the reader learns here whether an active

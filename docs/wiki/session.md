@@ -149,7 +149,7 @@ The command bar takes bare words; the line is split on whitespace (so quotes are
 | `mf <form\|none>` | Regular | set the Math form of a Model Card (`theory`, `definition`, `axiom`, `theorem`, `proposition`, `lemma`, `corollary`) | unchanged | yes | — |
 | `stats` | all | card counts: total, topics, regular, literature (`card_counts`) | unchanged | no | — |
 | `status` | all | pid from `zt.pid`, archive root, SQLite path, card count, the `locks:` line (`zt status` reads it the same way; see [Locks in the Session](#locks-in-the-session)), open Sessions (`session_count`, which also prunes `zt.sessions`) | unchanged | no | — |
-| `lsbk` | all | Broken links from `link_lifecycle(&conn)?.broken_links()`: panel `broken links: N` with one `<source> <title> -> <target>: <line>` entry each, or the message `no broken links` | unchanged | no | — |
+| `lsbk` | all | Broken links from `link_lifecycle(&conn)?.broken_links()`: panel `broken links: N` with one `<source> <title> -> <target>: <line>` entry each (a Term use names its label and reason: `(term 均衡, missing)` or `(term 均衡, not a Term head)`), or the message `no broken links` | unchanged | no | — |
 | `help` | all | panel of the commands offered at the Pointer | unchanged | no | — |
 | `q` | all | quit | — | no | — |
 

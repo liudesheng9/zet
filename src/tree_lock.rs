@@ -7155,4 +7155,134 @@ mod tests {
             "the old tree really is gone, so the export is the only record left"
         );
     }
+
+    // --- Term uses in Lock promises (S11, #153) ------------------------------------------------
+
+    const TERM_TABLE: &str = "## 术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 均衡 | 平衡 | 双方都不改变策略 | §1 |\n";
+
+    /// A fresh Topic holding a Term list at `<tree>/1|a` and its head `<tree>/1|a|a`.
+    fn topic_with_term_head(conn: &mut Connection) -> (String, String, String) {
+        let root = crate::create_topic(conn, Workspace::Human, &card_text("第二主题", "正文"))
+            .expect("create topic")
+            .0;
+        let tree = crate::tree_id(&root).to_string();
+        let first = format!("{tree}/1");
+        crate::insert_card(
+            conn,
+            &first,
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("第一张", "正文"),
+        )
+        .expect("first card");
+        let list = format!("{first}|a");
+        crate::insert_card(
+            conn,
+            &list,
+            false,
+            Workspace::Human,
+            CardType::Term,
+            None,
+            &card_text("术语表", TERM_TABLE),
+        )
+        .expect("term list");
+        let head = format!("{list}|a");
+        crate::insert_card_with_term(
+            conn,
+            &head,
+            false,
+            Workspace::Human,
+            CardType::Term,
+            None,
+            Some("均衡"),
+            &card_text("均衡", ""),
+        )
+        .expect("term head");
+        (root, list, head)
+    }
+
+    /// R0268/S11-AC05: a Term use is an authored macro, so it pins a head in another tree like any
+    /// Link, while a Term use to a head inside the same tree pins nothing.
+    #[test]
+    fn a_term_use_pins_a_cross_tree_head_and_a_same_tree_use_pins_nothing() {
+        let (_temp, mut conn) = archive();
+        let root = topic_tree(&mut conn);
+        let (other_root, _list, head) = topic_with_term_head(&mut conn);
+        let side = crate::load_card(&conn, &side_address(&root)).expect("side");
+        crate::update_card_text(
+            &mut conn,
+            &side,
+            &card_text("Side", &format!("术语 [[均衡@{head}]]")),
+        )
+        .expect("write the Term use");
+
+        let plan = resolve_plan(&conn, &root, Some("term pin")).expect("plan");
+        assert_eq!(plan.pins.len(), 1, "one distinct cross-tree head");
+        assert_eq!(plan.pins[0].target, head);
+        assert_eq!(plan.pins[0].sources.len(), 1);
+        assert_eq!(plan.pins[0].sources[0].1, side_address(&root));
+        assert!(
+            plan.warnings.is_empty(),
+            "the head resolves, so the Term use is no warning"
+        );
+
+        // The same-tree case: the second topic's first Card uses its own tree's head.
+        let first = format!("{}/1", crate::tree_id(&other_root));
+        let card = crate::load_card(&conn, &first).expect("first");
+        crate::update_card_text(
+            &mut conn,
+            &card,
+            &card_text("第一张", &format!("[[均衡@{head}]]")),
+        )
+        .expect("write the same-tree use");
+        let plan = resolve_plan(&conn, &other_root, Some("same tree")).expect("plan");
+        assert!(
+            plan.pins.is_empty(),
+            "a same-tree Term use creates no external pin"
+        );
+        assert!(plan.warnings.is_empty());
+    }
+
+    /// R0268/S11-AC05: a move that would rewrite a Locked source's Term use is refused, exactly as
+    /// for an ordinary Link. The use is a warning when the Lock is accepted because its target does
+    /// not resolve yet; the target then resolves elsewhere and may not be renamed under the Lock.
+    #[test]
+    fn a_locked_source_refuses_a_rewrite_of_its_term_use() {
+        let (_temp, mut conn) = archive();
+        let root = topic_tree(&mut conn);
+        let future_head = "1/1|a|a".to_string();
+        let side = crate::load_card(&conn, &side_address(&root)).expect("side");
+        // Seed a Term use to an address that holds no Card yet: the Lock accepts it as a warning.
+        conn.execute(
+            "UPDATE cards SET text = ?1 WHERE row_id = ?2",
+            params![
+                card_text("Side", &format!("[[均衡@{future_head}]]")),
+                side.row_id
+            ],
+        )
+        .expect("seed the Term use");
+        crate::link_index::rebuild(&conn).expect("index the seeded use");
+        let plan = resolve_plan(&conn, &root, Some("locked before the head exists")).expect("plan");
+        assert!(plan.pins.is_empty(), "an unresolved Term use pins nothing");
+        assert_eq!(plan.warnings.len(), 1);
+        assert_eq!(plan.warnings[0].target, future_head);
+        lock_tx(&conn, &plan).expect("apply the Lock");
+
+        // The head now exists in an unlocked tree, at the address the locked source names.
+        let (other_root, _list, head) = topic_with_term_head(&mut conn);
+        assert_eq!(head, future_head);
+        let mapping = BTreeMap::from([(head.clone(), format!("{head}|b"))]);
+        let error = ensure_unlocked(&conn, Change::Mapping(&mapping))
+            .expect_err("a Locked source's Term use may not be rewritten");
+        let refusal = error.downcast_ref::<Refusal>().expect("a typed refusal");
+        assert_eq!(refusal.reason.id(), "edit");
+        assert!(
+            refusal.message.contains("locked tree")
+                && refusal.cards.contains(&side_address(&root)),
+            "{refusal:?}"
+        );
+        let _ = other_root;
+    }
 }

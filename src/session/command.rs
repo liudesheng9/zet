@@ -1609,6 +1609,8 @@ mod tests {
                 source_address: "0/0".to_string(),
                 source_title: "Topic".to_string(),
                 target: "Missing".to_string(),
+                label: None,
+                reason: crate::link::BrokenReason::Missing,
                 source_line: "see [[Missing]]".to_string(),
             }]))
         );

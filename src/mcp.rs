@@ -1254,7 +1254,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "list_broken_links",
             "List broken links",
-            "Links whose target Card no longer exists.",
+            "Links whose target Card no longer exists, and Term uses whose target row is not a Term head. A Term row carries the authored `label` and `reason` (`missing` or `not_head`).",
             json!({ "workspace": workspace_filter }),
             &[],
             true,

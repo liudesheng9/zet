@@ -228,24 +228,37 @@ fn refresh_reverse(conn: &Connection, affected: &BTreeSet<String>) -> Result<usi
         let Some(card) = optional_card(conn, target)? else {
             continue;
         };
-        // A Term use is no reasoning Link: its own "Term uses" section is design 10.3's later
-        // slice (S11, #153), so the ordinary Reverse links skip its rows here.
+        // One row per (source, form): ordinary Reverse links and Term uses are separate sections,
+        // and a source that writes both forms to one target appears once in each (S11, #153).
         let mut sources = conn.prepare_cached(
-            "SELECT DISTINCT l.source,c.text FROM links l
+            "SELECT DISTINCT l.source, c.text, CASE WHEN l.kind = 'term' THEN 1 ELSE 0 END AS term
+             FROM links l
              JOIN cards c ON (c.location=l.source OR c.citation_key=l.source)
-             WHERE l.target=?1 AND (l.kind IS NULL OR l.kind <> 'term') ORDER BY l.source",
+             WHERE l.target=?1 ORDER BY l.source, term",
         )?;
-        let linked = sources
+        let rows = sources
             .query_map([target], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let linked = linked
-            .into_iter()
-            .map(|(address, text)| Ok((address, crate::parse_card_text(&text)?.title)))
-            .collect::<Result<Vec<_>>>()?;
-        let reverse =
-            crate::card::reverse_section(linked.iter().map(|(a, t)| (a.as_str(), t.as_str())));
+        let mut ordinary = Vec::new();
+        let mut term_uses = Vec::new();
+        for (address, text, is_term) in rows {
+            let title = crate::parse_card_text(&text)?.title;
+            if is_term {
+                term_uses.push((address, title));
+            } else {
+                ordinary.push((address, title));
+            }
+        }
+        let reverse = crate::card::reverse_section(
+            ordinary.iter().map(|(a, t)| (a.as_str(), t.as_str())),
+            term_uses.iter().map(|(a, t)| (a.as_str(), t.as_str())),
+        );
         let text = crate::card::with_reverse_section(&card.text, &reverse)?;
         if text != card.text {
             changed += conn.execute(

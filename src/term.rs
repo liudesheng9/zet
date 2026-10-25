@@ -294,7 +294,16 @@ fn uses_to(conn: &Connection, at: &str) -> Result<u64> {
 /// another type, which is exactly what `term_link_target` reports and what a new Term use must
 /// pass (S10, #151).
 fn head_of(conn: &Connection, at: &str) -> Result<Option<String>> {
-    let Some((card_type, name)) = stored(conn, at)? else {
+    head_of_with(at, &|at| stored(conn, at))
+}
+
+/// [`head_of`] over an in-memory identity lookup, so the full Link lifecycle can classify a Term
+/// use without a database read (S11, #153). Both paths share this rule.
+fn head_of_with(
+    at: &str,
+    lookup: &dyn Fn(&str) -> Result<Option<Stored>>,
+) -> Result<Option<String>> {
+    let Some((card_type, name)) = lookup(at)? else {
         return Ok(None);
     };
     if card_type != CardType::Term || name.is_none() {
@@ -306,10 +315,30 @@ fn head_of(conn: &Connection, at: &str) -> Result<Option<String>> {
     let Some(parent) = crate::parent_location(at) else {
         return Ok(None);
     };
-    let Some((parent_type, parent_name)) = stored(conn, &parent)? else {
+    let Some((parent_type, parent_name)) = lookup(&parent)? else {
         return Ok(None);
     };
     Ok((parent_type == CardType::Term && parent_name.is_none()).then_some(parent))
+}
+
+/// The addresses that are currently valid Term heads among a set of stored Card identities. The
+/// Link lifecycle uses it to report a Term use to an existing non-head row as a semantic fault,
+/// without reading or parsing another body (S11, #153).
+pub(crate) fn head_addresses<'a>(
+    cards: impl IntoIterator<Item = (&'a str, CardType, Option<&'a str>)>,
+) -> Result<BTreeSet<String>> {
+    let identities: BTreeMap<String, Stored> = cards
+        .into_iter()
+        .map(|(at, card_type, name)| (at.to_string(), (card_type, name.map(str::to_string))))
+        .collect();
+    let lookup = |at: &str| Ok(identities.get(at).cloned());
+    let mut heads = BTreeSet::new();
+    for at in identities.keys() {
+        if head_of_with(at, &lookup)?.is_some() {
+            heads.insert(at.clone());
+        }
+    }
+    Ok(heads)
 }
 
 /// Whether one address is a Term head right now: the one role a new Term use may target (S10-AC03).

@@ -288,7 +288,9 @@ fn result_panel(result: &CommandResult) -> Option<Vec<ViewLine>> {
                 address: broken.source_address.clone(),
                 rest: format!(
                     " {} -> {}: {}",
-                    broken.source_title, broken.target, broken.source_line
+                    broken.source_title,
+                    broken.detail(),
+                    broken.source_line
                 ),
             }));
             Some(lines)

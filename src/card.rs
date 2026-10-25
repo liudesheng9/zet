@@ -20,6 +20,8 @@ use sha2::Digest;
 
 pub(crate) const REVERSE_MARKER: &str = "<!-- zt:reverse-links -->";
 pub(crate) const REVERSE_HEADING: &str = "## Reverse links";
+/// The generated heading that lists Term uses separately from reasoning Reverse links (S11, #153).
+pub(crate) const TERM_HEADING: &str = "## Term uses";
 const LEGACY_DELIM: &str = "<--->";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -338,17 +340,40 @@ pub(crate) fn compose_card_text(title: &str, body: &str, reverse: &str) -> Strin
     text
 }
 
-/// The generated Reverse link section for the given inbound sources.
-pub(crate) fn reverse_section<'a>(sources: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
+/// The generated tail for the given inbound sources (S11, #153; design 10.3): the ordinary Reverse
+/// links section first, then the Term uses section. An empty section is never emitted, so a Card
+/// with no Term use keeps exactly the bytes it had before Term links existed. The caller
+/// deduplicates and orders each list; one source may appear once in each section.
+pub(crate) fn reverse_section<'a>(
+    ordinary: impl IntoIterator<Item = (&'a str, &'a str)>,
+    term_uses: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> String {
+    let mut out = String::new();
+    push_reverse_section(&mut out, REVERSE_HEADING, ordinary);
+    push_reverse_section(&mut out, TERM_HEADING, term_uses);
+    out
+}
+
+/// Append one nonempty generated section, separated from an earlier one by one blank line.
+fn push_reverse_section<'a>(
+    out: &mut String,
+    heading: &str,
+    sources: impl IntoIterator<Item = (&'a str, &'a str)>,
+) {
     let items = sources
         .into_iter()
         .map(|(address, title)| format!("- [[{address}]] {title}").trim_end().to_string())
         .collect::<Vec<_>>();
     if items.is_empty() {
-        String::new()
-    } else {
-        format!("{REVERSE_HEADING}\n\n{}\n", items.join("\n"))
+        return;
     }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(heading);
+    out.push_str("\n\n");
+    out.push_str(&items.join("\n"));
+    out.push('\n');
 }
 
 /// The text a new Card opens with: its heading, a blank line, an empty body
@@ -469,12 +494,29 @@ mod tests {
         assert_eq!(parsed.body, "notes");
     }
 
+    /// S11-AC02/R0264: the generated tail holds ordinary Reverse links and Term uses as two
+    /// separate sections under one marker, and an empty section is never emitted. A Card with no
+    /// Term use keeps exactly the bytes it had before this release.
     #[test]
-    fn reverse_sections_are_markdown_lists_under_a_heading() {
-        assert_eq!(reverse_section([]), "");
+    fn reverse_sections_are_markdown_lists_under_a_heading_and_term_uses_come_second() {
+        assert_eq!(reverse_section([], std::iter::empty()), "");
         assert_eq!(
-            reverse_section([("0/0", "Earlier"), ("0/2", "")]),
+            reverse_section([("0/0", "Earlier"), ("0/2", "")], std::iter::empty()),
             "## Reverse links\n\n- [[0/0]] Earlier\n- [[0/2]]\n"
+        );
+        assert_eq!(
+            reverse_section(
+                std::iter::empty(),
+                [("0/2", "User"), ("0/1", "Other user")]
+            ),
+            "## Term uses\n\n- [[0/2]] User\n- [[0/1]] Other user\n"
+        );
+        assert_eq!(
+            reverse_section(
+                [("0/0", "Earlier")],
+                [("0/2", "User")]
+            ),
+            "## Reverse links\n\n- [[0/0]] Earlier\n\n## Term uses\n\n- [[0/2]] User\n"
         );
     }
 

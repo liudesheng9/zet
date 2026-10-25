@@ -642,6 +642,12 @@ pub(crate) struct Snapshot {
     pub(crate) parsed: BTreeMap<String, crate::ParsedCard>,
     pub(crate) lifecycle: LinkLifecycle,
     pub(crate) inbound: BTreeMap<String, BTreeSet<String>>,
+    /// The inbound sources of each target that write at least one ordinary Link to it, so the GUI
+    /// can present Reverse links apart from Term uses (S11, #153; design 10.3).
+    reverse_inbound: BTreeMap<String, BTreeSet<String>>,
+    /// The inbound sources of each target that write a Term use to it, with the authored label of
+    /// the first such use. Kept apart from ordinary Reverse links, like the generated sections.
+    term_inbound: BTreeMap<String, BTreeMap<String, String>>,
     /// The active Lock facts of the same read: which Cards an active Lock promises and which it
     /// pins. It arrives with the Cards and the revision, so a projection never mixes revisions.
     lock: crate::tree_lock::LockView,
@@ -719,13 +725,31 @@ impl Snapshot {
             .map(|card| (card.address.clone(), card.clone()))
             .collect();
         let mut inbound: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut reverse_inbound: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut term_inbound: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         for card in &cards {
             for occurrence in LinkBody::parse(&parsed[&card.address].body)?.occurrences() {
-                if by_address.contains_key(occurrence.target) {
-                    inbound
-                        .entry(occurrence.target.to_string())
-                        .or_default()
-                        .insert(card.address.clone());
+                if !by_address.contains_key(occurrence.target) {
+                    continue;
+                }
+                inbound
+                    .entry(occurrence.target.to_string())
+                    .or_default()
+                    .insert(card.address.clone());
+                match occurrence.form {
+                    crate::link::LinkForm::Ordinary => {
+                        reverse_inbound
+                            .entry(occurrence.target.to_string())
+                            .or_default()
+                            .insert(card.address.clone());
+                    }
+                    crate::link::LinkForm::Term => {
+                        term_inbound
+                            .entry(occurrence.target.to_string())
+                            .or_default()
+                            .entry(card.address.clone())
+                            .or_insert_with(|| occurrence.label.unwrap_or_default().to_string());
+                    }
                 }
             }
         }
@@ -735,6 +759,8 @@ impl Snapshot {
             parsed,
             lifecycle,
             inbound,
+            reverse_inbound,
+            term_inbound,
             lock,
             revision,
             folded: OnceLock::new(),
@@ -968,6 +994,33 @@ impl Snapshot {
             .into_iter()
             .flatten()
             .map(|source| self.reference(source))
+            .collect()
+    }
+
+    /// The Cards that write an ordinary Link to `address`, apart from Term uses (S11, #153). The
+    /// generated `## Reverse links` section lists the same sources for the same reason.
+    pub(crate) fn reverse_links(&self, address: &str) -> Vec<Value> {
+        self.reverse_inbound
+            .get(address)
+            .into_iter()
+            .flatten()
+            .map(|source| self.reference(source))
+            .collect()
+    }
+
+    /// The Cards that write a Term use to `address`, in address order, each with the authored
+    /// label its first use wrote (S11, #153). They are listed apart from ordinary Reverse links,
+    /// as the generated `## Term uses` section is.
+    pub(crate) fn term_uses(&self, address: &str) -> Vec<Value> {
+        self.term_inbound
+            .get(address)
+            .into_iter()
+            .flat_map(|sources| sources.iter())
+            .map(|(source, label)| {
+                let mut value = self.reference(source);
+                value["label"] = json!(label);
+                value
+            })
             .collect()
     }
 
@@ -1230,6 +1283,8 @@ impl Snapshot {
                     "title": broken.source_title,
                     "workspace": self.workspace(&broken.source_address).map(Workspace::id),
                     "target": broken.target,
+                    "label": broken.label,
+                    "reason": broken.reason.id(),
                     "line": broken.source_line,
                 })
             })

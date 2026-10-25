@@ -708,20 +708,24 @@ pub(crate) fn links(
 pub(crate) fn broken(root: &Path, workspace: Option<crate::Workspace>) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let mut query=tx.prepare("SELECT l.source,l.ord,l.target FROM links l JOIN cards s ON s.location=l.source OR s.citation_key=l.source LEFT JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE t.row_id IS NULL AND (?1 IS NULL OR s.workspace=?1) ORDER BY l.source,l.ord")?;
+    // A missing target is Broken for either form; a Term row whose target exists is Broken only
+    // when that row is no longer a Term head (S11, #153, design 10.3).
+    let mut query=tx.prepare("SELECT l.source,l.ord,l.target,l.kind FROM links l JOIN cards s ON s.location=l.source OR s.citation_key=l.source LEFT JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE (t.row_id IS NULL OR l.kind = 'term') AND (?1 IS NULL OR s.workspace=?1) ORDER BY l.source,l.ord")?;
     let rows = query
         .query_map([workspace.map(crate::Workspace::id)], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, usize>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(query);
     let mut bodies = BTreeMap::new();
+    let mut heads: BTreeMap<String, bool> = BTreeMap::new();
     let mut broken = Vec::new();
-    for (source, ord, target) in rows {
+    for (source, ord, target, kind) in rows {
         if !bodies.contains_key(&source) {
             let card = crate::load_card(&tx, &source)?;
             let parsed = crate::parse_card_text(&card.text)?;
@@ -734,7 +738,32 @@ pub(crate) fn broken(root: &Path, workspace: Option<crate::Workspace>) -> Result
             .get(ord)
             .filter(|o| o.target == target)
             .context("Link index drift in broken-link source; run `zt status --check-links`")?;
-        broken.push(json!({"source":source,"title":parsed.title,"workspace":card.workspace.id(),"target":target,"line":crate::link::line_around(&parsed.body,occurrence.macro_range.start)}));
+        let term_row = kind.as_deref() == Some("term");
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cards WHERE location=?1 OR citation_key=?1)",
+            [&target],
+            |r| r.get(0),
+        )?;
+        let reason = if !exists {
+            crate::link::BrokenReason::Missing
+        } else if term_row {
+            let is_head = match heads.get(&target) {
+                Some(is_head) => *is_head,
+                None => {
+                    let is_head = crate::term::is_head(&tx, &target)?;
+                    heads.insert(target.clone(), is_head);
+                    is_head
+                }
+            };
+            if is_head {
+                continue;
+            }
+            crate::link::BrokenReason::NotHead
+        } else {
+            // An ordinary Link to an existing row is valid, whatever its Card type.
+            continue;
+        };
+        broken.push(json!({"source":source,"title":parsed.title,"workspace":card.workspace.id(),"target":target,"label":occurrence.label,"reason":reason.id(),"line":crate::link::line_around(&parsed.body,occurrence.macro_range.start)}));
     }
     tx.commit()?;
     Ok(json!({"broken":broken}))

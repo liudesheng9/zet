@@ -2444,6 +2444,13 @@ fn link_lifecycle(conn: &Connection) -> Result<link::LinkLifecycle> {
 }
 
 fn link_lifecycle_from_cards(cards: &[Card]) -> Result<link::LinkLifecycle> {
+    // A Term use to an existing row that is no valid head is a semantic fault, so the lifecycle
+    // carries the same computed head set `term::is_head` answers (S11, #153).
+    let heads = crate::term::head_addresses(
+        cards
+            .iter()
+            .map(|card| (card.address.as_str(), card.card_type, card.term_name.as_deref())),
+    )?;
     let snapshots = cards
         .iter()
         .map(|card| {
@@ -2452,6 +2459,7 @@ fn link_lifecycle_from_cards(cards: &[Card]) -> Result<link::LinkLifecycle> {
                 address: card.address.clone(),
                 title: parsed.title,
                 body: parsed.body,
+                term_head: heads.contains(&card.address),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -4591,7 +4599,10 @@ fn cmd_lsbk() -> Result<()> {
     for broken in link_lifecycle(&conn)?.broken_links()? {
         println!(
             "{} {} -> {}: {}",
-            broken.source_address, broken.source_title, broken.target, broken.source_line
+            broken.source_address,
+            broken.source_title,
+            broken.detail(),
+            broken.source_line
         );
     }
     Ok(())

@@ -602,8 +602,8 @@ fn a_written_term_link_keeps_its_macro_and_reaches_the_head() {
     assert_eq!(faults.len(), 1, "{faults:#?}");
     assert_eq!(faults[0]["fault"], json!("term_row_without_card"), "only the missing row");
 
-    // A Term use is no reasoning Link: the head's generated Reverse links name no user yet, and
-    // the archive reports no Broken link.
+    // A Term use is no reasoning Link: the head's generated Reverse links name no user, and the
+    // separate Term uses section names the source under its own heading (S11, #153).
     assert!(
         mcp.ok("get_card", json!({ "at": &source }))["text"]
             .as_str()
@@ -616,7 +616,11 @@ fn a_written_term_link_keeps_its_macro_and_reaches_the_head() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(!head_text.contains(&source), "{head_text}");
+    assert!(!head_text.contains("## Reverse links"), "{head_text}");
+    assert!(
+        head_text.contains(&format!("## Term uses\n\n- [[{source}]] 均衡的价格\n")),
+        "the head lists its Term use in its own generated section: {head_text}"
+    );
     let broken = mcp.ok("list_broken_links", json!({}));
     assert_eq!(broken["broken"], json!([]), "{broken}");
 }
