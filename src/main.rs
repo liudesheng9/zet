@@ -4498,7 +4498,7 @@ fn shell_insert(at: &str, typed: TypeArgs) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            place::apply_insert_plan(
+            let accepted = place::apply_insert_plan(
                 &mut conn,
                 &plan,
                 card_type,
@@ -4506,6 +4506,7 @@ fn shell_insert(at: &str, typed: TypeArgs) -> Result<()> {
                 term.as_deref(),
                 &text,
             )?;
+            print_warnings(&accepted);
             println!("{}", plan.location);
             Ok(())
         }

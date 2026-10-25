@@ -1196,3 +1196,201 @@ fn lock_facts(home: &Home) -> (i64, i64, i64) {
         count("lock_events"),
     )
 }
+
+/// S29/R0510: a new Event or Finding Card that lacks its required labels is refused by its type's
+/// format rule, and the archive keeps no Card, receipt, revision or Topic allocation.
+#[test]
+fn a_new_event_or_finding_without_its_labels_is_refused_without_residue() {
+    let home = Home::new(Some("enforce"));
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({ "title": "主题", "body": "主题说明。" }))
+        ["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    for (card_type, title, body, rule) in [
+        ("event", "1999 年的一笔交易", "双方签约，交易完成。", "E2"),
+        ("finding", "试点提高了收入", "收入增加了 3 个百分点。", "F1"),
+    ] {
+        let cards = home.cards();
+        let revision = home.revision();
+        let receipts = home.receipts();
+        let next_topic = home.next_topic();
+        let (value, is_error) = mcp.call(
+            "create_successor",
+            json!({ "at": topic, "type": card_type, "title": title, "body": body }),
+        );
+        assert!(is_error, "the {card_type} Card must be refused: {value}");
+        assert_eq!(value["error"], json!("card_check"), "{value}");
+        assert!(
+            fault_rules(&value).iter().any(|found| found == rule),
+            "the refusal names {rule}: {value}"
+        );
+        assert_eq!(home.cards(), cards, "a refused {card_type} writes no Card");
+        assert_eq!(
+            home.revision(),
+            revision,
+            "a refused {card_type} moves no revision"
+        );
+        assert_eq!(
+            home.receipts(),
+            receipts,
+            "a refused {card_type} keeps no receipt"
+        );
+        assert_eq!(
+            home.next_topic(),
+            next_topic,
+            "a refused {card_type} allocates no Topic id"
+        );
+    }
+}
+
+/// S29/R0516: promoting a concept model to formal makes the formal size rule applicable. The
+/// promotion stores as a metadata edit; the part's same write passes while the head is a concept
+/// model and is then refused by R13, with no stored change.
+#[test]
+fn promoting_a_concept_model_to_formal_runs_the_new_formal_checks() {
+    let home = Home::new(None);
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({ "title": "模型主题", "body": "主题说明。" }))
+        ["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let model = mcp.ok(
+        "create_successor",
+        json!({
+            "at": topic, "title": "均衡模型", "type": "model", "level": "concept",
+            "body": "这一段说明背景并给出充分理由。"
+        }),
+    )["address"]
+        .as_str()
+        .expect("model address")
+        .to_string();
+    let long_body: String = (1..=13).map(|n| format!("第 {n} 句说明这一步。")).collect();
+    let part = mcp.ok(
+        "create_successor",
+        json!({
+            "at": model, "kind": "side", "facet": "设定",
+            "title": "设定", "body": long_body
+        }),
+    )["address"]
+        .as_str()
+        .expect("part address")
+        .to_string();
+    home.run(&["config", "set", "gate.stage", "enforce"]);
+    // A concept model skips the formal size rule, so the part's edit is stored.
+    let concept_body = format!("{long_body}第 14 句说明这一步。");
+    mcp.ok("edit_card", json!({ "at": part, "body": concept_body }));
+
+    // The promotion is a metadata-only edit of the Model Card.
+    let revision = home.revision();
+    let promoted = mcp.ok("edit_card", json!({ "at": model, "level": "formal" }));
+    assert_eq!(promoted["address"], json!(model), "{promoted}");
+    assert_eq!(
+        home.revision(),
+        revision + 1,
+        "the promotion stores one edit"
+    );
+    let level = home
+        .conn()
+        .query_row(
+            "SELECT model_level FROM cards WHERE location = ?1",
+            [&model],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("stored level");
+    assert_eq!(level, "formal");
+
+    // The same part write is now refused by the newly applicable formal rule.
+    let stored = home.text(&part);
+    let revision = home.revision();
+    let (refusal, is_error) = mcp.call(
+        "edit_card",
+        json!({ "at": part, "body": format!("{concept_body}第 15 句说明这一步。") }),
+    );
+    assert!(is_error, "the formal rule now applies: {refusal}");
+    assert_eq!(refusal["error"], json!("card_check"), "{refusal}");
+    assert!(
+        fault_rules(&refusal).iter().any(|rule| rule == "R13"),
+        "the newly applicable rule is R13: {refusal}"
+    );
+    assert_eq!(home.text(&part), stored, "the refused edit changed no text");
+    assert_eq!(home.revision(), revision, "the refused edit moved no revision");
+}
+
+/// S29/R0518: a move is a structural change. Under enforce, a Card that keeps its old prose fault
+/// still moves, its Link still points at the same target, the target's generated Reverse section
+/// is refreshed to the new address, and the authored text keeps the fault unchanged.
+#[test]
+fn a_move_keeps_a_retained_fault_and_refreshes_the_reverse_section() {
+    let home = Home::new(None);
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({ "title": "来源主题", "body": "主题说明。" }))
+        ["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let target = mcp.ok("create_topic", json!({ "title": "目标主题", "body": "目标说明。" }))
+        ["address"]
+        .as_str()
+        .expect("target address")
+        .to_string();
+    let host = mcp.ok(
+        "create_successor",
+        json!({ "at": topic, "title": "目标卡", "body": "这一段说明背景并给出充分理由。" }),
+    )["address"]
+        .as_str()
+        .expect("host address")
+        .to_string();
+    let host2 = mcp.ok(
+        "create_successor",
+        json!({ "at": host, "title": "目标卡二", "body": "这一段说明背景并给出充分理由。" }),
+    )["address"]
+        .as_str()
+        .expect("second host address")
+        .to_string();
+    let body = format!(
+        "这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。对应 [[{target}]]：这条理由说明选择。甲；乙。"
+    );
+    let card = mcp.ok(
+        "create_successor",
+        json!({ "at": host, "kind": "side", "title": "保留缺陷", "body": body }),
+    )["address"]
+        .as_str()
+        .expect("card address")
+        .to_string();
+    assert!(
+        home.text(&target).contains(&format!("- [[{card}]]")),
+        "the target lists the Card before the move: {}",
+        home.text(&target)
+    );
+    home.run(&["config", "set", "gate.stage", "enforce"]);
+
+    let cards = home.cards();
+    let destination = format!("{host2}|a");
+    let moved = mcp.ok(
+        "move_card",
+        json!({ "at": card, "to": destination, "confirm": "move" }),
+    );
+    assert_eq!(moved["applied"], json!(true), "{moved}");
+    assert_eq!(home.cards(), cards, "a move stores no new Card");
+    let stored = home.text(&destination);
+    assert!(
+        stored.contains("甲；乙。"),
+        "the retained prose fault is unchanged: {stored}"
+    );
+    assert!(
+        stored.contains(&format!("[[{target}]]")),
+        "the Link target is unchanged: {stored}"
+    );
+    let reverse = home.text(&target);
+    assert!(
+        reverse.contains(&format!("- [[{destination}]]")),
+        "the target's generated Reverse section names the new address: {reverse}"
+    );
+    assert!(
+        !reverse.contains(&format!("- [[{card}]]")),
+        "the old address is gone from the Reverse section: {reverse}"
+    );
+}

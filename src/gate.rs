@@ -1814,3 +1814,319 @@ mod write_gate_tests {
         assert!(shown.contains(&"gate_stage=advisory".to_string()), "{shown:#?}");
     }
 }
+
+/// S29 (#171): the measured bound on the gate's added work (R0552/R0553).
+///
+/// The gate's decision is one function, `check_proposed`, inside the caller's write transaction. It
+/// parses the proposed Card, loads the bounded context, runs the checker's local rules, and decides
+/// the ratchet. That is exactly the "additional gate work" the design bounds; lock waiting, file
+/// I/O and provider time are outside it by construction. Two tests live here:
+///
+/// * `the_context_statements_are_bounded_and_constant_in_archive_size` runs in the ordinary suite
+///   and counts the SQL statements one decision issues through SQLite's statement trace, so an
+///   accidental archive-size-dependent read fails the suite.
+/// * `measure_the_gate_work_per_typical_card` is `#[ignore]`d because it is a measurement, not a
+///   pass/fail case. It prints one JSON line with median/p95/p99/max microseconds per Card class,
+///   the statement count, and the archive size. Run it in release mode:
+///
+///   cargo test --release --bin zt gate::perf -- --ignored --nocapture
+#[cfg(test)]
+mod perf {
+    use super::*;
+    use crate::model::Level;
+    use crate::workspace::Access;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    /// Every statement SQLite traced on the one measured connection. Only the measurement test
+    /// installs the tracer, so no other test's connection is recorded.
+    static TRACED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    fn trace_statement(sql: &str) {
+        TRACED.lock().expect("trace lock").push(sql.to_string());
+    }
+
+    /// The statements one gate decision issues on `conn`.
+    fn statements_of(conn: &mut Connection, candidate: &Candidate) -> Vec<String> {
+        TRACED.lock().expect("trace lock").clear();
+        conn.trace(Some(trace_statement));
+        let outcome = check_proposed(conn, candidate);
+        conn.trace(None);
+        let traced = std::mem::take(&mut *TRACED.lock().expect("trace lock"));
+        outcome.expect("the check completes");
+        traced
+    }
+
+    /// The four-row term table the book stores as its nameless Term list.
+    const TABLE: &str = "## 术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 均衡 | 平衡 | 双方都不改变策略 | §1.1 |\n| 弹性 | 弹性系数 | 价格变化的反应程度 | §2.3 |\n| 生产函数 | 产量函数 | 投入与产出的关系 | §3.1 |\n| 替代弹性 | 替换弹性 | 要素比例对价格的反应 | §4.2 |\n";
+
+    /// One book with its term list and rows, a concept Model Card with a part, and `extra`
+    /// unrelated Cards in a second Topic tree. The unrelated Cards are what an archive-size
+    /// dependent read would have to scan.
+    fn measured_archive(extra: usize) -> (tempfile::TempDir, Connection) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        let conn = crate::open_db(temp.path()).expect("open database");
+        let owner = Access::Owner;
+        crate::ops::create_literature_tx(
+            &conn,
+            owner,
+            Workspace::Agent,
+            "@book{Book2026, title={Book 2026}}",
+            "# Book 2026\n\n这本书说明一个模型。\n",
+        )
+        .expect("literature");
+        crate::ops::create_successor_tx_with_term(
+            &conn,
+            owner,
+            crate::ops::Successor::Direct,
+            "Book2026",
+            CardType::Idea,
+            None,
+            None,
+            "# 第一章\n\n设置与假设。\n",
+        )
+        .expect("anchor");
+        crate::ops::create_successor_tx_with_term(
+            &conn,
+            owner,
+            crate::ops::Successor::Side,
+            "Book2026/1",
+            CardType::Term,
+            None,
+            None,
+            &format!("# 术语表：精度\n\n{TABLE}\n"),
+        )
+        .expect("term list");
+        crate::ops::create_successor_tx_with_term(
+            &conn,
+            owner,
+            crate::ops::Successor::Side,
+            "Book2026/1|a",
+            CardType::Term,
+            None,
+            Some("均衡"),
+            "# 均衡\n\n## 释义\n\n两个参与者都不愿单方面改变策略。\n",
+        )
+        .expect("term head");
+        crate::ops::create_successor_tx_with_term(
+            &conn,
+            owner,
+            crate::ops::Successor::Direct,
+            "Book2026/1",
+            CardType::Model,
+            None,
+            None,
+            "# 均衡模型\n\n## 问题\n\n价格如何决定。\n\n## 结论\n\n价格等于边际成本。\n",
+        )
+        .expect("model");
+        let model = "Book2026/2";
+        crate::ops::create_successor_tx_with_term(
+            &conn,
+            owner,
+            crate::ops::Successor::Side,
+            model,
+            CardType::Model,
+            Some(&crate::model::Part {
+                facet: crate::model::Facet::parse("设定").expect("facet"),
+                emphasis: None,
+            }),
+            None,
+            "# 设定\n\n## 假设\n\n存在一个代表性家庭。\n",
+        )
+        .expect("model part");
+        // A supported concept level, so a promoted formal edit has a level to compare with.
+        conn.execute(
+            "UPDATE cards SET model_level = 'concept' WHERE location = ?1",
+            [model],
+        )
+        .expect("concept level");
+        // The unrelated Cards: rows an archive-size-dependent read would have to visit.
+        conn.execute(
+            "INSERT INTO cards(location, is_topic, is_lit, text, workspace, card_type)
+             VALUES('90/0', 1, 0, '# 无关主题\n\n无关。\n', 'agent', 'idea')",
+            [],
+        )
+        .expect("unrelated root");
+        for n in 1..=extra {
+            conn.execute(
+                "INSERT INTO cards(location, is_topic, is_lit, text, workspace, card_type)
+                 VALUES(?1, 0, 0, '# 无关卡\n\n这一段说明背景并给出充分理由。\n', 'agent', 'idea')",
+                [(format!("90/{n}"))],
+            )
+            .expect("unrelated card");
+        }
+        (temp, conn)
+    }
+
+    /// The Card classes a digest writes most: a new Idea Card in a book, an edit of stored prose
+    /// (the ratchet path), a Term head edit (the T rules), and a Model part edit (the model level
+    /// and term table).
+    fn candidates(conn: &Connection) -> Vec<(&'static str, Candidate)> {
+        let idea = "# 价格等于边际成本\n\n这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。对应 [[Book2026/1]]：这条理由说明选择。\n";
+        let anchor = crate::load_card(conn, "Book2026/1").expect("anchor");
+        let head = crate::load_card(conn, "Book2026/1|a|a").expect("term head");
+        let part = crate::load_card(conn, "Book2026/2|a").expect("model part");
+        vec![
+            (
+                "idea create",
+                Candidate::create(
+                    "Book2026/5",
+                    Kind::Regular,
+                    Workspace::Agent,
+                    idea,
+                    CardType::Idea,
+                    None,
+                ),
+            ),
+            (
+                "idea edit",
+                Candidate::edit(
+                    &anchor,
+                    "# 第一章\n\n这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。\n",
+                    CardType::Idea,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            ),
+            (
+                "term head edit",
+                Candidate::edit(
+                    &head,
+                    "# 均衡\n\n## 释义\n\n两个参与者都不愿单方面改变策略，因此没有一方愿意偏离。\n",
+                    CardType::Term,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .with_term(Some("均衡")),
+            ),
+            (
+                "model part edit",
+                Candidate::edit(
+                    &part,
+                    "# 设定\n\n## 假设\n\n存在一个代表性家庭，它选择消费与劳动的分配。\n",
+                    CardType::Model,
+                    Some(crate::model::Facet::parse("设定").expect("facet")),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .with_term(None),
+            ),
+        ]
+    }
+
+    /// The one statement count a typical decision issues, at two archive sizes.
+    fn counts() -> (usize, usize) {
+        let (_small_temp, mut small) = measured_archive(0);
+        let (_big_temp, mut big) = measured_archive(300);
+        let (_, candidate) = candidates(&small).remove(0);
+        let small_count = statements_of(&mut small, &candidate).len();
+        let big_count = statements_of(&mut big, &candidate).len();
+        (small_count, big_count)
+    }
+
+    /// R0553: the bounded context does not grow with the archive. The same proposal issues the
+    /// same number of SQL statements against a 6-Card archive and a 306-Card one, so no decision
+    /// reads an archive-wide slice.
+    #[test]
+    fn the_context_statements_are_bounded_and_constant_in_archive_size() {
+        let (small, big) = counts();
+        assert_eq!(
+            small, big,
+            "the gate's statement count depends on archive size: {small} vs {big}"
+        );
+        assert!(
+            small <= 32,
+            "one decision issues {small} statements, over the bounded-context budget"
+        );
+    }
+
+    /// The measurement itself. Prints one JSON line and asserts the design's target; run it in
+    /// release mode because a debug build measures the unoptimised checker.
+    #[test]
+    #[ignore = "measurement: run with --release --ignored --nocapture"]
+    fn measure_the_gate_work_per_typical_card() {
+        const RUNS: usize = 200;
+        const WARMUP: usize = 20;
+        let (temp, mut conn) = measured_archive(300);
+        let (small, big) = counts();
+        let archive_bytes = std::fs::metadata(temp.path().join("zt.sqlite3"))
+            .expect("archive file")
+            .len();
+        let mut classes = Vec::new();
+        for (name, candidate) in candidates(&conn) {
+            for _ in 0..WARMUP {
+                drop(check_proposed(&conn, &candidate));
+            }
+            let mut samples = Vec::with_capacity(RUNS);
+            let mut accepted = 0usize;
+            let mut diagnostics = 0usize;
+            for _ in 0..RUNS {
+                let started = Instant::now();
+                let outcome = check_proposed(&conn, &candidate);
+                samples.push(started.elapsed().as_micros() as u64);
+                match outcome {
+                    Ok(accepted_result) => {
+                        accepted += 1;
+                        diagnostics += accepted_result.lines().len();
+                    }
+                    Err(error) => {
+                        if let Some(refusal) = error.downcast_ref::<Refusal>() {
+                            diagnostics += refusal.report.diagnostics.len();
+                        }
+                    }
+                }
+            }
+            samples.sort_unstable();
+            let at = |fraction: f64| samples[((samples.len() - 1) as f64 * fraction).round() as usize];
+            let median = at(0.5);
+            classes.push(serde_json::json!({
+                "card": name,
+                "runs": RUNS,
+                "median_us": median,
+                "p95_us": at(0.95),
+                "p99_us": at(0.99),
+                "max_us": *samples.last().expect("samples"),
+                "accepted": accepted,
+                "advice_per_run": diagnostics / RUNS,
+            }));
+        }
+        let (_name, probe) = candidates(&conn).remove(0);
+        let statements = statements_of(&mut conn, &probe).len();
+        let report = serde_json::json!({
+            "measurement": "gate work per typical Card",
+            "issue": "#171 (S29)",
+            "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+            "archive_cards": 6 + 302 + 300,
+            "archive_bytes": archive_bytes,
+            "context_statements_one_card": statements,
+            "context_statements_small_vs_large": [small, big],
+            "classes": classes,
+        });
+        println!("{}", serde_json::to_string(&report).expect("report JSON"));
+        let typical = report["classes"][0]["median_us"].as_u64().expect("median");
+        assert!(
+            typical < 5_000,
+            "the typical Card's gate work median is {typical} us, over the 5 ms target"
+        );
+    }
+
+    /// The three Workspaces' policies load once per decision; the measurement's fixture uses the
+    /// default policy, so a stray override would change the numbers.
+    #[test]
+    fn the_measured_archive_holds_the_default_policy_and_one_level() {
+        let (_temp, conn) = measured_archive(0);
+        assert_eq!(current_stage(&conn).expect("stage"), Stage::Advisory);
+        assert!(rows(&conn).expect("overrides").is_empty());
+        let level = crate::load_card(&conn, "Book2026/2").expect("model").level;
+        assert_eq!(level, Some(Level::Concept));
+    }
+}

@@ -1,6 +1,6 @@
 [package]
 name = "zt"
-version = "0.38.0"
+version = "0.39.0"
 edition = "2024"
 default-run = "zt"
 
@@ -37,5 +37,8 @@ windows-sys = { version = "0.61", features = [
 assert_cmd = "2.0"
 portable-pty = "0.9"
 predicates = "3.1"
+# The SQLite statement trace the gate's bounded-context test counts (S29, #171). A dev-only
+# feature: the shipped binary links rusqlite without it.
+rusqlite = { version = "0.32", features = ["trace"] }
 serde_yaml_ng = "0.10"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }

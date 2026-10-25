@@ -691,6 +691,25 @@ mod tests {
         }
     }
 
+    /// S29 (#171, R0541): a CRLF body is planned like an LF one. The term in prose links, the term
+    /// in a code fence stays literal, the visible text and the line endings are unchanged, and the
+    /// second pass changes nothing.
+    #[test]
+    fn a_crlf_body_links_its_prose_and_keeps_its_line_endings() {
+        let body = "# 笔记\r\n\r\n均衡与`生产函数`。\r\n\r\n```\r\n均衡\r\n```\r\n";
+        let planned = plan(body, Policy::All);
+        assert_preserved(body, &planned);
+        assert_eq!(edits(&planned), [("link", "均衡", "[[均衡@K/10]]")]);
+        assert_eq!(
+            planned.new_body.matches("\r\n").count(),
+            body.matches("\r\n").count(),
+            "the line endings are unchanged: {:?}",
+            planned.new_body
+        );
+        let again = plan(&planned.new_body, Policy::All);
+        assert!(again.edits.is_empty(), "{:?}", again.edits);
+        assert_eq!(again.new_body, planned.new_body);
+    }
     #[test]
     fn foreign_and_non_book_macros_are_retained_and_reported() {
         let body = "[[均衡@bookB/3]] 与 [[均衡@12/3]] 与 均衡";

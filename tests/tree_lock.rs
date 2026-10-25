@@ -7109,3 +7109,197 @@ fn a_dump_fails_without_an_archive_when_the_lock_history_cannot_be_read() {
         "no staging folder and no archive remain after the failed dump"
     );
 }
+
+/// S29/R0524/R0525: the archive the previous release leaves can hold an active Lock, a pinned
+/// target outside it, committed receipts and a non-Idea Card. Upgrading to the term-aware archive
+/// keeps every pin, row identity, type, receipt, event and seal, while the new field starts empty;
+/// the Lock still governs its tree and the pinned target stays editable.
+#[test]
+fn a_generation_one_archive_keeps_its_pins_non_idea_types_and_receipts() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen pins");
+    let outside = topic(&mut mcp, "Pinned targets");
+    let pinned = card(&mut mcp, &outside, "Pinned card", "这一段说明背景并给出充分理由。");
+    let body = format!(
+        "这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。对应 [[{pinned}]]：这条理由说明选择。"
+    );
+    let created = mcp.ok(
+        "apply_batch",
+        json!({ "items": [{
+            "op_key": "s29/upgrade/1/create/first",
+            "client_ref": "first",
+            "tool": "create_successor",
+            "arguments": { "at": root, "title": "First", "body": body },
+        }] }),
+    );
+    let member = address(created["results"][0]["result"].clone());
+    let event = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": member,
+            "type": "event",
+            "title": "1999 年的签约",
+            "body": "这一段说明背景并给出充分理由。\n\n- 时间：1999 年。\n\n- 地点：北京。\n\n- 参与者：甲、乙。\n\n- 经过：双方签约。\n\n- 来源：[[1/0]]。",
+        }),
+    ));
+    let lock = gui.lock(&root, Some("pins survive the Term migration"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    home.cmd().arg("down").assert().success();
+
+    // The archive as the previous release left it: generation-1 Cards with no Term field.
+    let (rows_before, types_before, members_before, pins_before, receipts_before, seal_before, events_before) = {
+        let conn = home.db();
+        previous_release_cards(&conn);
+        assert_eq!(lock_schema_version(&conn).as_deref(), Some("1"));
+        let seal: String = conn
+            .query_row(
+                "SELECT range_fingerprint FROM locks WHERE lock_id = ?1",
+                [lock_id],
+                |row| row.get(0),
+            )
+            .expect("the seal");
+        let types = table_rows(
+            &conn,
+            "SELECT row_id, COALESCE(location, citation_key) AS address, card_type FROM cards ORDER BY row_id",
+        );
+        let pins = table_rows(
+            &conn,
+            &format!(
+                "SELECT lock_id, source_row, target_row, target_address FROM lock_pins
+                  WHERE lock_id = {lock_id} ORDER BY target_row"
+            ),
+        );
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM lock_events WHERE lock_id = ?1",
+                [lock_id],
+                |row| row.get(0),
+            )
+            .expect("events");
+        (
+            card_rows(&conn),
+            types,
+            member_rows(&conn, lock_id),
+            pins,
+            table_rows(
+                &conn,
+                "SELECT op_key, request_hash, result_json FROM applied_ops ORDER BY op_key",
+            ),
+            seal,
+            events,
+        )
+    };
+    assert_eq!(json!(seal_before), lock["seal"]);
+    assert!(
+        pins_before.as_array().map(Vec::len).unwrap_or(0) >= 1,
+        "the locked member pins the Card outside its tree: {pins_before}"
+    );
+    assert_eq!(
+        types_before
+            .as_array()
+            .expect("cards")
+            .iter()
+            .find(|card| card["address"] == json!(event))
+            .expect("the Event Card")["card_type"],
+        json!("event")
+    );
+
+    home.cmd().arg("up").assert().success();
+    let gui = home.gui();
+    let conn = home.db();
+    assert_eq!(lock_schema_version(&conn).as_deref(), Some("2"));
+    assert_eq!(card_rows(&conn), rows_before, "every row id and address");
+    assert_eq!(
+        table_rows(
+            &conn,
+            "SELECT row_id, COALESCE(location, citation_key) AS address, card_type FROM cards ORDER BY row_id",
+        ),
+        types_before,
+        "every Card keeps its type"
+    );
+    assert_eq!(
+        member_rows(&conn, lock_id),
+        members_before,
+        "the member baselines are the same bytes, so old seals verify"
+    );
+    assert_eq!(
+        table_rows(
+            &conn,
+            &format!(
+                "SELECT lock_id, source_row, target_row, target_address FROM lock_pins
+                  WHERE lock_id = {lock_id} ORDER BY target_row"
+            ),
+        ),
+        pins_before,
+        "every pin keeps its source, target and address"
+    );
+    assert_eq!(
+        table_rows(
+            &conn,
+            "SELECT op_key, request_hash, result_json FROM applied_ops ORDER BY op_key",
+        ),
+        receipts_before,
+        "committed receipts are unchanged"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM lock_events WHERE lock_id = ?1",
+            [lock_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("events"),
+        events_before,
+        "the Lock history is unchanged"
+    );
+    let names: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE term_name IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("term names");
+    assert_eq!(names, 0, "the new field starts empty on every old Card");
+    drop(conn);
+
+    let panel = gui.panel();
+    assert_eq!(panel["integrity"]["ok"], true, "{panel}");
+    let listed = panel["locks"]
+        .as_array()
+        .expect("locks")
+        .iter()
+        .find(|item| item["lock_id"] == json!(lock_id))
+        .expect("the Lock");
+    assert_eq!(listed["seal"], lock["seal"]);
+    assert_eq!(listed["seal_intact"], true);
+
+    // The committed receipt replays verbatim after the upgrade.
+    let replayed = mcp.ok(
+        "apply_batch",
+        json!({ "items": [{
+            "op_key": "s29/upgrade/1/create/first",
+            "client_ref": "first",
+            "tool": "create_successor",
+            "arguments": { "at": root, "title": "First", "body": body },
+        }] }),
+    );
+    assert_eq!(replayed["results"][0]["replayed"], true, "{replayed}");
+    // The Lock still governs its tree, and the pinned target outside it stays editable.
+    let refused = mcp.refused("edit_card", json!({ "at": member, "body": "改。" }));
+    assert_card_locked(&refused, "edit", &root, &[&member]);
+    mcp.ok(
+        "edit_card",
+        json!({ "at": pinned, "body": "这一段说明背景并给出充分理由。已改。" }),
+    );
+    let edited = home
+        .db()
+        .query_row(
+            "SELECT text FROM cards WHERE location = ?1",
+            [&pinned],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("the pinned target");
+    assert!(edited.contains("已改。"));
+    gui.unlock(lock_id);
+}

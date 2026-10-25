@@ -530,6 +530,76 @@ fn create_many(mcp: &mut Mcp, from: &str, count: usize) -> Vec<String> {
     made
 }
 
+/// S29 (#171, R0554): measure the relinker's plan and apply on the 300-Card fixture and record the
+/// actual batch count. Run in release mode:
+///
+///   cargo test --release --test term_link_apply -- --ignored --nocapture
+#[test]
+#[ignore = "measurement: run with --release --ignored --nocapture"]
+fn measure_the_relinker_on_three_hundred_cards() {
+    const RUNS: usize = 2;
+    let program = zt_program().expect(
+        "this measurement needs a zt binary: build the repository (cargo build) or set ZT_TEST_ZT",
+    );
+    let mut plans = Vec::new();
+    let mut applies = Vec::new();
+    let mut batches = 0u64;
+    let mut changed = 0u64;
+    let mut archive_bytes = 0u64;
+    // Each run gets its own scratch archive: the fixture's term table names the book it sources,
+    // so one archive holds one fixture book.
+    for _run in 0..RUNS {
+        let zt = Zt::new(program.clone());
+        let mut mcp = zt.mcp();
+        let (root, anchor, _list, _balance) = book(&mut mcp, "testbook2026", "Test Book");
+        create_many(&mut mcp, &anchor, 300);
+        let work = tempfile::tempdir().expect("work");
+        let staged = staging(work.path(), "book", &root, "Test Book");
+        let stage = staged.to_str().expect("staging path").to_string();
+        let started = std::time::Instant::now();
+        let said = plan_of(&zt, &stage);
+        plans.push(started.elapsed().as_micros() as u64);
+        assert_eq!(said["complete"], true, "{said}");
+        changed = said["cards_changed"].as_u64().unwrap_or(0);
+        let started = std::time::Instant::now();
+        let output = apply(&zt, &stage);
+        applies.push(started.elapsed().as_micros() as u64);
+        assert!(
+            output.status.success(),
+            "apply: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let applied = last_json(&output);
+        batches = applied["chunks"].as_u64().unwrap_or(0);
+        archive_bytes = std::fs::metadata(zt.archive.join("zt.sqlite3"))
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+    }
+    plans.sort_unstable();
+    applies.sort_unstable();
+    let at = |samples: &[u64], fraction: f64| -> u64 {
+        samples[((samples.len() - 1) as f64 * fraction).round() as usize]
+    };
+    let report = json!({
+        "measurement": "term-link relinker on a 300-Card book",
+        "issue": "#171 (S29)",
+        "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "cards_scanned": 304,
+        "cards_changed": changed,
+        "runs": RUNS,
+        "plan": {
+            "median_ms": at(&plans, 0.5) as f64 / 1000.0,
+            "max_ms": *plans.last().expect("plan samples") as f64 / 1000.0,
+        },
+        "apply": {
+            "median_ms": at(&applies, 0.5) as f64 / 1000.0,
+            "max_ms": *applies.last().expect("apply samples") as f64 / 1000.0,
+        },
+        "batches": batches,
+        "archive_bytes": archive_bytes,
+    });
+    println!("{}", serde_json::to_string(&report).expect("report JSON"));
+}
 /// The one acceptance seam of design 13.6's verification: a 300-Card book applies its 301 edits in
 /// five bounded identified calls, a rerun replays the accepted receipts, and a replanned no-op
 /// writes nothing.

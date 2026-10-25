@@ -1213,6 +1213,20 @@ async function run(which, args, opts0 = {}, kind) {
 
 let failed = 0
 const check = (cond, message) => { console.log(`${cond ? 'ok' : 'FAIL'}: ${message}`); if (!cond) failed++ }
+// S29 (#171, R0548): what a run's recorded provider resources must look like when it ends. Every
+// conversation it started is terminal and deleted, and every workspace registration it made is
+// removed. The stand-in records these facts itself, so this is recorded-evidence, not a message.
+const settledResources = (rt) => {
+  const all = [...rt.state.resources.values()]
+  const conversations = all.flatMap((r) => r.conversations || [])
+  const spaces = all.filter((r) => r.workspace && r.workspace.path)
+  return {
+    conversations: conversations.length,
+    terminal: conversations.every((c) => c.terminal === true && c.deleted === true),
+    workspaces: spaces.length,
+    removed: spaces.every((r) => r.workspace_removed === true),
+  }
+}
 const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@book{Key}', bookTitle: '书' }
 
 // ================================================================================================================
@@ -1399,6 +1413,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(failed.result.term_link.status === 'skipped' && /not ready/.test(String(failed.result.term_link.reason || '')) && failed.led.find('termlink/book@1') && failed.led.find('termlink/book@1').state === 'blocked', `S24: the normal Term-link dependency stays blocked with its reason (${JSON.stringify(failed.result.term_link)})`)
   check(failed.result.audit && failed.report.stages.audit.status === 'done' && failed.result.run_report, 'S24: the audit and the run report still run and show the coverage debt')
   check(!failed.termCalls.some((c) => c.tool === 'term-link' && c.step === 'apply'), 'S24: a failed term job never reaches the Term-link apply')
+  const failedSettled = settledResources(failed)
+  check(failedSettled.terminal && failedSettled.removed, `S29: a failed Term job still leaves no live conversation and no workspace registration (${JSON.stringify(failedSettled)})`)
   // A failed term job leaves the ready later drafts staged and the publication partial.
   const partial = await run('econ', { ...base, figures: false }, { termPublicationPartial: true })
   check(partial.result.term_cards.status === 'failed' && /not complete/.test(String(partial.result.term_cards.reason || '')), `S24: a partial publication is reported, never a successful zero-term book (${JSON.stringify(partial.result.term_cards.reason)})`)
@@ -1420,6 +1436,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const settled = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { termAlreadyDone: true, retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1'], ['termcards', 'termcards/book@1'], ['termlink', 'termlink/book@1']], retainedDone: ['termcards', 'termlink'] })
   check(settled.result && settled.result.mode === 'resume' && settled.report.stages['term-cards'].status === 'done' && settled.report.stages['term-link'].status === 'done', `S24: a resume of a settled Term branch claims nothing and fails nothing (${JSON.stringify([settled.report && settled.report.stages && settled.report.stages['term-cards'], settled.report && settled.report.stages && settled.report.stages['term-link']])})`)
   check(settled.result && settled.result.term_cards && settled.result.term_cards.status === 'done' && settled.result.term_link && settled.result.term_link.status === 'skipped' && settled.termCalls.every((c) => c.step !== 'apply'), 'S24: a settled Term branch runs no plan/apply work on resume and reports itself complete')
+  const resumeSettled = settledResources(settled)
+  check(resumeSettled.terminal && resumeSettled.removed, `S29: a resume settles every recorded resource it reuses (${JSON.stringify(resumeSettled)})`)
   const mathFull = await run('math', { ...base, figures: false })
   check(mathFull.report.stages['term-cards'].status === 'done' && mathFull.report.stages['term-link'].status === 'done', 'S24 (math): the inherited Term stages run in the mathematics variant')
 }
@@ -1456,6 +1474,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // A run keyed by out alone is the mode's own interface.
   const plain = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards' })
   check(!plain.report.halted && plain.result && plain.result.mode === 'term-cards', `S25: mode term-cards needs only out (${plain.report.halted ? plain.report.halted.error : plain.result && plain.result.mode})`)
+  const plainSettled = settledResources(plain)
+  check(plainSettled.terminal && plainSettled.removed, `S29: the mode's own interface settles every recorded resource too (${JSON.stringify(plainSettled)})`)
 
   // Mode term-cards: the backfill preparation, the Term-card branch, the deterministic pass and the audit.
   const cards = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards' })
@@ -1470,6 +1490,11 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cards.result.backfill && cards.result.backfill.list && cards.result.backfill.list.rows === 2 && cards.result.backfill.source.reused === true && cards.result.backfill.conflicts.length === 0, `S25 term-cards: the report carries the validation it bound (${JSON.stringify(cards.result.backfill && cards.result.backfill.list)})`)
   check(cards.result.audit && cards.report.stages.audit.status === 'done', 'S25 term-cards: the read-only audit still describes the book')
   check(!cards.calls.some((c) => /^finalize /.test(c.label || '') || /zt-digest organize-|zt-digest figures|zt-digest bridge|model-compiler/.test(c.cmd || '')), 'S25 term-cards: no finalization, Organize, Figures, Bridge or model command runs')
+  const cardsSettled = settledResources(cards)
+  // This stand-in answers the dedicated mode's compiler commands itself and starts no provider
+  // resource, so the run records none to leave behind; the full, failure and resume runs below and
+  // above are where recorded conversations and workspaces prove their cleanup.
+  check(cardsSettled.terminal && cardsSettled.removed, `S29 term-cards: every recorded resource of the backfill is settled (${JSON.stringify(cardsSettled)})`)
 
   // Mode term-link: deterministic only. No source stage, no Term-card branch, no provider job.
   const link = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link' })
@@ -1483,6 +1508,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(link.result.term_cards && link.result.term_cards.status === 'skipped', `S25 term-link: the report names the Term-card branch as not run, never as a success (${JSON.stringify(link.result.term_cards)})`)
   check(link.termManagers.length === 0 && link.calls.every((c) => !/DeepSeek subagent manager/.test(c.prompt || '')), 'S25 term-link: no DeepSeek manager or provider job starts in the deterministic mode')
   check(link.result.audit && link.result.backfill && link.result.backfill.tree.heads === 0, 'S25 term-link: the audit and the bound validation are in the result')
+  const linkSettled = settledResources(link)
+  check(linkSettled.conversations === 0 && linkSettled.workspaces === 0, `S29 term-link: the deterministic mode starts no provider resource to leave behind (${JSON.stringify(linkSettled)})`)
 
   // A Lock or a conflict stops the backfill at prepare, before any Term compiler or provider job.
   const locked = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link' }, { backfillLock: true })

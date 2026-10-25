@@ -4037,6 +4037,34 @@ mod tests {
         );
     }
 
+    /// S29 (#171, R0561): a Term use is authored markup, not prose. One body with and without its
+    /// Term macros gives the same diagnostics, so linking a Card adds no prose fault.
+    #[test]
+    fn term_markup_adds_no_prose_fault() {
+        let plain = "这一段说明背景并给出充分理由。均衡是稳定的状态。这一段说明结果如何出现。它让读者看到条件。生产函数决定产出。甲；乙。";
+        let linked = "这一段说明背景并给出充分理由。[[均衡@K/10]]是稳定的状态。这一段说明结果如何出现。它让读者看到条件。[[生产函数@K/11]]决定产出。甲；乙。";
+        assert_ne!(plain, linked);
+        let report = |body: &str| {
+            let cards = json!([{
+                "address": "K/2",
+                "title": "均衡是稳定的状态",
+                "body": body,
+                "type": "idea",
+                "category": "idea",
+            }]);
+            Check::new(Limits::default(), false, "").report(cards.as_array().expect("cards"))
+        };
+        let before = report(plain);
+        let after = report(linked);
+        assert_eq!(
+            before, after,
+            "Term markup changed the diagnostics: {before:#?} vs {after:#?}"
+        );
+        assert!(
+            before.iter().any(|diagnostic| diagnostic.rule == "R3"),
+            "the fixture still exercises a real prose rule: {before:#?}"
+        );
+    }
     #[test]
     fn term_prose_over_the_limit_reports_t9() {
         let long = "甲".repeat(1700);
