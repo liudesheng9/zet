@@ -9,7 +9,7 @@
     "executable": {
       "zt": "0.40.0",
       "zt_check": "0.14.0",
-      "zt_digest": "0.28.0"
+      "zt_digest": "0.29.0"
     },
     "rule": {
       "rule_version": "4",
@@ -48,7 +48,7 @@
     "sha256": {
       "zt": "4171ee6cbed9854e2a1123827a0a575aed0e650a67a1c8eaf5adf166a4c5f67b",
       "zt_check": "355d321bdb020237a32bdea2efa98ea76eee7919b120701b344214937885e24e",
-      "zt_digest": "75403c8c06bca392feb7e7670e25503db4452f7af2ff0c59c5d28079e5b7eeaf"
+      "zt_digest": "2249aeab97874a5c3fdd4712331eda950b1e44eebe6bdd8f846b1ef6ced32de9"
     }
   },
   "workflows": {

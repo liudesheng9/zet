@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "issue": 173,
+  "slice": "S31",
+  "generated": "2026-10-25",
+  "release_manifest": {
+    "path": "docs/term-cards-links-and-check-gate-release-manifest.json",
+    "sha256": "fabe28967431dd6685768d7152b323472aaabaae03dc61ac3f4f42fd71b0e2fc",
+    "executable": "0.40.0"
+  },
+  "deployed": {
+    "zt": "0.40.0",
+    "zt_check": "0.14.0",
+    "zt_digest": "0.29.0",
+    "workflow_project": {
+      "zt-econ-digest": "6.6.0",
+      "zt-math-digest": "5.6.0"
+    },
+    "workflow_global": {
+      "zt-econ-digest": "6.6.0",
+      "zt-math-digest": "5.6.0"
+    },
+    "base": "5.6.0",
+    "skills": [
+      "zt",
+      "zettelkasten",
+      "zt-digest-protocol"
+    ]
+  },
+  "preflight": {
+    "ok": true,
+    "checks": 34,
+    "verify_release": true,
+    "live": {
+      "archive": "D:\\zt",
+      "state": "up",
+      "pid": "44236",
+      "revision": 7921,
+      "cards": 1952,
+      "locks": "5 trees, 1944 cards, 83 pinned targets; integrity ok",
+      "stage": "advisory",
+      "policy_hash": "447f8a4aa5f8f6248497910e17974275459c1e310343b550cfd3eb3551aa2190",
+      "rule_version": "4",
+      "diagnostic_schema": "1",
+      "active_digest": {
+        "active": false,
+        "run_id": "2a95c9a34a9a13ecd5705770417c3596",
+        "unit": "run",
+        "age_s": 3168,
+        "ttl_s": 300
+      }
+    },
+    "evidence": "D:\\zt-target\\release-173/release-preflight.json"
+  },
+  "observation": {
+    "ok": true,
+    "checked": 1952,
+    "diagnostics": 15,
+    "by_rule": {
+      "R20": 1,
+      "R5": 1,
+      "R4": 1,
+      "R7": 2,
+      "L2": 2,
+      "I2": 1,
+      "I4": 3,
+      "R2": 4
+    },
+    "by_severity": {
+      "block": 1,
+      "advise": 14
+    },
+    "term_rules": [],
+    "stage": "advisory",
+    "revision": 7921,
+    "policy_hash": "447f8a4aa5f8f6248497910e17974275459c1e310343b550cfd3eb3551aa2190",
+    "evidence": "D:\\zt-target\\release-173/release-observe.json"
+  },
+  "backup": {
+    "ok": true,
+    "path": "D:\\zt-release-backups\\20261025-s31",
+    "files": [
+      {
+        "file": "zt.sqlite3",
+        "bytes": 33366016,
+        "sha256": "c098cc0d6beca7fad38002867727f588f6d4143510cfb0fe84384aa0e3181816"
+      }
+    ],
+    "manifest_sha256": "59ee4956f0362dd559acb31d1c134e89fb43d801a7b7cdbde9a3324b559e41e7",
+    "validation": {
+      "ran": true,
+      "ok": true,
+      "started": true,
+      "state": "up",
+      "archive_id": "806009944a966daad513b2aacabddc5f",
+      "revision": 7921,
+      "cards": 1952,
+      "locks": "5 trees, 1944 cards, 83 pinned targets; integrity ok"
+    },
+    "before": {
+      "archive_id": "806009944a966daad513b2aacabddc5f",
+      "revision": 7921,
+      "cards": 1952,
+      "card_digest": "032e98566dd1d4540c80ce18de8211f089dfa2cf0d7be56faad913357caaf24f",
+      "stage": "advisory",
+      "policy_hash": "447f8a4aa5f8f6248497910e17974275459c1e310343b550cfd3eb3551aa2190",
+      "locks": "5 trees, 1944 cards, 83 pinned targets; integrity ok"
+    },
+    "after": {
+      "archive_id": "806009944a966daad513b2aacabddc5f",
+      "revision": 7921,
+      "cards": 1952,
+      "state": "up"
+    },
+    "evidence": "D:\\zt-target\\release-173/release-backup.json"
+  },
+  "policy_promotion": {
+    "applied": false,
+    "reason": "owner decision after the S30 copied-book review (#172, deferred) and the proposed observation window; no timer may promote",
+    "tested": [
+      "promotion without a decision file is refused",
+      "promotion and rollback rewrite no Card",
+      "the mandatory Term-link invariant refuses in both stages",
+      "rollback returns the quality checks to advice"
+    ]
+  },
+  "tests": {
+    "release_live": "25 checks, 0 failed",
+    "release_manifest": "3 passed, 0 failed",
+    "release_set": "111 checks, ok",
+    "verify_release": "ok"
+  }
+}
