@@ -152,6 +152,27 @@ mod tests {
         assert_eq!(k.formulas, vec!["$$a+b$$", "$x=1$"]);
     }
 
+    /// S27 (#166, AC02): a Term macro is kept as the raw authored macro. `keep` compares what a
+    /// rewrite must preserve, and `Compiler::test_rewrite` refuses a rewrite whose kept Links are
+    /// not all present, so relabelling or dropping a Term use is a lost Link, never a pass.
+    #[test]
+    fn a_term_macro_is_kept_as_the_raw_authored_macro() {
+        let old = "均衡 [[均衡@Key/3|a]] 是本书的核心。";
+        let kept = keep(old);
+        assert_eq!(kept.links, vec!["均衡@Key/3|a"]);
+        // The visible term written plainly is no Link at all: it changes nothing a rewrite keeps.
+        assert!(keep("均衡是本书的核心。").links.is_empty());
+        // Relabelling the same target, and dropping the use, each lose the kept macro.
+        for rewritten in [
+            "均衡 [[生产函数@Key/3|a]] 是本书的核心。",
+            "均衡是本书的核心。",
+        ] {
+            let now = keep(rewritten);
+            let lost: Vec<&String> = kept.links.iter().filter(|link| !now.links.contains(link)).collect();
+            assert_eq!(lost, vec!["均衡@Key/3|a"], "{rewritten}");
+        }
+    }
+
     #[test]
     fn kind_words() {
         assert!(kinded("对照 [[0/1]]：那里讨论投资。", "0/1"));

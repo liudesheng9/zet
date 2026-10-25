@@ -22,7 +22,8 @@
                  the other Cards of a book with the book's term table (a Literature-tree Card titled
                  术语表…) when it has one.
     layer        the Card layer faults (rules I1 to L3 of zt-check) per rule, with the
-                 advisory rules (I1, I6, E5, L3, and I7's unknown-source line) counted apart. The
+                 advisory rules counted apart: the checker's own default advisory catalog
+                 (zt_check::policy::ADVISORY_RULES) and I7's unknown-source subcase. The
                  script gives the checker each Card's category, Links, kinded Links, parent, and
                  inbound Links.
     orphans      Regular Cards that no Card links to (inbound 0).

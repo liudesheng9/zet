@@ -1,9 +1,14 @@
-//! `zt-digest term-cards`: the Term Card compiler (design 12.1–12.6, S18 / #159 and S19 / #162).
+//! `zt-digest term-cards`: the Term Card compiler (design 12.1–12.6, S18 / #159, S19 / #162 and
+//! S27 / #166).
 //!
-//!   zt-digest term-cards -Step plan|jobs|check|review-plan|fix-plan|apply|report
+//!   zt-digest term-cards -Step plan|jobs|precheck|check|review-plan|fix-plan|apply|report
 //!                        -Staging <folder> [-PerJob 4] [-MathPerJob 1]
 //!                        [-MaxStepsPerCard 12] [-MaxProse 1600]
 //!                        [-Jobs <ids>] [-Token <claim>] [-Apply]
+//!
+//! `precheck` (S27, #166) is the writer's own SELF-CHECK: it runs the same `check_job` the
+//! deterministic `check` runs and prints one line per diagnostic, then `faults: N` (blocking lines
+//! only). It writes nothing and opens no archive, so a writer can run it as often as it needs.
 //!
 //! One book's Term list is read by role: a Term Card with no name is the list, and a pre-term
 //! book's legacy `术语表` table is adapted when no Term list exists. Each row is bound to the
@@ -67,10 +72,13 @@ use std::sync::LazyLock;
 
 // --- the command surface -------------------------------------------------------------------------
 
-/// The declared steps, in command order (design 12.1).
-pub const STEPS: [&str; 7] = [
+/// The declared steps, in command order (design 12.1). `precheck` is the writer's own SELF-CHECK
+/// (S27, #166, design 14.5): the same `check_job` the deterministic `check` runs, printed as fault
+/// lines, with no compiler artifact and no Card written.
+pub const STEPS: [&str; 8] = [
     "plan",
     "jobs",
+    "precheck",
     "check",
     "review-plan",
     "fix-plan",
@@ -247,6 +255,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     match p.step.as_str() {
         "plan" => plan(&p),
         "jobs" => jobs(&p),
+        "precheck" => precheck_step(&p),
         "check" => check_step(&p),
         "review-plan" => review_plan_step(&p),
         "fix-plan" => fix_plan_step(&p),
@@ -1149,6 +1158,15 @@ fn job_text(
         "格式：`{{\"terms\":[…]}}`。本组只写这些术语，拼写必须和任务文件完全一致：{}。",
         rows_terms(job)
     ));
+    // The writer's exact SELF-CHECK (S27, #166, design 14.5): the same check the deterministic
+    // `check` step runs, printed as fault lines, writing nothing. Its command is not invented here:
+    // it is this tool's own `precheck` step on this job.
+    sb.blank();
+    sb.line(format!(
+        "SELF-CHECK: zt-digest term-cards -Step precheck -Staging \"{}\" -Jobs {id}",
+        inputs.staging
+    ));
+    sb.line("写完运行这一行命令自查：改正它报告的每个问题，再运行，直到最后一行是 `faults: 0`（最多三次）。命令没有打印 `faults:` 行时，视为没有自查。");
     sb.line("写完后只回复一行 JSON：`{\"terms\":术语数,\"math\":数学概念数,\"steps\":推导总步数}`。");
     Ok(sb.0)
 }
@@ -2579,6 +2597,69 @@ fn term_entries(
         entries.push(entry);
     }
     (entries, cards)
+}
+
+/// `-Step precheck`: the writer's exact SELF-CHECK (S27, #166, design 14.5). It runs the same
+/// `check_job` the deterministic `check` runs on the job's output file and prints the result the way
+/// every writer's check prints it: one line per diagnostic, then `faults: N`, the number of blocking
+/// lines. It writes nothing — no check artifact, no readiness, no state, no Card — so a writer can
+/// run it as many times as it needs before it replies. A run that prints no `faults:` line did not
+/// check, exactly as `zt-check`'s own contract says.
+fn precheck_step(p: &Params) -> Result<i32> {
+    let compiled = Compiled::load(p)?;
+    let documents: Vec<Value> = compiled
+        .selected(p)?
+        .iter()
+        .map(|job| check_job(&compiled, job))
+        .collect::<Result<Vec<_>>>()?;
+    let mut lines: Vec<String> = Vec::new();
+    let mut blocking: usize = 0;
+    for document in &documents {
+        let job = pstr(document, "job");
+        for term in document["terms"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+            let row = term["row"].as_u64().unwrap_or(0);
+            let address = format!("{job}/r{row:03}");
+            if let Some(reason) = term["reason"].as_str().filter(|reason| !reason.is_empty()) {
+                lines.push(format!("{address} missing {reason}"));
+                blocking += 1;
+            }
+            for (kind, key) in [("schema", "schema_faults"), ("render", "render_faults")] {
+                for fault in term[key].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                    lines.push(format!(
+                        "{address} {kind} {}: {}",
+                        pstr(fault, "path"),
+                        pstr(fault, "message")
+                    ));
+                    blocking += 1;
+                }
+            }
+            for diagnostic in term["diagnostics"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                let advisory = diagnostic["severity"].as_str() == Some("advise");
+                if !advisory {
+                    blocking += 1;
+                }
+                lines.push(format!(
+                    "{} {} {}{}",
+                    pstr(diagnostic, "address"),
+                    pstr(diagnostic, "rule"),
+                    if advisory { "(advisory) " } else { "" },
+                    pstr(diagnostic, "message")
+                ));
+            }
+        }
+        for term in document["unexpected"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+            lines.push(format!(
+                "{job} unexpected {}: this job does not own that term",
+                ps::s(term)
+            ));
+            blocking += 1;
+        }
+    }
+    for line in &lines {
+        util::print_line(line)?;
+    }
+    util::print_line(&format!("faults: {blocking}"))?;
+    Ok(0)
 }
 
 /// The check step: check the selected writers' outputs against the draft schema, the deterministic

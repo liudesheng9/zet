@@ -722,12 +722,14 @@ impl Compiler {
         while start < calls.len() {
             let batch = &calls[start..];
             let run = calls::run(self.zt()?, batch, &mut calls::Options::new());
+            let mut refusal: Option<calls::Failure> = None;
             let lines: Vec<String> = match run {
                 Ok((done, failure)) => {
                     let mut lines: Vec<String> = done.into_iter().map(|d| d.line).collect();
-                    if let Some(f) = failure {
+                    if let Some(f) = &failure {
                         lines.extend(f.lines());
                     }
+                    refusal = failure;
                     lines
                 }
                 Err(error) => {
@@ -749,6 +751,18 @@ impl Compiler {
                     if let Some(slot) = results.get_mut(start + k) {
                         *slot = Some(Err(m[2].to_string()));
                     }
+                }
+            }
+            // S27 (#166, R0447): a `card_check` refusal is content, so its blocking fault lines are
+            // recorded with the refused write. The one follow-up fix job then lists them as faults
+            // instead of one sentence that hides what the archive asked for. The reason is persisted
+            // in the compiler's state, so it must carry the lines and not be read from a reply.
+            if let (Some(k), Some(failure)) = (failed_at, refusal.as_ref()) {
+                let faults = failure.refusal_fault_lines();
+                if !faults.is_empty()
+                    && let Some(slot) = results.get_mut(start + k)
+                {
+                    *slot = Some(Err(format!("card_check:\n{}", faults.join("\n"))));
                 }
             }
             match failed_at {
@@ -1751,7 +1765,18 @@ impl Compiler {
                 self.state["plan"][a.as_str()] = json!({ "title": field(card, "title"), "body": field(card, "body"), "category": field(card, "category") });
                 let mut faults = left.clone();
                 if truthy(refused) {
-                    faults.push(("拒绝".into(), format!("脚本拒绝了上一轮的改写：{}", field(refused, "reason"))));
+                    let reason = field(refused, "reason");
+                    // S27 (#166, R0447): a refused `card_check` carries the archive's own blocking
+                    // fault lines; each becomes one fault of this bounded follow-up job.
+                    let refused_lines = refused_faults(&reason);
+                    if refused_lines.is_empty() {
+                        faults.push(("拒绝".into(), format!("脚本拒绝了上一轮的改写：{reason}")));
+                    } else {
+                        faults.push(("拒绝".into(), "脚本拒绝了上一轮的改写；按下面的每一行改正：".into()));
+                        for line in refused_lines {
+                            faults.push(("拒绝".into(), line));
+                        }
+                    }
                 }
                 sb.push_str(&format_card(card, &faults, "", ""));
             }
@@ -2177,6 +2202,22 @@ fn push(list: &mut Value, item: Value) {
     }
 }
 
+/// The blocking fault lines of a persisted `card_check` refusal (S27, #166, R0447). The reason
+/// `invoke_writes` records is `card_check:` followed by one line per blocking fault; any other
+/// refusal has none and stays the one sentence it was.
+fn refused_faults(reason: &str) -> Vec<String> {
+    let mut lines = reason.lines();
+    let head = lines.next().unwrap_or_default();
+    if !head.contains("card_check") {
+        return Vec::new();
+    }
+    lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// The rules the whole-book Card cycle checks an owned scope with. The Cards/group
 /// completion runs the same set, so the work it hands to the book cycle is exactly
 /// the work that cycle will see (R216).
@@ -2241,6 +2282,22 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_card_check_hands_its_fault_lines_to_the_next_fix_job() {
+        // S27 (#166, R0447): the archive's `card_check` refusal is content for the cycle's one
+        // follow-up round. Each blocking line its refusal carried becomes one fault of that job,
+        // not one opaque sentence a writer cannot act on.
+        let reason = "zt: card_check:\nK/1 R3 分号把两句连在一起。\nK/1 R2 这一句太长。";
+        assert_eq!(
+            refused_faults(reason),
+            vec!["K/1 R3 分号把两句连在一起。".to_string(), "K/1 R2 这一句太长。".to_string()]
+        );
+        // A refusal with no line, and every other refusal, stay the one sentence they always were.
+        assert!(refused_faults("zt: card_check:").is_empty());
+        assert!(refused_faults("zt: a conflict on `K/1`").is_empty());
+        assert!(refused_faults("category model is not writable").is_empty());
+    }
 
     #[test]
     fn book_links_skip_topic_trees_outside_the_literature_catalogue() {

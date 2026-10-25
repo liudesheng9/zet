@@ -13,7 +13,7 @@
 //!   zt-digest pilot -Step plan|preflight|qualify -Staging <out> -Work <folder> ...   (the one-book pilot gate, #117)
 //!   zt-digest publish -Step plan|apply|check -Work <folder> [-Register <p>] [-Hub <p>] [-File <s>] ...   (the existing-register and crossing-hub publication gate, #119)
 //!   zt-digest resolve -Step plan|apply|check -Work <folder> [-File <s>] ...   (a separately selected historical resolution batch, #122)
-//!   zt-digest term-cards -Step plan|jobs|... -Staging <folder> ...   (the Term-card compiler, #159)
+//!   zt-digest term-cards -Step plan|jobs|precheck|check|... -Staging <folder> ...   (the Term-card compiler, #159, #166)
 //!   zt-digest term-link  -Step plan|apply -Staging <folder> ...   (the deterministic Term-link pass, #160)
 //!
 //! Each tool takes the parameters of the PowerShell script it replaces, in the

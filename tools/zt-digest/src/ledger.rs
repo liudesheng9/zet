@@ -6456,6 +6456,12 @@ const TRANSIENT_CAUSES: &[&str] = &[
 ];
 
 pub(crate) fn cause_code(cause: &str) -> &'static str {
+    // S27 (#166, R0447): a cause that quotes the archive's own `card_check` refusal keeps that
+    // code, so the unit's fault names the content the gate refused instead of a generic check
+    // failure, and no stage reads it as a provider or run crash.
+    if cause.contains("card_check") {
+        return "card_check";
+    }
     if TRANSIENT_CAUSES.iter().any(|word| cause.contains(word)) { "provider_transient" } else { "check_failed" }
 }
 
@@ -6485,7 +6491,11 @@ pub(crate) fn fault_class(code: &str) -> Result<&'static str> {
         | "named_part_changed" | "explanation_missing"
         // R326/R337: the owner's Lock stops the write its destination asked for. It is the destination's
         // decision, so it is a content fault and never a retryable one.
-        | "card_locked" => "content",
+        | "card_locked"
+        // S27 (#166, R0447): the archive's own write gate refused the proposed content. It is content
+        // to fix through the current cycle, never a provider or run crash, and the refused input is
+        // not retried unchanged.
+        | "card_check" => "content",
         _ => bail!("unknown fault code `{code}`"),
     })
 }
@@ -16887,6 +16897,25 @@ mod tests {
             assert!(fault_class(code).is_ok(), "{code} is a known code");
         }
         assert!(fault_class("not_a_code").is_err(), "an unknown code is refused");
+    }
+
+    #[test]
+    fn a_gate_card_check_refusal_is_a_content_fault_the_ledger_accepts() {
+        // S27 (#166, R0447): a write the archive's own gate refused is content for the current fix
+        // cycle. The stage records it against the unit it stopped (`ledger fail -Fault {code:
+        // card_check}`), so the code must be a known content fault: an unknown code is refused, and
+        // the refusal would read as a provider or run crash instead of the content it is.
+        assert_eq!(fault_class("card_check").unwrap(), "content");
+        // A refused write is never scheduled for an automatic retry: the next attempt is a new
+        // content fix, not a repeat of the same refused input.
+        assert_ne!(fault_class("card_check").unwrap(), "retryable");
+        // A finish that quotes the refusal as its cause keeps the archive's own code, and that code
+        // is content: the stage never reads the refusal as a provider or run crash.
+        assert_eq!(cause_code("zt: card_check: K/1 R3 分号把两句连在一起。"), "card_check");
+        assert_eq!(fault_class(cause_code("card_check: 1 blocking fault")).unwrap(), "content");
+        // Every other cause keeps its old reading.
+        assert_eq!(cause_code("card `K/1` changed since the plan"), "check_failed");
+        assert_eq!(cause_code("transport_closed"), "provider_transient");
     }
 
     #[test]

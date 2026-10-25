@@ -253,6 +253,16 @@ fn unknown(name: &str, reason: &str) -> Value {
 
 // --- the whole section ----------------------------------------------------------------------------
 
+/// The advisory facts the report publishes (S27, #166, AC06): the checker's own default advisory
+/// catalog, plus the advisory subcases whose rule blocks in general. One blocker/advisory decision
+/// serves the audit and every gate, so no caller keeps a private rule list.
+fn advisory_facts() -> Value {
+    json!({
+        "rules": zt_check::policy::ADVISORY_RULES,
+        "subcases": ["I7"],
+    })
+}
+
 /// The `baseline` section of `audit.json`: evidence, source sets, measures, the task sheet and
 /// the comparison. Read-only and derived: the same read gives the same bytes apart from the
 /// report's own timestamp and seconds.
@@ -352,7 +362,8 @@ pub fn build(f: &Facts) -> Result<Value> {
             "zt_check": zt_check::VERSION,
             "zt": f.zt_version,
             "rules": "R2-R21, I1-I7, E1-E5, F1-F4, L1-L3",
-            "advisory_rules": ["I1", "I6", "E5", "L3", "I7", "R20", "R21"]
+            "advisory_rules": advisory_facts()["rules"].clone(),
+            "advisory_subcases": advisory_facts()["subcases"].clone()
         },
         "thresholds": {
             "max_sentences": f.p.max_sentences,
@@ -1532,6 +1543,23 @@ fn number_field(task: &Value, id: &str, name: &str) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_audit_publishes_the_shared_advisory_rules() {
+        // S27 (#166, AC06): the audit is a check-result consumer like every compiler. Its published
+        // advice reads the checker's own default advisory catalog instead of a private list, so a
+        // rule that changes state changes the audit's metadata with it. I7's unknown-source line
+        // stays a subcase of a blocking rule, never an advisory rule of its own.
+        let facts = advisory_facts();
+        assert_eq!(facts["rules"], json!(zt_check::policy::ADVISORY_RULES));
+        let rules = zt_check::policy::ADVISORY_RULES;
+        assert!(rules.contains(&"T4"), "T4 is an advisory rule");
+        assert!(!rules.contains(&"I7"), "I7 is a blocking rule with an advisory subcase");
+        assert_eq!(facts["subcases"], json!(["I7"]));
+        for rule in &["R20", "R21", "I1", "I6", "L3", "E5"] {
+            assert!(rules.contains(rule), "{rule} is advisory");
+        }
+    }
 
     fn lib_index(books: &[&str]) -> BookIndex {
         let trees: Vec<Value> = books

@@ -108,8 +108,15 @@ if (@($r13Run | Where-Object { $_ -match '^X/1\|a\|a\|[1-4] R13 ' }).Count) {
 # An offline draft is honest about what it did not cover: its lines stay complete for
 # the families it declares, and the process exits 2 rather than passing by omission.
 $checker = (Get-Command zt-check -CommandType Application | Select-Object -First 1).Source
-$null = @(& $checker --json $fixture --setting 'K/1|a|a' 2>&1)
+# The rule version this checker uses is the one its own status document publishes (S27, #166): a
+# draft binds the contract it was checked under, never a frozen literal that drifts from the rules.
+$ruleStatusPath = Join-Path ([IO.Path]::GetTempPath()) "zt-check-rule-$PID.json"
+$null = @(& $checker --json $fixture --setting 'K/1|a|a' --report $ruleStatusPath 2>&1)
 if ($LASTEXITCODE -ne 2) { Write-Output "exit: an offline draft must exit 2, got $LASTEXITCODE"; $failed++ }
+if (-not (Test-Path -LiteralPath $ruleStatusPath)) { throw 'the offline draft wrote no status document' }
+$ruleVersion = [string](Get-Content -LiteralPath $ruleStatusPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable).contract.rule_version
+Remove-Item -LiteralPath $ruleStatusPath -Force -ErrorAction SilentlyContinue
+if (-not $ruleVersion) { throw 'the status document names no rule version' }
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) "zt-check-contract-$PID"
 New-Item -ItemType Directory -Force $scratch | Out-Null
@@ -128,7 +135,7 @@ try {
     $contextCard = [ordered]@{ address = $topic.address; title = $topic.title; workspace = 'agent' }
     function Write-Draft($cards, $families) {
         [ordered]@{
-            rule_version = '1'
+            rule_version = $ruleVersion
             policy_hash = $policyHash
             cards = $cards
             context = [ordered]@{ cards = @($contextCard); complete_for = $families }
@@ -142,7 +149,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $out[-1] -ne 'faults: 0') { Write-Output "draft: a complete clean draft must exit 0 with faults: 0 ($($LASTEXITCODE): $($out -join ' | '))"; $failed++ }
     $status = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     if ($status.mode -ne 'draft_bundle' -or $status.verdict -ne 'pass' -or -not $status.complete -or @($status.missing).Count) { Write-Output "status: a complete draft must say so ($($status | ConvertTo-Json -Compress -Depth 6))"; $failed++ }
-    if ($status.policy_source -ne 'built_in' -or $status.contract.rule_version -ne '1' -or $status.contract.policy_hash -ne $policyHash) { Write-Output 'status: the draft binds the built-in policy it declared'; $failed++ }
+    if ($status.policy_source -ne 'built_in' -or $status.contract.rule_version -ne $ruleVersion -or $status.contract.policy_hash -ne $policyHash) { Write-Output 'status: the draft binds the built-in policy it declared'; $failed++ }
 
     # A complete draft with a blocking fault: exit 1, the blocker in faults: N.
     Write-Draft @([ordered]@{ address = 'D/2'; type = 'idea'; text = "# 税负落在买方`n`n税负落在买方；卖方只承担一小部分。" }) $all

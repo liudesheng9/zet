@@ -104,9 +104,34 @@ impl Failure {
         let mut lines = vec![format!("{} error {}", self.index, one_line(&self.message))];
         if let Some(refusal) = &self.refusal {
             lines.push(format!("{} {}", refusal_code(refusal), util::compact(refusal)));
+            // S27 (#166, R0447): the blocking fault lines of a `card_check` refusal are the content
+            // a writer must fix. They follow the refusal's JSON, one per line, exactly as the
+            // checker wrote them, so no writer parses the JSON or the message to find them.
+            lines.extend(self.refusal_fault_lines());
         }
         lines.push(format!("resume: -From {} -Addresses {}", self.index, self.resolved.join(",")));
         lines
+    }
+
+    /// The blocking fault lines of a `card_check` refusal (S27, #166, R0447): the refusal's own
+    /// `faults` array without the lines the checker marked `(advisory)`. Any other refusal carries
+    /// none, and a Lock keeps exactly its three lines.
+    pub fn refusal_fault_lines(&self) -> Vec<String> {
+        let Some(refusal) = self.refusal.as_ref().filter(|refusal| refusal["error"] == json!("card_check")) else {
+            return Vec::new();
+        };
+        refusal["faults"]
+            .as_array()
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty() && !line.contains("(advisory)"))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -1081,6 +1106,36 @@ mod tests {
         );
         let quiet = Failure { index: 0, message: "unknown tool `nope`".into(), resolved: vec![], refusal: None };
         assert_eq!(quiet.lines(), vec!["0 error unknown tool `nope`", "resume: -From 0 -Addresses "]);
+    }
+
+    #[test]
+    fn a_card_check_refusal_keeps_its_blocking_fault_lines_for_the_fix_cycle() {
+        // S27 (#166, R0447): a refused write is content, not a provider fault. The refusal's own
+        // blocking fault lines travel with the failure, so a writer reads the lines it must fix.
+        let refusal = json!({"error":"card_check","address":"K/1","blocking":1,
+            "faults":["K/1 R3 分号把两句连在一起。","K/1 R2 (advisory) 一句很长的话。"],
+            "message":"1 blocking fault"});
+        let reply = json!({"result":{"isError":true,"content":[{"type":"text","text":"..."}],"structuredContent":refusal}});
+        let got = refusal_of(&reply).expect("a structured refusal");
+        let failure = Failure {
+            index: 0,
+            message: typed_message("1 blocking fault", &Some(got.clone())),
+            resolved: vec![],
+            refusal: Some(got),
+        };
+        assert_eq!(failure.refusal_fault_lines(), vec!["K/1 R3 分号把两句连在一起。".to_string()]);
+        let lines = failure.lines();
+        assert_eq!(lines[0], "0 error card_check: 1 blocking fault");
+        assert!(lines[1].starts_with("card_check {"), "{}", lines[1]);
+        assert_eq!(lines[2], "K/1 R3 分号把两句连在一起。");
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert_eq!(lines[3], "resume: -From 0 -Addresses ");
+
+        // Any other refusal has no fault lines; a Lock keeps exactly its old three lines.
+        let locked = json!({"error":"card_locked","message":"locked","tree":"K"});
+        let failure = Failure { index: 1, message: "locked".into(), resolved: vec![], refusal: Some(locked) };
+        assert!(failure.refusal_fault_lines().is_empty());
+        assert_eq!(failure.lines().len(), 3, "{:?}", failure.lines());
     }
 
     #[test]

@@ -39,6 +39,18 @@ fn n(v: &Value) -> String {
     s(v)
 }
 
+/// The advisory rules of one rule group, read from the checker's shared advisory catalog (S27,
+/// #166, AC06): the report never keeps its own list of what advice is. `prefixes` are the rule
+/// families of the group (`R` for the Card language, `IEFL` for the Card layers).
+fn advisory_rules(prefixes: &[char]) -> String {
+    zt_check::policy::ADVISORY_RULES
+        .iter()
+        .filter(|rule| rule.chars().next().is_some_and(|c| prefixes.contains(&c)))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn render(report: &Value, p: &Params) -> String {
     let mut md = String::new();
     let mut line = |text: &str| {
@@ -147,20 +159,22 @@ pub fn render(report: &Value, p: &Params) -> String {
             n(&b["topics"]["sizes"]["max"])
         ));
         line(&format!(
-            "- **Card language**: {} faults in {} of {} Cards. By rule: {}. Standalone advice (R20, R21): {} by rule: {}.",
+            "- **Card language**: {} faults in {} of {} Cards. By rule: {}. Standalone advice ({}): {} by rule: {}.",
             n(&b["style"]["faults"]),
             n(&b["style"]["cards_with_faults"]),
             n(&b["style"]["cards_checked"]),
             tally(&b["style"]["by_rule"]),
+            advisory_rules(&['R']),
             n(&b["style"]["advisory"]),
             tally(&b["style"]["advice_by_rule"])
         ));
         let term = if truthy(&b["layer"]["term_table"]) { format!("`{}`", n(&b["layer"]["term_table"])) } else { "none".into() };
         line(&format!(
-            "- **Card layer rules** (I, E, F, L): {} faults in {} Cards, {} advisory (I1, I6, E5, L3, I7 unknown). By rule: {}. Term table: {term}.",
+            "- **Card layer rules** (I, E, F, L): {} faults in {} Cards, {} advisory ({}; I7 unknown-source subcase). By rule: {}. Term table: {term}.",
             n(&b["layer"]["faults"]),
             n(&b["layer"]["cards_with_faults"]),
             n(&b["layer"]["advisory"]),
+            advisory_rules(&['I', 'E', 'F', 'L']),
             tally(&b["layer"]["by_rule"])
         ));
         if let Some(m) = b["style"]["by_category"].as_object() {
@@ -586,6 +600,18 @@ fn baseline(line: &mut impl FnMut(&str), b: &Value, p: &Params) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advisory_rule_lists_come_from_the_shared_catalog() {
+        // S27 (#166, AC06): the rendered advice names the checker's own advisory rules of that rule
+        // group, so a rule that becomes advisory or blocking changes the report with the catalog.
+        assert_eq!(advisory_rules(&['R']), "R20, R21");
+        assert_eq!(advisory_rules(&['I', 'E', 'F', 'L']), "I1, I6, L3, E5");
+        // No advisory layer rule beyond I1/I6/L3/E5, and the Term rule T4 never leaks into the Card
+        // layer's list: it is not a layer rule, whatever the catalog holds.
+        assert_eq!(advisory_rules(&['T']), "T4");
+        assert_eq!(advisory_rules(&['Z']), "");
+    }
 
     #[test]
     fn cut_lists() {
