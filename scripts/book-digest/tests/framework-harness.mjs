@@ -199,7 +199,12 @@ const finalizeFinal = (name) => {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = []
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = [], termCalls = [], termManagers = []
+  // S24 (#167): the Term-card branch's fixed two-job plan (both concept jobs, so no review is owed).
+  const termJobs = [
+    { id: 't001', kind: 'concept', rows: [1], terms: ['均衡'] },
+    { id: 't002', kind: 'concept', rows: [2], terms: ['机会主义'] },
+  ]
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
   // A resumed run reads the units its prepared run retained; the stand-in re-adds exactly those, so the
@@ -347,6 +352,14 @@ function runtime(kind, opts = {}) {
     if (/ ledger done /.test(cmd)) {
       const id = (cmd.match(/-Unit "?([\w/-]+@\d+)"?/) || [])[1]
       led.finish(id)
+      // S24 (#167): the Term-card book unit is ready only once every job unit is done, as the real
+      // ledger's success dependencies make it. A failed job leaves it registered, so the Term-link
+      // pass can never claim it.
+      if (id && id.startsWith('termcards/') && !id.startsWith('termcards/book@')) {
+        const jobs = led.layer('termcards').filter((u) => u.id.startsWith('termcards/t'))
+        const book = led.find('termcards/book@1')
+        if (book && jobs.length && jobs.every((u) => u.state === 'done')) book.state = 'ready'
+      }
       return { ok: true, output: json({ schema_version: 1, unit: id, state: 'done', complete: true }) }
     }
     if (/ ledger status /.test(cmd) && / -Held /.test(cmd)) {
@@ -648,6 +661,62 @@ function runtime(kind, opts = {}) {
     if (process.env.DBG83 && /resource|cleanup/.test(cmd)) console.log('DBG', cmd.slice(0, 160))
     commands.push(cmd)
     failedStep.push(cmd)
+    // S24 (#167): the Term-card branch and the deterministic Term-link pass. The stand-in owns a
+    // fixed two-job Term plan, registers the units its compiler would register, and answers the
+    // steps the compiler prints; a scenario may fail a writer, make the publication partial, stop
+    // the pass or block it on its ledger dependencies.
+    const termCmd = cmd.match(/^zt-digest (term-cards|term-link) -Step (plan|jobs|check|review-plan|fix-plan|apply|report)\b/)
+    if (termCmd) {
+      const tool = termCmd[1]
+      const step = termCmd[2]
+      const out = (cmd.match(/-Staging '([^']*)'/) || cmd.match(/-Staging "([^"]*)"/) || [])[1] || 'D:\\x\\Key'
+      termCalls.push({ tool, step, cmd })
+      if (tool === 'term-cards') {
+        if (step === 'plan') {
+          if (opts.termPlanFails) return { ok: false, exit: 1, output: 'term-cards: the book has no Term list' }
+          led.add('termcards/t001@1', 'termcards', { job: termJobs[0] })
+          led.add('termcards/t002@1', 'termcards', { job: termJobs[1] })
+          const book = led.add('termcards/book@1', 'termcards', {})
+          book.state = 'registered'
+          return { ok: true, exit: 0, output: json({ ok: true, step: 'plan', book: 'Key', revision: 1, plan_hash: 'ph-terms', terms: 2, math: 0, concept: 2, jobs: termJobs, units: { book: 'termcards/book@1', jobs: { t001: 'termcards/t001@1', t002: 'termcards/t002@1' } } }) }
+        }
+        if (step === 'jobs') {
+          const listed = (cmd.match(/-Tokens '([^']*)'/) || [])[1] || ''
+          const ids = listed.split(',').filter(Boolean).map((e) => e.slice(0, e.lastIndexOf(':')))
+          const jobs = ids.map((id) => ({ id, kind: 'concept', rows: [Number(id.slice(1))], terms: [`术语${id.slice(1)}`], files: [`${out}\\term-cards\\dsh-term-card-instructions.zh.md`, `${out}\\term-cards\\jobs\\${id}.md`], prompt: 'p', output: `${out}\\term-cards\\out\\${id}.json`, permissions: { archive_read: true, archive_write: false }, model: 'deepseek-official/deepseek-flash', effort: 'high', skills: ['zettelkasten', 'asd-ste100-zh'], delete_after_collect: false }))
+          return { ok: true, exit: 0, output: json({ ok: true, step: 'jobs', plan_revision: 1, plan_hash: 'ph-terms', units: [], jobs }) }
+        }
+        if (step === 'check' || step === 'review-plan' || step === 'fix-plan') {
+          const ready = led.layer('termcards').filter((u) => u.id.startsWith('termcards/t') && u.state === 'done').length
+          const common = { ok: true, step, plan_revision: 1, plan_hash: 'ph-terms', complete: ready >= termJobs.length, counts: { ready, needs_fix: 0, needs_review: 0, refused: 0, missing: 0, unchecked: 0 } }
+          const readiness = { path: `${out}\\term-cards\\check\\readiness.json`, complete: ready >= termJobs.length, counts: common.counts }
+          if (step === 'check') return { ok: true, exit: 0, output: json({ ...common, terms: termJobs.map((job) => ({ job: job.id, row: job.rows[0], term: job.terms[0], status: 'ready' })), readiness }) }
+          if (step === 'review-plan') return { ok: true, exit: 0, output: json({ ...common, jobs: [], reviews: [], readiness }) }
+          return { ok: true, exit: 0, output: json({ ...common, jobs: [], planned: [], final: [], readiness }) }
+        }
+        if (step === 'apply') {
+          const partial = !!opts.termPublicationPartial
+          return { ok: true, exit: 0, output: json({ ok: true, step: 'apply', complete: !partial, rows: termJobs.length, committed: partial ? 1 : termJobs.length, ready_unpublished: partial ? 1 : 0, refused: 0, pending: 0, conflicted: 0, staged: [], stop: partial ? { code: 'not_ready', message: 'row 2 is not ready' } : null, report: `${out}\\term-cards\\report.json` }) }
+        }
+        return { ok: true, exit: 0, output: json({ ok: true, step, report: `${out}\\term-cards\\report.json` }) }
+      }
+      if (step === 'plan') {
+        if (opts.termLinkPlanFails) return { ok: false, exit: 1, output: 'term-link: the Term-structure read names no list: the book has no Term list to link' }
+        const unit = led.add('termlink/book@1', 'termlink', { pass: 'book' })
+        const termBook = led.find('termcards/book@1')
+        // The real ledger blocks the pass on its unfinished dependencies: a Term-card book that is
+        // not done (or a scenario that blocks the pass) leaves nothing ready to claim.
+        if (opts.termLinkBlocked || (termBook && termBook.state !== 'done')) unit.state = 'blocked'
+        return { ok: true, exit: 0, output: json({ ok: true, step: 'plan', book: 'Key', plan_revision: 1, plan_hash: 'ph-link', cards_scanned: 9, cards_changed: 1, cards_refused: 0, complete: true, unit: 'termlink/book@1' }) }
+      }
+      if (step === 'apply') {
+        if (opts.termLinkStops) return { ok: false, exit: 1, output: `${json({ ok: false, step: 'apply', complete: false, stop: { code: 'card_check', message: 'R2 in Key/1|a' }, code: 'card_check', error: 'card_check: R2 in Key/1|a' })}\n${json({ error: 'card_check', message: 'R2 in Key/1|a' })}` }
+        const noop = opts.termLinkNoop === true
+        const token = Number((cmd.match(/-Token (\d+)/) || [])[1])
+        return { ok: true, exit: 0, output: json({ ok: true, step: 'apply', complete: true, no_op: noop, code: null, claim_token: token, report: `${out}\\term-link\\apply.json`, counts: { cards_scanned: 9, cards_changed: noop ? 0 : 1, cards_refused: 0, links_added: noop ? 0 : 2 }, chunks: noop ? 0 : 1 }) }
+      }
+      return { ok: true, exit: 0, output: json({ ok: true, step }) }
+    }
     // S17 / #140 (Tree Lock): the owner locks the run's destination mid-run. The refused command answers
     // the archive's own typed refusal (the shape lockcheck::refusal prints) and exits 2, once: a stage that
     // retried it, or re-pointed the write, would run a second command or show it in `lockedRetries`.
@@ -930,6 +999,24 @@ function runtime(kind, opts = {}) {
         return { ok: r.ok, output: r.output }
       }
     }
+    // S24 (#167): the Term-card branch's own managers. A wave keeps its writers, then a settle
+    // manager deletes their conversations; a scenario may fail every writer of a wave.
+    if (text.startsWith('You are a DeepSeek subagent manager for ZET Term Cards (settle a wave)')) {
+      const open = text.indexOf('\n', text.indexOf('SESSIONS ('))
+      const end = text.indexOf('\n\nFor each', open)
+      const list = JSON.parse(text.slice(open, end < 0 ? text.length : end))
+      termManagers.push({ label, phase: callOpts.phase, kind: 'settle', jobs: list.map((s) => s.id) })
+      return { ok: true, deleted: list.length, not_deleted: [], sessions: list.map((s) => ({ id: s.id, session_id: s.session_id, deleted: true })) }
+    }
+    if (text.startsWith('You are a DeepSeek subagent manager for ZET Term Cards (')) {
+      const kind = (text.match(/Term Cards \(([^)]+)\)/) || [])[1] || 'write'
+      const open = text.indexOf('\n', text.indexOf('JOBS ('))
+      const end = text.indexOf('\n\n1. Start', open)
+      const listed = JSON.parse(text.slice(open, end < 0 ? text.length : end))
+      termManagers.push({ label, phase: callOpts.phase, kind, jobs: listed.map((job) => job.id) })
+      const failed = kind === 'write' && !!opts.termWriterFails
+      return { ok: true, jobs: listed.map((job) => ({ id: job.id, session_id: sessionOf(job.id), status: failed ? 'failed' : 'done', answer: failed ? 'the writer failed' : '{}', registered: true, evidence: true, deleted: false })) }
+    }
     if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
     if (label === 'prepare book') {
       // S17 / #140: a preparation the owner's Lock refused answers the tool's typed refusal line and
@@ -1013,7 +1100,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1140,7 +1227,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(after('organize') === 'link-check', 'schedule: Organize runs after the link checks settle')
   check(after('figures') === 'organize', 'schedule: Figures is released by Organize')
   check(after('bridge') === 'figures', 'schedule: the report-first Bridge follows Figures (its endpoint snapshots are the final Card text)')
-  check(after('audit') === 'bridge', 'schedule: the final audit follows the Bridge report')
+  check(after('audit') === 'bridge,term-link', 'schedule: the final audit follows the Bridge report and the Term-link pass (R0420: tl --> audit)')
   check(after('finalize') === 'audit', 'schedule: the finite finalization follows the audit it plans from (#86)')
   check(after('cleanup') === 'finalize' && after('report') === 'cleanup', 'schedule: the settlement waits for the finalization, then cleanup, then report')
   check(stageOf('econ', 'finalize').onFail === 'continue', 'schedule: a residual finalization fault leaves a partial result, never a halted run')
@@ -1191,8 +1278,87 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const m = builds.math.bp
   const mathAfter = (id) => (m.stages.find((s) => s.id === id).after || []).join(',')
   check(mathAfter('cards-book') === 'explain' && mathAfter('link-check') === 'link' && mathAfter('math-theory') === 'link-check', 'schedule: the mathematics variant keeps Theory after the link check')
-  check(mathAfter('audit') === 'bridge' && mathAfter('math-check') === 'finalize' && mathAfter('cleanup') === 'math-check', 'schedule: the mathematics check describes the final audit revision, then the settlement')
+  check(mathAfter('audit') === 'bridge,term-link' && mathAfter('math-check') === 'finalize' && mathAfter('cleanup') === 'math-check', 'schedule: the mathematics check describes the final audit revision, then the settlement')
   check(m.stages.some((s) => s.id === 'finalize'), 'schedule: the mathematics variant holds the finalization stage its base declares')
+}
+
+// ================================================================================================================
+// S24 (#167): the parallel Term stages and their truthful full-mode dependencies
+// ================================================================================================================
+{
+  const tc = stageOf('econ', 'term-cards')
+  const tl = stageOf('econ', 'term-link')
+  check(tc && tc.module === 'zt-term-cards' && (tc.after || []).join(',') === 'terms' && tc.onFail === 'continue', `S24: the Term-card branch runs after the term table beside the digest writers (after ${(tc.after || []).join(',')})`)
+  check(tl && tl.module === 'zt-term-link' && (tl.after || []).join(',') === 'bridge,term-cards' && tl.onFail === 'continue', `S24: the Term-link pass waits for every Card writer and the term-card branch (after ${(tl.after || []).join(',')})`)
+  for (const which of ['econ', 'math']) {
+    const bp = builds[which].bp
+    check(bp.stages.some((s) => s.id === 'term-cards') && bp.stages.some((s) => s.id === 'term-link'), `S24 (${which}): the variant inherits both Term stages from the base`)
+    const resume = (bp.modes.resume || [])
+    check(resume.includes('term-cards') && resume.includes('term-link'), `S24 (${which}): mode resume drains both Term stages`)
+  }
+  const args = builds.econ.bp.args
+  check(args.termCards && args.termCards.type === 'boolean' && args.termCards.default === true && args.termLink && args.termLink.type === 'boolean' && args.termLink.default === true, 'S24: the termCards and termLink layer switches are declared boolean and default on')
+  check(args.termCardsPerJob && args.termCardsPerJob.type === 'number' && args.termCardsPerJob.min === 1 && args.termCardsPerJob.max === 8 && args.termCardsPerJob.default === 4 && args.termCardsMathPerJob && args.termCardsMathPerJob.default === 1, 'S24: the per-job sizing args are declared and bounded 1..8')
+  check(args.termLinkOccurrences && args.termLinkOccurrences.enum && args.termLinkOccurrences.enum.join(',') === 'first,all' && args.termLinkOccurrences.default === 'first', 'S24: the occurrence arg is an enum of first and all')
+  const badOccurrences = await run('econ', { ...base, termLinkOccurrences: 'second', until: 'digest' })
+  check(badOccurrences.thrown && /args\.termLinkOccurrences must be one of/.test(badOccurrences.thrown.message), 'S24: an undeclared occurrence policy is refused before any stage')
+  const badPerJob = await run('econ', { ...base, termCardsPerJob: 9, until: 'digest' })
+  check(badPerJob.thrown && /args\.termCardsPerJob must be within \[1, 8\]/.test(badPerJob.thrown.message), 'S24: an out-of-range per-job size is refused before any stage')
+  // No second scheduler: the branch claims units from the run ledger and starts no other queue.
+  for (const module of ['zt-term-cards', 'zt-term-link']) {
+    const source = fs.readFileSync(path.join(workflowDir, 'modules', `${module}.js`), 'utf8')
+    check(/ledger\('claim'/.test(source) && /next -Out/.test(source) && /ledger\('complete'/.test(source) && /done -Out/.test(source) && !/setInterval|setTimeout|new Date\(|schedule\[|queue\[|worker pool/i.test(source), `S24: ${module} uses the run ledger as its scheduler and starts no second one`)
+  }
+  // The arithmetic the branch can be wrong about: at most four retained writers per wave.
+  const full = await run('econ', { ...base, figures: false })
+  const writes = full.termManagers.filter((m) => m.kind === 'write')
+  check(full.report.stages['term-cards'] && full.report.stages['term-cards'].status === 'done' && full.report.stages['term-link'] && full.report.stages['term-link'].status === 'done', `S24: a full run completes both Term stages (${JSON.stringify([full.report.stages['term-cards'], full.report.stages['term-link']])})`)
+  check(writes.length > 0 && writes.every((m) => m.jobs.length <= 4), `S24: every writer manager holds at most four jobs (${writes.map((m) => m.jobs.length).join(',')})`)
+  const groups = full.led.gate('termcards')
+  check(groups.complete === true && full.led.find('termcards/book@1') && full.led.find('termcards/book@1').state === 'done' && full.led.find('termlink/book@1') && full.led.find('termlink/book@1').state === 'done', `S24: the Term-card job/book units and the Term-link pass all complete on the verified work (${[...full.led.units.values()].filter((u) => /term/.test(u.layer)).map((u) => `${u.id}=${u.state}`).join(',')})`)
+  const tcCalls = full.termCalls.filter((c) => c.tool === 'term-cards')
+  const steps = tcCalls.map((c) => c.step)
+  check(steps.includes('plan') && steps.indexOf('plan') < steps.indexOf('jobs') && steps.includes('check') && steps.indexOf('jobs') < steps.indexOf('apply'), `S24: the branch plans, claims its jobs, checks and publishes in order (${steps.join(',')})`)
+  check(full.termCalls.find((c) => c.tool === 'term-link' && c.step === 'plan').cmd.includes('-Occurrences first'), 'S24: the Term-link pass runs the declared occurrence policy')
+  check(full.result.term_cards && full.result.term_cards.status === 'done' && full.result.term_cards.unit === 'termcards/book@1' && full.result.term_cards.publication && full.result.term_cards.publication.complete === true, `S24: the report carries the Term-card branch's own complete result (${JSON.stringify(full.result.term_cards)})`)
+  check(full.result.term_link && full.result.term_link.status === 'done' && full.result.term_link.unit === 'termlink/book@1' && full.result.term_link.counts && full.result.term_link.counts.cards_changed === 1, `S24: the report carries the applied Term-link pass and its counts (${JSON.stringify(full.result.term_link)})`)
+  check(full.result.schedule && full.result.schedule.term_cards === 'done' && full.result.schedule.term_link === 'done', 'S24: the schedule summary names both Term stages')
+  // The frozen layer switches: a disabled Term layer freezes into the prepared target and runs no stage.
+  const noCards = await run('econ', { ...base, figures: false, termCards: false })
+  const noCardsPrep = noCards.calls.find((c) => c.label === 'prepare book')
+  check(noCardsPrep && /"termCards":false/.test(noCardsPrep.cmd), 'S24: a disabled Term-card branch is frozen into the prepared target (-RunOptions)')
+  check(noCards.report.stages['term-cards'].status === 'skipped' && noCards.termCalls.every((c) => c.tool !== 'term-cards'), 'S24: termCards false skips the branch and runs no compiler command')
+  check(noCards.report.stages['term-link'].status === 'done' && noCards.led.find('termlink/book@1').state === 'done', 'S24: a disabled Term-card branch registers no unit to wait for; the Term-link pass still runs')
+  const noLink = await run('econ', { ...base, figures: false, termLink: false })
+  const noLinkPrep = noLink.calls.find((c) => c.label === 'prepare book')
+  check(noLinkPrep && /"termLink":false/.test(noLinkPrep.cmd) && noLink.report.stages['term-link'].status === 'skipped' && noLink.termCalls.every((c) => c.tool !== 'term-link'), 'S24: termLink false is frozen, skips the pass and registers no termlink unit')
+  check(noLink.led.find('termcards/book@1') && noLink.led.find('termcards/book@1').state === 'done', 'S24: termLink false never blocks the Term-card branch')
+  // A failed term job leaves committed work but can never complete the book unit; the pass stays blocked.
+  const failed = await run('econ', { ...base, figures: false }, { termWriterFails: true })
+  check(failed.report.stages['term-cards'].status !== 'failed' && failed.result.term_cards.status === 'failed', 'S24: a failed writer fails the branch without halting the run')
+  check(failed.led.find('termcards/t001@1').state === 'failed' && failed.led.find('termcards/t002@1').state === 'failed' && failed.led.find('termcards/book@1').state !== 'done', 'S24: a failed job unit keeps its own fault and the book unit never completes')
+  check(failed.result.term_link.status === 'skipped' && /not ready/.test(String(failed.result.term_link.reason || '')) && failed.led.find('termlink/book@1') && failed.led.find('termlink/book@1').state === 'blocked', `S24: the normal Term-link dependency stays blocked with its reason (${JSON.stringify(failed.result.term_link)})`)
+  check(failed.result.audit && failed.report.stages.audit.status === 'done' && failed.result.run_report, 'S24: the audit and the run report still run and show the coverage debt')
+  check(!failed.termCalls.some((c) => c.tool === 'term-link' && c.step === 'apply'), 'S24: a failed term job never reaches the Term-link apply')
+  // A failed term job leaves the ready later drafts staged and the publication partial.
+  const partial = await run('econ', { ...base, figures: false }, { termPublicationPartial: true })
+  check(partial.result.term_cards.status === 'failed' && /not complete/.test(String(partial.result.term_cards.reason || '')), `S24: a partial publication is reported, never a successful zero-term book (${JSON.stringify(partial.result.term_cards.reason)})`)
+  check(partial.led.find('termcards/book@1').state !== 'done' && partial.result.term_link.status === 'skipped', 'S24: a partial Term-card book leaves the book unit incomplete and the Term-link pass skipped')
+  // A stopped pass records its fault and stays incomplete; the audit still runs.
+  const stopped = await run('econ', { ...base, figures: false }, { termLinkStops: true })
+  check(stopped.result.term_link.status === 'failed' && /card_check/.test(String(stopped.result.term_link.reason || '')), `S24: a stopped Term-link pass reports its typed stop (${JSON.stringify(stopped.result.term_link.reason)})`)
+  check(stopped.led.find('termlink/book@1').state !== 'done' && stopped.result.audit, 'S24: a stopped pass keeps its unit incomplete and the audit still describes the book')
+  // A book with no usable Term list is a clear incomplete result, never a successful zero-term book.
+  // No Term list at all: the branch cannot plan a Term card and the pass cannot plan a link, and neither is a successful zero-term book.
+  const noList = await run('econ', { ...base, figures: false }, { termPlanFails: true, termLinkPlanFails: true })
+  check(noList.result.term_cards.status === 'failed' && /no Term list/.test(String(noList.result.term_cards.reason || '')), `S24: a plan with no Term list is a clear failed result (${JSON.stringify(noList.result.term_cards.reason)})`)
+  check(noList.result.term_link.status === 'failed' && /no list/.test(String(noList.result.term_link.reason || '')) && !noList.led.find('termlink/book@1'), `S24: a Term link requested with no Term list is a clear failed result and owns no unit (${JSON.stringify(noList.result.term_link.reason)})`)
+  check(noList.result.audit && noList.report.stages.audit.status === 'done', 'S24: the audit still describes a book whose Term list could not be planned')
+  const quiet = await run('econ', { ...base, figures: false }, { termLinkNoop: true })
+  check(quiet.result.term_link.status === 'done' && quiet.result.term_link.no_op === true && quiet.led.find('termlink/book@1').state === 'done', 'S24: a proven Term-link no-op completes its unit with no edit')
+  // The math variant runs the same inherited pair.
+  const mathFull = await run('math', { ...base, figures: false })
+  check(mathFull.report.stages['term-cards'].status === 'done' && mathFull.report.stages['term-link'].status === 'done', 'S24 (math): the inherited Term stages run in the mathematics variant')
 }
 
 {
@@ -1673,7 +1839,10 @@ for (const kind of ['econ', 'math']) {
   // #110: the Link units now settle through link-finish, so content is complete while the cleanup
   // still reports its own half: the two are still reported apart.
   check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.status === (result.cleanup.content_complete ? 'complete' : 'partial'), `${kind} full: the cleanup reports its own half apart from content completeness (${JSON.stringify(result.cleanup && { units: result.cleanup.units, status: result.cleanup.status, cleanup_complete: result.cleanup.cleanup_complete })})`)
-  if (kind === 'econ') check(result.cleanup.content_complete === true, 'econ full: the settled Link units leave no content gap')
+  if (kind === 'econ') {
+    const undone = [...led.units.values()].filter((u) => u.layer !== 'cleanup' && u.state !== 'done').map((u) => `${u.id}=${u.state}`)
+    check(result.cleanup.content_complete === true, `econ full: the settled Link units leave no content gap (${undone.join(', ')})`)
+  }
   check(!calls.some((c) => /^Clean up:/.test(c.label)), `${kind} full: no step deletes its own conversations any more`)
 }
 {
@@ -1812,7 +1981,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '12' && modules['zt-workflow-lib'] === '1', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v12 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
+  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '13' && modules['zt-workflow-lib'] === '1', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v13 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

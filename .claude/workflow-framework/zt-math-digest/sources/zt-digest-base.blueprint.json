@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "5.4.1",
+  "version": "5.5.3",
   "description": "The shared base of the ZT digest workflows. A digest builds only the book's Literature tree: Prepare, the book term table, the ledger-driven group cycle, the per-group Card checks, the whole-book card cycle, Link, Organize (the Literature index and the structure Card), Figures and the report-first Bridge between Literature trees, joined by the final audit, with slots where a book type installs its own layers (models, explanations, events, findings, math stages). Topic trees, Topic Cards, hubs and the concept register belong to zt-idea-grow.",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [
@@ -274,6 +274,39 @@
     "cardChecks": {
       "type": "boolean",
       "description": "modes full and link: false skips the card layer cycle"
+    },
+    "termCards": {
+      "type": "boolean",
+      "default": true,
+      "description": "false skips the Term-card branch of a full run; the layer is then excluded in the prepared run, so no Term-link pass waits for it"
+    },
+    "termLink": {
+      "type": "boolean",
+      "default": true,
+      "description": "false skips the deterministic Term-link pass of a full run; the layer is then excluded in the prepared run"
+    },
+    "termCardsPerJob": {
+      "type": "number",
+      "min": 1,
+      "max": 8,
+      "default": 4,
+      "description": "concept terms per Term-card writer job (the compiler's default is 4)"
+    },
+    "termCardsMathPerJob": {
+      "type": "number",
+      "min": 1,
+      "max": 8,
+      "default": 1,
+      "description": "mathematical terms per Term-card writer job (the compiler's default is 1)"
+    },
+    "termLinkOccurrences": {
+      "type": "string",
+      "enum": [
+        "first",
+        "all"
+      ],
+      "default": "first",
+      "description": "which eligible occurrences the Term-link pass links: the first per term and body, or all"
     }
   },
   "consts": {
@@ -569,6 +602,47 @@
         },
         "key": {
           "$ref": "stages.prepare.output.citation_key"
+        }
+      }
+    },
+    {
+      "id": "term-cards",
+      "title": "Term cards",
+      "detail": "the Term-card branch beside the digest writers (design 14.1): the compiler's writer jobs in waves of four on the shared DSMP pool, their checks, the independent mathematical reviews and the one finite fix; each job unit and the book unit complete only from the compiler's own checked artifacts, so a failed or partial book stays incomplete",
+      "after": [
+        "terms"
+      ],
+      "module": "zt-term-cards",
+      "onFail": "continue",
+      "when": [
+        {
+          "op": "and",
+          "value": [
+            {
+              "path": "mode",
+              "op": "matches",
+              "value": "^(full|resume)$"
+            },
+            {
+              "path": "args.termCards",
+              "op": "!=",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "params": {
+        "out": "{{args.out}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        },
+        "perJob": {
+          "$ref": "args.termCardsPerJob",
+          "default": null
+        },
+        "mathPerJob": {
+          "$ref": "args.termCardsMathPerJob",
+          "default": null
         }
       }
     },
@@ -900,11 +974,52 @@
       ]
     },
     {
+      "id": "term-link",
+      "title": "Term link",
+      "detail": "the deterministic Term-link pass after every Card writer and the Bridge (design 14.1-14.2): claim the run's termlink/book@1 unit, freeze the plan, apply it under the claim and complete the unit only from the compiler's apply report; a failed Term-card book or Card writer leaves it blocked and reported, never linked",
+      "after": [
+        "bridge",
+        "term-cards"
+      ],
+      "module": "zt-term-link",
+      "onFail": "continue",
+      "when": [
+        {
+          "op": "and",
+          "value": [
+            {
+              "path": "mode",
+              "op": "matches",
+              "value": "^(full|resume)$"
+            },
+            {
+              "path": "args.termLink",
+              "op": "!=",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "params": {
+        "out": "{{args.out}}",
+        "args": "{{args}}",
+        "mode": "{{mode}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        },
+        "occurrences": {
+          "$ref": "args.termLinkOccurrences",
+          "default": "first"
+        }
+      }
+    },
+    {
       "id": "audit",
       "title": "Audit",
       "detail": "digest-audit.ps1, read-only: faults per rule, orphans, models, figures (it counts the box's Topic trees and hubs as information, never as a digest fault)",
       "after": [
-        "bridge"
+        "bridge",
+        "term-link"
       ],
       "module": "zt-audit",
       "when": [
@@ -1046,6 +1161,12 @@
         },
         "finalize": {
           "$ref": "stages.finalize.output"
+        },
+        "termCards": {
+          "$ref": "stages.term-cards.output"
+        },
+        "termLink": {
+          "$ref": "stages.term-link.output"
         },
         "key": {
           "$ref": "stages.prepare.output.citation_key"

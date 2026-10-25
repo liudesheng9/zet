@@ -130,8 +130,22 @@ fn card_cycle_rule_missing<'a>(declared: &std::collections::BTreeSet<&str>) -> O
 }
 
 const RUN_FLAGS: &[&str] = &[
-    "terms", "models", "events", "findings", "hubs", "figures", "bridge", "notation", "boundary",
-    "proof", "theory",
+    "terms",
+    "models",
+    "events",
+    "findings",
+    "hubs",
+    "figures",
+    "bridge",
+    "notation",
+    "boundary",
+    "proof",
+    "theory",
+    // S24 (#167): the Term-card branch and the Term-link pass are layers of the run. Their
+    // switch is frozen at preparation, so a disabled layer registers no unit and no pass waits
+    // for work that will not come (R0430).
+    "termCards",
+    "termLink",
 ];
 
 /// The publication contract version is part of every aggregate input manifest, so
@@ -324,10 +338,12 @@ fn target(contract: &Value) -> Result<Value> {
         if run[name] != false {
             continue;
         }
-        let affected = if name == "models" {
-            vec!["models", "explain"]
-        } else {
-            vec![name]
+        let affected = match name {
+            "models" => vec!["models", "explain"],
+            // The Term layers' units carry the layer names, not the switch names.
+            "termCards" => vec!["termcards"],
+            "termLink" => vec!["termlink"],
+            _ => vec![name],
         };
         for layer in affected {
             enabled.retain(|l| l != layer);
@@ -1465,6 +1481,547 @@ pub(crate) fn term_cards_claim(p: &Prepared, unit: &str, token: i64) -> Result<V
         "lease_until": lease_until,
         "done": false,
     }))
+}
+
+/// One Term-link pass's identity in the run ledger (S24, #167; design 14.2). The run's one
+/// whole-book pass is `termlink/book@1`; a finalization correction round R gets its own
+/// `termlink/final@R`, so a later correction can never be suppressed by a reusable unit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TermLinkPass {
+    /// `None` for the whole-book pass, `Some(R)` for finalization round R.
+    pub(crate) round: Option<i64>,
+    /// The exact Cards of a finalization round; empty for the whole book.
+    pub(crate) cards: Vec<String>,
+}
+
+impl TermLinkPass {
+    pub(crate) fn book() -> Self {
+        Self {
+            round: None,
+            cards: Vec::new(),
+        }
+    }
+
+    pub(crate) fn final_round(round: i64, cards: &[String]) -> Result<Self> {
+        if round <= 0 {
+            bail!("the finalization round must be a positive whole number, not {round}");
+        }
+        if cards.is_empty() {
+            bail!("finalization round {round} names no changed Card");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for at in cards {
+            if at.trim().is_empty() || at.len() > 200 || at.contains(['\n', '\r']) || !seen.insert(at) {
+                bail!("`{at}` is not one readable Card address of round {round}");
+            }
+        }
+        Ok(Self {
+            round: Some(round),
+            cards: cards.to_vec(),
+        })
+    }
+
+    pub(crate) fn logical_key(&self) -> &'static str {
+        match self.round {
+            None => "book",
+            Some(_) => "final",
+        }
+    }
+
+    pub(crate) fn revision(&self) -> i64 {
+        self.round.unwrap_or(1)
+    }
+
+    pub(crate) fn unit(&self) -> String {
+        format!("termlink/{}@{}", self.logical_key(), self.revision())
+    }
+}
+
+/// The layer whose units are Card writers the whole-book Term-link pass waits for: their
+/// completed work is the final body the deterministic pass links. Publications are separate.
+const TERM_LINK_WRITERS: &[&str] = &[
+    "digest", "events", "findings", "models", "explain", "boundary", "proof", "notes",
+];
+
+/// The whole-book publications a Term-link pass waits for, when the run registered them.
+const TERM_LINK_PUBLICATIONS: &[&str] = &[
+    "cards-book",
+    "link-check",
+    "organize",
+    "skeleton",
+    "figures",
+    "bridge",
+    "theory",
+];
+
+/// The frozen obligation of one Term-link pass. A changed Term mapping with more published rows is
+/// the same obligation — the completion verifier binds the applied plan — so the identity keeps the
+/// pass, its scope and its option, never the plan hash or the current vocabulary.
+pub(crate) fn term_link_unit_inputs(plan: &Value, pass: &TermLinkPass) -> Value {
+    json!({
+        "schema_version": 1,
+        "kind": "term_link_unit",
+        "book": plan["book"]["citation_key"],
+        "list": plan["list"]["address"],
+        "pass": pass.logical_key(),
+        "round": pass.round,
+        "occurrences": plan["options"]["occurrences"],
+        "cards": pass.cards,
+    })
+}
+
+/// Register one Term-link pass in the prepared run's ledger (S24, #167; design 14.2). The unit
+/// depends on the successful Term-card publication and on every existing unit of the enabled Card
+/// writers and their publications; a layer the run disabled registered no unit, so its dependency
+/// is omitted instead of waiting for work that will not come (R0430). A failed writer leaves this
+/// pass blocked by `dependency_failed`, so a failed Term job can never complete the book pass.
+pub(crate) fn register_term_link(
+    tx: &Transaction,
+    plan: &Value,
+    pass: &TermLinkPass,
+) -> Result<Value> {
+    if plan["schema_version"] != 2 || field(plan, "kind")? != "term_link_plan" {
+        bail!("invalid term-link plan: schema 2 of kind term_link_plan is required");
+    }
+    field(plan, "plan_hash")?;
+    let unit = pass.unit();
+    let inputs = term_link_unit_inputs(plan, pass);
+    let hash = canon::hash_value(&inputs);
+    let existing: Option<String> = tx
+        .query_row("SELECT input_hash FROM units WHERE id=?1", [&unit], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let mut reused = true;
+    if let Some(stored) = existing {
+        if stored != hash {
+            bail!("a registered Term-link unit cannot be rebound to different work: {unit}");
+        }
+    } else {
+        reused = false;
+        register(tx, "termlink", pass.logical_key(), pass.revision(), &inputs, None, false)?;
+        let mut needs: Vec<String> = Vec::new();
+        let latest_book = |layer: &str| -> Result<Option<String>> {
+            Ok(tx
+                .query_row(
+                    "SELECT id FROM units WHERE layer=?1 AND logical_key='book' ORDER BY revision DESC LIMIT 1",
+                    [layer],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        };
+        if let Some(book) = latest_book("termcards")? {
+            needs.push(book);
+        }
+        for layer in TERM_LINK_WRITERS {
+            let mut statement =
+                tx.prepare("SELECT id FROM units WHERE layer=?1 ORDER BY id")?;
+            let rows = statement.query_map([layer], |row| row.get::<_, String>(0))?;
+            needs.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        for layer in TERM_LINK_PUBLICATIONS {
+            if let Some(book) = latest_book(layer)? {
+                needs.push(book);
+            }
+        }
+        needs.sort();
+        needs.dedup();
+        for need in &needs {
+            dependency(tx, &unit, need, "success")?;
+        }
+        event(
+            tx,
+            &unit,
+            None,
+            None,
+            "registered",
+            &json!({
+                "pass": pass.logical_key(),
+                "round": pass.round,
+                "cards": pass.cards.len(),
+                "plan_revision": plan["revision"],
+                "plan_hash": plan["plan_hash"],
+                "prerequisites": needs,
+            }),
+        )?;
+    }
+    Ok(json!({
+        "unit": unit,
+        "pass": pass.logical_key(),
+        "round": pass.round,
+        "cards": pass.cards.len(),
+        "revision": pass.revision(),
+        "reused": reused,
+        "input_hash": hash,
+    }))
+}
+
+/// Register one Term-link plan in the prepared run's ledger and commit it.
+pub(crate) fn term_link_register(p: &Prepared, plan: &Value, pass: &TermLinkPass) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let units = register_term_link(&tx, plan, pass)?;
+    let run = meta(&tx, "run_id")?;
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"run_id":run,"units":units}))
+}
+
+/// Complete one Term-card unit from the compiler's own checked artifacts (S24, #167; design 14.2,
+/// R0423/R0424). A job unit (`termcards/tNNN@<plan revision>`) binds the readiness result: every row
+/// the job wrote is `ready`, which is the schema, the shared check, the required reviews and the one
+/// permitted fix disposition together. The book unit (`termcards/book@<plan revision>`) binds the
+/// publication report: every required row's head and parts are committed and were read back. A
+/// partial prefix is committed work that leaves the book unit incomplete (R0343).
+fn termcards_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
+    let rest = unit
+        .strip_prefix("termcards/")
+        .context("not a Term-card unit")?;
+    let (key, revision) = rest
+        .split_once('@')
+        .context("invalid Term-card unit")?;
+    let revision: i64 = revision.parse().context("invalid Term-card revision")?;
+    let inputs = unit_inputs(p, unit)?;
+    let kind = field(&inputs, "kind")?;
+    if inputs["schema_version"] != 1 {
+        bail!("the Term-card unit carries no frozen plan input");
+    }
+    if (key == "book") != (kind == "term_cards_book") {
+        bail!("the Term-card unit `{unit}` does not match its frozen input");
+    }
+    if inputs["plan_revision"].as_i64() != Some(revision) {
+        bail!("the Term-card unit `{unit}` is bound to another plan revision");
+    }
+    let _guard = unit_guard(p, unit)?;
+    let (_claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    if done {
+        return Ok(json!({"schema_version":1,"unit":unit,"state":"done","reused":true}));
+    }
+    let artifact = canon::read_json(&path.to_string_lossy()).context("invalid Term-card evidence")?;
+    let bound = |field_name: &str, value: &Value, expected: &Value| -> Result<()> {
+        if value != expected {
+            bail!("the Term-card {field_name} is bound to another plan; rerun -Step plan");
+        }
+        Ok(())
+    };
+    let result;
+    if kind == "term_card_job" {
+        let expected_path = p.out.join("term-cards").join("check").join("readiness.json");
+        if !expected_path.is_file() {
+            bail!(
+                "the Term-card readiness artifact `{}` is missing; rerun -Step check",
+                path_to_string(&expected_path)
+            );
+        }
+        if std::fs::canonicalize(path)? != std::fs::canonicalize(&expected_path)? {
+            bail!("completion evidence locator mismatch");
+        }
+        if artifact["schema_version"] != 1 || artifact["kind"] != "term_cards_readiness" {
+            bail!("not a Term-card readiness artifact");
+        }
+        bound("readiness", &artifact["book"], &inputs["book"])?;
+        bound("readiness", &artifact["plan_revision"], &inputs["plan_revision"])?;
+        bound("readiness", &artifact["plan_hash"], &inputs["plan_hash"])?;
+        bound(
+            "readiness",
+            &artifact["list"]["body_sha256"],
+            &inputs["list_sha256"],
+        )?;
+        bound(
+            "readiness",
+            &artifact["source"]["fingerprint"],
+            &inputs["source_fingerprint"],
+        )?;
+        let job = &inputs["job"];
+        let id = field(job, "id")?;
+        let rows = job["rows"]
+            .as_array()
+            .filter(|rows| !rows.is_empty())
+            .context("the Term-card job names no row")?;
+        let mut verified = Vec::new();
+        for row in rows {
+            let number = row.as_u64().context("invalid Term-card row number")?;
+            let term = artifact["terms"]
+                .as_array()
+                .and_then(|terms| {
+                    terms.iter().find(|term| {
+                        term["row"].as_u64() == Some(number)
+                            && term["job"] == inputs["job"]["id"]
+                    })
+                })
+                .with_context(|| {
+                    format!("the readiness result holds no row {number} of job `{id}`")
+                })?;
+            if term["status"] != "ready" {
+                bail!(
+                    "row {number} of the Term-card job `{id}` is `{}`, not ready",
+                    term["status"].as_str().unwrap_or("unknown")
+                );
+            }
+            verified.push(json!({"row":number,"term":term["term"],"draft_sha256":term["draft_sha256"],"render_sha256":term["render_sha256"]}));
+        }
+        result = json!({
+            "schema_version": 1,
+            "kind": "termcards_completion",
+            "unit": unit,
+            "token": token,
+            "job": id,
+            "rows": verified,
+            "readiness": {"path": path_to_string(path), "sha256": canon::sha256_hex(&std::fs::read(path)?)},
+        });
+    } else if kind == "term_cards_book" {
+        let expected_path = p.out.join("term-cards").join("report.json");
+        if !expected_path.is_file() {
+            bail!(
+                "the Term-card publication report `{}` is missing; rerun -Step apply or -Step report",
+                path_to_string(&expected_path)
+            );
+        }
+        if std::fs::canonicalize(path)? != std::fs::canonicalize(&expected_path)? {
+            bail!("completion evidence locator mismatch");
+        }
+        if artifact["schema_version"] != 1 || artifact["kind"] != "term_cards_report" {
+            bail!("not a Term-card publication report");
+        }
+        if artifact["claim_token"].as_i64() != Some(token) {
+            bail!("the publication report was not written under this unit's claim");
+        }
+        bound("report", &artifact["book"]["citation_key"], &inputs["book"])?;
+        bound("report", &artifact["plan"]["revision"], &inputs["plan_revision"])?;
+        bound("report", &artifact["plan"]["hash"], &inputs["plan_hash"])?;
+        bound(
+            "report",
+            &artifact["plan"]["list"]["body_sha256"],
+            &inputs["list_sha256"],
+        )?;
+        bound(
+            "report",
+            &artifact["source"]["fingerprint"],
+            &inputs["source_fingerprint"],
+        )?;
+        if artifact["complete"] != true || !artifact["stop"].is_null() {
+            let stop = artifact["stop"]["code"].as_str().unwrap_or("none");
+            bail!(
+                "the Term-card book is not complete (stop: {stop}); a committed prefix leaves the book unit incomplete"
+            );
+        }
+        let rows = artifact["rows"]
+            .as_array()
+            .filter(|rows| !rows.is_empty())
+            .context("the Term-card report holds no row")?;
+        if inputs["rows"].as_u64() != Some(rows.len() as u64) {
+            bail!("the Term-card report does not cover the plan's every row");
+        }
+        let mut verified = Vec::new();
+        for row in rows {
+            let number = row["row"].as_u64().context("invalid Term-card row number")?;
+            let publication = &row["publication"];
+            let head = publication["head"]
+                .as_str()
+                .filter(|head| !head.is_empty())
+                .with_context(|| format!("row {number} has no committed head"))?;
+            if publication["status"] != "committed" || row["readiness"]["status"] != "ready" {
+                bail!(
+                    "row {number} is `{}`, not a committed ready row",
+                    publication["status"].as_str().unwrap_or("unknown")
+                );
+            }
+            let parts = publication["parts"].as_array().cloned().unwrap_or_default();
+            if parts.iter().any(|part| part.as_str().is_none_or(str::is_empty)) {
+                bail!("row {number} names an empty continuation part");
+            }
+            let expected = row["readiness"]["cards"]
+                .as_array()
+                .map(|cards| cards.iter().filter(|card| card["role"] == "part").count())
+                .unwrap_or(0);
+            if parts.len() != expected {
+                bail!(
+                    "row {number} committed {} continuation part(s), the plan renders {expected}",
+                    parts.len()
+                );
+            }
+            verified.push(json!({"row":number,"term":row["term"],"head":head,"parts":parts}));
+        }
+        result = json!({
+            "schema_version": 1,
+            "kind": "termcards_book_completion",
+            "unit": unit,
+            "token": token,
+            "rows": verified,
+            "archive": artifact["archive"],
+            "report": {"path": path_to_string(path), "sha256": canon::sha256_hex(&std::fs::read(path)?)},
+        });
+    } else {
+        bail!("the Term-card unit carries no frozen plan input");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claimed = claim(&tx, unit, token)?;
+    output(
+        &tx,
+        unit,
+        "completion",
+        "file",
+        &path_to_string(path),
+        &canon::sha256_hex(&std::fs::read(path)?),
+        &result,
+    )?;
+    completion_fault(p, "after_outputs")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":"verified","kind":result["kind"]}),
+    )?;
+    completion_fault(p, "before_commit")?;
+    tx.commit()?;
+    completion_fault(p, "after_commit")?;
+    Ok(result)
+}
+
+/// Complete one Term-link pass from its apply report (S24, #167; design 14.2, R0425/R0428): the
+/// report must be the applied plan's own completed verification, a proven no-op, or nothing at all
+/// is claimed. A refused Card, a pending or unknown chunk, a Lock or a stale plan keeps the unit
+/// incomplete, so the run reports coverage debt instead of a linked book that was never linked.
+fn termlink_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
+    let pass = TermLinkPass {
+        round: unit
+            .strip_prefix("termlink/final@")
+            .map(str::parse::<i64>)
+            .transpose()
+            .context("invalid Term-link round")?,
+        cards: Vec::new(),
+    };
+    let whole_book = unit.starts_with("termlink/book@");
+    if !whole_book && pass.round.is_none() {
+        bail!("`{unit}` is not a Term-link unit");
+    }
+    let inputs = unit_inputs(p, unit)?;
+    if inputs["schema_version"] != 1 || inputs["kind"] != "term_link_unit" {
+        bail!("the Term-link unit carries no frozen pass input");
+    }
+    let _guard = unit_guard(p, unit)?;
+    let (_claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    if done {
+        return Ok(json!({"schema_version":1,"unit":unit,"state":"done","reused":true}));
+    }
+    let expected_path = p.out.join("term-link").join("apply.json");
+    if !expected_path.is_file() {
+        bail!(
+            "the Term-link apply report `{}` is missing; rerun -Step apply",
+            path_to_string(&expected_path)
+        );
+    }
+    if std::fs::canonicalize(path)? != std::fs::canonicalize(&expected_path)? {
+        bail!("completion evidence locator mismatch");
+    }
+    let report = canon::read_json(&path.to_string_lossy()).context("invalid Term-link evidence")?;
+    if report["schema_version"] != 1 || report["kind"] != "term_link_apply" {
+        bail!("not a Term-link apply report");
+    }
+    if report["book"]["citation_key"] != inputs["book"] {
+        bail!("the apply report is about another book");
+    }
+    if report["options"]["occurrences"] != inputs["occurrences"] {
+        bail!("the apply report used another occurrence policy");
+    }
+    let planned_cards: Vec<&str> = inputs["cards"]
+        .as_array()
+        .map(|cards| cards.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let applied_cards: Vec<&str> = report["options"]["cards"]
+        .as_array()
+        .map(|cards| cards.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if planned_cards != applied_cards {
+        bail!("the apply report used another Card scope than the pass it completes");
+    }
+    if report["claim"]["token"].as_i64() != Some(token) {
+        bail!("the apply report was not written under this unit's claim");
+    }
+    if report["complete"] != true || !report["stop"].is_null() {
+        let code = report["stop"]["code"].as_str().unwrap_or("none");
+        bail!(
+            "the Term-link pass is not complete (stop: {code}); the run keeps its coverage debt"
+        );
+    }
+    let counts = &report["counts"];
+    if counts["cards_refused"].as_u64().unwrap_or(0) != 0 {
+        bail!("the Term-link plan refused Card(s); the pass is not verified");
+    }
+    let chunks = report["chunks"].as_array().cloned().unwrap_or_default();
+    let no_op = report["no_op"] == true;
+    if no_op {
+        if !chunks.is_empty() {
+            bail!("the apply report claims a no-op but carries chunks");
+        }
+        if report["archive"]["revision_before"] != report["archive"]["revision_after"] {
+            bail!("the apply report claims a no-op but the archive revision advanced");
+        }
+    } else {
+        if chunks.is_empty() {
+            bail!("the apply report carries no committed chunk");
+        }
+        for chunk in &chunks {
+            if !matches!(chunk["state"].as_str(), Some("committed") | Some("replayed")) {
+                bail!(
+                    "the Term-link chunk `{}` is `{}`; the pass is not applied",
+                    chunk["chunk"].as_u64().unwrap_or(0),
+                    chunk["state"].as_str().unwrap_or("unknown")
+                );
+            }
+        }
+    }
+    let result = json!({
+        "schema_version": 1,
+        "kind": "termlink_completion",
+        "unit": unit,
+        "token": token,
+        "pass": inputs["pass"],
+        "round": inputs["round"],
+        "plan_revision": report["plan"]["revision"],
+        "plan_hash": report["plan"]["hash"],
+        "no_op": no_op,
+        "counts": counts,
+        "archive": report["archive"],
+        "apply": {"path": path_to_string(path), "sha256": canon::sha256_hex(&std::fs::read(path)?)},
+    });
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claimed = claim(&tx, unit, token)?;
+    output(
+        &tx,
+        unit,
+        "completion",
+        "file",
+        &path_to_string(path),
+        &canon::sha256_hex(&std::fs::read(path)?),
+        &result,
+    )?;
+    completion_fault(p, "after_outputs")?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":"verified","kind":result["kind"],"no_op":no_op}),
+    )?;
+    completion_fault(p, "before_commit")?;
+    tx.commit()?;
+    completion_fault(p, "after_commit")?;
+    Ok(result)
+}
+
+/// One path as the ledger records it.
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().to_string()
 }
 
 /// One retained compiler plan: every entry names one mathematical unit and the work
@@ -16549,6 +17106,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     .as_i64()
                     .context("missing Terms planning options")?;
                 terms_apply(&p, &mut zt, token, terms, candidates)?
+            } else if unit.starts_with("termcards/") {
+                // S24 (#167): the Term-card job/book unit's proof is the compiler's own checked
+                // readiness or publication report, re-read here; no caller-supplied address counts.
+                termcards_finish(&p, &unit, token, Path::new(&path))?
+            } else if unit.starts_with("termlink/") {
+                // S24 (#167): the Term-link pass's proof is its apply report: applied and verified,
+                // or proven no-op, and never a refused Card or a pending chunk.
+                termlink_finish(&p, &unit, token, Path::new(&path))?
             } else if publication_unit(&unit).is_ok() {
                 publication_finish(&p, &mut zt, &unit, token, Path::new(&path))?
             } else if let Some(layer) = math_book_layer(&unit) {
@@ -17749,6 +18314,570 @@ mod term_card_ledger_tests {
             .unwrap_err()
             .to_string();
         assert!(stale.contains("stale_claim"), "{stale}");
+    }
+}
+
+#[cfg(test)]
+mod term_link_ledger_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn ledger() -> (TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(&dir.path().join("ledger.sqlite3"), true).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        for (key, value) in [
+            ("run_id", json!("run")),
+            ("invocation", json!(1)),
+            ("target", json!({"enabled":["digest","terms","cards-book"],"excluded":[]})),
+        ] {
+            conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2)",
+                params![key, canon::canonical_json(&value)],
+            )
+            .unwrap();
+        }
+        (dir, conn)
+    }
+
+    fn add(conn: &Connection, id: &str, layer: &str, key: &str, revision: i64, state: &str) {
+        conn.execute(
+            "INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_at) VALUES(?1,?2,?3,?4,?5,'{}',?6,'now')",
+            params![id, layer, key, revision, state, canon::hash_value(&json!(id))],
+        )
+        .unwrap();
+    }
+
+    fn plan() -> Value {
+        json!({
+            "schema_version": 2,
+            "kind": "term_link_plan",
+            "revision": 1,
+            "plan_hash": "d".repeat(64),
+            "book": {"citation_key": "K"},
+            "archive": {"id": "a1", "path": "p", "revision": 7},
+            "list": {"address": "K/1", "body_sha256": "b".repeat(64), "row_count": 3},
+            "options": {"occurrences": "first", "cards": Value::Null},
+            "scope": {"cards": 9},
+            "counts": {"cards_scanned": 9, "cards_changed": 3},
+        })
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_term_link_pass_waits_for_the_term_cards_and_every_enabled_writer() {
+        let (_dir, conn) = ledger();
+        add(&conn, "terms/book@1", "terms", "book", 1, "done");
+        add(&conn, "termcards/t001@1", "termcards", "t001", 1, "done");
+        add(&conn, "termcards/book@1", "termcards", "book", 1, "registered");
+        add(&conn, "digest/g001@1", "digest", "g001", 1, "done");
+        add(&conn, "digest/g002@1", "digest", "g002", 1, "failed");
+        add(&conn, "events/g001@1", "events", "g001", 1, "done");
+        add(&conn, "models/K2c@1", "models", "K2c", 1, "done");
+        add(&conn, "cards-book/book@1", "cards-book", "book", 1, "done");
+        add(&conn, "bridge/book@1", "bridge", "book", 1, "done");
+        add(&conn, "audit/book@1", "audit", "book", 1, "registered");
+        let tx = conn.unchecked_transaction().unwrap();
+        let units = register_term_link(&tx, &plan(), &TermLinkPass::book()).unwrap();
+        assert_eq!(units["unit"], json!("termlink/book@1"));
+        assert_eq!(units["reused"], json!(false));
+        // The Term-card publication and every existing Card-writer unit are the pass's prerequisites;
+        // a later layer (audit) and the terms table alone (not a Card writer) are not.
+        let needs: Vec<String> = {
+            let mut statement = tx
+                .prepare("SELECT needs_id FROM deps WHERE unit_id='termlink/book@1' ORDER BY needs_id")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            needs,
+            vec![
+                "bridge/book@1",
+                "cards-book/book@1",
+                "digest/g001@1",
+                "digest/g002@1",
+                "events/g001@1",
+                "models/K2c@1",
+                "termcards/book@1",
+            ]
+        );
+        tx.commit().unwrap();
+
+        // The same plan reuses its unit and writes no row.
+        let tx = conn.unchecked_transaction().unwrap();
+        let again = register_term_link(&tx, &plan(), &TermLinkPass::book()).unwrap();
+        assert_eq!(again["reused"], json!(true));
+        assert_eq!(count(&tx, "SELECT count(*) FROM units WHERE layer='termlink'"), 1);
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn a_run_without_term_cards_waits_for_no_absent_unit() {
+        let (_dir, conn) = ledger();
+        add(&conn, "digest/g001@1", "digest", "g001", 1, "done");
+        let tx = conn.unchecked_transaction().unwrap();
+        let units = register_term_link(&tx, &plan(), &TermLinkPass::book()).unwrap();
+        assert_eq!(units["unit"], json!("termlink/book@1"));
+        // The Term-card layer is disabled: its dependency is omitted instead of waiting forever.
+        assert_eq!(
+            count(&tx, "SELECT count(*) FROM deps WHERE needs_id LIKE 'termcards/%'"),
+            0
+        );
+        assert_eq!(
+            count(&tx, "SELECT count(*) FROM deps WHERE unit_id='termlink/book@1'"),
+            1
+        );
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn a_finalization_round_gets_its_own_unit_and_its_scoped_cards() {
+        let (_dir, conn) = ledger();
+        let pass = TermLinkPass::final_round(2, &["K/1|a".to_string(), "K/2|b".to_string()]).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let first = register_term_link(&tx, &plan(), &pass).unwrap();
+        assert_eq!(first["unit"], json!("termlink/final@2"));
+        tx.commit().unwrap();
+
+        // Another correction round is a different obligation, never a suppressed repeat.
+        let tx = conn.unchecked_transaction().unwrap();
+        let second = register_term_link(&tx, &plan(), &TermLinkPass::final_round(3, &["K/1|a".to_string()]).unwrap()).unwrap();
+        assert_eq!(second["unit"], json!("termlink/final@3"));
+        tx.commit().unwrap();
+
+        // A different scope under the same round cannot be rebound onto the registered unit.
+        let tx = conn.unchecked_transaction().unwrap();
+        let error = register_term_link(&tx, &plan(), &TermLinkPass::final_round(2, &["K/9|z".to_string()]).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cannot be rebound"), "{error}");
+    }
+
+    #[test]
+    fn a_scoped_round_requires_the_changed_cards() {
+        let error = TermLinkPass::final_round(1, &[]).err().unwrap().to_string();
+        assert!(error.contains("names no changed Card"), "{error}");
+    }
+
+    #[test]
+    fn the_term_layers_are_run_options_and_a_disabled_one_is_excluded_not_awaited() {
+        let run = run_options("econ", false, None).unwrap();
+        assert_eq!(run["termCards"], json!(true));
+        assert_eq!(run["termLink"], json!(true));
+        let off = run_options("econ", false, Some(&json!({"termCards": false}))).unwrap();
+        let contract = json!({
+            "variant": "econ",
+            "citation_key": "K",
+            "groups": [],
+            "options": {"run_options": off},
+        });
+        let target = target(&contract).unwrap();
+        assert!(target["excluded"].as_array().unwrap().contains(&json!("termcards")));
+        assert!(!target["enabled"].as_array().unwrap().contains(&json!("termcards")));
+        // The switch names are the declaration; the layer names are what the target excludes.
+        assert!(run_options("econ", false, Some(&json!({"termCards2": false}))).is_err());
+        assert!(run_options("econ", false, Some(&json!({"termCards": false, "termLink": false})))
+            .unwrap()["termLink"]
+            == json!(false));
+    }
+}
+
+#[cfg(test)]
+mod term_completion_tests {
+    //! The Term-card job/book and Term-link pass completions (S24, #167): the ledger completes a
+    //! unit only from the compiler's own checked artifact, and a partial or refused pass stays open.
+    use super::*;
+    use std::path::Path;
+
+    const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        out: std::path::PathBuf,
+        contract: Value,
+        hash: String,
+    }
+
+    fn fixture(units: &[(&str, Value)]) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::fs::canonicalize(dir.path()).unwrap();
+        let contract = json!({
+            "variant": "econ",
+            "citation_key": "K",
+            "groups": [],
+            "options": {},
+            "source": {"path": "s"},
+        });
+        let hash = canon::hash_value(&contract);
+        let conn = connect(&out.join("ledger.sqlite3"), true).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        for (key, value) in [
+            ("schema_version", json!(1)),
+            ("run_id", json!("run")),
+            ("invocation", json!(1)),
+            ("preparation", contract.clone()),
+            ("preparation_hash", json!(hash)),
+            ("target", target(&contract).unwrap()),
+        ] {
+            conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2)",
+                params![key, canon::canonical_json(&value)],
+            )
+            .unwrap();
+        }
+        for (id, inputs) in units {
+            conn.execute(
+                "INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,owner,claim_token,lease_until,created_at) VALUES(?1,?2,?3,?4,'claimed',?5,?6,'writer',3,?7,'now')",
+                params![
+                    id,
+                    id.split('/').next().unwrap(),
+                    id.split('/').nth(1).unwrap().split('@').next().unwrap(),
+                    id.split('@').nth(1).unwrap().parse::<i64>().unwrap(),
+                    canon::canonical_json(inputs),
+                    canon::hash_value(inputs),
+                    now_seconds() + 600
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        Fixture {
+            _dir: dir,
+            out,
+            contract,
+            hash,
+        }
+    }
+
+    impl Fixture {
+        fn prepared(&self) -> Prepared {
+            Prepared {
+                out: self.out.clone(),
+                contract: self.contract.clone(),
+                hash: self.hash.clone(),
+            }
+        }
+
+        fn write(&self, rel: &str, value: &Value) -> std::path::PathBuf {
+            let path = self.out.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            util::write_atomic(&path, &ps::json_pretty(value)).unwrap();
+            path
+        }
+
+        fn state(&self, unit: &str) -> (String, Value) {
+            let conn = connect(&self.out.join("ledger.sqlite3"), false).unwrap();
+            conn.query_row(
+                "SELECT state,coalesce(result_json,'null') FROM units WHERE id=?1",
+                [unit],
+                |row| {
+                    let state: String = row.get(0)?;
+                    let result: String = row.get(1)?;
+                    Ok((state, serde_json::from_str(&result).unwrap()))
+                },
+            )
+            .unwrap()
+        }
+    }
+
+    fn job_inputs() -> Value {
+        json!({
+            "schema_version": 1,
+            "kind": "term_card_job",
+            "book": "K",
+            "plan_revision": 1,
+            "plan_hash": HASH,
+            "list_sha256": "b".repeat(64),
+            "source_fingerprint": "c".repeat(64),
+            "job": {"id": "t001", "kind": "concept", "rows": [1, 2], "terms": ["机会主义", "专用性"]},
+        })
+    }
+
+    fn readiness(status: &str) -> Value {
+        json!({
+            "schema_version": 1,
+            "kind": "term_cards_readiness",
+            "book": "K",
+            "plan_revision": 1,
+            "plan_hash": HASH,
+            "list": {"address": "K/1", "body_sha256": "b".repeat(64)},
+            "source": {"fingerprint": "c".repeat(64)},
+            "complete": false,
+            "counts": {"ready": 2},
+            "terms": [
+                {"row": 1, "term": "机会主义", "job": "t001", "status": status, "draft_sha256": "d1", "render_sha256": "r1"},
+                {"row": 2, "term": "专用性", "job": "t001", "status": "ready", "draft_sha256": "d2", "render_sha256": "r2"},
+            ],
+        })
+    }
+
+    fn book_inputs() -> Value {
+        json!({
+            "schema_version": 1,
+            "kind": "term_cards_book",
+            "book": "K",
+            "plan_revision": 1,
+            "plan_hash": HASH,
+            "list_sha256": "b".repeat(64),
+            "source_fingerprint": "c".repeat(64),
+            "rows": 1,
+            "jobs": [{"id": "t001", "unit": "termcards/t001@1"}],
+        })
+    }
+
+    fn report() -> Value {
+        json!({
+            "schema_version": 1,
+            "kind": "term_cards_report",
+            "claim_token": 3,
+            "complete": true,
+            "stop": Value::Null,
+            "book": {"citation_key": "K"},
+            "plan": {"revision": 1, "hash": HASH, "list": {"body_sha256": "b".repeat(64)}},
+            "source": {"fingerprint": "c".repeat(64)},
+            "archive": {"revision_before": 7, "revision_after": 8},
+            "rows": [{
+                "row": 1,
+                "term": "机会主义",
+                "readiness": {"status": "ready", "cards": [{"role": "head"}, {"role": "part"}]},
+                "publication": {"status": "committed", "head": "K/2|a", "parts": ["K/2|a|a"]},
+            }],
+        })
+    }
+
+    #[test]
+    fn a_ready_job_completes_from_its_readiness_result() {
+        let fixture = fixture(&[("termcards/t001@1", job_inputs())]);
+        let path = fixture.write("term-cards/check/readiness.json", &readiness("ready"));
+        let result = termcards_finish(&fixture.prepared(), "termcards/t001@1", 3, &path).unwrap();
+        assert_eq!(result["kind"], json!("termcards_completion"));
+        assert_eq!(result["rows"].as_array().unwrap().len(), 2);
+        assert_eq!(fixture.state("termcards/t001@1").0, "done");
+    }
+
+    #[test]
+    fn a_job_that_is_not_ready_stays_open() {
+        let fixture = fixture(&[("termcards/t001@1", job_inputs())]);
+        let path = fixture.write("term-cards/check/readiness.json", &readiness("needs_fix"));
+        let error = termcards_finish(&fixture.prepared(), "termcards/t001@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not ready"), "{error}");
+        assert_eq!(fixture.state("termcards/t001@1").0, "claimed");
+    }
+
+    #[test]
+    fn a_readiness_result_bound_to_another_plan_cannot_complete_a_job() {
+        let fixture = fixture(&[("termcards/t001@1", job_inputs())]);
+        let mut foreign = readiness("ready");
+        foreign["plan_hash"] = json!("d".repeat(64));
+        let path = fixture.write("term-cards/check/readiness.json", &foreign);
+        let error = termcards_finish(&fixture.prepared(), "termcards/t001@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("bound to another plan"), "{error}");
+    }
+
+    #[test]
+    fn the_book_completes_only_when_every_row_is_committed_and_read_back() {
+        let fixture = fixture(&[("termcards/book@1", book_inputs())]);
+        let path = fixture.write("term-cards/report.json", &report());
+        let result = termcards_finish(&fixture.prepared(), "termcards/book@1", 3, &path).unwrap();
+        assert_eq!(result["kind"], json!("termcards_book_completion"));
+        assert_eq!(result["rows"][0]["head"], json!("K/2|a"));
+        assert_eq!(fixture.state("termcards/book@1").0, "done");
+    }
+
+    #[test]
+    fn a_committed_prefix_never_completes_the_book_unit() {
+        let fixture = fixture(&[("termcards/book@1", book_inputs())]);
+        let mut partial = report();
+        partial["complete"] = json!(false);
+        partial["stop"] = json!({"code": "not_ready", "message": "row 2 is not ready"});
+        let path = fixture.write("term-cards/report.json", &partial);
+        let error = termcards_finish(&fixture.prepared(), "termcards/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not complete"), "{error}");
+        assert_eq!(fixture.state("termcards/book@1").0, "claimed");
+    }
+
+    fn termlink_inputs(cards: &[&str]) -> Value {
+        json!({
+            "schema_version": 1,
+            "kind": "term_link_unit",
+            "book": "K",
+            "list": "K/1",
+            "pass": if cards.is_empty() { "book" } else { "final" },
+            "round": if cards.is_empty() { Value::Null } else { json!(2) },
+            "occurrences": "first",
+            "cards": cards,
+        })
+    }
+
+    fn apply_report() -> Value {
+        json!({
+            "schema_version": 1,
+            "kind": "term_link_apply",
+            "complete": true,
+            "no_op": false,
+            "stop": Value::Null,
+            "claim": {"token": 3},
+            "book": {"citation_key": "K"},
+            "options": {"occurrences": "first", "cards": Value::Null},
+            "plan": {"revision": 1, "hash": "e".repeat(64)},
+            "archive": {"revision_before": 7, "revision_after": 8},
+            "counts": {"cards_scanned": 9, "cards_changed": 1, "cards_refused": 0},
+            "chunks": [{"chunk": 1, "state": "committed", "items": 1}],
+        })
+    }
+
+    #[test]
+    fn a_verified_term_link_pass_completes_its_unit() {
+        let fixture = fixture(&[("termlink/book@1", termlink_inputs(&[]))]);
+        let path = fixture.write("term-link/apply.json", &apply_report());
+        let result = termlink_finish(&fixture.prepared(), "termlink/book@1", 3, &path).unwrap();
+        assert_eq!(result["kind"], json!("termlink_completion"));
+        assert_eq!(result["no_op"], json!(false));
+        assert_eq!(fixture.state("termlink/book@1").0, "done");
+    }
+
+    #[test]
+    fn a_proven_no_op_completes_without_a_receipt() {
+        let fixture = fixture(&[("termlink/book@1", termlink_inputs(&[]))]);
+        let mut quiet = apply_report();
+        quiet["no_op"] = json!(true);
+        quiet["chunks"] = json!([]);
+        quiet["archive"] = json!({"revision_before": 7, "revision_after": 7});
+        let path = fixture.write("term-link/apply.json", &quiet);
+        let result = termlink_finish(&fixture.prepared(), "termlink/book@1", 3, &path).unwrap();
+        assert_eq!(result["no_op"], json!(true));
+    }
+
+    #[test]
+    fn a_refused_or_pending_pass_stays_open() {
+        let fixture = fixture(&[("termlink/book@1", termlink_inputs(&[]))]);
+        let mut incomplete = apply_report();
+        incomplete["complete"] = json!(false);
+        incomplete["stop"] = json!({"code": "card_check"});
+        let path = fixture.write("term-link/apply.json", &incomplete);
+        let error = termlink_finish(&fixture.prepared(), "termlink/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not complete"), "{error}");
+        assert_eq!(fixture.state("termlink/book@1").0, "claimed");
+
+        let mut pending = apply_report();
+        pending["chunks"] = json!([{"chunk": 1, "state": "pending"}]);
+        let path = fixture.write("term-link/apply.json", &pending);
+        let error = termlink_finish(&fixture.prepared(), "termlink/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not applied"), "{error}");
+    }
+
+    #[test]
+    fn a_finalization_round_completes_only_its_own_scope() {
+        let fixture = fixture(&[("termlink/final@2", termlink_inputs(&["K/1|a"]))]);
+        let path = fixture.write("term-link/apply.json", &apply_report());
+        let error = termlink_finish(&fixture.prepared(), "termlink/final@2", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("another Card scope"), "{error}");
+        let mut scoped = apply_report();
+        scoped["options"]["cards"] = json!(["K/1|a"]);
+        let path = fixture.write("term-link/apply.json", &scoped);
+        let result = termlink_finish(&fixture.prepared(), "termlink/final@2", 3, &path).unwrap();
+        assert_eq!(result["pass"], json!("final"));
+        assert_eq!(result["round"], json!(2));
+    }
+
+    #[test]
+    fn the_apply_report_must_be_written_under_this_units_claim() {
+        let fixture = fixture(&[("termlink/book@1", termlink_inputs(&[]))]);
+        let mut foreign = apply_report();
+        foreign["claim"]["token"] = json!(4);
+        let path = fixture.write("term-link/apply.json", &foreign);
+        let error = termlink_finish(&fixture.prepared(), "termlink/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("this unit's claim"), "{error}");
+    }
+
+    #[test]
+    fn the_artifact_must_be_the_compilers_own_file() {
+        let fixture = fixture(&[("termcards/t001@1", job_inputs())]);
+        fixture.write("term-cards/check/readiness.json", &readiness("ready"));
+        let path = fixture.write("elsewhere/readiness.json", &readiness("ready"));
+        let error = termcards_finish(&fixture.prepared(), "termcards/t001@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("locator mismatch"), "{error}");
+        // A missing canonical artifact is named as missing, never read as a foreign one.
+        std::fs::remove_file(fixture.out.join("term-cards/check/readiness.json")).unwrap();
+        let error = termcards_finish(&fixture.prepared(), "termcards/t001@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is missing"), "{error}");
+    }
+
+    #[test]
+    fn a_foreign_readiness_result_cannot_complete_the_book_unit() {
+        let fixture = fixture(&[("termcards/book@1", book_inputs())]);
+        let mut foreign = report();
+        foreign["plan"]["hash"] = json!("d".repeat(64));
+        foreign["kind"] = json!("term_cards_report");
+        let path = fixture.write("term-cards/report.json", &foreign);
+        let error = termcards_finish(&fixture.prepared(), "termcards/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("bound to another plan"), "{error}");
+    }
+
+    #[test]
+    fn a_foreign_claim_cannot_complete_the_book_unit() {
+        let fixture = fixture(&[("termcards/book@1", book_inputs())]);
+        let mut foreign = report();
+        foreign["claim_token"] = json!(4);
+        let path = fixture.write("term-cards/report.json", &foreign);
+        let error = termcards_finish(&fixture.prepared(), "termcards/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("this unit's claim"), "{error}");
+    }
+
+    #[test]
+    fn a_card_without_its_committed_head_keeps_the_book_open() {
+        let fixture = fixture(&[("termcards/book@1", book_inputs())]);
+        let mut headless = report();
+        headless["rows"][0]["publication"]["head"] = Value::Null;
+        let path = fixture.write("term-cards/report.json", &headless);
+        let error = termcards_finish(&fixture.prepared(), "termcards/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no committed head"), "{error}");
+    }
+
+    #[test]
+    fn a_changed_continuation_chain_keeps_the_book_open() {
+        let fixture = fixture(&[("termcards/book@1", book_inputs())]);
+        let mut chain = report();
+        chain["rows"][0]["publication"]["parts"] = json!([]);
+        let path = fixture.write("term-cards/report.json", &chain);
+        let error = termcards_finish(&fixture.prepared(), "termcards/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("continuation part"), "{error}");
+        let _ = Path::new("x");
     }
 }
 

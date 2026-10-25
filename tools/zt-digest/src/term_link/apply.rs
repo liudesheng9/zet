@@ -1058,6 +1058,8 @@ pub(crate) fn build_report(
         "no_op": no_op,
         "code": stop.as_ref().map(|stop| stop["code"].clone()),
         "claim_token": p.token,
+        "pass": if p.round.is_some() { "final" } else { "book" },
+        "round": p.round,
         "plan_revision": plan["revision"],
         "plan_hash": plan["plan_hash"],
         "plan_replaces": plan["replaces"],
@@ -1097,6 +1099,8 @@ pub(crate) fn build_report(
         "no_op": no_op,
         "code": stop.as_ref().map(|stop| stop["code"].clone()),
         "claim": p.token.map(|token| json!({"token": token})),
+        "pass": if p.round.is_some() { "final" } else { "book" },
+        "round": p.round,
         "book": plan["book"],
         "plan": {
             "path": plan_path,
@@ -1344,6 +1348,8 @@ fn stop_stale(
         "no_op": false,
         "code": "plan_stale",
         "claim": p.token.map(|token| json!({"token": token})),
+        "pass": if p.round.is_some() { "final" } else { "book" },
+        "round": p.round,
         "book": fresh.plan["book"],
         "plan": {
             "path": frozen.path,
@@ -1401,6 +1407,7 @@ mod tests {
             citation_key: None,
             occurrences: super::super::matches::Policy::First,
             cards: Vec::new(),
+            round: None,
             token: None,
             apply: true,
         }

@@ -3,7 +3,7 @@
 //!
 //!   zt-digest term-link -Step plan|apply -Staging <folder>
 //!                       [-CitationKey <key>] [-Occurrences first|all]
-//!                       [-Cards <addresses>] [-Token <claim>] [-Apply]
+//!                       [-Cards <addresses>] [-Round <n>] [-Token <claim>] [-Apply]
 //!
 //! One agent Literature tree is read once, with its bodies: the book's Term list is read by role
 //! through the archive's own computed Term structure, each table row is joined to its one valid
@@ -83,6 +83,10 @@ pub(crate) struct Params {
     pub(crate) occurrences: Policy,
     /// The exact `-Cards` subset; empty means the whole eligible tree.
     pub(crate) cards: Vec<String>,
+    /// The finalization correction round a `-Cards` pass serves (S24, #167; design 14.2); None means
+    /// the run's one whole-book pass, and a subset without a round is a diagnostic pass that owns no
+    /// ledger unit.
+    pub(crate) round: Option<i64>,
     pub(crate) token: Option<i64>,
     pub(crate) apply: bool,
 }
@@ -91,10 +95,19 @@ impl Params {
     pub(crate) fn work(&self) -> String {
         ps::join(&self.staging, WORK)
     }
+
+    /// The ledger obligation this invocation serves: the whole book, one finalization round, or a
+    /// diagnostic subset that completes nothing (R0429).
+    pub(crate) fn pass(&self) -> Result<Option<crate::ledger::TermLinkPass>> {
+        if let Some(round) = self.round {
+            return crate::ledger::TermLinkPass::final_round(round, &self.cards).map(Some);
+        }
+        Ok((self.cards.is_empty()).then(crate::ledger::TermLinkPass::book))
+    }
 }
 
 /// The declared parameters and switch of the command contract (R0352, S22-AC01).
-const NAMES: [&str; 6] = ["Step", "Staging", "CitationKey", "Occurrences", "Cards", "Token"];
+const NAMES: [&str; 7] = ["Step", "Staging", "CitationKey", "Occurrences", "Cards", "Round", "Token"];
 
 pub(crate) fn params(argv: &[String]) -> Result<Params> {
     let a = Args::parse(&util::bind_positional(argv, &NAMES)?, &NAMES, &["Apply"])?;
@@ -137,12 +150,28 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
     if token.is_some() && step == "plan" {
         bail!("term-link plan is not a claimed step; remove -Token");
     }
+    let round = if a.has("Round") {
+        Some(
+            a.required("Round")?
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .context("-Round must be a positive whole number")?,
+        )
+    } else {
+        None
+    };
+    if round.is_some() && cards.is_empty() {
+        bail!("-Round names a finalization correction round: it relinks the -Cards that round changed");
+    }
     Ok(Params {
         step,
         staging,
         citation_key,
         occurrences,
         cards,
+        round,
         token,
         apply,
     })
@@ -189,11 +218,25 @@ fn plan(p: &Params) -> Result<i32> {
     let read = zt.cards(&addresses, "text")?;
     let terms = zt.call("get_terms", json!({"at": key}))?;
     let built = build_plan(&manifest, &titles, read.archive_revision, &read.cards, &terms, p)?;
+    let mut built = built;
     let work = p.work();
     std::fs::create_dir_all(&work)
         .with_context(|| format!("cannot create the term-link work folder `{work}`"))?;
     util::write_atomic(&ps::join(&work, PLAN), &ps::json_pretty(&built.plan))?;
     util::write_atomic(&ps::join(&work, PREVIEW), &built.preview)?;
+    // S24 (#167): in a prepared run the plan registers its pass's ledger unit. A whole-book pass is
+    // `termlink/book@1`, a finalization round is `termlink/final@R`, and a diagnostic subset owns no
+    // unit, so it can never complete the book's Term linking (R0429). The ledger stays the scheduler.
+    let mut units = Value::Null;
+    if std::path::Path::new(&ps::join(staging, "ledger.sqlite3")).is_file()
+        && let Some(pass) = p.pass()?
+    {
+        let prepared = crate::ledger::Prepared::read(staging, &mut zt)?;
+        units = crate::ledger::term_link_register(&prepared, &built.plan, &pass)?["units"].clone();
+    }
+    built.summary["unit"] = units["unit"].clone();
+    built.summary["pass"] = units["pass"].clone();
+    built.summary["round"] = units["round"].clone();
     for fault in &built.card_faults {
         eprintln!(
             "term-link: refused {} ({} at line {}): {}",
@@ -964,6 +1007,7 @@ mod tests {
             citation_key: None,
             occurrences,
             cards: cards.iter().map(|at| at.to_string()).collect(),
+            round: None,
             token: None,
             apply: step == "apply",
         }

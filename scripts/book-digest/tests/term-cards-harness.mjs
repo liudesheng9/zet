@@ -122,8 +122,12 @@ function book(out, opts = {}) {
     plan() {
       return { ok: true, step: 'plan', book: 'Key', revision: 1, plan_revision: 1, plan_hash: 'ph-1', terms: this.jobs.length, math: this.jobs.filter((j) => j.kind === 'math').length, concept: this.jobs.filter((j) => j.kind === 'concept').length, jobs: this.jobs.map((job) => ({ id: job.id, kind: job.kind })) }
     },
-    jobsLine() {
-      return { ok: true, step: 'jobs', plan_revision: 1, plan_hash: 'ph-1', jobs: this.jobs }
+    jobsLine(command) {
+      // The branch asks for one wave at a time (`-Jobs` without a prepared ledger, `-Tokens` with).
+      const listed = (String(command || '').match(/-Tokens '([^']*)'/) || [])[1] || (String(command || '').match(/-Jobs '([^']*)'/) || [])[1] || ''
+      const ids = listed ? listed.split(',').filter(Boolean).map((e) => (e.includes(':') ? e.slice(0, e.indexOf(':')) : e)) : []
+      const jobs = ids.length ? this.jobs.filter((job) => ids.includes(job.id)) : this.jobs
+      return { ok: true, step: 'jobs', plan_revision: 1, plan_hash: 'ph-1', units: [], jobs }
     },
     check() {
       return { ok: true, step: 'check', plan_revision: 1, plan_hash: 'ph-1', ...this.readiness(), terms: this.jobs.map((job, index) => ({ job: job.id, row: job.rows[0], term: job.terms[0], status: this.states()[index] })) }
@@ -146,8 +150,16 @@ function book(out, opts = {}) {
       const jobs = this.written.has('t005') && !this.fixed ? [FIX_JOB(this.out, 't005', 5, '机会主义')] : []
       return { ok: true, step: 'fix-plan', plan_revision: 1, plan_hash: 'ph-1', jobs, planned: jobs.map(() => ({ job: 't005', status: 'planned' })), final: [], ...this.readiness() }
     },
-    answer(step) {
-      const line = { plan: () => this.plan(), jobs: () => this.jobsLine(), check: () => this.check(), 'review-plan': () => this.reviewPlan(), 'fix-plan': () => this.fixPlan() }[step]
+    // S24 (#167): the branch publishes its ready rows after the waves. This fixture has no prepared
+    // ledger (its plan line registers no units), so the compiler answers the publication and report
+    // steps without a claim token.
+    publication(step) {
+      const counts = this.counts()
+      const complete = counts.ready === this.jobs.length && this.written.size === this.jobs.length
+      return { ok: true, step, plan_revision: 1, plan_hash: 'ph-1', rows: this.jobs.length, ready: this.jobs.length, committed: complete ? this.jobs.length : 0, ready_unpublished: complete ? 0 : this.jobs.length, refused: 0, pending: 0, conflicted: 0, staged: [], stop: complete ? null : { code: 'not_ready', message: 'later rows stay staged' }, complete, report: `${this.work}\\report.json` }
+    },
+    answer(step, command) {
+      const line = { plan: () => this.plan(), jobs: () => this.jobsLine(command), check: () => this.check(), 'review-plan': () => this.reviewPlan(), 'fix-plan': () => this.fixPlan(), apply: () => this.publication('apply'), report: () => this.publication('report') }[step]
       if (!line) throw new Error(`stand-in: unknown compiler step ${step}`)
       return line.call(this)
     },
@@ -193,7 +205,7 @@ function runtime(opts = {}) {
     const step = (command.match(/-Step ([\w-]+)/) || [])[1]
     const out = (command.match(/-Staging '([^']+)'/) || [])[1]
     state.calls.push({ line: command })
-    return { ok: true, output: JSON.stringify(bookOf(out).answer(step)) }
+    return { ok: true, output: JSON.stringify(bookOf(out).answer(step, command)) }
   }
 
   async function manager(prompt) {

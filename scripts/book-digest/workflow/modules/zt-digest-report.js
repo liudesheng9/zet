@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v16 ====
+// ==== module zt-digest-report v17 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -18,8 +18,11 @@
 // the restatement review of new Topic Cards, the hubs, the register and mode hubs leave the report; zt-idea-grow
 // reports them. 16 adds next: the digest built the Literature tree only, so the whole report (and the log) names
 // the follow-up run that grows its Topic Cards, hubs and register: zt-idea-grow with this book and a fresh folder.
+// 17 (S24, #167) adds term_cards and term_link: each stage's truthful complete/degraded/skipped status with its
+// ledger unit, plan, readiness/publication or apply counts and the reason it stopped, so a failed Term-card job or
+// a blocked Term-link pass is visible coverage debt in the run's own result (R0428).
 defineModule({
-  id: 'zt-digest-report', version: '16', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '17', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -29,6 +32,8 @@ defineModule({
     groups: { type: 'any', description: 'the group count' },
     digest: { type: 'any', description: 'the digest stage output (its per-group chains)' },
     cards: { type: 'any', description: 'the Cards layer output (the per-group offline checks)' },
+    termCards: { type: 'any', description: 'the Term-card branch output: its units, waves, readiness and publication (S24, #167)' },
+    termLink: { type: 'any', description: 'the deterministic Term-link pass output: its unit, plan, counts and no_op (S24, #167)' },
     models: { type: 'any', description: 'the output of the model layer (the models stage of a book type)' },
     terms: { type: 'any', description: 'the term table stage output' },
     cardsBook: { type: 'any', description: 'the whole-book card cycle (mode cards)' },
@@ -62,6 +67,25 @@ defineModule({
     const layerSummary = (value) => value && value.dispositions
       ? { status: value.status, verified: value.dispositions.filter(d => d.status === 'done').length, failed: value.dispositions.filter(d => d.status === 'failed').length, retrying: value.dispositions.filter(d => d.status === 'retry').length, open: (value.gate && value.gate.counts && (value.gate.counts.open || 0)) || 0, complete: !!(value.gate && value.gate.complete) }
       : null
+    // S24 (#167): the two Term stages' own truthful result. A stage that did not run is `skipped` with
+    // its reason, never an absent or silently successful entry.
+    const termSummary = (value, what) => !value
+      ? { status: 'skipped', reason: `${what} did not run` }
+      : {
+        status: value.status || 'unknown',
+        unit: value.unit || value.book_unit || null,
+        pass: value.pass || null,
+        round: value.round ?? null,
+        plan: value.plan || (value.plan_revision !== undefined ? { revision: value.plan_revision, hash: value.plan_hash } : null),
+        jobs: value.jobs ? { total: value.jobs.total || 0, done: value.jobs.done || 0, failed: (value.jobs.failed || []).map(f => f.id) } : null,
+        readiness: value.readiness || null,
+        publication: value.publication || null,
+        completion: value.completion || null,
+        counts: value.counts || null,
+        no_op: value.no_op === true,
+        blocked: (value.unresolved || []).slice(0, 32),
+        reason: value.reason || value.error || null,
+      }
     const schedule = {
       settings: { maxAttempts: Z.MAX_ATTEMPTS, dshRunCap: Z.DSH_RUN_CAP },
       digest: p.digest && (Array.isArray(p.digest.items) || Array.isArray(p.digest.reports)) ? { verified: digestReports.filter(r => r.status === 'done').length, failed: digestReports.filter(r => r.status !== 'done').length } : null,
@@ -71,6 +95,8 @@ defineModule({
       events: layerSummary((extra && extra.events) || null),
       findings: layerSummary((extra && extra.findings) || null),
       link: p.link ? { scheduled: p.link.scheduled ?? 0, skipped: p.link.skipped ?? 0, verified: p.link.verified ?? 0, failed: p.link.failed ?? 0, provider_runs: p.link.provider_runs ?? 0 } : null,
+      term_cards: termSummary(p.termCards, 'the Term-card branch').status,
+      term_link: termSummary(p.termLink, 'the Term-link pass').status,
     }
     if (MODE === 'bridge') return { mode: MODE, citation_key: KEY, bridge: or(p.bridge, { status: 'failed', error: 'Bridge stage produced no summary' }) }
     if (MODE === 'cards') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, cards: or(p.cardsBook, null), schedule, run_report: runReport }
@@ -89,6 +115,11 @@ defineModule({
     const groupCount = p.groups || 0
     const next = { workflow: 'zt-idea-grow', script: '.claude/workflows/zt-idea-grow.js', args: { book: KEY, out: '<a fresh work folder>' }, why: 'this digest built only the Literature tree; zt-idea-grow grows its Topic Cards, hubs and register' }
     ctx.log(`Next: run zt-idea-grow with book "${KEY}" and a fresh out folder: the digest wrote no Topic Card, Hub Card or register entry.`)
+    if (p.termCards || p.termLink) {
+      const tc = termSummary(p.termCards, 'the Term-card branch')
+      const tl = termSummary(p.termLink, 'the Term-link pass')
+      ctx.log(`Terms: term-cards ${tc.status}${tc.unit ? ` (${tc.unit})` : ''}${tc.reason ? `: ${tc.reason}` : ''}; term-link ${tl.status}${tl.unit ? ` (${tl.unit})` : ''}${tl.reason ? `: ${tl.reason}` : ''}.`)
+    }
     return {
       mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: Z.toBlocks(Z.groupsOf(groupCount)).length,
       digest: digestReports.map(r => ({ group: r.group, status: r.status, unit: r.unit || null, disposition: r.disposition || null, owned: r.owned ?? null, errors: r.errors || null })),
@@ -98,6 +129,8 @@ defineModule({
       link_gaps: linkGaps,
       link_blocked: (p.linkBlocked || []).map(b => ({ group: b.n, unit: b.unit, state: b.state, reason: b.reason })),
       terms: (p.terms && p.terms.report) || null, cards: cardsReport,
+      term_cards: termSummary(p.termCards, 'the Term-card branch'),
+      term_link: termSummary(p.termLink, 'the Term-link pass'),
       deepseek_usage: runUsage, cleanup: (p.cleanup && p.cleanup.cleanup) || null, run_report: runReport,
       organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), audit: or(p.audit, null), finalize: or(p.finalize, null),
       schedule,

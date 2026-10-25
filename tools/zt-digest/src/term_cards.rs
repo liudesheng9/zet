@@ -4,7 +4,7 @@
 //!   zt-digest term-cards -Step plan|jobs|precheck|check|review-plan|fix-plan|apply|report
 //!                        -Staging <folder> [-PerJob 4] [-MathPerJob 1]
 //!                        [-MaxStepsPerCard 12] [-MaxProse 1600]
-//!                        [-Jobs <ids>] [-Token <claim>] [-Apply]
+//!                        [-Jobs <ids>] [-Token <claim>] [-Tokens <job:claim,...>] [-Apply]
 //!
 //! `precheck` (S27, #166) is the writer's own SELF-CHECK: it runs the same `check_job` the
 //! deterministic `check` runs and prints one line per diagnostic, then `faults: N` (blocking lines
@@ -38,7 +38,9 @@
 //! Card. When the staging folder is a prepared run (`ledger.sqlite3`), the plan registers the
 //! existing ledger's `termcards/tNNN@<plan revision>` job units and the `termcards/book@<plan
 //! revision>` unit; the existing run ledger remains the scheduler and `state.json` is never a
-//! second queue. `jobs` reads one claimed job unit and prints the DeepSeek job for that writer.
+//! second queue. `jobs` reads claimed job units and prints the DeepSeek job for each writer: `-Token`
+//! claims one, `-Tokens` claims a wave of them (S24, #167). `apply -Token` records the claimed book unit
+//! in its report, so the stage's ledger completion binds the publication it verified.
 //!
 //! `check`, `review-plan` and `fix-plan` are the S19 (#162) steps: the exact writer JSON is checked
 //! against the draft schema, rendered by zt-check's deterministic renderer and checked by the same
@@ -146,6 +148,9 @@ pub(crate) struct Params {
     pub(crate) max_prose: i64,
     pub(crate) jobs: Vec<String>,
     pub(crate) token: Option<i64>,
+    /// `-Tokens t001:3,t002:4`: one claimed job unit per entry (S24, #167: a wave claims up to
+    /// four units in one ledger read, and one compiler step prints their jobs).
+    pub(crate) tokens: Vec<(String, i64)>,
     pub(crate) apply: bool,
 }
 
@@ -156,7 +161,7 @@ impl Params {
 }
 
 /// The declared parameters and switch of the command contract (S18-AC01).
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 9] = [
     "Step",
     "Staging",
     "PerJob",
@@ -165,6 +170,7 @@ const NAMES: [&str; 8] = [
     "MaxProse",
     "Jobs",
     "Token",
+    "Tokens",
 ];
 
 pub(crate) fn params(argv: &[String]) -> Result<Params> {
@@ -215,8 +221,20 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
     if (step == "apply") != apply {
         bail!("term-cards apply requires -Apply; no other step accepts it");
     }
-    if token.is_some() && step != "jobs" {
-        bail!("term-cards {step} does not claim a job unit; remove -Token");
+    let tokens = token_list(&a.str("Tokens"))?;
+    if token.is_some() && !tokens.is_empty() {
+        bail!("-Token claims one job and -Tokens claims a list; give one of them");
+    }
+    // S24 (#167): `-Token` binds a claimed job unit at `jobs`, and a claimed book unit at `apply`
+    // (the report carries the claim so the ledger's completion checks it).
+    if token.is_some() && !["jobs", "apply"].contains(&step.as_str()) {
+        bail!("term-cards {step} does not claim a unit; remove -Token");
+    }
+    if !tokens.is_empty() && step != "jobs" {
+        bail!("term-cards {step} does not claim job units; remove -Tokens");
+    }
+    if !tokens.is_empty() && !jobs.is_empty() {
+        bail!("-Tokens names its jobs itself; remove -Jobs");
     }
     if !jobs.is_empty() && matches!(step.as_str(), "plan" | "apply" | "report") {
         bail!("term-cards {step} is not job-scoped; remove -Jobs");
@@ -230,8 +248,38 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
         max_prose,
         jobs,
         token,
+        tokens,
         apply,
     })
+}
+
+/// `-Tokens t001:3,t002:4`: claimed job ids with their claim tokens, each id once.
+fn token_list(text: &str) -> Result<Vec<(String, i64)>> {
+    let mut out: Vec<(String, i64)> = Vec::new();
+    for part in text.split(',') {
+        let entry = part.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (id, token) = entry
+            .split_once(':')
+            .with_context(|| format!("-Tokens takes `<job>:<claim>`, not `{entry}`"))?;
+        let id = id.trim();
+        if id.is_empty() {
+            bail!("-Tokens names no job in `{entry}`");
+        }
+        if out.iter().any(|(seen, _)| seen == id) {
+            bail!("-Tokens names `{id}` twice");
+        }
+        let token = token
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .with_context(|| format!("-Tokens: `{entry}` carries no positive claim token"))?;
+        out.push((id.to_string(), token));
+    }
+    Ok(out)
 }
 
 /// `-Jobs t001,t002`: trimmed ids, each once, in the order given.
@@ -1514,11 +1562,18 @@ fn jobs(p: &Params) -> Result<i32> {
     let plan = compiled.plan.clone();
     let plan_hash = compiled.plan_hash.clone();
     let all: Vec<Value> = compiled.jobs()?.clone();
-    let selected: Vec<&Value> = if p.jobs.is_empty() {
+    // `-Tokens` names its own jobs, in the wave's order; `-Jobs` names a subset; no selection
+    // prints every job (a read-only listing).
+    let wanted: Vec<String> = if !p.tokens.is_empty() {
+        p.tokens.iter().map(|(id, _)| id.clone()).collect()
+    } else {
+        p.jobs.clone()
+    };
+    let selected: Vec<&Value> = if wanted.is_empty() {
         all.iter().collect()
     } else {
         let mut out = Vec::new();
-        for id in &p.jobs {
+        for id in &wanted {
             let job = all
                 .iter()
                 .find(|job| pstr(job, "id") == *id)
@@ -1533,22 +1588,38 @@ fn jobs(p: &Params) -> Result<i32> {
     }
     let mut unit = Value::Null;
     let mut token = Value::Null;
-    if let Some(claim) = p.token {
-        if p.jobs.len() != 1 {
+    let mut units: Vec<Value> = Vec::new();
+    let claims: Vec<(String, i64)> = if !p.tokens.is_empty() {
+        p.tokens.clone()
+    } else if let Some(claim) = p.token {
+        vec![(pstr(selected[0], "id"), claim)]
+    } else {
+        Vec::new()
+    };
+    if !claims.is_empty() {
+        if p.tokens.is_empty() && p.jobs.len() != 1 {
             bail!("-Token claims exactly one job; name one -Jobs id");
         }
-        let job = selected[0];
-        let unit_id = format!("termcards/{}@{}", pstr(job, "id"), pstr(&plan, "revision"));
         let mut zt = crate::zt::start()?;
         let prepared = crate::ledger::Prepared::read(&p.staging, &mut zt)?;
-        let claimed = crate::ledger::term_cards_claim(&prepared, &unit_id, claim)?;
-        let expected = canon::hash_value(&job_unit_inputs(&plan, job));
-        if claimed["input_hash"] != json!(expected) {
-            bail!("the claimed job unit `{unit_id}` is bound to another plan input; rerun -Step plan");
+        for (id, claim) in &claims {
+            let job = all
+                .iter()
+                .find(|job| pstr(job, "id") == *id)
+                .with_context(|| format!("the plan has no job `{id}`"))?;
+            let unit_id = format!("termcards/{}@{}", id, pstr(&plan, "revision"));
+            let claimed = crate::ledger::term_cards_claim(&prepared, &unit_id, *claim)?;
+            let expected = canon::hash_value(&job_unit_inputs(&plan, job));
+            if claimed["input_hash"] != json!(expected) {
+                bail!("the claimed job unit `{unit_id}` is bound to another plan input; rerun -Step plan");
+            }
+            record_job_started(&work, job)?;
+            units.push(json!({"job": id, "unit": unit_id, "token": claim}));
         }
-        unit = json!(unit_id);
-        token = json!(claim);
-        record_job_started(&work, job)?;
+        if claims.len() == 1 {
+            unit = json!(units[0]["unit"]);
+            token = json!(claims[0].1);
+        }
     }
     let printed: Vec<Value> = selected
         .iter()
@@ -1577,6 +1648,7 @@ fn jobs(p: &Params) -> Result<i32> {
         "plan_hash": plan_hash,
         "unit": unit,
         "token": token,
+        "units": units,
         "jobs": printed,
     });
     util::print_line(&canon::canonical_json(&summary))?;
@@ -3628,6 +3700,39 @@ mod tests {
     }
 
     #[test]
+    fn a_wave_claims_its_units_in_one_jobs_step() {
+        let p = params(&argv(&[
+            "-Step",
+            "jobs",
+            "-Staging",
+            "D:\\s",
+            "-Tokens",
+            "t001:3,t002:4",
+        ]))
+        .unwrap();
+        assert_eq!(
+            p.tokens,
+            vec![("t001".to_string(), 3), ("t002".to_string(), 4)]
+        );
+        // A malformed list, a duplicate id, two claim forms, or a claim outside `jobs` is refused.
+        for bad in [
+            vec!["-Step", "jobs", "-Staging", "D:\\s", "-Tokens", "t001"],
+            vec!["-Step", "jobs", "-Staging", "D:\\s", "-Tokens", "t001:0"],
+            vec!["-Step", "jobs", "-Staging", "D:\\s", "-Tokens", "t001:1,t001:2"],
+            vec![
+                "-Step", "jobs", "-Staging", "D:\\s", "-Tokens", "t001:1", "-Token", "2", "-Jobs",
+                "t001",
+            ],
+            vec![
+                "-Step", "jobs", "-Staging", "D:\\s", "-Tokens", "t001:1", "-Jobs", "t001",
+            ],
+            vec!["-Step", "check", "-Staging", "D:\\s", "-Tokens", "t001:1"],
+        ] {
+            assert!(params(&argv(&bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn a_malformed_command_is_refused_before_any_read() {
         assert!(params(&argv(&["-Step", "nope", "-Staging", "s"])).is_err());
         assert!(params(&argv(&["-Step", "plan"])).is_err());
@@ -4483,6 +4588,7 @@ mod tests {
             max_prose: DEFAULT_MAX_PROSE,
             jobs: Vec::new(),
             token: None,
+            tokens: Vec::new(),
             apply: step == "apply",
         }
     }

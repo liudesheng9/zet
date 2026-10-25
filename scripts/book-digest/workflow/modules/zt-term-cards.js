@@ -1,16 +1,24 @@
-// ==== module zt-term-cards v1 ====
-// S20 (#164): run the Term-card compiler's writer, reviewer and fix jobs on the shared DeepSeek
-// Subagent Managed Protocol (DSMP) pool (design 12.4; S20 / #164). The compiler (zt-digest
-// term-cards, S18/S19) prints the exact JSON jobs; this module only
-// schedules them, so no agent decides what a term is or writes Card prose.
+// ==== module zt-term-cards v2 ====
+// S20 (#164) built the branch; S24 (#167) makes it ledger work. The Term-card compiler's writer,
+// reviewer and fix jobs run on the shared DeepSeek Subagent Managed Protocol (DSMP) pool (design
+// 12.4), and the branch is the run's own `termcards/tNNN@<plan revision>` job units plus its
+// `termcards/book@<plan revision>` unit (design 14.2, R0423/R0424). The compiler (zt-digest
+// term-cards) prints the exact JSON jobs and registers the units at `plan`; this module schedules
+// them and completes them only from the compiler's own checked artifacts.
 //
-// The schedule (R0335): the writer jobs are processed in waves of at most four. A wave keeps its four
-// writer conversations (retained, never archived), runs the compiler's check, obtains the independent
-// reviews of the mathematical drafts (at most four reviewer conversations alongside the writers),
-// sends the one permitted fix back to each writer's own conversation through deepseek_prompt, checks
-// and re-reviews any changed draft, and deletes the wave's conversations before the next wave starts.
-// Four retained writers + four reviewers = the protocol's eight conversations; no manager can hold
-// eight writers and then look for a reviewer slot, so the shared 64-slot pool cannot deadlock.
+// The schedule (R0335): ready job units are claimed in waves of at most four. A wave runs its
+// writers (retained, never archived), the compiler's check, the independent reviews of the
+// mathematical drafts (at most four reviewer conversations alongside the writers), the one permitted
+// fix in each writer's own conversation, and the recheck/re-review of a changed draft; each job unit
+// then completes from `check/readiness.json`, which binds the job schema, the shared check, the
+// required reviews and the fix disposition. The wave's conversations are deleted before the next
+// wave is admitted. Four retained writers + four reviewers = the protocol's eight conversations; no
+// manager holds eight writers and then looks for a reviewer slot, so the shared pool cannot deadlock.
+//
+// The book unit completes only from `report.json` when every required row's head and parts are
+// committed and read back. A partial prefix, a refused row or a failed writer leaves it incomplete,
+// so the Term-link pass stays blocked and the audit/report show the coverage debt (R0428). No unit is
+// ever marked done to unblock a later stage.
 //
 // Every manager call takes one dsmpSlot from the script-wide pool (at most eight managers alive), and
 // the runtime policy is the installed protocol's own: 240 minutes per conversation, nonblocking polls
@@ -18,12 +26,9 @@
 // A conversation is registered, its answer evidence is written into the local staging folder, and its
 // deletion is recorded, so the run's own cleanup can verify the provider resources. The workspace
 // registration is removed when the branch is done (success or failure); the staging files stay.
-//
-// The stage graph, the ledger units and the full-mode dependencies belong to S24 (#167): this module
-// returns the branch's report and writes no ledger unit of its own.
 defineModule({
-  id: 'zt-term-cards', version: '1', requires: ['@dsmp', 'zt-workflow-lib'],
-  summary: 'Term cards: schedule the compiler\'s writer jobs in waves of four on the shared DSMP pool, review the mathematical drafts, send the one fix back to each writer\'s own conversation, delete every conversation and remove the workspace registration while keeping the staging files.',
+  id: 'zt-term-cards', version: '2', requires: ['@dsmp', 'zt-workflow-lib'],
+  summary: 'Term cards: claim the run\'s Term-card job units in waves of four, schedule their writers, reviews and fixes on the shared DSMP pool, complete each unit from the compiler\'s readiness result and the book unit from its publication report, and leave a failed or partial book incomplete.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder (the compiler\'s -Staging)' },
     key: { type: 'string', required: true, description: 'the book\'s Citation key' },
@@ -38,6 +43,7 @@ defineModule({
     // The four constants this module reconciles against the protocol it was built with (R0332/R0334).
     const WANTED = { perManager: 8, maxManagers: 8, pollSeconds: 90, budgetMinutes: 240 }
     const WAVE = 4 // R0335: at most four live writers, and at most four reviewers alongside them.
+    const MAX_WAVES = 200 // a bounded claim loop: one wave can never be claimed for ever.
 
     const q = (v) => `'${String(v).replace(/'/g, "''")}'`
     const OUT = String(p.out).replace(/[\\/]+$/, '')
@@ -75,17 +81,29 @@ defineModule({
 
     const notes = { registered: 0, evidence: 0, deleted: 0, not_deleted: [], workspaces: [] }
     const sessions = {} // a retained writer's job id -> its conversation id
-    const report = { status: 'done', book: p.key, work: WORK, jobs: { total: 0, done: 0, failed: [] }, waves: [], reviews: { planned: 0, approved: 0, refused: 0 }, fixes: { planned: 0, final: 0 }, readiness: { counts: {}, complete: false }, deepseek: notes }
+    const report = { status: 'done', book: p.key, work: WORK, ledger: false, jobs: { total: 0, done: 0, failed: [] }, waves: [], reviews: { planned: 0, approved: 0, refused: 0 }, fixes: { planned: 0, final: 0 }, readiness: { counts: {}, complete: false }, book_unit: null, publication: null, deepseek: notes }
     let error = ''
     let lock = null
     let readiness = { counts: {}, complete: false }
+    let bookUnit = null // { id, token, input_hash }
 
     // One compiler command through the one relay. Its last JSON line is the step's answer.
-    const command = async (label, args) => {
-      const got = await ztRelay(ctx, { command: `${exe} term-cards ${args}`, label: `${ctx.stage}: ${label}`, phase, role: p.relay || 'relay', run: `the digest run the user started for "${OUT}"`, note: ' (it writes only the staging folder)' })
-      const line = got.json
-      if (!line || line.ok !== true) throw new Error(`term-cards ${label}: ${tail((got.run && got.run.output) || 'no output')}`)
-      return line
+    const command = async (label, args, always = false) => {
+      const got = await ztRelay(ctx, { command: `${exe} term-cards ${args}`, label: `${ctx.stage}: ${label}`, phase, role: p.relay || 'relay', run: `the digest run the user started for "${OUT}"`, note: ' (it writes only the staging folder)', always })
+      return got
+    }
+    const ledger = async (label, args, always = false) => {
+      const got = await ztRelay(ctx, { command: `${exe} ledger ${args}`, label: `${ctx.stage}: ${label}`, phase, role: p.relay || 'relay', run: `the digest run the user started for "${OUT}"`, note: ' (it reads or records the run ledger only)', always, lockStops: false })
+      return { ok: !!(got.run && got.run.ok), line: got.json, output: (got.run && got.run.output) || '' }
+    }
+    // Record one unit's content fault: the ledger classifies the code from its cause (S5), and a
+    // card_check refusal keeps the archive's own code.
+    const fault = async (label, unit, code, cause) => {
+      const document = { schema_version: 1, unit: unit.id, input_hash: unit.input_hash, cause: tail(cause) }
+      if (code) document.code = code
+      const got = await ledger(label, `fail -Out "${OUT}" -Unit "${unit.id}" -Token ${unit.token} -Fault ${q(JSON.stringify(document))}`)
+      if (!got.ok) log(`Term cards: the ledger refused the fault of ${unit.id}: ${tail(got.output)}`)
+      return got
     }
     const bookkeeping = (line) => { if (line && line.counts) readiness = { counts: line.counts, complete: line.complete === true } }
     // The final review state of each term, keyed by job and row: a later review-plan repeats the
@@ -123,6 +141,7 @@ ${JSON.stringify(jobs, null, 1)}
 ${table || '(empty)'}
    With a session: mcp__deepseek__deepseek_prompt with that session_id, prompt_files = its "files", prompt = its "prompt", skills = its "skills", reasoning_effort = its "effort", wait_seconds 0. Without a session: mcp__deepseek__deepseek_run with prompt_files = its "fallback", and the same other fields.
    The moment a deepseek_run returns a session_id, record it: ${register}
+   Register only the session_id deepseek_run returned, never a word in its place: never invent an id, a PENDING placeholder or a job name. A step with no job starts no run: never send a placeholder prompt.
 2. Collect loop. A session is OPEN until you have collected it in step 4. Repeat until no session is open:
    a. Poll, in ONE message: call mcp__deepseek__deepseek_wait with wait_seconds 0 for EVERY open session.
    b. Act on every result before waiting again:
@@ -209,84 +228,187 @@ Return ok=true, deleted (how many), not_deleted ("session_id: reason" for each),
     }
 
     const planOptions = [[p.perJob, '-PerJob'], [p.mathPerJob, '-MathPerJob'], [p.maxStepsPerCard, '-MaxStepsPerCard'], [p.maxProse, '-MaxProse']]
-      .filter(([value]) => value !== undefined).map(([value, flag]) => ` ${flag} ${Number(value)}`).join('')
+      .filter(([value]) => value !== undefined && value !== null).map(([value, flag]) => ` ${flag} ${Number(value)}`).join('')
+
+    // One wave: write, check, review, fix once, recheck and re-review, then (in a prepared run)
+    // complete each claimed unit from the readiness result that says every row of that job is ready.
+    const runWave = async (index, units, given) => {
+      const ids = units ? units.map((unit) => String(unit.inputs.job.id)) : (given || []).map((job) => job.id)
+      const row = { wave: index + 1, jobs: ids, reviews: 0, fixes: 0, completed: [] }
+      report.waves.push(row)
+      try {
+        let wave = []
+        if (units) {
+          const listed = await command('jobs', `-Step jobs -Staging ${q(OUT)} -Tokens ${q(units.map((unit) => `${unit.inputs.job.id}:${unit.token}`).join(','))}`)
+          const line = listed.json
+          if (!line || line.ok !== true || !Array.isArray(line.jobs)) throw new Error(`term-cards jobs: ${tail((listed.run && listed.run.output) || 'no output')}`)
+          wave = line.jobs
+        } else {
+          const listed = await command('jobs', `-Step jobs -Staging ${q(OUT)} -Jobs ${q(ids.join(','))}`)
+          const line = listed.json
+          if (!line || line.ok !== true || !Array.isArray(line.jobs)) throw new Error(`term-cards jobs: ${tail((listed.run && listed.run.output) || 'no output')}`)
+          wave = line.jobs
+        }
+        // The writer conversations of this wave are retained (delete_after_collect false). A failed
+        // writer's conversation is retained too, so the wave's settle deletes it as well.
+        const written = await manager('write', wave)
+        const failed = []
+        for (const entry of written) {
+          if (entry.session_id) sessions[entry.id] = entry.session_id
+          if (entry.status === 'done') report.jobs.done++
+          else {
+            report.jobs.failed.push({ id: entry.id, answer: tail(entry.answer) })
+            failed.push(entry.id)
+            if (!entry.session_id) notes.not_deleted.push(`${entry.id}: no session id returned`)
+          }
+        }
+        if (failed.length) {
+          for (const unit of (units || []).filter((unit) => failed.includes(String(unit.inputs.job.id)))) {
+            const answer = ((report.jobs.failed.find((f) => f.id === String(unit.inputs.job.id)) || {}).answer) || ''
+            await fault('writer fault', unit, '', `the writer job ${unit.inputs.job.id} failed: ${answer}`)
+          }
+          throw new Error(`term-cards: writer job(s) failed: ${failed.join(', ')}`)
+        }
+        bookkeeping((await command('check', `-Step check -Staging ${q(OUT)}`)).json)
+
+        // The independent review of every mathematical draft, in waves of at most four, alongside
+        // the four retained writers.
+        const reviews = async () => {
+          const got = await command('review-plan', `-Step review-plan -Staging ${q(OUT)}`)
+          const line = got.json
+          if (!line || line.ok !== true) throw new Error(`term-cards review-plan: ${tail((got.run && got.run.output) || 'no output')}`)
+          bookkeeping(line)
+          countReviews(line)
+          for (const group of reviewBatches((line.jobs || []).filter((job) => job.delete_after_collect === true))) {
+            row.reviews += group.length
+            report.reviews.planned += group.length
+            await manager('review', group)
+          }
+        }
+        await reviews()
+
+        // One finite fix per writer job, sent back to that writer's own conversation; a changed
+        // draft is checked and re-reviewed.
+        const fixed = await command('fix-plan', `-Step fix-plan -Staging ${q(OUT)}`)
+        const fixLine = fixed.json
+        if (!fixLine || fixLine.ok !== true) throw new Error(`term-cards fix-plan: ${tail((fixed.run && fixed.run.output) || 'no output')}`)
+        bookkeeping(fixLine)
+        report.fixes.final += (fixLine.final || []).length
+        const fixes = (fixLine.jobs || []).filter((job) => job.continue)
+        report.fixes.planned += fixes.length
+        for (const group of chunk(fixes, WAVE)) {
+          row.fixes += group.length
+          await manager('fix', group)
+        }
+        if (fixes.length) {
+          bookkeeping((await command('check', `-Step check -Staging ${q(OUT)}`)).json)
+          await reviews()
+        }
+
+        // Complete each claimed unit from the readiness result: a job whose every row is ready is
+        // the unit's proof (R0423); a job that is not ready keeps its unit open and is named.
+        const notReady = []
+        for (const unit of units || []) {
+          const done = await ledger('complete', `done -Out "${OUT}" -Unit "${unit.id}" -Token ${unit.token} -Outputs "${WORK}\\check\\readiness.json"`)
+          if (done.ok && done.line && done.line.state === 'done') {
+            row.completed.push(unit.id)
+            continue
+          }
+          notReady.push(String(unit.inputs.job.id))
+          await fault('readiness fault', unit, '', `the job ${unit.inputs.job.id} is not ready: ${tail(done.output)}`)
+        }
+        if (notReady.length) throw new Error(`term-cards: job(s) not ready after the permitted fix: ${notReady.join(', ')}`)
+      } finally {
+        // The wave is complete or stopped: delete its retained writers before the next wave is
+        // admitted (R0330/R0335). Every staged file stays on disk.
+        await settleWave(`wave ${index + 1}`, ids)
+      }
+    }
 
     try {
       const planned = await command('plan', `-Step plan -Staging ${q(OUT)}${planOptions}`)
-      report.plan_revision = planned.revision
-      report.plan_hash = planned.plan_hash
-      const listed = await command('jobs', `-Step jobs -Staging ${q(OUT)}`)
-      const jobs = Array.isArray(listed.jobs) ? listed.jobs : []
-      report.jobs.total = jobs.length
-      report.plan_revision = listed.plan_revision || report.plan_revision
-      report.plan_hash = listed.plan_hash || report.plan_hash
-      if (!jobs.length) {
-        // A plan with no writer job is no Term branch: never report a successful zero-term book
-        // (design 14.2). The stage graph of S24 (#167) decides skipped versus failed for it.
-        report.readiness = readiness
-        report.status = 'failed'
-        report.error = 'the plan has no writer jobs (no usable Term rows)'
-        report.staging = WORK
-        return report
+      const planLine = planned.json
+      if (!planLine || planLine.ok !== true) throw new Error(`term-cards plan: ${tail((planned.run && planned.run.output) || 'no output')}`)
+      report.plan_revision = planLine.revision
+      report.plan_hash = planLine.plan_hash
+      const units = planLine.units || null
+      report.book_unit = units && units.book ? units.book : null
+      report.ledger = !!(units && (units.book || (units.jobs && Object.keys(units.jobs).length)))
+
+      if (!report.ledger) {
+        // No prepared run ledger (a fixture or a diagnostic branch): the compiler lists its plan's
+        // jobs, and the branch reports the branch's own result without a ledger unit.
+        const listed = await command('jobs', `-Step jobs -Staging ${q(OUT)}`)
+        const jobs = (listed.json && listed.json.jobs) || []
+        report.jobs.total = jobs.length
+        if (!jobs.length) {
+          report.readiness = readiness
+          report.status = 'failed'
+          report.error = 'the plan has no writer jobs (no usable Term rows)'
+          report.staging = WORK
+          return report
+        }
+        for (let index = 0; index < chunk(jobs, WAVE).length && !error && !lock; index++) {
+          const wave = chunk(jobs, WAVE)[index]
+          try {
+            await runWave(index, null, wave)
+          } catch (e) {
+            error = error || tail(e && e.message) || 'term-cards: the wave failed'
+          }
+        }
+      } else {
+        report.jobs.total = Object.keys(units.jobs || {}).length
+        let claimedWaves = 0
+        while (!error && !lock && claimedWaves < MAX_WAVES && !bookUnit) {
+          const claimed = await ledger('claim', `next -Out "${OUT}" -Layer termcards -Take ${WAVE} -Owner "term cards wave ${claimedWaves + 1}" -Lease 3600`)
+          if (!claimed.ok || !claimed.line) { error = `the Term-card claim returned no answer: ${tail(claimed.output)}`; break }
+          const held = (claimed.line.units || []).filter((unit) => unit && typeof unit.id === 'string')
+          // The book unit sorts before the job units (logical key `book`): when every job is done, the
+          // claim offers it alone, and the branch goes straight to its publication under this claim.
+          const book = held.find((unit) => unit.id.startsWith('termcards/book@'))
+          if (book) {
+            bookUnit = book
+            report.book_unit = book.id
+          }
+          const ready = held.filter((unit) => unit.id.startsWith('termcards/') && !unit.id.startsWith('termcards/book@') && unit.inputs && unit.inputs.job && unit.inputs.job.id)
+          if (!ready.length) break
+          claimedWaves++
+          await runWave(claimedWaves - 1, ready)
+        }
+        if (claimedWaves >= MAX_WAVES) error = error || `the Term-card branch claimed ${MAX_WAVES} waves without settling`
+        if (!error && !lock && !bookUnit) {
+          const claimed = await ledger('claim', `next -Out "${OUT}" -Layer termcards -Take 1 -Owner "term cards book" -Wait 60 -Lease 3600`)
+          const unit = ((claimed.line && claimed.line.units) || []).find((u) => u && typeof u.id === 'string' && u.id.startsWith('termcards/book@'))
+          if (!unit) {
+            report.readiness = readiness
+            report.status = 'failed'
+            report.error = 'the Term-card book unit is not ready: a writer job or the Term table it waits on is not done'
+            report.staging = WORK
+            return report
+          }
+          bookUnit = unit
+          report.book_unit = unit.id
+        }
       }
-      const waves = chunk(jobs, WAVE)
-      for (let index = 0; index < waves.length && !error && !lock; index++) {
-        const wave = waves[index]
-        const ids = wave.map((job) => job.id)
-        const row = { wave: index + 1, jobs: ids, reviews: 0, fixes: 0 }
-        report.waves.push(row)
-        log(`Term cards: wave ${index + 1}/${waves.length}: ${ids.length} writer job(s) ${ids.join(', ')}.`)
-        try {
-          // The writer conversations of this wave are retained (delete_after_collect false). A failed
-          // writer's conversation is retained too, so the wave's settle deletes it as well.
-          const written = await manager('write', wave)
-          for (const entry of written) {
-            if (entry.session_id) sessions[entry.id] = entry.session_id
-            if (entry.status === 'done') report.jobs.done++
-            else {
-              report.jobs.failed.push({ id: entry.id, answer: tail(entry.answer) })
-              if (!entry.session_id) notes.not_deleted.push(`${entry.id}: no session id returned`)
-            }
+      if (!error && !lock) {
+        const applied = await command('apply', `-Step apply -Staging ${q(OUT)}${bookUnit ? ` -Token ${bookUnit.token}` : ''} -Apply`)
+        const line = applied.json
+        const ok = !!(applied.run && applied.run.ok) && !!line && line.ok === true && line.complete === true
+        report.publication = line ? { complete: line.complete === true, rows: line.rows, committed: line.committed, ready_unpublished: line.ready_unpublished, refused: line.refused, pending: line.pending, conflicted: line.conflicted, staged: line.staged, stop: line.stop } : null
+        if (!ok) {
+          const stop = (line && (line.code || (line.stop && line.stop.code))) || 'incomplete'
+          if (bookUnit) await fault('publication fault', bookUnit, '', `the Term-card publication is not complete (${stop}): ${tail((line && line.error) || (applied.run && applied.run.output) || 'no output')}`)
+          report.status = 'failed'
+          report.error = `the Term-card publication is not complete (${stop}); the book unit stays incomplete`
+        } else if (bookUnit) {
+          const completed = await ledger('complete', `done -Out "${OUT}" -Unit "${bookUnit.id}" -Token ${bookUnit.token} -Outputs "${WORK}\\report.json"`)
+          if (!completed.ok || !completed.line || completed.line.state !== 'done') {
+            await fault('book fault', bookUnit, '', `the Term-card book completion was refused: ${tail(completed.output)}`)
+            report.status = 'failed'
+            report.error = `the Term-card book unit could not complete: ${tail(completed.output)}`
+          } else {
+            report.completion = completed.line
           }
-          if (report.jobs.failed.length) throw new Error(`term-cards: writer job(s) failed: ${report.jobs.failed.map((f) => f.id).join(', ')}`)
-          bookkeeping(await command('check', `-Step check -Staging ${q(OUT)}`))
-
-          // The independent review of every mathematical draft, in waves of at most four, alongside
-          // the four retained writers.
-          const reviews = async () => {
-            const line = await command('review-plan', `-Step review-plan -Staging ${q(OUT)}`)
-            bookkeeping(line)
-            countReviews(line)
-            for (const group of reviewBatches((line.jobs || []).filter((job) => job.delete_after_collect === true))) {
-              row.reviews += group.length
-              report.reviews.planned += group.length
-              await manager('review', group)
-            }
-          }
-          await reviews()
-
-          // One finite fix per writer job, sent back to that writer's own conversation; a changed
-          // draft is checked and re-reviewed.
-          const fixed = await command('fix-plan', `-Step fix-plan -Staging ${q(OUT)}`)
-          bookkeeping(fixed)
-          report.fixes.final += (fixed.final || []).length
-          const fixes = (fixed.jobs || []).filter((job) => job.continue)
-          report.fixes.planned += fixes.length
-          for (const group of chunk(fixes, WAVE)) {
-            row.fixes += group.length
-            await manager('fix', group)
-          }
-          if (fixes.length) {
-            bookkeeping(await command('check', `-Step check -Staging ${q(OUT)}`))
-            await reviews()
-          }
-        } catch (e) {
-          if (e && e.lock_refusal) lock = e
-          error = error || tail(e && e.message) || 'term-cards: the wave failed'
-        } finally {
-          // The wave is complete or stopped: delete its retained writers before the next wave is
-          // admitted (R0330/R0335). Every staged file stays on disk.
-          await settleWave(`wave ${index + 1}`, ids)
         }
       }
     } catch (e) {

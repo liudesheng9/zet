@@ -1738,6 +1738,7 @@ fn build_report(
         "schema_version": 1,
         "ok": stop.is_none_or(|stop| stop.exit == 0),
         "step": p.step,
+        "claim_token": p.token,
         "book": compiled.book(),
         "plan_revision": compiled.revision,
         "plan_hash": compiled.plan_hash,
@@ -1764,6 +1765,7 @@ fn build_report(
         "schema_version": 1,
         "kind": "term_cards_report",
         "step": p.step,
+        "claim_token": p.token,
         "at": canon::utc_now_o(),
         "book": compiled.plan["book"],
         "plan": {

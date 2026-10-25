@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.4.1",
+  "version": "5.5.3",
   "scope": "project",
   "script": ".claude/workflows/zt-math-digest.js",
   "scriptRel": "workflows/zt-math-digest.js",
-  "sha256": "cf94d4eede69f52c3c8c452d922e8a96b3e8886a1fbf65d7a4a1f34b8067a1c5",
-  "fingerprint": "38dc9dfd03b140e2",
-  "blueprintSha256": "9aa0a71c0a741072983fcf59cfb95157b78ec02eb460f7731b2b2ea7d60ba3db",
+  "sha256": "7784e99b134cbddb5e2267f40a98f8fc1d6c415ae3866766c5763355fd086141",
+  "fingerprint": "bd481ff032339d77",
+  "blueprintSha256": "2b0f8e568de38aeb9b6ce4c27310256f3342796dbe2100b493693a408d41742e",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "1",
@@ -17,8 +17,8 @@
     "zt-bridge": "9",
     "zt-cards-book": "4",
     "zt-cards-layer": "2",
-    "zt-digest-prepare": "12",
-    "zt-digest-report": "16",
+    "zt-digest-prepare": "13",
+    "zt-digest-report": "17",
     "zt-dsh-cleanup": "11",
     "zt-dsh-source": "2",
     "zt-model-lib": "10",
@@ -36,7 +36,9 @@
     "zt-math-skeleton": "1",
     "zt-math-theory": "1",
     "zt-model-layer": "6",
-    "zt-organize": "8"
+    "zt-organize": "8",
+    "zt-term-cards": "2",
+    "zt-term-link": "1"
   },
   "moduleFiles": {
     "gate": {
@@ -73,11 +75,11 @@
     },
     "zt-digest-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-prepare.js",
-      "sha256": "1e369239196795e4a2a9509038fd46642076354582604d380c522d40a57ede6d"
+      "sha256": "42c119ea63bc99c6de8b4d86e991b3d545cb22cf0b7475cffbafdfbf108e3fb2"
     },
     "zt-digest-report": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
-      "sha256": "c5b7c07553918a3745a989edd77bc0687432bd6a26416cf08a89882042910a98"
+      "sha256": "8e8cb379b816b81e45da8925a28bda380ae49fcd317ec2b7652f7c1365387f9e"
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
@@ -150,28 +152,37 @@
     "zt-organize": {
       "file": "scripts/book-digest/workflow/modules/zt-organize.js",
       "sha256": "64d0d55a9364907f0ac0162ca3fed8284b7ae82328fdd7a5c9ecbb36c18f642d"
+    },
+    "zt-term-cards": {
+      "file": "scripts/book-digest/workflow/modules/zt-term-cards.js",
+      "sha256": "cebb48b78f15935956801f4814bf206e985a33d92953a44ecf9cb2547bd37134"
+    },
+    "zt-term-link": {
+      "file": "scripts/book-digest/workflow/modules/zt-term-link.js",
+      "sha256": "9f918eb7249f7077b90de9a92ac03ae4f6c3a3545c2e70fc078c15db7fe9919a"
     }
   },
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-math-digest.blueprint.json",
-      "sha256": "14ac5b6e800221d8a8d21f8a3b77a91c5842059039a43be7437fb03293692526"
+      "sha256": "4a84e1966f3554de7fb4f9ea396ee449bbdc3d8c213b1af913bb2ee866e5191e"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "73e5eced5ceb5b78e3bafafb508efb7496fe6afd45155e176b1cfc8889285dd2"
+      "sha256": "4bc86711bfe9680fec036091515eedd835982dc5fa58caffef6215be9d2bce8f"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-24T19:28:47.422Z",
+  "installedAt": "2026-10-25T16:07:28.933Z",
   "dryRun": {
-    "agents": 53,
+    "agents": 55,
     "order": [
       "args",
       "source",
       "prepare",
       "math-skeleton",
       "terms",
+      "term-cards",
       "digest",
       "cards",
       "models",
@@ -186,6 +197,7 @@
       "organize",
       "figures",
       "bridge",
+      "term-link",
       "audit",
       "finalize",
       "math-check",

@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v12 ====
+// ==== module zt-digest-prepare v13 ====
 // Prepare (mode full): prepare-book-digest.ps1 -Apply writes the Chinese text, the section groups, the
 // Literature tree with one anchor per group, and the shared prefixes, then binds the immutable run contract with
 // the effective settings (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the
@@ -13,8 +13,10 @@
 // 10 (Tree Lock S17, #140): a preparation the owner's Lock refused stops the run with the archive's own
 // typed `card_locked` refusal (R326/R337), never as a generic preparation failure.
 // 11 (docs/literature-only-digest-design.md): no hubs switch is frozen; the prepared run never has a hubs layer.
+// 13 (S24, #167): the Term-card branch and the Term-link pass freeze their switches too (termCards, termLink),
+// so a layer this run disables is excluded in the prepared target and no unit waits for work that will not come (R0430).
 defineModule({
-  id: 'zt-digest-prepare', version: '12', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '13', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume) or take args.groups; output {groups, groupList}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -70,7 +72,7 @@ defineModule({
       // The layer switches the run declares are frozen into the prepared target: a layer this run
       // deliberately excludes is excluded in the ledger too, so no unit waits for work that will not come.
       const switches = {}
-      for (const name of ['terms', 'models', 'events', 'findings', 'figures', 'bridge', 'notation', 'boundary', 'proof', 'theory']) {
+      for (const name of ['terms', 'models', 'events', 'findings', 'figures', 'bridge', 'notation', 'boundary', 'proof', 'theory', 'termCards', 'termLink']) {
         if (typeof A[name] === 'boolean') switches[name] = A[name]
       }
       const runOptions = Object.keys(switches).length ? ` -RunOptions '${JSON.stringify(switches)}'` : ''
