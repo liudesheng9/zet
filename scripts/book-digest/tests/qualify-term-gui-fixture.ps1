@@ -47,13 +47,21 @@ function Write-Cards($calls) {
     , @($lines | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
 
-function Wait-Down {
-    for ($i = 0; $i -lt 50; $i++) {
-        $status = @(zt status 2>&1)
-        if (-not ($status -match '^state: up')) { return }
+# The fixture's own service, stopped and waited out: `zt down` removes the record before the
+# daemon process exits, so a Reset must wait for the old pid itself before it deletes the archive
+# (a new daemon started over a half-stopped one finds no usable GUI record).
+function Stop-FixtureService {
+    $pidFile = Join-Path $Archive 'zt.pid'
+    $old = ''
+    if (Test-Path -LiteralPath $pidFile) { $old = (Get-Content -LiteralPath $pidFile -Raw).Trim() }
+    zt down 2>$null | Out-Null
+    for ($i = 0; $i -lt 120; $i++) {
+        $running = $old -and [bool](Get-Process -Id $old -ErrorAction SilentlyContinue)
+        $up = @(zt status 2>&1) -match '^state: up'
+        if (-not $running -and -not $up) { return }
         Start-Sleep -Milliseconds 100
     }
-    throw 'the service did not stop'
+    throw 'the scratch service did not stop'
 }
 
 function Get-Gui {
@@ -91,12 +99,15 @@ what the page must show (issue #171, S29-AC08 / R0550):
      its arrow/target, its Reason kind visible, and hover/focus states distinct from a Term label.
   3. Broken Term use: open the Card 弹性… Deleting the head left the use as a labelled, marked
      reference; the page says it is broken without hover (a reader who cannot hover still learns),
-     and no address is shown.
+     and the body shows the label with no address. A diagnostic list (Links out, Broken links) may
+     name the missing target address: that is how a reader finds what to fix, and it is not body text.
   4. Broken ordinary Link: the Card 含断链的笔记 shows its broken Link marked as broken, and the
      Broken-links reader lists it.
   5. Cross-Workspace: open the human Card 读记 = 读 [[TermBook2026/1]] …, which links into the agent
-     book. The Link carries the agent Workspace's ink, both in the human Card and in the agent
-     target's Reverse section.
+     book. The Link and the agent target's Reverse chip carry the other Workspace's ink (cross chips
+     are inked by the source Card's Workspace), in both directions.
+  5b. Map nodes: the map's node excerpt and tooltip for 0/2 show 均衡, and for 0/4 show 弹性, never
+     the hidden `@TermBook2026/...` address.
   6. Term head as an explanation Card: open 均衡. Its sections (释义, 区别, 来源) read as one
      explanation Card, and its ## Term uses section lists the using Cards collapsed.
   7. Writing desk completion: open the desk on the agent Card 笔记 and type [[均. The completion
@@ -122,8 +133,7 @@ switch ($Action) {
 if ($Action -eq 'start') {
     New-Item -ItemType Directory -Force -Path $Archive, $config | Out-Null
     if ($Reset) {
-        zt down 2>$null | Out-Null
-        Wait-Down
+        Stop-FixtureService
         Get-ChildItem -LiteralPath $Archive -Force | Remove-Item -Recurse -Force
     }
     zt config set archive_root $Archive | Out-Null

@@ -1477,9 +1477,13 @@ pub(crate) fn excerpt(body: &str) -> String {
             .trim_start_matches(['#', '>', '-', '*', '+', ' '])
             .trim();
         if !line.is_empty() {
+            // A Term use previews as its visible label (design 10.4, S29/#171): the macro's hidden
+            // address must not leak into a map node's excerpt or tooltip. An ordinary Link keeps
+            // its address, as the digest's excerpts always have.
+            let projected = zt_check::text::strip_term_links(line);
             let plain = ["**", "__", "~~", "`", "[[", "]]"]
                 .iter()
-                .fold(line.to_string(), |text, mark| text.replace(mark, ""));
+                .fold(projected, |text, mark| text.replace(mark, ""));
             return clip(&plain, 140);
         }
     }
@@ -1561,6 +1565,24 @@ mod tests {
 The model"
             ),
             "The model"
+        );
+    }
+
+    /// S29 (#171): a map node's excerpt shows a Term use as its visible label, never the hidden
+    /// address, while an ordinary Link keeps the address the digest's excerpts always showed.
+    #[test]
+    fn an_excerpt_projects_a_term_use_to_its_label() {
+        assert_eq!(
+            excerpt("需求是 [[均衡@TermBook2026/1|a|a]] 的。"),
+            "需求是 均衡 的。"
+        );
+        assert_eq!(
+            excerpt("这一段说明背景。[[弹性@TermBook2026/1|a|d]] 决定税负。"),
+            "这一段说明背景。弹性 决定税负。"
+        );
+        assert_eq!(
+            excerpt("对应 [[0/1]]：这条理由说明选择。"),
+            "对应 0/1：这条理由说明选择。"
         );
     }
 
