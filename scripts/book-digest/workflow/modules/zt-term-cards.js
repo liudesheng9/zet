@@ -1,4 +1,4 @@
-// ==== module zt-term-cards v2 ====
+// ==== module zt-term-cards v3 ====
 // S20 (#164) built the branch; S24 (#167) makes it ledger work. The Term-card compiler's writer,
 // reviewer and fix jobs run on the shared DeepSeek Subagent Managed Protocol (DSMP) pool (design
 // 12.4), and the branch is the run's own `termcards/tNNN@<plan revision>` job units plus its
@@ -20,6 +20,13 @@
 // so the Term-link pass stays blocked and the audit/report show the coverage debt (R0428). No unit is
 // ever marked done to unblock a later stage.
 //
+// v3 (S30 pilot, #172): a job that fails its writer or stays not ready after its one fix fails only its
+// own unit; the remaining waves are still admitted (design 12.4: complete the wave's bounded fix and
+// review, delete it, then admit the remaining writers). When the book unit cannot be claimed, the
+// ready contiguous prefix is still published without the book claim (12.5: a failed term job can leave
+// a published prefix), and the book unit stays incomplete. The run-level records (answer evidence,
+// a wave's settle) carry no `-Unit run`: the ledger fences -Unit with -Token, and a wave holds no unit.
+//
 // Every manager call takes one dsmpSlot from the script-wide pool (at most eight managers alive), and
 // the runtime policy is the installed protocol's own: 240 minutes per conversation, nonblocking polls
 // of all open sessions, at most 90 seconds blocking on one, one provider retry, one semantic fix.
@@ -27,7 +34,7 @@
 // deletion is recorded, so the run's own cleanup can verify the provider resources. The workspace
 // registration is removed when the branch is done (success or failure); the staging files stay.
 defineModule({
-  id: 'zt-term-cards', version: '2', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '3', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: claim the run\'s Term-card job units in waves of four, schedule their writers, reviews and fixes on the shared DSMP pool, complete each unit from the compiler\'s readiness result and the book unit from its publication report, and leave a failed or partial book incomplete.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder (the compiler\'s -Staging)' },
@@ -86,6 +93,7 @@ defineModule({
     let lock = null
     let readiness = { counts: {}, complete: false }
     let bookUnit = null // { id, token, input_hash }
+    const notReady = [] // v3: the jobs that failed their writer or stayed not ready; later waves still run
 
     // One compiler command through the one relay. Its last JSON line is the step's answer.
     const command = async (label, args, always = false) => {
@@ -122,8 +130,8 @@ defineModule({
 
     // The record commands each manager runs itself, at the moment the fact exists (R0322-R0325).
     const register = `${exe} ledger resource -Out ${q(OUT)} -Unit run -RegisterId <session_id> -Workspace ${q(WORK)}`
-    const evidence = (file) => `${exe} ledger resource -Out ${q(OUT)} -Unit run -EvidenceFor <session_id> -Evidence ${q(file)}`
-    const settle = `${exe} ledger resource -Out ${q(OUT)} -Unit run -Settle <session_id> -State finished -Deleted confirmed`
+    const evidence = (file) => `${exe} ledger resource -Out ${q(OUT)} -EvidenceFor <session_id> -Evidence ${q(file)}`
+    const settle = `${exe} ledger resource -Out ${q(OUT)} -Settle <session_id> -State finished -Deleted confirmed`
 
     // The manager prompt: the DSMP v1.1 loop (one retry, 240 min, 90 s polls) with the one extension
     // the Term-card chain needs: a writer conversation survives until its wave's fix/review
@@ -203,7 +211,7 @@ First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_dele
 SESSIONS (${list.length}):
 ${JSON.stringify(list.map(([id, session_id]) => ({ id, session_id })))}
 
-For each session in order: call mcp__deepseek__deepseek_delete with its session_id. If a delete is refused, do not retry it and record the reason. Then record the outcome once for that session: ${settle} (or ${exe} ledger resource -Out ${q(OUT)} -Unit run -Settle <session_id> -State finished -Deleted failed -Message '<reason>').
+For each session in order: call mcp__deepseek__deepseek_delete with its session_id. If a delete is refused, do not retry it and record the reason. Then record the outcome once for that session: ${settle} (or ${exe} ledger resource -Out ${q(OUT)} -Settle <session_id> -State finished -Deleted failed -Message '<reason>').
 Return ok=true, deleted (how many), not_deleted ("session_id: reason" for each), and one entry per session: id, session_id, deleted.`
     const settleWave = async (label, ids) => {
       const list = ids.filter((id) => sessions[id]).map((id) => [id, sessions[id]])
@@ -263,11 +271,13 @@ Return ok=true, deleted (how many), not_deleted ("session_id: reason" for each),
           }
         }
         if (failed.length) {
+          // v3: a failed writer fails only its own unit; the wave's other jobs and the later waves go on.
           for (const unit of (units || []).filter((unit) => failed.includes(String(unit.inputs.job.id)))) {
             const answer = ((report.jobs.failed.find((f) => f.id === String(unit.inputs.job.id)) || {}).answer) || ''
             await fault('writer fault', unit, '', `the writer job ${unit.inputs.job.id} failed: ${answer}`)
           }
-          throw new Error(`term-cards: writer job(s) failed: ${failed.join(', ')}`)
+          if (failed.length === written.length) return
+          units = units && units.filter((unit) => !failed.includes(String(unit.inputs.job.id)))
         }
         bookkeeping((await command('check', `-Step check -Staging ${q(OUT)}`)).json)
 
@@ -307,17 +317,16 @@ Return ok=true, deleted (how many), not_deleted ("session_id: reason" for each),
 
         // Complete each claimed unit from the readiness result: a job whose every row is ready is
         // the unit's proof (R0423); a job that is not ready keeps its unit open and is named.
-        const notReady = []
         for (const unit of units || []) {
           const done = await ledger('complete', `done -Out "${OUT}" -Unit "${unit.id}" -Token ${unit.token} -Outputs "${WORK}\\check\\readiness.json"`)
           if (done.ok && done.line && done.line.state === 'done') {
             row.completed.push(unit.id)
             continue
           }
+          // v3: the job keeps its own fault; the later waves are still admitted.
           notReady.push(String(unit.inputs.job.id))
           await fault('readiness fault', unit, '', `the job ${unit.inputs.job.id} is not ready: ${tail(done.output)}`)
         }
-        if (notReady.length) throw new Error(`term-cards: job(s) not ready after the permitted fix: ${notReady.join(', ')}`)
       } finally {
         // The wave is complete or stopped: delete its retained writers before the next wave is
         // admitted (R0330/R0335). Every staged file stays on disk.
@@ -392,8 +401,15 @@ Return ok=true, deleted (how many), not_deleted ("session_id: reason" for each),
               log('Term cards: every unit of the branch is already complete; nothing to claim.')
               return report
             }
+            // v3 (design 12.5): a failed term job still leaves its ready contiguous prefix published.
+            // The compiler publishes it without the book claim; the book unit stays incomplete.
+            const applied = await command('apply', `-Step apply -Staging ${q(OUT)} -Apply`)
+            const line = applied.json
+            report.publication = line ? { complete: line.complete === true, rows: line.rows, committed: line.committed, ready_unpublished: line.ready_unpublished, refused: line.refused, pending: line.pending, conflicted: line.conflicted, staged: line.staged, stop: line.stop, prefix: true } : null
             report.status = 'failed'
-            report.error = 'the Term-card book unit is not ready: a writer job or the Term table it waits on is not done'
+            report.error = notReady.length
+              ? `term-cards: job(s) not ready after the permitted fix: ${notReady.join(', ')}; the ready prefix (${(line && line.committed) || 0} row(s)) is published and the book unit stays incomplete`
+              : 'the Term-card book unit is not ready: a writer job or the Term table it waits on is not done'
             report.staging = WORK
             return report
           }
@@ -422,6 +438,8 @@ Return ok=true, deleted (how many), not_deleted ("session_id: reason" for each),
           }
         }
       }
+      // v3: a job left not ready names itself after the prefix publication (no-ledger branch).
+      if (!error && !lock && notReady.length) error = `term-cards: job(s) not ready after the permitted fix: ${notReady.join(', ')}`
     } catch (e) {
       if (e && e.lock_refusal) lock = e
       error = error || tail(e && e.message) || 'term-cards: the branch failed'

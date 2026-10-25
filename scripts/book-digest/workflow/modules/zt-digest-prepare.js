@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v14 ====
+// ==== module zt-digest-prepare v15 ====
 // Prepare (mode full): prepare-book-digest.ps1 -Apply writes the Chinese text, the section groups, the
 // Literature tree with one anchor per group, and the shared prefixes, then binds the immutable run contract with
 // the effective settings (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the
@@ -21,7 +21,7 @@
 // and stop before any provider work on a Lock or a conflict. -Sections creates no root, anchor, group,
 // model or narrative Card (R0435); neither mode reruns an ordinary digest or model stage (R0436).
 defineModule({
-  id: 'zt-digest-prepare', version: '14', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '15', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume), validate or re-stage one already digested book for a Term backfill (modes term-cards and term-link) or take args.groups; output {groups, groupList, citation_key, backfill?}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -67,7 +67,9 @@ defineModule({
         const reevaluated = (facts.reevaluated || []).length
         log(`Resume: invocation ${facts.invocation}, resume_count ${facts.resume_count}; ${reset} unresolved unit(s) reset, ${reevaluated} blocked dependant(s) back to dependency evaluation, ${(facts.reclaimed || []).length} lost claim(s) reclaimed, ${((facts.closure && facts.closure.downstream) || []).length} unit(s) in the closure to drain. ${groups} retained groups, variant ${view.variant}, settings maxAttempts ${settings.max_attempts}, dshRunCap ${settings.dsh_run_cap} s.`)
       }
-      return { groups, groupList: groupList(groups), resumed: facts.status === 'resumed', resume: facts, settings, citation_key: view.citation_key }
+      // v15 (S30 pilot, #172): the prepared run's frozen layer switches. A resume gets only `out`, so the
+      // Term stages read termCards/termLink here instead of their args defaults (true).
+      return { groups, groupList: groupList(groups), resumed: facts.status === 'resumed', resume: facts, settings, citation_key: view.citation_key, run_options: view.run_options || null }
     }
     if (p.mode === 'term-cards' || p.mode === 'term-link') {
       // S25 (#168): the backfill's own preparation. `-Sections` reuses or reconstructs the staged source

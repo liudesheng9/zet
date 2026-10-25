@@ -5503,7 +5503,7 @@ fn status_summary(full: &Value) -> Value {
         entry["total"] = json!(entry["total"].as_i64().unwrap_or(0) + 1);
     }
     let mut summary = serde_json::Map::new();
-    for key in ["schema_version", "run_id", "invocation", "resume_count", "citation_key", "variant", "settings", "counts", "settled", "complete", "sealed"] {
+    for key in ["schema_version", "run_id", "invocation", "resume_count", "citation_key", "variant", "settings", "run_options", "counts", "settled", "complete", "sealed"] {
         if let Some(value) = full.get(key) {
             summary.insert(key.to_string(), value.clone());
         }
@@ -17756,6 +17756,7 @@ mod tests {
             "schema_version":1,"run_id":"r1","invocation":2,"resume_count":1,"citation_key":"Key",
             "variant":"econ","settings":{"max_attempts":3,"dsh_run_cap":1200},
             "counts":{"declared":4},"settled":false,"complete":false,
+            "run_options":{"models":true,"termCards":false,"termLink":false},
             "dependencies":[{"unit":"audit/book@1","needs":"digest/g001@1"}],
             "units":[
                 {"id":"digest/g001@1","layer":"digest","state":"ready","progress":{"big":"x"}},
@@ -17772,6 +17773,8 @@ mod tests {
         assert_eq!(s["counts"]["declared"], json!(4));
         assert_eq!(s["layers"]["digest"], json!({"ready":1,"registered":1,"total":2}));
         assert_eq!(s["layers"]["terms"]["total"], json!(1));
+        // The S30 pilot (#172): a resume reads the prepared run's own Term switches from here.
+        assert_eq!(s["run_options"]["termCards"], json!(false));
         assert!(s.get("units").is_none() && s.get("dependencies").is_none());
     }
 

@@ -1498,6 +1498,8 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 
 ## Change history
 
+- `2026-10-25` — 0.29.4: embeds base 5.6.1 / econ 6.6.1 / math 5.6.1 (patch-compatible with runs prepared under 5.6.0/6.6.0), and `ledger status -Summary` carries the prepared run's `run_options`, which mode resume reads to keep a disabled Term layer off (S30 pilot, #172). Test: `ledger::tests::a_status_summary_counts_the_units_per_layer`. The release manifest names `zt_digest` 0.29.4 and the 5.6.1/6.6.1/5.6.1 workflows.
+
 - `2026-10-25` — 0.29.3: `ledger done` on a Term-card unit prints `state: done` on its first completion too (the reuse path already did; the stored `termcards_completion` record is unchanged). The `zt-term-cards` branch reads `state` from that line, so every job completed for the first time was reported not ready and then faulted (`stale_claim`). Found on the S30 pilot's Term-card wave (#172: t005 and t009). Test: `term_completion_tests::a_ready_job_completes_from_its_readiness_result`. The release manifest names `zt_digest` 0.29.3.
 
 - `2026-10-25` — 0.29.2: the claimed Terms apply accepts the Term Card it has just filed. Its post-write check, the completion re-check (`terms_done`) and the output record still wanted `type: idea`, so after 0.29.1 the table was written and then refused (`persisted Terms table differs from accepted input`). All three use `terms_table_shape_ok` and `TERMS_TABLE_TYPE` (`term`). Found on the S30 pilot's lean digest (#172). Test: `ledger::tests::a_filed_terms_table_is_the_term_typed_side_successor_of_the_first_anchor`. The release manifest names `zt_digest` 0.29.2.

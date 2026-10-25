@@ -1,4 +1,4 @@
-// ==== module zt-term-link-lib v1 ====
+// ==== module zt-term-link-lib v2 ====
 // The deterministic Term-link pass of one book (S24, #167; S26, #169), shared by the `term-link`
 // stage and the finite finalization. It owns no content decision: it claims the pass's ledger
 // unit, runs the compiler's frozen `plan` (which registers that unit in a prepared run), applies
@@ -86,6 +86,32 @@ async function ztTermLinkPass(ctx, p) {
       }
       report.status = 'skipped'
       report.reason = `the Term-link unit is not ready: ${report.unresolved.length} unresolved unit(s) (${counts.failed || 0} failed, ${counts.blocked || 0} blocked); a failed Term-card book or Card writer never becomes a linked book`
+      if (round === null) {
+        // v2 (S30 pilot, #172): the whole-book pass still links the Terms that are published. The stage
+        // runs after every Card writer and the Term-card branch, so no writer changes a body under it.
+        // It applies the frozen plan without a claim: the unit stays incomplete (R0343: never done
+        // over a partial book), and a later complete book runs the claimed pass, which is idempotent.
+        const applied = await command('prefix apply', `-Step apply -Staging ${q(OUT)} -Occurrences ${p.occurrences} -Apply`, true)
+        const summary = applied.json && applied.json.step === 'apply' ? applied.json : null
+        if (summary) {
+          report.counts = summary.counts || null
+          report.no_op = summary.no_op === true
+          report.chunks = summary.chunks
+        }
+        if (!(applied.run && applied.run.ok) || !summary || summary.complete !== true) {
+          const detail = applied.json && applied.json.step !== 'apply' ? applied.json : null
+          report.status = 'failed'
+          report.code = (summary && summary.code) || (detail && (detail.code || detail.error)) || 'incomplete'
+          report.error = `the prefix Term-link pass stopped as ${report.code}; ${report.reason}`
+          log(`Term link: failed — ${report.error}.`)
+          return report
+        }
+        report.status = 'partial'
+        report.prefix = true
+        report.reason = `${report.reason}; the published prefix is linked (${(report.counts && report.counts.cards_changed) || 0} Card(s) changed) and the unit stays incomplete`
+        log(`Term link: partial — ${report.reason}.`)
+        return report
+      }
       log(`Term link: skipped — ${report.reason}.`)
       return report
     }
@@ -138,7 +164,7 @@ async function ztTermLinkPass(ctx, p) {
 }
 
 defineModule({
-  id: 'zt-term-link-lib', version: '1', library: true, requires: ['zt-workflow-lib'],
+  id: 'zt-term-link-lib', version: '2', library: true, requires: ['zt-workflow-lib'],
   summary: 'Library: the deterministic Term-link pass (claim the pass unit, freeze the plan, apply under the claim, complete only from the apply report) for the Term-link stage and the finite finalization.',
 })
 // ==== end module zt-term-link-lib ====
