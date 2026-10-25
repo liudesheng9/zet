@@ -1277,6 +1277,184 @@ fn math_register(p: &Prepared, _zt: &mut Zt) -> Result<Value> {
     }))
 }
 
+/// The Term-card compiler's per-job obligations (S18, #159; design 12.1, 14.2). A `term-cards`
+/// plan enumerates one job per stable frozen row group, and every job becomes one unit of the same
+/// ledger: no second scheduler. The book unit waits on every job unit. A unit binds the exact
+/// frozen plan and job it was enumerated from, so the same plan reuses its units and a plan
+/// revision registers new ones instead of rebinding old work.
+pub(crate) fn register_term_cards(tx: &Transaction, plan: &Value) -> Result<Value> {
+    if plan["schema_version"] != 1 || plan["kind"] != "term_cards_plan" {
+        bail!("invalid term-cards plan: schema 1 of kind term_cards_plan is required");
+    }
+    let revision = plan["revision"]
+        .as_i64()
+        .filter(|revision| *revision > 0)
+        .context("the term-cards plan names no positive revision")?;
+    field(plan, "plan_hash")?;
+    let jobs = plan["jobs"]
+        .as_array()
+        .filter(|jobs| !jobs.is_empty())
+        .context("the term-cards plan holds no job")?;
+    let terms = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM units WHERE id='terms/book@1')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+    let mut reused = true;
+    let mut job_units = serde_json::Map::new();
+    let mut units = Vec::new();
+    for job in jobs {
+        let id = field(job, "id")?.to_string();
+        if id.trim().is_empty() || id.len() > 200 || id.contains(['\n', '\r', '/']) {
+            bail!("`{id}` is not one readable Term-card job id");
+        }
+        let unit = format!("termcards/{id}@{revision}");
+        let inputs = crate::term_cards::job_unit_inputs(plan, job);
+        let hash = canon::hash_value(&inputs);
+        let existing: Option<String> = tx
+            .query_row("SELECT input_hash FROM units WHERE id=?1", [&unit], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        match existing {
+            Some(stored) => {
+                if stored != hash {
+                    bail!(
+                        "a registered term-card job cannot be rebound to different work: {unit}"
+                    );
+                }
+            }
+            None => {
+                reused = false;
+                register(tx, "termcards", &id, revision, &inputs, None, false)?;
+                if terms {
+                    // A term-card job reads the run's frozen Term list.
+                    dependency(tx, &unit, "terms/book@1", "success")?;
+                }
+                event(
+                    tx,
+                    &unit,
+                    None,
+                    None,
+                    "registered",
+                    &json!({"job":id,"plan_revision":revision,"plan_hash":plan["plan_hash"]}),
+                )?;
+            }
+        }
+        job_units.insert(id.clone(), json!(unit));
+        units.push(json!({"unit":unit,"job":id,"input_hash":hash}));
+    }
+    let book_unit = format!("termcards/book@{revision}");
+    let book_inputs = crate::term_cards::book_unit_inputs(plan);
+    let book_hash = canon::hash_value(&book_inputs);
+    let existing: Option<String> = tx
+        .query_row("SELECT input_hash FROM units WHERE id=?1", [&book_unit], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    match existing {
+        Some(stored) => {
+            if stored != book_hash {
+                bail!("a registered term-card book cannot be rebound to different work: {book_unit}");
+            }
+        }
+        None => {
+            reused = false;
+            register(tx, "termcards", "book", revision, &book_inputs, None, false)?;
+            for job in jobs {
+                dependency(
+                    tx,
+                    &book_unit,
+                    &format!("termcards/{}@{revision}", field(job, "id")?),
+                    "success",
+                )?;
+            }
+            event(
+                tx,
+                &book_unit,
+                None,
+                None,
+                "registered",
+                &json!({"plan_revision":revision,"plan_hash":plan["plan_hash"],"jobs":jobs.len()}),
+            )?;
+        }
+    }
+    // A changed source/list starts a new plan revision (S18-AC06). Older open units of this layer
+    // can never be claimed as current work: they are terminal history that names its replacement,
+    // exactly as an older aggregate publication revision is. A claim that is still running is not
+    // superseded under its owner: a new revision waits for it to settle.
+    let older: Vec<(String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT id,state FROM units WHERE layer='termcards' AND revision<?1 AND state NOT IN ('done','failed') ORDER BY revision,id",
+        )?;
+        statement
+            .query_map([revision], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if let Some((unit, _)) = older.iter().find(|(_, state)| state == "claimed") {
+        bail!(
+            "the term-card unit `{unit}` of an older plan revision is still claimed; let it settle before a new plan revision"
+        );
+    }
+    for (unit, _) in &older {
+        tx.execute(
+            "UPDATE units SET state='failed',owner=NULL,lease_until=NULL,retry_after=NULL,fault_class='operator',fault_json=?2 WHERE id=?1",
+            params![unit, canon::canonical_json(&json!({
+                "code": "superseded",
+                "by": book_unit,
+                "cause": "a changed source or list registered a new term-card plan revision",
+            }))],
+        )?;
+        event(
+            tx,
+            unit,
+            None,
+            None,
+            "superseded",
+            &json!({"by":book_unit,"plan_revision":revision}),
+        )?;
+    }
+    Ok(json!({
+        "book": book_unit,
+        "jobs": job_units,
+        "revision": revision,
+        "reused": reused,
+        "superseded": older.iter().map(|(unit, _)| unit.clone()).collect::<Vec<_>>(),
+        "units": {"book": book_unit, "jobs": job_units},
+        "registered": units,
+        "input_hash": book_hash,
+    }))
+}
+
+/// Register one decoded term-cards plan in the prepared run's ledger and commit it.
+pub(crate) fn term_cards_register(p: &Prepared, plan: &Value) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let units = register_term_cards(&tx, plan)?;
+    let run = meta(&tx, "run_id")?;
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"run_id":run,"units":units["units"]}))
+}
+
+/// Read one claimed Term-card job unit. The claim itself is created by the existing
+/// `ledger next -Layer termcards`; this step renews it and returns the token-bound input hash the
+/// caller compares with the plan's job input.
+pub(crate) fn term_cards_claim(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
+    let (claimed, _progress, run, done) = finish_claim(p, unit, token)?;
+    Ok(json!({
+        "schema_version": 1,
+        "unit": unit,
+        "token": token,
+        "run_id": run,
+        "input_hash": claimed.input_hash,
+        "done": done,
+    }))
+}
+
 /// One retained compiler plan: every entry names one mathematical unit and the work
 /// that unit owes. An entry that does not is refused before any unit is registered.
 fn math_plan(layer: &str, plan: &Value) -> Result<Value> {
@@ -16164,6 +16342,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 "proof",
                 "theory",
                 "math-check",
+                // The term-card compiler's own job units (S18, #159). They are registered by
+                // `term-cards -Step plan` and claimed by the workflow layer that drives them.
+                "termcards",
             ]
             .contains(&a.str("Layer").as_str())
         {
@@ -17295,6 +17476,185 @@ mod tests {
 
 
 
+
+#[cfg(test)]
+mod term_card_ledger_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn ledger() -> (TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(&dir.path().join("ledger.sqlite3"), true).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        for (key, value) in [
+            ("run_id", json!("run")),
+            ("invocation", json!(1)),
+            ("target", json!({"enabled":[],"excluded":[]})),
+        ] {
+            conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2)",
+                params![key, canon::canonical_json(&value)],
+            )
+            .unwrap();
+        }
+        (dir, conn)
+    }
+
+    fn plan(revision: i64, terms: &[&str]) -> Value {
+        let jobs: Vec<Value> = terms
+            .iter()
+            .enumerate()
+            .map(|(index, term)| {
+                json!({
+                    "id": format!("t{:03}", index + 1),
+                    "kind": "concept",
+                    "rows": [index + 1],
+                    "terms": [term],
+                })
+            })
+            .collect();
+        json!({
+            "schema_version": 1,
+            "kind": "term_cards_plan",
+            "revision": revision,
+            "plan_hash": "a".repeat(64),
+            "book": {"citation_key": "K"},
+            "list": {"body_sha256": "b".repeat(64), "row_count": terms.len()},
+            "source": {"fingerprint": "c".repeat(64)},
+            "jobs": jobs,
+        })
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_term_cards_plan_registers_its_jobs_and_the_book_unit_once() {
+        let (_dir, conn) = ledger();
+        let tx = conn.unchecked_transaction().unwrap();
+        let units = register_term_cards(&tx, &plan(1, &["剩余控制权", "敲竹杠", "企业边界"]))
+            .unwrap();
+        assert_eq!(units["book"], json!("termcards/book@1"));
+        assert_eq!(units["jobs"]["t001"], json!("termcards/t001@1"));
+        assert_eq!(units["jobs"]["t003"], json!("termcards/t003@1"));
+        assert_eq!(units["reused"], json!(false));
+        assert_eq!(count(&tx, "SELECT count(*) FROM units WHERE layer='termcards'"), 4);
+        // The book waits on every job; no terms unit exists in this run yet, so no job waits.
+        assert_eq!(
+            count(
+                &tx,
+                "SELECT count(*) FROM deps WHERE unit_id='termcards/book@1' AND condition='success'"
+            ),
+            3
+        );
+        assert_eq!(
+            count(&tx, "SELECT count(*) FROM deps WHERE unit_id LIKE 'termcards/t%'"),
+            0
+        );
+        tx.commit().unwrap();
+
+        // The same plan reuses every unit and writes no row or event.
+        let tx = conn.unchecked_transaction().unwrap();
+        let events = count(&tx, "SELECT count(*) FROM events");
+        let again = register_term_cards(&tx, &plan(1, &["剩余控制权", "敲竹杠", "企业边界"]))
+            .unwrap();
+        assert_eq!(again["reused"], json!(true));
+        assert_eq!(count(&tx, "SELECT count(*) FROM units WHERE layer='termcards'"), 4);
+        assert_eq!(count(&tx, "SELECT count(*) FROM events"), events);
+        tx.commit().unwrap();
+
+        // A changed plan revision registers its own units beside the historical ones, and every
+        // older open unit is terminal superseded history that names its replacement.
+        let tx = conn.unchecked_transaction().unwrap();
+        let next = register_term_cards(&tx, &plan(2, &["剩余控制权"])).unwrap();
+        assert_eq!(next["book"], json!("termcards/book@2"));
+        assert_eq!(next["superseded"].as_array().unwrap().len(), 4);
+        assert_eq!(count(&tx, "SELECT count(*) FROM units WHERE layer='termcards'"), 6);
+        assert_eq!(
+            count(
+                &tx,
+                "SELECT count(*) FROM units WHERE id LIKE 'termcards/%@1' AND state='failed' AND json_extract(fault_json,'$.code')='superseded'"
+            ),
+            4
+        );
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn a_new_plan_revision_waits_for_a_claimed_job_and_supersedes_ready_ones() {
+        let (_dir, conn) = ledger();
+        let tx = conn.unchecked_transaction().unwrap();
+        register_term_cards(&tx, &plan(1, &["剩余控制权", "敲竹杠"])).unwrap();
+        tx.commit().unwrap();
+        conn.execute(
+            "UPDATE units SET state='claimed',owner='writer',claim_token=1,lease_until=9999999999 WHERE id='termcards/t001@1'",
+            [],
+        )
+        .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let error = register_term_cards(&tx, &plan(2, &["剩余控制权"]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("still claimed"), "{error}");
+        drop(tx);
+        assert_eq!(count(&conn, "SELECT count(*) FROM units WHERE layer='termcards'"), 3);
+        // Once the writer settles, the new revision registers and the older open units become
+        // superseded history.
+        conn.execute(
+            "UPDATE units SET state='failed',fault_class='content',fault_json='{\"code\":\"check_failed\"}' WHERE id='termcards/t001@1'",
+            [],
+        )
+        .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let next = register_term_cards(&tx, &plan(2, &["剩余控制权"])).unwrap();
+        assert_eq!(next["superseded"], json!(["termcards/book@1", "termcards/t002@1"]));
+        // The real failure keeps its own fault and is never rewritten as supersession.
+        let (state, fault): (String, String) = tx
+            .query_row(
+                "SELECT state,fault_json FROM units WHERE id='termcards/t001@1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((state.as_str(), fault.as_str()), ("failed", "{\"code\":\"check_failed\"}"));
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn a_registered_job_cannot_be_rebound_to_different_work() {
+        let (_dir, conn) = ledger();
+        let tx = conn.unchecked_transaction().unwrap();
+        register_term_cards(&tx, &plan(1, &["剩余控制权"])).unwrap();
+        tx.commit().unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let error = register_term_cards(&tx, &plan(1, &["敲竹杠"]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cannot be rebound"), "{error}");
+    }
+
+    #[test]
+    fn a_terms_unit_makes_every_job_wait_for_the_frozen_list() {
+        let (_dir, conn) = ledger();
+        conn.execute(
+            "INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_at) VALUES('terms/book@1','terms','book',1,'done','{}','h','now')",
+            [],
+        )
+        .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        register_term_cards(&tx, &plan(1, &["剩余控制权", "敲竹杠"])).unwrap();
+        assert_eq!(
+            count(
+                &tx,
+                "SELECT count(*) FROM deps WHERE needs_id='terms/book@1' AND condition='success'"
+            ),
+            2
+        );
+        tx.commit().unwrap();
+    }
+}
 
 #[cfg(test)]
 mod fail_class_tests {
