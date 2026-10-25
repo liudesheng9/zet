@@ -7,7 +7,7 @@ paths:
   - ".claude/workflow-framework/zt-issue-dev/**"
   - "!.claude/workflow-framework/*/history/**"
 synced: bfde6673e03d
-updated: 2026-10-24
+updated: 2026-10-25
 ---
 
 # Issue development workflow
@@ -103,7 +103,7 @@ The manager calls `deepseek_run` with:
 
 ### One issue
 
-1. `zirIssue` builds the start arguments, and the manager starts the conversation (`op: start`). Every manager op carries the issue number, and every manager prompt says the job is that one issue only. The goal objective ends with the scope mark `consts.scopeMark` (`issue #N only`). If the goal the bridge echoes back lacks it, the conversation is deleted and started once more. A second wrong start gives the outcome `failed`. The bridge sends the message, sets the goal once the agent is working on it, and keeps the turn running through the goal rounds. The manager calls `deepseek_wait` with 900 s waits, at most 12 per manager agent.
+1. `zirIssue` builds the start arguments, and the manager starts the conversation (`op: start`). Every manager op carries the issue number, and every manager prompt says the job is that one issue only. The goal objective ends with the scope mark `consts.scopeMark` (`issue #N only`). If the goal the bridge echoes back lacks it, or (since 1.5.0) the manager reports a goal phase `none` or a model or effort other than the asked ones (`model`, `reasoning_effort` of the bridge result), the conversation is deleted and started once more. A second wrong start gives the outcome `failed`. The bridge sends the message, sets the goal once the agent is working on it, and keeps the turn running through the goal rounds. The manager calls `deepseek_wait` with 900 s waits, at most 12 per manager agent.
 2. `running` starts another wait manager, at most `maxWaitCalls` (8) per issue. After that the outcome is `timeout`.
 3. `needs_response`: the main agent is called once per pending item. Questions go back as `answers [{id, custom}]` and approvals as `decision`. Then a `respond` manager continues. After `maxAsks` asks the outcome is `max-asks`.
 4. `finished` ends the issue by the goal's phase: `complete` gives `done`; `blocked` gives `needs-human`, or `max-rounds` for a `round-limit` block. The summary is the STATUS text, else the tail of the answer.
@@ -163,7 +163,7 @@ node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs verify zt-i
 
 ## Testing
 
-`node scripts/issue-dev/tests/issue-relay.tests.mjs` builds the blueprint and runs it in the framework's stand-in runtime, one scenario per path (26 tests):
+`node scripts/issue-dev/tests/issue-relay.tests.mjs` builds the blueprint and runs it in the framework's stand-in runtime, one scenario per path (30 tests):
 - `expandIssues`;
 - the start arguments: `goal` objective, `max_goal_rounds`, model, effort, `tdd`, no placeholders left;
 - the manager prompt passing `goal` and loading `deepseek_goal`;
@@ -184,6 +184,8 @@ node ~/.claude/skills/workflow-framework-protocol/tools/assemble.mjs verify zt-i
 - an off-scope start (the 1.1.1 range rewrite) deleted and restarted;
 - a start with no goal echo treated as off scope;
 - two off-scope starts failing the issue while the next issue still runs;
+- a start on another model source with a made-up goal echo (the #170 case), a start with goal phase `none`, and a start with no reported model, each deleted and restarted;
+- the start prompt naming every key to pass and asking for the reported model and effort;
 - `#9` not matching `#97`'s mark;
 - GUI work routed to the Opus main agent: the first message forbids DeepSeek GUI code, and the executor is `opus` with the GUI principles;
 - `dsh-times`: two zstd frames, a foreground command, a background job ended by its notice and one ended by `job_output`, merged runs;
@@ -200,10 +202,12 @@ The goal path itself is checked live in the bridge repository with `scripts/goal
 - Haiku managers copy text verbatim. Answers are cut to the last 6000 characters (the bridge reports the last 12,000 characters of a goal turn), and main-agent results to 3800 characters. Long logs go to files.
 - `E:/zet` is usually also the user's own DeepSeek workspace. The cleanup removes it only when it is empty (`ownWorkspaces: false`).
 - 1.1.1 drifted across issues on the #92–#122 run. The #93 PRD agent implemented child issues, and the #97 Haiku manager rewrote its `deepseek_run` to "issues #92 through #122". It did so because workflow subagents see the user's message, here a request for the whole range. Prompt rules alone do not bind a manager, so 1.2.0 also checks the echoed goal.
+- 1.4.0 #170: the Haiku manager called `deepseek_run` with only `cwd` and `prompt`. The bridge ran its default source (`opencode-go`, effort high) with no goal, and the manager then wrote a goal echo of its own that held the scope mark, so the 1.2.0 check passed. A manager echo is not proof: 1.5.0 also compares the model and effort the bridge reports, and a goal phase `none` fails the start too.
 - Commit `scripts/issue-dev/` before a run: the DeepSeek agent commits and pushes on `main`, and it would otherwise include stray working-tree files.
 
 ## Change history
 
+- `2026-10-25` — zt-issue-dev 1.5.0 (relay module v5): the start check. The manager returns the `model` and `reasoning_effort` the bridge reports; a start on another model or effort, or with goal phase `none`, is deleted and started once more, then the issue fails. The start prompt names every key to pass. Found on #170 of the #150–#174 run. The harness has 30 scenarios.
 - `2026-10-24` — zt-issue-dev 1.4.0 (relay module v4): test-time notes. After each issue, `dsh-times.mjs` measures the conversation's commands from its stored log before the delete. The main agent names the slow test runs that were not needed, and the next issues are told not to run them. New arg `testNotes`; the report adds `testNotes` and `testTime`. Checked on the stored #126 conversation: 109 commands, 622 s of shell time, `cargo test --all-targets` 4 runs = 399 s. The harness has 26 scenarios.
 
 - `2026-10-20` — zt-issue-dev 1.3.0: GUI development moves from DeepSeek to the main agent, pinned to `opus`. The main agent follows `gui-first-principles`, the user's GUI preferences (real index cards, focus+context, physical motion, easy set-building) and the GUI pitfalls (rebuild after each edit, CSS class collisions, scratch-archive testing, overlap check). The DeepSeek agent sends one GUI request per issue. The harness has 23 scenarios.

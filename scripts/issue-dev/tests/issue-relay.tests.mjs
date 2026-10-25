@@ -28,11 +28,12 @@ const repoOk = { ok: true, clean: true, pushed: true, zt: { match: true, service
 
 // The goal the bridge echoes for a correct start: it ends with the issue's scope mark.
 const scoped = n => `… Work on no other issue: other issues get their own conversations. Scope: issue #${n} only)`
-// Give every manager answer that lacks one the correctly scoped echo of its issue (from the label, else the only issue).
+// Give every manager answer that lacks them the correctly scoped echo of its issue (from the label, else the only
+// issue) and the model and effort the bridge reports for a correct start.
 const withScope = (answers, issues) => answers.map(a => {
-  if (!a.answer || a.answer.session_id === undefined || a.answer.goal_objective !== undefined) return a
+  if (!a.answer || a.answer.session_id === undefined) return a
   const n = ((a.label || '').match(/#(\d+)/) || [])[1] || issues[0].number
-  return { ...a, answer: { ...a.answer, goal_objective: scoped(n) } }
+  return { ...a, answer: { goal_objective: scoped(n), model: 'deepseek-official/deepseek-flash', reasoning_effort: 'max', ...a.answer } }
 })
 
 const timesQuiet = { ok: true, commands: 3, shellSec: 10, testSec: 5, tests: 1, slow: [] }
@@ -283,13 +284,57 @@ await test('two off-scope starts fail the issue, delete both, and the next issue
   ])
   const [a, b] = r.result.result.issues
   assert.equal(a.outcome, 'failed')
-  assert.match(a.summary, /goal is not "issue #97 only", twice/)
+  assert.match(a.summary, /wrong conversation twice; the last: goal is not "issue #97 only"/)
   assert.equal(a.session, '')
   assert.equal(a.trail.filter(t => t.kind === 'scope').length, 2)
   assert.equal(r.calls.filter(c => /#97 manager delete off-scope/.test(c.label)).length, 2)
   assert.ok(!r.calls.some(c => /#97 (main agent|manager wait|manager respond|manager resume)/.test(c.label)), 'no relay for an off-scope conversation')
   assert.equal(b.outcome, 'done')
   assert.equal(r.result.deepseek.deleted, 3)
+})
+
+await test('a start the bridge reports on another model source is deleted and started once more, though its goal echo looks right', async () => {
+  // #170: the manager dropped model, effort and goal; the bridge ran opencode-go at high effort, the manager made up the echo.
+  const r = await run('wrong model', [issue(170)], [
+    { label: 'manager start$', answer: st({ session_id: 'og', status: 'cancelled', goal_phase: 'paused', model: 'opencode-go/deepseek-v4.1-flash', reasoning_effort: 'high', goal_objective: '/tdd issue #170 ... (scoped to issue #170 only)' }) },
+    { label: 'manager start 2$', answer: done({ session_id: 'good' }) },
+  ])
+  const i = r.result.result.issues[0]
+  assert.equal(i.outcome, 'done')
+  assert.equal(i.session, 'good')
+  assert.equal(i.trail[0].kind, 'scope')
+  assert.match(i.trail[0].result, /model opencode-go\/deepseek-v4\.1-flash at effort high, not deepseek-official\/deepseek-flash at max/)
+  assert.ok(r.calls.some(c => /#170 manager delete off-scope 1$/.test(c.label)))
+  assert.ok(!r.calls.some(c => /#170 manager resume/.test(c.label)), 'a wrong start is not resumed')
+})
+
+await test('a start with the right model but no goal (phase none) is started once more', async () => {
+  const r = await run('phase none', [issue(97)], [
+    { label: 'manager start$', answer: st({ session_id: 'ng', status: 'needs_response', goal_phase: 'none', pending: [{ request_id: 'q', kind: 'question', detail: '{}' }] }) },
+    { label: 'manager start 2$', answer: done({ session_id: 'good' }) },
+  ])
+  assert.equal(r.result.result.issues[0].outcome, 'done')
+  assert.match(r.result.result.issues[0].trail[0].result, /no goal/)
+  assert.ok(!r.calls.some(c => /#97 main agent/.test(c.label)), 'no ask of a goalless start reaches the main agent')
+})
+
+await test('a start whose manager reports no model counts as a wrong start', async () => {
+  const r = await run('no model', [issue(97)], [
+    { label: 'manager start$', answer: st({ session_id: 'nm', model: '' }) },
+    { label: 'manager start 2$', answer: done({ session_id: 'good' }) },
+  ])
+  assert.equal(r.result.result.issues[0].outcome, 'done')
+  assert.match(r.result.result.issues[0].trail[0].result, /model \(none\)/)
+})
+
+await test('the start prompt names every argument to pass and asks for the reported model and effort', async () => {
+  const s = spy.replace('async function zirManage(ctx, p, op, label) {', 'async function zirManage(ctx, p, op, label) {\n  ;(globalThis.__zirPrompts ||= []).push(zirManagerPrompt(op, p, p.waitsPerManager))')
+  globalThis.__zirPrompts = []
+  await run('keys', [issue(71)], [{ label: 'manager start$', answer: done() }], { src: s })
+  const text = globalThis.__zirPrompts[0]
+  assert.match(text, /all 8 keys: cwd, prompt, goal, max_goal_rounds, model, reasoning_effort, skills, wait_seconds/)
+  assert.match(text, /model \(the "model" of the last result, verbatim/)
+  assert.match(text, /reasoning_effort \(the "reasoning_effort" of the last result/)
 })
 
 await test('a mark for another issue whose number starts the same does not pass (#9 vs #97)', async () => {

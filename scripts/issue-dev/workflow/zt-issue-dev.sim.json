@@ -94,7 +94,9 @@
         "error": "",
         "context_pct": 3,
         "waits": 1,
-        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #65 only)"
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #65 only)",
+        "model": "deepseek-official/deepseek-flash",
+        "reasoning_effort": "max"
       }
     },
     {
@@ -124,7 +126,9 @@
         "error": "",
         "context_pct": 8,
         "waits": 2,
-        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #65 only)"
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #65 only)",
+        "model": "deepseek-official/deepseek-flash",
+        "reasoning_effort": "max"
       }
     },
     {
@@ -154,7 +158,9 @@
         "error": "",
         "context_pct": 2,
         "waits": 3,
-        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #66 only)"
+        "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #66 only)",
+        "model": "deepseek-official/deepseek-flash",
+        "reasoning_effort": "max"
       }
     },
     {

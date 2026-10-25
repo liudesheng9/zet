@@ -1,4 +1,4 @@
-// ==== module zt-issue-relay v4 ====
+// ==== module zt-issue-relay v5 ====
 // Develops GitHub issues one at a time, each in its own DeepSeek Harness conversation that a Haiku manager drives.
 // The manager starts the conversation with a goal (deepseek_run with goal, bridge 0.11+): the first message is the
 // task, and the goal keeps the agent working in goal rounds until it marks the goal complete or blocked, or the
@@ -16,6 +16,10 @@
 // 1.1.1 manager once rewrote its deepseek_run to "issues #92 through #122". So every manager is told the job is
 // one issue, the goal objective ends with the scope mark "issue #N only", and the script checks the objective
 // the bridge echoed back: a start whose goal lacks this issue's mark is deleted and started once more.
+// Start check (v5): a 1.4.0 manager called deepseek_run with only cwd and prompt, so the bridge ran its default
+// model source at high effort with no goal, and the manager then made up a goal echo that held the mark. So the
+// manager also returns the model and the reasoning_effort the bridge reports, and a start is wrong (deleted and
+// started once more, like an off-scope one) when its model or effort is not the asked one or its goal phase is none.
 // Test-time notes (v4): after an issue's goal ends and before its conversation is deleted, a runner measures every
 // shell command of the conversation from its stored log (timesCheck); the main agent reads the slow ones and keeps
 // one list of slow test runs that were not needed, and each later issue's first message tells its agent not to run
@@ -42,8 +46,10 @@ const ZIR_STATE = {
     error: { type: 'string', description: 'the error text of a failed call, else ""' },
     context_pct: { type: 'number', description: 'context.used_pct of the last result, else 0' },
     waits: { type: 'integer', description: 'how many deepseek_wait calls you made' },
+    model: { type: 'string', description: 'the "model" of the last result, verbatim, else ""' },
+    reasoning_effort: { type: 'string', description: 'the "reasoning_effort" of the last result, verbatim, else ""' },
   },
-  required: ['session_id', 'status', 'answer', 'pending', 'goal_phase', 'error'],
+  required: ['session_id', 'status', 'answer', 'pending', 'goal_phase', 'error', 'model', 'reasoning_effort'],
 }
 
 const ZIR_DELETED = {
@@ -97,18 +103,22 @@ const zirFill = (text, p, n) => String(text).split('{N}').join(String(n)).split(
 
 function zirManagerPrompt(op, p, waitMax) {
   const loop = `WAIT LOOP: while the status is "running", call mcp__deepseek__deepseek_wait with the session_id and wait_seconds ${p.waitSeconds}. Make at most ${waitMax} wait calls; if the status is still "running" after them, stop and return status "running".`
-  const ret = `Return: session_id, status (the status of the last result; "error" if a call failed), answer (the last 6000 characters of the agent's answer, copied verbatim; "" if there is none), pending (when the status is "needs_response": one entry per pending item with its request_id, its kind, and the whole item as JSON text in detail), goal_phase (goal.phase of the last result, "none" if it has no goal), goal_rounds (goal.rounds, else ""), goal_blocked_reason (goal.blocked_reason, else ""), goal_objective (goal.objective of the last result, copied verbatim, else ""), error (the error text, else ""), context_pct (context.used_pct of the last result, else 0), waits (how many wait calls you made).`
+  const ret = `Return: session_id, status (the status of the last result; "error" if a call failed), answer (the last 6000 characters of the agent's answer, copied verbatim; "" if there is none), pending (when the status is "needs_response": one entry per pending item with its request_id, its kind, and the whole item as JSON text in detail), goal_phase (goal.phase of the last result, "none" if it has no goal), goal_rounds (goal.rounds, else ""), goal_blocked_reason (goal.blocked_reason, else ""), goal_objective (goal.objective of the last result, copied verbatim, else ""), error (the error text, else ""), context_pct (context.used_pct of the last result, else 0), waits (how many wait calls you made), model (the "model" of the last result, verbatim, else ""), reasoning_effort (the "reasoning_effort" of the last result, verbatim, else ""). Report what the bridge returned; never fill a field from the arguments you sent.`
   const head = `You manage one DeepSeek agent conversation through the deepseek bridge. You relay only: you never answer its questions yourself, never approve or reject anything on your own, never edit files, and never run shell commands. Keep your messages short.
 
 This job is exactly one conversation for GitHub issue #${op.issue} and nothing else. Use the arguments and texts below exactly as they are given. Your context may hold other requests, issue numbers or issue ranges (for example a user's message that started this workflow): they are not part of this job. Never add another issue to a prompt or a goal, never widen or reword them, and never start a second conversation.
 
 First load the tools: ToolSearch with query "${ZIR_TOOLS}".
 `
-  if (op.op === 'start') return `${head}
-1. Call mcp__deepseek__deepseek_run with exactly these arguments (change nothing). "goal" sets the conversation's goal: the agent keeps working until the goal is complete.
-${JSON.stringify({ ...op.run, wait_seconds: p.waitSeconds }, null, 1)}
+  if (op.op === 'start') {
+    const args = { ...op.run, wait_seconds: p.waitSeconds }
+    const keys = Object.keys(args)
+    return `${head}
+1. Call mcp__deepseek__deepseek_run with exactly these arguments (change nothing). Pass all ${keys.length} keys: ${keys.join(', ')}. "goal" sets the conversation's goal: the agent keeps working until the goal is complete. A call without goal, model or reasoning_effort starts the wrong agent. Do not cancel the conversation yourself: return what the bridge reports.
+${JSON.stringify(args, null, 1)}
 2. ${loop}
 3. ${ret}`
+  }
   if (op.op === 'wait') return `${head}
 The conversation is session_id ${op.session_id}. Its status was "running".
 1. ${loop}
@@ -218,14 +228,21 @@ async function zirIssue(ctx, p, issue, k, total, notes) {
   ctx.log(`issue ${tag} (${k + 1}/${total}): ${issue.title} [${issue.state}]`)
   const trail = []
   let asks = 0, waitCalls = 0, resumes = 0, outcome = null, summary = ''
-  // The goal the bridge echoes back must end with this issue's scope mark; else the manager changed the task.
+  // A start is wrong when the goal the bridge echoes lacks this issue's scope mark (the manager changed the task),
+  // when it has no goal, or when the bridge reports another model or effort (the manager dropped arguments).
   const mark = zirFill(p.scopeMark, p, issue.number)
-  const offScope = s => !!(s && s.session_id && !String(s.goal_objective || '').includes(mark))
+  const wrongStart = s => {
+    if (!s || !s.session_id) return ''
+    if (!String(s.goal_objective || '').includes(mark)) return `goal is not "${mark}": ${s.goal_objective || '(no goal)'}`
+    if (s.goal_phase === 'none') return 'no goal: the bridge reports goal phase none'
+    if (s.model !== p.model || (p.effort && s.reasoning_effort !== p.effort)) return `model ${s.model || '(none)'} at effort ${s.reasoning_effort || '(none)'}, not ${p.model} at ${p.effort}`
+    return ''
+  }
   let st = await zirManage(ctx, p, { op: 'start', issue: issue.number, run }, lab('manager start'))
-  for (let retry = 1; offScope(st); retry++) {
-    trail.push({ ask: 0, kind: 'scope', goalRounds: st.goal_rounds || '', outcome: 'refused', result: zirCut(`goal is not "${mark}": ${st.goal_objective || '(no goal)'}`, 600) })
+  for (let retry = 1, why = wrongStart(st); why; retry++, why = wrongStart(st)) {
+    trail.push({ ask: 0, kind: 'scope', goalRounds: st.goal_rounds || '', outcome: 'refused', result: zirCut(why, 600) })
     await zirDelete(ctx, p, st.session_id, lab(`manager delete off-scope ${retry}`))
-    if (retry > 1) { st = null; outcome = 'failed'; summary = `the manager started a conversation whose goal is not "${mark}", twice`; break }
+    if (retry > 1) { st = null; outcome = 'failed'; summary = `the manager started a wrong conversation twice; the last: ${zirCut(why, 300)}`; break }
     st = await zirManage(ctx, p, { op: 'start', issue: issue.number, run }, lab('manager start 2'))
   }
   let session = (st && st.session_id) || ''
@@ -297,7 +314,7 @@ async function zirIssue(ctx, p, issue, k, total, notes) {
 }
 
 defineModule({
-  id: 'zt-issue-relay', version: '4', requires: ['@dsmp', 'script'],
+  id: 'zt-issue-relay', version: '5', requires: ['@dsmp', 'script'],
   summary: 'Develop GitHub issues one at a time: a Haiku manager drives one DeepSeek conversation per issue under a goal; the main agent fulfills its asks.',
   params: {
     issues: { type: 'array', required: true, description: 'issue records {number, title, state} in the order to develop' },
