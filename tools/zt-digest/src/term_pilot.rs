@@ -1512,6 +1512,36 @@ fn review_checks(review: &Value, checks: &mut Checks) -> Vec<Value> {
     corrections
 }
 
+/// The whole decision: the choice itself, every item's accept/correct, the correction notes, the
+/// approval's full S30 sample and the rejection's unresolved work. `record` and its unit test use
+/// the same function, so the file path cannot accept a decision the checks refuse.
+fn decision_checks(review: &Value, checks: &mut Checks) -> (String, usize, Vec<Value>) {
+    let decision = at(review, "decision");
+    checks.require(
+        "review.decision",
+        ps::is_in(&decision, &["approve", "reject"]),
+        format!("the review decision `{decision}` is neither `approve` nor `reject`"),
+    );
+    let corrections = review_checks(review, checks);
+    let decided = review["math"].as_array().map(Vec::len).unwrap_or(0)
+        + review["concept"].as_array().map(Vec::len).unwrap_or(0)
+        + review["cards"].as_array().map(Vec::len).unwrap_or(0);
+    checks.require_that("review.items", decided > 0, || "the review sheet decides no item".to_string());
+    match decision.as_str() {
+        "approve" => checks.require(
+            "review.complete",
+            review["complete"] == json!(true),
+            "an approval needs the full three math terms, two concept terms and ten GUI Cards",
+        ),
+        "reject" => {
+            let unresolved = review["unresolved"].as_array().map(Vec::len).unwrap_or(0);
+            checks.require("review.unresolved", unresolved > 0, "a rejection must name its unresolved work");
+        }
+        _ => {}
+    }
+    (decision, decided, corrections)
+}
+
 fn record(zt: &mut Zt, p: &Params) -> Result<Value> {
     if p.decision.trim().is_empty() {
         bail!("-Decision is required: the owner's filled `term-pilot-review.json`");
@@ -1530,18 +1560,7 @@ fn record(zt: &mut Zt, p: &Params) -> Result<Value> {
         );
     }
     let mut checks = Checks::default();
-    let decision = at(&review, "decision");
-    let corrections = review_checks(&review, &mut checks);
-    let decided = review["math"].as_array().map(Vec::len).unwrap_or(0)
-        + review["concept"].as_array().map(Vec::len).unwrap_or(0)
-        + review["cards"].as_array().map(Vec::len).unwrap_or(0);
-    checks.require_that("review.items", decided > 0, || "the review sheet decides no item".to_string());
-    if decision == "approve" {
-        checks.require("review.complete", review["complete"] == json!(true), "an approval needs the full three math terms, two concept terms and ten GUI Cards");
-    } else {
-        let unresolved = review["unresolved"].as_array().map(Vec::len).unwrap_or(0);
-        checks.require("review.unresolved", unresolved > 0, "a rejection must name its unresolved work");
-    }
+    let (decision, decided, corrections) = decision_checks(&review, &mut checks);
     let _ = zt;
     let (ok, checks_value, problems) = checks.reported();
     let record = json!({
@@ -1737,5 +1756,45 @@ mod tests {
         assert!(checks.failures().is_empty());
         assert_eq!(corrections.len(), 1);
         assert_eq!(at(&corrections[0], "note"), "把「均衡」的公式改为 T1");
+    }
+
+    #[test]
+    fn a_complete_approval_passes_and_an_incomplete_or_nameless_one_is_refused() {
+        let mut review = json!({
+            "complete": true,
+            "decision": "approve",
+            "unresolved": [],
+            "math": [{"term": "均衡", "decision": "accept", "note": ""}],
+            "concept": [{"term": "剩余控制权", "decision": "accept", "note": ""}],
+            "cards": [{"address": "K/1", "decision": "accept", "note": ""}],
+        });
+        let mut checks = Checks::default();
+        let (decision, decided, corrections) = decision_checks(&review, &mut checks);
+        assert_eq!(decision, "approve");
+        assert_eq!(decided, 3);
+        assert!(checks.failures().is_empty(), "{:?}", checks.failures());
+        assert!(corrections.is_empty());
+
+        review["complete"] = json!(false);
+        let mut checks = Checks::default();
+        decision_checks(&review, &mut checks);
+        assert_eq!(checks.failures().len(), 1, "an incomplete approval must be refused");
+
+        review["complete"] = json!(true);
+        review["decision"] = json!("reject");
+        let mut checks = Checks::default();
+        decision_checks(&review, &mut checks);
+        assert_eq!(checks.failures().len(), 1, "a rejection must name its unresolved work");
+
+        review["unresolved"] = json!(["the pilot book needs two more math terms"]);
+        let mut checks = Checks::default();
+        let (decision, _, _) = decision_checks(&review, &mut checks);
+        assert_eq!(decision, "reject");
+        assert!(checks.failures().is_empty(), "{:?}", checks.failures());
+
+        review["decision"] = json!("defer");
+        let mut checks = Checks::default();
+        decision_checks(&review, &mut checks);
+        assert_eq!(checks.failures().len(), 1, "a third decision is not recorded");
     }
 }
