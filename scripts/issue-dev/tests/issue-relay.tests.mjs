@@ -35,10 +35,12 @@ const withScope = (answers, issues) => answers.map(a => {
   return { ...a, answer: { ...a.answer, goal_objective: scoped(n) } }
 })
 
-async function run(name, issues, answers, { args = {}, repo = repoOk, src = script } = {}) {
+const timesQuiet = { ok: true, commands: 3, shellSec: 10, testSec: 5, tests: 1, slow: [] }
+
+async function run(name, issues, answers, { args = {}, repo = repoOk, src = script, times = timesQuiet } = {}) {
   globalThis.__zirOps = []
   const sim = {
-    script: { 'issue-list\\.mjs': { ok: true, issues, missing: [] }, 'repo-state\\.mjs': repo },
+    script: { 'issue-list\\.mjs': { ok: true, issues, missing: [] }, 'repo-state\\.mjs': repo, 'dsh-times\\.mjs': times },
     answers: [...withScope(answers, issues), { label: 'manager delete', answer: { deleted: true, cancelled: false, note: '' } }],
   }
   const r = await simulate(src, { sim, args: { issues: issues.map(i => i.number), ...args } })
@@ -320,6 +322,81 @@ await test('the old maxRounds arg is refused', async () => {
   const sim = { script: { 'issue-list\\.mjs': { ok: true, issues: [issue(65)], missing: [] } }, answers: [] }
   const r = await simulate(script, { sim, args: { issues: [65], maxRounds: 3 } })
   assert.match(String(r.error && r.error.message), /args\.maxRounds is not declared/)
+})
+
+// ---- test-time notes (1.4.0) ----
+const { decodeFrames, records, shellTimes, summarize, commandKey } = await import(pathToFileURL(path.join(here, '..', 'dsh-times.mjs')).href)
+const zlib = await import('node:zlib')
+
+await test('dsh-times: frames, foreground, background by notice and by job_output, merged runs', () => {
+  const T = 1_000_000
+  const recs = [
+    { type: 'session', time: T },
+    { type: 'tool/call', time: T + 0, data: { callId: 'a', name: 'pwsh', arguments: JSON.stringify({ command: 'cargo test --bin zt 2>&1 | Select-Object -Last 5', description: 'unit' }) } },
+    { type: 'tool/result', time: T + 30_000, data: { message: { toolCallId: 'a', content: [{ type: 'text', text: 'ok' }] } } },
+    { type: 'tool/call', time: T + 31_000, data: { callId: 'b', name: 'pwsh', arguments: JSON.stringify({ command: 'cargo test --all-targets 2>&1 | Out-String', run_in_background: true }) } },
+    { type: 'tool/result', time: T + 31_010, data: { message: { toolCallId: 'b', content: [{ type: 'text', text: 'started background job pwsh-1' }] } } },
+    { type: 'agent/inbox/spliced', time: T + 231_000, data: { inserted: [{ content: [{ type: 'text', text: 'background job pwsh-1 (pwsh: cargo test --all-targets 2>&1 | Out-String) finished [status: completed, exit code: 0]. Read its output with job_output.' }] }] } },
+    { type: 'tool/call', time: T + 232_000, data: { callId: 'c', name: 'pwsh', arguments: JSON.stringify({ command: 'cargo test --all-targets 2>&1 | Select-String ok', run_in_background: true }) } },
+    { type: 'tool/result', time: T + 232_010, data: { message: { toolCallId: 'c', content: [{ type: 'text', text: 'started background job pwsh-2' }] } } },
+    { type: 'tool/call', time: T + 233_000, data: { callId: 'd', name: 'job_output', arguments: JSON.stringify({ job_id: 'pwsh-2', wait: true }) } },
+    { type: 'tool/result', time: T + 240_000, data: { message: { toolCallId: 'd', content: [{ type: 'text', text: '(no new output)\n[status: running]' }] } } },
+    { type: 'tool/call', time: T + 241_000, data: { callId: 'e', name: 'job_output', arguments: JSON.stringify({ job_id: 'pwsh-2', wait: true }) } },
+    { type: 'tool/result', time: T + 332_000, data: { message: { toolCallId: 'e', content: [{ type: 'text', text: 'test result: ok. 3 passed' }] } } },
+    { type: 'tool/call', time: T + 333_000, data: { callId: 'f', name: 'read', arguments: '{}' } },
+    { type: 'tool/result', time: T + 334_000, data: { message: { toolCallId: 'f', content: [] } } },
+  ]
+  // Two frames, written as dsh appends them.
+  const lines = recs.map(r => JSON.stringify(r) + '\n')
+  const buf = Buffer.concat([zlib.zstdCompressSync(Buffer.from(lines.slice(0, 5).join(''))), zlib.zstdCompressSync(Buffer.from(lines.slice(5).join('')))])
+  const got = shellTimes(records(decodeFrames(buf)))
+  assert.deepEqual(got.map(c => c.sec), [30, 200, 100])
+  assert.deepEqual(got.map(c => c.exit), [null, 0, null])
+  assert.ok(got.every(c => c.finished && c.test))
+  assert.equal(commandKey('cd E:\\zet; cargo test --all-targets 2>&1 | Out-String'), 'cd E:\\zet; cargo test --all-targets')
+  const s = summarize(got, { minSec: 60 })
+  assert.equal(s.commands, 3); assert.equal(s.shellSec, 330); assert.equal(s.tests, 3)
+  assert.deepEqual(s.slow.map(m => [m.cmd, m.sec, m.runs]), [['cargo test --all-targets', 300, 2]])
+})
+
+const slowTimes = { ok: true, commands: 40, shellSec: 900, testSec: 800, tests: 6, slow: [{ sec: 700, test: true, background: true, exit: 0, cmd: 'cargo test --all-targets', example: 'cargo test --all-targets', description: 'whole suite', runs: 4, unfinished: 0 }] }
+const note = { command: 'cargo test --all-targets', sec: 700, reason: 'run 4 times with no code change between the last 3', instead: 'cargo test --bin zt -- <module>::' }
+
+await test('times are read before the delete; slow runs go to the main agent; its notes reach the next issue only', async () => {
+  const r = await run('notes', [issue(150), issue(151)], [
+    { label: '#150 manager start$', answer: done({ session_id: 's150' }) },
+    { label: '#150 test notes$', answer: { notes: [note], summary: 'added the repeated full suite' } },
+    { label: '#151 manager start$', answer: done({ session_id: 's151' }) },
+    { label: '#151 test notes$', answer: { notes: [note], summary: 'kept' } },
+  ], { src: spy, times: slowTimes })
+  const labels = r.calls.map(c => c.label)
+  const at = s => labels.findIndex(l => l.endsWith(s))
+  assert.ok(at('#150 test times: script') >= 0 || at('#150 test times') >= 0, 'times measured')
+  const iTimes = labels.findIndex(l => /#150 test times/.test(l)), iNotes = at('#150 test notes'), iDel = at('#150 manager delete')
+  assert.ok(iTimes < iNotes && iNotes < iDel, `order times < notes < delete: ${labels.join(' | ')}`)
+  const timesCall = r.calls.find(c => /#150 test times/.test(c.label))
+  assert.match(timesCall.command, /dsh-times\.mjs --session s150 --issue 150 --out 'C:\/Users\/chenx\/\.zt-issue-dev\/times\/issue-150\.json'/)
+  const starts = globalThis.__zirOps.filter(o => o.op === 'start')
+  assert.doesNotMatch(starts[0].run.prompt, /Slow test runs not to repeat/)
+  assert.match(starts[1].run.prompt, /--- Slow test runs not to repeat ---[\s\S]*Do not run them in this issue[\s\S]*- `cargo test --all-targets` \(700 s\): run 4 times with no code change between the last 3 Run instead: cargo test --bin zt -- <module>::$/)
+  assert.match(starts[1].run.goal, /Scope: issue #151 only\)$/, 'the goal is unchanged')
+  const res = r.result.result
+  assert.deepEqual(res.testNotes, [note])
+  assert.deepEqual(res.testTime, [{ issue: 150, shellSec: 900, testSec: 800, tests: 6 }, { issue: 151, shellSec: 900, testSec: 800, tests: 6 }])
+  assert.equal(res.issues[0].times.slow[0].runs, 4)
+  assert.equal(res.issues[1].notesGiven, 1)
+})
+
+await test('no slow command: no main-agent call; seeded testNotes reach the first issue; a failed times read keeps the notes', async () => {
+  let r = await run('quiet', [issue(160)], [{ label: 'manager start$', answer: done() }], { src: spy, args: { testNotes: [note] } })
+  assert.ok(!r.calls.some(c => /test notes/.test(c.label)))
+  assert.match(globalThis.__zirOps.find(o => o.op === 'start').run.prompt, /`cargo test --all-targets` \(700 s\)/)
+  assert.deepEqual(r.result.result.testNotes, [note])
+  r = await run('broken', [issue(161)], [{ label: 'manager start$', answer: done() }], { args: { testNotes: [note] }, times: { ok: false, error: 'no stored log for session s' } })
+  assert.equal(r.result.result.issues[0].outcome, 'done')
+  assert.match(r.result.result.issues[0].times.error, /no stored log/)
+  assert.deepEqual(r.result.result.testNotes, [note])
+  assert.ok(!r.calls.some(c => /test notes/.test(c.label)))
 })
 
 console.log(`${passed} passed${process.exitCode ? ', some failed' : ''}`)

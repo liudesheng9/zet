@@ -50,6 +50,28 @@
         "match": true,
         "service": "up"
       }
+    },
+    "dsh-times.mjs": {
+      "ok": true,
+      "session": "s",
+      "issue": 0,
+      "commands": 40,
+      "shellSec": 900,
+      "testSec": 800,
+      "tests": 6,
+      "slow": [
+        {
+          "sec": 700,
+          "test": true,
+          "background": true,
+          "exit": 0,
+          "cmd": "cd E:\\zet; cargo test --all-targets",
+          "example": "cd E:\\zet; cargo test --all-targets 2>&1 | Out-String",
+          "description": "whole suite",
+          "runs": 4,
+          "unfinished": 0
+        }
+      ]
     }
   },
   "answers": [
@@ -106,6 +128,20 @@
       }
     },
     {
+      "label": "#65 test notes$",
+      "answer": {
+        "notes": [
+          {
+            "command": "cd E:\\zet; cargo test --all-targets",
+            "sec": 700,
+            "reason": "run 4 times; 3 runs followed only doc changes",
+            "instead": "cargo test --bin zt -- <module>::"
+          }
+        ],
+        "summary": "added the repeated full suite"
+      }
+    },
+    {
       "label": "#66 manager start$",
       "answer": {
         "session_id": "s66",
@@ -119,6 +155,20 @@
         "context_pct": 2,
         "waits": 3,
         "goal_objective": "… Work on no other issue: other issues get their own conversations. Scope: issue #66 only)"
+      }
+    },
+    {
+      "label": "#66 test notes$",
+      "answer": {
+        "notes": [
+          {
+            "command": "cd E:\\zet; cargo test --all-targets",
+            "sec": 700,
+            "reason": "run 4 times; 3 runs followed only doc changes",
+            "instead": "cargo test --bin zt -- <module>::"
+          }
+        ],
+        "summary": "kept"
       }
     },
     {

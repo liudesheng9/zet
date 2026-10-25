@@ -1,4 +1,4 @@
-// ==== module zt-issue-relay v3 ====
+// ==== module zt-issue-relay v4 ====
 // Develops GitHub issues one at a time, each in its own DeepSeek Harness conversation that a Haiku manager drives.
 // The manager starts the conversation with a goal (deepseek_run with goal, bridge 0.11+): the first message is the
 // task, and the goal keeps the agent working in goal rounds until it marks the goal complete or blocked, or the
@@ -16,6 +16,10 @@
 // 1.1.1 manager once rewrote its deepseek_run to "issues #92 through #122". So every manager is told the job is
 // one issue, the goal objective ends with the scope mark "issue #N only", and the script checks the objective
 // the bridge echoed back: a start whose goal lacks this issue's mark is deleted and started once more.
+// Test-time notes (v4): after an issue's goal ends and before its conversation is deleted, a runner measures every
+// shell command of the conversation from its stored log (timesCheck); the main agent reads the slow ones and keeps
+// one list of slow test runs that were not needed, and each later issue's first message tells its agent not to run
+// them. The list starts from the testNotes param and comes back in the output for the next run.
 
 const ZIR_STATE = {
   type: 'object',
@@ -59,8 +63,25 @@ const ZIR_EXEC = {
   required: ['outcome', 'result', 'answers', 'decision'],
 }
 
+const ZIR_NOTES = {
+  type: 'object',
+  properties: {
+    notes: {
+      type: 'array', description: 'the whole list after this issue: the earlier notes you keep plus new ones, at most 10',
+      items: { type: 'object', properties: {
+        command: { type: 'string', description: 'the test command (as measured) the agents must not run' },
+        sec: { type: 'number', description: 'the seconds it took in the issue where it was measured' },
+        reason: { type: 'string', description: 'why it was not needed, one sentence' },
+        instead: { type: 'string', description: 'the narrower test to run instead, or ""' } },
+        required: ['command', 'sec', 'reason', 'instead'] },
+    },
+    summary: { type: 'string', description: 'one sentence: what you added or dropped and why' },
+  },
+  required: ['notes', 'summary'],
+}
+
 // The declared defaults; the kernel passes only the params a blueprint gives.
-const ZIR_DEFAULTS = { skills: [], maxGoalRounds: 60, maxAsks: 40, waitSeconds: 900, waitsPerManager: 12, maxWaitCalls: 8, managerRole: 'manager', executorRole: 'executor', runnerRole: 'runner', cleanupWorkspace: true }
+const ZIR_DEFAULTS = { skills: [], maxGoalRounds: 60, maxAsks: 40, waitSeconds: 900, waitsPerManager: 12, maxWaitCalls: 8, managerRole: 'manager', executorRole: 'executor', runnerRole: 'runner', cleanupWorkspace: true, timesCheck: '', testNotes: [], notesHeader: '' }
 
 const ZIR_TOOLS = 'select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_goal,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete'
 
@@ -144,15 +165,50 @@ Do what it asks, within your rules, then return outcome, result, answers and dec
     { role: p.executorRole, schema: ZIR_EXEC, label })
 }
 
-const zirCut = (s, n) => (String(s || '').length > n ? String(s).slice(0, n) + `\n[... cut at ${n} characters]` : String(s || ''))
+// The text added to the first message for the notes kept so far ("" when there are none).
+function zirNotesText(p, notes) {
+  if (!notes || !notes.length) return ''
+  const lines = notes.map(n => `- \`${n.command}\` (${Math.round(n.sec)} s): ${n.reason}${n.instead ? ` Run instead: ${n.instead}` : ''}`)
+  return `${p.notesHeader}\n${lines.join('\n')}`
+}
+
+async function zirTimes(ctx, p, issue, session, lab) {
+  if (!p.timesCheck || !session || !/^[\w.-]+$/.test(session)) return null
+  try {
+    return await wfpScript(ctx, { command: p.timesCheck.split('{N}').join(String(issue.number)).split('{SESSION}').join(session), cwd: p.cwd, role: p.runnerRole, label: lab('test times'), timeoutMs: 300000 })
+  } catch (e) { return { ok: false, error: String(e && e.message || e) } }
+}
+
+// The main agent reads one issue's slow commands and returns the updated list of test runs not to repeat.
+async function zirJudgeNotes(ctx, p, issue, times, notes, lab) {
+  const slow = (times && times.ok && times.slow) || []
+  if (!slow.length) return { notes, summary: 'no slow command', judged: false }
+  const r = await ctx.agent(`The DeepSeek agent of GitHub issue #${issue.number} ("${issue.title}") of ${p.repo} has finished. A script measured the shell commands of its conversation: ${times.commands} commands, ${times.shellSec} s in all, ${times.tests} test runs, ${times.testSec} s of tests. The slow ones (the runs of one command added up; the output filter after the first pipe is left out):
+${JSON.stringify(slow, null, 1)}
+
+The notes so far (each later issue's agent is told not to run these):
+${JSON.stringify(notes, null, 1)}
+
+Your job: keep one short list of slow test runs that the agents did not need, so the next issues skip them. Read only: run no tests or builds, change no files. You may read the repository (git log, git show --stat, the test files, AGENTS.md, docs/wiki) to judge what a run covers.
+- Add a note for a test command that took long and was not needed for this issue: a whole suite run again with no code change since its last pass, the same suite run several times where one final run would do, a suite of an area the issue did not touch, or a full run where a filtered run covers the changed code. Give the narrower run in instead when there is one.
+- Do not add a note for a run that was needed: the tests of the changed code, or one final full run of the crate the issue changed. A slow command that is not a test (a build, an install) gets no note.
+- Keep the earlier notes that still hold; drop one only when this issue shows it was needed. At most 10 notes; command is the measured command text.
+Return notes (the whole list) and summary.`,
+    { role: p.executorRole, schema: ZIR_NOTES, label: lab('test notes') })
+  if (!r || !Array.isArray(r.notes)) return { notes, summary: 'the main agent returned nothing; notes kept', judged: false }
+  return { notes: r.notes.slice(0, 10), summary: zirCut(r.summary, 400), judged: true }
+}
+
+const zirCut = (s, n) =>(String(s || '').length > n ? String(s).slice(0, n) + `\n[... cut at ${n} characters]` : String(s || ''))
 const zirTail = (s, n) => (String(s || '').length > n ? String(s).slice(-n) : String(s || ''))
 
-async function zirIssue(ctx, p, issue, k, total) {
+async function zirIssue(ctx, p, issue, k, total, notes) {
   const tag = `#${issue.number}`
   const lab = s => `${ctx.label}: ${tag} ${s}`
+  const notesText = zirNotesText(p, notes)
   const run = {
     cwd: p.cwd,
-    prompt: zirFill(`${p.taskPrompt}\n\n${p.protocol}`, p, issue.number),
+    prompt: zirFill(`${p.taskPrompt}\n\n${p.protocol}`, p, issue.number) + (notesText ? `\n\n${notesText}` : ''),
     goal: zirFill(p.goalObjective, p, issue.number),
     max_goal_rounds: p.maxGoalRounds,
     model: p.model,
@@ -220,6 +276,9 @@ async function zirIssue(ctx, p, issue, k, total) {
     }
     outcome = 'failed'; summary = `${st.status}, goal ${st.goal_phase}: ${zirCut(st.error || said.text, 600)}`
   }
+  // The stored log goes with the conversation, so the times are read before the delete.
+  const times = await zirTimes(ctx, p, issue, session, lab)
+  const judged = await zirJudgeNotes(ctx, p, issue, times, notes || [], lab)
   const del = await zirDelete(ctx, p, session, lab('manager delete'))
   let repo = null
   try {
@@ -229,13 +288,16 @@ async function zirIssue(ctx, p, issue, k, total) {
     number: issue.number, title: issue.title, stateBefore: issue.state, outcome, summary: zirCut(summary, 1500),
     goalRounds: (st && st.goal_rounds) || '', asks, session, deleted: !!(del && del.deleted),
     lastAnswer: outcome === 'done' ? '' : zirTail(st && st.answer, 2000), trail, repo,
+    notesGiven: (notes || []).length,
+    times: times && times.ok ? { commands: times.commands, shellSec: times.shellSec, tests: times.tests, testSec: times.testSec, slow: times.slow, out: times.out || '' } : (times ? { error: zirCut(times.error, 600) } : null),
+    notes: judged.notes, notesSummary: judged.summary,
   }
   ctx.log(`issue ${tag}: ${outcome}${summary ? ' — ' + zirCut(summary, 200) : ''}`)
   return res
 }
 
 defineModule({
-  id: 'zt-issue-relay', version: '3', requires: ['@dsmp', 'script'],
+  id: 'zt-issue-relay', version: '4', requires: ['@dsmp', 'script'],
   summary: 'Develop GitHub issues one at a time: a Haiku manager drives one DeepSeek conversation per issue under a goal; the main agent fulfills its asks.',
   params: {
     issues: { type: 'array', required: true, description: 'issue records {number, title, state} in the order to develop' },
@@ -258,12 +320,20 @@ defineModule({
     executorRole: { type: 'string', default: 'executor', role: true, description: 'the main agent role' },
     runnerRole: { type: 'string', default: 'runner', role: true, description: 'the role that runs the repo check' },
     cleanupWorkspace: { type: 'boolean', default: true, description: 'remove the workspace from the DeepSeek Desktop at the end when it holds no conversations' },
+    timesCheck: { type: 'string', default: '', description: 'the command that measures a conversation\'s shell commands from its stored log; {N} is the issue number, {SESSION} the session id; "" measures nothing' },
+    testNotes: { type: 'array', default: [], description: 'the notes to start with: {command, sec, reason, instead} of slow test runs not to repeat' },
+    notesHeader: { type: 'string', default: '', description: 'the text before the notes in the first message' },
   },
   run: async (ctx, params) => {
     const p = { ...ZIR_DEFAULTS, ...Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null)) }
     const issues = wfpClone(p.issues)
     const results = []
-    for (const [k, issue] of issues.entries()) results.push(await zirIssue(ctx, p, issue, k, issues.length))
+    let notes = wfpClone(p.testNotes || [])
+    for (const [k, issue] of issues.entries()) {
+      const r = await zirIssue(ctx, p, issue, k, issues.length, notes)
+      notes = r.notes
+      results.push(r)
+    }
     let workspace = null
     if (p.cleanupWorkspace && issues.length) workspace = (await dsCleanupWorkspaces([p.cwd], { ownWorkspaces: false, label: `${ctx.label}: workspace cleanup`, phase: ctx.phase }))[0] || null
     const count = o => results.filter(r => r.outcome === o).length
@@ -272,7 +342,8 @@ defineModule({
       notDone: results.filter(r => r.outcome !== 'done').map(r => `#${r.number} ${r.outcome}`),
       repoNotOk: results.filter(r => !(r.repo && r.repo.ok)).map(r => `#${r.number}`),
       notDeleted: results.filter(r => r.session && !r.deleted).map(r => r.session),
-      workspace,
+      workspace, testNotes: notes,
+      testTime: results.map(r => ({ issue: r.number, ...(r.times && !r.times.error ? { shellSec: r.times.shellSec, testSec: r.times.testSec, tests: r.times.tests } : { error: r.times ? r.times.error : 'not measured' }) })),
     }
   },
 })
