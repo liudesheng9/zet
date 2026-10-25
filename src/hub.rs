@@ -2541,7 +2541,8 @@ mod tests {
                 .expect(title);
             }
             let index = ops::create_topic(root, Access::Owner, Workspace::Agent, "# 索引\n\n入口。\n")
-                .expect("agent Topic");
+                .expect("agent Topic")
+                .0;
             let register = ops::create_successor(
                 root,
                 Access::Owner,
@@ -2551,7 +2552,8 @@ mod tests {
                 None,
                 "# 索引：代理工作区的入口\n\n## 词条\n",
             )
-            .expect("register");
+            .expect("register")
+            .0;
             ops::edit(
                 root,
                 Access::Owner,
@@ -2565,7 +2567,8 @@ mod tests {
             )
             .expect("register level");
             let topic = ops::create_topic(root, Access::Owner, Workspace::Agent, "# 学习\n\n学。\n")
-                .expect("agent Topic");
+                .expect("agent Topic")
+                .0;
             let first = ops::create_successor(
                 root,
                 Access::Owner,
@@ -2575,7 +2578,8 @@ mod tests {
                 None,
                 "# 学习的第一张卡\n\n文本。\n",
             )
-            .expect("topic Card");
+            .expect("topic Card")
+            .0;
             for (title, body) in [
                 ("学习的个体行为", "学习改变信念。\n\n来源：[[bookA]]"),
                 ("学习的产业生产率", "学习提高产出。\n\n来源：[[bookB]]"),
@@ -2589,7 +2593,8 @@ mod tests {
                     None,
                     &format!("# {title}\n\n{body}\n"),
                 )
-                .expect("topic Card");
+                .expect("topic Card")
+            .0;
             }
             // The register accepts the term its entry Card states.
             ops::edit(
@@ -2604,7 +2609,8 @@ mod tests {
             )
             .expect("register body");
             let human = ops::create_topic(root, Access::Owner, Workspace::Human, "# 人的主题\n\n人。\n")
-                .expect("human Topic");
+                .expect("human Topic")
+                .0;
             let human_card = ops::create_successor(
                 root,
                 Access::Owner,
@@ -2614,7 +2620,8 @@ mod tests {
                 None,
                 "# 人的卡\n\n文本。\n",
             )
-            .expect("human Card");
+            .expect("human Card")
+            .0;
             let snapshot = Snapshot::read(root).expect("snapshot");
             Self {
                 _temp: temp,
@@ -2668,7 +2675,8 @@ mod tests {
                 None,
                 "# 学习的入口\n\n## 个体学习\n- [[bookA]]：学习会改变个体的信念。\n",
             )
-            .expect("topic hub");
+            .expect("topic hub")
+            .0;
             ops::edit(
                 root,
                 Access::Owner,
@@ -3038,7 +3046,8 @@ mod tests {
         )
         .expect("Book A");
         let topic = ops::create_topic(root, Access::Owner, Workspace::Agent, "# 学习\n\n学。\n")
-            .expect("Topic");
+            .expect("Topic")
+            .0;
         let card = ops::create_successor(
             root,
             Access::Owner,
@@ -3048,7 +3057,8 @@ mod tests {
             None,
             "# 学习的个体行为\n\n学习会改变个体的信念。\n",
         )
-        .expect("Card");
+        .expect("Card")
+        .0;
         let snapshot = Snapshot::read(root).expect("snapshot");
         let plan = draft(
             &snapshot,

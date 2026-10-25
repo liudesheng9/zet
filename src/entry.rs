@@ -4206,7 +4206,8 @@ mod tests {
         }
         let topic =
             crate::ops::create_topic(root, crate::Access::Owner, Workspace::Agent, "# 索引\n")
-                .expect("index topic");
+                .expect("index topic")
+                .0;
         let register = format!("{}/1", crate::tree_id(&topic));
         let register = {
             let made = crate::ops::create_successor(
@@ -4221,7 +4222,8 @@ mod tests {
                     body.replace("{register}", &register)
                 ),
             )
-            .expect("register");
+            .expect("register")
+            .0;
             assert_eq!(made, register, "the register sits at its tree's first place");
             made
         };
@@ -4513,7 +4515,8 @@ mod tests {
             None,
             "# 词条 A–F\n\n## 词条\n- 学习：[[bookB/1]]\n",
         )
-        .expect("register part");
+        .expect("register part")
+        .0;
         assert_eq!(part, format!("{register}|a"));
         edit(
             temp.path(),
@@ -5599,7 +5602,8 @@ mod tests {
                 None,
                 &format!("# 卡{index}\n\n第 {index} 张陈述。\n\n来源：[[bookA]]\n"),
             )
-            .expect("a Card");
+            .expect("a Card")
+            .0;
             parent = address.clone();
             made.push(address);
         }
@@ -5900,7 +5904,8 @@ mod tests {
             Workspace::Agent,
             "# 学习树\n\n问题树。",
         )
-        .expect("topic");
+        .expect("topic")
+        .0;
         crate::ops::create_successor(
             temp.path(),
             crate::Access::Owner,

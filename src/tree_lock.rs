@@ -3592,7 +3592,8 @@ mod tests {
     /// `<tree>/1|a`, which links the first Card.
     fn topic_tree(conn: &mut Connection) -> String {
         let root = crate::create_topic(conn, Workspace::Human, &card_text("Topic", "root body"))
-            .expect("create topic");
+            .expect("create topic")
+            .0;
         let tree = crate::tree_id(&root).to_string();
         let first = format!("{tree}/1");
         crate::insert_card(
@@ -4684,7 +4685,8 @@ mod tests {
     /// A Topic tree whose first Card links `target`, so a Lock on the tree pins that Card.
     fn linking_tree(conn: &mut Connection, title: &str, target: &str) -> String {
         let root = crate::create_topic(conn, Workspace::Human, &card_text(title, "root body"))
-            .expect("create topic");
+            .expect("create topic")
+            .0;
         let first = format!("{}/1", crate::tree_id(&root));
         crate::insert_card(
             conn,
@@ -4702,7 +4704,8 @@ mod tests {
     /// A Topic tree whose Cards link nothing.
     fn plain_tree(conn: &mut Connection, title: &str) -> (String, String) {
         let root = crate::create_topic(conn, Workspace::Human, &card_text(title, "root body"))
-            .expect("create topic");
+            .expect("create topic")
+            .0;
         let first = format!("{}/1", crate::tree_id(&root));
         crate::insert_card(
             conn,

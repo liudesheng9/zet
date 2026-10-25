@@ -378,6 +378,7 @@ fn owned_paragraph(
     }
     crate::link_index::validate(conn, text, None)?;
     let changed = body != original_body;
+    let mut accepted = crate::gate::Accepted::none();
     if changed {
         let mut written = card.text.clone();
         let inserted = if range.is_empty() {
@@ -399,16 +400,27 @@ fn owned_paragraph(
         };
         written.replace_range(range, &inserted);
         crate::artifact::require_present(root, &written)?;
-        crate::validate_card_text(conn, address, &written, Some(&card.text))?;
+        accepted = crate::gate::check_proposed(
+            conn,
+            &crate::gate::Candidate::edit(
+                &card,
+                &written,
+                card.card_type,
+                card.facet.clone(),
+                card.emphasis,
+                card.level,
+                card.hub_level,
+                card.form,
+            ),
+        )?;
         conn.execute(
             "UPDATE cards SET text=?1 WHERE row_id=?2",
             rusqlite::params![written, card.row_id],
         )?;
     }
-    Ok((
-        json!({"address":address,"owned_paragraph":{"address":address,"text":text,"replaces_receipt":replaces,"adopted":adopted}}),
-        changed,
-    ))
+    let mut result = json!({"address":address,"owned_paragraph":{"address":address,"text":text,"replaces_receipt":replaces,"adopted":adopted}});
+    accepted.attach(&mut result);
+    Ok((result, changed))
 }
 
 fn authored_bytes(arguments: &Value) -> usize {
@@ -783,17 +795,27 @@ fn simulate(
                     json!({"op_key":op_key,"client_ref":client_ref,"result":result,"replayed":false}),
                 );
             }
-            Err(error) => match error.downcast_ref::<crate::tree_lock::Refusal>() {
-                // R195: record the refusal with its item identity and keep the plan going.
-                Some(refusal) if preview => {
-                    refusals.push(
-                        json!({"index":index,"op_key":op_key,"client_ref":client_ref,"refusal":refusal.value()}),
-                    );
-                    failed.insert(client_ref.to_string(), identity);
+            Err(error) => {
+                // R0175: a blocking Card-check refusal names the zero-based item, its tool and its
+                // operation key, and rolls the whole real batch back. The exhaustive preview
+                // collection of card_check refusals is S05 (#147).
+                if let Some(refusal) = error.downcast_ref::<crate::gate::Refusal>() {
+                    return Err(anyhow::Error::new(
+                        refusal.clone().in_batch(index, tool, op_key),
+                    ));
                 }
-                // R197: every non-Lock failure keeps its current fail-fast contract.
-                _ => return Err(error),
-            },
+                match error.downcast_ref::<crate::tree_lock::Refusal>() {
+                    // R195: record the refusal with its item identity and keep the plan going.
+                    Some(refusal) if preview => {
+                        refusals.push(
+                            json!({"index":index,"op_key":op_key,"client_ref":client_ref,"refusal":refusal.value()}),
+                        );
+                        failed.insert(client_ref.to_string(), identity);
+                    }
+                    // R197: every non-Lock failure keeps its current fail-fast contract.
+                    _ => return Err(error),
+                }
+            }
         }
     }
     if !changed.is_empty() {

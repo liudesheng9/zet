@@ -138,8 +138,14 @@ pub(super) fn help_for(context: PointerContext) -> Help {
     }
 }
 
-pub(super) fn pointer_context(root: &Path, pointer: &Pointer) -> Result<PointerContext> {
-    match pointer {
+/// Print the warnings of an accepted write, compactly, above the refreshed view (R0176).
+fn show_check(accepted: &crate::gate::Accepted) {
+    for line in accepted.lines() {
+        println!("check: {line}");
+    }
+}
+
+pub(super) fn pointer_context(root: &Path, pointer: &Pointer) -> Result<PointerContext> {    match pointer {
         Pointer::Root => Ok(PointerContext::Root),
         Pointer::Card(target) => {
             let conn = crate::open_db(root)?;
@@ -541,7 +547,9 @@ fn execute_command(
             let workspace = state.workspace;
             let mut created = None;
             let mut save = |text: &str| {
-                created = Some(crate::create_topic(&mut conn, workspace, text)?);
+                let (location, accepted) = crate::create_topic(&mut conn, workspace, text)?;
+                show_check(&accepted);
+                created = Some(location);
                 Ok(())
             };
             if interaction.edit(&crate::topic_template(&title), "edit mode", &mut save)?
@@ -564,7 +572,7 @@ fn execute_command(
             // checks again, because an editor can outlive the view this precheck reads.
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&location))?;
             let mut save = |text: &str| {
-                crate::insert_card(
+                let accepted = crate::insert_card(
                     &mut conn,
                     &location,
                     false,
@@ -572,7 +580,9 @@ fn execute_command(
                     crate::CardType::Idea,
                     None,
                     text,
-                )
+                )?;
+                show_check(&accepted);
+                Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(location);
@@ -588,7 +598,7 @@ fn execute_command(
             let location = crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&location))?;
             let mut save = |text: &str| {
-                crate::insert_card(
+                let accepted = crate::insert_card(
                     &mut conn,
                     &location,
                     false,
@@ -596,7 +606,9 @@ fn execute_command(
                     crate::CardType::Idea,
                     None,
                     text,
-                )
+                )?;
+                show_check(&accepted);
+                Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(location);
@@ -626,7 +638,15 @@ fn execute_command(
             let mut save_text = |edited: &str| {
                 let parsed = crate::parse_literature_edit_text(edited)?;
                 let text = crate::compose_card_text(&metadata.title, &parsed.body, "");
-                crate::insert_literature_card(&mut conn, &citation_key, workspace, &bibtex, &text)
+                let accepted = crate::insert_literature_card(
+                    &mut conn,
+                    &citation_key,
+                    workspace,
+                    &bibtex,
+                    &text,
+                )?;
+                show_check(&accepted);
+                Ok(())
             };
             if interaction.edit(&initial_text, "edit mode", &mut save_text)? {
                 state.pointer = Pointer::Card(citation_key);
@@ -684,25 +704,33 @@ fn execute_command(
                             )?;
                             interaction.confirm("move", &lines)?;
                         }
-                        crate::update_literature_metadata(
+                        let accepted = crate::update_literature_metadata(
                             &mut conn,
                             &card,
                             &metadata.citation_key,
                             &bibtex,
                             &metadata.title,
                         )?;
+                        show_check(&accepted);
                         state.pointer = Pointer::Card(metadata.citation_key);
                         Ok(Execution::Continue(CommandResult::Changed))
                     }
                     crate::EditPart::Text => {
-                        let mut save =
-                            |text: &str| crate::update_literature_text(&mut conn, &card, text);
+                        let mut save = |text: &str| {
+                            let accepted = crate::update_literature_text(&mut conn, &card, text)?;
+                            show_check(&accepted);
+                            Ok(())
+                        };
                         interaction.edit(&card.text, "edit mode", &mut save)?;
                         Ok(Execution::Continue(CommandResult::Changed))
                     }
                 };
             }
-            let mut save = |text: &str| crate::update_card_text(&mut conn, &card, text);
+            let mut save = |text: &str| {
+                let accepted = crate::update_card_text(&mut conn, &card, text)?;
+                show_check(&accepted);
+                Ok(())
+            };
             interaction.edit(&card.text, "edit mode", &mut save)?;
             Ok(Execution::Continue(CommandResult::Changed))
         }
@@ -769,7 +797,15 @@ fn execute_command(
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
             interaction.confirm("insert", &crate::place::insert_verification_lines(&plan))?;
             let mut save = |text: &str| {
-                crate::place::apply_insert_plan(&mut conn, &plan, crate::CardType::Idea, None, text)
+                let accepted = crate::place::apply_insert_plan(
+                    &mut conn,
+                    &plan,
+                    crate::CardType::Idea,
+                    None,
+                    text,
+                )?;
+                show_check(&accepted);
+                Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(plan.location.clone());
@@ -788,45 +824,64 @@ fn execute_command(
                 _ => bail!("only Model Cards can have a Model facet"),
             };
             let _lock = crate::acquire_edit_lock(root, "session ty")?;
-            let conn = crate::open_db(root)?;
+            let mut conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
-            // A part keeps its emphasis while it stays a part.
+            // A part keeps its emphasis while it stays a part. The type change is one combined
+            // candidate through the same gate as every other authoring route (R0163).
             let emphasis = card.emphasis.filter(|_| facet.is_some());
-            let tx = conn.unchecked_transaction()?;
-            crate::model::set(&tx, &card, card_type, facet.as_ref(), emphasis)?;
-            if (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis)
-                && crate::link_index::ready(&tx)
-            {
-                crate::link_index::bump_revision(&tx)?;
+            let change = crate::ops::TypeChange {
+                card_type: Some(card_type),
+                facet: Some(facet),
+                emphasis: Some(emphasis),
+                ..crate::ops::TypeChange::default()
+            };
+            let tx = conn.transaction()?;
+            let (address, changed, accepted) = crate::ops::edit_tx(
+                &tx,
+                crate::Access::Owner,
+                &at,
+                None,
+                change,
+                None,
+            )?;
+            if changed {
+                crate::link_index::source_changed(&tx, &address)?;
             }
             tx.commit()?;
+            show_check(&accepted);
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["ty", ..] => bail!("usage: ty <idea|event|finding|model|hub> [<facet>]"),
         ["lv", value] => {
             let at = state.current_card("lv")?;
             let _lock = crate::acquire_edit_lock(root, "session lv")?;
-            let conn = crate::open_db(root)?;
+            let mut conn = crate::open_db(root)?;
             let card = crate::load_card(&conn, &at)?;
-            let tx = conn.unchecked_transaction()?;
-            let changed;
-            if card.card_type == crate::CardType::Hub {
+            let change = if card.card_type == crate::CardType::Hub {
                 let level = if value.eq_ignore_ascii_case("none") {
                     None
                 } else {
                     Some(crate::hub::HubLevel::parse(value)?)
                 };
-                changed = level != card.hub_level;
-                crate::hub::set_level(&tx, &card, level)?;
+                crate::ops::TypeChange {
+                    hub_level: Some(level),
+                    ..crate::ops::TypeChange::default()
+                }
             } else {
                 let level = crate::model::parse_optional_level(value)?;
-                changed = level != card.level;
-                crate::model::set_level(&tx, &card, level)?;
-            }
-            if changed && crate::link_index::ready(&tx) {
-                crate::link_index::bump_revision(&tx)?;
+                crate::ops::TypeChange {
+                    level: Some(level),
+                    ..crate::ops::TypeChange::default()
+                }
+            };
+            let tx = conn.transaction()?;
+            let (address, changed, accepted) =
+                crate::ops::edit_tx(&tx, crate::Access::Owner, &at, None, change, None)?;
+            if changed {
+                crate::link_index::source_changed(&tx, &address)?;
             }
             tx.commit()?;
+            show_check(&accepted);
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["lv", ..] => bail!("usage: lv <level|none>"),
@@ -834,14 +889,19 @@ fn execute_command(
             let at = state.current_card("mf")?;
             let form = crate::math::parse_optional_form(value)?;
             let _lock = crate::acquire_edit_lock(root, "session mf")?;
-            let conn = crate::open_db(root)?;
-            let card = crate::load_card(&conn, &at)?;
-            let tx = conn.unchecked_transaction()?;
-            crate::math::set_form(&tx, &card, form)?;
-            if form != card.form && crate::link_index::ready(&tx) {
-                crate::link_index::bump_revision(&tx)?;
+            let mut conn = crate::open_db(root)?;
+            let change = crate::ops::TypeChange {
+                form: Some(form),
+                ..crate::ops::TypeChange::default()
+            };
+            let tx = conn.transaction()?;
+            let (address, changed, accepted) =
+                crate::ops::edit_tx(&tx, crate::Access::Owner, &at, None, change, None)?;
+            if changed {
+                crate::link_index::source_changed(&tx, &address)?;
             }
             tx.commit()?;
+            show_check(&accepted);
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["mf", ..] => bail!("usage: mf <form|none>"),
@@ -1381,6 +1441,36 @@ mod tests {
             "only Regular Cards can be Event, Finding, Model, or Hub Cards"
         );
         assert_eq!(card_type("0/0"), crate::CardType::Idea);
+    }
+
+    /// S04-AC03/R0163: the Session's own type setter reaches the shared gate; an
+    /// enforcing archive refuses the retype and leaves the stored type alone.
+    #[test]
+    fn the_session_retype_reaches_the_shared_gate() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        let mut conn = crate::open_db(temp.path()).expect("open database");
+        conn.execute(
+            "INSERT INTO cards(location, is_topic, is_lit, text, workspace, card_type) VALUES\
+             ('0/0', 1, 0, '# Topic\n\n主题说明。\n', 'agent', 'idea'),\
+             ('0/1', 0, 0, '# Base\n\n这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。\n', 'agent', 'idea')",
+            [],
+        )
+        .expect("insert Cards");
+        crate::gate::change_stage(&mut conn, "enforce").expect("enforce");
+        drop(conn);
+        let card_type = |at: &str| {
+            let conn = crate::open_db(temp.path()).expect("open database");
+            crate::load_card(&conn, at).expect("card").card_type
+        };
+        let mut state = SessionState::at("0/1");
+        let error = execute_without_interaction(temp.path(), &mut state, "ty event")
+            .expect_err("an Event must meet the Event format");
+        assert!(
+            error.downcast_ref::<crate::gate::Refusal>().is_some(),
+            "{error:#}"
+        );
+        assert_eq!(card_type("0/1"), crate::CardType::Idea);
     }
 
     /// S11 (#134) R263: `del keep-root` empties a Tree and keeps the Pointer on its retained root.

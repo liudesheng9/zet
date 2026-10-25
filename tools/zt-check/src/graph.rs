@@ -3,139 +3,14 @@
 //! never inputs. Inbound sources may be in either Workspace.
 
 use anyhow::{Context, Result, bail};
-use regex::Regex;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::LazyLock;
+use std::collections::{BTreeMap, BTreeSet};
 
-// The orphan rule vocabulary is the core's, shared with I5; this module keeps
-// the whole-archive classification and report that the audit path calls.
-pub use crate::core::{EXCLUDED, SUBSTANTIVE, is_orphan};
-
-static ANCHOR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^/]+/\d+$").unwrap());
-static TERMS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
-static NOTATION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(符号表|notation)").unwrap());
-static STRUCTURE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^本卡是《.*》的结构卡").unwrap());
-
-/// Whether a Card body holds the `## 同述入口` section: the derived navigation role of an accepted
-/// restatement entry (§4.5, D086). The role is derived from the written text on every read, never
-/// stored as Card metadata; a heading inside a code fence is not a section.
-pub fn is_restatement_entry(body: &str) -> bool {
-    let mut fenced = false;
-    for raw in body.lines() {
-        let trimmed = raw.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
-        }
-        if let Some(heading) = trimmed
-            .strip_prefix("## ")
-            .or_else(|| trimmed.strip_prefix("### "))
-            && heading.trim() == "同述入口"
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn field<'a>(card: &'a Value, name: &str) -> &'a str {
-    card[name].as_str().unwrap_or_default()
-}
-
-/// Classify the same metadata for audit, compiler and standalone checks. A scope that does not
-/// read the register's declaration classifies no Card as a register part; the register read does.
-pub fn category(
-    card: &Value,
-    literature: &HashSet<String>,
-    anchors: &HashMap<String, usize>,
-) -> String {
-    category_with_parts(card, literature, anchors, &HashSet::new())
-}
-
-/// The same classification, with the addresses a register's root declares under `词条分册` (§8.5,
-/// D188): a register part is a navigation Card holding term rows, not a substantive Idea, so it
-/// triggers no claim-title or Idea-size rule and needs no topic hub of its own.
-pub fn category_with_parts(
-    card: &Value,
-    literature: &HashSet<String>,
-    anchors: &HashMap<String, usize>,
-    register_parts: &HashSet<String>,
-) -> String {
-    if register_parts.contains(field(card, "address")) {
-        return "register-part".into();
-    }
-    if matches!(field(card, "kind"), "topic" | "literature") {
-        return "root".into();
-    }
-    match field(card, "type") {
-        "finding" => return "finding".into(),
-        "event" => return "event".into(),
-        "hub" => return "hub".into(),
-        "model" => {
-            return if field(card, "facet").is_empty() {
-                "model"
-            } else {
-                "part"
-            }
-            .into();
-        }
-        _ => {}
-    }
-    let tree = field(card, "tree");
-    let in_book = literature.contains(tree);
-    if in_book && ANCHOR.is_match(field(card, "address")) {
-        return "anchor".into();
-    }
-    if TERMS.is_match(field(card, "title")) {
-        return "terms".into();
-    }
-    if NOTATION.is_match(field(card, "title")) {
-        return "notation".into();
-    }
-    let prose = card["excerpt"]
-        .as_str()
-        .unwrap_or_else(|| field(card, "body"));
-    if in_book && STRUCTURE.is_match(prose) {
-        return "structure".into();
-    }
-    // An accepted restatement entry names the substantive statement at another address: it is
-    // navigation, not a claim of its own (§4.5, D086). The role comes from the authored section
-    // (or the flag the archive derives from it), never from a stored Card field.
-    if card["restatement"] == true
-        || card["body"]
-            .as_str()
-            .is_some_and(|body| is_restatement_entry(body))
-    {
-        return "restatement-entry".into();
-    }
-    let parent = card["parent"]
-        .as_str()
-        .unwrap_or_else(|| field(card, "parent_address"));
-    if in_book
-        && parent == format!("{tree}/1")
-        && field(card, "edge") == "side"
-        && field(card, "type") == "idea"
-    {
-        let own = Regex::new(&format!(r"^{}/\d+$", regex::escape(tree))).unwrap();
-        let count = card["links"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .filter(|target| own.is_match(target))
-            .collect::<HashSet<_>>()
-            .len();
-        if count >= 3 && anchors.get(tree).is_none_or(|total| count * 2 >= *total) {
-            return "structure".into();
-        }
-    }
-    "idea".into()
-}
+// The orphan rule vocabulary and the Card classification are the core's: the
+// write gate and the audit path share one definition.
+pub use crate::core::{
+    EXCLUDED, SUBSTANTIVE, category, category_with_parts, is_orphan, is_restatement_entry,
+};
 
 /// Complete explicit agent target scope. Missing inbound facts are an error,
 /// never a fabricated zero. Strong kinded inbound remains a separate layer rule.
@@ -198,6 +73,7 @@ pub fn orphan_report(cards: &[Value], revision: u64, changed: &[String]) -> Resu
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::{HashMap, HashSet};
 
     /// The graph classifier derives the same navigation role from the authored section, from the
     /// flag the archive derives from it, and from nothing else.

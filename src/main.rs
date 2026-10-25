@@ -667,7 +667,8 @@ fn print_policy_summary(root: &Path) {
     let shown = open_db(root).and_then(|conn| {
         let policies = gate::load(&conn)?;
         let revision = gate::revision(&conn)?;
-        Ok(gate::summary_lines(root, &policies, revision))
+        let stage = gate::current_stage(&conn)?;
+        Ok(gate::summary_lines(root, &policies, revision, stage))
     });
     match shown {
         Ok(lines) => {
@@ -691,10 +692,11 @@ fn cmd_config_policy() -> Result<()> {
     }
     let conn = open_db(&root)?;
     let policies = gate::load(&conn)?;
+    let stage = gate::current_stage(&conn)?;
     println!("policy_archive={}", root.display());
     println!("policy_hash={}", policies.hash());
     println!("policy_revision={}", gate::revision(&conn)?);
-    for line in gate::table_lines(&policies) {
+    for line in gate::table_lines(&policies, stage) {
         println!("{line}");
     }
     Ok(())
@@ -713,6 +715,15 @@ fn cmd_config_set_gate(key: &str, value: &str) -> Result<()> {
     }
     let _lock = acquire_edit_lock(&root, "gate policy")?;
     let mut conn = open_db(&root)?;
+    if key == gate::STAGE_KEY {
+        let (stage, _) = gate::change_stage(&mut conn, value)?;
+        if value.trim().eq_ignore_ascii_case("default") {
+            println!("gate.stage=default");
+        } else {
+            println!("gate.stage={}", stage.id());
+        }
+        return Ok(());
+    }
     let outcome = gate::change(&mut conn, key, value)?;
     println!("{}", outcome.line());
     Ok(())
@@ -2692,7 +2703,9 @@ fn shell_create_literature(workspace: Workspace) -> Result<()> {
     };
     let parsed = parse_literature_edit_text(&edited_text)?;
     let text = compose_card_text(&metadata.title, &parsed.body, "");
-    insert_literature_card(&mut conn, &metadata.citation_key, workspace, &bibtex, &text)?;
+    let accepted =
+        insert_literature_card(&mut conn, &metadata.citation_key, workspace, &bibtex, &text)?;
+    print_warnings(&accepted);
     println!("{}", metadata.citation_key);
     Ok(())
 }
@@ -2726,12 +2739,12 @@ fn insert_literature_card(
     workspace: Workspace,
     bibtex: &str,
     text: &str,
-) -> Result<()> {
+) -> Result<gate::Accepted> {
     let tx = conn.transaction()?;
-    insert_literature_card_tx(&tx, citation_key, workspace, bibtex, text)?;
+    let accepted = insert_literature_card_tx(&tx, citation_key, workspace, bibtex, text)?;
     link_index::source_changed(&tx, citation_key)?;
     tx.commit()?;
-    Ok(())
+    Ok(accepted)
 }
 
 fn insert_literature_card_tx(
@@ -2740,13 +2753,23 @@ fn insert_literature_card_tx(
     workspace: Workspace,
     bibtex: &str,
     text: &str,
-) -> Result<()> {
+) -> Result<gate::Accepted> {
     literature::validate_citation_key(citation_key)?;
     if citation_key_exists_case_insensitive(conn, citation_key)? {
         bail!("Literature Card `{citation_key}` already exists");
     }
-    validate_card_text(conn, citation_key, text, None)?;
     tree_lock::ensure_unlocked(conn, tree_lock::Change::CreateAt(citation_key))?;
+    let accepted = gate::check_proposed(
+        conn,
+        &gate::Candidate::create(
+            citation_key,
+            gate::Kind::Literature,
+            workspace,
+            text,
+            CardType::Idea,
+            None,
+        ),
+    )?;
     let parsed = parse_card_text(text)?;
     let text = compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
     conn.execute(
@@ -2760,7 +2783,7 @@ fn insert_literature_card_tx(
             CardType::Idea.id()
         ],
     )?;
-    Ok(())
+    Ok(accepted)
 }
 
 /// The first line of an edit lock file whose holder also keeps the file's OS lock.
@@ -3155,6 +3178,14 @@ fn acquire_edit_lock(root: &Path, operation: &'static str) -> Result<EditLock> {
     }
 }
 
+/// Print the warnings of an accepted write to the diagnostic stream, keeping stdout the
+/// machine-readable result (R0176).
+fn print_warnings(accepted: &gate::Accepted) {
+    for line in accepted.lines() {
+        eprintln!("check: {line}");
+    }
+}
+
 fn shell_create_topic(workspace: Workspace, title: &str) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root, "create_topic")?;
@@ -3165,7 +3196,8 @@ fn shell_create_topic(workspace: Workspace, title: &str) -> Result<()> {
     match run_editor(&topic_template(title))? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            let location = create_topic(&mut conn, workspace, &text)?;
+            let (location, accepted) = create_topic(&mut conn, workspace, &text)?;
+            print_warnings(&accepted);
             println!("{location}");
             Ok(())
         }
@@ -3185,7 +3217,7 @@ fn shell_create_direct(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            insert_card(
+            let accepted = insert_card(
                 &mut conn,
                 &location,
                 false,
@@ -3194,6 +3226,7 @@ fn shell_create_direct(at: &str) -> Result<()> {
                 None,
                 &text,
             )?;
+            print_warnings(&accepted);
             println!("{location}");
             Ok(())
         }
@@ -3211,7 +3244,7 @@ fn shell_create_side(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            insert_card(
+            let accepted = insert_card(
                 &mut conn,
                 &location,
                 false,
@@ -3220,6 +3253,7 @@ fn shell_create_side(at: &str) -> Result<()> {
                 None,
                 &text,
             )?;
+            print_warnings(&accepted);
             println!("{location}");
             Ok(())
         }
@@ -3245,18 +3279,30 @@ fn shell_edit(at: &str, part: Option<EditPart>) -> Result<()> {
     }
     match run_editor(&card.text)? {
         EditOutcome::Canceled => Ok(()),
-        EditOutcome::Saved(text) => update_card_text(&mut conn, &card, &text),
+        EditOutcome::Saved(text) => {
+            let accepted = update_card_text(&mut conn, &card, &text)?;
+            print_warnings(&accepted);
+            Ok(())
+        }
     }
 }
 
 fn shell_edit_literature_text(conn: &mut Connection, card: &Card) -> Result<()> {
     match run_editor(&card.text)? {
         EditOutcome::Canceled => Ok(()),
-        EditOutcome::Saved(edited) => update_literature_text(conn, card, &edited),
+        EditOutcome::Saved(edited) => {
+            let accepted = update_literature_text(conn, card, &edited)?;
+            print_warnings(&accepted);
+            Ok(())
+        }
     }
 }
 
-fn update_literature_text(conn: &mut Connection, card: &Card, edited: &str) -> Result<()> {
+fn update_literature_text(
+    conn: &mut Connection,
+    card: &Card,
+    edited: &str,
+) -> Result<gate::Accepted> {
     tree_lock::ensure_unlocked(conn, tree_lock::Change::Edit(card.row_id))?;
     let metadata = literature::parse_metadata(
         card.bibtex
@@ -3265,11 +3311,23 @@ fn update_literature_text(conn: &mut Connection, card: &Card, edited: &str) -> R
     )?;
     let parsed = parse_literature_edit_text(edited)?;
     let text = compose_card_text(&metadata.title, &parsed.body, "");
-    validate_card_text(conn, &card.address, &text, Some(&card.text))?;
     let stored = parse_card_text(&card.text)?;
     if parsed.body == stored.body && metadata.title == stored.title {
-        return Ok(());
+        return Ok(gate::Accepted::none());
     }
+    let accepted = gate::check_proposed(
+        conn,
+        &gate::Candidate::edit(
+            card,
+            &text,
+            CardType::Idea,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    )?;
     let tx = conn.transaction()?;
     tx.execute(
         "UPDATE cards SET text = ?1 WHERE row_id = ?2",
@@ -3277,7 +3335,7 @@ fn update_literature_text(conn: &mut Connection, card: &Card, edited: &str) -> R
     )?;
     link_index::source_changed(&tx, &card.address)?;
     tx.commit()?;
-    Ok(())
+    Ok(accepted)
 }
 
 fn shell_edit_literature_metadata(conn: &mut Connection, card: &Card) -> Result<()> {
@@ -3322,7 +3380,9 @@ fn shell_edit_literature_metadata(conn: &mut Connection, card: &Card) -> Result<
             let mut input = stdin.lock();
             read_confirmation(&mut input, "move")?;
         }
-        update_literature_metadata(conn, card, &metadata.citation_key, &edited, &metadata.title)?;
+        let accepted =
+            update_literature_metadata(conn, card, &metadata.citation_key, &edited, &metadata.title)?;
+        print_warnings(&accepted);
         return Ok(());
     }
 }
@@ -3369,16 +3429,35 @@ fn update_literature_metadata(
     citation_key: &str,
     bibtex: &str,
     title: &str,
-) -> Result<()> {
+) -> Result<gate::Accepted> {
     tree_lock::ensure_unlocked(conn, tree_lock::Change::Edit(card.row_id))?;
     let parsed = parse_card_text(&card.text)?;
     if citation_key == card.address
         && card.bibtex.as_deref() == Some(bibtex)
         && title == parsed.title
     {
-        return Ok(());
+        return Ok(gate::Accepted::none());
     }
     let text = compose_card_text(title, &parsed.body, "");
+    // A Citation-key remap or another BibTeX field changes no authored prose, so it keeps the
+    // existing structural path and runs no prose check (S04-AC08). A new title is authored text
+    // and is checked like any other edit.
+    let accepted = if title == parsed.title {
+        gate::Accepted::none()
+    } else {
+        let mut candidate = gate::Candidate::edit(
+            card,
+            &text,
+            CardType::Idea,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        candidate.address = citation_key.to_string();
+        gate::check_proposed(conn, &candidate)?
+    };
     let tx = conn.transaction()?;
     let mapping = if citation_key != card.address {
         citation_rename_mapping(&tx, &card.address, citation_key)?
@@ -3397,7 +3476,7 @@ fn update_literature_metadata(
         regenerate_reverse_links_tx(&tx)?;
     }
     tx.commit()?;
-    Ok(())
+    Ok(accepted)
 }
 
 /// Insert a Topic or Regular Card. A Regular Card must name the Workspace of
@@ -3410,12 +3489,12 @@ fn insert_card(
     card_type: CardType,
     part: Option<&model::Part>,
     text: &str,
-) -> Result<()> {
+) -> Result<gate::Accepted> {
     let tx = conn.transaction()?;
-    insert_card_tx(&tx, location, is_topic, workspace, card_type, part, text)?;
+    let accepted = insert_card_tx(&tx, location, is_topic, workspace, card_type, part, text)?;
     link_index::source_changed(&tx, location)?;
     tx.commit()?;
-    Ok(())
+    Ok(accepted)
 }
 
 /// Validate and insert within a caller-owned transaction. The caller finalizes
@@ -3428,7 +3507,7 @@ fn insert_card_tx(
     card_type: CardType,
     part: Option<&model::Part>,
     text: &str,
-) -> Result<()> {
+) -> Result<gate::Accepted> {
     if !is_valid_location(location) {
         bail!("invalid location `{location}`");
     }
@@ -3449,8 +3528,18 @@ fn insert_card_tx(
     let facet = part.map(|part| &part.facet);
     let emphasis = part.and_then(|part| part.emphasis);
     model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
-    validate_card_text(conn, location, text, None)?;
+    // Access and Locks precede the authored change; the gate then checks the final candidate
+    // inside this same transaction (R0155).
     tree_lock::ensure_unlocked(conn, tree_lock::Change::CreateAt(location))?;
+    let kind = if is_topic {
+        gate::Kind::Topic
+    } else {
+        gate::Kind::Regular
+    };
+    let accepted = gate::check_proposed(
+        conn,
+        &gate::Candidate::create(location, kind, workspace, text, card_type, part),
+    )?;
     let parsed = parse_card_text(text)?;
     let text = compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
     conn.execute(
@@ -3469,24 +3558,44 @@ fn insert_card_tx(
     if is_topic {
         bump_next_topic_id(conn, location)?;
     }
-    Ok(())
+    Ok(accepted)
 }
 
 /// Create a Topic in `workspace` at the next Topic number.
-fn create_topic(conn: &mut Connection, workspace: Workspace, text: &str) -> Result<String> {
+fn create_topic(
+    conn: &mut Connection,
+    workspace: Workspace,
+    text: &str,
+) -> Result<(String, gate::Accepted)> {
     let location = next_topic_location(conn)?;
-    insert_card(conn, &location, true, workspace, CardType::Idea, None, text)?;
-    Ok(location)
+    let accepted = insert_card(conn, &location, true, workspace, CardType::Idea, None, text)?;
+    Ok((location, accepted))
 }
 
-fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()> {
+fn update_card_text(
+    conn: &mut Connection,
+    card: &Card,
+    text: &str,
+) -> Result<gate::Accepted> {
     tree_lock::ensure_unlocked(conn, tree_lock::Change::Edit(card.row_id))?;
-    validate_card_text(conn, &card.address, text, Some(&card.text))?;
     let before = parse_card_text(&card.text)?;
     let after = parse_card_text(text)?;
     if before.title == after.title && before.body == after.body {
-        return Ok(());
+        return Ok(gate::Accepted::none());
     }
+    let accepted = gate::check_proposed(
+        conn,
+        &gate::Candidate::edit(
+            card,
+            text,
+            card.card_type,
+            card.facet.clone(),
+            card.emphasis,
+            card.level,
+            card.hub_level,
+            card.form,
+        ),
+    )?;
     let text = compose_card_text(&after.title, &after.body, &after.reverse);
     let tx = conn.transaction()?;
     tx.execute(
@@ -3495,7 +3604,7 @@ fn update_card_text(conn: &mut Connection, card: &Card, text: &str) -> Result<()
     )?;
     link_index::source_changed(&tx, &card.address)?;
     tx.commit()?;
-    Ok(())
+    Ok(accepted)
 }
 
 fn regenerate_reverse_links_tx(conn: &Connection) -> Result<()> {

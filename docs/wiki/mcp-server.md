@@ -100,6 +100,12 @@ Every MCP writer reports one typed objection when an active Tree Lock forbids th
 
 A pure receipt replay is not a write. `apply_batch` checks the stored receipt before it runs any writer, so replaying a committed operation after the owner locks its result answers the stored `result` verbatim (with `replayed: true`), performs no Card mutation and adds no current Lock annotation to the historical receipt. A **new** `op_key` that asks for the same edit is refused with `card_locked`, even when the proposed text equals the stored text. A batch whose earlier items are valid and whose later item is refused rolls back every unseen Card, receipt, Topic allocation, Link row and revision inside its one transaction, while receipts committed before it survive; item count, authored-byte, local-reference and transaction bounds are unchanged.
 
+### The structured write check (S04, #146)
+
+Every MCP writer reaches `gate::check_proposed` inside its transaction. A successful write keeps its existing fields and adds `warnings` (`[{rule, fault, message, legacy}]`, the message/key bounded to 2000 characters for transport) and `check` (`{complete: true, rule_version, policy_hash, stage}`); the shell routes print the same lines, and the GUI returns them beside the save result.
+
+A blocking write answers the typed `card_check` object instead of a generic message: `{error: "card_check", address, blocking, faults: [clipped lines], diagnostics: [structured faults], zt_check_version, policy_hash, message}`. `faults` are the checker's ordered human lines; `diagnostics` are the structured faults (`address`, `rule`, `fault`, `key`, `message`, `severity`, `legacy`, `scope`, plus `truncated: true` when a long `message` or `key` was clipped); the human `message` starts `card_check: N blocking fault(s)` and repeats the fault lines. It travels in the existing tool result (`isError: true`, `structuredContent` carrying the fields), mapped by downcasting `gate::Refusal` beside `tree_lock::Refusal`. A real `apply_batch` refusal adds `item {index, tool, op_key}` and rolls back the whole batch, receipts included. An unreadable policy/stage or an over-budget context answers `check_incomplete` (`reason` `policy`, `stage` or `context_budget`) instead of a pass. The archive's `gate.stage` decides whether a policy `block` refuses (`enforce`) or is reported as advice (`advisory`, the rollout default); mandatory envelope/Link/Access/Lock invariants refuse in both stages.
+
 ### Indexed and bulk read views
 
 `get_cards` also returns `archive_identity: {id, path}` from the same read transaction. `id` is the existing random 128-bit `metadata.archive_id`, retained as its original 32 hexadecimal characters; `path` is the resolved archive directory. An empty address list provides identity/revision without Card bodies. Reads validate the stored identity and refuse a missing/malformed value rather than generating one. Replacing the database at the same path produces a different identity; a consistent SQLite restore preserves it, and deleting every Card still keeps it (	ests/workspaces_mcp.rs proves it through zt del --all, the command that replaced zt clear). Ledger binding must compare identity as well as path and verify actual outputs after restoration. No second identifier or new metadata table is introduced.
@@ -221,6 +227,8 @@ Every tool's `inputSchema` is an object with `additionalProperties: false`. `too
 | `list_broken_links` | RO | `workspace` | `{ broken: Snapshot::broken(workspace) }` (each with `target`, `workspace`, …) | service down |
 
 #### Write tools (agent Workspace only)
+
+Every successful write adds `warnings` (each `{rule, fault, message, legacy}`, bounded for transport) and `check {complete, rule_version, policy_hash, stage}` to the result fields below; a blocking Card-check fault answers the typed `card_check` object described in "The structured write check (S04, #146)", and a refused call rolls its transaction back.
 
 | Tool | Hints | Arguments (required in bold) | Result | Errors and rules |
 |---|---|---|---|---|

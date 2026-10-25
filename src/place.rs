@@ -125,15 +125,27 @@ pub(crate) fn apply_insert_plan(
     card_type: CardType,
     part: Option<&model::Part>,
     text: &str,
-) -> Result<()> {
+) -> Result<crate::gate::Accepted> {
     let workspace = crate::workspace::tree_workspace(conn, &plan.location)?;
     let facet = part.map(|part| &part.facet);
     let emphasis = part.and_then(|part| part.emphasis);
     model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
-    crate::validate_card_text(conn, &plan.location, text, None)?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
+    // The Card that will be stored: Links to Cards that move down are rewritten first, so the
+    // check reads the exact committed text.
     let text = crate::replace_link_locations(text, &plan.mapping)?;
+    let accepted = crate::gate::check_proposed(
+        conn,
+        &crate::gate::Candidate::create(
+            &plan.location,
+            crate::gate::Kind::Regular,
+            workspace,
+            &text,
+            card_type,
+            part,
+        ),
+    )?;
     let tx = conn.transaction()?;
     crate::apply_location_mapping_tx(&tx, &plan.mapping)?;
     tx.execute(
@@ -150,7 +162,7 @@ pub(crate) fn apply_insert_plan(
     )?;
     crate::regenerate_reverse_links_tx(&tx)?;
     tx.commit()?;
-    Ok(())
+    Ok(accepted)
 }
 
 fn all_locations(conn: &Connection) -> Result<BTreeSet<String>> {

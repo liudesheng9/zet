@@ -715,8 +715,9 @@ pub(crate) fn book_place(target: &str) -> bool {
 }
 
 /// The Literature tree a Link target names: the Citation key of a book Card or
-/// of one of its anchors. A Topic address names no Literature tree.
-pub(crate) fn literature_tree(target: &str) -> Option<String> {
+/// of one of its anchors. A Topic address names no Literature tree. The write
+/// gate uses the same definition to name the book a proposed Card belongs to.
+pub fn literature_tree(target: &str) -> Option<String> {
     if BOOK_ANCHOR.is_match(target) {
         return target.split_once('/').map(|(key, _)| key.to_string());
     }

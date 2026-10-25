@@ -49,7 +49,7 @@ pub(crate) fn create_topic(
     access: Access,
     workspace: Workspace,
     text: &str,
-) -> Result<String> {
+) -> Result<(String, crate::gate::Accepted)> {
     access.ensure_writable(workspace)?;
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_topic")?;
     let mut conn = crate::open_db(root)?;
@@ -64,14 +64,15 @@ pub(crate) fn create_successor(
     card_type: CardType,
     part: Option<Part>,
     text: &str,
-) -> Result<String> {
+) -> Result<(String, crate::gate::Accepted)> {
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_successor")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let address = create_successor_tx(&tx, access, kind, at, card_type, part.as_ref(), text)?;
+    let (address, accepted) =
+        create_successor_tx(&tx, access, kind, at, card_type, part.as_ref(), text)?;
     crate::link_index::source_changed(&tx, &address)?;
     tx.commit()?;
-    Ok(address)
+    Ok((address, accepted))
 }
 
 pub(crate) fn create_topic_tx(
@@ -79,11 +80,19 @@ pub(crate) fn create_topic_tx(
     access: Access,
     workspace: Workspace,
     text: &str,
-) -> Result<String> {
+) -> Result<(String, crate::gate::Accepted)> {
     access.ensure_writable(workspace)?;
     let address = crate::next_topic_location(conn)?;
-    crate::insert_card_tx(conn, &address, true, workspace, CardType::Idea, None, text)?;
-    Ok(address)
+    let accepted = crate::insert_card_tx(
+        conn,
+        &address,
+        true,
+        workspace,
+        CardType::Idea,
+        None,
+        text,
+    )?;
+    Ok((address, accepted))
 }
 
 pub(crate) fn create_successor_tx(
@@ -94,7 +103,7 @@ pub(crate) fn create_successor_tx(
     card_type: CardType,
     part: Option<&Part>,
     text: &str,
-) -> Result<String> {
+) -> Result<(String, crate::gate::Accepted)> {
     let parent = crate::load_card(conn, at)?;
     access.ensure_writable(parent.workspace)?;
     let location = match kind {
@@ -110,7 +119,7 @@ pub(crate) fn create_successor_tx(
             crate::next_side_successor(conn, &parent.address, &BTreeSet::new())?
         }
     };
-    crate::insert_card_tx(
+    let accepted = crate::insert_card_tx(
         conn,
         &location,
         false,
@@ -119,7 +128,7 @@ pub(crate) fn create_successor_tx(
         part,
         text,
     )?;
-    Ok(location)
+    Ok((location, accepted))
 }
 
 /// `text` is the Card text after the generated title: only its body is kept,
@@ -130,15 +139,15 @@ pub(crate) fn create_literature(
     workspace: Workspace,
     bibtex: &str,
     text: &str,
-) -> Result<String> {
+) -> Result<(String, crate::gate::Accepted)> {
     access.ensure_writable(workspace)?;
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_literature")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let address = create_literature_tx(&tx, access, workspace, bibtex, text)?;
+    let (address, accepted) = create_literature_tx(&tx, access, workspace, bibtex, text)?;
     crate::link_index::source_changed(&tx, &address)?;
     tx.commit()?;
-    Ok(address)
+    Ok((address, accepted))
 }
 
 pub(crate) fn create_literature_tx(
@@ -147,13 +156,14 @@ pub(crate) fn create_literature_tx(
     workspace: Workspace,
     bibtex: &str,
     text: &str,
-) -> Result<String> {
+) -> Result<(String, crate::gate::Accepted)> {
     access.ensure_writable(workspace)?;
     let metadata = crate::literature::parse_metadata(bibtex)?;
     let parsed = crate::parse_literature_edit_text(text)?;
     let text = crate::compose_card_text(&metadata.title, &parsed.body, "");
-    crate::insert_literature_card_tx(conn, &metadata.citation_key, workspace, bibtex, &text)?;
-    Ok(metadata.citation_key)
+    let accepted =
+        crate::insert_literature_card_tx(conn, &metadata.citation_key, workspace, bibtex, &text)?;
+    Ok((metadata.citation_key, accepted))
 }
 
 /// A change to a Card's type, Model facet, emphasis, and elaboration level.
@@ -274,18 +284,20 @@ pub(crate) fn edit(
     text: Option<&str>,
     change: TypeChange,
     base: Option<&str>,
-) -> Result<String> {
+) -> Result<(String, crate::gate::Accepted)> {
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "edit")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let (address, changed) = edit_tx(&tx, access, at, text, change, base)?;
+    let (address, changed, accepted) = edit_tx(&tx, access, at, text, change, base)?;
     if changed {
         crate::link_index::source_changed(&tx, &address)?;
     }
     tx.commit()?;
-    Ok(address)
+    Ok((address, accepted))
 }
 
+/// One combined candidate: the final text and the final metadata are checked together, then
+/// written (R0160). A refusal leaves the stored Card and the transaction untouched.
 pub(crate) fn edit_tx(
     conn: &Connection,
     access: Access,
@@ -293,7 +305,7 @@ pub(crate) fn edit_tx(
     text: Option<&str>,
     change: TypeChange,
     base: Option<&str>,
-) -> Result<(String, bool)> {
+) -> Result<(String, bool, crate::gate::Accepted)> {
     let card = unchanged_card(conn, at, base)?;
     access.ensure_writable(card.workspace)?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Edit(card.row_id))?;
@@ -308,8 +320,9 @@ pub(crate) fn edit_tx(
     }
     let mut changed =
         retyped || level != card.level || hub_level != card.hub_level || form != card.form;
+    let old = crate::parse_card_text(&card.text)?;
+    let mut final_text = card.text.clone();
     if let Some(text) = text {
-        let old = crate::parse_card_text(&card.text)?;
         let mut parsed = if card.is_lit {
             crate::parse_literature_edit_text(text)?
         } else {
@@ -319,14 +332,31 @@ pub(crate) fn edit_tx(
             parsed.title = old.title.clone();
         }
         if parsed.title != old.title || parsed.body != old.body {
-            let text = crate::compose_card_text(&parsed.title, &parsed.body, &old.reverse);
-            crate::validate_card_text(conn, &card.address, &text, Some(&card.text))?;
-            conn.execute(
-                "UPDATE cards SET text=?1 WHERE row_id=?2",
-                rusqlite::params![text, card.row_id],
-            )?;
+            final_text = crate::compose_card_text(&parsed.title, &parsed.body, &old.reverse);
             changed = true;
         }
+    }
+    if !changed {
+        return Ok((card.address.clone(), false, crate::gate::Accepted::none()));
+    }
+    let accepted = crate::gate::check_proposed(
+        conn,
+        &crate::gate::Candidate::edit(
+            &card,
+            &final_text,
+            card_type,
+            facet.clone(),
+            emphasis,
+            level,
+            hub_level,
+            form,
+        ),
+    )?;
+    if final_text != card.text {
+        conn.execute(
+            "UPDATE cards SET text=?1 WHERE row_id=?2",
+            rusqlite::params![final_text, card.row_id],
+        )?;
     }
     if retyped {
         crate::model::set(conn, &card, card_type, facet.as_ref(), emphasis)?;
@@ -343,7 +373,7 @@ pub(crate) fn edit_tx(
         let card = crate::load_card(conn, &card.address)?;
         crate::math::set_form(conn, &card, form)?;
     }
-    Ok((card.address, changed))
+    Ok((card.address, changed, accepted))
 }
 
 /// Replace a Literature Card's BibTeX. A new Citation key renames the whole
@@ -388,14 +418,16 @@ pub(crate) fn edit_metadata(
             });
         }
     }
-    crate::update_literature_metadata(
+    let accepted = crate::update_literature_metadata(
         &mut conn,
         &card,
         &metadata.citation_key,
         bibtex,
         &metadata.title,
     )?;
-    Ok(Outcome::Done(json!({ "address": metadata.citation_key })))
+    let mut value = json!({ "address": metadata.citation_key });
+    accepted.attach(&mut value);
+    Ok(Outcome::Done(value))
 }
 
 /// Delete a Card and its successors (a Tree root deletes its whole tree).
@@ -493,7 +525,6 @@ pub(crate) fn insert_card(
         part.as_ref().map(|part| &part.facet),
         part.as_ref().and_then(|part| part.emphasis),
     )?;
-    crate::validate_card_text(&conn, &plan.location, text, None)?;
     crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
     crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
     if confirm != Some("insert") {
@@ -502,10 +533,16 @@ pub(crate) fn insert_card(
             lines: crate::place::insert_verification_lines(&plan),
         });
     }
-    crate::place::apply_insert_plan(&mut conn, &plan, card_type, part.as_ref(), text)?;
-    Ok(Outcome::Done(
-        json!({ "address": plan.location, "moved": plan.mapping }),
-    ))
+    let accepted = crate::place::apply_insert_plan(
+        &mut conn,
+        &plan,
+        card_type,
+        part.as_ref(),
+        text,
+    )?;
+    let mut value = json!({ "address": plan.location, "moved": plan.mapping });
+    accepted.attach(&mut value);
+    Ok(Outcome::Done(value))
 }
 
 fn unchanged_card(conn: &Connection, at: &str, base: Option<&str>) -> Result<Card> {
@@ -1319,6 +1356,7 @@ The model"
                 }),
                 text,
             )
+            .map(|written| written.0)
         };
         create_topic(root, owner, Workspace::Agent, "# Firms\n").unwrap();
         make(
@@ -1368,7 +1406,8 @@ The model"
                 }),
                 "# Example\n\nof [[0/1]]\n",
             )
-            .unwrap(),
+            .unwrap()
+            .0,
             "0/1|b"
         );
         assert_eq!(emphasis_of(root, "0/1|b"), Some(Emphasis::Aside));
@@ -1585,11 +1624,11 @@ The model"
         let root = temp.path();
         let owner = Access::Owner;
         assert_eq!(
-            create_topic(root, owner, Workspace::Human, "# Firms\n").unwrap(),
+            create_topic(root, owner, Workspace::Human, "# Firms\n").unwrap().0,
             "0/0"
         );
         assert_eq!(
-            create_topic(root, owner, Workspace::Agent, "# Agent\n").unwrap(),
+            create_topic(root, owner, Workspace::Agent, "# Agent\n").unwrap().0,
             "1/0"
         );
         let event = "# 1926 GM buys Fisher Body\n\nwhat happened\n";
@@ -1603,7 +1642,8 @@ The model"
                 None,
                 event
             )
-            .unwrap(),
+            .unwrap()
+            .0,
             "0/1"
         );
         assert_eq!(type_of(root, "0/1"), CardType::Event);
@@ -1728,7 +1768,8 @@ The model"
                 None,
                 "# GHM property-rights model\n"
             )
-            .unwrap(),
+            .unwrap()
+            .0,
             "1/1"
         );
         edit(root, Access::Agent, "1/1", None, ty(CardType::Event), None).unwrap();
@@ -1991,7 +2032,7 @@ The model"
             drop(lock);
         });
         assert_eq!(
-            create_topic(&root, Access::Owner, Workspace::Agent, "# Waits\n").unwrap(),
+            create_topic(&root, Access::Owner, Workspace::Agent, "# Waits\n").unwrap().0,
             "0/0"
         );
         release.join().unwrap();

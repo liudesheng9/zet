@@ -130,7 +130,7 @@ fn write_tx(conn: &Connection, request: &Request) -> Result<Outcome> {
     let (parent, edge) = placement(conn, &destination.address)?;
     // A locked human destination is a kept refusal, not an error: the reader's draft stays in the
     // desk, the refusal names the Locked tree, and the transaction is rolled back (R061, T09).
-    let address = match crate::ops::create_successor_tx(
+    let (address, accepted) = match crate::ops::create_successor_tx(
         conn,
         Access::Owner,
         edge,
@@ -139,7 +139,7 @@ fn write_tx(conn: &Connection, request: &Request) -> Result<Outcome> {
         None,
         request.text,
     ) {
-        Ok(address) => address,
+        Ok(written) => written,
         Err(error) => match error.downcast_ref::<crate::tree_lock::Refusal>() {
             Some(refusal) => {
                 return Ok(Outcome::Refused(json!({
@@ -157,10 +157,21 @@ fn write_tx(conn: &Connection, request: &Request) -> Result<Outcome> {
                     },
                 })));
             }
-            None => return Err(error),
+            None => {
+                if let Some(refusal) = error.downcast_ref::<crate::gate::Refusal>() {
+                    return Ok(Outcome::Refused(json!({
+                        "saved": false,
+                        "reason": "card_check",
+                        "detail": "the reply was not saved; correct the fault lines and save once more",
+                        "check": refusal.value(),
+                        "target": context,
+                    })));
+                }
+                return Err(error);
+            }
         },
     };
-    Ok(Outcome::Saved(json!({
+    let mut saved = json!({
         "saved": true,
         "address": address,
         "kind": link.kind.id(),
@@ -172,7 +183,9 @@ fn write_tx(conn: &Connection, request: &Request) -> Result<Outcome> {
             "parent": parent,
             "edge": if edge == crate::ops::Successor::Direct { "direct" } else { "side" },
         },
-    })))
+    });
+    accepted.attach(&mut saved);
+    Ok(Outcome::Saved(saved))
 }
 
 /// The letters and digits a reply says beyond its Link and the relation word before it. The Link's
@@ -227,7 +240,8 @@ fn destination(conn: &Connection, wanted: Option<&str>) -> Result<Destination> {
         }
     }
     let text = format!("# {DEFAULT_TOPIC}\n\n{DEFAULT_TOPIC_BODY}\n");
-    let address = crate::ops::create_topic_tx(conn, Access::Owner, Workspace::Human, &text)?;
+    let (address, _) =
+        crate::ops::create_topic_tx(conn, Access::Owner, Workspace::Human, &text)?;
     Ok(Destination {
         address,
         title: DEFAULT_TOPIC.to_string(),

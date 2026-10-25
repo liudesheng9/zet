@@ -728,10 +728,13 @@ impl Charts {
 }
 
 /// One failed GUI request. A Tree Lock refusal keeps its structured facts, so the page can name the
-/// Locked tree, the Lock and the pinned sources instead of printing one opaque line.
+/// Locked tree, the Lock and the pinned sources instead of printing one opaque line; a Card-check
+/// refusal keeps its typed contract the same way, so the desk can show the fault lines and keep
+/// the draft (R0164, R0176).
 struct ApiError {
     message: String,
     refusal: Option<Value>,
+    check: Option<Value>,
 }
 
 impl ApiError {
@@ -739,6 +742,7 @@ impl ApiError {
         Self {
             message: message.into(),
             refusal: None,
+            check: None,
         }
     }
 }
@@ -749,12 +753,28 @@ impl From<anyhow::Error> for ApiError {
             return Self {
                 message: refusal.to_string(),
                 refusal: Some(refusal.value()),
+                check: None,
             };
         }
         if let Some(refusal) = error.downcast_ref::<crate::tree_lock::IndexRefusal>() {
             return Self {
                 message: refusal.to_string(),
                 refusal: Some(refusal.value()),
+                check: None,
+            };
+        }
+        if let Some(refusal) = error.downcast_ref::<crate::gate::Refusal>() {
+            return Self {
+                message: refusal.to_string(),
+                refusal: None,
+                check: Some(refusal.value()),
+            };
+        }
+        if let Some(incomplete) = error.downcast_ref::<crate::gate::Incomplete>() {
+            return Self {
+                message: incomplete.to_string(),
+                refusal: None,
+                check: Some(incomplete.value()),
             };
         }
         Self::new(format!("{error:#}"))
@@ -987,7 +1007,12 @@ impl App {
                         value["refusal"] = refusal;
                         409
                     }
-                    None => 400,
+                    None => {
+                        if let Some(check) = error.check {
+                            value["check"] = check;
+                        }
+                        400
+                    }
                 };
                 respond_json(request, status, &value);
             }
@@ -1516,7 +1541,7 @@ impl App {
         if form.is_some() && (card_type != CardType::Model || part.is_some()) {
             return Err(ApiError::new(crate::math::FORM_NEEDS_MODEL_CARD.to_string()));
         }
-        let location = match kind.as_str() {
+        let (location, mut accepted) = match kind.as_str() {
             "topic" if card_type != CardType::Idea => {
                 return Err(ApiError::new(
                     "only Regular Cards can be Event, Finding, Model, or Hub Cards".to_string(),
@@ -1550,9 +1575,12 @@ impl App {
                 form: form.map(Some),
                 ..TypeChange::default()
             };
-            ops::edit(&self.root, ACCESS, &location, None, change, None)?;
+            let (_, checked) = ops::edit(&self.root, ACCESS, &location, None, change, None)?;
+            if !checked.is_empty() {
+                accepted = checked;
+            }
         }
-        Ok(json!({ "address": location }))
+        Ok(accepted.value(&location))
     }
 
     fn literature_check(&self, body: &Value) -> ApiResult {
@@ -1568,14 +1596,14 @@ impl App {
     }
 
     fn create_literature(&self, body: &Value) -> ApiResult {
-        let address = ops::create_literature(
+        let (address, accepted) = ops::create_literature(
             &self.root,
             ACCESS,
             workspace_field(body)?,
             &str_field(body, "bibtex")?,
             &str_field(body, "text")?,
         )?;
-        Ok(json!({ "address": address }))
+        Ok(accepted.value(&address))
     }
 
     /// Save a Card's text, its type, facet, emphasis, and level, or both.
@@ -1594,7 +1622,7 @@ impl App {
         } else {
             body.get("text").and_then(Value::as_str).map(str::to_string)
         };
-        let address = ops::edit(
+        let (address, accepted) = ops::edit(
             &self.root,
             ACCESS,
             &str_field(body, "at")?,
@@ -1602,7 +1630,7 @@ impl App {
             change,
             base_field(body),
         )?;
-        Ok(json!({ "address": address }))
+        Ok(accepted.value(&address))
     }
 
     fn edit_metadata(&self, body: &Value) -> ApiResult {

@@ -2640,7 +2640,8 @@ mod tests {
         let mut conn = crate::open_db(temp.path()).expect("open database");
         let text = |title: &str, body: &str| crate::compose_card_text(title, body, "");
         let frozen = crate::create_topic(&mut conn, crate::Workspace::Human, &text("Frozen", "frozen"))
-            .expect("frozen topic");
+            .expect("frozen topic")
+            .0;
         let inner = format!("{}/1", crate::tree_id(&frozen));
         crate::insert_card(
             &mut conn,
@@ -2654,7 +2655,8 @@ mod tests {
         .expect("inner card");
         let linker_root =
             crate::create_topic(&mut conn, crate::Workspace::Human, &text("Linker", "linker"))
-                .expect("linker topic");
+                .expect("linker topic")
+                .0;
         let linker = format!("{}/1", crate::tree_id(&linker_root));
         crate::insert_card(
             &mut conn,
@@ -2682,7 +2684,8 @@ mod tests {
             crate::Workspace::Human,
             &text("Loose", "loose"),
         )
-        .expect("loose topic");
+        .expect("loose topic")
+        .0;
         let loose = crate::load_card(&conn, &loose_root).expect("loose root");
         assert_eq!(card_marks(&conn, loose.row_id).expect("marks"), "");
     }

@@ -280,6 +280,8 @@ impl Server {
                             .or_else(||error.downcast_ref::<crate::batch::Conflict>().map(crate::batch::Conflict::value))
                             .or_else(|| error.downcast_ref::<crate::tree_lock::Refusal>().map(crate::tree_lock::Refusal::value))
                             .or_else(|| error.downcast_ref::<crate::tree_lock::IndexRefusal>().map(crate::tree_lock::IndexRefusal::value))
+                            .or_else(|| error.downcast_ref::<crate::gate::Refusal>().map(crate::gate::Refusal::value))
+                            .or_else(|| error.downcast_ref::<crate::gate::Incomplete>().map(crate::gate::Incomplete::value))
                             .unwrap_or_else(|| json!({ "error": format!("{error:#}") })),
                         true,
                     ),
@@ -629,7 +631,7 @@ pub(crate) fn write_card_tx(
         if let Some(text) = &text {
             crate::artifact::require_present(root, text)?;
         }
-        let (address, changed) = ops::edit_tx(
+        let (address, changed, accepted) = ops::edit_tx(
             conn,
             ACCESS,
             &at,
@@ -637,27 +639,31 @@ pub(crate) fn write_card_tx(
             change,
             args.get("base").and_then(Value::as_str),
         )?;
-        return Ok((json!({"address":address}), changed));
+        return Ok((accepted.value(&address), changed));
     }
     if name == "create_literature" {
         let body = optional_string(args, "body")?;
         crate::artifact::require_present(root, &body)?;
         let workspace = target_workspace(args)?;
-        let address = ops::create_literature_tx(
+        let (address, accepted) = ops::create_literature_tx(
             conn,
             ACCESS,
             workspace,
             &string_arg(args, "bibtex")?,
             &body,
         )?;
-        return Ok((json!({"address":address,"workspace":workspace.id()}), true));
+        let mut value = json!({"address":address,"workspace":workspace.id()});
+        accepted.attach(&mut value);
+        return Ok((value, true));
     }
     let text = crate::compose_card_text(&title_arg(args)?, &optional_string(args, "body")?, "");
     crate::artifact::require_present(root, &text)?;
-    let result = match name {
+    let accepted;
+    let mut result = match name {
         "create_topic" => {
             let workspace = target_workspace(args)?;
-            let address = ops::create_topic_tx(conn, ACCESS, workspace, &text)?;
+            let (address, checked) = ops::create_topic_tx(conn, ACCESS, workspace, &text)?;
+            accepted = checked;
             json!({"address":address,"workspace":workspace.id()})
         }
         "create_successor" => {
@@ -675,7 +681,7 @@ pub(crate) fn write_card_tx(
             if hub_level.is_some() && card_type != CardType::Hub {
                 bail!(crate::hub::LEVEL_NEEDS_HUB_CARD);
             }
-            let address = ops::create_successor_tx(
+            let (address, checked) = ops::create_successor_tx(
                 conn,
                 ACCESS,
                 kind,
@@ -684,6 +690,7 @@ pub(crate) fn write_card_tx(
                 part.as_ref(),
                 &text,
             )?;
+            accepted = checked;
             let card = crate::load_card(conn, &address)?;
             if level.is_some() {
                 crate::model::set_level(conn, &card, level)?;
@@ -698,6 +705,7 @@ pub(crate) fn write_card_tx(
         }
         other => bail!("unsupported batch tool `{other}`"),
     };
+    accepted.attach(&mut result);
     Ok((result, true))
 }
 

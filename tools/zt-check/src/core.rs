@@ -1415,6 +1415,132 @@ fn unnamed_referent(faults: &mut Faults, address: &str, text: &str) {
     );
 }
 
+// The shared classification of an authored Card (``§4.5``, D086, D188): one definition serves
+// the audit, the compilers, the standalone checker and the service write gate.
+pattern!(CATEGORY_ANCHOR, r"^[^/]+/\d+$");
+pattern!(CATEGORY_TERMS, r"(?i)^术语表");
+pattern!(CATEGORY_NOTATION, r"(?i)^(符号表|notation)");
+pattern!(CATEGORY_STRUCTURE, r"(?i)^本卡是《.*》的结构卡");
+
+/// Whether a Card body holds the `## 同述入口` section: the derived navigation role of an
+/// accepted restatement entry (§4.5, D086). The role is derived from the written text on every
+/// read, never stored as Card metadata; a heading inside a code fence is not a section.
+pub fn is_restatement_entry(body: &str) -> bool {
+    let mut fenced = false;
+    for raw in body.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = trimmed
+            .strip_prefix("## ")
+            .or_else(|| trimmed.strip_prefix("### "))
+            && heading.trim() == "同述入口"
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Classify the same metadata for audit, compiler and standalone checks. A scope that does not
+/// read the register's declaration classifies no Card as a register part; the register read does.
+pub fn category(
+    card: &Value,
+    literature: &HashSet<String>,
+    anchors: &HashMap<String, usize>,
+) -> String {
+    category_with_parts(card, literature, anchors, &HashSet::new())
+}
+
+/// The same classification, with the addresses a register's root declares under `词条分册` (§8.5,
+/// D188): a register part is a navigation Card holding term rows, not a substantive Idea, so it
+/// triggers no claim-title or Idea-size rule and needs no topic hub of its own.
+pub fn category_with_parts(
+    card: &Value,
+    literature: &HashSet<String>,
+    anchors: &HashMap<String, usize>,
+    register_parts: &HashSet<String>,
+) -> String {
+    if register_parts.contains(&text(prop(card, "address"))) {
+        return "register-part".into();
+    }
+    if ps_in(&text(prop(card, "kind")), &["topic", "literature"]) {
+        return "root".into();
+    }
+    match text(prop(card, "type")).as_str() {
+        "finding" => return "finding".into(),
+        "event" => return "event".into(),
+        "hub" => return "hub".into(),
+        "model" => {
+            return if text(prop(card, "facet")).is_empty() {
+                "model"
+            } else {
+                "part"
+            }
+            .into();
+        }
+        _ => {}
+    }
+    let tree = text(prop(card, "tree"));
+    let in_book = literature.contains(&tree);
+    if in_book && CATEGORY_ANCHOR.is_match(&text(prop(card, "address"))) {
+        return "anchor".into();
+    }
+    if CATEGORY_TERMS.is_match(&text(prop(card, "title"))) {
+        return "terms".into();
+    }
+    if CATEGORY_NOTATION.is_match(&text(prop(card, "title"))) {
+        return "notation".into();
+    }
+    let prose = prop(card, "excerpt")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| text(prop(card, "body")));
+    if in_book && CATEGORY_STRUCTURE.is_match(&prose) {
+        return "structure".into();
+    }
+    // An accepted restatement entry names the substantive statement at another address: it is
+    // navigation, not a claim of its own (§4.5, D086). The role comes from the authored section
+    // (or the flag the archive derives from it), never from a stored Card field.
+    if prop(card, "restatement") == Some(&Value::Bool(true))
+        || prop(card, "body")
+            .and_then(Value::as_str)
+            .is_some_and(is_restatement_entry)
+    {
+        return "restatement-entry".into();
+    }
+    let parent = text(prop(card, "parent"));
+    let parent = if parent.is_empty() {
+        text(prop(card, "parent_address"))
+    } else {
+        parent
+    };
+    if in_book
+        && parent == format!("{tree}/1")
+        && text(prop(card, "edge")) == "side"
+        && text(prop(card, "type")) == "idea"
+    {
+        let own = Regex::new(&format!(r"^{}/\d+$", regex::escape(&tree))).unwrap();
+        let count = card["links"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|target| own.is_match(target))
+            .collect::<HashSet<_>>()
+            .len();
+        if count >= 3 && anchors.get(&tree).is_none_or(|total| count * 2 >= *total) {
+            return "structure".into();
+        }
+    }
+    "idea".into()
+}
+
 /// The source evidence of one Card as the audit derives it (design §4.3, D068–D072): an
 /// explicit `sources` set, else the Citation keys its `来源` lines name, else the Literature
 /// tree it is filed in. Empty is unknown, which is not a pass.

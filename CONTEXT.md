@@ -292,6 +292,14 @@ _Avoid_: Lint, quality score
 The severity the Card check gives each mechanically implemented rule in one archive: `block` (the write gate refuses), `advise` (the line is reported as advice), or `off` (the rule is not reported), decided separately for the human and the agent Workspace. The checker owns the rule catalog and its defaults; the archive stores only its declared `gate.<workspace>.<rule>` overrides in `metadata`. A missing override means the default; an explicit `default` removes the row and restores it.
 _Avoid_: Lint settings, per-archive config file, feature switch
 
+**Write gate**:
+The one Card-check decision every authoring route makes inside its existing write transaction: it resolves the final proposed Card (text and metadata), enforces the mandatory envelope, Link, Access and Lock rules, gathers bounded context (parent and model level, the model or book term table, distinct targets), runs the checker's rules under the archive's Card-check policy and the legacy ratchet, and either stores the Card with its warnings or refuses with a typed `card_check` without storing anything.
+_Avoid_: Pre-commit hook, second writer, gate service
+
+**Gate stage**:
+The archive's rollout decision for the write gate, stored as `gate.stage`: `advisory` reports every quality diagnostic as advice and refuses none, while `enforce` lets a `block` policy setting refuse the write. Mandatory envelope, Link, Access and Lock invariants refuse in both stages. It is promoted deliberately by the owner, never by a timer.
+_Avoid_: Feature flag, global switch
+
 **Book term table**:
 The terms of one digested book, with the words not to use for each: a Card titled `术语表…`, a Side successor of the book's first anchor. Rule R6 checks the book's Cards against it, as a model's term table checks its parts. A word not to use is another name for the same concept, never a different concept.
 _Avoid_: Glossary, vocabulary
