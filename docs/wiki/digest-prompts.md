@@ -3,7 +3,7 @@ block: digest-prompts
 title: Digest prompts
 paths:
   - "scripts/book-digest/*.md"
-synced: b010362930b5
+synced: 93e7b921af82
 updated: 2026-10-25
 ---
 

@@ -6,8 +6,8 @@ paths:
   - ".claude/workflows/zt-idea-grow.js"
   - ".claude/workflow-framework/zt-idea-grow/**"
   - "!.claude/workflow-framework/*/history/**"
-synced: 7ef99bd606f8
-updated: 2026-10-23
+synced: 93e7b921af82
+updated: 2026-10-25
 ---
 
 # Idea-grow workflow
