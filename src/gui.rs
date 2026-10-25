@@ -2302,16 +2302,14 @@ fn longest_backtick_run(text: &str) -> usize {
 
 /// The page a chart frame loads: the chart's HTML in the card's typography
 /// and colors, KaTeX when the chart holds TeX, and the titles of the Cards it
-/// names with `[[address]]`. The store keeps this small template;
-/// [`serve_chart_page`] fills in the theme and inlines the scripts.
+/// names with `[[address]]` or a Term `[[label@address]]`. The store keeps this
+/// small template; [`serve_chart_page`] fills in the theme and inlines the scripts.
 fn chart_page(source: &str, snapshot: &Snapshot) -> String {
     let mut links = serde_json::Map::new();
-    let mut rest = source;
-    while let Some(start) = rest.find("[[") {
-        let Some(length) = rest[start + 2..].find("]]") else {
-            break;
-        };
-        let target = &rest[start + 2..start + 2 + length];
+    // The one lexical scan: a name inside a code span is no Link there either, and a Term use
+    // names the head's address.
+    for occurrence in crate::link::LinkBody::for_rendering(source).occurrences() {
+        let target = occurrence.target;
         if !target.is_empty() && target.len() < 200 && !target.contains(['\n', '[', ']']) {
             let exists = snapshot.by_address.contains_key(target);
             links.insert(
@@ -2319,7 +2317,6 @@ fn chart_page(source: &str, snapshot: &Snapshot) -> String {
                 json!({ "title": snapshot.title(target), "exists": exists }),
             );
         }
-        rest = &rest[start + 2 + length + 2..];
     }
     // `</` would end the script element the data sits in.
     let links = Value::Object(links).to_string().replace("</", "<\\/");
@@ -5360,6 +5357,28 @@ mod render_tests {
         );
         assert_eq!(normalize_math_delimiters(r"\[ y \]"), "$$y$$");
         assert_eq!(normalize_math_delimiters(r"open \( only"), r"open \( only");
+    }
+
+    /// S10 (#151): a chart names its Cards by the shared lexical scan, so an ordinary Link and a
+    /// Term use both name the target address, while a name in a code span is no Link.
+    #[test]
+    fn a_chart_names_ordinary_and_term_links_by_their_targets() {
+        let (_temp, snapshot) = snapshot();
+        let page = chart_page("<p>[[0/1]] [[均衡@0/1]] `[[0/9]]` [[0/8]]</p>", &snapshot);
+        let links = page
+            .split("window.ZT_LINKS = ")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("the chart's links map");
+        let links: Value = serde_json::from_str(links).expect("the links map is JSON");
+        assert_eq!(links["0/1"]["exists"], json!(true));
+        assert_eq!(links["0/1"]["title"], json!("Ownership matters"));
+        assert_eq!(links["0/8"]["exists"], json!(false));
+        assert!(links.get("0/9").is_none(), "a code span is no Link: {links}");
+        assert!(
+            links.get("均衡@0/1").is_none(),
+            "a Term use names the address, not the macro: {links}"
+        );
     }
 
     #[test]

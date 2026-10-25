@@ -238,7 +238,7 @@ The page accepts a message only when `event.source` is the `contentWindow` of on
 
 ### Chart authoring surface (inside a chart)
 
-- `window.ZT_LINKS` — `{ "<address>": {title, exists} }` for each `[[address]]` in the chart source.
+- `window.ZT_LINKS` — `{ "<address>": {title, exists} }` for each Link in the chart source, read with the shared lexical scan: an ordinary `[[address]]` and a Term `[[label@address]]` both name the target address, and a name inside a code span names no Link.
 - `[[address]]` in chart text becomes `a.zt-link` (or, in SVG text, sets `data-zt` on the text element); any element with `data-zt="<address>"` or `a[href^="#/card/"]` opens that Card on click.
 - CSS tokens `--zt-paper`, `--zt-ink`, `--zt-ink-soft`, `--zt-ink-faint`, `--zt-rule`, `--zt-line`, `--zt-accent(-soft)`, `--zt-link(-soft)`, `--zt-topic(-soft)`, `--zt-model(-soft)`, `--zt-event(-soft)`, `--zt-series-1` … `--zt-series-6`, `--zt-serif`, `--zt-sans`, `--zt-mono`, with a dark set under `:root[data-theme="dark"]`.
 - TeX in `$…$`, `$$…$$`, `\(…\)`, `\[…\]` in chart text (outside `script, style, textarea, code, pre, svg`) is typeset when KaTeX was inlined.
@@ -381,7 +381,7 @@ Keys outside text fields (`installKeys`): `:` command bar, `/` or `Ctrl+K` searc
 
 ### Chart pages
 
-1. `chart_page(source, snapshot)` collects each `[[target]]` in the source (non-empty, under 200 bytes, no newline or bracket) with its title and existence into a JSON object, escapes `</` in it, and writes a template: `<html data-theme="__ZT_THEME__">`, a KaTeX placeholder `<!--zt:katex-->` only when the source holds `$`, `\(`, or `\[`, `<script>window.ZT_LINKS = …</script>`, a frame placeholder `<!--zt:frame-->`, and the source inside `<div id="zt-chart">`.
+1. `chart_page(source, snapshot)` collects each Link target the shared lexical scan reports in the source (non-empty, under 200 bytes, no newline or bracket; a Term use names its head's address, a code-span name is no Link) with its title and existence into a JSON object, escapes `</` in it, and writes a template: `<html data-theme="__ZT_THEME__">`, a KaTeX placeholder `<!--zt:katex-->` only when the source holds `$`, `\(`, or `\[`, `<script>window.ZT_LINKS = …</script>`, a frame placeholder `<!--zt:frame-->`, and the source inside `<div id="zt-chart">`.
 2. `Charts::add` keys the page by the first 16 bytes of its SHA-256 (32 hex characters) and keeps at most 512 pages, dropping the oldest inserted first; adding an existing page keeps its place.
 3. The page sets each iframe's `src` to `/chart/<id>?theme=<light|dark>` in `wireCharts` (on every render and on theme toggle).
 4. `/chart/<id>` fills the theme, inlines `chart-frame.js` and, when the placeholder is there, KaTeX's JS and its CSS with every font as a `data:font/woff2;base64,…` URI (`katex_inline_css`, built once), and answers with the chart CSP.
@@ -817,6 +817,7 @@ Gaps: the page has no browsed test harness in the repository. Its two DOM-free m
 - **An over-long Spread name is cut, not refused.** `normalize` truncates `name` to 80 characters by characters and refuses only a `question` over 512; this is what lets a long question name its own Spread. An older binary that lacks the field silently drops every `question` on its next Spread save (rollback risk; see Spreads §5).
 
 ## Change history
+- `2026-10-25` — S10 (#151): `chart_page` reads the chart source's Links through the shared lexical scan (`LinkBody::for_rendering`) instead of its own `[[` loop, so a Term use in a chart names its head's address in `window.ZT_LINKS` and a name inside a code span names no Link. The page template, CSP and frame contract are unchanged; new unit test `a_chart_names_ordinary_and_term_links_by_their_targets`.
 - `2026-10-24` — S07 (#149): the GUI Card route answers the Term Card exact `term` name, and `/api/create`, `/api/edit` and `/api/insert` accept the `term` field (omitted/null/set) through `src/term.rs`; the browser desk itself is S14 (#161).
 
 - `2026-10-24` — S04 (#146) page half: the write check in the page. `api()` keeps a 400's `check` on the error and the Reply desk raises a `reason: card_check` refusal with it; the writing desk shows a refused save as a correction slip beside Save (`.desk-check`): the blocking fault lines first, each one a button that finds its sentence in the draft, the advice folded; the draft stays, no Lock panel button, no automatic retry. Every accepted desk save (create, Literature create, edit, metadata, insert, hub draft create/edit, Reply) and `ty`/`lv`/`mf` show the answer's `warnings` and `check` as a small check slip under the existing save toast (`.toast-check`), new advice first, three lines and `+N more`. The rules are `ZtDraft.checkNote`, `ZtDraft.checkRefusal` and `ZtDraft.locateFault`. Tests: `the_save_note_shows_new_advice_first_and_folds_the_rest`, `a_card_check_refusal_lists_the_blocking_lines_and_finds_them_in_the_draft`, `every_gui_write_shows_its_check_beside_the_save_result`.
