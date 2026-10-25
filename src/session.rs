@@ -46,6 +46,9 @@ impl<R: BufRead> Interaction for LineInteraction<'_, R> {
 
 struct TuiInteraction<'a> {
     clipboard: &'a mut dyn ClipboardAccess,
+    /// Accepted-write warnings collected for the status row (S15-AC05): the TUI must not print
+    /// them into the alternate screen, where the next frame would immediately erase them.
+    warnings: Vec<String>,
 }
 
 impl Interaction for TuiInteraction<'_> {
@@ -64,6 +67,15 @@ impl Interaction for TuiInteraction<'_> {
 
     fn confirm(&mut self, expected: &str, lines: &[String]) -> Result<()> {
         tui_read_confirmation(expected, lines, self.clipboard)
+    }
+
+    fn check(&mut self, accepted: &crate::gate::Accepted) {
+        self.warnings.extend(
+            accepted
+                .lines()
+                .into_iter()
+                .map(|line| format!("check: {line}")),
+        );
     }
 }
 
@@ -222,26 +234,6 @@ impl ViewLine {
         Self::Entry {
             address: address.to_string(),
             rest: format!(" {title}"),
-        }
-    }
-
-    fn clipped(&self, max_cells: usize) -> Self {
-        match self {
-            Self::Plain(text) => Self::Plain(clip_to_cells(text, max_cells)),
-            Self::Heading(text) => Self::Heading(clip_to_cells(text, max_cells)),
-            Self::Hint(text) => Self::Hint(clip_to_cells(text, max_cells)),
-            Self::Linked(text) => Self::Linked(clip_to_cells(text, max_cells)),
-            Self::Entry { address, rest } => {
-                let address_cells = tui_text_width(address);
-                if address_cells >= max_cells {
-                    Self::Plain(clip_to_cells(address, max_cells))
-                } else {
-                    Self::Entry {
-                        address: address.clone(),
-                        rest: clip_to_cells(rest, max_cells - address_cells),
-                    }
-                }
-            }
         }
     }
 }
@@ -599,7 +591,7 @@ pub(crate) fn process_exists(pid: u32) -> bool {
         .is_some_and(|status| status.success())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct LinkSpan {
     row: u16,
     start: u16,
@@ -677,59 +669,218 @@ impl TuiFrame {
     }
 }
 
+/// The restrained ink of one rendered run (S15, #157). It keeps the Session's conventions: a Link
+/// is blue and underlined, a Broken one dark red, a heading bold and a hint dark grey. A Term use
+/// is its authored word in dark cyan with the same one underline (`TERM_INK`), quiet enough not to
+/// compete with the prose or with a reasoned Link.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Ink {
+    Plain,
+    Heading,
+    Hint,
+    Link,
+    BrokenLink,
+    Term,
+    BrokenTerm,
+    StatusError,
+}
+
+/// The restrained colour of a Term use in the terminal (S15, #157; design 15.3).
+const TERM_INK: crossterm::style::Color = crossterm::style::Color::DarkCyan;
+
+impl Ink {
+    /// Whether this run carries the one underline every Link shows.
+    fn is_underlined(self) -> bool {
+        matches!(
+            self,
+            Ink::Link | Ink::BrokenLink | Ink::Term | Ink::BrokenTerm
+        )
+    }
+}
+
+/// One styled run of a rendered line: the text exactly as it reaches the screen plus, for a
+/// followable Link, the address recorded in that run's `LinkSpan`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LineSegment {
+    ink: Ink,
+    text: String,
+    target: Option<String>,
+}
+
+impl LineSegment {
+    fn plain(text: &str) -> Self {
+        Self::styled(Ink::Plain, text)
+    }
+
+    fn styled(ink: Ink, text: &str) -> Self {
+        Self {
+            ink,
+            text: expand_display_tabs(text),
+            target: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ScreenGlyph {
     ch: char,
     width: u16,
+    ink: Ink,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct RenderedRow {
     glyphs: Vec<ScreenGlyph>,
     hard_break_after: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl RenderedRow {
+    #[cfg(test)]
+    fn text(&self) -> String {
+        self.glyphs.iter().map(|glyph| glyph.ch).collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct RenderedScreen {
     rows: Vec<RenderedRow>,
+    /// Followable Link spans by absolute screen row, in reading order.
+    links: Vec<LinkSpan>,
+}
+
+/// Lays out rendered lines at one terminal width (S15, #157). Drawing, display columns,
+/// `LinkSpan`s and the copied text all come from this one wrap rule, so a hidden address can never
+/// move them apart.
+struct ScreenBuilder {
+    width: u16,
+    rows: Vec<RenderedRow>,
+    links: Vec<LinkSpan>,
+    used: u16,
+}
+
+impl ScreenBuilder {
+    fn new(width: u16) -> Self {
+        Self {
+            width: width.max(1),
+            rows: Vec::new(),
+            links: Vec::new(),
+            used: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Add one logical line, clipped to `max_rows` when it is taller than the room that is left.
+    /// Returns false when no row is left at all.
+    fn try_push_line(&mut self, segments: &[LineSegment], max_rows: usize) -> bool {
+        if max_rows == 0 {
+            return false;
+        }
+        let mut line = ScreenBuilder::new(self.width);
+        line.push_line(segments);
+        let mut rows = line.rows;
+        let mut links = line.links;
+        if rows.len() > max_rows {
+            rows.truncate(max_rows);
+            links.retain(|link| (link.row as usize) < rows.len());
+        }
+        rows.last_mut()
+            .expect("a line occupies at least one row")
+            .hard_break_after = true;
+        let offset = self.rows.len() as u16;
+        for link in links {
+            self.links.push(LinkSpan {
+                row: link.row.saturating_add(offset),
+                ..link
+            });
+        }
+        self.rows.extend(rows);
+        true
+    }
+
+    /// Add one logical line of segments; it occupies at least one row.
+    fn push_line(&mut self, segments: &[LineSegment]) {
+        self.rows.push(RenderedRow::default());
+        self.used = 0;
+        for segment in segments {
+            self.push_segment(segment);
+        }
+        self.rows
+            .last_mut()
+            .expect("a line occupies at least one row")
+            .hard_break_after = true;
+    }
+
+    fn push_segment(&mut self, segment: &LineSegment) {
+        let target = segment.target.as_deref();
+        let mut span_start = None;
+        for ch in segment.text.chars() {
+            let width = char_display_width(ch) as u16;
+            if self.used > 0 && self.used.saturating_add(width) > self.width {
+                self.close_span(&mut span_start, target);
+                self.rows.push(RenderedRow::default());
+                self.used = 0;
+            }
+            if span_start.is_none() {
+                span_start = target.map(|_| (self.rows.len() - 1, self.used));
+            }
+            self.rows
+                .last_mut()
+                .expect("a line starts with one row")
+                .glyphs
+                .push(ScreenGlyph {
+                    ch,
+                    width,
+                    ink: segment.ink,
+                });
+            self.used = self.used.saturating_add(width);
+        }
+        self.close_span(&mut span_start, target);
+    }
+
+    fn close_span(&mut self, span_start: &mut Option<(usize, u16)>, target: Option<&str>) {
+        let Some((row, start)) = span_start.take() else {
+            return;
+        };
+        let Some(target) = target else {
+            return;
+        };
+        if self.used > start {
+            self.links.push(LinkSpan {
+                row: row as u16,
+                start,
+                end: self.used,
+                target: target.to_string(),
+            });
+        }
+    }
 }
 
 impl RenderedScreen {
-    fn from_logical_lines(lines: &[String], width: u16) -> Self {
-        let width = width.max(1);
-        let mut rows = Vec::new();
+    fn from_segments(lines: &[Vec<LineSegment>], width: u16) -> Self {
+        let mut builder = ScreenBuilder::new(width);
         for line in lines {
-            let mut glyphs = Vec::new();
-            let mut used = 0_u16;
-            for ch in line.chars() {
-                let expanded = if ch == '\t' {
-                    vec![' '; char_display_width('\t')]
-                } else {
-                    vec![ch]
-                };
-                for rendered_ch in expanded {
-                    let glyph_width = char_display_width(rendered_ch).max(1) as u16;
-                    if used > 0 && used.saturating_add(glyph_width) > width {
-                        rows.push(RenderedRow {
-                            glyphs,
-                            hard_break_after: false,
-                        });
-                        glyphs = Vec::new();
-                        used = 0;
-                    }
-                    glyphs.push(ScreenGlyph {
-                        ch: rendered_ch,
-                        width: glyph_width,
-                    });
-                    used = used.saturating_add(glyph_width);
-                }
-            }
-            rows.push(RenderedRow {
-                glyphs,
-                hard_break_after: true,
-            });
+            builder.push_line(line);
         }
-        Self { rows }
+        Self {
+            rows: builder.rows,
+            links: builder.links,
+        }
+    }
+
+    fn from_logical_lines(lines: &[String], width: u16) -> Self {
+        let lines = lines
+            .iter()
+            .map(|line| vec![LineSegment::plain(line)])
+            .collect::<Vec<_>>();
+        Self::from_segments(&lines, width)
+    }
+
+    #[cfg(test)]
+    fn row_texts(&self) -> Vec<String> {
+        self.rows.iter().map(RenderedRow::text).collect()
     }
 
     fn selected_text(&self, selection: ScreenSelection) -> String {
@@ -751,8 +902,8 @@ impl RenderedScreen {
             };
             let mut column = 0_u16;
             for glyph in &row.glyphs {
-                let glyph_end = column.saturating_add(glyph.width).saturating_sub(1);
-                if glyph_end >= first && column <= last {
+                let (glyph_start, glyph_end) = glyph_columns(column, glyph.width);
+                if glyph_end >= first && glyph_start <= last {
                     selected.push(glyph.ch);
                 }
                 column = column.saturating_add(glyph.width);
@@ -762,6 +913,17 @@ impl RenderedScreen {
             }
         }
         selected
+    }
+}
+
+/// The screen columns one glyph covers: an ordinary glyph owns `width` cells, while a combining
+/// mark (width 0) belongs to the cell before it, so a selection or a copy keeps it with its base.
+fn glyph_columns(column: u16, width: u16) -> (u16, u16) {
+    if width == 0 {
+        let cell = column.saturating_sub(1);
+        (cell, cell)
+    } else {
+        (column, column.saturating_add(width).saturating_sub(1))
     }
 }
 
@@ -990,16 +1152,22 @@ fn cmd_tui_session(root: PathBuf) -> Result<()> {
                     crossterm::event::KeyCode::Enter => {
                         let line = command.trim().to_string();
                         command.clear();
-                        let execution = {
-                            let mut interaction = TuiInteraction {
-                                clipboard: &mut clipboard,
-                            };
-                            command::execute(&root, &mut state, &line, &mut interaction)
+                        let mut interaction = TuiInteraction {
+                            clipboard: &mut clipboard,
+                            warnings: Vec::new(),
                         };
+                        let execution =
+                            command::execute(&root, &mut state, &line, &mut interaction);
+                        let warnings = std::mem::take(&mut interaction.warnings);
                         match execution {
                             Ok(Execution::Exit) => break,
                             Ok(Execution::Continue(result)) => {
-                                present_tui_result(result, &mut view)
+                                present_tui_result(result, &mut view);
+                                // An accepted write's warnings take the status row the Session
+                                // already uses for its own notices (S15-AC05).
+                                if !warnings.is_empty() {
+                                    view.message = StatusMessage::Info(warnings.join(" | "));
+                                }
                             }
                             Err(err) => view.message = StatusMessage::Error(format!("{err:#}")),
                         }
@@ -1102,15 +1270,6 @@ enum StatusMessage {
     None,
     Info(String),
     Error(String),
-}
-
-impl StatusMessage {
-    fn text(&self) -> &str {
-        match self {
-            Self::None => "",
-            Self::Info(text) | Self::Error(text) => text,
-        }
-    }
 }
 
 fn present_tui_result(result: CommandResult, view: &mut TuiView) {
@@ -1224,94 +1383,104 @@ fn draw_tui(
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     let width = width.max(1);
     let height = height.max(3);
-    let message_rows = match &view.message {
-        StatusMessage::None => 1,
-        message => tui_line_height(message.text()).clamp(1, 3),
+    let (message_segments, message_rows) = match &view.message {
+        StatusMessage::None => (Vec::new(), 1),
+        StatusMessage::Info(text) => status_line(text, Ink::Plain, width),
+        StatusMessage::Error(text) => status_line(text, Ink::StatusError, width),
     };
     let command_row = height - 1;
-    let message_row = command_row - message_rows;
+    let message_row = command_row - message_rows as u16;
     let total_lines = content.len();
     let scroll = view.scroll.min(total_lines.saturating_sub(1));
 
-    let mut stdout = io::stdout();
-    let mut links = Vec::new();
-    let mut screen_lines = Vec::new();
-    let mut row = 0_u16;
+    let mut builder = ScreenBuilder::new(width);
     let mut visible_lines = 0;
+    for line in content.iter().skip(scroll) {
+        let remaining = (message_row as usize).saturating_sub(builder.len());
+        if remaining == 0 {
+            break;
+        }
+        let segments = segments_of(line, &link_lifecycle);
+        if !builder.try_push_line(&segments, remaining) {
+            break;
+        }
+        visible_lines += 1;
+        if builder.len() >= message_row as usize {
+            break;
+        }
+    }
+    while builder.len() < message_row as usize {
+        builder.push_line(&[]);
+    }
+
+    let message_segments = if matches!(view.message, StatusMessage::None) {
+        vec![LineSegment::styled(
+            Ink::Hint,
+            &clip_to_cells(
+                &tui_hint(view.panel.is_some(), scroll, visible_lines, total_lines),
+                width as usize,
+            ),
+        )]
+    } else {
+        message_segments
+    };
+    builder.try_push_line(&message_segments, message_rows);
+    while builder.len() < message_row as usize + message_rows {
+        builder.push_line(&[]);
+    }
+
+    let command_text = command_bar_text(command, width);
+    builder.push_line(&[LineSegment::plain(&command_text)]);
+    while builder.len() < height as usize {
+        builder.push_line(&[]);
+    }
+    let screen = RenderedScreen {
+        rows: builder.rows,
+        links: builder.links,
+    };
+
+    let mut stdout = io::stdout();
     crossterm::queue!(
         stdout,
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         crossterm::cursor::MoveTo(0, 0)
     )?;
-    for line in content.iter().skip(scroll) {
-        let remaining = message_row.saturating_sub(row);
-        if remaining == 0 {
-            break;
-        }
-        let line = if tui_line_height(&line.text()) > remaining {
-            if visible_lines > 0 {
-                break;
-            }
-            line.clipped(remaining as usize * width as usize)
-        } else {
-            line.clone()
-        };
-        write_tui_view_line(&mut stdout, &link_lifecycle, &mut row, &line, &mut links)?;
-        screen_lines.push(line.text());
-        visible_lines += 1;
+    for (row_index, row) in screen.rows.iter().enumerate() {
+        queue_screen_row(&mut stdout, row_index as u16, row)?;
     }
-    for _ in row..message_row {
-        screen_lines.push(String::new());
-    }
-
-    let (message_text, message_color) = match &view.message {
-        StatusMessage::None => (
-            tui_hint(view.panel.is_some(), scroll, visible_lines, total_lines),
-            Some(crossterm::style::Color::DarkGrey),
-        ),
-        StatusMessage::Info(text) => (text.clone(), None),
-        StatusMessage::Error(text) => (text.clone(), Some(crossterm::style::Color::DarkRed)),
-    };
-    let message_text = clip_to_cells(
-        &expand_display_tabs(&message_text),
-        message_rows as usize * width as usize,
-    );
-    crossterm::queue!(stdout, crossterm::cursor::MoveTo(0, message_row))?;
-    if let Some(color) = message_color {
-        crossterm::queue!(stdout, crossterm::style::SetForegroundColor(color))?;
-    }
-    crossterm::queue!(
-        stdout,
-        crossterm::style::Print(&message_text),
-        crossterm::style::ResetColor
-    )?;
-    screen_lines.push(message_text);
-
-    let command_text = command_bar_text(command, width);
-    crossterm::queue!(
-        stdout,
-        crossterm::cursor::MoveTo(0, command_row),
-        crossterm::style::Print(&command_text)
-    )?;
-    screen_lines.push(command_text.clone());
-
-    let screen = RenderedScreen::from_logical_lines(&screen_lines, width);
     if let Some(selection) = selection {
         queue_screen_selection(&mut stdout, &screen, *selection)?;
     }
     crossterm::queue!(
         stdout,
-        crossterm::cursor::MoveTo(tui_text_width(&command_text) as u16, command_row)
+        crossterm::cursor::MoveTo(
+            (tui_text_width(&command_text) as u16).min(width.saturating_sub(1)),
+            command_row
+        )
     )?;
     stdout.flush()?;
     Ok(TuiFrame {
-        links,
+        links: screen.links.clone(),
         screen,
         scroll,
         visible_lines,
         total_lines,
         content_rows: message_row as usize,
     })
+}
+
+/// One status message as rendered runs and the rows it takes (S15, #157): a long warning or error
+/// keeps as many rows as it needs, up to the three this Session gives it.
+fn status_line(text: &str, ink: Ink, width: u16) -> (Vec<LineSegment>, usize) {
+    let segments = vec![LineSegment::styled(
+        ink,
+        &clip_to_cells(&expand_display_tabs(text), 3 * width as usize),
+    )];
+    let rows = RenderedScreen::from_segments(std::slice::from_ref(&segments), width)
+        .rows
+        .len()
+        .clamp(1, 3);
+    (segments, rows)
 }
 
 fn tui_hint(panel_open: bool, scroll: usize, visible_lines: usize, total_lines: usize) -> String {
@@ -1352,40 +1521,139 @@ fn command_bar_text(command: &str, width: u16) -> String {
     format!("> ...{}", tail.into_iter().rev().collect::<String>())
 }
 
-fn write_tui_view_line<W: Write>(
-    stdout: &mut W,
-    lifecycle: &link::LinkLifecycle,
-    row: &mut u16,
-    line: &ViewLine,
-    links: &mut Vec<LinkSpan>,
-) -> Result<()> {
+/// The rendered runs of one view line (S15, #157): a Term use becomes its authored label with its
+/// target recorded, an ordinary Link keeps the macro it always showed, and a Broken use keeps its
+/// word with the broken ink and no target.
+fn segments_of(line: &ViewLine, lifecycle: &link::LinkLifecycle) -> Vec<LineSegment> {
     match line {
-        ViewLine::Plain(text) => write_tui_plain_line(stdout, row, text),
-        ViewLine::Heading(text) => {
+        ViewLine::Plain(text) => vec![LineSegment::plain(text)],
+        ViewLine::Heading(text) => vec![LineSegment::styled(Ink::Heading, text)],
+        ViewLine::Hint(text) => vec![LineSegment::styled(Ink::Hint, text)],
+        ViewLine::Entry { address, rest } => vec![
+            LineSegment {
+                ink: Ink::Link,
+                text: expand_display_tabs(address),
+                target: Some(address.clone()),
+            },
+            LineSegment::plain(rest),
+        ],
+        ViewLine::Linked(text) => linked_segments(text, lifecycle),
+    }
+}
+
+fn linked_segments(text: &str, lifecycle: &link::LinkLifecycle) -> Vec<LineSegment> {
+    let mut segments = Vec::new();
+    let mut offset = 0;
+    for classified in lifecycle.classify_for_rendering(text) {
+        let plain = &text[offset..classified.macro_range.start];
+        if !plain.is_empty() {
+            segments.push(LineSegment::plain(plain));
+        }
+        let macro_text = &text[classified.macro_range.clone()];
+        let valid = classified.status == link::LinkStatus::Valid;
+        let target = valid.then(|| classified.target.to_string());
+        match classified.form {
+            link::LinkForm::Ordinary => segments.push(LineSegment {
+                ink: if valid { Ink::Link } else { Ink::BrokenLink },
+                text: expand_display_tabs(macro_text),
+                target,
+            }),
+            link::LinkForm::Term => {
+                // A reader sees the authored word. A stored macro with no label (an old, refused
+                // write) still shows its address, so the reader always gets a usable word.
+                let word = classified
+                    .label
+                    .filter(|label| !label.trim().is_empty())
+                    .unwrap_or(classified.target);
+                segments.push(LineSegment {
+                    ink: if valid { Ink::Term } else { Ink::BrokenTerm },
+                    text: expand_display_tabs(word),
+                    target,
+                });
+            }
+        }
+        offset = classified.macro_range.end;
+    }
+    let rest = &text[offset..];
+    if !rest.is_empty() {
+        segments.push(LineSegment::plain(rest));
+    }
+    segments
+}
+
+/// The text one view line shows in a terminal without styles, used by the line Session.
+fn rendered_view_text(line: &ViewLine, lifecycle: &link::LinkLifecycle) -> String {
+    segments_of(line, lifecycle)
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect()
+}
+
+fn queue_screen_row<W: Write>(stdout: &mut W, row: u16, rendered: &RenderedRow) -> Result<()> {
+    if rendered.glyphs.is_empty() {
+        return Ok(());
+    }
+    crossterm::queue!(stdout, crossterm::cursor::MoveTo(0, row))?;
+    let mut run = String::new();
+    let mut ink = rendered.glyphs[0].ink;
+    for glyph in &rendered.glyphs {
+        if glyph.ink != ink {
+            queue_ink_run(stdout, ink, &run)?;
+            run.clear();
+            ink = glyph.ink;
+        }
+        run.push(glyph.ch);
+    }
+    queue_ink_run(stdout, ink, &run)?;
+    Ok(())
+}
+
+fn queue_ink_run<W: Write>(stdout: &mut W, ink: Ink, text: &str) -> Result<()> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    match ink {
+        Ink::Plain => crossterm::queue!(stdout, crossterm::style::Print(text))?,
+        Ink::Heading => {
             crossterm::queue!(
                 stdout,
-                crossterm::style::SetAttribute(crossterm::style::Attribute::Bold)
-            )?;
-            write_tui_plain_line(stdout, row, text)?;
-            crossterm::queue!(
-                stdout,
+                crossterm::style::SetAttribute(crossterm::style::Attribute::Bold),
+                crossterm::style::Print(text),
                 crossterm::style::SetAttribute(crossterm::style::Attribute::NormalIntensity)
             )?;
-            Ok(())
         }
-        ViewLine::Hint(text) => {
-            crossterm::queue!(
-                stdout,
-                crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey)
-            )?;
-            write_tui_plain_line(stdout, row, text)?;
+        _ => {
+            let color = ink_color(ink).expect("a coloured ink has a colour");
+            crossterm::queue!(stdout, crossterm::style::SetForegroundColor(color))?;
+            if ink.is_underlined() {
+                crossterm::queue!(
+                    stdout,
+                    crossterm::style::SetAttribute(crossterm::style::Attribute::Underlined)
+                )?;
+            }
+            crossterm::queue!(stdout, crossterm::style::Print(text))?;
+            if ink.is_underlined() {
+                crossterm::queue!(
+                    stdout,
+                    crossterm::style::SetAttribute(crossterm::style::Attribute::NoUnderline)
+                )?;
+            }
             crossterm::queue!(stdout, crossterm::style::ResetColor)?;
-            Ok(())
         }
-        ViewLine::Linked(text) => write_tui_link_line(stdout, lifecycle, row, text, links),
-        ViewLine::Entry { address, rest } => {
-            write_tui_location_line(stdout, row, address, rest, links)
+    }
+    Ok(())
+}
+
+/// The foreground colour of one ink, or `None` when it keeps the terminal's own ink.
+fn ink_color(ink: Ink) -> Option<crossterm::style::Color> {
+    match ink {
+        Ink::Plain | Ink::Heading => None,
+        Ink::Hint => Some(crossterm::style::Color::DarkGrey),
+        Ink::Link => Some(crossterm::style::Color::Blue),
+        Ink::BrokenLink | Ink::BrokenTerm | Ink::StatusError => {
+            Some(crossterm::style::Color::DarkRed)
         }
+        Ink::Term => Some(TERM_INK),
     }
 }
 
@@ -1405,9 +1673,9 @@ fn queue_screen_selection<W: Write>(
         let mut selected_column = None;
         let mut selected = String::new();
         for glyph in &rendered_row.glyphs {
-            let glyph_end = column.saturating_add(glyph.width).saturating_sub(1);
-            if glyph_end >= first && column <= last {
-                selected_column.get_or_insert(column);
+            let (glyph_start, glyph_end) = glyph_columns(column, glyph.width);
+            if glyph_end >= first && glyph_start <= last {
+                selected_column.get_or_insert(glyph_start);
                 selected.push(glyph.ch);
             }
             column = column.saturating_add(glyph.width);
@@ -1459,95 +1727,6 @@ fn tui_line_height(text: &str) -> u16 {
         .unwrap_or(80);
     let display_width = tui_text_width(text).max(1);
     display_width.div_ceil(width) as u16
-}
-
-fn write_tui_location_line<W: Write>(
-    stdout: &mut W,
-    row: &mut u16,
-    location: &str,
-    suffix: &str,
-    links: &mut Vec<LinkSpan>,
-) -> Result<()> {
-    crossterm::queue!(stdout, crossterm::cursor::MoveTo(0, *row))?;
-    queue_tui_valid_link(stdout, *row, 0, location, location, links)?;
-    crossterm::queue!(stdout, crossterm::style::Print(expand_display_tabs(suffix)))?;
-    *row = row.saturating_add(tui_line_height(&format!("{location}{suffix}")));
-    Ok(())
-}
-
-fn write_tui_link_line<W: Write>(
-    stdout: &mut W,
-    lifecycle: &link::LinkLifecycle,
-    row: &mut u16,
-    text: &str,
-    links: &mut Vec<LinkSpan>,
-) -> Result<()> {
-    crossterm::queue!(stdout, crossterm::cursor::MoveTo(0, *row))?;
-    let mut col = 0_u16;
-    let mut offset = 0_usize;
-    for classified in lifecycle.classify_for_rendering(text) {
-        let start = classified.macro_range.start;
-        let plain = &text[offset..start];
-        crossterm::queue!(stdout, crossterm::style::Print(expand_display_tabs(plain)))?;
-        col = col.saturating_add(tui_text_width(plain) as u16);
-        let macro_text = &text[classified.macro_range.clone()];
-        match classified.status {
-            link::LinkStatus::Valid => {
-                queue_tui_valid_link(stdout, *row, col, macro_text, classified.target, links)?;
-            }
-            link::LinkStatus::Broken => {
-                crossterm::queue!(
-                    stdout,
-                    crossterm::style::SetForegroundColor(crossterm::style::Color::DarkRed),
-                    crossterm::style::SetAttribute(crossterm::style::Attribute::Underlined),
-                    crossterm::style::Print(expand_display_tabs(macro_text)),
-                    crossterm::style::SetAttribute(crossterm::style::Attribute::NoUnderline),
-                    crossterm::style::ResetColor
-                )?;
-            }
-        }
-        col = col.saturating_add(tui_text_width(macro_text) as u16);
-        offset = classified.macro_range.end;
-    }
-    let rest = &text[offset..];
-    crossterm::queue!(stdout, crossterm::style::Print(expand_display_tabs(rest)))?;
-    *row = row.saturating_add(tui_line_height(text));
-    Ok(())
-}
-
-fn queue_tui_valid_link<W: Write>(
-    stdout: &mut W,
-    row: u16,
-    col: u16,
-    text: &str,
-    target: &str,
-    links: &mut Vec<LinkSpan>,
-) -> Result<()> {
-    crossterm::queue!(
-        stdout,
-        crossterm::style::SetForegroundColor(crossterm::style::Color::Blue),
-        crossterm::style::SetAttribute(crossterm::style::Attribute::Underlined),
-        crossterm::style::Print(text),
-        crossterm::style::SetAttribute(crossterm::style::Attribute::NoUnderline),
-        crossterm::style::ResetColor
-    )?;
-    let width = crossterm::terminal::size()?.0.max(1);
-    let mut span_row = row.saturating_add(col / width);
-    let mut span_start = col % width;
-    let mut remaining = tui_text_width(text) as u16;
-    while remaining > 0 {
-        let span_width = remaining.min(width.saturating_sub(span_start));
-        links.push(LinkSpan {
-            row: span_row,
-            start: span_start,
-            end: span_start.saturating_add(span_width),
-            target: target.to_string(),
-        });
-        remaining = remaining.saturating_sub(span_width);
-        span_row = span_row.saturating_add(1);
-        span_start = 0;
-    }
-    Ok(())
 }
 
 fn tui_select_literature_edit_part(clipboard: &mut dyn ClipboardAccess) -> Result<EditPart> {
@@ -2163,9 +2342,31 @@ fn char_display_width(ch: char) -> usize {
     match ch {
         '\t' => 4,
         ch if ch.is_control() => 0,
+        ch if is_zero_width(ch) => 0,
         ch if ch.is_ascii() => 1,
         _ => 2,
     }
+}
+
+/// Whether a character takes no cell of its own: the combining marks, variation selectors and
+/// zero-width joiners that attach to the character before them (S15, #157; design 15.3).
+fn is_zero_width(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x0300..=0x036F   // combining diacritical marks
+            | 0x0483..=0x0489 // Cyrillic combining marks
+            | 0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7
+            | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06DC
+            | 0x06DF..=0x06E4 | 0x06E7..=0x06E8 | 0x06EA..=0x06ED
+            | 0x0900..=0x0903 | 0x093A..=0x094F | 0x0951..=0x0957
+            | 0x1AB0..=0x1AFF // combining diacritical marks extended
+            | 0x1DC0..=0x1DFF // combining diacritical marks supplement
+            | 0x200B..=0x200F // zero-width space, joiners and directional marks
+            | 0x2060..=0x2064 | 0x20D0..=0x20F0 // invisible operators, combining marks for symbols
+            | 0xFE00..=0xFE0F // variation selectors
+            | 0xFE20..=0xFE2F // combining half marks
+            | 0xE0100..=0xE01EF // variation selectors supplement
+    )
 }
 
 fn run_tui_editor(
@@ -2587,8 +2788,9 @@ fn line_select_literature_edit_part<R: BufRead>(input: &mut R) -> Result<EditPar
 
 fn print_view(root: &Path, state: &SessionState) -> Result<()> {
     let conn = open_db(root)?;
+    let lifecycle = link_lifecycle(&conn)?;
     for line in view_lines(&conn, state.pointer(), state.workspace())? {
-        println!("{}", line.text());
+        println!("{}", rendered_view_text(&line, &lifecycle));
     }
     Ok(())
 }
@@ -2783,7 +2985,7 @@ mod tests {
     fn frame_scrolling_pages_within_content_bounds() {
         let frame = TuiFrame {
             links: Vec::new(),
-            screen: RenderedScreen { rows: Vec::new() },
+            screen: RenderedScreen::default(),
             scroll: 0,
             visible_lines: 10,
             total_lines: 25,
@@ -2826,17 +3028,18 @@ mod tests {
     }
 
     #[test]
-    fn view_line_clipping_respects_display_cells_and_keeps_entry_addresses() {
+    fn panel_entries_keep_their_address_spans_in_display_cells() {
+        let screen = screen_of(&ViewLine::entry("0/1", "Long title"), 80);
+
+        assert_eq!(screen.row_texts(), ["0/1 Long title"]);
         assert_eq!(
-            ViewLine::Plain("ab中c".to_string()).clipped(3),
-            ViewLine::Plain("ab".to_string())
-        );
-        assert_eq!(
-            ViewLine::entry("0/1", "Long title").clipped(8),
-            ViewLine::Entry {
-                address: "0/1".to_string(),
-                rest: " Long".to_string(),
-            }
+            screen.links,
+            [LinkSpan {
+                row: 0,
+                start: 0,
+                end: 3,
+                target: "0/1".to_string(),
+            }]
         );
     }
 
@@ -3359,5 +3562,263 @@ mod tests {
 
         editor.apply(EditorAction::MoveUp, viewport);
         assert_eq!(editor.position(), EditorPosition::new(1, 1));
+    }
+
+    /// The Link lifecycle the rendering tests share: one valid Term head `0/1|a|a` and one
+    /// ordinary Card `0/1` that is no Term head.
+    fn rendering_lifecycle() -> link::LinkLifecycle {
+        link::LinkLifecycle::from_cards(vec![
+            link::CardSnapshot::term_head("0/1|a|a", "均衡", "## 释义\n\n双方都不改变策略。\n"),
+            link::CardSnapshot::card("0/1", "Other", "body"),
+        ])
+    }
+
+    fn screen_of(line: &ViewLine, width: u16) -> RenderedScreen {
+        RenderedScreen::from_segments(&[segments_of(line, &rendering_lifecycle())], width)
+    }
+
+    fn screen_selection(anchor: (u16, u16), active: (u16, u16)) -> ScreenSelection {
+        ScreenSelection {
+            anchor: ScreenPosition {
+                row: anchor.0,
+                column: anchor.1,
+            },
+            active: ScreenPosition {
+                row: active.0,
+                column: active.1,
+            },
+        }
+    }
+
+    /// S15-AC01/R0474: a Term use reads as its authored label with its target recorded in the
+    /// LinkSpan, while an ordinary Link keeps the macro it always showed.
+    #[test]
+    fn a_term_use_reads_as_its_label_and_records_its_target() {
+        let screen = screen_of(
+            &ViewLine::Linked("see [[均衡@0/1|a|a]] and [[0/1]]".to_string()),
+            80,
+        );
+
+        assert_eq!(screen.row_texts(), ["see 均衡 and [[0/1]]"]);
+        assert_eq!(
+            screen.links,
+            [
+                LinkSpan {
+                    row: 0,
+                    start: 4,
+                    end: 8,
+                    target: "0/1|a|a".to_string(),
+                },
+                LinkSpan {
+                    row: 0,
+                    start: 13,
+                    end: 20,
+                    target: "0/1".to_string(),
+                },
+            ]
+        );
+        assert_eq!(screen.rows[0].glyphs[4].ink, Ink::Term);
+        assert_eq!(screen.rows[0].glyphs[0].ink, Ink::Plain);
+    }
+
+    /// S15-AC01/R0475: a broken Term use keeps its word with the broken style and records no
+    /// target, so a reader sees the term but cannot follow it.
+    #[test]
+    fn a_broken_term_use_keeps_its_label_but_no_target() {
+        for line in ["see [[需求@0/9]]", "see [[需求@0/1]]"] {
+            let screen = screen_of(&ViewLine::Linked(line.to_string()), 80);
+
+            assert_eq!(screen.row_texts(), ["see 需求"]);
+            assert!(screen.links.is_empty(), "{line}");
+            assert_eq!(screen.rows[0].glyphs[4].ink, Ink::BrokenTerm, "{line}");
+        }
+    }
+
+    /// S15-AC02/R0474: column advance and wrapping use the rendered label's display width, never
+    /// the hidden macro bytes.
+    #[test]
+    fn a_term_labels_display_width_decides_the_wrap() {
+        let line = ViewLine::Linked("一[[均衡@0/1|a|a]]二".to_string());
+        let screen = screen_of(&line, 12);
+
+        assert_eq!(screen.row_texts(), ["一均衡二"]);
+        assert_eq!(
+            screen.links,
+            [LinkSpan {
+                row: 0,
+                start: 2,
+                end: 6,
+                target: "0/1|a|a".to_string(),
+            }]
+        );
+        assert!(
+            RenderedScreen::from_logical_lines(&[line.text()], 12)
+                .rows
+                .len()
+                > 1,
+            "the hidden address bytes alone would wrap this line"
+        );
+    }
+
+    /// S15-AC02: a Term label wider than the screen keeps a followable LinkSpan on every row it
+    /// covers, and mouse hit testing works on the later rows.
+    #[test]
+    fn a_wrapped_term_label_stays_followable_on_every_row() {
+        let screen = screen_of(&ViewLine::Linked("[[均衡弹性@0/1|a|a]]".to_string()), 4);
+
+        assert_eq!(screen.row_texts(), ["均衡", "弹性"]);
+        assert_eq!(
+            screen.links,
+            [
+                LinkSpan {
+                    row: 0,
+                    start: 0,
+                    end: 4,
+                    target: "0/1|a|a".to_string(),
+                },
+                LinkSpan {
+                    row: 1,
+                    start: 0,
+                    end: 4,
+                    target: "0/1|a|a".to_string(),
+                },
+            ]
+        );
+        assert_eq!(link_target_at(&screen.links, 1, 1), Some("0/1|a|a"));
+    }
+
+    /// S15-AC04: an ordinary Link keeps its macro and its half-open display spans, including one
+    /// span split across a soft wrap.
+    #[test]
+    fn an_ordinary_link_keeps_its_macro_and_splits_its_span_across_rows() {
+        let screen = screen_of(&ViewLine::Linked("一二三四[[0/1]]".to_string()), 10);
+
+        assert_eq!(screen.row_texts(), ["一二三四[[", "0/1]]"]);
+        assert_eq!(
+            screen.links,
+            [
+                LinkSpan {
+                    row: 0,
+                    start: 8,
+                    end: 10,
+                    target: "0/1".to_string(),
+                },
+                LinkSpan {
+                    row: 1,
+                    start: 0,
+                    end: 5,
+                    target: "0/1".to_string(),
+                },
+            ]
+        );
+    }
+
+    /// S15-AC03: a combining mark takes no column and copies with its base, so hidden address
+    /// bytes can never shift a selection or a copied range.
+    #[test]
+    fn combining_marks_take_no_column_and_copy_with_their_base() {
+        let screen = screen_of(
+            &ViewLine::Linked("e\u{301} [[均衡@0/1|a|a]]".to_string()),
+            6,
+        );
+
+        assert_eq!(screen.row_texts(), ["e\u{301} 均衡"]);
+        assert_eq!(
+            screen.links,
+            [LinkSpan {
+                row: 0,
+                start: 2,
+                end: 6,
+                target: "0/1|a|a".to_string(),
+            }]
+        );
+        assert_eq!(
+            screen.selected_text(screen_selection((0, 0), (0, 5))),
+            "e\u{301} 均衡"
+        );
+        assert_eq!(
+            screen.selected_text(screen_selection((0, 2), (0, 5))),
+            "均衡"
+        );
+    }
+
+    /// S15-AC01: the drawn label uses the restrained term ink, dark cyan with the one underline
+    /// every Link uses, and the hidden address never reaches the screen.
+    #[test]
+    fn the_drawn_term_label_uses_the_restrained_term_ink() {
+        let screen = screen_of(&ViewLine::Linked("see [[均衡@0/1|a|a]]".to_string()), 80);
+        let mut drawn = Vec::new();
+        queue_screen_row(&mut drawn, 0, &screen.rows[0]).expect("draw the row");
+        let drawn = String::from_utf8(drawn).expect("terminal bytes are UTF-8");
+
+        assert!(drawn.contains("均衡"), "{drawn:?}");
+        assert!(
+            !drawn.contains("0/1|a|a"),
+            "the target stays hidden: {drawn:?}"
+        );
+        assert!(
+            drawn.contains("\u{1b}[4m"),
+            "the term label keeps one underline: {drawn:?}"
+        );
+        // The colour mapping is asserted directly: a test terminal has no colour support, so
+        // crossterm rightly writes no colour sequence here.
+        assert_eq!(ink_color(Ink::Term), Some(TERM_INK));
+        assert_eq!(
+            ink_color(Ink::Term),
+            Some(crossterm::style::Color::DarkCyan)
+        );
+        assert_eq!(ink_color(Ink::Link), Some(crossterm::style::Color::Blue));
+        assert_eq!(
+            ink_color(Ink::BrokenTerm),
+            Some(crossterm::style::Color::DarkRed)
+        );
+        assert_eq!(ink_color(Ink::Plain), None);
+        assert!(Ink::Term.is_underlined());
+        assert!(Ink::Link.is_underlined());
+        assert!(!Ink::Hint.is_underlined());
+    }
+
+    /// S15-AC02: only a first line taller than the whole content area is clipped, and it is
+    /// clipped to the rows that fit, so it can never overlap the status and command rows.
+    #[test]
+    fn a_first_line_too_tall_for_the_screen_is_clipped_to_the_rows_that_fit() {
+        let segments = segments_of(
+            &ViewLine::Linked("[[均衡弹性@0/1|a|a]]".to_string()),
+            &rendering_lifecycle(),
+        );
+        let mut builder = ScreenBuilder::new(4);
+
+        assert!(builder.try_push_line(&segments, 1));
+        assert_eq!(builder.rows.len(), 1);
+        assert_eq!(
+            builder.rows[0]
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.ch)
+                .collect::<String>(),
+            "均衡"
+        );
+        assert!(!builder.try_push_line(&[LineSegment::plain("next")], 0));
+    }
+
+    /// S15-AC01: the line Session reads the same label-only projection the TUI draws.
+    #[test]
+    fn the_line_session_reads_a_term_use_as_its_label() {
+        let lifecycle = rendering_lifecycle();
+
+        assert_eq!(
+            rendered_view_text(
+                &ViewLine::Linked("see [[均衡@0/1|a|a]] and [[0/1]]".to_string()),
+                &lifecycle,
+            ),
+            "see 均衡 and [[0/1]]"
+        );
+        assert_eq!(
+            rendered_view_text(
+                &ViewLine::Linked("see [[需求@0/9]]".to_string()),
+                &lifecycle
+            ),
+            "see 需求"
+        );
     }
 }

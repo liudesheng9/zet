@@ -95,6 +95,26 @@ impl PtySession {
         )
     }
 
+    /// A fake clipboard at a chosen size whose copy is written to `clipboard_output`.
+    #[allow(dead_code)] // used by tests/term_session.rs, not by every PTY suite
+    pub fn spawn_with_test_clipboard_output_at_size(
+        program: &Path,
+        config_dir: &Path,
+        clipboard_text: &str,
+        clipboard_output: &Path,
+        rows: u16,
+        cols: u16,
+    ) -> Self {
+        Self::spawn_configured(
+            program,
+            config_dir,
+            &[],
+            Some((clipboard_text, Some(clipboard_output))),
+            false,
+            (rows, cols),
+        )
+    }
+
     pub fn spawn_with_real_clipboard_shortcuts(program: &Path, config_dir: &Path) -> Self {
         Self::spawn_configured(program, config_dir, &[], None, true, (24, 80))
     }

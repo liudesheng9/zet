@@ -4383,15 +4383,15 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub|term> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q\n"
     ));
     assert!(
-        stdout.contains("  mv [alone] <new-location>                    move the current card")
+        stdout.contains("  mv [alone] <new-location>                         move the current card and its successors (alone: only the card; its chain closes up)")
     );
-    assert!(stdout.contains("  ins                                          insert a new card"));
+    assert!(stdout.contains("  ins                                               insert a new card in the current card's place; it and its successors move down"));
     assert!(
         stdout.contains(
-            "  ty <idea|event|finding|model|hub> [<facet>]  make the current card an Idea, Event, Finding, Model, or Hub Card; a facet (any short label) makes it a Model part"
+            "  ty <idea|event|finding|model|hub|term> [<facet>]  make the current card an Idea, Event, Finding, Model, Hub, or Term Card; a facet (any short label) makes it a Model part"
         )
     );
     assert!(stdout.contains(

@@ -480,12 +480,13 @@ fn line_session_shows_and_sets_the_type_of_the_current_card() {
     home.human_topic();
     let output = home
         .cmd()
-        .write_stdin("go 0/1\nty event\nty model\ngo 0/0\nty event\nhelp\nq\n".as_bytes())
+        .write_stdin("go 0/1\nty event\nty term\nty model\ngo 0/0\nty event\nhelp\nq\n".as_bytes())
         .output()
         .expect("line session");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("location: 0/1\n# Human Card"));
     assert!(stdout.contains("location: 0/1 [event]\n# Human Card"));
+    assert!(stdout.contains("location: 0/1 [term]\n# Human Card"));
     assert!(stdout.contains("location: 0/1 [model]\n# Human Card"));
     assert!(stdout.contains(&format!("{ROOT_REFUSAL}\n")));
     assert!(stdout.contains("location: 0/0\n# Human Topic"));

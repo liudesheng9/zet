@@ -104,7 +104,9 @@ blocks they are plain text. A Term Card's direct word link is `[[label@address]]
 is the word in the sentence (1–40 characters), exactly one `@` separates it from the address,
 and that address must name a Term head (an immediate Side successor of a Term list). A move
 rewrites only the address bytes, never the label. The terminal never renders Markdown: the
-Session shows and edits the stored Markdown exactly as written.
+Session shows and edits the stored Markdown exactly as written. The one exception is the
+reading view of a Term link: a Session reader sees its label, while edit mode still shows the
+whole `[[label@address]]` macro.
 
 A named Term Card follows one authored template, checked by the T1–T10 rules on every write:
 the `术语：`, optional `原文：`, `不用：`, `类别：` and `首次定义：` head lines; the fixed sections

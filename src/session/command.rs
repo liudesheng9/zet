@@ -89,8 +89,8 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnRegular,
     ),
     (
-        "ty <idea|event|finding|model|hub> [<facet>]",
-        "make the current card an Idea, Event, Finding, Model, or Hub Card; a facet (any short label) makes it a Model part",
+        "ty <idea|event|finding|model|hub|term> [<facet>]",
+        "make the current card an Idea, Event, Finding, Model, Hub, or Term Card; a facet (any short label) makes it a Model part",
         Availability::OnRegular,
     ),
     (
@@ -170,6 +170,13 @@ pub(super) trait Interaction {
     fn choose_literature_edit_part(&mut self) -> Result<crate::EditPart>;
 
     fn confirm(&mut self, expected: &str, lines: &[String]) -> Result<()>;
+
+    /// Present one accepted write's warnings in the front end's own convention (R0176,
+    /// S15-AC05). The line Session prints them above its refreshed view; the TUI collects them
+    /// for its status row, because printing into the alternate screen would erase them.
+    fn check(&mut self, accepted: &crate::gate::Accepted) {
+        show_check(accepted);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -546,9 +553,10 @@ fn execute_command(
             let mut conn = crate::open_db(root)?;
             let workspace = state.workspace;
             let mut created = None;
+            let mut accepted = None;
             let mut save = |text: &str| {
-                let (location, accepted) = crate::create_topic(&mut conn, workspace, text)?;
-                show_check(&accepted);
+                let (location, shown) = crate::create_topic(&mut conn, workspace, text)?;
+                accepted = Some(shown);
                 created = Some(location);
                 Ok(())
             };
@@ -556,6 +564,9 @@ fn execute_command(
                 && let Some(location) = created
             {
                 state.pointer = Pointer::Card(location);
+            }
+            if let Some(accepted) = accepted {
+                interaction.check(&accepted);
             }
             Ok(Execution::Continue(CommandResult::Changed))
         }
@@ -571,8 +582,9 @@ fn execute_command(
             // R232 (S08-AC02): a Locked destination refuses before the editor opens. The writer
             // checks again, because an editor can outlive the view this precheck reads.
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&location))?;
+            let mut accepted = None;
             let mut save = |text: &str| {
-                let accepted = crate::insert_card(
+                accepted = Some(crate::insert_card(
                     &mut conn,
                     &location,
                     false,
@@ -580,12 +592,14 @@ fn execute_command(
                     crate::CardType::Idea,
                     None,
                     text,
-                )?;
-                show_check(&accepted);
+                )?);
                 Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(location);
+            }
+            if let Some(accepted) = accepted {
+                interaction.check(&accepted);
             }
             Ok(Execution::Continue(CommandResult::Changed))
         }
@@ -597,8 +611,9 @@ fn execute_command(
             crate::ensure_side_parent(&parent)?;
             let location = crate::next_side_successor(&conn, &parent.address, &BTreeSet::new())?;
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&location))?;
+            let mut accepted = None;
             let mut save = |text: &str| {
-                let accepted = crate::insert_card(
+                accepted = Some(crate::insert_card(
                     &mut conn,
                     &location,
                     false,
@@ -606,12 +621,14 @@ fn execute_command(
                     crate::CardType::Idea,
                     None,
                     text,
-                )?;
-                show_check(&accepted);
+                )?);
                 Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(location);
+            }
+            if let Some(accepted) = accepted {
+                interaction.check(&accepted);
             }
             Ok(Execution::Continue(CommandResult::Changed))
         }
@@ -635,21 +652,24 @@ fn execute_command(
             let initial_text = crate::card::card_template(&metadata.title);
             let citation_key = metadata.citation_key.clone();
             let workspace = state.workspace;
+            let mut checked = None;
             let mut save_text = |edited: &str| {
                 let parsed = crate::parse_literature_edit_text(edited)?;
                 let text = crate::compose_card_text(&metadata.title, &parsed.body, "");
-                let accepted = crate::insert_literature_card(
+                checked = Some(crate::insert_literature_card(
                     &mut conn,
                     &citation_key,
                     workspace,
                     &bibtex,
                     &text,
-                )?;
-                show_check(&accepted);
+                )?);
                 Ok(())
             };
             if interaction.edit(&initial_text, "edit mode", &mut save_text)? {
                 state.pointer = Pointer::Card(citation_key);
+            }
+            if let Some(checked) = checked {
+                interaction.check(&checked);
             }
             Ok(Execution::Continue(CommandResult::Changed))
         }
@@ -711,27 +731,33 @@ fn execute_command(
                             &bibtex,
                             &metadata.title,
                         )?;
-                        show_check(&accepted);
+                        interaction.check(&accepted);
                         state.pointer = Pointer::Card(metadata.citation_key);
                         Ok(Execution::Continue(CommandResult::Changed))
                     }
                     crate::EditPart::Text => {
+                        let mut accepted = None;
                         let mut save = |text: &str| {
-                            let accepted = crate::update_literature_text(&mut conn, &card, text)?;
-                            show_check(&accepted);
+                            accepted = Some(crate::update_literature_text(&mut conn, &card, text)?);
                             Ok(())
                         };
                         interaction.edit(&card.text, "edit mode", &mut save)?;
+                        if let Some(accepted) = accepted {
+                            interaction.check(&accepted);
+                        }
                         Ok(Execution::Continue(CommandResult::Changed))
                     }
                 };
             }
+            let mut accepted = None;
             let mut save = |text: &str| {
-                let accepted = crate::update_card_text(&mut conn, &card, text)?;
-                show_check(&accepted);
+                accepted = Some(crate::update_card_text(&mut conn, &card, text)?);
                 Ok(())
             };
             interaction.edit(&card.text, "edit mode", &mut save)?;
+            if let Some(accepted) = accepted {
+                interaction.check(&accepted);
+            }
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["del", rest @ ..] => {
@@ -796,20 +822,23 @@ fn execute_command(
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
             crate::tree_lock::ensure_unlocked(&conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
             interaction.confirm("insert", &crate::place::insert_verification_lines(&plan))?;
+            let mut accepted = None;
             let mut save = |text: &str| {
-                let accepted = crate::place::apply_insert_plan(
+                accepted = Some(crate::place::apply_insert_plan(
                     &mut conn,
                     &plan,
                     crate::CardType::Idea,
                     None,
                     None,
                     text,
-                )?;
-                show_check(&accepted);
+                )?);
                 Ok(())
             };
             if interaction.edit(&crate::regular_template(), "edit mode", &mut save)? {
                 state.pointer = Pointer::Card(plan.location.clone());
+            }
+            if let Some(accepted) = accepted {
+                interaction.check(&accepted);
             }
             Ok(Execution::Continue(CommandResult::Changed))
         }
@@ -849,10 +878,10 @@ fn execute_command(
                 crate::link_index::source_changed(&tx, &address)?;
             }
             tx.commit()?;
-            show_check(&accepted);
+            interaction.check(&accepted);
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["ty", ..] => bail!("usage: ty <idea|event|finding|model|hub> [<facet>]"),
+        ["ty", ..] => bail!("usage: ty <idea|event|finding|model|hub|term> [<facet>]"),
         ["lv", value] => {
             let at = state.current_card("lv")?;
             let _lock = crate::acquire_edit_lock(root, "session lv")?;
@@ -882,7 +911,7 @@ fn execute_command(
                 crate::link_index::source_changed(&tx, &address)?;
             }
             tx.commit()?;
-            show_check(&accepted);
+            interaction.check(&accepted);
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["lv", ..] => bail!("usage: lv <level|none>"),
@@ -902,7 +931,7 @@ fn execute_command(
                 crate::link_index::source_changed(&tx, &address)?;
             }
             tx.commit()?;
-            show_check(&accepted);
+            interaction.check(&accepted);
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["mf", ..] => bail!("usage: mf <form|none>"),
@@ -1405,6 +1434,7 @@ mod tests {
             ("ty event", crate::CardType::Event),
             ("ty finding", crate::CardType::Finding),
             ("ty MODEL", crate::CardType::Model),
+            ("ty TERM", crate::CardType::Term),
             ("ty idea", crate::CardType::Idea),
         ] {
             assert_eq!(
@@ -1419,7 +1449,7 @@ mod tests {
                 "ty fact",
                 "unknown card type `fact`; expected idea, event, finding, model, hub, or term",
             ),
-            ("ty", "usage: ty <idea|event|finding|model|hub> [<facet>]"),
+            ("ty", "usage: ty <idea|event|finding|model|hub|term> [<facet>]"),
             (
                 "ty event model x",
                 "only Model Cards can have a Model facet",
@@ -1637,7 +1667,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub|term> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;
