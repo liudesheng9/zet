@@ -1,4 +1,5 @@
-//! `zt-digest term-link`: the deterministic Term-link pass (design 13.1-13.5, S22 / #160).
+//! `zt-digest term-link`: the deterministic Term-link pass (design 13.1-13.7, S22 / #160 and
+//! S23 / #163).
 //!
 //!   zt-digest term-link -Step plan|apply -Staging <folder>
 //!                       [-CitationKey <key>] [-Occurrences first|all]
@@ -14,15 +15,26 @@
 //! inside eligible prose runs.
 //!
 //! The plan is a pure function of its frozen inputs: `<Staging>/term-link/plan.json` and
-//! `preview.md` carry no clock, so equal inputs produce equal bytes. The plan writes no Card; the
-//! guarded apply belongs to S23 (#163), and until that slice fills it the step answers one compact
-//! `not_implemented` line and exits 2.
+//! `preview.md` carry no clock, so equal inputs produce equal bytes. Every Card freezes its
+//! authored fingerprint (the archive's own receipt projection) and, when changed, its planned
+//! output's fingerprint, so an apply never edits from a stale offset or base.
+//!
+//! `apply` revalidates the frozen plan against the archive (identity, book/list/head mapping,
+//! policy contract, options, scope and each Card's authored guard), explicitly replans a Card whose
+//! body changed into the next plan revision with its updated preview and diff, rechecks the
+//! preservation equation, and writes at most one `edit_card` per changed Card through bounded
+//! identified chunks with stable operation keys. It reports the committed, replayed, pending and
+//! refused chunks, stops on the archive's typed `card_locked` (exit 2) or `card_check`/stale-base
+//! refusal (exit 1) without rewriting prose, and writes no receipt and no revision when the plan
+//! has no edit.
 
+mod apply;
 mod card;
 mod matches;
 mod spans;
 
 use crate::args::Args;
+use crate::calls;
 use crate::canon;
 use crate::organize::common::{self, pstr};
 use crate::ps;
@@ -41,15 +53,19 @@ pub const STEPS: [&str; 2] = ["plan", "apply"];
 
 /// The work folder under `-Staging`.
 const WORK: &str = "term-link";
-const PLAN: &str = "plan.json";
-const PREVIEW: &str = "preview.md";
-
-/// The slice and issue that fill the guarded apply.
-const APPLY_SLICE: (&str, u64) = ("S23", 163);
+pub(crate) const PLAN: &str = "plan.json";
+pub(crate) const PREVIEW: &str = "preview.md";
+/// The apply report's two artifacts.
+pub(crate) const APPLY: &str = "apply.json";
+pub(crate) const APPLY_MD: &str = "apply.md";
 
 /// The syntax version the plan freezes (design 13.2; R0358). A changed matcher or protected-span
 /// rule changes it, so an old plan is never replayed under a new parser.
 pub const SYNTAX_VERSION: u8 = 1;
+
+/// The plan artifact's own schema. An apply refuses a plan frozen by another schema instead of
+/// reading fields it does not carry; the operator runs `-Step plan` again.
+pub const PLAN_SCHEMA: u8 = 2;
 
 /// The structure Card's authored role marker (the same first line the checker and the hub walk
 /// read): a Side successor of the root that opens with it is navigation, not prose.
@@ -72,7 +88,7 @@ pub(crate) struct Params {
 }
 
 impl Params {
-    fn work(&self) -> String {
+    pub(crate) fn work(&self) -> String {
         ps::join(&self.staging, WORK)
     }
 }
@@ -148,31 +164,11 @@ fn card_addresses(text: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// The compact answer of the apply step, which belongs to S23 (#163).
-fn not_implemented() -> (i32, Value) {
-    let (slice, issue) = APPLY_SLICE;
-    (
-        2,
-        json!({
-            "schema_version": 1,
-            "ok": false,
-            "step": "apply",
-            "code": "not_implemented",
-            "slice": slice,
-            "issue": issue,
-        }),
-    )
-}
-
 pub fn cli(argv: &[String]) -> Result<i32> {
     let p = params(argv)?;
     match p.step.as_str() {
         "plan" => plan(&p),
-        _ => {
-            let (code, value) = not_implemented();
-            util::print_line(&canon::canonical_json(&value))?;
-            Ok(code)
-        }
+        _ => apply::run(&p),
     }
 }
 
@@ -213,7 +209,7 @@ fn plan(p: &Params) -> Result<i32> {
 
 /// One Literature tree in the agent Workspace, read as this book. The checks run before the Term
 /// read so a Topic tree is refused with the scope's own sentence.
-fn ensure_book_tree(titles: &Value, key: &str) -> Result<()> {
+pub(crate) fn ensure_book_tree(titles: &Value, key: &str) -> Result<()> {
     if is_topic_tree(key) {
         bail!("`{key}` is a topic tree, not a Literature tree; the pass is Literature-scoped");
     }
@@ -244,7 +240,7 @@ fn is_topic_tree(key: &str) -> bool {
 }
 
 /// The addresses of one tree, in the natural address order the title read already uses.
-fn tree_addresses(titles: &Value, key: &str) -> Vec<String> {
+pub(crate) fn tree_addresses(titles: &Value, key: &str) -> Vec<String> {
     titles["titles"]
         .as_array()
         .into_iter()
@@ -255,7 +251,7 @@ fn tree_addresses(titles: &Value, key: &str) -> Vec<String> {
 }
 
 /// The Citation key the staging folder was prepared for; `-CitationKey` may only repeat it.
-fn book_key(manifest: &Value, p: &Params) -> Result<String> {
+pub(crate) fn book_key(manifest: &Value, p: &Params) -> Result<String> {
     let key = pstr(manifest, "citation_key").trim().to_string();
     if key.is_empty() {
         bail!("manifest.json names no citation_key; term-link planning needs its book");
@@ -516,18 +512,27 @@ pub(crate) fn build_plan(
     unrowed.sort();
     unrowed.dedup();
     let vocabulary = matches::Vocabulary::build(&term_rows, &unrowed);
+    // The whole vocabulary derivation, not only the row→head and auto-link choices: a new named
+    // Term Card that publishes no row, a retyped part, or a changed avoid word changes what the
+    // pass may link, so an apply revalidates this hash beside the two mapping hashes.
+    let vocabulary_hash = canon::hash_value(&json!({
+        "terms": term_rows.iter().map(|term| json!({
+            "row": term.row,
+            "term": term.term,
+            "avoid": term.avoid,
+            "heads": term.heads,
+            "auto_link": term.auto_link,
+        })).collect::<Vec<_>>(),
+        "own": own_terms,
+        "unrowed": unrowed,
+    }));
 
     // --- every in-scope Card, in natural address order ---------------------------------------
     let mut card_values: Vec<Value> = Vec::new();
-    let mut counts = Counts::default();
-    let mut card_faults: Vec<Value> = Vec::new();
-    let mut changed = 0usize;
-    let mut refused = 0usize;
     for card in &scope.included {
         let address = pstr(card, "address");
         let title = pstr(card, "title");
         let body = pstr(card, "body");
-        let text = pstr(card, "text");
         let planned = {
             let own_term = own_terms.get(&address).map(String::as_str);
             let profile = spans::Profile {
@@ -536,17 +541,12 @@ pub(crate) fn build_plan(
             };
             card::plan_card(&body, &profile, &vocabulary, p.occurrences, &key)
         };
-        counts.add(&planned);
-        if planned.changed() {
-            changed += 1;
-        }
         let fault = planned.fault.as_ref().map(|fault| {
-            refused += 1;
             let (line, line_text) = match fault.at {
                 Some(at) => card::line_of(&body, at),
                 None => (0, String::new()),
             };
-            let value = json!({
+            json!({
                 "address": address,
                 "title": title,
                 "code": fault.code,
@@ -554,17 +554,21 @@ pub(crate) fn build_plan(
                 "line": line,
                 "line_text": line_text,
                 "message": fault.message,
-            });
-            card_faults.push(value.clone());
-            value
+            })
         });
         let mut value = json!({
             "address": address,
             "title": title,
             "type": pstr(card, "type"),
             "term_role": card.get("term_role").cloned().unwrap_or(Value::Null),
-            "authored_sha256": canon::sha256_hex(text.as_bytes()),
             "body_sha256": canon::sha256_hex(body.as_bytes()),
+            // The archive's own authored fingerprint projection: the base guard every edit of this
+            // plan carries (R0406), and, for a changed Card, the planned output the apply reads
+            // back after the commit. It excludes the generated Reverse/Term-use text, which the
+            // pass itself changes; hashing the whole stored text would make the pass its own
+            // concurrent edit.
+            "authored_fingerprint": calls::authored_fingerprint(card),
+            "new_fingerprint": Value::Null,
             "changed": planned.changed(),
             "edits": planned.edits.iter().map(|edit| json!({
                 "kind": edit.kind.id(),
@@ -589,17 +593,21 @@ pub(crate) fn build_plan(
             "fault": fault,
         });
         if planned.changed() {
+            let mut output = card.clone();
+            output["body"] = json!(planned.new_body);
+            value["new_fingerprint"] = json!(calls::authored_fingerprint(&output));
             value["body"] = json!(body);
             value["new_body"] = json!(planned.new_body);
             value["new_body_sha256"] = json!(canon::sha256_hex(planned.new_body.as_bytes()));
         }
         card_values.push(value);
     }
+    let counts = counts_of(&card_values);
     let cards_hash = canon::hash_value(&json!(card_values
         .iter()
         .map(|card| json!({
             "address": card["address"],
-            "authored_sha256": card["authored_sha256"],
+            "authored_fingerprint": card["authored_fingerprint"],
             "body_sha256": card["body_sha256"],
         }))
         .collect::<Vec<_>>()));
@@ -621,9 +629,14 @@ pub(crate) fn build_plan(
         if title.trim().is_empty() { key.clone() } else { title }
     };
     let frozen = json!({
-        "schema_version": 1,
+        "schema_version": PLAN_SCHEMA,
         "kind": "term_link_plan",
         "syntax_version": SYNTAX_VERSION,
+        // The plan's own revision: 1 when the plan step freezes it, one more each time an apply
+        // explicitly replans a changed Card into the next revision (R0405).
+        "revision": 1,
+        "replaces": Value::Null,
+        "replanned": [],
         "book": {
             "citation_key": key,
             "title": book_title,
@@ -651,8 +664,8 @@ pub(crate) fn build_plan(
             "eligible": scope.included.len() + scope.unselected,
             "included": scope.included.len(),
             "unselected": scope.unselected,
-            "changed": changed,
-            "refused": refused,
+            "changed": counts["cards_changed"],
+            "refused": counts["cards_refused"],
             "excluded": scope.excluded,
         },
         "list": {
@@ -667,6 +680,7 @@ pub(crate) fn build_plan(
             "list": canon::sha256_hex(list_body.as_bytes()),
             "mapping": vocabulary.mapping_hash,
             "autolink": vocabulary.autolink_hash,
+            "vocabulary": vocabulary_hash,
             "cards": cards_hash,
         },
         "term_structure": {
@@ -675,23 +689,14 @@ pub(crate) fn build_plan(
             "coverage": terms["coverage"],
         },
         "cards": card_values,
-        "counts": {
-            "cards_scanned": scope.included.len(),
-            "cards_changed": changed,
-            "cards_refused": refused,
-            "links_added": counts.links_added,
-            "links_repaired": counts.links_repaired,
-            "links_kept": counts.links_kept,
-            "links_removed": counts.links_removed,
-            "retained_foreign": counts.retained_foreign,
-            "retained_other": counts.retained_other,
-            "skipped": counts.skipped_json(),
-        },
+        "counts": counts,
     });
     let plan_hash = canon::hash_value(&frozen);
     let mut plan = frozen;
     plan["plan_hash"] = json!(plan_hash);
     let preview = preview_of(&plan);
+    let cards = plan["cards"].as_array().cloned().unwrap_or_default();
+    let counts = &plan["counts"];
     let summary = json!({
         "schema_version": 1,
         "ok": true,
@@ -699,27 +704,56 @@ pub(crate) fn build_plan(
         "book": key,
         "archive_revision": titles_revision,
         "plan_hash": plan_hash,
-        "cards_scanned": scope.included.len(),
-        "cards_changed": changed,
-        "cards_refused": refused,
-        "links_added": counts.links_added,
-        "links_repaired": counts.links_repaired,
-        "links_kept": counts.links_kept,
-        "links_removed": counts.links_removed,
-        "retained_foreign": counts.retained_foreign,
-        "retained_other": counts.retained_other,
-        "skipped": counts.skipped_json(),
-        "complete": refused == 0,
+        "plan_revision": 1,
+        "cards_scanned": counts["cards_scanned"],
+        "cards_changed": counts["cards_changed"],
+        "cards_refused": counts["cards_refused"],
+        "links_added": counts["links_added"],
+        "links_repaired": counts["links_repaired"],
+        "links_kept": counts["links_kept"],
+        "links_removed": counts["links_removed"],
+        "retained_foreign": counts["retained_foreign"],
+        "retained_other": counts["retained_other"],
+        "skipped": counts["skipped"],
+        "complete": counts["cards_refused"] == 0,
         "plan": ps::join(&p.work(), PLAN),
         "preview": ps::join(&p.work(), PREVIEW),
         "work": p.work(),
     });
+    let card_faults: Vec<Value> = cards
+        .iter()
+        .filter(|card| card["fault"].is_object())
+        .map(|card| card["fault"].clone())
+        .collect();
     Ok(Built {
         plan,
         preview,
         summary,
         card_faults,
     })
+}
+
+/// The plan's report counts: the Card scope facts plus the link, retained and skip counts, read
+/// back from the frozen Card entries. A fresh plan and a merged apply revision therefore count
+/// their Cards the same way.
+pub(crate) fn counts_of(cards: &[Value]) -> Value {
+    let mut counts = Counts::of_cards(cards).report();
+    counts["cards_scanned"] = json!(cards.len());
+    counts["cards_changed"] = json!(cards
+        .iter()
+        .filter(|card| card["changed"] == true)
+        .count());
+    counts["cards_refused"] = json!(cards
+        .iter()
+        .filter(|card| card["fault"].is_object())
+        .count());
+    // A revision can record Cards whose planned output an earlier run already committed; they are
+    // no longer edits this plan owes, but they are still part of what the pass changed.
+    counts["cards_applied"] = json!(cards
+        .iter()
+        .filter(|card| card["applied"] == true)
+        .count());
+    counts
 }
 
 /// Whether a Term head's authored metadata disables automatic linking.
@@ -737,6 +771,14 @@ pub(crate) fn preview_of(plan: &Value) -> String {
         "Book: {} — {}\n\n",
         plan["book"]["citation_key"].as_str().unwrap_or_default(),
         plan["book"]["title"].as_str().unwrap_or_default()
+    ));
+    out.push_str(&format!(
+        "Plan revision {}{}\n\n",
+        plan["revision"].as_u64().unwrap_or(1),
+        match plan["replaces"].as_str() {
+            Some(replaces) => format!(" (replaces {})", &replaces[..12.min(replaces.len())]),
+            None => String::new(),
+        }
     ));
     out.push_str(&format!(
         "Policy: {} occurrence · syntax {} · compiler {} · checker {} · rule {}\n\n",
@@ -792,6 +834,22 @@ pub(crate) fn preview_of(plan: &Value) -> String {
     if !excluded.is_empty() {
         out.push_str("## Excluded by role\n\n");
         for card in &excluded {
+            out.push_str(&format!(
+                "- `{}` {} ({})\n",
+                card["address"].as_str().unwrap_or_default(),
+                card["title"].as_str().unwrap_or_default(),
+                card["reason"].as_str().unwrap_or_default()
+            ));
+        }
+        out.push('\n');
+    }
+
+    // An apply that replanned a changed Card freezes the next revision and publishes this preview
+    // again, so the reader sees which Cards moved out of the plan they reviewed (R0405).
+    let replanned = plan["replanned"].as_array().cloned().unwrap_or_default();
+    if !replanned.is_empty() {
+        out.push_str("## Replanned Cards\n\n");
+        for card in &replanned {
             out.push_str(&format!(
                 "- `{}` {} ({})\n",
                 card["address"].as_str().unwrap_or_default(),
@@ -924,11 +982,14 @@ mod tests {
         assert_eq!(p.occurrences, Policy::All);
         assert_eq!(p.cards, ["K/1", "K/2"]);
         assert_eq!(p.citation_key.as_deref(), Some("K"));
-        assert!(parsed(&["-Step", "apply", "-Staging", "D:\\s", "-Apply"]).unwrap().apply);
+        let p = parsed(&["-Step", "apply", "-Staging", "D:\\s", "-Apply", "-Token", "7"]).unwrap();
+        assert!(p.apply);
+        assert_eq!(p.token, Some(7));
         for bad in [
             vec!["-Step", "apply", "-Staging", "D:\\s"],
             vec!["-Step", "plan", "-Staging", "D:\\s", "-Apply"],
             vec!["-Step", "plan", "-Staging", "D:\\s", "-Token", "1"],
+            vec!["-Step", "apply", "-Staging", "D:\\s", "-Apply", "-Token", "0"],
             vec!["-Step", "plan", "-Staging", "D:\\s", "-Occurrences", "some"],
             vec!["-Step", "plan", "-Staging", "D:\\s", "-Cards", "K/1,K/1"],
             vec!["-Step", "plan", "-Staging", ""],
@@ -937,11 +998,6 @@ mod tests {
         ] {
             assert!(parsed(&bad).is_err(), "{bad:?} was accepted");
         }
-        let (code, said) = not_implemented();
-        assert_eq!(code, 2);
-        assert_eq!(said["code"], "not_implemented");
-        assert_eq!(said["slice"], "S23");
-        assert_eq!(said["issue"], 163);
     }
 
     #[test]
@@ -1173,7 +1229,7 @@ mod tests {
         assert_eq!(plan["heads"][1]["term"], "生产函数");
         assert_eq!(plan["heads"][1]["auto_link"], false);
         assert_eq!(plan["heads"][1]["head"], "K/5");
-        for key in ["list", "mapping", "autolink", "cards"] {
+        for key in ["list", "mapping", "autolink", "vocabulary", "cards"] {
             let hash = plan["fingerprints"][key].as_str().unwrap();
             assert_eq!(hash.len(), 64, "{key}");
         }
@@ -1203,6 +1259,73 @@ mod tests {
         assert_eq!(first["new_body"], "[[净生产函数@K/8]]决定产出。");
         let second = planned_cards.iter().find(|card| card["address"] == "K/2").unwrap();
         assert_eq!(second["new_body"], "生产函数影响[[均衡@K/4]]。均衡是稳定的。");
+    }
+
+    #[test]
+    fn the_plan_freezes_each_cards_authored_guards_and_a_revision() {
+        let (titles, cards, terms) = book();
+        let p = plan_params("plan", Policy::First, &[]);
+        let built = planned(&titles, &cards, &terms, &p).unwrap();
+        let plan = &built.plan;
+        assert_eq!(plan["schema_version"], PLAN_SCHEMA);
+        assert_eq!(plan["revision"], 1);
+        assert!(plan["replaces"].is_null());
+        assert_eq!(plan["replanned"], json!([]));
+        let read = |at: &str| cards.iter().find(|card| card["address"] == at).unwrap().clone();
+        for at in ["K/1", "K/2", "K/7"] {
+            let entry = plan["cards"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|card| card["address"] == at)
+                .unwrap();
+            assert_eq!(
+                entry["authored_fingerprint"],
+                crate::calls::authored_fingerprint(&read(at)),
+                "{at}"
+            );
+        }
+        // A changed Card freezes the projection of its planned output: the archived receipt's
+        // after_fingerprint, which the apply reads back.
+        let first = plan["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|card| card["address"] == "K/1")
+            .unwrap();
+        let mut output = read("K/1");
+        output["body"] = json!("[[净生产函数@K/8]]决定产出。");
+        assert_eq!(first["new_fingerprint"], crate::calls::authored_fingerprint(&output));
+        assert_eq!(first["new_fingerprint"].as_str().unwrap().len(), 64);
+        // A Card the plan does not edit has no output fingerprint to claim.
+        let unchanged = plan["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|card| card["address"] == "K/7")
+            .unwrap();
+        assert!(unchanged["new_fingerprint"].is_null());
+        assert_eq!(built.summary["plan_revision"], 1);
+    }
+
+    #[test]
+    fn the_counts_come_from_the_frozen_cards_once() {
+        let (titles, cards, terms) = book();
+        let p = plan_params("plan", Policy::First, &[]);
+        let built = planned(&titles, &cards, &terms, &p).unwrap();
+        let counts = &built.plan["counts"];
+        // A merged plan counts its Cards again, so this reconstruction is the one source.
+        assert_eq!(
+            counts,
+            &super::counts_of(built.plan["cards"].as_array().unwrap())
+        );
+        assert_eq!(counts["cards_scanned"], 6);
+        assert_eq!(counts["cards_changed"], 2);
+        assert_eq!(counts["cards_refused"], 0);
+        assert_eq!(counts["links_added"], 2);
+        assert_eq!(counts["links_kept"], 0);
+        assert_eq!(counts["retained_foreign"], 1);
+        assert_eq!(counts["skipped"]["auto_link_off"], 2);
     }
 
     #[test]

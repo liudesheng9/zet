@@ -427,7 +427,11 @@ fn the_term_link_plan_reads_a_real_book_and_writes_no_card() {
     assert_eq!(said["archive_revision"], revision);
     let plan = plan_json(&staged);
     assert_eq!(plan["kind"], "term_link_plan");
+    assert_eq!(plan["schema_version"], 2);
     assert_eq!(plan["syntax_version"], 1);
+    assert_eq!(plan["revision"], 1);
+    assert!(plan["replaces"].is_null());
+    assert_eq!(plan["replanned"], json!([]));
     assert_eq!(plan["list"]["address"], list);
     assert_eq!(plan["list"]["row_count"], 3);
     assert_eq!(plan["scope"]["included"], 6);
@@ -612,13 +616,16 @@ fn the_term_link_plan_reads_a_real_book_and_writes_no_card() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // --- apply belongs to S23 (#163) and stops honestly --------------------------------------
-    let apply = zt.digest(&["term-link", "-Step", "apply", "-Staging", stage, "-Apply"]);
-    assert_eq!(apply.status.code(), Some(2));
-    let apply_said = last_json(&apply);
-    assert_eq!(apply_said["code"], "not_implemented");
-    assert_eq!(apply_said["slice"], "S23");
-    assert_eq!(apply_said["issue"], 163);
+    // --- every frozen Card carries its apply guard, and misuse still stops the step -----------
+    for card in plan["cards"].as_array().unwrap() {
+        assert_eq!(
+            card["authored_fingerprint"].as_str().unwrap().len(),
+            64,
+            "{}",
+            card["address"]
+        );
+        assert!(card["new_fingerprint"].is_string() == (card["changed"] == true));
+    }
     let bare = zt.digest(&["term-link", "-Step", "apply", "-Staging", stage]);
     assert!(!bare.status.success());
     let before_malformed = mcp.revision();

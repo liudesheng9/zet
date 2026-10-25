@@ -117,29 +117,63 @@ pub(crate) struct Counts {
     pub(crate) retained_foreign: usize,
     pub(crate) retained_other: usize,
     /// Skip reason → count, in the report's fixed order.
-    pub(crate) skipped: BTreeMap<&'static str, usize>,
+    pub(crate) skipped: BTreeMap<String, usize>,
 }
 
 impl Counts {
-    pub(crate) fn add(&mut self, plan: &CardPlan) {
-        for edit in &plan.edits {
-            match edit.kind {
-                EditKind::Link => self.links_added += 1,
-                EditKind::Repair => self.links_repaired += 1,
-                EditKind::Normalize => self.links_removed += 1,
+    /// The counts of a plan read back from its frozen Card entries. One source for the plan the
+    /// pass writes and for the plan a merged apply revision freezes again (R0405).
+    pub(crate) fn of_cards(cards: &[serde_json::Value]) -> Counts {
+        let mut counts = Counts::default();
+        for card in cards {
+            for edit in card["edits"].as_array().into_iter().flatten() {
+                match edit["kind"].as_str() {
+                    Some("link") => counts.links_added += 1,
+                    Some("repair") => counts.links_repaired += 1,
+                    Some("normalize") => counts.links_removed += 1,
+                    _ => {}
+                }
+            }
+            counts.links_kept += card["kept"].as_array().map_or(0, Vec::len);
+            for retained in card["retained"].as_array().into_iter().flatten() {
+                if retained["reason"] == "foreign_book" {
+                    counts.retained_foreign += 1;
+                } else {
+                    counts.retained_other += 1;
+                }
+            }
+            for skip in card["skips"].as_array().into_iter().flatten() {
+                if let Some(reason) = skip["reason"].as_str() {
+                    *counts.skipped.entry(reason.to_string()).or_default() += 1;
+                }
             }
         }
-        self.links_kept += plan.kept.len();
-        for retained in &plan.retained {
-            if retained.reason == "foreign_book" {
-                self.retained_foreign += 1;
-            } else {
-                self.retained_other += 1;
-            }
-        }
-        for skip in &plan.skips {
-            *self.skipped.entry(skip.reason).or_default() += 1;
-        }
+        counts
+    }
+
+    /// The link, retained and skip counts as the report prints them.
+    pub(crate) fn report(&self) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        map.insert("links_added".to_string(), serde_json::json!(self.links_added));
+        map.insert(
+            "links_repaired".to_string(),
+            serde_json::json!(self.links_repaired),
+        );
+        map.insert("links_kept".to_string(), serde_json::json!(self.links_kept));
+        map.insert(
+            "links_removed".to_string(),
+            serde_json::json!(self.links_removed),
+        );
+        map.insert(
+            "retained_foreign".to_string(),
+            serde_json::json!(self.retained_foreign),
+        );
+        map.insert(
+            "retained_other".to_string(),
+            serde_json::json!(self.retained_other),
+        );
+        map.insert("skipped".to_string(), self.skipped_json());
+        serde_json::Value::Object(map)
     }
 
     /// The skip map as the report prints it: every seen reason in a stable order.
@@ -150,7 +184,7 @@ impl Counts {
             map.insert((*reason).to_string(), serde_json::json!(count));
         }
         for (reason, count) in &self.skipped {
-            map.entry((*reason).to_string())
+            map.entry(reason.to_string())
                 .or_insert_with(|| serde_json::json!(count));
         }
         serde_json::Value::Object(map)
