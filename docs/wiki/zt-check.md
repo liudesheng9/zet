@@ -5,7 +5,7 @@ paths:
   - "tools/zt-check/**"
   - "tests/term_cards.rs"
   - "scripts/install-zt-check.ps1"
-synced: 8c6a87a92071
+synced: 11ff5e7c372d
 updated: 2026-10-25
 ---
 
