@@ -20,9 +20,21 @@ use std::path::Path;
 
 use crate::Workspace;
 
-/// The one Tree Lock schema generation this binary understands.
-pub(crate) const SCHEMA_VERSION: &str = "1";
+/// The current Tree Lock schema generation this binary installs and understands.
+pub(crate) const SCHEMA_VERSION: &str = "2";
+/// The previous generation this binary validates and upgrades once (S07, #149).
+const LEGACY_SCHEMA_VERSION: &str = "1";
 const SCHEMA_KEY: &str = "tree_lock_schema_version";
+
+/// One stored Tree Lock protection generation. Generation 1 protects the pre-Term authored
+/// fields; generation 2 adds the Term Card's name. Both keep the same four lock tables, indexes
+/// and trigger names, so the difference is one exact trigger definition plus the declared
+/// generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Generation {
+    One,
+    Two,
+}
 
 /// The four lock tables of schema 1. Their column sets are compared as well, because a rebuild
 /// that loses or reorders a column would otherwise let the baseline evidence be misread (R298).
@@ -86,10 +98,10 @@ const INDEX_DEFS: [(&str, &str); 4] = [
     ),
 ];
 
-/// The six canonical protection triggers of schema 1, each with the exact statement that creates
-/// it, in the order the design lists them. The scan compares the stored definition because a
-/// trigger replaced under the same name would still pass a name-only check (R026, R287).
-const TRIGGER_DEFS: [(&str, &str); 6] = [
+/// The six canonical protection triggers of generation 1, each with the exact statement that
+/// creates it, in the order the design lists them. The scan compares the stored definition because
+/// a trigger replaced under the same name would still pass a name-only check (R026, R287).
+const TRIGGER_DEFS_V1: [(&str, &str); 6] = [
     (
         "lock_no_delete",
         "CREATE TRIGGER IF NOT EXISTS lock_no_delete BEFORE DELETE ON cards
@@ -185,6 +197,31 @@ BEGIN SELECT RAISE(ABORT, 'zt: card is a pinned target of a locked tree'); END;"
 // that holds no Lock (T11 keeps the function-less connection as an unsupported writer of a locked
 // body, not of every Card).
 
+/// The canonical protection triggers of one generation. Generation 2 adds the Term Card's name to
+/// the Locked-member update guard, so a name-only change is an authored change. Every other
+/// statement is the same text, so a generation-1 trigger is compared with the generation-1
+/// statement and is never called tampered merely because it lacks the new field (S07-AC07).
+fn trigger_defs(generation: Generation) -> Vec<(&'static str, String)> {
+    TRIGGER_DEFS_V1
+        .iter()
+        .map(|(name, sql)| {
+            let mut sql = (*sql).to_string();
+            if generation == Generation::Two && *name == "lock_no_change" {
+                let anchor = "    OR NEW.math_form    IS NOT OLD.math_form\n";
+                assert!(
+                    sql.contains(anchor),
+                    "the generation-1 update guard carries its last old field"
+                );
+                sql = sql.replace(
+                    anchor,
+                    "    OR NEW.math_form    IS NOT OLD.math_form\n    OR NEW.term_name    IS NOT OLD.term_name\n",
+                );
+            }
+            (*name, sql)
+        })
+        .collect()
+}
+
 /// The canonical trigger names, in the order the design lists them.
 pub(crate) const TRIGGER_NAMES: [&str; 6] = [
     "lock_no_delete",
@@ -203,11 +240,14 @@ fn schema_sql() -> String {
 // SQL backstop
 // ---------------------------------------------------------------------------------------------
 
-/// Register the two deterministic SQL wrappers on a connection. This installs no schema and runs no
+/// Register the deterministic SQL wrappers on a connection. This installs no schema and runs no
 /// migration, so opening a connection never recurses into the writer lock.
 pub(crate) fn register_sql_functions(conn: &Connection) -> Result<()> {
     use rusqlite::functions::FunctionFlags;
     let flags = FunctionFlags::SQLITE_DETERMINISTIC | FunctionFlags::SQLITE_UTF8;
+    // The eight-argument form is the pre-Term contract: it hashes the legacy fields and treats the
+    // term name as absent, exactly as it did before the column existed. Retained SQL that calls the
+    // old arity keeps its old answer; a term-aware caller uses the nine-argument form (S07, #149).
     conn.create_scalar_function("zt_authored_fp", 8, flags, |ctx| {
         let text: String = ctx.get(0)?;
         let bibtex: Option<String> = ctx.get(1)?;
@@ -226,10 +266,35 @@ pub(crate) fn register_sql_functions(conn: &Connection) -> Result<()> {
             model_level.as_deref(),
             hub_level.as_deref(),
             form.as_deref(),
+            None,
         )
         .map_err(|error| rusqlite::Error::UserFunctionError(Box::from(format!("{error:#}"))))
     })
     .context("failed to register zt_authored_fp")?;
+    conn.create_scalar_function("zt_authored_fp", 9, flags, |ctx| {
+        let text: String = ctx.get(0)?;
+        let bibtex: Option<String> = ctx.get(1)?;
+        let card_type: String = ctx.get(2)?;
+        let facet: Option<String> = ctx.get(3)?;
+        let emphasis: Option<String> = ctx.get(4)?;
+        let model_level: Option<String> = ctx.get(5)?;
+        let hub_level: Option<String> = ctx.get(6)?;
+        let form: Option<String> = ctx.get(7)?;
+        let term_name: Option<String> = ctx.get(8)?;
+        fingerprint_of_raw(
+            &text,
+            bibtex.as_deref(),
+            &card_type,
+            facet.as_deref(),
+            emphasis.as_deref(),
+            model_level.as_deref(),
+            hub_level.as_deref(),
+            form.as_deref(),
+            term_name.as_deref(),
+        )
+        .map_err(|error| rusqlite::Error::UserFunctionError(Box::from(format!("{error:#}"))))
+    })
+    .context("failed to register the term-aware zt_authored_fp")?;
     conn.create_scalar_function("zt_tree_root", 1, flags, |ctx| {
         let address: String = ctx.get(0)?;
         Ok::<Option<String>, rusqlite::Error>(final_tree_root(&address))
@@ -250,9 +315,11 @@ fn fingerprint_of_raw(
     model_level: Option<&str>,
     hub_level: Option<&str>,
     form: Option<&str>,
+    term_name: Option<&str>,
 ) -> Result<String> {
     let parsed = crate::parse_card_text(text)?;
     let card_type = crate::CardType::parse(card_type)?;
+    crate::term::ensure_on_type(term_name, card_type)?;
     let facet = facet.map(crate::model::Facet::parse).transpose()?;
     let emphasis = emphasis.map(crate::model::Emphasis::parse).transpose()?;
     let level = model_level.map(crate::model::Level::parse).transpose()?;
@@ -263,7 +330,7 @@ fn fingerprint_of_raw(
         .map(|level| level.id().to_string())
         .or_else(|| hub_level.as_ref().map(|level| level.id().to_string()))
         .unwrap_or_default();
-    Ok(crate::card::authored_fingerprint_framed(
+    Ok(crate::card::authored_fingerprint_framed_term(
         &parsed.title,
         &parsed.body,
         bibtex.unwrap_or_default(),
@@ -272,6 +339,7 @@ fn fingerprint_of_raw(
         emphasis.map_or("", |emphasis| emphasis.id()),
         &level_id,
         form.map_or("", |form| form.id()),
+        term_name,
     ))
 }
 
@@ -306,14 +374,29 @@ fn schema_version(conn: &Connection) -> Result<Option<String>> {
         .optional()?)
 }
 
-/// Install or validate schema version 1 and its protection. Called once at service startup, after
-/// the Card-table rebuilds, so it never fights a migration. An unsupported generation refuses to
-/// write rather than attempting a repair; a supported generation has a missing or altered trigger,
-/// index or table re-created here, and the caller has already recorded that fault. Answers the
+/// The generation this archive declares, `None` when the Tree Lock schema is not installed. An
+/// unknown generation is refused here, before any caller can read or repair it.
+pub(crate) fn stored_generation(conn: &Connection) -> Result<Option<Generation>> {
+    match schema_version(conn)?.as_deref() {
+        None => Ok(None),
+        Some(LEGACY_SCHEMA_VERSION) => Ok(Some(Generation::One)),
+        Some(SCHEMA_VERSION) => Ok(Some(Generation::Two)),
+        Some(other) => bail!(
+            "unsupported Tree Lock schema version `{other}`; archive was not modified"
+        ),
+    }
+}
+
+/// Install or validate the current generation and its protection. Called once at service startup,
+/// after the Card-table rebuilds, so it never fights a migration. An unsupported generation refuses
+/// to write rather than attempting a repair; a supported generation has a missing or altered
+/// trigger, index or table re-created here, and the caller has already recorded that fault. A
+/// generation-1 archive is never repaired here: its one validated upgrade belongs to the Card
+/// migration, so an altered old trigger is refused rather than silently replaced. Answers the
 /// canonical objects this call had to reinstall, in catalog order.
 fn install_or_repair(conn: &Connection) -> Result<Vec<String>> {
     let mut repaired = Vec::new();
-    match schema_version(conn)? {
+    match stored_generation(conn)? {
         None => {
             conn.execute_batch(&schema_sql())
                 .context("failed to install the Tree Lock tables")?;
@@ -328,7 +411,7 @@ fn install_or_repair(conn: &Connection) -> Result<Vec<String>> {
                 params![SCHEMA_KEY, SCHEMA_VERSION],
             )?;
         }
-        Some(version) if version == SCHEMA_VERSION => {
+        Some(Generation::Two) => {
             // A damaged column set is reported, never repaired: fabricating a snapshot or a new
             // seal would replace the owner's evidence with a lie (R298).
             validate_schema(conn)?;
@@ -339,26 +422,73 @@ fn install_or_repair(conn: &Connection) -> Result<Vec<String>> {
             validate_indexes(conn)?;
             validate_triggers(conn)?;
         }
-        Some(other) => bail!(
-            "unsupported Tree Lock schema version `{other}`; archive was not modified"
+        Some(Generation::One) => bail!(
+            "Tree Lock generation 1 was not upgraded by the Card migration; archive was not modified"
         ),
     }
     Ok(repaired)
 }
 
 /// The structural generation check the boot sequence runs before any repair or Card migration
-/// (R303, S07-AC02/AC04). A missing lock schema is a first installation and passes; a supported
-/// generation must still hold the four tables with the columns this binary reads; any other stored
-/// generation refuses startup, so no migration ever runs against an archive whose promise this
-/// binary cannot interpret. It creates, repairs and records nothing.
+/// (R303, S07-AC02/AC04). A missing lock schema is a first installation and passes; either
+/// generation this binary can interpret must still hold the four tables with the columns it reads;
+/// any other stored generation refuses startup, so no migration ever runs against an archive whose
+/// promise this binary cannot interpret. It creates, repairs and records nothing.
 pub(crate) fn check_generation(conn: &Connection) -> Result<()> {
+    check_generation_within(conn, &[LEGACY_SCHEMA_VERSION, SCHEMA_VERSION])
+}
+
+/// The same structural check with an explicit supported set. Production supports generations 1 and
+/// 2; the compatibility fixture runs the baseline release's rule (generation 1 only) against a
+/// generation-2 archive, proving the old binary refuses before it modifies anything (S07-AC08,
+/// R0248). This parameterizes the decision, not the stored check.
+pub(crate) fn check_generation_within(conn: &Connection, supported: &[&str]) -> Result<()> {
     match schema_version(conn)? {
         None => Ok(()),
-        Some(version) if version == SCHEMA_VERSION => validate_schema(conn),
+        Some(version) if supported.contains(&version.as_str()) => validate_schema(conn),
         Some(other) => bail!(
             "unsupported Tree Lock schema version `{other}`; archive was not modified"
         ),
     }
+}
+
+/// Install generation 2 over a validated generation-1 archive, atomically with the Card schema
+/// widening (S07-AC07, R0247). The caller has already compared the old canonical protection and
+/// recorded the active member evidence; this call replaces the six protection triggers, validates
+/// them, and only then moves the declared generation. A missing or altered generation-1 trigger is
+/// refused by the pre-migration check, never repaired here. Answers whether it upgraded.
+pub(crate) fn upgrade_generation(conn: &Connection) -> Result<bool> {
+    if stored_generation(conn)? != Some(Generation::One) {
+        return Ok(false);
+    }
+    let tx = conn.unchecked_transaction()?;
+    let upgraded = upgrade_generation_tx(&tx)?;
+    tx.commit()?;
+    Ok(upgraded)
+}
+
+/// The generation-2 protection installation inside the caller's transaction, so a Card-table
+/// rebuild and the protection it needs commit together. Nothing is read from or written to a Card,
+/// so every old identity is untouched.
+pub(crate) fn upgrade_generation_tx(conn: &Connection) -> Result<bool> {
+    if stored_generation(conn)? != Some(Generation::One) {
+        return Ok(false);
+    }
+    for name in TRIGGER_NAMES {
+        conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
+            .with_context(|| format!("failed to replace Tree Lock trigger `{name}`"))?;
+    }
+    for (name, sql) in trigger_defs(Generation::Two) {
+        conn.execute_batch(&sql)
+            .with_context(|| format!("failed to install Tree Lock trigger `{name}`"))?;
+    }
+    validate_indexes(conn)?;
+    validate_triggers(conn)?;
+    conn.execute(
+        "UPDATE metadata SET value = ?1 WHERE key = ?2",
+        params![SCHEMA_VERSION, SCHEMA_KEY],
+    )?;
+    Ok(true)
 }
 
 /// R302 (S07-AC01/AC09): one consistent SQLite backup of the archive before the first installation
@@ -479,22 +609,29 @@ fn trigger_exists(conn: &Connection, name: &str) -> Result<bool> {
     Ok(stored_sql(conn, "trigger", name)?.is_some())
 }
 
-fn validate_triggers(conn: &Connection) -> Result<()> {
+/// Validate the protection triggers of one exact generation. A generation-1 archive is checked
+/// against its own statements, so its missing new field is not tampering.
+fn validate_triggers_for(conn: &Connection, generation: Generation) -> Result<()> {
     for name in TRIGGER_NAMES {
         if !trigger_exists(conn, name)? {
             bail!("Tree Lock trigger `{name}` is missing; archive was not modified");
         }
     }
-    for (name, sql) in TRIGGER_DEFS {
+    for (name, sql) in trigger_defs(generation) {
         let stored = stored_sql(conn, "trigger", name)?
             .with_context(|| format!("Tree Lock trigger `{name}` is missing"))?;
-        if !same_definition(&stored, sql) {
+        if !same_definition(&stored, &sql) {
             bail!(
                 "Tree Lock trigger `{name}` has an altered definition; archive was not modified"
             );
         }
     }
     Ok(())
+}
+
+/// Validate the current generation's triggers.
+fn validate_triggers(conn: &Connection) -> Result<()> {
+    validate_triggers_for(conn, Generation::Two)
 }
 
 fn validate_indexes(conn: &Connection) -> Result<()> {
@@ -513,20 +650,27 @@ fn validate_indexes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Re-create every missing or altered canonical trigger, in catalog order, and answer their names.
-fn reinstall_triggers(conn: &Connection) -> Result<Vec<String>> {
+/// Re-create every missing or altered canonical trigger of one generation, in catalog order, and
+/// answer their names.
+fn reinstall_triggers_for(conn: &Connection, generation: Generation) -> Result<Vec<String>> {
     let mut repaired = Vec::new();
-    for (name, sql) in TRIGGER_DEFS {
-        if is_canonical(conn, "trigger", name, sql)? {
+    for (name, sql) in trigger_defs(generation) {
+        if is_canonical(conn, "trigger", name, &sql)? {
             continue;
         }
         conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
             .with_context(|| format!("failed to replace Tree Lock trigger `{name}`"))?;
-        conn.execute_batch(sql)
+        conn.execute_batch(&sql)
             .with_context(|| format!("failed to install Tree Lock trigger `{name}`"))?;
         repaired.push(name.to_string());
     }
     Ok(repaired)
+}
+
+/// Re-create every missing or altered current-generation trigger, in catalog order, and answer their
+/// names.
+fn reinstall_triggers(conn: &Connection) -> Result<Vec<String>> {
+    reinstall_triggers_for(conn, Generation::Two)
 }
 
 /// Re-create every missing or altered canonical index, in catalog order, and answer their names.
@@ -546,20 +690,21 @@ fn reinstall_indexes(conn: &Connection) -> Result<Vec<String>> {
 }
 
 /// The canonical protection that is present and exact right now, so the boot sequence can tell what
-/// its own authorized Card rebuild dropped. Empty when no supported lock schema is installed, which
-/// is also the answer that makes the restoration a no-op (R051, R304).
+/// its own authorized Card rebuild dropped. The generation is the stored one, so a generation-1
+/// archive is compared with its own exact statements. Empty when no supported lock schema is
+/// installed, which is also the answer that makes the restoration a no-op (R051, R304).
 pub(crate) fn canonical_protection(conn: &Connection) -> Result<BTreeSet<&'static str>> {
     let mut present = BTreeSet::new();
-    if schema_version(conn)?.as_deref() != Some(SCHEMA_VERSION) {
+    let Some(generation) = stored_generation(conn)? else {
         return Ok(present);
-    }
+    };
     for (name, sql) in INDEX_DEFS {
         if is_canonical(conn, "index", name, sql)? {
             present.insert(name);
         }
     }
-    for (name, sql) in TRIGGER_DEFS {
-        if is_canonical(conn, "trigger", name, sql)? {
+    for (name, sql) in trigger_defs(generation) {
+        if is_canonical(conn, "trigger", name, &sql)? {
             present.insert(name);
         }
     }
@@ -571,14 +716,15 @@ pub(crate) fn canonical_protection(conn: &Connection) -> Result<BTreeSet<&'stati
 /// object that was canonical before the rebuild and is missing or altered after it was lost by this
 /// boot's own rebuild; one that was already missing before keeps its recorded evidence and is left
 /// to the guarded comparison. A damaged table or an unsupported generation is never repaired here.
+/// The stored generation decides the exact statements; after the Term migration it is generation 2.
 /// Answers the objects it re-created, in catalog order.
 pub(crate) fn restore_rebuilt_protection(
     conn: &Connection,
     before: &BTreeSet<&'static str>,
 ) -> Result<Vec<String>> {
-    if schema_version(conn)?.as_deref() != Some(SCHEMA_VERSION) {
+    let Some(generation) = stored_generation(conn)? else {
         return Ok(Vec::new());
-    }
+    };
     validate_schema(conn)?;
     let mut restored = Vec::new();
     for (name, sql) in INDEX_DEFS {
@@ -590,18 +736,18 @@ pub(crate) fn restore_rebuilt_protection(
             restored.push(name.to_string());
         }
     }
-    for (name, sql) in TRIGGER_DEFS {
-        if before.contains(name) && !is_canonical(conn, "trigger", name, sql)? {
+    for (name, sql) in trigger_defs(generation) {
+        if before.contains(name) && !is_canonical(conn, "trigger", name, &sql)? {
             conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
                 .with_context(|| format!("failed to replace Tree Lock trigger `{name}`"))?;
-            conn.execute_batch(sql)
+            conn.execute_batch(&sql)
                 .with_context(|| format!("failed to install Tree Lock trigger `{name}`"))?;
             restored.push(name.to_string());
         }
     }
     if !restored.is_empty() {
         validate_indexes(conn)?;
-        validate_triggers(conn)?;
+        validate_triggers_for(conn, generation)?;
     }
     Ok(restored)
 }
@@ -1001,7 +1147,9 @@ const LOCK_COLUMNS: &str =
 /// Every Lock, active first by id. `None` means the Tree Lock schema is not installed, so nothing
 /// is protected and every writer must refuse until the service installs it.
 fn load_state(conn: &Connection) -> Result<Option<State>> {
-    if schema_version(conn)? != Some(SCHEMA_VERSION.to_string()) {
+    // An archive with no lock schema, or one whose declared generation this binary cannot read, has
+    // no promise this binary may write; the generation check refuses the latter at startup.
+    if stored_generation(conn).ok().flatten().is_none() {
         return Ok(None);
     }
     let mut locks = BTreeMap::new();
@@ -1146,7 +1294,7 @@ impl LockView {
     /// archive whose Tree Lock schema is not installed is legitimately lock-free. The caller reads
     /// its Cards, these facts and the archive revision in one SQLite read transaction.
     pub(crate) fn read(conn: &Connection, rows: Option<&[i64]>) -> Result<Self> {
-        if schema_version(conn)? != Some(SCHEMA_VERSION.to_string()) {
+        if stored_generation(conn).ok().flatten().is_none() {
             return Ok(Self::empty());
         }
         let mut view = Self::default();
@@ -2375,7 +2523,7 @@ fn plural(count: i64, word: &str) -> String {
 /// the supported generation cannot answer, so its caller reports `unavailable` instead of a healthy
 /// zero-Lock result (R235, R298). Reading the scope starts no Lock operation and writes nothing.
 pub(crate) fn scope(conn: &Connection) -> Result<Scope> {
-    if schema_version(conn)? != Some(SCHEMA_VERSION.to_string()) {
+    if stored_generation(conn)?.is_none() {
         bail!("the Tree Lock schema is not installed or is not the supported generation");
     }
     if conn.is_autocommit() {
@@ -2435,6 +2583,7 @@ struct StoredCard {
     level: Option<String>,
     hub_level: Option<String>,
     form: Option<String>,
+    term_name: Option<String>,
 }
 
 impl StoredCard {
@@ -2449,6 +2598,7 @@ impl StoredCard {
             self.level.as_deref(),
             self.hub_level.as_deref(),
             self.form.as_deref(),
+            self.term_name.as_deref(),
         )
     }
 
@@ -2457,12 +2607,27 @@ impl StoredCard {
     }
 }
 
+/// Whether this archive's `cards` table already holds the Term Card name column. A generation-1
+/// archive opened before its migration does not, and the snapshot then reads the field as absent.
+fn has_term_column(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'term_name')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?)
+}
+
 fn stored_cards(conn: &Connection) -> Result<Vec<StoredCard>> {
-    let mut stmt = conn.prepare(
+    let term = if has_term_column(conn)? {
+        "term_name"
+    } else {
+        "NULL"
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT row_id, COALESCE(location, citation_key), is_topic, is_lit, bibtex, text,
-                workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
-           FROM cards",
-    )?;
+                workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, {term}
+           FROM cards"
+    ))?;
     let cards = stmt
         .query_map([], |row| {
             Ok(StoredCard {
@@ -2479,6 +2644,7 @@ fn stored_cards(conn: &Connection) -> Result<Vec<StoredCard>> {
                 level: row.get(10)?,
                 hub_level: row.get(11)?,
                 form: row.get(12)?,
+                term_name: row.get(13)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -2555,7 +2721,9 @@ fn stored_pins(conn: &Connection, lock_id: i64) -> Result<Vec<(i64, i64, String)
 /// The ids of every active Lock, in creation order. A damaged archive answers none instead of
 /// failing: a fault that cannot be attributed is still reported, just not recorded.
 fn active_lock_ids(conn: &Connection) -> Result<Vec<i64>> {
-    if schema_version(conn).ok().flatten().as_deref() != Some(SCHEMA_VERSION) {
+    // An archive with no lock schema, or one whose declared generation this binary cannot read, has
+    // no active promise it can attribute; the generation check has already refused the latter.
+    if stored_generation(conn).ok().flatten().is_none() {
         return Ok(Vec::new());
     }
     let Ok(mut stmt) = conn.prepare("SELECT lock_id FROM locks WHERE unlocked_at IS NULL ORDER BY lock_id")
@@ -2572,8 +2740,22 @@ fn active_lock_ids(conn: &Connection) -> Result<Vec<i64>> {
 /// the required indexes and the six canonical triggers. `false` means the baseline evidence cannot
 /// be read at all, so no per-Lock comparison is attempted and nothing is fabricated (R298).
 fn schema_faults(conn: &Connection, integrity: &mut Integrity) -> Result<bool> {
-    let version = schema_version(conn)?;
-    if version.as_deref() != Some(SCHEMA_VERSION) {
+    let generation = match stored_generation(conn) {
+        Ok(generation) => generation,
+        Err(_) => {
+            integrity.faults.push(
+                Fault::schema(
+                    "schema-version",
+                    SCHEMA_KEY,
+                    "the Tree Lock schema is not installed or is not the supported generation",
+                )
+                .expected(SCHEMA_VERSION)
+                .actual(schema_version(conn)?.unwrap_or_else(|| "<missing>".to_string())),
+            );
+            return Ok(false);
+        }
+    };
+    let Some(generation) = generation else {
         integrity.faults.push(
             Fault::schema(
                 "schema-version",
@@ -2581,10 +2763,10 @@ fn schema_faults(conn: &Connection, integrity: &mut Integrity) -> Result<bool> {
                 "the Tree Lock schema is not installed or is not the supported generation",
             )
             .expected(SCHEMA_VERSION)
-            .actual(version.unwrap_or_else(|| "<missing>".to_string())),
+            .actual("<missing>"),
         );
         return Ok(false);
-    }
+    };
     let mut readable = true;
     for table in LOCK_TABLES {
         let columns = expected_columns(table).expect("every lock table has an expected column set");
@@ -2627,7 +2809,7 @@ fn schema_faults(conn: &Connection, integrity: &mut Integrity) -> Result<bool> {
             Some(_) => {}
         }
     }
-    for (name, sql) in TRIGGER_DEFS {
+    for (name, sql) in trigger_defs(generation) {
         match stored_sql(conn, "trigger", name)? {
             None => integrity.faults.push(
                 Fault::schema(
@@ -2638,7 +2820,7 @@ fn schema_faults(conn: &Connection, integrity: &mut Integrity) -> Result<bool> {
                 .expected("the canonical trigger")
                 .actual("missing"),
             ),
-            Some(stored) if !same_definition(&stored, sql) => integrity.faults.push(
+            Some(stored) if !same_definition(&stored, &sql) => integrity.faults.push(
                 Fault::schema(
                     "trigger-altered",
                     name,
@@ -3210,11 +3392,18 @@ pub(crate) fn startup_guard(conn: &Connection) -> Result<StartupGuard> {
     })
 }
 
-/// The comparison a Card, row-identity or trigger migration runs first (R293). A no-op when no
-/// promise could be affected: no lock schema, or no active Lock.
+/// The comparison a Card, row-identity or trigger migration runs first (R293, S07-AC07). For a
+/// generation-1 archive it also validates the old canonical protection exactly, so an altered or
+/// missing old trigger refuses the upgrade instead of being silently replaced. A no-op when no lock
+/// schema is installed or no promise could be affected; the protection comparison runs even with no
+/// active Lock, because the upgrade replaces that protection.
 pub(crate) fn check_before_migration(conn: &Connection) -> Result<usize> {
-    if schema_version(conn)?.as_deref() != Some(SCHEMA_VERSION) {
+    let Some(generation) = stored_generation(conn)? else {
         return Ok(0);
+    };
+    if generation == Generation::One {
+        validate_indexes(conn)?;
+        validate_triggers_for(conn, Generation::One)?;
     }
     if active_lock_ids(conn)?.is_empty() {
         return Ok(0);
@@ -3479,7 +3668,7 @@ fn dump_export_in(conn: &Connection) -> Result<Value> {
     let integrity = scan(conn)?;
     let mut locks = Vec::new();
     let mut events = Vec::new();
-    if schema_version(conn)?.as_deref() == Some(SCHEMA_VERSION) {
+    if stored_generation(conn)?.is_some() {
         for lock in all_locks(conn)? {
             let mut value = lock.value();
             let object = value.as_object_mut().expect("Lock value is an object");
@@ -3627,7 +3816,33 @@ mod tests {
         format!("{}|a", first_address(root))
     }
 
+    /// The term-aware SQL fingerprint: nine arguments, the last the stored term name.
     fn fingerprint_query(
+        conn: &Connection,
+        text: &str,
+        metadata: [Option<&str>; 7],
+        term_name: Option<&str>,
+    ) -> rusqlite::Result<String> {
+        conn.query_row(
+            "SELECT zt_authored_fp(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                text,
+                metadata[0],
+                metadata[1],
+                metadata[2],
+                metadata[3],
+                metadata[4],
+                metadata[5],
+                metadata[6],
+                term_name,
+            ],
+            |row| row.get(0),
+        )
+    }
+
+    /// The retained eight-argument form keeps the pre-Term bytes; retained SQL that calls the old
+    /// arity never silently reads the new field.
+    fn fingerprint_query_legacy(
         conn: &Connection,
         text: &str,
         metadata: [Option<&str>; 7],
@@ -3670,6 +3885,7 @@ mod tests {
                 level: None,
                 hub_level: None,
                 form: None,
+                term_name: None,
             },
             Card {
                 row_id: 2,
@@ -3686,6 +3902,7 @@ mod tests {
                 level: None,
                 hub_level: None,
                 form: None,
+                term_name: None,
             },
             Card {
                 row_id: 3,
@@ -3702,6 +3919,7 @@ mod tests {
                 level: None,
                 hub_level: None,
                 form: None,
+                term_name: None,
             },
             Card {
                 row_id: 4,
@@ -3718,6 +3936,7 @@ mod tests {
                 level: Some(crate::model::Level::parse("formal").expect("level")),
                 hub_level: None,
                 form: Some(crate::math::MathForm::parse("theorem").expect("form")),
+                term_name: None,
             },
             Card {
                 row_id: 5,
@@ -3734,6 +3953,24 @@ mod tests {
                 level: None,
                 hub_level: Some(crate::hub::HubLevel::parse("topic").expect("hub level")),
                 form: None,
+                term_name: None,
+            },
+            Card {
+                row_id: 6,
+                address: "1/1".into(),
+                citation_key: None,
+                is_topic: false,
+                is_lit: false,
+                bibtex: None,
+                text: text.clone(),
+                workspace: Workspace::Human,
+                card_type: CardType::Term,
+                facet: None,
+                emphasis: None,
+                level: None,
+                hub_level: None,
+                form: None,
+                term_name: Some("均衡".into()),
             },
         ];
         for card in cases {
@@ -3750,6 +3987,7 @@ mod tests {
                     card.hub_level.map(|level| level.id()),
                     card.form.map(|form| form.id()),
                 ],
+                card.term_name.as_deref(),
             )
             .expect("SQL fingerprint");
             assert_eq!(
@@ -3758,6 +3996,27 @@ mod tests {
                 card.card_type.id(),
                 card.facet
             );
+            // The old arity always hashes the legacy bytes: a Card without a term name matches it,
+            // and a named Card deliberately does not.
+            let legacy = fingerprint_query_legacy(
+                &conn,
+                &card.text,
+                [
+                    card.bibtex.as_deref(),
+                    Some(card.card_type.id()),
+                    card.facet.as_ref().map(|facet| facet.id()),
+                    card.emphasis.map(|emphasis| emphasis.id()),
+                    card.level.map(|level| level.id()),
+                    card.hub_level.map(|level| level.id()),
+                    card.form.map(|form| form.id()),
+                ],
+            )
+            .expect("legacy SQL fingerprint");
+            if card.term_name.is_none() {
+                assert_eq!(legacy, expected, "the legacy arity is unchanged");
+            } else {
+                assert_ne!(legacy, expected, "a named Card differs from the legacy bytes");
+            }
         }
     }
 
@@ -3769,6 +4028,7 @@ mod tests {
             &conn,
             &card_text("Title", "body"),
             [None, Some("bogus"), None, None, None, None, None],
+            None,
         )
         .expect_err("unknown enum aborts");
         assert!(error.to_string().contains("unknown card type"), "{error}");
@@ -4060,12 +4320,12 @@ mod tests {
             params![original.text, first_address(&root)],
         )
         .expect("restore the text");
-        let trigger = TRIGGER_DEFS
-            .iter()
+        let trigger = trigger_defs(Generation::Two)
+            .into_iter()
             .find(|(name, _)| *name == "lock_no_change")
-            .map(|(_, sql)| *sql)
+            .map(|(_, sql)| sql)
             .expect("the canonical trigger");
-        conn.execute_batch(trigger).expect("restore the trigger");
+        conn.execute_batch(&trigger).expect("restore the trigger");
         let latched = check(&conn).expect("check");
         assert!(latched.faults.is_empty(), "{:?}", latched.faults);
         assert_eq!(latched.latched.len(), 2, "{:?}", latched.latched);
@@ -4514,13 +4774,22 @@ mod tests {
 
     #[test]
     fn the_installed_triggers_name_the_shared_reverse_marker_and_use_no_custom_functions() {
-        for (name, sql) in TRIGGER_DEFS {
+        let installed = trigger_defs(Generation::Two);
+        for (name, sql) in &installed {
             assert!(!sql.contains("zt_authored_fp"), "{name} uses only built-in SQL");
             assert!(!sql.contains("zt_tree_root"), "{name} uses only built-in SQL");
         }
         assert!(
-            TRIGGER_DEFS[1].1.contains(crate::card::REVERSE_MARKER),
+            installed[1].1.contains(crate::card::REVERSE_MARKER),
             "the update trigger compares the authored text before the generated Reverse marker"
+        );
+        assert!(
+            installed[1].1.contains("NEW.term_name    IS NOT OLD.term_name"),
+            "the term-aware update trigger protects the Term Card name"
+        );
+        assert!(
+            !TRIGGER_DEFS_V1[1].1.contains("term_name"),
+            "generation 1 is compared with its own exact statement"
         );
         let (_temp, mut conn) = archive();
         let installed: String = conn
@@ -5041,7 +5310,7 @@ mod tests {
     /// one of them, and the guarded startup restores each exact statement.
     #[test]
     fn all_six_canonical_triggers_are_compared_and_restored() {
-        for (name, _) in TRIGGER_DEFS {
+        for (name, _) in trigger_defs(Generation::Two) {
             let (_temp, mut conn) = archive();
             let (_root, lock) = locked_topic(&mut conn);
             conn.execute_batch(&format!(
@@ -5435,60 +5704,66 @@ mod tests {
         assert_eq!(listed["latched_faults"].as_array().expect("latched").len(), 2);
     }
 
-    /// The trigger statements of the six canonical protection triggers, in catalog order, plus the
-    /// citation-key index, so a hand rebuild can put the archive back the way a boot finds it.
-    fn protection_statements(conn: &Connection) -> (Vec<String>, String) {
-        let mut triggers = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN
-                 ('lock_no_delete','lock_no_change','lock_no_insert','lock_no_move_in',
-                  'lock_pin_no_delete','lock_pin_no_move') ORDER BY name",
-            )
-            .expect("trigger catalog");
-        for sql in stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("trigger rows")
-        {
-            triggers.push(sql.expect("trigger sql"));
-        }
-        assert_eq!(triggers.len(), 6, "every canonical trigger exists");
-        let index: String = conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type = 'index'
-                   AND name = 'cards_citation_key_nocase'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("the citation index");
-        (triggers, index)
-    }
-
-    /// An archive as the previous release left it: the Tree Lock schema 1 with one active Lock, but
-    /// a `cards` table whose type constraint predates the Finding Card type, so a boot rebuilds the
-    /// table. Every column is present, so the promise can still be compared. The six canonical
-    /// triggers and the unique index are re-created after the hand rebuild, so a boot finds the
-    /// promise intact and must keep it across its own authorized Card rebuild (R051/R304,
-    /// S07-AC05).
+    /// An archive as Tree Lock generation 1 left it: the term-free `cards` table, the declared
+    /// generation 1, and the six generation-1 canonical triggers around one active Lock. Every
+    /// column of that release is present, so the promise can still be compared. A boot must keep the
+    /// promise across its own authorized Card rebuild and install generation 2 (S07-AC07).
     fn previous_release_archive(conn: &mut Connection) -> (String, Lock) {
         let (root, lock) = locked_topic(conn);
-        let (triggers, index) = protection_statements(conn);
+        // The previous release's exact table: today's definition before Term Cards, with `term`
+        // absent from the type CHECK and no `term_name` column.
+        let previous_table = format!(
+            "CREATE TABLE cards_previous (
+                row_id INTEGER PRIMARY KEY,
+                location TEXT UNIQUE,
+                citation_key TEXT UNIQUE,
+                is_topic INTEGER NOT NULL CHECK(is_topic IN (0, 1)),
+                is_lit INTEGER NOT NULL CHECK(is_lit IN (0, 1)),
+                bibtex TEXT,
+                text TEXT NOT NULL,
+                workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
+                card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub')),
+                model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND {}),
+                model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
+                model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
+                hub_level TEXT CHECK(hub_level IS NULL OR hub_level IN ('line', 'topic', 'field', 'register')),
+                math_form TEXT CHECK(math_form IS NULL OR math_form IN ({})),
+                CHECK(
+                    (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
+                    OR
+                    (is_lit = 1 AND is_topic = 0 AND location IS NULL AND citation_key IS NOT NULL AND bibtex IS NOT NULL)
+                ),
+                CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL),
+                CHECK(model_level IS NULL OR (card_type = 'model' AND model_facet IS NULL)),
+                CHECK(hub_level IS NULL OR card_type = 'hub'),
+                CHECK(math_form IS NULL OR (card_type = 'model' AND model_facet IS NULL))
+            );",
+            crate::model::Facet::MAX_CHARS,
+            crate::math_form_values()
+        );
+        assert!(!previous_table.contains("term"), "{previous_table}");
         let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form";
-        let previous_table = crate::cards_table("cards_previous").replace("'finding', ", "");
         conn.execute_batch(&format!(
             "BEGIN IMMEDIATE;
              {previous_table}
              INSERT INTO cards_previous ({columns}) SELECT {columns} FROM cards;
              DROP TABLE cards;
              ALTER TABLE cards_previous RENAME TO cards;
-             {index};
+             CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+                 ON cards(citation_key COLLATE NOCASE)
+                 WHERE citation_key IS NOT NULL;
+             UPDATE metadata SET value = '{LEGACY_SCHEMA_VERSION}' WHERE key = '{SCHEMA_KEY}';
              COMMIT;"
         ))
         .expect("rebuild the archive into the previous release's generation");
-        for sql in &triggers {
-            conn.execute_batch(sql).expect("re-create a canonical trigger");
+        for (name, sql) in trigger_defs(Generation::One) {
+            conn.execute_batch(&sql)
+                .unwrap_or_else(|error| panic!("re-create trigger `{name}`: {error}"));
         }
-        validate_triggers(conn).expect("the previous release left canonical triggers");
+        validate_schema(conn).expect("the previous release's lock tables");
+        validate_indexes(conn).expect("the previous release's indexes");
+        validate_triggers_for(conn, Generation::One)
+            .expect("the previous release left canonical generation-1 triggers");
         (root, lock)
     }
 
@@ -5499,7 +5774,7 @@ mod tests {
         let (temp, mut conn) = archive();
         previous_release_archive(&mut conn);
         conn.execute(
-            "UPDATE metadata SET value = '2' WHERE key = 'tree_lock_schema_version'",
+            "UPDATE metadata SET value = '3' WHERE key = 'tree_lock_schema_version'",
             [],
         )
         .expect("mark an unsupported generation");
@@ -5507,7 +5782,7 @@ mod tests {
         let error = crate::initialize_database(temp.path()).expect_err("unsupported generation");
         let said = format!("{error:#}");
         assert!(
-            said.contains("unsupported Tree Lock schema version `2`"),
+            said.contains("unsupported Tree Lock schema version `3`"),
             "{said}"
         );
         assert!(said.contains("archive was not modified"), "{said}");
@@ -5522,7 +5797,7 @@ mod tests {
             )
             .expect("the table");
         assert!(
-            !definition.contains("'finding'"),
+            !definition.contains("'term'"),
             "the Card migration must not run before the generation is accepted: {definition}"
         );
         let version: String = conn
@@ -5532,7 +5807,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("the retained marker");
-        assert_eq!(version, "2");
+        assert_eq!(version, "3");
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM locks", [], |row| row.get::<_, i64>(0))
                 .expect("locks"),
@@ -5553,10 +5828,93 @@ mod tests {
         );
     }
 
+    /// S07-AC08/R0248: the baseline release reads only generation 1. Running its exact structural
+    /// rule against a generation-2 archive refuses before anything is modified, so the generation
+    /// check — not a metadata key an old binary never reads — supplies the compatibility floor.
+    #[test]
+    fn the_baseline_generation_rule_refuses_generation_two_without_modifying_the_archive() {
+        let (_temp, conn) = archive();
+        let definition: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the table");
+        let rows = crate::card_identity_rows(&conn).expect("rows");
+        let error = check_generation_within(&conn, &[LEGACY_SCHEMA_VERSION])
+            .expect_err("a baseline binary understands only generation 1");
+        assert_eq!(
+            error.to_string(),
+            "unsupported Tree Lock schema version `2`; archive was not modified"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("the table"),
+            definition
+        );
+        assert_eq!(crate::card_identity_rows(&conn).expect("rows"), rows);
+        assert_eq!(
+            schema_version(&conn).expect("generation").as_deref(),
+            Some(SCHEMA_VERSION)
+        );
+    }
+
+    /// R0247/S07-AC07: a generation-1 archive whose old protection was altered refuses the upgrade
+    /// instead of silently repairing it, and nothing is widened or migrated.
+    #[test]
+    fn an_altered_generation_one_trigger_refuses_the_upgrade_without_a_repair() {
+        let (temp, mut conn) = archive();
+        previous_release_archive(&mut conn);
+        conn.execute_batch(
+            "DROP TRIGGER lock_no_change;
+             CREATE TRIGGER lock_no_change BEFORE DELETE ON cards WHEN 0
+             BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;",
+        )
+        .expect("alter the old protection");
+        drop(conn);
+        let error = crate::initialize_database(temp.path()).expect_err("an altered old trigger");
+        let said = format!("{error:#}");
+        assert!(
+            said.contains("Tree Lock trigger `lock_no_change` has an altered definition"),
+            "{said}"
+        );
+        assert!(said.contains("archive was not modified"), "{said}");
+        let conn = crate::open_db(temp.path()).expect("open the archive again");
+        assert_eq!(
+            schema_version(&conn).expect("generation").as_deref(),
+            Some(LEGACY_SCHEMA_VERSION),
+            "the declared generation was not moved"
+        );
+        let definition: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the table");
+        assert!(
+            !definition.contains("'term'"),
+            "the Card table was not widened: {definition}"
+        );
+        // The altered trigger is left exactly as it was found: no silent repair.
+        let stored: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'lock_no_change'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the altered trigger");
+        assert!(stored.contains("BEFORE DELETE"), "{stored}");
+    }
+
     /// Erase the whole Tree Lock schema the way the archive before this feature looked: no four
     /// tables, no indexes, no triggers, no version marker. The Cards stay untouched.
-    fn without_lock_schema(conn: &Connection) {
-        conn.execute_batch(
+    fn without_lock_schema(conn: &Connection) {        conn.execute_batch(
             "DROP TRIGGER IF EXISTS lock_no_delete;
              DROP TRIGGER IF EXISTS lock_no_change;
              DROP TRIGGER IF EXISTS lock_no_insert;
@@ -5791,13 +6149,13 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("the table");
-        assert!(!definition.contains("'finding'"), "{definition}");
+        assert!(!definition.contains("'term'"), "{definition}");
         drop(conn);
 
         crate::initialize_database(temp.path()).expect("the boot rebuilds the Card table");
 
         let conn = crate::open_db(temp.path()).expect("open the rebuilt archive");
-        // The rebuild happened and produced today's table with one backup, as every rebuild does.
+        // The rebuild happened and produced today's term-aware table with one backup.
         let definition: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
@@ -5805,12 +6163,13 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("the rebuilt table");
-        assert!(definition.contains("'finding'"), "{definition}");
+        assert!(definition.contains("'term'"), "{definition}");
+        assert!(definition.contains("term_name"), "{definition}");
         let rebuild_backups = std::fs::read_dir(temp.path())
             .expect("archive root")
             .filter(|entry| {
                 entry.as_ref().expect("entry").file_name().to_string_lossy()
-                    .starts_with("zt.sqlite3.pre-finding-cards-")
+                    .starts_with("zt.sqlite3.pre-term-cards-")
             })
             .count();
         assert_eq!(rebuild_backups, 1, "the rebuild backed the archive up first");
@@ -5835,8 +6194,13 @@ mod tests {
                 .expect("locks"),
             1
         );
-        // The six canonical triggers are back, and the guarded comparison is clean: the loss this
+        // The six generation-2 triggers are back, and the guarded comparison is clean: the loss this
         // boot caused is an authorized rebuild, not tampering.
+        assert_eq!(
+            schema_version(&conn).expect("generation").as_deref(),
+            Some(SCHEMA_VERSION),
+            "the term-aware generation is installed with the widened table"
+        );
         validate_triggers(&conn).expect("the canonical triggers are installed");
         validate_indexes(&conn).expect("the canonical indexes are installed");
         let integrity = check(&conn).expect("check");
@@ -6042,7 +6406,7 @@ mod tests {
         let tx = conn.unchecked_transaction()?;
         // The authored rows change inside one transaction, so the statement triggers that protect
         // authored bytes are removed here and restored before the commit (R311).
-        for (name, _) in TRIGGER_DEFS {
+        for (name, _) in trigger_defs(Generation::Two) {
             tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))?;
         }
         let mut resealed = Vec::new();
@@ -6067,6 +6431,7 @@ mod tests {
                     card.level.as_deref(),
                     card.hub_level.as_deref(),
                     card.form.as_deref(),
+                    card.term_name.as_deref(),
                 )?;
                 tx.execute(
                     "UPDATE lock_members SET authored_fp = ?1 WHERE lock_id = ?2 AND row_id = ?3",
@@ -6330,33 +6695,15 @@ mod tests {
         // The owner's repair, not a reseal, is what makes the promise healthy again.
         conn.execute("UPDATE cards SET text = ?1 WHERE location = ?2", params![original, root])
             .expect("restore the authored text");
-        conn.execute_batch(
-            "CREATE TRIGGER lock_no_change BEFORE UPDATE ON cards
-             WHEN EXISTS (
-                 SELECT 1 FROM lock_members m JOIN locks l ON l.lock_id = m.lock_id
-                 WHERE m.row_id = OLD.row_id AND l.unlocked_at IS NULL
-             ) AND (
-                 NEW.row_id IS NOT OLD.row_id
-              OR NEW.location IS NOT OLD.location
-              OR NEW.citation_key IS NOT OLD.citation_key
-              OR NEW.workspace IS NOT OLD.workspace
-              OR NEW.is_topic IS NOT OLD.is_topic
-              OR NEW.is_lit IS NOT OLD.is_lit
-              OR NEW.bibtex IS NOT OLD.bibtex
-              OR NEW.card_type IS NOT OLD.card_type
-              OR NEW.model_facet IS NOT OLD.model_facet
-              OR NEW.model_emphasis IS NOT OLD.model_emphasis
-              OR NEW.model_level IS NOT OLD.model_level
-              OR NEW.hub_level IS NOT OLD.hub_level
-              OR NEW.math_form IS NOT OLD.math_form
-              OR (CASE WHEN instr(NEW.text, '<!-- zt:reverse-links -->') = 0 THEN NEW.text
-                       ELSE substr(NEW.text, 1, instr(NEW.text, '<!-- zt:reverse-links -->') - 1) END)
-                 IS NOT
-                 (CASE WHEN instr(OLD.text, '<!-- zt:reverse-links -->') = 0 THEN OLD.text
-                       ELSE substr(OLD.text, 1, instr(OLD.text, '<!-- zt:reverse-links -->') - 1) END)
-             )
-             BEGIN SELECT RAISE(ABORT, 'zt: card is in a locked tree'); END;",
-        )
+        let canonical = trigger_defs(Generation::Two)
+            .into_iter()
+            .find(|(name, _)| *name == "lock_no_change")
+            .map(|(_, sql)| sql)
+            .expect("the canonical update trigger");
+        conn.execute_batch(&format!(
+            "DROP TRIGGER IF EXISTS lock_no_change;
+             {canonical}"
+        ))
         .expect("restore the canonical trigger");
         assert!(check(&conn).expect("check").ok());
         assert_eq!(

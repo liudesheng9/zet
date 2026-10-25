@@ -138,9 +138,14 @@ fn request(tool: &str, arguments: &Value) -> Result<Value> {
 fn fingerprint(conn: &rusqlite::Connection, address: &str) -> Result<String> {
     let card = crate::load_card(conn, address)?;
     let parsed = crate::parse_card_text(&card.text)?;
-    Ok(hash(
-        &json!({"title":parsed.title,"body":parsed.body,"bibtex":card.bibtex,"type":card.card_type.id(),"facet":card.facet.map(|f|f.id().to_string()),"emphasis":card.emphasis.map(crate::model::Emphasis::id),"level":card.level.map(crate::model::Level::id),"hub_level":card.hub_level.map(crate::hub::HubLevel::id),"form":card.form.map(crate::math::MathForm::id)}),
-    ))
+    let mut authored = json!({"title":parsed.title,"body":parsed.body,"bibtex":card.bibtex,"type":card.card_type.id(),"facet":card.facet.map(|f|f.id().to_string()),"emphasis":card.emphasis.map(crate::model::Emphasis::id),"level":card.level.map(crate::model::Level::id),"hub_level":card.hub_level.map(crate::hub::HubLevel::id),"form":card.form.map(crate::math::MathForm::id)});
+    // A nonempty term name is part of the receipt identity, in the same field convention the digest
+    // guard uses. A Card without one keeps exactly its old projection, so retained receipts stay
+    // comparable (S07-AC06, R0245).
+    if let Some(term) = &card.term_name {
+        authored["term"] = json!(term);
+    }
+    Ok(hash(&authored))
 }
 
 fn guard_edit(conn: &rusqlite::Connection, args: &Value, current: &str) -> Result<()> {
@@ -964,4 +969,44 @@ fn apply_item(
         result,
         wrote,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S07-AC06/R0245: the service's receipt projection adds a nonempty Term name in one explicit
+    /// field, and a Card without one keeps exactly its old projection. Both hex values are the
+    /// same fixture the digest guard pins, so the two implementations are checked against one
+    /// contract rather than against each other.
+    #[test]
+    fn the_receipt_projection_adds_a_nonempty_term_name_only() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::initialize_database(temp.path()).expect("initialize");
+        let mut conn = crate::open_db(temp.path()).expect("open");
+        let (root, _) = crate::create_topic(&mut conn, crate::Workspace::Agent, "# Terms\n\n")
+            .expect("topic");
+        let first = format!("{}/1", crate::tree_id(&root));
+        crate::insert_card_with_term(
+            &mut conn,
+            &first,
+            false,
+            crate::Workspace::Agent,
+            crate::CardType::Term,
+            None,
+            Some("均衡"),
+            "# 均衡\n\n定义：",
+        )
+        .expect("term card");
+        assert_eq!(
+            fingerprint(&conn, &first).expect("fingerprint"),
+            "35aaae5adf8cfe486781b0c8ddc8728f701119292b4ba93cbc1083ec8969b423"
+        );
+        conn.execute("UPDATE cards SET term_name = NULL WHERE location = ?1", [&first])
+            .expect("clear the name");
+        assert_eq!(
+            fingerprint(&conn, &first).expect("fingerprint"),
+            "2caa06f0e57fa7874839259b3bfa5f8d05e60c75c6266198a57869ad03726cee"
+        );
+    }
 }

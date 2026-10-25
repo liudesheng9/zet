@@ -56,6 +56,9 @@ pub(crate) fn create_topic(
     crate::create_topic(&mut conn, workspace, text)
 }
 
+/// A create with no Term name; production routes use [`create_successor_with_term`], and the tests
+/// that predate Term Cards call this form.
+#[cfg(test)]
 pub(crate) fn create_successor(
     root: &Path,
     access: Access,
@@ -65,11 +68,34 @@ pub(crate) fn create_successor(
     part: Option<Part>,
     text: &str,
 ) -> Result<(String, crate::gate::Accepted)> {
+    create_successor_with_term(root, access, kind, at, card_type, part, None, text)
+}
+
+/// The same create with a Term Card's exact name (S07, #149).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_successor_with_term(
+    root: &Path,
+    access: Access,
+    kind: Successor,
+    at: &str,
+    card_type: CardType,
+    part: Option<Part>,
+    term_name: Option<&str>,
+    text: &str,
+) -> Result<(String, crate::gate::Accepted)> {
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_successor")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let (address, accepted) =
-        create_successor_tx(&tx, access, kind, at, card_type, part.as_ref(), text)?;
+    let (address, accepted) = create_successor_tx_with_term(
+        &tx,
+        access,
+        kind,
+        at,
+        card_type,
+        part.as_ref(),
+        term_name,
+        text,
+    )?;
     crate::link_index::source_changed(&tx, &address)?;
     tx.commit()?;
     Ok((address, accepted))
@@ -104,6 +130,20 @@ pub(crate) fn create_successor_tx(
     part: Option<&Part>,
     text: &str,
 ) -> Result<(String, crate::gate::Accepted)> {
+    create_successor_tx_with_term(conn, access, kind, at, card_type, part, None, text)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_successor_tx_with_term(
+    conn: &Connection,
+    access: Access,
+    kind: Successor,
+    at: &str,
+    card_type: CardType,
+    part: Option<&Part>,
+    term_name: Option<&str>,
+    text: &str,
+) -> Result<(String, crate::gate::Accepted)> {
     let parent = crate::load_card(conn, at)?;
     access.ensure_writable(parent.workspace)?;
     let location = match kind {
@@ -119,13 +159,14 @@ pub(crate) fn create_successor_tx(
             crate::next_side_successor(conn, &parent.address, &BTreeSet::new())?
         }
     };
-    let accepted = crate::insert_card_tx(
+    let accepted = crate::insert_card_tx_with_term(
         conn,
         &location,
         false,
         parent.workspace,
         card_type,
         part,
+        term_name,
         text,
     )?;
     Ok((location, accepted))
@@ -166,9 +207,10 @@ pub(crate) fn create_literature_tx(
     Ok((metadata.citation_key, accepted))
 }
 
-/// A change to a Card's type, Model facet, emphasis, and elaboration level.
-/// `facet`, `emphasis`, and `level` are `None` to leave them alone and
-/// `Some(None)` to clear them.
+/// A change to a Card's type, Model facet, emphasis, elaboration level, hub
+/// level, Math form, and Term name. `facet`, `emphasis`, `level`, `hub_level`,
+/// `form`, and `term` are `None` to leave them alone and `Some(None)` to clear
+/// them.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TypeChange {
     pub(crate) card_type: Option<CardType>,
@@ -177,6 +219,8 @@ pub(crate) struct TypeChange {
     pub(crate) level: Option<Option<Level>>,
     pub(crate) hub_level: Option<Option<crate::hub::HubLevel>>,
     pub(crate) form: Option<Option<crate::math::MathForm>>,
+    /// The Term name field: omitted preserves, null clears, a string sets (S07, #149).
+    pub(crate) term: Option<Option<String>>,
 }
 
 impl TypeChange {
@@ -187,6 +231,23 @@ impl TypeChange {
             && self.level.is_none()
             && self.hub_level.is_none()
             && self.form.is_none()
+            && self.term.is_none()
+    }
+
+    /// The term name the Card has after the change. Only a Term Card has one, so a type change
+    /// away clears it; an explicit name on another type is an invalid-field error, never a silent
+    /// typo. Outer whitespace is trimmed and a trimmed-empty string clears, as every route does.
+    pub(crate) fn resolve_term(&self, card: &Card) -> Result<Option<String>> {
+        let (card_type, _, _) = self.resolve(card);
+        match &self.term {
+            None => Ok(card.term_name.clone().filter(|_| card_type == CardType::Term)),
+            Some(None) => Ok(None),
+            Some(Some(raw)) => {
+                let name = crate::term::normalize_name(raw)?;
+                crate::term::ensure_on_type(name.as_deref(), card_type)?;
+                Ok(name)
+            }
+        }
     }
 
     /// The Math form the Card has after the change: only a Model Card (no
@@ -313,13 +374,17 @@ pub(crate) fn edit_tx(
     let level = change.resolve_level(&card)?;
     let hub_level = change.resolve_hub_level(&card)?;
     let form = change.resolve_form(&card)?;
+    let term_name = change.resolve_term(&card)?;
     let retyped = (card_type, &facet, emphasis) != (card.card_type, &card.facet, card.emphasis);
     if retyped {
         crate::card_type::ensure_allowed(&card, card_type)?;
         crate::model::ensure_allowed(conn, Some(&card), card_type, facet.as_ref(), emphasis)?;
     }
-    let mut changed =
-        retyped || level != card.level || hub_level != card.hub_level || form != card.form;
+    let mut changed = retyped
+        || level != card.level
+        || hub_level != card.hub_level
+        || form != card.form
+        || term_name != card.term_name;
     let old = crate::parse_card_text(&card.text)?;
     let mut final_text = card.text.clone();
     if let Some(text) = text {
@@ -350,7 +415,8 @@ pub(crate) fn edit_tx(
             level,
             hub_level,
             form,
-        ),
+        )
+        .with_term(term_name.as_deref()),
     )?;
     if final_text != card.text {
         conn.execute(
@@ -358,8 +424,16 @@ pub(crate) fn edit_tx(
             rusqlite::params![final_text, card.row_id],
         )?;
     }
+    // A name that is being cleared goes first, so a type change in the same edit never leaves a
+    // name on a non-Term Card; the table's own check backs the same order.
+    if term_name.is_none() && card.term_name.is_some() {
+        crate::term::set_name(conn, card.row_id, None)?;
+    }
     if retyped {
         crate::model::set(conn, &card, card_type, facet.as_ref(), emphasis)?;
+    }
+    if term_name.is_some() && term_name != card.term_name {
+        crate::term::set_name(conn, card.row_id, term_name.as_deref())?;
     }
     if level != card.level {
         let card = crate::load_card(conn, &card.address)?;
@@ -503,12 +577,16 @@ pub(crate) fn move_card(
 /// Insert a new Card at the place of the Regular Card `before`, which moves
 /// down with its subtree and becomes the new Card's Direct successor. Links in
 /// `text` name today's addresses.
-pub(crate) fn insert_card(
+///
+/// The insert with a Term Card's exact name (S07, #149).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_card_with_term(
     root: &Path,
     access: Access,
     before: &str,
     card_type: CardType,
     part: Option<Part>,
+    term_name: Option<&str>,
     text: &str,
     confirm: Option<&str>,
 ) -> Result<Outcome> {
@@ -516,6 +594,7 @@ pub(crate) fn insert_card(
     let mut conn = crate::open_db(root)?;
     let card = crate::load_card(&conn, before)?;
     access.ensure_writable(card.workspace)?;
+    crate::term::ensure_on_type(term_name, card_type)?;
     let plan = crate::place::insert_plan(&conn, before)?;
     access.ensure_link_rewrites_allowed(&conn, &plan.mapping)?;
     crate::model::ensure_allowed(
@@ -538,6 +617,7 @@ pub(crate) fn insert_card(
         &plan,
         card_type,
         part.as_ref(),
+        term_name,
         text,
     )?;
     let mut value = json!({ "address": plan.location, "moved": plan.mapping });
@@ -710,6 +790,8 @@ impl Snapshot {
                     hasher.update(card.level_id().unwrap_or_default().as_bytes());
                     hasher.update([0]);
                     hasher.update(card.form.map_or("", crate::math::MathForm::id).as_bytes());
+                    hasher.update([0]);
+                    hasher.update(card.term_name.as_deref().unwrap_or_default().as_bytes());
                     hasher.update([0]);
                 }
                 hasher
@@ -1289,7 +1371,7 @@ The model"
         );
     }
 
-    const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, or Hub Cards";
+    const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, Hub, or Term Cards";
 
     fn archive() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("temp dir");

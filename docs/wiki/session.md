@@ -461,6 +461,7 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 - PTY tests match against all frames ever drawn: wait for "one more" occurrence than before a key, never only for a string that an earlier frame already showed.
 
 ## Change history
+- `2026-10-24` — S07 (#149): the Session `ins` writer passes no Term name (it creates an Idea Card between Cards), and `ty` retyping a Term Card away clears its name through `ops::edit_tx`; the Session editor itself still shows raw Markdown and has no Term-name field.
 
 - `2026-10-21` — Tree Lock S12 (#135): the `zt.sessions.lock` lock is now a holdable guard (`hold_registration` / `RegistrationGuard`), and `update_session_pids` is built on it instead of opening and locking its own file. `zt del --all` holds the guard from its Session check through its commit, so a Session that starts during the confirmation blocks in `register_session` and registers only on the emptied archive; every other Session command and key is unchanged, and the Session still offers no delete-all form and refuses `clear` as an unknown command.
 

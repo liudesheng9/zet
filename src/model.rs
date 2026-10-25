@@ -350,7 +350,9 @@ fn parts_in_db(conn: &Connection, head: &Card) -> Result<Vec<String>> {
 }
 
 /// Store a Card's type, facet, and emphasis. A Card that stops being a Model
-/// Card (it changes type or becomes a part) loses its elaboration level.
+/// Card (it changes type or becomes a part) loses its elaboration level, and a
+/// Card that stops being a Term Card loses its term name in the same statement,
+/// so the table's own check never sees a name on another type.
 pub(crate) fn set(
     conn: &Connection,
     card: &Card,
@@ -365,7 +367,8 @@ pub(crate) fn set(
         "UPDATE cards SET card_type = ?1, model_facet = ?2, model_emphasis = ?3,
              model_level = CASE WHEN ?1 = 'model' AND ?2 IS NULL THEN model_level END,
              math_form = CASE WHEN ?1 = 'model' AND ?2 IS NULL THEN math_form END,
-             hub_level = CASE WHEN ?1 = 'hub' THEN hub_level END
+             hub_level = CASE WHEN ?1 = 'hub' THEN hub_level END,
+             term_name = CASE WHEN ?1 = 'term' THEN term_name END
          WHERE row_id = ?4",
         params![
             card_type.id(),

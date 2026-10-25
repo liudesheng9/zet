@@ -599,6 +599,7 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
             "model_level",
             "hub_level",
             "math_form",
+            "term_name",
         ]
     );
     assert!(
@@ -2952,7 +2953,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
     std::io::Read::read_to_string(&mut manifest, &mut body).expect("manifest text");
     assert_eq!(
         body,
-        r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
+        r#"{"next_topic_id":0,"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
     );
     drop(manifest);
     // R315, S13-AC02: a dump of an archive that holds no Lock still carries the version-1 evidence.

@@ -27,6 +27,8 @@ pub(crate) struct DumpCard {
     address: String,
     workspace: Workspace,
     card_type: CardType,
+    /// The exact Term name of a Term Card, `None` for no name.
+    term_name: Option<String>,
     facet: Option<Facet>,
     emphasis: Option<Emphasis>,
     level: Option<Level>,
@@ -52,6 +54,7 @@ impl DumpCard {
             address,
             workspace,
             card_type,
+            term_name: None,
             facet: None,
             emphasis: None,
             level: None,
@@ -60,6 +63,12 @@ impl DumpCard {
             bibtex: None,
             text,
         }
+    }
+
+    /// The exact term name of a Term Card.
+    pub(crate) fn with_term_name(mut self, term_name: Option<String>) -> Self {
+        self.term_name = term_name;
+        self
     }
 
     /// The Model facet and emphasis of a Model part.
@@ -97,6 +106,7 @@ impl DumpCard {
             address,
             workspace,
             card_type: CardType::Idea,
+            term_name: None,
             facet: None,
             emphasis: None,
             level: None,
@@ -126,6 +136,16 @@ fn manifest(cards: &[DumpCard], next_topic_id: u64) -> Result<String> {
         .iter()
         .filter(|card| card.card_type != CardType::Idea)
         .map(|card| (card.address.clone(), card.card_type.id()))
+        .collect::<BTreeMap<_, _>>();
+    // The term-name map sits beside the type map: an absent name is omitted, exactly as an Idea
+    // Card's type is omitted from `types` (S07 #149; S17 completes dump/load compatibility).
+    let term_names = cards
+        .iter()
+        .filter_map(|card| {
+            card.term_name
+                .as_ref()
+                .map(|term| (card.address.clone(), term.clone()))
+        })
         .collect::<BTreeMap<_, _>>();
     let facets = cards
         .iter()
@@ -159,9 +179,10 @@ fn manifest(cards: &[DumpCard], next_topic_id: u64) -> Result<String> {
         .collect::<BTreeMap<_, _>>();
     // serde_json sorts object keys, so the documented key order is written out.
     Ok(format!(
-        r#"{{"next_topic_id":{next_topic_id},"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}}"#,
+        r#"{{"next_topic_id":{next_topic_id},"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}}"#,
         serde_json::to_string(&workspaces)?,
         serde_json::to_string(&types)?,
+        serde_json::to_string(&term_names)?,
         serde_json::to_string(&facets)?,
         serde_json::to_string(&emphasis)?,
         serde_json::to_string(&levels)?,
@@ -1011,6 +1032,13 @@ mod tests {
                 "h".to_string(),
             )
             .with_hub_level(Some(HubLevel::Topic)),
+            DumpCard::new(
+                "1/1|d".to_string(),
+                Workspace::Agent,
+                CardType::Term,
+                "t".to_string(),
+            )
+            .with_term_name(Some("均衡".to_string())),
             DumpCard::literature(
                 "Smith2024".to_string(),
                 Workspace::Agent,
@@ -1020,15 +1048,15 @@ mod tests {
         ];
         assert_eq!(
             manifest(&cards, 7).unwrap(),
-            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent","1/1|b":"agent","1/1|c":"agent","Smith2024":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"event","1/1|b":"finding","1/1|c":"hub"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"},"hub_levels":{"1/1|c":"topic"}}"#
+            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent","1/1|b":"agent","1/1|c":"agent","1/1|d":"agent","Smith2024":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"event","1/1|b":"finding","1/1|c":"hub","1/1|d":"term"},"term_names":{"1/1|d":"均衡"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"},"hub_levels":{"1/1|c":"topic"}}"#
         );
         assert_eq!(
             manifest(&cards[..1], 1).unwrap(),
-            r#"{"next_topic_id":1,"workspaces":{"0/0":"human"},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
+            r#"{"next_topic_id":1,"workspaces":{"0/0":"human"},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
         );
         assert_eq!(
             manifest(&[], 0).unwrap(),
-            r#"{"next_topic_id":0,"workspaces":{},"types":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
+            r#"{"next_topic_id":0,"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
         );
     }
 

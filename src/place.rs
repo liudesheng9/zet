@@ -124,11 +124,13 @@ pub(crate) fn apply_insert_plan(
     plan: &InsertPlan,
     card_type: CardType,
     part: Option<&model::Part>,
+    term_name: Option<&str>,
     text: &str,
 ) -> Result<crate::gate::Accepted> {
     let workspace = crate::workspace::tree_workspace(conn, &plan.location)?;
     let facet = part.map(|part| &part.facet);
     let emphasis = part.and_then(|part| part.emphasis);
+    crate::term::ensure_on_type(term_name, card_type)?;
     model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
@@ -144,20 +146,22 @@ pub(crate) fn apply_insert_plan(
             &text,
             card_type,
             part,
-        ),
+        )
+        .with_term(term_name),
     )?;
     let tx = conn.transaction()?;
     crate::apply_location_mapping_tx(&tx, &plan.mapping)?;
     tx.execute(
-        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis)
-         VALUES(?1, NULL, 0, 0, NULL, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, term_name)
+         VALUES(?1, NULL, 0, 0, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             plan.location,
             text,
             workspace.id(),
             card_type.id(),
             facet.map(model::Facet::id),
-            emphasis.map(model::Emphasis::id)
+            emphasis.map(model::Emphasis::id),
+            term_name
         ],
     )?;
     crate::regenerate_reverse_links_tx(&tx)?;

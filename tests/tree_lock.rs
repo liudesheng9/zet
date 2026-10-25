@@ -105,6 +105,17 @@ impl TestHome {
         Connection::open(self.archive_root.join("zt.sqlite3")).expect("open database")
     }
 
+    /// The stored Term name of one Card, read straight from the archive.
+    fn term_name_of(&self, address: &str) -> Option<String> {
+        self.db()
+            .query_row(
+                "SELECT term_name FROM cards WHERE COALESCE(location, citation_key) = ?1",
+                [address],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .expect("term name")
+    }
+
     fn restart(&self) {
         self.cmd().arg("down").assert().success();
         self.cmd().arg("up").assert().success();
@@ -2035,7 +2046,7 @@ fn a_lock_survives_a_service_restart_and_installs_once() {
             |row| row.get(0),
         )
         .expect("schema version");
-    assert_eq!(version, "1");
+    assert_eq!(version, "2", "the current term-aware generation");
     let triggers: i64 = home
         .db()
         .query_row(
@@ -4893,24 +4904,46 @@ fn protection_sql(conn: &Connection) -> (Vec<String>, String) {
     (triggers, index)
 }
 
-/// Replace the `cards` table with the previous release's definition: the same columns and rules but
-/// no Finding Card type. Every row keeps its row id, and the canonical protection is re-created the
-/// way that release left it, so the next boot performs an authorized Card rebuild (R051, R304).
+/// Replace the `cards` table with the previous release's definition: every column and rule that
+/// release had, without the Term type and without `term_name`. The declared generation returns to
+/// 1 and the generation-1 triggers are re-created, so the next boot performs the authorized Term
+/// Card rebuild and the validated generation upgrade (S07 #149, R0234-R0247).
 fn previous_release_cards(conn: &Connection) {
     let (triggers, index) = protection_sql(conn);
-    let definition: String = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("the cards table");
-    let previous = definition
-        .replacen("cards", "cards_previous", 1)
-        .replace("'finding', ", "");
-    assert!(!previous.contains("'finding'"), "{previous}");
-    // The stored definition carries no trailing semicolon of its own.
-    let previous = format!("{};", previous.trim_end_matches(';'));
+    // Generation 1 protects the same fields except the Term name.
+    let triggers = triggers
+        .iter()
+        .map(|sql| sql.replace("    OR NEW.term_name    IS NOT OLD.term_name\n", ""))
+        .collect::<Vec<_>>();
+    assert!(
+        !triggers.iter().any(|sql| sql.contains("term_name")),
+        "the generation-1 protection knows no term name"
+    );
+    let previous = "CREATE TABLE cards_previous (
+        row_id INTEGER PRIMARY KEY,
+        location TEXT UNIQUE,
+        citation_key TEXT UNIQUE,
+        is_topic INTEGER NOT NULL CHECK(is_topic IN (0, 1)),
+        is_lit INTEGER NOT NULL CHECK(is_lit IN (0, 1)),
+        bibtex TEXT,
+        text TEXT NOT NULL,
+        workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
+        card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub')),
+        model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND 32),
+        model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
+        model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
+        hub_level TEXT CHECK(hub_level IS NULL OR hub_level IN ('line', 'topic', 'field', 'register')),
+        math_form TEXT CHECK(math_form IS NULL OR math_form IN ('theory', 'definition', 'axiom', 'theorem', 'proposition', 'lemma', 'corollary')),
+        CHECK(
+            (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
+            OR
+            (is_lit = 1 AND is_topic = 0 AND location IS NULL AND citation_key IS NOT NULL AND bibtex IS NOT NULL)
+        ),
+        CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL),
+        CHECK(model_level IS NULL OR (card_type = 'model' AND model_facet IS NULL)),
+        CHECK(hub_level IS NULL OR card_type = 'hub'),
+        CHECK(math_form IS NULL OR (card_type = 'model' AND model_facet IS NULL))
+    );";
     let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form";
     conn.execute_batch(&format!(
         "BEGIN IMMEDIATE;
@@ -4919,11 +4952,12 @@ fn previous_release_cards(conn: &Connection) {
          DROP TABLE cards;
          ALTER TABLE cards_previous RENAME TO cards;
          {index};
+         UPDATE metadata SET value = '1' WHERE key = 'tree_lock_schema_version';
          COMMIT;"
     ))
     .expect("rebuild the cards table into the previous release's definition");
     for sql in &triggers {
-        conn.execute_batch(sql).expect("re-create a canonical trigger");
+        conn.execute_batch(sql).expect("re-create a generation-1 trigger");
     }
     let triggers: i64 = conn
         .query_row(
@@ -5052,7 +5086,7 @@ fn a_first_upgrade_backs_the_archive_up_and_installs_protection_once() {
     assert!(!saved_locks, "the backup is the archive before the installation");
     // The archive itself is installed, with every row identity intact.
     let installed = home.db();
-    assert_eq!(lock_schema_version(&installed).as_deref(), Some("1"));
+    assert_eq!(lock_schema_version(&installed).as_deref(), Some("2"));
     let triggers: i64 = installed
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN
@@ -5097,7 +5131,7 @@ fn an_unsupported_lock_generation_refuses_startup_before_a_card_migration() {
         // The previous release's Card table, and a generation this binary does not know.
         previous_release_cards(&conn);
         conn.execute(
-            "UPDATE metadata SET value = '2' WHERE key = 'tree_lock_schema_version'",
+            "UPDATE metadata SET value = '3' WHERE key = 'tree_lock_schema_version'",
             [],
         )
         .expect("mark an unsupported generation");
@@ -5117,7 +5151,7 @@ fn an_unsupported_lock_generation_refuses_startup_before_a_card_migration() {
         String::from_utf8_lossy(&up.stderr)
     );
     assert!(
-        said.contains("unsupported Tree Lock schema version `2`"),
+        said.contains("unsupported Tree Lock schema version `3`"),
         "{said}"
     );
     assert!(said.contains("archive was not modified"), "{said}");
@@ -5131,10 +5165,10 @@ fn an_unsupported_lock_generation_refuses_startup_before_a_card_migration() {
         )
         .expect("the Card table");
     assert!(
-        !definition.contains("'finding'"),
+        !definition.contains("'term'"),
         "the Card migration must not run before the generation is accepted: {definition}"
     );
-    assert_eq!(lock_schema_version(&conn).as_deref(), Some("2"));
+    assert_eq!(lock_schema_version(&conn).as_deref(), Some("3"));
     assert_eq!(card_rows(&conn), rows_before, "every Card row identity is untouched");
     assert_eq!(
         member_rows(&conn, lock_id),
@@ -5198,7 +5232,24 @@ fn an_authorized_card_rebuild_keeps_the_promise_and_its_protection() {
             |row| row.get(0),
         )
         .expect("the rebuilt table");
-    assert!(definition.contains("'finding'"), "{definition}");
+    assert!(definition.contains("'term'"), "{definition}");
+    assert!(definition.contains("term_name"), "{definition}");
+    assert_eq!(
+        lock_schema_version(&home.db()).as_deref(),
+        Some("2"),
+        "the widened table installs the term-aware generation"
+    );
+    let backups: Vec<_> = fs::read_dir(&home.archive_root)
+        .expect("archive root")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("zt.sqlite3.pre-term-cards-")
+        })
+        .collect();
+    assert_eq!(backups.len(), 1, "the rebuild backed the archive up first");
     assert_eq!(
         panel["integrity"]["faults"],
         json!([]),
@@ -5286,10 +5337,188 @@ fn an_authorized_card_rebuild_keeps_the_promise_and_its_protection() {
 }
 
 
+/// S07-AC07/AC09, R0243/R0247: a generation-1 archive upgrades to the term-aware generation 2 in
+/// one authorized rebuild. Every Card row, member baseline, pin, event, receipt and revision stays
+/// as it was; the new field starts empty; the seals still verify; an old receipt replays; and a
+/// dump keeps the new type and name maps.
+#[test]
+fn a_generation_one_archive_upgrades_to_two_keeping_rows_receipts_and_lock_evidence() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen");
+    let created = mcp.ok(
+        "apply_batch",
+        json!({ "items": [{
+            "op_key": "s07/upgrade/1/create/first",
+            "client_ref": "first",
+            "tool": "create_successor",
+            "arguments": { "at": root, "title": "First", "body": "first body" },
+        }] }),
+    );
+    let first = created["results"][0]["result"]["address"]
+        .as_str()
+        .expect("first address")
+        .to_string();
+    let lock = gui.lock(&root, Some("survives the Term migration"));
+    let lock_id = lock["lock_id"].as_i64().expect("lock id");
+    home.cmd().arg("down").assert().success();
+    let (rows_before, members_before, receipts_before, seal_before) = {
+        let conn = home.db();
+        previous_release_cards(&conn);
+        assert_eq!(lock_schema_version(&conn).as_deref(), Some("1"));
+        let seal: String = conn
+            .query_row(
+                "SELECT range_fingerprint FROM locks WHERE lock_id = ?1",
+                [lock_id],
+                |row| row.get(0),
+            )
+            .expect("the seal");
+        let receipts = table_rows(
+            &conn,
+            "SELECT op_key, request_hash, result_json FROM applied_ops ORDER BY op_key",
+        );
+        (
+            card_rows(&conn),
+            member_rows(&conn, lock_id),
+            receipts,
+            seal,
+        )
+    };
+    assert_eq!(json!(seal_before), lock["seal"]);
+
+    home.cmd().arg("up").assert().success();
+    // The GUI listens on a fresh port after the restart.
+    let gui = home.gui();
+
+    let conn = home.db();
+    assert_eq!(lock_schema_version(&conn).as_deref(), Some("2"));
+    let definition: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the upgraded table");
+    assert!(definition.contains("'term'"), "{definition}");
+    assert!(definition.contains("term_name"), "{definition}");
+    assert_eq!(card_rows(&conn), rows_before, "every Card row id and address");
+    assert_eq!(
+        member_rows(&conn, lock_id),
+        members_before,
+        "the member baselines are the same bytes, so old seals verify"
+    );
+    let empty_names: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE term_name IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("term names");
+    assert_eq!(empty_names, 0, "the new field starts empty on every old Card");
+    assert_eq!(
+        table_rows(
+            &home.db(),
+            "SELECT op_key, request_hash, result_json FROM applied_ops ORDER BY op_key",
+        ),
+        receipts_before,
+        "committed receipts are unchanged"
+    );
+    drop(conn);
+    let panel = gui.panel();
+    assert_eq!(panel["integrity"]["ok"], true, "{panel}");
+    let listed = panel["locks"]
+        .as_array()
+        .expect("locks")
+        .iter()
+        .find(|item| item["lock_id"] == json!(lock_id))
+        .expect("the Lock");
+    assert_eq!(listed["seal"], lock["seal"]);
+    assert_eq!(listed["seal_intact"], true);
+    let backups: Vec<_> = fs::read_dir(&home.archive_root)
+        .expect("archive root")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("zt.sqlite3.pre-term-cards-")
+        })
+        .collect();
+    assert_eq!(backups.len(), 1, "one consistent backup before the rebuild");
+    // The committed receipt replays verbatim after the upgrade.
+    let replayed = mcp.ok(
+        "apply_batch",
+        json!({ "items": [{
+            "op_key": "s07/upgrade/1/create/first",
+            "client_ref": "first",
+            "tool": "create_successor",
+            "arguments": { "at": root, "title": "First", "body": "first body" },
+        }] }),
+    );
+    assert_eq!(replayed["results"][0]["replayed"], true, "{replayed}");
+    assert_eq!(replayed["results"][0]["result"]["address"], json!(first));
+    // The widened table takes a Term Card, and a dump keeps its type and exact name.
+    let terms = topic(&mut mcp, "Terms");
+    let term = address(mcp.ok(
+        "create_successor",
+        json!({ "at": terms, "title": "均衡", "body": "定义：", "type": "term", "term": "均衡" }),
+    ));
+    assert_eq!(home.term_name_of(&term).as_deref(), Some("均衡"));
+    if zip_dump_available() {
+        let archive = dump_archive(&home);
+        let manifest: Value =
+            serde_json::from_str(&dump_entry(&archive, "/archive.json")).expect("archive.json");
+        assert_eq!(manifest["types"][term.as_str()], "term");
+        assert_eq!(manifest["term_names"][term.as_str()], "均衡");
+        assert_eq!(manifest["types"][first.as_str()], Value::Null);
+    }
+    gui.unlock(lock_id);
+}
+
+/// S07-AC09/R0243: term_name is authored identity. A name-only change on a Locked member is
+/// refused through MCP and through the SQL backstop, while an unlocked pinned target keeps its
+/// editable name.
+#[test]
+fn a_locked_term_name_cannot_change_and_a_pinned_target_keeps_its_editable_name() {
+    let home = TestHome::new();
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let root = topic(&mut mcp, "Frozen terms");
+    let locked = address(mcp.ok(
+        "create_successor",
+        json!({ "at": root, "title": "均衡", "body": "定义：", "type": "term", "term": "均衡" }),
+    ));
+    let outside = topic(&mut mcp, "Outside terms");
+    let pinned = address(mcp.ok(
+        "create_successor",
+        json!({ "at": outside, "title": "利率", "body": "定义：", "type": "term", "term": "利率" }),
+    ));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": locked, "body": format!("定义：[[{pinned}]] 是资金的价格。") }),
+    );
+    let lock = gui.lock(&root, None);
+    // A name-only change is an authored edit of a Locked member.
+    let refusal = mcp.refused("edit_card", json!({ "at": locked, "term": "新名称" }));
+    assert_card_locked(&refusal, "edit", &root, &[&locked]);
+    assert_eq!(home.term_name_of(&locked).as_deref(), Some("均衡"));
+    // The SQL backstop refuses a forgotten writer that changes only the name.
+    let refused = home
+        .db()
+        .execute("UPDATE cards SET term_name = '绕过' WHERE location = ?1", [&locked])
+        .expect_err("the generation-2 trigger protects the name");
+    assert!(refused.to_string().contains("locked tree"), "{refused}");
+    assert_eq!(home.term_name_of(&locked).as_deref(), Some("均衡"));
+    // The pinned Term Card lies outside the tree: its name stays editable.
+    mcp.ok("edit_card", json!({ "at": pinned, "term": "真实利率" }));
+    assert_eq!(home.term_name_of(&pinned).as_deref(), Some("真实利率"));
+    gui.unlock(lock["lock_id"].as_i64().expect("lock id"));
+}
+
 // ---------------------------------------------------------------------------------------------
 // S09 (#132): structured MCP refusals and safe identified receipt replay.
 // ---------------------------------------------------------------------------------------------
-
 /// Every row of one table, as JSON objects, so a fixture can compare complete stored state.
 fn table_rows(conn: &Connection, sql: &str) -> Value {
     let mut stmt = conn.prepare(sql).expect("prepare state query");
@@ -5342,7 +5571,8 @@ fn archive_state(home: &TestHome) -> Value {
                     COALESCE(model_emphasis, '') AS model_emphasis,
                     COALESCE(model_level, '') AS model_level,
                     COALESCE(hub_level, '') AS hub_level,
-                    COALESCE(math_form, '') AS math_form
+                    COALESCE(math_form, '') AS math_form,
+                    COALESCE(term_name, '') AS term_name
                FROM cards ORDER BY row_id",
         ),
         "links": table_rows(

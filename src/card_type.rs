@@ -3,9 +3,9 @@
 //! Most Cards are Idea Cards. A Regular Card may instead be an Event Card,
 //! which records one real-world event, a Finding Card, which states one
 //! empirical result from a source, a Model Card, which presents one whole
-//! model, or a Hub Card, which opens one subject. The type is stored on the
-//! Card row, so it stays with the Card when it moves; Topic and Literature
-//! Cards are always Idea Cards.
+//! model, a Hub Card, which opens one subject, or a Term Card, which defines
+//! one term. The type is stored on the Card row, so it stays with the Card when
+//! it moves; Topic and Literature Cards are always Idea Cards.
 
 use anyhow::{Result, bail};
 
@@ -19,6 +19,7 @@ pub(crate) enum CardType {
     Finding,
     Model,
     Hub,
+    Term,
 }
 
 impl CardType {
@@ -30,6 +31,7 @@ impl CardType {
             CardType::Finding => "finding",
             CardType::Model => "model",
             CardType::Hub => "hub",
+            CardType::Term => "term",
         }
     }
 
@@ -40,9 +42,10 @@ impl CardType {
             "finding" => Ok(CardType::Finding),
             "model" => Ok(CardType::Model),
             "hub" => Ok(CardType::Hub),
-            other => {
-                bail!("unknown card type `{other}`; expected idea, event, finding, model, or hub")
-            }
+            "term" => Ok(CardType::Term),
+            other => bail!(
+                "unknown card type `{other}`; expected idea, event, finding, model, hub, or term"
+            ),
         }
     }
 
@@ -58,10 +61,10 @@ impl std::fmt::Display for CardType {
     }
 }
 
-/// Only Regular Cards may be Event, Finding, Model, or Hub Cards.
+/// Only Regular Cards may be Event, Finding, Model, Hub, or Term Cards.
 pub(crate) fn ensure_allowed(card: &Card, card_type: CardType) -> Result<()> {
     if card_type != CardType::Idea && crate::is_tree_root(card) {
-        bail!("only Regular Cards can be Event, Finding, Model, or Hub Cards");
+        bail!("only Regular Cards can be Event, Finding, Model, Hub, or Term Cards");
     }
     Ok(())
 }
@@ -78,14 +81,16 @@ mod tests {
             CardType::Finding,
             CardType::Model,
             CardType::Hub,
+            CardType::Term,
         ] {
             assert_eq!(CardType::parse(card_type.id()).unwrap(), card_type);
         }
         assert_eq!(CardType::parse(" Event ").unwrap(), CardType::Event);
         assert_eq!(CardType::parse("Finding").unwrap(), CardType::Finding);
+        assert_eq!(CardType::parse("TERM ").unwrap(), CardType::Term);
         assert_eq!(
             CardType::parse("fact").unwrap_err().to_string(),
-            "unknown card type `fact`; expected idea, event, finding, model, or hub"
+            "unknown card type `fact`; expected idea, event, finding, model, hub, or term"
         );
         assert_eq!(CardType::from_stored("bogus"), CardType::Idea);
         assert_eq!(CardType::default(), CardType::Idea);

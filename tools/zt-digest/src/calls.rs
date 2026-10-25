@@ -929,11 +929,16 @@ fn verified_outputs(expected: &BTreeMap<String, String>, cards: &[Value]) -> Res
     Ok(())
 }
 
-/// The archive receipt projection uses standard JSON and excludes generated text.
+/// The archive receipt projection uses standard JSON and excludes generated text. A nonempty term
+/// name joins it in the same field convention the service uses; a Card without one keeps exactly
+/// its old projection, so retained receipts stay comparable (S07-AC06, R0245).
 pub(crate) fn authored_fingerprint(card: &Value) -> String {
     let model = card["type"] == "model";
     let hub = card["type"] == "hub";
-    let authored = json!({"title":card["title"],"body":card["body"],"bibtex":card["bibtex"],"type":card["type"],"facet":card["facet"],"emphasis":card["emphasis"],"level":if model{card["level"].clone()}else{Value::Null},"hub_level":if hub{card["level"].clone()}else{Value::Null},"form":card["form"]});
+    let mut authored = json!({"title":card["title"],"body":card["body"],"bibtex":card["bibtex"],"type":card["type"],"facet":card["facet"],"emphasis":card["emphasis"],"level":if model{card["level"].clone()}else{Value::Null},"hub_level":if hub{card["level"].clone()}else{Value::Null},"form":card["form"]});
+    if let Some(term) = card["term"].as_str().filter(|term| !term.is_empty()) {
+        authored["term"] = json!(term);
+    }
     crate::canon::sha256_hex(crate::canon::canonical(&authored).to_string().as_bytes())
 }
 
@@ -1107,5 +1112,29 @@ mod tests {
         let human = card("9/1", "第一版正文。", "human");
         let foreign = verified_outputs(&expected, &[human, second]).unwrap_err().to_string();
         assert!(foreign.starts_with("identified output changed: `9/1`"), "{foreign}");
+    }
+
+    /// S07-AC06/R0245: a nonempty Term name joins the receipt projection in the service's field
+    /// convention, and a Card without one keeps exactly its old projection. The two hex values are
+    /// the service test's fixture, so both implementations are checked against one contract.
+    #[test]
+    fn a_nonempty_term_name_joins_the_receipt_projection_only() {
+        let card = json!({"title":"均衡","body":"定义：","bibtex":null,"type":"term","facet":null,"emphasis":null,"level":null,"hub_level":null,"form":null,"term":"均衡"});
+        assert_eq!(
+            authored_fingerprint(&card),
+            "35aaae5adf8cfe486781b0c8ddc8728f701119292b4ba93cbc1083ec8969b423"
+        );
+        let mut list = card.clone();
+        list["term"] = json!(null);
+        assert_eq!(
+            authored_fingerprint(&list),
+            "2caa06f0e57fa7874839259b3bfa5f8d05e60c75c6266198a57869ad03726cee"
+        );
+        // An empty string is no name too.
+        list["term"] = json!("");
+        assert_eq!(
+            authored_fingerprint(&list),
+            "2caa06f0e57fa7874839259b3bfa5f8d05e60c75c6266198a57869ad03726cee"
+        );
     }
 }

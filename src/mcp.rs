@@ -551,15 +551,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 (_, Some(_)) => CardType::Model,
                 (card_type, None) => card_type.unwrap_or_default(),
             };
+            let term = term_for_type(args, card_type)?;
             let title = title_arg(args)?;
             let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
             crate::artifact::require_present(&root, &text)?;
-            let outcome = ops::insert_card(
+            let outcome = ops::insert_card_with_term(
                 &root,
                 ACCESS,
                 &before,
                 card_type,
                 part,
+                term.as_deref(),
                 &text,
                 args.get("confirm").and_then(Value::as_str),
             )?;
@@ -611,6 +613,7 @@ pub(crate) fn write_card_tx(
             level,
             hub_level,
             form: optional_form(args)?,
+            term: optional_term(args)?,
         };
         let parsed = crate::parse_card_text(&card.text)?;
         let text_given = ["text", "title", "body"]
@@ -652,6 +655,9 @@ pub(crate) fn write_card_tx(
         return Ok((accepted.value(&address), changed));
     }
     if name == "create_literature" {
+        if optional_term(args)?.flatten().is_some() {
+            bail!(crate::term::NAME_NEEDS_TERM_CARD);
+        }
         let body = optional_string(args, "body")?;
         crate::artifact::require_present(root, &body)?;
         let workspace = target_workspace(args)?;
@@ -671,6 +677,9 @@ pub(crate) fn write_card_tx(
     let accepted;
     let mut result = match name {
         "create_topic" => {
+            if optional_term(args)?.flatten().is_some() {
+                bail!(crate::term::NAME_NEEDS_TERM_CARD);
+            }
             let workspace = target_workspace(args)?;
             let (address, checked) = ops::create_topic_tx(conn, ACCESS, workspace, &text)?;
             accepted = checked;
@@ -679,6 +688,7 @@ pub(crate) fn write_card_tx(
         "create_successor" => {
             let kind = successor_kind(args)?;
             let (part, card_type) = successor_part_type(args)?;
+            let term = term_for_type(args, card_type)?;
             let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
             let (level, hub_level) = (level.flatten(), hub_level.flatten());
             let form = optional_form(args)?.flatten();
@@ -691,13 +701,14 @@ pub(crate) fn write_card_tx(
             if hub_level.is_some() && card_type != CardType::Hub {
                 bail!(crate::hub::LEVEL_NEEDS_HUB_CARD);
             }
-            let (address, checked) = ops::create_successor_tx(
+            let (address, checked) = ops::create_successor_tx_with_term(
                 conn,
                 ACCESS,
                 kind,
                 &string_arg(args, "at")?,
                 card_type,
                 part.as_ref(),
+                term.as_deref(),
                 &text,
             )?;
             accepted = checked;
@@ -751,6 +762,9 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
         .context("item arguments must be an object")?;
     match name {
         "create_topic" | "create_literature" => {
+            if optional_term(args)?.flatten().is_some() {
+                bail!(crate::term::NAME_NEEDS_TERM_CARD);
+            }
             canonical["workspace"] = json!(target_workspace(args)?.id());
             canonical["body"] = json!(optional_string(args, "body")?);
             if name == "create_topic" {
@@ -767,6 +781,9 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
             canonical["type"] = json!(card_type.id());
             canonical["facet"] = json!(part.as_ref().map(|p| p.facet.id()));
             canonical["emphasis"] = json!(part.and_then(|p| p.emphasis).map(Emphasis::id));
+            // The exact Term name is part of the request identity: two creates that differ only in
+            // the name are different requests, never a replay of one another (S07, #149).
+            canonical["term"] = json!(term_for_type(args, card_type)?);
             let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
             canonical["level"] = json!(
                 level
@@ -785,6 +802,11 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
         "edit_card" => {
             if let Some(value) = args.get("base_fingerprint").and_then(Value::as_str) {
                 canonical["base_fingerprint"] = json!(value.to_ascii_lowercase());
+            }
+            // A present term field is canonicalized; an absent one stays absent, because omission on
+            // an edit preserves the stored name.
+            if canonical.get("term").is_some() {
+                canonical["term"] = json!(optional_term(args)?.flatten());
             }
             if let Some(spec) = canonical
                 .get_mut("owned_paragraph")
@@ -847,6 +869,19 @@ fn optional_card_type(args: &Value) -> Result<Option<CardType>> {
         Some(Value::String(value)) => CardType::parse(value).map(Some),
         Some(_) => bail!("argument `type` must be a string"),
     }
+}
+
+/// The Term name field: absent preserves, null or a trimmed-empty string clears, a string sets.
+fn optional_term(args: &Value) -> Result<Option<Option<String>>> {
+    crate::term::parse_field(args.get("term"))
+}
+
+/// A Term name is only valid on a Term Card; a create request that names one on another type is an
+/// invalid field, not a silent typo (S07, #149).
+fn term_for_type(args: &Value, card_type: CardType) -> Result<Option<String>> {
+    let term = optional_term(args)?.flatten();
+    crate::term::ensure_on_type(term.as_deref(), card_type)?;
+    Ok(term)
 }
 
 /// `None` when absent; `Some(None)` for null, an empty string, or `none`,
@@ -973,8 +1008,15 @@ fn tool_definitions() -> Vec<Value> {
     let card_type = |description: &str| {
         json!({
             "type": "string",
-            "enum": ["idea", "event", "finding", "model", "hub"],
+            "enum": ["idea", "event", "finding", "model", "hub", "term"],
             "description": description,
+        })
+    };
+    let term = |description: &str| {
+        json!({
+            "type": ["string", "null"],
+            "description": description,
+            "maxLength": crate::term::MAX_NAME_CHARS,
         })
     };
     let limit =
@@ -1023,7 +1065,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_tree",
             "Get tree",
-            "Every Card of one tree, root first, with its type (idea, event, finding, model, hub), edge (root, direct, side), parent, excerpt, Links, and the Card's active Lock facts (`lock`, `pinned_by`).",
+            "Every Card of one tree, root first, with its type (idea, event, finding, model, hub, term), edge (root, direct, side), parent, excerpt, Links, and the Card's active Lock facts (`lock`, `pinned_by`).",
             json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." },"bodies":{"type":"boolean","description":"Include complete body, stored text and BibTeX in each summary."} }),
             &["tree"],
             true,
@@ -1041,7 +1083,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_card",
             "Get card",
-            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, or hub), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. `restatement` is the derived navigation role of an accepted restatement entry (a `## 同述入口` section, never a stored field), and `statement_fingerprint` is the exact authored statement hash: line endings, outer whitespace and separately labelled source lines are ignored, while formulas, values, signs, variables, negation, assumptions and scope are kept. A Model Card or Model part also reports `model`: its model's structure. `lock` is `null` or `{lock_id, tree, since}`, where `tree` is the Locked tree's root address; `pinned_by` lists the sorted, deduplicated roots of the active Locks whose Cards link this one; `writable` is this agent's Workspace permission and no active Lock, so a pinned target stays writable while a Locked member does not.",
+            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, hub, or term), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. `restatement` is the derived navigation role of an accepted restatement entry (a `## 同述入口` section, never a stored field), and `statement_fingerprint` is the exact authored statement hash: line endings, outer whitespace and separately labelled source lines are ignored, while formulas, values, signs, variables, negation, assumptions and scope are kept. A Model Card or Model part also reports `model`: its model's structure. `lock` is `null` or `{lock_id, tree, since}`, where `tree` is the Locked tree's root address; `pinned_by` lists the sorted, deduplicated roots of the active Locks whose Cards link this one; `writable` is this agent's Workspace permission and no active Lock, so a pinned target stays writable while a Locked member does not.",
             json!({ "at": at }),
             &["at"],
             true,
@@ -1152,7 +1194,7 @@ fn tool_definitions() -> Vec<Value> {
             json!({
                 "query": { "type": "string", "description": "Text to find; required unless `type` or `form` is given." },
                 "mode": { "type": "string", "enum": ["plain", "entry"], "description": "`plain` (default) keeps the existing lexical order; `entry` ranks register terms and hub ways in before ordinary title and body hits." },
-                "type": card_type("Only Cards of this type: idea, event (Event Cards), finding (Finding Cards), model (Model Cards), or hub (Hub Cards)."),
+                "type": card_type("Only Cards of this type: idea, event (Event Cards), finding (Finding Cards), model (Model Cards), hub (Hub Cards), or term (Term Cards)."),
                 "form": form("Only Model Cards of this Math form: theory (Theory Cards) or a unit (definition, axiom, theorem, proposition, lemma, corollary)."),
                 "workspace": workspace_filter,
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 30." },
@@ -1230,9 +1272,10 @@ fn tool_definitions() -> Vec<Value> {
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
-                "type": card_type("The Card type: idea (default), event, finding, model, or hub."),
+                "type": card_type("The Card type: idea (default), event, finding, model, hub, or term."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model)."),
                 "emphasis": emphasis("For a Model part: core (the heart of the model, what a reader must see first) or aside (detail a reader may skip); omit for a regular part."),
+                "term": term("For a Term Card (type term): its exact term name, one line of at most 40 characters. Omit or null for a candidate Term list."),
                 "level": level("For a Model Card (type model, no facet): concept (level 1, a concept model: stated in words, no Derivation parts) or formal (level 2, a formal model: self-sufficient, with a derivation and Derivation parts); omit when not yet decided. For a Hub Card (type hub): line, topic, field, or register."),
                 "form": form("For a Model Card (type model, no facet) that states a mathematical unit: definition, axiom, theorem, proposition, lemma, or corollary; or theory for a Theory Card, the way into one theory. Omit for an ordinary model."),
             }),
@@ -1243,14 +1286,15 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "edit_card",
             "Edit card",
-            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, Finding, Model, or Hub Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept or formal; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, Finding, Model, Hub, or Term Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept or formal; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
             json!({
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
                 "body": body,
-                "type": card_type("New Card type: idea, event, finding, model, or hub (event, finding, model, and hub only for Regular Cards)."),
+                "type": card_type("New Card type: idea, event, finding, model, hub, or term (event, finding, model, hub, and term only for Regular Cards)."),
                 "facet": facet("New Model facet (implies type model); empty for none."),
                 "emphasis": emphasis("New emphasis of a Model part: core, aside, or empty for a regular part."),
+                "term": term("New exact term name of a Term Card; null or an empty string clears it, and a type change away from term clears it. Omit to keep it."),
                 "level": level("New elaboration level of a Model Card (concept or formal), or new hub level of a Hub Card (line, topic, field, or register); empty for none."),
                 "form": form("New Math form of a Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary; empty for none."),
                 "text": { "type": "string", "description": "The whole Card Markdown; overrides title and body." },
@@ -1305,9 +1349,10 @@ fn tool_definitions() -> Vec<Value> {
                 "before": { "type": "string", "description": "The existing Regular Card whose place the new Card takes." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
-                "type": card_type("The Card type: idea (default), event, finding, model, or hub."),
+                "type": card_type("The Card type: idea (default), event, finding, model, hub, or term."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model); a Derivation part's facet starts with `推导`."),
                 "emphasis": emphasis("For a Model part: core or aside; omit for a regular part."),
+                "term": term("For a Term Card (type term): its exact term name. Omit or null for a candidate Term list."),
                 "confirm": confirm,
             }),
             &["before", "title"],

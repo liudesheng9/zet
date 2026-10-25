@@ -15,7 +15,7 @@ use tempfile::TempDir;
 #[path = "support/host_tools.rs"]
 mod host_tools;
 
-const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, or Hub Cards";
+const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, Hub, or Term Cards";
 
 struct TestHome {
     _tmp: TempDir,
@@ -325,7 +325,7 @@ fn mcp_creates_edits_reads_and_lists_cards_by_type() {
     for name in ["create_successor", "edit_card", "search_cards"] {
         assert_eq!(
             tool(name)["inputSchema"]["properties"]["type"]["enum"],
-            json!(["idea", "event", "finding", "model", "hub"])
+            json!(["idea", "event", "finding", "model", "hub", "term"])
         );
     }
     assert_eq!(tool("search_cards")["inputSchema"]["required"], json!([]));
@@ -359,7 +359,7 @@ fn mcp_creates_edits_reads_and_lists_cards_by_type() {
             "create_successor",
             json!({ "at": "1/2", "title": "x", "type": "fact" })
         )
-        .contains("unknown card type `fact`; expected idea, event, finding, model, or hub")
+        .contains("unknown card type `fact`; expected idea, event, finding, model, hub, or term")
     );
 
     // Reads report the type.
@@ -695,7 +695,7 @@ fn dump_records_event_and_model_cards_after_the_workspaces() {
     .unwrap();
     assert_eq!(
         manifest,
-        r#"{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent","1/1|b":"agent"},"types":{"1/1":"model","1/1|a":"event","1/1|b":"hub"},"facets":{},"emphasis":{},"levels":{"1/1":"formal"},"forms":{},"hub_levels":{"1/1|b":"line"}}"#
+        r#"{"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent","1/1|b":"agent"},"types":{"1/1":"model","1/1|a":"event","1/1|b":"hub"},"term_names":{},"facets":{},"emphasis":{},"levels":{"1/1":"formal"},"forms":{},"hub_levels":{"1/1|b":"line"}}"#
     );
 }
 
@@ -845,3 +845,169 @@ fn up_rebuilds_an_archive_from_before_finding_cards_once() {
         "the table is rebuilt once"
     );
 }
+
+// --- S07 (#149): Term Cards: one exact name, clear field semantics, and the other type fields ---
+
+impl TestHome {
+    /// The stored Term name of a Card, `None` for a candidate list or a Card of another type.
+    fn term_name(&self, address: &str) -> Option<String> {
+        self.db()
+            .query_row(
+                "SELECT term_name FROM cards WHERE location = ?1 OR citation_key = ?1",
+                [address],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .expect("term name")
+    }
+}
+
+/// Create one Term Card through the real MCP route and answer its address.
+fn term_card(mcp: &mut Mcp, at: &str, title: &str, term: Option<&str>) -> String {
+    let mut arguments = json!({ "at": at, "title": title, "body": "定义：" , "type": "term" });
+    if let Some(term) = term {
+        arguments["term"] = json!(term);
+    }
+    let created = mcp.ok("create_successor", arguments);
+    created["address"].as_str().expect("address").to_string()
+}
+
+#[test]
+fn a_term_card_keeps_an_exact_name_and_an_omitted_null_or_empty_term_follows_the_field_protocol() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({ "title": "Terms" }))["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    // Outer whitespace is not part of the name; a Term Card without one is a candidate list.
+    let named = term_card(&mut mcp, &topic, "均衡", Some("  均衡  "));
+    assert_eq!(home.card_type(&named), "term");
+    assert_eq!(home.term_name(&named).as_deref(), Some("均衡"));
+    let list = mcp.ok(
+        "create_successor",
+        json!({
+            "at": named,
+            "kind": "side",
+            "title": "候选术语",
+            "body": "定义：",
+            "type": "term",
+        }),
+    )["address"]
+        .as_str()
+        .expect("list address")
+        .to_string();
+    assert_eq!(home.card_type(&list), "term");
+    assert_eq!(home.term_name(&list), None);
+    // The read projection and the search type filter expose the value and the type.
+    let read = mcp.ok("get_card", json!({ "at": named }));
+    assert_eq!(read["type"], "term");
+    assert_eq!(read["term"], "均衡");
+    // An omitted term on an edit preserves the stored name.
+    mcp.ok("edit_card", json!({ "at": named, "body": "定义：同一价格下供求相等。" }));
+    assert_eq!(home.term_name(&named).as_deref(), Some("均衡"));
+    // null clears it, and so does a trimmed-empty string.
+    mcp.ok("edit_card", json!({ "at": named, "term": null }));
+    assert_eq!(home.term_name(&named), None);
+    mcp.ok("edit_card", json!({ "at": named, "term": "利率" }));
+    assert_eq!(home.term_name(&named).as_deref(), Some("利率"));
+    mcp.ok("edit_card", json!({ "at": named, "term": "   " }));
+    assert_eq!(home.term_name(&named), None);
+    // The exact 40-scalar limit holds; one more character is refused and writes nothing.
+    let forty = "概".repeat(40);
+    mcp.ok("edit_card", json!({ "at": named, "term": forty }));
+    assert_eq!(home.term_name(&named).as_deref(), Some(forty.as_str()));
+    let too_long = "概".repeat(41);
+    assert_eq!(
+        mcp.err("edit_card", json!({ "at": named, "term": too_long })),
+        "a term name holds at most 40 characters"
+    );
+    assert_eq!(home.term_name(&named).as_deref(), Some(forty.as_str()));
+    // Retyping away clears the name; an explicit name on another type is an invalid field.
+    assert_eq!(
+        mcp.err("edit_card", json!({ "at": named, "type": "idea", "term": "利率" })),
+        "only Term Cards can have a term name; set `type` to `term` first"
+    );
+    assert_eq!(home.card_type(&named), "term", "a refused edit writes nothing");
+    assert_eq!(home.term_name(&named).as_deref(), Some(forty.as_str()));
+    mcp.ok("edit_card", json!({ "at": named, "type": "idea" }));
+    assert_eq!(home.card_type(&named), "idea");
+    assert_eq!(home.term_name(&named), None, "a type change away clears the name");
+    // The same combined edit can retype to term and set the name.
+    mcp.ok(
+        "edit_card",
+        json!({ "at": named, "type": "term", "term": "均衡" }),
+    );
+    assert_eq!(home.card_type(&named), "term");
+    assert_eq!(home.term_name(&named).as_deref(), Some("均衡"));
+    // Search by the sixth type lists only Term Cards.
+    assert_eq!(
+        typed(&mcp.ok("search_cards", json!({ "type": "term" }))["results"]),
+        pairs(&[
+            (named.as_str(), "term"),
+            (list.as_str(), "term"),
+        ])
+    );
+}
+
+#[test]
+fn a_term_name_is_refused_on_another_type_and_the_other_type_fields_are_refused_on_a_term_card() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({ "title": "Terms" }))["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let at = topic.as_str();
+    let term_card_needle = "only Term Cards can have a term name; set `type` to `term` first";
+    for arguments in [
+        json!({ "at": at, "title": "Idea", "term": "均衡" }),
+        json!({ "at": at, "title": "Event", "type": "event", "term": "均衡" }),
+        json!({ "at": at, "title": "Hub", "type": "hub", "term": "均衡" }),
+    ] {
+        assert_eq!(mcp.err("create_successor", arguments), term_card_needle);
+    }
+    assert_eq!(
+        mcp.err("create_topic", json!({ "title": "No term", "term": "均衡" })),
+        term_card_needle
+    );
+    // A Term Card takes no Model facet, level, form, or hub level: each combination is refused
+    // before anything is written.
+    assert_eq!(
+        mcp.err(
+            "create_successor",
+            json!({ "at": at, "title": "Part", "type": "term", "facet": "setting" })
+        ),
+        "only Model Cards can have a Model facet"
+    );
+    assert_eq!(
+        mcp.err(
+            "create_successor",
+            json!({ "at": at, "title": "Formal", "type": "term", "level": "formal" })
+        ),
+        "only a Model Card (a whole model, without a facet) has an elaboration level"
+    );
+    assert_eq!(
+        mcp.err(
+            "create_successor",
+            json!({ "at": at, "title": "Theorem", "type": "term", "form": "theorem" })
+        ),
+        "only a Model Card (a whole model, without a facet) has a Math form"
+    );
+    assert_eq!(
+        mcp.err(
+            "create_successor",
+            json!({ "at": at, "title": "Hub level", "type": "term", "level": "line" })
+        ),
+        "only a Hub Card has a hub level (line, topic, field, or register)"
+    );
+    assert_eq!(
+        home.db()
+            .query_row("SELECT COUNT(*) FROM cards", [], |row| row.get::<_, i64>(0))
+            .expect("cards"),
+        1,
+        "every refusal above wrote nothing"
+    );
+}
+

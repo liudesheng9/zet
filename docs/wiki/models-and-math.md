@@ -523,6 +523,7 @@ Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `
 - **A new Math form needs a migration** for archives whose `math_form` column was added by `ALTER TABLE`, because the column CHECK lists the forms of the time.
 
 ## Change history
+- `2026-10-24` — S07 (#149): `model::set` also clears `term_name` whenever the new Card type is not `term`, so the table check `term_name IS NULL OR card_type = 'term'` holds when a type change is made without the shared edit path; `ops::edit_tx` clears a removed name before the type change and sets a new one after it.
 
 - `2026-10-21` — #124 S01: `model::set`, `model::set_level` and `math::set_form` call the Tree Lock gate before their UPDATE, so a type, facet, emphasis, level or Math form change on a locked member is refused with the shared typed `Refusal`.
 

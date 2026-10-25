@@ -802,6 +802,7 @@ fn execute_command(
                     &plan,
                     crate::CardType::Idea,
                     None,
+                    None,
                     text,
                 )?;
                 show_check(&accepted);
@@ -1416,7 +1417,7 @@ mod tests {
         for (line, expected) in [
             (
                 "ty fact",
-                "unknown card type `fact`; expected idea, event, finding, model, or hub",
+                "unknown card type `fact`; expected idea, event, finding, model, hub, or term",
             ),
             ("ty", "usage: ty <idea|event|finding|model|hub> [<facet>]"),
             (
@@ -1438,7 +1439,7 @@ mod tests {
             .expect_err("tree roots stay Idea Cards");
         assert_eq!(
             error.to_string(),
-            "only Regular Cards can be Event, Finding, Model, or Hub Cards"
+            "only Regular Cards can be Event, Finding, Model, Hub, or Term Cards"
         );
         assert_eq!(card_type("0/0"), crate::CardType::Idea);
     }

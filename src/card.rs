@@ -87,13 +87,13 @@ fn parse(text: &str, require_title: bool) -> Result<ParsedCard> {
     })
 }
 
-/// The authored identity of one Card (S18, #99): its title, its body and its type fields, hashed.
-/// The Reverse section is generated, so it is not authored and not in the hash: writing a reply that
-/// links a Card changes that Card's Reverse links without changing this value, so a reader's
-/// captured fingerprint stays valid exactly while the authored text does.
+/// The authored identity of one Card (S18, #99): its title, its body, its type fields and its term
+/// name, hashed. The Reverse section is generated, so it is not authored and not in the hash:
+/// writing a reply that links a Card changes that Card's Reverse links without changing this value,
+/// so a reader's captured fingerprint stays valid exactly while the authored text does.
 pub(crate) fn authored_fingerprint(card: &crate::Card) -> Result<String> {
     let parsed = parse_card_text(&card.text)?;
-    Ok(authored_fingerprint_framed(
+    Ok(authored_fingerprint_framed_term(
         &parsed.title,
         &parsed.body,
         card.bibtex.as_deref().unwrap_or_default(),
@@ -102,14 +102,18 @@ pub(crate) fn authored_fingerprint(card: &crate::Card) -> Result<String> {
         card.emphasis.map_or("", |emphasis| emphasis.id()),
         card.level_id().unwrap_or_default(),
         card.form.map_or("", |form| form.id()),
+        card.term_name.as_deref(),
     ))
 }
 
-/// The authored fingerprint's byte framing (S01, #124): the eight authored fields in a fixed order,
-/// each followed by one NUL byte, hashed with SHA-256. `card::authored_fingerprint` and the SQL
-/// `zt_authored_fp` wrapper share this helper, so the trigger baseline and the Rust baseline are the
-/// same value. The caller has already normalized the fields: the parsed title and body, the raw
+/// The authored fingerprint's byte framing (S01, #124): the eight legacy authored fields in a fixed
+/// order, each followed by one NUL byte, hashed with SHA-256. `card::authored_fingerprint` and the
+/// SQL `zt_authored_fp` wrapper share this helper, so the trigger baseline and the Rust baseline are
+/// the same value. The caller has already normalized the fields: the parsed title and body, the raw
 /// BibTeX, and the stored enum ids (`""` when a field is absent).
+///
+/// This eight-field form is the compatibility baseline: a Card without a term name hashes exactly
+/// here, so introducing the nullable field invalidated no existing Lock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn authored_fingerprint_framed(
     title: &str,
@@ -121,6 +125,46 @@ pub(crate) fn authored_fingerprint_framed(
     level: &str,
     form: &str,
 ) -> String {
+    hex(framed(title, body, bibtex, card_type, facet, emphasis, level, form))
+}
+
+/// The term-aware authored fingerprint (S07, #149): the eight legacy fields, unchanged, and then,
+/// only for a nonempty term name, an explicit domain tag and the exact name:
+/// `term_name\0<name>\0`. A Card without a term name keeps its old bytes, so every existing Lock
+/// fingerprint stays valid across the migration.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn authored_fingerprint_framed_term(
+    title: &str,
+    body: &str,
+    bibtex: &str,
+    card_type: &str,
+    facet: &str,
+    emphasis: &str,
+    level: &str,
+    form: &str,
+    term_name: Option<&str>,
+) -> String {
+    let Some(name) = term_name.filter(|name| !name.is_empty()) else {
+        return authored_fingerprint_framed(title, body, bibtex, card_type, facet, emphasis, level, form);
+    };
+    let mut hasher = framed(title, body, bibtex, card_type, facet, emphasis, level, form);
+    hasher.update(b"term_name");
+    hasher.update([0u8]);
+    hasher.update(name.as_bytes());
+    hasher.update([0u8]);
+    hex(hasher)
+}
+
+fn framed(
+    title: &str,
+    body: &str,
+    bibtex: &str,
+    card_type: &str,
+    facet: &str,
+    emphasis: &str,
+    level: &str,
+    form: &str,
+) -> sha2::Sha256 {
     let mut hasher = sha2::Sha256::new();
     for field in [
         title, body, bibtex, card_type, facet, emphasis, level, form,
@@ -128,6 +172,10 @@ pub(crate) fn authored_fingerprint_framed(
         hasher.update(field.as_bytes());
         hasher.update([0u8]);
     }
+    hasher
+}
+
+fn hex(hasher: sha2::Sha256) -> String {
     hasher
         .finalize()
         .iter()
@@ -428,6 +476,59 @@ mod tests {
             reverse_section([("0/0", "Earlier"), ("0/2", "")]),
             "## Reverse links\n\n- [[0/0]] Earlier\n- [[0/2]]\n"
         );
+    }
+
+    #[test]
+    fn the_authored_fingerprint_adds_a_term_name_only_with_an_explicit_tag() {
+        // The legacy bytes are the eight NUL-terminated fields; a Card without a term name keeps
+        // exactly those bytes, so every existing Lock fingerprint survives the migration.
+        let legacy = authored_fingerprint_framed(
+            "T", "B", "bib", "idea", "", "", "", "",
+        );
+        assert_eq!(
+            authored_fingerprint_framed_term("T", "B", "bib", "idea", "", "", "", "", None),
+            legacy
+        );
+        assert_eq!(
+            authored_fingerprint_framed_term("T", "B", "bib", "idea", "", "", "", "", Some("")),
+            legacy,
+            "an empty name is no name"
+        );
+        // A nonempty name appends the domain tag, the exact name, and one NUL.
+        let mut expected = sha2::Sha256::new();
+        for field in ["T", "B", "bib", "idea", "", "", "", ""] {
+            expected.update(field.as_bytes());
+            expected.update([0u8]);
+        }
+        expected.update(b"term_name");
+        expected.update([0u8]);
+        expected.update("均衡".as_bytes());
+        expected.update([0u8]);
+        let expected = expected
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            authored_fingerprint_framed_term(
+                "T", "B", "bib", "idea", "", "", "", "", Some("均衡")
+            ),
+            expected
+        );
+        // Any other change to the name, or to any legacy field, is a different identity.
+        for changed in [
+            authored_fingerprint_framed_term(
+                "T", "B", "bib", "idea", "", "", "", "", Some("均衡 "),
+            ),
+            authored_fingerprint_framed_term(
+                "T", "B", "bib", "idea", "", "", "", "", Some("其他"),
+            ),
+            authored_fingerprint_framed_term(
+                "T", "B2", "bib", "idea", "", "", "", "", Some("均衡"),
+            ),
+        ] {
+            assert_ne!(changed, expected);
+        }
     }
 
     #[test]

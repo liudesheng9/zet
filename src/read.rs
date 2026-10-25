@@ -35,6 +35,9 @@ pub(crate) fn text_value(card: &Card, lock: &crate::tree_lock::LockView) -> Resu
         "workspace":card.workspace.id(),
         "writable":lock.writable_for(card.row_id, Access::Agent, card.workspace),
         "kind":crate::ops::kind(card),"type":card.card_type.id(),
+        // The exact Term name is an authored fact of a Term Card (S07, #149); later slices add the
+        // computed role, list, and count facts beside it.
+        "term":card.term_name,
         "facet":card.facet.as_ref().map(crate::model::Facet::id),
         "emphasis":card.emphasis.map(crate::model::Emphasis::id),
         "level":card.level_id(),"form":card.form.map(crate::math::MathForm::id),
@@ -751,7 +754,7 @@ struct HubRead {
 fn hub_read(conn: &Connection) -> Result<HubRead> {
     // Hub bodies are parsed for the hub policy and a Topic's body carries its `## 入口` section;
     // every other Card contributes its heading line only (the indexed read's economy).
-    let mut query=conn.prepare("SELECT row_id,COALESCE(location,citation_key),citation_key,is_topic,is_lit,bibtex,CASE WHEN card_type='hub' OR is_topic = 1 THEN text ELSE substr(ltrim(text,char(9)||char(10)||char(13)||' '),1,instr(ltrim(text,char(9)||char(10)||char(13)||' ')||char(10),char(10))-1) END,workspace,card_type,model_facet,model_emphasis,model_level,hub_level,math_form FROM cards ORDER BY COALESCE(location,citation_key)")?;
+    let mut query=conn.prepare("SELECT row_id,COALESCE(location,citation_key),citation_key,is_topic,is_lit,bibtex,CASE WHEN card_type='hub' OR is_topic = 1 THEN text ELSE substr(ltrim(text,char(9)||char(10)||char(13)||' '),1,instr(ltrim(text,char(9)||char(10)||char(13)||' ')||char(10),char(10))-1) END,workspace,card_type,model_facet,model_emphasis,model_level,hub_level,math_form,term_name FROM cards ORDER BY COALESCE(location,citation_key)")?;
     let cards = query
         .query_map([], crate::card_from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;

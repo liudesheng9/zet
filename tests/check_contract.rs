@@ -240,7 +240,7 @@ fn an_empty_get_cards_view_publishes_the_running_policy_limits_and_archive() {
     // The gate stage and the syntax capabilities (R0204).
     assert_eq!(served.stage, "advisory");
     assert!(!served.capabilities.term_links);
-    assert!(!served.capabilities.term_cards);
+    assert!(served.capabilities.term_cards);
     assert_eq!(served.checker_version, zt_check::VERSION);
     assert!(served.version_gaps().is_empty());
     assert!(served.limit_gaps(&Limits::default()).is_empty());

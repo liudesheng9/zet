@@ -36,6 +36,7 @@ mod scholar;
 mod session;
 mod shutdown;
 mod spread;
+mod term;
 mod tree_lock;
 mod workspace;
 
@@ -1428,7 +1429,8 @@ fn initialize_database(root: &Path) -> Result<()> {
         let before_level = [&before_emphasis[..], &["model_emphasis"]].concat();
         let before_hubs = [&before_level[..], &["model_level"]].concat();
         let before_math = [&before_hubs[..], &["hub_level"]].concat();
-        let current = [&before_math[..], &["math_form"]].concat();
+        let before_terms = [&before_math[..], &["math_form"]].concat();
+        let current = [&before_terms[..], &["term_name"]].concat();
         if columns != before_workspaces
             && columns != before_card_types
             && columns != before_facets
@@ -1436,6 +1438,7 @@ fn initialize_database(root: &Path) -> Result<()> {
             && columns != before_level
             && columns != before_hubs
             && columns != before_math
+            && columns != before_terms
             && columns != current
         {
             bail!("unsupported cards schema; database was not modified");
@@ -1475,6 +1478,7 @@ fn initialize_database(root: &Path) -> Result<()> {
     ensure_hub_cards(&conn, root)?;
     ensure_math_form_column(&conn, root)?;
     ensure_finding_cards(&conn, root)?;
+    ensure_term_cards(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)?;
     // The Tree Lock tables and triggers are installed after every Card-table rebuild, so a
@@ -1548,12 +1552,13 @@ fn cards_table(name: &str) -> String {
             bibtex TEXT,
             text TEXT NOT NULL,
             workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
-            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub')),
+            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub', 'term')),
             model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND {}),
             model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
             model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
             hub_level TEXT CHECK(hub_level IS NULL OR hub_level IN ('line', 'topic', 'field', 'register')),
             math_form TEXT CHECK(math_form IS NULL OR math_form IN ({})),
+            term_name TEXT CHECK(term_name IS NULL OR length(term_name) BETWEEN 1 AND {}),
             CHECK(
                 (is_lit = 0 AND location IS NOT NULL AND citation_key IS NULL AND bibtex IS NULL)
                 OR
@@ -1562,10 +1567,12 @@ fn cards_table(name: &str) -> String {
             CHECK(model_emphasis IS NULL OR model_facet IS NOT NULL),
             CHECK(model_level IS NULL OR (card_type = 'model' AND model_facet IS NULL)),
             CHECK(hub_level IS NULL OR card_type = 'hub'),
-            CHECK(math_form IS NULL OR (card_type = 'model' AND model_facet IS NULL))
+            CHECK(math_form IS NULL OR (card_type = 'model' AND model_facet IS NULL)),
+            CHECK(term_name IS NULL OR card_type = 'term')
         );",
         model::Facet::MAX_CHARS,
-        math_form_values()
+        math_form_values(),
+        term::MAX_NAME_CHARS
     )
 }
 
@@ -1836,6 +1843,154 @@ fn ensure_finding_cards(conn: &Connection, root: &Path) -> Result<()> {
     })
     .context("failed to add Finding Cards to the archive")?;
     log_event(root, "added finding cards; no card is a finding card yet").ok();
+    Ok(())
+}
+
+/// One Card row's identity as a migration must preserve it: every stored column except the new
+/// Term name. Comparing these rows before and after a rebuild proves the row ids, addresses, text,
+/// Workspace, type fields and BibTeX stayed exactly as they were (S07-AC04, R0240).
+#[derive(Debug, Eq, PartialEq)]
+struct CardIdentityRow {
+    row_id: i64,
+    location: Option<String>,
+    citation_key: Option<String>,
+    is_topic: i64,
+    is_lit: i64,
+    bibtex: Option<String>,
+    text: String,
+    workspace: String,
+    card_type: String,
+    model_facet: Option<String>,
+    model_emphasis: Option<String>,
+    model_level: Option<String>,
+    hub_level: Option<String>,
+    math_form: Option<String>,
+}
+
+fn card_identity_rows(conn: &Connection) -> Result<Vec<CardIdentityRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace,
+                card_type, model_facet, model_emphasis, model_level, hub_level, math_form
+           FROM cards ORDER BY row_id",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(CardIdentityRow {
+                row_id: row.get(0)?,
+                location: row.get(1)?,
+                citation_key: row.get(2)?,
+                is_topic: row.get(3)?,
+                is_lit: row.get(4)?,
+                bibtex: row.get(5)?,
+                text: row.get(6)?,
+                workspace: row.get(7)?,
+                card_type: row.get(8)?,
+                model_facet: row.get(9)?,
+                model_emphasis: row.get(10)?,
+                model_level: row.get(11)?,
+                hub_level: row.get(12)?,
+                math_form: row.get(13)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Archives written before Term Cards existed allow only the first five types and have no
+/// `term_name`. SQLite cannot change a CHECK, so the cards table is rebuilt in one transaction
+/// after a consistent backup: every Card keeps its row id, identity, Legacy text, Workspace, type
+/// fields and Lock evidence, the new field starts null, and the current indexes are re-created.
+/// When the archive still declares Tree Lock generation 1, the same transaction installs the
+/// term-aware generation-2 protection, so the widened schema and the contract that protects it
+/// change together (S07-AC04/AC07, R0234-R0248).
+fn ensure_term_cards(conn: &Connection, root: &Path) -> Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name = 'term_name')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_column {
+        // The previous release always lacks the column, so this arm only handles a state a partial
+        // manual change left behind. The protection still moves as one validated transaction.
+        if tree_lock::upgrade_generation(conn)? {
+            log_event(root, "installed term-aware tree lock generation 2").ok();
+        }
+        return Ok(());
+    }
+    // Every earlier column list already exists: `initialize_database` runs `ensure_finding_cards`
+    // (and the steps before it) first, and the column generations above accept only those shapes.
+    // Keeping this rebuild the only transaction from the previous release lets the widened table
+    // and the generation-2 protection commit together.
+    let generation = tree_lock::stored_generation(conn)?;
+    let cards: i64 = conn.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
+    if cards > 0 {
+        let backup = root.join(format!(
+            "zt.sqlite3.pre-term-cards-{}.bak",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+            .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+    }
+    let before_rows = card_identity_rows(conn)?;
+    let before_locks = tree_lock::check(conn)?;
+    let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form";
+    let migrated = (|| -> Result<()> {
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .context("failed to start the Term Card migration")?;
+        conn.execute_batch(&format!(
+            "{}
+             INSERT INTO cards_terms ({columns}) SELECT {columns} FROM cards;
+             DROP TABLE cards;
+             ALTER TABLE cards_terms RENAME TO cards;
+             CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+                 ON cards(citation_key COLLATE NOCASE)
+                 WHERE citation_key IS NOT NULL;",
+            cards_table("cards_terms")
+        ))
+        .context("failed to rebuild the cards table for Term Cards")?;
+        if generation == Some(tree_lock::Generation::One) {
+            tree_lock::upgrade_generation_tx(conn)?;
+        }
+        // R0240: prove the result before the new writes are enabled. The checks run inside the
+        // transaction, so a failure leaves the archive exactly as it was.
+        if card_identity_rows(conn)? != before_rows {
+            bail!("the Term Card migration changed a stored Card; archive was not modified");
+        }
+        let after_locks = tree_lock::check(conn)?;
+        let faults = |set: &tree_lock::Integrity| {
+            set.faults.iter().map(tree_lock::Fault::value).collect::<Vec<_>>()
+        };
+        if faults(&after_locks) != faults(&before_locks) {
+            bail!("the Term Card migration changed Lock integrity; archive was not modified");
+        }
+        let loaded = load_cards(conn)?;
+        if loaded.len() != before_rows.len() || loaded.iter().any(|card| card.term_name.is_some()) {
+            bail!("the Term Card migration did not read back; archive was not modified");
+        }
+        if generation == Some(tree_lock::Generation::One)
+            && tree_lock::stored_generation(conn)? != Some(tree_lock::Generation::Two)
+        {
+            bail!("the Term Card migration did not install generation 2; archive was not modified");
+        }
+        Ok(())
+    })();
+    match migrated {
+        Ok(()) => conn
+            .execute_batch("COMMIT;")
+            .context("failed to commit the Term Card migration")?,
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(error);
+        }
+    }
+    log_event(
+        root,
+        "added Term Cards; no card is a term card yet, and Lock generation 2 protects the new name",
+    )
+    .ok();
     Ok(())
 }
 
@@ -2132,6 +2287,7 @@ fn cmd_dump() -> Result<()> {
             } else {
                 Ok(
                     dump::DumpCard::new(card.address, card.workspace, card.card_type, card.text)
+                        .with_term_name(card.term_name)
                         .with_part(card.facet, card.emphasis)
                         .with_level(card.level)
                         .with_form(card.form)
@@ -2269,6 +2425,8 @@ struct Card {
     hub_level: Option<hub::HubLevel>,
     /// Set only on a Model Card: the mathematical unit it states, if any.
     form: Option<math::MathForm>,
+    /// Set only on a Term Card: the exact term it defines, or `None` for a candidate Term list.
+    term_name: Option<String>,
 }
 
 impl Card {
@@ -2459,13 +2617,14 @@ fn card_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
         level: model::Level::from_stored(row.get::<_, Option<String>>(11)?.as_deref()),
         hub_level: hub::HubLevel::from_stored(row.get::<_, Option<String>>(12)?.as_deref()),
         form: math::MathForm::from_stored(row.get::<_, Option<String>>(13)?.as_deref()),
+        term_name: row.get::<_, Option<String>>(14)?,
     })
 }
 
 fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, term_name
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [target],
         card_from_row,
@@ -2476,7 +2635,7 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, term_name
          FROM cards ORDER BY COALESCE(location, citation_key)",
     )?;
     let rows = stmt.query_map([], card_from_row)?;
@@ -3486,7 +3645,8 @@ fn update_literature_metadata(
 }
 
 /// Insert a Topic or Regular Card. A Regular Card must name the Workspace of
-/// the tree it joins; only a Regular Card may be an Event or Model Card.
+/// the tree it joins; only a Regular Card may be an Event, Finding, Model, Hub,
+/// or Term Card.
 fn insert_card(
     conn: &mut Connection,
     location: &str,
@@ -3496,8 +3656,35 @@ fn insert_card(
     part: Option<&model::Part>,
     text: &str,
 ) -> Result<gate::Accepted> {
+    insert_card_with_term(
+        conn, location, is_topic, workspace, card_type, part, None, text,
+    )
+}
+
+/// The same insert with a Term Card's exact name, set in the one `INSERT` so the table's own
+/// `term_name IS NULL OR card_type = 'term'` check never sees half of the pair.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_card_with_term(
+    conn: &mut Connection,
+    location: &str,
+    is_topic: bool,
+    workspace: Workspace,
+    card_type: CardType,
+    part: Option<&model::Part>,
+    term_name: Option<&str>,
+    text: &str,
+) -> Result<gate::Accepted> {
     let tx = conn.transaction()?;
-    let accepted = insert_card_tx(&tx, location, is_topic, workspace, card_type, part, text)?;
+    let accepted = insert_card_tx_with_term(
+        &tx,
+        location,
+        is_topic,
+        workspace,
+        card_type,
+        part,
+        term_name,
+        text,
+    )?;
     link_index::source_changed(&tx, location)?;
     tx.commit()?;
     Ok(accepted)
@@ -3514,12 +3701,29 @@ fn insert_card_tx(
     part: Option<&model::Part>,
     text: &str,
 ) -> Result<gate::Accepted> {
+    insert_card_tx_with_term(
+        conn, location, is_topic, workspace, card_type, part, None, text,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_card_tx_with_term(
+    conn: &Connection,
+    location: &str,
+    is_topic: bool,
+    workspace: Workspace,
+    card_type: CardType,
+    part: Option<&model::Part>,
+    term_name: Option<&str>,
+    text: &str,
+) -> Result<gate::Accepted> {
     if !is_valid_location(location) {
         bail!("invalid location `{location}`");
     }
     if is_topic && card_type != CardType::Idea {
-        bail!("only Regular Cards can be Event, Finding, Model, or Hub Cards");
+        bail!("only Regular Cards can be Event, Finding, Model, Hub, or Term Cards");
     }
+    crate::term::ensure_on_type(term_name, card_type)?;
     if location_exists(conn, location)? {
         bail!("card `{location}` already exists");
     }
@@ -3544,13 +3748,14 @@ fn insert_card_tx(
     };
     let accepted = gate::check_proposed(
         conn,
-        &gate::Candidate::create(location, kind, workspace, text, card_type, part),
+        &gate::Candidate::create(location, kind, workspace, text, card_type, part)
+            .with_term(term_name),
     )?;
     let parsed = parse_card_text(text)?;
     let text = compose_card_text(&parsed.title, &parsed.body, &parsed.reverse);
     conn.execute(
-        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis)
-         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, term_name)
+         VALUES(?1, NULL, ?2, 0, NULL, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             location,
             if is_topic { 1 } else { 0 },
@@ -3558,7 +3763,8 @@ fn insert_card_tx(
             workspace.id(),
             card_type.id(),
             facet.map(model::Facet::id),
-            emphasis.map(model::Emphasis::id)
+            emphasis.map(model::Emphasis::id),
+            term_name
         ],
     )?;
     if is_topic {
@@ -4204,7 +4410,7 @@ fn shell_insert(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            place::apply_insert_plan(&mut conn, &plan, CardType::Idea, None, &text)?;
+            place::apply_insert_plan(&mut conn, &plan, CardType::Idea, None, None, &text)?;
             println!("{}", plan.location);
             Ok(())
         }

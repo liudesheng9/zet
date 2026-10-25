@@ -1282,6 +1282,7 @@ impl App {
             "workspace": card.workspace.id(),
             "kind": ops::kind(card),
             "type": card.card_type.id(),
+            "term": card.term_name,
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
             "level": card.level_id(),
@@ -1541,29 +1542,32 @@ impl App {
         if form.is_some() && (card_type != CardType::Model || part.is_some()) {
             return Err(ApiError::new(crate::math::FORM_NEEDS_MODEL_CARD.to_string()));
         }
+        let term = term_for_type(body, card_type)?;
         let (location, mut accepted) = match kind.as_str() {
             "topic" if card_type != CardType::Idea => {
                 return Err(ApiError::new(
-                    "only Regular Cards can be Event, Finding, Model, or Hub Cards".to_string(),
+                    "only Regular Cards can be Event, Finding, Model, Hub, or Term Cards".to_string(),
                 ));
             }
             "topic" => ops::create_topic(&self.root, ACCESS, workspace_field(body)?, &text)?,
-            "direct" => ops::create_successor(
+            "direct" => ops::create_successor_with_term(
                 &self.root,
                 ACCESS,
                 ops::Successor::Direct,
                 &str_field(body, "at")?,
                 card_type,
                 part.clone(),
+                term.as_deref(),
                 &text,
             )?,
-            "side" => ops::create_successor(
+            "side" => ops::create_successor_with_term(
                 &self.root,
                 ACCESS,
                 ops::Successor::Side,
                 &str_field(body, "at")?,
                 card_type,
                 part,
+                term.as_deref(),
                 &text,
             )?,
             other => return Err(ApiError::new(format!("unknown card kind `{other}`"))),
@@ -1616,6 +1620,7 @@ impl App {
             level,
             hub_level,
             form: form_field(body)?,
+            term: term_field(body)?,
         };
         let text = if change.is_empty() {
             Some(str_field(body, "text")?)
@@ -1905,12 +1910,14 @@ impl App {
             (_, Some(_)) => CardType::Model,
             (card_type, None) => card_type.unwrap_or_default(),
         };
-        Ok(ops::insert_card(
+        let term = term_for_type(body, card_type)?;
+        Ok(ops::insert_card_with_term(
             &self.root,
             ACCESS,
             &str_field(body, "before")?,
             card_type,
             part,
+            term.as_deref(),
             &str_field(body, "text")?,
             confirm_field(body),
         )?
@@ -2526,6 +2533,18 @@ fn form_field(body: &Value) -> Result<Option<Option<crate::math::MathForm>>> {
         Some(Value::String(value)) => crate::math::parse_optional_form(value).map(Some),
         Some(_) => bail!("`form` must be a string"),
     }
+}
+
+/// An optional Term name: absent preserves, null or a trimmed-empty string clears, a string sets.
+fn term_field(body: &Value) -> Result<Option<Option<String>>> {
+    crate::term::parse_field(body.get("term"))
+}
+
+/// A Term name belongs only to a Term Card; a supplied name on another type is an invalid field.
+fn term_for_type(body: &Value, card_type: CardType) -> Result<Option<String>> {
+    let term = term_field(body)?.flatten();
+    crate::term::ensure_on_type(term.as_deref(), card_type)?;
+    Ok(term)
 }
 
 fn confirm_field(body: &Value) -> Option<&str> {

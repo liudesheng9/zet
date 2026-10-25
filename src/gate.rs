@@ -364,6 +364,8 @@ pub(crate) struct Candidate {
     pub(crate) level: Option<Level>,
     pub(crate) hub_level: Option<crate::hub::HubLevel>,
     pub(crate) form: Option<crate::math::MathForm>,
+    /// The Term Card's exact name, or `None` for a candidate Term list (S07, #149).
+    pub(crate) term: Option<String>,
     pub(crate) before: Option<Card>,
 }
 
@@ -388,8 +390,16 @@ impl Candidate {
             level: None,
             hub_level: None,
             form: None,
+            term: None,
             before: None,
         }
+    }
+
+    /// Give the proposed Card a Term Card's exact name. The name is part of the checked input, so
+    /// the checker sees the Card that will be stored.
+    pub(crate) fn with_term(mut self, term: Option<&str>) -> Self {
+        self.term = term.map(str::to_string);
+        self
     }
 
     /// A proposed edit of a stored Card: the final text and the final metadata together (R0160).
@@ -415,6 +425,9 @@ impl Candidate {
             level,
             hub_level,
             form,
+            // An omitted term field preserves the stored name; the shared edit path overrides this
+            // with the final resolved value.
+            term: card.term_name.clone(),
             before: Some(card.clone()),
         }
     }
@@ -432,6 +445,7 @@ impl Candidate {
             level: card.level,
             hub_level: card.hub_level,
             form: card.form,
+            term: card.term_name.clone(),
             before: None,
         }
     }
@@ -761,6 +775,7 @@ fn entry(candidate: &Candidate, parsed: &crate::ParsedCard, facts: &Facts) -> Va
         "address": candidate.address,
         "title": parsed.title,
         "body": parsed.body,
+        "type": candidate.card_type.id(),
         "facet": candidate.facet.as_ref().map(Facet::id),
         "category": facts.category,
         "workspace": candidate.workspace.id(),
@@ -788,6 +803,11 @@ fn entry(candidate: &Candidate, parsed: &crate::ParsedCard, facts: &Facts) -> Va
     }
     if let Some(form) = candidate.form {
         value["form"] = json!(form.id());
+    }
+    // A Term Card's exact name travels with the checked entry (S07, #149): the pending T rules
+    // read it, and the current rules still ignore it.
+    if let Some(term) = &candidate.term {
+        value["term"] = json!(term);
     }
     value
 }
@@ -884,7 +904,7 @@ fn load_optional(conn: &Connection, address: &str) -> Result<Option<Card>> {
     use rusqlite::OptionalExtension;
     conn.query_row(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
-                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form
+                is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, term_name
          FROM cards WHERE location = ?1 OR citation_key = ?1",
         [address],
         crate::card_from_row,
