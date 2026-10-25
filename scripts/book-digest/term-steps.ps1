@@ -48,6 +48,12 @@ function Fail-Unit($Unit, [string]$Cause) {
 
 switch ($Step) {
     'start' {
+        # A start begins the branch: a Term-card claim still held belongs to a stopped run. Release it,
+        # or a new plan revision is refused until its lease runs out.
+        $status = Run @('ledger', 'status', '-Out', $Out, '-Layer', 'termcards')
+        foreach ($u in @($status.json.units | Where-Object { $_.state -eq 'claimed' })) {
+            Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release') | Out-Null
+        }
         $planArgs = @('term-cards', '-Step', 'plan', '-Staging', $Out)
         if ($PerJob -gt 0) { $planArgs += @('-PerJob', "$PerJob") }
         if ($MathPerJob -gt 0) { $planArgs += @('-MathPerJob', "$MathPerJob") }
