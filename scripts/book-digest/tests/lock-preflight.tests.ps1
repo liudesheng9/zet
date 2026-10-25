@@ -156,7 +156,7 @@ try {
     # A locked Card stays readable by the checker and linkable from another tree: the Lock stops
     # writes into its tree, never reading or linking (R327/§15.2's agent policy).
     $check = @(& (Get-Command zt-check -CommandType Application).Source --cards 'Locked2021/1' --book Locked2021 2>&1 | ForEach-Object { "$_" })
-    Assert ($LASTEXITCODE -eq 0 -and ($check -join ' ') -match 'faults: \d+') "the checker reads a locked Card normally: $($check -join ' ')"
+    Assert ($LASTEXITCODE -ne 2 -and ($check -join ' ') -match 'faults: \d+') "the checker reads a locked Card normally: $($check -join ' ')"
     $thought = @(
         @{ tool = 'create_topic'; arguments = @{ title = '锁定之后的新想法'; body = '本主题追问：锁定卡还能不能被引用。' } },
         @{ tool = 'create_successor'; arguments = @{ at = '@@0'; title = '锁定卡仍然可以链接'; body = "这张卡用 [[Locked2021/1]] 说明：锁定树里的卡片可以读、可以链接。`n`n来源：[[Locked2021]]" } }

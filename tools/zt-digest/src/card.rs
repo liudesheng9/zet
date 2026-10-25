@@ -320,7 +320,14 @@ impl Compiler {
 
     fn hard_faults(&self, audit: &AuditView, address: &str) -> Vec<(String, String)> {
         let rules = self.rule_list();
-        audit.all_faults(address).iter().filter(|(rule, _)| is_in(rule, &rules)).cloned().collect()
+        // A line the checker published as `(advisory)` is not a hard fault (S06,
+        // R0187): the severity rides on the line, not on a private rule list.
+        audit
+            .all_faults(address)
+            .iter()
+            .filter(|(rule, message)| is_in(rule, &rules) && !message.contains("(advisory)"))
+            .cloned()
+            .collect()
     }
 
     fn next_seq(&mut self) -> i64 {

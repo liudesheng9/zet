@@ -72,7 +72,7 @@ try {
     Assert ($book.layer.term_table -eq $applied.card) 'audit: finds the term table'
     Assert ($book.cards_by_category.terms -eq 1) 'audit: the term table is its own category'
     $faults = @(Get-Content (Join-Path $out 'audit-faults.txt') -Encoding utf8)
-    Assert (@($faults | Where-Object { $_ -match "^$([regex]::Escape($idea)) R6 uses ``残余控制权`` for ``剩余控制权``" }).Count -eq 1) "audit: R6 flags the rejected word in the Idea Card ($($faults -join ' | '))"
+    Assert (@($faults | Where-Object { $_ -match "^$([regex]::Escape($idea)) R6 (\(advisory\) )?uses ``残余控制权`` for ``剩余控制权``" }).Count -eq 1) "audit: R6 flags the rejected word in the Idea Card ($($faults -join ' | '))"
     Assert (-not @($faults | Where-Object { $_ -match "^$([regex]::Escape($applied.card)) " }).Count) 'audit: the term table itself raises nothing'
 } finally {
     zt down 2>&1 | Out-Null

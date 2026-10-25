@@ -390,7 +390,12 @@ fn an_enforced_mcp_write_refuses_with_its_contract_and_writes_nothing() {
     );
     assert_eq!(written["check"]["complete"], json!(true));
     assert_eq!(written["check"]["stage"], json!("enforce"));
-    assert_eq!(written["check"]["rule_version"], json!(zt_check::VERSION));
+    assert_eq!(
+        written["check"]["rule_version"],
+        json!(zt_check::contract::RULE_VERSION),
+        "the write names the stable rule contract, not the executable version"
+    );
+    assert_eq!(written["check"]["checker_version"], json!(zt_check::VERSION));
     assert_eq!(home.cards(), cards + 1);
 }
 

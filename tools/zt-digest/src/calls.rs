@@ -859,7 +859,12 @@ fn precheck_identified(
             })
         })
         .collect();
-    let count = faults.len();
+    // The published `(advisory)` tag is the one advisory decision (S06, R0187): a
+    // caller counts blockers, never every printed line.
+    let count = faults
+        .iter()
+        .filter(|line| !line.contains("(advisory)"))
+        .count();
     faults.insert(0, format!("preview: not_applied revision={revision}"));
     faults.push(format!("faults: {count}"));
     Ok(faults)

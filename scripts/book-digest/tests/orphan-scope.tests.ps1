@@ -114,7 +114,7 @@ try {
     $null = Invoke-Zt @(@{tool='create_successor';arguments=@{at='OrphanBook/1';kind='side';title='少量链接仍然陈述观点';body='见 [[OrphanBook/1]]、[[OrphanBook/2]]、[[OrphanBook/3]]。'}})
     if (-not $Checker) { $Checker = (Get-Command zt-check -CommandType Application | Select-Object -First 1).Source }
     $classification = @(& $Checker --cards 'OrphanBook/1|j' --book OrphanBook --rules I2 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and ($classification -join ' ').Contains('OrphanBook/1|j I2')) 'standalone checks use the same complete anchor count before classifying a structure Card'
+    Assert ($LASTEXITCODE -ne 2 -and ($classification -join ' ').Contains('OrphanBook/1|j I2')) 'standalone checks use the same complete anchor count before classifying a structure Card'
 } finally {
     $env:EDITOR = $oldEditor
     Remove-Item Env:ZT_ORPHAN_TEST_BODY -ErrorAction SilentlyContinue

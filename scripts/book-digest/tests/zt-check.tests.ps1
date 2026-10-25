@@ -13,16 +13,16 @@ $expected = @(
     'K/1|a|a|1 R4 资产被清算。'
     'K/1|a|a|1 R5 双方进行谈判。'
     'K/1|a|a|1 R7 E 在时点 1 的用来还债的现金的上限是 $P$。'
-    'K/1|a|a|1 R6 uses `卖资产` for `清算`: 值得注意的是，C 会卖资产。'
+    'K/1|a|a|1 R6 (advisory) uses `卖资产` for `清算`: 值得注意的是，C 会卖资产。'
     'K/1|a|a|1 R9 `值得注意的是`: 值得注意的是，C 会卖资产。'
-    'K/1|a|a|1 R6 uses `还款额` for `可承诺的还款`: 可承诺的还款等于 $B$，还款额不会更高。'
+    'K/1|a|a|1 R6 (advisory) uses `还款额` for `可承诺的还款`: 可承诺的还款等于 $B$，还款额不会更高。'
     'K/1|a|a|1 R2 (50 characters > 40) 这一句很长很长'
     'K/1|a|a|2 R2 (34 characters > 30) 代入 $P=B$ 以后'
     'K/1|a|a|3 R3 The creditor cannot verify the return; it cannot enforce a payment from it either.'
     'K/1|a|a|4 R13 (13 sentences > 12) split the part'
     'K/1|a|a|5 R14 (7 steps > 6) split the derivation into a chain of Derivation parts'
     'Other/1|a|a R21 (advisory) unnamed referent `这张卡` with no named Link in its sentence: 这张卡属于另一个模型。'
-    'faults: 14'
+    'faults: 11'
 )
 $failed = 0
 if ($lines.Count -ne $expected.Count) {
@@ -103,5 +103,85 @@ if (-not @($strictRun | Where-Object { $_ -like 'X/1|a|a|5 R15 sections 起点, 
 if (@($r13Run | Where-Object { $_ -match '^X/1\|a\|a\|[1-4] R13 ' }).Count) {
     Write-Output "explain check: R13 must not count the explanation:"; $r13Run | ForEach-Object { Write-Output "  $_" }; $failed++
 }
+
+# --- S06 (#148): the exact draft, the status document, and the exit contract ----------------------
+# An offline draft is honest about what it did not cover: its lines stay complete for
+# the families it declares, and the process exits 2 rather than passing by omission.
+$checker = (Get-Command zt-check -CommandType Application | Select-Object -First 1).Source
+$null = @(& $checker --json $fixture --setting 'K/1|a|a' 2>&1)
+if ($LASTEXITCODE -ne 2) { Write-Output "exit: an offline draft must exit 2, got $LASTEXITCODE"; $failed++ }
+
+$scratch = Join-Path ([IO.Path]::GetTempPath()) "zt-check-contract-$PID"
+New-Item -ItemType Directory -Force $scratch | Out-Null
+$env:ZT_CONFIG_DIR = Join-Path $scratch 'config'
+$env:ZT_GUI_PORT = '0'
+try {
+    $null = @(zt config set archive_root (Join-Path $scratch 'archive') 2>&1)
+    $null = @(zt up 2>&1)
+    $null = Invoke-Zt @(@{tool='create_topic';arguments=@{title='校验主题'}})
+    # A write answers `N ok <address>`; the read names the stored row.
+    $topic = @(@(Invoke-Zt @(@{tool='export_titles';arguments=@{}}))[0].titles | Where-Object { $_.title -eq '校验主题' })[0]
+    $cleanText = "# 税负上升会减少交易数量`n`n税负上升使买卖双方减少交易数量。均衡价格上升，市场参与者也随之改变。我们可以观察成交量的下降。"
+    $draftPath = Join-Path $scratch 'draft.json'
+    $reportPath = Join-Path $scratch 'status.json'
+    $policyHash = ((& zt config show) | Where-Object { $_ -like 'policy_hash=*' }) -replace '^policy_hash=', ''
+    $contextCard = [ordered]@{ address = $topic.address; title = $topic.title; workspace = 'agent' }
+    function Write-Draft($cards, $families) {
+        [ordered]@{
+            rule_version = '1'
+            policy_hash = $policyHash
+            cards = $cards
+            context = [ordered]@{ cards = @($contextCard); complete_for = $families }
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $draftPath -Encoding utf8
+    }
+    $all = @('envelope', 'local', 'graph', 'placement', 'policy')
+
+    # A complete, clean draft: exit 0, the status names the contract it was checked under.
+    Write-Draft @([ordered]@{ address = 'D/1'; type = 'idea'; text = $cleanText }) $all
+    $out = @(& $checker --draft $draftPath --report $reportPath 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $out[-1] -ne 'faults: 0') { Write-Output "draft: a complete clean draft must exit 0 with faults: 0 ($($LASTEXITCODE): $($out -join ' | '))"; $failed++ }
+    $status = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    if ($status.mode -ne 'draft_bundle' -or $status.verdict -ne 'pass' -or -not $status.complete -or @($status.missing).Count) { Write-Output "status: a complete draft must say so ($($status | ConvertTo-Json -Compress -Depth 6))"; $failed++ }
+    if ($status.policy_source -ne 'built_in' -or $status.contract.rule_version -ne '1' -or $status.contract.policy_hash -ne $policyHash) { Write-Output 'status: the draft binds the built-in policy it declared'; $failed++ }
+
+    # A complete draft with a blocking fault: exit 1, the blocker in faults: N.
+    Write-Draft @([ordered]@{ address = 'D/2'; type = 'idea'; text = "# 税负落在买方`n`n税负落在买方；卖方只承担一小部分。" }) $all
+    $out = @(& $checker --draft $draftPath --report $reportPath 2>&1)
+    if ($LASTEXITCODE -ne 1 -or $out[-1] -ne 'faults: 2') { Write-Output "draft: a complete draft with blockers must exit 1 ($($LASTEXITCODE): $($out -join ' | '))"; $failed++ }
+    $status = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    if ($status.verdict -ne 'block' -or $status.blocking -ne 2 -or @($status.diagnostics).Count -ne 3) { Write-Output "status: the draft counts its blocking diagnostics ($($status | ConvertTo-Json -Compress -Depth 8))"; $failed++ }
+
+    # An undeclared family stays missing: the answer is incomplete, never a pass.
+    Write-Draft @([ordered]@{ address = 'D/1'; type = 'idea'; text = $cleanText }) @('envelope', 'local')
+    $out = @(& $checker --draft $draftPath --report $reportPath 2>&1)
+    $status = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    if ($LASTEXITCODE -ne 2 -or ($status.missing -join ',') -ne 'graph,placement,policy') { Write-Output "status: an undeclared family is missing ($(($status.missing -join ',')), exit $LASTEXITCODE)"; $failed++ }
+
+    # A stale rule binding is refused, with a message, and never reported as a pass.
+    [ordered]@{ rule_version = '0'; cards = @([ordered]@{ address = 'D/1'; text = $cleanText }) } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $draftPath -Encoding utf8
+    $err = @(& $checker --draft $draftPath 2>&1)
+    if ($LASTEXITCODE -ne 2 -or ($err -join ' ') -notmatch 'stale check contract') { Write-Output "draft: a stale rule version is refused ($($LASTEXITCODE): $($err -join ' | '))"; $failed++ }
+
+    # A live check reads the running service's contract: the policy hash is the archive's,
+    # the status names the gate stage, and an explicit limit that differs is incomplete.
+    $null = Invoke-Zt @(@{tool='create_successor';arguments=@{at=$topic.address;title='税负落在买方';body='税负落在买方；卖方只承担一小部分。'}})
+    $written = @(@(Invoke-Zt @(@{tool='export_titles';arguments=@{}}))[0].titles | Where-Object { $_.title -eq '税负落在买方' })[0]
+    $out = @(& $checker --cards $written.address --report $reportPath 2>&1)
+    if ($LASTEXITCODE -ne 1 -or $out[-1] -notmatch '^faults: [1-9]') { Write-Output "live: a faulting live Card exits 1 ($($LASTEXITCODE): $($out -join ' | '))"; $failed++ }
+    $status = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    if ($status.mode -ne 'live' -or $status.policy_source -ne 'archive' -or $status.contract.policy_hash -ne $policyHash -or $status.gate.stage -ne 'advisory' -or $status.gate.would_refuse) { Write-Output "live: the live status names the archive contract ($($status | ConvertTo-Json -Compress -Depth 6))"; $failed++ }
+    $out = @(& $checker --cards $written.address --max-chars 100 --report $reportPath 2>&1)
+    $status = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    if ($LASTEXITCODE -ne 2 -or ($status.missing -join ',') -ne 'limits' -or ($status.reasons -join ' ') -notmatch 'max_chars') { Write-Output "live: a limit outside the contract is incomplete ($($LASTEXITCODE): $(($status.missing -join ',')))"; $failed++ }
+    $out = @(& $checker --cards $written.address --workspace human --report $reportPath 2>&1)
+    $status = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    if ($LASTEXITCODE -ne 2 -or ($status.missing -join ',') -ne 'workspace' -or ($status.reasons -join ' ') -notmatch 'cannot reclassify a stored Card') { Write-Output "live: a conflicting Workspace flag is refused ($($LASTEXITCODE): $(($status.missing -join ',')))"; $failed++ }
+} finally {
+    $null = @(zt down 2>&1)
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:ZT_CONFIG_DIR, Env:ZT_GUI_PORT -ErrorAction SilentlyContinue
+}
+
 if ($failed) { Write-Output "FAILED: $failed"; exit 1 }
 Write-Output 'zt-check: all checks passed'

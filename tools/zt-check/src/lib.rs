@@ -10,6 +10,7 @@
 /// The checker's own version, so a run report can name the binary that checked its Cards.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod contract;
 pub mod core;
 pub mod policy;
 pub mod text;

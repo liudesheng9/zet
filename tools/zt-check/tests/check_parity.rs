@@ -9,6 +9,7 @@
 use serde_json::Value;
 use std::process::Command;
 use zt_check::core::{Check, Limits};
+use zt_check::policy::{CheckReport, PolicySet};
 
 const CARD_STYLE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -31,22 +32,32 @@ const LEGACY_RULE_VERSION_BUNDLE: &str = concat!(
 );
 const LEGACY_RULE_VERSION_EXPECTED: &str = include_str!("fixtures/legacy-rule-version-expected.txt");
 
-/// The installed executable's lines, as the digest scripts read them.
-fn binary(args: &[&str]) -> Vec<String> {
+/// The installed executable's lines and exit code, as the digest scripts read them.
+fn binary_run(args: &[&str]) -> (Vec<String>, i32) {
     let output = Command::new(env!("CARGO_BIN_EXE_zt-check"))
         .args(args)
         .output()
         .expect("run zt-check");
-    assert!(
-        output.status.success(),
-        "zt-check failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    (
+        String::from_utf8(output.stdout)
+            .expect("utf-8 output")
+            .lines()
+            .map(str::to_string)
+            .collect(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+/// The installed executable's lines for a check that completed. An offline draft
+/// is an incomplete evaluation by design (R0195: placement needs a service
+/// preview), so it exits 2 even though its lines are complete for what it covers.
+fn binary(args: &[&str]) -> Vec<String> {
+    let (lines, code) = binary_run(args);
+    assert_eq!(
+        code, 2,
+        "an offline draft is incomplete and says so by exit code: {lines:#?}"
     );
-    String::from_utf8(output.stdout)
-        .expect("utf-8 output")
-        .lines()
-        .map(str::to_string)
-        .collect()
+    lines
 }
 
 /// The in-process library adapter zt-digest calls.
@@ -77,12 +88,17 @@ fn core_lines(path: &str, setting: &str, limits: Limits) -> Vec<String> {
         .filter(|card| card["line"] == "shared")
         .filter_map(|card| card["address"].as_str().map(str::to_string))
         .collect::<Vec<_>>();
-    let mut lines = Check::new(limits, false, "")
+    // The recorded lines are the ones the coordinated policy produces (S06): an
+    // entry that names no Workspace is a draft in the agent Workspace, and
+    // `faults: N` counts the blocking diagnostics only.
+    let report = Check::new(limits, false, "")
         .with_terms(setting_body.as_deref())
         .with_shared(shared)
-        .run(cards);
-    let count = lines.len();
-    lines.push(format!("faults: {count}"));
+        .with_policies(PolicySet::new())
+        .report(cards);
+    let blockers = CheckReport::of(report.clone()).blockers;
+    let mut lines = report.iter().map(zt_check::core::Diagnostic::line).collect::<Vec<_>>();
+    lines.push(format!("faults: {blockers}"));
     lines
 }
 
@@ -113,10 +129,9 @@ fn the_card_layer_fixture_prints_the_same_ordered_lines_everywhere() {
 
 #[test]
 fn the_executable_states_the_library_version() {
-    assert_eq!(
-        binary(&["--version"]),
-        [format!("zt-check {}", zt_check::VERSION)]
-    );
+    let (lines, code) = binary_run(&["--version"]);
+    assert_eq!(code, 0, "a version answer is a complete invocation");
+    assert_eq!(lines, [format!("zt-check {}", zt_check::VERSION)]);
 }
 
 /// S02 (#144): a draft bundle that carries both versions prints the same ordered
@@ -158,7 +173,7 @@ fn the_envelope_error_is_the_same_in_the_binary_and_the_library() {
         .args(["--json", not_json])
         .output()
         .expect("run zt-check");
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8(output.stderr).expect("utf-8 stderr");
     assert!(stderr.starts_with("zt-check: the file is not JSON"), "{stderr}");
     let error = zt_check::check::run_lines(&["--json".to_string(), not_json.to_string()], None)

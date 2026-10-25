@@ -487,7 +487,12 @@ pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Val
         });
     }
     let identity = archive_identity(&tx, root)?;
-    let result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?,"archive_identity":identity});
+    // The check contract (S06, #148): the running service publishes the rules,
+    // effective policy, limits, archive, and syntax capabilities that would decide
+    // a write, in the one verified read a self-check already makes. A client that
+    // cannot read this block refuses to present its answer as the gate's.
+    let contract = contract_value(&tx, &identity)?;
+    let result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?,"archive_identity":identity,"check_contract":contract});
     if let Some(snapshot) = &snapshot {
         log_large_context(
             root,
@@ -711,6 +716,28 @@ fn archive_identity(conn: &Connection, root: &Path) -> Result<Value> {
     }
     let archive_path = std::fs::canonicalize(root).context("resolve archive identity path")?;
     Ok(json!({"id":archive_id,"path":archive_path.to_string_lossy()}))
+}
+
+/// The check contract this service publishes beside an archive read (design
+/// 8.3, S06 / #148): the rule and diagnostic versions, the effective policy and
+/// its hash, the limits, the archive identity and revision, the write-gate
+/// stage, and the syntax capabilities. A read that cannot name them refuses to
+/// answer, never silently defaulting a fact that decides a check.
+fn contract_value(conn: &Connection, identity: &Value) -> Result<Value> {
+    let policy = crate::gate::load(conn)?;
+    let stage = crate::gate::current_stage(conn)?;
+    let archive = zt_check::contract::ArchiveFacts {
+        id: identity["id"].as_str().unwrap_or_default().to_string(),
+        path: identity["path"].as_str().unwrap_or_default().to_string(),
+        revision: crate::link_index::revision(conn)?,
+        stage: stage.id().to_string(),
+    };
+    Ok(zt_check::contract::Contract::served(
+        &policy,
+        &zt_check::core::Limits::default(),
+        archive,
+    )
+    .publish())
 }
 
 /// One coherent hub read: every Card's metadata and heading line, the complete body of every Hub

@@ -14,7 +14,7 @@ $expected = @(
     '40/1|a I2 (9 characters < 40) merge candidate'
     '40/1|a I3 no source line'
     '40/1|a I4 no kinded Link'
-    '40/1|a I5 no other Card has an authored Link here'
+    '40/1|a I5 (advisory) no other Card has an authored Link here'
     '40/1|a L1 (1 Links read as refers) [[41/2]]'
     '40/1|a L2 (1 characters < 8) a Link with no reason: 见 [[41/2]]。'
     '40/1|b I2 (283 characters > 250) split candidate'
@@ -23,10 +23,10 @@ $expected = @(
     '40/1|b L3 (advisory) [[41/1]] is linked in 2 paragraphs'
     'Key/3|a E1 no date in the title'
     'Key/3|a E2 missing labels: 时间、地点、参与者、经过'
-    'Key/3|a E4 no Idea Card links it with a kind word'
+    'Key/3|a E4 (advisory) no Idea Card links it with a kind word'
     '40/1|b I6 (advisory) a title very similar to [[40/1]]'
     'Key/3|c E5 (advisory) the same event as [[Key/3|b]]?'
-    'faults: 16'
+    'faults: 10'
 )
 $failed = 0
 if ($lines.Count -ne $expected.Count) {

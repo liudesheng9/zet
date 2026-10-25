@@ -696,6 +696,12 @@ fn cmd_config_policy() -> Result<()> {
     println!("policy_archive={}", root.display());
     println!("policy_hash={}", policies.hash());
     println!("policy_revision={}", gate::revision(&conn)?);
+    // The stable check contract a client compares with its own (S06, R0197).
+    println!("rule_version={}", gate::RULE_VERSION);
+    println!(
+        "diagnostic_schema={}",
+        zt_check::contract::DIAGNOSTIC_SCHEMA
+    );
     for line in gate::table_lines(&policies, stage) {
         println!("{line}");
     }

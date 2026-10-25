@@ -222,6 +222,16 @@ impl Server {
                         "title": "ZT slip-box",
                         "version": crate::VERSION,
                     },
+                    // The checker contract this stdio process carries (design 8.3,
+                    // R0198). The authoritative facts come from the running
+                    // service's read/write replies, because a proxy and a daemon
+                    // can be different builds.
+                    "zt_check_version": zt_check::VERSION,
+                    "check_contract": {
+                        "rule_version": zt_check::contract::RULE_VERSION,
+                        "diagnostic_schema": zt_check::contract::DIAGNOSTIC_SCHEMA,
+                        "applicability_version": zt_check::contract::APPLICABILITY_VERSION,
+                    },
                     "instructions": INSTRUCTIONS,
                 }))
             }

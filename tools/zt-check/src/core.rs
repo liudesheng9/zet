@@ -329,7 +329,7 @@ fn corruption(body: &str, title: &str, address: &str, faults: &mut Faults) {
 }
 
 /// The limits of card-style-check.ps1 and self-check.ps1.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub max_sentences: i64,
     pub max_chars: i64,
@@ -353,6 +353,44 @@ impl Default for Limits {
             max_idea_chars: 300,
             min_reason: 8,
         }
+    }
+}
+
+impl Limits {
+    /// The eight limits under their flag names, as the check contract publishes
+    /// them (design 8.3, R0202).
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "max_sentences": self.max_sentences,
+            "max_chars": self.max_chars,
+            "max_steps": self.max_steps,
+            "max_explain_sentences": self.max_explain_sentences,
+            "max_explain_chars": self.max_explain_chars,
+            "min_idea_chars": self.min_idea_chars,
+            "max_idea_chars": self.max_idea_chars,
+            "min_reason": self.min_reason,
+        })
+    }
+
+    /// Read the published limits. A missing or non-integer limit is a refusal:
+    /// a check with unknown limits cannot be compared with the gate's.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        let number = |name: &str| -> Result<i64, String> {
+            value
+                .get(name)
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| format!("no `{name}`"))
+        };
+        Ok(Self {
+            max_sentences: number("max_sentences")?,
+            max_chars: number("max_chars")?,
+            max_steps: number("max_steps")?,
+            max_explain_sentences: number("max_explain_sentences")?,
+            max_explain_chars: number("max_explain_chars")?,
+            min_idea_chars: number("min_idea_chars")?,
+            max_idea_chars: number("max_idea_chars")?,
+            min_reason: number("min_reason")?,
+        })
     }
 }
 
@@ -1809,7 +1847,7 @@ pub fn is_orphan(address: &str, category: &str, inbound: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{DEFAULT_RULES, filter_rules};
+    use crate::policy::{CheckReport, DEFAULT_RULES, filter_rules};
     use serde_json::json;
 
     const CARD_STYLE_FIXTURE: &str =
@@ -1989,6 +2027,13 @@ mod tests {
         lines
     }
 
+    /// The report's lines with the count every mode publishes: the blockers only
+    /// (design 8.1, R0187).
+    fn reported(mut lines: Vec<String>, blockers: usize) -> Vec<String> {
+        lines.push(format!("faults: {blockers}"));
+        lines
+    }
+
     fn title_context(titles: &Value, complete: bool) -> TitleContext {
         let rows = titles.as_array().cloned().unwrap_or_default();
         let mut context = TitleContext::from_titles(&rows);
@@ -2031,21 +2076,35 @@ mod tests {
             .collect::<Vec<_>>();
         let check = Check::new(Limits::default(), false, "")
             .with_terms(setting_body.as_deref())
-            .with_shared(shared);
+            .with_shared(shared)
+            // The recorded lines are the ones the coordinated policy produces (S06):
+            // an entry that names no Workspace is a draft in the agent Workspace.
+            .with_policies(crate::policy::PolicySet::new());
         let report = check.report(cards);
         // S02-AC01: every fault carries the structured contract, its severity and
-        // scope come from the rule catalog, and the familiar lines are exactly
-        // the formatted report, in the same order.
+        // scope come from the rule catalog and the effective policy, and the
+        // familiar lines are exactly the formatted report, in the same order.
+        let policies = crate::policy::PolicySet::new();
+        let agent = policies.policy(crate::policy::Workspace::Agent);
         for diagnostic in &report {
             assert!(!diagnostic.address.is_empty(), "{diagnostic:?}");
             assert!(!diagnostic.rule.is_empty(), "{diagnostic:?}");
             assert!(!diagnostic.fault.is_empty(), "{diagnostic:?}");
             assert!(!diagnostic.message.is_empty(), "{diagnostic:?}");
             assert!(!diagnostic.legacy);
-            assert_eq!(diagnostic.severity, crate::policy::severity(&diagnostic.rule));
+            let decided = agent
+                .effective(&diagnostic.rule)
+                .and_then(crate::policy::Setting::severity);
+            assert!(
+                diagnostic.subcase || decided.is_none_or(|severity| severity == diagnostic.severity),
+                "{diagnostic:?}"
+            );
             assert_eq!(diagnostic.scope, crate::policy::scope(&diagnostic.rule));
         }
-        let lines = faulted(report.iter().map(Diagnostic::line).collect());
+        let lines = reported(
+            report.iter().map(Diagnostic::line).collect(),
+            CheckReport::of(report.clone()).blockers,
+        );
         let expected = CARD_STYLE_EXPECTED.lines().collect::<Vec<_>>();
         assert_eq!(lines, expected, "the fixture lines, in order: {lines:#?}");
         assert_eq!(check.run(cards), report.iter().map(Diagnostic::line).collect::<Vec<_>>());

@@ -7174,10 +7174,10 @@ fn group_quality(cards: &[Value], p: &Prepared) -> Result<Value> {
     };
     let lines = zt_check::check::run_lines(&check.args(), None)
         .context("group draft checker did not run")?;
-    checked_lines(lines, true)
+    checked_lines(lines)
 }
 
-fn checked_lines(lines: Vec<String>, advisories_counted: bool) -> Result<Value> {
+fn checked_lines(lines: Vec<String>) -> Result<Value> {
     let count = lines
         .last()
         .and_then(|l| l.strip_prefix("faults: "))
@@ -7188,16 +7188,12 @@ fn checked_lines(lines: Vec<String>, advisories_counted: bool) -> Result<Value> 
     if observations.iter().any(|line| !fault_line.is_match(line)) {
         bail!("incomplete group checker fault format");
     }
+    // Since S06 (#148) every zt-check mode counts blocking diagnostics only, so
+    // `faults: N` is the number of observation lines without an `(advisory)` tag.
     let (advisories, faults): (Vec<_>, Vec<_>) = observations
         .iter()
         .partition(|line| line.contains("(advisory)"));
-    if count
-        != if advisories_counted {
-            observations.len()
-        } else {
-            faults.len()
-        }
-    {
+    if count != faults.len() {
         bail!("incomplete group checker fault count");
     }
     if let Some(fault) = faults.iter().find(|line| {
@@ -8424,7 +8420,7 @@ fn group_finish(
         book: field(&p.contract, "citation_key")?.to_string(),
         ..Default::default()
     };
-    let self_check = checked_lines(check.run(zt)?, false)?;
+    let self_check = checked_lines(check.run(zt)?)?;
     verify_group_consumers(p, &read.cards, &self_check)?;
     if zt.archive_view()?["archive_revision"].as_u64() != Some(read.archive_revision) {
         bail!("read_view_changed: persisted group check");
@@ -11120,7 +11116,7 @@ fn empirical_result(
             ..Default::default()
         };
         let lines = check.run(zt)?;
-        let mut checked = checked_lines(lines, false)?;
+        let mut checked = checked_lines(lines)?;
         checked["rules"] = json!(layer.rules);
         checked
     };
@@ -13336,7 +13332,7 @@ fn terms_apply(
             json: file.path().to_string_lossy().into_owned(),
             ..Default::default()
         };
-        checked_lines(zt_check::check::run_lines(&check.args(), None)?, true)?
+        checked_lines(zt_check::check::run_lines(&check.args(), None)?)?
     } else {
         let preview = crate::calls::preview_identified(zt, &calls, &prefix, None)?;
         group_quality(
@@ -13384,7 +13380,7 @@ fn terms_apply(
             ..Default::default()
         };
         (
-            checked_lines(check.run(zt)?, false)?,
+            checked_lines(check.run(zt)?)?,
             json!(crate::calls::authored_fingerprint(c)),
             read.archive_revision,
         )

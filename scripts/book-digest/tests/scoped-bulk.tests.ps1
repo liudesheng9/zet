@@ -62,13 +62,13 @@ try {
     $checkerTrace = Join-Path $scratch 'checker-tools.jsonl'
     $env:ZT_TRACE_TOOLS = $checkerTrace
     $addressCheck = @(& $Checker --addresses 'ScopeBook/1|a' --setting 'ScopeBook/1|b' 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and ($addressCheck -join ' ').Contains('ScopeBook/1|a R4') -and ($addressCheck -join ' ').Contains('ScopeBook/1|a R6')) "the public address checker reads its required Cards and term table in bulk: $($addressCheck -join ' | ')"
+    Assert ($LASTEXITCODE -ne 2 -and ($addressCheck -join ' ').Contains('ScopeBook/1|a R4') -and ($addressCheck -join ' ').Contains('ScopeBook/1|a R6')) "the public address checker reads its required Cards and term table in bulk: $($addressCheck -join ' | ')"
     $checkTrace = @(Get-Content -LiteralPath $checkerTrace -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
     Assert (@($checkTrace | Where-Object tool -in @('get_card','get_tree','list_trees')).Count -eq 0) 'the address checker avoids per-Card model projections and tree scans'
     $cardTraceFile = Join-Path $scratch 'card-checker-tools.jsonl'
     $env:ZT_TRACE_TOOLS = $cardTraceFile
     $cardCheck = @(& $Checker --cards 'ScopeBook/1|a' --book ScopeBook --rules 'R4,L1,L2,I3' 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and ($cardCheck -join ' ').Contains('ScopeBook/1|a R4')) "the public Card checker keeps its faults through bulk inputs: $($cardCheck -join ' | ')"
+    Assert ($LASTEXITCODE -ne 2 -and ($cardCheck -join ' ').Contains('ScopeBook/1|a R4')) "the public Card checker keeps its faults through bulk inputs: $($cardCheck -join ' | ')"
     $cardTrace = @(Get-Content -LiteralPath $cardTraceFile -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
     Assert (@($cardTrace | Where-Object tool -in @('get_card','get_tree','list_trees')).Count -eq 0) 'the Card checker uses scoped Link facts without scanning the book tree'
     $null = Invoke-Zt @(
@@ -80,14 +80,14 @@ try {
     $env:ZT_TRACE_TOOLS = $modelTraceFile
     $modelCards = 'ScopeBook/1|c|a|1,ScopeBook/1|c|a,ScopeBook/1|c'
     $modelCheck = @(& $Checker --cards $modelCards --rules 'R4,R6,R15' 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and ($modelCheck -join ' ').Contains(' R4 ') -and ($modelCheck -join ' ').Contains(' R6 ') -and ($modelCheck -join ' ').Contains(' R15 ')) "a filed model retains its term table and formal explanation faults: $($modelCheck -join ' | ')"
+    Assert ($LASTEXITCODE -ne 2 -and ($modelCheck -join ' ').Contains(' R4 ') -and ($modelCheck -join ' ').Contains(' R6 ') -and ($modelCheck -join ' ').Contains(' R15 ')) "a filed model retains its term table and formal explanation faults: $($modelCheck -join ' | ')"
     $modelTrace = @(Get-Content -LiteralPath $modelTraceFile -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
     Assert (@($modelTrace | Where-Object tool -eq 'get_model').Count -eq 1 -and @($modelTrace | Where-Object tool -in @('get_card','get_tree','list_trees')).Count -eq 0) 'one required model context serves its filed parts and head through the same checker process'
     $env:ZT_FAIL_CARD = 'ScopeBook/1|c'
     $modelModeTraceFile = Join-Path $scratch 'model-mode-tools.jsonl'
     $env:ZT_TRACE_TOOLS = $modelModeTraceFile
     $modelMode = @(& $Checker --model 'ScopeBook/1|c' --require-explain 2>&1)
-    Assert ($LASTEXITCODE -eq 0 -and ($modelMode -join ' ').Contains(' R4 ') -and ($modelMode -join ' ').Contains(' R6 ') -and ($modelMode -join ' ').Contains(' R15 ')) "the model checker uses the head and setting already in its complete model context: $($modelMode -join ' | ')"
+    Assert ($LASTEXITCODE -ne 2 -and ($modelMode -join ' ').Contains(' R4 ') -and ($modelMode -join ' ').Contains(' R6 ') -and ($modelMode -join ' ').Contains(' R15 ')) "the model checker uses the head and setting already in its complete model context: $($modelMode -join ' | ')"
     $modelModeTrace = @(Get-Content -LiteralPath $modelModeTraceFile -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json })
     Assert (@($modelModeTrace | Where-Object tool -in @('get_card','get_tree','list_trees')).Count -eq 0) 'model mode does not reread the head through a full Card projection'
     $env:ZT_FAIL_CARD = 'ScopeBook/1|a'

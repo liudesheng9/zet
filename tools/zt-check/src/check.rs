@@ -8,11 +8,9 @@
 //! report policy in `policy`; this module owns only the inputs, the output, and
 //! the archive client. It is compiled only with the `cli` feature.
 
-use crate::core::{Check, Limits};
+use crate::core::{Check, Diagnostic, Limits};
 use crate::mcp::Zt;
-use crate::policy::{
-    Applicability, DEFAULT_RULES, LIST_SPLIT, filter_rules, ratchet,
-};
+use crate::policy::{Applicability, CheckReport, DEFAULT_RULES, LIST_SPLIT, ratchet, select_rules};
 use crate::text::{
     TitleContext, BOOK_ANCHOR, BOOK_CARD, culture, key, prop, ps_eq, ps_in, ps_string, text,
     utf16_form,
@@ -34,67 +32,393 @@ pub use crate::text::{
 const USAGE: &str = "usage:
   zt-check --version
   zt-check --json <file> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
+  zt-check --draft <file> [--report <file>] [--workspace human|agent] [--setting <address>] [limits]
   zt-check --model <address> [--skip-shared] [--setting <address>] [--level concept|formal] [--require-explain] [limits]
   zt-check --addresses <a,b,...> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
   zt-check --cards <a,b,...> [--log <file>] [--book <key>] [--rules R2,R3,...] [limits]
+every mode: [--workspace human|agent] [--report <file>]
 limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences 16
-        --max-explain-chars 600 --min-idea-chars 40 --max-idea-chars 300 --min-reason 8";
+        --max-explain-chars 600 --min-idea-chars 40 --max-idea-chars 300 --min-reason 8
+exit: 0 complete and no blocking fault, 1 complete with a blocking fault,
+      2 invalid, incomplete, stale contract, or infrastructure failure";
 
 // --- inputs -----------------------------------------------------------------------------------
 
-/// `--json`: a JSON array of entries (or one entry), as card-style-check.ps1 -Json reads
-/// it, or a bundle `{"cards": [...], "context": {"titles": [...], "complete": true}}`
-/// whose context is the read-only Workspace title comparison I6 needs (D135).
+/// `--json`: the established entry format (a JSON array of entries, one entry, or a
+/// bundle whose `context` gives I6 its read-only Workspace titles).
 ///
-/// An entry may carry `before`: the old authored version with its old metadata.
-/// When any entry does, the old and proposed versions are checked by the same
-/// core and policy, the legacy ratchet applies (design 6.3), and the returned
-/// fault count is the number of unmatched blocking diagnostics. A bundle with no
-/// `before` keeps the established output and count.
-pub(crate) fn check_json(
+/// The returned count is the number of blocking diagnostics, the count every mode
+/// publishes as `faults: N` (design 8.1, R0187).
+#[cfg(test)]
+fn check_json(
     raw: &str,
     setting: &str,
     limits: Limits,
     require_explain: bool,
     level: &str,
 ) -> Result<(Vec<String>, usize)> {
+    let options = Options {
+        setting: (!setting.is_empty()).then(|| setting.to_string()),
+        level: level.to_string(),
+        require_explain,
+        limits,
+        ..Options::default()
+    };
+    let outcome = check_draft(raw, InputKind::Json, &options)?;
+    let lines = outcome.report.lines();
+    Ok((lines, outcome.report.blockers))
+}
+
+/// Which draft format a file holds: the established entry array (`--json`) or the
+/// exact proposed-write bundle whose Cards carry their own full text (`--draft`,
+/// design 8.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InputKind {
+    Json,
+    Draft,
+}
+
+/// One draft as the bundle declares it: the candidate Cards, the context they were
+/// checked against, the Workspace they belong to, the check families the bundle
+/// declares complete, and the rule/policy binding it pins (design 8.2).
+pub(crate) struct Bundle {
+    pub(crate) cards: Vec<Value>,
+    pub(crate) context: TitleContext,
+    pub(crate) supplied_context: bool,
+    pub(crate) context_complete: bool,
+    pub(crate) workspace: Option<String>,
+    pub(crate) declared: Option<Vec<String>>,
+    pub(crate) rule_version: Option<String>,
+    pub(crate) policy_hash: Option<String>,
+}
+
+/// Read a draft file. `--json` keeps its established entry format; `--draft` reads
+/// the exact proposed-write bundle of design 8.2.
+pub(crate) fn read_bundle(raw: &str, kind: InputKind) -> Result<Bundle> {
     let raw = raw.strip_prefix('\u{FEFF}').unwrap_or(raw);
-    let (cards, context) = match serde_json::from_str::<Value>(raw).context("the file is not JSON")? {
+    let value: Value = serde_json::from_str(raw).context("the file is not JSON")?;
+    let (cards, bundle) = match value {
         Value::Object(map) if map.contains_key("cards") => {
-            let context = map.get("context").map(TitleContext::from_json).unwrap_or_default();
             let cards = match map.get("cards") {
                 Some(Value::Array(items)) => items.clone(),
                 Some(other) => vec![other.clone()],
                 None => Vec::new(),
             };
-            (cards, context)
+            (cards, map)
         }
-        Value::Array(items) => (items, TitleContext::default()),
-        other => (vec![other], TitleContext::default()),
+        Value::Array(items) => (items, Map::new()),
+        other => (vec![other], Map::new()),
     };
-    let shared = cards
+    let cards = match kind {
+        InputKind::Json => cards,
+        InputKind::Draft => cards
+            .iter()
+            .enumerate()
+            .map(|(index, card)| draft_entry(card, index))
+            .collect::<Result<Vec<_>>>()?,
+    };
+    let (context, supplied_context, context_complete) = draft_context(&bundle, kind)?;
+    let declared = bundle
+        .get("context")
+        .and_then(|context| context.get("complete_for"))
+        .map(|names| {
+            names
+                .as_array()
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        });
+    let text = |name: &str| {
+        bundle
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Ok(Bundle {
+        cards,
+        context,
+        supplied_context,
+        context_complete,
+        workspace: text("workspace").map(|workspace| workspace.to_lowercase()),
+        declared,
+        rule_version: text("rule_version"),
+        policy_hash: text("policy_hash"),
+    })
+}
+
+/// The Workspace title context a bundle supplies, and what it declares about it.
+fn draft_context(bundle: &Map<String, Value>, kind: InputKind) -> Result<(TitleContext, bool, bool)> {
+    let Some(context) = bundle.get("context").filter(|context| context.is_object()) else {
+        return Ok((TitleContext::default(), false, false));
+    };
+    if kind == InputKind::Json && context.get("cards").is_none() {
+        // The established `--json` envelope: `{complete, titles}`.
+        return Ok((TitleContext::from_json(context), true, context["complete"] == true));
+    }
+    let cards = context
+        .get("cards")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if cards.is_empty() && context.get("titles").is_none() {
+        return Ok((TitleContext::default(), false, false));
+    }
+    let titles = cards
         .iter()
-        .filter(|card| ps_eq(&text_of(card, "line"), "shared"))
-        .map(|card| ps_string(prop(card, "address")))
-        .collect();
-    let setting = utf16_form(setting);
+        .map(|card| {
+            json!({
+                "address": card.get("address").cloned().unwrap_or(Value::Null),
+                "title": card.get("title").cloned().unwrap_or(Value::Null),
+                "workspace": card.get("workspace").cloned().unwrap_or(Value::Null),
+                "type": card.get("type").cloned().unwrap_or(Value::Null),
+                "facet": card.get("facet").cloned().unwrap_or(Value::Null),
+                "restatement": card.get("restatement").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let complete = declared(context, "graph");
+    Ok((
+        TitleContext::from_json(&json!({ "complete": complete, "titles": titles })),
+        true,
+        complete,
+    ))
+}
+
+/// Whether a bundle declares one check family complete.
+fn declared(context: &Value, family: &str) -> bool {
+    context
+        .get("complete_for")
+        .and_then(Value::as_array)
+        .is_some_and(|names| names.iter().any(|name| name.as_str() == Some(family)))
+}
+
+/// One `--draft` Card: the exact Card text with its type fields (design 8.2). An
+/// address the caller cannot know yet stays provisional, so a fault line can name
+/// the draft without inventing an allocation (R0195).
+fn draft_entry(card: &Value, index: usize) -> Result<Value> {
+    let address = ps_string(prop(card, "address"));
+    let address = if address.trim().is_empty() {
+        format!("draft:{}", index + 1)
+    } else {
+        address
+    };
+    let text_value = text_of(card, "text");
+    if text_value.trim().is_empty() {
+        bail!("draft Card `{address}` has no `text`: a draft carries the exact Card text");
+    }
+    let (title, body) =
+        split_card_text(&text_value).with_context(|| format!("draft Card `{address}`"))?;
+    let mut entry = Map::new();
+    entry.insert("address".into(), json!(address));
+    entry.insert("title".into(), json!(title));
+    entry.insert("body".into(), json!(body));
+    let declared_type = text_of(card, "type");
+    let declared_category = text_of(card, "category");
+    let (kind, other) = if declared_type.is_empty() {
+        (declared_category.clone(), String::new())
+    } else {
+        (declared_type.clone(), declared_category.clone())
+    };
+    if !other.is_empty() && !ps_eq(&other, &kind) {
+        bail!(
+            "draft Card `{address}` names both a type `{declared_type}` and a category `{declared_category}`; name its type once"
+        );
+    }
+    if !kind.trim().is_empty() {
+        entry.insert(
+            "category".into(),
+            json!(draft_category(&kind).with_context(|| format!("draft Card `{address}`"))?),
+        );
+    }
+    // Every other entry fact the rules read travels unchanged; the draft names the
+    // exact proposed write, not a second input language.
+    for name in [
+        "facet",
+        "level",
+        "line",
+        "book",
+        "parent",
+        "links",
+        "kinds",
+        "relations",
+        "sources",
+        "workspace",
+        "inbound",
+        "inbound_kinded",
+        "term",
+        "before",
+    ] {
+        if let Some(value) = prop(card, name) {
+            entry.insert(name.to_string(), value.clone());
+        }
+    }
+    Ok(Value::Object(entry))
+}
+
+/// The title and body of one exact Card text: the first line is `# <title>`, the rest
+/// is the authored body. This is the envelope fact a draft check can verify offline.
+fn split_card_text(text: &str) -> Result<(String, String)> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = text.split('\n');
+    let heading = lines.next().unwrap_or_default();
+    let title = heading
+        .strip_prefix("# ")
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if title.is_empty() {
+        bail!("the text must open with `# <title>`");
+    }
+    let rest = lines.collect::<Vec<_>>().join("\n");
+    let body = rest.strip_prefix('\n').unwrap_or(&rest).to_string();
+    Ok((title, body))
+}
+
+/// The layer role a draft's type names. The Term type is the design's own example;
+/// its T rules are pending, so it takes the R rules like a Hub Card does.
+fn draft_category(kind: &str) -> Result<&'static str> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "idea" => Ok("idea"),
+        "event" => Ok("event"),
+        "finding" => Ok("finding"),
+        "model" => Ok("model"),
+        "hub" => Ok("hub"),
+        "term" => Ok("term"),
+        other => bail!("unknown draft type `{other}`; expected idea, event, finding, model, hub, or term"),
+    }
+}
+
+/// What one draft run decided, and the facts its status document publishes.
+#[derive(Debug)]
+pub(crate) struct DraftOutcome {
+    pub(crate) report: CheckReport,
+    pub(crate) missing: Vec<String>,
+    pub(crate) reasons: Vec<String>,
+    pub(crate) workspace: String,
+    pub(crate) contract: crate::contract::Contract,
+}
+
+/// Check one draft under the checker's built-in policy and report exactly which
+/// families the answer covers (design 8.2, US021). An unknown family, a stale rule
+/// binding, or two different Workspaces is an invalid invocation, never a pass.
+fn check_draft(raw: &str, kind: InputKind, options: &Options) -> Result<DraftOutcome> {
+    let mut bundle = read_bundle(raw, kind)?;
+    let workspace = match (bundle.workspace.clone(), options.workspace.clone()) {
+        (Some(bundle), Some(flag)) if !ps_eq(&bundle, &flag) => bail!(
+            "the draft names workspace {bundle} and --workspace names {flag}; name one Workspace"
+        ),
+        (Some(bundle), _) => bundle,
+        (None, flag) => flag.unwrap_or_else(|| "agent".to_string()),
+    };
+    if let Some(rule_version) = &bundle.rule_version
+        && !ps_eq(rule_version, crate::contract::RULE_VERSION)
+    {
+        bail!(
+            "stale check contract: the draft binds rule version {rule_version}, this zt-check uses {}",
+            crate::contract::RULE_VERSION
+        );
+    }
+    let contract = crate::contract::Contract::built_in(&options.limits);
+    let policy_bound = bundle
+        .policy_hash
+        .as_deref()
+        .map(|hash| ps_eq(hash, &contract.policy_hash));
+    let declared = bundle.declared.clone().unwrap_or_else(|| match kind {
+        InputKind::Json => vec!["local".to_string()],
+        InputKind::Draft => vec!["envelope".to_string(), "local".to_string()],
+    });
+    for family in &declared {
+        if !crate::contract::FAMILIES.contains(&family.as_str()) {
+            bail!(
+                "unknown check family `{family}`; a draft declares {}",
+                crate::contract::FAMILIES.join(", ")
+            );
+        }
+    }
+    let mut missing = Vec::new();
+    let mut reasons = Vec::new();
+    for family in crate::contract::FAMILIES {
+        let is_declared = declared.iter().any(|name| name == family);
+        let backed = match family {
+            "envelope" => kind == InputKind::Draft,
+            "graph" => bundle.supplied_context && bundle.context_complete,
+            "policy" => policy_bound == Some(true),
+            _ => true,
+        };
+        if is_declared && backed {
+            continue;
+        }
+        missing.push(family.to_string());
+        reasons.push(if is_declared {
+            match family {
+                "envelope" => "the entry format carries no exact Card text, so its envelope is unchecked".to_string(),
+                "graph" => "the graph checks need a complete Workspace context (`context.cards` with `complete_for` graph)".to_string(),
+                "policy" => "the draft binds no policy hash, or one other than this checker's built-in policy; a live check or a bound archive policy hash decides it".to_string(),
+                _ => String::new(),
+            }
+        } else {
+            match family {
+                "placement" => "placement (the allocated address, Link targets, Access and Locks) needs a service preview; a self-check reserves no future write".to_string(),
+                "policy" => "the draft carries no archive policy; the answer uses the checker's built-in defaults".to_string(),
+                "graph" => "the bundle declares no complete Workspace context".to_string(),
+                "envelope" => "the bundle does not carry the exact Card text".to_string(),
+                _ => format!("the bundle does not declare `{family}` complete"),
+            }
+        });
+    }
+    for card in &mut bundle.cards {
+        if ps_string(prop(card, "workspace")).is_empty() {
+            card["workspace"] = json!(workspace);
+        }
+    }
+    let setting = utf16_form(options.setting.as_deref().unwrap_or_default());
     let setting_body = (!setting.is_empty())
         .then(|| {
-            cards
+            bundle
+                .cards
                 .iter()
                 .find(|card| ps_eq(&text(prop(card, "address")), &setting))
                 .map(|card| ps_string(prop(card, "body")))
         })
         .flatten();
-    let check = Check::new(limits, require_explain, level)
-        .with_terms(setting_body.as_deref())
-        .with_shared(shared)
-        .with_context(context);
-    let before = before_entries(&cards)?;
+    let shared = bundle
+        .cards
+        .iter()
+        .filter(|card| ps_eq(&text_of(card, "line"), "shared"))
+        .map(|card| ps_string(prop(card, "address")))
+        .collect();
+    let check = Check::new(
+        options.limits.clone(),
+        options.require_explain,
+        &options.level,
+    )
+    .with_terms(setting_body.as_deref())
+    .with_shared(shared)
+    .with_context(bundle.context)
+    .with_policies(contract.policy.clone());
+    let report = check_report(&check, &bundle.cards)?;
+    Ok(DraftOutcome {
+        report,
+        missing,
+        reasons,
+        workspace,
+        contract,
+    })
+}
+
+/// Check the proposed Cards, applying the legacy ratchet when the bundle pairs any of
+/// them with its old authored version (design 6.3).
+fn check_report(check: &Check, cards: &[Value]) -> Result<CheckReport> {
+    let before = before_entries(cards)?;
     if before.is_empty() {
-        let lines = check.run(&cards);
-        let faults = lines.len();
-        return Ok((lines, faults));
+        return Ok(CheckReport::of(check.report(cards)));
     }
     let old_cards = before
         .iter()
@@ -117,7 +441,7 @@ pub(crate) fn check_json(
             diagnostic.address = proposed.clone();
         }
     }
-    let proposed_report = check.report(&cards);
+    let proposed_report = check.report(cards);
     let applicability = before
         .iter()
         .filter_map(|(address, entry)| {
@@ -130,12 +454,11 @@ pub(crate) fn check_json(
             ))
         })
         .collect::<HashMap<_, _>>();
-    let report = ratchet(&old_report, proposed_report, |diagnostic| {
+    Ok(ratchet(&old_report, proposed_report, |diagnostic| {
         applicability
             .get(&diagnostic.address)
             .is_some_and(|(before, proposed)| before.comparable(proposed, &diagnostic.rule))
-    });
-    Ok((report.lines(), report.blockers))
+    }))
 }
 
 /// The old authored version each entry declares under `before`, paired with the
@@ -168,13 +491,21 @@ fn text_of(card: &Value, name: &str) -> String {
 }
 
 /// A Card as card-style-check.ps1 reads it from get_card: address, title, body, facet.
+/// The stored Workspace travels with it: a live check decides each Card under its own
+/// Workspace's policy, and no flag may reclassify it (design 8.1, R0186).
 fn card_entry(card: &Value) -> Value {
-    json!({
+    let mut entry = json!({
         "address": card.get("address").cloned().unwrap_or(Value::Null),
         "title": card.get("title").cloned().unwrap_or(Value::Null),
         "body": card.get("body").cloned().unwrap_or(Value::Null),
         "facet": card.get("facet").cloned().unwrap_or(Value::Null),
-    })
+    });
+    if let Some(workspace) = card.get("workspace").and_then(Value::as_str)
+        && !workspace.is_empty()
+    {
+        entry["workspace"] = json!(workspace);
+    }
+    entry
 }
 
 /// The body of the setting Card: from the Cards checked, else from zt.
@@ -193,18 +524,103 @@ fn setting_body(zt: &mut Zt, cards: &[Value], setting: &str) -> Result<Option<St
     Ok(Some(ps_string(read.cards[0].get("body"))))
 }
 
+/// What one live run checked under the archive contract, and what it knows it did
+/// not cover. `missing` is empty only when the answer is the gate's own.
+#[derive(Default)]
+pub(crate) struct Checked {
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) missing: Vec<String>,
+    pub(crate) reasons: Vec<String>,
+}
+
+/// The served check contract: the running service's published facts and the archive
+/// revision they were read at (design 8.3). A client that cannot read them does not
+/// guess.
+pub(crate) struct Served {
+    pub(crate) contract: crate::contract::Contract,
+    pub(crate) revision: u64,
+}
+
+/// Read the running service's contract from the one verified empty `get_cards` view,
+/// and refuse an answer whose rules or limits this binary does not share (R0206).
+pub(crate) fn served(zt: &mut Zt) -> Result<Served> {
+    let view = zt.call("get_cards", json!({ "addresses": [], "view": "text" }))?;
+    if view["complete"] != true {
+        bail!("incomplete check contract: the empty archive view was not complete");
+    }
+    if view["cards"].as_array().is_none_or(|cards| !cards.is_empty()) {
+        bail!("incomplete check contract: the empty archive view returned Cards");
+    }
+    let Some(published) = view.get("check_contract").filter(|value| value.is_object()) else {
+        bail!(
+            "incomplete check contract: the running service publishes none; deploy the zt build that matches zt-check"
+        );
+    };
+    let contract = crate::contract::Contract::read(published)
+        .map_err(|error| anyhow::anyhow!("incomplete check contract: {error}"))?;
+    let gaps = contract.version_gaps();
+    if !gaps.is_empty() {
+        bail!("stale check contract: {}", gaps.join("; "));
+    }
+    // A stdio proxy and the daemon it serves can be different builds. The proxy's
+    // own declaration is compared with the served contract, so neither stands in
+    // for the other (R0198).
+    let initialized = zt.initialization();
+    for (name, served) in [
+        ("rule_version", &contract.rule_version),
+        ("diagnostic_schema", &contract.diagnostic_schema),
+        ("applicability_version", &contract.applicability_version),
+    ] {
+        match initialized["check_contract"].get(name).and_then(Value::as_str) {
+            Some(declared) if ps_eq(declared, served) => {}
+            Some(declared) => bail!(
+                "stale check contract: the zt mcp proxy declares {name} {declared}, the running service's read reply says {served}"
+            ),
+            None => bail!(
+                "incomplete check contract: the zt mcp proxy declares no {name}; update the zt on PATH"
+            ),
+        }
+    }
+    let revision = view["archive_revision"]
+        .as_u64()
+        .context("incomplete check contract: the archive view names no revision")?;
+    Ok(Served { contract, revision })
+}
+
+/// A live check may not reclassify a stored Card: the flag must agree with every
+/// Card's own Workspace, or the answer would claim a permission the owner never gave
+/// (design 8.1, R0186).
+fn workspace_gaps(cards: &[Value], flag: &str) -> Vec<String> {
+    if flag.is_empty() {
+        return Vec::new();
+    }
+    cards
+        .iter()
+        .filter_map(|card| {
+            let address = ps_string(prop(card, "address"));
+            let workspace = ps_string(prop(card, "workspace"));
+            (!workspace.is_empty() && !ps_eq(&workspace, flag)).then(|| {
+                format!("`{address}` is a {workspace} Card; --workspace {flag} cannot reclassify a stored Card")
+            })
+        })
+        .collect()
+}
+
+/// The limits a run uses must be the limits the contract publishes, or its answer is
+/// not the gate's (design 8.1 and 8.3).
+fn limit_gaps(contract: &crate::contract::Contract, options: &Options) -> Vec<String> {
+    contract.limit_gaps(&options.limits)
+}
+
 /// `--model`: every Card of the complete model context, with its setting's
 /// term table and level. An external setting uses a required lean read.
-pub(crate) fn check_model(
+fn check_model(
     zt: &mut Zt,
     at: &str,
-    setting: &str,
-    level: &str,
-    limits: Limits,
-    require_explain: bool,
-    skip_shared: bool,
-) -> Result<Vec<String>> {
-    let revision = zt.cards(&[], "text")?.archive_revision;
+    options: &Options,
+    served: &Served,
+) -> Result<Checked> {
+    let revision = served.revision;
     let structure = zt.call("get_model", json!({ "at": at }))?;
     structure["head"]["address"]
         .as_str()
@@ -213,15 +629,15 @@ pub(crate) fn check_model(
     for part in structure["parts"].as_array().into_iter().flatten() {
         cards.push(card_entry(part));
     }
-    let setting = if setting.is_empty() {
+    let setting = if options.setting.as_deref().unwrap_or_default().is_empty() {
         ps_string(structure["build"].get("setting"))
     } else {
-        setting.to_string()
+        options.setting.clone().unwrap_or_default()
     };
-    let level = if level.is_empty() {
+    let level = if options.level.is_empty() {
         ps_string(structure.get("level"))
     } else {
-        level.to_string()
+        options.level.clone()
     };
     // A shared part follows the term table of its home model, not this one.
     let shared = structure["build"]["order"]
@@ -231,17 +647,26 @@ pub(crate) fn check_model(
         .filter(|item| ps_eq(&ps_string(item.get("line")), "shared"))
         .map(|item| ps_string(item.get("address")))
         .collect::<Vec<_>>();
-    if skip_shared {
+    if options.skip_shared {
         cards.retain(|card| !ps_in(&ps_string(prop(card, "address")), &shared));
     }
     let body = setting_body(zt, &cards, &setting)?;
-    let check = Check::new(limits, require_explain, &level)
+    let check = Check::new(options.limits.clone(), options.require_explain, &level)
         .with_terms(body.as_deref())
-        .with_shared(shared);
+        .with_shared(shared)
+        .with_policies(served.contract.policy.clone());
     if zt.cards(&[], "text")?.archive_revision != revision {
         bail!("incomplete checker inputs: changing read view");
     }
-    Ok(check.run(&cards))
+    let mut checked = Checked {
+        diagnostics: check.report(&cards),
+        ..Checked::default()
+    };
+    checked.reasons = workspace_gaps(&cards, options.workspace.as_deref().unwrap_or_default());
+    if !checked.reasons.is_empty() {
+        checked.missing.push("workspace".to_string());
+    }
+    Ok(checked)
 }
 
 /// The Cards a Workspace's register declares under `词条分册`, in both Workspaces (§8.5, D188). A
@@ -275,15 +700,21 @@ pub(crate) fn declared_register_parts(zt: &mut Zt) -> Result<HashSet<String>> {
 /// part or Model Card with its model (setting, level, and every Derivation
 /// part with an explanation); an Idea Card, an anchor, an Event Card, or a
 /// Finding Card with
-/// its layer rules; any other Card with the R rules only. Returns every line,
-/// before the rule filter.
-pub(crate) fn check_cards(
+/// its layer rules; any other Card with the R rules only. Returns every
+/// diagnostic, before the rule filter, under the archive policy.
+fn check_cards(
     zt: &mut Zt,
     addresses: &[String],
-    book: &str,
-    limits: Limits,
-) -> Result<Vec<String>> {
+    options: &Options,
+    served: &Served,
+) -> Result<Checked> {
+    let revision = served.revision;
+    let book = options.book.as_deref().unwrap_or_default();
+    let limits = &options.limits;
     let batch = zt.cards(addresses, "text")?;
+    if batch.archive_revision != revision {
+        bail!("incomplete checker inputs: changing read view");
+    }
     let catalogue = zt.call("export_titles", json!({}))?;
     let titles = catalogue["titles"]
         .as_array()
@@ -415,7 +846,7 @@ pub(crate) fn check_cards(
         }
         plain.push(Value::Object(item));
     }
-    let mut lines = Vec::new();
+    let mut diagnostics = Vec::new();
     // Model parts and Model Cards: per model, with its setting (term table) and
     // level, as card-style-check.ps1 -Addresses reads them from the first Card.
     for (_, members) in &by_model {
@@ -424,16 +855,31 @@ pub(crate) fn check_cards(
         let level = ps_string(model.get("level"));
         let checked = members.iter().map(card_entry).collect::<Vec<_>>();
         let body = setting_body(zt, &checked, &setting)?;
-        let check = Check::new(limits.clone(), true, &level).with_terms(body.as_deref());
-        lines.extend(check.run(&checked));
+        let check = Check::new(limits.clone(), true, &level)
+            .with_terms(body.as_deref())
+            .with_policies(served.contract.policy.clone());
+        diagnostics.extend(check.report(&checked));
     }
     if !plain.is_empty() {
-        lines.extend(Check::new(limits, false, "").with_context(context).run(&plain));
+        diagnostics.extend(
+            Check::new(limits.clone(), false, "")
+                .with_context(context)
+                .with_policies(served.contract.policy.clone())
+                .report(&plain),
+        );
     }
-    if zt.cards(&[], "text")?.archive_revision != batch.archive_revision {
+    if zt.cards(&[], "text")?.archive_revision != revision {
         bail!("incomplete checker inputs: changing read view");
     }
-    Ok(lines)
+    let mut checked = Checked {
+        diagnostics,
+        ..Checked::default()
+    };
+    checked.reasons = workspace_gaps(&cards, options.workspace.as_deref().unwrap_or_default());
+    if !checked.reasons.is_empty() {
+        checked.missing.push("workspace".to_string());
+    }
+    Ok(checked)
 }
 
 // --- the command ------------------------------------------------------------------------------
@@ -441,6 +887,7 @@ pub(crate) fn check_cards(
 #[derive(Default)]
 struct Options {
     json: Option<String>,
+    draft: Option<String>,
     model: Option<String>,
     addresses: Option<String>,
     cards: Option<String>,
@@ -448,7 +895,12 @@ struct Options {
     book: Option<String>,
     rules: Option<String>,
     setting: Option<String>,
-    level: Option<String>,
+    level: String,
+    /// The Workspace a draft belongs to, or the live override a stored Card must
+    /// already agree with (design 8.1, R0183 and R0186).
+    workspace: Option<String>,
+    /// Where to write the structured check status (design 8.1, R0185).
+    report: Option<String>,
     require_explain: bool,
     skip_shared: bool,
     limits: Limits,
@@ -473,6 +925,7 @@ impl Options {
             };
             match flag {
                 "--json" => options.json = Some(value()?),
+                "--draft" => options.draft = Some(value()?),
                 "--model" => options.model = Some(value()?),
                 "--addresses" => options.addresses = Some(value()?),
                 "--cards" => options.cards = Some(value()?),
@@ -480,12 +933,20 @@ impl Options {
                 "--book" => options.book = Some(value()?),
                 "--rules" => options.rules = Some(value()?),
                 "--setting" => options.setting = Some(value()?),
+                "--report" => options.report = Some(value()?),
+                "--workspace" => {
+                    let workspace = value()?.to_lowercase();
+                    if !ps_in(&workspace, &["human", "agent"]) {
+                        bail!("--workspace is human or agent, not `{workspace}`");
+                    }
+                    options.workspace = Some(workspace);
+                }
                 "--level" => {
                     let level = value()?;
                     if !ps_in(&level, &["", "concept", "formal"]) {
                         bail!("--level is concept or formal, not `{level}`");
                     }
-                    options.level = Some(level.to_lowercase());
+                    options.level = level.to_lowercase();
                 }
                 "--require-explain" => options.require_explain = true,
                 "--skip-shared" => options.skip_shared = true,
@@ -506,6 +967,7 @@ impl Options {
         }
         let modes = [
             options.json.is_some(),
+            options.draft.is_some(),
             options.model.is_some(),
             options.addresses.is_some(),
             options.cards.is_some() || options.log.is_some(),
@@ -514,12 +976,12 @@ impl Options {
         .filter(|on| *on)
         .count();
         if modes != 1 {
-            bail!("name one input: --json, --model, --addresses, or --cards/--log\n{USAGE}");
+            bail!("name one input: --json, --draft, --model, --addresses, or --cards/--log\n{USAGE}");
         }
         let cards_mode = options.cards.is_some() || options.log.is_some();
         if cards_mode
             && (options.setting.is_some()
-                || options.level.is_some()
+                || !options.level.is_empty()
                 || options.require_explain
                 || options.skip_shared)
         {
@@ -540,38 +1002,49 @@ impl Options {
 /// `--addresses`: card-style-check.ps1 -Addresses. The Cards from lean batches;
 /// the term table from --setting or the first Card's model setting; the level
 /// from --level or the first Card's model.
-pub(crate) fn check_addresses(
+fn check_addresses(
     zt: &mut Zt,
     addresses: &[String],
-    setting: &str,
-    level: &str,
-    limits: Limits,
-    require_explain: bool,
-) -> Result<Vec<String>> {
+    options: &Options,
+    served: &Served,
+) -> Result<Checked> {
+    let revision = served.revision;
     let batch = zt.cards(addresses, "text")?;
+    if batch.archive_revision != revision {
+        bail!("incomplete checker inputs: changing read view");
+    }
     let read = batch.cards;
     let first = match read.first().filter(|card| card["type"] == "model") {
         Some(card) => zt.call("get_model", json!({"at":card["address"]}))?,
         None => Value::Null,
     };
-    let setting = if setting.is_empty() {
+    let setting = if options.setting.as_deref().unwrap_or_default().is_empty() {
         ps_string(first["build"].get("setting"))
     } else {
-        setting.to_string()
+        options.setting.clone().unwrap_or_default()
     };
-    let level = if level.is_empty() {
+    let level = if options.level.is_empty() {
         ps_string(first.get("level"))
     } else {
-        level.to_string()
+        options.level.clone()
     };
     let cards = read.iter().map(card_entry).collect::<Vec<_>>();
     let body = setting_body(zt, &cards, &setting)?;
-    if zt.cards(&[], "text")?.archive_revision != batch.archive_revision {
+    if zt.cards(&[], "text")?.archive_revision != revision {
         bail!("incomplete checker inputs: changing read view");
     }
-    Ok(Check::new(limits, require_explain, &level)
-        .with_terms(body.as_deref())
-        .run(&cards))
+    let mut checked = Checked {
+        diagnostics: Check::new(options.limits.clone(), options.require_explain, &level)
+            .with_terms(body.as_deref())
+            .with_policies(served.contract.policy.clone())
+            .report(&cards),
+        ..Checked::default()
+    };
+    checked.reasons = workspace_gaps(&cards, options.workspace.as_deref().unwrap_or_default());
+    if !checked.reasons.is_empty() {
+        checked.missing.push("workspace".to_string());
+    }
+    Ok(checked)
 }
 
 /// The checker's own identity: a report that records the software version of a run
@@ -580,20 +1053,238 @@ fn version() -> String {
     format!("zt-check {}", crate::VERSION)
 }
 
-/// `zt-check …`.
-pub fn run_cli(args: &[String]) -> Result<()> {
+/// The structured check status of one run (design 8.1, R0185): the verdict, the
+/// check families the answer covers, the counts, and the contract it was computed
+/// under. `--report <file>` writes it beside the ordinary fault lines, so a caller
+/// reads what the lines cannot say.
+#[derive(Clone, Debug)]
+pub struct Status {
+    /// `live`, `draft` (the entry format), or `draft_bundle` (the exact-write bundle).
+    pub mode: &'static str,
+    /// `pass`, `block`, or `incomplete`.
+    pub verdict: &'static str,
+    /// The check families or facts this answer did not cover.
+    pub missing: Vec<String>,
+    /// Why each missing family is missing.
+    pub reasons: Vec<String>,
+    /// The blocking diagnostics after the policy, which `faults: N` publishes.
+    pub blocking: usize,
+    /// The advisory diagnostics, printed with `(advisory)` and not counted.
+    pub advisory: usize,
+    /// The Workspace a draft belongs to, or the flag a live check had to agree with.
+    pub workspace: String,
+    /// `archive` (the running service's policy), `built_in` (the checker's defaults),
+    /// or `unverified` when no contract could be read.
+    pub policy_source: &'static str,
+    /// The published check contract (design 8.3).
+    pub contract: Value,
+    /// The gate stage's own decision, when an archive answered.
+    pub gate: Value,
+    /// Every diagnostic under the structured contract.
+    pub diagnostics: Vec<Value>,
+}
+
+impl Status {
+    /// Whether the evaluation covered everything its mode promises.
+    pub fn complete(&self) -> bool {
+        self.missing.is_empty()
+    }
+
+    /// The process exit contract (design 8.1, R0188–R0191): 0 for a complete
+    /// evaluation with no blocking fault, 1 for a complete evaluation with one, and
+    /// 2 for an invalid, incomplete, stale, or infrastructure outcome.
+    pub fn exit_code(&self) -> u8 {
+        match self.verdict {
+            "pass" => 0,
+            "block" => 1,
+            _ => 2,
+        }
+    }
+
+    /// The `--report` document.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "mode": self.mode,
+            "verdict": self.verdict,
+            "complete": self.complete(),
+            "missing": self.missing,
+            "reasons": self.reasons,
+            "blocking": self.blocking,
+            "advisory": self.advisory,
+            "workspace": self.workspace,
+            "policy_source": self.policy_source,
+            "contract": self.contract,
+            "gate": self.gate,
+            "diagnostics": self.diagnostics,
+        })
+    }
+}
+
+/// One run's lines and status. The lines are the ordinary fault lines and
+/// `faults: N`; the status carries what they cannot.
+pub struct Run {
+    pub lines: Vec<String>,
+    pub status: Status,
+}
+
+impl Run {
+    /// The process exit code this run answers (design 8.1, R0188–R0191).
+    pub fn exit_code(&self) -> u8 {
+        self.status.exit_code()
+    }
+}
+
+fn verdict(missing: &[String], blocking: usize) -> &'static str {
+    if !missing.is_empty() {
+        "incomplete"
+    } else if blocking > 0 {
+        "block"
+    } else {
+        "pass"
+    }
+}
+
+/// The fault lines, then the one count every mode publishes: the blocking
+/// diagnostics after policy and ratchet (design 8.1, R0187).
+fn report_lines(report: &CheckReport) -> Vec<String> {
+    let mut lines = report.lines();
+    lines.push(format!("faults: {}", report.blockers));
+    lines
+}
+
+/// The gate's own decision for the archive's stage: under `advisory` a blocking
+/// policy setting reports the line and refuses nothing.
+fn gate_json(contract: &crate::contract::Contract) -> Value {
+    let enforcing = contract.stage == "enforce";
+    json!({
+        "stage": contract.stage,
+        "would_refuse": enforcing,
+        "note": if enforcing {
+            "the archive's gate stage is enforce: a blocking diagnostic refuses the write"
+        } else {
+            "the archive's gate stage is advisory: it reports these lines and refuses no write"
+        },
+    })
+}
+
+fn diagnostics_json(report: &CheckReport) -> Vec<Value> {
+    report
+        .diagnostics
+        .iter()
+        .map(Diagnostic::to_json)
+        .collect()
+}
+
+/// A live run's answer under the running service's contract.
+fn live_run(served: &Served, checked: Checked, options: &Options) -> Run {
+    let report = CheckReport::of(checked.diagnostics);
+    let blocking = report.blockers;
+    let status = Status {
+        mode: "live",
+        verdict: verdict(&checked.missing, blocking),
+        missing: checked.missing,
+        reasons: checked.reasons,
+        blocking,
+        advisory: report.diagnostics.len() - blocking,
+        workspace: options
+            .workspace
+            .clone()
+            .unwrap_or_else(|| "each stored Card's own".to_string()),
+        policy_source: crate::contract::POLICY_SOURCE_ARCHIVE,
+        contract: served.contract.publish(),
+        gate: gate_json(&served.contract),
+        diagnostics: diagnostics_json(&report),
+    };
+    Run {
+        lines: report_lines(&report),
+        status,
+    }
+}
+
+/// A draft's answer: the checker's built-in policy, and exactly the families the
+/// bundle declared complete.
+fn draft_run(mode: &'static str, outcome: DraftOutcome) -> Run {
+    let report = outcome.report;
+    let blocking = report.blockers;
+    let status = Status {
+        mode,
+        verdict: verdict(&outcome.missing, blocking),
+        missing: outcome.missing,
+        reasons: outcome.reasons,
+        blocking,
+        advisory: report.diagnostics.len() - blocking,
+        workspace: outcome.workspace,
+        policy_source: crate::contract::POLICY_SOURCE_BUILT_IN,
+        contract: outcome.contract.publish(),
+        gate: Value::Null,
+        diagnostics: diagnostics_json(&report),
+    };
+    Run {
+        lines: report_lines(&report),
+        status,
+    }
+}
+
+/// A live run whose contract could not be read or does not match this binary: it
+/// prints the mismatch and refuses to predict acceptance (R0206). No rule is
+/// reported, because the rules that would decide are not known to be the same.
+fn unverified(options: &Options, reason: &str) -> Run {
+    let contract = crate::contract::Contract::built_in(&options.limits).publish();
+    let status = Status {
+        mode: "live",
+        verdict: "incomplete",
+        missing: vec!["contract".to_string()],
+        reasons: vec![reason.to_string()],
+        blocking: 0,
+        advisory: 0,
+        workspace: options
+            .workspace
+            .clone()
+            .unwrap_or_else(|| "each stored Card's own".to_string()),
+        policy_source: "unverified",
+        contract,
+        gate: Value::Null,
+        diagnostics: Vec::new(),
+    };
+    Run {
+        lines: vec![
+            format!("check: incomplete: {reason}"),
+            "faults: 0".to_string(),
+        ],
+        status,
+    }
+}
+
+/// `zt-check …`: the lines, the optional `--report` document, and the exit code.
+pub fn run_cli(args: &[String]) -> Result<u8> {
     // `--version` is answered before any archive is read: a review records the checker
     // that produced its lines, and a copied binary must be able to state which one it is.
     if args.len() == 1 && matches!(args[0].to_ascii_lowercase().as_str(), "--version" | "-v") {
         println!("{}", version());
-        return Ok(());
+        return Ok(0);
     }
-    write_lines(&run_lines(args, None)?)
+    let options = Options::parse(args)?;
+    let run = run(args, None)?;
+    write_lines(&run.lines)?;
+    if let Some(path) = &options.report {
+        write_status(path, &run.status)?;
+    }
+    Ok(run.exit_code())
 }
 
-/// The lines `zt-check …` prints: one per fault, then `faults: N`. With `zt`,
-/// the reads go to that `zt mcp`; without it, a new one starts when needed.
-pub fn run_lines(args: &[String], zt: Option<&mut Zt>) -> Result<Vec<String>> {
+/// The structured status document, written whole so a reader never sees half of one.
+fn write_status(path: &str, status: &Status) -> Result<()> {
+    let mut document =
+        serde_json::to_string_pretty(&status.to_json()).context("the check status is not JSON")?;
+    document.push('\n');
+    std::fs::write(path, document).with_context(|| format!("failed to write {path}"))?;
+    Ok(())
+}
+
+/// One run of `zt-check …`: its lines (the ordinary fault lines and `faults: N`)
+/// and the status that explains them. With `zt`, the reads go to that `zt mcp`;
+/// without it, a new one starts when the mode reads the archive.
+pub fn run(args: &[String], zt: Option<&mut Zt>) -> Result<Run> {
     fn server<'a>(shared: Option<&'a mut Zt>, own: &'a mut Option<Zt>) -> Result<&'a mut Zt> {
         match shared {
             Some(zt) => Ok(zt),
@@ -602,50 +1293,22 @@ pub fn run_lines(args: &[String], zt: Option<&mut Zt>) -> Result<Vec<String>> {
     }
     let mut own: Option<Zt> = None;
     let options = Options::parse(args)?;
-    let setting = options.setting.clone().unwrap_or_default();
-    let level = options.level.clone().unwrap_or_default();
-    let (mut out, count) = if let Some(path) = &options.json {
+    if let Some(path) = &options.json {
         let raw =
             std::fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
-        let (lines, faults) = check_json(
-            &raw,
-            &setting,
-            options.limits.clone(),
-            options.require_explain,
-            &level,
-        )?;
-        (lines, faults)
-    } else if let Some(list) = &options.addresses {
-        let list = LIST_SPLIT
-            .split(list)
-            .filter(|at| !at.is_empty())
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let zt = server(zt, &mut own)?;
-        let lines = check_addresses(
-            zt,
-            &list,
-            &setting,
-            &level,
-            options.limits.clone(),
-            options.require_explain,
-        )?;
-        let count = lines.len();
-        (lines, count)
-    } else if let Some(at) = &options.model {
-        let zt = server(zt, &mut own)?;
-        let lines = check_model(
-            zt,
-            at,
-            &setting,
-            &level,
-            options.limits.clone(),
-            options.require_explain,
-            options.skip_shared,
-        )?;
-        let count = lines.len();
-        (lines, count)
-    } else {
+        let outcome = check_draft(&raw, InputKind::Json, &options)?;
+        return Ok(draft_run("draft", outcome));
+    }
+    if let Some(path) = &options.draft {
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
+        let outcome = check_draft(&raw, InputKind::Draft, &options)?;
+        return Ok(draft_run("draft_bundle", outcome));
+    }
+    // The `--cards` list is read before any archive call, so an empty list still
+    // answers without a service, as it always has.
+    let cards_mode = options.addresses.is_none() && options.model.is_none();
+    let cards_list = if cards_mode {
         let mut list = LIST_SPLIT
             .split(options.cards.as_deref().unwrap_or_default())
             .filter(|at| !at.is_empty())
@@ -669,21 +1332,69 @@ pub fn run_lines(args: &[String], zt: Option<&mut Zt>) -> Result<Vec<String>> {
                 unique.push(at);
             }
         }
-        if unique.is_empty() {
-            (vec!["no Cards to check".to_string()], 0)
-        } else {
-            let zt = server(zt, &mut own)?;
-            let lines = check_cards(
-                zt,
-                &unique,
-                options.book.as_deref().unwrap_or_default(),
-                options.limits.clone(),
-            )?;
-            filter_rules(&lines, options.rules.as_deref().unwrap_or(DEFAULT_RULES))
+        unique
+    } else {
+        Vec::new()
+    };
+    if cards_mode && cards_list.is_empty() {
+        return Ok(Run {
+            lines: vec!["no Cards to check".to_string(), "faults: 0".to_string()],
+            status: Status {
+                mode: "live",
+                verdict: "pass",
+                missing: Vec::new(),
+                reasons: vec!["no Cards to check".to_string()],
+                blocking: 0,
+                advisory: 0,
+                workspace: options
+                    .workspace
+                    .clone()
+                    .unwrap_or_else(|| "each stored Card's own".to_string()),
+                policy_source: "unverified",
+                contract: crate::contract::Contract::built_in(&options.limits).publish(),
+                gate: Value::Null,
+                diagnostics: Vec::new(),
+            },
+        });
+    }
+    let zt = server(zt, &mut own)?;
+    let served = match served(zt) {
+        Ok(served) => served,
+        Err(error) => return Ok(unverified(&options, &format!("{error:#}"))),
+    };
+    let mut missing = Vec::new();
+    let mut reasons = Vec::new();
+    let gaps = limit_gaps(&served.contract, &options);
+    if !gaps.is_empty() {
+        missing.push("limits".to_string());
+        reasons.extend(gaps);
+    }
+    let mut checked = if let Some(list) = &options.addresses {
+        let list = LIST_SPLIT
+            .split(list)
+            .filter(|at| !at.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        check_addresses(zt, &list, &options, &served)?
+    } else if let Some(at) = &options.model {
+        check_model(zt, at, &options, &served)?
+    } else {
+        let checked = check_cards(zt, &cards_list, &options, &served)?;
+        let rules = options.rules.as_deref().unwrap_or(DEFAULT_RULES);
+        Checked {
+            diagnostics: select_rules(checked.diagnostics, rules),
+            ..checked
         }
     };
-    out.push(format!("faults: {count}"));
-    Ok(out)
+    checked.missing.splice(0..0, missing);
+    checked.reasons.splice(0..0, reasons);
+    Ok(live_run(&served, checked, &options))
+}
+
+/// The lines `zt-check …` prints: one per fault, then `faults: N`. With `zt`,
+/// the reads go to that `zt mcp`; without it, a new one starts when needed.
+pub fn run_lines(args: &[String], zt: Option<&mut Zt>) -> Result<Vec<String>> {
+    Ok(run(args, zt)?.lines)
 }
 
 /// One line each, UTF-8 whatever the console code page, with the line ends
@@ -786,7 +1497,7 @@ mod tests {
             [
                 "E/3 I2 (2 characters < 40) merge candidate",
                 "E/3 I6 (advisory) a title very similar to [[E/4]]",
-                "faults: 2",
+                "faults: 1",
             ]
         );
     }
@@ -798,7 +1509,7 @@ mod tests {
         let limits = Limits::default();
         assert_eq!(
             json_lines(ENVELOPE_SHARED, "S/1", limits.clone(), false, ""),
-            ["S/3 R6 uses `卖资产` for `清算`: 双方卖资产。", "faults: 1"]
+            ["S/3 R6 (advisory) uses `卖资产` for `清算`: 双方卖资产。", "faults: 0"]
         );
         assert_eq!(json_lines(ENVELOPE_SHARED, "S/9", limits, false, ""), ["faults: 0"]);
     }
@@ -1222,8 +1933,8 @@ mod tests {
             check_json(&advisory.to_string(), "", Limits::default(), false, "")
                 .unwrap()
                 .1,
-            1,
-            "the plain bundle keeps counting advisory lines until the coordinated switch"
+            0,
+            "the coordinated switch counts blocking diagnostics only (S06, R0187)"
         );
     }
 
@@ -1302,5 +2013,285 @@ mod tests {
             ),
             ["K/7|a E2 (advisory) missing labels: 来源", "faults: 0"]
         );
+    }
+
+    // --- S06 (#148): the exact draft, the Workspace, and the published status -------------------
+
+    fn draft(raw: &Value, options: &Options) -> DraftOutcome {
+        check_draft(&raw.to_string(), InputKind::Draft, options).expect("a valid draft")
+    }
+
+    fn all_families() -> Vec<String> {
+        crate::contract::FAMILIES
+            .iter()
+            .map(|family| family.to_string())
+            .collect()
+    }
+
+    /// S06-AC01/AC02: a draft names the exact Card text and its type, and an
+    /// address the caller cannot know yet stays provisional (R0195).
+    #[test]
+    fn a_draft_checks_the_exact_text_and_type_of_each_candidate() {
+        let raw = json!({
+            "workspace": "agent",
+            "cards": [
+                { "address": "K/14", "type": "idea", "text": "# 税负落在买方\n\n甲；乙。" },
+                { "type": "event", "text": "# 通用汽车收购费雪车身公司\n\n时间：1999 年。\n地点：上海。\n参与者：甲。\n经过：双方签约。\n来源：[[K]]" }
+            ]
+        });
+        let outcome = draft(&raw, &Options::default());
+        assert_eq!(
+            outcome.report.lines(),
+            [
+                "K/14 R3 甲；乙。",
+                "K/14 I1 (advisory) the title states no claim: 税负落在买方",
+                "K/14 I2 (4 characters < 40) merge candidate",
+                "draft:2 E1 no date in the title: 通用汽车收购费雪车身公司",
+            ]
+        );
+        // The default bundle declares the envelope and the local checks; the rest
+        // stay explicitly missing rather than passing by omission (US021).
+        assert_eq!(outcome.missing, ["graph", "placement", "policy"]);
+        assert!(
+            outcome
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("service preview")),
+            "the missing placement names the one way to resolve it: {:?}",
+            outcome.reasons
+        );
+        assert!(outcome.contract.archive.is_none(), "a draft has no archive");
+        assert_eq!(outcome.workspace, "agent", "a draft defaults to the agent Workspace");
+        assert_eq!(outcome.report.blockers, 3, "R3, I2 and E1 block; I1 is advice");
+    }
+
+    /// S06-AC02/AC07: a bundle that declares every family and binds the built-in
+    /// policy is a complete evaluation; its verdict follows its blockers.
+    #[test]
+    fn a_draft_that_declares_every_family_and_binds_the_policy_is_complete() {
+        let policy_hash = crate::contract::Contract::built_in(&Limits::default()).policy_hash;
+        let raw = json!({
+            "rule_version": crate::contract::RULE_VERSION,
+            "policy_hash": policy_hash,
+            "cards": [{ "address": "K/1", "text": "# 税负落在买方\n\n甲；乙。" }],
+            "context": {
+                "cards": [{ "address": "K/2", "title": "另一张卡", "workspace": "agent" }],
+                "complete_for": all_families(),
+            }
+        });
+        let outcome = draft(&raw, &Options::default());
+        assert!(outcome.missing.is_empty(), "{:?}", outcome.missing);
+        assert!(outcome.reasons.is_empty(), "{:?}", outcome.reasons);
+        assert_eq!(outcome.report.blockers, 1);
+    }
+
+    /// S06-AC05: a declared family the bundle's own facts do not back is not
+    /// complete: a graph declaration without a context, and a policy declaration
+    /// without the matching policy hash, stay missing.
+    #[test]
+    fn a_declared_family_without_its_facts_stays_incomplete() {
+        let raw = json!({
+            "cards": [{ "address": "K/1", "text": "# 税负落在买方\n\n只此一句。" }],
+            "context": { "complete_for": all_families() }
+        });
+        let outcome = draft(&raw, &Options::default());
+        assert_eq!(outcome.missing, ["graph", "policy"]);
+        assert!(
+            outcome.reasons.iter().any(|reason| reason.contains("complete Workspace context")),
+            "{:?}",
+            outcome.reasons
+        );
+        assert!(
+            outcome.reasons.iter().any(|reason| reason.contains("policy hash")),
+            "{:?}",
+            outcome.reasons
+        );
+
+        // A policy hash other than the built-in one is a different policy, not a pass.
+        let raw = json!({
+            "policy_hash": "0".repeat(64),
+            "cards": [{ "address": "K/1", "text": "# 税负落在买方\n\n只此一句。" }],
+            "context": { "complete_for": ["envelope", "local", "policy"] }
+        });
+        let outcome = draft(&raw, &Options::default());
+        assert_eq!(outcome.missing, ["graph", "placement", "policy"]);
+    }
+
+    /// S06-AC05: a stale rule binding is refused, never reported as a pass (R0206).
+    #[test]
+    fn a_stale_rule_version_in_the_bundle_is_refused() {
+        let raw = json!({
+            "rule_version": "0",
+            "cards": [{ "address": "K/1", "text": "# 税负落在买方\n\n只此一句。" }]
+        });
+        let error = check_draft(&raw.to_string(), InputKind::Draft, &Options::default())
+            .expect_err("a stale rule version is refused");
+        assert!(
+            format!("{error:#}").contains("stale check contract"),
+            "{error:#}"
+        );
+    }
+
+    /// S06-AC01: an unknown check family and an unknown draft type are invalid
+    /// invocations, never a silently narrower or broader check.
+    #[test]
+    fn an_unknown_family_or_type_is_refused() {
+        let raw = json!({
+            "cards": [{ "address": "K/1", "text": "# 税负落在买方\n\n只此一句。" }],
+            "context": { "complete_for": ["everything"] }
+        });
+        let error = check_draft(&raw.to_string(), InputKind::Draft, &Options::default())
+            .expect_err("an unknown family is refused");
+        assert!(format!("{error:#}").contains("unknown check family"), "{error:#}");
+
+        let raw = json!({ "cards": [{ "address": "K/1", "type": "chapter", "text": "# 标题\n\n正文。" }] });
+        let error = check_draft(&raw.to_string(), InputKind::Draft, &Options::default())
+            .expect_err("an unknown type is refused");
+        assert!(format!("{error:#}").contains("unknown draft type"), "{error:#}");
+    }
+
+    /// S06-AC01/AC02: a draft's text must carry the envelope title, and its type
+    /// is named once.
+    #[test]
+    fn a_draft_without_a_title_or_with_two_types_is_refused() {
+        let raw = json!({ "cards": [{ "address": "K/1", "text": "没有标题的正文。" }] });
+        let error = check_draft(&raw.to_string(), InputKind::Draft, &Options::default())
+            .expect_err("a text without a title is refused");
+        assert!(format!("{error:#}").contains("open with `# <title>`"), "{error:#}");
+
+        let raw = json!({
+            "cards": [{ "address": "K/1", "type": "event", "category": "idea", "text": "# 标题\n\n正文。" }]
+        });
+        let error = check_draft(&raw.to_string(), InputKind::Draft, &Options::default())
+            .expect_err("two types are refused");
+        assert!(format!("{error:#}").contains("name its type once"), "{error:#}");
+    }
+
+    /// S06-AC03: a draft belongs to the agent Workspace by default, and the
+    /// Workspace policy decides its severities. `--workspace human` cannot
+    /// reclassify a draft that names its own Workspace.
+    #[test]
+    fn the_workspace_flag_decides_a_draft_under_that_workspaces_policy() {
+        let long = (1..=13)
+            .map(|n| format!("第 {n} 句说明这一步的推理。"))
+            .collect::<String>();
+        let raw = json!({ "cards": [{ "address": "K/1", "facet": "设定", "text": format!("# 设定\n\n{long}") }] });
+        let agent = draft(&raw, &Options::default());
+        assert_eq!(agent.workspace, "agent");
+        assert_eq!(agent.report.blockers, 1, "R13 blocks in the agent Workspace");
+        let human = draft(
+            &raw,
+            &Options {
+                workspace: Some("human".to_string()),
+                ..Options::default()
+            },
+        );
+        assert_eq!(human.workspace, "human");
+        assert_eq!(human.report.blockers, 0, "R13 advises in the human Workspace");
+        assert!(
+            human.report.lines()[0].contains("R13 (advisory)"),
+            "{:?}",
+            human.report.lines()
+        );
+
+        // The bundle's own Workspace wins, and a different flag is a refusal.
+        let named = json!({ "workspace": "human", "cards": [] });
+        let error = check_draft(
+            &named.to_string(),
+            InputKind::Draft,
+            &Options {
+                workspace: Some("agent".to_string()),
+                ..Options::default()
+            },
+        )
+        .expect_err("two Workspaces are refused");
+        assert!(format!("{error:#}").contains("name one Workspace"), "{error:#}");
+    }
+
+    /// S06-AC01/AC07: the status document carries the verdict, the missing
+    /// families, the counts, the contract, and the gate's own stage decision.
+    #[test]
+    fn the_status_document_names_the_verdict_and_the_contract() {
+        let raw = json!({
+            "cards": [{ "address": "K/1", "text": "# 税负落在买方\n\n甲；乙。" }]
+        });
+        let run = draft(&raw, &Options::default());
+        let status = Run {
+            lines: printed(run.report.lines(), run.report.blockers),
+            status: Status {
+                mode: "draft_bundle",
+                verdict: verdict(&run.missing, run.report.blockers),
+                missing: run.missing,
+                reasons: run.reasons,
+                blocking: run.report.blockers,
+                advisory: run.report.diagnostics.len() - run.report.blockers,
+                workspace: run.workspace,
+                policy_source: crate::contract::POLICY_SOURCE_BUILT_IN,
+                contract: run.contract.publish(),
+                gate: Value::Null,
+                diagnostics: run
+                    .report
+                    .diagnostics
+                    .iter()
+                    .map(Diagnostic::to_json)
+                    .collect(),
+            },
+        };
+        let document = status.status.to_json();
+        assert_eq!(document["mode"], json!("draft_bundle"));
+        assert_eq!(document["verdict"], json!("incomplete"));
+        assert_eq!(document["complete"], json!(false));
+        assert_eq!(document["missing"], json!(["graph", "placement", "policy"]));
+        assert_eq!(document["blocking"], json!(1));
+        assert_eq!(document["advisory"], json!(0));
+        assert_eq!(document["policy_source"], json!("built_in"));
+        assert_eq!(
+            document["contract"]["rule_version"],
+            json!(crate::contract::RULE_VERSION)
+        );
+        assert_eq!(document["contract"]["archive"], Value::Null);
+        assert_eq!(document["gate"], Value::Null);
+        assert_eq!(document["diagnostics"][0]["rule"], json!("R3"));
+        assert_eq!(status.status.exit_code(), 2);
+        assert_eq!(status.lines.last().map(String::as_str), Some("faults: 1"));
+    }
+
+    /// S06-AC07: the exit contract is the verdict's: 0 pass, 1 block, 2 incomplete.
+    #[test]
+    fn the_exit_contract_follows_the_verdict() {
+        let status = |verdict, missing: Vec<String>| Status {
+            mode: "live",
+            verdict,
+            missing,
+            reasons: Vec::new(),
+            blocking: 0,
+            advisory: 0,
+            workspace: String::new(),
+            policy_source: "archive",
+            contract: Value::Null,
+            gate: Value::Null,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(status("pass", Vec::new()).exit_code(), 0);
+        assert_eq!(status("block", Vec::new()).exit_code(), 1);
+        assert_eq!(status("incomplete", vec!["placement".to_string()]).exit_code(), 2);
+    }
+
+    /// S06-AC03: a live check refuses a Workspace flag that would reclassify a
+    /// stored Card (R0186).
+    #[test]
+    fn a_live_workspace_flag_must_agree_with_every_stored_card() {
+        let cards = vec![
+            json!({ "address": "1/1", "workspace": "agent" }),
+            json!({ "address": "0/1", "workspace": "human" }),
+        ];
+        assert!(workspace_gaps(&cards, "").is_empty());
+        assert!(workspace_gaps(&cards, "agent").len() == 1);
+        assert_eq!(
+            workspace_gaps(&cards, "agent")[0],
+            "`0/1` is a human Card; --workspace agent cannot reclassify a stored Card"
+        );
+        let agent_only = vec![json!({ "address": "1/1", "workspace": "agent" })];
+        assert!(workspace_gaps(&agent_only, "agent").is_empty());
     }
 }

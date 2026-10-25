@@ -51,8 +51,6 @@ pub struct Params {
     pub skeleton: String,
 }
 
-/// The advisory rules zt-check reports apart from the hard ones: they never block a run.
-const ADVISORY: &[&str] = &["I1", "I6", "E5", "L3"];
 /// The Categories the one bounded correction cycle may rewrite, as the Card compiler
 /// declares them: everything else belongs to a done Model build, a Hub, a structure Card or
 /// the term table, and correcting it would reopen work this branch must not reopen.
@@ -286,7 +284,7 @@ fn disposition(
         "text": ps::field(&fault, "text"),
         "line": fault["line"],
     });
-    if ADVISORY.contains(&rule.as_str()) || rule.eq_ignore_ascii_case(NOTE_RULE) {
+    if ps::field(&fault, "line").contains("(advisory)") || rule.eq_ignore_ascii_case(NOTE_RULE) {
         out["outcome"] = json!("advisory");
         out["reason"] = json!("an advisory rule: it never blocks the run, and the bounded correction does not rewrite for it");
         return out;
@@ -320,13 +318,7 @@ fn disposition(
     out["tree"] = now["tree"].clone();
     let same: Vec<String> = faults_by_address
         .get(&key)
-        .map(|rules| {
-            rules
-                .iter()
-                .filter(|rule| !ADVISORY.contains(&rule.as_str()))
-                .cloned()
-                .collect()
-        })
+        .cloned()
         .unwrap_or_default();
     out["rules"] = json!(same);
     out
@@ -475,6 +467,11 @@ fn run_plan(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
     }
     let mut faults_by_address: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for fault in &faults {
+        // The published `(advisory)` tag is the one advisory decision every caller
+        // reads (S06, R0187): no caller keeps a private advisory list.
+        if ps::field(fault, "line").contains("(advisory)") {
+            continue;
+        }
         faults_by_address
             .entry(ps::key(&ps::field(&fault, "address")))
             .or_default()
@@ -1310,7 +1307,8 @@ fn run_final(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
     let mut by_class: BTreeMap<String, i64> = BTreeMap::new();
     for fault in &faults {
         let rule = ps::field(&fault, "rule");
-        if ADVISORY.contains(&rule.as_str()) || rule.eq_ignore_ascii_case(NOTE_RULE) {
+        // The checker's own `(advisory)` tag decides advice (S06, R0187).
+        if ps::field(fault, "line").contains("(advisory)") || rule.eq_ignore_ascii_case(NOTE_RULE) {
             continue;
         }
         let class = if SOURCE_RULES.contains(&rule.as_str()) { "source" } else { "hard" };
@@ -1553,7 +1551,13 @@ mod tests {
     use super::*;
 
     fn fault(address: &str, rule: &str, text: &str) -> Value {
-        json!({"address": address, "rule": rule, "text": text, "line": format!("{address} {rule} {text}")})
+        // The line carries the checker's own advisory tag, as an audit line does.
+        let tag = if zt_check::policy::severity(rule) == zt_check::core::Severity::Advise {
+            "(advisory) "
+        } else {
+            ""
+        };
+        json!({"address": address, "rule": rule, "text": text, "line": format!("{address} {rule} {tag}{text}")})
     }
 
     fn card(address: &str, category: &str, fingerprint: &str) -> Value {
@@ -1572,6 +1576,10 @@ mod tests {
     fn by_address(faults: &[Value]) -> BTreeMap<String, Vec<String>> {
         let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for fault in faults {
+            // The plan's per-Card rules are the blocking ones, as the plan builds them.
+            if ps::field(fault, "line").contains("(advisory)") {
+                continue;
+            }
             map.entry(ps::key(&ps::field(&fault, "address")))
                 .or_default()
                 .push(ps::field(&fault, "rule"));

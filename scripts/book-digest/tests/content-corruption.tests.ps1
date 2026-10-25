@@ -18,7 +18,10 @@ function Check-Entries($entries) {
     $file = Join-Path $scratch 'entries.json'
     [IO.File]::WriteAllText($file,($entries | ConvertTo-Json -Depth 12 -AsArray),$utf8)
     $lines = @(& $Checker --json $file 2>&1)
-    if ($LASTEXITCODE -ne 0 -or -not @($lines | Where-Object { $_ -match '^faults: \d+$' }).Count) { throw "checker did not run: $($lines -join ' | ')" }
+    # An offline draft is an incomplete evaluation by design (exit 2: placement needs a
+    # service preview), so the `faults:` line, not the exit code, is the evidence that
+    # the check completed; an invalid invocation prints no such line.
+    if (-not @($lines | Where-Object { $_ -match '^faults: \d+$' }).Count) { throw "checker did not run: $($lines -join ' | ')" }
     ,$lines
 }
 try {

@@ -596,7 +596,6 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             "list": unattributed.iter().map(|c| field(c, "address")).collect::<Vec<_>>()
         }
     });
-    let advisory = ["I1", "I6", "E5", "L3"];
     let mut book_reports: Vec<Value> = Vec::new();
     for key in &books {
         let mine: Vec<&Value> = scope.iter().copied().filter(|c| book_of(c).is_some_and(|b| eq(&b, key))).collect();
@@ -707,11 +706,12 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         let level_names: Vec<String> = model_rows.iter().map(|r| if truthy(&r["level"]) { s(&r["level"]) } else { "none".into() }).collect();
         let sum = |k: &str| model_rows.iter().map(|r| r[k].as_i64().unwrap_or(0)).sum::<i64>();
         let known = named.iter().filter(|n| n["known"] == true).count();
-        // A published "(advisory)" line is advice in every layer rule, not only the
-        // rules whose every line is advice: I7's unknown-source line is one (D138).
+        // A published "(advisory)" line is advice in every rule, whatever its
+        // layer (S06, R0187): the severity rides on the line, so no caller keeps a
+        // private advisory list.
         let layer_hard: Vec<&&Fault> = my_layer
             .iter()
-            .filter(|f| !is_in(&f.rule, &advisory) && !f.line.contains("(advisory)"))
+            .filter(|f| !f.line.contains("(advisory)"))
             .collect();
         book_reports.push(json!({
             "key": key,

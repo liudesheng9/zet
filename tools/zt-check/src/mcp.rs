@@ -52,6 +52,9 @@ pub struct Zt {
     next: u64,
     /// The server's own `initialize` answer, so a report can name the binary it read through.
     server_info: Value,
+    /// The whole `initialize` result, including the checker contract this stdio proxy
+    /// carries (design 8.3, R0198).
+    initialization: Value,
 }
 
 fn limits() -> (Duration, Duration) {
@@ -304,9 +307,11 @@ impl Zt {
             shutdown,
             next: 1,
             server_info: Value::Null,
+            initialization: Value::Null,
         };
         let hello = zt.exchange(json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } }),Some(json!(0)),"initialize")?;
         zt.server_info = hello["result"]["serverInfo"].clone();
+        zt.initialization = hello["result"].clone();
         zt.exchange(
             json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
             None,
@@ -324,6 +329,13 @@ impl Zt {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string()
+    }
+
+    /// The whole `initialize` result: the proxy's own checker declaration (R0198). The
+    /// authoritative contract for a check comes from the service's read replies; these facts
+    /// only reveal that the proxy and the served answer are different builds.
+    pub fn initialization(&self) -> &Value {
+        &self.initialization
     }
 
     fn exchange(&mut self, message: Value, id: Option<Value>, operation: &str) -> Result<Value> {

@@ -122,8 +122,8 @@ $examples = @(
         source = 'design §14.1 I6: the same title in another Workspace is no pair'; note = 'an offline bundle: the human Workspace is read-only for agents, so this case runs through --json' }
     [ordered]@{ family = 'duplicate-titles'; id = 'i6-incomplete-context'; rule = 'I6'; run = 'i6-json-incomplete'; card = '12/9|b'; lines = 2; naming = @('Workspace title context incomplete', '[[12/9|c]]'); annotation = 'unknown'
         source = 'design D136/D368: an incomplete context marks I6 unknown instead of claiming a Workspace-wide check'; note = 'the line names how many titles were compared and the known rows are still compared; `faults: 0` of that mode can then never read as a complete pass' }
-    [ordered]@{ family = 'duplicate-titles'; id = 'i6-scope-unknown'; rule = 'I6'; run = 'i6-json-scope'; card = '12/9|c'; lines = 1; naming = @('Workspace scope unknown'); annotation = 'unknown'
-        source = 'design D136: an entry that names no Workspace is not compared at all'; note = 'no pair may cross a Workspace boundary' }
+    [ordered]@{ family = 'duplicate-titles'; id = 'i6-scope-unknown'; rule = 'I6'; run = 'i6-json-scope'; card = '12/9|c'; lines = 1; naming = @('[[12/9|d]]'); annotation = 'true_positive'
+        source = 'S06 (#148) R0183: a draft belongs to --workspace (default agent), so the entry is compared inside the agent Workspace'; note = 'before S06 an entry that named no Workspace was not compared at all and the run said "Workspace scope unknown"; the draft contract now names the Workspace, and no pair may still cross a boundary (see i6-other-workspace)' }
 )
 
 # The recorded address of every Card the reviewed examples name.
@@ -356,9 +356,9 @@ function Write-CalibrationReport($concept) {
         families = $blocks
         completeness = [ordered]@{
             incomplete_context_line = @($script:jsonLines['i6-json-incomplete'] | Where-Object { $_ -match 'Workspace title context incomplete' }).Count
-            unnamed_workspace_line = @($script:jsonLines['i6-json-scope'] | Where-Object { $_ -match 'Workspace scope unknown' }).Count
+            cross_workspace_pair_line = @($script:jsonLines['i6-json-workspace'] | Where-Object { $_ -match ' I6 ' }).Count
             missing_source_line = @($script:archiveLines['own'] | Where-Object { $_ -match 'source evidence unknown' }).Count
-            note = 'a run whose context is incomplete states it in a line, so its zero faults cannot read as a complete pass; a missing source is an unknown line, never a pass (D368)'
+            note = 'a run whose context is incomplete states it in a line, so its zero faults cannot read as a complete pass; no pair crosses a Workspace boundary; a missing source is an unknown line, never a pass (D368)'
         }
         advice_only = [ordered]@{ runs = $advisor; statement = 'R20, R21, I6 and I7''s unknown-source line are printed as (advisory) and counted as no fault; a promotion to blocking is a separately versioned decision (S25-AC03)' }
         semantic_review = [ordered]@{ required = $true; evidence = @(
@@ -406,7 +406,7 @@ function Write-CalibrationReport($concept) {
     [void]$md.AppendLine('## Unknowns')
     [void]$md.AppendLine('')
     [void]$md.AppendLine("- Incomplete title-context lines: $($report.completeness.incomplete_context_line).")
-    [void]$md.AppendLine("- Unnamed-Workspace lines: $($report.completeness.unnamed_workspace_line).")
+    [void]$md.AppendLine("- Cross-Workspace I6 pairs: $($report.completeness.cross_workspace_pair_line).")
     [void]$md.AppendLine("- Missing-source unknown lines: $($report.completeness.missing_source_line).")
     [void]$md.AppendLine('- Semantic judgments exercised: no (canned answers); the judge''s own accuracy stays unknown until the S26 pilot.')
     [IO.File]::WriteAllText((Join-Path $script:Out 'calibration.md'), $md.ToString(), $utf8)
@@ -614,7 +614,8 @@ try {
         Record-Example $example $observed 'json'
     }
     Assert (@($script:jsonLines['i6-json-incomplete'] | Where-Object { $_ -match ' I6 \(advisory\) Workspace title context incomplete: 1 known title compared, others unknown$' }).Count -eq 1) 'an incomplete title context is reported as unknown, not as faults: 0 for a Workspace-wide check'
-    Assert (@($script:jsonLines['i6-json-scope'] | Where-Object { $_ -match ' I6 \(advisory\) Workspace scope unknown' }).Count -eq 1) 'an entry that names no Workspace is not compared across the boundary'
+    Assert (@($script:jsonLines['i6-json-scope'] | Where-Object { $_ -match ' I6 \(advisory\) a title very similar to ' }).Count -eq 1) 'a draft belongs to --workspace, so its title is compared inside that Workspace'
+    Assert (@($script:jsonLines['i6-json-workspace'] | Where-Object { $_ -match ' I6 ' }).Count -eq 0) 'no pair crosses a Workspace boundary'
 
     # --- the concept families: the reviewed concept examples through the concept review -----
     $concept = Invoke-ConceptReview $key $conceptFixture

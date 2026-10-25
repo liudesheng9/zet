@@ -72,6 +72,12 @@ try {
     $baselineReport.workspace.cards_by_category = [ordered]@{root=4;anchor=3;idea=3;finding=1;hub=1;model=1;notation=1;part=1}
     $baselineReport.books[0].orphans = [ordered]@{count=1;by_category=[ordered]@{idea=1};list=@('Lone2030/1|a')}
     $baselineFaults = $baselineFaults.Replace('I5 no Card other than the parent links here','I5 no other Card has an authored Link here')
+    # S06 (#148): the audit now reports under the archive's effective policy, so the agent
+    # Workspace's I5 is advice like I6, E5 and L3: the layer block counts one fewer hard
+    # fault and one more advisory line, and the line carries its tag.
+    $baselineFaults = $baselineFaults.Replace('I5 no other Card has an authored Link here','I5 (advisory) no other Card has an authored Link here')
+    $baselineReport.books[0].layer.faults = 2
+    $baselineReport.books[0].layer.advisory = 2
     # docs/literature-only-digest-design.md: a Topic-tree Card belongs to no book, so the agent hub
     # `0/1` that links the book is unattributed now, not attributed by its Link.
     $baselineReport.workspace.unattributed.count = 2
@@ -91,7 +97,7 @@ try {
     $bulkReport = Get-Content -LiteralPath (Join-Path $bulkOut 'audit.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
     Assert ($bulkReport.complete -and $bulkReport.archive_revision -is [long]) 'the completed audit records its consistent graph revision'
     foreach ($key in @('generated','seconds','complete','archive_revision','orphan_check','baseline')) { $report.Remove($key); $bulkReport.Remove($key) }
-    Assert (($baselineReport | ConvertTo-Json -Depth 60 -Compress) -ceq ($bulkReport | ConvertTo-Json -Depth 60 -Compress)) 'the bulk audit preserves the frozen graph, Bridge and quality fields after the named shared orphan/classification changes'
+        Assert (($baselineReport | ConvertTo-Json -Depth 60 -Compress) -ceq ($bulkReport | ConvertTo-Json -Depth 60 -Compress)) 'the bulk audit preserves the frozen graph, Bridge and quality fields after the named shared orphan/classification changes'
     Assert ($baselineFaults -ceq [IO.File]::ReadAllText((Join-Path $bulkOut 'audit-faults.txt'))) 'bulk and pre-migration audit fault lines match exactly'
     $modelOut = Join-Path $scratch 'model-audit'
     $env:ZT_TRACE_TOOLS = Join-Path $scratch 'model-audit-tools.jsonl'

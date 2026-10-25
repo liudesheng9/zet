@@ -219,6 +219,12 @@ pub(crate) fn summary_lines(
         format!("policy_hash={}", policies.hash()),
         format!("policy_revision={revision}"),
         format!("gate_stage={}", stage.id()),
+        // The stable check contract a client compares with its own (S06, R0197).
+        format!("rule_version={RULE_VERSION}"),
+        format!(
+            "diagnostic_schema={}",
+            zt_check::contract::DIAGNOSTIC_SCHEMA
+        ),
     ];
     for (workspace, rule, setting) in policies.overrides() {
         lines.push(format!(
@@ -306,9 +312,10 @@ pub(crate) fn table_lines(policies: &PolicySet, stage: Stage) -> Vec<String> {
 // S04: the write gate
 // ---------------------------------------------------------------------------------------------
 
-/// The checker version this service links: the `rule_version` of an accepted write's check block
-/// and the `zt_check_version` of a refusal, so a client knows which rules decided.
-pub(crate) const RULE_VERSION: &str = zt_check::VERSION;
+/// The stable rule contract this service links: the `rule_version` of an accepted write's check
+/// block, so a client knows which rules decided. It is independent of the executable version
+/// (design 8.3, R0197); `zt_check_version` names the build that carries it.
+pub(crate) const RULE_VERSION: &str = zt_check::contract::RULE_VERSION;
 
 /// The most distinct Link targets one proposed Card may name. The bound is the checker's own bulk
 /// read unit; a Card over it is refused as an incomplete check, never silently truncated (R0108).
@@ -512,6 +519,8 @@ impl Accepted {
             "rule_version": RULE_VERSION,
             "policy_hash": self.policy_hash,
             "stage": self.stage.map(Stage::id),
+            // The build that carries the rule version (R0197, R0205).
+            "checker_version": zt_check::VERSION,
         });
     }
 
@@ -545,7 +554,8 @@ impl Refusal {
             "blocking": self.report.blockers,
             "faults": self.report.lines(),
             "diagnostics": self.report.diagnostics.iter().map(public_diagnostic).collect::<Vec<_>>(),
-            "zt_check_version": RULE_VERSION,
+            "zt_check_version": zt_check::VERSION,
+            "rule_version": RULE_VERSION,
             "policy_hash": self.policy_hash,
             "message": self.to_string(),
         });
@@ -609,7 +619,8 @@ impl Incomplete {
             "address": self.address,
             "reason": self.reason,
             "message": self.to_string(),
-            "zt_check_version": RULE_VERSION,
+            "zt_check_version": zt_check::VERSION,
+            "rule_version": RULE_VERSION,
         })
     }
 }
@@ -1185,6 +1196,11 @@ mod tests {
             "{summary:#?}"
         );
         assert!(summary.contains(&"gate.agent.R2=advise".to_string()), "{summary:#?}");
+        let rule_line = format!("rule_version={RULE_VERSION}");
+        assert!(
+            summary.iter().any(|line| line == &rule_line),
+            "the summary names the stable rule contract: {summary:#?}"
+        );
         assert!(summary.last().expect("footer").starts_with("overrides: 1"), "{summary:#?}");
 
         let table = table_lines(&policies, Stage::Advisory);
@@ -1286,6 +1302,7 @@ mod write_gate_tests {
         assert_eq!(value["check"]["stage"], json!("advisory"));
         assert_eq!(value["check"]["complete"], json!(true));
         assert_eq!(value["check"]["rule_version"], json!(RULE_VERSION));
+        assert_eq!(value["check"]["checker_version"], json!(zt_check::VERSION));
         assert_eq!(
             value["check"]["policy_hash"].as_str().map(str::len),
             Some(64)
@@ -1321,7 +1338,8 @@ mod write_gate_tests {
                 .len(),
             refusal.report.diagnostics.len()
         );
-        assert_eq!(refusal.value()["zt_check_version"], json!(RULE_VERSION));
+        assert_eq!(refusal.value()["zt_check_version"], json!(zt_check::VERSION));
+        assert_eq!(refusal.value()["rule_version"], json!(RULE_VERSION));
         assert_eq!(refusal.value()["policy_hash"].as_str().map(str::len), Some(64));
         assert!(refusal.to_string().starts_with("card_check: "), "{refusal}");
         assert!(has_rule(&refusal, "R3"), "{refusal:?}");

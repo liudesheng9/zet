@@ -169,6 +169,14 @@ impl RuleSpec {
             Workspace::Agent => self.agent,
         }
     }
+
+    /// Whether a check contract publishes this rule's effective setting: only a
+    /// rule a policy decides. A mandatory invariant and a pending rule decide
+    /// nothing yet, so publishing them as settings would claim a decision the
+    /// gate never makes.
+    pub fn is_configurable(&self) -> bool {
+        self.state == RuleState::Configurable && self.alias_of.is_none()
+    }
 }
 
 const fn spec(
@@ -874,6 +882,20 @@ pub fn filter_rules(lines: &[String], rules: &str) -> (Vec<String>, usize) {
         }
     }
     (kept, faults)
+}
+
+/// The diagnostics of the rules asked for. The `--cards` mode filters by rule id;
+/// the count that follows is the blocking diagnostics among the kept ones
+/// (design 8.1, R0187), so no caller keeps a second advisory list.
+pub fn select_rules(diagnostics: Vec<Diagnostic>, rules: &str) -> Vec<Diagnostic> {
+    let allowed = LIST_SPLIT
+        .split(rules)
+        .filter(|rule| !rule.is_empty())
+        .collect::<Vec<_>>();
+    diagnostics
+        .into_iter()
+        .filter(|diagnostic| ps_in(&diagnostic.rule, &allowed))
+        .collect()
 }
 
 #[cfg(test)]
