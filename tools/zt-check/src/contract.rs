@@ -63,11 +63,11 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// What this build implements. The Term slices flip these: Term Cards arrive with S07 (#149);
-    /// Term links stay off until S10 (#151).
+    /// What this build implements. The Term slices flip these: Term Cards arrived with S07 (#149)
+    /// and Term links with S10 (#151).
     pub fn current() -> Self {
         Self {
-            term_links: false,
+            term_links: true,
             term_cards: true,
         }
     }
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(value["archive"]["id"], json!("a".repeat(32)));
         assert_eq!(value["archive"]["path"], json!("D:\\zt"));
         assert_eq!(value["archive"]["revision"], json!(7921));
-        assert_eq!(value["capabilities"]["term_links"], json!(false));
+        assert_eq!(value["capabilities"]["term_links"], json!(true));
         assert_eq!(value["capabilities"]["term_cards"], json!(true));
     }
 

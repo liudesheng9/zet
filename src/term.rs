@@ -13,8 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::CardType;
 
-/// The longest term name, and the same limit a Term-link label gets: Unicode scalar values.
-pub(crate) const MAX_NAME_CHARS: usize = 40;
+/// The longest term name, and the same limit a Term-link label gets: Unicode scalar values. The
+/// shared text module owns it, so the name parser and the lexical Link scanner cannot disagree.
+pub(crate) const MAX_NAME_CHARS: usize = zt_check::text::MAX_TERM_NAME;
 
 /// The refusal for a name supplied beside another Card type.
 pub(crate) const NAME_NEEDS_TERM_CARD: &str =
@@ -290,7 +291,8 @@ fn uses_to(conn: &Connection, at: &str) -> Result<u64> {
 
 /// Whether an address is a valid Term head: a named Term Card that is an immediate Side successor
 /// of a Term list. Answers the list it is a head of; `None` for a missing Card, a list, a part, or
-/// another type, which is exactly what `term_link_target` reports.
+/// another type, which is exactly what `term_link_target` reports and what a new Term use must
+/// pass (S10, #151).
 fn head_of(conn: &Connection, at: &str) -> Result<Option<String>> {
     let Some((card_type, name)) = stored(conn, at)? else {
         return Ok(None);
@@ -308,6 +310,11 @@ fn head_of(conn: &Connection, at: &str) -> Result<Option<String>> {
         return Ok(None);
     };
     Ok((parent_type == CardType::Term && parent_name.is_none()).then_some(parent))
+}
+
+/// Whether one address is a Term head right now: the one role a new Term use may target (S10-AC03).
+pub(crate) fn is_head(conn: &Connection, at: &str) -> Result<bool> {
+    Ok(head_of(conn, at)?.is_some())
 }
 
 /// The list a `get_terms {at}` read names: the Card itself when it is a list, else the nearest list
@@ -386,16 +393,14 @@ struct Use {
     count: u64,
 }
 
-/// The authored label of the first Term use of `target` in one body: the text before the first `@`
-/// inside `[[label@target]]`. The ordinary Link scanner supplies the macros and skips code spans
-/// and fences; the Term form itself is read here until S10 adds it to the shared parser, so a
-/// stored Term use is reported rather than refused.
+/// The authored label of the first Term use of `target` in one body: the shared lexical scan gives
+/// the label and the address, so this reader never splits `label@address` on its own (S10-AC06).
 fn label_of(body: &str, target: &str) -> Option<String> {
     for occurrence in crate::link::LinkBody::for_rendering(body).occurrences() {
-        let Some((label, address)) = occurrence.target.split_once('@') else {
+        if occurrence.form != crate::link::LinkForm::Term || occurrence.target != target {
             continue;
-        };
-        if address == target && !label.is_empty() {
+        }
+        if let Some(label) = occurrence.label.filter(|label| !label.is_empty()) {
             return Some(label.to_string());
         }
     }

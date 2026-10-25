@@ -124,7 +124,10 @@ shows the hub graph and the hubs the policy requires but the Workspace lacks; mo
 defines one term: a name makes it a head (an immediate Side successor of the list) or a continuation part \
 (a same-named Direct successor of a head or part), and no name makes it a Term list whose body holds the \
 book's four-column term table. get_terms reads one list's rows, heads, parts, unfiled Cards, uses, coverage \
-and faults; a role is computed, never stored. Write Card text \
+and faults; a role is computed, never stored. Write a direct Term use as `[[label@address]]`: the label is \
+the word in the sentence (1 to 40 characters), exactly one `@` separates it from a Regular Location, and \
+that address must name a Term head; a new Term use on any other Card is refused, and a label that differs \
+from the head's name is reported as advice, never rewritten. Write Card text \
 plainly: one statement per sentence, no semicolons, active voice, one term per meaning. Card \
 bodies may hold TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the GUI \
 renders. delete_card, move_card, insert_card, and Citation key renames return a plan first; \

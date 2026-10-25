@@ -277,16 +277,12 @@ pub(crate) fn section_links(body: &str, names: &[&str]) -> Vec<String> {
             }
         }
         if inside {
-            let mut rest = line;
-            while let Some(open) = rest.find("[[") {
-                let Some(close) = rest[open..].find("]]") else {
-                    break;
-                };
-                let target = rest[open + 2..open + close].to_string();
+            // The shared lexical scan names each Link's target; a code span holds none.
+            for occurrence in crate::link::LinkBody::for_rendering(line).occurrences() {
+                let target = occurrence.target.to_string();
                 if !found.contains(&target) {
                     found.push(target);
                 }
-                rest = &rest[open + close + 2..];
             }
         }
     }

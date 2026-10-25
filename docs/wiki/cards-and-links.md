@@ -9,6 +9,7 @@ paths:
   - "src/workspace.rs"
   - "src/link.rs"
   - "tests/card_types.rs"
+  - "tests/term_links.rs"
 synced: 078184642558
 updated: 2026-10-25
 ---
@@ -17,9 +18,9 @@ updated: 2026-10-25
 
 ## Purpose
 
-This block holds the core vocabulary of ZT's card archive: what a Card's stored text looks like and how it is parsed and composed, which Card types exist and where each may stand, how a Literature Card's BibTeX metadata gives its Citation key and title, which Workspace a tree belongs to and which client may change it, and how `[[target]]` Links are found, checked, rewritten, turned into Reverse links, and reported as Broken links. Every other block that reads or writes a Card (the shell and service, the Session, the GUI, the MCP server, Card operations, models, hubs) builds on these pure functions and small types. They exist so that the Card format and the Link rules have one implementation, shared by every client.
+This block holds the core vocabulary of ZT's card archive: what a Card's stored text looks like and how it is parsed and composed, which Card types exist and where each may stand, how a Literature Card's BibTeX metadata gives its Citation key and title, which Workspace a tree belongs to and which client may change it, and how `[[target]]` and Term `[[label@address]]` links are found, checked, rewritten, turned into Reverse links, and reported as Broken links. Every other block that reads or writes a Card (the shell and service, the Session, the GUI, the MCP server, Card operations, models, hubs) builds on these pure functions and small types. They exist so that the Card format and the Link rules have one implementation, shared by every client.
 
-**Owns:** the Markdown Card text format and the Reverse link marker (`src/card.rs`); the Card type enum and the Tree-root type rule (`src/card_type.rs`); the Term Card's one authored name and its grammar, the client field protocol, the write, the computed Term role, and the `get_terms` structure read (`src/term.rs`); BibTeX parsing, Citation key validation, and title normalization (`src/literature.rs`); the `Workspace` and `Access` types and the cross-Workspace checks (`src/workspace.rs`); Link recognition (including code spans and fences), edit validation, target rewriting, Reverse link derivation, and Broken link listing (`src/link.rs`).
+**Owns:** the Markdown Card text format and the Reverse link marker (`src/card.rs`); the Card type enum and the Tree-root type rule (`src/card_type.rs`); the Term Card's one authored name and its grammar, the client field protocol, the write, the computed Term role, the Term-head test, and the `get_terms` structure read (`src/term.rs`); BibTeX parsing, Citation key validation, and title normalization (`src/literature.rs`); the `Workspace` and `Access` types and the cross-Workspace checks (`src/workspace.rs`); Link recognition (the lexical scan is the checker's, `zt_check::text`, re-exported here), the root address grammar, edit validation including the Term-head rule and its legacy retention, target rewriting, Reverse link derivation, and Broken link listing (`src/link.rs`).
 
 **Does not own:** SQLite schema, migrations, Location grammar helpers (`is_valid_location`, `tree_id`, `tree_root_address`), the edit lock, the save, delete, move, and Citation-key rename transactions in `src/main.rs`, or the dump ([Service, CLI and storage](service-and-cli.md)); the access-checked operations and place/insert plans ([Card operations](card-operations.md)); Model facets, emphasis, levels, Relation kinds, and Math forms ([Models and math](models-and-math.md)); Hub levels ([Hub Cards](hub-cards.md)); rendering of Links and Cards ([GUI](gui.md), [Terminal Session](session.md)); MCP tool schemas ([MCP server](mcp-server.md)); the Card layer rules for Finding and Event bodies ([zt-check](zt-check.md)).
 
@@ -27,11 +28,11 @@ This block holds the core vocabulary of ZT's card archive: what a Card's stored 
 
 | | |
 |---|---|
-| Entry points | `card::parse_card_text`, `card::parse_literature_edit_text`, `card::compose_card_text`, `card::reverse_section`, `card::card_template`, `card::from_legacy_text`; `CardType::parse` / `from_stored`, `card_type::ensure_allowed`; `literature::parse_metadata`, `literature::validate_citation_key`; `Workspace::parse` / `from_stored`, `Access::ensure_writable`, `Access::ensure_link_rewrites_allowed`, `workspace::tree_workspace`, `workspace::ensure_same_workspace`, `workspace::counts`; `LinkBody::parse`, `LinkBody::rewrite_targets`, `LinkLifecycle::from_cards` and its methods, `link::code_ranges`, `link::fenced_code_ranges` |
-| Key files | `src/card.rs` — Markdown Card text: parse, compose, templates, Reverse link section, legacy conversion, authored fingerprint. `src/card_type.rs` — `CardType` (`idea`, `event`, `finding`, `model`, `hub`, `term`) and the Tree-root rule. `src/term.rs` — the Term Card name parser (`normalize_name`), the `term` field protocol, the type rule and the one-row write, and the computed Term structure: `Role`, `place`, `role`, `facts`, `resolve_list`, `structure`, and the seven coverage faults. `src/literature.rs` — BibTeX metadata parser, Citation key rules, title normalization. `src/workspace.rs` — `Workspace`, `Access`, `WorkspaceCounts`, tree Workspace lookup and the no-cross-Workspace-move rule. `src/link.rs` — `LinkBody` (one body's Links), `LinkLifecycle` (Links against an archive snapshot), code-range scanning. `tests/card_types.rs` — end-to-end tests of Card types through the shell, Session, MCP, GUI, dump, and schema upgrades, including the Term field protocol; `tests/term_structure.rs` — end-to-end tests of `get_terms` and the computed role facts (owned by [MCP server](mcp-server.md)) |
-| Depends on | [Service, CLI and storage](service-and-cli.md) (`crate::Card`, `is_tree_root`, `is_valid_location`, `tree_id`, `tree_root_address`, `load_card`, `load_cards`, `parse_card_text` re-export in `src/main.rs`); `anyhow`; `rusqlite` (only in `src/workspace.rs`); `nom-bibtex` 0.6 (`Bibtex::raw_parse`) |
+| Entry points | `card::parse_card_text`, `card::parse_literature_edit_text`, `card::compose_card_text`, `card::reverse_section`, `card::card_template`, `card::from_legacy_text`; `CardType::parse` / `from_stored`, `card_type::ensure_allowed`; `literature::parse_metadata`, `literature::validate_citation_key`; `Workspace::parse` / `from_stored`, `Access::ensure_writable`, `Access::ensure_link_rewrites_allowed`, `workspace::tree_workspace`, `workspace::ensure_same_workspace`, `workspace::counts`; `LinkBody::parse`, `LinkBody::rewrite_targets`, `LinkForm`, `LinkOccurrence`, `link::validate`, `LinkLifecycle::from_cards` and its methods, `link::code_ranges`, `link::fenced_code_ranges`; `term::is_head` |
+| Key files | `src/card.rs` — Markdown Card text: parse, compose, templates, Reverse link section, legacy conversion, authored fingerprint. `src/card_type.rs` — `CardType` (`idea`, `event`, `finding`, `model`, `hub`, `term`) and the Tree-root rule. `src/term.rs` — the Term Card name parser (`normalize_name`), the `term` field protocol, the type rule and the one-row write, the Term-head test (`is_head`), and the computed Term structure: `Role`, `place`, `role`, `facts`, `resolve_list`, `structure`, and the seven coverage faults. `src/literature.rs` — BibTeX metadata parser, Citation key rules, title normalization. `src/workspace.rs` — `Workspace`, `Access`, `WorkspaceCounts`, tree Workspace lookup and the no-cross-Workspace-move rule. `src/link.rs` — `LinkBody` (one body's Links), `LinkLifecycle` (Links against an archive snapshot), the root address grammar, Term-link validation and legacy retention; the lexical scan itself is `zt_check::text`'s. `tests/card_types.rs` — end-to-end tests of Card types through the shell, Session, MCP, GUI, dump, and schema upgrades, including the Term field protocol; `tests/term_links.rs` — end-to-end tests of direct Term links through the public MCP writes and reads (S10, #151); `tests/term_structure.rs` — end-to-end tests of `get_terms` and the computed role facts (owned by [MCP server](mcp-server.md)) |
+| Depends on | [Service, CLI and storage](service-and-cli.md) (`crate::Card`, `is_tree_root`, `is_valid_location`, `is_valid_regular_location`, `tree_id`, `tree_root_address`, `load_card`, `load_cards`, `parse_card_text` re-export in `src/main.rs`); [zt-check](zt-check.md) (`zt_check::text`: `parse_links`, `link_occurrences`, `code_ranges`, `fenced_code_ranges`, `LinkForm`, `LinkOccurrence`, `MAX_TERM_NAME`); `anyhow`; `rusqlite` (only in `src/workspace.rs`); `nom-bibtex` 0.6 (`Bibtex::raw_parse`) |
 | Used by | [Service, CLI and storage](service-and-cli.md), [Card operations](card-operations.md), [Terminal Session](session.md), [GUI](gui.md), [MCP server](mcp-server.md), [Models and math](models-and-math.md), [Hub Cards](hub-cards.md) |
-| Tests | Unit tests in each of `src/card.rs`, `src/card_type.rs`, `src/literature.rs`, `src/workspace.rs`, `src/link.rs`; integration tests in `tests/card_types.rs` (Link behaviour is also exercised by `tests/cli_service.rs`, `tests/pty_session.rs`, `tests/workspaces_mcp.rs`, owned by other blocks) |
+| Tests | Unit tests in each of `src/card.rs`, `src/card_type.rs`, `src/literature.rs`, `src/workspace.rs`, `src/link.rs`; integration tests in `tests/card_types.rs`, `tests/term_links.rs` (Link behaviour is also exercised by `tests/cli_service.rs`, `tests/pty_session.rs`, `tests/workspaces_mcp.rs`, owned by other blocks) |
 
 ## Concepts
 
@@ -42,7 +43,8 @@ This block holds the core vocabulary of ZT's card archive: what a Card's stored 
 - `Term Card` — a Regular Card of type `term` (S07, #149) that defines one term or holds one book's term table. Its optional `term_name` column holds the exact name; no name means a candidate Term list. A Topic or Literature root can never be one.
 - `Term name` — one line of at most 40 Unicode scalar values, outer whitespace trimmed, holding no `[`, `]`, `@`, `|`, or backtick. The `term` client field is omitted (preserve), `null` or a trimmed-empty string (clear), or a string (set). It is valid only on a Term Card, and a type change away clears it. It is authored identity: `card::authored_fingerprint` appends `term_name\0<name>\0` only for a nonempty name, so a Card without one keeps its old bytes.
 - `Term role` — how a Term Card takes part in one Term list (S08, #150; design 9.2): `list` (a Term Card with no name), `card` (a head: a named Term Card that is an immediate Side successor of a list), `part` (a named Term Card that continues a same-named head or part as its Direct successor), or `unfiled` (no valid placement). A Card of another type has no role. The role is computed from the Card type, the exact name and the placement on every read; no column, facet, or ownership table stores it.
-- `Term use` — a stored `links` row with `kind = 'term'`: one `[[label@address]]` occurrence whose label is the term written in the sentence and whose target is the head it names. The label stays in the authored macro; the index keeps only source, occurrence ordinal, target and kind.
+- `Term use` — a stored `links` row with `kind = 'term'`: one `[[label@address]]` occurrence whose label is the term written in the sentence and whose target is the head it names. A write indexes it from the shared lexical scan with the head's address, never the `label@address` text; the label stays in the authored macro. Its own generated "Term uses" Reverse section is S11 (#153); until then the ordinary Reverse links skip it.
+- `Term link` — the direct word-to-Term-Card reference `[[label@address]]` (S10, #151; design 10.1). Split at the first `@`: the label is 1–40 scalar values on one line, the address is a Regular Location, and a second `@` is malformed. Outside code it is a Term use; inside inline/display math a Term-like macro is literal and no use. A new Term use must name a Term head; a move rewrites only the address bytes.
 - `Term structure` — the computed read of one Term list (`term::structure`): the four-column rows of its body, its heads, parts and unfiled Cards, its Term uses, its coverage counts, and its faults. One read inside one transaction carries its archive revision and identity.
 - `Regular Card` / `Tree root` — a Tree root is a Topic Card (`is_topic`) or a Literature Card (`is_lit`); `crate::is_tree_root` in `src/main.rs`. Only Regular Cards may have a type other than `idea`.
 - `Literature Card` — the root of a Literature tree; its address is its Citation key and its title comes from BibTeX. `LiteratureMetadata { citation_key, title }` in `src/literature.rs`.
@@ -50,7 +52,7 @@ This block holds the core vocabulary of ZT's card archive: what a Card's stored 
 - `Workspace` — `Workspace::{Human, Agent}` in `src/workspace.rs`, stored as `human` / `agent`. Every tree belongs to one Workspace, read from its Tree root.
 - `Access` — `Access::{Owner, Agent}` in `src/workspace.rs`: which Workspaces a client may change. Owner (Session, GUI, shell) changes both; Agent (the MCP server) changes only the agent Workspace.
 - `Zone` — the Topic zone and Literature zone of a Workspace; `WorkspaceCounts { topic_trees, literature_trees, cards }` counts their trees.
-- `Link` — a `[[target]]` macro in a Card body whose target is a Location or a Citation key. One occurrence is `LinkOccurrence { target, macro_range, target_range }` in `src/link.rs`.
+- `Link` — a `[[target]]` macro in a Card body whose target is a Location or a Citation key. One occurrence is `LinkOccurrence { target, label, form, macro_range, target_range, label_range }` (`zt_check::text`, re-exported by `src/link.rs`); a Term link's `form` is `LinkForm::Term` and carries its `label` and `label_range`.
 - `Broken link` — a Link whose target Card does not exist; `BrokenLink { source_address, source_title, target, source_line }` and `LinkStatus::Broken` in `src/link.rs`.
 - `Link lifecycle` — `LinkLifecycle`: the set of Card snapshots (`CardSnapshot { address, title, body }`) against which Links are classified, validated, and turned into Reverse links and Broken links.
 
@@ -65,15 +67,17 @@ flowchart LR
         ctype[card_type.rs<br/>CardType, ensure_allowed]
         lit[literature.rs<br/>parse_metadata, validate_citation_key]
         ws[workspace.rs<br/>Workspace, Access, tree_workspace]
-        link[link.rs<br/>LinkBody, LinkLifecycle, code_ranges]
+        link[link.rs<br/>LinkBody, LinkLifecycle, validate]
+        check[zt-check text.rs<br/>parse_links, LinkOccurrence]
     end
     main[main.rs storage<br/>insert_card, update_card_text,<br/>regenerate_reverse_links_tx, move/delete plans]
     ops[ops.rs<br/>access-checked operations]
     views[gui.rs, session.rs,<br/>mcp.rs, model.rs, hub.rs]
 
+    link -->|parse_links, link_occurrences| check
     link -->|reverse_section| card
     link -->|validate_citation_key| lit
-    link -->|is_valid_location| main
+    link -->|is_valid_regular_location| main
     ws -->|LinkBody::parse| link
     ws -->|load_card, load_cards, parse_card_text| main
     ctype -->|is_tree_root| main
@@ -89,7 +93,7 @@ flowchart LR
 ```
 
 - `src/card.rs` knows only the text format. It does not know Links: the Reverse link section is passed in as a string.
-- `src/link.rs` knows Link syntax. It calls back into `crate::is_valid_location` (Location grammar, `src/main.rs`) and `literature::validate_citation_key` to decide whether a target is well formed, and calls `card::reverse_section` to format Reverse links. It never touches SQLite: callers load `CardSnapshot`s (address, title, body) with `link_lifecycle` / `link_lifecycle_from_cards` in `src/main.rs`.
+- `src/link.rs` adds the root's meaning to the checker's lexical scan. `zt_check::text::parse_links` / `link_occurrences` own the macro shape, the Term label grammar, the code-span/fence exclusion, and the math-literal rule; `src/link.rs` validates the target grammar (an ordinary Link is a Location or a Citation key, a Term link is a Regular Location only), checks a new Term target is a head, and derives Reverse and Broken links. It calls back into `crate::is_valid_location`, `crate::is_valid_regular_location` (Location grammar, `src/main.rs`) and `literature::validate_citation_key`, and calls `card::reverse_section` to format Reverse links. It never touches SQLite: callers load `CardSnapshot`s (address, title, body) with `link_lifecycle` / `link_lifecycle_from_cards` in `src/main.rs`.
 - `src/workspace.rs` reads Tree roots with `crate::load_card` and, for agent Access, scans every Card with `crate::load_cards`, `crate::parse_card_text`, and `LinkBody`.
 - `src/card_type.rs` checks one rule with `crate::is_tree_root`; the per-type field rules (facet, emphasis, level, form, hub level) live in `src/model.rs`, `src/math.rs`, and `src/hub.rs`.
 - `src/literature.rs` is standalone apart from `nom-bibtex`.
@@ -158,7 +162,8 @@ The rules for each type:
 | `facts` | `fn(&Connection, &Card) -> Result<Option<Value>>` | The computed `term_role`, `term_list`, and `term_uses` facts every Card read publishes. `term_uses` counts the stored `kind = 'term'` rows that name the Card. |
 | `resolve_list` | `fn(&Connection, at) -> Result<Card>` | The list a `get_terms {at}` names: the Card itself, the nearest list on its placement chain, or the one Term list of a tree root's tree. Errors name a card that does not exist, a Card that is neither a list nor under one, a tree with no list, and a tree with several lists (all addresses listed, none selected). |
 | `structure` | `fn(&Connection, at) -> Result<Value>` | The whole read: `rows`, `row_duplicates`, `heads`, `parts`, `unfiled`, `uses`, `faults`, `coverage`, and `complete`. See [MCP server](mcp-server.md#get_terms) for the reply. |
-| `facts::label_of` | `fn(body, target) -> Option<String>` | The authored label of the first `[[label@target]]` in one body; the ordinary Link scanner supplies the macros and skips code. |
+| `is_head` | `fn(&Connection, at) -> Result<bool>` | Whether an address is a Term head right now: a named Term Card that is an immediate Side successor of a list. The one role a new Term use may name (S10, #151); a list, part, another type, or a missing Card answers `false`. |
+| `facts::label_of` | `fn(body, target) -> Option<String>` | The authored label of the first Term use of `target` in one body, read from the shared `LinkOccurrence` (`form`, `label`, `target`); it never splits `@` itself. |
 
 The seven faults (design 9.2), reported, never refused:
 
@@ -205,13 +210,14 @@ Title normalization (`normalize_title`): grouping braces `{` `}` are removed; an
 
 | Item | Signature | Behaviour and errors |
 |---|---|---|
-| `LinkOccurrence<'a>` | `{ target: &'a str, macro_range: Range<usize>, target_range: Range<usize> }` | Byte ranges into the body: `[[…]]` and the target inside it. |
-| `LinkBody::parse` | `fn(&'a str) -> Result<LinkBody<'a>>` | Strict scan. Errors: `invalid link macro` (a `[[` with no `]]`, or a stray `]]` in prose after the last Link), ``invalid link macro target `<t>` `` (target is neither a valid Location nor a valid Citation key). |
-| `LinkBody::for_rendering` | `fn(&'a str) -> LinkBody<'a>` | Tolerant scan (never fails): every `[[target]]` outside code, valid or not; stops at a `[[` with no `]]`. Used by `classify_for_rendering` and by `hub::parse_body` for member lines. |
+| `LinkOccurrence<'a>` | `{ target: &'a str, label: Option<&'a str>, form: LinkForm, macro_range: Range<usize>, target_range: Range<usize>, label_range: Option<Range<usize>> }` | UTF-8 byte ranges into the body (`zt_check::text`, re-exported): the whole `[[…]]`, the address alone, and for a Term link the label. `LinkForm::{Ordinary, Term}` is derived from syntax (`@`). |
+| `LinkBody::parse` | `fn(&'a str) -> Result<LinkBody<'a>>` | Strict shared scan plus the root grammar. Errors: `invalid link macro` (a `[[` with no `]]`, or a stray `]]` in prose after the last Link), ``invalid link macro target `<t>` `` (target is neither a valid Location nor a valid Citation key), an invalid Term label (`invalid Term link label: 1-40 characters on one line`), a second `@` (`invalid Term link macro: one `@` separates the label and the address`), and ``invalid Term link macro target `<t>` `` (not a Regular Location). |
+| `LinkBody::for_rendering` | `fn(&'a str) -> LinkBody<'a>` | Tolerant shared scan (never fails): every `[[target]]` outside code, valid or not; stops at a `[[` with no `]]`. A Term-like macro in prose is a `Term` occurrence; inside math it is literal and absent. Used by `classify_for_rendering` and by `hub::parse_body` for member lines. |
 | `LinkBody::occurrences` | `fn(&self) -> &[LinkOccurrence]` | In text order, duplicates kept. |
-| `LinkBody::rewrite_targets` | `fn(&self, &BTreeMap<String, String>) -> LinkRewrite` | Replaces only `target_range` bytes whose target is a mapping key; every other byte stays. `LinkRewrite { body, count }` counts replaced occurrences. |
-| `code_ranges` | `fn(&str) -> Vec<Range<usize>>` | Fenced code blocks plus inline code spans, sorted by start. Used by the GUI's TeX-delimiter rewrite. |
-| `fenced_code_ranges` | `fn(&str) -> Vec<Range<usize>>` | Fenced code blocks only, from opening through closing fence line. Used by the GUI, the Session's Markdown view, and search excerpts in `src/ops.rs`. |
+| `LinkBody::rewrite_targets` | `fn(&self, &BTreeMap<String, String>) -> LinkRewrite` | Replaces only `target_range` bytes whose target is a mapping key; every other byte stays, including a Term link's label and punctuation. `LinkRewrite { body, count }` counts replaced occurrences. |
+| `link::validate` | `fn(body, old_body, exists, is_head) -> Result<()>` | The one edit rule (S10, #151): an ordinary new target must exist, while an old Broken target may stay at any occurrence count; a new Term use must name a Term head. An old invalid Term use may stay only with the same `(label, target)`, up to its old multiplicity, so a changed invalid target is never retention; a malformed Term macro is refused even when the old body held it. Errors: ``link target `<t>` does not exist``, ``Term link target `<t>` does not exist``, ``Term link target `<t>` is not a Term head``. `src/link_index.rs::validate` passes the stored-Card lookups; the test-only `LinkLifecycle::validate_edit` passes its snapshot set. |
+| `code_ranges` | `fn(&str) -> Vec<Range<usize>>` | Fenced code blocks plus inline code spans, sorted by start (`zt_check::text`, re-exported). Used by the GUI's TeX-delimiter rewrite and the shared Link scan. |
+| `fenced_code_ranges` | `fn(&str) -> Vec<Range<usize>>` | Fenced code blocks only, from opening through closing fence line (`zt_check::text`, re-exported). Used by the GUI, the Session's Markdown view, and search excerpts in `src/ops.rs`. |
 | `CardSnapshot` | `{ address, title, body: String }` | One Card as the lifecycle sees it. |
 | `LinkLifecycle::from_cards` | `fn(Vec<CardSnapshot>) -> Self` | Keeps the snapshots and the set of their addresses. |
 | `LinkLifecycle::classify_for_rendering` | `fn(&self, &'a str) -> Vec<ClassifiedLink<'a>>` | Tolerant scan (never fails): each occurrence with `LinkStatus::Valid` when the target is well formed and exists, else `Broken`. A trailing `[[` with no `]]` is dropped. |
@@ -242,17 +248,18 @@ Title normalization (`normalize_title`): grouping braces `{` `}` are removed; an
 4. A text edit (`update_literature_text`) re-parses the stored BibTeX and always replaces the title with the BibTeX title.
 5. A metadata edit (`ops::edit_metadata`, `update_literature_metadata`) with a new entry key renames the tree: `citation_rename_mapping` maps `Old -> New` and each `Old/<suffix> -> New/<suffix>`; a new key equal to the old one ignoring case, or used by another Card, is refused; agent Access runs `ensure_link_rewrites_allowed`; the client must confirm with `move`; the row, `apply_location_mapping_tx` (which rewrites Links with `LinkBody::rewrite_targets`), and Reverse links change in one transaction.
 
-### Link recognition (`scan_occurrences`)
+### Link recognition (`zt_check::text::parse_links`)
 
-1. `code_ranges` finds code: `scan_code` walks lines; a line with up to 3 spaces of indent and a run of 3 or more `` ` `` or `~` opens a fence; a line with the same character, a run at least as long, and nothing else closes it; an unclosed fence runs to the end of the text. In the prose between fences, `inline_code_ranges` pairs backtick runs of equal length; an unmatched run is literal text.
-2. The scanner finds each `[[`. If it lies in a code range, scanning jumps to the end of that range. Otherwise the target is the text up to the next `]]`.
-3. Strict mode refuses a missing `]]` and a target that is neither `crate::is_valid_location` nor a valid Citation key. After the last Link, any `]]` outside code is refused.
-4. Tolerant mode (`for_rendering`) keeps malformed targets (classified Broken later) and stops at a `[[` with no `]]`.
+1. `zt_check::text::code_ranges` finds code: `scan_code` walks lines; a line with up to 3 spaces of indent and a run of 3 or more `` ` `` or `~` opens a fence; a line with the same character, a run at least as long, and nothing else closes it; an unclosed fence runs to the end of the text. In the prose between fences, `inline_code_ranges` pairs backtick runs of equal length; an unmatched run is literal text.
+2. The scanner finds each `[[`. If it lies in a code range, scanning jumps to the end of that range. Otherwise the macro is the text up to the next `]]`. A content with `@` is a `Term` form (split at the first `@` into label and target); otherwise it is `Ordinary`.
+3. A Term-like macro whose `[[` lies in an inline (`$…$`) or display (`$$…$$`) math range is literal and is skipped, so it is no occurrence; an ordinary macro in math stays an ordinary Link. A `$` inside a code span opens no math.
+4. Strict mode refuses a missing `]]`, a Term label that is empty, longer than 40 scalar values or on more than one line, a second `@`, and (in `src/link.rs`) a target outside the root grammar: an ordinary target must be a valid Location or Citation key, a Term target a Regular Location. After the last Link, any `]]` outside code is refused.
+5. Tolerant mode (`for_rendering`) keeps malformed targets and labels (classified Broken later) and stops at a `[[` with no `]]`.
 
 ### Reverse links
 
 1. `reverse_sections` parses every snapshot body strictly.
-2. For each occurrence whose target exists, the source address is added once per target (`seen` set), so one source gives one line however often it links.
+2. For each ordinary occurrence whose target exists, the source address is added once per target (`seen` set), so one source gives one line however often it links. A Term use is skipped: its own "Term uses" section is S11 (#153).
 3. Sources are kept in a `BTreeSet<&str>`: byte order of the address string.
 4. Each Card gets `card::reverse_section` of its sources with their titles. Broken targets give no Reverse link.
 
@@ -370,6 +377,8 @@ for broken in lifecycle.broken_links()? {
 }
 ```
 
+`link_index::validate` is the transactional rule: an ordinary new target must exist, and a new Term use must name a Term head; an old Broken ordinary target and an old invalid Term use (same label and target, old multiplicity) may stay. A term use is Broken when its head is gone, and a Term use never adds an ordinary Reverse link.
+
 ### Check Access before a change that renames addresses
 
 ```rust
@@ -406,7 +415,7 @@ GUI:      POST /api/edit {"at":"0/1|a","type":"idea"}
 
 ## Testing
 
-Unit tests live beside the code; the integration tests are in `tests/card_types.rs`. Build in `D:/zt-target` on this machine (E: is short of space), and keep `ZT_GUI_PORT=0` (the test helpers set it) so a test daemon never takes port 4717.
+Unit tests live beside the code; the integration tests are in `tests/card_types.rs` and `tests/term_links.rs`. Build in `D:/zt-target` on this machine (E: is short of space), and keep `ZT_GUI_PORT=0` (the test helpers set it) so a test daemon never takes port 4717.
 
 ```bash
 # unit tests of this block (the binary crate holds them)
@@ -415,8 +424,9 @@ CARGO_TARGET_DIR=D:/zt-target cargo test --bin zt card_type::
 CARGO_TARGET_DIR=D:/zt-target cargo test --bin zt literature::
 CARGO_TARGET_DIR=D:/zt-target cargo test --bin zt workspace::
 CARGO_TARGET_DIR=D:/zt-target cargo test --bin zt link::
-# integration tests of Card types
+# integration tests of Card types and direct Term links
 CARGO_TARGET_DIR=D:/zt-target cargo test --test card_types
+CARGO_TARGET_DIR=D:/zt-target cargo test --test term_links
 ```
 
 What they cover:
@@ -426,19 +436,21 @@ What they cover:
 - `src/term.rs`: name normalization, the field protocol, the type rule, and the placement walk: each role, a Side successor of a head, another name, a synthetic cycle refused, and a chain past `MAX_CHAIN` refused with the depth reason. `tests/term_structure.rs` drives the same roles and faults through the real MCP reads.
 - `src/literature.rs`: identity and title normalization, refusal of `@comment` / `@preamble` / `@string`, two entries, no or empty title, macro title; Citation key grammar and reserved stems.
 - `src/workspace.rs`: name parsing (`ai`), `from_stored` fallback, Access matrix and error text.
-- `src/link.rs`: exact ranges, strict errors, rendering classification, old-versus-new Broken targets, byte-exact rewriting and counts, Reverse link dedupe and order, code spans and fences (unclosed fence, unmatched backtick), Broken link source lines.
+- `src/link.rs`: exact ranges (macro, target, and a Term link's label), strict errors (ordinary target, Term label, second `@`, malformed Term target), rendering classification, old-versus-new Broken targets, old invalid Term uses retained only with their label and multiplicity, byte-exact rewriting of a Term target with its label intact, Reverse link dedupe and order (Term uses excluded), code spans and fences (unclosed fence, unmatched backtick), Broken link source lines, and a Term-like macro in math that is literal while an ordinary Link there stays a Link.
 - `src/tree_lock.rs`: the SQL `zt_authored_fp` digest equals `card::authored_fingerprint` for every authored field (Idea, Event, Model part, Model Card with a level and a Math form, Hub Card), an invalid stored enum aborts, and the seal hashes address-sorted `<address>\t<fingerprint>\n` lines ([Service, CLI and storage](service-and-cli.md)).
 - `tests/card_types.rs`: the `card_type` column added to a 0.4 archive once; MCP create/edit/get/tree/search by type and the root and human-Workspace refusals; types kept through moves and Citation-key renames; Session `ty`; GUI `/api/create`, `/api/edit`, `/api/overview` counts; the dump `archive.json`; Finding Cards through MCP (`insert_card`, `list_trees` counts); the one-time rebuild of a 0.17 archive for `finding` with its backup. The dump test returns early when no zip backend is found (`tar` on Windows, `zip` elsewhere).
+- `tests/term_links.rs` (S10, #151): a created Card keeps `[[均衡@address]]` byte for byte and indexes it as one `kind = 'term'` row at the head's address; `get_terms` sees the use and label with no fault; a refused new use (list, part, ordinary Card, missing target, non-Location, second `@`, empty or 41-scalar label) writes nothing and advances no revision; a mismatched label is advice and stays authored; an old invalid use is retained only with its label/target and multiplicity; math and code examples are literal while an ordinary Link in math keeps its kind; a batch commits or rolls back whole; and moving the head rewrites only the target bytes, then `zt status --check-links` passes.
 
-Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspace`, `ensure_same_workspace`, or `counts` directly (they are covered end to end in `tests/workspaces_mcp.rs`); no test covers a stray `]]` before a later Link, indented code blocks, a marker line inside a code fence, or Reverse link order with `0/10` beside `0/2`.
+Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspace`, `ensure_same_workspace`, or `counts` directly (they are covered end to end in `tests/workspaces_mcp.rs`); no test covers a stray `]]` before a later Link, indented code blocks, a marker line inside a code fence, or Reverse link order with `0/10` beside `0/2`. The restatement-entry reader (`zt_check::text::entry_section`) still takes the raw bracket content as a navigation target, so a Term use inside `## 同述入口` reads as `label@address` there; the Term projection of reads and checks is S12 (#154).
 
 ## Decisions and pitfalls
 
 ### Decisions
 
 - **One Markdown document per Card, generated tail.** The marker is an HTML comment so rendered Markdown hides it; the client never supplies Reverse links ([docs/markdown-cards-and-gui-design.md](../markdown-cards-and-gui-design.md)).
-- **One Link module.** All `[[target]]` interpretation is in `src/link.rs`, and it takes snapshots instead of a connection, so it has no storage seam to mock; raw `[[` scanning elsewhere is not allowed ([docs/link-lifecycle-and-session-command-policy-deepening-design.md](../link-lifecycle-and-session-command-policy-deepening-design.md)). "New Broken link" means a target absent from the old body's Broken set, not a count of occurrences.
-- **Code is not a Link.** Inline code spans and fenced blocks are excluded from validation, rewriting, and Reverse links, so Cards can show `[[x]]` literally and charts in ```` ```chart ```` fences are not Links ([docs/markdown-cards-and-gui-design.md](../markdown-cards-and-gui-design.md)).
+- **One lexical scanner in the checker; the root owns the meaning.** Macro shape, the label grammar, code and math exclusion, and tolerant rendering are `zt_check::text`'s, so the service, the checker, and every future consumer read one implementation. `src/link.rs` adds the address grammar, the Term-head rule, and the lifecycle, and it takes snapshots instead of a connection, so it has no storage seam to mock. No other code splits `label@address` ([docs/link-lifecycle-and-session-command-policy-deepening-design.md](../link-lifecycle-and-session-command-policy-deepening-design.md)). "New Broken link" means a target absent from the old body's Broken set, not a count of occurrences.
+- **Code is not a Link; math is no Term use.** Inline code spans and fenced blocks are excluded from validation, rewriting, and Reverse links, so Cards can show `[[x]]` literally and charts in ```` ```chart ```` fences are not Links ([docs/markdown-cards-and-gui-design.md](../markdown-cards-and-gui-design.md)). A Term-like macro inside inline or display math is literal too, while an ordinary Link there keeps its ordinary meaning: the relinker's broader protected-span set is S22's, not this parser's, so the ordinary grammar does not grow.
+- **A Term use is syntax plus a role, not a second store.** `[[label@address]]` is recognized lexically; the write checks the address is a Term head by the same `term::is_head` the read uses, and the index keeps only source, ordinal, target and `kind = 'term'`. The label stays in the authored macro, where a mismatch is advice; nothing normalizes or rewrites the word (S10, #151; design 10.1).
 - **Citation key is the BibTeX entry key, ASCII and filename-safe.** The dump writes `<citation-key>.bib`, so keys exclude Windows reserved stems and are unique case-insensitively while Links stay case-sensitive. A real BibTeX parser is used, the raw string is stored unchanged, and only the display title is normalized ([docs/literature-card-design.md](../literature-card-design.md)).
 - **Workspaces share one address space.** Links keep one meaning everywhere; Cards and trees never cross Workspaces; regenerating a human Card's Reverse links is not a change to it ([docs/workspaces-and-mcp-design.md](../workspaces-and-mcp-design.md)).
 - **Type is row data, not formatting.** It is stored on the row, survives moves and renames, and body conventions are taught, not validated ([docs/event-and-model-cards-design.md](../event-and-model-cards-design.md), [docs/finding-cards-design.md](../finding-cards-design.md), [docs/hub-cards-design.md](../hub-cards-design.md)).
@@ -450,17 +462,21 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 - **The marker is found everywhere, even in code.** `parse` matches `<!-- zt:reverse-links -->` on any trimmed line, including inside a fenced code block, so a Card that quotes the marker loses the rest of its body (or is refused if it quotes it twice).
 - **Stray `]]` is checked only after the last Link.** Strict parsing refuses `[[0/1]] then ]]` but accepts `a ]] b [[0/1]]`, because the tail check starts at the end of the last Link.
 - **Only fenced and inline code is code.** Indented code blocks (4 spaces) and fences indented more than 3 spaces (for example inside a list item) are prose, so `[[…]]` in them are Links and must be valid.
+- **A stray `$` in prose can hide a Term use.** The math exclusion pairs dollar signs without Markdown context, so `$` … `$` around a Term-like macro makes it literal; a `$` inside a code span opens no formula.
+- **An old invalid Term use is retained by identity, not by target.** The legacy allowance counts `(label, target)` occurrences in the old body, so a third copy, a changed target, or a changed label is a new invalid use and is refused; a malformed Term macro is refused even when stored (S10-AC04).
+- **A Term target's role is checked now, not carried.** A head that is later retyped, moved out of its list, or deleted leaves the stored use invalid; the source Card can still be edited while keeping that use, and `get_terms` reports it. Editing another Card does not revalidate the use.
 - **Reverse link order is byte order.** `BTreeSet<&str>` sorts `0/10` before `0/2` and Citation keys by ASCII (uppercase first); it is not Folgezettel order (`model::address_order`).
 - **Headings are stricter than CommonMark.** The title must be `# ` at column 0; a tab after `#` or a leading space is refused.
 - **Literature titles are not editable in the text.** Any heading in edited Literature text is dropped and the BibTeX title wins; change the `title` field instead.
 - **A case-only Citation key change is refused.** Renaming `smith2024` to `Smith2024` fails the case-insensitive conflict check; it needs a rename to a different key and back.
 - **Unknown stored values fall back silently.** `CardType::from_stored` reads garbage as `idea` and `Workspace::from_stored` as `human`; the schema CHECKs are what keep bad values out.
 - **Agent rewrite checks are archive-wide.** `ensure_link_rewrites_allowed` parses every Card in the archive for each agent move, insert, delete, or rename; it is O(Cards).
-- **zt-check finds Links differently.** `tools/zt-check/src/check.rs` uses its own `\[\[[^\]]+\]\]` pattern for the Card layer rules, which does not skip code spans; see [zt-check](zt-check.md).
+- **zt-check's restatement-entry reader still reads raw brackets.** `zt_check::text::entry_section` (the `## 同述入口` navigation rules) takes `[[…]]` content as a target with its own pattern, which does not skip code spans and does not know a Term label; the Term projection of reads and checks belongs to S12 (#154). The lexical Link scan itself is shared.
 - **Stale test message.** In `tests/card_types.rs`, the assertion message "the schema accepts only the three Card types" predates Finding and Hub Cards; the check itself (refusing `fact`) is still right.
 
 ## Change history
 
+- `2026-10-25` — S10 (#151): direct Term links. `zt_check::text` gains the shared lexical Link scan (`LinkForm`, `LinkOccurrence` with macro/target/label byte ranges, `LinkFault`, `link_occurrences`, `parse_links`, `code_ranges`, `fenced_code_ranges`, `MAX_TERM_NAME`); `src/link.rs` reuses it and adds the root address grammar, the Term-head write rule with its multiplicity-aware legacy retention (`link::validate`), and Term uses in `LinkLifecycle::broken_links` while ordinary Reverse links skip them. `term::is_head` exposes the computed head role and `term::label_of` reads the shared occurrence. Writing `[[均衡@address]]` keeps the label and punctuation, indexes `kind = 'term'` at the head's address, and moving the head rewrites only the target bytes; a Term-like macro in math is literal. zt 0.30.0, zt-check 0.7.0.
 - `2026-10-25` — S08 (#150): `src/term.rs` computes the Term structure beside the name it already owns. `Role` (`list`, `card`, `part`, `unfiled`), `place` (one placement walk, `MAX_CHAIN = 128`, a typed `Placement` refusal for a cycle or a too-long chain), `role`, `facts`, `resolve_list` (a list, a descendant, or the one list of a tree, with every ambiguous list named), and `structure` (rows, `row_duplicates`, heads, parts, unfiled Cards, uses, the seven faults, coverage). The table parse moved earlier into the shared text module; `term_rows_raw` and `term_row_duplicates` add the raw rows a publication must resolve before one head per row. No schema, name grammar, or fingerprint changed (zt 0.29.0, zt-check 0.6.0).
 - `2026-10-24` — S07 (#149): `CardType::Term` and the nullable `cards.term_name` column. `src/term.rs` owns the one name parser (trim; at most 40 Unicode scalar values; one line; no `[`, `]`, `@`, `|`, backtick), the `term` field protocol (omitted/null/set), the Regular-Card rule and the one-row write. The authored fingerprint appends `term_name\0<name>\0` only for a nonempty name, so existing Lock seals keep their bytes; the SQL wrapper keeps its eight-argument form and adds a nine-argument term-aware one. The dump manifest gains `term_names`.
 - `2026-10-22` — Tree Lock S04 (#127): the reviewed identity now has an owner history beside it. A note change is one `lock_events` row with the previous and the new note and changes no authored fingerprint, seal or pin, and an unlock deletes only the Lock's live `lock_members`/`lock_pins` rows while its initial `lock` event keeps every promised address, row and fingerprint, which `GET /api/locks` reads back as the Lock's `members` and `pins`. Authored identity, the seal framing and the pin rules are unchanged.

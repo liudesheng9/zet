@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::ops::Range;
 use std::sync::LazyLock;
 
 /// One compiled pattern: a rule or a text shape, built once per process.
@@ -668,6 +669,305 @@ pub(crate) fn read_terms(body: &str) -> Terms {
     terms
 }
 
+// --- Link macros (design 10.1, S10 / #151) ----------------------------------------------------
+
+/// The lexical form of one Link macro: an ordinary Link, or a Term link whose `label@` prefix is
+/// the word in the sentence that a Term Card defines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum LinkForm {
+    Ordinary,
+    Term,
+}
+
+/// The longest Term name, and the same limit a Term-link label gets: Unicode scalar values, one
+/// line (design 9.1; used by the root's name parser and by [`parse_links`]).
+pub const MAX_TERM_NAME: usize = 40;
+
+/// One Link macro outside literal code (and, for a Term link, outside math), with its UTF-8 byte
+/// ranges into the scanned text: the whole macro, the address alone, and the label a Term link
+/// adds. The label is the only optional part.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkOccurrence<'a> {
+    pub target: &'a str,
+    pub label: Option<&'a str>,
+    pub form: LinkForm,
+    pub macro_range: Range<usize>,
+    pub target_range: Range<usize>,
+    pub label_range: Option<Range<usize>>,
+}
+
+/// Why the strict lexical Link scan refused a body. The first two keep the root Link parser's
+/// long-standing message; the last two are the Term grammar's own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinkFault {
+    /// A `[[` outside code with no closing `]]`.
+    UnclosedMacro,
+    /// A `]]` outside code with no opening `[[`.
+    StrayMacroEnd,
+    /// A Term label that is empty, longer than [`MAX_TERM_NAME`], or spans lines.
+    LabelLength,
+    /// More than one `@`: exactly one separates the label and the address.
+    SecondSeparator,
+}
+
+impl LinkFault {
+    pub fn message(self) -> &'static str {
+        match self {
+            LinkFault::UnclosedMacro | LinkFault::StrayMacroEnd => "invalid link macro",
+            LinkFault::LabelLength => {
+                "invalid Term link label: 1-40 characters on one line"
+            }
+            LinkFault::SecondSeparator => {
+                "invalid Term link macro: one `@` separates the label and the address"
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for LinkFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for LinkFault {}
+
+/// Every Link macro outside Markdown code, valid or not; it never fails. A Term-like macro inside
+/// inline or display math is literal, so it is no occurrence; an ordinary macro there is still an
+/// ordinary Link, as it always was (R0254).
+pub fn link_occurrences(text: &str) -> Vec<LinkOccurrence<'_>> {
+    scan_links(text, false).unwrap_or_default()
+}
+
+/// The strict lexical scan of one body: the macro shape, the Term label grammar, and the code and
+/// math exclusion of [`link_occurrences`], refusing a macro without its closing delimiter, a
+/// stray `]]`, and a malformed Term label. The address grammar and the target lifecycle stay in
+/// the root's Link wrapper, which owns them.
+pub fn parse_links(text: &str) -> Result<Vec<LinkOccurrence<'_>>, LinkFault> {
+    scan_links(text, true)
+}
+
+fn scan_links(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>, LinkFault> {
+    let code = code_ranges(text);
+    let math = math_ranges(text, &code);
+    let in_code = |index: usize| code.iter().find(|range| range.contains(&index));
+    let in_math = |index: usize| math.iter().any(|range| range.contains(&index));
+    let mut occurrences = Vec::new();
+    let mut offset = 0;
+    while let Some(start_relative) = text[offset..].find("[[") {
+        let start = offset + start_relative;
+        if let Some(range) = in_code(start) {
+            offset = range.end;
+            continue;
+        }
+        let content_start = start + 2;
+        let Some(end_relative) = text[content_start..].find("]]") else {
+            if strict {
+                return Err(LinkFault::UnclosedMacro);
+            }
+            break;
+        };
+        let content_end = content_start + end_relative;
+        let content = &text[content_start..content_end];
+        let macro_end = content_end + 2;
+        // A `label@address` shape inside a formula is a literal example, not a Term use.
+        if content.contains('@') && in_math(start) {
+            offset = macro_end;
+            continue;
+        }
+        let occurrence = match content.find('@') {
+            Some(at) => {
+                let label = &content[..at];
+                let target = &content[at + 1..];
+                if strict {
+                    if target.contains('@') {
+                        return Err(LinkFault::SecondSeparator);
+                    }
+                    if label.is_empty()
+                        || label.chars().count() > MAX_TERM_NAME
+                        || label.contains(['\n', '\r'])
+                    {
+                        return Err(LinkFault::LabelLength);
+                    }
+                }
+                LinkOccurrence {
+                    target,
+                    label: Some(label),
+                    form: LinkForm::Term,
+                    macro_range: start..macro_end,
+                    target_range: content_start + at + 1..content_end,
+                    label_range: Some(content_start..content_start + at),
+                }
+            }
+            None => LinkOccurrence {
+                target: content,
+                label: None,
+                form: LinkForm::Ordinary,
+                macro_range: start..macro_end,
+                target_range: content_start..content_end,
+                label_range: None,
+            },
+        };
+        occurrences.push(occurrence);
+        offset = macro_end;
+    }
+    if strict {
+        let mut tail = offset;
+        while let Some(relative) = text[tail..].find("]]") {
+            let index = tail + relative;
+            match in_code(index) {
+                Some(range) => tail = range.end.max(index + 1),
+                None => return Err(LinkFault::StrayMacroEnd),
+            }
+        }
+    }
+    Ok(occurrences)
+}
+
+/// Byte ranges of fenced code blocks and inline code spans in Markdown text. Analysis of either
+/// needs them: they are literal, so no Link macro or term match lives there.
+pub fn code_ranges(text: &str) -> Vec<Range<usize>> {
+    let (mut fenced, inline) = scan_code(text);
+    fenced.extend(inline);
+    fenced.sort_by_key(|range| range.start);
+    fenced
+}
+
+/// Byte ranges of fenced code blocks, each from its opening fence line through its closing fence
+/// line.
+pub fn fenced_code_ranges(text: &str) -> Vec<Range<usize>> {
+    scan_code(text).0
+}
+
+/// Byte ranges of inline (`$...$`) and display (`$$...$$`) math. A Term-like macro inside one is
+/// literal (R0254); the span syntax is the one the prose projection above reads. A dollar sign
+/// inside Markdown code opens no math: code is literal too.
+fn math_ranges(text: &str, code: &[Range<usize>]) -> Vec<Range<usize>> {
+    let bytes = text.as_bytes();
+    let in_code = |index: usize| code.iter().any(|range| range.contains(&index));
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'$' || in_code(index) {
+            index += 1;
+            continue;
+        }
+        if bytes.get(index + 1) == Some(&b'$') {
+            let mut search = index + 2;
+            let mut close = None;
+            while search + 1 < bytes.len() {
+                if bytes[search] == b'$' && bytes[search + 1] == b'$' && !in_code(search) {
+                    close = Some(search);
+                    break;
+                }
+                search += 1;
+            }
+            match close {
+                Some(close) => {
+                    ranges.push(index..close + 2);
+                    index = close + 2;
+                }
+                None => index += 2,
+            }
+            continue;
+        }
+        let mut search = index + 1;
+        let mut close = None;
+        while search < bytes.len() && bytes[search] != b'\n' {
+            if bytes[search] == b'$' && !in_code(search) {
+                if search > index + 1 {
+                    close = Some(search);
+                }
+                break;
+            }
+            search += 1;
+        }
+        match close {
+            Some(close) => {
+                ranges.push(index..close + 1);
+                index = close + 1;
+            }
+            None => index += 1,
+        }
+    }
+    ranges
+}
+
+fn scan_code(text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let mut ranges = Vec::new();
+    let mut inline = Vec::new();
+    let mut fence: Option<(u8, usize, usize)> = None;
+    let mut prose_start = 0;
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let line_end = line_start + line.len();
+        let content = line.trim_end_matches(['\n', '\r']);
+        let indent = content.len() - content.trim_start_matches(' ').len();
+        let trimmed = &content[indent..];
+        let run = |ch: u8| trimmed.bytes().take_while(|byte| *byte == ch).count();
+        match fence {
+            None if indent <= 3 && (run(b'`') >= 3 || run(b'~') >= 3) => {
+                let ch = trimmed.as_bytes()[0];
+                inline_code_ranges(text, prose_start..line_start, &mut inline);
+                fence = Some((ch, run(ch), line_start));
+            }
+            Some((ch, count, start))
+                if indent <= 3 && run(ch) >= count && trimmed[run(ch)..].trim().is_empty() =>
+            {
+                ranges.push(start..line_end);
+                fence = None;
+                prose_start = line_end;
+            }
+            _ => {}
+        }
+        line_start = line_end;
+    }
+    match fence {
+        Some((_, _, start)) => ranges.push(start..text.len()),
+        None => inline_code_ranges(text, prose_start..text.len(), &mut inline),
+    }
+    (ranges, inline)
+}
+
+fn inline_code_ranges(text: &str, within: Range<usize>, ranges: &mut Vec<Range<usize>>) {
+    let bytes = text.as_bytes();
+    let run_at = |index: usize| {
+        bytes[index..within.end]
+            .iter()
+            .take_while(|byte| **byte == b'`')
+            .count()
+    };
+    let mut index = within.start;
+    while index < within.end {
+        if bytes[index] != b'`' {
+            index += 1;
+            continue;
+        }
+        let open = run_at(index);
+        let mut search = index + open;
+        let mut close = None;
+        while search < within.end {
+            if bytes[search] == b'`' {
+                let run = run_at(search);
+                if run == open {
+                    close = Some(search + run);
+                    break;
+                }
+                search += run;
+            } else {
+                search += 1;
+            }
+        }
+        match close {
+            Some(end) => {
+                ranges.push(index..end);
+                index = end;
+            }
+            None => index += open,
+        }
+    }
+}
+
 // --- the checks -------------------------------------------------------------------------------
 
 /// One title projection of the Workspace context: a read-only comparison row.
@@ -836,6 +1136,122 @@ pub fn title_similarity(a: &str, b: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R0250/R0251 (S10, #151): one shared Lexical scan reports the whole macro, the address, and
+    /// the optional Term label as UTF-8 byte ranges into the original text.
+    #[test]
+    fn link_occurrences_report_utf8_macro_target_and_label_ranges_and_their_form() {
+        let text = "见 [[0/1]] 与 [[均衡@2/1|a]]。";
+        assert_eq!(
+            link_occurrences(text),
+            [
+                LinkOccurrence {
+                    target: "0/1",
+                    label: None,
+                    form: LinkForm::Ordinary,
+                    macro_range: 4..11,
+                    target_range: 6..9,
+                    label_range: None,
+                },
+                LinkOccurrence {
+                    target: "2/1|a",
+                    label: Some("均衡"),
+                    form: LinkForm::Term,
+                    macro_range: 16..32,
+                    target_range: 25..30,
+                    label_range: Some(18..24),
+                },
+            ]
+        );
+        // Every range is a byte range into the original text, so a rewrite touches only bytes.
+        let occurrence = &link_occurrences(text)[1];
+        assert_eq!(&text[occurrence.macro_range.clone()], "[[均衡@2/1|a]]");
+        assert_eq!(&text[occurrence.label_range.clone().unwrap()], "均衡");
+        assert_eq!(&text[occurrence.target_range.clone()], "2/1|a");
+    }
+
+    /// R0252/R0253 (S10, #151): the strict scan refuses a missing delimiter, a stray `]]`, and a
+    /// Term label outside the shared one-line 1–40-scalar grammar; the tolerant scan keeps what it
+    /// can see and never fails.
+    #[test]
+    fn the_strict_link_scan_refuses_macro_shape_and_term_label_faults() {
+        for (text, fault) in [
+            ("before [[0/1", LinkFault::UnclosedMacro),
+            ("before ]]", LinkFault::StrayMacroEnd),
+            ("[[@2/1|a]]", LinkFault::LabelLength),
+            ("[[均衡\n@2/1|a]]", LinkFault::LabelLength),
+            ("[[均衡@2/1|a@b]]", LinkFault::SecondSeparator),
+        ] {
+            assert_eq!(parse_links(text), Err(fault), "{text:?}");
+        }
+        let forty = "概".repeat(MAX_TERM_NAME);
+        assert_eq!(
+            parse_links(&format!("[[{forty}@2/1|a]]")).unwrap()[0].label,
+            Some(forty.as_str())
+        );
+        let forty_one = "概".repeat(MAX_TERM_NAME + 1);
+        assert_eq!(
+            parse_links(&format!("[[{forty_one}@2/1|a]]")),
+            Err(LinkFault::LabelLength)
+        );
+        assert_eq!(
+            LinkFault::UnclosedMacro.to_string(),
+            "invalid link macro",
+            "the root parser's long-standing message is kept"
+        );
+        assert_eq!(LinkFault::StrayMacroEnd.to_string(), "invalid link macro");
+
+        // The tolerant scan never fails: an unclosed macro ends the scan, a stray `]]` is text,
+        // and a malformed Term macro still reports the ranges at its first `@`.
+        assert_eq!(link_occurrences("before [[0/1").len(), 0);
+        assert_eq!(link_occurrences("before ]]").len(), 0);
+        let broken = &link_occurrences("x [[a@b@2/1|a]] y")[0];
+        assert_eq!(broken.form, LinkForm::Term);
+        assert_eq!(broken.label, Some("a"));
+        assert_eq!(broken.target, "b@2/1|a");
+        assert_eq!(&"x [[a@b@2/1|a]] y"[broken.target_range.clone()], "b@2/1|a");
+    }
+
+    /// R0254 (S10, #151): code and math are literal. A Term-like example inside a formula is no
+    /// Term use, while an ordinary Link there keeps the interpretation it always had.
+    #[test]
+    fn term_macros_inside_math_and_code_are_literal_and_ordinary_links_are_unchanged() {
+        for text in [
+            "$[[均衡@2/1|a]]$",
+            "$$[[均衡@2/1|a]]$$",
+            "text $x [[均衡@2/1|a]] y$ more",
+            "`[[均衡@2/1|a]]`",
+            "```\n[[均衡@2/1|a]]\n```",
+        ] {
+            let term_forms = link_occurrences(text)
+                .into_iter()
+                .filter(|occurrence| occurrence.form == LinkForm::Term)
+                .count();
+            assert_eq!(term_forms, 0, "{text:?}");
+        }
+        // An ordinary Link inside math is still an ordinary Link, exactly as before this slice.
+        let occurrences = link_occurrences("$[[0/1]]$");
+        assert_eq!(occurrences.len(), 1);
+        assert_eq!(occurrences[0].form, LinkForm::Ordinary);
+        assert_eq!(occurrences[0].target, "0/1");
+        assert_eq!(occurrences[0].macro_range, 1..8);
+        // A Term-like macro in prose is a Term use, and the code exclusion is unchanged.
+        assert_eq!(link_occurrences("a [[均衡@2/1|a]] b")[0].form, LinkForm::Term);
+        // A dollar sign inside a code span opens no formula, so the prose Term use after it stays
+        // a use.
+        assert_eq!(
+            link_occurrences("`$` [[均衡@2/1|a]]")[0].form,
+            LinkForm::Term,
+            "a code-span dollar is literal"
+        );
+        assert_eq!(
+            link_occurrences("`[[0/1]]` and [[0/2]]")
+                .iter()
+                .map(|occurrence| occurrence.target)
+                .collect::<Vec<_>>(),
+            ["0/2"]
+        );
+    }
 
     #[test]
     fn title_identity_folds_case_and_punctuation() {

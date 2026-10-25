@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::link::LinkBody;
+use crate::link::{LinkBody, LinkForm};
 use crate::{Card, CardType};
 
 /// Which part of its model a Model part presents: a short, one-line label.
@@ -666,13 +666,15 @@ fn sentence_around(
     }
 }
 
-/// One Link of a body, read: its target, its kind, and the sentence that holds
-/// it, with the Links in that sentence named by the reader's `name`.
+/// One Link of a body, read: its target, its kind, the sentence that holds
+/// it, and whether it is an ordinary Link or a Term use. A Term use names its
+/// Term head directly and takes part in no reasoning kind (design 10.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LinkRead {
     pub(crate) target: String,
     pub(crate) kind: RelationKind,
     pub(crate) note: String,
+    pub(crate) form: LinkForm,
 }
 
 /// Every Link of `body`, in order, read with its kind and sentence.
@@ -686,6 +688,17 @@ pub(crate) fn read_links(body: &str, name: impl Fn(&str) -> String) -> Vec<LinkR
         .iter()
         .map(|occurrence| {
             let range = occurrence.macro_range.clone();
+            let note = sentence_around(body, range.clone(), &name);
+            if occurrence.form == LinkForm::Term {
+                // A Term use is no announced relation and never changes the ordinary Link state
+                // a following ordinary Link may share.
+                return LinkRead {
+                    target: occurrence.target.to_string(),
+                    kind: RelationKind::Refers,
+                    note,
+                    form: LinkForm::Term,
+                };
+            }
             let start = sentence_start(body, range.start);
             // After a Link earlier in the same sentence, only the words since it count.
             let shared = previous.filter(|&(end, _)| end > start);
@@ -697,7 +710,8 @@ pub(crate) fn read_links(body: &str, name: impl Fn(&str) -> String) -> Vec<LinkR
             LinkRead {
                 target: occurrence.target.to_string(),
                 kind,
-                note: sentence_around(body, range, &name),
+                note,
+                form: LinkForm::Ordinary,
             }
         })
         .collect()

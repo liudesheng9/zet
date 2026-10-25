@@ -37,15 +37,30 @@ pub(crate) fn bump_revision(conn: &Connection) -> Result<()> {
 fn rows(card: &crate::Card) -> Result<Vec<Row>> {
     let parsed =
         crate::parse_card_text(&card.text).with_context(|| format!("Card `{}`", card.address))?;
-    crate::link::LinkBody::parse(&parsed.body)
+    let body = crate::link::LinkBody::parse(&parsed.body)
         .with_context(|| format!("Card `{}`", card.address))?;
-    Ok(crate::model::read_links(&parsed.body, str::to_string)
-        .into_iter()
+    let reads = crate::model::read_links(&parsed.body, str::to_string);
+    debug_assert_eq!(
+        body.occurrences().len(),
+        reads.len(),
+        "one LinkRead per occurrence"
+    );
+    Ok(body
+        .occurrences()
+        .iter()
+        .zip(reads)
         .enumerate()
-        .map(|(ord, link)| {
-            let kind = (link.kind != crate::model::RelationKind::Refers)
-                .then(|| link.kind.id().to_string());
-            (card.address.clone(), ord as i64, link.target, kind)
+        .map(|(ord, (occurrence, read))| {
+            // A Term use is its own kind, so a reader can tell it from a reasoning Link (design
+            // 10.3, S11 builds its Term-uses section on this row).
+            let kind = match occurrence.form {
+                crate::link::LinkForm::Term => Some("term".to_string()),
+                crate::link::LinkForm::Ordinary => {
+                    (read.kind != crate::model::RelationKind::Refers)
+                        .then(|| read.kind.id().to_string())
+                }
+            };
+            (card.address.clone(), ord as i64, occurrence.target.to_string(), kind)
         })
         .collect())
 }
@@ -192,7 +207,9 @@ pub(crate) fn sync_sources(conn: &Connection, sources: &BTreeSet<String>) -> Res
     write_stats(conn, sources.len(), affected.len(), changed)
 }
 
-/// Validate only the referenced targets; generated text is never authoritative.
+/// Validate only the referenced targets; generated text is never authoritative. The rules are the
+/// root Link wrapper's: an ordinary Link needs an existing target, and a new Term use needs a Term
+/// head with the legacy multiplicity exception (S10, #151).
 pub(crate) fn validate(conn: &Connection, body: &str, old_body: Option<&str>) -> Result<()> {
     let exists = |at: &str| -> Result<bool> {
         Ok(conn.query_row(
@@ -201,20 +218,8 @@ pub(crate) fn validate(conn: &Connection, body: &str, old_body: Option<&str>) ->
             |r| r.get(0),
         )?)
     };
-    let mut old_broken = BTreeSet::new();
-    if let Some(old) = old_body {
-        for link in crate::link::LinkBody::for_rendering(old).occurrences() {
-            if !exists(link.target)? {
-                old_broken.insert(link.target.to_string());
-            }
-        }
-    }
-    for link in crate::link::LinkBody::parse(body)?.occurrences() {
-        if !old_broken.contains(link.target) && !exists(link.target)? {
-            bail!("link target `{}` does not exist", link.target);
-        }
-    }
-    Ok(())
+    let is_head = |at: &str| crate::term::is_head(conn, at);
+    crate::link::validate(body, old_body, exists, is_head)
 }
 
 fn refresh_reverse(conn: &Connection, affected: &BTreeSet<String>) -> Result<usize> {
@@ -223,7 +228,13 @@ fn refresh_reverse(conn: &Connection, affected: &BTreeSet<String>) -> Result<usi
         let Some(card) = optional_card(conn, target)? else {
             continue;
         };
-        let mut sources = conn.prepare_cached("SELECT DISTINCT l.source,c.text FROM links l JOIN cards c ON (c.location=l.source OR c.citation_key=l.source) WHERE l.target=?1 ORDER BY l.source")?;
+        // A Term use is no reasoning Link: its own "Term uses" section is design 10.3's later
+        // slice (S11, #153), so the ordinary Reverse links skip its rows here.
+        let mut sources = conn.prepare_cached(
+            "SELECT DISTINCT l.source,c.text FROM links l
+             JOIN cards c ON (c.location=l.source OR c.citation_key=l.source)
+             WHERE l.target=?1 AND (l.kind IS NULL OR l.kind <> 'term') ORDER BY l.source",
+        )?;
         let linked = sources
             .query_map([target], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))

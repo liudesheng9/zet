@@ -2,12 +2,12 @@ use anyhow::{Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LinkOccurrence<'a> {
-    pub(crate) target: &'a str,
-    pub(crate) macro_range: Range<usize>,
-    pub(crate) target_range: Range<usize>,
-}
+/// The shared lexical scan of `tools/zt-check/src/text.rs` (design 10.1, S10 / #151): macro shape,
+/// the Term label grammar, code-span/fence exclusions, and the math-literal rule for a Term-like
+/// example. The root wrapper below owns the address grammar and the Link lifecycle.
+pub(crate) use zt_check::text::{
+    LinkForm, LinkOccurrence, code_ranges, fenced_code_ranges, link_occurrences,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LinkBody<'a> {
@@ -23,18 +23,37 @@ pub(crate) struct LinkRewrite {
 
 impl<'a> LinkBody<'a> {
     pub(crate) fn parse(text: &'a str) -> Result<Self> {
-        Ok(Self {
-            text,
-            occurrences: scan_occurrences(text, true)?,
-        })
+        let occurrences = zt_check::text::parse_links(text)?;
+        // The root's grammar: an ordinary Link names a Location or a Citation key, while a Term
+        // link names a Regular Location only (R0252).
+        for occurrence in &occurrences {
+            let valid = match occurrence.form {
+                LinkForm::Ordinary => {
+                    crate::is_valid_location(occurrence.target)
+                        || crate::literature::validate_citation_key(occurrence.target).is_ok()
+                }
+                LinkForm::Term => crate::is_valid_regular_location(occurrence.target),
+            };
+            if !valid {
+                bail!(
+                    "invalid {}link macro target `{}`",
+                    if occurrence.form == LinkForm::Term {
+                        "Term "
+                    } else {
+                        ""
+                    },
+                    occurrence.target
+                );
+            }
+        }
+        Ok(Self { text, occurrences })
     }
 
     /// Every `[[target]]` outside code, valid or not; it never fails.
     pub(crate) fn for_rendering(text: &'a str) -> Self {
         Self {
             text,
-            occurrences: scan_occurrences(text, false)
-                .expect("tolerant Link scanning cannot return an error"),
+            occurrences: link_occurrences(text),
         }
     }
 
@@ -61,141 +80,70 @@ impl<'a> LinkBody<'a> {
     }
 }
 
-/// Link macros are recognized in Markdown prose only: text inside inline code
-/// spans and fenced code blocks is never a Link.
-fn scan_occurrences(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>> {
-    let code = code_ranges(text);
-    let in_code = |index: usize| code.iter().find(|range| range.contains(&index));
-    let mut occurrences = Vec::new();
-    let mut offset = 0;
-    while let Some(start_relative) = text[offset..].find("[[") {
-        let start = offset + start_relative;
-        if let Some(range) = in_code(start) {
-            offset = range.end;
-            continue;
-        }
-        let target_start = start + 2;
-        let Some(end_relative) = text[target_start..].find("]]") else {
-            if strict {
-                bail!("invalid link macro");
-            }
-            break;
-        };
-        let target_end = target_start + end_relative;
-        let target = &text[target_start..target_end];
-        if strict
-            && !crate::is_valid_location(target)
-            && crate::literature::validate_citation_key(target).is_err()
-        {
-            bail!("invalid link macro target `{target}`");
-        }
-        occurrences.push(LinkOccurrence {
-            target,
-            macro_range: start..target_end + 2,
-            target_range: target_start..target_end,
-        });
-        offset = target_end + 2;
-    }
-    if strict {
-        let mut tail = offset;
-        while let Some(relative) = text[tail..].find("]]") {
-            let index = tail + relative;
-            match in_code(index) {
-                Some(range) => tail = range.end.max(index + 1),
-                None => bail!("invalid link macro"),
-            }
-        }
-    }
-    Ok(occurrences)
-}
-
-/// Byte ranges of fenced code blocks and inline code spans in Markdown text.
-pub(crate) fn code_ranges(text: &str) -> Vec<Range<usize>> {
-    let (mut fenced, inline) = scan_code(text);
-    fenced.extend(inline);
-    fenced.sort_by_key(|range| range.start);
-    fenced
-}
-
-/// Byte ranges of fenced code blocks, each from its opening fence line
-/// through its closing fence line.
-pub(crate) fn fenced_code_ranges(text: &str) -> Vec<Range<usize>> {
-    scan_code(text).0
-}
-
-fn scan_code(text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-    let mut ranges = Vec::new();
-    let mut inline = Vec::new();
-    let mut fence: Option<(u8, usize, usize)> = None;
-    let mut prose_start = 0;
-    let mut line_start = 0;
-    for line in text.split_inclusive('\n') {
-        let line_end = line_start + line.len();
-        let content = line.trim_end_matches(['\n', '\r']);
-        let indent = content.len() - content.trim_start_matches(' ').len();
-        let trimmed = &content[indent..];
-        let run = |ch: u8| trimmed.bytes().take_while(|byte| *byte == ch).count();
-        match fence {
-            None if indent <= 3 && (run(b'`') >= 3 || run(b'~') >= 3) => {
-                let ch = trimmed.as_bytes()[0];
-                inline_code_ranges(text, prose_start..line_start, &mut inline);
-                fence = Some((ch, run(ch), line_start));
-            }
-            Some((ch, count, start))
-                if indent <= 3 && run(ch) >= count && trimmed[run(ch)..].trim().is_empty() =>
-            {
-                ranges.push(start..line_end);
-                fence = None;
-                prose_start = line_end;
-            }
-            _ => {}
-        }
-        line_start = line_end;
-    }
-    match fence {
-        Some((_, _, start)) => ranges.push(start..text.len()),
-        None => inline_code_ranges(text, prose_start..text.len(), &mut inline),
-    }
-    (ranges, inline)
-}
-
-fn inline_code_ranges(text: &str, within: Range<usize>, ranges: &mut Vec<Range<usize>>) {
-    let bytes = text.as_bytes();
-    let run_at = |index: usize| {
-        bytes[index..within.end]
-            .iter()
-            .take_while(|byte| **byte == b'`')
-            .count()
-    };
-    let mut index = within.start;
-    while index < within.end {
-        if bytes[index] != b'`' {
-            index += 1;
-            continue;
-        }
-        let open = run_at(index);
-        let mut search = index + open;
-        let mut close = None;
-        while search < within.end {
-            if bytes[search] == b'`' {
-                let run = run_at(search);
-                if run == open {
-                    close = Some(search + run);
-                    break;
+/// Validate one authored body's Links against the archive (R0252, R0254; design 10.3).
+///
+/// An ordinary Link to a new target must reach a Card, while an old Broken target may stay at any
+/// occurrence count. A new Term use must reach a Term head; an old invalid Term use may stay only
+/// with the same label and target, up to its old multiplicity, so changing an invalid target is
+/// never retention. `exists` answers whether a Card is stored at an address and `is_head` whether
+/// that Card is a Term head.
+pub(crate) fn validate(
+    body: &str,
+    old_body: Option<&str>,
+    exists: impl Fn(&str) -> Result<bool>,
+    is_head: impl Fn(&str) -> Result<bool>,
+) -> Result<()> {
+    let mut old_broken = BTreeSet::new();
+    let mut retained: BTreeMap<(String, String), usize> = BTreeMap::new();
+    if let Some(old) = old_body {
+        // The old body is read tolerantly: a stored Card can hold a target that has since gone,
+        // and that is exactly the use a later edit may retain.
+        for occurrence in LinkBody::for_rendering(old).occurrences() {
+            match occurrence.form {
+                LinkForm::Ordinary => {
+                    if !exists(occurrence.target)? {
+                        old_broken.insert(occurrence.target.to_string());
+                    }
                 }
-                search += run;
-            } else {
-                search += 1;
+                LinkForm::Term => {
+                    if !is_head(occurrence.target)? {
+                        let label = occurrence.label.unwrap_or_default().to_string();
+                        *retained
+                            .entry((label, occurrence.target.to_string()))
+                            .or_default() += 1;
+                    }
+                }
             }
-        }
-        match close {
-            Some(end) => {
-                ranges.push(index..end);
-                index = end;
-            }
-            None => index += open,
         }
     }
+    let body = LinkBody::parse(body)?;
+    for occurrence in body.occurrences() {
+        match occurrence.form {
+            LinkForm::Ordinary => {
+                if !exists(occurrence.target)? && !old_broken.contains(occurrence.target) {
+                    bail!("link target `{}` does not exist", occurrence.target);
+                }
+            }
+            LinkForm::Term => {
+                if is_head(occurrence.target)? {
+                    continue;
+                }
+                let label = occurrence.label.unwrap_or_default().to_string();
+                let key = (label, occurrence.target.to_string());
+                if let Some(left) = retained.get_mut(&key)
+                    && *left > 0
+                {
+                    *left -= 1;
+                    continue;
+                }
+                if !exists(occurrence.target)? {
+                    bail!("Term link target `{}` does not exist", occurrence.target);
+                }
+                bail!("Term link target `{}` is not a Term head", occurrence.target);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -263,24 +211,9 @@ impl LinkLifecycle {
         body: &'a str,
         old_body: Option<&str>,
     ) -> Result<LinkBody<'a>> {
-        let old_broken: BTreeSet<String> = match old_body {
-            Some(old_body) => LinkBody::parse(old_body)?
-                .occurrences()
-                .iter()
-                .filter(|occurrence| !self.addresses.contains(occurrence.target))
-                .map(|occurrence| occurrence.target.to_string())
-                .collect(),
-            None => BTreeSet::new(),
-        };
-        let body = LinkBody::parse(body)?;
-        for occurrence in body.occurrences() {
-            if !self.addresses.contains(occurrence.target)
-                && !old_broken.contains(occurrence.target)
-            {
-                bail!("link target `{}` does not exist", occurrence.target);
-            }
-        }
-        Ok(body)
+        let exists = |at: &str| Ok(self.addresses.contains(at));
+        validate(body, old_body, exists, |_| Ok(false))?;
+        LinkBody::parse(body)
     }
 
     pub(crate) fn reverse_sections(&self) -> Result<BTreeMap<String, String>> {
@@ -294,6 +227,11 @@ impl LinkLifecycle {
             let body = LinkBody::parse(&source.body)?;
             let mut seen = BTreeSet::new();
             for occurrence in body.occurrences() {
+                // A Term use is no reasoning Link: its own "Term uses" section is design 10.3's
+                // later slice (S11, #153), so the ordinary Reverse links ignore it here.
+                if occurrence.form != LinkForm::Ordinary {
+                    continue;
+                }
                 if self.addresses.contains(occurrence.target) && seen.insert(occurrence.target) {
                     inbound
                         .entry(occurrence.target)
@@ -356,15 +294,119 @@ mod tests {
             [
                 LinkOccurrence {
                     target: "0/1",
+                    label: None,
+                    form: LinkForm::Ordinary,
                     macro_range: 4..11,
                     target_range: 6..9,
+                    label_range: None,
                 },
                 LinkOccurrence {
                     target: "LitA",
+                    label: None,
+                    form: LinkForm::Ordinary,
                     macro_range: 16..24,
                     target_range: 18..22,
+                    label_range: None,
                 },
             ]
+        );
+    }
+
+    /// R0250–R0254 (S10, #151): the root wrapper reuses the shared scan, so a Term link keeps its
+    /// label and exact byte ranges, and a move rewrites only the address bytes.
+    #[test]
+    fn term_links_keep_their_label_and_ranges_through_a_target_rewrite() {
+        let text = "见 [[均衡@2/1|a]] 与 [[0/1]]。";
+        let body = LinkBody::parse(text).expect("a valid Term link");
+        let occurrence = &body.occurrences()[0];
+        assert_eq!(occurrence.form, LinkForm::Term);
+        assert_eq!(occurrence.target, "2/1|a");
+        assert_eq!(occurrence.label, Some("均衡"));
+        assert_eq!(&text[occurrence.label_range.clone().unwrap()], "均衡");
+        assert_eq!(&text[occurrence.target_range.clone()], "2/1|a");
+        assert_eq!(&text[occurrence.macro_range.clone()], "[[均衡@2/1|a]]");
+
+        let mapping = BTreeMap::from([("2/1|a".to_string(), "2/2|b".to_string())]);
+        assert_eq!(
+            body.rewrite_targets(&mapping),
+            LinkRewrite {
+                body: "见 [[均衡@2/2|b]] 与 [[0/1]]。".to_string(),
+                count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn a_term_link_target_is_a_regular_location_and_its_label_is_shared_grammar() {
+        for (text, expected) in [
+            ("[[均衡@0/0]]", "invalid Term link macro target `0/0`"),
+            (
+                "[[均衡@LitA]]",
+                "invalid Term link macro target `LitA`",
+            ),
+            (
+                "[[a@b@2/1|a]]",
+                "invalid Term link macro: one `@` separates the label and the address",
+            ),
+            ("[[@2/1|a]]", "invalid Term link label: 1-40 characters on one line"),
+        ] {
+            let error = LinkBody::parse(text).expect_err("invalid Term link");
+            assert_eq!(error.to_string(), expected, "{text:?}");
+        }
+        // A Term target in a Literature tree is a Regular Location like any other.
+        assert!(LinkBody::parse("[[均衡@Book1990/1|a]]").is_ok());
+    }
+
+    /// R0254/S10-AC07: the tolerant scan classifies a Term use by its address, an ordinary
+    /// Reverse section ignores it (its own section is S11), and a missing Term target is Broken.
+    #[test]
+    fn rendering_broken_reads_and_reverse_links_see_a_term_use_by_its_address() {
+        let lifecycle = LinkLifecycle::from_cards(vec![CardSnapshot {
+            address: "0/1".to_string(),
+            title: "Target".to_string(),
+            body: "target".to_string(),
+        }]);
+        assert_eq!(
+            lifecycle.classify_for_rendering("见 [[均衡@0/1]] 与 [[幽灵@0/9]]"),
+            [
+                ClassifiedLink {
+                    target: "0/1",
+                    macro_range: 4..18,
+                    status: LinkStatus::Valid,
+                },
+                ClassifiedLink {
+                    target: "0/9",
+                    macro_range: 23..37,
+                    status: LinkStatus::Broken,
+                },
+            ]
+        );
+
+        let lifecycle = LinkLifecycle::from_cards(vec![
+            CardSnapshot {
+                address: "0/1".to_string(),
+                title: "Target".to_string(),
+                body: "target".to_string(),
+            },
+            CardSnapshot {
+                address: "0/2".to_string(),
+                title: "User".to_string(),
+                body: "见 [[均衡@0/1]] 与 [[幽灵@0/9]]".to_string(),
+            },
+        ]);
+        assert_eq!(
+            lifecycle.reverse_sections().expect("reverse links")["0/1"],
+            "",
+            "a Term use is no ordinary Reverse link"
+        );
+        assert_eq!(
+            lifecycle.broken_links().expect("broken links"),
+            [BrokenLink {
+                source_address: "0/2".to_string(),
+                source_title: "User".to_string(),
+                target: "0/9".to_string(),
+                source_line: "见 [[均衡@0/1]] 与 [[幽灵@0/9]]".to_string(),
+            }]
         );
     }
 

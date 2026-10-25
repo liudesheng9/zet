@@ -422,17 +422,12 @@ pub(crate) fn register_part_rows(body: &str) -> Vec<RegisterPartRow> {
 /// row may put around them. The accepted range labels keep their own en dash and their `、`.
 fn part_label(item: &str) -> String {
     let mut words = String::new();
-    let mut rest = item;
-    while let Some(start) = rest.find("[[") {
-        words.push_str(&rest[..start]);
-        match rest[start..].find("]]") {
-            Some(end) => rest = &rest[start + end + 2..],
-            None => {
-                rest = "";
-            }
-        }
+    let mut offset = 0;
+    for occurrence in crate::link::LinkBody::for_rendering(item).occurrences() {
+        words.push_str(&item[offset..occurrence.macro_range.start]);
+        offset = occurrence.macro_range.end;
     }
-    words.push_str(rest);
+    words.push_str(&item[offset..]);
     words
         .trim_matches(|ch: char| {
             ch.is_whitespace() || matches!(ch, ':' | '：' | '-' | '—' | '·' | '，' | ',' | '、')
@@ -549,17 +544,12 @@ pub(crate) fn register_row_faults(row: &RegisterRow, exists: &dyn Fn(&str) -> bo
 /// punctuation removed.
 fn clean_reason(text: &str) -> String {
     let mut out = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("[[") {
-        out.push_str(&rest[..start]);
-        match rest[start..].find("]]") {
-            Some(end) => rest = &rest[start + end + 2..],
-            None => {
-                rest = "";
-            }
-        }
+    let mut offset = 0;
+    for occurrence in crate::link::LinkBody::for_rendering(text).occurrences() {
+        out.push_str(&text[offset..occurrence.macro_range.start]);
+        offset = occurrence.macro_range.end;
     }
-    out.push_str(rest);
+    out.push_str(&text[offset..]);
     let out = out.replace("（枢纽）", "").replace("(hub)", "");
     out.trim_matches(|ch: char| {
         ch.is_whitespace() || matches!(ch, ':' | '：' | '-' | '—' | '–' | '·' | '，' | ',' | '、')
