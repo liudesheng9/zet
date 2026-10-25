@@ -222,11 +222,54 @@
     return `M ${p.x + p.w} ${y1} H ${gx - r} Q ${gx} ${y1} ${gx} ${y1 + r} V ${y2 - r} Q ${gx} ${y2} ${gx + r} ${y2} H ${c.x}`;
   }
 
-  /** SVG path for a Link from the focus: an arc that leaves and enters on the right. */
-  function linkArc(a, b) {
+  /**
+   * A Card summary's Links, split for a graph view (S16, #158; design 15.2). A Term use is a
+   * vocabulary reference, not a reasoning Link: `A -> B` is a Term edge iff `A.term_use_targets`
+   * names `B`. `links` keeps every ordinary edge: a target the Card names only through Term uses
+   * is left out, while one it also names with an announced relation (`kinds`) stays, its Term use
+   * then being one more edge. `terms` lists the Term edges, and only when `showTerms` is on, so a
+   * default view draws none. Nodes are never touched: this decides only which edges are drawn.
+   */
+  function edgeSplit(node, showTerms = false) {
+    const all = (node && node.links) || [];
+    const used = new Set((node && node.term_use_targets) || []);
+    const kinds = (node && node.kinds) || {};
+    const links = all.filter((target) => !used.has(target) || Object.prototype.hasOwnProperty.call(kinds, target));
+    const terms = showTerms ? all.filter((target, i) => used.has(target) && all.indexOf(target) === i) : [];
+    return { links, terms };
+  }
+
+  /** Whether `node` reaches `target` with a Term use (the edge a default view leaves out). */
+  const isTermEdge = (node, target) => !!(node && node.term_use_targets && node.term_use_targets.includes(target));
+
+  /**
+   * The Map's edges at its focus. `outbound` and `inbound` are the in-tree addresses the focus
+   * links and is linked from; `summaryOf` gives a Card summary. `lens` is what the focus lens
+   * shows, the same with Term edges on or off, so pressing the switch moves no Card; `out` and
+   * `in` are the ordinary arcs; `termOut` and `termIn` the Term arcs, empty unless `showTerms`.
+   * Inbound arcs are left out when more than 16 Cards link the focus (a tree root would light
+   * up everything).
+   */
+  function focusEdges(summaryOf, focus, outbound, inbound, showTerms = false) {
+    const inboundShown = inbound.length <= 16 ? inbound : [];
+    const own = edgeSplit(summaryOf(focus), true);
+    return {
+      lens: [...outbound, ...inboundShown],
+      out: outbound.filter((at) => own.links.includes(at)),
+      in: inboundShown.filter((at) => edgeSplit(summaryOf(at), false).links.includes(focus)),
+      termOut: showTerms ? outbound.filter((at) => own.terms.includes(at)) : [],
+      termIn: showTerms ? inboundShown.filter((at) => isTermEdge(summaryOf(at), focus)) : [],
+    };
+  }
+
+  /**
+   * SVG path for a Link from the focus: an arc that leaves and enters on the right. `wider`
+   * bows it further out, so a Term edge beside an ordinary one between the same Cards stays apart.
+   */
+  function linkArc(a, b, wider = 0) {
     const ax = a.x + a.w; const ay = a.y + a.h / 2;
     const bx = b.x + b.w; const by = b.y + b.h / 2;
-    const reach = 40 + Math.min(220, Math.abs(by - ay) * 0.22);
+    const reach = 40 + wider + Math.min(220, Math.abs(by - ay) * 0.22);
     const cx = Math.max(ax, bx) + reach;
     return `M ${ax} ${ay} C ${cx} ${ay} ${cx} ${by} ${bx} ${by}`;
   }
@@ -299,20 +342,24 @@
       t.angle = angle;
       for (const [address, p] of t.local) pos.set(address, { x: t.x + p.x, y: t.y + p.y, depth: p.depth, tree: t.id });
     }
-    // Links between trees, bundled into one arc per pair of trees.
+    // Links between trees, bundled into one arc per pair of trees. Ordinary Links and Term uses
+    // are bundled apart (S16, #158): the view draws `termBundles` only when Term edges are shown,
+    // and the ring itself never depends on either.
     const bundles = new Map();
-    for (const node of nodes) {
-      for (const target of node.links || []) {
-        const other = pos.get(target);
-        if (!other || other.tree === node.tree) continue;
-        const key = node.tree < other.tree ? node.tree + '\u0000' + other.tree : other.tree + '\u0000' + node.tree;
-        bundles.set(key, (bundles.get(key) || 0) + 1);
-      }
-    }
-    return {
-      trees, pos, R,
-      bundles: [...bundles].map(([key, count]) => { const [a, b] = key.split('\u0000'); return { a, b, count }; }),
+    const termBundles = new Map();
+    const bundle = (into, node, target) => {
+      const other = pos.get(target);
+      if (!other || other.tree === node.tree) return;
+      const key = node.tree < other.tree ? node.tree + '\u0000' + other.tree : other.tree + '\u0000' + node.tree;
+      into.set(key, (into.get(key) || 0) + 1);
     };
+    for (const node of nodes) {
+      const split = edgeSplit(node, true);
+      for (const target of split.links) bundle(bundles, node, target);
+      for (const target of split.terms) bundle(termBundles, node, target);
+    }
+    const listed = (map) => [...map].map(([key, count]) => { const [a, b] = key.split('\u0000'); return { a, b, count }; });
+    return { trees, pos, R, bundles: listed(bundles), termBundles: listed(termBundles) };
   }
 
   // ------------------------------------------------------------ the Table
@@ -617,7 +664,7 @@
     return run;
   }
   return {
-    sideRank, outline, pathTo, focusLens, edgePath, elbow, linkArc, constellation, LOD, GUTTER,
+    sideRank, outline, pathTo, focusLens, edgePath, elbow, edgeSplit, isTermEdge, focusEdges, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,
     theoryRows, labelsIn, studyStations, theoryRun,
   };

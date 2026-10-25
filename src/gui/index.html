@@ -111,6 +111,10 @@
         <button class="lens-toggle" id="file-spread" title="Write a card that lists these cards, filed after the card you hold">File as card</button>
         <button class="lens-toggle" id="ask-open" title="Ask the box a question: the cards it can justify lie on a temporary Table until you Keep or Cancel them (ask)">Ask the box</button>
       </div>
+      <button class="lens-toggle term-toggle" id="term-toggle" type="button" aria-pressed="false" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="7" height="10" rx="1"/><circle cx="19" cy="12" r="2"/><path class="term-dots" d="M10.5 12H16"/></svg>
+        <span>Term uses</span>
+      </button>
       <div class="zoom">
         <button class="icon-btn" data-zoom="out" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
         <button class="icon-btn" data-zoom="fit" title="Fit" aria-label="Fit to view"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
@@ -139,6 +143,7 @@
       <span><i class="lg-direct"></i>direct successor</span>
       <span><i class="lg-side"></i>side successor</span>
       <span><i class="lg-link"></i>link of the pointer</span>
+      <span class="lg-term-row" hidden><i class="lg-term"></i>term use</span>
       <span><b class="lg-fold">+3</b>cards filed behind</span>
     </div>
   </main>

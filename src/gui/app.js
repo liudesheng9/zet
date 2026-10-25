@@ -166,7 +166,8 @@
     features: ZtFeatures.read(null),
     nodes: [],            // every Card summary, for link completion and the sky
     byAddress: new Map(), // address -> Card summary
-    inboundOf: new Map(), // address -> addresses of the Cards that link it
+    inboundOf: new Map(), // address -> addresses of the Cards that link it with an ordinary Link
+    termInboundOf: new Map(), // address -> addresses of the Cards that reach it with a Term use
     childrenOf: new Map(), // address -> summaries of its Direct and Side successors
     fingerprint: '',
     pointer: null,        // Card address, or null for ROOT
@@ -174,6 +175,9 @@
     tree: null,
     outline: null,        // the current tree as an outline (layout.js)
     expandAll: store.get('zt-expand') === '1',
+    // Term edges (S16, #158): a Term use is a vocabulary reference, not a reasoning Link, so the
+    // Map, the Table and the Constellation leave its edge out until the reader shows them.
+    termEdges: store.get('zt-term-edges') === '1',
     mode: ['constellation', 'table'].includes(store.get('zt-mode')) ? store.get('zt-mode') : 'map',
     // The Workspace shown at ROOT and given new trees; it follows the Pointer.
     workspace: store.get('zt-workspace') === 'agent' ? 'agent' : 'human',
@@ -196,12 +200,16 @@
     state.nodes = nodes;
     state.byAddress = new Map(nodes.map((node) => [node.address, node]));
     state.inboundOf = new Map();
+    state.termInboundOf = new Map();
     state.childrenOf = new Map();
+    const into = (map, target, source) => {
+      if (!map.has(target)) map.set(target, []);
+      map.get(target).push(source);
+    };
     for (const node of nodes) {
-      for (const target of node.links || []) {
-        if (!state.inboundOf.has(target)) state.inboundOf.set(target, []);
-        state.inboundOf.get(target).push(node.address);
-      }
+      const split = ZtLayout.edgeSplit(node, true);
+      for (const target of split.links) into(state.inboundOf, target, node.address);
+      for (const target of split.terms) into(state.termInboundOf, target, node.address);
       if (node.parent && node.edge !== 'root') {
         if (!state.childrenOf.has(node.parent)) state.childrenOf.set(node.parent, []);
         state.childrenOf.get(node.parent).push(node);
@@ -1259,6 +1267,20 @@
     renderStage();
   }
 
+  /**
+   * Show or hide the Term edges in the Map, the Table and the Constellation (S16, #158). One
+   * switch for all three views, kept like the other view options in this browser only; it never
+   * adds or removes a Card, only the dotted Term edges between them.
+   */
+  function setTermEdges(on) {
+    state.termEdges = on;
+    store.set('zt-term-edges', on ? '1' : '0');
+    renderStage();
+  }
+
+  /** A Card's edges as the views draw them now: its ordinary Links, and its Term uses when shown. */
+  const edgesOf = (address) => ZtLayout.edgeSplit(state.byAddress.get(address), state.termEdges);
+
   function renderStage() {
     if (!state.overview) return;
     const inTree = state.mode === 'map' && state.card;
@@ -1284,6 +1306,14 @@
     lens.classList.toggle('on', state.expandAll);
     lens.title = state.expandAll ? 'Focus on the pointer and fold the rest (x)' : 'Unfold the whole tree (x)';
     lens.querySelector('span').textContent = state.expandAll ? 'Whole tree' : 'Focus';
+    const terms = $('#term-toggle');
+    terms.hidden = !(inTree || onTableMode || state.mode === 'constellation');
+    terms.classList.toggle('on', state.termEdges);
+    terms.setAttribute('aria-pressed', state.termEdges ? 'true' : 'false');
+    terms.title = state.termEdges
+      ? 'Term uses are drawn as dotted pencil lines marked “term”: hide them again'
+      : 'Show the Term uses: a dotted pencil line from a Card to the Term it uses (a word, not a reasoning Link)';
+    $('#legend .lg-term-row').hidden = !state.termEdges;
     const title = $('#stage-title');
     if (state.mode === 'constellation') {
       title.textContent = `Constellation · ${state.overview.trees.length} trees · ${state.nodes.length} cards`;
@@ -1484,13 +1514,28 @@
           const b = geometry.get(address);
           if (b && !near.has(address) && !state.linkedOut.has(address)) put('i' + address, ZtLayout.linkArc(b, focus), 'e-link in');
         }
+        // Term edges only while they are shown (S16, #158): dotted pencil, bowed a little wider than
+        // an ordinary arc so the two never lie on one line.
+        for (const address of state.termOut || []) {
+          const b = geometry.get(address);
+          if (b && !near.has(address)) put('t' + address, ZtLayout.linkArc(focus, b, 18), 'e-term out');
+        }
+        for (const address of state.termIn || []) {
+          const b = geometry.get(address);
+          if (b && !near.has(address) && !state.termOut.has(address)) put('u' + address, ZtLayout.linkArc(b, focus, 18), 'e-term in');
+        }
       }
       const over = hovered && hovered !== view.focus ? geometry.get(hovered) : null;
       if (over) {
         const near = structural(hovered);
-        for (const target of state.outline.card.get(hovered).links) {
+        const split = ZtLayout.edgeSplit(state.outline.card.get(hovered), state.termEdges);
+        for (const target of split.links) {
           const b = geometry.get(target);
           if (b && target !== hovered && !near.has(target)) put('h' + target, ZtLayout.linkArc(over, b), 'e-link peek');
+        }
+        for (const target of split.terms) {
+          const b = geometry.get(target);
+          if (b && target !== hovered && !near.has(target)) put('g' + target, ZtLayout.linkArc(over, b, 18), 'e-term peek');
         }
       }
       for (const [key, path] of paths) if (!keep.has(key)) { path.remove(); paths.delete(key); }
@@ -1533,13 +1578,18 @@
       const outline = state.outline;
       if (!card || !outline) return;
       const inTree = (address) => outline.card.has(address) && address !== card.address;
-      state.linkedOut = new Set(card.outbound.map((link) => link.address).filter(inTree));
+      const outbound = card.outbound.map((link) => link.address).filter(inTree);
       const inbound = card.inbound.map((link) => link.address).filter(inTree);
-      // A Card that half the tree refers to (a tree root) would light up everything.
-      state.linkedIn = new Set(inbound.length <= 16 ? inbound : []);
+      // The lens shows the same Cards whether Term edges are drawn or not (S16, #158): the switch
+      // only adds or removes the dotted Term arcs, so no Card moves when it is pressed.
+      const arcs = ZtLayout.focusEdges((at) => outline.card.get(at), card.address, outbound, inbound, state.termEdges);
+      state.linkedOut = new Set(arcs.out);
+      state.linkedIn = new Set(arcs.in);
+      state.termOut = new Set(arcs.termOut);
+      state.termIn = new Set(arcs.termIn);
       const fresh = !view || view.tree !== state.tree.tree;
       view = ZtLayout.focusLens(outline, card.address, {
-        links: [...state.linkedOut, ...state.linkedIn], expandAll: state.expandAll,
+        links: arcs.lens, expandAll: state.expandAll,
       });
       view.tree = state.tree.tree;
 
@@ -2019,8 +2069,11 @@
   /** Cards the open Card relates to: what it links, what links it, and its place in its tree. */
   function relatedTo(address) {
     const node = state.byAddress.get(address);
-    const related = new Set(node ? node.links : []);
+    // A Term use relates two Cards only while Term edges are shown (S16, #158).
+    const split = edgesOf(address);
+    const related = new Set([...split.links, ...split.terms]);
     for (const source of state.inboundOf.get(address) || []) related.add(source);
+    if (state.termEdges) for (const source of state.termInboundOf.get(address) || []) related.add(source);
     if (node && node.edge !== 'root' && node.parent) related.add(node.parent);
     for (const child of state.childrenOf.get(address) || []) related.add(child.address);
     related.delete(address);
@@ -2455,23 +2508,34 @@
       const groups = [];
       for (const card of cards) {
         const node = state.byAddress.get(card.at);
-        for (const target of node.links) {
+        const split = edgesOf(card.at);
+        // Ordinary threads first; a Term use is a thread only while Term edges are shown (S16, #158),
+        // dotted pencil and named `term`, sagging the other way when an ordinary thread joins the same pair.
+        const strings = [
+          ...split.links.map((target) => ({ target, term: false })),
+          ...split.terms.map((target) => ({ target, term: true })),
+        ];
+        for (const { target, term } of strings) {
           if (target === card.at || !lying.has(target)) continue;
-          const kind = (node.kinds && node.kinds[target]) || 'refers';
+          const kind = term ? 'term' : (node.kinds && node.kinds[target]) || 'refers';
           const hot = !!focus && (card.at === focus || target === focus);
           const warm = !hot && !!hovered && (card.at === hovered || target === hovered);
-          const back = (state.byAddress.get(target)?.links || []).includes(card.at) && card.at > target;
-          const geometry = ZtLayout.thread(rectOf(card), rectOf(lying.get(target)), back);
+          const reverse = edgesOf(target);
+          const back = (term ? reverse.terms : reverse.links).includes(card.at) && card.at > target;
+          const geometry = ZtLayout.thread(rectOf(card), rectOf(lying.get(target)), term && split.links.includes(target) ? !back : back);
           const group = svg('g', { class: 'thread kind-' + kind + (hot ? ' hot' : warm ? ' warm' : focus ? ' faint' : '') });
           const label = svg('title', {});
-          label.textContent = `${card.at} ${KINDS[kind] ? KINDS[kind].fwd : 'refers to'} ${target}`;
+          label.textContent = term ? `${card.at} uses the term ${target}` : `${card.at} ${KINDS[kind] ? KINDS[kind].fwd : 'refers to'} ${target}`;
           const tip = geometry.end;
           const a = geometry.angle;
-          const arrow = `M ${tip.x - 8 * Math.cos(a - 0.45)} ${tip.y - 8 * Math.sin(a - 0.45)} L ${tip.x} ${tip.y} L ${tip.x - 8 * Math.cos(a + 0.45)} ${tip.y - 8 * Math.sin(a + 0.45)}`;
+          // A Term thread ends in a pencil dot, not an arrow: its shape, not only its ink, says what it is.
+          const arrow = term
+            ? `M ${tip.x - 2.6} ${tip.y} a 2.6 2.6 0 1 0 5.2 0 a 2.6 2.6 0 1 0 -5.2 0`
+            : `M ${tip.x - 8 * Math.cos(a - 0.45)} ${tip.y - 8 * Math.sin(a - 0.45)} L ${tip.x} ${tip.y} L ${tip.x - 8 * Math.cos(a + 0.45)} ${tip.y - 8 * Math.sin(a + 0.45)}`;
           group.append(label, svg('path', { d: geometry.d, class: 'line' }), svg('path', { d: arrow, class: 'tip' }));
-          if ((hot || warm) && kind !== 'refers' && KINDS[kind]) {
+          if ((hot || warm) && (term || (kind !== 'refers' && KINDS[kind]))) {
             const word = svg('text', { x: geometry.mid.x, y: geometry.mid.y, class: 'word' });
-            word.textContent = KINDS[kind].fwd;
+            word.textContent = term ? 'term' : KINDS[kind].fwd;
             group.append(word);
           }
           groups.push([hot ? 2 : warm ? 1 : 0, group]);
@@ -2493,10 +2557,14 @@
       };
       const kindOfLink = (from, to) => state.byAddress.get(from)?.kinds?.[to];
       const sources = state.inboundOf.get(focus) || [];
-      for (const target of node.links) { const k = kindOfLink(focus, target); if (k && KINDS[k]) add(target, 'out', KINDS[k].fwd); }
+      // A Card reached only by a Term use is within reach only while Term edges are shown (S16, #158).
+      const split = edgesOf(focus);
+      for (const target of split.links) { const k = kindOfLink(focus, target); if (k && KINDS[k]) add(target, 'out', KINDS[k].fwd); }
       for (const source of sources) { const k = kindOfLink(source, focus); if (k && KINDS[k]) add(source, 'in', KINDS[k].back); }
-      for (const target of node.links) add(target, 'out', 'links to');
+      for (const target of split.links) add(target, 'out', 'links to');
       for (const source of sources) add(source, 'in', 'linked from');
+      for (const target of split.terms) add(target, 'out', 'uses the term');
+      if (state.termEdges) for (const source of state.termInboundOf.get(focus) || []) add(source, 'in', 'term used by');
       if (node.edge !== 'root' && node.parent) add(node.parent, 'tree', 'filed after');
       for (const child of state.childrenOf.get(focus) || []) add(child.address, 'tree', child.edge === 'side' ? 'branches to' : 'continued by');
       return list;
@@ -2913,6 +2981,23 @@
         ctx.lineWidth = Math.max(px, 1 + 1.7 * Math.log2(1 + bundle.count));
         ctx.stroke();
       }
+      // Term uses between trees, only while Term edges are shown (S16, #158): a dotted pencil arc
+      // bowed a little further in than the ordinary bundle of the same pair.
+      if (state.termEdges) {
+        ctx.setLineDash([1.5 * px, 4 * px]);
+        for (const bundle of layout.termBundles) {
+          const a = layout.byTree.get(bundle.a); const b = layout.byTree.get(bundle.b);
+          const touch = [hoveredTree, focusTree].some((id) => id && (id === bundle.a || id === bundle.b));
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.quadraticCurveTo((a.x + b.x) * 0.06, (a.y + b.y) * 0.06, b.x, b.y);
+          ctx.strokeStyle = touch ? ink : faint;
+          ctx.globalAlpha = touch ? 0.5 : (focusTree || hoveredTree ? 0.1 : 0.22);
+          ctx.lineWidth = Math.max(px, 0.8 + 0.9 * Math.log2(1 + bundle.count)) * (touch ? 1 : 0.8);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
 
       // Each tree's disc and its outline edges.
       for (const tree of layout.trees) {
@@ -2951,23 +3036,32 @@
       }
 
       // Single Links: the Pointer's in blue, the hovered card's in ink.
+      // A Term use is a dotted pencil line with a dotted ring, drawn only while Term edges are shown
+      // (S16, #158); the ordinary Links keep their solid lines and rings.
       const spray = (from, color, alpha) => {
         if (!from) return;
-        ctx.beginPath();
-        for (const target of from.links) {
-          const to = layout.byAddress.get(target);
-          if (to && to !== from) arc(ctx, from, to);
-        }
-        ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = 1.3 * px;
-        ctx.stroke();
-        for (const target of from.links) {
-          const to = layout.byAddress.get(target);
-          if (!to || to === from) continue;
+        const split = ZtLayout.edgeSplit(from, state.termEdges);
+        const strand = (targets, dash, stroke, a, width) => {
+          ctx.setLineDash(dash);
           ctx.beginPath();
-          ctx.arc(to.x, to.y, to.r + 2.5 * px, 0, Math.PI * 2);
-          ctx.lineWidth = 1.4 * px; ctx.strokeStyle = color; ctx.globalAlpha = Math.min(1, alpha + 0.2);
+          for (const target of targets) {
+            const to = layout.byAddress.get(target);
+            if (to && to !== from) arc(ctx, from, to);
+          }
+          ctx.strokeStyle = stroke; ctx.globalAlpha = a; ctx.lineWidth = width;
           ctx.stroke();
-        }
+          for (const target of targets) {
+            const to = layout.byAddress.get(target);
+            if (!to || to === from) continue;
+            ctx.beginPath();
+            ctx.arc(to.x, to.y, to.r + 2.5 * px, 0, Math.PI * 2);
+            ctx.lineWidth = 1.4 * px; ctx.strokeStyle = stroke; ctx.globalAlpha = Math.min(1, a + 0.2);
+            ctx.stroke();
+          }
+          ctx.setLineDash([]);
+        };
+        strand(split.links, [], color, alpha, 1.3 * px);
+        if (split.terms.length) strand(split.terms, [1.5 * px, 3.5 * px], cssVar('--ink-soft'), Math.max(0.45, alpha - 0.1), 1.2 * px);
       };
       spray(focus, link, 0.75);
       if (hovered && hovered !== focus) spray(hovered, ink, 0.55);
@@ -6641,6 +6735,7 @@
     setMode(state.mode);
     $('#rail-toggle').addEventListener('click', () => openRail());
     $('#lens-toggle').addEventListener('click', () => setExpandAll(!state.expandAll));
+    $('#term-toggle').addEventListener('click', () => setTermEdges(!state.termEdges));
     $('#spread-pick').addEventListener('click', () => showSpreads());
     $('#file-spread').addEventListener('click', () => fileSpread().catch(fail));
     $('#ask-open').addEventListener('click', () => askBox('').catch(fail));

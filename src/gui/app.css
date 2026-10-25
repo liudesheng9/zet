@@ -371,6 +371,12 @@ kbd {
 .lens-toggle svg { width: 16px; height: 16px; }
 .lens-toggle.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .lens-toggle kbd { padding: 2px 4px; font-size: 9.5px; }
+/* The one Term-edge switch of the Map, the Table and the Constellation (S16, #158): its icon is the
+   edge it shows, a dotted pencil line from a card to a dot, so it is its own legend. Off it is the
+   quiet glass of the other view switches; on it takes the accent ink and a pressed fill. */
+.term-toggle .term-dots { stroke-dasharray: .2 3; stroke-width: 2; }
+.term-toggle.on { background: color-mix(in srgb, var(--accent) 9%, var(--glass)); }
+.term-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 11px; }
 .stage-title { font: italic 15px var(--serif); color: var(--ink-soft); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: .01em; }
 .viewport {
   position: relative; flex: 1; overflow: hidden; cursor: grab;
@@ -395,6 +401,12 @@ body.holding, body.holding * { -webkit-user-select: none !important; user-select
 .edges .e-link.out { opacity: .78; animation: flow 1.1s linear infinite; }
 .edges .e-link.in { opacity: .4; stroke-dasharray: 2 4; stroke-linecap: round; }
 .edges .e-link.peek { stroke: var(--ink-soft); opacity: .5; stroke-width: 1.2; }
+/* A Term use (S16, #158): a dotted pencil arc, drawn only while Term edges are shown. Dots, not
+   dashes, and pencil, not link blue, so it never reads as a reasoning Link; it fades in as it is drawn. */
+.edges .e-term { stroke: var(--ink-soft); stroke-width: 1.6; stroke-dasharray: .2 4.2; stroke-linecap: round; opacity: .7; animation: term-edge-in .3s ease-in-out; }
+.edges .e-term.in { opacity: .5; }
+.edges .e-term.peek { opacity: .45; stroke-width: 1.3; }
+@keyframes term-edge-in { from { opacity: 0; } }
 @keyframes flow { to { stroke-dashoffset: -18; } }
 .nodes { position: absolute; left: 0; top: 0; }
 
@@ -562,6 +574,7 @@ body.holding, body.holding * { -webkit-user-select: none !important; user-select
 .legend i { display: inline-block; width: 18px; height: 0; vertical-align: middle; margin-right: 6px; border-top: 2px solid var(--ink-faint); }
 .legend .lg-side { border-top-style: dotted; }
 .legend .lg-link { border-top: 2px dashed var(--link); }
+.legend .lg-term { border-top: 2px dotted var(--ink-soft); }
 .legend .lg-fold {
   font: 600 9.5px/16px var(--mono); padding: 0 6px; margin-right: 6px; border-radius: 99px;
   background: var(--line-soft); color: var(--ink-soft);
@@ -1394,6 +1407,13 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .thread.kind-relaxes .line { stroke-dasharray: 12 4 2 4; }
 .thread.kind-corresponds .line { stroke-dasharray: 2 3; }
 .thread.kind-specializes .line { stroke-dasharray: 14 3; }
+/* A Term use on the Table (S16, #158): fine pencil dots ending in a dot, never an arrow, and in
+   pencil even when hot, so its shape and its ink both set it apart from every reasoning kind. */
+.thread.kind-term .line { stroke-dasharray: .2 4; stroke-width: 1.6; }
+.thread.kind-term .tip { fill: var(--ink-faint); stroke: none; }
+.thread.hot.kind-term .line { stroke: var(--ink-soft); stroke-width: 1.8; }
+.thread.hot.kind-term .tip { fill: var(--ink-soft); stroke: none; }
+.thread.kind-term .word { fill: var(--ink-soft); font-style: italic; text-transform: none; letter-spacing: .02em; }
 .thread.faint .line, .thread.faint .tip { opacity: .14; }
 .thread.warm .line, .thread.warm .tip { stroke: var(--ink-soft); opacity: .75; }
 .thread.hot .line, .thread.hot .tip { stroke: var(--link); stroke-width: 2; opacity: .92; }

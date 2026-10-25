@@ -4576,6 +4576,167 @@ mod tests {
         );
     }
 
+    /// S16 (#158): the graph views' edge rules — which Links are Term edges, what the Map's lens
+    /// shows, the Constellation's bundles — are the page's own DOM-free code (`src/gui/layout.js`),
+    /// run here rather than described.
+    fn layout_js(expression: &str) -> Option<Value> {
+        page_module_js("layout.js", LAYOUT_JS, "L", expression)
+    }
+
+    /// S16 (#158, S16-AC05; design 15.2): a default graph view draws no Term edge, the one switch
+    /// draws them as their own edges, and neither state adds, removes or moves a Card or an
+    /// ordinary edge. `A -> B` is a Term edge iff `A.term_use_targets` names `B`, inbound and
+    /// outbound alike; a target also named with an announced relation keeps its ordinary edge.
+    #[test]
+    fn a_default_graph_view_leaves_term_edges_out_and_the_switch_draws_them_apart() {
+        let Some(out) = layout_js(
+            "(() => {
+               const card = (address, parent, edge, links, kinds, terms) =>
+                 ({ address, tree: address.split('/')[0], parent, edge, links, kinds, term_use_targets: terms });
+               // 1/1 reaches 1/2 only with a Term use, rests on 1/3 and also uses its Term, refers to 1/4.
+               const cards = [
+                 card('1/0', null, 'root', [], {}, []),
+                 card('1/1', '1/0', 'direct', ['1/2', '1/3', '1/4'], { '1/3': 'rests-on' }, ['1/2', '1/3']),
+                 card('1/2', '1/1', 'direct', ['1/1'], {}, ['1/1']),
+                 card('1/3', '1/2', 'direct', [], {}, []),
+                 card('1/4', '1/3', 'direct', ['1/1'], { '1/1': 'illustrates' }, []),
+                 card('1/5', '1/4', 'direct', [], {}, []),
+               ];
+               const by = new Map(cards.map((c) => [c.address, c]));
+               const split = (at, on) => L.edgeSplit(by.get(at), on);
+               const outline = L.outline(cards, '1/0');
+               const edges = (on) => L.focusEdges((at) => by.get(at), '1/1', ['1/2', '1/3', '1/4'], ['1/2', '1/4'], on);
+               const lensOf = (on) => L.focusLens(outline, '1/1', { links: edges(on).lens })
+                 .nodes.map((n) => [n.address, n.x, n.y, n.w, n.h, n.role, n.lod]);
+               // Two trees: 1/1 -> 2/1 is a Term use only, 1/4 -> 2/1 an ordinary Link.
+               const sky = [
+                 ...cards,
+                 card('2/0', null, 'root', [], {}, []),
+                 card('2/1', '2/0', 'direct', [], {}, []),
+               ];
+               sky[1] = { ...sky[1], links: [...sky[1].links, '2/1'], term_use_targets: [...sky[1].term_use_targets, '2/1'] };
+               sky[4] = { ...sky[4], links: [...sky[4].links, '2/1'] };
+               const plain = sky.map((c) => ({ ...c, term_use_targets: [] }));
+               const ring = L.constellation(sky, []);
+               const ringPlain = L.constellation(plain, []);
+               return {
+                 off: split('1/1', false), on: split('1/1', true),
+                 older: L.edgeSplit({ links: ['1/2'], kinds: {} }, true),
+                 odd: L.edgeSplit({ links: ['1/2'], kinds: { '1/2': 'term' }, term_use_targets: ['1/2'] }, false),
+                 none: L.edgeSplit(undefined, true),
+                 inbound: [L.isTermEdge(by.get('1/2'), '1/1'), L.isTermEdge(by.get('1/4'), '1/1'), L.isTermEdge(by.get('1/1'), '1/2')],
+                 mapOff: edges(false), mapOn: edges(true),
+                 lensSame: JSON.stringify(lensOf(false)) === JSON.stringify(lensOf(true)),
+                 lensCards: lensOf(false).map((n) => n[0]),
+                 bundles: ring.bundles, termBundles: ring.termBundles,
+                 plainBundles: ringPlain.bundles, plainTermBundles: ringPlain.termBundles,
+                 ringSame: JSON.stringify([...ring.pos]) === JSON.stringify([...ringPlain.pos]),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the layout module was not run");
+            return;
+        };
+        // Default: the Term-only target 1/2 has no edge; 1/3 keeps its ordinary edge, and so does
+        // the plain reference 1/4.
+        assert_eq!(out["off"], json!({ "links": ["1/3", "1/4"], "terms": [] }));
+        // On: the Term edges come in as their own list, and the ordinary edges are the same.
+        assert_eq!(out["on"], json!({ "links": ["1/3", "1/4"], "terms": ["1/2", "1/3"] }));
+        // A summary without `term_use_targets` keeps every Link; a stray `term` kind or a missing
+        // summary does not throw.
+        assert_eq!(out["older"], json!({ "links": ["1/2"], "terms": [] }));
+        assert_eq!(out["odd"], json!({ "links": ["1/2"], "terms": [] }));
+        assert_eq!(out["none"], json!({ "links": [], "terms": [] }));
+        // Inbound applies the same rule: 1/2 -> 1/1 is a Term edge, 1/4 -> 1/1 is not, 1/1 -> 1/2 is.
+        assert_eq!(out["inbound"], json!([true, false, true]));
+        // The Map: no Term arc by default, both directions with the switch on, the ordinary arcs
+        // the same in both states.
+        assert_eq!(out["mapOff"]["out"], json!(["1/3", "1/4"]));
+        assert_eq!(out["mapOff"]["in"], json!(["1/4"]));
+        assert_eq!(out["mapOff"]["termOut"], json!([]));
+        assert_eq!(out["mapOff"]["termIn"], json!([]));
+        assert_eq!(out["mapOn"]["out"], out["mapOff"]["out"]);
+        assert_eq!(out["mapOn"]["in"], out["mapOff"]["in"]);
+        assert_eq!(out["mapOn"]["termOut"], json!(["1/2", "1/3"]));
+        assert_eq!(out["mapOn"]["termIn"], json!(["1/2"]));
+        // The lens shows the same Cards in the same places whether the switch is on or off.
+        assert_eq!(out["lensSame"], json!(true));
+        for at in ["1/1", "1/2", "1/3", "1/4"] {
+            assert!(out["lensCards"].as_array().unwrap().contains(&json!(at)), "{at} stays in the lens");
+        }
+        // The Constellation: the Term-only Link between the trees is bundled apart, the ordinary one
+        // counts as before, and the ring does not move.
+        assert_eq!(out["bundles"], json!([{ "a": "1", "b": "2", "count": 1 }]));
+        assert_eq!(out["termBundles"], json!([{ "a": "1", "b": "2", "count": 1 }]));
+        assert_eq!(out["plainBundles"], json!([{ "a": "1", "b": "2", "count": 2 }]));
+        assert_eq!(out["plainTermBundles"], json!([]));
+        assert_eq!(out["ringSame"], json!(true));
+    }
+
+    /// S16 (#158, S16-AC05): the page itself — one switch for the Map, the Table and the
+    /// Constellation, off by default and kept in this browser, with a label, a title, a pressed
+    /// state and a focus ring; Term edges drawn only behind it, dotted pencil with their own word
+    /// and tip; the Model board and the reader untouched by it.
+    #[test]
+    fn the_front_end_draws_term_edges_only_behind_one_switch() {
+        // One switch, a real button with its label and pressed state, in the stage bar.
+        let button = &INDEX_HTML[INDEX_HTML.find("id=\"term-toggle\"").expect("the switch")..];
+        let button = &button[..button.find("</button>").expect("end of the switch")];
+        assert!(INDEX_HTML.contains("<button class=\"lens-toggle term-toggle\" id=\"term-toggle\" type=\"button\" aria-pressed=\"false\" hidden>"));
+        assert!(button.contains("<span>Term uses</span>"));
+        assert_eq!(INDEX_HTML.matches("id=\"term-toggle\"").count(), 1, "one switch for every view");
+        let bar = &INDEX_HTML[INDEX_HTML.find("<div class=\"stage-bar\">").unwrap()..INDEX_HTML.find("<div class=\"viewport\"").unwrap()];
+        assert!(bar.contains("id=\"term-toggle\""), "the switch sits in the view controls");
+        assert!(INDEX_HTML.contains("<span class=\"lg-term-row\" hidden><i class=\"lg-term\"></i>term use</span>"));
+        // Off by default, kept like the other view options, shown in all three graph views.
+        assert!(APP_JS.contains("termEdges: store.get('zt-term-edges') === '1',"));
+        let set = app_function("setTermEdges");
+        assert!(set.contains("store.set('zt-term-edges', on ? '1' : '0');") && set.contains("renderStage();"));
+        let stage = app_function("renderStage");
+        assert!(stage.contains("terms.hidden = !(inTree || onTableMode || state.mode === 'constellation');"));
+        assert!(stage.contains("terms.setAttribute('aria-pressed', state.termEdges ? 'true' : 'false');"));
+        assert!(stage.contains("terms.title = state.termEdges"));
+        assert!(APP_JS.contains("$('#term-toggle').addEventListener('click', () => setTermEdges(!state.termEdges));"));
+        // The Map draws Term arcs only from the switch's lists, and its lens does not follow the switch.
+        assert!(APP_JS.contains("ZtLayout.focusEdges((at) => outline.card.get(at), card.address, outbound, inbound, state.termEdges);"));
+        assert!(APP_JS.contains("links: arcs.lens, expandAll: state.expandAll,"));
+        assert!(APP_JS.contains("put('t' + address, ZtLayout.linkArc(focus, b, 18), 'e-term out');"));
+        assert!(APP_JS.contains("put('u' + address, ZtLayout.linkArc(b, focus, 18), 'e-term in');"));
+        assert!(APP_JS.contains("ZtLayout.edgeSplit(state.outline.card.get(hovered), state.termEdges);"));
+        assert_eq!(APP_JS.matches("'e-term").count(), 3, "three Term arc kinds and no other");
+        // The Table: threads from the same split, a Term thread named `term` with a dot for a tip.
+        assert!(APP_JS.contains("const edgesOf = (address) => ZtLayout.edgeSplit(state.byAddress.get(address), state.termEdges);"));
+        assert!(APP_JS.contains("const kind = term ? 'term' : (node.kinds && node.kinds[target]) || 'refers';"));
+        assert!(APP_JS.contains("word.textContent = term ? 'term' : KINDS[kind].fwd;"));
+        assert!(APP_JS.contains("`${card.at} uses the term ${target}`"));
+        let related = app_function("relatedTo");
+        assert!(related.contains("const split = edgesOf(address);"));
+        assert!(related.contains("if (state.termEdges) for (const source of state.termInboundOf.get(address) || []) related.add(source);"));
+        // The Constellation: Term bundles and single Term lines only behind the switch.
+        assert!(APP_JS.contains("if (state.termEdges) {\n        ctx.setLineDash([1.5 * px, 4 * px]);\n        for (const bundle of layout.termBundles) {")
+            || APP_JS.contains("if (state.termEdges) {\r\n        ctx.setLineDash([1.5 * px, 4 * px]);\r\n        for (const bundle of layout.termBundles) {"));
+        assert!(APP_JS.contains("const split = ZtLayout.edgeSplit(from, state.termEdges);"));
+        // The Model board and the reader do not read the switch: Model semantics stay with it on.
+        for name in ["modelBoard", "renderReader", "theoryBoard"] {
+            let body = app_function(name);
+            for word in ["termEdges", "edgesOf", "term_use_targets", "edgeSplit"] {
+                assert!(!body.contains(word), "{name} reads `{word}`");
+            }
+        }
+        // KINDS stays the announced kinds: a Term use is no relation kind.
+        let kinds = &APP_JS[APP_JS.find("const KINDS = {").unwrap()..];
+        let kinds = &kinds[..kinds.find("};").unwrap()];
+        assert!(!kinds.contains("term"), "KINDS names no Term kind: {kinds}");
+        // The style: dotted pencil in theme ink, not colour alone, with a focus ring on the switch.
+        let arc = css_rule(".edges .e-term");
+        assert!(arc.contains("stroke: var(--ink-soft)") && arc.contains("stroke-dasharray: .2 4.2") && !arc.contains('#'), "{arc}");
+        let thread = css_rule(".thread.kind-term .line");
+        assert!(thread.contains("stroke-dasharray: .2 4"), "{thread}");
+        assert!(css_rule(".thread.hot.kind-term .line").contains("var(--ink-soft)"), "a hot Term thread stays pencil");
+        assert!(css_rule(".term-toggle:focus-visible").contains("outline: 2px solid var(--accent)"));
+        assert!(css_rule(".legend .lg-term").contains("dotted"));
+    }
+
     #[test]
     fn the_front_end_names_every_relation_kind() {
         use crate::model::RelationKind;
