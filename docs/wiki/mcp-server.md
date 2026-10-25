@@ -7,7 +7,7 @@ paths:
   - "tests/workspaces_mcp.rs"
   - "tests/term_structure.rs"
   - ".mcp.json"
-synced: 078184642558
+synced: 4438542fed9b
 updated: 2026-10-25
 ---
 
