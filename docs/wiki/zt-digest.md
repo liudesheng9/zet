@@ -4,7 +4,7 @@ title: zt-digest
 paths:
   - "tools/zt-digest/**"
   - "scripts/install-zt-digest.ps1"
-synced: f0ddf286449c
+synced: 7c51a3cf2932
 updated: 2026-10-25
 ---
 
