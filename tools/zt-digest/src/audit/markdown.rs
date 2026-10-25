@@ -1,8 +1,8 @@
 //! audit.md, as digest-audit.ps1 wrote it (AppendLine: Environment.NewLine).
 
 use super::Params;
-use crate::ps::{NL, ps_items, s, truthy};
-use serde_json::Value;
+use crate::ps::{NL, ps_count, ps_items, s, truthy};
+use serde_json::{Value, json};
 
 /// `$cut`: the first -Sample items in backticks, then `, … (N)`; or `none`.
 fn cut(list: &[String], sample: i64) -> String {
@@ -91,6 +91,31 @@ pub fn render(report: &Value, p: &Params) -> String {
         n(&w["hubs"]["with_faults"])
     ));
     line(&format!("| Broken Links | {} |", n(&w["broken_links"])));
+    // S26 (#169): the Workspace's Term coverage is the books' own sections.
+    let wt = &w["terms"];
+    line(&format!(
+        "| Terms | **{}**: {} book(s) with a Term list; rows {} ({} published), heads {} ({} math, {} concept), parts {}, uses {}, avoid words left plain {}, T faults {} |",
+        n(&wt["status"]),
+        n(&wt["books_with_list"]),
+        n(&wt["rows"]),
+        n(&wt["published"]),
+        n(&wt["heads"]),
+        n(&wt["math"]),
+        n(&wt["concept"]),
+        n(&wt["parts"]),
+        n(&wt["uses"]),
+        n(&wt["avoid"]),
+        n(&wt["faults"])
+    ));
+    if report["gate"].is_object() {
+        line(&format!(
+            "| Check contract | rule version {}; stage {}; policy {}; zt-check {} |",
+            n(&report["gate"]["rule_version"]),
+            n(&report["gate"]["stage"]),
+            n(&report["gate"]["policy_hash"]),
+            n(&report["gate"]["checker_version"])
+        ));
+    }
     let books = ps_items(&report["books"]);
     let keys = |f: &dyn Fn(&Value) -> bool| -> Vec<String> { books.iter().filter(|b| f(&b["bridges"]["island"])).map(|b| format!("`{}`", n(&b["key"]))).collect() };
     let islands = keys(&|v| *v == Value::Bool(true));
@@ -181,6 +206,72 @@ pub fn render(report: &Value, p: &Params) -> String {
             for (cat, t) in m {
                 line(&format!("  - {cat}: {}", tally(t)));
             }
+        }
+        // S26 (#169): the Term coverage and quality, apart from the audit's own completion.
+        let t = &b["terms"];
+        if t["status"] == "skipped" {
+            line(&format!("- **Terms**: skipped ({}).", n(&t["reason"])));
+        } else if truthy(&t["list"]) {
+            let most: Vec<String> = ps_items(&t["most_used"])
+                .iter()
+                .map(|row| format!("{} ({})", n(&row["term"]), n(&row["uses"])))
+                .collect();
+            line(&format!(
+                "- **Terms** (`{}`, **{}**): rows {} ({} published), heads {} ({} math, {} concept), parts {}, unfiled {}. Uses {} in {} Cards ({}). No use: {} head(s), {} Card(s). Avoid words left plain: {}. T faults: {}. Most used: {}.",
+                n(&t["list"]),
+                n(&t["status"]),
+                n(&t["rows"]),
+                n(&t["published"]),
+                n(&t["heads"]),
+                n(&t["math"]),
+                n(&t["concept"]),
+                n(&t["parts"]),
+                n(&t["unfiled"]),
+                n(&t["uses"]["total"]),
+                n(&t["uses"]["cards"]),
+                tally(&t["uses"]["by_type"]),
+                ps_count(&t["no_use"]["heads"]),
+                ps_count(&t["no_use"]["cards"]),
+                n(&t["avoid"]["count"]),
+                n(&t["faults"]["total"]),
+                if most.is_empty() { "none".to_string() } else { most.join(", ") }
+            ));
+            if !t["reason"].as_str().unwrap_or_default().is_empty() {
+                line(&format!("  - Why not complete: {}.", n(&t["reason"])));
+            }
+            if !ps_items(&t["no_use"]["heads"]).is_empty() {
+                line(&format!(
+                    "  - Heads with no Term use: {}",
+                    cut(&strings(&t["no_use"]["heads"]), p.sample)
+                ));
+            }
+            if !ps_items(&t["avoid"]["list"]).is_empty() {
+                let rows: Vec<String> = ps_items(&t["avoid"]["list"])
+                    .iter()
+                    .take(p.sample.max(1) as usize)
+                    .map(|row| format!("`{}` line {}: {}", n(&row["address"]), n(&row["line"]), n(&row["word"])))
+                    .collect();
+                line(&format!("  - Avoid words still written plainly: {}", rows.join("; ")));
+            }
+        }
+        let g = &t["generation"];
+        if g["available"] == json!(true) {
+            let unit = |value: &Value| {
+                if value.is_null() {
+                    "none".to_string()
+                } else {
+                    format!("{} {}", n(&value["unit"]), n(&value["state"]))
+                }
+            };
+            let finals: Vec<String> = ps_items(&g["final_rounds"]).iter().map(unit).collect();
+            line(&format!(
+                "- **Term generation**: Term-card book unit {}; whole-book Term-link unit {}{}.",
+                unit(&g["term_cards"]),
+                unit(&g["term_link"]),
+                if finals.is_empty() { String::new() } else { format!("; finalization rounds: {}", finals.join(", ")) }
+            ));
+        } else {
+            line(&format!("- **Term generation**: not known ({}).", n(&g["reason"])));
         }
         line(&format!(
             "- **Orphans** (no inbound Link): {} ({}): {}",

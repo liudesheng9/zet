@@ -172,26 +172,42 @@ const finalizePlan = (name) => {
     refresh: [],
   }
 }
-const finalizeScope = () => ({
+const finalizeScope = (opts = {}) => ({
   schema_version: 1, kind: 'finalize_changes', step: 'scope', graph_revision: 8, change_hash: 'a'.repeat(64),
   changed: [{ address: 'Key/1|a', kinds: ['structure'], category: 'idea', tree: 'Key', fingerprint_before: 'b'.repeat(64), fingerprint_after: 'c'.repeat(64) }],
   touched_trees: ['Key'], kinds: ['structure'], counts: { cards: 1, trees: 1 },
+  // S26 (#169): the round's Term-link scope, decided by `finalize -Step scope` from the actual changed
+  // Cards and the applied mapping.
+  term_link: {
+    schema_version: 1, kind: 'term_link_round', applicable: opts.termLinkOff !== true, round: 1, scope: opts.termLinkOff === true ? 'none' : 'cards', cards: opts.termLinkOff === true ? [] : ['Key/1|a'], excluded: [],
+    mapping_changed: false, reasons: [], reason: opts.termLinkOff === true ? 'the prepared run excluded the Term-link layer' : '', list: 'Key/1|t',
+    current: { list: 'l1', mapping: 'm1', autolink: 'a1', vocabulary: 'v1' }, before: { audit: { list: 'l1', mapping: 'm1', autolink: 'a1', vocabulary: 'v1' } },
+  },
+  cycle: { state: 'D:\\x\\Key\\finalize\\fix\\state.json', report: 'D:\\x\\Key\\finalize\\fix\\report.json', verdicts: null, faults_before: 1, faults_after: 0, refused: 0 },
   refresh: [
     { layer: 'link-check', applicable: true, artifacts: ['report'], coverage: 'none', reason: '', branch_refreshable: true },
     { layer: 'organize', applicable: false, stage_owned: true, reason: 'its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here' },
     { layer: 'audit', applicable: true, artifacts: ['report'], coverage: 'none', reason: '', branch_refreshable: true },
   ],
 })
+const finalizeChanges = (finalized, opts = {}) => ({ ...finalizeScope(opts), step: 'changes', finalized })
 const finalizeRefresh = (layer) => ({ layer, unit: `${layer}/book@2`, revision: 2, state: 'done', complete: true, disposition: 'published', reused: false, superseded: [], changed_cards: 1, touched_trees: ['Key'] })
-const finalizeFinal = (name) => {
+const finalizeFinal = (name, opts = {}) => {
   const b = finalizeBranch(name)
   const residual = b.counts.fix + b.counts.conflict + b.counts.blocked
+  const fixed = b.branch === 'fix'
   return {
     schema_version: 1, kind: 'finalize_report', step: 'final', citation_key: 'Key', variant: 'econ',
     status: residual ? 'partial' : 'done', complete: !residual, branch: b.branch, graph_revision: 8,
     audit: { scheduled: { unit: 'audit/book@1', revision: 1, graph_revision: 7 }, final: { unit: 'audit/book@2', revision: 2, graph_revision: 8 } },
     changes: { cards: b.counts.fix ? 1 : 0, trees: b.counts.fix ? 1 : 0, kinds: b.counts.fix ? ['structure'] : [], graph_revision: 8, change_hash: 'a'.repeat(64) },
     refresh: [{ layer: 'link-check', unit: 'link-check/book@2', revision: 2, state: 'done', refreshed: true, applicable: true, reason: '' }, { layer: 'audit', unit: 'audit/book@2', revision: 2, state: 'done', refreshed: true, applicable: true, reason: '' }],
+    // S26 (#169): the round the workflow claimed and completed from the ledger, and the final audit's
+    // own Term quality. `audit ran` never means `all terms passed`.
+    term_link: fixed && opts.termLinkOff !== true
+      ? { applicable: true, round: 1, scope: 'cards', cards: ['Key/1|a'], mapping_changed: false, reasons: [], unit: 'termlink/final@1', state: 'done', status: 'complete', counts: { cards_changed: 1, links_added: 2 }, no_op: false, reason: '' }
+      : { applicable: false, round: 1, scope: 'none', cards: [], mapping_changed: false, reasons: [], unit: null, state: null, status: 'skipped', counts: null, no_op: false, reason: 'the book has no single Term list: tree `Key` has no Term list' },
+    terms: { status: fixed && opts.termLinkOff !== true ? 'complete' : 'skipped', rows: 2, published: 2, missing: 0, heads: 2, parts: 0, unfiled: 0, uses: fixed ? 2 : 0, faults: 0, reason: '' },
     faults: { total: 0, residual, advisory: b.counts.advisory, by_class: residual ? { hard: residual } : {}, list: [] },
     infrastructure: [], audit_book: { cards: 9, orphans: 0, figures_missing: 0, models_not_self_sufficient: 0 },
     report: { path: 'D:\\x\\Key\\finalize\\final-report.json' },
@@ -210,7 +226,7 @@ function backfillLine(mode) {
     list: { address: 'Key/1|a', type: 'term', title: '术语表：《书》的 2 个术语', legacy: true, rows: 2, terms: ['均衡', '机会主义'], sha256: '1'.repeat(64) },
     list_sha256: '1'.repeat(64),
     source: { path: 'S.md', sha256: '2'.repeat(64), sections: 2, book_sha256: '3'.repeat(64), reused: true, rebuilt: [], bound: true },
-    drafts: null, contract: '5.5.5/6.5.5', archive_revision: 7, conflicts: [], complete: true,
+    drafts: null, contract: '5.5.6/6.5.6', archive_revision: 7, conflicts: [], complete: true,
     record: 'D:\\x\\Key\\backfill.json',
   }
 }
@@ -720,19 +736,25 @@ function runtime(kind, opts = {}) {
       }
       if (step === 'plan') {
         if (opts.termLinkPlanFails) return { ok: false, exit: 1, output: 'term-link: the Term-structure read names no list: the book has no Term list to link' }
-        const unit = led.add('termlink/book@1', 'termlink', { pass: 'book' })
+        // S26 (#169): a finalization round is `-Round R` with the cycle's changed Cards, or the whole
+        // book when the correction changed the Term mapping; it owns `termlink/final@R`.
+        const round = Number((cmd.match(/-Round (\d+)/) || [])[1] || 0)
+        const scopedCards = ((cmd.match(/-Cards '([^']*)'/) || [])[1] || '').split(',').filter(Boolean)
+        const unitId = round ? `termlink/final@${round}` : 'termlink/book@1'
+        const unit = led.add(unitId, 'termlink', round ? { pass: 'final', round, cards: scopedCards } : { pass: 'book' })
         const termBook = led.find('termcards/book@1')
         // The real ledger blocks the pass on its unfinished dependencies: a Term-card book that is
         // not done (or a scenario that blocks the pass) leaves nothing ready to claim.
         if (opts.termLinkBlocked || (termBook && termBook.state !== 'done')) unit.state = 'blocked'
-        if (opts.termAlreadyDone) led.finish('termlink/book@1')
-        return { ok: true, exit: 0, output: json({ ok: true, step: 'plan', book: 'Key', plan_revision: 1, plan_hash: 'ph-link', cards_scanned: 9, cards_changed: 1, cards_refused: 0, complete: true, unit: 'termlink/book@1' }) }
+        if (opts.termAlreadyDone) led.finish(unitId)
+        return { ok: true, exit: 0, output: json({ ok: true, step: 'plan', book: 'Key', plan_revision: 1, plan_hash: 'ph-link', cards_scanned: round ? (scopedCards.length || 9) : 9, cards_changed: 1, cards_refused: 0, complete: true, unit: unitId, pass: round ? 'final' : 'book', round: round || null }) }
       }
       if (step === 'apply') {
         if (opts.termLinkStops) return { ok: false, exit: 1, output: `${json({ ok: false, step: 'apply', complete: false, stop: { code: 'card_check', message: 'R2 in Key/1|a' }, code: 'card_check', error: 'card_check: R2 in Key/1|a' })}\n${json({ error: 'card_check', message: 'R2 in Key/1|a' })}` }
         const noop = opts.termLinkNoop === true
         const token = Number((cmd.match(/-Token (\d+)/) || [])[1])
-        return { ok: true, exit: 0, output: json({ ok: true, step: 'apply', complete: true, no_op: noop, code: null, claim_token: token, report: `${out}\\term-link\\apply.json`, counts: { cards_scanned: 9, cards_changed: noop ? 0 : 1, cards_refused: 0, links_added: noop ? 0 : 2 }, chunks: noop ? 0 : 1 }) }
+        const round = Number((cmd.match(/-Round (\d+)/) || [])[1] || 0)
+        return { ok: true, exit: 0, output: json({ ok: true, step: 'apply', complete: true, no_op: noop, code: null, claim_token: token, pass: round ? 'final' : 'book', round: round || null, report: `${out}\\term-link\\apply.json`, counts: { cards_scanned: 9, cards_changed: noop ? 0 : 1, cards_refused: 0, links_added: noop ? 0 : 2 }, chunks: noop ? 0 : 1 }) }
       }
       return { ok: true, exit: 0, output: json({ ok: true, step }) }
     }
@@ -945,9 +967,10 @@ function runtime(kind, opts = {}) {
     // The finite finalization (#86): the plan's branch decides whether the one correction cycle
     // runs, and the final audit reports the fresh revision.
     if (/^finalize plan$/.test(label)) return { ok: true, output: json(finalizePlan(opts.finalize || 'fix')) }
-    if (/^finalize scope$/.test(label)) return { ok: true, output: json(finalizeScope()) }
+    if (/^finalize changes$/.test(label)) return { ok: true, output: json(finalizeChanges(opts.finalizeRecovered !== true, opts)) }
+    if (/^finalize scope$/.test(label)) return { ok: true, output: json(finalizeScope(opts)) }
     if (/^finalize refresh /.test(label)) return { ok: true, output: json(finalizeRefresh(label.replace('finalize refresh ', ''))) }
-    if (/^finalize final$/.test(label)) return { ok: true, output: json(finalizeFinal(opts.finalize || 'fix')) }
+    if (/^finalize final$/.test(label)) return { ok: true, output: json(finalizeFinal(opts.finalize || 'fix', opts)) }
     if (text.startsWith('You run one compiler chain')) return await chainAnswer(text, callOpts)
     if (text.startsWith('You run one block')) return await blockAnswer(text, callOpts)
     if (text.startsWith('You drive DeepSeek Harness')) {
@@ -1337,7 +1360,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const badPerJob = await run('econ', { ...base, termCardsPerJob: 9, until: 'digest' })
   check(badPerJob.thrown && /args\.termCardsPerJob must be within \[1, 8\]/.test(badPerJob.thrown.message), 'S24: an out-of-range per-job size is refused before any stage')
   // No second scheduler: the branch claims units from the run ledger and starts no other queue.
-  for (const module of ['zt-term-cards', 'zt-term-link']) {
+  for (const module of ['zt-term-cards', 'zt-term-link-lib']) {
     const source = fs.readFileSync(path.join(workflowDir, 'modules', `${module}.js`), 'utf8')
     check(/ledger\('claim'/.test(source) && /next -Out/.test(source) && /ledger\('complete'/.test(source) && /done -Out/.test(source) && !/setInterval|setTimeout|new Date\(|schedule\[|queue\[|worker pool/i.test(source), `S24: ${module} uses the run ledger as its scheduler and starts no second one`)
   }
@@ -1365,7 +1388,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(noCardsPrep && /"termCards":false/.test(noCardsPrep.cmd), 'S24: a disabled Term-card branch is frozen into the prepared target (-RunOptions)')
   check(noCards.report.stages['term-cards'].status === 'skipped' && noCards.termCalls.every((c) => c.tool !== 'term-cards'), 'S24: termCards false skips the branch and runs no compiler command')
   check(noCards.report.stages['term-link'].status === 'done' && noCards.led.find('termlink/book@1').state === 'done', 'S24: a disabled Term-card branch registers no unit to wait for; the Term-link pass still runs')
-  const noLink = await run('econ', { ...base, figures: false, termLink: false })
+  const noLink = await run('econ', { ...base, figures: false, termLink: false }, { termLinkOff: true })
   const noLinkPrep = noLink.calls.find((c) => c.label === 'prepare book')
   check(noLinkPrep && /"termLink":false/.test(noLinkPrep.cmd) && noLink.report.stages['term-link'].status === 'skipped' && noLink.termCalls.every((c) => c.tool !== 'term-link'), 'S24: termLink false is frozen, skips the pass and registers no termlink unit')
   check(noLink.led.find('termcards/book@1') && noLink.led.find('termcards/book@1').state === 'done', 'S24: termLink false never blocks the Term-card branch')
@@ -1880,7 +1903,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 // The finite finalization (#86, R299/R300)
 // ================================================================================================================
 for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
-  const { calls, commands, result, report, logs } = await run('econ', { ...base, figures: false }, { finalize: branch })
+  const { calls, commands, result, report, logs, led } = await run('econ', { ...base, figures: false }, { finalize: branch })
   const labels = calls.map((c) => c.label)
   const prompts = calls.map((c) => c.prompt).join('\n')
   const finalizeLabels = labels.filter((l) => /^finalize/.test(l))
@@ -1898,14 +1921,71 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
     const refreshes = (prompts.match(/[^\n]*finalize -Step refresh[^\n]*/g) || [])
     check(refreshes.length === 1 && /-Layer link-check -Report /.test(refreshes[0]), `finalize fix: only the publication this branch re-derives is refreshed (${refreshes.length}: ${refreshes[0] || ''})`)
     check(!/-Step refresh .*-Layer (organize|hubs|bridge|figures|skeleton|theory)/.test(prompts), 'finalize fix: a stage-owned publication is never republished from a stale artifact')
+    // S26 (#169, R0438-R0440): the round's Term-link pass runs after the changed-Card manifest and
+    // before the final read-only audit, for exactly the Cards the correction changed.
+    const scopePos = prompts.indexOf('finalize -Step scope')
+    const planPos = prompts.indexOf("-Round 1 -Cards 'Key/1|a'", Math.max(0, scopePos))
+    const applyPos = planPos < 0 ? -1 : prompts.indexOf('term-link -Step apply', planPos)
+    const finalPos = applyPos < 0 ? -1 : prompts.indexOf('finalize -Step final', applyPos)
+    check(scopePos >= 0 && planPos > scopePos && applyPos > planPos && finalPos > applyPos, `finalize fix (S26): scope → the round's Term-link plan/apply → final audit (${[scopePos, planPos, applyPos, finalPos].join(',')})`)
+    check(led.find('termlink/final@1') && led.find('termlink/final@1').state === 'done', `finalize fix (S26): the round completes its own generation unit (${led.find('termlink/final@1') && led.find('termlink/final@1').state})`)
+    check(result.finalize.term_link && result.finalize.term_link.status === 'done' && result.finalize.term_link.round === 1 && result.finalize.term_link.scope === 'cards', `finalize fix (S26): the stage reports the round it ran (${JSON.stringify(result.finalize.term_link && { status: result.finalize.term_link.status, round: result.finalize.term_link.round, scope: result.finalize.term_link.scope })})`)
+    check(result.term_link && result.term_link.final && result.term_link.final.status === 'complete' && result.term_link.final.unit === 'termlink/final@1' && result.term_link.final.round === 1, `finalize fix (S26): the run report carries the completed round (${JSON.stringify(result.term_link && result.term_link.final)})`)
+    check(result.term_link.audit_terms && result.term_link.audit_terms.status === 'complete', `finalize fix (S26): the final audit's Term quality is reported apart from the run's execution (${JSON.stringify(result.term_link && result.term_link.audit_terms)})`)
   } else {
     check(finalizeLabels.join(',') === 'finalize plan,finalize final', `finalize ${branch}: no correction cycle and no refresh of unchanged publications (${finalizeLabels.join(',')})`)
     check(!commands.some((c) => /finalize[\\/]fix/.test(c)), `finalize ${branch}: no Card-scoped cycle runs`)
+    check(!commands.some((c) => /term-link -Step plan .*-Round/.test(c)), `finalize ${branch} (S26): no round runs without a changed-Card manifest`)
+    check(result.term_link && result.term_link.final && result.term_link.final.status === 'skipped', `finalize ${branch} (S26): the skipped round is stated, never a silent success (${JSON.stringify(result.term_link && result.term_link.final)})`)
   }
   check(finalizeLabels[finalizeLabels.length - 1] === 'finalize final', `finalize ${branch}: the final read-only audit is the branch's last step`)
   check(report.stages.finalize && report.stages.finalize.status !== 'failed', `finalize ${branch}: the stage never fails on a residual fault`)
   check(/finalize -Step final -Out/.test(prompts), 'finalize: the final step is the tool\'s own read-only audit, never a re-used report')
   check(logs.some((l) => /Finalize: (done|partial) at graph revision/.test(l)), `finalize ${branch}: the branch reports its own outcome and revision`)
+}
+{
+  // S26 (#169): a resume after the correction cycle was recorded but before the final audit must not
+  // silently reuse a branch that never relinked: it continues from the retained manifest (no second
+  // cycle, no skipped round) and publishes the final audit.
+  const retained = [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['organize', 'organize/book@1'], ['skeleton', 'skeleton/book@1'], ['figures', 'figures/book@1'], ['bridge', 'bridge/book@1'], ['audit', 'audit/book@1'], ['link-check', 'link-check/book@1']]
+  const rt = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained, retainedDone: ['organize', 'skeleton', 'figures', 'bridge', 'audit', 'link-check'], finalizeRecovered: true })
+  const labels = rt.calls.map((c) => c.label)
+  check(labels.includes('finalize changes') && !labels.includes('finalize plan') && !labels.includes('finalize scope'), `finalize resume (S26): the recorded cycle is not re-entered (${labels.filter((l) => /^finalize/.test(l)).join(',')})`)
+  const rtText = rt.calls.map((c) => c.prompt).join('\n')
+  check(/term-link -Step plan .*-Round 1 -Cards 'Key\/1\|a'/.test(rtText) && /finalize -Step final/.test(rtText), 'finalize resume (S26): the skipped Term-link round and the final audit still run')
+  check(rt.result.finalize && rt.result.finalize.recovered === true && rt.result.finalize.final, `finalize resume (S26): the stage reports the recovered branch and its final audit (${JSON.stringify(rt.result.finalize && { recovered: rt.result.finalize.recovered, status: rt.result.finalize.status })})`)
+}
+{
+  // S26 (#169, R0438): the mathematics variant inherits the round too, and its final math check
+  // follows the finalization, so it describes the relinked final text.
+  const mf = await run('math', { ...base, figures: false }, { finalize: 'fix' })
+  const prompts = mf.calls.map((c) => c.prompt).join('\n')
+  const scopePos = prompts.indexOf('finalize -Step scope')
+  const roundPos = prompts.indexOf("-Round 1 -Cards 'Key/1|a'", Math.max(0, scopePos))
+  const finalPos = roundPos < 0 ? -1 : prompts.indexOf('finalize -Step final', roundPos)
+  check(scopePos >= 0 && roundPos > scopePos && finalPos > roundPos, 'S26 (math): the inherited finalization relinks its changed Cards before the final audit')
+  check(mf.result.term_link && mf.result.term_link.final && mf.result.term_link.final.status === 'complete' && mf.result.term_link.audit_terms && mf.result.term_link.audit_terms.status === 'complete', `S26 (math): the mathematics run reports the completed round and Term quality (${JSON.stringify(mf.result.term_link && mf.result.term_link.final)})`)
+}
+{
+  // A resume of a finalization that already published its final audit reuses it (the current audit
+  // publication carries the finalization refresh scope) instead of re-running the correction round.
+  const retained = [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['organize', 'organize/book@1'], ['skeleton', 'skeleton/book@1'], ['figures', 'figures/book@1'], ['bridge', 'bridge/book@1'], ['audit', 'audit/book@1'], ['link-check', 'link-check/book@1']]
+  const rt = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained, retainedDone: ['organize', 'skeleton', 'figures', 'bridge', 'audit', 'link-check'] })
+  const labels = rt.calls.map((c) => c.label)
+  check(labels.includes('finalize changes') && !labels.includes('finalize final') && !labels.includes('finalize plan') && rt.result.finalize.reused === true, `finalize resume: a completed finalization is reused, never relinked again (${labels.filter((l) => /^finalize/.test(l)).join(',')})`)
+}
+{
+  // S26 (#169, R0440/S26-AC06): only the finalization's final write boundary and the Term-link
+  // stage itself relink. A writer that also ran a Term-link pass would see stale text and make the
+  // audit meaningless; the audit is read-only and never relinks either.
+  const others = ['zt-group-cycle', 'zt-cards-layer', 'zt-cards-book', 'zt-link-check', 'zt-model-layer', 'zt-explain', 'zt-event-layer', 'zt-finding-layer', 'zt-bridge', 'zt-organize', 'zt-figures', 'zt-audit', 'zt-digest-report', 'zt-math-boundary', 'zt-math-proof', 'zt-math-theory']
+  const read = (id) => fs.readFileSync(path.join(workflowDir, 'modules', `${id}.js`), 'utf8')
+  check(/async function ztTermLinkPass/.test(read('zt-term-link-lib')), 'S26: the shared pass lives in zt-term-link-lib')
+  check(/ztTermLinkPass\(ctx, p\)/.test(read('zt-term-link')), 'S26: the term-link stage delegates to the shared pass')
+  check(/ztTermLinkPass\(ctx, \{/.test(read('zt-finalize')), 'S26: the finite finalization runs the same pass for its round')
+  for (const module of others) {
+    check(!/ztTermLinkPass|term-link -Step| -Layer termlink/.test(read(module)), `S26: ${module} is no Term-link writer; the final write boundary is the only one (R0440)`)
+  }
 }
 
 // ================================================================================================================
@@ -2092,7 +2172,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '14' && modules['zt-digest-report'] === '18' && modules['zt-workflow-lib'] === '1', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v14, zt-digest-report v18 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '14' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '1' && modules['zt-term-link-lib'] === '1' && modules['zt-finalize'] === '3', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v14, zt-digest-report v19, zt-term-link-lib v1, zt-finalize v3 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

@@ -5,6 +5,10 @@
 //!                       [-CitationKey <key>] [-Occurrences first|all]
 //!                       [-Cards <addresses>] [-Round <n>] [-Token <claim>] [-Apply]
 //!
+//! A finalization round is `-Round <n>` with `-Cards` (the correction cycle's changed Cards) or
+//! without it (the whole book, when the correction changed the Term list, a head name or an
+//! auto-link policy: the mapping is book-wide, R0439).
+//!
 //! One agent Literature tree is read once, with its bodies: the book's Term list is read by role
 //! through the archive's own computed Term structure, each table row is joined to its one valid
 //! head and that head's auto-link choice, and every in-scope Card body is planned by byte offset.
@@ -30,7 +34,7 @@
 
 mod apply;
 mod card;
-mod matches;
+pub(crate) mod matches;
 mod spans;
 
 use crate::args::Args;
@@ -83,9 +87,11 @@ pub(crate) struct Params {
     pub(crate) occurrences: Policy,
     /// The exact `-Cards` subset; empty means the whole eligible tree.
     pub(crate) cards: Vec<String>,
-    /// The finalization correction round a `-Cards` pass serves (S24, #167; design 14.2); None means
-    /// the run's one whole-book pass, and a subset without a round is a diagnostic pass that owns no
-    /// ledger unit.
+    /// The finalization correction round this pass serves (S24, #167; design 14.4); None means the
+    /// run's one whole-book pass. With `-Cards` it relinks exactly those Cards; without `-Cards` it
+    /// replans and relinks the whole book, which is what a correction that changed the Term list,
+    /// a head name or an auto-link policy requires (R0439). A subset without a round is a
+    /// diagnostic pass that owns no ledger unit.
     pub(crate) round: Option<i64>,
     pub(crate) token: Option<i64>,
     pub(crate) apply: bool,
@@ -96,8 +102,9 @@ impl Params {
         ps::join(&self.staging, WORK)
     }
 
-    /// The ledger obligation this invocation serves: the whole book, one finalization round, or a
-    /// diagnostic subset that completes nothing (R0429).
+    /// The ledger obligation this invocation serves: the whole book, one finalization round (a
+    /// Card subset, or the whole book when that round changed the Term mapping), or a diagnostic
+    /// subset that completes nothing (R0429).
     pub(crate) fn pass(&self) -> Result<Option<crate::ledger::TermLinkPass>> {
         if let Some(round) = self.round {
             return crate::ledger::TermLinkPass::final_round(round, &self.cards).map(Some);
@@ -162,9 +169,6 @@ pub(crate) fn params(argv: &[String]) -> Result<Params> {
     } else {
         None
     };
-    if round.is_some() && cards.is_empty() {
-        bail!("-Round names a finalization correction round: it relinks the -Cards that round changed");
-    }
     Ok(Params {
         step,
         staging,
@@ -329,6 +333,34 @@ struct Scope {
     unselected: usize,
 }
 
+/// Why one Card is outside the deterministic pass: `root`, `term_list`, `structure` or `notation`
+/// (R0354). The finalization round classifies the correction cycle's changed addresses with this
+/// same test, so its `-Cards` subset is exactly what the plan accepts.
+pub(crate) fn exclusion_reason(
+    address: &str,
+    title: &str,
+    body: &str,
+    card_type: &str,
+    term: &Value,
+    root: &str,
+    list: &str,
+) -> Option<&'static str> {
+    let first_line = body.lines().next().unwrap_or_default().trim();
+    // A named Term Card titled 符号表 defines that word; it is no notation table.
+    let named_term = card_type == "term" && term.is_string();
+    if address == root {
+        Some("root")
+    } else if address == list {
+        Some("term_list")
+    } else if STRUCTURE_MARKER.is_match(first_line) {
+        Some("structure")
+    } else if is_notation_table(title) && !named_term {
+        Some("notation")
+    } else {
+        None
+    }
+}
+
 /// The tree's cards minus the root, the Term list, the structure Card and the notation table
 /// (R0354); with `-Cards`, exactly the named eligible subset. Every exclusion is by an existing
 /// role marker, never by a title that happens to contain a common word (except the notation
@@ -344,20 +376,15 @@ fn scope_of(cards: &[Value], root: &str, list: &str, selected: &[String]) -> Res
         let address = pstr(card, "address");
         let title = pstr(card, "title");
         let body = pstr(card, "body");
-        let first_line = body.lines().next().unwrap_or_default().trim();
-        // A named Term Card titled 符号表 defines that word; it is no notation table.
-        let named_term = pstr(card, "type") == "term" && card["term"].is_string();
-        let reason = if address == root {
-            Some("root")
-        } else if address == list {
-            Some("term_list")
-        } else if STRUCTURE_MARKER.is_match(first_line) {
-            Some("structure")
-        } else if is_notation_table(&title) && !named_term {
-            Some("notation")
-        } else {
-            None
-        };
+        let reason = exclusion_reason(
+            &address,
+            &title,
+            &body,
+            &pstr(card, "type"),
+            card.get("term").unwrap_or(&Value::Null),
+            root,
+            list,
+        );
         match reason {
             Some(reason) => {
                 excluded.insert(address.clone(), (reason, title.clone()));
@@ -503,72 +530,14 @@ pub(crate) fn build_plan(
         );
     }
     let rows = terms["rows"].as_array().context("the Term structure carries no rows")?;
-    let mut term_rows: Vec<matches::Term> = Vec::new();
-    let mut heads_json: Vec<Value> = Vec::new();
-    let mut own_terms: BTreeMap<String, String> = BTreeMap::new();
-    for row in rows {
-        let term = pstr(row, "term");
-        let heads: Vec<String> = row["heads"]
-            .as_array()
-            .map(|heads| heads.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default();
-        let auto_link = heads.iter().all(|head| {
-            by_address
-                .get(head)
-                .map(|card| !auto_link_off(&pstr(card, "body")))
-                .unwrap_or(false)
-        });
-        heads_json.push(json!({
-            "row": row["row"],
-            "term": term,
-            "head": (heads.len() == 1).then(|| heads[0].clone()),
-            "heads": heads,
-            "auto_link": auto_link,
-            "published": row["published"],
-        }));
-        for head in &heads {
-            own_terms.insert(head.clone(), term.clone());
-        }
-        term_rows.push(matches::Term {
-            row: row["row"].as_u64().unwrap_or(0) as usize,
-            term,
-            avoid: row["avoid"]
-                .as_array()
-                .map(|avoid| avoid.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                .unwrap_or_default(),
-            heads,
-            auto_link,
-        });
-    }
-    for part in terms["parts"].as_array().into_iter().flatten() {
-        own_terms.insert(pstr(part, "address"), pstr(part, "term"));
-    }
-    for unfiled in terms["unfiled"].as_array().into_iter().flatten() {
-        own_terms.insert(pstr(unfiled, "address"), pstr(unfiled, "term"));
-    }
-    let row_names: BTreeSet<String> = term_rows.iter().map(|term| term.term.clone()).collect();
-    let mut unrowed: Vec<String> = own_terms
-        .values()
-        .filter(|name| !row_names.contains(*name))
-        .cloned()
-        .collect();
-    unrowed.sort();
-    unrowed.dedup();
-    let vocabulary = matches::Vocabulary::build(&term_rows, &unrowed);
-    // The whole vocabulary derivation, not only the row→head and auto-link choices: a new named
-    // Term Card that publishes no row, a retyped part, or a changed avoid word changes what the
-    // pass may link, so an apply revalidates this hash beside the two mapping hashes.
-    let vocabulary_hash = canon::hash_value(&json!({
-        "terms": term_rows.iter().map(|term| json!({
-            "row": term.row,
-            "term": term.term,
-            "avoid": term.avoid,
-            "heads": term.heads,
-            "auto_link": term.auto_link,
-        })).collect::<Vec<_>>(),
-        "own": own_terms,
-        "unrowed": unrowed,
-    }));
+    let VocabularyFacts {
+        matcher: vocabulary,
+        head_rows: heads_json,
+        own: own_terms,
+        mapping_hash,
+        autolink_hash,
+        vocabulary_hash,
+    } = vocabulary(terms, &by_address)?;
 
     // --- every in-scope Card, in natural address order ---------------------------------------
     let mut card_values: Vec<Value> = Vec::new();
@@ -715,14 +684,14 @@ pub(crate) fn build_plan(
             "address": list_address,
             "title": pstr(list_card, "title"),
             "body_sha256": canon::sha256_hex(list_body.as_bytes()),
-            "row_count": term_rows.len(),
+            "row_count": rows.len(),
             "rows": list_rows,
         },
         "heads": heads_json,
         "fingerprints": {
             "list": canon::sha256_hex(list_body.as_bytes()),
-            "mapping": vocabulary.mapping_hash,
-            "autolink": vocabulary.autolink_hash,
+            "mapping": mapping_hash,
+            "autolink": autolink_hash,
             "vocabulary": vocabulary_hash,
             "cards": cards_hash,
         },
@@ -776,6 +745,110 @@ pub(crate) fn build_plan(
     })
 }
 
+/// The one vocabulary derivation the Term-link plan and the audit share (S26, #169): the book's
+/// rows joined to their one head and that head's auto-link choice, every named Card that publishes
+/// no row, the matcher itself, and the canonical fingerprints that bind a plan to its mapping.
+/// A changed list body, head name, auto-link policy or whole vocabulary changes them, so a
+/// finalization round whose correction changed one of those replans the whole book instead of a
+/// Card subset (R0439). The derivation is a pure function of the Term structure and the Card
+/// bodies, never of a clock or a run, so the audit and the plan publish the same fingerprints.
+#[derive(Debug)]
+pub(crate) struct VocabularyFacts {
+    /// The built matcher the plan's per-Card transformation reads.
+    pub(crate) matcher: matches::Vocabulary,
+    /// One row per table row: its head(s), the auto-link choice and whether it is published.
+    pub(crate) head_rows: Vec<Value>,
+    /// Every named Card of this list → its exact term (heads, parts and unfiled Cards).
+    pub(crate) own: BTreeMap<String, String>,
+    pub(crate) mapping_hash: String,
+    pub(crate) autolink_hash: String,
+    pub(crate) vocabulary_hash: String,
+}
+
+/// Build the shared vocabulary facts from one Term-structure read and the Cards it names.
+pub(crate) fn vocabulary(
+    terms: &Value,
+    by_address: &BTreeMap<String, &Value>,
+) -> Result<VocabularyFacts> {
+    let rows = terms["rows"]
+        .as_array()
+        .context("the Term structure carries no rows")?;
+    let mut term_rows: Vec<matches::Term> = Vec::new();
+    let mut head_rows: Vec<Value> = Vec::new();
+    let mut own_terms: BTreeMap<String, String> = BTreeMap::new();
+    for row in rows {
+        let term = pstr(row, "term");
+        let heads: Vec<String> = row["heads"]
+            .as_array()
+            .map(|heads| heads.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default();
+        let auto_link = heads.iter().all(|head| {
+            by_address
+                .get(head)
+                .map(|card| !auto_link_off(&pstr(card, "body")))
+                .unwrap_or(false)
+        });
+        head_rows.push(json!({
+            "row": row["row"],
+            "term": term,
+            "head": (heads.len() == 1).then(|| heads[0].clone()),
+            "heads": heads,
+            "auto_link": auto_link,
+            "published": row["published"],
+        }));
+        for head in &heads {
+            own_terms.insert(head.clone(), term.clone());
+        }
+        term_rows.push(matches::Term {
+            row: row["row"].as_u64().unwrap_or(0) as usize,
+            term,
+            avoid: row["avoid"]
+                .as_array()
+                .map(|avoid| avoid.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default(),
+            heads,
+            auto_link,
+        });
+    }
+    for part in terms["parts"].as_array().into_iter().flatten() {
+        own_terms.insert(pstr(part, "address"), pstr(part, "term"));
+    }
+    for unfiled in terms["unfiled"].as_array().into_iter().flatten() {
+        own_terms.insert(pstr(unfiled, "address"), pstr(unfiled, "term"));
+    }
+    let row_names: BTreeSet<String> = term_rows.iter().map(|term| term.term.clone()).collect();
+    let mut unrowed: Vec<String> = own_terms
+        .values()
+        .filter(|name| !row_names.contains(*name))
+        .cloned()
+        .collect();
+    unrowed.sort();
+    unrowed.dedup();
+    let matcher = matches::Vocabulary::build(&term_rows, &unrowed);
+    // The whole vocabulary derivation, not only the row→head and auto-link choices: a new named
+    // Term Card that publishes no row, a retyped part, or a changed avoid word changes what the
+    // pass may link, so an apply revalidates this hash beside the two mapping hashes.
+    let vocabulary_hash = canon::hash_value(&json!({
+        "terms": term_rows.iter().map(|term| json!({
+            "row": term.row,
+            "term": term.term,
+            "avoid": term.avoid,
+            "heads": term.heads,
+            "auto_link": term.auto_link,
+        })).collect::<Vec<_>>(),
+        "own": own_terms,
+        "unrowed": unrowed,
+    }));
+    Ok(VocabularyFacts {
+        mapping_hash: matcher.mapping_hash.clone(),
+        autolink_hash: matcher.autolink_hash.clone(),
+        matcher,
+        head_rows,
+        own: own_terms,
+        vocabulary_hash,
+    })
+}
+
 /// The plan's report counts: the Card scope facts plus the link, retained and skip counts, read
 /// back from the frozen Card entries. A fresh plan and a merged apply revision therefore count
 /// their Cards the same way.
@@ -800,7 +873,7 @@ pub(crate) fn counts_of(cards: &[Value]) -> Value {
 }
 
 /// Whether a Term head's authored metadata disables automatic linking.
-fn auto_link_off(body: &str) -> bool {
+pub(crate) fn auto_link_off(body: &str) -> bool {
     zt_check::term::parse_template(body)
         .line(zt_check::term::AUTO_LINK_LABEL)
         .is_some_and(|line| line.value.trim() == zt_check::term::AUTO_LINK_OFF)
@@ -1029,6 +1102,18 @@ mod tests {
         let p = parsed(&["-Step", "apply", "-Staging", "D:\\s", "-Apply", "-Token", "7"]).unwrap();
         assert!(p.apply);
         assert_eq!(p.token, Some(7));
+        // S26 (#169): a finalization round takes -Cards (the exact changed Cards) or, when the
+        // correction changed the Term mapping, no -Cards at all: that round replans the whole book.
+        let p = parsed(&["-Step", "plan", "-Staging", "D:\\s", "-Round", "2", "-Cards", "K/1"]).unwrap();
+        assert_eq!(p.round, Some(2));
+        assert_eq!(p.cards, ["K/1"]);
+        assert_eq!(p.pass().unwrap().unwrap().unit(), "termlink/final@2");
+        let p = parsed(&["-Step", "plan", "-Staging", "D:\\s", "-Round", "2"]).unwrap();
+        assert_eq!(p.round, Some(2));
+        assert!(p.cards.is_empty());
+        let pass = p.pass().unwrap().unwrap();
+        assert_eq!(pass.unit(), "termlink/final@2");
+        assert!(pass.cards.is_empty(), "a round without -Cards owns the whole book");
         for bad in [
             vec!["-Step", "apply", "-Staging", "D:\\s"],
             vec!["-Step", "plan", "-Staging", "D:\\s", "-Apply"],

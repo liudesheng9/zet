@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "5.5.5",
+  "version": "5.5.6",
   "description": "The shared base of the ZT digest workflows. A digest builds only the book's Literature tree: Prepare, the book term table, the ledger-driven group cycle, the per-group Card checks, the whole-book card cycle, Link, Organize (the Literature index and the structure Card), Figures and the report-first Bridge between Literature trees, joined by the final audit, with slots where a book type installs its own layers (models, explanations, events, findings, math stages). Topic trees, Topic Cards, hubs and the concept register belong to zt-idea-grow. Modes term-cards and term-link backfill the Terms of one already digested book: they validate it and reuse or reconstruct only its staged source slices, run the Term stages and the read-only audit, and never rerun its digest, model, organize or Bridge stages (S25, #168).",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [
@@ -1023,7 +1023,7 @@
     {
       "id": "term-link",
       "title": "Term link",
-      "detail": "the deterministic Term-link pass after every Card writer and the Bridge (design 14.1-14.2): claim the run's termlink/book@1 unit, freeze the plan, apply it under the claim and complete the unit only from the compiler's apply report; a failed Term-card book or Card writer leaves it blocked and reported, never linked",
+      "detail": "the deterministic Term-link pass after every Card writer and the Bridge (design 14.1-14.2): claim the run's termlink/book@1 unit, freeze the plan, apply it under the claim and complete the unit only from the compiler's apply report; a failed Term-card book or Card writer leaves it blocked and reported, never linked. The finite finalization runs the same shared pass for its one correction round (termlink/final@R), for the changed Cards or the whole book when the correction changed the Term mapping (S26, #169)",
       "after": [
         "bridge",
         "term-cards"
@@ -1097,7 +1097,7 @@
     {
       "id": "finalize",
       "title": "Finalize",
-      "detail": "the finite finalization: the audit plan, at most one compiler correction cycle scoped to its Cards, the changed-Card/touched-tree manifest, the dependency-scoped publication refresh, and the final read-only audit",
+      "detail": "the finite finalization: the audit plan, at most one compiler correction cycle scoped to its Cards, the changed-Card/touched-tree manifest, the Term-link round for the Cards that cycle changed (the whole book when it changed the Term mapping), the dependency-scoped publication refresh, and the final read-only audit",
       "after": [
         "audit"
       ],

@@ -153,8 +153,9 @@ mod tests {
     }
 
     /// S27 (#166, AC02): a Term macro is kept as the raw authored macro. `keep` compares what a
-    /// rewrite must preserve, and `Compiler::test_rewrite` refuses a rewrite whose kept Links are
-    /// not all present, so relabelling or dropping a Term use is a lost Link, never a pass.
+    /// rewrite must preserve, so a relabelled or dropped Term use is a kept-Link difference.
+    /// S26 (#169, design 14.5, US087): `Compiler::lost_links` then excuses a dropped Term macro
+    /// whose visible label still stands, because the finalization's Term-link round restores it.
     #[test]
     fn a_term_macro_is_kept_as_the_raw_authored_macro() {
         let old = "均衡 [[均衡@Key/3|a]] 是本书的核心。";

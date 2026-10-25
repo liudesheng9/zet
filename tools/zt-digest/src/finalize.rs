@@ -1,8 +1,9 @@
 //! `zt-digest finalize`: the declared finite finalization branch (R299, R300; #86).
 //!
 //! The run already published one read-only audit revision. Finalization is the finite
-//! sequence `audit-plan → at most one compiler correction cycle → refresh affected
-//! downstream publications → final read-only audit`:
+//! sequence `audit-plan → at most one compiler correction cycle → changed-Card manifest →
+//! the round's Term-link pass → completion of the affected publications → final read-only
+//! audit`:
 //!
 //! - `plan` publishes the scheduling audit revision when it is still open, then derives one
 //!   immutable plan from it: every fault with its disposition (`fix`, `conflict`, `blocked`,
@@ -11,15 +12,21 @@
 //!   `conflict`, `unresolved`). A recorded cycle makes the plan immutable, so the branch can
 //!   never be re-entered.
 //! - `scope` records the cycle's exact changed-Card/touched-tree manifest once, by comparing
-//!   the audited Card fingerprints with the current archive. One cycle per plan: a second
-//!   scope is refused instead of looping.
+//!   the audited Card fingerprints with the current archive, and classifies the round's
+//!   Term-link scope: the changed eligible Cards, or the whole book when the correction
+//!   changed the Term mapping (S26, #169; R0438/R0439). One cycle per plan: a second scope
+//!   is refused instead of looping.
+//! - `changes` returns that retained manifest read-only, with whether the branch already
+//!   published its final audit and whether its round completed, so a resume continues a
+//!   recorded branch without re-entering the cycle (S26, #169).
 //! - `refresh` publishes and completes one affected aggregate publication at a new revision
 //!   whose declared scope is that manifest. The same manifest reuses its revision; a changed
 //!   one derives the next.
 //! - `final` runs the read-only audit again (or verifies a given fresh report), publishes and
 //!   completes the final audit revision, and writes the final report: the new graph revision,
-//!   every residual hard/source/infrastructure fault, and `partial` instead of the scheduling
-//!   audit whenever a hard fault remains.
+//!   the round's Term-link facts, the final audit's Term quality, every residual
+//!   hard/source/infrastructure fault, and `partial` instead of the scheduling audit whenever
+//!   a hard fault or an incomplete round remains.
 //!
 //! Nothing here writes Card prose; every write is a ledger revision completed through the
 //! same verified publication boundary the run already uses.
@@ -33,7 +40,7 @@ use crate::util;
 use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -630,6 +637,262 @@ fn change_kinds(before: Option<&Value>, after: &Value) -> Vec<String> {
     kinds.into_iter().collect()
 }
 
+/// The finalization round's Term-link scope (S26, #169; design 14.4, R0438/R0439): the scheduling
+/// audit revision is the round's generation identity; a changed Term list, head name, auto-link
+/// policy or whole vocabulary invalidates the book mapping and replans the whole book, while a
+/// body-only correction relinks exactly the changed eligible Cards. A round never owns no unit by
+/// accident: a disabled layer, a book without one Term list, or a mapping that cannot be derived
+/// states that reason instead.
+fn term_link_round(
+    enabled: bool,
+    round: i64,
+    list: Option<&str>,
+    unavailable: Option<&str>,
+    current: Option<&Value>,
+    before: &[(&'static str, &Value)],
+    eligible: &[String],
+    excluded: &[Value],
+    term_list_changed: bool,
+) -> Value {
+    let mut block = json!({
+        "schema_version": 1,
+        "kind": "term_link_round",
+        "applicable": true,
+        "round": round,
+        "scope": "none",
+        "cards": [],
+        "excluded": excluded,
+        "mapping_changed": false,
+        "reasons": [],
+        "before": Value::Null,
+        "current": current.cloned().unwrap_or(Value::Null),
+        "reason": "",
+    });
+    let mut reasons: Vec<String> = Vec::new();
+    if !enabled {
+        block["applicable"] = json!(false);
+        block["reason"] = json!("the prepared run excluded the Term-link layer");
+        return block;
+    }
+    let Some(list) = list else {
+        block["applicable"] = json!(false);
+        block["reason"] = json!(format!(
+            "the book has no single Term list: {}",
+            unavailable.unwrap_or("the Term structure could not be read")
+        ));
+        return block;
+    };
+    block["list"] = json!(list);
+    let Some(current) = current else {
+        block["applicable"] = json!(false);
+        block["reason"] = json!(format!(
+            "the book's Term mapping could not be derived: {}",
+            unavailable.unwrap_or("no Term structure")
+        ));
+        return block;
+    };
+    let mut mapping_changed = term_list_changed;
+    if term_list_changed {
+        reasons.push("the corrected Card is the Term list".to_string());
+    }
+    let keys = ["list", "mapping", "autolink", "vocabulary"];
+    let mut compared = false;
+    for (source, fingerprints) in before {
+        if !fingerprints.is_object() {
+            continue;
+        }
+        compared = true;
+        for key in keys {
+            let was = fingerprints[key].as_str().unwrap_or_default();
+            let now = current[key].as_str().unwrap_or_default();
+            if !was.is_empty() && was != now {
+                mapping_changed = true;
+                reasons.push(format!(
+                    "the {source} Term mapping changed its `{key}` fingerprint"
+                ));
+            }
+        }
+    }
+    if !compared {
+        // No applied mapping is recorded (an older audit, or a whole-book pass that never planned):
+        // the safe scope is the whole book, never a subset that could miss a changed vocabulary.
+        mapping_changed = true;
+        reasons.push(
+            "no applied Term mapping fingerprint is available; the whole book is replanned"
+                .to_string(),
+        );
+    }
+    let mut stored_before = Map::new();
+    for (source, fingerprints) in before {
+        stored_before.insert((*source).to_string(), Value::clone(fingerprints));
+    }
+    block["before"] = Value::Object(stored_before);
+    block["mapping_changed"] = json!(mapping_changed);
+    if mapping_changed {
+        block["scope"] = json!("book");
+        block["reasons"] = json!(reasons);
+        return block;
+    }
+    block["reasons"] = json!(reasons);
+    if eligible.is_empty() {
+        block["scope"] = json!("none");
+        block["reason"] = json!("no eligible Card changed: there is nothing to relink");
+        return block;
+    }
+    block["scope"] = json!("cards");
+    block["cards"] = json!(eligible);
+    block
+}
+
+/// Read the book's current Term mapping and classify this round's scope. One Term-structure read
+/// and one bounded read of the heads' bodies; every fact comes from the same archive revision the
+/// scope manifest was recorded at.
+fn run_term_scope(
+    p: &Prepared,
+    zt: &mut Zt,
+    key: &str,
+    plan: &Value,
+    audit: &AuditView,
+    changed: &[Value],
+    current_cards: &BTreeMap<String, Value>,
+) -> Result<Value> {
+    // The prepared target names the layers it excluded; the Term layers are switches whose layer
+    // names (`termlink`) are not in COMMON's enabled list, so the excluded list is the one fact.
+    let target = ledger::target_of(&p.contract)?;
+    let enabled = !ps::ps_items(&target["excluded"])
+        .iter()
+        .any(|layer| ps::eq(&ps::s(layer), "termlink"));
+    let round = plan["audit"]["revision"].as_i64().unwrap_or(0);
+    if !enabled {
+        return Ok(term_link_round(false, round, None, None, None, &[], &[], &[], false));
+    }
+    let terms = match zt.call("get_terms", json!({"at": key})) {
+        Ok(terms) => terms,
+        Err(error) => {
+            return Ok(term_link_round(
+                true,
+                round,
+                None,
+                Some(&error.to_string()),
+                None,
+                &[],
+                &[],
+                &[],
+                false,
+            ));
+        }
+    };
+    let list = terms["list"].as_str().filter(|list| !list.is_empty()).map(str::to_string);
+    let Some(list) = list else {
+        return Ok(term_link_round(
+            true,
+            round,
+            None,
+            Some("the Term structure names no list"),
+            None,
+            &[],
+            &[],
+            &[],
+            false,
+        ));
+    };
+    // The shared derivation needs the heads' authored bodies (their auto-link lines), never the
+    // whole tree: the Term structure already carries every other mapping fact.
+    let mut head_addresses: BTreeSet<String> = BTreeSet::new();
+    // The list's own body is the `list` fingerprint's input.
+    head_addresses.insert(list.clone());
+    for row in ps::ps_items(&terms["rows"]) {
+        for head in ps::ps_items(&row["heads"]) {
+            if let Some(head) = head.as_str() {
+                head_addresses.insert(head.to_string());
+            }
+        }
+    }
+    for head in ps::ps_items(&terms["heads"]) {
+        let address = ps::field(&head, "address");
+        if !address.is_empty() {
+            head_addresses.insert(address);
+        }
+    }
+    let addresses: Vec<String> = head_addresses.into_iter().collect();
+    let mut by_address: BTreeMap<String, Value> = BTreeMap::new();
+    if !addresses.is_empty() {
+        let read = zt.cards(&addresses, "text")?;
+        for card in &read.cards {
+            by_address.insert(ps::field(card, "address"), card.clone());
+        }
+    }
+    let refs: BTreeMap<String, &Value> = by_address
+        .iter()
+        .map(|(address, card)| (address.clone(), card))
+        .collect();
+    let (current, unavailable) = match crate::term_link::vocabulary(&terms, &refs) {
+        Ok(facts) => (
+            Some(json!({
+                "list": by_address
+                    .get(&list)
+                    .map(|card| canon::sha256_hex(ps::field(card, "body").as_bytes())),
+                "mapping": facts.mapping_hash,
+                "autolink": facts.autolink_hash,
+                "vocabulary": facts.vocabulary_hash,
+            })),
+            None,
+        ),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    // The recorded mappings this round may have moved away from: the scheduling audit's own
+    // terms section, and the whole-book plan the run applied.
+    let mut before: Vec<(&'static str, Value)> = Vec::new();
+    let audit_fingerprints = audit.book(key)["terms"]["fingerprints"].clone();
+    if audit_fingerprints.is_object() {
+        before.push(("audit", audit_fingerprints));
+    }
+    let applied = p.out.join("term-link").join(crate::term_link::PLAN);
+    if applied.is_file()
+        && let Ok(plan) = util::read_json(&applied)
+        && let Some(fingerprints) = plan.get("fingerprints").filter(|value| value.is_object())
+    {
+        before.push(("whole-book plan", fingerprints.clone()));
+    }
+    let before_refs: Vec<(&'static str, &Value)> =
+        before.iter().map(|(source, fingerprints)| (*source, fingerprints)).collect();
+    let mut eligible: Vec<String> = Vec::new();
+    let mut excluded: Vec<Value> = Vec::new();
+    let mut term_list_changed = false;
+    for entry in changed {
+        let address = ps::field(entry, "address");
+        let Some(card) = current_cards.get(&address) else { continue };
+        let reason = crate::term_link::exclusion_reason(
+            &address,
+            &ps::field(card, "title"),
+            &ps::field(card, "body"),
+            &ps::field(card, "type"),
+            card.get("term").unwrap_or(&Value::Null),
+            key,
+            &list,
+        );
+        if ps::field(card, "term_role") == "list" {
+            term_list_changed = true;
+        }
+        match reason {
+            Some(reason) => excluded.push(json!({"address": address, "reason": reason})),
+            None => eligible.push(address),
+        }
+    }
+    let current_ref = current.as_ref();
+    Ok(term_link_round(
+        true,
+        round,
+        Some(&list),
+        unavailable.as_deref(),
+        current_ref,
+        &before_refs,
+        &eligible,
+        &excluded,
+        term_list_changed,
+    ))
+}
+
 fn run_scope(p: &Prepared, zt: &mut Zt, _a: &Params) -> Result<Value> {
     let plan_file = plan_path(&p.out);
     if !plan_file.exists() {
@@ -686,6 +949,7 @@ fn run_scope(p: &Prepared, zt: &mut Zt, _a: &Params) -> Result<Value> {
     let mut changed = Vec::new();
     let mut trees = BTreeSet::new();
     let mut kinds = BTreeSet::new();
+    let mut current_cards: BTreeMap<String, Value> = BTreeMap::new();
     for card in &read.cards {
         let address = ps::field(&card, "address");
         let body = ps::field(&card, "body");
@@ -702,7 +966,12 @@ fn run_scope(p: &Prepared, zt: &mut Zt, _a: &Params) -> Result<Value> {
             "figures": audit::figure_labels(&body),
             "fingerprint": card_fingerprint(&ps::field(&card, "title"), &body, &ps::field(&card, "facet")),
             "tree": ps::field(&card, "tree"),
+            // S26 (#169): the Term facts the round's scope is classified from.
+            "type": ps::field(&card, "type"),
+            "term": card["term"].clone(),
+            "term_role": card["term_role"].clone(),
         });
+        current_cards.insert(address.clone(), now.clone());
         let before = audited.get(&ps::key(&address));
         let kinds_here = change_kinds(before, &now);
         if kinds_here.is_empty() {
@@ -720,6 +989,9 @@ fn run_scope(p: &Prepared, zt: &mut Zt, _a: &Params) -> Result<Value> {
             "kinds": kinds_here,
             "category": before.map(|before| ps::field(before, "category")).unwrap_or_else(|| "new".into()),
             "tree": ps::field(&card, "tree"),
+            "type": ps::field(&card, "type"),
+            "term": card["term"].clone(),
+            "term_role": card["term_role"].clone(),
             "fingerprint_before": before.map(|before| before["fingerprint"].clone()).unwrap_or(Value::Null),
             "fingerprint_after": now["fingerprint"],
         }));
@@ -731,6 +1003,10 @@ fn run_scope(p: &Prepared, zt: &mut Zt, _a: &Params) -> Result<Value> {
         "changed": changed,
         "trees": trees,
     }));
+    // S26 (#169): the round's Term-link scope, decided from the actual changed Cards and the
+    // applied mapping, is part of the immutable manifest the finalization's relink runs.
+    let key = must(&plan, "citation_key")?;
+    let term_link = run_term_scope(p, zt, &key, &plan, &audit, &changed, &current_cards)?;
     let changes = json!({
         "schema_version": 1,
         "kind": "finalize_changes",
@@ -740,6 +1016,7 @@ fn run_scope(p: &Prepared, zt: &mut Zt, _a: &Params) -> Result<Value> {
         "touched_trees": trees,
         "kinds": kinds,
         "counts": {"cards": changed.len(), "trees": trees.len()},
+        "term_link": term_link,
         "cycle": {
             "state": state_file.to_string_lossy(),
             "report": report_file.to_string_lossy(),
@@ -768,6 +1045,7 @@ fn run_scope(p: &Prepared, zt: &mut Zt, _a: &Params) -> Result<Value> {
         "touched_trees": changes["touched_trees"],
         "kinds": changes["kinds"],
         "counts": changes["counts"],
+        "term_link": changes["term_link"],
         "refresh": refresh,
         "changes": changes_path(&p.out).to_string_lossy(),
     }))
@@ -1225,6 +1503,47 @@ fn refresh_facts(p: &Prepared, refresh: &[Value]) -> Result<Vec<Value>> {
     Ok(facts)
 }
 
+/// `-Step changes`: the retained changed-Card manifest, read-only (S26, #169). A resume uses it to
+/// continue a finalization whose correction cycle and scope are already recorded, without
+/// re-entering the one permitted cycle. It also reports whether the branch already published its
+/// final audit (the scheduling audit is published with no refresh scope; the final one carries the
+/// `finalize_refresh` scope) and whether every applicable Term-link round completed.
+fn run_changes(p: &Prepared, a: &Params) -> Result<Value> {
+    let file = if a.changes.trim().is_empty() {
+        changes_path(&p.out)
+    } else {
+        PathBuf::from(&a.changes)
+    };
+    let mut changes = util::read_json(&file).with_context(|| {
+        format!(
+            "no changed-Card manifest at {}: the correction cycle has not been recorded",
+            file.display()
+        )
+    })?;
+    let conn = ledger::connect(&p.out.join("ledger.sqlite3"), false)?;
+    let mut finalized = false;
+    if let Some((unit, _)) = ledger::required_publication(&conn, "audit")? {
+        let inputs: Option<String> = conn
+            .query_row("SELECT inputs_json FROM units WHERE id=?1", [&unit], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let inputs: Value = inputs
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok())
+            .unwrap_or(Value::Null);
+        finalized = inputs["scope"]["kind"] == json!("finalize_refresh");
+    }
+    let round = &changes["term_link"];
+    if finalized && round["applicable"] == json!(true) && round["scope"] != json!("none") {
+        let number = round["round"].as_i64().unwrap_or(0);
+        finalized = unit_state(&conn, &format!("termlink/final@{number}"))? == "done";
+    }
+    changes["step"] = json!("changes");
+    changes["finalized"] = json!(finalized);
+    Ok(changes)
+}
+
 fn run_final(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
     let plan_file = plan_path(&p.out);
     if !plan_file.exists() {
@@ -1347,6 +1666,86 @@ fn run_final(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
         }
     }
     *by_class.entry("infrastructure".to_string()).or_default() += infrastructure.len() as i64;
+    // S26 (#169, R0438/R0442): the finalization round's own Term-link pass, read from the ledger
+    // the workflow claimed it in. A round the workflow never ran, or one whose apply was refused,
+    // is infrastructure debt: the final audit ran, but the book's Term links are not verified.
+    let round_scope = changes["term_link"].clone();
+    let term_round = round_scope["round"].as_i64().unwrap_or(scheduled_revision);
+    let mut term_link = json!({
+        "applicable": round_scope["applicable"],
+        "round": term_round,
+        "scope": round_scope["scope"],
+        "cards": round_scope["cards"],
+        "mapping_changed": round_scope["mapping_changed"],
+        "reasons": round_scope["reasons"],
+        "unit": Value::Null,
+        "state": Value::Null,
+        "status": "skipped",
+        "counts": Value::Null,
+        "no_op": false,
+        "reason": round_scope["reason"],
+    });
+    if round_scope["applicable"] == json!(true) && round_scope["scope"] != json!("none") {
+        let unit = format!("termlink/final@{term_round}");
+        let conn = ledger::connect(&p.out.join("ledger.sqlite3"), false)?;
+        let row: Option<(String, Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT state,fault_json,result_json FROM units WHERE id=?1",
+                [&unit],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        term_link["unit"] = json!(unit);
+        match row {
+            None => {
+                term_link["status"] = json!("failed");
+                term_link["reason"] = json!("the round's Term-link unit was never registered: the final audit ran before any relink");
+                infrastructure.push(json!({
+                    "layer": "term-link",
+                    "unit": unit,
+                    "state": "missing",
+                    "reason": "the finalization round's Term-link pass did not run",
+                }));
+            }
+            Some((state, fault, result)) => {
+                let fault: Value = fault
+                    .as_deref()
+                    .and_then(|text| serde_json::from_str(text).ok())
+                    .unwrap_or(Value::Null);
+                term_link["state"] = json!(state);
+                if !fault.is_null() {
+                    term_link["fault"] = fault.clone();
+                }
+                if let Some(result) = result
+                    .as_deref()
+                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                {
+                    term_link["counts"] = result["counts"].clone();
+                    term_link["no_op"] = result["no_op"].clone();
+                }
+                if state == "done" {
+                    term_link["status"] = json!("complete");
+                    term_link["reason"] = json!("");
+                } else {
+                    let code = fault["code"].as_str().unwrap_or_default();
+                    let refused = code == "card_check" || code == "card_locked";
+                    term_link["status"] = json!(if refused { "refused" } else { "degraded" });
+                    term_link["reason"] = json!(format!(
+                        "the round's Term-link unit is {state}{}",
+                        if code.is_empty() { String::new() } else { format!(" ({code})") }
+                    ));
+                    infrastructure.push(json!({
+                        "layer": "term-link",
+                        "unit": unit,
+                        "state": state,
+                        "code": if code.is_empty() { Value::Null } else { json!(code) },
+                        "reason": term_link["reason"],
+                    }));
+                }
+            }
+        }
+    }
+    by_class.insert("infrastructure".to_string(), infrastructure.len() as i64);
     let status = if residual.is_empty() && infrastructure.is_empty() {
         "done"
     } else {
@@ -1376,6 +1775,17 @@ fn run_final(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
             "change_hash": changes["change_hash"],
         },
         "refresh": refresh_facts(p, &refresh_now)?,
+        // S26 (#169, R0438/R0442): the round that relinked the corrected Cards before this final
+        // audit, and the audit's own Term quality. `audit ran` never means `all terms passed`.
+        "term_link": term_link,
+        "terms": {
+            "status": book["terms"]["status"],
+            "rows": book["terms"]["rows"], "published": book["terms"]["published"],
+            "missing": book["terms"]["missing"], "heads": book["terms"]["heads"],
+            "parts": book["terms"]["parts"], "unfiled": book["terms"]["unfiled"],
+            "uses": book["terms"]["uses"]["total"], "faults": book["terms"]["faults"]["total"],
+            "reason": book["terms"]["reason"],
+        },
         "faults": {
             "total": faults.len(),
             "residual": residual.len(),
@@ -1412,6 +1822,51 @@ fn final_markdown(report: &Value) -> String {
         ps::field(report, "branch"),
         report["changes"]["cards"],
         report["changes"]["trees"],
+    ));
+    let term = &report["term_link"];
+    if term["applicable"] == json!(true) {
+        let scope = if term["scope"] == json!("book") {
+            "the whole book (the Term mapping changed)".to_string()
+        } else if term["scope"] == json!("cards") {
+            format!("{} changed Card(s)", ps::ps_items(&term["cards"]).len())
+        } else {
+            "no eligible Card".to_string()
+        };
+        let counts = &term["counts"];
+        text.push_str(&format!(
+            "Term-link round {}: **{}**, scope {}; unit `{}` is {}{}{}.\n\n",
+            term["round"],
+            ps::field(term, "status"),
+            scope,
+            ps::field(term, "unit"),
+            ps::field(term, "state"),
+            if term["no_op"] == json!(true) { " (proven no-op)" } else { "" },
+            if counts.is_object() {
+                format!(
+                    "; {} Card(s) changed, {} link(s) added",
+                    counts["cards_changed"], counts["links_added"]
+                )
+            } else {
+                String::new()
+            }
+        ));
+    } else {
+        text.push_str(&format!(
+            "Term-link round {}: skipped ({}).\n\n",
+            term["round"],
+            ps::field(term, "reason")
+        ));
+    }
+    let terms = &report["terms"];
+    text.push_str(&format!(
+        "Term quality of the final audit: **{}** ({} row(s), {} published, {} head(s), {} part(s), {} use(s), {} fault(s)).\n\n",
+        ps::field(terms, "status"),
+        terms["rows"],
+        terms["published"],
+        terms["heads"],
+        terms["parts"],
+        terms["uses"],
+        terms["faults"],
     ));
     text.push_str("## Refreshed publications\n\n| layer | unit | state | refreshed |\n|---|---|---|---|\n");
     for entry in ps::ps_items(&report["refresh"]) {
@@ -1458,7 +1913,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "Step", "Out", "Report", "FixWork", "Layer", "Changes", "Coverage", "Scope", "Decisions", "Applied", "Skeleton",
     ];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &[])?;
-    let step = a.choice("Step", &["plan", "scope", "refresh", "stage", "final"])?;
+    let step = a.choice("Step", &["plan", "scope", "changes", "refresh", "stage", "final"])?;
     let p = Params {
         step: step.to_ascii_lowercase(),
         out: a.required("Out")?,
@@ -1482,6 +1937,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let result = match p.step.as_str() {
         "plan" => run_plan(&prepared, &mut zt, &p)?,
         "scope" => run_scope(&prepared, &mut zt, &p)?,
+        "changes" => run_changes(&prepared, &p)?,
         "refresh" => run_refresh(&prepared, &mut zt, &p)?,
         "stage" => run_stage(&prepared, &mut zt, &p)?,
         _ => run_final(&prepared, &mut zt, &p)?,
@@ -1735,5 +2191,138 @@ mod tests {
         assert!(rule_key("R1") < rule_key("I3"));
         assert!(rule_key("I3") < rule_key("E1"));
         assert!(rule_key("E1") < rule_key("L1"));
+    }
+
+    fn fingerprints(list: &str, mapping: &str, autolink: &str, vocabulary: &str) -> Value {
+        json!({"list": list, "mapping": mapping, "autolink": autolink, "vocabulary": vocabulary})
+    }
+
+    #[test]
+    fn a_body_only_correction_relinks_its_exact_changed_cards() {
+        let current = fingerprints("l1", "m1", "a1", "v1");
+        let audit = fingerprints("l1", "m1", "a1", "v1");
+        let eligible = vec!["Key/1|a".to_string(), "Key/1|b".to_string()];
+        let block = term_link_round(
+            true,
+            3,
+            Some("Key/1|t"),
+            None,
+            Some(&current),
+            &[("audit", &audit)],
+            &eligible,
+            &[],
+            false,
+        );
+        assert_eq!(block["applicable"], json!(true));
+        assert_eq!(block["round"], json!(3));
+        assert_eq!(block["scope"], json!("cards"));
+        assert_eq!(block["cards"], json!(["Key/1|a", "Key/1|b"]));
+        assert_eq!(block["mapping_changed"], json!(false));
+    }
+
+    #[test]
+    fn a_changed_term_mapping_replans_the_whole_book_with_the_round() {
+        // A changed Term list, head name or auto-link policy moves one of the four fingerprints;
+        // the round must not limit itself to the correction cycle's body edits (R0439).
+        let current = fingerprints("l2", "m1", "a1", "v1");
+        let audit = fingerprints("l1", "m1", "a1", "v1");
+        let block = term_link_round(
+            true,
+            2,
+            Some("Key/1|t"),
+            None,
+            Some(&current),
+            &[("audit", &audit)],
+            &["Key/1|a".to_string()],
+            &[],
+            false,
+        );
+        assert_eq!(block["scope"], json!("book"));
+        assert_eq!(block["cards"], json!([]));
+        assert_eq!(block["mapping_changed"], json!(true));
+        assert!(
+            ps::field(&block, "reasons").contains("\"list\"") || format!("{}", block["reasons"]).contains("list"),
+            "{}",
+            block["reasons"]
+        );
+        // A changed auto-link choice is the same book-wide effect.
+        let autolink = fingerprints("l1", "m1", "a2", "v1");
+        let block = term_link_round(
+            true,
+            2,
+            Some("Key/1|t"),
+            None,
+            Some(&current),
+            &[("whole-book plan", &autolink)],
+            &["Key/1|a".to_string()],
+            &[],
+            false,
+        );
+        assert_eq!(block["scope"], json!("book"));
+        assert!(format!("{}", block["reasons"]).contains("autolink"), "{}", block["reasons"]);
+        // The corrected Term list itself is a mapping change whatever the fingerprints say.
+        let block = term_link_round(
+            true,
+            2,
+            Some("Key/1|t"),
+            None,
+            Some(&current),
+            &[("audit", &current)],
+            &[],
+            &[],
+            true,
+        );
+        assert_eq!(block["scope"], json!("book"));
+        assert!(format!("{}", block["reasons"]).contains("Term list"), "{}", block["reasons"]);
+    }
+
+    #[test]
+    fn a_round_with_no_applied_mapping_replans_the_whole_book_or_states_why_it_cannot() {
+        // No audit fingerprint and no whole-book plan: the safe scope is the whole book.
+        let current = fingerprints("l1", "m1", "a1", "v1");
+        let block = term_link_round(
+            true,
+            1,
+            Some("Key/1|t"),
+            None,
+            Some(&current),
+            &[],
+            &["Key/1|a".to_string()],
+            &[],
+            false,
+        );
+        assert_eq!(block["scope"], json!("book"));
+        assert!(format!("{}", block["reasons"]).contains("no applied Term mapping"));
+        // A disabled layer, a book without a Term list, and a mapping that cannot be derived each
+        // state their own reason instead of pretending there is nothing to relink.
+        let off = term_link_round(false, 1, None, None, None, &[], &[], &[], false);
+        assert_eq!(off["applicable"], json!(false));
+        assert!(ps::field(&off, "reason").contains("excluded the Term-link layer"));
+        let no_list = term_link_round(true, 1, None, Some("tree `Key` has no Term list"), None, &[], &[], &[], false);
+        assert_eq!(no_list["applicable"], json!(false));
+        assert!(ps::field(&no_list, "reason").contains("no Term list"));
+        let unavailable = term_link_round(true, 1, Some("Key/1|t"), Some("duplicate rows"), None, &[], &[], &[], false);
+        assert_eq!(unavailable["applicable"], json!(false));
+        assert!(ps::field(&unavailable, "reason").contains("duplicate rows"));
+    }
+
+    #[test]
+    fn an_unchanged_mapping_with_no_eligible_change_is_a_stated_no_op() {
+        let current = fingerprints("l1", "m1", "a1", "v1");
+        let block = term_link_round(
+            true,
+            4,
+            Some("Key/1|t"),
+            None,
+            Some(&current),
+            &[("audit", &current)],
+            &[],
+            &[json!({"address": "Key/1|s", "reason": "structure"})],
+            false,
+        );
+        assert_eq!(block["applicable"], json!(true));
+        assert_eq!(block["scope"], json!("none"));
+        assert!(ps::field(&block, "reason").contains("no eligible Card changed"));
+        assert_eq!(block["excluded"], json!([{"address": "Key/1|s", "reason": "structure"}]));
     }
 }

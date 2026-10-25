@@ -69,6 +69,32 @@ function Complete-Upstream($Out, [string]$Keep = '') {
     if ($LASTEXITCODE) { throw 'fixture: failing to complete the upstream units' }
 }
 
+# S26 (#169): one Term-link pass exactly as the workflow module runs it: plan (which registers the
+# pass's unit), claim, apply under the claim, and complete from the apply report.
+function Term-Pass($Out, [string[]]$More = @()) {
+    $plan = Run-Digest (@('term-link', '-Step', 'plan', '-Staging', $Out) + $More)
+    $claim = Run-Digest @('ledger', 'next', '-Out', $Out, '-Layer', 'termlink', '-Take', '1', '-Owner', 'finalize test', '-Wait', '5', '-Lease', '600')
+    $unit = @($claim.units | Where-Object { $_.id -like 'termlink/*' })[0]
+    if (-not $unit) { throw "no Term-link unit is ready: $($claim | ConvertTo-Json -Compress)" }
+    $apply = Run-Digest (@('term-link', '-Step', 'apply', '-Staging', $Out) + $More + @('-Token', "$($unit.token)", '-Apply'))
+    $done = Run-Digest @('ledger', 'done', '-Out', $Out, '-Unit', $unit.id, '-Token', "$($unit.token)", '-Outputs', (Join-Path $Out 'term-link\apply.json'))
+    return [pscustomobject]@{ plan = $plan; claim = $claim; unit = $unit.id; apply = $apply; done = $done }
+}
+
+# One Term list, two heads and the three-row table variants the two Term scenarios use.
+function New-TermList($Key, $Anchor) {
+    return Write-Calls @(
+        @{ tool = 'create_successor'; arguments = @{ at = $Anchor; kind = 'side'; type = 'term'; title = '术语表：测试'
+                body = "本卡是《$Key》的术语表。`n`n术语表`n`n| 术语 | 不用 | 意思 | 首次定义 |`n|---|---|---|---|`n| 均衡 | 平衡 | 供需相等 | §1.1 |`n`n来源：[[$Key]]" } }
+    )
+}
+function New-TermHead($Key, $List, $Term) {
+    return (Write-Calls @(
+        @{ tool = 'create_successor'; arguments = @{ at = $List; kind = 'side'; type = 'term'; term = $Term; title = $Term
+                body = "术语：$Term`n类别：概念`n首次定义：§1.1`n`n## 释义`n`n本书对$Term的定义。`n`n来源：[[$Key]] §1.1" } }
+    ))[0]
+}
+
 # The optional content layers stay out, so every fixture run has the same small set of publications.
 $runOptions = Join-Path $scratch 'run-options.json'
 
@@ -293,6 +319,131 @@ try {
     $stageStatus = Run-Digest @('ledger', 'status', '-Out', $stageOut, '-Layer', 'skeleton')
     $stageRow = @($stageStatus.publications | Where-Object { $_.layer -eq 'skeleton' })[0]
     Assert ($stageRow.current -eq $true -and $stageRow.revision -eq $stageSkeleton.revision) 'stage: the published skeleton revision is the current publication'
+
+    # --- S26 (#169): the finalization round relinks the Cards its correction cycle changed ---------------
+    # A reader's final edits must not remove Term links. The corrected Idea Card loses its
+    # `[[均衡@head]]` macro; the round's exact changed-Card pass restores it before the final audit.
+    $termKey = 'FinalizeTerms'
+    $termOut = New-Prepared $termKey
+    $termList = (New-TermList $termKey "$termKey/1")[0]
+    $termHead = New-TermHead $termKey $termList '均衡'
+    $termPeers = Write-Calls @(
+        @{ tool = 'create_successor'; arguments = @{ at = "$termKey/1"; kind = 'side'; title = '所有权决定空白处的用法'
+                body = "契约无法写明所有情形，所有者因此决定空白处的资产用法，这个用法由所有权决定。`n`n来源：[[$termKey]] §1" } },
+        @{ tool = 'create_successor'; arguments = @{ at = "$termKey/1"; kind = 'side'; title = '剩余控制权提高谈判地位'
+                body = "剩余控制权提高谈判地位；所有者可以拒绝合作并带走资产，谈判地位因此提高。`n`n来源：[[$termKey]] §1" } }
+    )
+    $termPeer, $termFaulty = $termPeers
+    $null = Write-Calls @(
+        @{ tool = 'edit_card'; arguments = @{ at = $termPeer; body = "契约无法写明所有情形，所有者因此决定空白处的资产用法，这个用法由所有权决定。依赖 [[$termFaulty]]，后者给出剩余控制权提高谈判地位的论证。`n`n来源：[[$termKey]] §1" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $termFaulty; body = "剩余控制权提高谈判地位；所有者可以拒绝合作并带走资产，谈判地位因此提高。均衡 [[均衡@$termHead]] 决定价格。依赖 [[$termPeer]]，后者给出契约不完全时所有权决定用法的前提。`n`n来源：[[$termKey]] §1" } }
+    )
+    Complete-Upstream $termOut
+    # The run's one whole-book pass had nothing to link (the macro is already exact): a proven no-op
+    # that still completes `termlink/book@1`. Its frozen plan is the mapping the finalization round
+    # compares with.
+    $wholeBook = Term-Pass $termOut
+    Assert ($wholeBook.unit -ceq 'termlink/book@1' -and $wholeBook.plan.cards_changed -eq 0 -and $wholeBook.apply.no_op -eq $true -and $wholeBook.done.state -ceq 'done') "terms: the whole-book pass is a proven no-op on an exact tree (unit $($wholeBook.unit), changed $($wholeBook.plan.cards_changed), no_op $($wholeBook.apply.no_op), state $($wholeBook.done.state), apply $($wholeBook.apply | ConvertTo-Json -Compress))"
+    $null = Run-Digest @('audit', '-CitationKey', $termKey, '-Out', $termOut)
+    $termAudit = Read-Json (Join-Path $termOut 'audit.json')
+    $term = $termAudit.books[0].terms
+    Assert ($term.status -ceq 'complete' -and $term.rows -eq 1 -and $term.published -eq 1 -and $term.heads -eq 1 -and $term.uses.total -eq 1) "terms: the audit reads the book's one term and its one use ($($term.status))"
+    Assert ($term.generation.available -eq $true -and $term.generation.term_link.unit -ceq 'termlink/book@1' -and $term.generation.term_link.state -ceq 'done') 'terms: the audit names the run generation its Term coverage describes'
+    $appliedPlan = Read-Json (Join-Path $termOut 'term-link\plan.json')
+    Assert ($term.fingerprints.list -ceq $appliedPlan.fingerprints.list -and $term.fingerprints.mapping -ceq $appliedPlan.fingerprints.mapping -and $term.fingerprints.autolink -ceq $appliedPlan.fingerprints.autolink -and $term.fingerprints.vocabulary -ceq $appliedPlan.fingerprints.vocabulary) 'terms: the audit and the plan publish the same mapping fingerprints (one shared derivation)'
+    $termPlan = Finalize 'plan' $termOut
+    Assert ($termPlan.branch -ceq 'fix' -and @($termPlan.fix_cycle.cards).Count -eq 1 -and @($termPlan.fix_cycle.cards)[0] -ceq $termFaulty) 'terms: the semicolon Card is the one correction target'
+    $termFix = Join-Path $termOut 'finalize\fix'
+    $null = Run-Digest @('card', '-Step', 'plan', '-Book', $termKey, '-Work', $termFix, '-Cards', (Join-Path $termOut 'finalize\fix-cards.txt'), '-Rules', 'R3', '-NoOrphans')
+    $termState = Read-Json (Join-Path $termFix 'state.json')
+    $termJob = @($termState.jobs.Keys | Where-Object { $_ -like 'fix-*' })[0]
+    Assert ($null -ne $termJob) 'terms: the correction cycle has one fix job'
+    Save-Json (Join-Path $termFix "out\$termJob.json") @{ cards = @(@{ address = $termFaulty; verdict = 'fix'; title = '剩余控制权提高谈判地位'
+                body = "剩余控制权提高谈判地位。所有者可以拒绝合作并带走资产，谈判地位因此提高。均衡决定价格。依赖 [[$termPeer]]，后者给出契约不完全时所有权决定用法的前提。`n`n来源：[[$termKey]] §1" }) }
+    $null = Run-Digest @('card', '-Step', 'apply', '-Work', $termFix)
+    $null = Run-Digest @('card', '-Step', 'check', '-Work', $termFix)
+    $null = Run-Digest @('card', '-Step', 'apply', '-Work', $termFix)
+    $null = Run-Digest @('card', '-Step', 'report', '-Work', $termFix)
+    $relinkedBefore = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $termFaulty } }))[0]
+    Assert (-not $relinkedBefore.body.Contains("[[均衡@")) 'terms: the correction rewrote the body without its Term link (the debt this round pays)'
+    $termChanges = Finalize 'scope' $termOut @('-FixWork', $termFix)
+    $round = $termChanges.term_link.round
+    Assert ($termChanges.term_link.applicable -eq $true -and $termChanges.term_link.scope -ceq 'cards' -and $termChanges.term_link.mapping_changed -eq $false) "terms: a body-only correction scopes the round to its changed Cards ($($termChanges.term_link.scope))"
+    Assert (@($termChanges.term_link.cards).Count -eq 1 -and @($termChanges.term_link.cards)[0] -ceq $termFaulty -and $round -eq $termPlan.audit.revision) "terms: the round's exact Card scope and scheduling-audit generation are recorded ($($termChanges.term_link.cards -join ',') round $round)"
+    $retained = Finalize 'changes' $termOut
+    Assert ($retained.step -ceq 'changes' -and $retained.finalized -eq $false -and $retained.change_hash -ceq $termChanges.change_hash -and $retained.term_link.scope -ceq 'cards') 'terms: the retained manifest continues a recorded branch, and the branch is not yet final'
+    $roundPass = Term-Pass $termOut @('-Round', "$round", '-Cards', $termFaulty)
+    Assert ($roundPass.unit -ceq "termlink/final@$round" -and $roundPass.plan.cards_scanned -eq 1 -and $roundPass.plan.cards_changed -eq 1 -and $roundPass.plan.links_added -ge 1) "terms: the round relinks exactly the corrected Card ($($roundPass.plan.cards_changed) changed, $($roundPass.plan.links_added) link)"
+    Assert ($roundPass.apply.complete -eq $true -and $roundPass.done.state -ceq 'done') "terms: the round's unit completes from its apply report ($($roundPass.done.state))"
+    $relinked = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $termFaulty } }))[0]
+    Assert ($relinked.body.Contains("[[均衡@$termHead]]")) 'terms: the final text again carries the Term link the correction dropped'
+    # The branch's own refresh of the publication it re-derives, as the module runs it before final.
+    $termRefresh = Finalize 'refresh' $termOut @('-Layer', 'link-check', '-Report', (Join-Path $termFix 'report.json'))
+    Assert ($termRefresh.state -ceq 'done' -and $termRefresh.changed_cards -eq 1) 'terms: the Link check revision follows the changed-Card manifest'
+    $termFinal = Finalize 'final' $termOut
+    Assert ($termFinal.term_link.status -ceq 'complete' -and $termFinal.term_link.unit -ceq "termlink/final@$round" -and $termFinal.term_link.scope -ceq 'cards') "terms: the final report names the completed round before the final audit ($($termFinal.term_link.status))"
+    Assert ($termFinal.terms.status -ceq 'complete' -and $termFinal.terms.rows -eq 1 -and $termFinal.terms.uses -eq 1) "terms: the final audit reads the restored Term use ($($termFinal.terms.uses))"
+    Assert ($termFinal.status -ceq 'done') "terms: a fully relinked correction leaves no residual (status $($termFinal.status))"
+    $termFinalText = Get-Content -Raw (Join-Path $termOut 'finalize\final-report.md') -Encoding utf8
+    Assert ($termFinalText -match "Term-link round $round" -and $termFinalText -match 'complete' -and $termFinalText -match 'Term quality') 'terms: the human final report shows the round and the final Term quality'
+    $settledChanges = Finalize 'changes' $termOut
+    Assert ($settledChanges.finalized -eq $true) 'terms: after the final audit the retained manifest reports the branch as finalized (a resume reuses it)'
+
+    # --- S26 (#169): a changed Term mapping replans the whole book --------------------------------------
+    # The correction cannot target a Term Card, but a Term Card may change beside it. The round then
+    # invalidates the mapping and relinks the whole book, so a Card outside the correction cycle that
+    # now names a newly published term is linked too (R0439).
+    $mapKey = 'FinalizeTermsMap'
+    $mapOut = New-Prepared $mapKey
+    $mapList = (New-TermList $mapKey "$mapKey/1")[0]
+    $mapHead = New-TermHead $mapKey $mapList '均衡'
+    $mapCards = Write-Calls @(
+        @{ tool = 'create_successor'; arguments = @{ at = "$mapKey/1"; kind = 'side'; title = '所有权决定空白处的用法'
+                body = "契约无法写明所有情形，所有者因此决定空白处的资产用法，这个用法由所有权决定。`n`n来源：[[$mapKey]] §1" } },
+        @{ tool = 'create_successor'; arguments = @{ at = "$mapKey/1"; kind = 'side'; title = '剩余控制权提高谈判地位'
+                body = "剩余控制权提高谈判地位；所有者可以拒绝合作并带走资产，谈判地位因此提高。均衡 [[均衡@$mapHead]] 决定价格。`n`n来源：[[$mapKey]] §1" } },
+        @{ tool = 'create_successor'; arguments = @{ at = "$mapKey/1"; kind = 'side'; title = '弹性衡量价格反应'
+                body = "弹性衡量价格反应，价格变化越大反应越强。`n`n来源：[[$mapKey]] §2" } }
+    )
+    $mapPeer, $mapFaulty, $mapPlain = $mapCards
+    $null = Write-Calls @(
+        @{ tool = 'edit_card'; arguments = @{ at = $mapPeer; body = "契约无法写明所有情形，所有者因此决定空白处的资产用法，这个用法由所有权决定。依赖 [[$mapFaulty]]，后者给出剩余控制权提高谈判地位的论证。对应 [[$mapPlain]]，后者讨论价格对数量的反应。`n`n来源：[[$mapKey]] §1" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $mapFaulty; body = "剩余控制权提高谈判地位；所有者可以拒绝合作并带走资产，谈判地位因此提高。均衡 [[均衡@$mapHead]] 决定价格。依赖 [[$mapPeer]]，后者给出契约不完全时所有权决定用法的前提。`n`n来源：[[$mapKey]] §1" } },
+        @{ tool = 'edit_card'; arguments = @{ at = $mapPlain; body = "弹性衡量价格反应，价格变化越大反应越强。依赖 [[$mapPeer]]，后者给出契约不完全时所有权决定用法的前提。`n`n来源：[[$mapKey]] §2" } }
+    )
+    Complete-Upstream $mapOut
+    $null = Run-Digest @('audit', '-CitationKey', $mapKey, '-Out', $mapOut)
+    $mapPlan = Finalize 'plan' $mapOut
+    Assert ($mapPlan.branch -ceq 'fix' -and @($mapPlan.fix_cycle.cards)[0] -ceq $mapFaulty) 'terms: the mapping fixture schedules its one correction'
+    $mapFix = Join-Path $mapOut 'finalize\fix'
+    $null = Run-Digest @('card', '-Step', 'plan', '-Book', $mapKey, '-Work', $mapFix, '-Cards', (Join-Path $mapOut 'finalize\fix-cards.txt'), '-Rules', 'R3', '-NoOrphans')
+    $mapState = Read-Json (Join-Path $mapFix 'state.json')
+    $mapJob = @($mapState.jobs.Keys | Where-Object { $_ -like 'fix-*' })[0]
+    Save-Json (Join-Path $mapFix "out\$mapJob.json") @{ cards = @(@{ address = $mapFaulty; verdict = 'fix'; title = '剩余控制权提高谈判地位'
+                body = "剩余控制权提高谈判地位。所有者可以拒绝合作并带走资产，谈判地位因此提高。均衡决定价格。依赖 [[$mapPeer]]，后者给出契约不完全时所有权决定用法的前提。`n`n来源：[[$mapKey]] §1" }) }
+    $null = Run-Digest @('card', '-Step', 'apply', '-Work', $mapFix)
+    $null = Run-Digest @('card', '-Step', 'check', '-Work', $mapFix)
+    $null = Run-Digest @('card', '-Step', 'apply', '-Work', $mapFix)
+    $null = Run-Digest @('card', '-Step', 'report', '-Work', $mapFix)
+    # The mapping moved after the scheduling audit: a new row and its head publish a new link word.
+    $null = Write-Calls @(@{ tool = 'edit_card'; arguments = @{ at = $mapList
+                body = "本卡是《$mapKey》的术语表。`n`n术语表`n`n| 术语 | 不用 | 意思 | 首次定义 |`n|---|---|---|---|`n| 均衡 | 平衡 | 供需相等 | §1.1 |`n| 弹性 | — | 价格反应 | §2.1 |`n`n来源：[[$mapKey]]" } })
+    $mapHead2 = New-TermHead $mapKey $mapList '弹性'
+    $mapChanges = Finalize 'scope' $mapOut @('-FixWork', $mapFix)
+    $mapRound = $mapChanges.term_link.round
+    Assert ($mapChanges.term_link.applicable -eq $true -and $mapChanges.term_link.scope -ceq 'book' -and $mapChanges.term_link.mapping_changed -eq $true) "terms: a changed Term list and new head invalidate the mapping and replan the whole book ($($mapChanges.term_link.scope))"
+    Assert (@($mapChanges.term_link.cards).Count -eq 0 -and @($mapChanges.term_link.reasons | Where-Object { $_ -match 'fingerprint' }).Count -ge 1) 'terms: the round states which mapping fingerprint changed'
+    $mapPass = Term-Pass $mapOut @('-Round', "$mapRound")
+    Assert ($mapPass.unit -ceq "termlink/final@$mapRound" -and $mapPass.plan.pass -ceq 'final' -and $mapPass.plan.round -eq $mapRound -and $mapPass.plan.cards_scanned -ge 3) "terms: the mapping round replans the whole book ($($mapPass.plan.cards_scanned) Cards scanned)"
+    Assert ($mapPass.plan.links_added -ge 2 -and $mapPass.apply.complete -eq $true -and $mapPass.done.state -ceq 'done') "terms: the whole-book round links the Cards outside the correction too ($($mapPass.plan.links_added) links)"
+    $mapLinked = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $mapPlain } }))[0]
+    Assert ($mapLinked.body.Contains("[[弹性@$mapHead2]]")) 'terms: the Card outside the correction cycle receives its new Term link'
+    $mapInputs = @((Run-Digest @('ledger', 'status', '-Out', $mapOut, '-Layer', 'termlink')).units | Where-Object { $_.id -ceq "termlink/final@$mapRound" })[0].inputs
+    Assert (@($mapInputs.cards).Count -eq 0 -and $mapInputs.round -eq $mapRound -and $mapInputs.pass -ceq 'final') 'terms: the whole-book round unit records the round and the empty Card subset'
+    $null = Finalize 'refresh' $mapOut @('-Layer', 'link-check', '-Report', (Join-Path $mapFix 'report.json'))
+    $mapFinal = Finalize 'final' $mapOut
+    Assert ($mapFinal.term_link.status -ceq 'complete' -and $mapFinal.term_link.scope -ceq 'book' -and $mapFinal.terms.rows -eq 2 -and $mapFinal.terms.uses -eq 2) "terms: the final audit reads both restored/added Term uses ($($mapFinal.terms.uses))"
+    Assert ($mapFinal.status -ceq 'done') "terms: the whole-book round leaves a clean final audit (status $($mapFinal.status), $($mapFinal.faults.residual) residual, infrastructure $($mapFinal.infrastructure | ConvertTo-Json -Compress))"
 
     Write-Output 'all finalization checks passed'
 } finally {

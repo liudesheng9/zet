@@ -8,6 +8,7 @@
 pub mod book_of;
 mod markdown;
 mod measures;
+mod terms;
 
 
 use crate::args::Args;
@@ -263,7 +264,16 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
 
     // The public global report needs every category, book attribution and
     // Bridge endpoint. Load that graph once, without model projections per Card.
-    let revision = zt.cards(&[], "text")?.archive_revision;
+    // The empty read also publishes the running service's check contract: the rules, policy,
+    // limits, stage and capabilities that would decide a write (S26, #169, R0441).
+    let contract_view = zt.call("get_cards", json!({"addresses": [], "view": "text"}))?;
+    let revision = contract_view["archive_revision"]
+        .as_u64()
+        .context("incomplete audit archive revision")?;
+    let gate = contract_view["check_contract"].clone();
+    if !gate.is_object() {
+        bail!("incomplete audit check contract");
+    }
     // #94 S01: the archive's own identity, so a report names the archive it measured and a
     // later comparison can refuse a baseline from another one.
     let identity_view = zt.archive_view().context("incomplete audit archive identity")?;
@@ -327,7 +337,8 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         .filter(|address| !address.is_empty())
         .collect();
     let index = book_of::book_index_with_parts(&all_trees, &graph_cards, &register_parts);
-    let category = |c: &Value| index.category.get(&field(c, "address")).cloned().unwrap_or_default();
+    let category_of = |at: &str| index.category.get(at).cloned().unwrap_or_default();
+    let category = |c: &Value| category_of(&field(c, "address"));
     let book_of = |c: &Value| index.book_of.get(&field(c, "address")).cloned();
     let bridge_counts = |key: &str| bridge_counts(&graph_cards, &index, graph_complete, key);
 
@@ -526,6 +537,12 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
                 "facet": facets.get(&ci(&a)).cloned().map(Value::String).unwrap_or(Value::Null), "line": null,
                 "category": category(c), "tree": field(c, "tree"), "workspace": field(c, "workspace"), "book": book_of(c).map(Value::String).unwrap_or(Value::Null),
                 "parent": field(c, "parent"), "links": str_list(&c["links"]), "kinds": ps::keys(&c["kinds"]),
+                // The computed Term facts a finalization round reads back (S26, #169): a changed
+                // Card that is a Term list or a named Term Card is a mapping change, and the audit's
+                // snapshot is the before-state the scope step compares with.
+                "type": field(c, "type"), "term": c["term"].clone(),
+                "term_role": c["term_role"].clone(), "term_list": c["term_list"].clone(),
+                "auto_link": if eq(&category(c), "term") { json!(!crate::term_link::auto_link_off(&body)) } else { Value::Null },
                 // The kinded relation of each Link, which I7 reads; the array above keeps its order.
                 "relations": c["kinds"].clone(),
                 "inbound": inbound_from.get(&ci(&a)).cloned().unwrap_or_default(),
@@ -612,7 +629,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         })
     };
     let hub_entries = ps_items(&hubs["hubs"]);
-    let workspace = json!({
+    let mut workspace = json!({
         "trees": trees.len(),
         "topic_trees": topic_trees.len(),
         "books": all_books.len(),
@@ -634,6 +651,9 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             "list": unattributed.iter().map(|c| field(c, "address")).collect::<Vec<_>>()
         }
     });
+    // S26 (#169): the run's Term generation from its ledger, read once, read-only. A folder that
+    // is no prepared run states that fact instead of pretending the generation is complete.
+    let term_generation = terms::generation(std::path::Path::new(&out_dir));
     let mut book_reports: Vec<Value> = Vec::new();
     for key in &books {
         let mine: Vec<&Value> = scope.iter().copied().filter(|c| book_of(c).is_some_and(|b| eq(&b, key))).collect();
@@ -751,6 +771,29 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             .iter()
             .filter(|f| !f.line.contains("(advisory)"))
             .collect();
+        // S26 (#169, R0441): the book's Term coverage, uses, faults and quality, built from the
+        // archive's computed Term structure and the bodies this audit already read.
+        let term_list = mine
+            .iter()
+            .find(|card| eq(&category(card), "terms"))
+            .map(|card| field(card, "address"));
+        let book_terms = match &term_list {
+            Some(_) => {
+                let read = zt
+                    .call("get_terms", json!({"at": key}))
+                    .map_err(|error| error.to_string());
+                terms::build(&terms::Facts {
+                    list: term_list.clone(),
+                    terms: read,
+                    book: &mine,
+                    bodies: &bodies,
+                    category: &category_of,
+                    faults: &faults,
+                    generation: term_generation.clone(),
+                })
+            }
+            None => terms::skipped(),
+        };
         book_reports.push(json!({
             "key": key,
             "title": field(tree_info.get(&ci(key)).unwrap_or(&Value::Null), "title"),
@@ -808,9 +851,12 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
                 "missing_known": known, "missing_unknown": named.len() - known,
                 "list": named
             },
+            "terms": book_terms,
             "broken_links": broken_from.iter().filter(|a| mine_set.contains_key(&ci(a))).count()
         }));
     }
+    // The Workspace's Term coverage is the books' own sections, never a second derivation.
+    workspace["terms"] = terms::aggregate(&book_reports);
     let scope_name = if p.citation_key.is_empty() { "agent".to_string() } else { p.citation_key.clone() };
     if zt.cards(&[], "text")?.archive_revision != revision {
         bail!("incomplete audit inputs: changing read view");
@@ -850,6 +896,10 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         "seconds": seconds,
         "workspace": workspace,
         "books": book_reports,
+        // The running service's own check contract (R0441): rule version, effective policy,
+        // limits, stage and syntax capabilities. An audit answers under these facts, so a reader
+        // can compare it with the gate that would decide a write.
+        "gate": gate,
         "baseline": baseline
     });
 
@@ -874,6 +924,13 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             "measures": report["baseline"]["measures"].as_object().map(serde_json::Map::len).unwrap_or(0),
             "missing": ps::ps_count(&report["baseline"]["evidence"]["missing"])
         },
+        // S26 (#169): the Term quality of the whole scope and of each book, beside the audit's own
+        // completion. `terms.status` is the quality; `complete` above only says the read finished.
+        "terms": w["terms"],
+        "gate": {
+            "stage": report["gate"]["stage"], "rule_version": report["gate"]["rule_version"],
+            "policy_hash": report["gate"]["policy_hash"],
+        },
         "books": ps_items(&report["books"]).iter().map(|b| json!({
             "key": b["key"], "cards": b["cards"], "topic_trees": b["topics"]["trees"], "style_faults": b["style"]["faults"],
             "style_advisory": b["style"]["advisory"],
@@ -882,6 +939,10 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
             "orphans": b["orphans"]["count"], "no_source": b["no_source"]["count"], "unkinded": b["unkinded"]["count"],
             "models": b["models"]["count"], "not_self_sufficient": b["models"]["not_self_sufficient"],
             "derivations": b["models"]["derivations"], "explained": b["models"]["explained"],
+            "terms": b["terms"]["status"], "term_rows": b["terms"]["rows"], "term_published": b["terms"]["published"],
+            "term_heads": b["terms"]["heads"], "term_parts": b["terms"]["parts"],
+            "term_uses": b["terms"]["uses"]["total"], "term_faults": b["terms"]["faults"]["total"],
+            "term_no_use": b["terms"]["no_use"]["heads"].as_array().map(Vec::len).unwrap_or(0),
             "figures_missing": b["figures"]["missing_known"].as_i64().unwrap_or(0) + b["figures"]["missing_unknown"].as_i64().unwrap_or(0)
         })).collect::<Vec<_>>()
     });

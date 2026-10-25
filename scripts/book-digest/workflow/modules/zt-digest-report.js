@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v18 ====
+// ==== module zt-digest-report v19 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -24,8 +24,11 @@
 // 18 (S25, #168) adds the backfill modes term-cards and term-link: the pre-dispatch validation (Workspace, list,
 // occupancy, source/sections fingerprints, Lock and conflicts) plus the Term stages' own result and the read-only
 // audit, so one selected book's Term backfill reports its coverage and debt without a fresh digest.
+// 19 (S26, #169) adds term_link.final: the finite finalization's own round (generation, scope, unit, status and
+// counts), read from the final report's ledger facts, and the final audit's Term quality under `terms`, so a run
+// that corrected Cards reports whether their Term links were restored and audit-ran never reads as all-terms-passed.
 defineModule({
-  id: 'zt-digest-report', version: '18', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '19', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -101,6 +104,28 @@ defineModule({
       link: p.link ? { scheduled: p.link.scheduled ?? 0, skipped: p.link.skipped ?? 0, verified: p.link.verified ?? 0, failed: p.link.failed ?? 0, provider_runs: p.link.provider_runs ?? 0 } : null,
       term_cards: termSummary(p.termCards, 'the Term-card branch').status,
       term_link: termSummary(p.termLink, 'the Term-link pass').status,
+      term_link_final: (p.finalize && p.finalize.final && p.finalize.final.term_link && p.finalize.final.term_link.status) || null,
+    }
+    // S26 (#169): the finite finalization's own Term-link round and the final audit's Term quality,
+    // both read from the final report's ledger facts, never inferred from the whole-book pass.
+    const termLinkSummary = (value, finalize) => {
+      const summary = termSummary(value, 'the Term-link pass')
+      const round = finalize && finalize.final && finalize.final.term_link
+      if (round) {
+        summary.final = {
+          applicable: round.applicable !== false,
+          round: round.round ?? null,
+          scope: round.scope || null,
+          status: round.status || 'unknown',
+          unit: round.unit || null,
+          state: round.state || null,
+          counts: round.counts || null,
+          no_op: round.no_op === true,
+          reason: round.reason || null,
+        }
+      }
+      if (finalize && finalize.final && finalize.final.terms) summary.audit_terms = finalize.final.terms
+      return summary
     }
     if (MODE === 'bridge') return { mode: MODE, citation_key: KEY, bridge: or(p.bridge, { status: 'failed', error: 'Bridge stage produced no summary' }) }
     if (MODE === 'cards') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, cards: or(p.cardsBook, null), schedule, run_report: runReport }
@@ -116,7 +141,7 @@ defineModule({
     if (MODE === 'term-cards' || MODE === 'term-link') {
       const backfill = (p.prepare && p.prepare.backfill) || null
       const tc = termSummary(p.termCards, 'the Term-card branch')
-      const tl = termSummary(p.termLink, 'the Term-link pass')
+      const tl = termLinkSummary(p.termLink, p.finalize)
       const conflicts = (backfill && backfill.conflicts) || []
       ctx.log(`Backfill ${MODE}: ${tc.status} term-cards, ${tl.status} term-link${backfill ? `; ${backfill.list ? backfill.list.rows : 0} Term row(s), ${backfill.tree.heads} published head(s)` : ''}${conflicts.length ? `, ${conflicts.length} conflict(s)` : ''}.`)
       return {
@@ -141,8 +166,8 @@ defineModule({
     ctx.log(`Next: run zt-idea-grow with book "${KEY}" and a fresh out folder: the digest wrote no Topic Card, Hub Card or register entry.`)
     if (p.termCards || p.termLink) {
       const tc = termSummary(p.termCards, 'the Term-card branch')
-      const tl = termSummary(p.termLink, 'the Term-link pass')
-      ctx.log(`Terms: term-cards ${tc.status}${tc.unit ? ` (${tc.unit})` : ''}${tc.reason ? `: ${tc.reason}` : ''}; term-link ${tl.status}${tl.unit ? ` (${tl.unit})` : ''}${tl.reason ? `: ${tl.reason}` : ''}.`)
+      const tl = termLinkSummary(p.termLink, p.finalize)
+      ctx.log(`Terms: term-cards ${tc.status}${tc.unit ? ` (${tc.unit})` : ''}${tc.reason ? `: ${tc.reason}` : ''}; term-link ${tl.status}${tl.unit ? ` (${tl.unit})` : ''}${tl.reason ? `: ${tl.reason}` : ''}${tl.final ? `; final round ${tl.final.round} ${tl.final.status} (${tl.final.scope})` : ''}.`)
     }
     return {
       mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: Z.toBlocks(Z.groupsOf(groupCount)).length,
@@ -154,7 +179,7 @@ defineModule({
       link_blocked: (p.linkBlocked || []).map(b => ({ group: b.n, unit: b.unit, state: b.state, reason: b.reason })),
       terms: (p.terms && p.terms.report) || null, cards: cardsReport,
       term_cards: termSummary(p.termCards, 'the Term-card branch'),
-      term_link: termSummary(p.termLink, 'the Term-link pass'),
+      term_link: termLinkSummary(p.termLink, p.finalize),
       deepseek_usage: runUsage, cleanup: (p.cleanup && p.cleanup.cleanup) || null, run_report: runReport,
       organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), audit: or(p.audit, null), finalize: or(p.finalize, null),
       schedule,

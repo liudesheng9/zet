@@ -97,6 +97,12 @@ try {
     $bulkReport = Get-Content -LiteralPath (Join-Path $bulkOut 'audit.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String
     Assert ($bulkReport.complete -and $bulkReport.archive_revision -is [long]) 'the completed audit records its consistent graph revision'
     foreach ($key in @('generated','seconds','complete','archive_revision','orphan_check','baseline')) { $report.Remove($key); $bulkReport.Remove($key) }
+        # S26 (#169) adds the per-book `terms` section, `workspace.terms` and the top-level `gate`
+        # check contract. They are new fields, covered by term-audit.tests.ps1; every pre-existing
+        # field below still has to match the retained report byte for byte.
+        $report.workspace.Remove('terms'); $bulkReport.workspace.Remove('terms')
+        $report.Remove('gate'); $bulkReport.Remove('gate')
+        foreach ($book in @($report.books) + @($bulkReport.books)) { $book.Remove('terms') }
         Assert (($baselineReport | ConvertTo-Json -Depth 60 -Compress) -ceq ($bulkReport | ConvertTo-Json -Depth 60 -Compress)) 'the bulk audit preserves the frozen graph, Bridge and quality fields after the named shared orphan/classification changes'
     Assert ($baselineFaults -ceq [IO.File]::ReadAllText((Join-Path $bulkOut 'audit-faults.txt'))) 'bulk and pre-migration audit fault lines match exactly'
     $modelOut = Join-Path $scratch 'model-audit'

@@ -1506,9 +1506,8 @@ impl TermLinkPass {
         if round <= 0 {
             bail!("the finalization round must be a positive whole number, not {round}");
         }
-        if cards.is_empty() {
-            bail!("finalization round {round} names no changed Card");
-        }
+        // No Cards is the round's whole-book replanning: a correction that changed the Term list,
+        // a head name or an auto-link policy invalidates the whole mapping (R0439).
         let mut seen = std::collections::BTreeSet::new();
         for at in cards {
             if at.trim().is_empty() || at.len() > 200 || at.contains(['\n', '\r']) || !seen.insert(at) {
@@ -1558,6 +1557,9 @@ const TERM_LINK_PUBLICATIONS: &[&str] = &[
 /// the same obligation — the completion verifier binds the applied plan — so the identity keeps the
 /// pass, its scope and its option, never the plan hash or the current vocabulary.
 pub(crate) fn term_link_unit_inputs(plan: &Value, pass: &TermLinkPass) -> Value {
+    // A round's scope is already in the input: `cards` is the exact changed-Card subset of a
+    // body-only correction, empty for the whole-book replanning a changed Term mapping requires
+    // (R0439). Adding another field would rebind every already-registered pass for no fact.
     json!({
         "schema_version": 1,
         "kind": "term_link_unit",
@@ -1981,6 +1983,7 @@ fn termlink_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<
         "kind": "termlink_completion",
         "unit": unit,
         "token": token,
+        "state": "done",
         "pass": inputs["pass"],
         "round": inputs["round"],
         "plan_revision": report["plan"]["revision"],
@@ -18465,9 +18468,35 @@ mod term_link_ledger_tests {
     }
 
     #[test]
-    fn a_scoped_round_requires_the_changed_cards() {
-        let error = TermLinkPass::final_round(1, &[]).err().unwrap().to_string();
-        assert!(error.contains("names no changed Card"), "{error}");
+    fn a_round_without_cards_is_the_whole_book_replanning() {
+        // R0439: a changed Term list, head name or auto-link policy invalidates the book mapping,
+        // so the round owns the whole book. It is still the round's own generation identity.
+        let (_dir, conn) = ledger();
+        let pass = TermLinkPass::final_round(2, &[]).unwrap();
+        assert_eq!(pass.unit(), "termlink/final@2");
+        let tx = conn.unchecked_transaction().unwrap();
+        let units = register_term_link(&tx, &plan(), &pass).unwrap();
+        assert_eq!(units["unit"], json!("termlink/final@2"));
+        assert_eq!(units["cards"], json!(0));
+        let inputs: String = tx
+            .query_row("SELECT inputs_json FROM units WHERE id='termlink/final@2'", [], |row| row.get(0))
+            .unwrap();
+        let inputs: Value = serde_json::from_str(&inputs).unwrap();
+        assert_eq!(inputs["pass"], json!("final"));
+        assert_eq!(inputs["round"], json!(2));
+        assert_eq!(inputs["cards"], json!([]));
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn a_scoped_round_requires_readable_changed_cards() {
+        let error = TermLinkPass::final_round(1, &["".to_string()]).err().unwrap().to_string();
+        assert!(error.contains("not one readable Card address"), "{error}");
+        let error = TermLinkPass::final_round(1, &["K/1|a".to_string(), "K/1|a".to_string()])
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("not one readable Card address"), "{error}");
     }
 
     #[test]
@@ -18750,6 +18779,7 @@ mod term_completion_tests {
         let path = fixture.write("term-link/apply.json", &apply_report());
         let result = termlink_finish(&fixture.prepared(), "termlink/book@1", 3, &path).unwrap();
         assert_eq!(result["kind"], json!("termlink_completion"));
+        assert_eq!(result["state"], json!("done"));
         assert_eq!(result["no_op"], json!(false));
         assert_eq!(fixture.state("termlink/book@1").0, "done");
     }

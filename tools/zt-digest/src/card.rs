@@ -830,9 +830,10 @@ impl Compiler {
                 new.push_str(&format!("\n{}\n{}", field(p, "title"), field(p, "body")));
             }
         }
-        let keep = text::keep(&format!("{}\n{}", field(old, "title"), field(old, "body")));
+        let old_text = format!("{}\n{}", field(old, "title"), field(old, "body"));
+        let keep = text::keep(&old_text);
         let now = text::keep(&new);
-        let mut lost: Vec<String> = keep.links.iter().filter(|l| !is_in(l, &now.links)).cloned().collect();
+        let mut lost = lost_links(&old_text, &new);
         // An Organize note that names other Links may replace a wrongly cited Card: the rewrite may
         // drop as many Links as it adds of those the note names, and no more.
         let note_text = if truthy(&self.state["notes"]) { field(&self.state["notes"], &field(entry, "address")) } else { String::new() };
@@ -2202,6 +2203,27 @@ fn push(list: &mut Value, item: Value) {
     }
 }
 
+/// The Links a rewrite would lose: every kept Link the new text does not carry, except a Term macro
+/// whose visible label still stands in the new text (S26, #169; design 14.5, US087). A writer may
+/// write the visible term plainly, and the finalization's Term-link round restores the macro; a
+/// relabelled or truly dropped Term use still loses its label and is refused.
+fn lost_links(old_text: &str, new_text: &str) -> Vec<String> {
+    let keep = text::keep(old_text);
+    let now = text::keep(new_text);
+    keep.links
+        .iter()
+        .filter(|link| !is_in(link, &now.links))
+        .filter(|link| match link.split_once('@') {
+            Some((label, _)) => {
+                let label = label.trim();
+                label.is_empty() || !new_text.contains(label)
+            }
+            None => true,
+        })
+        .cloned()
+        .collect()
+}
+
 /// The blocking fault lines of a persisted `card_check` refusal (S27, #166, R0447). The reason
 /// `invoke_writes` records is `card_check:` followed by one line per blocking fault; any other
 /// refusal has none and stays the one sentence it was.
@@ -2282,6 +2304,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rewrite_may_write_a_terms_visible_word_plainly_but_never_lose_it() {
+        // S26 (#169, design 14.5, US087): the finalization's Term-link round restores a dropped
+        // macro, so a correction that writes the visible term plainly is no lost Link.
+        let old = "均衡 [[均衡@K/3|a]] 决定价格。依赖 [[K/1]]，后者给出前提。";
+        assert!(lost_links(old, "均衡决定价格。依赖 [[K/1]]，后者给出前提。").is_empty());
+        // A relabelled use and a rewrite that drops the visible word still lose their Link.
+        assert_eq!(
+            lost_links("生产由 [[均衡@K/3|a]] 决定。", "生产由 [[生产函数@K/3|a]] 决定。"),
+            vec!["均衡@K/3|a"]
+        );
+        assert_eq!(
+            lost_links(old, "价格由供需决定。依赖 [[K/1]]，后者给出前提。"),
+            vec!["均衡@K/3|a"]
+        );
+        // An ordinary Link is never excused by its address appearing in prose.
+        assert_eq!(lost_links(old, "均衡决定价格。K/1 是一个地址。"), vec!["K/1"]);
+    }
 
     #[test]
     fn a_refused_card_check_hands_its_fault_lines_to_the_next_fix_job() {
