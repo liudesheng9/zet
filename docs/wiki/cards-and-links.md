@@ -10,7 +10,8 @@ paths:
   - "src/link.rs"
   - "tests/card_types.rs"
   - "tests/term_links.rs"
-synced: 8c6a87a92071
+  - "tests/term_lifecycle.rs"
+synced: b32b8847cc48
 updated: 2026-10-25
 ---
 
