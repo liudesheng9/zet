@@ -4122,6 +4122,69 @@ mod tests {
         assert!(!include_str!("mcp.rs").contains("\"reply\""), "Reply is not an MCP tool");
     }
 
+    /// S11 (#153, US040): the reader shows ordinary Reverse links under `Referred by` and Term
+    /// uses in a second row of their own, each from its own list, and hides the second row when
+    /// there is none; the broken-links dialog names a broken Term use's word and its reason.
+    #[test]
+    fn the_front_end_shows_term_uses_apart_from_reverse_links_and_names_broken_term_facts() {
+        let reader = &APP_JS[APP_JS.find("function renderReader()").expect("the reader")..];
+        let reader = &reader[..reader.find("card.outbound.length ?").expect("the links-out row")];
+        assert!(
+            reader.contains("referredBy(card).length ? [h('div', { class: 'section-label', text: `Referred by · ${referredBy(card).length}` })")
+                && reader.contains("referredBy(card).map((link) => chip(link))"),
+            "Referred by is built from the ordinary Reverse links: {reader}"
+        );
+        assert!(
+            reader.contains("termUses(card).length ? [h('div', { class: 'section-label', text: `Term uses · ${termUses(card).length}` })")
+                && reader.contains("termUses(card).map((link) => termUseChip(link))")
+                && reader.contains(": null,"),
+            "Term uses is its own row, absent when the list is empty: {reader}"
+        );
+        assert!(!reader.contains("card.inbound.map"), "the reader no longer lists the merged inbound set");
+        assert!(APP_JS.contains(
+            "function referredBy(card) { return Array.isArray(card.reverse_links) ? card.reverse_links : card.inbound; }"
+        ));
+        assert!(APP_JS.contains(
+            "function termUses(card) { return Array.isArray(card.term_uses) ? card.term_uses : []; }"
+        ));
+        // A Term-use chip is the ordinary chip (it opens the source Card) with the authored word.
+        let term_chip = &APP_JS[APP_JS.find("function termUseChip(link)").expect("the term chip")..];
+        let term_chip = &term_chip[..term_chip.find("function actionButton").expect("end")];
+        assert!(term_chip.contains("chip(link, 'term-use')"), "{term_chip}");
+        assert!(term_chip.contains("class: 'term-word'") && term_chip.contains("text: link.label"), "{term_chip}");
+        // The broken dialog keeps the ordinary text and adds the term fact only for a Term use.
+        let broken = &APP_JS[APP_JS.find("async function showBroken()").expect("the dialog")..];
+        let broken = &broken[..broken.find("// ------------------------------------------------------------ tree locks").expect("end")];
+        assert!(broken.contains("h('span', { class: 't', text: `${item.title} → ${item.target}` })"));
+        assert!(broken.contains("brokenTermFact(item) ? h('span', { class: 'term-fact', text: brokenTermFact(item) }) : null"));
+        assert!(broken.contains("if (item.label == null) return '';"), "an ordinary Link has no term fact");
+        assert!(
+            broken.contains("item.reason === 'not_head' ? 'not a Term head' : 'missing'"),
+            "both reasons are named: {broken}"
+        );
+        // Run the shipped fact rule itself under Node when it is installed.
+        let start = broken.find("function brokenTermFact(item)").expect("the fact rule");
+        let rule = &broken[start..];
+        let rule = &rule[..rule.find("\n  }\n").expect("end of the rule") + 4];
+        let script = format!(
+            "{rule}\nconsole.log(JSON.stringify([\
+             brokenTermFact({{label: null, reason: 'missing'}}),\
+             brokenTermFact({{label: '需求', reason: 'missing'}}),\
+             brokenTermFact({{label: '需求', reason: 'not_head'}})]));"
+        );
+        if let Ok(out) = std::process::Command::new("node").arg("-e").arg(&script).output() {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                r#"["","“需求” · missing","“需求” · not a Term head"]"#
+            );
+        }
+        let css = &APP_CSS[APP_CSS.find(".chip .term-word {").expect("the term word style")..];
+        let css = &css[..css.find('\n').unwrap()];
+        assert!(css.contains("var(--ink-soft)") && !css.contains('#'), "theme ink only: {css}");
+        assert!(APP_CSS.contains(".chip .term-fact { flex: none;"), "the fact is never cut off");
+    }
+
     /// S19 (#108, AC04, AC05, AC06): the reader and the Table carry one low-salience slot, it asks
     /// the one read-only route once per read, it never posts, and its actions are the ordinary
     /// open, lay, and Reply.

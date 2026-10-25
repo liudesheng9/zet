@@ -701,6 +701,11 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
 .chip .addr { color: var(--ink-faint); }
 .chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip.broken { border-color: var(--broken-soft); color: var(--broken); }
+/* A Term use (S11, #153): the ordinary chip with the word the source wrote, set small and italic
+   so the row reads as uses of a word, not as reasoning Links. A broken use's fact (its word and
+   missing / not a Term head) follows the target and is never cut off. */
+.chip .term-word { font: italic 11.5px var(--serif); color: var(--ink-soft); }
+.chip .term-fact { flex: none; font-size: 11.5px; opacity: .85; }
 /* The distant Card: one slot beside the neighbours, a pencil note rather than a card. It stays
    faint until the reader points at it or tabs into it, and it never takes ink or motion from the
    Card held: no shadow, no lift, no animation. */

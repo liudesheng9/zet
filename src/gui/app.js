@@ -3311,6 +3311,21 @@
     }, h('span', { class: 'addr', text: link.address }), h('span', { class: 't' }, link.broken ? 'missing' : titleNodes(link.title || '(untitled)')));
   }
 
+  /** The ordinary Reverse links of a Card; an older answer without the split keeps `inbound`. */
+  function referredBy(card) { return Array.isArray(card.reverse_links) ? card.reverse_links : card.inbound; }
+
+  /** The Cards that write a Term use `[[label@address]]` to this Card, in address order (S11, #153). */
+  function termUses(card) { return Array.isArray(card.term_uses) ? card.term_uses : []; }
+
+  /** A Term-use chip: the ordinary chip with the authored word the source wrote for this Term. */
+  function termUseChip(link) {
+    const el = chip(link, 'term-use');
+    if (link.label) {
+      el.insertBefore(h('span', { class: 'term-word', title: `written as “${link.label}”`, text: link.label }), el.lastChild);
+    }
+    return el;
+  }
+
   function actionButton(label, key, handler, options = {}) {
     return h('button', {
       class: 'btn' + (options.primary ? ' primary' : '') + (options.danger ? ' danger' : '') + (options.cls ? ' ' + options.cls : ''),
@@ -3399,7 +3414,11 @@
       card.kind === 'literature' ? h('details', { class: 'biblio' },
         h('summary', { text: `BibTeX · ${card.citation_key}` }),
         h('pre', { text: card.bibtex })) : null,
-      card.inbound.length ? [h('div', { class: 'section-label', text: `Referred by · ${card.inbound.length}` }), h('div', { class: 'chips' }, card.inbound.map((link) => chip(link)))] : null,
+      // Reasoning Reverse links and Term uses are two rows, as the generated `## Reverse links`
+      // and `## Term uses` sections are (S11, #153, US040). A source that writes both forms sits
+      // in both rows; a Card with no Term use shows the one row it always had.
+      referredBy(card).length ? [h('div', { class: 'section-label', text: `Referred by · ${referredBy(card).length}` }), h('div', { class: 'chips' }, referredBy(card).map((link) => chip(link)))] : null,
+      termUses(card).length ? [h('div', { class: 'section-label', text: `Term uses · ${termUses(card).length}` }), h('div', { class: 'chips term-uses' }, termUses(card).map((link) => termUseChip(link)))] : null,
       card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), h('div', { class: 'chips' }, card.outbound.map((link) => chip(link)))] : null,
       // One distant Card beside the neighbours, faint until focus or hover (S19, #108), and the
       // selected Bridge report's one-line status (S20, #112).
@@ -4769,8 +4788,15 @@
       ? h('div', { class: 'chips' }, broken.map((item) => h('button', {
         class: 'chip broken', title: item.line,
         onclick: () => { close(); go(item.source); },
-      }, h('span', { class: 'addr', text: item.source }), h('span', { class: 't', text: `${item.title} → ${item.target}` }))))
+      }, h('span', { class: 'addr', text: item.source }), h('span', { class: 't', text: `${item.title} → ${item.target}` }),
+      brokenTermFact(item) ? h('span', { class: 'term-fact', text: brokenTermFact(item) }) : null)))
       : h('p', { text: 'no broken links' })));
+  }
+
+  /** The term fact of a broken Term use: its authored word and why it is broken; none for an ordinary Link (S11, #153). */
+  function brokenTermFact(item) {
+    if (item.label == null) return '';
+    return `“${item.label}” · ${item.reason === 'not_head' ? 'not a Term head' : 'missing'}`;
   }
 
   // ------------------------------------------------------------ tree locks
