@@ -383,10 +383,14 @@ GUI 把它显示为带小页面图标的链接，并在卡片盒旁打开：PDF 
 `zt dp` 会在 `<archive_root>/dump/` 下写出一个压缩归档，完整记录整个卡片系统：
 
 - `mapping.json`：每个 Card 地址到其 Markdown 文件的映射。
-- 每张 Card 一个 Markdown 文件，内容是其存储的原文；Literature Card 的文件以包含 BibTeX 的 YAML front matter 开头，
+- 每张 Card 一个 Markdown 文件，内容是其存储的原文，因此作者写下的 Term 链接保留原始 `[[label@address]]` 宏，
+  Term Card 保留生成的 `## Term uses` 段；Literature Card 的文件以包含 BibTeX 的 YAML front matter 开头，
   `<citation-key>.bib` 保存 BibTeX 的原始字节。
-- `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），每张 Event 与 Model Card 的类型，每个 Model part 的 facet，以及每个 core 或 aside part 的 emphasis，例如
-  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"}}`。
+- `archive.json`：每个 Card 地址所属的 Workspace、下一个 Topic 编号（因此已删除的 Topic 编号不会被重用），每张 Event、
+  Finding、Model、Hub 与 Term Card 的类型，每个有名字的 Term Card 与 Term part 的术语名（Term list 与其他 Card 都不出现，
+  与 Idea Card 不出现在类型表中相同），每个 Model part 的 facet，每个 core 或 aside part 的 emphasis，以及每张有细化层级的
+  Model Card 的层级，例如
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"term"},"term_names":{"1/1|a":"均衡"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"}}`。
 - `locks.json`：同一次读取的 Tree Lock 证据——每个 Lock（生效或已结束）及其封条；生效 Lock 的成员快照与 pin，
   含地址、行身份与作者指纹；全部 Lock 事件（按顺序）；以及完整性事实。归档没有 Lock 时也会写出；发现故障时只作为
   证据记录，不会阻止诊断性导出。它只记录历史：导出不会恢复任何内容，也不会导入 Lock。
@@ -394,6 +398,10 @@ GUI 把它显示为带小页面图标的链接，并在卡片盒旁打开：PDF 
 `zt dp` 只列出主机上的工具真正能写出的格式（`zip`、`tar.gz`、`tar.zst`、`7z`）：它会依次尝试 `PATH` 上的每个
 `tar`、`zip` 或 `7z`，保留第一个其探测归档带有正确格式签名的工具。在 Windows 上，Git for Windows 自带的 GNU tar
 会被跳过，改用系统自带的 `tar.exe`。
+
+含有 Term Card 或 Term 链接的归档与旧版 `zt` 不向后兼容：归档的 generation 标记会让旧二进制拒绝启动，而不是悄悄丢掉
+`term_name`，或把 `[[label@address]]` 宏当成普通 Link 读取。把 Card 检查的 gate 退回 `advisory` 只改变哪些质量问题会拒绝
+写入，绝不改变这条语法/模式边界；Term 数据存在之后的完整二进制降级需要经过审查的转换或 Term 之前的备份恢复。
 
 ## 删除
 

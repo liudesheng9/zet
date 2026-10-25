@@ -5828,12 +5828,71 @@ mod tests {
         );
     }
 
-    /// S07-AC08/R0248: the baseline release reads only generation 1. Running its exact structural
-    /// rule against a generation-2 archive refuses before anything is modified, so the generation
+    /// S07-AC08/R0248 and S17-AC04/R0477: the baseline release reads only generation 1. Running
+    /// its exact structural rule against a generation-2 archive that already holds Term Cards,
+    /// an exact term name and a Term use refuses before anything is modified, so the generation
     /// check — not a metadata key an old binary never reads — supplies the compatibility floor.
     #[test]
     fn the_baseline_generation_rule_refuses_generation_two_without_modifying_the_archive() {
-        let (_temp, conn) = archive();
+        let (_temp, mut conn) = archive();
+        topic_tree(&mut conn);
+        // The new syntax the generation-2 archive can hold: a Term list, a named head and a Term
+        // use. A baseline binary would read the macro as an ordinary Link target.
+        crate::insert_card_with_term(
+            &mut conn,
+            "0/1|b",
+            false,
+            Workspace::Human,
+            CardType::Term,
+            None,
+            None,
+            &card_text(
+                "术语表",
+                "| 术语 | 不用 | 意思 | 首次定义 |
+| --- | --- | --- | --- |
+| 均衡 | 平衡 | 双方都不改变策略 | §1.1 |",
+            ),
+        )
+        .expect("the Term list");
+        crate::insert_card_with_term(
+            &mut conn,
+            "0/1|b|a",
+            false,
+            Workspace::Human,
+            CardType::Term,
+            None,
+            Some("均衡"),
+            &card_text(
+                "均衡",
+                "术语：均衡\n\n类别：概念\n\n## 释义\n\n双方都不改变策略。\n\n来源：[[0/0]] §1.1",
+            ),
+        )
+        .expect("the Term head");
+        crate::insert_card(
+            &mut conn,
+            "0/1|c",
+            false,
+            Workspace::Human,
+            CardType::Idea,
+            None,
+            &card_text("使用者", "均衡 [[均衡@0/1|b|a]] 决定价格。"),
+        )
+        .expect("the Term use");
+        let head_before: (Option<String>, String) = conn
+            .query_row(
+                "SELECT term_name, text FROM cards WHERE location = '0/1|b|a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the stored head");
+        assert_eq!(head_before.0.as_deref(), Some("均衡"));
+        let use_before: String = conn
+            .query_row(
+                "SELECT text FROM cards WHERE location = '0/1|c'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the stored use");
         let definition: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
@@ -5858,6 +5917,26 @@ mod tests {
             definition
         );
         assert_eq!(crate::card_identity_rows(&conn).expect("rows"), rows);
+        assert_eq!(
+            conn.query_row(
+                "SELECT term_name, text FROM cards WHERE location = '0/1|b|a'",
+                [],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("the retained head"),
+            head_before,
+            "the exact term name and the head text are untouched"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT text FROM cards WHERE location = '0/1|c'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("the retained use"),
+            use_before,
+            "the raw Term macro is untouched"
+        );
         assert_eq!(
             schema_version(&conn).expect("generation").as_deref(),
             Some(SCHEMA_VERSION)

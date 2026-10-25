@@ -498,13 +498,17 @@ through the bridge and keeps it in ZET's cache while the archive's copy keeps it
 system:
 
 - `mapping.json`: every Card address mapped to its Markdown file.
-- One Markdown file per Card holding its exact stored text; a Literature Card's file starts with
-  YAML front matter holding its BibTeX, and `<citation-key>.bib` holds the exact BibTeX bytes.
+- One Markdown file per Card holding its exact stored text, so an authored Term link keeps its
+  raw `[[label@address]]` macro and a Term Card keeps its generated `## Term uses` section; a
+  Literature Card's file starts with YAML front matter holding its BibTeX, and
+  `<citation-key>.bib` holds the exact BibTeX bytes.
 - `archive.json`: the Workspace of every Card address, the next Topic number (so deleted
-  Topic numbers are not reused), the type of every Event and Model Card, the facet of every
-  Model part, the emphasis of every core or aside part, and the elaboration level of every Model
-  Card that has one, for example
-  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent"},"types":{"0/1":"model","0/1|a":"model"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"}}`.
+  Topic numbers are not reused), the type of every Event, Finding, Model, Hub and Term Card,
+  the term name of every named Term Card and Term part (a Term list and every other Card are
+  omitted, exactly as an Idea Card is omitted from the type map), the facet of every Model part,
+  the emphasis of every core or aside part, and the elaboration level of every Model Card that has
+  one, for example
+  `{"next_topic_id":3,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"term"},"term_names":{"1/1|a":"均衡"},"facets":{"0/1|a":"setting"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"}}`.
 - `locks.json`: the Tree Lock evidence of the same captured view — every Lock, active or ended,
   with its seal; the member snapshots and pins of the active ones with their addresses, row
   identities and authored fingerprints; every Lock event in order; and the integrity facts. It is
@@ -515,6 +519,13 @@ system:
 really write: it tries every `tar`, `zip`, or `7z` on `PATH` and keeps the first whose probe
 archive carries the right format signature. On Windows a GNU tar from Git for Windows is passed
 over for the bundled `tar.exe`.
+
+An archive that holds Term Cards or Term links is not backward-compatible with an older `zt`:
+the archive's generation marker makes an older binary refuse to start instead of silently
+dropping `term_name` or reading a `[[label@address]]` macro as an ordinary Link. Returning the
+Card-check gate to `advisory` changes only which quality faults refuse a write, never that
+syntax/schema boundary; a full binary downgrade after Term data exists needs a reviewed
+conversion or the pre-Term backup restore.
 
 ## Deleting
 

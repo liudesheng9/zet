@@ -120,8 +120,10 @@ impl DumpCard {
 
 /// `archive.json`: everything beyond the Card files that a dump needs to
 /// replicate the archive. `workspaces` maps every address in `mapping.json`
-/// to its Workspace, `types` maps every Event, Finding, Model, and Hub Card to its Card type
-/// (Idea Cards are left out), `facets` maps every Model part to its Model
+/// to its Workspace, `types` maps every Event, Finding, Model, Hub, and Term Card to its Card
+/// type (Idea Cards are left out), `term_names` maps every named Term Card and Term part to its
+/// exact term name (a Card with no name is omitted, exactly as an Idea Card is omitted from
+/// `types`), `facets` maps every Model part to its Model
 /// facet, `emphasis` maps every core or aside part to its emphasis, `levels`
 /// maps every Model Card with an elaboration level to it, `forms` maps every
 /// Model Card that states a mathematical unit to its Math form, `hub_levels` maps

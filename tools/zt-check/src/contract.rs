@@ -58,7 +58,8 @@ pub struct ArchiveFacts {
 
 /// The relevant syntax capabilities of the running service (R0204). A draft that
 /// uses Term syntax is not checked by a service that does not understand it, so
-/// the answer says so instead of passing.
+/// [`Contract::version_gaps`] names a missing Term capability instead of letting the
+/// answer pass (R0477).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     pub term_links: bool,
@@ -279,6 +280,22 @@ impl Contract {
                 gaps.push(format!("{name}: this zt-check uses {ours}, the published contract says {theirs}"));
             }
         }
+        // The published syntax capabilities are part of the same contract (R0204): a service
+        // that cannot read Term links or Term Cards computes a different answer for the same
+        // authored bytes, so a difference is never a comparable pass (R0477). This is the
+        // capability floor beside the version floor; an older build that has no such comparison
+        // refuses the new service through `rule_version` instead.
+        let mine = Capabilities::current();
+        for (name, ours, theirs) in [
+            ("term_links", mine.term_links, self.capabilities.term_links),
+            ("term_cards", mine.term_cards, self.capabilities.term_cards),
+        ] {
+            if ours != theirs {
+                gaps.push(format!(
+                    "{name}: this zt-check implements {ours}, the published contract says {theirs}"
+                ));
+            }
+        }
         gaps
     }
 
@@ -445,6 +462,37 @@ mod tests {
         assert!(gaps[0].contains("says 0"));
         assert!(gaps[1].contains("diagnostic_schema: this zt-check uses 1"));
         assert!(gaps[1].contains("says 2"));
+    }
+
+    /// S17 (#155)/R0477: the published syntax capabilities are a compatibility
+    /// floor, not decoration. A service that does not announce Term links or
+    /// Term Cards does not share this build's syntax, so an answer computed
+    /// against it is never comparable — even if every version string matched.
+    #[test]
+    fn a_service_without_the_term_syntax_is_a_contract_gap() {
+        let served = Contract::served(&policy(), &Limits::default(), archive());
+        assert!(
+            served.version_gaps().is_empty(),
+            "the current service shares this build's syntax"
+        );
+
+        let mut without_links = served.clone();
+        without_links.capabilities.term_links = false;
+        let gaps = without_links.version_gaps();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(gaps[0].contains("term_links"), "{gaps:?}");
+        assert!(gaps[0].contains("this zt-check"), "{gaps:?}");
+        assert!(gaps[0].contains("says false"), "{gaps:?}");
+
+        let mut without_terms = served.clone();
+        without_terms.capabilities = Capabilities {
+            term_links: false,
+            term_cards: false,
+        };
+        let gaps = without_terms.version_gaps();
+        assert_eq!(gaps.len(), 2, "{gaps:?}");
+        assert!(gaps.iter().any(|gap| gap.contains("term_links")), "{gaps:?}");
+        assert!(gaps.iter().any(|gap| gap.contains("term_cards")), "{gaps:?}");
     }
 
     #[test]

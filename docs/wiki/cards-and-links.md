@@ -357,7 +357,7 @@ The Lock's own history is separate from the Cards it promised: an owner note cha
 
 ### Dump
 
-`archive.json` in a `zt dp` dump lists every Card's Workspace, every non-Idea Card's type, and the term name of every named Term Card (from `tests/card_types.rs`):
+`archive.json` in a `zt dp` dump lists every Card's Workspace, every non-Idea Card's type, and the term name of every named Term Card (from `tests/card_types.rs`). A Term list and every non-Term Card are omitted from `term_names` exactly as an Idea Card is omitted from `types`, while a head and each of its continuation parts all appear; the dump's Markdown keeps the raw authored macros and the generated Term-use section, and the whole payload is round-tripped in `tests/term_portability.rs` (S17 #155):
 
 ```json
 {"next_topic_id":2,"workspaces":{"0/0":"human","0/1":"human","1/0":"agent","1/1":"agent","1/1|a":"agent","1/1|b":"agent"},"types":{"1/1":"model","1/1|a":"event","1/1|b":"hub"},"term_names":{},"facets":{},"emphasis":{},"levels":{"1/1":"formal"},"forms":{},"hub_levels":{"1/1|b":"line"}}
