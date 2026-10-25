@@ -1882,7 +1882,10 @@ fn termcards_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result
     completion_fault(p, "before_commit")?;
     tx.commit()?;
     completion_fault(p, "after_commit")?;
-    Ok(result)
+    // The printed line says the unit's state, as the reuse path does; the stored record is unchanged.
+    let mut line = result;
+    line["state"] = json!("done");
+    Ok(line)
 }
 
 /// Complete one Term-link pass from its apply report (S24, #167; design 14.2, R0425/R0428): the
@@ -18728,6 +18731,11 @@ mod term_completion_tests {
         assert_eq!(result["kind"], json!("termcards_completion"));
         assert_eq!(result["rows"].as_array().unwrap().len(), 2);
         assert_eq!(fixture.state("termcards/t001@1").0, "done");
+        // The S30 pilot (#172): the Term-card branch reads `state` from the printed line, and a
+        // first completion that lacked it was reported not ready (and faulted) like a failed job.
+        assert_eq!(result["state"], json!("done"));
+        let again = termcards_finish(&fixture.prepared(), "termcards/t001@1", 3, &path).unwrap();
+        assert_eq!(again["state"], json!("done"));
     }
 
     #[test]
