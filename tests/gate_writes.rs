@@ -238,6 +238,23 @@ struct Gui {
 }
 
 impl Gui {
+    /// Freeze one tree through the real two-step page-token route.
+    fn lock(&self, root: &str) {
+        let (status, plan) = self.post("/api/lock", &json!({ "root": root }));
+        assert_eq!(status, 200, "{plan}");
+        assert_eq!(plan["applied"], json!(false), "the first request only plans: {plan}");
+        let (status, applied) = self.post(
+            "/api/lock",
+            &json!({
+                "root": root,
+                "confirm": "lock",
+                "plan_hash": plan["plan"]["plan_hash"].clone()
+            }),
+        );
+        assert_eq!(status, 200, "{applied}");
+        assert_eq!(applied["applied"], json!(true), "the confirmation commits: {applied}");
+    }
+
     fn post(&self, path: &str, body: &Value) -> (u16, Value) {
         use std::net::TcpStream;
         let payload = serde_json::to_string(body).expect("JSON body");
@@ -567,4 +584,588 @@ fn a_citation_key_remap_keeps_its_structural_path() {
     )
     .expect("renamed Card")
         == 1);
+}
+
+/// A body that passes the enforced gate and still carries advice, so an accepted
+/// preview item is proven to keep the ordinary operation-owned warnings.
+fn advised_body(target: &str) -> String {
+    format!(
+        "这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。式 (12) 有该项。对应 [[{target}]]：这条理由说明选择。"
+    )
+}
+
+/// S05 (#147) / R0179–R0180, US018–US019: a rollback-only preview treats a
+/// blocking Card check like a typed per-item refusal. It collects the refusal
+/// with its diagnostics, keeps simulating the independent items after it, marks
+/// a dependent item blocked instead of inventing a target, and writes nothing.
+#[test]
+fn a_preview_collects_a_card_check_refusal_and_blocks_its_dependent() {
+    let home = Home::new(Some("enforce"));
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({ "title": "主题", "body": "主题说明。" }))
+        ["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let target = mcp.ok("create_topic", json!({ "title": "目标", "body": "目标说明。" }))
+        ["address"]
+        .as_str()
+        .expect("target address")
+        .to_string();
+    let advised = advised_body(&target);
+    let cards = home.cards();
+    let revision = home.revision();
+    let next_topic = home.next_topic();
+    let receipts = home.receipts();
+    let items = json!([
+        {
+            "op_key": "s05/draft/1/create/bad",
+            "client_ref": "bad",
+            "tool": "create_successor",
+            "arguments": { "at": topic, "title": "拒绝卡", "body": "甲；乙。" }
+        },
+        {
+            "op_key": "s05/draft/1/create/dependent",
+            "client_ref": "dependent",
+            "tool": "create_successor",
+            "arguments": { "at": "@@bad", "title": "依赖卡", "body": advised }
+        },
+        {
+            "op_key": "s05/draft/1/create/good",
+            "client_ref": "good",
+            "tool": "create_successor",
+            "arguments": { "at": topic, "title": "独立卡", "body": advised }
+        }
+    ]);
+    let draft = mcp.ok("apply_batch", json!({ "preview": true, "items": items }));
+    assert_eq!(draft["preview"], json!(true), "{draft}");
+    assert_eq!(draft["applied"], json!(false), "{draft}");
+    assert_eq!(
+        draft["complete"],
+        json!(false),
+        "a refused plan is not complete: {draft}"
+    );
+    assert_eq!(
+        draft["scan"],
+        json!({ "items": 3, "checked": 1, "refused": 1, "blocked": 1 }),
+        "the preview states exactly what it checked and what it could not: {draft}"
+    );
+    assert_eq!(draft["archive_revision"], json!(revision), "{draft}");
+
+    let refusal = preview_refusal(&draft, 0);
+    assert_eq!(refusal["op_key"], json!("s05/draft/1/create/bad"), "{draft}");
+    assert_eq!(refusal["client_ref"], json!("bad"), "{draft}");
+    let check = &refusal["refusal"];
+    assert_eq!(check["error"], json!("card_check"), "{draft}");
+    assert_eq!(check["address"], json!("0/1"), "{draft}");
+    assert!(
+        check["blocking"].as_u64().expect("blocking") >= 1,
+        "{draft}"
+    );
+    assert!(
+        fault_rules(check).iter().any(|rule| rule == "R3"),
+        "the refusal keeps its fault lines: {draft}"
+    );
+    assert!(
+        check["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .any(|diagnostic| diagnostic["rule"] == json!("R3")
+                && diagnostic["fault"] == json!("semicolon")
+                && diagnostic["severity"] == json!("block")),
+        "the refusal keeps structured diagnostics: {draft}"
+    );
+    assert_eq!(check["zt_check_version"], json!(zt_check::VERSION), "{draft}");
+    assert_eq!(check["policy_hash"].as_str().map(str::len), Some(64), "{draft}");
+
+    let blocked = draft["blocked"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{draft}"));
+    assert_eq!(blocked.len(), 1, "{draft}");
+    assert_eq!(blocked[0]["index"], json!(1), "{draft}");
+    assert_eq!(
+        blocked[0]["client_ref"],
+        json!("dependent"),
+        "a dependent item is named: {draft}"
+    );
+    assert_eq!(
+        blocked[0]["reason"],
+        json!("blocked_by_refusal"),
+        "{draft}"
+    );
+    assert_eq!(
+        blocked[0]["blocked_by"],
+        json!([{ "index": 0, "op_key": "s05/draft/1/create/bad", "client_ref": "bad" }]),
+        "{draft}"
+    );
+    assert!(
+        blocked[0].get("address").is_none(),
+        "no address is invented for a blocked item: {draft}"
+    );
+
+    let results = draft["results"].as_array().expect("results");
+    assert_eq!(results.len(), 1, "{draft}");
+    assert_eq!(results[0]["op_key"], json!("s05/draft/1/create/good"), "{draft}");
+    let accepted = &results[0]["result"];
+    assert_eq!(accepted["address"], json!("0/1"), "{draft}");
+    assert_eq!(accepted["check"]["complete"], json!(true), "{draft}");
+    assert_eq!(accepted["check"]["stage"], json!("enforce"), "{draft}");
+    assert!(
+        accepted["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning["rule"] == json!("R20") && warning["legacy"] == json!(false)),
+        "an accepted preview item keeps its operation-owned warnings: {draft}"
+    );
+    let cards_projected = draft["cards"].as_array().expect("cards");
+    assert_eq!(cards_projected.len(), 1, "only the checked item projects a Card: {draft}");
+    assert_eq!(cards_projected[0]["address"], json!("0/1"), "{draft}");
+    assert_eq!(cards_projected[0]["body"], json!(advised), "{draft}");
+
+    // Preview uses the same writer/gate path: the single-Card route refuses the
+    // identical proposal with the same address, faults and diagnostics.
+    let (single, is_error) = mcp.call(
+        "create_successor",
+        json!({ "at": topic, "title": "拒绝卡", "body": "甲；乙。" }),
+    );
+    assert!(is_error, "the single-Card write is refused: {single}");
+    assert_eq!(single["error"], json!("card_check"), "{single}");
+    assert_eq!(single["address"], check["address"], "{single}");
+    assert_eq!(single["blocking"], check["blocking"], "{single}");
+    assert_eq!(single["faults"], check["faults"], "{single}");
+    assert_eq!(single["diagnostics"], check["diagnostics"], "{single}");
+    assert_eq!(single["policy_hash"], check["policy_hash"], "{single}");
+
+    // Everything rolled back: no Card, receipt, Topic allocation or revision.
+    assert_eq!(home.cards(), cards, "the preview created no Card");
+    assert_eq!(home.revision(), revision, "the preview moved no revision");
+    assert_eq!(home.next_topic(), next_topic, "the preview allocated no Topic id");
+    assert_eq!(home.receipts(), receipts, "the preview kept no receipt");
+}
+
+/// The refusal entry of one planned preview item, in plan order.
+fn preview_refusal(draft: &Value, index: i64) -> &Value {
+    draft["refusals"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{draft}"))
+        .iter()
+        .find(|refusal| refusal["index"] == json!(index))
+        .unwrap_or_else(|| panic!("no refusal at item {index}: {draft}"))
+}
+
+/// The durable receipts one OperationPrefix owns.
+fn stored_receipts(home: &Home, prefix: &str) -> i64 {
+    home.conn()
+        .query_row(
+            "SELECT COUNT(*) FROM applied_ops WHERE op_key LIKE ?1",
+            [format!("{prefix}%")],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+}
+
+/// S05 (#147) / R0175–R0178, R0181, US017: a real batch stays ordered and
+/// atomic. A later item sees an earlier successful candidate in the same
+/// transaction, one blocking item names its zero-based index/tool/operation key
+/// and rolls back every item, receipt, allocation and revision of this chunk,
+/// while the earlier committed chunk stays distinguishable and replayable.
+#[test]
+fn a_real_batch_names_its_blocking_item_and_keeps_earlier_chunks() {
+    let home = Home::new(Some("enforce"));
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({ "title": "主题", "body": "主题说明。" }))
+        ["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let target = mcp.ok("create_topic", json!({ "title": "目标", "body": "目标说明。" }))
+        ["address"]
+        .as_str()
+        .expect("target address")
+        .to_string();
+    let advised = advised_body(&target);
+    let first_chunk = json!([
+        {
+            "op_key": "s05/chunk1/1/create/first",
+            "client_ref": "first",
+            "tool": "create_successor",
+            "arguments": { "at": topic, "title": "第一卡", "body": advised }
+        },
+        {
+            "op_key": "s05/chunk1/1/create/topic",
+            "client_ref": "topic",
+            "tool": "create_successor",
+            "arguments": { "at": "@@first", "title": "第二卡", "body": advised }
+        }
+    ]);
+    let committed = mcp.ok("apply_batch", json!({ "items": first_chunk.clone() }));
+    let first = committed["results"][0]["result"]["address"]
+        .as_str()
+        .expect("first address")
+        .to_string();
+    let second = committed["results"][1]["result"]["address"]
+        .as_str()
+        .expect("second address")
+        .to_string();
+    assert_ne!(first, second);
+    assert_eq!(home.cards(), 4, "the two setup Topics and the two batch Cards");
+    assert_eq!(stored_receipts(&home, "s05/chunk1/"), 2);
+    let cards_after_chunk1 = home.cards();
+    let revision_after_chunk1 = home.revision();
+    let next_topic_after_chunk1 = home.next_topic();
+
+    // A lost response is recovered by repeating the identical accepted input: the
+    // durable receipts answer again and allocate nothing.
+    let replayed = mcp.ok("apply_batch", json!({ "items": first_chunk.clone() }));
+    assert!(
+        replayed["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .all(|result| result["replayed"] == json!(true)),
+        "the committed chunk replays its receipts: {replayed}"
+    );
+    assert_eq!(
+        replayed["results"][0]["result"]["address"],
+        json!(first),
+        "{replayed}"
+    );
+    assert_eq!(
+        replayed["results"][0]["result"]["after_fingerprint"],
+        committed["results"][0]["result"]["after_fingerprint"],
+        "the receipt keeps its durable output: {replayed}"
+    );
+    assert_eq!(home.cards(), cards_after_chunk1);
+    assert_eq!(home.revision(), revision_after_chunk1, "a replay moves no revision");
+
+    // The next chunk creates one Topic, then meets a blocking Card check. Its item
+    // identity is the zero-based index; the whole unseen chunk rolls back.
+    let second_chunk = json!([
+        {
+            "op_key": "s05/chunk2/1/create/topic",
+            "client_ref": "topic",
+            "tool": "create_topic",
+            "arguments": { "title": "未提交主题", "body": "未提交主题。" }
+        },
+        {
+            "op_key": "s05/chunk2/1/create/bad",
+            "client_ref": "bad",
+            "tool": "create_successor",
+            "arguments": { "at": target, "title": "拒绝卡", "body": "甲；乙。" }
+        },
+        {
+            "op_key": "s05/chunk2/1/create/last",
+            "client_ref": "last",
+            "tool": "create_successor",
+            "arguments": { "at": "@@topic", "title": "也不提交", "body": advised }
+        }
+    ]);
+    let (refused, is_error) = mcp.call("apply_batch", json!({ "items": second_chunk }));
+    assert!(is_error, "the blocking item refuses the chunk: {refused}");
+    assert_eq!(refused["error"], json!("card_check"), "{refused}");
+    assert_eq!(
+        refused["item"],
+        json!({
+            "index": 1,
+            "tool": "create_successor",
+            "op_key": "s05/chunk2/1/create/bad"
+        }),
+        "the refusal names the zero-based item, its tool and its operation key: {refused}"
+    );
+    assert!(
+        refused["message"].as_str().is_some_and(|message| message
+            .starts_with("batch item 1 (create_successor): card_check: ")),
+        "the human message keeps the existing batch-item convention: {refused}"
+    );
+    assert!(fault_rules(&refused).iter().any(|rule| rule == "R3"), "{refused}");
+    assert_eq!(home.cards(), cards_after_chunk1, "no item of the chunk persisted");
+    assert_eq!(home.revision(), revision_after_chunk1);
+    assert_eq!(home.next_topic(), next_topic_after_chunk1, "no allocation persisted");
+    assert_eq!(stored_receipts(&home, "s05/chunk2/"), 0, "the refused chunk kept no receipt");
+    assert_eq!(
+        stored_receipts(&home, "s05/chunk1/"),
+        2,
+        "the earlier committed chunk stays distinguishable and stored"
+    );
+    for title in ["未提交主题", "拒绝卡", "也不提交"] {
+        let stored: i64 = home
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM cards WHERE text LIKE ?1",
+                [format!("%{title}%")],
+                |row| row.get(0),
+            )
+            .expect("stored title count");
+        assert_eq!(stored, 0, "the refused chunk wrote no `{title}` Card");
+    }
+    assert!(
+        home.text(&first).contains("这一段说明背景"),
+        "the first chunk's Card is still stored"
+    );
+    assert!(
+        home.text(&second).contains("这一段说明背景"),
+        "the dependent Card of the first chunk is still stored"
+    );
+}
+
+/// S05 (#147) / R0177–R0181, US017–US019: the larger preview sequence collects a
+/// Card-check refusal at a numeric item, blocks the item that references it,
+/// still simulates the later independent item, and lets that item resolve a Link
+/// to a Card created earlier in the same rollback-only transaction. A forward
+/// reference remains unsupported and keeps the whole-request failure contract.
+#[test]
+fn a_preview_sequence_collects_refusals_and_resolves_earlier_candidates_only() {
+    let home = Home::new(Some("enforce"));
+    let mut mcp = home.mcp();
+    let revision = home.revision();
+    let stored_cards = home.cards();
+    let key = |index: usize| format!("s05/sequence/1/apply/item-{index:04}");
+    let linking = "这一段说明背景并给出充分理由。这一段说明结果如何出现。它让读者看到条件。对应 [[@@1]]：这条理由说明选择。";
+    let items = json!([
+        {
+            "op_key": key(0),
+            "client_ref": "0",
+            "tool": "create_topic",
+            "arguments": { "title": "序列范围", "body": "序列说明。" }
+        },
+        {
+            "op_key": key(1),
+            "client_ref": "1",
+            "tool": "create_topic",
+            "arguments": { "title": "序列目标", "body": "目标说明。" }
+        },
+        {
+            "op_key": key(2),
+            "client_ref": "2",
+            "tool": "create_successor",
+            "arguments": { "at": "@@0", "title": "拒绝卡", "body": "甲；乙。" }
+        },
+        {
+            "op_key": key(3),
+            "client_ref": "3",
+            "tool": "create_successor",
+            "arguments": { "at": "@@2", "title": "依赖卡", "body": linking }
+        },
+        {
+            "op_key": key(4),
+            "client_ref": "4",
+            "tool": "create_successor",
+            "arguments": { "at": "@@3", "title": "传递依赖卡", "body": linking }
+        },
+        {
+            "op_key": key(5),
+            "client_ref": "5",
+            "tool": "create_successor",
+            "arguments": { "at": "@@0", "title": "独立卡", "body": linking }
+        }
+    ]);
+    let draft = mcp.ok(
+        "apply_batch",
+        json!({ "preview": true, "preview_items": items }),
+    );
+    assert_eq!(draft["preview"], json!(true), "{draft}");
+    assert_eq!(draft["applied"], json!(false), "{draft}");
+    assert_eq!(draft["complete"], json!(false), "{draft}");
+    assert_eq!(draft["archive_revision"], json!(revision), "{draft}");
+    assert_eq!(
+        draft["scan"],
+        json!({ "items": 6, "checked": 3, "refused": 1, "blocked": 2 }),
+        "{draft}"
+    );
+    let refusal = preview_refusal(&draft, 2);
+    assert_eq!(refusal["op_key"], json!(key(2)), "{draft}");
+    assert_eq!(refusal["refusal"]["error"], json!("card_check"), "{draft}");
+    assert!(
+        fault_rules(&refusal["refusal"])
+            .iter()
+            .any(|rule| rule == "R3"),
+        "{draft}"
+    );
+    let blocked = draft["blocked"].as_array().expect("blocked");
+    assert_eq!(blocked.len(), 2, "{draft}");
+    assert_eq!(
+        (
+            blocked[0]["index"].as_i64(),
+            blocked[0]["blocked_by"][0]["index"].as_i64()
+        ),
+        (Some(3), Some(2)),
+        "a direct dependent is blocked by the refused item: {draft}"
+    );
+    assert_eq!(
+        (
+            blocked[1]["index"].as_i64(),
+            blocked[1]["blocked_by"][0]["index"].as_i64()
+        ),
+        (Some(4), Some(3)),
+        "a dependent of a blocked item is blocked through the chain, not invented: {draft}"
+    );
+    assert_eq!(
+        draft["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .map(|result| result["client_ref"].as_str().expect("client_ref").to_string())
+            .collect::<Vec<_>>(),
+        ["0", "1", "5"],
+        "the independent item after the refusal and its blocked dependents still runs: {draft}"
+    );
+    // The last item resolved `[[@@1]]` against the Topic this same preview created,
+    // and its own parent resolved against the first candidate.
+    let cards = draft["cards"].as_array().expect("cards");
+    assert_eq!(cards.len(), 3, "{draft}");
+    let independent = cards
+        .iter()
+        .find(|card| card["address"] == json!("0/1"))
+        .unwrap_or_else(|| panic!("the independent candidate is projected: {draft}"));
+    assert_eq!(independent["parent_address"], json!("0/0"), "{draft}");
+    assert_eq!(independent["links"], json!(["1/0"]), "{draft}");
+
+    // A forward reference is still unsupported: nothing is bound before its item,
+    // and the ordinary whole-request failure leaves the archive untouched.
+    let forward = json!([
+        {
+            "op_key": key(0),
+            "client_ref": "0",
+            "tool": "create_successor",
+            "arguments": { "at": "@@1", "title": "前向卡", "body": linking }
+        },
+        {
+            "op_key": key(1),
+            "client_ref": "1",
+            "tool": "create_topic",
+            "arguments": { "title": "后建主题", "body": "后建说明。" }
+        }
+    ]);
+    let (error, is_error) = mcp.call(
+        "apply_batch",
+        json!({ "preview": true, "preview_items": forward }),
+    );
+    assert!(is_error, "a forward reference is refused: {error}");
+    assert!(
+        error["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("unresolved earlier client reference `@@1`")),
+        "{error}"
+    );
+    assert_eq!(home.cards(), stored_cards, "a refused preview sequence writes no Card");
+    assert_eq!(home.revision(), revision, "a refused preview sequence moves no revision");
+}
+
+/// S05-AC03 / R0179: one preview collects a Tree Lock refusal and a Card-check
+/// refusal independently, in plan order, and blocks each refused item's dependent
+/// without evaluating it against a fabricated target.
+#[test]
+fn a_preview_collects_lock_and_card_check_refusals_together() {
+    let home = Home::new(Some("enforce"));
+    let gui = home.gui();
+    let mut mcp = home.mcp();
+    let topic = mcp.ok("create_topic", json!({ "title": "主题", "body": "主题说明。" }))
+        ["address"]
+        .as_str()
+        .expect("topic address")
+        .to_string();
+    let frozen = mcp.ok("create_topic", json!({ "title": "冰封", "body": "冰封说明。" }))
+        ["address"]
+        .as_str()
+        .expect("frozen topic address")
+        .to_string();
+    let target = mcp.ok("create_topic", json!({ "title": "目标", "body": "目标说明。" }))
+        ["address"]
+        .as_str()
+        .expect("target address")
+        .to_string();
+    let frozen_card = mcp.ok(
+        "create_successor",
+        json!({ "at": frozen, "title": "冰封卡", "body": advised_body(&target) }),
+    )["address"]
+        .as_str()
+        .expect("frozen card address")
+        .to_string();
+    gui.lock(&frozen);
+    let cards = home.cards();
+    let revision = home.revision();
+    let items = json!([
+        {
+            "op_key": "s05/mixed/1/create/locked",
+            "client_ref": "locked",
+            "tool": "create_successor",
+            "arguments": { "at": frozen_card, "title": "锁内卡", "body": advised_body(&target) }
+        },
+        {
+            "op_key": "s05/mixed/1/create/locked-dependent",
+            "client_ref": "lockedDependent",
+            "tool": "create_successor",
+            "arguments": { "at": "@@locked", "title": "锁依赖卡", "body": advised_body(&target) }
+        },
+        {
+            "op_key": "s05/mixed/1/create/bad",
+            "client_ref": "bad",
+            "tool": "create_successor",
+            "arguments": { "at": topic, "title": "拒绝卡", "body": "甲；乙。" }
+        },
+        {
+            "op_key": "s05/mixed/1/create/bad-dependent",
+            "client_ref": "badDependent",
+            "tool": "create_successor",
+            "arguments": { "at": "@@bad", "title": "拒绝依赖卡", "body": advised_body(&target) }
+        },
+        {
+            "op_key": "s05/mixed/1/create/good",
+            "client_ref": "good",
+            "tool": "create_successor",
+            "arguments": { "at": topic, "title": "独立卡", "body": advised_body(&target) }
+        }
+    ]);
+    let draft = mcp.ok("apply_batch", json!({ "preview": true, "items": items }));
+    assert_eq!(draft["complete"], json!(false), "{draft}");
+    assert_eq!(
+        draft["scan"],
+        json!({ "items": 5, "checked": 1, "refused": 2, "blocked": 2 }),
+        "{draft}"
+    );
+    let refusals = draft["refusals"].as_array().expect("refusals");
+    assert_eq!(
+        refusals
+            .iter()
+            .map(|refusal| refusal["index"].as_i64().expect("index"))
+            .collect::<Vec<_>>(),
+        [0, 2],
+        "both refusals keep plan order: {draft}"
+    );
+    assert_eq!(
+        preview_refusal(&draft, 0)["refusal"]["error"],
+        json!("card_locked"),
+        "{draft}"
+    );
+    assert_eq!(
+        preview_refusal(&draft, 0)["refusal"]["reason"],
+        json!("create-inside"),
+        "{draft}"
+    );
+    assert_eq!(
+        preview_refusal(&draft, 2)["refusal"]["error"],
+        json!("card_check"),
+        "{draft}"
+    );
+    let blocked = draft["blocked"].as_array().expect("blocked");
+    assert_eq!(
+        blocked
+            .iter()
+            .map(|item| (
+                item["index"].as_i64().expect("index"),
+                item["blocked_by"][0]["index"].as_i64().expect("blocked_by")
+            ))
+            .collect::<Vec<_>>(),
+        [(1, 0), (3, 2)],
+        "each dependent is blocked by its own refused item: {draft}"
+    );
+    assert_eq!(
+        draft["results"][0]["op_key"],
+        json!("s05/mixed/1/create/good"),
+        "{draft}"
+    );
+    assert_eq!(home.cards(), cards, "the preview wrote no Card");
+    assert_eq!(home.revision(), revision, "the preview moved no revision");
 }

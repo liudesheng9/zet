@@ -796,24 +796,35 @@ fn simulate(
                 );
             }
             Err(error) => {
-                // R0175: a blocking Card-check refusal names the zero-based item, its tool and its
-                // operation key, and rolls the whole real batch back. The exhaustive preview
-                // collection of card_check refusals is S05 (#147).
-                if let Some(refusal) = error.downcast_ref::<crate::gate::Refusal>() {
-                    return Err(anyhow::Error::new(
-                        refusal.clone().in_batch(index, tool, op_key),
-                    ));
-                }
-                match error.downcast_ref::<crate::tree_lock::Refusal>() {
-                    // R195: record the refusal with its item identity and keep the plan going.
+                // R0179/R0180: a preview treats a blocking Card check like the Lock refusal it
+                // already collects. The item keeps its typed refusal and identity, an independent
+                // later item still simulates, and a dependent reference is blocked instead of
+                // evaluated with made-up target data. A real batch stays fail-fast and names its
+                // first blocking item (R0175/R0178).
+                match error.downcast_ref::<crate::gate::Refusal>() {
                     Some(refusal) if preview => {
                         refusals.push(
                             json!({"index":index,"op_key":op_key,"client_ref":client_ref,"refusal":refusal.value()}),
                         );
                         failed.insert(client_ref.to_string(), identity);
                     }
-                    // R197: every non-Lock failure keeps its current fail-fast contract.
-                    _ => return Err(error),
+                    Some(refusal) => {
+                        return Err(anyhow::Error::new(
+                            refusal.clone().in_batch(index, tool, op_key),
+                        ));
+                    }
+                    None => match error.downcast_ref::<crate::tree_lock::Refusal>() {
+                        // R195: record the refusal with its item identity and keep the plan going.
+                        Some(refusal) if preview => {
+                            refusals.push(
+                                json!({"index":index,"op_key":op_key,"client_ref":client_ref,"refusal":refusal.value()}),
+                            );
+                            failed.insert(client_ref.to_string(), identity);
+                        }
+                        // R197: every non-Lock, non-Card-check failure keeps its current fail-fast
+                        // contract.
+                        _ => return Err(error),
+                    },
                 }
             }
         }

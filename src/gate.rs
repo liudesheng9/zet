@@ -568,7 +568,7 @@ impl std::fmt::Display for Refusal {
         if let Some(item) = &self.item {
             write!(
                 f,
-                "batch item {} ({}) ",
+                "batch item {} ({}): ",
                 item["index"].as_u64().unwrap_or_default(),
                 item["tool"].as_str().unwrap_or_default()
             )?;
