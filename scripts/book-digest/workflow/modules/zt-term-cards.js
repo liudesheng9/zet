@@ -1,7 +1,7 @@
 // ==== module zt-term-cards v1 ====
 // S20 (#164): run the Term-card compiler's writer, reviewer and fix jobs on the shared DeepSeek
-// Subagent Managed Protocol (DSMP) pool (docs/term-cards-links-and-check-gate-implementation-design.md
-// §12.4). The compiler (zt-digest term-cards, S18/S19) prints the exact JSON jobs; this module only
+// Subagent Managed Protocol (DSMP) pool (design 12.4; S20 / #164). The compiler (zt-digest
+// term-cards, S18/S19) prints the exact JSON jobs; this module only
 // schedules them, so no agent decides what a term is or writes Card prose.
 //
 // The schedule (R0335): the writer jobs are processed in waves of at most four. A wave keeps its four
