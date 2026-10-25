@@ -212,7 +212,7 @@ shows it and a regression test or a measured check now guards it.
    `dacece9`). A Term use previewed as `均衡@TermBook2026/1|a|a` because only the `[[`/`]]` marks
    were removed. The excerpt now runs the line through `zt_check::text::strip_term_links`, the same
    projection the checker and the projected reads use; `an_excerpt_projects_a_term_use_to_its_label`
-   covers a whole-word use, a broken use and an ordinary Link (whose address is kept).
+   covers a whole-word use, a broken use and an ordinary Link (whose address is kept). The excerpt is a display summary, so it is now projected in both read modes while `body`/`text` keep the raw and label modes of S12; `tests/term_projection.rs` asserts that refined rule, and the MCP block doc records it.
 3. **Completion ranked a title match before an exact Citation key** (`src/gui/draft.js`; fixed in
    `04792c2`). Typing `[[TermB` listed the human Card `1/1` first (its title contains
    `TermBook2026`), so Enter inserted `[[1/1]]`. One ranking scale now orders exact address or key,

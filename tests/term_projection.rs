@@ -234,7 +234,7 @@ fn get_card_projects_term_labels_only_when_asked_and_marks_the_reply() {
 }
 
 /// S12-AC03/S12-AC05 (R0273–R0275): `get_cards` and `get_tree` carry the same option and the same
-/// marker. A summary read marks only the cards whose text it projected; `get_tree` needs bodies.
+/// marker. A summary read marks only the cards whose text it projected; `get_tree` needs bodies. The excerpt is a display summary, so since S29 (#171) it always projects a Term use to its own visible label in both modes; only the authored `body` differs between the raw and label reads.
 #[test]
 fn bulk_reads_project_term_labels_and_mark_every_projected_reply() {
     let home = TestHome::new();
@@ -245,9 +245,10 @@ fn bulk_reads_project_term_labels_and_mark_every_projected_reply() {
     let raw = mcp.ok("get_cards", json!({ "addresses": [&card], "view": "text" }));
     assert!(raw.get("term_links").is_none(), "{raw}");
     assert_eq!(raw["cards"][0]["body"], json!(body));
+    let raw_excerpt = raw["cards"][0]["excerpt"].as_str().unwrap();
     assert!(
-        raw["cards"][0]["excerpt"].as_str().unwrap().contains("均衡@"),
-        "the raw excerpt shows the authored macro's text"
+        raw_excerpt.contains("价格由 均衡 与") && !raw_excerpt.contains("均衡@"),
+        "the excerpt is a display summary: it shows the visible term even in a raw read: {raw_excerpt}"
     );
     let fingerprint = raw["cards"][0]["statement_fingerprint"].clone();
 
