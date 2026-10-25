@@ -983,3 +983,68 @@ fn indexed_and_full_lifecycle_broken_reports_agree() {
         "{lsbk}"
     );
 }
+
+/// S11-AC04: side compaction is a rename plan too. Deleting an earlier side successor renames a
+/// later Term list and its head; a Term use of that head is rewritten to the compacted address
+/// with its label, and the regenerated Term uses section follows.
+#[test]
+fn side_compaction_rewrites_a_term_use_and_keeps_its_label() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let (anchor, list) = book_with_table(&home, &mut mcp, "Test2026", TABLE);
+    let first_head = head(&mut mcp, &list, "均衡");
+    let second = address(mcp.ok(
+        "create_successor",
+        json!({ "at": &anchor, "kind": "side", "title": "术语表：二", "type": "term", "body": TABLE }),
+    ));
+    let second_head = head(&mut mcp, &second, "均衡");
+    let source = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": &anchor,
+            "kind": "side",
+            "title": "使用者",
+            "body": format!("均衡 [[均衡@{second_head}]] 决定价格。"),
+        }),
+    ));
+    // Side successors `a` (the first list), `b` (the second list) and `c` (the source).
+    assert_eq!(list, "Test2026/1|a");
+    assert_eq!(second, "Test2026/1|b");
+    assert_eq!(second_head, "Test2026/1|b|a");
+    assert_eq!(source, "Test2026/1|c");
+    let _ = first_head;
+
+    mcp.ok("delete_card", json!({ "at": &list, "confirm": "delete" }));
+
+    // `b` -> `a`, its head `b|a` -> `a|a`, and the source `c` -> `b`: the deleted addresses are
+    // reused by the compacted Cards.
+    assert_eq!(
+        mcp.ok("get_card", json!({ "at": &list }))["title"],
+        json!("术语表：二"),
+        "the later Term list takes the deleted side place"
+    );
+    assert_eq!(
+        mcp.ok("get_card", json!({ "at": &second }))["title"],
+        json!("使用者"),
+        "the source takes the next compacted side place"
+    );
+    let compacted_head = format!("{list}|a");
+    assert_eq!(
+        mcp.ok("get_card", json!({ "at": &compacted_head }))["title"],
+        json!("均衡")
+    );
+    assert_eq!(
+        mcp.body(&second),
+        format!("均衡 [[均衡@{compacted_head}]] 决定价格。"),
+        "the compaction rewrites the target bytes and keeps the label"
+    );
+    assert!(
+        mcp.text(&compacted_head).contains(&format!("## Term uses\n\n- [[{second}]] 使用者\n")),
+        "the uses section follows the compacted head"
+    );
+    assert_eq!(mcp.ok("list_broken_links", json!({}))["broken"], json!([]));
+    home.cmd()
+        .args(["status", "--check-links"])
+        .assert()
+        .success();
+}
