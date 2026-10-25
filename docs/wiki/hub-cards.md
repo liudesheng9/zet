@@ -11,8 +11,8 @@ paths:
   - "tests/distant_card.rs"
   - "tests/ask_spread.rs"
   - "tests/hub_draft.rs"
-synced: 39ed5343fe42
-updated: 2026-10-22
+synced: 60227c5d0d08
+updated: 2026-10-25
 ---
 
 # Hub Cards
@@ -1043,6 +1043,7 @@ Gaps: no test for field hubs (their range, `unanchored` with the register), `dup
 
 ## Change history
 
+- `2026-10-24` — #146 S04: the shared write gate changed the returns of `ops::create_topic`, `ops::create_successor`, `ops::create_literature` and `ops::edit` (they now also carry the check result), so the hub and entry test fixtures read the address with `.0`; no hub rule, projection, route or message changed. `src/hub.rs` and `src/entry.rs` therefore have test-only edits in this commit.
 - `2026-10-22` — zt 0.26.2: `Graph::missing` (H2) counts only Idea Cards whose last segment is a Side label as branch starts, as the code comment and this doc already said. Before, every Idea Card was a branch start, so the doorway `<n>/1` of every Topic of `line_min` or more Cards was reported as needing a line hub although the topic hub maps that line (live: `412/1`, 38 Cards, after idea-grow 2.5.1 built its hubs). The model rule (2 or more Model Cards) is unchanged. New coverage: `tests/hub_cards.rs` `only_a_side_branch_requires_a_line_hub_and_the_doorway_line_does_not`.
 - `2026-10-21` — #126 S03: an entry-search row is a Card projection, so `entry::row` now adds the Card's `lock` and `pinned_by` through `tree_lock::decorate_card` and the Snapshot's read view. The tiers, the filters, the fold groups, the page limit, `ask_box`'s selection and every other ranking rule are unchanged; the annotations are descriptive only.
 - `2026-10-21` — #124 S01: `hub::set_level` now calls the Tree Lock gate before its UPDATE, so a Hub level change on a locked member is refused with the same typed `Refusal` as every other authored metadata change; nothing else in this block changed.
