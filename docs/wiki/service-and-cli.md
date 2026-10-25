@@ -19,8 +19,8 @@ paths:
   - "tests/check_core.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
-synced: 9607f0cc718a
-updated: 2026-10-24
+synced: ac6397c87496
+updated: 2026-10-25
 ---
 
 # Service, CLI and storage
