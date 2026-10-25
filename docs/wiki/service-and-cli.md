@@ -21,7 +21,7 @@ paths:
   - "tests/check_contract.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
-synced: 4dc09957b4fc
+synced: f0ddf286449c
 updated: 2026-10-25
 ---
 
