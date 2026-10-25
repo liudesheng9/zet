@@ -10,8 +10,8 @@ paths:
   - "src/features.rs"
   - "tests/integrated_release.rs"
   - "tests/reader_release.rs"
-synced: c9699d2675bc
-updated: 2026-10-24
+synced: f78d435e3560
+updated: 2026-10-25
 ---
 
 # GUI

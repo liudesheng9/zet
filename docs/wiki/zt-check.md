@@ -4,8 +4,8 @@ title: zt-check
 paths:
   - "tools/zt-check/**"
   - "scripts/install-zt-check.ps1"
-synced: cf2cbf393ef3
-updated: 2026-10-24
+synced: f78d435e3560
+updated: 2026-10-25
 ---
 
 # zt-check

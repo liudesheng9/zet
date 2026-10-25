@@ -6,8 +6,8 @@ paths:
   - "src/read.rs"
   - "tests/workspaces_mcp.rs"
   - ".mcp.json"
-synced: 7ef99bd606f8
-updated: 2026-10-22
+synced: f78d435e3560
+updated: 2026-10-25
 ---
 
 # MCP server
