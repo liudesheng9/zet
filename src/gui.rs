@@ -3271,10 +3271,11 @@ mod tests {
         assert!(api.contains("if (data.refusal) error.refusal = data.refusal;"), "{api}");
         assert!(api.contains("ZtLock.refusalText(data.refusal, data.error)"));
         let editor = app_function("openEditor");
-        let refused = editor.find("if (error.refusal) {").expect("refusal branch");
+        // A Card-check refusal (S04, #146) shows its own headline and offers no Lock panel.
+        let refused = editor.find("if (error.refusal && !refused) {").expect("refusal branch");
         assert!(editor[refused..].contains("lockPanel(ZtLock.refusalTree(error.refusal))"), "the panel opens at the refused tree");
         let catch = &editor[..refused];
-        assert!(catch.rfind("setMsg(error.message, 'err');").is_some());
+        assert!(catch.rfind("setMsg(refused ? refused.headline : error.message, 'err');").is_some());
         // The panel is an integrity check point: it reads the Locks every time it opens.
         assert!(app_function("lockPanel").contains("await loadLocks();"));
     }
@@ -3554,7 +3555,7 @@ mod tests {
         // The desk saves only on Save or Ctrl+S: no retry after a refusal or an unlock.
         assert_eq!(editor.matches("doSave").count(), 3, "defined once, wired to the button and to Ctrl+S");
         assert!(editor.contains("saveBtn.addEventListener('click', doSave);"));
-        let refused = editor.find("if (error.refusal) {").expect("the refusal branch");
+        let refused = editor.find("if (error.refusal && !refused) {").expect("the refusal branch");
         assert!(editor[refused..].contains("text: 'Lock panel'"));
     }
 
@@ -3817,6 +3818,114 @@ mod tests {
                 "{name} does not parse: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+        }
+    }
+
+    /// S04 (#146, S04-AC06, US014): an accepted write's save note names the stage and the advice
+    /// count, puts the advice this save added before the advice the Card already carried, shows
+    /// three and folds the rest; an answer that ran no check has no note.
+    #[test]
+    fn the_save_note_shows_new_advice_first_and_folds_the_rest() {
+        let Some(out) = draft_js(
+            "(() => {
+               const check = { complete: true, rule_version: '0.4.1', policy_hash: 'abcdef0123456789ff', stage: 'advisory' };
+               const warn = (rule, legacy) => ({ rule, fault: 'f', message: `${rule}  message\\n${'字'.repeat(200)}`, legacy });
+               return {
+                 none: draft.checkNote({ address: '1/1' }),
+                 clean: draft.checkNote({ address: '1/1', warnings: [], check }),
+                 mixed: draft.checkNote({ address: '1/1', warnings: [warn('R2', true), warn('R3', false), warn('R4', false), warn('R5', true), warn('R6', false)], check }),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        assert_eq!(out["none"], Value::Null);
+        assert_eq!(out["clean"]["summary"], json!("check · advisory · no advice"));
+        assert_eq!(out["clean"]["shown"], json!([]));
+        let mixed = &out["mixed"];
+        assert_eq!(mixed["summary"], json!("check · advisory · 5 advice · 3 new, 2 already there"));
+        assert_eq!(mixed["versions"], json!("zt-check 0.4.1 · policy abcdef012345"));
+        let rules = |key: &str| -> Vec<String> {
+            mixed[key].as_array().expect(key).iter().map(|line| line["rule"].as_str().unwrap().to_string()).collect()
+        };
+        assert_eq!(rules("shown"), ["R3", "R4", "R6"], "new advice first, three shown");
+        assert_eq!(rules("folded"), ["R2", "R5"], "the advice already there folds under +N");
+        let text = mixed["shown"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("R3 message ") && text.ends_with('…'), "one clipped line: {text}");
+        assert_eq!(text.chars().count(), 140);
+    }
+
+    /// S04 (#146, S04-AC06, US015): a refused write's slip lists the blocking lines first and folds
+    /// the advice; each line finds its sentence in the draft (also after a measure prefix); a check
+    /// that could not finish names its reason; any other error is not a Card check.
+    #[test]
+    fn a_card_check_refusal_lists_the_blocking_lines_and_finds_them_in_the_draft() {
+        let Some(out) = draft_js(
+            "(() => {
+               const refused = draft.checkRefusal({
+                 error: 'card_check', address: '1/1', blocking: 2,
+                 faults: ['1/1 R3 丙；丁。'],
+                 diagnostics: [
+                   { rule: 'R9', fault: 'old', key: '旧的句子', message: '旧的句子', severity: 'advise', legacy: true },
+                   { rule: 'R3', fault: 'semicolon', key: '丙；丁。', message: '丙；丁。', severity: 'block', legacy: false },
+                   { rule: 'R2', fault: 'sentence_length', key: '(30 字 > 25) 这是一个很长的句子。', message: '30 字 > 25: 这是一个很长的句子。', severity: 'block', legacy: false },
+                 ],
+               });
+               const text = '# 标题\\n\\n丙；丁。这是一个很长的句子。\\n';
+               return {
+                 refused,
+                 found: refused.blocking.map((line) => draft.locateFault(text, line)),
+                 missing: draft.locateFault('# 别的\\n', refused.blocking[0]),
+                 lines: draft.checkRefusal({ error: 'card_check', blocking: 1, faults: ['1/1 R3 丙；丁。', '1/1 R4 (advisory) 被看见。'] }),
+                 incomplete: draft.checkRefusal({ error: 'check_incomplete', reason: 'target_budget', message: 'check_incomplete: too many Link targets' }),
+                 other: draft.checkRefusal({ error: 'card_locked' }),
+                 absent: draft.checkRefusal(undefined),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        let refused = &out["refused"];
+        assert_eq!(refused["incomplete"], json!(false));
+        let rules = |value: &Value| -> Vec<String> {
+            value.as_array().unwrap().iter().map(|line| line["rule"].as_str().unwrap().to_string()).collect()
+        };
+        assert_eq!(rules(&refused["blocking"]), ["R3", "R2"]);
+        assert_eq!(rules(&refused["advice"]), ["R9"], "legacy advice is folded, never blocking");
+        assert!(refused["headline"].as_str().unwrap().starts_with("2 blocking faults: nothing was saved and the draft is kept."));
+        assert_eq!(out["found"], json!([{ "start": 6, "end": 10 }, { "start": 10, "end": 20 }]));
+        assert_eq!(out["missing"], Value::Null);
+        assert_eq!(rules(&out["lines"]["blocking"]), ["R3"], "the human lines stand in for missing diagnostics");
+        assert_eq!(out["lines"]["advice"][0]["text"], json!("被看见。"));
+        assert_eq!(out["incomplete"]["incomplete"], json!(true));
+        assert_eq!(out["incomplete"]["detail"], json!("check_incomplete: too many Link targets"));
+        assert_eq!(out["other"], Value::Null);
+        assert_eq!(out["absent"], Value::Null);
+    }
+
+    /// S04 (#146, S04-AC06): every desk save hands its answer to the save note, and every refusal
+    /// reaches the desk's correction slip: `api()` keeps the 400's `check`, a Reply's
+    /// `saved:false, reason:card_check` raises it, the slip lies beside Save, and a check refusal
+    /// offers no Lock panel and saves nothing again on its own.
+    #[test]
+    fn every_gui_write_shows_its_check_beside_the_save_result() {
+        assert!(APP_JS.contains("if (data.check) error.check = data.check;"));
+        assert!(APP_JS.contains("if (result.reason === 'card_check' && result.check) error.check = result.check;"));
+        // create, Literature create, edit, insert: one `.then(keep)` each.
+        assert_eq!(APP_JS.matches(".then(keep)").count(), 4);
+        // the hub draft's edit and create, the metadata save, the Reply.
+        assert_eq!(APP_JS.matches("return keep(saved);").count(), 2);
+        assert_eq!(APP_JS.matches("return keep(result);").count(), 2);
+        assert!(APP_JS.contains("const note = ZtDraft.checkNote(result || accepted);"));
+        assert_eq!(APP_JS.matches("`, result);").count(), 3, "ty, lv and mf pass their answer");
+        assert!(APP_JS.contains("const refused = ZtDraft.checkRefusal(error.check);"));
+        assert!(APP_JS.contains("if (error.refusal && !refused) {"), "no Lock panel for a check refusal");
+        assert!(APP_JS.contains("        deskCheck,\n        h('div', { class: 'dlg-foot' }, msg, cancelBtn, saveBtn),"));
+        assert_eq!(APP_JS.matches("doSave()").count(), 1, "only Ctrl+S saves again; nothing retries");
+        for class in [".desk-check {", ".desk-check-line.advice", ".toast-check-line.legacy"] {
+            assert!(APP_CSS.contains(class), "{class}");
         }
     }
 

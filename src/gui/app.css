@@ -2375,3 +2375,46 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   .lock-plan, .lock-card { transition: none; }
   .lock-band, .lock-band .wax, .stack.locked { animation: none !important; transition: none; }
 }
+
+/* ---------- the write check (S04, #146) ----------
+   A refused save leaves a correction slip on the desk's front edge, beside Save: a strip of card
+   stock under a red header line, its blocking lines first and in ink, the advice folded and faint.
+   A line is a button: clicking it finds the sentence in the draft. The slip slides in from under
+   the foot, as a slip pushed onto the desk. A saved write's note carries a smaller check slip. */
+.desk-check {
+  flex: 0 0 auto; max-height: 24vh; overflow: auto; margin: 0 18px 10px; padding: 0 12px 6px;
+  background: var(--stock); border: 1px solid var(--stock-edge); border-radius: 3px;
+  box-shadow: var(--card-shadow); animation: desk-check-in .28s ease-in-out;
+}
+.desk-check[hidden] { display: none; }
+@keyframes desk-check-in { from { transform: translateY(10px); opacity: 0; } }
+.desk-check-head {
+  margin: 0 -12px 4px; padding: 7px 12px 5px; border-bottom: 1.5px solid var(--paper-margin);
+  font: 600 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--broken);
+}
+.desk-check-detail { font: 12px var(--sans); color: var(--ink-soft); padding: 3px 0; }
+.desk-check-line {
+  display: flex; gap: 8px; align-items: baseline; width: 100%; padding: 4px 4px; margin: 0;
+  border: 0; border-bottom: 1px solid color-mix(in srgb, var(--link) 18%, transparent); border-radius: 0;
+  background: none; color: var(--ink); font: 12.5px/1.45 var(--sans); text-align: left; cursor: pointer;
+  transition: background .2s ease-in-out;
+}
+.desk-check-line:hover, .desk-check-line:focus-visible { background: color-mix(in srgb, var(--link) 8%, transparent); outline: none; }
+.desk-check-line .rule { flex: none; min-width: 2.6em; font: 700 11px var(--mono); color: var(--broken); }
+.desk-check-line .line { min-width: 0; overflow-wrap: anywhere; }
+.desk-check-line.unfound .line { text-decoration: underline dotted var(--ink-faint); }
+.desk-check-advice > summary { cursor: pointer; padding: 4px 4px 2px; font: 11.5px var(--sans); color: var(--ink-faint); }
+.desk-check-line.advice { font-size: 11.5px; color: var(--ink-soft); }
+.desk-check-line.advice .rule { color: var(--ink-faint); font-weight: 600; }
+.toast-check { margin-top: 6px; padding-top: 5px; border-top: 1px solid color-mix(in srgb, currentColor 22%, transparent); font-size: 12px; white-space: normal; }
+.toast-check-head { opacity: .7; font-size: 11.5px; }
+.toast-check ul { margin: 3px 0 0; padding: 0; list-style: none; }
+.toast-check-line { padding: 1px 0; overflow-wrap: anywhere; }
+.toast-check-line b { font: 700 11px var(--mono); margin-right: 2px; }
+.toast-check-line.legacy { opacity: .62; }
+.toast-check-line i { font-style: normal; opacity: .8; }
+.toast-check details > summary { cursor: pointer; opacity: .7; font-size: 11.5px; margin-top: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .desk-check { animation: none; }
+  .desk-check-line { transition: none; }
+}

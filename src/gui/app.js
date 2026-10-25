@@ -56,6 +56,8 @@
       const error = new Error(ZtLock.refusalText(data.refusal, data.error) || data.error || response.statusText);
       error.status = response.status;
       if (data.refusal) error.refusal = data.refusal;
+      // A Card-check refusal (S04, #146) keeps its typed contract, so the desk can show its lines.
+      if (data.check) error.check = data.check;
       throw error;
     }
     return data;
@@ -73,8 +75,12 @@
   const isTyping = (target) =>
     target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 
-  /** A short note in the corner; `action` adds one button to it (`{label, run}`). */
-  function toast(message, kind, action) {
+  /**
+   * A short note in the corner; `action` adds one button to it (`{label, run}`), `extra` one more
+   * node under the line (the save note's check slip). A note with `extra` stays while the pointer
+   * rests on it, so its folded lines can be read.
+   */
+  function toast(message, kind, action, extra) {
     const node = h('div', { class: 'toast' + (kind === 'err' ? ' err' : kind === 'warn' ? ' warn' : ''), text: message });
     if (action) {
       node.append(h('button', {
@@ -82,9 +88,33 @@
         onclick: () => { node.remove(); action.run(); },
       }));
     }
+    if (extra) node.append(extra);
     $('#toasts').append(node);
-    setTimeout(() => node.remove(), action ? 9000 : kind === 'err' || kind === 'warn' ? 6000 : 3200);
+    const life = action ? 9000 : kind === 'err' || kind === 'warn' ? (extra ? 9000 : 6000) : extra ? 5000 : 3200;
+    let timer = setTimeout(() => node.remove(), life);
+    if (extra) {
+      node.addEventListener('mouseenter', () => clearTimeout(timer));
+      node.addEventListener('mouseleave', () => { clearTimeout(timer); timer = setTimeout(() => node.remove(), 2500); });
+    }
   }
+
+  /**
+   * The check slip under a save note (S04, #146): the stage and the advice count on one faint line,
+   * then the advice this save added before the advice the Card already carried, at most three and
+   * the rest folded under `+N`. The versions that decided sit in the slip's tooltip.
+   */
+  function checkSlip(note) {
+    const row = (line) => h('li', { class: 'toast-check-line' + (line.legacy ? ' legacy' : '') },
+      h('b', { text: line.rule }), ' ', line.text, line.legacy ? h('i', { text: ' · already there' }) : null);
+    return h('div', { class: 'toast-check', title: note.versions },
+      h('div', { class: 'toast-check-head', text: note.summary }),
+      note.shown.length ? h('ul', {}, note.shown.map(row)) : null,
+      note.folded.length ? h('details', {}, h('summary', { text: `+${note.folded.length} more` }), h('ul', {}, note.folded.map(row))) : null);
+  }
+
+  /** The last accepted write's answer, kept by its save until `afterChange` shows its check. */
+  let accepted = null;
+  const keep = (result) => { accepted = result; return result.address; };
   /**
    * Show an error. A write the Lock state refuses (the page's own gate, S05 #128, or a server
    * refusal) names its tree, so the note carries the way to that tree's lock panel.
@@ -431,7 +461,7 @@
         gateWrite(state.card, 'level');
         const none = rest[0] === 'none';
         const result = await api('edit', { at: state.card.address, level: none ? '' : rest[0] });
-        return afterChange(result.address, none ? `${result.address} has no level` : `${result.address} is a ${rest[0]} ${state.card.type === 'hub' ? 'hub' : 'model'}`);
+        return afterChange(result.address, none ? `${result.address} has no level` : `${result.address} is a ${rest[0]} ${state.card.type === 'hub' ? 'hub' : 'model'}`, result);
       }
       case 'mf': {
         needCard();
@@ -439,7 +469,7 @@
         gateWrite(state.card, 'form');
         const none = rest[0] === 'none';
         const result = await api('edit', { at: state.card.address, form: none ? '' : rest[0] });
-        return afterChange(result.address, none ? `${result.address} states no mathematical unit` : `${result.address} is a ${rest[0]}`);
+        return afterChange(result.address, none ? `${result.address} states no mathematical unit` : `${result.address} is a ${rest[0]}`, result);
       }
       case 'stats': {
         const s = state.overview.stats;
@@ -2144,10 +2174,10 @@
         if (!placement || !placement.at) throw new Error('choose where the hub is filed first');
         if (placement.how === 'edit') {
           const saved = await api('edit', { at: placement.at, text, base: placement.base });
-          return saved.address;
+          return keep(saved);
         }
         const saved = await api('create', { kind: 'side', at: placement.at, text, type: 'hub', level: placement.level });
-        return saved.address;
+        return keep(saved);
       },
     });
     if (!address) return;
@@ -5654,6 +5684,49 @@
       const saveBtn = h('button', { class: 'btn primary' }, 'Save', h('kbd', { text: 'Ctrl S' }));
       const cancelBtn = h('button', { class: 'btn', text: 'Cancel' });
       const completion = h('div', { class: 'command-menu', hidden: true });
+      // S04 (#146): the correction slip of a save the Card check refused. It lies on the desk's
+      // front edge, beside Save: the blocking lines first, each one finds its sentence in the draft
+      // when clicked; the advice recedes under a fold. A new Save takes the slip away first.
+      const deskCheck = h('div', { class: 'desk-check', hidden: true, 'aria-live': 'polite' });
+      const findFault = (line, row) => {
+        const fields = [text, bib].filter(Boolean);
+        for (const field of fields) {
+          const at = ZtDraft.locateFault(field.value, line);
+          if (!at) continue;
+          field.focus();
+          field.setSelectionRange(at.start, at.end);
+          // Bring the selected sentence into the textarea's view: its line, a little below the top.
+          const lineHeight = parseFloat(getComputedStyle(field).lineHeight) || 20;
+          const before = field.value.slice(0, at.start).split('\n').length - 1;
+          field.scrollTop = Math.max(0, (before - 2) * lineHeight);
+          row.classList.remove('unfound');
+          return;
+        }
+        row.classList.add('unfound');
+        row.title = 'this sentence is not in the draft as written (the check reads the plain text); find it by hand';
+        text.focus();
+      };
+      const paintDeskCheck = (refused) => {
+        if (!refused) { deskCheck.hidden = true; deskCheck.replaceChildren(); return; }
+        const row = (line) => {
+          const node = h('button', {
+            class: 'desk-check-line' + (line.blocking ? ' blocking' : ' advice'), type: 'button',
+            title: line.fault ? `${line.rule} ${line.fault} · click to find it in the draft` : 'click to find it in the draft',
+            onclick: () => findFault(line, node),
+          }, h('span', { class: 'rule', text: line.rule }), h('span', { class: 'line', text: line.text }));
+          return node;
+        };
+        // The slip carries its own headline, so the desk's message line may change under it.
+        deskCheck.replaceChildren(...[
+          h('div', { class: 'desk-check-head', text: refused.incomplete ? 'Check not finished · nothing saved' : `Card check · nothing saved · ${refused.blocking.length} to fix` }),
+          h('div', { class: 'desk-check-detail', text: refused.detail || 'Click a line to find it in the draft, fix it, then Save again.' }),
+          ...refused.blocking.map(row),
+          refused.advice.length
+            ? h('details', { class: 'desk-check-advice' }, h('summary', { text: `+${refused.advice.length} advice` }), refused.advice.map(row))
+            : null,
+        ].filter(Boolean));
+        deskCheck.hidden = false;
+      };
       let bibTitle = null;
       let dirty = false;
 
@@ -5747,6 +5820,7 @@
           ),
           h('div', { class: 'pane' }, h('div', { class: 'pane-label' }, h('span', { text: 'Preview' })), preview),
         ),
+        deskCheck,
         h('div', { class: 'dlg-foot' }, msg, cancelBtn, saveBtn),
         completion,
       ));
@@ -5758,13 +5832,18 @@
           return;
         }
         saveBtn.disabled = true;
+        paintDeskCheck(null);
         try {
           const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '', chosenType === 'model' && chosenFacet ? chosenEmphasis : '', chosenType === 'model' && !chosenFacet ? chosenLevel : '');
           if (address !== undefined) finish(address);
         } catch (error) {
           // The draft stays in the desk: a refused Save (a Tree Lock refusal included) only says why.
-          setMsg(error.message, 'err');
-          if (error.refusal) {
+          // A Card-check refusal (S04, #146) says it in its own lines: one headline here, the fault
+          // lines on the slip. It offers no Lock panel, and nothing saves again on its own.
+          const refused = ZtDraft.checkRefusal(error.check);
+          setMsg(refused ? refused.headline : error.message, 'err');
+          paintDeskCheck(refused);
+          if (error.refusal && !refused) {
             msg.append(' ', h('button', {
               class: 'lock-open', type: 'button', text: 'Lock panel',
               title: 'Open the lock panel over this desk; your text stays here',
@@ -5859,8 +5938,15 @@
   }
 
   // ------------------------------------------------------------- mutations
-  async function afterChange(address, message) {
-    if (message) toast(message);
+  /**
+   * After a committed write: the save note, the refreshed cabinet, the Card. A write the Card check
+   * read (S04, #146) adds its check slip under the note — `result` when the caller holds the answer,
+   * else the one its desk save kept — and new advice marks the note (`.toast.warn`).
+   */
+  async function afterChange(address, message, result) {
+    const note = ZtDraft.checkNote(result || accepted);
+    accepted = null;
+    if (message) toast(message, note && note.fresh ? 'warn' : null, null, note ? checkSlip(note) : null);
     await refresh();
     go(address);
   }
@@ -5883,7 +5969,7 @@
       initial,
       // Every successor is a Regular Card, so it may be an Event or Model Card.
       cardType: kind === 'topic' ? null : 'idea',
-      save: (text, _bibtex, type, facet, emphasis, level) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined, level: level || undefined }).then((result) => result.address),
+      save: (text, _bibtex, type, facet, emphasis, level) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined, level: level || undefined }).then(keep),
     });
     if (!address) return;
     await afterChange(address, `created ${address}`);
@@ -5959,7 +6045,7 @@
           // Remember the destination only after the save succeeded, so a refused reply leaves the
           // previous preference alone.
           store.set('zt-reply-topic', result.destination.topic);
-          return result.address;
+          return keep(result);
         }
         // A refusal keeps the draft: show the fresh context the reader must decide against, take its
         // new fingerprint so a renewed Save is checked against the Card they now see, and stop.
@@ -5974,6 +6060,8 @@
         // Nothing retries on its own and nothing is unlocked.
         const error = new Error(result.detail || 'the reply was not saved');
         if (result.reason === 'locked_destination' && result.refusal) error.refusal = result.refusal;
+        // A Card-check refusal (S04, #146) hands its lines to the desk, like any other save.
+        if (result.reason === 'card_check' && result.check) error.check = result.check;
         throw error;
       },
     });
@@ -5992,7 +6080,7 @@
         if (checked.exists) return { ...checked, warn: true, note: `Literature Card \`${checked.citation_key}\` already exists` };
         return { ...checked, note: `Citation key ${checked.citation_key} · “${checked.title}”` };
       },
-      save: (text, bibtex) => api('literature', { bibtex, text, workspace: state.workspace }).then((result) => result.address),
+      save: (text, bibtex) => api('literature', { bibtex, text, workspace: state.workspace }).then(keep),
     });
     if (address) await afterChange(address, `created ${address}`);
   }
@@ -6018,7 +6106,7 @@
         at: card.address, text, base: card.text, type: type || undefined,
         facet: type === 'model' ? facet || '' : undefined, emphasis: type === 'model' ? emphasis || '' : undefined,
         level: type === 'model' && !facet ? level || '' : undefined,
-      }).then((result) => result.address),
+      }).then(keep),
     });
     if (address) await afterChange(address, `saved ${address}`);
   }
@@ -6033,7 +6121,7 @@
     const result = await api('edit', { at: card.address, type, facet: type === 'model' ? facet || '' : undefined });
     await afterChange(result.address, facet
       ? `${result.address} is the ${facetLabel(facet)} part of its model`
-      : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : type === 'finding' ? 'a Finding' : type === 'hub' ? 'a Hub' : 'a Model'} Card`);
+      : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : type === 'finding' ? 'a Finding' : type === 'hub' ? 'a Hub' : 'a Model'} Card`, result);
   }
 
   function choosePart() {
@@ -6087,7 +6175,7 @@
           if (!ok) return undefined;
           result = await api('metadata', { at: card.address, bibtex, base: card.text, confirm: result.confirm });
         }
-        return result.address;
+        return keep(result);
       },
     });
     if (address) await afterChange(address, `saved ${address}`);
@@ -6161,7 +6249,7 @@
       save: (text, _bibtex, type, facet, emphasis) => api('insert', {
         before: card.address, text, confirm: plan.confirm,
         type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined,
-      }).then((result) => result.address),
+      }).then(keep),
     });
     if (address) await afterChange(address, `inserted ${address}`);
   }
