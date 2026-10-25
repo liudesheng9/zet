@@ -59,7 +59,7 @@ switch ($Step) {
         if ($MathPerJob -gt 0) { $planArgs += @('-MathPerJob', "$MathPerJob") }
         $plan = Run $planArgs
         if (-not $plan.json -or $plan.json.ok -ne $true) { Reply @{ ok = $false; step = 'plan'; error = $plan.tail } }
-        $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '64', '-Owner', 'term cards', '-Lease', '14400')
+        $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '64', '-Owner', 'term cards', '-Lease', '7200')
         $units = @($claim.json.units | Where-Object { $_.id -like 'termcards/t*' })
         Save 'units.json' $units
         if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; plan_revision = $plan.json.revision } }
