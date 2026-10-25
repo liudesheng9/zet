@@ -314,10 +314,6 @@ pub(crate) const RULE_VERSION: &str = zt_check::VERSION;
 /// read unit; a Card over it is refused as an incomplete check, never silently truncated (R0108).
 pub(crate) const TARGET_BUDGET: usize = 1024;
 
-/// The deepest parent chain the model context walks. A deeper chain cannot be checked with the
-/// bounded context this gate supports (R0108), so it is refused as incomplete, not guessed.
-pub(crate) const ANCESTRY_BUDGET: usize = 64;
-
 /// What kind of Card is being written: a root or a Regular Card.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Kind {
@@ -846,8 +842,10 @@ fn gather(
     Ok(facts)
 }
 
-/// The Model Card a proposed part belongs to: itself for a head, else the nearest Model Card in
-/// its parent chain. Bounded by [`ANCESTRY_BUDGET`].
+/// The Model Card a proposed part belongs to: itself for a head, else the nearest Model Card with
+/// no facet that is a segment-boundary prefix of its address. One indexed query replaces the
+/// parent-chain walk: a legitimate long Direct-successor chain (a Topic with hundreds of Cards)
+/// must not be mistaken for unbounded context.
 fn head_model(conn: &Connection, candidate: &Candidate) -> Result<Option<String>> {
     if candidate.card_type == CardType::Model && candidate.facet.is_none() {
         return Ok(Some(candidate.address.clone()));
@@ -855,28 +853,19 @@ fn head_model(conn: &Connection, candidate: &Candidate) -> Result<Option<String>
     if candidate.facet.is_none() {
         return Ok(None);
     }
-    let mut at = crate::parent_location(&candidate.address);
-    let mut depth = 0usize;
-    while let Some(address) = at {
-        depth += 1;
-        if depth > ANCESTRY_BUDGET {
-            return Err(anyhow::Error::new(Incomplete {
-                address: candidate.address.clone(),
-                reason: "context_budget",
-                detail: format!(
-                    "the model ancestry is deeper than {ANCESTRY_BUDGET} Cards; the write check cannot be bounded"
-                ),
-            }));
-        }
-        let Some(card) = load_optional(conn, &address)? else {
-            return Ok(None);
-        };
-        if card.card_type == CardType::Model && card.facet.is_none() {
-            return Ok(Some(address));
-        }
-        at = crate::parent_location(&address);
-    }
-    Ok(None)
+    Ok(conn
+        .query_row(
+            "SELECT COALESCE(location, citation_key) FROM cards
+             WHERE card_type = 'model' AND model_facet IS NULL
+               AND (COALESCE(location, citation_key) = ?1
+                    OR ?1 GLOB (COALESCE(location, citation_key) || '/*')
+                    OR ?1 GLOB (COALESCE(location, citation_key) || '|*'))
+             ORDER BY length(COALESCE(location, citation_key)) DESC
+             LIMIT 1",
+            [candidate.address.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?)
 }
 
 /// The current body of a Card, or `None` when no Card is at that address.

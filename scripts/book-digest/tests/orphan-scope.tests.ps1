@@ -68,7 +68,7 @@ try {
     Assert ($faults.Contains('OrphanBook/1|e E4') -and -not $faults.Contains('OrphanBook/1|e I5')) 'strong kinded inbound evidence stays separate from ordinary orphanhood'
     $null = Invoke-Zt @(@{tool='edit_card';arguments=@{at='OrphanBook/1';body='依赖 [[OrphanBook/1|a]]，后者给出了新的共同约束。参照 [[OrphanBook/1|c]]，后者给出了本组的具体论点。参照 [[OrphanBook/1|e]]，后者给出了本组的真实事件。'}})
     $env:ZT_ORPHAN_TEST_BODY = "# 企业退出限制了选择`n`n依赖 [[OrphanBook/1|e]]，后者给出了企业退出的真实事件。`n"
-    $humanIdea = @(zt b --at 'HumanNotes2020/1' 2>&1)
+    $humanIdea = @(zt b --at 'HumanNotes2020/1' 2>&1 | Where-Object { $_ -notmatch '^check: ' })
     Assert ($LASTEXITCODE -eq 0 -and $humanIdea[-1] -eq 'HumanNotes2020/1|a') 'the owner CLI creates a human Idea carrier with a kinded Link'
     $laterAudit = Audit (Join-Path $scratch 'audit-after')
     $report = @(& $Digest card -Step report -Work $work 2>&1)

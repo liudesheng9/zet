@@ -71,7 +71,7 @@ try {
     $humanTopic=@(zt n --at 'HumanNotes2018' 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and $humanBook[-1] -eq 'HumanNotes2018' -and $humanTopic[-1] -eq 'HumanNotes2018/1') 'a human Literature tree exists before the first group starts'
     $env:EARLIER_HUMAN_BODY="# 人类对剩余控制权的补充`n`n人类作者补充：控制权分配影响谈判结果。`n"
-    $humanIdea=@(zt b --at $humanTopic[-1] 2>&1)
+    $humanIdea=@(zt b --at $humanTopic[-1] 2>&1 | Where-Object { $_ -notmatch '^check: ' })
     Assert ($LASTEXITCODE -eq 0 -and $humanIdea[-1] -eq 'HumanNotes2018/1|a') 'the human Workspace holds an earlier Idea beside it'
     $titles=Read-Titles
     Assert (@($titles.Keys | Where-Object { $_ -like '剩余控制权与谈判 *' }).Count -eq 25) 'twenty-five earlier control-rights Cards exist before the first group starts'
