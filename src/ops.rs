@@ -872,12 +872,20 @@ impl Snapshot {
                     .filter(|occurrence| seen.insert(occurrence.target.to_string()))
                     .map(|occurrence| {
                         let exists = self.by_address.contains_key(occurrence.target);
-                        json!({
+                        let mut value = json!({
                             "address": occurrence.target,
                             "title": self.title(occurrence.target),
                             "workspace": self.workspace(occurrence.target).map(Workspace::id),
                             "broken": !exists,
-                        })
+                        });
+                        // A Term use names the authored word beside its target, so an editor can
+                        // tell it from an ordinary reasoned citation of the same Term Card
+                        // (S14, #161; design 15.1).
+                        if occurrence.form == crate::link::LinkForm::Term {
+                            value["kind"] = json!("term");
+                            value["label"] = json!(occurrence.label);
+                        }
+                        value
                     })
                     .collect()
             })
@@ -933,12 +941,41 @@ impl Snapshot {
             "term_use_targets": term_use_targets,
             "inbound": self.inbound.get(&card.address).map_or(0, BTreeSet::len),
         });
+        // Only a Term Card carries its exact name and a computed Term role and list, so every
+        // other Card keeps its existing summary shape (S14, #161; design 15.1).
+        if card.card_type == CardType::Term {
+            value["term"] = json!(card.term_name);
+            if let Some(name) = card.term_name.as_deref() {
+                match crate::term::place(&card.address, name, &|at| {
+                    Ok(self
+                        .by_address
+                        .get(at)
+                        .map(|card| (card.card_type, card.term_name.clone())))
+                }) {
+                    Ok(Some(placed)) => {
+                        value["term_role"] = json!(placed.role.id());
+                        value["term_list"] = json!(placed.list);
+                    }
+                    Ok(None) => {
+                        value["term_role"] = json!(crate::term::Role::Unfiled.id());
+                        value["term_list"] = json!(null);
+                    }
+                    // A defensive placement fault is reported by the whole-list read; a summary
+                    // keeps no invented role.
+                    Err(_) => {}
+                }
+            } else {
+                value["term_role"] = json!(crate::term::Role::List.id());
+                value["term_list"] = json!(card.address);
+            }
+        }
         self.decorate(&mut value, card.row_id);
         value
     }
     /// Every tree root, with its Workspace, Zone, size, how many Event
-    /// Cards, Finding Cards, and models (Model Cards, not counting their
-    /// parts) it holds, and whether an active Lock governs it (R204, S03-AC01).
+    /// Cards, Finding Cards, Term Cards, and models (Model Cards, not counting
+    /// their parts) it holds, and whether an active Lock governs it (R204,
+    /// S03-AC01; the sixth Card type in S14, #161).
     pub(crate) fn trees(&self) -> Vec<Value> {
         self.cards
             .iter()
@@ -968,6 +1005,7 @@ impl Snapshot {
                     "events": typed(CardType::Event),
                     "findings": typed(CardType::Finding),
                     "models": typed(CardType::Model),
+                    "terms": typed(CardType::Term),
                     "locked": self.locked(card.row_id),
                 })
             })

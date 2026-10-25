@@ -1355,7 +1355,9 @@ fn shell_literature_edit_selector_errors_fail_before_editor_launch() {
         .success()
         .stdout(predicate::str::contains("  zt l [--ws <workspace>]\n"))
         .stdout(predicate::str::contains("  zt del --at <target>\n"))
-        .stdout(predicate::str::contains("  zt n --at <target>\n"));
+        .stdout(predicate::str::contains(
+            "  zt n --at <target> [--type <type>] [--term <name>]\n",
+        ));
 
     let cases: &[(&[&str], &str)] = &[
         (&["e", "--at", "SelectorKey"], "requires --part"),

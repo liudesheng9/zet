@@ -1278,7 +1278,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "list_links",
             "List links",
-            "Every `[[target]]` Link with the Workspace at each end. Use cross_workspace_only to see how the two Workspaces connect.",
+            "Every `[[target]]` Link with the Workspace at each end. A Term use is a Link of its own: it carries `kind: \"term\"` and the authored `label` beside its target, so an editor can tell a word use from an ordinary reasoned citation of the same Term Card. Use cross_workspace_only to see how the two Workspaces connect.",
             json!({
                 "workspace": workspace_filter,
                 "cross_workspace_only": { "type": "boolean" },
@@ -1338,7 +1338,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "create_successor",
             "Create successor card",
-            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event), `finding` for a Finding Card (one empirical result from a source), or `model` for a Model Card (one whole model). Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`. A Model Card (type model, no facet) may carry its model's elaboration `level`.",
+            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event), `finding` for a Finding Card (one empirical result from a source), `model` for a Model Card (one whole model), `hub` for a Hub Card (a way into one subject), or `term` for a Term Card (one term's explanation, with its exact `term` name; a named Term Card is a head only as an immediate Side successor of a Term list). Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`. A Model Card (type model, no facet) may carry its model's elaboration `level`.",
             json!({
                 "at": at,
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
@@ -1416,7 +1416,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "insert_card",
             "Insert card",
-            "Insert a new Card between two Cards of an agent tree: it takes the place of the Regular Card `before`, which moves down one place with its whole subtree and becomes the new Card's Direct successor (`X/2` -> new Card, old `X/2` -> `X/3`, …; before `P|a` the old `P|a` becomes `P|a|1`). Use it to add a missing step to a chain, such as a Derivation part between two parts of a model. Takes title, body, type, facet, and emphasis as create_successor does; it has no `level` or `form`, so set a Model Card's level or Math form with edit_card after the insert. Write Links in today's addresses, and they follow the move. Returns a plan of every renamed address first; confirm with `insert`.",
+            "Insert a new Card between two Cards of an agent tree: it takes the place of the Regular Card `before`, which moves down one place with its whole subtree and becomes the new Card's Direct successor (`X/2` -> new Card, old `X/2` -> `X/3`, …; before `P|a` the old `P|a` becomes `P|a|1`). Use it to add a missing step to a chain, such as a Derivation part between two parts of a model. Takes title, body, type, facet, emphasis, and term as create_successor does; it has no `level` or `form`, so set a Model Card's level or Math form with edit_card after the insert. Write Links in today's addresses, and they follow the move. Returns a plan of every renamed address first; confirm with `insert`.",
             json!({
                 "before": { "type": "string", "description": "The existing Regular Card whose place the new Card takes." },
                 "title": { "type": "string", "description": "The Card title (one line)." },

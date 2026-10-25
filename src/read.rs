@@ -578,7 +578,12 @@ pub(crate) fn cards(
                 attach_term_facts(&tx, &mut value, card)?;
                 value
             }
-            None => text_facts(&tx, card, &lean, term_links)?,
+            None => {
+                let mut value = text_facts(&tx, card, &lean, term_links)?;
+                // The lean read answers the same computed Term facts as the full one (S14, #161).
+                attach_term_facts(&tx, &mut value, card)?;
+                value
+            }
         });
     }
     let identity = archive_identity(&tx, root)?;
@@ -741,8 +746,8 @@ pub(crate) fn trees(
         let tree = crate::tree_id(&at);
         let lower = format!("{tree}/");
         let upper = format!("{tree}0");
-        let (count,events,findings,models):(u64,u64,u64,u64)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(card_type='event' AND model_facet IS NULL),0),COALESCE(SUM(card_type='finding' AND model_facet IS NULL),0),COALESCE(SUM(card_type='model' AND model_facet IS NULL),0) FROM cards WHERE (location>=?1 AND location<?2) OR citation_key=?3",rusqlite::params![lower,upper,tree],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-        trees.push(json!({"tree":tree,"root":at,"workspace":card.workspace.id(),"kind":crate::ops::zone(&card),"title":parsed.title,"excerpt":crate::ops::excerpt(&parsed.body),"count":count,"events":events,"findings":findings,"models":models,"locked":lock.is_locked(card.row_id)}));
+        let (count,events,findings,models,terms):(u64,u64,u64,u64,u64)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(card_type='event' AND model_facet IS NULL),0),COALESCE(SUM(card_type='finding' AND model_facet IS NULL),0),COALESCE(SUM(card_type='model' AND model_facet IS NULL),0),COALESCE(SUM(card_type='term'),0) FROM cards WHERE (location>=?1 AND location<?2) OR citation_key=?3",rusqlite::params![lower,upper,tree],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+        trees.push(json!({"tree":tree,"root":at,"workspace":card.workspace.id(),"kind":crate::ops::zone(&card),"title":parsed.title,"excerpt":crate::ops::excerpt(&parsed.body),"count":count,"events":events,"findings":findings,"models":models,"terms":terms,"locked":lock.is_locked(card.row_id)}));
     }
     tx.commit()?;
     Ok(json!({"trees":trees}))
@@ -755,13 +760,43 @@ pub(crate) fn links(
 ) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let mut query=tx.prepare("SELECT l.source,s.workspace,l.target,t.workspace FROM links l JOIN cards s ON s.location=l.source OR s.citation_key=l.source LEFT JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE (?1 IS NULL OR s.workspace=?1 OR t.workspace=?1) AND (?2=0 OR s.workspace<>t.workspace) GROUP BY l.source,l.target ORDER BY l.source,MIN(l.ord)")?;
-    let values=query.query_map(rusqlite::params![workspace.map(crate::Workspace::id),cross_only],|r|{
+    // The first occurrence of each distinct source-target pair decides its form, so a Term use is
+    // reported with the authored label an editor completes from (S14, #161; design 15.1). SQLite's
+    // bare-column rule on the min() aggregate keeps `kind` on that same first row.
+    let mut query=tx.prepare("SELECT l.source,s.workspace,l.target,t.workspace,l.kind,MIN(l.ord) FROM links l JOIN cards s ON s.location=l.source OR s.citation_key=l.source LEFT JOIN cards t ON t.location=l.target OR t.citation_key=l.target WHERE (?1 IS NULL OR s.workspace=?1 OR t.workspace=?1) AND (?2=0 OR s.workspace<>t.workspace) GROUP BY l.source,l.target ORDER BY l.source,MIN(l.ord)")?;
+    let rows=query.query_map(rusqlite::params![workspace.map(crate::Workspace::id),cross_only],|r|{
         let source:String=r.get(0)?;let source_workspace:String=r.get(1)?;
         let target:String=r.get(2)?;let target_workspace:Option<String>=r.get(3)?;
-        Ok(json!({"source":source,"source_workspace":source_workspace,"target":target,"target_workspace":target_workspace,"broken":target_workspace.is_none()}))
+        let kind:Option<String>=r.get(4)?;
+        Ok((source,source_workspace,target,target_workspace,kind))
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     drop(query);
+    // A Term row names no label in the index; the authored body holds it. Only sources with at
+    // least one Term use are parsed, and each source once.
+    let mut labels: BTreeMap<(String, String), Option<String>> = BTreeMap::new();
+    for (source, _, target, _, kind) in &rows {
+        if kind.as_deref() != Some("term") || labels.contains_key(&(source.clone(), target.clone())) {
+            continue;
+        }
+        let parsed = crate::parse_card_text(&crate::load_card(&tx, source)?.text)?;
+        let label = crate::link::LinkBody::parse(&parsed.body)?
+            .occurrences()
+            .iter()
+            .find(|occurrence| {
+                occurrence.target == target && occurrence.form == crate::link::LinkForm::Term
+            })
+            .and_then(|occurrence| occurrence.label)
+            .map(str::to_string);
+        labels.insert((source.clone(), target.clone()), label);
+    }
+    let values=rows.into_iter().map(|(source,source_workspace,target,target_workspace,kind)|{
+        let mut value = json!({"source":source,"source_workspace":source_workspace,"target":target,"target_workspace":target_workspace,"broken":target_workspace.is_none()});
+        if kind.as_deref() == Some("term") {
+            value["kind"] = json!("term");
+            value["label"] = json!(labels.get(&(source, target)).cloned().flatten());
+        }
+        value
+    }).collect::<Vec<_>>();
     tx.commit()?;
     Ok(json!({"links":values}))
 }

@@ -132,16 +132,19 @@ fn run() -> Result<()> {
             shell_create_literature(workspace)
         }
         [cmd, rest @ ..] if cmd == "n" => {
-            let at = parse_target_at(rest)?;
-            shell_create_direct(&at)
+            let (rest, typed) = parse_type_and_term(rest)?;
+            let at = parse_target_at(&rest)?;
+            shell_create_direct(&at, typed)
         }
         [cmd, rest @ ..] if cmd == "b" => {
-            let at = parse_at(rest)?;
-            shell_create_side(&at)
+            let (rest, typed) = parse_type_and_term(rest)?;
+            let at = parse_at(&rest)?;
+            shell_create_side(&at, typed)
         }
         [cmd, rest @ ..] if cmd == "e" => {
-            let (at, part) = parse_edit_args(rest)?;
-            shell_edit(&at, part)
+            let (rest, typed) = parse_type_and_term(rest)?;
+            let (at, part) = parse_edit_args(&rest)?;
+            shell_edit(&at, part, typed)
         }
         [cmd, rest @ ..] if cmd == "del" => {
             let command = parse_delete_args(rest)?;
@@ -152,8 +155,9 @@ fn run() -> Result<()> {
             shell_move(&at, &target, alone)
         }
         [cmd, rest @ ..] if cmd == "ins" => {
-            let at = parse_at(rest)?;
-            shell_insert(&at)
+            let (rest, typed) = parse_type_and_term(rest)?;
+            let at = parse_at(&rest)?;
+            shell_insert(&at, typed)
         }
         _ => bail!("unknown command"),
     }
@@ -281,6 +285,58 @@ fn parse_edit_args(args: &[String]) -> Result<(String, Option<EditPart>)> {
         }
     }
     Ok((target.context("expected --at <target>")?, part))
+}
+
+/// The optional `--type` and `--term` flags of a create, insert, or edit command (S14, #161):
+/// `--type` names the sixth Card type like any other, and `--term` sets or clears the exact Term
+/// name a Term Card stores. A command without them keeps its existing behavior.
+#[derive(Clone, Debug, Default)]
+struct TypeArgs {
+    card_type: Option<CardType>,
+    /// `None` when the flag is absent; `Some(None)` clears the name; `Some(Some(name))` sets it.
+    term: Option<Option<String>>,
+}
+
+impl TypeArgs {
+    /// The type and name a new Card takes, checked before the editor opens so an inconsistent
+    /// request is refused without asking for text.
+    fn create(&self) -> Result<(CardType, Option<String>)> {
+        let card_type = self.card_type.unwrap_or_default();
+        let term = self.term.clone().flatten();
+        term::ensure_on_type(term.as_deref(), card_type)?;
+        Ok((card_type, term))
+    }
+}
+
+/// Pull `--type <type>` and `--term <name>` out of one command's arguments, leaving its existing
+/// `--at`/`--part` options in place. A repeated or value-less flag is refused by name.
+fn parse_type_and_term(args: &[String]) -> Result<(Vec<String>, TypeArgs)> {
+    let mut rest = Vec::new();
+    let mut typed = TypeArgs::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--type" if typed.card_type.is_none() => {
+                let value = args
+                    .get(index + 1)
+                    .context("expected --type <type>")?;
+                typed.card_type = Some(CardType::parse(value)?);
+                index += 2;
+            }
+            "--type" => bail!("duplicate or incomplete --type option"),
+            "--term" if typed.term.is_none() => {
+                let value = args.get(index + 1).context("expected --term <name>")?;
+                typed.term = Some(term::normalize_name(value)?);
+                index += 2;
+            }
+            "--term" => bail!("duplicate or incomplete --term option"),
+            other => {
+                rest.push(other.to_string());
+                index += 1;
+            }
+        }
+    }
+    Ok((rest, typed))
 }
 
 #[derive(Debug, Default)]
@@ -2343,9 +2399,9 @@ fn cmd_help() -> Result<()> {
         println!("  zt gui [--open]");
         println!("  zt t [--ws <workspace>] <title>");
         println!("  zt l [--ws <workspace>]");
-        println!("  zt n --at <target>");
-        println!("  zt b --at <location>");
-        println!("  zt e --at <location>");
+        println!("  zt n --at <target> [--type <type>] [--term <name>]");
+        println!("  zt b --at <location> [--type <type>] [--term <name>]");
+        println!("  zt e --at <location> [--type <type>] [--term <name>]");
         println!("  zt e --at <citation-key> --part metadata");
         println!("  zt e --at <citation-key> --part text");
         println!("  zt del --at <target>");
@@ -2353,7 +2409,7 @@ fn cmd_help() -> Result<()> {
         println!("  zt del --all");
         println!("  zt mv --at <location> [--alone] <new-location>");
         println!("  zt mv --at <location> [--alone] --before <location>");
-        println!("  zt ins --at <location>");
+        println!("  zt ins --at <location> [--type <type>] [--term <name>]");
         println!("  zt stats");
         println!("  zt ws");
         println!("  zt mcp");
@@ -3377,7 +3433,8 @@ fn shell_create_topic(workspace: Workspace, title: &str) -> Result<()> {
     }
 }
 
-fn shell_create_direct(at: &str) -> Result<()> {
+fn shell_create_direct(at: &str, typed: TypeArgs) -> Result<()> {
+    let (card_type, term) = typed.create()?;
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root, "create_direct")?;
     let mut conn = open_db(&root)?;
@@ -3390,13 +3447,14 @@ fn shell_create_direct(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            let accepted = insert_card(
+            let accepted = insert_card_with_term(
                 &mut conn,
                 &location,
                 false,
                 parent.workspace,
-                CardType::Idea,
+                card_type,
                 None,
+                term.as_deref(),
                 &text,
             )?;
             print_warnings(&accepted);
@@ -3406,7 +3464,8 @@ fn shell_create_direct(at: &str) -> Result<()> {
     }
 }
 
-fn shell_create_side(at: &str) -> Result<()> {
+fn shell_create_side(at: &str, typed: TypeArgs) -> Result<()> {
+    let (card_type, term) = typed.create()?;
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root, "create_side")?;
     let mut conn = open_db(&root)?;
@@ -3417,13 +3476,14 @@ fn shell_create_side(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            let accepted = insert_card(
+            let accepted = insert_card_with_term(
                 &mut conn,
                 &location,
                 false,
                 parent.workspace,
-                CardType::Idea,
+                card_type,
                 None,
+                term.as_deref(),
                 &text,
             )?;
             print_warnings(&accepted);
@@ -3433,7 +3493,7 @@ fn shell_create_side(at: &str) -> Result<()> {
     }
 }
 
-fn shell_edit(at: &str, part: Option<EditPart>) -> Result<()> {
+fn shell_edit(at: &str, part: Option<EditPart>, typed: TypeArgs) -> Result<()> {
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root, "edit")?;
     let mut conn = open_db(&root)?;
@@ -3441,6 +3501,9 @@ fn shell_edit(at: &str, part: Option<EditPart>) -> Result<()> {
     // The Lock refuses before an editor opens; the transaction writers check again.
     tree_lock::ensure_unlocked(&conn, tree_lock::Change::Edit(card.row_id))?;
     if card.is_lit {
+        if typed.card_type.is_some() || typed.term.is_some() {
+            bail!("a Literature Card is always an Idea Card; --type and --term apply to Regular Cards");
+        }
         return match part {
             Some(EditPart::Metadata) => shell_edit_literature_metadata(&mut conn, &card),
             Some(EditPart::Text) => shell_edit_literature_text(&mut conn, &card),
@@ -3450,10 +3513,26 @@ fn shell_edit(at: &str, part: Option<EditPart>) -> Result<()> {
     if part.is_some() {
         bail!("--part is valid only when editing a Literature Card");
     }
+    // An explicit type must be legal for this Card before the editor opens.
+    if let Some(card_type) = typed.card_type {
+        crate::card_type::ensure_allowed(&card, card_type)?;
+        term::ensure_on_type(typed.term.clone().flatten().as_deref(), card_type)?;
+    }
+    let change = crate::ops::TypeChange {
+        card_type: typed.card_type,
+        term: typed.term,
+        ..crate::ops::TypeChange::default()
+    };
     match run_editor(&card.text)? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            let accepted = update_card_text(&mut conn, &card, &text)?;
+            let tx = conn.transaction()?;
+            let (address, changed, accepted) =
+                crate::ops::edit_tx(&tx, Access::Owner, at, Some(&text), change, None)?;
+            if changed {
+                link_index::source_changed(&tx, &address)?;
+            }
+            tx.commit()?;
             print_warnings(&accepted);
             Ok(())
         }
@@ -4403,7 +4482,8 @@ fn shell_move(at: &str, target: &place::Target, alone: bool) -> Result<()> {
 }
 
 /// Insert a new Card at `at`: confirm the renumbering, then write the Card.
-fn shell_insert(at: &str) -> Result<()> {
+fn shell_insert(at: &str, typed: TypeArgs) -> Result<()> {
+    let (card_type, term) = typed.create()?;
     let root = require_service_up()?;
     let _lock = acquire_edit_lock(&root, "insert")?;
     let mut conn = open_db(&root)?;
@@ -4418,7 +4498,14 @@ fn shell_insert(at: &str) -> Result<()> {
     match run_editor(&regular_template())? {
         EditOutcome::Canceled => Ok(()),
         EditOutcome::Saved(text) => {
-            place::apply_insert_plan(&mut conn, &plan, CardType::Idea, None, None, &text)?;
+            place::apply_insert_plan(
+                &mut conn,
+                &plan,
+                card_type,
+                None,
+                term.as_deref(),
+                &text,
+            )?;
             println!("{}", plan.location);
             Ok(())
         }
