@@ -386,6 +386,7 @@ Reverse links to the human Card.
 | `list_trees` | tree roots, filtered by Workspace and Zone |
 | `get_tree`, `get_card` | one tree, or one Card with its neighbors and Links in and out |
 | `get_cards` | ordered full/text Card reads, up to 200 addresses, with missing addresses and one archive revision |
+| `get_terms` | one Term list's computed structure: its four-column rows, heads, parts and unfiled Cards, its stored term uses, its coverage, and its seven faults, with the archive revision it was read at |
 | `get_tree` with `bodies: true` | complete tree bodies, stored text and BibTeX in one read view |
 | `export_titles` | one title/metadata pass, filtered by Workspace and Zone, with count and revision |
 | `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, neighbours outside it, and its `build` report (build order and self-sufficiency faults) |

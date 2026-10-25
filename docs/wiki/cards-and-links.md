@@ -19,7 +19,7 @@ updated: 2026-10-25
 
 This block holds the core vocabulary of ZT's card archive: what a Card's stored text looks like and how it is parsed and composed, which Card types exist and where each may stand, how a Literature Card's BibTeX metadata gives its Citation key and title, which Workspace a tree belongs to and which client may change it, and how `[[target]]` Links are found, checked, rewritten, turned into Reverse links, and reported as Broken links. Every other block that reads or writes a Card (the shell and service, the Session, the GUI, the MCP server, Card operations, models, hubs) builds on these pure functions and small types. They exist so that the Card format and the Link rules have one implementation, shared by every client.
 
-**Owns:** the Markdown Card text format and the Reverse link marker (`src/card.rs`); the Card type enum and the Tree-root type rule (`src/card_type.rs`); the Term Card's one authored name, its grammar, client field protocol, and write (`src/term.rs`); BibTeX parsing, Citation key validation, and title normalization (`src/literature.rs`); the `Workspace` and `Access` types and the cross-Workspace checks (`src/workspace.rs`); Link recognition (including code spans and fences), edit validation, target rewriting, Reverse link derivation, and Broken link listing (`src/link.rs`).
+**Owns:** the Markdown Card text format and the Reverse link marker (`src/card.rs`); the Card type enum and the Tree-root type rule (`src/card_type.rs`); the Term Card's one authored name and its grammar, the client field protocol, the write, the computed Term role, and the `get_terms` structure read (`src/term.rs`); BibTeX parsing, Citation key validation, and title normalization (`src/literature.rs`); the `Workspace` and `Access` types and the cross-Workspace checks (`src/workspace.rs`); Link recognition (including code spans and fences), edit validation, target rewriting, Reverse link derivation, and Broken link listing (`src/link.rs`).
 
 **Does not own:** SQLite schema, migrations, Location grammar helpers (`is_valid_location`, `tree_id`, `tree_root_address`), the edit lock, the save, delete, move, and Citation-key rename transactions in `src/main.rs`, or the dump ([Service, CLI and storage](service-and-cli.md)); the access-checked operations and place/insert plans ([Card operations](card-operations.md)); Model facets, emphasis, levels, Relation kinds, and Math forms ([Models and math](models-and-math.md)); Hub levels ([Hub Cards](hub-cards.md)); rendering of Links and Cards ([GUI](gui.md), [Terminal Session](session.md)); MCP tool schemas ([MCP server](mcp-server.md)); the Card layer rules for Finding and Event bodies ([zt-check](zt-check.md)).
 
@@ -28,7 +28,7 @@ This block holds the core vocabulary of ZT's card archive: what a Card's stored 
 | | |
 |---|---|
 | Entry points | `card::parse_card_text`, `card::parse_literature_edit_text`, `card::compose_card_text`, `card::reverse_section`, `card::card_template`, `card::from_legacy_text`; `CardType::parse` / `from_stored`, `card_type::ensure_allowed`; `literature::parse_metadata`, `literature::validate_citation_key`; `Workspace::parse` / `from_stored`, `Access::ensure_writable`, `Access::ensure_link_rewrites_allowed`, `workspace::tree_workspace`, `workspace::ensure_same_workspace`, `workspace::counts`; `LinkBody::parse`, `LinkBody::rewrite_targets`, `LinkLifecycle::from_cards` and its methods, `link::code_ranges`, `link::fenced_code_ranges` |
-| Key files | `src/card.rs` — Markdown Card text: parse, compose, templates, Reverse link section, legacy conversion, authored fingerprint. `src/card_type.rs` — `CardType` (`idea`, `event`, `finding`, `model`, `hub`, `term`) and the Tree-root rule. `src/term.rs` — the Term Card name parser (`normalize_name`), the `term` field protocol, the type rule and the one-row write. `src/literature.rs` — BibTeX metadata parser, Citation key rules, title normalization. `src/workspace.rs` — `Workspace`, `Access`, `WorkspaceCounts`, tree Workspace lookup and the no-cross-Workspace-move rule. `src/link.rs` — `LinkBody` (one body's Links), `LinkLifecycle` (Links against an archive snapshot), code-range scanning. `tests/card_types.rs` — end-to-end tests of Card types through the shell, Session, MCP, GUI, dump, and schema upgrades, including the Term field protocol |
+| Key files | `src/card.rs` — Markdown Card text: parse, compose, templates, Reverse link section, legacy conversion, authored fingerprint. `src/card_type.rs` — `CardType` (`idea`, `event`, `finding`, `model`, `hub`, `term`) and the Tree-root rule. `src/term.rs` — the Term Card name parser (`normalize_name`), the `term` field protocol, the type rule and the one-row write, and the computed Term structure: `Role`, `place`, `role`, `facts`, `resolve_list`, `structure`, and the seven coverage faults. `src/literature.rs` — BibTeX metadata parser, Citation key rules, title normalization. `src/workspace.rs` — `Workspace`, `Access`, `WorkspaceCounts`, tree Workspace lookup and the no-cross-Workspace-move rule. `src/link.rs` — `LinkBody` (one body's Links), `LinkLifecycle` (Links against an archive snapshot), code-range scanning. `tests/card_types.rs` — end-to-end tests of Card types through the shell, Session, MCP, GUI, dump, and schema upgrades, including the Term field protocol; `tests/term_structure.rs` — end-to-end tests of `get_terms` and the computed role facts (owned by [MCP server](mcp-server.md)) |
 | Depends on | [Service, CLI and storage](service-and-cli.md) (`crate::Card`, `is_tree_root`, `is_valid_location`, `tree_id`, `tree_root_address`, `load_card`, `load_cards`, `parse_card_text` re-export in `src/main.rs`); `anyhow`; `rusqlite` (only in `src/workspace.rs`); `nom-bibtex` 0.6 (`Bibtex::raw_parse`) |
 | Used by | [Service, CLI and storage](service-and-cli.md), [Card operations](card-operations.md), [Terminal Session](session.md), [GUI](gui.md), [MCP server](mcp-server.md), [Models and math](models-and-math.md), [Hub Cards](hub-cards.md) |
 | Tests | Unit tests in each of `src/card.rs`, `src/card_type.rs`, `src/literature.rs`, `src/workspace.rs`, `src/link.rs`; integration tests in `tests/card_types.rs` (Link behaviour is also exercised by `tests/cli_service.rs`, `tests/pty_session.rs`, `tests/workspaces_mcp.rs`, owned by other blocks) |
@@ -39,8 +39,11 @@ This block holds the core vocabulary of ZT's card archive: what a Card's stored 
 - `Reverse link marker` — the line `<!-- zt:reverse-links -->` (`REVERSE_MARKER` in `src/card.rs`). An HTML comment, so rendered Markdown hides it. Everything after it is generated.
 - `Reverse link` — the generated section after the marker: `## Reverse links` (`REVERSE_HEADING`), a blank line, and one `- [[source]] Title` item per source Card. Built by `card::reverse_section` from the sources `LinkLifecycle::reverse_sections` derives.
 - `Card type` — what a Card holds: `CardType::{Idea, Event, Finding, Model, Hub, Term}` in `src/card_type.rs`; stored as `idea`, `event`, `finding`, `model`, `hub`, `term`. `Idea` is the default.
-- `Term Card` — a Regular Card of type `term` (S07, #149) that defines one term. Its optional `term_name` column holds the exact name; no name means a candidate Term list. A Topic or Literature root can never be one.
+- `Term Card` — a Regular Card of type `term` (S07, #149) that defines one term or holds one book's term table. Its optional `term_name` column holds the exact name; no name means a candidate Term list. A Topic or Literature root can never be one.
 - `Term name` — one line of at most 40 Unicode scalar values, outer whitespace trimmed, holding no `[`, `]`, `@`, `|`, or backtick. The `term` client field is omitted (preserve), `null` or a trimmed-empty string (clear), or a string (set). It is valid only on a Term Card, and a type change away clears it. It is authored identity: `card::authored_fingerprint` appends `term_name\0<name>\0` only for a nonempty name, so a Card without one keeps its old bytes.
+- `Term role` — how a Term Card takes part in one Term list (S08, #150; design 9.2): `list` (a Term Card with no name), `card` (a head: a named Term Card that is an immediate Side successor of a list), `part` (a named Term Card that continues a same-named head or part as its Direct successor), or `unfiled` (no valid placement). A Card of another type has no role. The role is computed from the Card type, the exact name and the placement on every read; no column, facet, or ownership table stores it.
+- `Term use` — a stored `links` row with `kind = 'term'`: one `[[label@address]]` occurrence whose label is the term written in the sentence and whose target is the head it names. The label stays in the authored macro; the index keeps only source, occurrence ordinal, target and kind.
+- `Term structure` — the computed read of one Term list (`term::structure`): the four-column rows of its body, its heads, parts and unfiled Cards, its Term uses, its coverage counts, and its faults. One read inside one transaction carries its archive revision and identity.
 - `Regular Card` / `Tree root` — a Tree root is a Topic Card (`is_topic`) or a Literature Card (`is_lit`); `crate::is_tree_root` in `src/main.rs`. Only Regular Cards may have a type other than `idea`.
 - `Literature Card` — the root of a Literature tree; its address is its Citation key and its title comes from BibTeX. `LiteratureMetadata { citation_key, title }` in `src/literature.rs`.
 - `Citation key` — the BibTeX entry key, matching `^[A-Za-z][A-Za-z0-9_-]{0,127}$`, never a Windows reserved filename stem, never a valid Location (it has no `/` and starts with a letter). Case-significant for lookup and Links; unique case-insensitively (enforced in `src/main.rs`).
@@ -124,11 +127,11 @@ Title rule (`title_from_heading`): the first non-blank line before the marker mu
 
 | Item | Signature | Behaviour |
 |---|---|---|
-| `CardType` | `enum { Idea (default), Event, Finding, Model, Hub }` | Derives `Copy`, `Ord`, `Hash`, `Default`. `Display` writes `id()`. |
-| `CardType::id` | `fn(self) -> &'static str` | `idea`, `event`, `finding`, `model`, `hub`: the stored and typed name. |
-| `CardType::parse` | `fn(&str) -> Result<Self>` | Trims and lowercases. Error: ``unknown card type `<x>`; expected idea, event, finding, model, or hub``. |
+| `CardType` | `enum { Idea (default), Event, Finding, Model, Hub, Term }` | Derives `Copy`, `Ord`, `Hash`, `Default`. `Display` writes `id()`. |
+| `CardType::id` | `fn(self) -> &'static str` | `idea`, `event`, `finding`, `model`, `hub`, `term`: the stored and typed name. |
+| `CardType::parse` | `fn(&str) -> Result<Self>` | Trims and lowercases. Error: ``unknown card type `<x>`; expected idea, event, finding, model, hub, or term``. |
 | `CardType::from_stored` | `fn(&str) -> Self` | Like `parse`, but an unknown stored value reads as `Idea`. |
-| `ensure_allowed` | `fn(&Card, CardType) -> Result<()>` | Refuses a non-`Idea` type on a Tree root: `only Regular Cards can be Event, Finding, Model, or Hub Cards`. |
+| `ensure_allowed` | `fn(&Card, CardType) -> Result<()>` | Refuses a non-`Idea` type on a Tree root: `only Regular Cards can be Event, Finding, Model, Hub, or Term Cards`. |
 
 The rules for each type:
 
@@ -139,8 +142,38 @@ The rules for each type:
 | `finding` | Regular Cards only | no facet, emphasis, level, form, or hub level; the six labelled lines (`测量`, `数据`, `方法`, `结果`, `局限`, `来源`) are a convention | `ensure_allowed`; schema CHECKs; [zt-check](zt-check.md) F rules |
 | `model` | Regular Cards only | a Model Card (no facet) may carry `model_level` and `math_form`; a Model part has a `model_facet` and an optional `model_emphasis`; a Model Card with parts cannot change type or become a part | `ensure_allowed`; `model::ensure_allowed` / `model::set` in `src/model.rs` ([Models and math](models-and-math.md)) |
 | `hub` | Regular Cards only | only a Hub Card may carry `hub_level` (`line`, `topic`, `field`, `register`) | `ensure_allowed`; `hub::set_level` in `src/hub.rs` ([Hub Cards](hub-cards.md)) |
+| `term` | Regular Cards only | only a Term Card may carry `term_name` (S07, #149); a name is one line of at most 40 scalar values with no `[`, `]`, `@`, `\|`, backtick; no name is a Term list. Its role and structure are computed (see below) | `ensure_allowed`; `term::ensure_on_type`; the schema CHECK `term_name IS NULL OR card_type = 'term'` |
 
-`model::set` (in `src/model.rs`) also clears `model_level` and `math_form` when a Card stops being a Model Card head, and clears `hub_level` when it stops being a Hub Card.
+`model::set` (in `src/model.rs`) also clears `model_level` and `math_form` when a Card stops being a Model Card head, and clears `hub_level` when it stops being a Hub Card. `ops::resolve_term` clears `term_name` when a Card stops being a Term Card, unless the same combined edit sets a term.
+
+### Term structure and roles (`src/term.rs`)
+
+| Item | Signature | Behaviour and errors |
+|---|---|---|
+| `Role` | `enum { List, Head, Part, Unfiled }` | `List` is a Term Card with no name, `Head` a named immediate Side successor of a list, `Part` a named same-name Direct successor of a head or part, `Unfiled` no valid placement. `id()` gives `list`, `card` (a head's wire role), `part`, `unfiled`. A Card of another type has no role. |
+| `MAX_CHAIN` | `usize = 128` | The longest placement chain a read follows before it refuses. |
+| `Placement` | `{ address, reason: "depth" \| "cycle" }` | The typed read error: `code = "term_placement"`, the reason, and the address. A chain that is too long, or one that revisited an address, fails visibly rather than being cut. |
+| `place` | `fn(address, name, lookup) -> Result<Option<Placed>>` | Walks the placement chain with the Location parser. `Placed { role, list, head }` names the owning list and the head a part continues. A missing ancestor, another Card type, or another name ends the walk with no placement. |
+| `role` | `fn(&Connection, address, CardType, Option<&str>) -> Result<Option<(Role, Option<String>)>>` | The stored Card's role and owning list; `None` when it is not a Term Card. A list owns itself. |
+| `facts` | `fn(&Connection, &Card) -> Result<Option<Value>>` | The computed `term_role`, `term_list`, and `term_uses` facts every Card read publishes. `term_uses` counts the stored `kind = 'term'` rows that name the Card. |
+| `resolve_list` | `fn(&Connection, at) -> Result<Card>` | The list a `get_terms {at}` names: the Card itself, the nearest list on its placement chain, or the one Term list of a tree root's tree. Errors name a card that does not exist, a Card that is neither a list nor under one, a tree with no list, and a tree with several lists (all addresses listed, none selected). |
+| `structure` | `fn(&Connection, at) -> Result<Value>` | The whole read: `rows`, `row_duplicates`, `heads`, `parts`, `unfiled`, `uses`, `faults`, `coverage`, and `complete`. See [MCP server](mcp-server.md#get_terms) for the reply. |
+| `facts::label_of` | `fn(body, target) -> Option<String>` | The authored label of the first `[[label@target]]` in one body; the ordinary Link scanner supplies the macros and skips code. |
+
+The seven faults (design 9.2), reported, never refused:
+
+| Fault | Report |
+|---|---|
+| `term_unfiled` | A named Term Card whose placement is no list, head, or part (`address`, `term`). |
+| `term_duplicate` | More than one head for one exact name under one list (`term`, `heads`). |
+| `term_row_without_card` | A table row with no head of its exact spelling (`row`, `term`). |
+| `term_card_without_row` | A head whose exact name is in no table row (`address`, `term`). |
+| `term_part_name` | A Direct successor whose name differs from the valid head or part it continues (`address`, `term`, `expected`, `continues`, `role`). |
+| `term_label_mismatch` | A stored Term use whose authored label differs from its target's exact name (`source`, `target`, `label`, `term`). |
+| `term_link_target` | A stored Term use whose target is missing or is not a head (`source`, `target`, `label`, `reason` = `missing` / `not_head`). |
+
+The row reader is shared with the checker: `zt_check::text::term_table` (the compatibility view R6 and the digest already read), `term_rows_raw` (every row before case-insensitive replacement), and `term_row_duplicates` (raw rows whose names clash exactly or by case). `structure` reports the raw duplicate groups in `row_duplicates`, so a publisher resolves them before it allocates one head per row; the compatibility rows keep their existing input.
+
 
 ### Literature metadata (`src/literature.rs`)
 
@@ -190,7 +223,8 @@ Title normalization (`normalize_title`): grouping braces `{` `}` are removed; an
 
 - Shell `zt lsbk` (`cmd_lsbk` in `src/main.rs`) prints `<source> <title> -> <target>: <line>` per `BrokenLink`; Session `lsbk` shows the same list ([Terminal Session](session.md)); MCP `list_broken_links` and the GUI overview count use `broken_links` ([MCP server](mcp-server.md), [GUI](gui.md)).
 - `zt workspaces` (`cmd_workspaces` in `src/main.rs`) prints each Workspace's `id`, `label`, `counts`, and MCP access.
-- Session `ty <idea|event|finding|model|hub> [<facet>]`, MCP `type` arguments on `create_successor`, `insert_card`, `edit_card`, `search_cards`, and GUI `/api/create` / `/api/edit` `type` fields parse through `CardType::parse`.
+- Session `ty <idea|event|finding|model|hub|term> [<facet>]`, MCP `type` arguments on `create_successor`, `insert_card`, `edit_card`, `search_cards`, and GUI `/api/create` / `/api/edit` `type` fields parse through `CardType::parse`.
+- MCP `get_terms {at}` returns the computed Term structure of one list (rows, heads, parts, unfiled Cards, uses, faults, coverage), and `get_card`, `get_cards` and `get_tree` carry each Term Card's `term_role`, `term_list` and `term_uses` ([MCP server](mcp-server.md)).
 
 ## Behaviour
 
@@ -284,7 +318,8 @@ A Card with no inbound Links ends at the marker line: `# T\n\n<!-- zt:reverse-li
 | `bibtex` | `TEXT`, non-NULL only for Literature Cards | raw BibTeX, stored unchanged | input of `parse_metadata` |
 | `text` | `TEXT NOT NULL` | the Markdown Card text above | `ParsedCard` |
 | `workspace` | `TEXT NOT NULL DEFAULT 'human' CHECK(IN ('human','agent'))` | | `Workspace` |
-| `card_type` | `TEXT NOT NULL DEFAULT 'idea' CHECK(IN ('idea','event','finding','model','hub'))` | | `CardType` |
+| `card_type` | `TEXT NOT NULL DEFAULT 'idea' CHECK(IN ('idea','event','finding','model','hub','term'))` | | `CardType` |
+| `term_name` | `TEXT`, `CHECK(term_name IS NULL OR length BETWEEN 1 AND 40)`, `CHECK(term_name IS NULL OR card_type = 'term')` | the exact name of a named Term Card; NULL for a list or another type | `term::normalize_name` |
 
 The table definition and its migrations are in `cards_table`, `ensure_card_type_column`, `ensure_workspace_column`, `ensure_finding_cards`, and `ensure_markdown_cards` in `src/main.rs` ([Service, CLI and storage](service-and-cli.md)). `metadata.card_format = 'markdown'` records that `from_legacy_text` has run.
 
@@ -388,6 +423,7 @@ What they cover:
 
 - `src/card.rs`: compose/parse round trip, empty body, templates, the marker's uniqueness, heading rules (`#Title`, `## x`, closing `#`, `C#`), Literature text without a heading, the Reverse link format, legacy conversion.
 - `src/card_type.rs`: names, case and whitespace, the unknown-type error, `from_stored` fallback.
+- `src/term.rs`: name normalization, the field protocol, the type rule, and the placement walk: each role, a Side successor of a head, another name, a synthetic cycle refused, and a chain past `MAX_CHAIN` refused with the depth reason. `tests/term_structure.rs` drives the same roles and faults through the real MCP reads.
 - `src/literature.rs`: identity and title normalization, refusal of `@comment` / `@preamble` / `@string`, two entries, no or empty title, macro title; Citation key grammar and reserved stems.
 - `src/workspace.rs`: name parsing (`ai`), `from_stored` fallback, Access matrix and error text.
 - `src/link.rs`: exact ranges, strict errors, rendering classification, old-versus-new Broken targets, byte-exact rewriting and counts, Reverse link dedupe and order, code spans and fences (unclosed fence, unmatched backtick), Broken link source lines.
@@ -406,6 +442,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 - **Citation key is the BibTeX entry key, ASCII and filename-safe.** The dump writes `<citation-key>.bib`, so keys exclude Windows reserved stems and are unique case-insensitively while Links stay case-sensitive. A real BibTeX parser is used, the raw string is stored unchanged, and only the display title is normalized ([docs/literature-card-design.md](../literature-card-design.md)).
 - **Workspaces share one address space.** Links keep one meaning everywhere; Cards and trees never cross Workspaces; regenerating a human Card's Reverse links is not a change to it ([docs/workspaces-and-mcp-design.md](../workspaces-and-mcp-design.md)).
 - **Type is row data, not formatting.** It is stored on the row, survives moves and renames, and body conventions are taught, not validated ([docs/event-and-model-cards-design.md](../event-and-model-cards-design.md), [docs/finding-cards-design.md](../finding-cards-design.md), [docs/hub-cards-design.md](../hub-cards-design.md)).
+- **A Term role is computed, never stored.** `list`, `card`, `part`, `unfiled` follow only from the Card type, the exact `term_name`, and the placement, the way model faults follow from filed parts and Links. A stored discriminator or an ownership table would be a second truth that placement changes could contradict; the read recomputes it from one transaction (issue #150, design §9.2).
 
 ### Pitfalls
 
@@ -424,6 +461,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 
 ## Change history
 
+- `2026-10-25` — S08 (#150): `src/term.rs` computes the Term structure beside the name it already owns. `Role` (`list`, `card`, `part`, `unfiled`), `place` (one placement walk, `MAX_CHAIN = 128`, a typed `Placement` refusal for a cycle or a too-long chain), `role`, `facts`, `resolve_list` (a list, a descendant, or the one list of a tree, with every ambiguous list named), and `structure` (rows, `row_duplicates`, heads, parts, unfiled Cards, uses, the seven faults, coverage). The table parse moved earlier into the shared text module; `term_rows_raw` and `term_row_duplicates` add the raw rows a publication must resolve before one head per row. No schema, name grammar, or fingerprint changed (zt 0.29.0, zt-check 0.6.0).
 - `2026-10-24` — S07 (#149): `CardType::Term` and the nullable `cards.term_name` column. `src/term.rs` owns the one name parser (trim; at most 40 Unicode scalar values; one line; no `[`, `]`, `@`, `|`, backtick), the `term` field protocol (omitted/null/set), the Regular-Card rule and the one-row write. The authored fingerprint appends `term_name\0<name>\0` only for a nonempty name, so existing Lock seals keep their bytes; the SQL wrapper keeps its eight-argument form and adds a nine-argument term-aware one. The dump manifest gains `term_names`.
 - `2026-10-22` — Tree Lock S04 (#127): the reviewed identity now has an owner history beside it. A note change is one `lock_events` row with the previous and the new note and changes no authored fingerprint, seal or pin, and an unlock deletes only the Lock's live `lock_members`/`lock_pins` rows while its initial `lock` event keeps every promised address, row and fingerprint, which `GET /api/locks` reads back as the Lock's `members` and `pins`. Authored identity, the seal framing and the pin rules are unchanged.
 - `2026-10-21` — Tree Lock S02 (#125): pins are one row per distinct `(locked source row, existing target row)` pair, so a repeated authored macro deduplicates while two sources keep separate rows; a cross-Workspace Link qualifies; only macros the ordinary parser reads as authored Links qualify (fenced or inline code, generated Reverse text, artifacts, Document links and `data-zt` chart navigation do not); a pinned target that is also a Locked member obeys that Lock; and a Broken Link present at lock time is retained as a warning with its source and target, creates no pin, and joins the promise only after an unlock and a new Lock.

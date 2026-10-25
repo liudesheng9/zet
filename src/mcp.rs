@@ -120,7 +120,11 @@ trees in a `邻近` group. get_hub reports a hub's lines, upper and lower hubs, 
 register its flattened entries too; get_register reads those entries for one Workspace (an absent \
 register answers `register_missing`, not an error); list_hubs \
 shows the hub graph and the hubs the policy requires but the Workspace lacks; move_card also takes `before` \
-(another Card's place) and `alone` (only the Card; its chain closes the gap). Write Card text \
+(another Card's place) and `alone` (only the Card; its chain closes the gap). A Term Card (`type` `term`) \
+defines one term: a name makes it a head (an immediate Side successor of the list) or a continuation part \
+(a same-named Direct successor of a head or part), and no name makes it a Term list whose body holds the \
+book's four-column term table. get_terms reads one list's rows, heads, parts, unfiled Cards, uses, coverage \
+and faults; a role is computed, never stored. Write Card text \
 plainly: one statement per sentence, no semicolons, active voice, one term per meaning. Card \
 bodies may hold TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the GUI \
 renders. delete_card, move_card, insert_card, and Citation key renames return a plan first; \
@@ -258,7 +262,7 @@ impl Server {
                 Ok(match call_tool(name, arguments) {
                     Ok(value) => {
                         let result = tool_result(value, false);
-                        if matches!(name, "get_cards" | "get_tree" | "export_titles") || (name == "apply_batch" && arguments["preview"] == true) {
+                        if matches!(name, "get_cards" | "get_tree" | "export_titles" | "get_terms") || (name == "apply_batch" && arguments["preview"] == true) {
                             let size = serde_json::to_vec(&result)
                                 .map_err(|e| {
                                     RpcError::invalid_params(&format!(
@@ -292,6 +296,7 @@ impl Server {
                             .or_else(|| error.downcast_ref::<crate::tree_lock::IndexRefusal>().map(crate::tree_lock::IndexRefusal::value))
                             .or_else(|| error.downcast_ref::<crate::gate::Refusal>().map(crate::gate::Refusal::value))
                             .or_else(|| error.downcast_ref::<crate::gate::Incomplete>().map(crate::gate::Incomplete::value))
+                            .or_else(|| error.downcast_ref::<crate::term::Placement>().map(crate::term::Placement::value))
                             .unwrap_or_else(|| json!({ "error": format!("{error:#}") })),
                         true,
                     ),
@@ -428,6 +433,16 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             let terms_for = optional_string(args, "at")?;
             let terms_for = (!terms_for.is_empty()).then_some(terms_for);
             crate::read::register(&root, workspace, &entries, terms_for.as_deref())
+        }
+        "get_terms" => {
+            // The structure is read whole in one revision; a page bound would silently cut the
+            // rows, heads, parts or uses a coverage decision needs (S08-AC04).
+            for bound in ["limit", "offset", "entry_limit", "entry_offset", "rows_limit"] {
+                if args.get(bound).is_some_and(|value| !value.is_null()) {
+                    bail!("get_terms reads the whole list and takes no page bound; remove `{bound}`");
+                }
+            }
+            crate::read::terms(&root, &string_arg(args, "at")?)
         }
         "ask_box" => {
             let ask = crate::entry::AskArgs::from_args(args)?;
@@ -1161,6 +1176,20 @@ fn tool_definitions() -> Vec<Value> {
                 Value::Object(properties)
             },
             &["workspace"],
+            true,
+            false,
+        ),
+        tool(
+            "get_terms",
+            "Get terms",
+            "Read the computed structure of one Term list: `rows` (the list body's four-column table in source order, each with its `term`, `avoid`, `meaning`, `defined`, the `heads` that publish it by exact spelling, and `published`), `row_duplicates` (raw rows whose names are the same exactly or only in case, which the compatibility table reader would fold into one row and a publication must resolve first), `heads` (each with its address, exact `term`, title, wire `role` `card`, the `parts` it continues and its `uses` count), `parts` (each with the `head` it continues), `unfiled` Cards of the list's subtree, `uses` (each stored Term use: source, title, target, authored label, occurrence count), the seven structure `faults` (`term_unfiled`, `term_duplicate`, `term_row_without_card`, `term_card_without_row`, `term_part_name`, `term_label_mismatch`, `term_link_target`), `coverage` (rows, raw_rows, published, missing, heads, parts, unfiled, uses), and the `archive_revision`/`archive_identity` it was read at. A role is computed from the Card type, its exact name and its placement; nothing stores it. `at` names a Term list, any Card under one, or a tree that holds exactly one Term list; a tree with several lists is refused by name, never silently read as the first. The read is whole and takes no page bound.",
+            json!({
+                "at": {
+                    "type": "string",
+                    "description": "A Term list address, any Card under one, or a tree that holds exactly one Term list.",
+                },
+            }),
+            &["at"],
             true,
             false,
         ),

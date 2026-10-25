@@ -439,7 +439,10 @@ pub(crate) fn card(root: &Path, at: &str) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let snapshot = context(&tx, &[at.to_string()], true)?;
-    let result = card_value(&snapshot, at)?;
+    let mut result = card_value(&snapshot, at)?;
+    if let Some(card) = snapshot.by_address.get(at) {
+        attach_term_facts(&tx, &mut result, card)?;
+    }
     log_large_context(
         root,
         "get_card",
@@ -449,6 +452,34 @@ pub(crate) fn card(root: &Path, at: &str) -> Result<Value> {
     );
     tx.commit()?;
     Ok(result)
+}
+
+/// The computed Term facts of one Card (S08, #150): its `term_role`, the `term_list` it belongs
+/// to and how many stored Term uses name it. A Card of another type carries none, so every Card
+/// read keeps its existing shape.
+fn attach_term_facts(conn: &Connection, value: &mut Value, card: &Card) -> Result<()> {
+    if let Some(facts) = crate::term::facts(conn, card)?
+        && let Some(fields) = facts.as_object()
+    {
+        for (key, field) in fields {
+            value[key] = field.clone();
+        }
+    }
+    Ok(())
+}
+
+/// The computed structure of one Term list (S08, #150): its table rows, heads, parts, unfiled
+/// Cards, Term uses, coverage and faults, read in one transaction together with the revision and
+/// archive identity they describe.
+pub(crate) fn terms(root: &Path, at: &str) -> Result<Value> {
+    let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let mut value = crate::term::structure(&tx, at)?;
+    let identity = archive_identity(&tx, root)?;
+    value["archive_revision"] = json!(crate::link_index::revision(&tx)?);
+    value["archive_identity"] = identity;
+    tx.commit()?;
+    Ok(value)
 }
 
 pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Value> {
@@ -485,7 +516,11 @@ pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Val
     let mut values = Vec::new();
     for card in &cards {
         values.push(match &snapshot {
-            Some(snapshot) => card_value(snapshot, &card.address)?,
+            Some(snapshot) => {
+                let mut value = card_value(snapshot, &card.address)?;
+                attach_term_facts(&tx, &mut value, card)?;
+                value
+            }
             None => text_facts(&tx, card, &lean)?,
         });
     }
@@ -546,6 +581,7 @@ pub(crate) fn tree(root: &Path, tree: &str, bodies: bool) -> Result<Value> {
             value["text"] = json!(card.text);
             value["bibtex"] = json!(card.bibtex);
         }
+        attach_term_facts(&tx, &mut value, card)?;
         cards.push(value);
     }
     let value = json!({"tree":tree,"root":root_address,"workspace":root_card.workspace.id(),"zone":crate::ops::zone(root_card),"title":snapshot.title(&root_address),"cards":cards,"complete":true,"archive_revision":crate::link_index::revision(&tx)?});

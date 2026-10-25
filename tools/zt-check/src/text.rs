@@ -555,6 +555,56 @@ pub struct TermRow {
 /// row has been read; a later row that names the same term (case ignored) replaces the earlier
 /// one, as R6's ordered hashtable does.
 pub fn term_table(body: &str) -> Vec<TermRow> {
+    term_rows(body, true)
+}
+
+/// Every parsed row of one book Card's term table in source order, before the compatibility
+/// reader's case-insensitive replacement (S08, #150; design 9.3). A publisher that allocates one
+/// head per row reads this, so the reader that folds a row away for R6 never hides a row that
+/// needs its own Card. The name kept for a row is exactly its table cell: no normalization,
+/// case folding, or qualifier removal happens here.
+pub fn term_rows_raw(body: &str) -> Vec<TermRow> {
+    term_rows(body, false)
+}
+
+/// One ambiguous group of raw term-table rows: rows whose names are the same exactly or after
+/// case folding (the compatibility reader's [`key`]), so it would fold them into one row while
+/// they need one decision before publication (S08, #150; design 9.3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TermRowDuplicate {
+    /// The first spelling seen for the group.
+    pub term: String,
+    /// Every row's exact spelling, in source order.
+    pub spellings: Vec<String>,
+    /// The 1-based row numbers of the raw table.
+    pub rows: Vec<usize>,
+}
+
+/// The raw rows the compatibility reader cannot keep apart: an exact or case-equivalent name in
+/// more than one row. Empty when every row names its own term.
+pub fn term_row_duplicates(body: &str) -> Vec<TermRowDuplicate> {
+    let mut groups: Vec<TermRowDuplicate> = Vec::new();
+    for (index, row) in term_rows_raw(body).into_iter().enumerate() {
+        match groups
+            .iter_mut()
+            .find(|group| key(&group.term) == key(&row.term))
+        {
+            Some(group) => {
+                group.spellings.push(row.term);
+                group.rows.push(index + 1);
+            }
+            None => groups.push(TermRowDuplicate {
+                term: row.term.clone(),
+                spellings: vec![row.term],
+                rows: vec![index + 1],
+            }),
+        }
+    }
+    groups.retain(|group| group.spellings.len() > 1);
+    groups
+}
+
+fn term_rows(body: &str, compatibility: bool) -> Vec<TermRow> {
     let mut rows: Vec<TermRow> = Vec::new();
     let mut in_table = false;
     for line in body.split('\n') {
@@ -574,9 +624,13 @@ pub fn term_table(body: &str) -> Vec<TermRow> {
         }
         let Some((term, avoid, meaning, defined)) = term_cells(t) else { continue };
         let row = TermRow { term, avoid, meaning, defined };
-        match rows.iter_mut().find(|known| key(&known.term) == key(&row.term)) {
-            Some(entry) => *entry = row,
-            None => rows.push(row),
+        if compatibility {
+            match rows.iter_mut().find(|known| key(&known.term) == key(&row.term)) {
+                Some(entry) => *entry = row,
+                None => rows.push(row),
+            }
+        } else {
+            rows.push(row);
         }
     }
     rows
@@ -829,6 +883,37 @@ mod tests {
         assert!(read_terms(plain).is_empty());
         assert_eq!(term_table(plain).len(), 1);
         assert!(term_table("没有术语表的卡").is_empty());
+    }
+
+    /// S08 (#150) AC05: the publication reader sees every raw row before the compatibility
+    /// reader folds a case-equivalent repeat away, and reports the clash as ambiguous.
+    #[test]
+    fn raw_rows_keep_the_duplicates_the_compatibility_reader_folds_away() {
+        let body = "术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| GDP | 国民生产总值 | 产出 | §1 |\n| GDP | 国内生产总值 | 产出 | §2 |\n| Gdp | 生产总值 | 产出 | §3 |\n| 均衡 | — | 不变 | §4 |";
+        let raw = term_rows_raw(body);
+        assert_eq!(
+            raw.iter().map(|row| row.term.as_str()).collect::<Vec<_>>(),
+            ["GDP", "GDP", "Gdp", "均衡"]
+        );
+        assert_eq!(raw[1].avoid, ["国内生产总值"], "raw order and content are kept");
+        // The compatibility reader is unchanged: one row survives, the later spelling wins.
+        let cooked = term_table(body);
+        assert_eq!(cooked.len(), 2);
+        assert_eq!(cooked[0].term, "Gdp");
+        assert_eq!(cooked[0].avoid, ["生产总值"]);
+
+        let duplicates = term_row_duplicates(body);
+        assert_eq!(duplicates.len(), 1, "{duplicates:?}");
+        assert_eq!(duplicates[0].term, "GDP");
+        assert_eq!(duplicates[0].spellings, ["GDP", "GDP", "Gdp"]);
+        assert_eq!(duplicates[0].rows, [1, 2, 3]);
+
+        // Two rows that name different terms are no ambiguity, and one row is no clash.
+        let distinct = "术语表\n| 术语 | 不用 |\n| --- | --- |\n| 均衡 | — |\n| 弹性 | — |\n";
+        assert!(term_row_duplicates(distinct).is_empty());
+        assert!(term_row_duplicates("术语表\n| 术语 | 不用 |\n| --- | --- |\n| 均衡 | — |\n").is_empty());
+        assert!(term_row_duplicates("没有术语表的卡").is_empty());
+        assert!(term_rows_raw("没有术语表的卡").is_empty());
     }
 
     #[test]
