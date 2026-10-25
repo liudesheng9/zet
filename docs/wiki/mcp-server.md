@@ -9,7 +9,7 @@ paths:
   - "tests/term_projection.rs"
   - "tests/term_editing.rs"
   - ".mcp.json"
-synced: f0ddf286449c
+synced: 4f21ea0f2a7b
 updated: 2026-10-25
 ---
 

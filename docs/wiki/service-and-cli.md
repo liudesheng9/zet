@@ -15,14 +15,13 @@ paths:
   - "tests/gate_writes.rs"
   - "tests/tree_lock.rs"
   - "tests/term_portability.rs"
-  - "tests/term_editing.rs"
   - "tests/autostart.rs"
   - "tests/closed_stdout.rs"
   - "tests/check_core.rs"
   - "tests/check_contract.rs"
   - "tests/support/**"
   - "tests/fixtures/**"
-synced: f0ddf286449c
+synced: 4f21ea0f2a7b
 updated: 2026-10-25
 ---
 

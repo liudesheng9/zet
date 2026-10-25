@@ -5,8 +5,7 @@ paths:
   - "src/ops.rs"
   - "src/batch.rs"
   - "src/place.rs"
-  - "tests/term_editing.rs"
-synced: f0ddf286449c
+synced: 4f21ea0f2a7b
 updated: 2026-10-25
 ---
 
