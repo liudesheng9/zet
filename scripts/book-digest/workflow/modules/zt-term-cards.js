@@ -380,7 +380,18 @@ Return ok=true, deleted (how many), not_deleted ("session_id: reason" for each),
           const claimed = await ledger('claim', `next -Out "${OUT}" -Layer termcards -Take 1 -Owner "term cards book" -Wait 60 -Lease 3600`)
           const unit = ((claimed.line && claimed.line.units) || []).find((u) => u && typeof u.id === 'string' && u.id.startsWith('termcards/book@'))
           if (!unit) {
+            // A resume can find the whole branch already settled: every unit is done, so the layer's
+            // gate is complete and there is nothing left to claim. That is not a failure.
+            const gate = await ledger('gate', `gate -Out "${OUT}" -Layer termcards -Brief`, true)
+            const view = gate.line || {}
             report.readiness = readiness
+            if (view.complete === true) {
+              report.status = 'done'
+              report.already_complete = true
+              report.book_unit = units.book || report.book_unit
+              log('Term cards: every unit of the branch is already complete; nothing to claim.')
+              return report
+            }
             report.status = 'failed'
             report.error = 'the Term-card book unit is not ready: a writer job or the Term table it waits on is not done'
             report.staging = WORK

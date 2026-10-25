@@ -678,6 +678,7 @@ function runtime(kind, opts = {}) {
           led.add('termcards/t002@1', 'termcards', { job: termJobs[1] })
           const book = led.add('termcards/book@1', 'termcards', {})
           book.state = 'registered'
+          if (opts.termAlreadyDone) { led.finish('termcards/t001@1'); led.finish('termcards/t002@1'); led.finish('termcards/book@1') }
           return { ok: true, exit: 0, output: json({ ok: true, step: 'plan', book: 'Key', revision: 1, plan_hash: 'ph-terms', terms: 2, math: 0, concept: 2, jobs: termJobs, units: { book: 'termcards/book@1', jobs: { t001: 'termcards/t001@1', t002: 'termcards/t002@1' } } }) }
         }
         if (step === 'jobs') {
@@ -707,6 +708,7 @@ function runtime(kind, opts = {}) {
         // The real ledger blocks the pass on its unfinished dependencies: a Term-card book that is
         // not done (or a scenario that blocks the pass) leaves nothing ready to claim.
         if (opts.termLinkBlocked || (termBook && termBook.state !== 'done')) unit.state = 'blocked'
+        if (opts.termAlreadyDone) led.finish('termlink/book@1')
         return { ok: true, exit: 0, output: json({ ok: true, step: 'plan', book: 'Key', plan_revision: 1, plan_hash: 'ph-link', cards_scanned: 9, cards_changed: 1, cards_refused: 0, complete: true, unit: 'termlink/book@1' }) }
       }
       if (step === 'apply') {
@@ -1361,6 +1363,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const quiet = await run('econ', { ...base, figures: false }, { termLinkNoop: true })
   check(quiet.result.term_link.status === 'done' && quiet.result.term_link.no_op === true && quiet.led.find('termlink/book@1').state === 'done', 'S24: a proven Term-link no-op completes its unit with no edit')
   // The math variant runs the same inherited pair.
+  // A resume of a settled branch: every Term unit is done, so both stages find nothing to claim and fail nothing.
+  const settled = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { termAlreadyDone: true, retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1'], ['termcards', 'termcards/book@1'], ['termlink', 'termlink/book@1']], retainedDone: ['termcards', 'termlink'] })
+  check(settled.result && settled.result.mode === 'resume' && settled.report.stages['term-cards'].status === 'done' && settled.report.stages['term-link'].status === 'done', `S24: a resume of a settled Term branch claims nothing and fails nothing (${JSON.stringify([settled.report && settled.report.stages && settled.report.stages['term-cards'], settled.report && settled.report.stages && settled.report.stages['term-link']])})`)
+  check(settled.result && settled.result.term_cards && settled.result.term_cards.status === 'done' && settled.result.term_link && settled.result.term_link.status === 'skipped' && settled.termCalls.every((c) => c.step !== 'apply'), 'S24: a settled Term branch runs no plan/apply work on resume and reports itself complete')
   const mathFull = await run('math', { ...base, figures: false })
   check(mathFull.report.stages['term-cards'].status === 'done' && mathFull.report.stages['term-link'].status === 'done', 'S24 (math): the inherited Term stages run in the mathematics variant')
 }
