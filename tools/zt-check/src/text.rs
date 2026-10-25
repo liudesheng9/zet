@@ -736,6 +736,24 @@ impl std::fmt::Display for LinkFault {
 
 impl std::error::Error for LinkFault {}
 
+/// A refused Link macro with the UTF-8 byte offset of the macro that stopped the strict scan
+/// (design 13.3, R0369): a deterministic prose editor names the exact span a Card must repair
+/// instead of guessing its intent. [`parse_links`] keeps the byte-free error old callers read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinkFaultAt {
+    pub fault: LinkFault,
+    /// The byte offset of the refused macro: its opening `[[` (or the stray `]]`).
+    pub at: usize,
+}
+
+impl std::fmt::Display for LinkFaultAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at byte {}", self.fault.message(), self.at)
+    }
+}
+
+impl std::error::Error for LinkFaultAt {}
+
 /// Every Link macro outside Markdown code, valid or not; it never fails. A Term-like macro inside
 /// inline or display math is literal, so it is no occurrence; an ordinary macro there is still an
 /// ordinary Link, as it always was (R0254).
@@ -748,6 +766,12 @@ pub fn link_occurrences(text: &str) -> Vec<LinkOccurrence<'_>> {
 /// stray `]]`, and a malformed Term label. The address grammar and the target lifecycle stay in
 /// the root's Link wrapper, which owns them.
 pub fn parse_links(text: &str) -> Result<Vec<LinkOccurrence<'_>>, LinkFault> {
+    scan_links(text, true).map_err(|refused| refused.fault)
+}
+
+/// [`parse_links`] with the refused macro's byte offset, so a deterministic editor can name the
+/// line a Card must repair (S22, #160).
+pub fn parse_links_at(text: &str) -> Result<Vec<LinkOccurrence<'_>>, LinkFaultAt> {
     scan_links(text, true)
 }
 
@@ -796,9 +820,9 @@ pub fn strip_term_links(text: &str) -> String {
     out
 }
 
-fn scan_links(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>, LinkFault> {
+fn scan_links(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>, LinkFaultAt> {
     let code = code_ranges(text);
-    let math = math_ranges(text, &code);
+    let math = math_ranges_in(text, &code);
     let in_code = |index: usize| code.iter().find(|range| range.contains(&index));
     let in_math = |index: usize| math.iter().any(|range| range.contains(&index));
     let mut occurrences = Vec::new();
@@ -812,7 +836,10 @@ fn scan_links(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>, LinkF
         let content_start = start + 2;
         let Some(end_relative) = text[content_start..].find("]]") else {
             if strict {
-                return Err(LinkFault::UnclosedMacro);
+                return Err(LinkFaultAt {
+                    fault: LinkFault::UnclosedMacro,
+                    at: start,
+                });
             }
             break;
         };
@@ -830,13 +857,19 @@ fn scan_links(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>, LinkF
                 let target = &content[at + 1..];
                 if strict {
                     if target.contains('@') {
-                        return Err(LinkFault::SecondSeparator);
+                        return Err(LinkFaultAt {
+                            fault: LinkFault::SecondSeparator,
+                            at: start,
+                        });
                     }
                     if label.is_empty()
                         || label.chars().count() > MAX_TERM_NAME
                         || label.contains(['\n', '\r'])
                     {
-                        return Err(LinkFault::LabelLength);
+                        return Err(LinkFaultAt {
+                            fault: LinkFault::LabelLength,
+                            at: start,
+                        });
                     }
                 }
                 LinkOccurrence {
@@ -866,7 +899,12 @@ fn scan_links(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>, LinkF
             let index = tail + relative;
             match in_code(index) {
                 Some(range) => tail = range.end.max(index + 1),
-                None => return Err(LinkFault::StrayMacroEnd),
+                None => {
+                    return Err(LinkFaultAt {
+                        fault: LinkFault::StrayMacroEnd,
+                        at: index,
+                    });
+                }
             }
         }
     }
@@ -890,8 +928,14 @@ pub fn fenced_code_ranges(text: &str) -> Vec<Range<usize>> {
 
 /// Byte ranges of inline (`$...$`) and display (`$$...$$`) math. A Term-like macro inside one is
 /// literal (R0254); the span syntax is the one the prose projection above reads. A dollar sign
-/// inside Markdown code opens no math: code is literal too.
-fn math_ranges(text: &str, code: &[Range<usize>]) -> Vec<Range<usize>> {
+/// inside Markdown code opens no math: code is literal too. A deterministic prose editor that must
+/// protect formulas reads the same spans (S22, #160; design 13.4).
+pub fn math_ranges(text: &str) -> Vec<Range<usize>> {
+    math_ranges_in(text, &code_ranges(text))
+}
+
+/// [`math_ranges`] over an already-computed code set, so one scan can share its code ranges.
+fn math_ranges_in(text: &str, code: &[Range<usize>]) -> Vec<Range<usize>> {
     let bytes = text.as_bytes();
     let in_code = |index: usize| code.iter().any(|range| range.contains(&index));
     let mut ranges = Vec::new();
@@ -1330,6 +1374,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["0/2"]
         );
+    }
+
+    /// S22 (#160; design 13.3-13.4): the deterministic relinker names the exact macro a Card must
+    /// repair, and it reads the same dollar-math spans the shared Link scan treats as literal.
+    #[test]
+    fn a_refused_link_macro_names_its_fault_and_offset_and_math_spans_are_shared() {
+        for (text, fault) in [
+            ("前 [[0/1", LinkFault::UnclosedMacro),
+            ("前 ]]", LinkFault::StrayMacroEnd),
+            ("x [[@2/1|a]]", LinkFault::LabelLength),
+            ("x [[均衡\n@2/1|a]]", LinkFault::LabelLength),
+            ("x [[a@b@2/1|a]]", LinkFault::SecondSeparator),
+        ] {
+            let refused = parse_links_at(text).expect_err(text);
+            assert_eq!(refused.fault, fault, "{text:?}");
+            let expected = if fault == LinkFault::StrayMacroEnd {
+                text.find("]]").unwrap()
+            } else {
+                text.find("[[").unwrap()
+            };
+            assert_eq!(refused.at, expected, "{text:?}");
+            assert_eq!(
+                parse_links(text),
+                Err(fault),
+                "the byte-free error stays what old callers read"
+            );
+        }
+        assert_eq!(parse_links_at("[[均衡@2/1|a]]").unwrap().len(), 1);
+
+        // The shared math spans are the ones the Link scan already treats as literal.
+        let text = "比例 $x/y$ 与 $$z=1$$，代码 `$c$`，货币 \\$5。";
+        let spans: Vec<&str> = math_ranges(text)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
+        assert_eq!(spans, ["$x/y$", "$$z=1$$"]);
+        assert!(math_ranges("没有公式").is_empty());
+        assert!(math_ranges("`$c$`").is_empty(), "a code dollar opens no math");
     }
 
     #[test]

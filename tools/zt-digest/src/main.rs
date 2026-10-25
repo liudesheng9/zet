@@ -13,6 +13,8 @@
 //!   zt-digest pilot -Step plan|preflight|qualify -Staging <out> -Work <folder> ...   (the one-book pilot gate, #117)
 //!   zt-digest publish -Step plan|apply|check -Work <folder> [-Register <p>] [-Hub <p>] [-File <s>] ...   (the existing-register and crossing-hub publication gate, #119)
 //!   zt-digest resolve -Step plan|apply|check -Work <folder> [-File <s>] ...   (a separately selected historical resolution batch, #122)
+//!   zt-digest term-cards -Step plan|jobs|... -Staging <folder> ...   (the Term-card compiler, #159)
+//!   zt-digest term-link  -Step plan|apply -Staging <folder> ...   (the deterministic Term-link pass, #160)
 //!
 //! Each tool takes the parameters of the PowerShell script it replaces, in the
 //! same `-Name value` form (names ignore case; a switch is `-Name` alone), and
@@ -53,6 +55,7 @@ mod restate;
 mod skeleton;
 mod snapshot;
 mod term_cards;
+mod term_link;
 mod terms;
 mod topic_home;
 mod grow;
@@ -168,6 +171,7 @@ fn main() {
         "finding" => finding::cli(&rest),
         "terms" => terms::cli(&rest),
         "term-cards" => term_cards::cli(&rest),
+        "term-link" => term_link::cli(&rest),
         "skeleton" => skeleton::cli(&rest),
         "organize-survey" => organize::survey_cli(&rest),
         "organize-apply" => organize::apply_cli(&rest),
@@ -207,7 +211,7 @@ fn main() {
         }
         _ => {
             eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, card, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,
-       terms, term-cards, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch");
+       terms, term-cards, term-link, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch");
             Ok(2)
         }
     };

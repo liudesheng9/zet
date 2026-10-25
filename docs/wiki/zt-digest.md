@@ -59,6 +59,7 @@ updated: 2026-10-25
 | | `tools/zt-digest/src/event.rs`, `src/finding.rs`, `src/event/layer.rs` — `event` and `finding`; `layer.rs` is the cycle both share (plan, precheck, apply, report, state.json, the accepted `plan.json` candidate/job manifest, zt-check on the drafts, the `ZT_RACE_*` test seam) |
 | | `tools/zt-digest/src/terms.rs`, `src/skeleton.rs` — `terms` (book-terms.ps1), `skeleton` (book-skeleton.ps1, the audit in-process) |
 | | `tools/zt-digest/src/term_cards.rs` — `term-cards` (#159, S18): the per-book Term-card plan and its bounded writer jobs — the Term list read by role or its legacy `术语表` adapter, the frozen list/source/notation evidence and math/concept classification, the row-number job ids, `plan.json`/`jobs/`/`state.json`, and the registered `termcards/tNNN@<plan revision>` ledger units; `check`, `review-plan`, `fix-plan`, `apply` and `report` are declared and stop until S19 (#162) and S21 (#165) |
+| | `tools/zt-digest/src/term_link.rs` and `src/term_link/` — `term-link` (#160, S22): one book's deterministic, text-preserving Term-link plan — the role-scoped agent Literature read, the link-word/blocker vocabulary and leftmost-longest scan (`matches.rs`), the protected spans (`spans.rs`), one Card's byte substitutions and the preservation equation (`card.rs`), `plan.json`/`preview.md` and the plan content hash; `apply` is declared and stops until S23 (#163) |
 | | `tools/zt-digest/src/organize.rs` and `src/organize/` — `organize-survey` (`survey.rs`, the audit in-process; with `-Topics` the Topic survey of named agent Topics, `topic_survey`), `organize-apply` (`apply.rs`, one move per call with `-Moves`), `common.rs` (shared by terms, skeleton, and Organize) |
 | | `tools/zt-digest/src/figures.rs` — `figures` (attach-figures.ps1 with figures.ps1's functions, which `prepare` also uses) |
 | | `tools/zt-digest/src/prepare.rs` — `prepare` (prepare-book-digest.ps1) and `prepare-link` (prepare-link-pass.ps1) |
@@ -72,7 +73,7 @@ updated: 2026-10-25
 | | `scripts/install-zt-digest.ps1` — `cargo build --release` into `D:\zt-digest-target`, then copies `zt-digest.exe` beside `zt.exe` |
 | Depends on | [zt-check](zt-check.md) (library: `check::run_lines`, `mcp::Zt`, `mcp::scope` (the Literature scope), `reply_text`, `reply_error`); [MCP server](mcp-server.md) (`zt mcp`); [Service, CLI and storage](service-and-cli.md) (the service must be up) |
 | Used by | [Digest scripts](digest-scripts.md) (every digest script forwards to its tool; `zt-calls.ps1` writes through the helper path); [Digest workflows](digest-workflows.md) (`zdTool` runs every script as its tool); [Digest prompts](digest-prompts.md) (DeepSeek runs the helper); [Agent skills](agent-skills.md) (`skills/zt/SKILL.md` names the helper) |
-| Tests | `cargo test` in `tools/zt-digest` (`args`, `calls`, `ps`, `audit`, `card`, `model::text`, the explanation facts, the notes mapping and the source-fault decisions, the stage 2 tools' pure parts, and the term-card plan's list adapters, source evidence, classification, grouping, revisions and ledger registration, with `tests/term_cards_plan.rs` driving plan/jobs over a real scratch archive); every `scripts/book-digest/tests/*.tests.ps1` runs its tool through the forwarder (`run-all.ps1`); `tests/seam-zt-mcp.mjs` stands in for `zt mcp` in the Bridge fault and race tests; `explain-finish.tests.ps1` drives the Explain completion through the real commands; `source-notes.tests.ps1` drives the notes preparation, the group and model context packs, the `source-faults` tool and the compiler's plan recording; `cleanup-resources.tests.ps1` drives the resource registration, observation and checked cleanup completion; `finalize.tests.ps1` drives the finite finalization at its command boundary (the four branches, the changed-Card manifest, the new publication revisions and their reuse, the refused stale final audit and the refused second cycle); `service-health.tests.ps1` drives the bounded edit wait and its one log line, the fault/contention split, the active-run marker, the disappeared-and-restarted daemon, the reconnect and receipt replay, and the infrastructure fault of a service that stays down |
+| Tests | `cargo test` in `tools/zt-digest` (`args`, `calls`, `ps`, `audit`, `card`, `model::text`, the explanation facts, the notes mapping and the source-fault decisions, the stage 2 tools' pure parts, and the term-card plan's list adapters, source evidence, classification, grouping, revisions and ledger registration, and the term-link plan's protected spans, vocabulary, leftmost-longest matcher, one-Card transformation, preservation property and artifacts, with `tests/term_cards_plan.rs` and `tests/term_link_plan.rs` driving the commands over a real scratch archive); every `scripts/book-digest/tests/*.tests.ps1` runs its tool through the forwarder (`run-all.ps1`); `tests/seam-zt-mcp.mjs` stands in for `zt mcp` in the Bridge fault and race tests; `explain-finish.tests.ps1` drives the Explain completion through the real commands; `source-notes.tests.ps1` drives the notes preparation, the group and model context packs, the `source-faults` tool and the compiler's plan recording; `cleanup-resources.tests.ps1` drives the resource registration, observation and checked cleanup completion; `finalize.tests.ps1` drives the finite finalization at its command boundary (the four branches, the changed-Card manifest, the new publication revisions and their reuse, the refused stale final audit and the refused second cycle); `service-health.tests.ps1` drives the bounded edit wait and its one log line, the fault/contention split, the active-run marker, the disappeared-and-restarted daemon, the reconnect and receipt replay, and the infrastructure fault of a service that stays down |
 
 ## Concepts
 
@@ -91,8 +92,9 @@ updated: 2026-10-25
   | `math` | `math-compiler.ps1` | `prepare-link` | `prepare-link-pass.ps1` |
   | `concepts` | `concept-compiler.ps1` | `snapshot-topics` | `snapshot-topics.ps1` |
   | `register` | `register-compiler.ps1` (new, #101) | `term-cards` | (new, #159) |
+  | `term-link` | (new, #160) | | |
 
-  All 21 are ported. `book-of.ps1` and `relatedness.ps1` stay as PowerShell for old callers and their own tests; the tools use their Rust ports. `source-faults` is one more tool and replaces no script: it keeps the run's source-fault record and renders its report. `term-cards` (#159) replaces no script either: it is the Term-card compiler's plan and job steps.
+  All the scripts in this table are ported. `book-of.ps1` and `relatedness.ps1` stay as PowerShell for old callers and their own tests; the tools use their Rust ports. `source-faults` is one more tool and replaces no script: it keeps the run's source-fault record and renders its report. `term-cards` (#159) and `term-link` (#160) replace no script either: they are the Term-card compiler's plan and job steps, and the deterministic Term-link pass.
 - `Forwarder` — a PowerShell script whose body is replaced by a call of its tool (`& $exe <tool> @args`), kept so that callers and tests that name the script still work. `ZT_DIGEST` names the binary to use; otherwise it is `zt-digest` on PATH. Most forwarders rebuild `$args` first: an array becomes a comma-separated value, and `-Name:value`, which `pwsh -File` and `&` hand over as two arguments, becomes one again. A forwarder whose tool reads instruction files (`card`, `math`, `bridge`, `event`, `finding`, `terms`, `skeleton`, `prepare`) sets `ZT_DIGEST_SCRIPTS` to its own folder.
 - `Script paths` — job files name the scripts as the scripts named themselves: `HELPER:` the helper `skills\zt\scripts\zt-mcp.ps1` and the `dsh-*.zh.md` files in `scripts\book-digest`. `model::Scripts` takes them from the repository zt-digest was built from (`CARGO_MANIFEST_DIR`), or from `ZT_DIGEST_REPO`.
 - `PowerShell semantics` — what the scripts' output depended on and the ported tools keep: case-insensitive string comparison and hashtable keys, `Sort-Object` order (an unstable introsort with the zh-CN culture's case-insensitive collation), `@($null)` as one item, `[int]` rounding half to even, and `ConvertTo-Json` formatting (`src/ps.rs`).
@@ -175,6 +177,67 @@ zt-digest term-cards -Step plan|jobs|check|review-plan|fix-plan|apply|report
 - **Ledger.** In a prepared run (`<Staging>/ledger.sqlite3`) `plan` registers `termcards/tNNN@<plan revision>` and `termcards/book@<plan revision>`; each job waits for `terms/book@1` when that unit exists and the book waits for every job. The existing ledger stays the scheduler; `state.json` is not a second queue. `jobs -Jobs <one> -Token <claim>` renews a claimed job unit and checks its frozen input hash against the plan.
 - **Later slices.** `check`, `review-plan` and `fix-plan` are S19 (#162); `apply` and `report` are S21 (#165). Until then each prints one compact `not_implemented` line and exits 2, writing nothing.
 - **No archive write.** `plan` only calls `get_tree`/`get_card`/`get_cards` (raw bodies, never the label projection), and it stops when the archive revision moved under it. `tests/term_cards_plan.rs` proves the archive revision and the list's authored text are unchanged across plan and jobs.
+
+### The deterministic Term-link plan (S22, #160)
+
+`term-link` is the first slice of design §13: it exposes the whole declared command and implements
+`plan`, the text-preserving transformation a book's Term links come from.
+
+```text
+zt-digest term-link -Step plan|apply -Staging <folder>
+                    [-CitationKey <key>] [-Occurrences first|all]
+                    [-Cards <addresses>] [-Token <claim>] [-Apply]
+```
+
+- **Scope.** `plan` reads the Literature titles once (`export_titles`, Zone `literature`) and checks
+  that the staging folder's Citation key names an agent Literature tree. A Topic number, a human
+  tree, a missing tree, or a `-CitationKey` naming another book stops before a body is read. It
+  then reads the tree's bodies in bounded `get_cards` text batches and the archive's computed Term
+  structure (`get_terms`); all three reads must report one archive revision and the run's contract
+  identity when the staging folder is a prepared run. `get_tree` is deliberately not used: it
+  parses every body strictly and would refuse a whole tree for one malformed macro, while this pass
+  must name the Card that needs correction. The root, the Term list, a Card whose first body line
+  is the structure marker `本卡是《…》的结构卡`, and the `符号表…`/`notation…` table are excluded by
+  those roles; a named Term Card that defines `符号表` is prose, not the notation table. `-Cards`
+  may name an exact subset of the eligible Cards; an address outside the tree, a Card the pass
+  excludes, or a repeat is refused. Term heads and parts are in scope with their own exact term
+  protected, and their uses of other terms link normally.
+- **Vocabulary and matching.** Link words are the exact row spellings with one valid head and
+  automatic linking enabled. Blockers are every `不用` word, every name without a usable head or
+  with `自动链接：否`, the conservative short names (one Han character, or a Latin name under three
+  letters), the ambiguous bare form of qualified homonyms, and named Term Cards that publish no
+  row. One leftmost-longest literal scan matches inside eligible prose runs, with blocker precedence
+  on an exact tie and case-sensitive ASCII word boundaries for Latin edges (`GDP` never links inside
+  `GDPR` or `GDP_2024`). `-Occurrences first` links the first eligible unblocked occurrence per term
+  and body; `all` links every one. A protected or blocked occurrence never consumes the
+  first-occurrence allowance. Duplicate list rows stop the plan before anything is frozen.
+- **Protected spans.** Without reserializing Markdown, the pass protects fenced and inline code,
+  chart fences, dollar and LaTeX math, every Link macro, Markdown links and images (inline,
+  reference, definition and autolink forms), raw HTML, headings, table rows, `来源`/`出处` lines,
+  Term head metadata lines, generated Reverse text, the current term in its own head and parts, and
+  the uncertain tail of an unclosed code or math delimiter. Emphasis delimiters and backslash
+  escapes split the eligible runs as well, so a term split by markup is never linked.
+- **Normalization and preservation.** Every same-book Term macro reads as its label first: a stale,
+  missing or retyped target is repaired to the label's one valid head, a repeated or unlinkable use
+  becomes its plain label, and a correct use is re-emitted unchanged. A foreign book's macro is
+  retained byte for byte and reported, as is a non-book (Topic) target. Malformed Term-like markup
+  refuses that Card with its line and byte offset while the rest of the plan still runs. No edit is
+  accepted unless `strip_term_links(new_body) == strip_term_links(old_body)` byte for byte; the
+  shared projection does the comparison, so ordinary Links, formulas, punctuation, whitespace,
+  Unicode and metadata never change.
+- **Artifacts and determinism.** `<Staging>/term-link/plan.json` freezes the archive identity and
+  revision, the book, syntax/compiler/checker/rule versions, the occurrence policy and exact
+  `-Cards` subset, the list (address, title, body hash, rows, duplicates), the row→head→auto-link
+  mapping with its mapping and auto-link fingerprints, the input Cards' authored and parsed-body
+  hashes plus the plan content hash, every byte substitution (`link`/`repair`/`normalize`), retained
+  and kept uses, skip reasons at UTF-8 byte offsets, and each changed Card's exact output body.
+  `preview.md` shows the totals, every changed prose line and every refused Card. Neither file
+  holds a clock or run random: equal frozen inputs produce equal bytes, Cards stay in natural
+  address order and terms in row order.
+- **Read-only and later slice.** `plan` writes no Card and takes no Lock precheck (a Lock governs
+  writes); the integration test proves the archive revision and every authored Card text are
+  unchanged. `apply` is S23 (#163); until then it prints one compact `not_implemented` line with its
+  slice and issue and exits 2, writing nothing.
 
 ### Prepared input contract for ledger binding
 
