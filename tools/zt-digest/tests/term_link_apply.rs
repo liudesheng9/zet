@@ -880,6 +880,90 @@ fn a_locked_tree_stops_the_apply_with_the_typed_refusal_and_exit_two() {
     assert!(mcp.body(&anchor).contains("[[均衡@"));
 }
 
+/// S23-AC04: a receipt that no longer claims this plan's planned output is one typed
+/// `output_diverged` stop (exit 1), never a silent success. The archive replays a damaged stored
+/// receipt before its guard and writer, which is the only deterministic way to produce that answer
+/// without a racing second writer; the Card itself is already at its planned output.
+#[test]
+fn a_receipt_that_is_not_the_planned_output_is_a_typed_stop_not_a_success() {
+    let program = zt_program().expect("this seam needs a zt binary");
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    let (root, anchor, _list, _balance) = book(&mut mcp, "testbook2026", "Test Book");
+    created(&mut mcp, &anchor, "direct", "第二章", "净生产函数决定产出。");
+    let work = tempfile::tempdir().expect("work");
+    let staged = staging(work.path(), "book", &root, "Test Book");
+    let stage = staged.to_str().unwrap();
+    plan_of(&zt, stage);
+    let output = apply(&zt, stage);
+    assert!(
+        output.status.success(),
+        "apply: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(last_json(&output)["cards_written"], 2);
+    let applied_body = mcp.body(&anchor);
+    assert!(applied_body.contains("[[均衡@"), "{applied_body}");
+    let revision = mcp.revision();
+    let receipts = zt.receipts();
+    assert_eq!(receipts, 2);
+    // Damage the anchor's stored receipt: its recorded output is no longer the plan's output.
+    let db = zt.archive.join("zt.sqlite3");
+    let conn = rusqlite::Connection::open(&db).expect("open the scratch archive");
+    conn.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    let mut damaged = 0usize;
+    {
+        let mut statement = conn
+            .prepare("SELECT op_key,result_json FROM applied_ops WHERE op_key LIKE 'term-link-%'")
+            .expect("receipts");
+        let rows: Vec<(String, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("read receipts")
+            .collect::<Result<_, _>>()
+            .expect("receipt rows");
+        for (op_key, text) in rows {
+            let mut result: Value = serde_json::from_str(&text).expect("receipt JSON");
+            if result["address"] != anchor.as_str() {
+                continue;
+            }
+            result["after_fingerprint"] = json!("f".repeat(64));
+            conn.execute(
+                "UPDATE applied_ops SET result_json=?1 WHERE op_key=?2",
+                rusqlite::params![result.to_string(), op_key],
+            )
+            .expect("damage the receipt");
+            damaged += 1;
+        }
+    }
+    drop(conn);
+    assert_eq!(damaged, 1, "the anchor has exactly one receipt to damage");
+    // The same frozen plan replays its stable keys; the damaged receipt is not a success.
+    let output = apply(&zt, stage);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a divergent receipt is a content stop: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let said = last_json(&output);
+    assert_eq!(said["ok"], false);
+    assert_eq!(said["code"], "output_diverged");
+    assert_eq!(said["complete"], false);
+    assert_eq!(said["cards_written"], 0);
+    assert_eq!(said["cards_replayed"], 2);
+    let report = report_json(&staged);
+    assert_eq!(report["stop"]["code"], "output_diverged");
+    assert_eq!(report["stop"]["exit"], 1);
+    assert_eq!(report["chunks"][0]["state"], "replayed");
+    assert_eq!(report["stop"]["detail"]["address"], anchor.as_str());
+    assert_eq!(report["stop"]["detail"]["receipt"], json!("f".repeat(64)));
+    assert_eq!(mcp.revision(), revision, "a divergence writes nothing");
+    assert_eq!(zt.receipts(), receipts, "a replay writes no new receipt");
+    assert_eq!(mcp.body(&anchor), applied_body, "the Card is untouched");
+}
+
 #[test]
 fn a_refused_card_is_reported_and_the_rest_of_the_plan_is_applied() {
     let program = zt_program().expect("this seam needs a zt binary");
