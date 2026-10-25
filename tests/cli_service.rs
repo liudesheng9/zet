@@ -629,6 +629,51 @@ fn service_bootstraps_configured_archive_root_and_reports_status() {
         .stdout(predicate::str::contains("service already stopped"));
 }
 
+/// S28 (#170, US093): the executable publishes its own version and capability contract, so a
+/// release check can tell the executable, rule, diagnostic and archive-schema contracts apart
+/// without reading the source tree. `zt version` stays the one plain human line.
+#[test]
+fn version_publishes_the_executable_rule_schema_and_capability_contract() {
+    let home = TestHome::new();
+    home.cmd()
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(format!(
+            "zt {}\n",
+            env!("CARGO_PKG_VERSION")
+        )));
+
+    let out = home
+        .cmd()
+        .args(["version", "--json"])
+        .output()
+        .expect("zt version --json");
+    assert!(
+        out.status.success(),
+        "zt version --json failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("zt version --json prints one JSON object");
+    assert_eq!(value["zt"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(value["checker"], zt_check::VERSION);
+    assert_eq!(value["rule_version"], zt_check::contract::RULE_VERSION);
+    assert_eq!(
+        value["diagnostic_schema"],
+        zt_check::contract::DIAGNOSTIC_SCHEMA
+    );
+    assert_eq!(
+        value["applicability_version"],
+        zt_check::contract::APPLICABILITY_VERSION
+    );
+    // The Tree Lock schema generation this build installs and understands: the Term-aware
+    // generation 2, whose older-binary floor is a real refusal, not a note.
+    assert_eq!(value["schema"], "2");
+    assert_eq!(value["capabilities"]["term_links"], true);
+    assert_eq!(value["capabilities"]["term_cards"], true);
+}
+
 #[test]
 fn literature_schema_enforces_card_kind_states_and_case_insensitive_identity() {
     let home = TestHome::new();

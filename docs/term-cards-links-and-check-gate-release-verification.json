@@ -1,0 +1,138 @@
+{
+  "ok": true,
+  "issue": 170,
+  "slice": "S28",
+  "manifest": "E:\\zet\\docs\\term-cards-links-and-check-gate-release-manifest.json",
+  "checks": 53,
+  "failed": 0,
+  "contracts": {
+    "executable": {
+      "zt": "0.40.0",
+      "zt_check": "0.14.0",
+      "zt_digest": "0.28.0"
+    },
+    "rule": {
+      "rule_version": "4",
+      "diagnostic_schema": "1",
+      "applicability_version": "2"
+    },
+    "archive_schema": {
+      "generation": "2",
+      "card_format": "markdown",
+      "term_field": "term_name",
+      "supported_read_generations": [
+        "1",
+        "2"
+      ],
+      "older_binary_refuses": "2"
+    },
+    "workflow": {
+      "base": "5.6.0",
+      "zt-econ-digest": "6.6.0",
+      "zt-math-digest": "5.6.0"
+    }
+  },
+  "capabilities": {
+    "term_links": true,
+    "term_cards": true
+  },
+  "policy": {
+    "default_stage": "advisory",
+    "mandatory_invariants_active": true,
+    "promotion": "owner"
+  },
+  "binaries": {
+    "zt": "C:\\Users\\chenx\\.cargo\\bin\\zt.exe",
+    "zt_check": "C:\\Users\\chenx\\.cargo\\bin\\zt-check.exe",
+    "zt_digest": "C:\\Users\\chenx\\.cargo\\bin\\zt-digest.exe",
+    "sha256": {
+      "zt": "4171ee6cbed9854e2a1123827a0a575aed0e650a67a1c8eaf5adf166a4c5f67b",
+      "zt_check": "355d321bdb020237a32bdea2efa98ea76eee7919b120701b344214937885e24e",
+      "zt_digest": "75403c8c06bca392feb7e7670e25503db4452f7af2ff0c59c5d28079e5b7eeaf"
+    }
+  },
+  "workflows": {
+    "zt-econ-digest": {
+      "version": "6.6.0",
+      "sha256": "304e4e1a88e8a745a89d7f7f8859afebd78bef37e35897b23a2be0720af319ee",
+      "verified": true
+    },
+    "zt-math-digest": {
+      "version": "5.6.0",
+      "sha256": "9b46925f8beb7af7b92fce8305ee017b975e5bf8c3c0d6be2d730fa6bd533507",
+      "verified": true
+    }
+  },
+  "skills": {
+    "zt": {
+      "source_sha256": "agents/openai.yaml=fff6aceb789ac3e83843a76d6fb212f1b03c4f4648c8f51b822df84f5ea31323\nscripts/zt-mcp.ps1=81970fc55fe7cbe907779fc18bd6f05d95c9ebe438d0dc7091c80b3209732a3d\nSKILL.md=4acb484e0d2fb7943e84b87d94cc5f804c0bf7b9b806ecd18b19ff6dcc23bf1d",
+      "copies": {
+        "C:\\Users\\chenx\\.claude\\skills": {
+          "exists": true,
+          "match": true
+        },
+        "C:\\Users\\chenx\\.codex\\skills": {
+          "exists": true,
+          "match": true
+        }
+      },
+      "dsh": true
+    },
+    "zettelkasten": {
+      "source_sha256": "agents/openai.yaml=cb7fde01617dac78ed9f0ed5b084b621f8aa87c995d270cc8c72294d27468b41\nreferences/luhmann-and-practice.md=6e54169425d94bc17729ab85dd25e1865e6f0977bfae7667a9b67dfd8652a781\nSKILL.md=d7ee1c3038fb739164ff8f886f5f796792d41265f1b7399799834061a0fa88c0",
+      "copies": {
+        "C:\\Users\\chenx\\.claude\\skills": {
+          "exists": true,
+          "match": true
+        },
+        "C:\\Users\\chenx\\.codex\\skills": {
+          "exists": true,
+          "match": true
+        }
+      },
+      "dsh": true
+    },
+    "zt-digest-protocol": {
+      "source_sha256": "references/scripts.md=7dcb5a9a154bafec9ddf2d8d435fc9a074d0577a096ea08a7ac0c819b8163be7\nSKILL.md=b24d232e57af319753838542f07970f13e89bade61747966e5bc02a0e73d8ba3",
+      "copies": {
+        "C:\\Users\\chenx\\.claude\\skills": {
+          "exists": true,
+          "match": true
+        },
+        "C:\\Users\\chenx\\.codex\\skills": {
+          "exists": true,
+          "match": true
+        }
+      },
+      "dsh": true
+    }
+  },
+  "static": {
+    "ran": true,
+    "ok": true,
+    "failed": 0,
+    "tail": [
+      "failed: 0",
+      "release set: ok (111 checks)"
+    ]
+  },
+  "service": {
+    "checked": true,
+    "archive_id": "806009944a966daad513b2aacabddc5f",
+    "archive_path": "\\\\?\\D:\\zt",
+    "revision": 7921,
+    "rule_version": "4",
+    "checker_version": "0.14.0",
+    "stage": "advisory",
+    "cards": "1952"
+  },
+  "scratch": {
+    "ran": true,
+    "ok": true
+  },
+  "wiki": {
+    "ran": true,
+    "ok": true
+  },
+  "failures": []
+}

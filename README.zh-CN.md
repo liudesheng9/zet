@@ -9,11 +9,12 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 - 所有 Card 都用 Markdown 书写：`# 标题`、Markdown 正文，以及自动生成的 Reverse link。
 - 使用 `zt gui` 浏览与编辑：卡片柜、按地址排布的 Folgezettel 地图、把各处相关 Card 并排摊开的桌面（Table）、全部 Card 的星图（Constellation），以及带实时预览的 Markdown 写作台。
 - 使用 Topic 树和 Literature 树组织笔记：每个 Topic 与每个基于 BibTeX 的 Literature Card 都是一棵独立 Regular Card 树的根。
-- 可以把 Regular Card 标为 Event Card（一个真实发生的事件）、Finding Card（来源中的一个实证结果）或 Model Card（一个完整的模型），引用它的其他 Card 用 Link 指向它。
+- 可以把 Regular Card 标为 Event Card（一个真实发生的事件）、Finding Card（来源中的一个实证结果）、Model Card（一个完整的模型）或 Term Card（书中的一个术语，带准确名称与词条链接），引用它的其他 Card 用 Link 指向它。
 - 维护两个 Workspace：一个属于你，一个属于 AI agent，各有 Topic zone 与 Literature zone；Link 可以跨 Workspace，Card 不能在 Workspace 之间移动。
 - 通过 `zt mcp` 服务器让编程 agent 在 agent Workspace 中工作，而你的 Workspace 对它只读。
 - 在交互式终端 Session 中，通过 Location 或 Citation key 导航 Card。
 - 使用 `[[target]]` Link 连接 Card，并自动生成 Reverse link、检查 Broken link。
+- 每次写入都经过同一道检查：格式、Link、Access 与 Lock 的强制规则总会拒绝，较新的质量规则先只给出建议，等 owner 主动升级 gate。
 - 在 Session 或 Shell 中安全地创建、编辑、移动和删除 Card 树。
 - 使用本地 SQLite 存储数据，并提供状态、统计、导出，以及一条删除命令：可清空一棵 Card 树、保留树根，或重置整个 archive。
 - 使用 `zt autostart on` 让服务在登录时启动、在机器关机时停止（Windows）。
@@ -25,6 +26,20 @@ ZT 是一个本地优先的卡片笔记系统：每张 Card 都是可寻址的 M
 ```sh
 cargo install --path . --locked
 ```
+
+## 发布
+
+一次发布把 `zt`、`zt-check`、`zt-digest`、两个冻结的消化工作流以及安装好的 agent 指南作为**一套兼容的产品**一起交付。四组版本互相关联但彼此独立：可执行文件版本（`zt`、`zt-check`、`zt-digest`）、检查器的规则/诊断模式/适用性版本、归档模式 generation，以及冻结工作流的构建版本。本二进制把它承载的版本彼此分开地发布成一个 JSON 对象：
+
+```sh
+zt version          # 一行人类可读的版本
+zt version --json   # zt、checker、rule_version、diagnostic_schema、applicability_version、schema、capabilities
+```
+
+候选发布集记录在 `docs/term-cards-links-and-check-gate-release-manifest.json`；它的静态一致性由测试
+`tests/release_manifest.rs` 保证，`scripts/verify-release.ps1` 再把已安装的二进制、冻结脚本与其 lock、已安装的
+skill 以及运行中服务的元数据与该清单逐项核对。运行中的 daemon 版本以 daemon 记录为准，不是磁盘上二进制副本的版本：
+`zt status` 会打印它，服务也会在每次读取 Card 时一并发布自己的规则与能力契约。
 
 ## 快速开始
 
@@ -107,6 +122,31 @@ Topic 和 Regular Card 必须以 `# 标题` 开头。`<!-- zt:reverse-links -->`
 带标签的定义、符号表、带依据与结果的编号推导、极限、算例、直觉和常见误读。写 `自动链接：否` 并附
 必需的 `自动链接理由：` 行，表示该术语保持不自动链接。很长的说明续写在标题为 `推导（续 k/n）：…`
 的 Term part 中，续卡保留同一术语名并链接回 head。
+
+### Term Card、术语表与 Term use
+
+**术语表卡**（Term list Card）是没有术语名、类型为 `term` 的 Regular Card：正文保留书的四列表格，它的直接侧后继
+按表格行序就是它的 **Term Card**。Term Card 只陈述一个准确的**术语名**：至多 40 个字符、只占一行，不能含 `[`、
+`]`、`@`、`|` 或反引号；标题就是该名称，正文按上面的固定模板书写，最后一行 `来源：` 指明书名与定位。**Term part**
+沿用 head 的术语名，续写很长的说明。术语表、head 与 part 的角色由存储的术语名和 Location 计算，不另存一份结构。
+`自动链接：否` 与它必需的 `自动链接理由：` 一起，表示这个过于宽泛的术语不进入确定性链接流程。
+
+**Term use** 是另一张 Card 正文里的一个词，写成 `[[均衡@Smith2024/1|a]]`：标签就是句中那个词，恰好一个 `@`
+分开标签与地址，地址必须指向一张 Term head。移动只改写地址字节，从不改动标签；读者只看到标签。head 自动生成的
+`## Term uses` 段单独列出使用它的 Card，与 Reverse link 分开。在 Link 扫描中，Term use 的关系类型是 `term`，
+由语法决定，与它前面的关系词无关：它是术语引用，不是论证 Link，因此不给 Model 成员、关系或邻居，也不给
+Idea/Event/Finding 的论证计数，默认也不画图边。Map、Table 与 Constellation 在读者打开 Term uses 开关之前都会隐藏
+Term 边；Broken links、Term uses、Lock pins 这些通用 Link 读取仍然能看到它。
+
+检查器的 T1–T10 规则在每次写入时检查 Term Card 的固定模板：已知且有序的头部行与各节、标题/名称/表格行的身份、
+数学 head 所需的数学内容、符号表覆盖、带依据与结果的编号推导、不得留下未展开的跳步、Term 链接目标与标签一致、
+一行一个 head、正文长度，以及公式配对。数学 Term Card 还要写出前提、带标签的定义、带理由的等价形式、极限、算例、
+直觉、区别与常见误读。来源忠实是模板的一部分：书的原话保留在 `书中的说法`，书中略去的推导步骤标为
+`（补：书中略去）`，绝不悄悄补写成书里的说法；术语表行保留原拼写。
+
+读取可以把 Term use 投影成读者看到的标签：在 `get_card`、`get_cards` 或 `get_tree`（带正文）上传
+`term_links: "label"`，回复给出可见的句子文本并标记为投影。默认的原始读取保留作者写下的宏；编辑底稿、回执哈希与
+指纹必须使用原始读取，因为投影文本只用于显示。消息摘要始终是投影后的显示文本。
 
 0.2.0 之前创建的档案会在 `zt up` 时自动转换；转换前会先把原数据库备份为档案目录中的
 `zt.sqlite3.pre-markdown-<时间>.bak`。
@@ -196,7 +236,7 @@ Topic 和 Literature Card 永远是 Idea Card。类型属于 Card 本身：移�
   `ty idea` 设置当前 Regular Card 的类型。
 - **GUI**：Event、Finding 与 Model Card 在阅读器卡片、地图和搜索结果中带有 EVENT、FINDING 或 MODEL 印章，书桌上的每叠卡片会统计它们的数量；
   Regular Card 的写作台有类型选择器，命令栏也支持 `ty`。
-- **MCP**：`create_successor`、`insert_card` 和 `edit_card` 接受 `type`（`idea`、`event`、`finding`、`model` 或 `hub`；`edit_card` 可以只传 `type`），
+- **MCP**：`create_successor`、`insert_card` 和 `edit_card` 接受 `type`（`idea`、`event`、`finding`、`model`、`hub` 或 `term`；`edit_card` 可以只传 `type`），
   `get_card`、`get_tree` 和 `search_cards` 会返回类型；`search_cards` 可按 `type` 筛选，此时 `query` 可以为空，
   用来列出该类型的全部 Card。
 - **导出**：`archive.json` 在 `types` 中列出所有非 Idea Card。
@@ -281,13 +321,18 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 
 ### 消化一本书
 
-Claude Code 工作流 `zt-econ-digest`（经济学书）和 `zt-math-digest`（数学教材）由同一个基础蓝图构建，把 Scholar Archive 中的一本书转成 agent Card：DeepSeek Harness 逐节消化，
-全书消化之后，由模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个 DeepSeek 复核推导，把跳步或过密的推导分卡拆成两张或更多张），随后连接全书各部分，再由 Opus 整理结构。书中的图随书进入卡片：准备阶段把书的 Markdown 中的每张图收进 ZET（见“来自 archive 的图”），并把每张图写成一行 `![图 2.C.1](artifact:…)` 交给写卡的 DeepSeek，卡片讨论这张图时原样粘贴；整理之后，`scripts/book-digest/attach-figures.ps1` 把图放进本书每一张提到它但还没显示它的卡片，并在文献卡上链接原书的 PDF 与 Markdown（模式 `figures` 只对已有的消化结果做这一步）。最后，枢纽阶段为整个代理工作区建枢纽卡（见“枢纽卡”）。
-详见 [docs/zt-digest-workflow.md](docs/zt-digest-workflow.md)。
+Claude Code 工作流 `zt-econ-digest`（经济学书）和 `zt-math-digest`（数学教材）由同一个基础蓝图构建，把 Scholar Archive 中的一本书转成 agent Card。它们只建这本书的 **Literature 树**。DeepSeek Harness 逐节消化；**Term-card 分支**在书的术语表之后与消化写手并行，写出 Term Card（每批一个写手、一次独立的数学复核和一次有限的修正，共用 DeepSeek 池）；全书消化之后，模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个复核把跳步或过密的推导拆开）；随后连接全书各部分，由 Opus 整理结构；书中的图随书进入卡片；报告优先的 Bridge 找出跨书连接；最后，确定性的 **Term-link 流程**在所有写手之后连接最终正文。Topic 树、Topic Card、枢纽卡与索引块属于 `zt-idea-grow`：它在消化完成后从这棵 Literature 树生长出来，运行报告会给出这一步的后续命令。
+
+`mode` 用单个阶段代替完整运行：`full`、`resume`（每次运行一次）、`link`、`cards`、`models`、`explain`、`events`、`findings`、`figures`、`audit`、`bridge`、`term-cards`、`term-link`，数学变体再加 `math`。两个 Term 模式为**一本已经消化完的书**补建术语：`term-cards` 只准备或复用这本书已暂存的源切片，并按表格顺序发布 Term Card（只发布已就绪的前缀；失败的行留在暂存区），`term-link` 对这本书当前的 Term Card 执行确定性链接。两者都不会重跑消化、模型、整理或 Bridge 阶段；除 Term 设置外只接受 `out`：`termCards`（默认 true，Term-card 分支）、`termLink`（默认 true，最终链接流程）、`termCardsPerJob`（1–8，默认 4 个概念术语/写手）、`termCardsMathPerJob`（1–8，默认 1 个数学术语）与 `termLinkOccurrences`（`first` 默认，或 `all`）。这些设置在准备阶段就冻结进运行契约。
+
+写手在提交前检查自己写出的确切草稿。`card_check` 拒绝属于内容问题：写手在该任务有限的修正轮次内改好，不当作脚本或网络故障。`card_locked` 是选址决定：阶段停止，保留已写出的草稿与回执，绝不重试、解锁或改换写入路径。审计运行过不等于所有术语都通过：它的 `terms` 段单独报告覆盖率、T 规则故障、term use、未解决的行与检查契约，使执行成功、发布完整性与内容质量互不冒充。
+
+详见 [docs/zt-digest-workflow.md](docs/zt-digest-workflow.md) 与
+[zt-digest-protocol skill](skills/zt-digest-protocol/SKILL.md)。
 
 ### 枢纽卡
 
-**枢纽卡**（类型 `hub`，zt 0.16.0）是进入一个主题的入口：它在 `##` 组标题下每个成员占一行，写成 `- [[地址]]：这张卡贡献什么`，并在 `## 邻近` 组里指向别的树。它的**枢纽层级**说明主题有多宽：`line`（一条思路）、`topic`（一棵主题树，由 Topic 正文链接）、`field`（几个主题）、`register`（整个工作区的关键词，放在主题 `索引` 里）。枢纽只列更低层级的枢纽。`get_hub` 报告一张枢纽的各行、上下层枢纽和问题（过大、没有理由、没有走出本树、只按地址抄了本树等）；`list_hubs` 给出枢纽图和工作区还缺的枢纽；`get_card` 列出列入一张卡的枢纽。GUI 把枢纽画成导卡：主题越宽，卡顶的标签越靠左；每张卡的标题上方显示可以上溯的枢纽。书的消化流程的枢纽阶段写出它们：Haiku 枢纽经理根据普查选定阈值，DeepSeek 规划领域、写每张枢纽，`scripts/book-digest/hub-compiler.ps1` 建卡并检查。详见 [docs/hub-cards-design.md](docs/hub-cards-design.md)。
+**枢纽卡**（类型 `hub`，zt 0.16.0）是进入一个主题的入口：它在 `##` 组标题下每个成员占一行，写成 `- [[地址]]：这张卡贡献什么`，并在 `## 邻近` 组里指向别的树。它的**枢纽层级**说明主题有多宽：`line`（一条思路）、`topic`（一棵主题树，由 Topic 正文链接）、`field`（几个主题）、`register`（整个工作区的关键词，放在主题 `索引` 里）。枢纽只列更低层级的枢纽。`get_hub` 报告一张枢纽的各行、上下层枢纽和问题（过大、没有理由、没有走出本树、只按地址抄了本树等）；`list_hubs` 给出枢纽图和工作区还缺的枢纽；`get_card` 列出列入一张卡的枢纽。GUI 把枢纽画成导卡：主题越宽，卡顶的标签越靠左；每张卡的标题上方显示可以上溯的枢纽。`zt-idea-grow` 在消化之后写出它们：Haiku 枢纽经理根据普查选定阈值，DeepSeek 规划领域、写每张枢纽，`scripts/book-digest/hub-compiler.ps1` 建卡并检查。详见 [docs/hub-cards-design.md](docs/hub-cards-design.md)。
 
 **索引卡**（层级 `register`）是工作区里唯一的索引枢纽，是主题 `索引` 的第一张卡。它的 `## 词条` 组每行一个词条，写成 `- 学习：[[5/1]] [[5/2]]`：冒号前是词条，后指一到三张承载这个词条的卡；范围写在词条里，解释写在目标卡里。词条超过 120 行时，这些行搬进 `## 词条分册` 声明的普通 Idea Card，每张对应一个公认的拼音首字母区间（`- [[2/1|a]] A–F`；读音缺失或不确定的词条进 `其他`）。每张分册有自己的 `## 词条` 组，是索引卡的直接侧后继，自己不能再有分册。`get_register` 把这些行当作一个可分页的整体来读；带上 `at` 时，它还会给出一张卡承载的全部公认词条——命名它的词条行，以及它自己实质性标题或正文里写到的词条——`scripts/book-digest/register-compiler.ps1` 规划、发布并复查它。
 
@@ -308,18 +353,20 @@ Claude Code 工作流 `zt-econ-digest`（经济学书）和 `zt-math-digest`（�
 | `get_model` | 整个模型：Model Card 与各 part（归档在其下或被它链接）的正文、facet 和 emphasis，带类型的关系、松散的 part、模型外的邻居，以及 `build` 报告（构建顺序与自足性问题） |
 | `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`；`mode: entry` 先给出登记簿词条及其入口卡、hub 成员行和模型入口，再给普通标题与正文命中；已确认的同述入口，或两张陈述指纹完全相同的 Idea Card，合成一行，并给出规范陈述卡与全部成员）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
-| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event 或 Model Card（`type`，Model Card 可带 `level`），或 Model part（`facet`、`emphasis`） |
-| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、facet、emphasis、层级或 BibTeX |
+| `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event、Finding、Model、Hub 或 Term Card（`type`；Model Card 的 `level`/`form`、Model part 的 `facet`/`emphasis`、Hub Card 的 `level`、Term Card 的 `term` 名称） |
+| `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、术语名、facet、emphasis、层级、hub 层级、数学形式或 BibTeX |
 | `delete_card`、`move_card` | 删除或移动 agent Card（删除计划列出会断开的 Link，`into` 把它们改指一张保留的卡；`move_card` 用 `to` 移到空位，用 `before` 占用另一张卡的位置，用 `alone` 不带后继） |
 | `insert_card` | 把新的 agent Card 插到另一张卡的位置上；那张卡及其子树下移 |
 
 删除、移动、插入和修改 Citation key 会先返回一份计划；用计划中给出的 `confirm` 文本（`delete`、树根地址、
 `move` 或 `insert`）再次调用才会真正执行。使用前需要先启动服务。
 
-zt 附带两个 agent skill：`zt`（`skills/zt/SKILL.md`）说明 Workspace、工具和规则；`zettelkasten`
-（`skills/zettelkasten/SKILL.md`）依据卢曼（Niklas Luhmann）的做法和后来实践者的经验，说明如何撰写一张 Card
-以及如何组织 Card 之间的关系（资料来源见 `skills/zettelkasten/references/`）。要让每个 Claude Code、Codex 和
-DeepSeek Harness 对话都能使用这两个 skill，并让 Claude Code 与 Codex 能使用该服务器，在 Windows 上运行一次以下命令；更新 skill 或移动 `zt` 可执行文件后再运行一次：
+zt 附带三个 agent skill：`zt`（`skills/zt/SKILL.md`）说明 Workspace、工具、Term Card 与 Term use 以及规则；
+`zettelkasten`（`skills/zettelkasten/SKILL.md`）依据卢曼（Niklas Luhmann）的做法和后来实践者的经验，说明如何撰写一张
+Card 以及如何组织 Card 之间的关系（资料来源见 `skills/zettelkasten/references/`）；`zt-digest-protocol`
+（`skills/zt-digest-protocol/SKILL.md`）是消化工作流及其工具的操作手册。要让每个 Claude Code、Codex 和 DeepSeek
+Harness 对话都能使用这些 skill，并让 Claude Code 与 Codex 能使用该服务器，在 Windows 上运行一次以下命令；更新
+skill 或移动 `zt` 可执行文件后再运行一次：
 
 ```powershell
 pwsh -File scripts/install-agent-integrations.ps1
@@ -379,6 +426,28 @@ GUI 把它显示为带小页面图标的链接，并在卡片盒旁打开：PDF 
 服务通过 bridge 取得文档，并在 archive 中的副本大小不变时使用 ZET 缓存。编辑器的 **＋ Figure or document** 面板在图的上方列出 Work 的文档，
 `scholar_archive_file` 也以 `link` 返回这条链接。
 
+## Card 检查与策略
+
+每条写入路径——Shell（`n`、`b`、`e`、`ins`、`del`、`mv`）、行式与全屏 Session、GUI 路由、MCP 工具以及一次批量或
+预览——都在自己的写入事务内、对即将存储的那张确切 Card 做同一次 Card 检查。格式、Link、Access 与 Lock 的强制规则
+总会拒绝：拒绝带有类型（`card_check`、`card_locked` 等），说明原因，且不存储任何 Card、回执、revision 或 Topic
+分配。被接受的写入连同它的建议一起存储，因此警告从不需要牺牲草稿。检查只读取有界上下文（父卡与模型层级、书的术语表、
+不同的 Link 目标、Term Card 的角色与表格行）；图规则只留在审计里；一次真实批量至多 64 项，预览序列至多检查 200 项。
+
+检查器拥有规则目录，归档只保存自己的覆盖项：
+
+```sh
+zt config policy                                   # gate 阶段、policy 哈希、revision、规则版本与每条规则
+zt config set gate.stage enforce                   # 或 advisory（默认）/ default
+zt config set gate.human.R3 advise                 # 按 Workspace 与规则：block / advise / off / default
+zt config set gate.agent.R6 default                # 显式 default：删除该行
+```
+
+新归档从 `advisory` 开始：每条质量诊断都作为建议返回，Card 照常存储，因此新规则不会让已有的写手中途卡死。`enforce`
+才允许 `block` 规则拒绝。这个阶段由 owner 主动升级，绝不由计时器自动推进。已有 Card 上保留的（legacy）故障仍是建议，
+同一故障的新出现则在 `enforce` 下阻止写入，所以旧归档不会变得无法编辑；强制不变量在两个阶段都会拒绝。把阶段退回
+`advisory` 只改变哪些质量问题会拒绝写入，绝不改变语法/模式兼容边界。
+
 ## 导出
 
 `zt dp` 会在 `<archive_root>/dump/` 下写出一个压缩归档，完整记录整个卡片系统：
@@ -401,8 +470,10 @@ GUI 把它显示为带小页面图标的链接，并在卡片盒旁打开：PDF 
 会被跳过，改用系统自带的 `tar.exe`。
 
 含有 Term Card 或 Term 链接的归档与旧版 `zt` 不向后兼容：归档的 generation 标记会让旧二进制拒绝启动，而不是悄悄丢掉
-`term_name`，或把 `[[label@address]]` 宏当成普通 Link 读取。把 Card 检查的 gate 退回 `advisory` 只改变哪些质量问题会拒绝
-写入，绝不改变这条语法/模式边界；Term 数据存在之后的完整二进制降级需要经过审查的转换或 Term 之前的备份恢复。
+`term_name`，或把 `[[label@address]]` 宏当成普通 Link 读取。`zt version --json` 发布本二进制安装并理解的
+generation，`docs/term-cards-links-and-check-gate-release-manifest.json` 记录这套兼容发布集。把 Card 检查的 gate 退回
+`advisory` 只改变哪些质量问题会拒绝写入，绝不改变这条语法/模式边界；Term 数据存在之后的完整二进制降级需要经过审查的
+转换或 Term 之前的备份恢复。
 
 ## 删除
 

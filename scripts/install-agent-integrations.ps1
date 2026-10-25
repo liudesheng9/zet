@@ -6,8 +6,9 @@
 
 .DESCRIPTION
   Safe to re-run; it replaces only what it owns.
-  - Copies each skills/<name> (zt, zettelkasten) to ~/.claude/skills/<name> and
-    ~/.codex/skills/<name>, and links ~/.dsh/skills/<name> to the Codex copy for DeepSeek Harness.
+  - Copies each skills/<name> (zt, zettelkasten, zt-digest-protocol) to ~/.claude/skills/<name>
+    and ~/.codex/skills/<name>, and links ~/.dsh/skills/<name> to the Codex copy for DeepSeek
+    Harness.
   - Registers the stdio server `zt` (`<zt.exe> mcp`) in Claude Code's user scope (~/.claude.json),
     approves this repository's .mcp.json server, and allows the server's tools in
     ~/.claude/settings.json so every conversation can call them without a prompt. The server

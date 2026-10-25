@@ -90,6 +90,7 @@ fn run() -> Result<()> {
             println!("zt {VERSION}");
             Ok(())
         }
+        [cmd, flag] if cmd == "version" && flag == "--json" => cmd_version_json(),
         [cmd] if cmd == "help" => cmd_help(),
         [cmd] if cmd == "up" => cmd_up(),
         [cmd] if cmd == "down" => cmd_down(),
@@ -2364,6 +2365,29 @@ fn cmd_clear() -> Result<()> {
     bail!("zt clear is now `zt del --all`")
 }
 
+/// `zt version --json` (S28, #170, US093): this build's own version and capability contract. The
+/// executable, checker, rule, diagnostic and archive-schema versions are separate contracts, so a
+/// release check reads each one from the build that carries it instead of inferring one from
+/// another. The workflow build version is not a property of this binary: the installed frozen
+/// registry holds it.
+fn cmd_version_json() -> Result<()> {
+    let capabilities = zt_check::contract::Capabilities::current();
+    let value = serde_json::json!({
+        "zt": VERSION,
+        "checker": zt_check::VERSION,
+        "rule_version": zt_check::contract::RULE_VERSION,
+        "diagnostic_schema": zt_check::contract::DIAGNOSTIC_SCHEMA,
+        "applicability_version": zt_check::contract::APPLICABILITY_VERSION,
+        "schema": tree_lock::SCHEMA_VERSION,
+        "capabilities": {
+            "term_links": capabilities.term_links,
+            "term_cards": capabilities.term_cards,
+        },
+    });
+    println!("{}", serde_json::to_string(&value)?);
+    Ok(())
+}
+
 fn cmd_help() -> Result<()> {
     let up = Config::load()?
         .archive_root
@@ -2379,6 +2403,7 @@ fn cmd_help() -> Result<()> {
     println!("  zt status");
     println!("  zt autostart [on|off]");
     println!("  zt version");
+    println!("  zt version --json");
     println!("  zt help");
     println!("  zt config show");
     println!("  zt config policy");

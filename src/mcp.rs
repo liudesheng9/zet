@@ -75,7 +75,7 @@ because a locked tree takes no new Cards and none of its Cards changes. Only the
 Locks, and a Card lock never widens your Access. A `card_locked` tool error is a destination \
 decision and a planning error, not a transient failure: do not retry it, do not ask for a different \
 Access, do not change the database directly, and do not substitute another client's write path; \
-report it and plan another destination. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
+report it and plan another destination. An accepted write may carry `warnings` (advice): keep the stored Card and improve it when the task allows. A `card_check` error is content: fix each named fault inside the task's limited fix rounds, then write again; do not resend the Card unchanged, and do not change a synonym or a relation word only to silence a check. The archive's `gate.stage` decides whether a quality rule refuses, and no client flag overrides it. Start with list_workspaces and list_trees, read with get_card or search_cards, and \
 use get_cards for ordered full/text bulk reads (at most 200 addresses). search_cards `mode: entry` \
 ranks ways in first, exactly as the GUI's search does: an exact address, a matching register term and \
 its entry Cards, a matching hub member line and the Card it opens, a matching model head, a matching \
@@ -1698,6 +1698,12 @@ mod tests {
         // different Access; the owner's own GUI stays out of the agent's instructions.
         for refused in ["/api/", "X-ZT-Token", "zt-token", "token=", "cannot be bypassed by", "unlock_card", "lock_card"] {
             assert!(!said.contains(refused), "the instructions mention {refused}: {said}");
+        }
+        // S28 (#170): the instructions state the check contract's two answers — accepted advice is
+        // stored with the Card, a card_check refusal is content to fix, and the gate stage is the
+        // archive's, not the client's.
+        for expected in ["`card_check`", "advice", "warnings", "gate.stage"] {
+            assert!(lower.contains(expected), "the instructions never say {expected}: {said}");
         }
     }
 

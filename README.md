@@ -9,11 +9,12 @@ ZT is a local note system built around addressable Markdown Cards, with a termin
 - Write every Card in Markdown: a `# Title` heading, a Markdown body, and generated Reverse links.
 - Browse and edit in `zt gui`: a card cabinet, a Folgezettel map laid out by address, a Table to lay related Cards from anywhere side by side, a Constellation of all Cards, and a live Markdown writing desk.
 - Organize notes as Topic trees and Literature trees: each Topic and each BibTeX-backed Literature Card is the root of its own tree of Regular Cards.
-- Mark a Regular Card as an Event Card (one real-world event), a Finding Card (one empirical result from a source), or a Model Card (one whole model); the other Cards that cite it link to it.
+- Mark a Regular Card as an Event Card (one real-world event), a Finding Card (one empirical result from a source), a Model Card (one whole model), or a Term Card (one term of a book, with its exact name and word links); the other Cards that cite it link to it.
 - Keep two Workspaces, one for you and one for an AI agent, each with a Topic zone and a Literature zone; Links cross between them, Cards never move between them.
 - Let coding agents work in the agent Workspace through the `zt mcp` server, with read-only access to yours.
 - Navigate Cards by Location or Citation key in an interactive terminal Session.
 - Connect Cards with `[[target]]` Links, with generated Reverse links and Broken link checks.
+- Check every Card write in one gate: mandatory format, Link, Access and Lock rules always refuse, and the newer quality rules report advice until the owner promotes the gate.
 - Safely create, edit, move, and delete Card trees from the Session or shell.
 - Store everything locally in SQLite, with status, statistics, dump, and one delete command that can empty a Card tree, keep a tree root, or reset the whole archive.
 - Start the service when you sign in and stop it when the machine goes down, with `zt autostart on` (Windows).
@@ -25,6 +26,26 @@ Install the Rust toolchain, clone this repository, and run:
 ```sh
 cargo install --path . --locked
 ```
+
+## Releases
+
+A release ships `zt`, `zt-check`, `zt-digest`, both frozen digest variants and the installed agent
+guidance as one compatible set. Four versions are related but distinct: the executable versions
+(`zt`, `zt-check`, `zt-digest`), the checker's rule, diagnostic-schema and applicability versions,
+the archive schema generation, and the frozen workflow build versions. This binary publishes the
+ones it carries, apart from each other, as one JSON object:
+
+```sh
+zt version          # the one human line
+zt version --json   # zt, checker, rule_version, diagnostic_schema, applicability_version, schema, capabilities
+```
+
+The candidate set is `docs/term-cards-links-and-check-gate-release-manifest.json`. Its static
+consistency is a test (`tests/release_manifest.rs`); `scripts/verify-release.ps1` checks the
+installed binaries, the frozen scripts against their locks, the installed skills and the running
+service's metadata against it. A running daemon's version is the daemon record, not the copied
+binary: `zt status` prints it and the service publishes its rule and capability contract beside
+every Card read.
 
 ## Quick start
 
@@ -116,6 +137,43 @@ hypotheses, a tagged definition, a symbol table, numbered derivation steps with 
 result, limits, a computed example, intuition and misreadings. `自动链接：否` with a required
 `自动链接理由：` line records that the term must stay unlinked. A long explanation continues in
 Term parts titled `推导（续 k/n）：…`, which keep the same term name and link back to the head.
+
+### Term Cards, Term lists and Term uses
+
+A **Term list Card** is a Regular Card of type `term` with no term name: its body keeps the book's
+four-column table, and its immediate Side successors in table order are its **Term Cards**. A Term
+Card states one exact **term name**, at most 40 characters on one line and without `[`, `]`, `@`,
+`|` or a backtick. Its title is that name, it follows the head template above, and it ends with a
+`来源：` line naming the book and its locator. A **Term part** repeats the head's term name and
+continues a long explanation; the role of a Term list, a head or a part is computed from the stored
+name and Location, never stored separately. A `自动链接：否` line plus its `自动链接理由：` keeps a
+too-general term out of the deterministic link pass.
+
+A **Term use** is a word in another Card's body written `[[均衡@Smith2024/1|a]]`: the label is the
+word as it stands in the sentence, exactly one `@` separates it from the address, and the address
+must name a Term head. A move rewrites only the address bytes, never the label, and a reader sees
+only the label. The head's generated `## Term uses` section lists the Cards that use it, apart from
+its Reverse links. In the Link scan a Term use reads as the `term` **Relation kind**, assigned by
+its syntax whatever word stands before it: it is a vocabulary reference, not a reasoning Link, so
+it gives no Model membership, relation or neighbour, no Idea/Event/Finding reasoning credit, and no
+default graph edge. The Map, the Table and the Constellation hide Term edges until the reader turns
+the Term uses switch on; the general Link readers (Broken links, Term uses, Lock pins) still see it.
+
+The checker's T1–T10 rules check a Term Card's authored template on every write: the known ordered
+head lines and sections, the title/name/row identity, the mathematical content a math head needs,
+symbol-table coverage, numbered derivation steps with a basis and a result, no unexpanded skipped
+step, Term-link target and label agreement, one head per row, the measured prose size, and balanced
+formulas. A math Term Card also states its hypotheses, a tagged definition, equivalent forms with
+reasons, limits, a computed example, intuition, distinctions and misreadings. Source fidelity is
+part of the template: the book's own wording stays in `书中的说法`, an omitted derivation step is
+marked `（补：书中略去）` and never silently invented, and the book's term table row keeps its exact
+spelling.
+
+Reads can project a Term use to the label a reader sees: `term_links: "label"` on `get_card`,
+`get_cards` or `get_tree` (with bodies) returns that visible sentence text and marks the reply as
+projected. The default raw read keeps the authored macros; use it for an edit base, a receipt hash
+or a fingerprint, because projected text is display only. A message excerpt is always projected,
+because it is a display summary.
 
 Archives created before 0.2.0 are converted automatically on `zt up`; the original database
 is first copied to `zt.sqlite3.pre-markdown-<time>.bak` in the archive root.
@@ -345,19 +403,44 @@ except plain inline tags such as `<sub>`, `<sup>`, `<br>`, and `<kbd>`.
 ### Digesting a book
 
 The Claude Code workflows `zt-econ-digest` (economics books) and `zt-math-digest` (mathematics
-textbooks), built from one shared base, turn a book from the Scholar Archive into agent Cards:
-DeepSeek Harness runs digest it section by section; after the digest, the model
-compiler builds every model it wrote to its elaboration level (a Sonnet architect only plans each
-model; a script builds the skeleton; DeepSeek writes the Cards and charts, then the Derivation
-parts, and a DeepSeek reviewer splits any derivation that jumps or is too dense); a link pass ties
-the parts of the book together, and Opus organizes the result. The book's figures come along:
-the prepare step keeps every figure of the book's Markdown in ZET (see *Figures from the archive*)
-and hands the writers each one as an `![图 2.C.1](artifact:…)` line to paste where a Card discusses
-it; after Organize, `scripts/book-digest/attach-figures.ps1` puts each figure into every Card of the
-book that names it but does not show it yet, and links the book's PDF and Markdown from its
-Literature Card (mode `figures` runs only this step on an earlier digest). Last, the hub stage
-builds the Hub Cards of the whole agent Workspace (see *Hub Cards*). See
-[docs/zt-digest-workflow.md](docs/zt-digest-workflow.md).
+textbooks), built from one shared base, turn a book from the Scholar Archive into agent Cards.
+They build only the book's **Literature tree**. DeepSeek Harness digests it section by section;
+the **Term-card branch** runs beside the digest writers after the book term table and writes the
+Term Cards (a writer, an independent mathematical review and one finite fix per job, in waves on
+the shared DeepSeek pool); after the digest the model compiler builds every model to its
+elaboration level (a Sonnet architect plans each model; a script builds the skeleton; DeepSeek
+writes the Cards and charts, then the Derivation parts; a reviewer splits any derivation that
+jumps or is too dense); a link pass ties the parts of the book together; Opus organizes the
+result; the book's figures come along; the report-first Bridge finds cross-book connections; and
+the deterministic **Term-link pass** links the final bodies after every writer. The prepare step
+keeps every figure of the book's Markdown in ZET and hands the writers each one as an
+`![图 2.C.1](artifact:…)` line; after Organize, `scripts/book-digest/attach-figures.ps1` puts each
+figure into every Card of the book that names it but does not show it yet, and links the book's PDF
+and Markdown from its Literature Card (mode `figures` runs only that step on an earlier digest).
+Topic trees, Topic Cards, hubs and the register belong to `zt-idea-grow`, which grows them from the
+finished Literature tree afterwards; the run report names that follow-up.
+
+`mode` replaces a full run with one stage: `full`, `resume` (once per run), `link`, `cards`,
+`models`, `explain`, `events`, `findings`, `figures`, `audit`, `bridge`, `term-cards`,
+`term-link`, and the math variant's `math`. The two Term modes backfill one already digested
+book: `term-cards` prepares or reuses only the book's staged source slices and publishes Term
+Cards in table order (a ready prefix; a failed row stays staged), and `term-link` applies the
+deterministic pass to the book's current Term Cards. Neither reruns the digest, model, Organize
+or Bridge stages, and both accept only `out` besides the Term settings: `termCards` (default
+true, the branch), `termLink` (default true, the final pass), `termCardsPerJob` (1–8, default 4
+concept terms per writer), `termCardsMathPerJob` (1–8, default 1 mathematical term) and
+`termLinkOccurrences` (`first`, the default, or `all`). The settings are frozen into the prepared
+run.
+
+A writer checks its own exact draft before it submits. A `card_check` refusal is content: the
+writer corrects it inside that job's finite fix cycle. A `card_locked` answer is a planning stop:
+the stage stops, keeps the drafts and receipts already written, and never retries, unlocks or
+re-points the write. An audit that ran is not a claim that all Terms passed: its `terms` section
+reports coverage, T faults, uses, unresolved rows and the check contract separately, so
+execution success, publication completeness and content quality stay distinct.
+
+See [docs/zt-digest-workflow.md](docs/zt-digest-workflow.md) and the
+[zt-digest-protocol skill](skills/zt-digest-protocol/SKILL.md).
 
 ### Hub Cards
 
@@ -370,9 +453,9 @@ hub's lines, upper and lower hubs, and faults (too large, no reasons, no Links o
 copy of the tree in address order, …); `list_hubs` shows the hub graph and the hubs a Workspace
 still needs; `get_card` names the hubs that list a Card. The GUI draws a hub as a guide card whose
 tab stands further left the wider its subject is, and shows above every Card the hubs it can climb
-to. The book digest's hub stage writes them: a Haiku hub manager chooses the limits from a survey,
-DeepSeek plans the fields and writes each hub, and `scripts/book-digest/hub-compiler.ps1` builds
-and checks the Cards. See [docs/hub-cards-design.md](docs/hub-cards-design.md).
+to. `zt-idea-grow` writes them after a digest: a Haiku hub manager chooses the limits from a
+survey, DeepSeek plans the fields and writes each hub, and `scripts/book-digest/hub-compiler.ps1`
+builds and checks the Cards. See [docs/hub-cards-design.md](docs/hub-cards-design.md).
 
 The **register** is the one hub of level `register` in a Workspace, the first Card of the Topic
 `索引`. Its `## 词条` section holds one key term per item, `- 学习：[[5/1]] [[5/2]]`: the term
@@ -406,20 +489,22 @@ Reverse links to the human Card.
 | `get_model` | a whole model: its Model Card and parts (filed under it or linked from it) with bodies, facets, and emphasis, its kinded relations, loose parts, neighbours outside it, and its `build` report (build order and self-sufficiency faults) |
 | `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`; `mode: entry` ranks a register term and its entry Cards, a hub member line, and a model head before ordinary title and body hits, and folds a confirmed restatement entry or an exact duplicate Idea-Card statement into one row that names its canonical Card and every member), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
-| `create_successor` | add a direct or side successor to an agent Card, optionally an Event or Model Card (`type`, a Model Card's `level`) or a Model part (`facet`, `emphasis`) |
-| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, facet, emphasis, level, or BibTeX |
+| `create_successor` | add a direct or side successor to an agent Card, optionally an Event, Finding, Model, Hub or Term Card (`type`; a Model Card's `level`/`form`, a Model part's `facet`/`emphasis`, a Hub Card's `level`, a Term Card's `term` name) |
+| `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, term name, facet, emphasis, level, hub level, math form, or BibTeX |
 | `delete_card`, `move_card` | delete or move agent Cards (the delete plan lists the Links it would break, and `into` re-points them to a Card that stays; `move_card` to a free slot with `to`, into another Card's place with `before`, `alone` without its successors) |
 | `insert_card` | insert a new agent Card in another Card's place; that Card and its subtree move down |
 
 Deletes, moves, inserts, and Citation key renames first return a plan; call again with the `confirm`
 text it names (`delete`, the tree root's address, `move`, or `insert`) to apply it. The service must be up.
 
-Two agent skills come with zt: `zt` (`skills/zt/SKILL.md`) teaches the Workspaces, tools, and
-rules, and `zettelkasten` (`skills/zettelkasten/SKILL.md`) teaches how to compose a Card and
-connect it, after Niklas Luhmann's practice and later practitioners' experience (sources in
-`skills/zettelkasten/references/`). To make the skills available in every Claude Code, Codex,
-and DeepSeek Harness conversation, and the server in Claude Code and Codex, run once on Windows, and again after updating a skill
-or moving the `zt` binary:
+Three agent skills come with zt: `zt` (`skills/zt/SKILL.md`) teaches the Workspaces, tools, Term
+Cards and Term uses, and the rules; `zettelkasten` (`skills/zettelkasten/SKILL.md`) teaches how to
+compose a Card and connect it, after Niklas Luhmann's practice and later practitioners' experience
+(sources in `skills/zettelkasten/references/`); and `zt-digest-protocol`
+(`skills/zt-digest-protocol/SKILL.md`) is the operator's manual for the digest workflows and their
+tools. To make the skills available in every Claude Code, Codex, and DeepSeek Harness conversation,
+and the server in Claude Code and Codex, run once on Windows, and again after updating a skill or
+moving the `zt` binary:
 
 ```powershell
 pwsh -File scripts/install-agent-integrations.ps1
@@ -494,6 +579,35 @@ through the bridge and keeps it in ZET's cache while the archive's copy keeps it
 **＋ Figure or document** picker lists a Work's documents above its figures, and
 `scholar_archive_file` returns the link as `link`.
 
+## Card check and policy
+
+Every write route — the shell (`n`, `b`, `e`, `ins`, `del`, `mv`), the line and terminal Session,
+the GUI routes, the MCP tools and one batch or preview — makes one Card-check decision inside its
+own write transaction, on the exact Card it is about to store. The mandatory envelope, Link, Access
+and Lock rules always refuse: a refusal is typed (`card_check`, `card_locked`, …), names the reason,
+and stores no Card, receipt, revision or Topic allocation. An accepted write is stored together
+with its advice, so a warning never costs the draft. The check reads bounded context (the parent and
+model level, the book's term table, the distinct Link targets, a Term Card's role and list rows);
+graph rules stay in the audit, and a real batch is at most 64 items while a preview sequence may
+check up to 200.
+
+The checker owns the rule catalog; the archive stores only its overrides:
+
+```sh
+zt config policy                                   # gate stage, policy hash, revision, rule versions, every rule
+zt config set gate.stage enforce                   # or advisory (the default) / default
+zt config set gate.human.R3 advise                 # block / advise / off / default, per Workspace and rule
+zt config set gate.agent.R6 default                # explicit default: remove the row
+```
+
+A fresh archive starts `advisory`: every quality diagnostic is returned as advice and stores the
+Card, so the new rules cannot strand an existing writer. `enforce` lets a `block` rule refuse. The
+stage is promoted deliberately by the owner, never by a timer. A retained (legacy) fault on an
+existing Card stays advice while a new occurrence of the same fault blocks under `enforce`, so an
+old archive never becomes uneditable; the mandatory invariants refuse in both stages. Returning the
+stage to `advisory` changes only which quality faults refuse a write, never the syntax/schema
+compatibility boundary.
+
 ## Dumps
 
 `zt dp` writes a compressed archive under `<archive_root>/dump/` that records the whole card
@@ -524,8 +638,10 @@ over for the bundled `tar.exe`.
 
 An archive that holds Term Cards or Term links is not backward-compatible with an older `zt`:
 the archive's generation marker makes an older binary refuse to start instead of silently
-dropping `term_name` or reading a `[[label@address]]` macro as an ordinary Link. Returning the
-Card-check gate to `advisory` changes only which quality faults refuse a write, never that
+dropping `term_name` or reading a `[[label@address]]` macro as an ordinary Link. `zt version
+--json` publishes the generation this build installs and understands, and
+`docs/term-cards-links-and-check-gate-release-manifest.json` names the compatible set. Returning
+the Card-check gate to `advisory` changes only which quality faults refuse a write, never that
 syntax/schema boundary; a full binary downgrade after Term data exists needs a reviewed
 conversion or the pre-Term backup restore.
 
