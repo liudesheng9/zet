@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const READ_TOOLS = new Set(['get_tree', 'get_card', 'get_cards', 'list_trees', 'list_workspaces', 'list_broken_links', 'list_links', 'get_model']);
 
@@ -177,10 +178,10 @@ async function main() {
   }
   const dst = await test.call('get_tree', { tree: treeId, bodies: true });
   fs.writeFileSync(path.join(outDir, 'test-tree.json'), JSON.stringify(dst, null, 2));
-  const report = compare(cards, treeCards(dst));
+  const report = compare(cards, treeCards(dst), treeId);
   report.broken_outside_links = outsideLinks(cards, treeId);
   fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
-  log(`compared ${report.live_count} live / ${report.test_count} test cards; ${report.differences.length} differences; ${report.broken_outside_links.length} outside links`);
+  log(`compared ${report.live_count} live / ${report.test_count} test cards; ${report.differences.length} differences; ${report.outside_inbound.length} inbound Links from other trees (not copied); ${report.broken_outside_links.length} outside links`);
   live.close();
   test.close();
 }
@@ -274,9 +275,35 @@ function linkSet(card) {
   return { links: linksOf(card), kinds: card.kinds ?? {} };
 }
 
-function compare(liveCards, testCards) {
+const REVERSE_MARK = '<!-- zt:reverse-links -->';
+const inTree = (addr, treeId) => addr === treeId || addr.startsWith(`${treeId}/`);
+
+// The generated reverse-links section lists every Card that links this one. A copy of one tree
+// cannot hold the Links from other trees (another book's Bridge, a Topic Card), so the live text
+// is compared with those lines dropped (and the section dropped when none is left), and its inbound
+// count lowered by as many; the dropped Links are reported in outside_inbound, not as differences.
+function withoutOutsideInbound(card, treeId) {
+  const text = card.text ?? '';
+  const at = text.indexOf(REVERSE_MARK);
+  if (at < 0 || !treeId) return { text, inbound: card.inbound ?? null, outside: [] };
+  const lines = text.slice(at).split('\n');
+  const outside = [];
+  const kept = lines.filter((l) => {
+    const m = l.match(/^- \[\[([^\]]+)\]\]/);
+    if (m && !inTree(m[1].trim(), treeId)) { outside.push(m[1].trim()); return false; }
+    return true;
+  });
+  const anyLeft = kept.some((l) => /^- \[\[/.test(l));
+  const head = text.slice(0, at);
+  // With no line left the copy has no section at all; its text then ends where the body ends.
+  const out = anyLeft ? head + kept.join('\n') : head.trimEnd();
+  return { text: out, inbound: card.inbound == null ? null : card.inbound - outside.length, outside, trimmed: !anyLeft };
+}
+
+export function compare(liveCards, testCards, treeId) {
   const byAddr = new Map(testCards.map((c) => [c.address, c]));
   const differences = [];
+  const outsideInbound = [];
   const fields = ['type', 'edge', 'parent', 'facet', 'emphasis', 'level', 'form', 'title', 'bibtex'];
   for (const lc of liveCards) {
     const tc = byAddr.get(lc.address);
@@ -286,13 +313,15 @@ function compare(liveCards, testCards) {
       if ((lc[f] ?? null) !== (tc[f] ?? null)) differences.push({ address: lc.address, field: f, live: lc[f] ?? null, test: tc[f] ?? null });
     }
     if (authoredBody(lc) !== authoredBody(tc)) differences.push({ address: lc.address, field: 'body', live: authoredBody(lc), test: authoredBody(tc) });
-    if ((lc.text ?? '') !== (tc.text ?? '')) differences.push({ address: lc.address, field: 'text (with generated reverse links)' });
-    if ((lc.inbound ?? null) !== (tc.inbound ?? null)) differences.push({ address: lc.address, field: 'inbound', live: lc.inbound, test: tc.inbound });
+    const lv = withoutOutsideInbound(lc, treeId);
+    for (const from of lv.outside) outsideInbound.push({ to: lc.address, from });
+    if (lv.text !== (lv.trimmed ? (tc.text ?? '').trimEnd() : (tc.text ?? ''))) differences.push({ address: lc.address, field: 'text (with generated reverse links)' });
+    if ((lv.inbound ?? null) !== (tc.inbound ?? null)) differences.push({ address: lc.address, field: 'inbound', live: lv.inbound, test: tc.inbound });
     const ll = JSON.stringify(linkSet(lc)); const tl = JSON.stringify(linkSet(tc));
     if (ll !== tl) differences.push({ address: lc.address, field: 'links', live: linkSet(lc), test: linkSet(tc) });
   }
   for (const [addr] of byAddr) differences.push({ address: addr, field: 'extra_in_test' });
-  return { live_count: liveCards.length, test_count: testCards.length, differences };
+  return { live_count: liveCards.length, test_count: testCards.length, differences, outside_inbound: outsideInbound };
 }
 
 function outsideLinks(cards, treeId) {
@@ -305,4 +334,6 @@ function outsideLinks(cards, treeId) {
   return out;
 }
 
-main().catch((e) => { console.error(e.stack || String(e)); process.exit(1); });
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e) => { console.error(e.stack || String(e)); process.exit(1); });
+}
