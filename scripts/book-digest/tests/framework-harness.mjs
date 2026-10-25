@@ -1071,14 +1071,58 @@ function runtime(kind, opts = {}) {
       termManagers.push({ label, phase: callOpts.phase, kind: 'settle', jobs: list.map((s) => s.id) })
       return { ok: true, deleted: list.length, not_deleted: [], sessions: list.map((s) => ({ id: s.id, session_id: s.session_id, deleted: true })) }
     }
+    // zt-term-cards v4 (#172): a Haiku manager runs DeepSeek jobs only. A "drive <step>" job runs one
+    // term-steps.ps1 step (answered here on the in-memory ledger, as the script does); the content
+    // managers run entries [from, to] of the job file the start step wrote.
     if (text.startsWith('You are a DeepSeek subagent manager for ZET Term Cards (')) {
       const kind = (text.match(/Term Cards \(([^)]+)\)/) || [])[1] || 'write'
-      const open = text.indexOf('\n', text.indexOf('JOBS ('))
-      const end = text.indexOf('\n\n1. Start', open)
-      const listed = JSON.parse(text.slice(open, end < 0 ? text.length : end))
-      termManagers.push({ label, phase: callOpts.phase, kind, jobs: listed.map((job) => job.id) })
-      const failed = kind === 'write' && !!opts.termWriterFails
-      return { ok: true, jobs: listed.map((job) => ({ id: job.id, session_id: sessionOf(job.id), status: failed ? 'failed' : 'done', answer: failed ? 'the writer failed' : '{}', registered: true, evidence: true, deleted: false })) }
+      const drive = (kind.match(/^drive (\w+)$/) || [])[1]
+      const answer = (id, value) => ({ ok: true, jobs: [{ id, session_id: sessionOf(id), status: 'done', answer: json(value), deleted: true }] })
+      if (drive) {
+        termManagers.push({ label, phase: callOpts.phase, kind: 'drive', step: drive, prompt: text })
+        const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
+        termCalls.push({ tool: 'term-steps', step: drive, cmd: (plain.match(/pwsh -NoProfile -File [^\n"]*"[^"]*" -Step \w+ -Out "[^"]*"[^\n]*/) || [])[0] || '' })
+        if (drive === 'start') {
+          if (opts.termPlanFails) return answer('drive-start', { ok: false, step: 'plan', error: 'term-cards: the book has no Term list' })
+          for (const job of termJobs) { const u = led.add(`termcards/${job.id}@1`, 'termcards', { job }); if (!opts.termAlreadyDone) u.state = 'claimed' }
+          const book = led.add('termcards/book@1', 'termcards', {})
+          if (opts.termAlreadyDone) { for (const job of termJobs) led.finish(`termcards/${job.id}@1`); led.finish('termcards/book@1') } else book.state = 'registered'
+          return answer('drive-start', { ok: true, jobs: opts.termAlreadyDone ? 0 : termJobs.length, plan_revision: 1 })
+        }
+        if (drive === 'review') return answer('drive-review', { ok: true, reviews: 0, counts: {} })
+        if (drive === 'fix') return answer('drive-fix', { ok: true, fixes: 0, counts: {} })
+        if (drive === 'finish') {
+          const done = [], failed = []
+          for (const job of termJobs) {
+            const u = led.find(`termcards/${job.id}@1`)
+            if (u.state === 'done') { done.push(job.id); continue }
+            if (opts.termWriterFails || termNotReady.has(job.id)) { led.fail(u.id, 'failed'); failed.push(job.id) } else { led.finish(u.id); done.push(job.id) }
+          }
+          const complete = !failed.length && !opts.termPublicationPartial
+          if (complete) led.finish('termcards/book@1')
+          return answer('drive-finish', { ok: true, done, failed, book: complete ? 'done' : 'incomplete', publication: { complete, rows: termJobs.length, committed: done.length, ready_unpublished: 0, stop: complete ? null : { code: 'not_ready' } } })
+        }
+      }
+      const range = text.match(/entries (\d+) through (\d+)/)
+      const listed = range ? termJobs.slice(Number(range[1]), Number(range[2]) + 1) : []
+      termManagers.push({ label, phase: callOpts.phase, kind: kind.split(' ')[0], jobs: listed.map((job) => job.id) })
+      const failed = kind.startsWith('write') && !!opts.termWriterFails
+      return { ok: true, jobs: listed.map((job) => ({ id: job.id, session_id: sessionOf(job.id), status: failed ? 'failed' : 'done', answer: failed ? 'the writer failed' : '{}', deleted: true })) }
+    }
+    if (text.startsWith('You are a DeepSeek subagent manager for the ZET Term-link pass')) {
+      termManagers.push({ label, phase: callOpts.phase, kind: 'drive', step: 'link', prompt: text })
+      const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
+      termCalls.push({ tool: 'term-steps', step: 'link', cmd: (plain.match(/pwsh -NoProfile -File[^\n]*?-Occurrences \w+/) || [])[0] || '' })
+      const reply = (value) => ({ answer: json(value), deleted: true })
+      if (opts.termLinkPlanFails) return reply({ ok: false, step: 'plan', error: 'term-link: the Term-structure read names no list: the book has no Term list to link' })
+      const unit = led.add('termlink/book@1', 'termlink', { pass: 'book' })
+      if (unit.state === 'done') return reply({ ok: true, status: 'skipped', reason: 'already complete' })
+      const book = led.find('termcards/book@1')
+      if (opts.termLinkStops) { led.fail(unit.id, 'failed'); return reply({ ok: true, status: 'failed', unit: unit.id, counts: null, second: null }) }
+      const changed = opts.termLinkNoop ? 0 : 1
+      if (!book || book.state === 'done') { led.finish(unit.id); return reply({ ok: true, status: 'done', unit: unit.id, counts: { cards_changed: changed, links_added: changed * 2 }, second: { cards_changed: 0, cards_refused: 0 } }) }
+      unit.state = 'blocked'
+      return reply({ ok: true, status: 'partial', unit: null, counts: { cards_changed: changed, links_added: changed }, second: { cards_changed: 0, cards_refused: 0 } })
     }
     if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
     if (label === 'prepare book') {
@@ -1381,91 +1425,48 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(badOccurrences.thrown && /args\.termLinkOccurrences must be one of/.test(badOccurrences.thrown.message), 'S24: an undeclared occurrence policy is refused before any stage')
   const badPerJob = await run('econ', { ...base, termCardsPerJob: 9, until: 'digest' })
   check(badPerJob.thrown && /args\.termCardsPerJob must be within \[1, 8\]/.test(badPerJob.thrown.message), 'S24: an out-of-range per-job size is refused before any stage')
-  // No second scheduler: the branch claims units from the run ledger and starts no other queue.
-  for (const module of ['zt-term-cards', 'zt-term-link-lib']) {
-    const source = fs.readFileSync(path.join(workflowDir, 'modules', `${module}.js`), 'utf8')
-    check(/ledger\('claim'/.test(source) && /next -Out/.test(source) && /ledger\('complete'/.test(source) && /done -Out/.test(source) && !/setInterval|setTimeout|new Date\(|schedule\[|queue\[|worker pool/i.test(source), `S24: ${module} uses the run ledger as its scheduler and starts no second one`)
-  }
-  // The arithmetic the branch can be wrong about: at most four retained writers per wave.
+  // zt-term-cards v4 / zt-term-link v3 (#172): Haiku managers and DeepSeek jobs only. Every deterministic
+  // step is a term-steps.ps1 call that a DeepSeek drive job runs; no Claude agent relays a command.
   const full = await run('econ', { ...base, figures: false })
-  const writes = full.termManagers.filter((m) => m.kind === 'write')
-  check(full.report.stages['term-cards'] && full.report.stages['term-cards'].status === 'done' && full.report.stages['term-link'] && full.report.stages['term-link'].status === 'done', `S24: a full run completes both Term stages (${JSON.stringify([full.report.stages['term-cards'], full.report.stages['term-link']])})`)
-  check(writes.length > 0 && writes.every((m) => m.jobs.length <= 4), `S24: every writer manager holds at most four jobs (${writes.map((m) => m.jobs.length).join(',')})`)
-  const groups = full.led.gate('termcards')
-  check(groups.complete === true && full.led.find('termcards/book@1') && full.led.find('termcards/book@1').state === 'done' && full.led.find('termlink/book@1') && full.led.find('termlink/book@1').state === 'done', `S24: the Term-card job/book units and the Term-link pass all complete on the verified work (${[...full.led.units.values()].filter((u) => /term/.test(u.layer)).map((u) => `${u.id}=${u.state}`).join(',')})`)
+  check(full.report.stages['term-cards'].status === 'done' && full.report.stages['term-link'].status === 'done', `v4: a full run completes both Term stages (${JSON.stringify([full.report.stages['term-cards'], full.report.stages['term-link']])})`)
   const termRelays = full.calls.filter((c) => /^term-(cards|link): /.test(c.label || '') && c.agentType === 'zt-relay')
-  check(termRelays.length > 0 && termRelays.every((c) => c.model === 'haiku'), `S24: every Term stage command runs as the Haiku relay role, never a variant-specific agent (${termRelays.length})`)
-  const termManagersAll = full.calls.filter((c) => /ZET Term Cards/.test(c.prompt || ''))
-  check(termManagersAll.length > 0 && termManagersAll.every((c) => c.model === 'haiku' && !c.agentType), `S24: every Term-card wave, review, fix and settle manager is the blueprint's Haiku manager (${termManagersAll.length})`)
-  const tcCalls = full.termCalls.filter((c) => c.tool === 'term-cards')
-  const steps = tcCalls.map((c) => c.step)
-  check(steps.includes('plan') && steps.indexOf('plan') < steps.indexOf('jobs') && steps.includes('check') && steps.indexOf('jobs') < steps.indexOf('apply'), `S24: the branch plans, claims its jobs, checks and publishes in order (${steps.join(',')})`)
-  check(full.termCalls.find((c) => c.tool === 'term-link' && c.step === 'plan').cmd.includes('-Occurrences first'), 'S24: the Term-link pass runs the declared occurrence policy')
-  check(full.result.term_cards && full.result.term_cards.status === 'done' && full.result.term_cards.unit === 'termcards/book@1' && full.result.term_cards.publication && full.result.term_cards.publication.complete === true, `S24: the report carries the Term-card branch's own complete result (${JSON.stringify(full.result.term_cards)})`)
-  check(full.result.term_link && full.result.term_link.status === 'done' && full.result.term_link.unit === 'termlink/book@1' && full.result.term_link.counts && full.result.term_link.counts.cards_changed === 1, `S24: the report carries the applied Term-link pass and its counts (${JSON.stringify(full.result.term_link)})`)
-  check(full.result.schedule && full.result.schedule.term_cards === 'done' && full.result.schedule.term_link === 'done', 'S24: the schedule summary names both Term stages')
+  check(termRelays.length === 0, `v4: no Term stage step runs as a Claude relay (${termRelays.map((c) => c.label).join(', ')})`)
+  const termAgents = full.calls.filter((c) => /^term-(cards|link): /.test(c.label || ''))
+  check(termAgents.length > 0 && termAgents.filter((c) => !/: workspace$/.test(c.label)).every((c) => c.model === 'haiku' && !c.agentType && /You are a DeepSeek subagent manager/.test(c.prompt || '')), `v4: every Term stage agent is a Haiku DeepSeek manager (${termAgents.length})`)
+  const drives = full.termCalls.filter((c) => c.tool === 'term-steps').map((c) => c.step)
+  check(drives.join(',') === 'start,review,fix,finish,link', `v4: the drive steps run in order start, review, fix, finish, link (${drives.join(',')})`)
+  check(full.termCalls.filter((c) => c.tool === 'term-steps').every((c) => /term-steps\.ps1" -Step \w+ -Out "/.test(c.cmd)), `v4: each drive job runs the one term-steps.ps1 step (${JSON.stringify(full.termCalls.map((c) => c.cmd))})`)
+  check(full.termCalls.some((c) => c.step === 'start' && / -PerJob 4/.test(c.cmd) && / -MathPerJob 1/.test(c.cmd)) && full.termCalls.some((c) => c.step === 'link' && /-Occurrences first/.test(c.cmd)), 'v4: the per-job sizes and the occurrence policy reach the script')
+  const writes = full.termManagers.filter((m) => m.kind === 'write')
+  check(writes.length > 0 && writes.every((m) => m.jobs.length <= 8) && writes.flatMap((m) => m.jobs).length === 2, `v4: every writer manager holds at most eight jobs and all jobs are written (${writes.map((m) => m.jobs.length).join(',')})`)
+  check(full.led.find('termcards/book@1').state === 'done' && full.led.find('termlink/book@1').state === 'done', 'v4: the Term-card book unit and the Term-link pass complete')
+  check(full.result.term_cards.status === 'done' && full.result.term_cards.publication && full.result.term_cards.publication.complete === true, `v4: the report carries the complete Term-card branch (${JSON.stringify(full.result.term_cards)})`)
+  check(full.result.term_link.status === 'done' && full.result.term_link.counts && full.result.term_link.counts.cards_changed === 1, `v4: the report carries the applied Term-link pass (${JSON.stringify(full.result.term_link)})`)
   // The frozen layer switches: a disabled Term layer freezes into the prepared target and runs no stage.
   const noCards = await run('econ', { ...base, figures: false, termCards: false })
   const noCardsPrep = noCards.calls.find((c) => c.label === 'prepare book')
-  check(noCardsPrep && /"termCards":false/.test(noCardsPrep.cmd), 'S24: a disabled Term-card branch is frozen into the prepared target (-RunOptions)')
-  check(noCards.report.stages['term-cards'].status === 'skipped' && noCards.termCalls.every((c) => c.tool !== 'term-cards'), 'S24: termCards false skips the branch and runs no compiler command')
-  check(noCards.report.stages['term-link'].status === 'done' && noCards.led.find('termlink/book@1').state === 'done', 'S24: a disabled Term-card branch registers no unit to wait for; the Term-link pass still runs')
+  check(noCardsPrep && /"termCards":false/.test(noCardsPrep.cmd) && noCards.report.stages['term-cards'].status === 'skipped' && noCards.termCalls.filter((c) => c.tool === 'term-steps').every((c) => c.step === 'link'), `S24: termCards false is frozen and skips the Term-card branch (${JSON.stringify([!!noCardsPrep, noCardsPrep && noCardsPrep.cmd && noCardsPrep.cmd.slice(0, 300), noCards.report.stages['term-cards'], noCards.termCalls.map((c) => c.step)])})`)
   const noLink = await run('econ', { ...base, figures: false, termLink: false }, { termLinkOff: true })
   const noLinkPrep = noLink.calls.find((c) => c.label === 'prepare book')
-  check(noLinkPrep && /"termLink":false/.test(noLinkPrep.cmd) && noLink.report.stages['term-link'].status === 'skipped' && noLink.termCalls.every((c) => c.tool !== 'term-link'), 'S24: termLink false is frozen, skips the pass and registers no termlink unit')
-  check(noLink.led.find('termcards/book@1') && noLink.led.find('termcards/book@1').state === 'done', 'S24: termLink false never blocks the Term-card branch')
-  // A failed term job leaves committed work but can never complete the book unit; the pass stays blocked.
-  const failed = await run('econ', { ...base, figures: false }, { termWriterFails: true })
-  check(failed.report.stages['term-cards'].status !== 'failed' && failed.result.term_cards.status === 'failed', 'S24: a failed writer fails the branch without halting the run')
-  check(failed.led.find('termcards/t001@1').state === 'failed' && failed.led.find('termcards/t002@1').state === 'failed' && failed.led.find('termcards/book@1').state !== 'done', 'S24: a failed job unit keeps its own fault and the book unit never completes')
-  check(failed.result.term_link.status === 'partial' && /not ready/.test(String(failed.result.term_link.reason || '')) && failed.led.find('termlink/book@1') && failed.led.find('termlink/book@1').state === 'blocked', `S24/S30: the normal Term-link dependency stays blocked with its reason; the pass links only the published prefix (${JSON.stringify(failed.result.term_link)})`)
-  check(failed.result.audit && failed.report.stages.audit.status === 'done' && failed.result.run_report, 'S24: the audit and the run report still run and show the coverage debt')
-  check(!failed.termCalls.some((c) => c.tool === 'term-link' && c.step === 'apply' && / -Token /.test(c.cmd)), 'S24/S30: a failed term job never reaches a claimed Term-link apply (the prefix pass holds no claim)')
-  const failedSettled = settledResources(failed)
-  check(failedSettled.terminal && failedSettled.removed, `S29: a failed Term job still leaves no live conversation and no workspace registration (${JSON.stringify(failedSettled)})`)
-  // A failed term job leaves the ready later drafts staged and the publication partial.
-  const partial = await run('econ', { ...base, figures: false }, { termPublicationPartial: true })
-  check(partial.result.term_cards.status === 'failed' && /not complete/.test(String(partial.result.term_cards.reason || '')), `S24: a partial publication is reported, never a successful zero-term book (${JSON.stringify(partial.result.term_cards.reason)})`)
-  check(partial.led.find('termcards/book@1').state !== 'done' && partial.result.term_link.status === 'partial' && partial.led.find('termlink/book@1').state !== 'done', 'S24/S30: a partial Term-card book leaves the book unit and the Term-link unit incomplete; the pass links only the published prefix')
-  // A stopped pass records its fault and stays incomplete; the audit still runs.
+  check(noLinkPrep && /"termLink":false/.test(noLinkPrep.cmd) && noLink.report.stages['term-link'].status === 'skipped' && noLink.termCalls.every((c) => c.step !== 'link'), 'S24: termLink false is frozen and skips the pass')
+  // A job that is not ready fails only itself; every other job completes; the ready prefix is published and linked.
+  const partial = await run('econ', { ...base, figures: false }, { termJobCount: 10, termNotReady: ['t001'] })
+  const written = new Set(partial.termManagers.filter((m) => m.kind === 'write').flatMap((m) => m.jobs))
+  check(written.size === 10 && partial.termManagers.filter((m) => m.kind === 'write').length === 2, `v4: ten jobs run on two writer managers (${[...written].join(',')})`)
+  check(partial.led.find('termcards/t001@1').state === 'failed' && ['t002', 't003', 't010'].every((id) => partial.led.find(`termcards/${id}@1`).state === 'done') && partial.led.find('termcards/book@1').state !== 'done', 'v4: the not-ready job fails alone, the rest complete, the book unit stays incomplete')
+  check(partial.result.term_cards.status === 'failed' && /t001/.test(String(partial.result.term_cards.reason || partial.result.term_cards.error || '')), `v4: the branch names the job that is not ready (${JSON.stringify(partial.result.term_cards)})`)
+  check(partial.result.term_link.status === 'partial' && partial.led.find('termlink/book@1').state !== 'done', `v4: the Term-link pass links the published prefix and its unit stays incomplete (${JSON.stringify(partial.result.term_link)})`)
+  check(partial.result.audit && partial.report.stages.audit.status === 'done', 'v4: the audit still runs after an incomplete Term-card book')
+  // A stopped pass and a book with no Term list are clear failed results.
   const stopped = await run('econ', { ...base, figures: false }, { termLinkStops: true })
-  check(stopped.result.term_link.status === 'failed' && /card_check/.test(String(stopped.result.term_link.reason || '')), `S24: a stopped Term-link pass reports its typed stop (${JSON.stringify(stopped.result.term_link.reason)})`)
-  check(stopped.led.find('termlink/book@1').state !== 'done' && stopped.result.audit, 'S24: a stopped pass keeps its unit incomplete and the audit still describes the book')
-  // A book with no usable Term list is a clear incomplete result, never a successful zero-term book.
-  // No Term list at all: the branch cannot plan a Term card and the pass cannot plan a link, and neither is a successful zero-term book.
+  check(stopped.result.term_link.status === 'failed' && stopped.led.find('termlink/book@1').state !== 'done', 'v4: a stopped Term-link pass is failed and its unit stays incomplete')
   const noList = await run('econ', { ...base, figures: false }, { termPlanFails: true, termLinkPlanFails: true })
-  check(noList.result.term_cards.status === 'failed' && /no Term list/.test(String(noList.result.term_cards.reason || '')), `S24: a plan with no Term list is a clear failed result (${JSON.stringify(noList.result.term_cards.reason)})`)
-  check(noList.result.term_link.status === 'failed' && /no list/.test(String(noList.result.term_link.reason || '')) && !noList.led.find('termlink/book@1'), `S24: a Term link requested with no Term list is a clear failed result and owns no unit (${JSON.stringify(noList.result.term_link.reason)})`)
-  check(noList.result.audit && noList.report.stages.audit.status === 'done', 'S24: the audit still describes a book whose Term list could not be planned')
-  const quiet = await run('econ', { ...base, figures: false }, { termLinkNoop: true })
-  check(quiet.result.term_link.status === 'done' && quiet.result.term_link.no_op === true && quiet.led.find('termlink/book@1').state === 'done', 'S24: a proven Term-link no-op completes its unit with no edit')
-  // S30 (#172): a job that stays not ready after its one fix fails only itself. The remaining waves are
-  // still admitted (design 12.4), the ready prefix is published without the book claim (12.5), and the
-  // Term-link pass links the published prefix while its unit stays incomplete (R0343: never done).
-  const waves = await run('econ', { ...base, figures: false }, { termJobCount: 6, termNotReady: ['t001'] })
-  const written = new Set(waves.termManagers.filter((m) => m.kind === 'write').flatMap((m) => m.jobs))
-  check(['t001', 't002', 't003', 't004', 't005', 't006'].every((id) => written.has(id)), `S30: a not-ready job in wave 1 does not stop the later waves (written ${[...written].join(',')})`)
-  check(waves.led.find('termcards/t001@1').state !== 'done' && ['t002', 't003', 't004', 't005', 't006'].every((id) => waves.led.find(`termcards/${id}@1`).state === 'done'), `S30: the not-ready job keeps its fault and every other job completes (${[...waves.led.units.values()].filter((u) => u.layer === 'termcards').map((u) => `${u.id}=${u.state}`).join(',')})`)
-  check(waves.result.term_cards.status === 'failed' && /t001/.test(String(waves.result.term_cards.reason || '')) && !/t00[2-6]/.test(String(waves.result.term_cards.reason || '')), `S30: the branch names only the job that is not ready (${JSON.stringify(waves.result.term_cards.reason)})`)
-  const prefixApply = waves.termCalls.filter((c) => c.tool === 'term-cards' && c.step === 'apply')
-  check(prefixApply.length === 1 && !/ -Token /.test(prefixApply[0].cmd) && waves.result.term_cards.publication && waves.led.find('termcards/book@1').state !== 'done', `S30: the ready prefix is published without the book claim, and the book unit stays incomplete (${JSON.stringify(prefixApply.map((c) => c.cmd))})`)
-  const linkApply = waves.termCalls.filter((c) => c.tool === 'term-link' && c.step === 'apply')
-  check(linkApply.length === 1 && !/ -Token /.test(linkApply[0].cmd) && waves.result.term_link.status === 'partial' && waves.result.term_link.counts && waves.led.find('termlink/book@1').state !== 'done', `S30: the Term-link pass links the published prefix without a claim and its unit stays incomplete (${JSON.stringify(waves.result.term_link)})`)
-  // S30 (#172): run-level records carry no -Unit (the ledger fences -Unit with -Token, and a wave holds no cleanup unit).
-  const termCardsSource = fs.readFileSync(path.join(workflowDir, 'modules', 'zt-term-cards.js'), 'utf8')
-  check(!/-Unit run -(Settle|EvidenceFor)/.test(termCardsSource) && /ledger resource -Out \$\{q\(OUT\)\} -Settle <session_id>/.test(termCardsSource), 'S30: the wave settle and the evidence record are run-level records without -Unit run')
-  // S30 (#172): a resume keeps the prepared run's own Term switches: termCards/termLink false stay off.
+  check(noList.result.term_cards.status === 'failed' && /no Term list/.test(String(noList.result.term_cards.reason || noList.result.term_cards.error || '')) && noList.result.term_link.status === 'failed', `v4: a book with no Term list is a clear failed result (${JSON.stringify([noList.result.term_cards, noList.result.term_link])})`)
+  // A resume keeps the prepared run's own Term switches.
   const resumedOff = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { runOptions: { models: true, events: true, findings: true, termCards: false, termLink: false }, termLinkOff: true, retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
-  check(resumedOff.report.stages['term-cards'].status === 'skipped' && resumedOff.report.stages['term-link'].status === 'skipped' && resumedOff.termCalls.length === 0, `S30: a resume of a run prepared with termCards and termLink false runs neither Term stage (${JSON.stringify([resumedOff.report.stages['term-cards'], resumedOff.report.stages['term-link']])})`)
-  const resumedOn = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
-  check(resumedOn.report.stages['term-cards'].status !== 'skipped' && resumedOn.report.stages['term-link'].status !== 'skipped', 'S30: a resume of a run prepared with the Term layers on still drains both Term stages')
-  // The math variant runs the same inherited pair.
-  // A resume of a settled branch: every Term unit is done, so both stages find nothing to claim and fail nothing.
+  check(resumedOff.report.stages['term-cards'].status === 'skipped' && resumedOff.report.stages['term-link'].status === 'skipped' && resumedOff.termCalls.length === 0, 'S30: a resume of a run prepared with the Term layers off runs neither Term stage')
   const settled = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { termAlreadyDone: true, retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1'], ['termcards', 'termcards/book@1'], ['termlink', 'termlink/book@1']], retainedDone: ['termcards', 'termlink'] })
-  check(settled.result && settled.result.mode === 'resume' && settled.report.stages['term-cards'].status === 'done' && settled.report.stages['term-link'].status === 'done', `S24: a resume of a settled Term branch claims nothing and fails nothing (${JSON.stringify([settled.report && settled.report.stages && settled.report.stages['term-cards'], settled.report && settled.report.stages && settled.report.stages['term-link']])})`)
-  check(settled.result && settled.result.term_cards && settled.result.term_cards.status === 'done' && settled.result.term_link && settled.result.term_link.status === 'skipped' && settled.termCalls.every((c) => c.step !== 'apply'), 'S24: a settled Term branch runs no plan/apply work on resume and reports itself complete')
-  const resumeSettled = settledResources(settled)
-  check(resumeSettled.terminal && resumeSettled.removed, `S29: a resume settles every recorded resource it reuses (${JSON.stringify(resumeSettled)})`)
+  check(settled.report.stages['term-cards'].status === 'done' && settled.result.term_cards.status === 'done' && settled.result.term_link.status === 'skipped', `v4: a resume of a settled Term branch writes nothing and fails nothing (${JSON.stringify([settled.result.term_cards, settled.result.term_link])})`)
   const mathFull = await run('math', { ...base, figures: false })
   check(mathFull.report.stages['term-cards'].status === 'done' && mathFull.report.stages['term-link'].status === 'done', 'S24 (math): the inherited Term stages run in the mathematics variant')
 }
@@ -1512,9 +1513,9 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(!!cardsPrepare && /zt-digest prepare -Out "D:\\x\\Key" -Sections -Brief/.test(cardsPrepare.cmd || ''), `S25 term-cards: prepare runs the sections-only branch on the prepared run (${cardsPrepare && cardsPrepare.cmd})`)
   check(cards.calls.every((c) => !/prepare book/.test(c.label || '')), 'S25 term-cards: the book is never prepared again')
   check(cards.report.stages.source && cards.report.stages.source.status !== 'failed', 'S25 term-cards: its declared source stage runs (the source passages the Term cards need)')
-  check(cards.report.stages['term-cards'].status === 'done' && cards.result.term_cards.status === 'done' && cards.result.term_cards.unit === 'termcards/book@1', `S25 term-cards: the Term-card branch completes from its publication (${JSON.stringify(cards.result.term_cards)})`)
+  check(cards.report.stages['term-cards'].status === 'done' && cards.result.term_cards.status === 'done' && cards.result.term_cards.publication && cards.result.term_cards.publication.complete === true, `S25 term-cards: the Term-card branch completes from its publication (${JSON.stringify(cards.result.term_cards)})`)
   check(cards.result.term_link && cards.result.term_link.status === 'done' && cards.result.term_link.unit === 'termlink/book@1', `S25 term-cards: the Term-link pass follows the publication (${JSON.stringify(cards.result.term_link)})`)
-  check(cards.termCalls.some((c) => c.tool === 'term-cards' && c.step === 'plan') && cards.termCalls.some((c) => c.tool === 'term-link' && c.step === 'apply'), 'S25 term-cards: the two Term compilers plan, publish and link in the one run')
+  check(cards.termCalls.some((c) => c.step === 'start') && cards.termCalls.some((c) => c.step === 'finish') && cards.termCalls.some((c) => c.step === 'link'), 'S25 term-cards: the Term cards are planned, published and linked in the one run')
   check(cards.result.backfill && cards.result.backfill.list && cards.result.backfill.list.rows === 2 && cards.result.backfill.source.reused === true && cards.result.backfill.conflicts.length === 0, `S25 term-cards: the report carries the validation it bound (${JSON.stringify(cards.result.backfill && cards.result.backfill.list)})`)
   check(cards.result.audit && cards.report.stages.audit.status === 'done', 'S25 term-cards: the read-only audit still describes the book')
   check(!cards.calls.some((c) => /^finalize /.test(c.label || '') || /zt-digest organize-|zt-digest figures|zt-digest bridge|model-compiler/.test(c.cmd || '')), 'S25 term-cards: no finalization, Organize, Figures, Bridge or model command runs')
@@ -1531,10 +1532,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(!!linkPrepare && /zt-digest prepare -Out "D:\\x\\Key" -Validate -Brief/.test(linkPrepare.cmd || ''), `S25 term-link: prepare validates the existing book and staging (${linkPrepare && linkPrepare.cmd})`)
   check(link.report.stages.source && link.report.stages.source.status === 'not-in-mode', `S25 term-link: the source stage never runs (${link.report.stages.source && link.report.stages.source.status})`)
   check(link.report.stages['term-cards'].status === 'not-in-mode' && link.termCalls.every((c) => c.tool !== 'term-cards'), 'S25 term-link: the Term-card branch is not dispatched')
-  check(link.termCalls.some((c) => c.tool === 'term-link' && c.step === 'plan') && link.termCalls.some((c) => c.tool === 'term-link' && c.step === 'apply'), `S25 term-link: the deterministic plan and apply run (${link.termCalls.map((c) => `${c.tool}:${c.step}`).join(',')})`)
+  check(link.termCalls.some((c) => c.step === 'link') && !link.termCalls.some((c) => c.step === 'start'), `S25 term-link: the deterministic pass runs and no Term-card step (${link.termCalls.map((c) => `${c.tool}:${c.step}`).join(',')})`)
   check(link.result.term_link && link.result.term_link.status === 'done' && link.result.term_link.unit === 'termlink/book@1', `S25 term-link: the pass completes from its apply report (${JSON.stringify(link.result.term_link)})`)
   check(link.result.term_cards && link.result.term_cards.status === 'skipped', `S25 term-link: the report names the Term-card branch as not run, never as a success (${JSON.stringify(link.result.term_cards)})`)
-  check(link.termManagers.length === 0 && link.calls.every((c) => !/DeepSeek subagent manager/.test(c.prompt || '')), 'S25 term-link: no DeepSeek manager or provider job starts in the deterministic mode')
+  check(link.termManagers.every((m) => m.kind === 'drive' && m.step === 'link'), 'S25 term-link: mode term-link starts only the one link drive job, no writer')
   check(link.result.audit && link.result.backfill && link.result.backfill.tree.heads === 0, 'S25 term-link: the audit and the bound validation are in the result')
   const linkSettled = settledResources(link)
   check(linkSettled.conversations === 0 && linkSettled.workspaces === 0, `S29 term-link: the deterministic mode starts no provider resource to leave behind (${JSON.stringify(linkSettled)})`)
@@ -2036,7 +2037,7 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   const others = ['zt-group-cycle', 'zt-cards-layer', 'zt-cards-book', 'zt-link-check', 'zt-model-layer', 'zt-explain', 'zt-event-layer', 'zt-finding-layer', 'zt-bridge', 'zt-organize', 'zt-figures', 'zt-audit', 'zt-digest-report', 'zt-math-boundary', 'zt-math-proof', 'zt-math-theory']
   const read = (id) => fs.readFileSync(path.join(workflowDir, 'modules', `${id}.js`), 'utf8')
   check(/async function ztTermLinkPass/.test(read('zt-term-link-lib')), 'S26: the shared pass lives in zt-term-link-lib')
-  check(/ztTermLinkPass\(ctx, p\)/.test(read('zt-term-link')), 'S26: the term-link stage delegates to the shared pass')
+  check(/-Step link/.test(read('zt-term-link')) && /ztTermLinkPass\(ctx/.test(read('zt-finalize')), 'v4: the term-link stage is one link drive job; the finalization round keeps the shared pass')
   check(/ztTermLinkPass\(ctx, \{/.test(read('zt-finalize')), 'S26: the finite finalization runs the same pass for its round')
   for (const module of others) {
     check(!/ztTermLinkPass|term-link -Step| -Layer termlink/.test(read(module)), `S26: ${module} is no Term-link writer; the final write boundary is the only one (R0440)`)
@@ -2227,7 +2228,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '15' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '1' && modules['zt-term-link-lib'] === '2' && modules['zt-term-cards'] === '3' && modules['zt-finalize'] === '3', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v15, zt-digest-report v19, zt-term-link-lib v2, zt-term-cards v3, zt-finalize v3 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '15' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '1' && modules['zt-term-link-lib'] === '2' && modules['zt-term-cards'] === '4' && modules['zt-finalize'] === '3', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v15, zt-digest-report v19, zt-term-link-lib v2, zt-term-cards v4, zt-finalize v3 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
