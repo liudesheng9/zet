@@ -1086,6 +1086,7 @@ fn a_preview_collects_lock_and_card_check_refusals_together() {
     gui.lock(&frozen);
     let cards = home.cards();
     let revision = home.revision();
+    let lock_history = lock_facts(&home);
     let items = json!([
         {
             "op_key": "s05/mixed/1/create/locked",
@@ -1168,4 +1169,25 @@ fn a_preview_collects_lock_and_card_check_refusals_together() {
     );
     assert_eq!(home.cards(), cards, "the preview wrote no Card");
     assert_eq!(home.revision(), revision, "the preview moved no revision");
+    assert_eq!(
+        lock_facts(&home),
+        lock_history,
+        "the preview kept no Lock history"
+    );
+}
+
+/// The stored Lock facts a preview must leave alone: Locks, members and history.
+fn lock_facts(home: &Home) -> (i64, i64, i64) {
+    let conn = home.conn();
+    let count = |table: &str| {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("lock table count")
+    };
+    (
+        count("locks"),
+        count("lock_members"),
+        count("lock_events"),
+    )
 }
