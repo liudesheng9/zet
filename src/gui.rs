@@ -4184,10 +4184,11 @@ mod tests {
             "Referred by is built from the ordinary Reverse links: {reader}"
         );
         assert!(
-            reader.contains("termUses(card).length ? [h('div', { class: 'section-label', text: `Term uses · ${termUses(card).length}` })")
+            reader.contains("termUses(card).length ? h('details', { class: 'term-uses' },")
+                && reader.contains("h('summary', { class: 'section-label', text: `Term uses · ${termUses(card).length}` })")
                 && reader.contains("termUses(card).map((link) => termUseChip(link))")
                 && reader.contains(": null,"),
-            "Term uses is its own row, absent when the list is empty: {reader}"
+            "Term uses is its own folded row, absent when the list is empty: {reader}"
         );
         assert!(!reader.contains("card.inbound.map"), "the reader no longer lists the merged inbound set");
         assert!(APP_JS.contains(
@@ -4232,6 +4233,155 @@ mod tests {
         let css = &css[..css.find('\n').unwrap()];
         assert!(css.contains("var(--ink-soft)") && !css.contains('#'), "theme ink only: {css}");
         assert!(APP_CSS.contains(".chip .term-fact { flex: none;"), "the fact is never cut off");
+    }
+
+    /// The CSS rule that starts with `selector`, up to its closing brace.
+    fn css_rule<'a>(selector: &str) -> &'a str {
+        let start = APP_CSS
+            .find(&format!("\n{selector} {{"))
+            .unwrap_or_else(|| panic!("no rule {selector}"));
+        let rule = &APP_CSS[start + 1..];
+        &rule[..=rule.find('}').expect("end of rule")]
+    }
+
+    /// The `app.js` function that starts with `head`, up to the next function at the same depth.
+    fn js_function<'a>(head: &str) -> &'a str {
+        let start = APP_JS.find(head).unwrap_or_else(|| panic!("no function {head}"));
+        let body = &APP_JS[start..];
+        &body[..body.find("\n  }\n").expect("end of function") + 4]
+    }
+
+    /// S13 (#156, US047/US048, S13-AC01..AC03): a quiet Term link is the authored word in the
+    /// prose's own font, size and ink with a restrained dotted line; its meaning and address show
+    /// on a slip on hover and on keyboard focus by CSS alone; Enter and Space follow it through
+    /// the ordinary Card route; a cross-Workspace Term link keeps its meaning and adds the
+    /// Workspace instead of losing its title; and a broken one is pencilled in the broken ink with
+    /// its reason as visible text.
+    #[test]
+    fn the_front_end_writes_term_links_quietly_with_a_slip_on_hover_and_focus() {
+        let term = css_rule(".zt-link.zt-term");
+        for part in [
+            "font: inherit",
+            "color: inherit",
+            "background: none",
+            "box-shadow: none",
+            "padding: 0",
+            "text-decoration-style: dotted",
+        ] {
+            assert!(term.contains(part), "a Term link is prose, not a chip ({part}): {term}");
+        }
+        assert!(!term.contains('#'), "theme ink only: {term}");
+        let shown = css_rule(".zt-term:hover .zt-term-tip, .zt-term:focus-visible .zt-term-tip");
+        assert!(shown.contains("opacity: 1") && shown.contains("visibility: visible"), "{shown}");
+        let tip = css_rule(".zt-term-tip");
+        assert!(
+            tip.contains("position: absolute") && tip.contains("visibility: hidden") && tip.contains("pointer-events: none"),
+            "the slip lies hidden under the word until it is asked for: {tip}"
+        );
+        assert!(tip.contains("ease-in-out") && !tip.contains('#'), "{tip}");
+        for ws in ["agent", "human"] {
+            let cross = css_rule(&format!(".zt-link.zt-term.cross.{ws}"));
+            assert!(
+                cross.contains("background: none") && cross.contains(&format!("var(--{ws})")),
+                "a cross-Workspace Term link keeps the Workspace colour in its line: {cross}"
+            );
+        }
+        let broken = css_rule(".zt-link.zt-term.broken");
+        assert!(broken.contains("var(--broken)") && broken.contains("dashed"), "{broken}");
+        let note = css_rule(".zt-term-note");
+        assert!(note.contains("display: inline-block") && note.contains("var(--broken)"), "{note}");
+
+        // The page wires Term links in wireMarkdown, and a cross-Workspace Term link no longer
+        // loses its meaning to the Workspace title.
+        let wire = js_function("function wireMarkdown(root)");
+        assert!(
+            wire.contains("if (anchor.classList.contains('zt-term')) wireTermLink(anchor, cross);")
+                && wire.contains("else if (cross) anchor.title = `${wsLabel(cross)} workspace`;"),
+            "{wire}"
+        );
+        assert!(
+            wire.contains("anchor.addEventListener('click', (event) => { event.preventDefault(); go(anchor.dataset.target); });"),
+            "the ordinary encoded Card route stays the click: {wire}"
+        );
+        let link = js_function("function wireTermLink(anchor, cross)");
+        assert!(link.contains("class: 'zt-term-tip', id, 'aria-hidden': 'true'"), "{link}");
+        assert!(link.contains("anchor.setAttribute('aria-describedby', id);"), "{link}");
+        assert!(link.contains("anchor.removeAttribute('title');"), "{link}");
+        assert!(
+            link.contains("anchor.style.setProperty('--tip-shift'")
+                && link.contains("anchor.style.setProperty('--tip-max'")
+                && tip.contains("var(--tip-shift, 0px)")
+                && tip.contains("var(--tip-max, 24em)"),
+            "the slip is narrowed to the card and slid back onto it near the right edge: {link}"
+        );
+        assert!(
+            link.contains("event.key !== ' '") && link.contains("go(anchor.dataset.target);"),
+            "Space follows the link as Enter does: {link}"
+        );
+        assert!(
+            !link.contains("innerHTML") && !link.contains("html:"),
+            "the slip's words are text, never HTML: {link}"
+        );
+        // No new route, popover service or Term page.
+        assert!(!APP_JS.contains("/api/term"), "the reader asks no new route");
+
+        let rule = js_function("function termTipParts(meaning, target, workspaceLabel)");
+        let script = format!(
+            "{rule}\nconsole.log(JSON.stringify([\
+             termTipParts('双方都不改变策略', '0/1|a', ''),\
+             termTipParts(undefined, '0/1|a', 'Agent')]));"
+        );
+        if let Ok(out) = std::process::Command::new("node").arg("-e").arg(&script).output() {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                r#"[{"meaning":"双方都不改变策略","address":"0/1|a","workspace":""},{"meaning":"","address":"0/1|a","workspace":"Agent workspace"}]"#
+            );
+        }
+    }
+
+    /// S13 (#156, US049, S13-AC05/AC06): a Term Card is read in the ordinary reader: one quiet
+    /// line under the title names its computed role and the list it is filed in (the list's name
+    /// opens the list through the ordinary route), and its generated Term uses fold to their count
+    /// under a normal `<details>` disclosure. No second page or board is added.
+    #[test]
+    fn the_front_end_names_term_facts_quietly_and_folds_term_uses_to_their_count() {
+        let reader = js_function("function renderReader()");
+        assert!(
+            reader.contains("h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)')),\n        termFactsLine(card),"),
+            "the Term facts line sits under the title in the card head: {reader}"
+        );
+        let line = js_function("function termFactsLine(card)");
+        assert!(line.contains("h('p', { class: 'term-facts' },") && line.contains("onclick: () => go(facts.list.address)"), "{line}");
+        assert!(!line.contains("innerHTML") && !line.contains("html:"), "{line}");
+        let css = css_rule(".card .term-facts");
+        assert!(css.contains("var(--ink-faint)") && css.contains("12px") && !css.contains('#'), "quiet: {css}");
+        let marker = css_rule("details.term-uses > summary::before");
+        assert!(marker.contains("transition: transform"), "{marker}");
+        assert!(APP_CSS.contains("details.term-uses[open] > summary::before { transform: rotate(90deg); }"));
+
+        let rule = js_function("function termFactsText(facts)");
+        let script = format!(
+            "{rule}\nconst list = {{address: '0/1', title: '术语表：测试'}};\
+             console.log(JSON.stringify([\
+             termFactsText(null),\
+             termFactsText({{role: 'list', list}}),\
+             termFactsText({{role: 'card', list}}),\
+             termFactsText({{role: 'part', list}}),\
+             termFactsText({{role: 'unfiled', list: null}})]));"
+        );
+        if let Ok(out) = std::process::Command::new("node").arg("-e").arg(&script).output() {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                concat!(
+                    r#"[null,{"role":"Term list","list":null,"note":""},"#,
+                    r#"{"role":"Term head","list":{"address":"0/1","title":"术语表：测试"},"note":"filed in"},"#,
+                    r#"{"role":"Term part","list":{"address":"0/1","title":"术语表：测试"},"note":"filed in"},"#,
+                    r#"{"role":"Unfiled Term","list":null,"note":"in no Term list"}]"#
+                )
+            );
+        }
     }
 
     /// S19 (#108, AC04, AC05, AC06): the reader and the Table carry one low-salience slot, it asks

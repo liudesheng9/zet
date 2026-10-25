@@ -3405,6 +3405,7 @@
           onclick: () => go(hub.address),
         }, h('span', { class: 'lvl', text: hub.level || 'hub' }), h('span', { class: 't' }, titleNodes(hub.title || hub.address))))) : null,
         h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)')),
+        termFactsLine(card),
       ),
       md,
     ), h('div', { class: 'card-tools' },
@@ -3418,7 +3419,11 @@
       // and `## Term uses` sections are (S11, #153, US040). A source that writes both forms sits
       // in both rows; a Card with no Term use shows the one row it always had.
       referredBy(card).length ? [h('div', { class: 'section-label', text: `Referred by · ${referredBy(card).length}` }), h('div', { class: 'chips' }, referredBy(card).map((link) => chip(link)))] : null,
-      termUses(card).length ? [h('div', { class: 'section-label', text: `Term uses · ${termUses(card).length}` }), h('div', { class: 'chips term-uses' }, termUses(card).map((link) => termUseChip(link)))] : null,
+      // The generated Term uses fold to their count under a normal disclosure (S13, #156): the
+      // explanation is the focus, and the uses lie folded beneath it until the reader opens them.
+      termUses(card).length ? h('details', { class: 'term-uses' },
+        h('summary', { class: 'section-label', text: `Term uses · ${termUses(card).length}` }),
+        h('div', { class: 'chips' }, termUses(card).map((link) => termUseChip(link)))) : null,
       card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), h('div', { class: 'chips' }, card.outbound.map((link) => chip(link)))] : null,
       // One distant Card beside the neighbours, faint until focus or hover (S19, #108), and the
       // selected Bridge report's one-line status (S20, #112).
@@ -4667,16 +4672,82 @@
       if (anchor.classList.contains('zt-link')) {
         const targetWorkspace = nodeWorkspace(anchor.dataset.target);
         const here = state.card ? state.card.workspace : state.workspace;
-        if (targetWorkspace && targetWorkspace !== here) {
-          anchor.classList.add('cross', targetWorkspace);
-          anchor.title = `${wsLabel(targetWorkspace)} workspace`;
-        }
+        const cross = targetWorkspace && targetWorkspace !== here ? targetWorkspace : null;
+        if (cross) anchor.classList.add('cross', cross);
+        // A quiet Term link keeps its meaning and address and adds the Workspace to them; an
+        // ordinary chip already shows its address, so its title names the Workspace alone.
+        if (anchor.classList.contains('zt-term')) wireTermLink(anchor, cross);
+        else if (cross) anchor.title = `${wsLabel(cross)} workspace`;
         anchor.addEventListener('click', (event) => { event.preventDefault(); go(anchor.dataset.target); });
       } else {
         anchor.target = '_blank';
         anchor.rel = 'noopener noreferrer';
       }
     }
+  }
+
+  /** The words a quiet Term link's slip holds (S13, #156): the list row's short meaning, the
+   *  target address, and the Workspace when the link crosses into the other one. */
+  function termTipParts(meaning, target, workspaceLabel) {
+    return { meaning: meaning || '', address: target || '', workspace: workspaceLabel ? `${workspaceLabel} workspace` : '' };
+  }
+
+  let termTipSeq = 0;
+  /** A quiet Term link (S13, #156; design 15.2): the authored word in the prose with a small slip
+   *  under it that names the list row's meaning and the address. The slip shows on hover and on
+   *  keyboard focus by CSS alone; it replaces the browser's own title tooltip and is the link's
+   *  accessible description. Enter follows the link as any link does, and Space does too. */
+  function wireTermLink(anchor, cross) {
+    const parts = termTipParts(anchor.dataset.meaning, anchor.dataset.target, cross ? wsLabel(cross) : '');
+    const id = `zt-term-tip-${++termTipSeq}`;
+    anchor.append(h('span', { class: 'zt-term-tip', id, 'aria-hidden': 'true' },
+      parts.meaning ? h('span', { class: 'zt-term-meaning' }, titleNodes(parts.meaning)) : null,
+      h('span', { class: 'zt-term-addr', text: parts.address }),
+      parts.workspace ? h('span', { class: 'zt-term-ws', text: parts.workspace }) : null));
+    anchor.removeAttribute('title');
+    anchor.setAttribute('aria-describedby', id);
+    // The slip stays on the card: before it shows, it is narrowed to the card and slid left
+    // when the word sits near the card's right edge.
+    const fit = () => {
+      const tip = anchor.querySelector('.zt-term-tip');
+      const sheet = (anchor.closest('.md') || anchor.parentElement).getBoundingClientRect();
+      anchor.style.setProperty('--tip-max', `${Math.max(120, Math.floor(sheet.width - 16))}px`);
+      anchor.style.setProperty('--tip-shift', '0px');
+      const box = tip.getBoundingClientRect();
+      const over = box.right - (sheet.right - 8);
+      const room = box.left - (sheet.left + 8);
+      anchor.style.setProperty('--tip-shift', `${over > 0 ? -Math.min(over, Math.max(0, room)) : 0}px`);
+    };
+    anchor.addEventListener('pointerenter', fit);
+    anchor.addEventListener('focus', fit);
+    anchor.addEventListener('keydown', (event) => {
+      if (event.key !== ' ' || event.ctrlKey || event.metaKey || event.altKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      go(anchor.dataset.target);
+    });
+  }
+
+  /** The quiet head metadata of a Term Card (S13, #156): its computed role in words and the list
+   *  it is filed in, or null for a Card of another type. */
+  function termFactsText(facts) {
+    if (!facts || !facts.role) return null;
+    const role = { list: 'Term list', card: 'Term head', part: 'Term part', unfiled: 'Unfiled Term' }[facts.role] || 'Term';
+    const list = facts.role !== 'list' && facts.list && facts.list.address ? facts.list : null;
+    return { role, list, note: facts.role === 'unfiled' ? 'in no Term list' : list ? 'filed in' : '' };
+  }
+
+  /** The Term facts as one quiet pencil line under the title; the list's name opens the list. */
+  function termFactsLine(card) {
+    const facts = termFactsText(card.term_facts);
+    if (!facts) return null;
+    return h('p', { class: 'term-facts' },
+      h('span', { class: 'term-role', text: facts.role }),
+      facts.note ? ` · ${facts.note}` : null,
+      facts.list ? [' ', h('button', {
+        class: 'term-list', title: `Open the Term list ${facts.list.address}`,
+        onclick: () => go(facts.list.address),
+      }, titleNodes(facts.list.title || facts.list.address)), ' ', h('span', { class: 'term-list-addr', text: facts.list.address })] : null);
   }
 
   function renderAll() {
