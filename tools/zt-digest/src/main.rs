@@ -56,6 +56,7 @@ mod restate;
 mod skeleton;
 mod snapshot;
 mod term_cards;
+mod term_pilot;
 mod term_link;
 mod terms;
 mod topic_home;
@@ -172,6 +173,7 @@ fn main() {
         "finding" => finding::cli(&rest),
         "terms" => terms::cli(&rest),
         "term-cards" => term_cards::cli(&rest),
+        "term-pilot" => term_pilot::cli(&rest),
         "term-link" => term_link::cli(&rest),
         "skeleton" => skeleton::cli(&rest),
         "organize-survey" => organize::survey_cli(&rest),
@@ -212,7 +214,7 @@ fn main() {
         }
         _ => {
             eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, card, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,
-       terms, term-cards, term-link, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch");
+       terms, term-cards, term-link, term-pilot, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch");
             Ok(2)
         }
     };

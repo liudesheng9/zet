@@ -137,17 +137,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 /// One named check with its detail. A refused step names every failed check, not only the first,
 /// so the operator corrects one launch record once.
 #[derive(Default)]
-struct Checks(Vec<Value>);
+pub(crate) struct Checks(Vec<Value>);
 
 impl Checks {
     /// A failed check keeps the reason; a passed one keeps an empty detail, so the record reads
     /// as a list of gates rather than a list of messages.
-    fn require(&mut self, name: &str, ok: bool, detail: impl Into<String>) {
+    pub(crate) fn require(&mut self, name: &str, ok: bool, detail: impl Into<String>) {
         let detail = if ok { String::new() } else { detail.into() };
         self.0.push(json!({"name": name, "ok": ok, "detail": detail}));
     }
 
-    fn require_that(&mut self, name: &str, ok: bool, detail: impl FnOnce() -> String) {
+    pub(crate) fn require_that(&mut self, name: &str, ok: bool, detail: impl FnOnce() -> String) {
         if ok {
             self.0.push(json!({"name": name, "ok": true, "detail": ""}));
         } else {
@@ -155,7 +155,7 @@ impl Checks {
         }
     }
 
-    fn failures(&self) -> Vec<String> {
+    pub(crate) fn failures(&self) -> Vec<String> {
         self.0
             .iter()
             .filter(|check| check["ok"] != json!(true))
@@ -164,7 +164,7 @@ impl Checks {
     }
 
     /// Every check passed: the step may write its record. A refused step writes nothing.
-    fn finish(self, what: &str) -> Result<Vec<Value>> {
+    pub(crate) fn finish(self, what: &str) -> Result<Vec<Value>> {
         let failed = self.failures();
         if !failed.is_empty() {
             bail!("{what} refused: {}", failed.join("; "));
@@ -173,7 +173,7 @@ impl Checks {
     }
 
     /// The launch gate keeps its facts: it writes the record with `ok: false` and exits nonzero.
-    fn reported(self) -> (bool, Value, Vec<String>) {
+    pub(crate) fn reported(self) -> (bool, Value, Vec<String>) {
         let ok = self.failures().is_empty();
         let problems = self.failures();
         (ok, json!(self.0), problems)
@@ -191,7 +191,7 @@ fn at(value: &Value, key: &str) -> String {
 }
 
 /// The bytes and the SHA-256 of one existing file.
-fn file_identity(path: &Path) -> Result<(String, u64)> {
+pub(crate) fn file_identity(path: &Path) -> Result<(String, u64)> {
     let bytes = std::fs::read(path).with_context(|| format!("missing file `{}`", path.display()))?;
     Ok((canon::sha256_hex(&bytes), bytes.len() as u64))
 }
@@ -227,7 +227,7 @@ fn check_file_record(checks: &mut Checks, name: &str, record: &Value) -> Result<
 }
 
 /// One bounded `<program> <argument>` run, so a version probe can never stall the gate.
-fn bounded_version(program: &Path, argument: &str) -> Option<String> {
+pub(crate) fn bounded_version(program: &Path, argument: &str) -> Option<String> {
     use std::process::{Command, Stdio};
     let mut child = Command::new(program)
         .arg(argument)
@@ -258,7 +258,7 @@ fn bounded_version(program: &Path, argument: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -584,7 +584,7 @@ fn diff_protected(before: &[(String, String)], after: &[(String, String)]) -> Va
 
 /// The installed frozen Workflow that declares this prepared contract: its registry lock, its
 /// script bytes and its fingerprint. A pilot that cannot name them has not qualified a release.
-fn workflow_identity(project: &Path, variant: &str) -> Result<Value> {
+pub(crate) fn workflow_identity(project: &Path, variant: &str) -> Result<Value> {
     let name = format!("zt-{variant}-digest");
     let mut roots = vec![project.to_path_buf()];
     if let Some(home) = home_dir() {

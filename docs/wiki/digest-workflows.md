@@ -441,6 +441,7 @@ A backfill adds the Term Cards and Term links of one already digested book; it n
 3. Mode `term-cards` then runs the ordinary `term-cards` stage (compiler plan, waves of writers, checks, reviews, one fix, publication) and the `term-link` stage; mode `term-link` runs only the deterministic pass, so no source stage, no Term-card writer and no provider job starts.
 4. `audit` is read-only and always runs; `cleanup` settles the run's conversations; `report` returns the validation it bound (`backfill`), each Term stage's truthful result and the audit, never a fresh digest's report.
 5. A partial prefix, a failed writer or a stopped pass stays debt in `report` and in the ledger; the owner can fix the book and run the same mode again, and the frozen plans and units are reconciled, not duplicated.
+6. The S30 (#172) copied-book pilot runs mode `term-cards` on a copy of the box: its `zt-digest term-pilot` gate plans the copy, prepared run, source and one Term list before the run, preflights it, qualifies the run's retained artifacts (rows, list, preservation, second pass, diagnostics, usage) and records the owner's decision. The runbook is [`docs/term-cards-links-and-check-gate-pilot.md`](../../docs/term-cards-links-and-check-gate-pilot.md). The run itself is the owner's and Claude Code's; the gate writes only under `-Work`.
 
 ### The model compiler per batch (`compileBatch`)
 
