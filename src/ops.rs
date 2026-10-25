@@ -660,6 +660,10 @@ pub(crate) struct Snapshot {
     /// The content fingerprint, made on the first ask: the GUI's heartbeat and the entry
     /// search's revision key both read it, and a Snapshot kept across requests hashes once.
     fingerprint: OnceLock<String>,
+    /// The short meaning each current Term head publishes in its list's table, keyed by the head's
+    /// address, made on the first ask (S13, #156; design 15.2). A quiet Term link in the reader
+    /// offers this row's meaning, so the answer comes from the same read as the Cards.
+    term_meanings: OnceLock<BTreeMap<String, String>>,
 }
 
 struct Folded {
@@ -765,6 +769,7 @@ impl Snapshot {
             revision,
             folded: OnceLock::new(),
             fingerprint: OnceLock::new(),
+            term_meanings: OnceLock::new(),
         })
     }
 
@@ -1022,6 +1027,86 @@ impl Snapshot {
                 value
             })
             .collect()
+    }
+
+    /// The short meaning a current Term head publishes in its list's table (S13, #156; design
+    /// 15.2): the `意思` cell of the exact row the head's name matches. `None` for a Card that is
+    /// no current Term head, or whose list holds no row for it.
+    pub(crate) fn term_meaning(&self, address: &str) -> Option<&str> {
+        self.term_meanings().get(address).map(String::as_str)
+    }
+
+    /// The computed Term facts of one Card for the reader (S13, #156): its role and the list it
+    /// belongs to, titled for the quiet head metadata. A Card of another type carries none, so
+    /// every ordinary Card read keeps its existing shape.
+    pub(crate) fn term_facts(&self, address: &str) -> Result<Option<Value>> {
+        let Some(card) = self.by_address.get(address) else {
+            return Ok(None);
+        };
+        if card.card_type != CardType::Term {
+            return Ok(None);
+        }
+        let Some(name) = card.term_name.as_deref() else {
+            return Ok(Some(json!({
+                "role": crate::term::Role::List.id(),
+                "list": {
+                    "address": card.address,
+                    "title": self.title(&card.address),
+                },
+            })));
+        };
+        let lookup = |at: &str| -> Result<Option<(CardType, Option<String>)>> {
+            Ok(self
+                .by_address
+                .get(at)
+                .map(|card| (card.card_type, card.term_name.clone())))
+        };
+        Ok(Some(match crate::term::place(address, name, &lookup)? {
+            Some(placed) => json!({
+                "role": placed.role.id(),
+                "list": {
+                    "address": placed.list,
+                    "title": self.title(&placed.list),
+                },
+            }),
+            None => json!({ "role": crate::term::Role::Unfiled.id(), "list": null }),
+        }))
+    }
+
+    fn term_meanings(&self) -> &BTreeMap<String, String> {
+        self.term_meanings.get_or_init(|| {
+            let heads = crate::term::head_addresses(
+                self.cards
+                    .iter()
+                    .map(|card| (card.address.as_str(), card.card_type, card.term_name.as_deref())),
+            )
+            .unwrap_or_default();
+            let mut meanings = BTreeMap::new();
+            for head in heads {
+                let Some(name) = self
+                    .by_address
+                    .get(&head)
+                    .and_then(|card| card.term_name.as_deref())
+                else {
+                    continue;
+                };
+                let Some(list) = crate::parent_location(&head) else {
+                    continue;
+                };
+                let Some(parsed) = self.parsed.get(&list) else {
+                    continue;
+                };
+                let meaning = zt_check::text::term_table(&parsed.body)
+                    .into_iter()
+                    .find(|row| row.term == name)
+                    .map(|row| row.meaning)
+                    .unwrap_or_default();
+                if !meaning.is_empty() {
+                    meanings.insert(head, meaning);
+                }
+            }
+            meanings
+        })
     }
 
     /// Navigation to an address, if a Card is there.

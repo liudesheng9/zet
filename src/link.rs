@@ -196,8 +196,15 @@ pub(crate) enum LinkStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClassifiedLink<'a> {
     pub(crate) target: &'a str,
+    /// The authored word of a Term use; `None` for an ordinary Link (S13, #156).
+    pub(crate) label: Option<&'a str>,
+    pub(crate) form: LinkForm,
     pub(crate) macro_range: Range<usize>,
     pub(crate) status: LinkStatus,
+    /// Why a Broken occurrence is unusable, so a reader can explain it without guessing: a
+    /// missing target or a Term use of an existing Card that is no current head. `None` for a
+    /// Valid occurrence.
+    pub(crate) reason: Option<BrokenReason>,
 }
 
 /// Why a Link occurrence is Broken (S11, #153; design 10.3).
@@ -273,14 +280,20 @@ impl LinkLifecycle {
         LinkBody::for_rendering(body)
             .occurrences()
             .iter()
-            .map(|occurrence| ClassifiedLink {
-                target: occurrence.target,
-                macro_range: occurrence.macro_range.clone(),
-                status: if self.reaches_valid_target(occurrence) {
-                    LinkStatus::Valid
-                } else {
-                    LinkStatus::Broken
-                },
+            .map(|occurrence| {
+                let reason = self.broken_reason(occurrence);
+                ClassifiedLink {
+                    target: occurrence.target,
+                    label: occurrence.label,
+                    form: occurrence.form,
+                    macro_range: occurrence.macro_range.clone(),
+                    status: if reason.is_some() {
+                        LinkStatus::Broken
+                    } else {
+                        LinkStatus::Valid
+                    },
+                    reason,
+                }
             })
             .collect()
     }
@@ -299,6 +312,19 @@ impl LinkLifecycle {
             && self.addresses.contains(occurrence.target)
             && (occurrence.form == LinkForm::Ordinary
                 || self.term_heads.contains(occurrence.target))
+    }
+
+    /// Why one occurrence is unusable, for both the Broken-link report and the reader (S11, #153;
+    /// S13, #156). One rule keeps the two surfaces from disagreeing about what is broken.
+    fn broken_reason(&self, occurrence: &LinkOccurrence) -> Option<BrokenReason> {
+        if self.reaches_valid_target(occurrence) {
+            return None;
+        }
+        if occurrence.form == LinkForm::Term && self.addresses.contains(occurrence.target) {
+            Some(BrokenReason::NotHead)
+        } else {
+            Some(BrokenReason::Missing)
+        }
     }
 
     #[cfg(test)]
@@ -381,16 +407,7 @@ impl LinkLifecycle {
         let mut broken = Vec::new();
         for card in &self.cards {
             for occurrence in LinkBody::parse(&card.body)?.occurrences() {
-                let reason = if !self.addresses.contains(occurrence.target) {
-                    Some(BrokenReason::Missing)
-                } else if occurrence.form == LinkForm::Term
-                    && !self.term_heads.contains(occurrence.target)
-                {
-                    Some(BrokenReason::NotHead)
-                } else {
-                    None
-                };
-                let Some(reason) = reason else {
+                let Some(reason) = self.broken_reason(occurrence) else {
                     continue;
                 };
                 broken.push(BrokenLink {
@@ -506,13 +523,19 @@ mod tests {
             [
                 ClassifiedLink {
                     target: "0/1",
+                    label: Some("均衡"),
+                    form: LinkForm::Term,
                     macro_range: 4..18,
                     status: LinkStatus::Valid,
+                    reason: None,
                 },
                 ClassifiedLink {
                     target: "0/9",
+                    label: Some("幽灵"),
+                    form: LinkForm::Term,
                     macro_range: 23..37,
                     status: LinkStatus::Broken,
+                    reason: Some(BrokenReason::Missing),
                 },
             ]
         );
@@ -569,8 +592,11 @@ mod tests {
             lifecycle.classify_for_rendering("[[均衡@0/3]]"),
             [ClassifiedLink {
                 target: "0/3",
+                label: Some("均衡"),
+                form: LinkForm::Term,
                 macro_range: 0..14,
                 status: LinkStatus::Broken,
+                reason: Some(BrokenReason::NotHead),
             }]
         );
     }
@@ -620,13 +646,19 @@ mod tests {
             [
                 ClassifiedLink {
                     target: "0/1",
+                    label: None,
+                    form: LinkForm::Ordinary,
                     macro_range: 6..13,
                     status: LinkStatus::Valid,
+                    reason: None,
                 },
                 ClassifiedLink {
                     target: "Missing",
+                    label: None,
+                    form: LinkForm::Ordinary,
                     macro_range: 22..33,
                     status: LinkStatus::Broken,
+                    reason: Some(BrokenReason::Missing),
                 },
             ]
         );
@@ -658,13 +690,19 @@ mod tests {
             [
                 ClassifiedLink {
                     target: "0/1",
+                    label: None,
+                    form: LinkForm::Ordinary,
                     macro_range: 3..10,
                     status: LinkStatus::Valid,
+                    reason: None,
                 },
                 ClassifiedLink {
                     target: "0/01",
+                    label: None,
+                    form: LinkForm::Ordinary,
                     macro_range: 15..23,
                     status: LinkStatus::Broken,
+                    reason: Some(BrokenReason::Missing),
                 },
             ]
         );

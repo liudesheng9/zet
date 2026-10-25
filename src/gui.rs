@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::link::{LinkBody, LinkStatus};
+use crate::link::{BrokenReason, ClassifiedLink, LinkBody, LinkForm, LinkStatus};
 use crate::model::{Emphasis, Facet};
 use crate::ops::{self, Snapshot, TypeChange};
 use crate::{Access, CardType, Workspace};
@@ -1283,6 +1283,9 @@ impl App {
             "kind": ops::kind(card),
             "type": card.card_type.id(),
             "term": card.term_name,
+            // The computed Term role and list, so the reader can name them quietly beside the
+            // head and keep the generated use list a separate, countable list (S13, #156).
+            "term_facts": snapshot.term_facts(&card.address)?,
             "facet": card.facet.as_ref().map(Facet::id),
             "emphasis": card.emphasis.map(Emphasis::id),
             "level": card.level_id(),
@@ -2405,24 +2408,70 @@ fn link_events<'a>(text: &str, snapshot: &Snapshot) -> Vec<pulldown_cmark::Event
                 text[offset..link.macro_range.start].to_string().into(),
             ));
         }
-        let target = escape_html(link.target);
-        let chip = match link.status {
-            LinkStatus::Valid => format!(
-                "<a class=\"zt-link\" href=\"#/card/{}\" data-target=\"{target}\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">{}</span></a>",
-                escape_html(&percent_encode(link.target)),
-                escape_html(&snapshot.title(link.target)),
-            ),
-            LinkStatus::Broken => format!(
-                "<span class=\"zt-link broken\" title=\"Broken link\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">missing</span></span>"
-            ),
-        };
-        events.push(Event::InlineHtml(chip.into()));
+        events.push(Event::InlineHtml(link_html(&link, snapshot).into()));
         offset = link.macro_range.end;
     }
     if offset < text.len() {
         events.push(Event::Text(text[offset..].to_string().into()));
     }
     events
+}
+
+/// One Link occurrence as HTML in the reader's prose (S13, #156; design 15.2). A Term use is the
+/// authored word alone, in the prose font, carrying the list row's short meaning and the target
+/// address for hover and focus, and the existing encoded Card route for click or keyboard. An
+/// ordinary Link keeps its address/title chip. Every authored value is escaped here, while the
+/// route is URL-encoded separately, so a label, meaning or target stays data and never becomes
+/// markup or a second attribute.
+fn link_html(link: &ClassifiedLink, snapshot: &Snapshot) -> String {
+    let target = escape_html(link.target);
+    let route = percent_encode(link.target);
+    if link.form == LinkForm::Term {
+        let label = escape_html(term_label(link));
+        let Some(reason) = link.reason else {
+            let meaning = snapshot.term_meaning(link.target).unwrap_or_default();
+            let title = if meaning.is_empty() {
+                link.target.to_string()
+            } else {
+                format!("{meaning} · {}", link.target)
+            };
+            return format!(
+                "<a class=\"zt-link zt-term\" href=\"#/card/{route}\" data-target=\"{target}\" data-meaning=\"{}\" title=\"{}\">{label}</a>",
+                escape_html(meaning),
+                escape_html(&title),
+            );
+        };
+        let note = term_broken_note(reason);
+        return format!(
+            "<span class=\"zt-link zt-term broken\" data-target=\"{target}\" data-reason=\"{}\" title=\"Broken Term link: {target} ({note})\">{label} <span class=\"zt-term-note\">{note}</span></span>",
+            reason.id(),
+        );
+    }
+    match link.status {
+        LinkStatus::Valid => format!(
+            "<a class=\"zt-link\" href=\"#/card/{route}\" data-target=\"{target}\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">{}</span></a>",
+            escape_html(&snapshot.title(link.target)),
+        ),
+        LinkStatus::Broken => format!(
+            "<span class=\"zt-link broken\" title=\"Broken link\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">missing</span></span>"
+        ),
+    }
+}
+
+/// The word a Term use shows: its authored label, or the target address when the stored macro has
+/// no label, so the reader always has an accessible word rather than an invisible Link.
+fn term_label<'a>(link: &ClassifiedLink<'a>) -> &'a str {
+    link.label
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or(link.target)
+}
+
+/// Why a broken Term use is unusable, in the reader's words (S13, #156; design 15.2).
+fn term_broken_note(reason: BrokenReason) -> &'static str {
+    match reason {
+        BrokenReason::Missing => "missing",
+        BrokenReason::NotHead => "not a Term head",
+    }
 }
 
 fn str_field(body: &Value, name: &str) -> Result<String> {
@@ -5231,6 +5280,171 @@ mod render_tests {
         .unwrap();
         let snapshot = Snapshot::read(root).expect("snapshot");
         (temp, snapshot)
+    }
+
+    /// A book with one Term list and its published head `均衡`, whose list row carries the short
+    /// meaning a quiet Term link offers on hover or focus (S13, #156).
+    fn term_snapshot() -> (tempfile::TempDir, Snapshot, String) {
+        term_snapshot_with_meaning("双方都不改变策略")
+    }
+
+    /// The same book, with the exact `意思` cell the reader's hover text comes from.
+    fn term_snapshot_with_meaning(meaning: &str) -> (tempfile::TempDir, Snapshot, String) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        crate::initialize_database(root).expect("initialize database");
+        ops::create_topic(root, Access::Owner, Workspace::Human, "# Firms\n").unwrap();
+        ops::create_successor(
+            root,
+            Access::Owner,
+            Successor::Direct,
+            "0/0",
+            CardType::Idea,
+            None,
+            "# The first chapter\n\nbody\n",
+        )
+        .unwrap();
+        let table = format!(
+            "# 术语表：测试\n\n## 术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 均衡 | 平衡 | {meaning} | §1.1 |\n"
+        );
+        let (list, _) = ops::create_successor_with_term(
+            root,
+            Access::Owner,
+            Successor::Side,
+            "0/1",
+            CardType::Term,
+            None,
+            None,
+            &table,
+        )
+        .unwrap();
+        let (head, _) = ops::create_successor_with_term(
+            root,
+            Access::Owner,
+            Successor::Side,
+            &list,
+            CardType::Term,
+            None,
+            Some("均衡"),
+            "# 均衡\n\n## 释义\n\n两个参与者都不愿单方面改变策略。\n",
+        )
+        .unwrap();
+        let snapshot = Snapshot::read(root).expect("snapshot");
+        (temp, snapshot, head)
+    }
+
+    /// S13 (#156, US047/US048, S13-AC01/AC02): a Term use renders only its authored label in the
+    /// prose font, offers the list row's short meaning and the target address, and navigates
+    /// through the existing encoded Card route instead of the ordinary address/title chip.
+    #[test]
+    fn a_term_use_renders_only_its_label_with_the_list_row_meaning_and_encoded_route() {
+        let (_temp, snapshot, head) = term_snapshot();
+        let html = render_markdown(
+            &format!("均衡 [[均衡@{head}]] 决定价格。"),
+            &snapshot,
+            &Charts::default(),
+        );
+        let route = head.replace('|', "%7C");
+        assert!(
+            html.contains(&format!(
+                "<a class=\"zt-link zt-term\" href=\"#/card/{route}\" data-target=\"{head}\" data-meaning=\"双方都不改变策略\" title=\"双方都不改变策略 · {head}\">均衡</a>"
+            )),
+            "a Term link is its label, its list-row meaning, and its encoded route: {html}"
+        );
+        assert!(
+            !html.contains("zt-link-addr"),
+            "a Term link shows no address chip: {html}"
+        );
+    }
+
+    /// S13 (#156, US048, S13-AC03): a broken Term use keeps its authored word, says in its own
+    /// text why it cannot be followed (no hover needed), and offers no route; an ordinary Broken
+    /// Link keeps the chip it always had.
+    #[test]
+    fn a_broken_term_use_keeps_its_label_and_explains_why_it_cannot_be_followed() {
+        let (_temp, snapshot, _head) = term_snapshot();
+        let missing = render_markdown("幽灵 [[幽灵@0/9]] 不决定价格。", &snapshot, &Charts::default());
+        assert!(
+            missing.contains(
+                "<span class=\"zt-link zt-term broken\" data-target=\"0/9\" data-reason=\"missing\" title=\"Broken Term link: 0/9 (missing)\">幽灵 <span class=\"zt-term-note\">missing</span></span>"
+            ),
+            "a missing Term target is explained without hover: {missing}"
+        );
+        assert!(!missing.contains("#/card/"), "a broken Term use has no route: {missing}");
+
+        let not_head = render_markdown("均衡 [[均衡@0/1]] 不决定价格。", &snapshot, &Charts::default());
+        assert!(
+            not_head.contains(
+                "<span class=\"zt-link zt-term broken\" data-target=\"0/1\" data-reason=\"not_head\" title=\"Broken Term link: 0/1 (not a Term head)\">均衡 <span class=\"zt-term-note\">not a Term head</span></span>"
+            ),
+            "an existing Card that is no Term head is explained in its own words: {not_head}"
+        );
+
+        let ordinary = render_markdown("见 [[Gone]]。", &snapshot, &Charts::default());
+        assert!(
+            ordinary.contains("<span class=\"zt-link broken\" title=\"Broken link\">"),
+            "an ordinary Broken Link keeps its chip: {ordinary}"
+        );
+        assert!(!ordinary.contains("zt-term"), "{ordinary}");
+    }
+
+    /// S13 (#156, S13-AC04/R0470): a term label, a list-row meaning, a target and every attribute
+    /// value are data. Markup in any of them is escaped, a forged target cannot open a second
+    /// attribute or a route, and the Card route is URL-encoded separately from the attributes.
+    #[test]
+    fn term_labels_meanings_targets_and_attributes_are_escaped_and_the_route_is_encoded() {
+        let (_temp, snapshot, head) =
+            term_snapshot_with_meaning("双方都\"不\"改变策略 & <b>均衡</b>");
+        let hostile = "<img src=x onerror=alert(1)>均衡";
+        let html = render_markdown(&format!("[[{hostile}@{head}]]"), &snapshot, &Charts::default());
+        assert!(
+            html.contains(&format!("href=\"#/card/{}\"", head.replace('|', "%7C"))),
+            "the route is URL-encoded and names the target: {html}"
+        );
+        assert!(
+            html.contains(&format!("data-target=\"{head}\"")),
+            "the attribute keeps the authored address: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                ">{}</a>",
+                escape_html(hostile)
+            )),
+            "a term label is text, never HTML: {html}"
+        );
+        assert!(
+            !html.contains("<img") && html.contains("&lt;img src=x onerror=alert(1)&gt;"),
+            "a hostile label runs nothing: {html}"
+        );
+        assert!(
+            html.contains(
+                "data-meaning=\"双方都&quot;不&quot;改变策略 &amp; &lt;b&gt;均衡&lt;/b&gt;\""
+            ),
+            "the list-row meaning is escaped: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "title=\"双方都&quot;不&quot;改变策略 &amp; &lt;b&gt;均衡&lt;/b&gt; · {head}\""
+            )),
+            "the hover and focus title is escaped: {html}"
+        );
+        assert!(!html.contains("<b>均衡</b>"), "{html}");
+
+        let forged = render_markdown(
+            "[[均衡@0/1\" onmouseover=\"alert(1)]]",
+            &snapshot,
+            &Charts::default(),
+        );
+        assert!(
+            forged.contains("data-target=\"0/1&quot; onmouseover=&quot;alert(1)\""),
+            "a forged target stays inside its attribute: {forged}"
+        );
+        assert!(
+            !forged.contains(" onmouseover=\"alert(1)\"") && !forged.contains("<script>"),
+            "no attribute or element is injected: {forged}"
+        );
+        assert!(forged.contains("data-reason=\"missing\""), "{forged}");
+        assert!(!forged.contains("#/card/"), "an unusable target has no route: {forged}");
     }
 
     #[test]
