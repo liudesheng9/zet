@@ -637,19 +637,18 @@ fn sentence_around(
             at.end + index + if ch == '\n' { 0 } else { ch.len_utf8() }
         });
     let sentence = &body[start..end];
+    // The shared lexical scan names each macro's target, so a Term use shows its head's address
+    // rather than its authored `label@address`, and a name in a code span is no Link.
     let mut text = String::new();
-    let mut rest = sentence;
-    while let Some(open) = rest.find("[[") {
-        let Some(close) = rest[open..].find("]]") else {
-            break;
-        };
-        text.push_str(&rest[..open]);
+    let mut offset = 0;
+    for occurrence in crate::link::LinkBody::for_rendering(sentence).occurrences() {
+        text.push_str(&sentence[offset..occurrence.macro_range.start]);
         text.push('「');
-        text.push_str(&name(&rest[open + 2..open + close]));
+        text.push_str(&name(occurrence.target));
         text.push('」');
-        rest = &rest[open + close + 2..];
+        offset = occurrence.macro_range.end;
     }
-    text.push_str(rest);
+    text.push_str(&sentence[offset..]);
     let text = text
         .trim()
         .trim_start_matches(['-', '*', '>', '#', ' '])
@@ -1595,6 +1594,19 @@ mod tests {
             sentence_around(body, at..at + 11, |_| "setting".into()),
             "uses 「setting」 for the payoffs"
         );
+    }
+
+    /// S10 (#151): a Term use's note names the head it reaches, not the authored macro; an
+    /// ordinary Link keeps its target.
+    #[test]
+    fn a_term_use_note_names_its_head_and_never_the_authored_macro() {
+        let reads = read_links("均衡 [[均衡@2/1|a]] 决定价格。", |at| at.to_string());
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].target, "2/1|a");
+        assert_eq!(reads[0].form, LinkForm::Term);
+        assert_eq!(reads[0].note, "均衡 「2/1|a」 决定价格。");
+        let ordinary = read_links("见 [[2/1|a]] 的正文。", |at| at.to_string());
+        assert_eq!(ordinary[0].note, "见 「2/1|a」 的正文。");
     }
 
     #[test]
