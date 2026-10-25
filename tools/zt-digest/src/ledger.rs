@@ -13924,12 +13924,7 @@ fn terms_done(p: &Prepared, zt: &mut Zt, token: i64) -> Result<Value> {
             "card" => {
                 let card = zt.cards(&[locator.clone()], "text")?;
                 let book = field(&p.contract, "citation_key")?;
-                if card.cards[0]["workspace"] != "agent"
-                    || card.cards[0]["kind"] != "regular"
-                    || card.cards[0]["type"] != "idea"
-                    || card.cards[0]["tree"] != book
-                    || card.cards[0]["edge"] != "side"
-                    || card.cards[0]["parent_address"] != format!("{book}/1")
+                if !terms_table_shape_ok(&card.cards[0], book)
                     || crate::calls::authored_fingerprint(&card.cards[0]) != *fingerprint
                     || result["card_fingerprint"] != *fingerprint
                 {
@@ -13952,6 +13947,19 @@ fn terms_done(p: &Prepared, zt: &mut Zt, token: i64) -> Result<Value> {
     }
     result["reused"] = json!(true);
     Ok(result)
+}
+
+// The type of a book's filed term table (terms::new_table_call files it as a Term Card).
+const TERMS_TABLE_TYPE: &str = "term";
+
+// A filed table is an agent regular Term Card, the Side successor of the book's first anchor.
+fn terms_table_shape_ok(card: &Value, key: &str) -> bool {
+    card["workspace"] == "agent"
+        && card["kind"] == "regular"
+        && card["type"] == TERMS_TABLE_TYPE
+        && card["tree"] == key
+        && card["edge"] == "side"
+        && card["parent_address"] == format!("{key}/1")
 }
 
 // The one call a claimed Terms apply may accept: none for a book without terms, else the new
@@ -14126,12 +14134,7 @@ fn terms_apply(
     let (self_check, card_fingerprint, revision) = if let Some(address) = card.as_str() {
         let read = zt.cards(&[address.to_string()], "text")?;
         let c = &read.cards[0];
-        if c["workspace"] != "agent"
-            || c["kind"] != "regular"
-            || c["type"] != "idea"
-            || c["tree"] != key
-            || c["edge"] != "side"
-            || c["parent_address"] != format!("{key}/1")
+        if !terms_table_shape_ok(c, key)
             || c["title"] != rendered["title"]
             || c["body"].as_str().unwrap_or_default().replace("\r\n", "\n")
                 != field(&rendered, "body")?.replace("\r\n", "\n")
@@ -14231,7 +14234,7 @@ fn terms_apply(
             "card",
             card,
             card_fingerprint.as_str().unwrap(),
-            &json!({"type":"idea","purpose":"terms"}),
+            &json!({"type":TERMS_TABLE_TYPE,"purpose":"terms"}),
         )?;
     }
     for receipt in &receipts {
@@ -17377,6 +17380,18 @@ mod tests {
         assert_eq!(expected[0]["arguments"]["at"], json!("k/1"));
         assert_eq!(expected[0]["arguments"]["kind"], json!("side"));
         assert!(expected_terms_calls(true, "k", &rendered).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_filed_terms_table_is_the_term_typed_side_successor_of_the_first_anchor() {
+        // The S30 pilot (#172): the table is filed as a Term Card, so a check that still wanted an
+        // Idea Card refused the Card the apply had just written.
+        let card = |ty: &str, edge: &str, parent: &str| json!({"workspace":"agent","kind":"regular","type":ty,"tree":"k","edge":edge,"parent_address":parent});
+        assert!(terms_table_shape_ok(&card("term", "side", "k/1"), "k"));
+        assert!(!terms_table_shape_ok(&card("idea", "side", "k/1"), "k"));
+        assert!(!terms_table_shape_ok(&card("term", "direct", "k/1"), "k"));
+        assert!(!terms_table_shape_ok(&card("term", "side", "k/2"), "k"));
+        assert_eq!(TERMS_TABLE_TYPE, crate::terms::new_table_call("k", "t", "b")["arguments"]["type"]);
     }
 
     #[test]
