@@ -1442,16 +1442,28 @@ pub(crate) fn term_cards_register(p: &Prepared, plan: &Value) -> Result<Value> {
 
 /// Read one claimed Term-card job unit. The claim itself is created by the existing
 /// `ledger next -Layer termcards`; this step renews it and returns the token-bound input hash the
-/// caller compares with the plan's job input.
+/// caller compares with the plan's job input. A start step returns at once, so it renews the lease
+/// once instead of starting a heartbeat thread.
 pub(crate) fn term_cards_claim(p: &Prepared, unit: &str, token: i64) -> Result<Value> {
-    let (claimed, _progress, run, done) = finish_claim(p, unit, token)?;
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claimed = claim(&tx, unit, token)?;
+    let lease_until = held_lease(&tx, unit)?;
+    tx.execute(
+        "UPDATE units SET lease_until=?2 WHERE id=?1",
+        params![unit, lease_until],
+    )?;
+    let run = meta(&tx, "run_id")?;
+    tx.commit()?;
     Ok(json!({
         "schema_version": 1,
         "unit": unit,
         "token": token,
         "run_id": run,
         "input_hash": claimed.input_hash,
-        "done": done,
+        "lease_until": lease_until,
+        "done": false,
     }))
 }
 
@@ -17653,6 +17665,61 @@ mod term_card_ledger_tests {
             2
         );
         tx.commit().unwrap();
+    }
+
+    #[test]
+    fn a_claimed_term_card_job_answers_its_frozen_input_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+        let contract = json!({
+            "variant": "econ",
+            "citation_key": "K",
+            "groups": [],
+            "options": {},
+            "source": {"path": "s"},
+        });
+        let hash = canon::hash_value(&contract);
+        let conn = connect(&out.join("ledger.sqlite3"), true).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        for (key, value) in [
+            ("schema_version", json!(1)),
+            ("run_id", json!("run")),
+            ("invocation", json!(1)),
+            ("preparation", contract.clone()),
+            ("preparation_hash", json!(hash)),
+            ("target", target(&contract).unwrap()),
+        ] {
+            conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2)",
+                params![key, canon::canonical_json(&value)],
+            )
+            .unwrap();
+        }
+        let inputs = json!({"schema_version":1,"kind":"term_card_job","job":"t001"});
+        let input_hash = canon::hash_value(&inputs);
+        conn.execute(
+            "INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,owner,claim_token,lease_until,created_at) VALUES('termcards/t001@1','termcards','t001',1,'claimed',?1,?2,'writer',3,?3,'now')",
+            params![
+                canon::canonical_json(&inputs),
+                input_hash,
+                now_seconds() + 600
+            ],
+        )
+        .unwrap();
+        drop(conn);
+        let p = Prepared {
+            out: out.to_path_buf(),
+            contract,
+            hash,
+        };
+        let claimed = term_cards_claim(&p, "termcards/t001@1", 3).unwrap();
+        assert_eq!(claimed["input_hash"], json!(input_hash));
+        assert_eq!(claimed["done"], json!(false));
+        let stale = term_cards_claim(&p, "termcards/t001@1", 2)
+            .unwrap_err()
+            .to_string();
+        assert!(stale.contains("stale_claim"), "{stale}");
     }
 }
 
