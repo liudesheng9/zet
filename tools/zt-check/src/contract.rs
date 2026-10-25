@@ -18,7 +18,10 @@ use serde_json::{Map, Value, json};
 /// The rule semantics, visible-text semantics, limits, and diagnostic schema of
 /// this checker. A live check compares it with the running service's; a
 /// mismatch never becomes a successful acceptance prediction (R0206).
-pub const RULE_VERSION: &str = "2";
+///
+/// 3 (S12, #154): the visible-text projection reads a Term link as its label, so
+/// the same text can now be measured and checked differently than under version 2.
+pub const RULE_VERSION: &str = "3";
 
 /// The version of the published diagnostic shape: the eight fields of
 /// `core::Diagnostic::to_json` and the `block`/`advise` and `local`/`graph`
@@ -435,7 +438,10 @@ mod tests {
         served.diagnostic_schema = "2".to_string();
         let gaps = served.version_gaps();
         assert_eq!(gaps.len(), 2, "{gaps:?}");
-        assert!(gaps[0].contains("rule_version: this zt-check uses 2"));
+        assert!(
+            gaps[0].contains(&format!("rule_version: this zt-check uses {RULE_VERSION}")),
+            "{gaps:?}"
+        );
         assert!(gaps[0].contains("says 0"));
         assert!(gaps[1].contains("diagnostic_schema: this zt-check uses 1"));
         assert!(gaps[1].contains("says 2"));

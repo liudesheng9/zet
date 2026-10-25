@@ -212,13 +212,16 @@ pub(crate) fn similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
 
 /// The claim a Card makes: its first paragraph that is not a heading, figure, table, quote, code
 /// fence, or label line. A label and the source line are evidence beside the claim, not the claim.
+/// A Term link is not visible prose either: it reads as the label a reader sees (R0276, S12 /
+/// #154), while an ordinary Link keeps the treatment it always had.
 pub(crate) fn statement(body: &str) -> String {
     for paragraph in body.split("\n\n") {
         let t = paragraph.trim();
         if t.is_empty() || NOT_A_STATEMENT.is_match(t) || SOURCE_LINE.is_match(t) || ASSUMPTION_LINE.is_match(t) {
             continue;
         }
-        let text = line(&LINK.replace_all(t, " "), MAX_STATEMENT);
+        let visible = zt_check::text::strip_term_links(t);
+        let text = line(&LINK.replace_all(&visible, " "), MAX_STATEMENT);
         if !text.is_empty() {
             return text;
         }
@@ -2266,6 +2269,32 @@ mod tests {
         assert_eq!(similarity(&a, &b), 1.0);
         assert_eq!(similarity(&a, &bigrams("债务契约")), 0.0);
         assert_eq!(similarity(&bigrams(""), &b), 0.0);
+    }
+
+    /// R0276/S12-AC06 (S12, #154): the statement a review compares reads a Term link as the word a
+    /// reader sees, so adding or moving the markup cannot invent a different claim; a changed
+    /// visible label is a changed claim. An ordinary Link keeps the treatment it always had.
+    #[test]
+    fn statement_reads_a_term_link_as_its_visible_label() {
+        assert_eq!(
+            statement("当 [[均衡@K/1|a]] 存在时，价格不变。"),
+            "当 均衡 存在时，价格不变。"
+        );
+        assert_eq!(
+            statement("当 均衡 存在时，价格不变。"),
+            statement("当 [[均衡@K/1|a]] 存在时，价格不变。")
+        );
+        assert_ne!(
+            statement("当 [[失衡@K/1|a]] 存在时，价格不变。"),
+            statement("当 均衡 存在时，价格不变。")
+        );
+        // An ordinary Link is still no prose word, exactly as before.
+        assert_eq!(statement("当 [[K/1]] 存在时。"), "当 存在时。");
+        // A formula beside the term stays significant.
+        assert_ne!(
+            statement("当 [[均衡@K/1|a]] 存在且 $x=1$ 时。"),
+            statement("当 均衡 存在且 $x=2$ 时。")
+        );
     }
 
     /// S23 / #115: the run's proposals are the concepts its own book term table declares. One row

@@ -6,14 +6,11 @@
 //! scope. A Topic tree is a tree whose id is a Topic number (all ASCII digits), so the check needs
 //! no archive read.
 
-use regex::Regex;
+use crate::text::{LinkForm, link_occurrences};
 use serde_json::Value;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static LITERATURE_ONLY: AtomicBool = AtomicBool::new(false);
-
-static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\[\]]+)\]\]").unwrap());
 
 /// The generated section a Card read ends with; its Links are the archive's, not authored.
 const REVERSE_LINKS: &str = "<!-- zt:reverse-links -->";
@@ -35,9 +32,20 @@ pub fn is_topic_address(address: &str) -> bool {
 }
 
 /// The Topic-tree Link targets of authored text, ignoring the generated Reverse links section.
+/// R0272 (S12, #154): each macro's actual target comes from the shared Link scan, so a Term use
+/// names the address after `@`, never the `label@target` text the old bracket regex reported. A
+/// malformed Term-like macro is no Link; the strict write path refuses it on its own.
 pub fn topic_links(text: &str) -> Vec<String> {
     let authored = text.split(REVERSE_LINKS).next().unwrap_or_default();
-    LINK.captures_iter(authored).map(|c| c[1].trim().to_string()).filter(|t| is_topic_address(t)).collect()
+    link_occurrences(authored)
+        .into_iter()
+        .filter(|occurrence| match occurrence.form {
+            LinkForm::Ordinary => true,
+            LinkForm::Term => occurrence.is_valid_term_macro(),
+        })
+        .map(|occurrence| occurrence.target.trim().to_string())
+        .filter(|target| is_topic_address(target))
+        .collect()
 }
 
 /// Why the Literature scope refuses this call, or None when it may go to the archive. Reads pass.
@@ -108,6 +116,46 @@ mod tests {
         let body = "依赖 [[Smith2024/1]]。对照 [[408/1]]。\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[411/1]] 索引";
         assert_eq!(topic_links(body), vec!["408/1".to_string()]);
         assert!(topic_links("only [[Smith2024/1|a]] here").is_empty());
+    }
+
+    /// R0272/S12-AC02 (S12, #154): the scope reads each macro's actual target through the shared
+    /// Link scan, so a Term use of a Topic-tree Card is refused by the address after `@` instead of
+    /// hiding behind a `label@target` string the topic rule cannot see. A malformed Term-like macro
+    /// is no Link (the strict write path refuses it) and is never read as one concatenated address.
+    #[test]
+    fn the_literature_scope_refuses_a_term_use_of_a_topic_card_by_its_target() {
+        assert_eq!(
+            topic_links("对照 [[均衡@408/1|a]] 与 [[Smith2024/1]]。"),
+            vec!["408/1|a".to_string()]
+        );
+        let refusal = literature_refusal(
+            "edit_card",
+            &json!({ "at": "Smith2024/1|a", "body": "对照 [[均衡@408/1|a]]。" }),
+        )
+        .expect("a Term use of a Topic Card is refused");
+        assert!(refusal.contains("408/1|a"), "{refusal}");
+        let batch = json!({ "items": [{
+            "op_key": "s12/literature-scope/1/item/0000", "client_ref": "0", "tool": "create_successor",
+            "arguments": { "at": "Smith2024/1", "title": "x", "body": "对照 [[均衡@408/1|a]]。" }
+        }] });
+        assert!(
+            literature_refusal("apply_batch", &batch)
+                .is_some_and(|why| why.contains("408/1|a")),
+            "the batch path reads the same target"
+        );
+
+        // A Term use of a Literature Card stays inside the Literature scope.
+        assert!(
+            literature_refusal(
+                "create_successor",
+                &json!({ "at": "Smith2024/1", "title": "x", "body": "依赖 [[边际成本@Smith2024/2|a]]。" })
+            )
+            .is_none()
+        );
+        // Malformed Term-like markup is no Link: it is neither a `label@target` concatenation nor
+        // a silently accepted target. The strict parser refuses the write itself.
+        assert!(topic_links("[[a@b@408/1]]").is_empty());
+        assert!(topic_links("[[@408/1]]").is_empty());
     }
 
     #[test]

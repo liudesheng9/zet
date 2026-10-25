@@ -3230,6 +3230,51 @@ mod tests {
         assert_eq!(r6("差别税率提高了征收成本。").len(), 1);
     }
 
+    /// R0270/R0271 and S12-AC01/AC07 (S12, #154): every language and size rule reads the visible
+    /// word a Term link shows, never its address. Adding or moving only the markup changes no
+    /// fault, while changing the visible label is a real prose change.
+    #[test]
+    fn term_links_read_as_visible_prose_in_the_language_and_size_rules() {
+        let table = "术语表：\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 均衡 | 平衡 | 双方都不改变策略 | §1.1 |\n";
+        let check = Check::new(Limits::default(), false, "").with_terms(Some(table));
+        let rules = |sentence: &str| {
+            let mut faults = Faults::default();
+            check.sentence(&mut faults, "K/1", false, sentence, false);
+            faults
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.rule.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // A 41-character visible sentence with a Term link is still an R2 fault: dropping the
+        // macro used to hide its five visible characters and pass.
+        let prefix = "这句用于检查可见句子长度的示例".repeat(2) + "检查句子长度";
+        let visible = format!("{prefix}边际替代率");
+        assert_eq!(measure(&visible).size, 41, "{visible}");
+        let with_link = format!("{prefix}[[边际替代率@2/1|a]]。");
+        assert_eq!(rules(&with_link), ["R2"], "the projected label is measured");
+        assert_eq!(rules(&format!("{visible}。")), ["R2"], "the plain sentence reads the same");
+
+        // The address is never prose: a visible sentence under the limit keeps no fault even with
+        // a target whose address alone would push it over.
+        let at_limit = format!("{prefix}均衡");
+        assert_eq!(measure(&at_limit).size, 38);
+        assert!(
+            rules(&format!("{prefix}[[均衡@Lit2026/1|a]]。")).is_empty(),
+            "a 38-character visible sentence with a 12-character address keeps no R2 fault"
+        );
+
+        // R6 checks the visible term, not the address: the rejected word inside the label is the
+        // same fault it is in plain prose.
+        assert_eq!(rules("价格 [[平衡@2/1|a]] 不变。"), ["R6"], "the label is prose");
+        assert_eq!(rules("价格 平衡 不变。"), ["R6"], "the same word without markup");
+        assert!(rules("价格 [[均衡@2/1|a]] 不变。").is_empty());
+        assert!(rules("价格 均衡 不变。").is_empty());
+        // Moving only the markup around the same words invents no fault (S12-AC07).
+        assert!(rules("价格 均衡 [[均衡@2/1|a]] 不变。").is_empty());
+    }
+
     /// R20 and R21: a local label that stands in for its content, and a deictic
     /// with no named Link in its sentence. Both are advice, not blocking faults.
     #[test]

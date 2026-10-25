@@ -85,7 +85,11 @@ canonical statement and its `members` name every Card behind the row, while `tot
 `row_total` counts rows. A search starts no model. \
 Check missing, complete and \
 archive_revision. get_tree with bodies=true includes full text, and export_titles reads selected \
-titles in one pass. These bulk replies have an 8 MiB encoded tool-result limit; a read_limit error \
+titles in one pass. A Term link `[[label@address]]` reads as its label in prose: pass \
+`term_links: \"label\"` to get_card, get_cards or get_tree (with bodies) to receive that visible text \
+for reading or prompting, and the reply is marked. The default raw read keeps the authored macros \
+for an edit base, a receipt hash and a fingerprint; never edit or fingerprint projected text. \
+These bulk replies have an 8 MiB encoded tool-result limit; a read_limit error \
 requires a smaller chunk. If related reads have different revisions, retry once or label a changing view. \
 create new trees with create_topic or create_literature, then grow them with create_successor. \
 Most Cards are Idea Cards (type `idea`); a Regular Card may instead be an Event Card (`event`: one \
@@ -381,14 +385,20 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 .map(|v| v.as_bool().context("argument `bodies` must be a boolean"))
                 .transpose()?
                 .unwrap_or(false);
-            crate::read::tree(&root, &tree, bodies)
+            let term_links = term_links_arg(args)?;
+            if term_links == crate::read::TermLinks::Label && !bodies {
+                bail!(
+                    "get_tree projects bodies only; pass bodies: true with term_links: \"label\", or omit term_links"
+                );
+            }
+            crate::read::tree(&root, &tree, bodies, term_links)
         }
         "export_titles" => {
             crate::read::titles(&root, optional_workspace(args)?, optional_zone(args)?)
         }
         "get_card" => {
             let at = string_arg(args, "at")?;
-            crate::read::card(&root, &at)
+            crate::read::card(&root, &at, term_links_arg(args)?)
         }
         "get_cards" => {
             let addresses = args
@@ -412,7 +422,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 "text" => true,
                 other => bail!("unknown Card view `{other}`; expected full or text"),
             };
-            crate::read::cards(&root, &addresses, text)
+            crate::read::cards(&root, &addresses, text, term_links_arg(args)?)
         }
         "get_model" => {
             let at = string_arg(args, "at")?;
@@ -869,6 +879,21 @@ fn title_arg(args: &Value) -> Result<String> {
     Ok(title.to_string())
 }
 
+/// R0273 (S12, #154): the optional label projection of `get_card`, `get_cards` and `get_tree`. An
+/// absent value is the raw read; `raw` states that default; `label` returns the visible prose and
+/// makes the reply carry the projection marker.
+fn term_links_arg(args: &Value) -> Result<crate::read::TermLinks> {
+    match args.get("term_links") {
+        None | Some(Value::Null) => Ok(crate::read::TermLinks::Raw),
+        Some(Value::String(value)) => match value.as_str() {
+            "raw" => Ok(crate::read::TermLinks::Raw),
+            "label" => Ok(crate::read::TermLinks::Label),
+            other => bail!("unknown term_links value `{other}`; expected raw or label"),
+        },
+        Some(_) => bail!("argument `term_links` must be a string: raw or label"),
+    }
+}
+
 fn optional_workspace(args: &Value) -> Result<Option<Workspace>> {
     match args.get("workspace") {
         None | Some(Value::Null) => Ok(None),
@@ -1043,6 +1068,17 @@ fn tool_definitions() -> Vec<Value> {
     };
     let limit =
         |description: &str| json!({ "type": "integer", "minimum": 1, "description": description });
+    // R0273/R0275 (S12, #154): the one optional read projection. `raw` is the default; `label`
+    // returns the visible prose a reader sees and marks the reply, so projected text is never
+    // mistaken for an edit base or a fingerprint input.
+    let term_links = || {
+        json!({
+            "type": "string",
+            "enum": ["raw", "label"],
+            "default": "raw",
+            "description": "`raw` (default) keeps the authored Term-link macros; `label` returns the visible prose and marks the reply with `term_links: \"label\"`. Projected text is never an edit base or a fingerprint input.",
+        })
+    };
     let entry_offset = json!({
         "type": "integer",
         "minimum": 0,
@@ -1087,8 +1123,8 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_tree",
             "Get tree",
-            "Every Card of one tree, root first, with its type (idea, event, finding, model, hub, term), edge (root, direct, side), parent, excerpt, Links, and the Card's active Lock facts (`lock`, `pinned_by`).",
-            json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." },"bodies":{"type":"boolean","description":"Include complete body, stored text and BibTeX in each summary."} }),
+            "Every Card of one tree, root first, with its type (idea, event, finding, model, hub, term), edge (root, direct, side), parent, excerpt, Links, and the Card's active Lock facts (`lock`, `pinned_by`). With `bodies: true`, also each body, stored text and BibTeX; pass `term_links: \"label\"` with it to read the visible prose a Term link shows instead of the authored macro, marked in the reply.",
+            json!({ "tree": { "type": "string", "description": "A tree id (Topic number or Citation key) or any address in the tree." },"bodies":{"type":"boolean","description":"Include complete body, stored text and BibTeX in each summary."},"term_links":term_links() }),
             &["tree"],
             true,
             false,
@@ -1105,8 +1141,8 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_card",
             "Get card",
-            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, hub, or term), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. `restatement` is the derived navigation role of an accepted restatement entry (a `## 同述入口` section, never a stored field), and `statement_fingerprint` is the exact authored statement hash: line endings, outer whitespace and separately labelled source lines are ignored, while formulas, values, signs, variables, negation, assumptions and scope are kept. A Model Card or Model part also reports `model`: its model's structure. `lock` is `null` or `{lock_id, tree, since}`, where `tree` is the Locked tree's root address; `pinned_by` lists the sorted, deduplicated roots of the active Locks whose Cards link this one; `writable` is this agent's Workspace permission and no active Lock, so a pinned target stays writable while a Locked member does not.",
-            json!({ "at": at }),
+            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, hub, or term), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. The body and stored text keep the authored Term-link macros by default; `term_links: \"label\"` returns the visible prose a Term link shows and marks the reply. `restatement` is the derived navigation role of an accepted restatement entry (a `## 同述入口` section, never a stored field), and `statement_fingerprint` is the exact authored statement hash: line endings, outer whitespace and separately labelled source lines are ignored, while formulas, values, signs, variables, negation, assumptions and scope are kept (a Term macro reads as its visible label). A Model Card or Model part also reports `model`: its model's structure. `lock` is `null` or `{lock_id, tree, since}`, where `tree` is the Locked tree's root address; `pinned_by` lists the sorted, deduplicated roots of the active Locks whose Cards link this one; `writable` is this agent's Workspace permission and no active Lock, so a pinned target stays writable while a Locked member does not.",
+            json!({ "at": at, "term_links": term_links() }),
             &["at"],
             true,
             false,
@@ -1114,8 +1150,8 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_cards",
             "Get cards",
-            "Read ordered Card addresses in one archive revision. Full matches get_card; text omits model and hub projections. Every Card carries the derived `restatement` navigation role, its exact `statement_fingerprint`, its active Lock facts (`lock`, `pinned_by`) and the truthful `writable`; the full and the text view answer the same Lock facts at one revision. Reports missing addresses explicitly. archive_identity contains the persisted random 128-bit id and resolved archive path, including for an empty address list; bind prepared runs to it rather than a path alone.",
-            json!({"addresses":{"type":"array","items":{"type":"string"},"maxItems":200},"view":{"type":"string","enum":["full","text"],"default":"full"}}),
+            "Read ordered Card addresses in one archive revision. Full matches get_card; text omits model and hub projections. Every Card carries the derived `restatement` navigation role, its exact `statement_fingerprint`, its active Lock facts (`lock`, `pinned_by`) and the truthful `writable`; the full and the text view answer the same Lock facts at one revision. Bodies, stored text and excerpts keep the authored Term-link macros by default; `term_links: \"label\"` returns the visible prose a Term link shows and marks the reply and each projected Card. Reports missing addresses explicitly. archive_identity contains the persisted random 128-bit id and resolved archive path, including for an empty address list; bind prepared runs to it rather than a path alone.",
+            json!({"addresses":{"type":"array","items":{"type":"string"},"maxItems":200},"view":{"type":"string","enum":["full","text"],"default":"full"},"term_links":term_links()}),
             &["addresses"],
             true,
             false,

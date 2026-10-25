@@ -28,7 +28,40 @@ impl Limit {
     }
 }
 
-pub(crate) fn text_value(card: &Card, lock: &crate::tree_lock::LockView) -> Result<Value> {
+/// The optional label projection of a public read (R0273–R0275, S12 / #154; design 10.4). `Raw` is
+/// the default and keeps the authored Term-link macros byte for byte; `Label` returns the visible
+/// prose a reader sees through the one shared projection. Every projected reply carries the marker,
+/// so a consumer can never mistake projected text for an edit base or a fingerprint input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TermLinks {
+    Raw,
+    Label,
+}
+
+impl TermLinks {
+    /// The response marker a projected read carries; the only value the read mode accepts besides
+    /// `raw`.
+    pub(crate) const MARKER: &'static str = "label";
+
+    fn project(self, text: &str) -> String {
+        match self {
+            Self::Raw => text.to_string(),
+            Self::Label => zt_check::text::strip_term_links(text),
+        }
+    }
+
+    fn mark(self, value: &mut Value) {
+        if self == Self::Label {
+            value["term_links"] = json!(Self::MARKER);
+        }
+    }
+}
+
+pub(crate) fn text_value(
+    card: &Card,
+    lock: &crate::tree_lock::LockView,
+    term_links: TermLinks,
+) -> Result<Value> {
     let parsed = crate::parse_card_text(&card.text)?;
     let mut value = json!({
         "address":card.address,"tree":crate::tree_id(&card.address),
@@ -41,24 +74,25 @@ pub(crate) fn text_value(card: &Card, lock: &crate::tree_lock::LockView) -> Resu
         "facet":card.facet.as_ref().map(crate::model::Facet::id),
         "emphasis":card.emphasis.map(crate::model::Emphasis::id),
         "level":card.level_id(),"form":card.form.map(crate::math::MathForm::id),
-        "title":parsed.title,"body":parsed.body,"text":card.text,
+        "title":parsed.title,"body":term_links.project(&parsed.body),"text":term_links.project(&card.text),
         "bibtex":card.bibtex,"citation_key":card.citation_key,
         // The derived navigation role of a restatement entry (D086) and the exact statement
-        // fingerprint folding compares (§4.5, D087). Both are computed from the authored text on
-        // every read and stored nowhere.
+        // fingerprint folding compares (§4.5, D087). Both are read from the raw authored text in
+        // either mode, so a projected body never feeds a fingerprint (S12-AC04).
         "restatement":crate::entry::is_restatement_entry(&parsed.body),
         "statement_fingerprint":crate::card::statement_fingerprint(&parsed.body)
     });
+    term_links.mark(&mut value);
     crate::tree_lock::decorate_card(&mut value, card.row_id, lock);
     Ok(value)
 }
 
-pub(crate) fn card_value(snapshot: &Snapshot, at: &str) -> Result<Value> {
+pub(crate) fn card_value(snapshot: &Snapshot, at: &str, term_links: TermLinks) -> Result<Value> {
     let card = snapshot
         .by_address
         .get(at)
         .with_context(|| format!("card `{at}` does not exist"))?;
-    let mut value = text_value(card, snapshot.lock())?;
+    let mut value = text_value(card, snapshot.lock(), term_links)?;
     value["model"] = json!(snapshot.model(at));
     value["hubs"] = json!(crate::hub::hubs_of(snapshot, at));
     value["parent"] = json!(snapshot.nav(crate::parent_location(at)));
@@ -85,8 +119,11 @@ pub(crate) fn text_facts(
     conn: &Connection,
     card: &Card,
     lock: &crate::tree_lock::LockView,
+    term_links: TermLinks,
 ) -> Result<Value> {
-    let mut value = text_value(card, lock)?;
+    let mut value = text_value(card, lock, term_links)?;
+    // The excerpt is derived from the body this read returns, so a projected read previews the same
+    // visible prose it names (S12-AC03).
     value["excerpt"] = json!(crate::ops::excerpt(
         value["body"].as_str().unwrap_or_default()
     ));
@@ -434,12 +471,12 @@ pub(crate) fn model(root: &Path, at: &str) -> Result<Value> {
     Ok(model)
 }
 
-pub(crate) fn card(root: &Path, at: &str) -> Result<Value> {
+pub(crate) fn card(root: &Path, at: &str, term_links: TermLinks) -> Result<Value> {
     let started = std::time::Instant::now();
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let snapshot = context(&tx, &[at.to_string()], true)?;
-    let mut result = card_value(&snapshot, at)?;
+    let mut result = card_value(&snapshot, at, term_links)?;
     if let Some(card) = snapshot.by_address.get(at) {
         attach_term_facts(&tx, &mut result, card)?;
     }
@@ -482,7 +519,12 @@ pub(crate) fn terms(root: &Path, at: &str) -> Result<Value> {
     Ok(value)
 }
 
-pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Value> {
+pub(crate) fn cards(
+    root: &Path,
+    addresses: &[String],
+    text: bool,
+    term_links: TermLinks,
+) -> Result<Value> {
     let started = std::time::Instant::now();
     if addresses.len() > 200 {
         return Err(Limit {
@@ -517,11 +559,11 @@ pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Val
     for card in &cards {
         values.push(match &snapshot {
             Some(snapshot) => {
-                let mut value = card_value(snapshot, &card.address)?;
+                let mut value = card_value(snapshot, &card.address, term_links)?;
                 attach_term_facts(&tx, &mut value, card)?;
                 value
             }
-            None => text_facts(&tx, card, &lean)?,
+            None => text_facts(&tx, card, &lean, term_links)?,
         });
     }
     let identity = archive_identity(&tx, root)?;
@@ -530,7 +572,8 @@ pub(crate) fn cards(root: &Path, addresses: &[String], text: bool) -> Result<Val
     // a write, in the one verified read a self-check already makes. A client that
     // cannot read this block refuses to present its answer as the gate's.
     let contract = contract_value(&tx, &identity)?;
-    let result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?,"archive_identity":identity,"check_contract":contract});
+    let mut result = json!({"cards":values,"complete":missing.is_empty(),"missing":missing,"archive_revision":crate::link_index::revision(&tx)?,"archive_identity":identity,"check_contract":contract});
+    term_links.mark(&mut result);
     if let Some(snapshot) = &snapshot {
         log_large_context(
             root,
@@ -564,7 +607,7 @@ fn tree_addresses(conn: &Connection, tree: &str) -> Result<Vec<String>> {
     Ok(addresses)
 }
 
-pub(crate) fn tree(root: &Path, tree: &str, bodies: bool) -> Result<Value> {
+pub(crate) fn tree(root: &Path, tree: &str, bodies: bool, term_links: TermLinks) -> Result<Value> {
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
     let tree = crate::tree_id(tree);
@@ -576,15 +619,18 @@ pub(crate) fn tree(root: &Path, tree: &str, bodies: bool) -> Result<Value> {
     for at in &addresses {
         let card = &snapshot.by_address[at];
         let mut value = snapshot.summary(card);
+        value["excerpt"] = json!(term_links.project(value["excerpt"].as_str().unwrap_or_default()));
         if bodies {
-            value["body"] = json!(snapshot.parsed[at].body);
-            value["text"] = json!(card.text);
+            value["body"] = json!(term_links.project(&snapshot.parsed[at].body));
+            value["text"] = json!(term_links.project(&card.text));
             value["bibtex"] = json!(card.bibtex);
         }
+        term_links.mark(&mut value);
         attach_term_facts(&tx, &mut value, card)?;
         cards.push(value);
     }
-    let value = json!({"tree":tree,"root":root_address,"workspace":root_card.workspace.id(),"zone":crate::ops::zone(root_card),"title":snapshot.title(&root_address),"cards":cards,"complete":true,"archive_revision":crate::link_index::revision(&tx)?});
+    let mut value = json!({"tree":tree,"root":root_address,"workspace":root_card.workspace.id(),"zone":crate::ops::zone(root_card),"title":snapshot.title(&root_address),"cards":cards,"complete":true,"archive_revision":crate::link_index::revision(&tx)?});
+    term_links.mark(&mut value);
     tx.commit()?;
     Ok(value)
 }

@@ -369,7 +369,9 @@ fn formulas(body: &str) -> Vec<String> {
 }
 
 /// The statement text a transfer moves: the authored body without its source lines. The source
-/// lines travel beside the claim as its evidence, and they are not the claim.
+/// lines travel beside the claim as its evidence, and they are not the claim. A Term link is not
+/// visible prose: it reads as the label a reader sees (R0276, S12 / #154), so adding or moving the
+/// markup never changes the statement a transfer moves.
 fn statement_text(body: &str) -> String {
     let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
     let mut kept: Vec<&str> = Vec::new();
@@ -386,7 +388,7 @@ fn statement_text(body: &str) -> String {
         }
         kept.push(raw);
     }
-    kept.join("\n").trim().to_string()
+    zt_check::text::strip_term_links(&kept.join("\n")).trim().to_string()
 }
 
 // --- the concept report the transfer consumes ----------------------------------------------------
@@ -2248,6 +2250,25 @@ mod tests {
         assert_eq!(statement_text(body), "当 $x=1$ 时均衡唯一。\n\n假设：同一产业。");
         assert_eq!(formulas(body), vec!["$x=1$".to_string()]);
         let fenced = "```\n来源：[[alpha]]\n```";
+        assert_eq!(statement_text(fenced), fenced);
+    }
+
+    /// R0276/S12-AC06 (S12, #154): the statement a transfer moves reads a Term link as the word a
+    /// reader sees, so adding the markup does not change the statement, while a changed visible
+    /// label is a changed statement. A Term-like example in code stays literal.
+    #[test]
+    fn the_statement_text_reads_term_markup_as_its_visible_label() {
+        let marked = "当 [[均衡@alpha/1|a]] 存在时，价格不变。\n\n来源：[[alpha]] §2";
+        assert_eq!(statement_text(marked), "当 均衡 存在时，价格不变。");
+        assert_eq!(
+            statement_text(marked),
+            statement_text("当 均衡 存在时，价格不变。")
+        );
+        assert_ne!(
+            statement_text("当 [[失衡@alpha/1|a]] 存在时，价格不变。"),
+            statement_text("当 均衡 存在时，价格不变。")
+        );
+        let fenced = "```\n[[均衡@alpha/1|a]]\n```";
         assert_eq!(statement_text(fenced), fenced);
     }
 

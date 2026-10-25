@@ -292,7 +292,11 @@ pub(crate) fn ps_int(value: Option<&Value>) -> i64 {
 /// The text without what the rules do not cover; a formula keeps a placeholder
 /// so it still splits nothing.
 pub(crate) fn plain(text: &str) -> String {
-    let text = DISPLAY_MATH.replace_all(text, "F");
+    // R0270 (S12, #154): the visible word of a Term link is prose, so it is projected before the
+    // ordinary Link markup is removed exactly as it already was. A rule then measures the sentence
+    // a reader sees, not a macro whose address would add digits or whose label would vanish.
+    let text = strip_term_links(text);
+    let text = DISPLAY_MATH.replace_all(&text, "F");
     let text = INLINE_MATH.replace_all(&text, "F");
     let text = LINK.replace_all(&text, "");
     let text = CODE.replace_all(&text, "C");
@@ -745,6 +749,51 @@ pub fn link_occurrences(text: &str) -> Vec<LinkOccurrence<'_>> {
 /// the root's Link wrapper, which owns them.
 pub fn parse_links(text: &str) -> Result<Vec<LinkOccurrence<'_>>, LinkFault> {
     scan_links(text, true)
+}
+
+impl LinkOccurrence<'_> {
+    /// Whether this occurrence is a syntactically valid Term-link macro (R0269, S12 / #154): a
+    /// `label@address` shape the strict lexical scan accepts — one nonempty label of at most
+    /// [`MAX_TERM_NAME`] scalar values on one line, and one nonempty address without a second `@`.
+    /// Target resolution is not part of this decision, so projection never consults the archive.
+    pub fn is_valid_term_macro(&self) -> bool {
+        self.form == LinkForm::Term
+            && self.label.is_some_and(|label| {
+                !label.is_empty()
+                    && label.chars().count() <= MAX_TERM_NAME
+                    && !label.contains(['\n', '\r'])
+            })
+            && !self.target.is_empty()
+            && !self.target.contains('@')
+    }
+}
+
+/// R0269 (design 10.4, 13.3): replace every syntactically valid Term-link macro outside literal
+/// syntax by its label, and keep every other byte as authored. This is the one visible-text
+/// projection the language and size checks, the Literature scope, the statement comparison and the
+/// optional label-only reads share. It is lexical: it strips a Term use even when its target is
+/// missing or retyped, strips no ordinary Link, and leaves a malformed Term-like macro untouched
+/// for the strict Link scan to refuse.
+pub fn strip_term_links(text: &str) -> String {
+    let occurrences = link_occurrences(text);
+    if !occurrences
+        .iter()
+        .any(LinkOccurrence::is_valid_term_macro)
+    {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut offset = 0;
+    for occurrence in occurrences {
+        if !occurrence.is_valid_term_macro() {
+            continue;
+        }
+        out.push_str(&text[offset..occurrence.macro_range.start]);
+        out.push_str(occurrence.label.unwrap_or_default());
+        offset = occurrence.macro_range.end;
+    }
+    out.push_str(&text[offset..]);
+    out
 }
 
 fn scan_links(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>, LinkFault> {
@@ -1210,6 +1259,36 @@ mod tests {
         assert_eq!(broken.label, Some("a"));
         assert_eq!(broken.target, "b@2/1|a");
         assert_eq!(&"x [[a@b@2/1|a]] y"[broken.target_range.clone()], "b@2/1|a");
+    }
+
+    /// R0269 (S12, #154; design 10.4 and 13.3): one shared lexical projection replaces each
+    /// syntactically valid Term link by its label and leaves every other byte alone. It resolves no
+    /// target, strips no ordinary Link, and leaves a malformed Term-like macro as authored.
+    #[test]
+    fn a_valid_term_link_projects_its_label_and_leaves_every_other_byte_alone() {
+        let text = "见 [[均衡@2/1|a]] 与 [[0/1]]，`[[均衡@2/1|a]]`，$[[均衡@2/1|a]]$，与 [[a@b@2/1|a]]、[[@2/1|a]]。\n```\n[[均衡@2/1|a]]\n```";
+        assert_eq!(
+            strip_term_links(text),
+            "见 均衡 与 [[0/1]]，`[[均衡@2/1|a]]`，$[[均衡@2/1|a]]$，与 [[a@b@2/1|a]]、[[@2/1|a]]。\n```\n[[均衡@2/1|a]]\n```"
+        );
+        // A repeated use keeps each own label, and a text without Term markup is unchanged.
+        assert_eq!(
+            strip_term_links("[[边际替代率@2/1|a]][[均衡@2/1|a]]"),
+            "边际替代率均衡"
+        );
+        assert_eq!(strip_term_links("没有链接。\n"), "没有链接。\n");
+        // The label grammar is the shared one: forty scalar values project, forty-one stay authored.
+        let forty = "概".repeat(MAX_TERM_NAME);
+        assert_eq!(
+            strip_term_links(&format!("[[{forty}@2/1|a]]")),
+            forty,
+            "the label limit is the shared Term-name limit"
+        );
+        let forty_one = "概".repeat(MAX_TERM_NAME + 1);
+        assert_eq!(
+            strip_term_links(&format!("[[{forty_one}@2/1|a]]")),
+            format!("[[{forty_one}@2/1|a]]")
+        );
     }
 
     /// R0254 (S10, #151): code and math are literal. A Term-like example inside a formula is no

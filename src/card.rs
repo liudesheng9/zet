@@ -186,13 +186,15 @@ fn hex(hasher: sha2::Sha256) -> String {
 }
 
 /// The exact statement fingerprint of one authored body (§4.5, D087): two Cards whose statements
-/// are the same claim get one fingerprint, and no other normalisation happens. Only three things
+/// are the same claim get one fingerprint, and no other normalisation happens. Only four things
 /// are ignored, exactly as the design says: line endings (CRLF and CR read as LF), the outer
-/// whitespace of the statement, and a separately labelled source line (`来源：…`, `出处：…`,
-/// `Source: …`), which is evidence beside the claim and not the claim. Formulas, numerical values,
-/// signs, variable names, negation, assumptions and scope stay in the text, so a changed sign,
-/// value, variable or assumption always gives a different fingerprint, and no formula is renamed
-/// or shortened.
+/// whitespace of the statement, a separately labelled source line (`来源：…`, `出处：…`,
+/// `Source: …`), which is evidence beside the claim and not the claim, and the Term-link markup
+/// that a reader never sees (S12, #154; R0276): a Term use reads as its visible label, so adding or
+/// moving the markup cannot invent a different prose claim. Formulas, numerical values, signs,
+/// variable names, negation, assumptions and scope stay in the text, so a changed sign, value,
+/// variable or assumption always gives a different fingerprint, and no formula is renamed or
+/// shortened.
 pub(crate) fn statement_fingerprint(body: &str) -> String {
     let text = statement_text(body);
     let mut hasher = sha2::Sha256::new();
@@ -205,9 +207,12 @@ pub(crate) fn statement_fingerprint(body: &str) -> String {
 }
 
 /// The statement text one fingerprint covers: the body with its line endings normalised, its
-/// separately labelled source lines dropped outside fenced code, and its outer whitespace trimmed.
+/// separately labelled source lines dropped outside fenced code, its outer whitespace trimmed, and
+/// each syntactically valid Term-link macro read as the label a reader sees (R0276, S12 / #154).
+/// Ordinary Links stay exactly as authored: this comparison ignores no other syntax.
 pub(crate) fn statement_text(body: &str) -> String {
     let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = zt_check::text::strip_term_links(&normalized);
     let mut kept: Vec<&str> = Vec::new();
     let mut fenced = false;
     for line in normalized.split('\n') {
@@ -597,6 +602,47 @@ mod tests {
         assert!(statement_fingerprint(fenced) != statement_fingerprint("陈述。\n\n```\n```\n"));
         // An entry that states no body has one stable fingerprint.
         assert_eq!(statement_fingerprint(""), statement_fingerprint("\n\n  \r\n"));
+    }
+
+    /// R0276/S12-AC06 (S12, #154): the statement comparison ignores Term markup in addition to its
+    /// established limited normalization, because the markup is not visible prose. The label is
+    /// the word a reader sees, so a changed label is a changed claim; formulas, values, signs,
+    /// variables, negation and assumptions beside it stay significant.
+    #[test]
+    fn the_statement_fingerprint_reads_a_term_link_as_its_visible_label() {
+        let marked = "当 [[均衡@2/1]] 存在时，价格不变。\n\n假设：同一产业。";
+        let plain = "当 均衡 存在时，价格不变。\n\n假设：同一产业。";
+        assert_eq!(statement_fingerprint(marked), statement_fingerprint(plain));
+        assert_eq!(statement_text(marked), statement_text(plain));
+        assert_eq!(
+            statement_text(marked),
+            "当 均衡 存在时，价格不变。\n\n假设：同一产业。"
+        );
+        // A changed visible label is a changed claim.
+        assert_ne!(
+            statement_fingerprint("当 [[失衡@2/1]] 存在时，价格不变。\n\n假设：同一产业。"),
+            statement_fingerprint(plain)
+        );
+        // The existing normalization still holds beside the label: a source line is evidence, and a
+        // changed value or sign is a change.
+        assert_eq!(
+            statement_fingerprint(
+                "当 [[均衡@2/1]] 存在时，价格不变。\n\n假设：同一产业。\n\n来源：[[book]] §2"
+            ),
+            statement_fingerprint(marked)
+        );
+        assert_ne!(
+            statement_fingerprint("当 [[均衡@2/1]] 存在时，价格变为 2。\n\n假设：同一产业。"),
+            statement_fingerprint(marked)
+        );
+        assert_ne!(
+            statement_fingerprint("当 [[均衡@2/1]] 存在时，价格不变。\n\n假设：不同产业。"),
+            statement_fingerprint(marked)
+        );
+        // A malformed Term-like macro is not projected: the write path refuses it, and the
+        // comparison never silently retypes the statement.
+        let malformed = "当 [[a@b@2/1]] 存在时，价格不变。";
+        assert_eq!(statement_text(malformed), malformed);
     }
 
     #[test]

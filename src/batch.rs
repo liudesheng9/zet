@@ -891,7 +891,12 @@ fn simulate(
             .collect::<Vec<_>>();
         let lock = crate::tree_lock::LockView::read(tx, Some(&rows))?;
         for card in &previewed {
-            cards.push(crate::read::text_facts(tx, card, &lock)?);
+            cards.push(crate::read::text_facts(
+                tx,
+                card,
+                &lock,
+                crate::read::TermLinks::Raw,
+            )?);
         }
     }
     Ok(Simulated {
