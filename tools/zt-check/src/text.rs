@@ -851,6 +851,22 @@ fn scan_links(text: &str, strict: bool) -> Result<Vec<LinkOccurrence<'_>>, LinkF
             offset = macro_end;
             continue;
         }
+        // `@@name` is the identified-batch reference: publication's placeholder for a Card that
+        // has no address yet (design 12.5). Its macro is an ordinary Link whose target is the
+        // reference, never a Term link with an empty label, so a draft's continuation part can
+        // name the head it will be created under and still pass the check that reads it.
+        if content.starts_with("@@") {
+            occurrences.push(LinkOccurrence {
+                target: content,
+                label: None,
+                form: LinkForm::Ordinary,
+                macro_range: start..macro_end,
+                target_range: content_start..content_end,
+                label_range: None,
+            });
+            offset = macro_end;
+            continue;
+        }
         let occurrence = match content.find('@') {
             Some(at) => {
                 let label = &content[..at];
@@ -1402,6 +1418,21 @@ mod tests {
             );
         }
         assert_eq!(parse_links_at("[[均衡@2/1|a]]").unwrap().len(), 1);
+
+        // `@@name` is the identified-batch reference a draft binds the Card it cannot address yet
+        // (design 12.5): its macro is an ordinary Link whose target is the reference, never a Term
+        // link with an empty label. Without this a draft's continuation part can never pass the
+        // check that reads it (S21, #165).
+        for text in [
+            "续：[[@@term_head]] 本卡沿用该卡的符号表。",
+            "续：[[@@r001]] 本卡承接该术语的说明。",
+        ] {
+            let parsed = parse_links_at(text).expect(text);
+            assert_eq!(parsed.len(), 1, "{text:?}");
+            assert_eq!(parsed[0].form, LinkForm::Ordinary, "{text:?}");
+            assert_eq!(parsed[0].target, &text[text.find("[[").unwrap() + 2..text.find("]]").unwrap()]);
+            assert_eq!(link_occurrences(text)[0].form, LinkForm::Ordinary, "{text:?}");
+        }
 
         // The shared math spans are the ones the Link scan already treats as literal.
         let text = "比例 $x/y$ 与 $$z=1$$，代码 `$c$`，货币 \\$5。";

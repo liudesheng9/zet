@@ -366,22 +366,32 @@ fn the_term_cards_plan_reads_a_real_list_and_writes_no_card() {
         String::from_utf8_lossy(&missing.stderr)
     );
     std::fs::rename(&backup, &sections).unwrap();
-    for (step, slice, issue) in [("apply", "S21", 165), ("report", "S21", 165)] {
+    // --- the publication steps publish nothing until a draft is checked and ready (S21, #165) ---
+    for (step, apply) in [("apply", true), ("report", false)] {
         let mut args = vec!["term-cards", "-Step", step, "-Staging", stage];
-        if step == "apply" {
+        if apply {
             args.push("-Apply");
         }
         let out = zt.digest(&args);
-        assert_eq!(out.status.code(), Some(2), "{step}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{step}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let said = last_json(&out);
-        assert_eq!(said["code"], "not_implemented", "{step}");
-        assert_eq!(said["slice"], slice, "{step}");
-        assert_eq!(said["issue"], issue, "{step}");
+        assert_eq!(said["step"], step);
+        assert_eq!(said["complete"], false, "{step}: {said}");
+        assert_eq!(said["ready"], 0, "{step}: no draft is checked yet");
+        assert_eq!(said["committed"], 0, "{step}");
+        assert_eq!(said["refused"], 2, "{step}");
+        assert_eq!(said["cards_written"], 0, "{step}");
+        assert!(staged.join("term-cards").join("report.json").is_file(), "{step}");
     }
-    assert!(
-        std::fs::read_dir(staged.join("term-cards").join("check")).unwrap().next().is_none(),
-        "an unimplemented step wrote into check/"
-    );
+    // The plan's list is a legacy Idea Card, so the ready check found nothing to retype either: the
+    // archive and the list's authored text are exactly as the plan read them.
+    assert_eq!(mcp.revision(), revision, "a publication without a ready draft wrote a Card");
+    assert_eq!(mcp.call("get_card", json!({"at":list}))["text"], authored["text"]);
 
     // --- the same frozen content keeps revision 1 and the exact plan bytes ---------------------
     let before = std::fs::read(staged.join("term-cards").join("plan.json")).unwrap();

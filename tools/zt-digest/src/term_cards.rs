@@ -44,9 +44,14 @@
 //! Every printed writer, review and fix job carries its managed contract (S20 / #164, design 12.4):
 //! the frozen official DeepSeek model at high effort, the job's own `skills`, and whether the
 //! conversation ends once its answer is collected. The Haiku manager role stays the workflow's; the
-//! job never picks a model and no skill text is copied. `apply` and `report` belong to S21 (#165);
-//! until that slice fills them this tool answers one compact `not_implemented` line and exits 2,
-//! writing nothing.
+//! job never picks a model and no skill text is copied.
+//!
+//! `apply` (S21 / #165, design 12.5–12.6) publishes the longest ready ordered row prefix as Side
+//! children of the Term list with their continuation parts, verifies every committed Card by
+//! reading it back and writes the publication coverage; `report` is the same read without a write.
+//! They live in `publish.rs` beside this file.
+
+mod publish;
 
 use crate::args::Args;
 use crate::canon;
@@ -121,26 +126,6 @@ static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 static LEGACY_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
 /// The book notation table's title prefix (`符号表：《…》的 N 个符号`).
 static NOTATION_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^符号表").unwrap());
-
-/// The compact answer of a step whose implementation belongs to a later slice.
-fn not_implemented(step: &str) -> (i32, Value) {
-    let (slice, issue) = match step {
-        "apply" | "report" => ("S21", 165),
-        "check" | "review-plan" | "fix-plan" => ("S19", 162),
-        _ => ("S18", 159),
-    };
-    (
-        2,
-        json!({
-            "schema_version": 1,
-            "ok": false,
-            "step": step,
-            "code": "not_implemented",
-            "slice": slice,
-            "issue": issue,
-        }),
-    )
-}
 
 /// One invocation's parsed parameters.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,11 +250,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "check" => check_step(&p),
         "review-plan" => review_plan_step(&p),
         "fix-plan" => fix_plan_step(&p),
-        other => {
-            let (code, value) = not_implemented(other);
-            util::print_line(&canon::canonical_json(&value))?;
-            Ok(code)
-        }
+        "apply" => publish::apply(&p),
+        "report" => publish::report(&p),
+        // `params` binds -Step to one of STEPS, so no other step reaches this dispatch.
+        _ => unreachable!("-Step is bound to one of STEPS"),
     }
 }
 
@@ -704,7 +688,7 @@ pub(crate) fn build_plan(
             },
         },
     });
-    let plan_hash = canon::hash_value(&frozen);
+    let plan_hash = plan_hash_of(&frozen);
     let (revision, revisions) = revision_of(existing_plan, existing_state, &frozen, &plan_hash);
     let mut plan = frozen.clone();
     plan["revision"] = json!(revision);
@@ -736,6 +720,20 @@ fn previous_plan_hash(plan: &Value) -> Option<String> {
     plan.get("plan_hash")
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+/// The plan content hash: the frozen plan without the list's *kind* (`type`, `legacy`). The kind is
+/// no list content: the first publication retypes a legacy table metadata-only and keeps every
+/// authored byte, so a resume that re-reads the retyped list must keep the same revision, its
+/// check artifacts and its receipts (S21, #165; R0336, R0342). The authored title, body, rows,
+/// source and limits all stay in the hash.
+fn plan_hash_of(frozen: &Value) -> String {
+    let mut value = frozen.clone();
+    if let Some(list) = value.get_mut("list").and_then(Value::as_object_mut) {
+        list.remove("type");
+        list.remove("legacy");
+    }
+    canon::hash_value(&value)
 }
 
 /// The previous revision and its history: `state.json` is the derived local progress, and an
@@ -852,6 +850,13 @@ fn state_of(
     } else {
         json!([])
     };
+    // The publication record is not plan progress: a Card an earlier revision published stays
+    // published, so the record survives a new revision and a resume can name its receipts
+    // (S21, #165; R0341, R0349).
+    let published = existing
+        .and_then(|old| old.get("published"))
+        .cloned()
+        .unwrap_or_else(|| json!({"rows": {}}));
     json!({
         "schema_version": 1,
         "kind": "term_cards_state",
@@ -864,6 +869,7 @@ fn state_of(
         "promotions": promotions,
         "fixes": fixes,
         "receipts": if same { existing.and_then(|old| old.get("receipts")).cloned().unwrap_or(json!({})) } else { json!({}) },
+        "published": published,
     })
 }
 
@@ -1175,22 +1181,36 @@ fn job_terms(job: &Value) -> Vec<String> {
 const PROMPT: &str =
     "按共享说明和任务文件，写好本组术语的 JSON 草稿，只写任务文件指定的输出文件，最后只回复一行 JSON。";
 
-fn plan(p: &Params) -> Result<i32> {
-    let staging = p.staging.as_str();
-    let manifest = common::manifest(staging)?;
+/// The staging folder's `manifest.json` with a usable Citation key: the book every term-card step
+/// is about. A missing or empty key stops before any archive read.
+fn book_manifest(p: &Params) -> Result<Value> {
+    let manifest = common::manifest(&p.staging)?;
     let key = pstr(&manifest, "citation_key");
     if key.trim().is_empty() {
         bail!("manifest.json names no citation_key; term-card planning needs its book");
     }
+    Ok(manifest)
+}
+
+/// Everything one coherent read of the staging folder and the archive says, exactly as `plan`
+/// reads and freezes it. The publication steps (S21, #165) re-read the same inputs and compare the
+/// rebuilt plan hash before they write or report anything, so no step ever acts on a stale plan.
+struct Fresh {
+    tree: Value,
+    list: ListRead,
+    built: BuiltPlan,
+    existing_plan: Option<Value>,
+}
+
+/// The one read sequence of `plan`, shared with the publication steps. It writes nothing.
+fn read_fresh(p: &Params, manifest: &Value, zt: &mut Zt) -> Result<Fresh> {
+    let staging = p.staging.as_str();
+    let key = pstr(manifest, "citation_key");
     let book_title = {
-        let title = pstr(&manifest, "book_title");
+        let title = pstr(manifest, "book_title");
         if title.trim().is_empty() { key.clone() } else { title }
     };
     let variant = pstr(&manifest["run_contract"], "variant");
-    let mut zt = crate::zt::start()?;
-    if let Some(refusal) = crate::lockcheck::preflight(&mut zt, "term-cards", "plan", &key)? {
-        return crate::lockcheck::stop("term-cards", &refusal);
-    }
     let tree = zt.call("get_tree", json!({"tree": key}))?;
     let archive_revision = tree["archive_revision"]
         .as_u64()
@@ -1200,8 +1220,8 @@ fn plan(p: &Params) -> Result<i32> {
         let mut read = |at: &str| zt.call("get_card", json!({"at": at}));
         select_list(&cards, &mut read)?
     };
-    let notation = read_notation(&mut zt, staging, &cards, &key)?;
-    let settings = read_settings(&mut zt, &cards, &list)?;
+    let notation = read_notation(zt, staging, &cards, &key)?;
+    let settings = read_settings(zt, &cards, &list)?;
     let mut notation = notation;
     for setting in &settings {
         notation.sources.push(json!({
@@ -1217,7 +1237,7 @@ fn plan(p: &Params) -> Result<i32> {
     let after = zt.call("get_cards", json!({"addresses":[],"view":"text"}))?;
     if after["archive_revision"].as_u64() != Some(archive_revision) {
         bail!(
-            "the archive changed while planning; run -Step plan again for a new plan revision"
+            "the archive changed while reading it; run the step again for the new archive revision"
         );
     }
     let inputs = PlanInputs {
@@ -1240,11 +1260,31 @@ fn plan(p: &Params) -> Result<i32> {
         },
     };
     let work = p.work();
+    let existing_plan = read_existing(&ps::join(&work, "plan.json"), "plan")?;
+    let existing_state = read_existing(&ps::join(&work, "state.json"), "state")?;
+    let built = build_plan(&inputs, existing_plan.as_ref(), existing_state.as_ref())?;
+    Ok(Fresh {
+        tree,
+        list: inputs.list.clone(),
+        built,
+        existing_plan,
+    })
+}
+
+fn plan(p: &Params) -> Result<i32> {
+    let staging = p.staging.as_str();
+    let manifest = book_manifest(p)?;
+    let key = pstr(&manifest, "citation_key");
+    let mut zt = crate::zt::start()?;
+    if let Some(refusal) = crate::lockcheck::preflight(&mut zt, "term-cards", "plan", &key)? {
+        return crate::lockcheck::stop("term-cards", &refusal);
+    }
+    let fresh = read_fresh(p, &manifest, &mut zt)?;
+    let work = p.work();
     let plan_path = ps::join(&work, "plan.json");
     let state_path = ps::join(&work, "state.json");
-    let existing_plan = read_existing(&plan_path, "plan")?;
-    let existing_state = read_existing(&state_path, "state")?;
-    let mut built = build_plan(&inputs, existing_plan.as_ref(), existing_state.as_ref())?;
+    let existing_plan = fresh.existing_plan;
+    let mut built = fresh.built;
     std::fs::create_dir_all(ps::join(&work, "jobs"))?;
     std::fs::create_dir_all(ps::join(&work, "out"))?;
     std::fs::create_dir_all(ps::join(&work, "check"))?;
@@ -1997,7 +2037,7 @@ impl Compiled {
             bail!("`{path}` is not a term-cards plan");
         }
         let plan_hash = pstr(&plan, "plan_hash");
-        if canon::hash_value(&frozen_of(&plan)?) != plan_hash {
+        if plan_hash_of(&frozen_of(&plan)?) != plan_hash {
             bail!("`{path}` changed since it was frozen; rerun -Step plan");
         }
         let revision = plan["revision"]
@@ -2156,6 +2196,7 @@ fn local_state(compiled: &Compiled) -> Result<Value> {
         "promotions": [],
         "receipts": {},
         "fixes": [],
+        "published": {"rows": {}},
     }))
 }
 
@@ -3622,16 +3663,16 @@ mod tests {
     }
 
     #[test]
-    fn steps_owned_by_later_slices_answer_compactly_and_write_nothing() {
-        for step in ["apply", "report"] {
-            let (code, value) = not_implemented(step);
-            assert_eq!(code, 2);
-            assert_eq!(value["ok"], false);
-            assert_eq!(value["code"], "not_implemented");
-            assert_eq!(value["step"], step);
-            assert_eq!(value["slice"], "S21");
-            assert_eq!(value["issue"], 165);
-        }
+    fn the_plan_hash_does_not_depend_on_the_lists_kind() {
+        // The first publication retypes a legacy table metadata-only (S21, #165; R0336). A resume
+        // that re-reads the retyped list must keep the same plan hash, its check artifacts and its
+        // receipts, so the list's kind is no list content.
+        let legacy = json!({"list": {"address": "K/1|a", "type": "idea", "legacy": true, "body_sha256": "s"}});
+        let retyped = json!({"list": {"address": "K/1|a", "type": "term", "legacy": false, "body_sha256": "s"}});
+        assert_eq!(plan_hash_of(&legacy), plan_hash_of(&retyped));
+        let mut changed = retyped.clone();
+        changed["list"]["body_sha256"] = json!("other");
+        assert_ne!(plan_hash_of(&legacy), plan_hash_of(&changed));
     }
 
     // --- source evidence and classification ------------------------------------------------------
@@ -4066,9 +4107,15 @@ mod tests {
         assert_eq!(plan["jobs"][1]["kind"], "concept");
         assert_eq!(plan["jobs"][0]["file"], ps::join(&ps::join(staging, "term-cards"), "jobs\\t001.md"));
         assert_eq!(plan["jobs"][0]["output"], ps::join(&ps::join(staging, "term-cards"), "out\\t001.json"));
-        // The frozen content hashes to the plan hash and the derived keys are not part of it.
+        // The frozen content hashes to the plan hash and the derived keys are not part of it; the
+        // list's kind is no list content either (S21, #165).
         let frozen = frozen_of(&plan).unwrap();
-        assert_eq!(canon::hash_value(&frozen), plan["plan_hash"]);
+        assert_eq!(plan_hash_of(&frozen), plan["plan_hash"]);
+        assert_ne!(
+            canon::hash_value(&frozen),
+            plan["plan_hash"],
+            "the list's kind is not part of the plan content hash"
+        );
     }
 
     fn section_text(section: &Section) -> String {
@@ -4334,7 +4381,7 @@ mod tests {
         std::fs::create_dir_all(ps::join(&work, "check")).unwrap();
         let mut plan = s19_plan(&work, rows);
         plan["limits"]["max_prose"] = json!(max_prose);
-        let hash = canon::hash_value(&frozen_of(&plan).unwrap());
+        let hash = plan_hash_of(&frozen_of(&plan).unwrap());
         plan["plan_hash"] = json!(hash);
         util::write_atomic(ps::join(&work, "plan.json"), &ps::json_pretty(&plan)).unwrap();
         Compiled {
