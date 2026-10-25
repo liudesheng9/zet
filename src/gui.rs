@@ -4451,6 +4451,156 @@ mod tests {
         assert_eq!(out["typed"], json!(["均衡", "general eq", null, null]));
     }
 
+    /// S29 (#171, the GUI check's defect B): `[[` completion ranks both groups on one scale, so the
+    /// first row, the one Enter takes, is the closest match: an exact address or Citation key, an
+    /// exact term name, an address prefix, a term-name prefix, then a title match. A human Card
+    /// whose title only mentions `TermBook2026` no longer comes before the book's own Card, and the
+    /// inserted forms stay `label@address` for a Term use and `address` for an ordinary Card.
+    #[test]
+    fn link_completion_ranks_an_exact_or_prefixed_address_before_a_title_match() {
+        let Some(out) = draft_js(
+            "(() => {
+               const nodes = [
+                 { address: '1', tree: '1', edge: 'root', title: '读记' },
+                 { address: '1/1', tree: '1', type: 'idea', title: '读 TermBook2026 的第一章' },
+                 { address: 'TermBook2026', tree: 'TermBook2026', edge: 'root', title: 'Term Book 2026' },
+                 { address: 'TermBook2026/1', tree: 'TermBook2026', type: 'idea', title: '第一章：均衡' },
+                 { address: 'TermBook2026/1|a', tree: 'TermBook2026', type: 'term', term: null, term_role: 'list', title: '术语表' },
+                 { address: 'TermBook2026/1|a|a', tree: 'TermBook2026', type: 'term', term: '均衡', term_role: 'card', title: '均衡' },
+                 { address: 'TermBook2026/1|a|b', tree: 'TermBook2026', type: 'term', term: '1/1', term_role: 'card', title: '一个怪名字' },
+                 { address: '0/2', tree: '0', type: 'idea', title: '均衡是重复博弈的稳定结果' },
+               ];
+               const rows = (typed) => draft.linkCompletions(nodes, typed, 8).map((row) => [row.kind, row.insert]);
+               return {
+                 prefix: rows('TermB'),
+                 key: rows('termbook2026').slice(0, 1),
+                 address: rows('1/1'),
+                 term: rows('均').slice(0, 3),
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        assert_eq!(
+            out["prefix"],
+            json!([
+                ["link", "TermBook2026"],
+                ["link", "TermBook2026/1"],
+                ["link", "TermBook2026/1|a"],
+                ["link", "TermBook2026/1|a|a"],
+                ["link", "TermBook2026/1|a|b"],
+                ["link", "1/1"],
+            ]),
+            "the Citation key prefix first, in address order; the title match last"
+        );
+        assert_eq!(out["key"], json!([["link", "TermBook2026"]]), "an exact Citation key, any case, comes first");
+        assert_eq!(
+            out["address"],
+            json!([["link", "1/1"], ["link", "TermBook2026/1|a|b"], ["term", "1/1@TermBook2026/1|a|b"]]),
+            "an exact address beats a Term head of the same name, and its group is listed first"
+        );
+        assert_eq!(
+            out["term"],
+            json!([["term", "均衡@TermBook2026/1|a|a"], ["link", "TermBook2026/1|a|a"], ["link", "TermBook2026/1"]]),
+            "a term-name prefix keeps the Term use first, its head cited next"
+        );
+    }
+
+    /// S29 (#171, the GUI check's defect C): the `[[` menu stands beside the caret's line and never
+    /// over it: below when it fits, above when the room below is short, shrunk to the larger side
+    /// otherwise, inside the window; and the chosen row is scrolled into view.
+    #[test]
+    fn the_completion_menu_never_covers_the_caret_line_and_keeps_its_row_in_view() {
+        let Some(out) = draft_js(
+            "(() => {
+               const view = { viewWidth: 1000, viewHeight: 800, menuWidth: 380 };
+               const place = (line, menuHeight, left = 100) => draft.menuPlace({ ...view, lineTop: line, lineBottom: line + 20, left, menuHeight });
+               return {
+                 below: place(100, 300),
+                 above: place(700, 300),
+                 squeezed: place(390, 600),
+                 right: place(100, 100, 900),
+                 scroll: [
+                   draft.rowScroll({ rowTop: 400, rowHeight: 30, scrollTop: 0, viewHeight: 200 }),
+                   draft.rowScroll({ rowTop: 20, rowHeight: 30, scrollTop: 100, viewHeight: 200 }),
+                   draft.rowScroll({ rowTop: 120, rowHeight: 30, scrollTop: 100, viewHeight: 200 }),
+                 ],
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        assert_eq!(out["below"]["above"], json!(false));
+        assert_eq!(out["below"]["top"], json!(124), "4 px under the line that ends at 120");
+        assert_eq!(out["above"]["above"], json!(true));
+        assert_eq!(out["above"]["top"], json!(396), "300 tall, ending 4 px above the line at 700");
+        assert_eq!(out["squeezed"]["above"], json!(false), "the larger side (below) when it fits neither");
+        assert_eq!(out["squeezed"]["top"], json!(414));
+        assert_eq!(out["squeezed"]["maxHeight"], json!(378), "it shrinks to the room below and scrolls");
+        assert_eq!(out["right"]["left"], json!(612), "kept 8 px inside the window's right edge");
+        assert_eq!(out["scroll"], json!([230, 20, 100]));
+
+        let desk = js_function("function openEditor(");
+        assert!(desk.contains("const line = caretLine(text, text.selectionStart);"), "{desk}");
+        assert!(desk.contains("const place = ZtDraft.menuPlace({"), "{desk}");
+        assert!(desk.contains("completion.scrollTop = ZtDraft.rowScroll({"), "{desk}");
+        assert!(!desk.contains("scrollIntoView"), "no ancestor scroll: {desk}");
+        assert!(desk.contains("if (layer && completion.parentElement !== layer) layer.append(completion);"), "off the desk's transform: {desk}");
+        assert!(desk.contains("options[0].kind === 'link' ? [...linkGroup, ...termGroup] : [...termGroup, ...linkGroup]"), "the best row's group first");
+        let caret = js_function("function caretLine(area, index)");
+        assert!(caret.contains("whiteSpace: 'pre-wrap'") && caret.contains("mirror.remove();"), "{caret}");
+    }
+
+    /// S29 (#171, the GUI check's defect D): a list sheet (Broken links among them) is a named modal
+    /// dialog: focus moves in and Tab stays inside, Escape and a route change close it, and focus
+    /// returns to what opened it.
+    #[test]
+    fn a_list_dialog_is_a_named_modal_that_closes_on_escape_and_route_and_returns_focus() {
+        let dialog = js_function("function listDialog(title, rows)");
+        assert!(dialog.contains("role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': id"), "{dialog}");
+        assert!(dialog.contains("h('h3', { id, text: title })"), "the heading names it: {dialog}");
+        assert!(dialog.contains("if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return; }"));
+        assert!(dialog.contains("window.addEventListener('hashchange', close);") && dialog.contains("window.removeEventListener('hashchange', close);"));
+        assert!(dialog.contains("const opener = document.activeElement;") && dialog.contains("opener.focus();"), "{dialog}");
+        assert!(dialog.contains("last.focus();") && dialog.contains("first.focus();"), "Tab wraps inside: {dialog}");
+        assert!(APP_JS.contains("    listDialog(`Broken links · ${broken.length}`, (close) =>"), "the broken list uses it");
+    }
+
+    /// S29 (#171, the GUI check's defect G): the folded `Term uses` summary is a control, so its
+    /// quiet label keeps at least 4.5:1 against the desk in the light and both dark theme blocks.
+    #[test]
+    fn the_term_uses_summary_keeps_text_contrast_in_both_themes() {
+        let rule = css_rule("details.term-uses > summary");
+        assert!(rule.contains("color: color-mix(in srgb, var(--ink-soft) 75%, var(--ink-faint));"), "{rule}");
+        assert!(css_rule("details.term-uses > summary:hover, details.term-uses > summary:focus-visible").contains("var(--ink)"));
+        let token = |block: &str, name: &str| -> [f64; 3] {
+            let start = APP_CSS.find(block).unwrap_or_else(|| panic!("no block {block}"));
+            let body = &APP_CSS[start..];
+            let body = &body[..body.find('}').unwrap()];
+            let at = body.find(&format!("  --{name}: #")).unwrap_or_else(|| panic!("no --{name} in {block}"));
+            let hex = &body[at + name.len() + 7..at + name.len() + 13];
+            [0, 2, 4].map(|i| f64::from(u8::from_str_radix(&hex[i..i + 2], 16).unwrap()))
+        };
+        let luminance = |rgb: [f64; 3]| {
+            let c = rgb.map(|v| {
+                let v = v / 255.0;
+                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            });
+            0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+        };
+        for block in [":root {", ":root[data-theme=\"dark\"] {", ":root:not([data-theme=\"light\"]) {"] {
+            let (soft, faint) = (token(block, "ink-soft"), token(block, "ink-faint"));
+            let ink = [0, 1, 2].map(|i| soft[i] * 0.75 + faint[i] * 0.25);
+            for ground in ["desk", "panel", "stock"] {
+                let (a, b) = (luminance(ink), luminance(token(block, ground)));
+                let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                assert!(ratio >= 4.5, "{block} --{ground}: {ratio:.2}");
+            }
+        }
+    }
+
     /// S14 (#161, US050, S14-AC01): the term-name field follows the server's own name rule, and a
     /// save sends a `term` only for a Term Card — a create none when the name is empty (a Term list),
     /// an edit always, so an emptied field clears the name; no other type ever sends one.

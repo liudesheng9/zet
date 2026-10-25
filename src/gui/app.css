@@ -784,7 +784,9 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
 .card .term-facts .term-list:hover { color: var(--link); text-decoration-color: currentColor; }
 .card .term-facts .term-list-addr { font: 11px var(--mono); }
 /* The generated Term uses lie folded to their count under a normal disclosure (S13, #156). */
-details.term-uses > summary { cursor: pointer; list-style: none; }
+/* It is a control, so its quiet label keeps text contrast (S29, #171): between the soft and the
+   faint pencil, at least 4.5:1 on the desk in both themes (light 5.1:1, dark 7.2:1). */
+details.term-uses > summary { cursor: pointer; list-style: none; color: color-mix(in srgb, var(--ink-soft) 75%, var(--ink-faint)); }
 details.term-uses > summary::-webkit-details-marker { display: none; }
 details.term-uses > summary::before {
   content: ""; flex: none; width: 0; height: 0;
@@ -792,7 +794,7 @@ details.term-uses > summary::before {
   transition: transform .25s ease-in-out;
 }
 details.term-uses[open] > summary::before { transform: rotate(90deg); }
-details.term-uses > summary:hover { color: var(--ink-soft); }
+details.term-uses > summary:hover, details.term-uses > summary:focus-visible { color: var(--ink); }
 details.term-uses[open] > .chips { animation: term-uses-open .3s ease-in-out; }
 @keyframes term-uses-open { from { opacity: 0; transform: translateY(-6px); } }
 /* The distant Card: one slot beside the neighbours, a pencil note rather than a card. It stays
@@ -894,6 +896,7 @@ details.term-uses[open] > .chips { animation: term-uses-open .3s ease-in-out; }
   overflow: hidden; animation: rise .28s var(--ease);
 }
 .sheet-dlg.narrow { width: min(560px, 100%); }
+.sheet-dlg[tabindex="-1"]:focus { outline: none; }
 @keyframes rise { from { transform: translateY(14px) scale(.985); opacity: 0; } }
 .dlg-head { display: flex; align-items: center; gap: 10px; padding: 13px 18px; border-bottom: 1px solid var(--hairline); }
 .dlg-head h3 { margin: 0; font: 600 17px var(--serif); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

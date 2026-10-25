@@ -4922,14 +4922,43 @@
     });
   }
 
+  /**
+   * A list sheet (Broken links, Workspaces, Spreads, Commands). It is a modal dialog named by its
+   * heading (S29, #171): focus moves into it and Tab stays inside while it lies open, Escape or a
+   * route change (another Card in the hash, Back) closes it, and focus returns to what opened it.
+   */
+  let listDialogs = 0;
   function listDialog(title, rows) {
-    let close = null;
+    const opener = document.activeElement;
+    const id = `list-dlg-${++listDialogs}`;
+    let shut = null;
+    const close = () => {
+      if (!shut) return;
+      shut();
+      shut = null;
+      window.removeEventListener('hashchange', close);
+      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+    };
     const content = typeof rows === 'function' ? rows(() => close()) : rows;
-    close = openOverlay(h('div', { class: 'sheet-dlg narrow', role: 'dialog' },
-      h('div', { class: 'dlg-head' }, h('h3', { text: title })),
+    const dialog = h('div', { class: 'sheet-dlg narrow', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': id, tabindex: '-1' },
+      h('div', { class: 'dlg-head' }, h('h3', { id, text: title })),
       h('div', { class: 'confirm-body' }, content),
       h('div', { class: 'dlg-foot' }, h('span', { class: 'msg' }), h('button', { class: 'btn primary', text: 'Close', onclick: () => close() })),
-    ));
+    );
+    dialog.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return; }
+      if (event.key !== 'Tab') return;
+      const stops = [...dialog.querySelectorAll('button, [href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])')]
+        .filter((node) => !node.disabled && node.offsetParent !== null);
+      if (!stops.length) { event.preventDefault(); return; }
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
+    shut = openOverlay(dialog);
+    window.addEventListener('hashchange', close);
+    (dialog.querySelector('.confirm-body button, .confirm-body [href]') || dialog.querySelector('.dlg-foot .btn') || dialog).focus();
   }
 
   function showWorkspaces() {
@@ -6105,20 +6134,40 @@
           : [h('span', { class: 'syntax', text: option.address }), h('span', { class: 'desc' }, titleNodes(option.title || '(untitled)'))]);
         const terms = options.filter((option) => option.kind === 'term');
         const links = options.filter((option) => option.kind === 'link');
-        completion.replaceChildren(
-          ...(terms.length ? [h('div', { class: 'group', text: 'Use the term' }), ...terms.map((option) => row(option, options.indexOf(option)))] : []),
-          ...(links.length ? [h('div', { class: 'group', text: terms.length ? 'Cite the card (a reasoned Link)' : 'Link to card' }), ...links.map((option) => row(option, options.indexOf(option)))] : []),
-        );
-        const rect = text.getBoundingClientRect();
-        completion.style.position = 'fixed';
-        completion.style.left = rect.left + 16 + 'px';
-        completion.style.top = 'auto';
-        completion.style.bottom = (window.innerHeight - rect.bottom + 12) + 'px';
-        completion.style.width = '380px';
-        completion.style.right = 'auto';
-        completion.hidden = false;
-        completion.querySelector('button.on')?.scrollIntoView({ block: 'nearest' });
+        // The group holding the closest match comes first (S29, #171), so the top row is the one
+        // Enter takes: `ZtDraft.linkCompletions` already ranks both groups on one scale.
+        const termGroup = terms.length ? [h('div', { class: 'group', text: 'Use the term' }), ...terms.map((option) => row(option, options.indexOf(option)))] : [];
+        const linkGroup = links.length ? [h('div', { class: 'group', text: terms.length ? 'Cite the card (a reasoned Link)' : 'Link to card' }), ...links.map((option) => row(option, options.indexOf(option)))] : [];
+        completion.replaceChildren(...(options[0].kind === 'link' ? [...linkGroup, ...termGroup] : [...termGroup, ...linkGroup]));
+        placeCompletion();
       };
+      /**
+       * Lay the menu beside the caret's line, never over it (S29, #171): below the line when it
+       * fits, above it when the space below is short, and keep the chosen row in view.
+       */
+      const placeCompletion = () => {
+        const line = caretLine(text, text.selectionStart);
+        // The menu lies on the dialog's layer, not inside the desk: the desk's rise transform would
+        // make it the menu's containing block and shift a `fixed` menu off the window coordinates.
+        const layer = text.closest('.layer');
+        if (layer && completion.parentElement !== layer) layer.append(completion);
+        Object.assign(completion.style, { position: 'fixed', right: 'auto', bottom: 'auto', maxHeight: 'none' });
+        completion.hidden = false;
+        const place = ZtDraft.menuPlace({
+          lineTop: line.top, lineBottom: line.bottom, left: line.left - 10,
+          menuHeight: Math.min(completion.scrollHeight + 2, window.innerHeight * 0.6), menuWidth: 380,
+          viewWidth: window.innerWidth, viewHeight: window.innerHeight,
+        });
+        Object.assign(completion.style, { top: place.top + 'px', left: place.left + 'px', width: place.width + 'px', maxHeight: place.maxHeight + 'px' });
+        completion.classList.toggle('cmp-above', place.above);
+        const on = completion.querySelector('button.on');
+        if (on) {
+          completion.scrollTop = ZtDraft.rowScroll({
+            rowTop: on.offsetTop, rowHeight: on.offsetHeight, scrollTop: completion.scrollTop, viewHeight: completion.clientHeight,
+          });
+        }
+      };
+      text.addEventListener('scroll', () => { if (!completion.hidden) placeCompletion(); });
       /** Replace the typed text after `[[` with the row's exact insert and close the macro. */
       const accept = (option, typed) => {
         const at = text.selectionStart;
@@ -6168,6 +6217,38 @@
         text.setSelectionRange(caret, caret);
       }
     });
+  }
+
+  /**
+   * The window box of the line that holds a textarea's caret (S29, #171): `{top, bottom, left}`,
+   * read from a hidden copy of the textarea that wraps its text the same way, so the `[[`
+   * completion can stand beside the line instead of over it.
+   */
+  function caretLine(area, index) {
+    const style = getComputedStyle(area);
+    const mirror = document.createElement('div');
+    for (const name of ['fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize', 'lineHeight', 'fontFamily',
+      'letterSpacing', 'wordSpacing', 'textIndent', 'textTransform', 'tabSize', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']) {
+      mirror.style[name] = style[name];
+    }
+    const inner = area.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    Object.assign(mirror.style, {
+      position: 'absolute', visibility: 'hidden', top: '0', left: '-9999px', boxSizing: 'content-box', border: '0',
+      width: Math.max(0, inner) + 'px', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: style.wordBreak,
+    });
+    mirror.textContent = area.value.slice(0, index);
+    const mark = document.createElement('span');
+    mark.textContent = '​';
+    mirror.append(mark);
+    document.body.append(mirror);
+    const rect = area.getBoundingClientRect();
+    const top = rect.top + area.clientTop + mark.offsetTop - area.scrollTop;
+    const line = { top, bottom: top + (mark.offsetHeight || parseFloat(style.fontSize) * 1.5), left: rect.left + area.clientLeft + mark.offsetLeft - area.scrollLeft };
+    mirror.remove();
+    // A caret scrolled out of the textarea still keeps the menu beside the visible text.
+    line.top = Math.max(rect.top, Math.min(line.top, rect.bottom));
+    line.bottom = Math.max(line.top, Math.min(line.bottom, rect.bottom));
+    return line;
   }
 
   // ------------------------------------------------------------- mutations

@@ -234,8 +234,16 @@
    *   Typing `word@` first keeps the reader's own word as the label and narrows to the heads whose
    *   name and word overlap, the text after `@` searching their addresses and trees.
    * - `link` rows: an ordinary reasoned Link `[[address]]`, by address, title, or term name. A
-   *   head offered as a Term use is always offered here too, first, since a claim about a
-   *   definition is a reasoned Link to it and not a use of the word.
+   *   head offered as a Term use is always offered here too, ranked just after its use, since a
+   *   claim about a definition is a reasoned Link to it and not a use of the word.
+   *
+   * Both groups share one rank (S29, #171), so the first row, the one Enter takes, is the closest
+   * match: an exact address or Citation key (0), an exact term name (1), an address or Citation
+   * key that starts with the text (2), a term name that starts with it (3), a term name that holds
+   * it (5), then a title or any other match (6). A Card whose title only mentions a Citation key
+   * never comes before that key's own Card. The group that holds the best row is listed first;
+   * inside a group the rows keep this rank, prefixes in natural address order and the rest in the
+   * box's order.
    *
    * `limit` bounds the Link group; Term uses get at most half of it.
    */
@@ -266,26 +274,67 @@
         .map((node) => ({ node, order: rank(node.term.toLowerCase(), query) }));
     }
     used.sort((a, b) => a.order - b.order || byAddress(a.node, b.node));
-    const termRows = used.slice(0, Math.max(1, Math.floor(limit / 2))).map(({ node }) => {
+    const termRows = used.slice(0, Math.max(1, Math.floor(limit / 2))).map(({ node, order }) => {
       const label = word || node.term;
-      return { kind: 'term', address: node.address, term: node.term, label, insert: `${label}@${node.address}`, title: node.title || '', book: book(node) };
+      return { kind: 'term', address: node.address, term: node.term, label, insert: `${label}@${node.address}`, title: node.title || '', book: book(node), score: 1 + 2 * order };
     });
-    if (word !== null) return termRows;
-    const seen = new Set();
-    const linkRows = [];
-    const cite = (node) => {
-      if (!node || seen.has(node.address) || linkRows.length >= limit) return;
-      seen.add(node.address);
-      linkRows.push({ kind: 'link', address: node.address, term: node.term || null, label: null, insert: node.address, title: node.title || '', book: book(node) });
-    };
-    for (const row of termRows) cite(list.find((node) => node.address === row.address));
+    const bare = (rows) => rows.map(({ score, ...row }) => row);
+    if (word !== null) return bare(termRows);
+    // A head offered as a Term use is cited just after its use, in the uses' own order.
+    const cited = new Map(termRows.map((row, index) => [row.address, { score: row.score + 0.5, index }]));
+    const matched = [];
     for (const node of list) {
-      if (node.address.toLowerCase().includes(query)
+      const lower = String(node.address).toLowerCase();
+      const head = cited.get(node.address);
+      let score = null;
+      if (query && lower === query) score = 0;
+      else if (query && lower.startsWith(query)) score = head ? Math.min(2, head.score) : 2;
+      else if (head) score = head.score;
+      else if (lower.includes(query)
         || String(node.title || '').toLowerCase().includes(query)
-        || (node.term && node.term.toLowerCase().includes(query))) cite(node);
+        || (node.term && node.term.toLowerCase().includes(query))) score = 6;
+      if (score !== null) matched.push({ node, score, index: head && score === head.score ? head.index : 0 });
     }
-    return [...termRows, ...linkRows];
+    // A stable sort: equal ranks keep the box's order, except prefixes (natural address order).
+    matched.sort((a, b) => a.score - b.score || a.index - b.index || (a.score === 2 ? byAddress(a.node, b.node) : 0));
+    const linkRows = matched.slice(0, limit).map(({ node, score }) => (
+      { kind: 'link', address: node.address, term: node.term || null, label: null, insert: node.address, title: node.title || '', book: book(node), score }));
+    const best = (rows) => (rows.length ? rows[0].score : Infinity);
+    return bare(best(linkRows) < best(termRows) ? [...linkRows, ...termRows] : [...termRows, ...linkRows]);
   };
 
-  return { replyDraft, replySwapPrefix, replyDestination, checkNote, checkRefusal, locateFault, TERM_NAME_MAX, termNameIssue, termField, linkTyped, linkCompletions };
+  /**
+   * Where the `[[` completion menu lies (S29, #171): next to the caret's line and never over it.
+   * It hangs below the line when it fits there; when the space below is short and the space above
+   * is larger it stands above the line instead, and it shrinks (scrolling its rows) to the larger
+   * side when it fits neither. It stays inside the window, `margin` from each edge, `gap` from the
+   * line. Every measure is in window pixels; `maxHeight` is the room on the chosen side.
+   */
+  const menuPlace = ({ lineTop, lineBottom, left, menuHeight, menuWidth, viewWidth, viewHeight, margin = 8, gap = 4 }) => {
+    const below = viewHeight - lineBottom - gap - margin;
+    const above = lineTop - gap - margin;
+    const up = menuHeight > below && above > below;
+    const room = Math.max(0, up ? above : below);
+    const height = Math.min(menuHeight, room);
+    const width = Math.max(0, Math.min(menuWidth, viewWidth - 2 * margin));
+    return {
+      top: up ? lineTop - gap - height : lineBottom + gap,
+      left: Math.max(margin, Math.min(left, viewWidth - margin - width)),
+      width,
+      maxHeight: room,
+      above: up,
+    };
+  };
+
+  /**
+   * The scroll offset that shows a row of a scrolled list whole, moving as little as it can:
+   * `scrollTop` unchanged when the row is already in view.
+   */
+  const rowScroll = ({ rowTop, rowHeight, scrollTop, viewHeight }) => {
+    if (rowTop < scrollTop) return rowTop;
+    if (rowTop + rowHeight > scrollTop + viewHeight) return rowTop + rowHeight - viewHeight;
+    return scrollTop;
+  };
+
+  return { replyDraft, replySwapPrefix, replyDestination, checkNote, checkRefusal, locateFault, TERM_NAME_MAX, termNameIssue, termField, linkTyped, linkCompletions, menuPlace, rowScroll };
 });
