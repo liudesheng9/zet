@@ -13954,6 +13954,19 @@ fn terms_done(p: &Prepared, zt: &mut Zt, token: i64) -> Result<Value> {
     Ok(result)
 }
 
+// The one call a claimed Terms apply may accept: none for a book without terms, else the new
+// list's call from terms::new_table_call (one constructor, so the check cannot drift from it).
+fn expected_terms_calls(no_terms: bool, key: &str, rendered: &Value) -> Result<Vec<Value>> {
+    if no_terms {
+        return Ok(Vec::new());
+    }
+    Ok(vec![crate::terms::new_table_call(
+        key,
+        field(rendered, "title")?,
+        field(rendered, "body")?,
+    )])
+}
+
 fn terms_apply(
     p: &Prepared,
     zt: &mut Zt,
@@ -14067,14 +14080,7 @@ fn terms_apply(
     if (no_terms && !calls.is_empty()) || (!no_terms && calls.len() != 1) {
         bail!("incomplete accepted Terms operation list");
     }
-    let expected_calls = if no_terms {
-        Vec::new()
-    } else {
-        vec![
-            json!({"tool":"create_successor","arguments":{"at":format!("{key}/1"),"kind":"side","title":rendered["title"],"body":rendered["body"]}}),
-        ]
-    };
-    if calls != expected_calls {
+    if calls != expected_terms_calls(no_terms, key, &rendered)? {
         bail!("accepted Terms calls differ from the required table and Side-successor placement");
     }
     let plan = json!({"schema_version":1,"unit":unit,"unit_input_hash":claimed.input_hash,"plan_revision":1,"operation_prefix":prefix,"input":rendered,"terms":answer["terms"],"disposition":if no_terms{"no_terms"}else{"terms"},"calls":calls});
@@ -17359,6 +17365,19 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_accepted_terms_call_of_a_new_book_is_the_term_typed_side_successor_term_call_writes() {
+        // The S30 pilot (#172): term_call writes a new book's list as a Term Card (S21, #165), and
+        // the claimed apply refused it because its own expected call still lacked the type.
+        let rendered = json!({"title":"术语表：《B》的 2 个术语","body":"| a |"});
+        let expected = expected_terms_calls(false, "k", &rendered).unwrap();
+        assert_eq!(expected, vec![crate::terms::new_table_call("k", "术语表：《B》的 2 个术语", "| a |")]);
+        assert_eq!(expected[0]["arguments"]["type"], json!("term"));
+        assert_eq!(expected[0]["arguments"]["at"], json!("k/1"));
+        assert_eq!(expected[0]["arguments"]["kind"], json!("side"));
+        assert!(expected_terms_calls(true, "k", &rendered).unwrap().is_empty());
+    }
 
     #[test]
     fn the_report_line_cuts_the_long_lists_and_counts_the_rest() {

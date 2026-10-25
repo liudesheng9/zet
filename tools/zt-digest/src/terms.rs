@@ -571,15 +571,18 @@ pub(crate) fn term_call(zt: &mut Zt, key: &str, title: &str, body: &str, guarded
             }
             json!({"tool":"edit_card","arguments":args})
         }
-        None => {
-            // A new book's list is a Term Card with no name from the start (S21, #165, design
-            // 12.5, R0336): the row parser and the Term-card compiler both read the list by that
-            // role, so a book never has to be retyped after its first publication. A book whose
-            // table predates the Term type keeps its Idea Card, kept byte for byte, and the
-            // Term-card compiler's first publication retypes it (metadata only).
-            json!({"tool":"create_successor","arguments":{"at":format!("{key}/1"),"kind":"side","type":"term","title":title,"body":body}})
-        }
+        None => new_table_call(key, title, body),
     })
+}
+
+/// The call that files a new book's list. A new book's list is a Term Card with no name from the
+/// start (S21, #165, design 12.5, R0336): the row parser and the Term-card compiler both read the
+/// list by that role, so a book never has to be retyped after its first publication. A book whose
+/// table predates the Term type keeps its Idea Card, kept byte for byte, and the Term-card
+/// compiler's first publication retypes it (metadata only). The claimed apply checks its accepted
+/// call against this same constructor.
+pub(crate) fn new_table_call(key: &str, title: &str, body: &str) -> Value {
+    json!({"tool":"create_successor","arguments":{"at":format!("{key}/1"),"kind":"side","type":"term","title":title,"body":body}})
 }
 
 #[cfg(test)]
