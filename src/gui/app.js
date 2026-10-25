@@ -218,13 +218,15 @@
   }
 
   // Card types: most Cards hold an idea; a Regular Card may record an event, state an empirical
-  // finding, present a model, or open a subject.
+  // finding, present a model, open a subject, or define a term (the sixth type, S14, #161: with no
+  // term name a Term Card is a Term list, with a name it is that term's definition).
   const CARD_TYPES = {
     idea: { label: 'Idea', note: 'one idea or claim' },
     event: { label: 'Event', note: 'one real-world event: what, when, where, who, and the source' },
     finding: { label: 'Finding', note: 'one empirical result: what was measured, the data, the method, the result, its limits, and the source' },
     model: { label: 'Model', note: 'one whole model: its question and what it shows, or one part of it' },
     hub: { label: 'Hub', note: 'a way into one subject: its Cards in named groups, each with what it adds' },
+    term: { label: 'Term', note: 'a Term list (no term name) or the definition of one named term' },
   };
   // A Hub Card is drawn as a guide card; its tab stands further left the wider its subject is.
   const HUB_LEVELS = {
@@ -380,7 +382,7 @@
     ['ins', "insert a new card in the current card's place; it and its successors move down", 'regular'],
     ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
     ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
-    ['ty <idea|event|finding|model|hub> [<facet>]', 'make the current card an Idea, Event, Finding, Model, or Hub Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part', 'regular'],
+    ['ty <idea|event|finding|model|hub|term> [<facet|name>]', 'make the current card an Idea, Event, Finding, Model, Hub, or Term Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part; a name makes a Term Card that term\'s definition (none: a Term list)', 'regular'],
     ['lv <level|none>', 'set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)', 'regular'],
     ['mf <form|none>', 'set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary', 'regular'],
     ['stats', 'count cards by kind', 'always'],
@@ -460,8 +462,8 @@
       }
       case 'ty':
         needCard();
-        if (rest.length < 1) throw new Error('usage: ty <idea|event|finding|model|hub> [<facet>]');
-        // A facet is the rest of the line, so it may hold spaces.
+        if (rest.length < 1) throw new Error('usage: ty <idea|event|finding|model|hub|term> [<facet|name>]');
+        // A facet or a term name is the rest of the line, so it may hold spaces.
         return setCardType(rest[0].toLowerCase(), rest.slice(1).join(' '));
       case 'lv': {
         needCard();
@@ -1366,6 +1368,7 @@
             tally('event', tree.events),
             tally('finding', tree.findings),
             tally('model', tree.models),
+            tally('term', tree.terms),
           ),
           h('span', { class: 'gauge', title: `${tree.count} of the ${largest} cards in the largest tree` },
             h('i', { style: `width: ${Math.max(6, Math.round(100 * tree.count / largest))}%` })),
@@ -5678,15 +5681,17 @@
    * with every edit, so Save is offered only for a draft that would pass it. `hub.chosen` holds
    * the placement the reader chose, for the caller's own Save.
    */
-  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis, level, reply, hub }) {
+  function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis, level, term, reply, hub }) {
     return new Promise((resolve) => {
       // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
       // A Model Card is the entry point of its model, or one of its parts when it has a facet: any
       // short label, with the common facets offered as suggestions. A part may be core or aside.
+      // A Term Card (S14, #161) carries a term name instead: none makes it a Term list.
       let chosenType = cardType;
       let chosenFacet = facet || '';
       let chosenEmphasis = emphasis || '';
       let chosenLevel = level || '';
+      let chosenTerm = term || '';
       const facetInput = cardType ? h('input', {
         class: 'facet-input', 'aria-label': 'Model facet', list: 'zt-facets', maxlength: 32, spellcheck: 'false',
         placeholder: 'whole model', value: chosenFacet,
@@ -5716,6 +5721,16 @@
         h('span', { class: 'lbl', text: 'Part' }), facetInput, emphasisPick, levelPick,
         h('datalist', { id: 'zt-facets' }, Object.entries(FACETS).map(([id, info]) => h('option', { value: id, label: info.note }))),
       ) : null;
+      // The term name sits beside the type stamps and shows only while Term is chosen, as the
+      // facet does for Model: one line, at most 40 characters, no Link syntax. Empty: a Term list.
+      const termInput = cardType ? h('input', {
+        class: 'term-name', 'aria-label': 'Term name', maxlength: ZtDraft.TERM_NAME_MAX, spellcheck: 'false', autocomplete: 'off',
+        placeholder: 'no name: a Term list', value: chosenTerm,
+        title: 'The exact term this Card defines. Empty: the Card is a Term list, whose Side successors are its terms. Other Cards use a term with [[name@address]]',
+        oninput: (event) => { chosenTerm = event.target.value; dirty = true; update(); },
+      }) : null;
+      const termPick = cardType ? h('span', { class: 'term-pick', hidden: cardType !== 'term' },
+        h('span', { class: 'lbl', text: 'Name' }), termInput) : null;
       const typePick = cardType && !hub ? h('div', { class: 'type-pick', role: 'radiogroup', 'aria-label': 'Card type' },        h('span', { class: 'lbl', text: 'Type' }),
         Object.entries(CARD_TYPES).map(([id, info]) => h('button', {
           class: id + (id === cardType ? ' on' : ''), role: 'radio', 'aria-checked': id === cardType ? 'true' : 'false',
@@ -5727,11 +5742,15 @@
               button.classList.toggle('on', button.dataset.type === id);
               button.setAttribute('aria-checked', button.dataset.type === id ? 'true' : 'false');
             }
+            // Only the chosen type's own field shows: a facet for Model, a name for Term.
             facetPick.hidden = id !== 'model';
+            termPick.hidden = id !== 'term';
+            if (id === 'term') termInput.focus();
             update();
           },
         })),
         facetPick,
+        termPick,
       ) : null;
       const text = h('textarea', { spellcheck: 'true', 'aria-label': 'Card Markdown' });
       text.value = initial;
@@ -5977,10 +5996,16 @@
           const title = literature ? (bibTitle ?? literature.title ?? '') : rendered.title;
           preview.innerHTML = rendered.html;
           preview.prepend(h('h1', { class: 'title' + (title ? '' : ' untitled') }, title ? titleNodes(title) : 'Untitled — start with “# Title”'));
-          const stamp = chosenType && typeStamp(chosenType, null, chosenType === 'model' ? chosenFacet : null, chosenFacet ? chosenEmphasis : null, chosenFacet ? null : chosenLevel);
-          if (stamp) preview.prepend(h('div', { class: 'card-meta' }, stamp));
+          const termName = chosenType === 'term' ? chosenTerm.trim() : '';
+          const stamp = chosenType && typeStamp(chosenType, chosenType === 'term' ? (termName ? `Term Card — the definition of “${termName}”` : 'Term Card — a Term list: its Side successors are its terms') : null, chosenType === 'model' ? chosenFacet : null, chosenFacet ? chosenEmphasis : null, chosenFacet ? null : chosenLevel);
+          if (stamp) {
+            preview.prepend(h('div', { class: 'card-meta' }, stamp,
+              chosenType === 'term' ? h('span', { class: 'term-pick-note', text: termName ? `defines “${termName}”` : 'Term list' }) : null));
+          }
           wireMarkdown(preview);
-          if (!bib || !msg.classList.contains('err')) setMsg(rendered.error || (literature ? 'The title comes from BibTeX.' : ''), rendered.error ? 'err' : null);
+          const termIssue = chosenType === 'term' ? ZtDraft.termNameIssue(chosenTerm) : null;
+          if (termIssue) setMsg(termIssue, 'err');
+          else if (!bib || !msg.classList.contains('err')) setMsg(rendered.error || (literature ? 'The title comes from BibTeX.' : ''), rendered.error ? 'err' : null);
           await hubPrecheck();
         } catch (error) { setMsg(error.message, 'err'); }
       }, 160);
@@ -6005,7 +6030,7 @@
                 dirty = true;
                 update();
               } }, '＋ Figure or document'),
-              ' · [[ links · text below the reverse-links marker is generated')),
+              ' · [[ links and term uses · text below the reverse-links marker is generated')),
             text,
             hub ? h('div', { class: 'hub-check' }, h('div', { class: 'pane-label' }, h('span', { text: 'Hub precheck' })), hubFaults) : null,
           ),
@@ -6022,10 +6047,13 @@
           setMsg('the hub precheck must pass before Save; fix the named faults', 'err');
           return;
         }
+        const termIssue = chosenType === 'term' ? ZtDraft.termNameIssue(chosenTerm) : null;
+        if (termIssue) { setMsg(termIssue, 'err'); termInput.focus(); return; }
         saveBtn.disabled = true;
         paintDeskCheck(null);
         try {
-          const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '', chosenType === 'model' && chosenFacet ? chosenEmphasis : '', chosenType === 'model' && !chosenFacet ? chosenLevel : '');
+          // The last argument is the term name, only for a Term Card: every other type saves none.
+          const address = await save(text.value, bib ? bib.value : undefined, chosenType, chosenType === 'model' ? chosenFacet : '', chosenType === 'model' && chosenFacet ? chosenEmphasis : '', chosenType === 'model' && !chosenFacet ? chosenLevel : '', chosenType === 'term' ? chosenTerm.trim() : '');
           if (address !== undefined) finish(address);
         } catch (error) {
           // The draft stays in the desk: a refused Save (a Tree Lock refusal included) only says why.
@@ -6051,39 +6079,53 @@
       saveBtn.addEventListener('click', doSave);
       cancelBtn.addEventListener('click', doCancel);
 
-      // [[ link completion
+      // [[ completion (S14, #161): two groups, each row inserting exactly what it says. A Term use
+      // `[[name@address]]` names a Term head by its term name, its book and address telling two
+      // heads of one name apart; an ordinary reasoned Link `[[address]]` cites a Card, the same
+      // Term Card included, since a claim about a definition is not a use of the word. The rows
+      // come from `ZtDraft.linkCompletions`; no address is ever made up.
       let options = [];
       let selected = 0;
       const hideCompletion = () => { completion.hidden = true; options = []; };
       const showCompletion = () => {
-        const before = text.value.slice(0, text.selectionStart);
-        const match = before.match(/\[\[([^\]\s]*)$/);
-        if (!match) return hideCompletion();
-        const query = match[1].toLowerCase();
-        options = state.nodes
-          .filter((node) => node.address.toLowerCase().includes(query) || (node.title || '').toLowerCase().includes(query))
-          .slice(0, 8);
+        const typed = ZtDraft.linkTyped(text.value.slice(0, text.selectionStart));
+        if (typed === null) return hideCompletion();
+        options = ZtDraft.linkCompletions(state.nodes, typed, 8);
         if (!options.length) return hideCompletion();
         selected = Math.min(selected, options.length - 1);
-        completion.replaceChildren(h('div', { class: 'group', text: 'Link to card' }), ...options.map((node, index) => h('button', {
-          class: index === selected ? 'on' : '',
-          onmousedown: (event) => { event.preventDefault(); accept(node, match[1].length); },
-        }, h('span', { class: 'syntax', text: node.address }), h('span', { class: 'desc', text: node.title || '(untitled)' }))));
+        const row = (option, index) => h('button', {
+          class: (option.kind === 'term' ? 'cmp-term' : 'cmp-cite') + (index === selected ? ' on' : ''),
+          title: option.kind === 'term'
+            ? `Term use: inserts [[${option.insert}]] — the word “${option.label}” for the term ${option.term} defined at ${option.address}`
+            : `Reasoned Link: inserts [[${option.insert}]]; say why you cite it`,
+          onmousedown: (event) => { event.preventDefault(); accept(option, typed.length); },
+        }, option.kind === 'term'
+          ? [h('span', { class: 'syntax' }, h('span', { class: 'cmp-word', text: option.label }), h('span', { class: 'cmp-at', text: '@' + option.address })),
+            h('span', { class: 'desc' }, h('span', { class: 'cmp-book', text: option.book.title || option.book.tree }), option.book.title ? h('span', { class: 'cmp-tree', text: option.book.tree }) : null)]
+          : [h('span', { class: 'syntax', text: option.address }), h('span', { class: 'desc' }, titleNodes(option.title || '(untitled)'))]);
+        const terms = options.filter((option) => option.kind === 'term');
+        const links = options.filter((option) => option.kind === 'link');
+        completion.replaceChildren(
+          ...(terms.length ? [h('div', { class: 'group', text: 'Use the term' }), ...terms.map((option) => row(option, options.indexOf(option)))] : []),
+          ...(links.length ? [h('div', { class: 'group', text: terms.length ? 'Cite the card (a reasoned Link)' : 'Link to card' }), ...links.map((option) => row(option, options.indexOf(option)))] : []),
+        );
         const rect = text.getBoundingClientRect();
         completion.style.position = 'fixed';
         completion.style.left = rect.left + 16 + 'px';
         completion.style.top = 'auto';
         completion.style.bottom = (window.innerHeight - rect.bottom + 12) + 'px';
-        completion.style.width = '340px';
+        completion.style.width = '380px';
         completion.style.right = 'auto';
         completion.hidden = false;
+        completion.querySelector('button.on')?.scrollIntoView({ block: 'nearest' });
       };
-      const accept = (node, typed) => {
+      /** Replace the typed text after `[[` with the row's exact insert and close the macro. */
+      const accept = (option, typed) => {
         const at = text.selectionStart;
         const after = text.value.slice(at);
         const closing = after.startsWith(']]') ? '' : ']]';
-        text.setRangeText(node.address + closing, at - typed, at, 'end');
-        if (!closing) text.selectionStart = text.selectionEnd = at - typed + node.address.length + 2;
+        text.setRangeText(option.insert + closing, at - typed, at, 'end');
+        if (!closing) text.selectionStart = text.selectionEnd = at - typed + option.insert.length + 2;
         hideCompletion();
         dirty = true;
         update();
@@ -6102,8 +6144,8 @@
           }
           if (event.key === 'Enter' || event.key === 'Tab') {
             event.preventDefault();
-            const match = text.value.slice(0, text.selectionStart).match(/\[\[([^\]\s]*)$/);
-            accept(options[selected], match ? match[1].length : 0);
+            const typed = ZtDraft.linkTyped(text.value.slice(0, text.selectionStart));
+            accept(options[selected], typed === null ? 0 : typed.length);
             return;
           }
           if (event.key === 'Escape') { event.preventDefault(); hideCompletion(); return; }
@@ -6158,9 +6200,9 @@
     const address = await openEditor({
       heading,
       initial,
-      // Every successor is a Regular Card, so it may be an Event or Model Card.
+      // Every successor is a Regular Card, so it may be an Event, Model, Hub, or Term Card.
       cardType: kind === 'topic' ? null : 'idea',
-      save: (text, _bibtex, type, facet, emphasis, level) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined, level: level || undefined }).then(keep),
+      save: (text, _bibtex, type, facet, emphasis, level, term) => api('create', { kind, at: parent?.address, text, workspace: state.workspace, type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined, level: level || undefined, term: ZtDraft.termField(type, term, 'create') }).then(keep),
     });
     if (!address) return;
     await afterChange(address, `created ${address}`);
@@ -6293,26 +6335,42 @@
       facet: card.facet,
       emphasis: card.emphasis,
       level: card.level,
-      save: (text, _bibtex, type, facet, emphasis, level) => api('edit', {
+      term: card.term,
+      // A Term Card always sends its name, so an emptied field clears it (a Term list); retyping
+      // away from Term sends none and the server clears the name with the type.
+      save: (text, _bibtex, type, facet, emphasis, level, term) => api('edit', {
         at: card.address, text, base: card.text, type: type || undefined,
         facet: type === 'model' ? facet || '' : undefined, emphasis: type === 'model' ? emphasis || '' : undefined,
         level: type === 'model' && !facet ? level || '' : undefined,
+        term: ZtDraft.termField(type, term, 'edit'),
       }).then(keep),
     });
     if (address) await afterChange(address, `saved ${address}`);
   }
 
-  /** `ty <idea|event|finding|model|hub> [<facet>]`: change only the current Regular Card's type and facet. */
-  async function setCardType(type, facet) {
+  /**
+   * `ty <idea|event|finding|model|hub|term> [<facet|name>]`: change only the current Regular Card's
+   * type and facet, or its type and term name. For `term` the rest of the line is the term name;
+   * none makes a Term list (and clears a name the Card had).
+   */
+  async function setCardType(type, rest) {
     const card = state.card;
-    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, finding, model, or hub`);
-    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event, Finding, Model, or Hub Cards');
+    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, finding, model, hub, or term`);
+    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event, Finding, Model, Hub, or Term Cards');
+    const facet = type === 'term' ? '' : rest;
+    const name = type === 'term' ? String(rest || '').trim() : '';
     if (facet && type !== 'model') throw new Error('only Model Cards can have a Model facet');
+    const issue = ZtDraft.termNameIssue(name);
+    if (issue) throw new Error(issue);
     gateWrite(card, 'type');
-    const result = await api('edit', { at: card.address, type, facet: type === 'model' ? facet || '' : undefined });
+    const result = await api('edit', {
+      at: card.address, type, facet: type === 'model' ? facet || '' : undefined, term: ZtDraft.termField(type, name, 'edit'),
+    });
     await afterChange(result.address, facet
       ? `${result.address} is the ${facetLabel(facet)} part of its model`
-      : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : type === 'finding' ? 'a Finding' : type === 'hub' ? 'a Hub' : 'a Model'} Card`, result);
+      : type === 'term'
+        ? `${result.address} is a Term Card: ${name ? `the definition of “${name}”` : 'a Term list'}`
+        : `${result.address} is ${type === 'idea' ? 'an Idea' : type === 'event' ? 'an Event' : type === 'finding' ? 'a Finding' : type === 'hub' ? 'a Hub' : 'a Model'} Card`, result);
   }
 
   function choosePart() {
@@ -6437,9 +6495,10 @@
       cardType: inModel ? 'model' : 'idea',
       facet: inModel && card.facet ? '推导' : '',
       emphasis: inModel && card.facet ? 'aside' : '',
-      save: (text, _bibtex, type, facet, emphasis) => api('insert', {
+      save: (text, _bibtex, type, facet, emphasis, _level, term) => api('insert', {
         before: card.address, text, confirm: plan.confirm,
         type: type || undefined, facet: facet || undefined, emphasis: emphasis || undefined,
+        term: ZtDraft.termField(type, term, 'create'),
       }).then(keep),
     });
     if (address) await afterChange(address, `inserted ${address}`);

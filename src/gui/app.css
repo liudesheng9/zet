@@ -49,6 +49,7 @@
   --finding: #7a3a6e;
   --model: #26457d;
   --hub: #2f6b4f;
+  --term: #6b5a1e;
   --radius: 12px;
   --ease: cubic-bezier(.2, .8, .25, 1);
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
@@ -106,6 +107,7 @@
   --finding: #dc9ccf;
   --model: #94b0ee;
   --hub: #8fd1ae;
+  --term: #d6c27f;
   --grain-opacity: .035;
   color-scheme: dark;
 }
@@ -158,6 +160,8 @@
     --event: #f08c86;
     --finding: #dc9ccf;
     --model: #94b0ee;
+    --hub: #8fd1ae;
+    --term: #d6c27f;
     --grain-opacity: .035;
     color-scheme: dark;
   }
@@ -1033,7 +1037,7 @@ button.ws-tag:hover { transform: rotate(-1.5deg); }
 .stack .face .types .type-stamp { font-size: 8px; padding: 0 5px; }
 .stack .face .types .tally { display: inline-flex; align-items: center; gap: 3px; font: 500 10.5px var(--mono); }
 /* The editor's type selector: three stamps to choose from; the chosen one is inked. */
-.type-pick { display: inline-flex; gap: 6px; align-items: center; }
+.type-pick { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .type-pick .lbl { font: 600 10px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); margin-right: 2px; }
 .type-pick button {
   font: 700 10px var(--sans); letter-spacing: .16em; text-transform: uppercase; line-height: 1.6;
@@ -1117,6 +1121,31 @@ button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
 .guide-tab.hub-line { left: 67%; }
 .type-stamp.hub { color: var(--hub); transform: rotate(-1deg); }
 .type-pick button.on.hub { color: var(--hub); }
+/* S14 (#161): the Term Card, the sixth type. Its stamp is pressed in an old dictionary's
+   brown ink and stays as quiet as the others; the desk's term name is a ruled blank beside the
+   stamps that shows only while Term is chosen, as the facet does for Model. */
+.type-stamp.term { color: var(--term); transform: rotate(1deg); }
+.type-pick button.on.term { color: var(--term); }
+.node.type-term { border-color: color-mix(in srgb, var(--term) 28%, var(--stock-edge)); }
+.term-pick { display: inline-flex; align-items: baseline; gap: 6px; margin-left: 4px; animation: term-pick-in .24s ease-in-out; }
+.term-pick[hidden] { display: none; }
+.term-pick .term-name {
+  width: 16ch; min-width: 10ch; padding: 1px 2px; border: 0; border-bottom: 1px solid var(--line);
+  background: none; color: var(--ink); font: 14px var(--serif); outline: none;
+  transition: border-color .2s ease-in-out;
+}
+.term-pick .term-name::placeholder { color: var(--ink-faint); font-style: italic; font-size: 12.5px; }
+.term-pick .term-name:focus { border-bottom-color: var(--term); }
+@keyframes term-pick-in { from { opacity: 0; transform: translateX(-6px); } }
+.card-meta .term-pick-note { font: italic 12px var(--serif); color: var(--ink-faint); }
+/* [[ completion: a Term use is written as the word in the prose's serif, its address faint; the
+   book that tells two heads of one name apart sits on the right, fainter still. */
+.command-menu button.cmp-term .syntax { display: inline-flex; align-items: baseline; gap: 1px; }
+.command-menu button.cmp-term .cmp-word { font: 14px var(--serif); color: var(--ink); }
+.command-menu button.cmp-term .cmp-at { font: 11px var(--mono); color: var(--ink-faint); }
+.command-menu button.cmp-term .desc { display: inline-flex; gap: 6px; align-items: baseline; min-width: 0; }
+.command-menu button.cmp-term .cmp-book { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22ch; }
+.command-menu button.cmp-term .cmp-tree { font: 10.5px var(--mono); color: var(--ink-faint); }
 .node.type-hub, .tcard.type-hub { border-color: color-mix(in srgb, var(--hub) 45%, var(--stock-edge)); border-top-width: 3px; }
 .node.type-hub::before, .tcard.type-hub::before {
   content: ''; position: absolute; top: -7px; width: 26%; height: 6px; left: 37%;

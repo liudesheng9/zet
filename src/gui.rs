@@ -4384,6 +4384,146 @@ mod tests {
         }
     }
 
+    /// S14 (#161, US051/US052, S14-AC02/AC03): `[[` completion offers a Term use only for a Term
+    /// head, found by its term name and told apart from a same-named head by its book and address;
+    /// it inserts exactly `name@address` (or the reader's own word before `@`), never an address it
+    /// made up. The ordinary reasoned Link to the same Term Card stays offered, first in its group.
+    #[test]
+    fn term_completion_offers_heads_by_name_with_their_book_and_keeps_the_ordinary_citation() {
+        let Some(out) = draft_js(
+            "(() => {
+               const nodes = [
+                 { address: 'Book1990', tree: 'Book1990', edge: 'root', title: 'A Book' },
+                 { address: 'Other2000', tree: 'Other2000', edge: 'root', title: 'Another Book' },
+                 { address: 'Book1990/1', tree: 'Book1990', type: 'term', term: null, term_role: 'list', title: '术语表' },
+                 { address: 'Book1990/1|b', tree: 'Book1990', type: 'term', term: '一般均衡', term_role: 'card', title: '一般均衡' },
+                 { address: 'Book1990/1|a', tree: 'Book1990', type: 'term', term: '均衡', term_role: 'card', title: '定义' },
+                 { address: 'Book1990/1|a1', tree: 'Book1990', type: 'term', term: '均衡', term_role: 'part', title: '均衡（续）' },
+                 { address: 'Other2000/3|a', tree: 'Other2000', type: 'term', term: '均衡', term_role: 'card', title: '均衡' },
+                 { address: 'Other2000/4', tree: 'Other2000', type: 'term', term: '均衡', term_role: 'unfiled', title: '均衡？' },
+                 { address: 'Book1990/2', tree: 'Book1990', type: 'idea', title: '均衡价格的形成' },
+               ];
+               const rows = (typed) => draft.linkCompletions(nodes, typed, 8).map((row) => [row.kind, row.insert, row.book.tree, row.book.title]);
+               return {
+                 name: rows('均衡'),
+                 word: rows('均衡价格@Other'),
+                 bare: rows('均衡@'),
+                 address: rows('Book1990/2'),
+                 none: rows(''),
+                 typed: [draft.linkTyped('见 [[均衡'), draft.linkTyped('[[general eq'), draft.linkTyped('[[a]] b'), draft.linkTyped('no link')],
+               };
+             })()",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        assert_eq!(
+            out["name"],
+            json!([
+                ["term", "均衡@Book1990/1|a", "Book1990", "A Book"],
+                ["term", "均衡@Other2000/3|a", "Other2000", "Another Book"],
+                ["term", "一般均衡@Book1990/1|b", "Book1990", "A Book"],
+                ["link", "Book1990/1|a", "Book1990", "A Book"],
+                ["link", "Other2000/3|a", "Other2000", "Another Book"],
+                ["link", "Book1990/1|b", "Book1990", "A Book"],
+                ["link", "Book1990/1|a1", "Book1990", "A Book"],
+                ["link", "Other2000/4", "Other2000", "Another Book"],
+                ["link", "Book1990/2", "Book1990", "A Book"],
+            ]),
+            "heads only, exact name first, each with its book; every offered head is also citable, first"
+        );
+        assert_eq!(
+            out["word"],
+            json!([["term", "均衡价格@Other2000/3|a", "Other2000", "Another Book"]]),
+            "the reader's own word stays the label; after `@` the book narrows; no citation rows"
+        );
+        assert_eq!(
+            out["bare"],
+            json!([
+                ["term", "均衡@Book1990/1|a", "Book1990", "A Book"],
+                ["term", "均衡@Other2000/3|a", "Other2000", "Another Book"],
+                ["term", "均衡@Book1990/1|b", "Book1990", "A Book"],
+            ])
+        );
+        assert_eq!(out["address"], json!([["link", "Book1990/2", "Book1990", "A Book"]]), "an address is an ordinary Link only");
+        let none = out["none"].as_array().unwrap();
+        assert!(!none.is_empty() && none.iter().all(|row| row[0] == "link"), "no Term use before a word: {none:?}");
+        assert_eq!(out["typed"], json!(["均衡", "general eq", null, null]));
+    }
+
+    /// S14 (#161, US050, S14-AC01): the term-name field follows the server's own name rule, and a
+    /// save sends a `term` only for a Term Card — a create none when the name is empty (a Term list),
+    /// an edit always, so an emptied field clears the name; no other type ever sends one.
+    #[test]
+    fn the_desk_sends_a_term_name_only_for_a_term_card_and_checks_it_like_the_server() {
+        let Some(out) = draft_js(
+            "(() => ({
+               ok: [draft.termNameIssue(''), draft.termNameIssue('  均衡  '), draft.termNameIssue('字'.repeat(40))],
+               refused: [draft.termNameIssue('a\\nb'), draft.termNameIssue('字'.repeat(41)), draft.termNameIssue('a@b'), draft.termNameIssue('[x]'), draft.termNameIssue('a|b'), draft.termNameIssue('a`b')],
+               create: [draft.termField('term', ' 均衡 ', 'create'), draft.termField('term', '  ', 'create') === undefined],
+               edit: [draft.termField('term', ' 均衡 ', 'edit'), draft.termField('term', '', 'edit')],
+               other: ['idea', 'event', 'finding', 'model', 'hub'].map((type) => draft.termField(type, '均衡', 'edit') === undefined),
+               max: draft.TERM_NAME_MAX,
+             }))()",
+        ) else {
+            eprintln!("node is not installed; the draft module was not run");
+            return;
+        };
+        assert_eq!(out["ok"], json!([null, null, null]));
+        let refused = out["refused"].as_array().unwrap();
+        assert!(refused.iter().all(Value::is_string), "{refused:?}");
+        assert_eq!(out["create"], json!(["均衡", true]));
+        assert_eq!(out["edit"], json!(["均衡", ""]));
+        assert_eq!(out["other"], json!([true, true, true, true, true]));
+        assert_eq!(out["max"], json!(crate::term::MAX_NAME_CHARS));
+    }
+
+    /// S14 (#161, S14-AC01/AC02/AC04): the page knows the sixth Card type everywhere it lists types
+    /// (the desk's type picker, the search chips, the stack tallies, `ty`), shows the term-name
+    /// field only while Term is chosen, sends the name through every desk save, and completes `[[`
+    /// from the shared rules; the Term ink is a theme variable in all three theme blocks.
+    #[test]
+    fn the_front_end_authors_term_cards_in_the_existing_desk() {
+        assert!(APP_JS.contains("    term: { label: 'Term', note: "), "CARD_TYPES names the sixth type");
+        let desk = js_function("function openEditor(");
+        assert!(desk.contains("class: 'term-name', 'aria-label': 'Term name', maxlength: ZtDraft.TERM_NAME_MAX"), "{desk}");
+        assert!(desk.contains("const termPick = cardType ? h('span', { class: 'term-pick', hidden: cardType !== 'term' },"));
+        assert!(desk.contains("facetPick.hidden = id !== 'model';\n            termPick.hidden = id !== 'term';"), "one type's field at a time");
+        assert!(desk.contains("chosenType === 'term' ? chosenTerm.trim() : ''"), "only a Term Card's save carries a name");
+        assert!(desk.contains("ZtDraft.termNameIssue(chosenTerm)"), "the name is checked before Save");
+        assert!(desk.contains("options = ZtDraft.linkCompletions(state.nodes, typed, 8);"));
+        assert!(desk.contains("text: 'Use the term'") && desk.contains("'Cite the card (a reasoned Link)'"), "two groups");
+        assert!(desk.contains("text.setRangeText(option.insert + closing, at - typed, at, 'end');"), "the row's exact insert");
+        assert!(!desk.contains(r"/\[\[([^\]\s]*)$/"), "one `[[` rule, the shared one");
+        // The desk's refusal surfaces are unchanged: the draft stays and the slip names the faults.
+        assert!(desk.contains("paintDeskCheck(refused);") && desk.contains("const refused = ZtDraft.checkRefusal(error.check);"));
+
+        let create = js_function("async function newCard(");
+        assert!(create.contains("term: ZtDraft.termField(type, term, 'create')"), "{create}");
+        let edit = js_function("async function editCard()");
+        assert!(edit.contains("term: card.term,") && edit.contains("term: ZtDraft.termField(type, term, 'edit'),") && edit.contains("base: card.text"), "{edit}");
+        let insert = js_function("async function insertCard()");
+        assert!(insert.contains("term: ZtDraft.termField(type, term, 'create'),"), "{insert}");
+        let retype = js_function("async function setCardType(");
+        assert!(retype.contains("term: ZtDraft.termField(type, name, 'edit')") && retype.contains("ZtDraft.termNameIssue(name)"), "{retype}");
+        assert!(APP_JS.contains("'ty <idea|event|finding|model|hub|term> [<facet|name>]'"));
+
+        assert!(APP_JS.contains("tally('term', tree.terms),"), "the stack tallies its Term Cards");
+        assert!(
+            APP_JS.contains("...Object.keys(CARD_TYPES).map((type) => chip('type', type, CARD_TYPES[type].label, types[type] || 0))"),
+            "the search chips list every type, Term included"
+        );
+
+        assert_eq!(APP_CSS.matches("  --term: #").count(), 3, "light, dark and system-dark Term ink");
+        assert!(css_rule(".type-stamp.term").contains("var(--term)"));
+        assert!(css_rule(".type-pick button.on.term").contains("var(--term)"));
+        assert!(css_rule(".term-pick[hidden]").contains("display: none"));
+        let field = css_rule(".term-pick .term-name");
+        assert!(field.contains("var(--serif)") && field.contains("border-bottom: 1px solid var(--line)") && !field.contains('#'), "{field}");
+        assert!(css_rule(".command-menu button.cmp-term .cmp-word").contains("var(--serif)"));
+        assert!(css_rule(".command-menu button.cmp-term .cmp-tree").contains("var(--ink-faint)"));
+    }
+
     /// S19 (#108, AC04, AC05, AC06): the reader and the Table carry one low-salience slot, it asks
     /// the one read-only route once per read, it never posts, and its actions are the ordinary
     /// open, lay, and Reply.

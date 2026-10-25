@@ -180,5 +180,112 @@
     return null;
   };
 
-  return { replyDraft, replySwapPrefix, replyDestination, checkNote, checkRefusal, locateFault };
+  // ------------------------------------------------------------- Term Cards (S14, #161)
+  // A Term Card is the sixth Card type: with no name it is a Term list, with a name it defines
+  // that term. The desk's term-name field and its `[[` completion follow these rules; the server
+  // (`src/term.rs`) stays the authority and refuses what they let through.
+
+  /** The longest term name and Term-use label (mirrors `MAX_TERM_NAME`): Unicode scalar values. */
+  const TERM_NAME_MAX = 40;
+
+  /**
+   * Why a typed term name cannot be saved, or `null` when it can. An empty name is no fault: it
+   * makes the Card a Term list. Mirrors `term::normalize_name`.
+   */
+  const termNameIssue = (name) => {
+    const value = String(name || '').trim();
+    if (!value) return null;
+    if (/[\r\n]/.test(value)) return 'a term name must be one line';
+    if (Array.from(value).length > TERM_NAME_MAX) return `a term name holds at most ${TERM_NAME_MAX} characters`;
+    if (/[[\]@|`]/.test(value)) return 'a term name cannot hold [ ] @ | or `';
+    return null;
+  };
+
+  /**
+   * The `term` field one desk save sends. Only a Term Card sends one, so no other type ever
+   * carries a name (retyping a Term Card away clears its name on the server). A create or an
+   * insert sends a name only when there is one (none: a Term list); an edit always sends it, so an
+   * emptied field clears the name and the Card becomes a Term list.
+   */
+  const termField = (type, name, how) => {
+    if (type !== 'term') return undefined;
+    const value = String(name || '').trim();
+    if (how === 'edit') return value;
+    return value || undefined;
+  };
+
+  /** The text typed after an unclosed `[[` before the caret, or `null` when there is none. */
+  const linkTyped = (before) => {
+    const match = String(before || '').match(/\[\[([^[\]\n]{0,80})$/);
+    return match ? match[1] : null;
+  };
+
+  /** Natural address order: `2/10` after `2/9`. */
+  const byAddress = (a, b) => String(a.address).localeCompare(String(b.address), undefined, { numeric: true });
+
+  /**
+   * The rows `[[` completion offers for the typed text, in two groups.
+   *
+   * - `term` rows: a Term use. Only a Term head (a named Term Card filed as a Side successor of a
+   *   list: `term_role` `card`) can be used, so only heads are offered, searched by their term
+   *   name: an exact name first, then a name that starts with the text, then one that holds it.
+   *   Each row names its book (the tree and its root title) and its address, so two heads of one
+   *   name are told apart, and inserts `name@address` exactly: the head's own name and address.
+   *   Typing `word@` first keeps the reader's own word as the label and narrows to the heads whose
+   *   name and word overlap, the text after `@` searching their addresses and trees.
+   * - `link` rows: an ordinary reasoned Link `[[address]]`, by address, title, or term name. A
+   *   head offered as a Term use is always offered here too, first, since a claim about a
+   *   definition is a reasoned Link to it and not a use of the word.
+   *
+   * `limit` bounds the Link group; Term uses get at most half of it.
+   */
+  const linkCompletions = (nodes, typed, limit = 8) => {
+    const list = Array.isArray(nodes) ? nodes : [];
+    const raw = String(typed || '');
+    const at = raw.indexOf('@');
+    const word = at >= 0 ? raw.slice(0, at).trim() : null;
+    const query = (at >= 0 ? raw.slice(at + 1) : raw).trim().toLowerCase();
+    const books = new Map();
+    for (const node of list) if (node.edge === 'root') books.set(node.tree, node.title || '');
+    const book = (node) => ({ tree: node.tree || '', title: books.get(node.tree) || '' });
+    const heads = list.filter((node) => node.type === 'term' && node.term_role === 'card' && node.term);
+    const rank = (name, text) => (name === text ? 0 : name.startsWith(text) ? 1 : 2);
+    let used = [];
+    if (word !== null) {
+      const w = word.toLowerCase();
+      used = heads
+        .filter((node) => {
+          const name = node.term.toLowerCase();
+          return (!w || name.includes(w) || w.includes(name))
+            && (!query || node.address.toLowerCase().includes(query) || String(node.tree || '').toLowerCase().includes(query));
+        })
+        .map((node) => ({ node, order: w ? rank(node.term.toLowerCase(), w) : 2 }));
+    } else if (query) {
+      used = heads
+        .filter((node) => node.term.toLowerCase().includes(query))
+        .map((node) => ({ node, order: rank(node.term.toLowerCase(), query) }));
+    }
+    used.sort((a, b) => a.order - b.order || byAddress(a.node, b.node));
+    const termRows = used.slice(0, Math.max(1, Math.floor(limit / 2))).map(({ node }) => {
+      const label = word || node.term;
+      return { kind: 'term', address: node.address, term: node.term, label, insert: `${label}@${node.address}`, title: node.title || '', book: book(node) };
+    });
+    if (word !== null) return termRows;
+    const seen = new Set();
+    const linkRows = [];
+    const cite = (node) => {
+      if (!node || seen.has(node.address) || linkRows.length >= limit) return;
+      seen.add(node.address);
+      linkRows.push({ kind: 'link', address: node.address, term: node.term || null, label: null, insert: node.address, title: node.title || '', book: book(node) });
+    };
+    for (const row of termRows) cite(list.find((node) => node.address === row.address));
+    for (const node of list) {
+      if (node.address.toLowerCase().includes(query)
+        || String(node.title || '').toLowerCase().includes(query)
+        || (node.term && node.term.toLowerCase().includes(query))) cite(node);
+    }
+    return [...termRows, ...linkRows];
+  };
+
+  return { replyDraft, replySwapPrefix, replyDestination, checkNote, checkRefusal, locateFault, TERM_NAME_MAX, termNameIssue, termField, linkTyped, linkCompletions };
 });
