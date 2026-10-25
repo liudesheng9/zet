@@ -3862,6 +3862,32 @@ mod tests {
         assert!(report.iter().all(|diagnostic| diagnostic.rule != "T7"), "{report:#?}");
     }
 
+    /// S09-AC02/R0281: the digest's source-fidelity convention is not rewritten. A writer that
+    /// supplies content the book omits labels it `（补：书中略去）` or `（补：书中未写）`; the
+    /// renderer keeps the label verbatim and the checker reports no Term fault for it.
+    #[test]
+    fn source_fidelity_supplement_labels_survive_the_renderer_and_the_checker() {
+        let mut value = term_draft();
+        value["example"] = json!(["书中略去这一步的代数。（补：书中略去）"]);
+        value["derivations"][0]["steps"][0]["text"] = json!("由书中补写这一步。（补：书中未写）");
+        let draft = crate::term::parse_draft(&value, &term_rows()).expect("a valid draft");
+        let rendered = crate::term::render(
+            &draft,
+            &term_row(),
+            "Test2026",
+            "Test2026/1|a|a",
+            &Limits::default(),
+        )
+        .expect("renders");
+        assert!(rendered.head.body.contains("（补：书中略去）"), "{}", rendered.head.body);
+        assert!(rendered.head.body.contains("（补：书中未写）"), "{}", rendered.head.body);
+        let lines = term_lines(&[term_entry(&rendered.head.title, &rendered.head.body)]);
+        assert!(
+            lines.iter().all(|line| line.contains("T4")),
+            "a source-fidelity label raises no Term fault: {lines:#?}"
+        );
+    }
+
     #[test]
     fn term_prose_over_the_limit_reports_t9() {
         let long = "甲".repeat(1700);
