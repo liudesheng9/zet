@@ -288,6 +288,10 @@ _Avoid_: Style guide, tone
 The checks on the Cards of a digest outside its models, beside the Card language: Idea Cards (I1–I6: a claim title, a size, a source line, kinded Links out and Links in, no near-duplicate title), Event Cards (E1–E5: a date, the fixed labels, an Idea Card that links it), Finding Cards (F1–F4: the fixed labels, a source line that links the book, one result per Card, an Idea Card that links it), and Links (L1–L3: a Relation kind, a reason, no repeat). `zt-check` checks them; `digest-audit.ps1` reports them.
 _Avoid_: Lint, quality score
 
+**Card-check policy**:
+The severity the Card check gives each mechanically implemented rule in one archive: `block` (the write gate refuses), `advise` (the line is reported as advice), or `off` (the rule is not reported), decided separately for the human and the agent Workspace. The checker owns the rule catalog and its defaults; the archive stores only its declared `gate.<workspace>.<rule>` overrides in `metadata`. A missing override means the default; an explicit `default` removes the row and restores it.
+_Avoid_: Lint settings, per-archive config file, feature switch
+
 **Book term table**:
 The terms of one digested book, with the words not to use for each: a Card titled `术语表…`, a Side successor of the book's first anchor. Rule R6 checks the book's Cards against it, as a model's term table checks its parts. A word not to use is another name for the same concept, never a different concept.
 _Avoid_: Glossary, vocabulary

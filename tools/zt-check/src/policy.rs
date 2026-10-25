@@ -7,7 +7,7 @@ use crate::core::{Diagnostic, Scope, Severity, SUBSTANTIVE};
 use crate::text::{pattern, prop, ps_eq, ps_in, ps_string, text};
 use regex::Regex;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
 /// The rules self-check.ps1 reports by default: every hard rule but R6.
@@ -34,11 +34,641 @@ pub fn severity(rule: &str) -> Severity {
 
 /// What evidence a rule reads under the default policy.
 pub fn scope(rule: &str) -> Scope {
+    if let Some(spec) = rule_of(rule) {
+        return spec.scope;
+    }
     if ps_in(rule, GRAPH_RULES) {
         Scope::Graph
     } else {
         Scope::Local
     }
+}
+
+// --- the gate policy catalog (S03, design 6.1 and 6.2) -----------------------------------------
+
+/// One Workspace whose Cards the effective policy decides. A person's notes and
+/// an agent's digest Cards can have different standards (design 6.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Workspace {
+    Human,
+    Agent,
+}
+
+impl Workspace {
+    /// Both Workspaces, in the order the policy output names them.
+    pub const ALL: [Workspace; 2] = [Workspace::Human, Workspace::Agent];
+
+    /// The name the `gate.<workspace>.<rule>` keys and the output use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Workspace::Human => "human",
+            Workspace::Agent => "agent",
+        }
+    }
+
+    /// The Workspace a configuration name denotes, exactly.
+    pub fn parse(name: &str) -> Option<Self> {
+        Workspace::ALL.into_iter().find(|workspace| workspace.as_str() == name)
+    }
+}
+
+impl std::fmt::Display for Workspace {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// One configured severity: refuse a write, report advice, or leave the rule out
+/// of the report entirely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setting {
+    Block,
+    Advise,
+    Off,
+}
+
+impl Setting {
+    /// The policy name a `gate.<workspace>.<rule>` value spells.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Setting::Block => "block",
+            Setting::Advise => "advise",
+            Setting::Off => "off",
+        }
+    }
+
+    /// The setting a configuration value names, or `None` for an unknown value.
+    pub fn parse(value: &str) -> Option<Self> {
+        [Setting::Block, Setting::Advise, Setting::Off]
+            .into_iter()
+            .find(|setting| setting.as_str() == value)
+    }
+
+    /// What a diagnostic of this setting does: `off` reports nothing.
+    pub fn severity(self) -> Option<Severity> {
+        match self {
+            Setting::Block => Some(Severity::Block),
+            Setting::Advise => Some(Severity::Advise),
+            Setting::Off => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Setting {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// How one rule takes part in the write gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleState {
+    /// Mechanically implemented and configurable.
+    Configurable,
+    /// An existing service invariant no policy can change (T7's Link target).
+    Mandatory,
+    /// Catalogued with its design default for a later slice: not mechanically
+    /// implemented, not enforced, and not configurable yet.
+    Pending,
+}
+
+impl RuleState {
+    /// The word `zt config policy` prints for this state.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleState::Configurable => "configurable",
+            RuleState::Mandatory => "mandatory",
+            RuleState::Pending => "pending",
+        }
+    }
+}
+
+/// One rule of the catalog with its default policy in each Workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuleSpec {
+    /// The rule id the core reports (`R2`, `E2`, ...).
+    pub rule: &'static str,
+    /// The default setting in the human Workspace.
+    pub human: Setting,
+    /// The default setting in the agent Workspace.
+    pub agent: Setting,
+    /// What evidence the rule reads (design 6.2's evaluation column).
+    pub scope: Scope,
+    /// Whether a policy can decide the rule at all.
+    pub state: RuleState,
+    /// The rule whose setting this rule shares: T10 is the Term-facing label of
+    /// the same open-formula predicate as R22, so one setting decides both.
+    pub alias_of: Option<&'static str>,
+}
+
+impl RuleSpec {
+    /// The default setting of this rule in one Workspace.
+    pub fn default(&self, workspace: Workspace) -> Setting {
+        match workspace {
+            Workspace::Human => self.human,
+            Workspace::Agent => self.agent,
+        }
+    }
+}
+
+const fn spec(
+    rule: &'static str,
+    human: Setting,
+    agent: Setting,
+    scope: Scope,
+    state: RuleState,
+) -> RuleSpec {
+    RuleSpec {
+        rule,
+        human,
+        agent,
+        scope,
+        state,
+        alias_of: None,
+    }
+}
+
+/// The rule catalog at full enforcement (design 6.2). The checker owns it; an
+/// archive stores only its overrides. A rule is configurable only when it is
+/// mechanically implemented, so the pending Term rules carry their design
+/// defaults without being enforced or settable yet.
+static CATALOG: &[RuleSpec] = &[
+    // Local/bounded-context format: the Card must be well formed in both
+    // Workspaces.
+    spec("R2", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R3", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R4", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R5", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    // R6 keeps the existing meaning-sensitive remediation decision: a synonym
+    // change is not made by a style check.
+    spec("R6", Setting::Off, Setting::Advise, Scope::Local, RuleState::Configurable),
+    spec("R7", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R9", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R12", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    // Formal model format: advice in the human Workspace, block for a digest.
+    spec("R13", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R14", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R15", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R16", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R17", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R18", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("R19", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    // Advisory subcases stay advisory in both Workspaces.
+    spec("R20", Setting::Advise, Setting::Advise, Scope::Local, RuleState::Configurable),
+    spec("R21", Setting::Advise, Setting::Advise, Scope::Local, RuleState::Configurable),
+    spec("R22", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("I1", Setting::Advise, Setting::Advise, Scope::Local, RuleState::Configurable),
+    spec("I2", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("I3", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("I4", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    // Graph facts are audit advice, not a write gate.
+    spec("I5", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
+    spec("I6", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
+    spec("I7", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("E1", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("E2", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("E4", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
+    spec("E5", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
+    spec("F1", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("F2", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("F3", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("F4", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
+    spec("L1", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("L2", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("L3", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
+    // The Term rules (S08-S10 of the Term design) are catalogued with their
+    // design defaults; none is mechanically implemented, so none is enforced or
+    // settable. A slice that implements one flips its state to Configurable.
+    spec("T1", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
+    spec("T2", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
+    spec("T3", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
+    spec("T4", Setting::Advise, Setting::Advise, Scope::Local, RuleState::Pending),
+    spec("T5", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
+    spec("T6", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
+    // T7's wrong/nonexistent Link target is the existing Link write invariant.
+    spec("T7", Setting::Block, Setting::Block, Scope::Local, RuleState::Mandatory),
+    // Computed term structure is audit advice.
+    spec("T8", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Pending),
+    spec("T9", Setting::Block, Setting::Block, Scope::Local, RuleState::Pending),
+    RuleSpec {
+        rule: "T10",
+        human: Setting::Block,
+        agent: Setting::Block,
+        scope: Scope::Local,
+        state: RuleState::Pending,
+        alias_of: Some("R22"),
+    },
+];
+
+/// Every rule the policy catalog names, in rule-id order.
+pub fn catalog() -> &'static [RuleSpec] {
+    CATALOG
+}
+
+/// The catalog entry of one rule id.
+pub fn rule_of(rule: &str) -> Option<&'static RuleSpec> {
+    CATALOG.iter().find(|spec| spec.rule == rule)
+}
+
+/// One existing service invariant: mandatory, with no rule id and no configurable
+/// severity (design 6.2's first row).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Invariant {
+    /// The configuration name a typo or an attempt to disable it would use.
+    pub name: &'static str,
+    /// What the invariant protects.
+    pub label: &'static str,
+}
+
+static INVARIANTS: &[Invariant] = &[
+    Invariant {
+        name: "envelope",
+        label: "the Card envelope and its single leading title",
+    },
+    Invariant {
+        name: "fields",
+        label: "the Card type and its valid fields",
+    },
+    Invariant {
+        name: "address",
+        label: "the Location and Citation-key grammar",
+    },
+    Invariant {
+        name: "links",
+        label: "the Link grammar and a newly introduced Link's target",
+    },
+    Invariant {
+        name: "targets",
+        label: "the existing target a Link or Reference names",
+    },
+    Invariant {
+        name: "access",
+        label: "Workspace Access: an agent writes only agent Cards",
+    },
+    Invariant {
+        name: "locks",
+        label: "an active Tree Lock",
+    },
+];
+
+/// The mandatory service invariants no gate policy can change.
+pub fn invariants() -> &'static [Invariant] {
+    INVARIANTS
+}
+
+/// The invariant a configuration name denotes.
+pub fn invariant(name: &str) -> Option<&'static Invariant> {
+    INVARIANTS.iter().find(|invariant| invariant.name == name)
+}
+
+// --- the effective policy of one archive (S03, design 6.1) -------------------------------------
+
+/// The metadata prefix of a declared override key.
+pub const GATE_PREFIX: &str = "gate.";
+
+/// The declared metadata key of one Workspace's rule: `gate.<workspace>.<rule>`.
+pub fn gate_key(workspace: Workspace, rule: &str) -> String {
+    format!("{GATE_PREFIX}{}.{rule}", workspace.as_str())
+}
+
+/// Read a `gate.<workspace>.<rule>` key. The Workspace must be exact and the
+/// rule is returned as written, so a typo reaches the catalog's own validation
+/// instead of being silently normalized.
+pub fn parse_gate_key(key: &str) -> Result<(Workspace, &str), String> {
+    let usage = || {
+        format!(
+            "`{key}` is not a gate policy key; use gate.<workspace>.<rule>, for example gate.agent.R2"
+        )
+    };
+    let rest = key.strip_prefix(GATE_PREFIX).ok_or_else(usage)?;
+    let mut parts = rest.split('.');
+    let (name, rule) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(name), Some(rule), None) => (name, rule),
+        _ => return Err(usage()),
+    };
+    let Some(workspace) = Workspace::parse(name) else {
+        return Err(format!(
+            "unknown Workspace `{name}` in `{key}`; expected human or agent"
+        ));
+    };
+    Ok((workspace, rule))
+}
+
+/// What one configuration value asks a policy to do: hold a setting, or remove
+/// the override so the rule falls back to its default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    Set(Setting),
+    Reset,
+}
+
+impl Change {
+    /// The value of a `gate.<workspace>.<rule>` argument.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        if value == "default" {
+            return Ok(Change::Reset);
+        }
+        match Setting::parse(value) {
+            Some(setting) => Ok(Change::Set(setting)),
+            None => Err(format!(
+                "unknown policy value `{value}`; expected block, advise, off, or default"
+            )),
+        }
+    }
+}
+
+/// The effective policy of one Workspace: the checker's defaults plus the
+/// archive's overrides. Missing override means the default (design 6.1, R0118).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Policy {
+    workspace: Workspace,
+    overrides: BTreeMap<String, Setting>,
+}
+
+impl Policy {
+    /// The default policy of one Workspace, with no archive override.
+    pub fn new(workspace: Workspace) -> Self {
+        Self {
+            workspace,
+            overrides: BTreeMap::new(),
+        }
+    }
+
+    /// The Workspace this policy decides.
+    pub fn workspace(&self) -> Workspace {
+        self.workspace
+    }
+
+    /// The stored overrides, in rule order.
+    pub fn overrides(&self) -> &BTreeMap<String, Setting> {
+        &self.overrides
+    }
+
+    /// Build one Workspace's policy from stored `(rule, value)` pairs.
+    pub fn from_overrides(
+        workspace: Workspace,
+        overrides: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, String> {
+        let mut policy = Policy::new(workspace);
+        for (rule, value) in overrides {
+            policy.change(&rule, Change::parse(&value)?)?;
+        }
+        Ok(policy)
+    }
+
+    /// Whether this Workspace stores an explicit override for the rule.
+    pub fn is_override(&self, rule: &str) -> bool {
+        self.overrides.contains_key(rule)
+    }
+
+    /// The setting that decides the rule: the override when one is stored, else
+    /// the catalog's default. `None` for a name the catalog does not hold, so a
+    /// rule added by a later checker keeps its own severity rather than an
+    /// invented policy decision.
+    pub fn effective(&self, rule: &str) -> Option<Setting> {
+        if let Some(setting) = self.overrides.get(rule) {
+            return Some(*setting);
+        }
+        let spec = rule_of(rule)?;
+        match spec.alias_of {
+            Some(target) => self.effective(target),
+            None => Some(spec.default(self.workspace)),
+        }
+    }
+
+    /// Validate one configured change and apply it. Returns whether the stored
+    /// overrides changed, so a no-op request writes no metadata row and moves no
+    /// revision.
+    pub fn change(&mut self, rule: &str, change: Change) -> Result<bool, String> {
+        let spec = validate_rule(rule)?;
+        if let Some(target) = spec.alias_of {
+            return Err(format!(
+                "{rule} is the Term-facing label of {target}; configure gate.<workspace>.{target} instead"
+            ));
+        }
+        match spec.state {
+            RuleState::Mandatory => {
+                return Err(format!("{rule} is a mandatory rule; it cannot be configured"));
+            }
+            RuleState::Pending => {
+                return Err(format!(
+                    "{rule} is not mechanically implemented yet; its default is {} and an override is refused until the rule exists",
+                    spec.default(self.workspace)
+                ));
+            }
+            RuleState::Configurable => {}
+        }
+        match change {
+            Change::Reset => Ok(self.overrides.remove(rule).is_some()),
+            Change::Set(setting) => {
+                if spec.scope == Scope::Graph && setting == Setting::Block {
+                    return Err(format!(
+                        "{rule} is a graph-only audit rule; it cannot block a single write"
+                    ));
+                }
+                if self.overrides.get(rule) == Some(&setting) {
+                    return Ok(false);
+                }
+                self.overrides.insert(rule.to_string(), setting);
+                Ok(true)
+            }
+        }
+    }
+
+    /// The effective policy as the stable text its hash covers: one line per
+    /// catalogued rule, so a catalog default, an alias, or an override that
+    /// changes a decision changes the text and its hash.
+    pub fn canonical(&self) -> String {
+        let mut text = format!("{}\n", self.workspace.as_str());
+        for spec in catalog() {
+            let setting = self
+                .effective(spec.rule)
+                .expect("every catalogued rule has an effective setting")
+                .as_str();
+            text.push_str(&format!("{}={setting}\n", spec.rule));
+        }
+        text
+    }
+
+    /// The SHA-256 of this Workspace's effective policy.
+    pub fn hash(&self) -> String {
+        sha256_hex(self.canonical().as_bytes())
+    }
+
+    /// Apply this policy to one diagnostic. `None` when the rule is off; an
+    /// advisory subcase stays advice whatever the setting (design 6.2). A rule
+    /// the catalog does not name keeps the severity the core gave it, so a rule
+    /// added by a later checker is never silently disabled.
+    pub fn decide(&self, mut diagnostic: Diagnostic) -> Option<Diagnostic> {
+        if diagnostic.subcase {
+            diagnostic.severity = Severity::Advise;
+            return Some(diagnostic);
+        }
+        match self.effective(&diagnostic.rule) {
+            Some(Setting::Off) => None,
+            Some(setting) => {
+                diagnostic.severity = setting.severity().expect("off was handled above");
+                Some(diagnostic)
+            }
+            None => Some(diagnostic),
+        }
+    }
+
+    /// The diagnostics this policy keeps, at the severities it decides.
+    pub fn apply(&self, diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+        diagnostics
+            .into_iter()
+            .filter_map(|diagnostic| self.decide(diagnostic))
+            .collect()
+    }
+
+    /// The assembled report at this policy's severities.
+    pub fn report(&self, diagnostics: Vec<Diagnostic>) -> CheckReport {
+        CheckReport::of(self.apply(diagnostics))
+    }
+}
+
+/// Validate a rule name against the catalog: a required service invariant and an
+/// unknown id are both refused, with the invariant's own explanation.
+fn validate_rule(rule: &str) -> Result<&'static RuleSpec, String> {
+    if let Some(invariant) = invariant(rule) {
+        return Err(format!(
+            "`{rule}` is a mandatory service invariant: {}; no gate policy can change it",
+            invariant.label
+        ));
+    }
+    rule_of(rule).ok_or_else(|| {
+        format!("unknown rule `{rule}`; the gate policy names only the rules of its catalog")
+    })
+}
+
+/// The schema marker of the hashed policy text, so a later layout is a different
+/// policy hash rather than a silent reinterpretation.
+pub const POLICY_SCHEMA: &str = "zt-gate-policy/1";
+
+/// One archive's effective policy: both Workspaces, loaded once per operation
+/// (design 6.1, S03-AC05).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PolicySet {
+    human: Policy,
+    agent: Policy,
+}
+
+impl Default for PolicySet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PolicySet {
+    /// Both Workspaces at their catalog defaults, with no override.
+    pub fn new() -> Self {
+        Self {
+            human: Policy::new(Workspace::Human),
+            agent: Policy::new(Workspace::Agent),
+        }
+    }
+
+    /// One Workspace's effective policy.
+    pub fn policy(&self, workspace: Workspace) -> &Policy {
+        match workspace {
+            Workspace::Human => &self.human,
+            Workspace::Agent => &self.agent,
+        }
+    }
+
+    fn policy_mut(&mut self, workspace: Workspace) -> &mut Policy {
+        match workspace {
+            Workspace::Human => &mut self.human,
+            Workspace::Agent => &mut self.agent,
+        }
+    }
+
+    /// Validate and apply one configured change to one Workspace.
+    pub fn change(
+        &mut self,
+        workspace: Workspace,
+        rule: &str,
+        change: Change,
+    ) -> Result<bool, String> {
+        self.policy_mut(workspace).change(rule, change)
+    }
+
+    /// Both Workspaces' stored overrides, in Workspace then rule order.
+    pub fn overrides(&self) -> Vec<(Workspace, &str, Setting)> {
+        let mut out = Vec::new();
+        for workspace in Workspace::ALL {
+            for (rule, setting) in self.policy(workspace).overrides() {
+                out.push((workspace, rule.as_str(), *setting));
+            }
+        }
+        out
+    }
+
+    /// Build the archive policy from stored `(key, value)` rows. A row this
+    /// binary cannot read is an error naming the row, never a silently weaker
+    /// default (S03-AC02).
+    pub fn from_pairs(
+        pairs: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, String> {
+        let mut set = PolicySet::new();
+        for (key, value) in pairs {
+            let (workspace, rule) = parse_gate_key(&key).map_err(|error| format!("{key}={value}: {error}"))?;
+            let change = Change::parse(&value).map_err(|error| format!("{key}={value}: {error}"))?;
+            set.change(workspace, rule, change)
+                .map_err(|error| format!("{key}={value}: {error}"))?;
+        }
+        Ok(set)
+    }
+
+    /// The effective policy as the stable text its hash covers.
+    pub fn canonical(&self) -> String {
+        format!(
+            "{POLICY_SCHEMA}\n{}\n{}",
+            self.human.canonical(),
+            self.agent.canonical()
+        )
+    }
+
+    /// The policy hash a check-contract reader compares (design 6.1, R0120).
+    pub fn hash(&self) -> String {
+        sha256_hex(self.canonical().as_bytes())
+    }
+
+    /// Apply the archive policy to the diagnostics of these entries: each entry's
+    /// own Workspace decides its rules, and an entry that names none is a draft
+    /// in the agent Workspace (design 8.1).
+    pub fn apply(&self, cards: &[Value], diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+        let workspaces = cards
+            .iter()
+            .filter_map(|card| {
+                let workspace = Workspace::parse(&ps_string(prop(card, "workspace")))?;
+                Some((ps_string(prop(card, "address")), workspace))
+            })
+            .collect::<HashMap<_, _>>();
+        diagnostics
+            .into_iter()
+            .filter_map(|diagnostic| {
+                let workspace = workspaces
+                    .get(&diagnostic.address)
+                    .copied()
+                    .unwrap_or(Workspace::Agent);
+                self.policy(workspace).decide(diagnostic)
+            })
+            .collect()
+    }
+}
+
+/// A lower-case SHA-256 digest, the policy hash's published spelling.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// The assembled result of one Card check: every diagnostic in the core's
@@ -260,6 +890,7 @@ mod tests {
             message: message.to_string(),
             severity: severity(rule),
             legacy: false,
+            subcase: false,
             scope: scope(rule),
         }
     }
@@ -443,5 +1074,337 @@ mod tests {
         let report = ratchet(&[old], vec![new], |_| true);
         assert!(!report.diagnostics[0].legacy);
         assert_eq!(report.blockers, 1);
+    }
+
+    /// S03-AC03 (design 6.2): the catalog owns the default policy of both
+    /// Workspaces. Human notes and agent digest Cards differ exactly where the
+    /// design says they do.
+    #[test]
+    fn the_catalog_names_the_design_defaults_for_both_workspaces() {
+        let default = |rule: &str, workspace: Workspace| {
+            rule_of(rule)
+                .unwrap_or_else(|| panic!("the catalog names {rule}"))
+                .default(workspace)
+        };
+        // Local/bounded-context format blocks in both Workspaces.
+        for rule in ["E1", "E2", "F1", "F2", "F3", "R18", "R19", "R22"] {
+            assert_eq!(default(rule, Workspace::Human), Setting::Block, "{rule} human");
+            assert_eq!(default(rule, Workspace::Agent), Setting::Block, "{rule} agent");
+        }
+        // Formal model rules: advice for human notes, blocking for digest Cards.
+        for rule in ["R13", "R14", "R15", "R16", "R17"] {
+            assert_eq!(default(rule, Workspace::Human), Setting::Advise, "{rule} human");
+            assert_eq!(default(rule, Workspace::Agent), Setting::Block, "{rule} agent");
+        }
+        // The text and layer rules: advice for the person, block for an agent.
+        for rule in [
+            "R2", "R3", "R4", "R5", "R7", "R9", "R12", "I2", "I3", "I4", "I7", "L1", "L2",
+        ] {
+            assert_eq!(default(rule, Workspace::Human), Setting::Advise, "{rule} human");
+            assert_eq!(default(rule, Workspace::Agent), Setting::Block, "{rule} agent");
+        }
+        // Advisory subcases stay advisory in both Workspaces.
+        for rule in ["I1", "R20", "R21"] {
+            assert_eq!(default(rule, Workspace::Human), Setting::Advise, "{rule} human");
+            assert_eq!(default(rule, Workspace::Agent), Setting::Advise, "{rule} agent");
+        }
+        // R6 keeps the existing meaning-sensitive remediation decision.
+        assert_eq!(default("R6", Workspace::Human), Setting::Off);
+        assert_eq!(default("R6", Workspace::Agent), Setting::Advise);
+        // Graph facts are audit advice, never a write gate.
+        for rule in ["I5", "I6", "E4", "E5", "F4", "L3"] {
+            assert_eq!(default(rule, Workspace::Human), Setting::Advise, "{rule} human");
+            assert_eq!(default(rule, Workspace::Agent), Setting::Advise, "{rule} agent");
+            assert_eq!(scope(rule), Scope::Graph, "{rule} is a graph rule");
+        }
+        // The Term rules are catalogued with their design defaults for the later
+        // slices; they are not mechanically implemented yet.
+        for rule in ["T1", "T2", "T3", "T5", "T6", "T9"] {
+            assert_eq!(default(rule, Workspace::Human), Setting::Block, "{rule} human");
+            assert_eq!(default(rule, Workspace::Agent), Setting::Block, "{rule} agent");
+            assert_eq!(rule_of(rule).unwrap().state, RuleState::Pending, "{rule}");
+        }
+        for rule in ["T4", "T8"] {
+            assert_eq!(default(rule, Workspace::Human), Setting::Advise, "{rule} human");
+            assert_eq!(default(rule, Workspace::Agent), Setting::Advise, "{rule} agent");
+        }
+        assert_eq!(scope("T8"), Scope::Graph, "T8 structure facts are audit advice");
+        // T10 is the Term-facing label of the open-formula predicate R22.
+        assert_eq!(rule_of("T10").unwrap().alias_of, Some("R22"));
+        assert_eq!(default("T10", Workspace::Agent), Setting::Block);
+        // T7 wrong/nonexistent targets are the existing Link write invariant.
+        assert_eq!(rule_of("T7").unwrap().state, RuleState::Mandatory);
+    }
+
+    /// S03-AC02/AC06: the catalog names every mechanically implemented rule once,
+    /// and a mandatory service invariant has no rule id at all.
+    #[test]
+    fn the_catalog_is_complete_and_unambiguous() {
+        let mut seen = std::collections::HashSet::new();
+        for spec in catalog() {
+            assert!(seen.insert(spec.rule), "{} is catalogued once", spec.rule);
+            assert!(!spec.rule.is_empty());
+        }
+        for rule in [
+            "R2", "R3", "R4", "R5", "R6", "R7", "R9", "R12", "R13", "R14", "R15", "R16",
+            "R17", "R18", "R19", "R20", "R21", "R22", "I1", "I2", "I3", "I4", "I5", "I6",
+            "I7", "E1", "E2", "E4", "E5", "F1", "F2", "F3", "F4", "L1", "L2", "L3",
+        ] {
+            assert_eq!(
+                rule_of(rule).map(|spec| spec.state),
+                Some(RuleState::Configurable),
+                "{rule} is enforced and configurable"
+            );
+        }
+        for name in ["envelope", "fields", "address", "links", "targets", "access", "locks"] {
+            assert!(invariant(name).is_some(), "{name} is a mandatory invariant");
+        }
+        assert!(invariant("R2").is_none(), "a rule id is not an invariant");
+    }
+
+    /// S03-AC01/AC02/R0117-R0119: one declared key names a Workspace and a rule,
+    /// and every typo, invariant, mandatory rule, pending rule, alias, and
+    /// graph-only blocking override is refused with an explanation.
+    #[test]
+    fn a_gate_key_and_its_change_are_validated_before_they_reach_a_policy() {
+        assert_eq!(gate_key(Workspace::Agent, "R2"), "gate.agent.R2");
+        assert_eq!(
+            parse_gate_key("gate.human.E2"),
+            Ok((Workspace::Human, "E2"))
+        );
+        assert_eq!(
+            parse_gate_key("gate.agent.R2"),
+            Ok((Workspace::Agent, "R2"))
+        );
+        let error = parse_gate_key("gate.agents.R2").unwrap_err();
+        assert!(error.contains("unknown Workspace `agents`"), "{error}");
+        let error = parse_gate_key("gate.agent").unwrap_err();
+        assert!(error.contains("gate.<workspace>.<rule>"), "{error}");
+        assert!(parse_gate_key("archive_root").is_err());
+        assert!(parse_gate_key("gui_search").is_err());
+        assert!(parse_gate_key("gate.agent.R2.extra").is_err());
+
+        let mut agent = Policy::new(Workspace::Agent);
+        assert_eq!(
+            Change::parse("advise"),
+            Ok(Change::Set(Setting::Advise))
+        );
+        assert_eq!(Change::parse("default"), Ok(Change::Reset));
+        let error = Change::parse("warn").unwrap_err();
+        assert!(error.contains("unknown policy value `warn`"), "{error}");
+        assert!(error.contains("block, advise, off, or default"), "{error}");
+
+        let error = agent
+            .change("R1", Change::Set(Setting::Advise))
+            .unwrap_err();
+        assert!(error.contains("unknown rule `R1`"), "{error}");
+        let error = agent
+            .change("access", Change::Set(Setting::Off))
+            .unwrap_err();
+        assert!(error.contains("mandatory service invariant"), "{error}");
+        assert!(error.contains("no gate policy can change it"), "{error}");
+        let error = agent
+            .change("T7", Change::Set(Setting::Advise))
+            .unwrap_err();
+        assert!(error.contains("T7 is a mandatory rule"), "{error}");
+        assert!(error.contains("cannot be configured"), "{error}");
+        let error = agent
+            .change("T4", Change::Set(Setting::Block))
+            .unwrap_err();
+        assert!(error.contains("T4 is not mechanically implemented yet"), "{error}");
+        assert!(error.contains("its default is advise"), "{error}");
+        let error = agent
+            .change("T10", Change::Set(Setting::Advise))
+            .unwrap_err();
+        assert!(error.contains("Term-facing label of R22"), "{error}");
+        assert!(error.contains("gate.<workspace>.R22"), "{error}");
+        let error = agent
+            .change("I5", Change::Set(Setting::Block))
+            .unwrap_err();
+        assert!(error.contains("graph-only audit rule"), "{error}");
+        assert!(error.contains("cannot block a single write"), "{error}");
+
+        // A graph rule may stay advice or be silenced; nothing starts a graph scan.
+        assert!(agent.change("I5", Change::Set(Setting::Advise)).is_ok());
+        assert!(agent.change("I5", Change::Set(Setting::Off)).is_ok());
+        assert!(agent.change("I5", Change::Reset).is_ok());
+        // Every configurable rule accepts every value it may hold.
+        for rule in ["R2", "R6", "I1", "E2", "L1", "R18"] {
+            let mut policy = Policy::new(Workspace::Agent);
+            for setting in [Setting::Block, Setting::Advise, Setting::Off] {
+                policy
+                    .change(rule, Change::Set(setting))
+                    .unwrap_or_else(|error| panic!("{rule} {setting}: {error}"));
+            }
+        }
+    }
+
+    /// S03-AC01 (R0118/R0120): a missing override means the default, an explicit
+    /// reset removes it, and the policy hash names the effective policy of both
+    /// Workspaces, so a change in one Workspace is a different archive policy.
+    #[test]
+    fn a_policy_holds_defaults_resets_and_one_stable_hash() {
+        let mut agent = Policy::new(Workspace::Agent);
+        assert_eq!(agent.effective("R2"), Some(Setting::Block));
+        assert!(!agent.is_override("R2"));
+        assert_eq!(agent.change("R2", Change::Set(Setting::Advise)), Ok(true));
+        assert!(agent.is_override("R2"));
+        assert_eq!(agent.effective("R2"), Some(Setting::Advise));
+        // Repeating the same value changes nothing.
+        assert_eq!(agent.change("R2", Change::Set(Setting::Advise)), Ok(false));
+        assert_eq!(agent.change("R2", Change::Reset), Ok(true));
+        assert_eq!(agent.effective("R2"), Some(Setting::Block));
+        assert_eq!(agent.change("R2", Change::Reset), Ok(false));
+        // A rule the catalog does not name has no policy opinion.
+        assert_eq!(agent.effective("R1"), None);
+        // The human Workspace keeps the design default for the same rule.
+        let human = Policy::new(Workspace::Human);
+        assert_eq!(human.effective("R2"), Some(Setting::Advise));
+        assert_eq!(human.effective("R6"), Some(Setting::Off));
+        // T10 reads R22's setting: one predicate, one decision.
+        assert_eq!(agent.effective("T10"), Some(Setting::Block));
+        agent.change("R22", Change::Set(Setting::Advise)).unwrap();
+        assert_eq!(agent.effective("T10"), Some(Setting::Advise));
+
+        // One archive policy: two Workspaces with independent overrides.
+        let mut set = PolicySet::new();
+        let before = set.hash();
+        assert_eq!(
+            set.change(Workspace::Human, "R2", Change::Set(Setting::Block)),
+            Ok(true)
+        );
+        let human_blocked = set.hash();
+        assert_ne!(before, human_blocked, "an effective change gets a new hash");
+        assert_eq!(
+            set.policy(Workspace::Human).effective("R2"),
+            Some(Setting::Block)
+        );
+        assert_eq!(
+            set.policy(Workspace::Agent).effective("R2"),
+            Some(Setting::Block),
+            "the other Workspace keeps its own default"
+        );
+        let mut agent_changed = set.clone();
+        agent_changed
+            .change(Workspace::Agent, "I1", Change::Set(Setting::Block))
+            .unwrap();
+        assert_ne!(
+            agent_changed.hash(),
+            human_blocked,
+            "an override in the other Workspace is another policy"
+        );
+        // The same effective policy has one stable hash.
+        let mut copy = PolicySet::from_pairs([(
+            "gate.human.R2".to_string(),
+            "block".to_string(),
+        )])
+        .unwrap();
+        assert_eq!(copy.hash(), human_blocked);
+        // Removing the override restores the default hash.
+        copy.change(Workspace::Human, "R2", Change::Reset).unwrap();
+        assert_eq!(copy.hash(), before);
+        // Pinning a rule to its current default stores the row but decides the
+        // same, so the effective hash does not move.
+        let mut pinned = PolicySet::new();
+        pinned
+            .change(Workspace::Human, "R2", Change::Set(Setting::Advise))
+            .unwrap();
+        assert!(pinned.policy(Workspace::Human).is_override("R2"));
+        assert_eq!(pinned.hash(), before);
+        // The hash is a lower-case SHA-256.
+        assert_eq!(before.len(), 64);
+        assert!(before.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+
+        // A stored row this binary cannot read is refused by name, never
+        // silently weakened.
+        let error = PolicySet::from_pairs([(
+            "gate.agent.R2".to_string(),
+            "warn".to_string(),
+        )])
+        .unwrap_err();
+        assert!(error.contains("gate.agent.R2=warn"), "{error}");
+        assert!(error.contains("unknown policy value `warn`"), "{error}");
+        let error =
+            PolicySet::from_pairs([("gate.aliens.R2".to_string(), "block".to_string())]).unwrap_err();
+        assert!(error.contains("unknown Workspace `aliens`"), "{error}");
+        let error = PolicySet::from_pairs([("gate.agent.I5".to_string(), "block".to_string())])
+            .unwrap_err();
+        assert!(error.contains("graph-only audit rule"), "{error}");
+    }
+
+    /// S03-AC03/AC05: the policy decides the severity of one diagnostic per rule
+    /// and Workspace, drops an off rule, and never promotes an advisory subcase
+    /// of an otherwise blocking rule (I7 unknown source).
+    #[test]
+    fn a_policy_applies_block_advise_and_off_to_a_report() {
+        let report_of = |policy: &Policy| {
+            policy.report(vec![
+                diagnostic(
+                    "K/1",
+                    "R2",
+                    "sentence_length",
+                    "41 characters > 40: 甲",
+                    "(41 characters > 40) 甲",
+                ),
+                diagnostic("K/1", "E2", "missing_labels", "labels:参与者", "missing labels: 参与者"),
+                diagnostic("K/1", "I1", "no_claim_title", "税", "the title states no claim: 税"),
+            ])
+        };
+        // The agent defaults: R2 and E2 block, I1 advises.
+        let agent = Policy::new(Workspace::Agent);
+        let report = report_of(&agent);
+        assert_eq!(report.blockers, 2);
+        assert_eq!(
+            report.lines(),
+            [
+                "K/1 R2 (41 characters > 40) 甲",
+                "K/1 E2 missing labels: 参与者",
+                "K/1 I1 (advisory) the title states no claim: 税",
+            ]
+        );
+        // The human defaults: R2 advises, E2 blocks.
+        let human = Policy::new(Workspace::Human);
+        assert_eq!(report_of(&human).blockers, 1);
+        assert_eq!(
+            report_of(&human).lines()[0],
+            "K/1 R2 (advisory) (41 characters > 40) 甲"
+        );
+        // An off rule disappears from the report entirely.
+        let mut quiet = human.clone();
+        quiet.change("E2", Change::Set(Setting::Off)).unwrap();
+        let report = report_of(&quiet);
+        assert_eq!(report.diagnostics.len(), 2);
+        assert!(report.diagnostics.iter().all(|diagnostic| diagnostic.rule != "E2"));
+        // A block override promotes an advice rule in the human Workspace.
+        let mut strict = human.clone();
+        strict.change("R2", Change::Set(Setting::Block)).unwrap();
+        assert_eq!(report_of(&strict).blockers, 2);
+        // I7's unknown-source subcase is advice even though agent I7 blocks.
+        let mut subcase = diagnostic(
+            "K/2",
+            "I7",
+            "own_source_unknown",
+            "[[b]]",
+            "(advisory) source evidence unknown, so [[b]] may be an own-source premise",
+        );
+        subcase.severity = Severity::Block;
+        subcase.subcase = true;
+        let mut agent = Policy::new(Workspace::Agent);
+        let report = agent.report(vec![subcase.clone()]);
+        assert_eq!(report.blockers, 0, "an advisory subcase never blocks");
+        assert_eq!(report.diagnostics[0].severity, Severity::Advise);
+        agent.change("I7", Change::Set(Setting::Block)).unwrap();
+        let report = agent.report(vec![subcase]);
+        assert_eq!(report.blockers, 0, "an explicit block cannot promote it");
+        assert_eq!(report.diagnostics[0].severity, Severity::Advise);
+        // A rule the catalog does not name keeps the severity the core gave it.
+        let mut plain = diagnostic("K/3", "R2", "sentence_length", "x", "x");
+        assert_eq!(agent.decide(plain.clone()).unwrap().severity, Severity::Block);
+        let unknown = Diagnostic {
+            rule: "Q1".to_string(),
+            ..plain.clone()
+        };
+        plain = unknown;
+        assert_eq!(agent.decide(plain).unwrap().severity, Severity::Block);
     }
 }

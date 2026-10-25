@@ -19,6 +19,7 @@ mod card_type;
 mod dump;
 mod entry;
 mod features;
+mod gate;
 mod gui;
 mod hub;
 mod link;
@@ -107,8 +108,12 @@ fn run() -> Result<()> {
         [cmd] if cmd == "__boot" => cmd_boot(),
         [cmd, root] if cmd == "__daemon" => cmd_daemon(PathBuf::from(root)),
         [cmd, sub] if cmd == "config" && sub == "show" => cmd_config_show(),
+        [cmd, sub] if cmd == "config" && sub == "policy" => cmd_config_policy(),
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && key == "archive_root" => {
             cmd_config_set_archive_root(value)
+        }
+        [cmd, sub, key, value] if cmd == "config" && sub == "set" && key.starts_with(gate::PREFIX) => {
+            cmd_config_set_gate(key, value)
         }
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && features::is_key(key) => {
             cmd_config_set_feature(key, value)
@@ -641,6 +646,75 @@ fn cmd_config_show() -> Result<()> {
         };
         println!("{key}={value}");
     }
+    match &config.archive_root {
+        Some(root) => print_policy_summary(root),
+        None => println!("policy: unavailable (archive_root is unset)"),
+    }
+    Ok(())
+}
+
+/// The selected archive's effective policy: its identity, hash, revision, and
+/// every stored override (design 6.1, R0118). A missing archive or an
+/// unreadable one leaves the other `zt config` lines intact.
+fn print_policy_summary(root: &Path) {
+    if !db_path(root).exists() {
+        println!(
+            "policy: unavailable (no archive at {}; run `zt up`)",
+            root.display()
+        );
+        return;
+    }
+    let shown = open_db(root).and_then(|conn| {
+        let policies = gate::load(&conn)?;
+        let revision = gate::revision(&conn)?;
+        Ok(gate::summary_lines(root, &policies, revision))
+    });
+    match shown {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+        Err(error) => println!("policy: unavailable ({error:#})"),
+    }
+}
+
+/// `zt config policy`: every catalogued rule and its effective setting in both
+/// Workspaces, so a default is as visible as an override (R0118, US009).
+fn cmd_config_policy() -> Result<()> {
+    let root = require_archive_root()?;
+    if !db_path(&root).exists() {
+        bail!(
+            "the archive at {} is not initialized; run `zt up`",
+            root.display()
+        );
+    }
+    let conn = open_db(&root)?;
+    let policies = gate::load(&conn)?;
+    println!("policy_archive={}", root.display());
+    println!("policy_hash={}", policies.hash());
+    println!("policy_revision={}", gate::revision(&conn)?);
+    for line in gate::table_lines(&policies) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// One declared `gate.<workspace>.<rule>` override in the selected archive. The
+/// write takes the archive's edit lock and advances the revision; a refused
+/// value writes nothing.
+fn cmd_config_set_gate(key: &str, value: &str) -> Result<()> {
+    let root = require_archive_root()?;
+    if !db_path(&root).exists() {
+        bail!(
+            "the archive at {} is not initialized; run `zt up`",
+            root.display()
+        );
+    }
+    let _lock = acquire_edit_lock(&root, "gate policy")?;
+    let mut conn = open_db(&root)?;
+    let outcome = gate::change(&mut conn, key, value)?;
+    println!("{}", outcome.line());
     Ok(())
 }
 
@@ -2078,7 +2152,9 @@ fn cmd_help() -> Result<()> {
     println!("  zt version");
     println!("  zt help");
     println!("  zt config show");
+    println!("  zt config policy");
     println!("  zt config set archive_root <path>");
+    println!("  zt config set gate.<workspace>.<rule> block|advise|off|default");
     println!("  zt config set gui_search|gui_ask|gui_reply on|off");
     println!("  zt scholar [status|pair [--rotate]|unpair|tools]");
     println!("  zt scholar call <tool> [<json-arguments>]");

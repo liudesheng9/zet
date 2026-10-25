@@ -1870,7 +1870,7 @@ dependencies = [
 
 [[package]]
 name = "zt"
-version = "0.26.5"
+version = "0.26.6"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1896,9 +1896,10 @@ dependencies = [
 
 [[package]]
 name = "zt-check"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "regex",
  "serde_json",
+ "sha2",
 ]

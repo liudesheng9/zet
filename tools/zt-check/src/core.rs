@@ -415,6 +415,9 @@ pub struct Diagnostic {
     pub severity: Severity,
     /// Whether an old version of the same Card already carried this occurrence.
     pub legacy: bool,
+    /// Whether this is an advisory subcase of a rule whose default is blocking
+    /// (I7's unknown source): the policy can never promote it (design 6.2).
+    pub subcase: bool,
     /// What evidence the diagnostic read.
     pub scope: Scope,
 }
@@ -486,6 +489,9 @@ pub struct Check {
     /// Every term the table keeps (its left column, rows without a rejected word too), longest first.
     kept: Vec<String>,
     shared: Vec<String>,
+    /// The archive's effective policy, loaded once per run (S03). Without one
+    /// the rules keep the checker's own severity, the pre-S03 behaviour.
+    policies: Option<crate::policy::PolicySet>,
 }
 
 impl Check {
@@ -498,12 +504,20 @@ impl Check {
             terms: Vec::new(),
             kept: Vec::new(),
             shared: Vec::new(),
+            policies: None,
         }
     }
 
     /// The Workspace title context from the mode's bulk reader, or a bundle's context.
     pub fn with_context(mut self, context: TitleContext) -> Self {
         self.context = context;
+        self
+    }
+
+    /// The archive's effective policy snapshot. One value decides the whole run,
+    /// including both sides of a legacy comparison (S03-AC05).
+    pub fn with_policies(mut self, policies: crate::policy::PolicySet) -> Self {
+        self.policies = Some(policies);
         self
     }
 
@@ -539,7 +553,10 @@ impl Check {
             prose_chars.insert(key(&address), chars);
         }
         self.layer(cards, &prose_chars, &mut faults);
-        faults.diagnostics
+        match &self.policies {
+            Some(policies) => policies.apply(cards, faults.diagnostics),
+            None => faults.diagnostics,
+        }
     }
 
     /// Every fault of the Cards, in the order card-style-check.ps1 writes them.
@@ -1594,6 +1611,7 @@ impl Faults {
             message,
             crate::policy::severity(rule),
             crate::policy::scope(rule),
+            false,
         );
     }
 
@@ -1607,6 +1625,7 @@ impl Faults {
             message,
             Severity::Advise,
             crate::policy::scope(rule),
+            true,
         );
     }
 
@@ -1619,6 +1638,7 @@ impl Faults {
         message: &str,
         severity: Severity,
         scope: Scope,
+        subcase: bool,
     ) {
         self.diagnostics.push(Diagnostic {
             address: from_utf16_form(address),
@@ -1628,6 +1648,7 @@ impl Faults {
             message: from_utf16_form(message),
             severity,
             legacy: false,
+            subcase,
             scope,
         });
     }
@@ -2414,5 +2435,85 @@ mod tests {
         assert_eq!(of_rule(&unlabelled, "R2").len(), 0, "two sentences are measured one by one: {unlabelled:#?}");
         let long = run_json(&card(format!("所有者决定空白处。\n\n跨书关联：对照 [[41/1|b]]：{}。", "甲".repeat(41)))["cards"], "", Limits::default(), false, "");
         assert_eq!(of_rule(&long, "R2").len(), 1, "a sentence over the limit still fails without its label");
+    }
+
+    /// S03-AC05: one effective policy snapshot decides a whole run, and each
+    /// entry is decided by the Workspace it names. Without a policy the checker
+    /// keeps its pre-S03 severity, which is why the first run has no advisory
+    /// line.
+    #[test]
+    fn a_policy_decides_each_entry_by_its_own_workspace() {
+        let sentence = "甲".repeat(41);
+        let cards = json!([
+            { "address": "11/1", "workspace": "human", "title": "短标题", "body": sentence },
+            { "address": "12/1", "workspace": "agent", "title": "短标题", "body": sentence },
+        ]);
+        let cards = cards.as_array().unwrap().clone();
+        let check = Check::new(Limits::default(), false, "");
+        assert_eq!(
+            check.run(&cards),
+            [
+                format!("11/1 R2 (41 characters > 40) {sentence}"),
+                format!("12/1 R2 (41 characters > 40) {sentence}"),
+            ]
+        );
+        // The design defaults: the person's Card gets advice, the agent's blocks.
+        let lines = check
+            .with_policies(crate::policy::PolicySet::new())
+            .run(&cards);
+        assert_eq!(
+            lines,
+            [
+                format!("11/1 R2 (advisory) (41 characters > 40) {sentence}"),
+                format!("12/1 R2 (41 characters > 40) {sentence}"),
+            ]
+        );
+        // Silencing the agent rule leaves the human line untouched: one snapshot,
+        // two Workspaces, no cross-talk.
+        let mut policies = crate::policy::PolicySet::new();
+        policies
+            .change(
+                crate::policy::Workspace::Agent,
+                "R2",
+                crate::policy::Change::Set(crate::policy::Setting::Off),
+            )
+            .unwrap();
+        let lines = Check::new(Limits::default(), false, "")
+            .with_policies(policies)
+            .run(&cards);
+        assert_eq!(
+            lines,
+            [format!("11/1 R2 (advisory) (41 characters > 40) {sentence}")]
+        );
+    }
+
+    /// S03-AC03 (R0123): the policy chooses severities, not applicability. An
+    /// agent policy makes R13 blocking, but a concept model keeps the exemption
+    /// the rule itself grants.
+    #[test]
+    fn a_policy_does_not_bypass_the_concept_model_exemption() {
+        let body = (1..=13)
+            .map(|n| format!("第{n}句说明一个条件。"))
+            .collect::<Vec<_>>()
+            .join("");
+        let entry = json!({
+            "address": "9/2", "workspace": "agent", "title": "设定",
+            "body": body, "category": "part", "facet": "设定", "level": "concept",
+        });
+        let check = Check::new(Limits::default(), false, "")
+            .with_policies(crate::policy::PolicySet::new());
+        let lines = check.run(std::slice::from_ref(&entry));
+        assert!(
+            of_rule(&lines, "R13").is_empty(),
+            "a concept model has no part-size rule: {lines:#?}"
+        );
+        let mut formal = entry;
+        formal["level"] = json!("formal");
+        let lines = check.run(&[formal]);
+        assert_eq!(
+            of_rule(&lines, "R13").len(),
+            1,
+            "the same part at the formal level meets the blocking rule: {lines:#?}"
+        );
     }
 }

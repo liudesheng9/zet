@@ -4272,7 +4272,9 @@ fn the_shell_and_the_session_offer_no_lock_command() {
     let shell = home.cmd().arg("help").output().expect("zt help");
     let said = String::from_utf8_lossy(&shell.stdout);
     assert!(said.contains("zt status --check-locks"), "{said}");
-    let without_check = said.replace("--check-locks", "");
+    // "block" is a Card-check policy value (S03, #145), not a Lock action.
+    let without_policy_values = said.replace("block|advise|off|default", "");
+    let without_check = without_policy_values.replace("--check-locks", "");
     assert!(
         !without_check.to_lowercase().contains("lock"),
         "the shell offers no Lock control: {said}"
