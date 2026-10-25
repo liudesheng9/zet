@@ -892,10 +892,21 @@ impl Snapshot {
             .filter(|link| link["broken"] == false)
             .filter_map(|link| link["address"].as_str().map(str::to_string))
             .collect::<Vec<_>>();
-        // What each Link says, where its words announce a kind; a plain reference is left out.
+        // What each Link says, where its words announce a relation; a plain reference is left out.
+        // A Term use is no reasoning kind either (S16, #158; design 10.2): it is reported apart, so
+        // a graph reader can still tell the edge and hide it by default.
         let mut kinds = serde_json::Map::new();
+        let mut term_use_targets = Vec::new();
+        let mut seen_term = BTreeSet::new();
         for read in crate::model::read_links(&self.parsed[&card.address].body, str::to_string) {
-            if read.kind != crate::model::RelationKind::Refers && links.contains(&read.target) {
+            if !links.contains(&read.target) {
+                continue;
+            }
+            if read.kind.is_term() {
+                if seen_term.insert(read.target.clone()) {
+                    term_use_targets.push(read.target);
+                }
+            } else if read.kind.names_a_relation() {
                 kinds
                     .entry(read.target)
                     .or_insert_with(|| Value::String(read.kind.id().to_string()));
@@ -919,6 +930,7 @@ impl Snapshot {
             "restatement": crate::entry::is_restatement_entry(&self.parsed[&card.address].body),
             "links": links,
             "kinds": kinds,
+            "term_use_targets": term_use_targets,
             "inbound": self.inbound.get(&card.address).map_or(0, BTreeSet::len),
         });
         self.decorate(&mut value, card.row_id);
@@ -963,19 +975,22 @@ impl Snapshot {
     }
 
     /// The Model Card a Model part belongs to first (the one it is filed
-    /// under, else the first that links it); `None` for any other Card.
+    /// under, else the first that links it); `None` for any other Card. Only an ordinary Link
+    /// makes a Model Card take a part in (S16, #158; design 10.2): a Term use names a word, not
+    /// an argument.
     pub(crate) fn model_head(&self, card: &Card) -> Option<String> {
         card.facet.as_ref()?;
-        crate::model::heads(&card.address, &self.by_address, &self.inbound)
+        crate::model::heads(&card.address, &self.by_address, &self.reverse_inbound)
             .into_iter()
             .next()
     }
 
     /// The structure of the model a Card belongs to: its Model Card, its
     /// parts, the kinded relations between them, its loose parts, and its
-    /// Links with Cards outside it.
+    /// Links with Cards outside it. Membership, relations, and neighbours read ordinary Links
+    /// only, so a Term use never joins, relates, or reaches around a model (S16, #158).
     pub(crate) fn model(&self, address: &str) -> Option<Value> {
-        crate::model::structure(address, &self.by_address, &self.parsed, &self.inbound)
+        crate::model::structure(address, &self.by_address, &self.parsed, &self.reverse_inbound)
     }
 
     /// The direct child Side successors of a Regular Card.

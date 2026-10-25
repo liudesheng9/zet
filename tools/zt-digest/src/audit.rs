@@ -211,6 +211,44 @@ fn str_list(value: &Value) -> Vec<String> {
     ps_items(value).iter().map(s).collect()
 }
 
+/// The authored Link targets of one Card that a reasoning count reads: every target except a
+/// source place and a Term use (S16, #158; design 10.2). A Term use is named apart in
+/// `term_use_targets`, so a vocabulary reference never counts as a plain reference or a reasoning edge.
+fn reasoning_links(card: &Value, books: &HashSet<String>) -> Vec<String> {
+    let terms = str_list(&card["term_use_targets"]);
+    str_list(&card["links"])
+        .into_iter()
+        .filter(|target| !book_of::source_target(target, books))
+        .filter(|target| !is_in(target, &terms))
+        .collect()
+}
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// S16-AC03 (#158): the audit's reasoning count leaves out a Term use and a source place, and
+    /// still reads an ordinary Link to another Card.
+    #[test]
+    fn a_reasoning_count_reads_no_term_use_and_no_source_place() {
+        let books: HashSet<String> = ["Hart1995".to_string()].into_iter().collect();
+        let card = json!({
+            "address": "6/1", "links": ["2/1|a", "Hart1995/2", "6/9", "6/9"],
+            "kinds": {"6/9": "rests-on"}, "term_use_targets": ["2/1|a"]
+        });
+        assert_eq!(reasoning_links(&card, &books), ["6/9", "6/9"]);
+        let term_only = json!({
+            "address": "6/2", "links": ["2/1|a", "Hart1995"], "kinds": {}, "term_use_targets": ["2/1|a"]
+        });
+        assert_eq!(
+            reasoning_links(&term_only, &books),
+            Vec::<String>::new(),
+            "a Term use is no plain reference"
+        );
+    }
+}
+
 /// What `run` returns: the progress lines and the summary.
 pub struct Outcome {
     pub summary: Value,
@@ -641,7 +679,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         let mut unkinded: Vec<&Value> = Vec::new();
         for c in &writing {
             let kinded = ps::keys(&c["kinds"]);
-            let others: Vec<String> = str_list(&c["links"]).into_iter().filter(|t| !book_of::source_target(t, &index.book_set)).collect();
+            let others = reasoning_links(c, &index.book_set);
             refers += others.iter().filter(|t| !is_in(t, &kinded)).count();
             let parent = field(c, "parent");
             if !kinded.iter().any(|k| !eq(k, &parent)) {

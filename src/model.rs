@@ -418,6 +418,10 @@ pub(crate) enum RelationKind {
     Specializes,
     /// A plain reference.
     Refers,
+    /// A Term use `[[label@address]]` (S16, #158; design 10.2). It is assigned by syntax alone,
+    /// never inferred from prose, so it is not in [`RELATION_KINDS`]; it takes part in no
+    /// reasoning kind, and the reasoning consumers filter it out.
+    Term,
 }
 
 /// Each announced kind with what it means and the words that announce it.
@@ -571,7 +575,20 @@ impl RelationKind {
             RelationKind::Objects => "objects",
             RelationKind::Specializes => "specializes",
             RelationKind::Refers => "refers",
+            RelationKind::Term => "term",
         }
+    }
+
+    /// Whether a relation word announced this kind. `refers` is the plain default and `term` is
+    /// assigned by syntax, so neither is a relation a projection or a checker reports (S16, #158).
+    pub(crate) fn names_a_relation(self) -> bool {
+        !matches!(self, RelationKind::Refers | RelationKind::Term)
+    }
+
+    /// Whether this kind is a Term use: a word reference that takes part in no reasoning kind
+    /// (S16, #158; design 10.2).
+    pub(crate) fn is_term(self) -> bool {
+        self == RelationKind::Term
     }
 
     /// The kind announced last in `words`, the text just before a Link.
@@ -689,11 +706,12 @@ pub(crate) fn read_links(body: &str, name: impl Fn(&str) -> String) -> Vec<LinkR
             let range = occurrence.macro_range.clone();
             let note = sentence_around(body, range.clone(), &name);
             if occurrence.form == LinkForm::Term {
-                // A Term use is no announced relation and never changes the ordinary Link state
-                // a following ordinary Link may share.
+                // A Term use is the `term` kind by its syntax (S16, #158; design 10.2). It is no
+                // announced relation and never changes the ordinary Link state a following
+                // ordinary Link may share.
                 return LinkRead {
                     target: occurrence.target.to_string(),
-                    kind: RelationKind::Refers,
+                    kind: RelationKind::Term,
                     note,
                     form: LinkForm::Term,
                 };
@@ -770,6 +788,10 @@ pub(crate) fn parts_of<'a>(
     let body = parsed.get(head).map_or("", |parsed| parsed.body.as_str());
     if let Ok(links) = LinkBody::parse(body) {
         for occurrence in links.occurrences() {
+            // A Term use names a word, never a part (S16, #158; design 10.2).
+            if occurrence.form == LinkForm::Term {
+                continue;
+            }
             if let Some(card) = by_address.get(occurrence.target)
                 && is_part(card)
                 && named.insert(card.address.as_str())
@@ -904,7 +926,16 @@ pub(crate) fn structure(
     let mut related = BTreeSet::new();
     let mut neighbours = Vec::new();
     let mut met = BTreeSet::new();
-    let head_reads = read_links(body_of(&head), name);
+    // A Term use is no reasoning Link (S16, #158; design 10.2): the model's relations and its
+    // neighbours are built from ordinary Links only, so a word reference never becomes an
+    // argument or a way out of the model.
+    let reasoning = |at: &str| {
+        read_links(body_of(at), name)
+            .into_iter()
+            .filter(|read| !read.kind.is_term())
+            .collect::<Vec<_>>()
+    };
+    let head_reads = reasoning(&head);
     for read in &head_reads {
         if outside(&read.target) && met.insert((head.clone(), read.target.clone())) {
             neighbours.push(neighbour("out", &head, &read.target, read));
@@ -912,7 +943,7 @@ pub(crate) fn structure(
     }
     let mut part_values = Vec::new();
     for part in &parts {
-        let reads = read_links(body_of(&part.address), name);
+        let reads = reasoning(&part.address);
         let mut seen = BTreeSet::new();
         for read in &reads {
             if read.target == part.address {
@@ -964,7 +995,7 @@ pub(crate) fn structure(
             if !outside(source) {
                 continue;
             }
-            let reads = read_links(body_of(source), name);
+            let reads = reasoning(source);
             if let Some(read) = reads.iter().find(|read| read.target == *member)
                 && met.insert((source.clone(), member.clone()))
             {
@@ -1607,6 +1638,61 @@ mod tests {
         assert_eq!(reads[0].note, "均衡 「2/1|a」 决定价格。");
         let ordinary = read_links("见 [[2/1|a]] 的正文。", |at| at.to_string());
         assert_eq!(ordinary[0].note, "见 「2/1|a」 的正文。");
+    }
+
+    /// S16-AC01/S16-AC02 (#158, design 10.2): a Term use is the `term` kind because of its
+    /// syntax. No relation word announces it, it neither takes nor lends an ordinary inherited
+    /// kind, and a later ordinary Link never reads `term` as its own.
+    #[test]
+    fn a_term_use_is_the_term_kind_by_syntax_and_never_inherits_an_ordinary_kind() {
+        let kinds = |body: &str| {
+            read_links(body, |at| at.to_string())
+                .into_iter()
+                .map(|read| (read.target, read.kind.id()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |target: &str, kind: &'static str| (target.to_string(), kind);
+        // The words before a Term use announce no kind for it: it is `term`.
+        assert_eq!(
+            kinds("依赖设定 [[均衡@2/1|a]] 的结论。"),
+            [pair("2/1|a", "term")]
+        );
+        assert_eq!(kinds("反驳 [[均衡@2/1|a]] 的解释。"), [pair("2/1|a", "term")]);
+        // A Term use between two ordinary Links leaves the first one's kind in place for the
+        // second, and the second never inherits `term` itself.
+        assert_eq!(
+            kinds("依赖 [[0/1]] 与 [[均衡@2/1|a]] 与 [[0/2]]。"),
+            [
+                pair("0/1", "rests-on"),
+                pair("2/1|a", "term"),
+                pair("0/2", "rests-on")
+            ]
+        );
+        // A Term use is no ordinary state at all: the next ordinary Link after it, with no
+        // relation word of its own, is a plain reference.
+        assert_eq!(
+            kinds("[[均衡@2/1|a]] 与 [[0/2]]。"),
+            [pair("2/1|a", "term"), pair("0/2", "refers")]
+        );
+        // `term` is not prose vocabulary: the English word announces nothing.
+        assert_eq!(
+            kinds("The term [[0/2]] is defined above."),
+            [pair("0/2", "refers")]
+        );
+        assert!(
+            !RELATION_KINDS
+                .iter()
+                .any(|(kind, _, _)| *kind == RelationKind::Term),
+            "a Term use is assigned by syntax, never inferred from prose"
+        );
+    }
+
+    /// S16-AC01 (#158): every emitted kind of a Link reads `term` for a Term use, so a general
+    /// projection and a reasoning consumer share one vocabulary.
+    #[test]
+    fn the_kind_ids_name_every_link_kind_including_term() {
+        assert_eq!(RelationKind::Term.id(), "term");
+        assert_eq!(RelationKind::Term.to_string(), "term");
     }
 
     #[test]

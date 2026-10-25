@@ -2019,8 +2019,16 @@ impl Check {
                 (Vec::new(), Vec::new(), Vec::new())
             };
             if has("links") {
+                // A Term use is a vocabulary reference, not a reasoning Link (S16, #158; design
+                // 10.2). The lexical scan is this checker's own, so L1 needs no caller to
+                // classify an edge: a target the body reaches only by Term uses is no Link the
+                // reason rules read, while an ordinary Link to the same target still is.
+                let term_only = term_only_targets(&body);
                 let mut refers: Vec<String> = Vec::new();
                 for link in &links {
+                    if term_only.contains(link.as_str()) {
+                        continue;
+                    }
                     if !ps_in(link, &kinds)
                         && !book_place(link)
                         && !(entry.0.iter().any(|target| ps_eq(target, link))
@@ -2051,9 +2059,12 @@ impl Check {
                 }
             }
             // L2 and L3 read the body: the sentence of each Link, and the paragraphs it appears in.
+            // A Term use reads as its visible word, so it starts no Link sentence and no repeated
+            // Link (S16, #158; design 10.2) — the same projection the size rules already use.
+            let reasoning_body = crate::text::strip_term_links(&body);
             let mut paragraphs: Vec<(String, BTreeSet<usize>)> = Vec::new();
             let mut paragraph = 0;
-            for raw in body.split('\n') {
+            for raw in reasoning_body.split('\n') {
                 let trim = raw.trim();
                 if trim.is_empty() {
                     paragraph += 1;
@@ -2072,7 +2083,7 @@ impl Check {
                     }
                 }
             }
-            for line in prose_lines(&body) {
+            for line in prose_lines(&reasoning_body) {
                 if entry.1.iter().any(|known| ps_eq(known, line.text.trim())) {
                     continue;
                 }
@@ -2151,6 +2162,26 @@ impl Check {
             }
         }
     }
+}
+
+/// The targets a body reaches only by Term uses (S16, #158; design 10.2): a vocabulary reference,
+/// not a reasoning Link. A target that an ordinary Link also names is not in the set, so L1 still
+/// reports it when no relation word announces it. One shared lexical scan, outside code and math.
+fn term_only_targets(body: &str) -> BTreeSet<String> {
+    let mut term = BTreeSet::new();
+    let mut ordinary = BTreeSet::new();
+    for occurrence in link_occurrences(body) {
+        let target = occurrence.target.to_string();
+        match occurrence.form {
+            LinkForm::Term => {
+                term.insert(target);
+            }
+            LinkForm::Ordinary => {
+                ordinary.insert(target);
+            }
+        }
+    }
+    term.difference(&ordinary).cloned().collect()
 }
 
 /// The template position of a Term head label, or `None` for a label outside the template.
@@ -3151,6 +3182,79 @@ mod tests {
                 "faults: 15",
             ]
         );
+    }
+
+    /// S16-AC03 (#158, design 10.2): a Term use is no reasoning Link. A Card whose Links reach a
+    /// Term head only by Term uses reports no L1 unkinded Link, no L2 missing reason, and no L3
+    /// repeat, while an ordinary unkinded Link in the same body still reports exactly itself.
+    #[test]
+    fn term_uses_are_no_reasoning_links_in_the_l_rules() {
+        let l_lines = |cards: Value| -> Vec<String> {
+            run_json(&cards, "", Limits::default(), false, "")
+                .into_iter()
+                .filter(|line| {
+                    line.split(' ')
+                        .nth(1)
+                        .is_some_and(|rule| matches!(rule, "L1" | "L2" | "L3"))
+                })
+                .collect()
+        };
+        // Two short paragraphs, each using the same Term head: no unkinded Link, no missing
+        // reason, and no repeated-Link fault, because none of them is a reasoning Link.
+        let term_only = json!([{
+            "address": "6/1", "title": "均衡决定价格水平",
+            "body": "见 [[均衡@2/1|a]]。\n\n又见 [[均衡@2/1|a]]。",
+            "category": "idea", "parent": "6/0", "tree": "6",
+            "links": ["2/1|a"], "kinds": []
+        }]);
+        assert_eq!(l_lines(term_only), Vec::<String>::new());
+        // The same body with one ordinary unkinded Link: only that Link is read as a reference.
+        let mixed = json!([{
+            "address": "6/2", "title": "均衡与两种解释",
+            "body": "均衡 [[6/9]] 与 [[均衡@2/1|a]] 在这张卡里并列地给出两种解释。",
+            "category": "idea", "parent": "6/0", "tree": "6",
+            "links": ["6/9", "2/1|a"], "kinds": []
+        }]);
+        assert_eq!(
+            l_lines(mixed),
+            ["6/2 L1 (1 Links read as refers) [[6/9]]"]
+        );
+    }
+
+    /// S16-AC03 (#158): a Term use gives no Idea reasoning credit. A Card whose only kinded Link
+    /// is a Term use carries no kinded Link at all (its `kinds` never holds `term`), so I4 still
+    /// reports it, and the Term use is named apart in `term_links`.
+    #[test]
+    fn a_term_use_gives_no_kinded_link_credit() {
+        let cards = json!([{
+            "address": "6/3", "title": "均衡决定价格水平",
+            "body": "均衡 [[均衡@2/1|a]] 决定价格水平，因为供给与需求在这里相等，价格不再变动。",
+            "category": "idea", "parent": "6/0", "tree": "6",
+            "links": ["2/1|a"], "kinds": [], "term_links": ["2/1|a"]
+        }]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        assert_eq!(of_rule(&lines, "I4"), ["6/3 I4 no kinded Link to a Card other than the parent"]);
+        assert!(of_rule(&lines, "L1").is_empty(), "{lines:#?}");
+        assert!(of_rule(&lines, "L2").is_empty(), "{lines:#?}");
+    }
+
+    /// S16-AC03/S16-AC06 (#158): a source citation beside a Term use still counts as the source
+    /// line (I3), and the Term use is still no reasoned Link (L1, L2, L3).
+    #[test]
+    fn a_source_citation_beside_a_term_use_keeps_its_own_meaning() {
+        let cards = json!([{
+            "address": "6/4", "title": "均衡的定义与它的出处",
+            "body": "见 [[均衡@2/1|a]]。\n\n来源：[[Hart1995/2]] 第 3 节。",
+            "category": "idea", "parent": "6/0", "tree": "6", "book": "Hart1995",
+            "links": ["2/1|a", "Hart1995/2"], "kinds": []
+        }]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        for rule in ["I3", "L1", "L2", "L3"] {
+            assert!(
+                of_rule(&lines, rule).is_empty(),
+                "{rule} must not read the Term use or lose the citation: {lines:#?}"
+            );
+        }
     }
 
     /// F1 to F4: the labels, the source line, one result per Card, and a kinded Link in.

@@ -3281,7 +3281,12 @@ fn scan_links(snapshot: &Snapshot, address: &str) -> LinkScan {
         kept.push_str(line);
         kept.push('\n');
     }
-    scan.links = crate::model::read_links(&kept, |target| snapshot.title(target));
+    // A Term use is a word reference, not a step of an argument (S16, #158; design 10.2): the
+    // walk and the spread's threads read ordinary Links only.
+    scan.links = crate::model::read_links(&kept, |target| snapshot.title(target))
+        .into_iter()
+        .filter(|read| !read.kind.is_term())
+        .collect();
     scan
 }
 

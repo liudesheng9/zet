@@ -865,11 +865,13 @@ fn link_targets(body: &str) -> Vec<String> {
     targets
 }
 
-/// The targets a body links with a relation word, by their kind: the checker's `relations` map.
+/// The targets a body links with a relation word, by their kind: the checker's `relations` map. A
+/// Term use is no reasoning kind (S16, #158; design 10.2), so the checker never counts it as an
+/// announced relation and never reports it as an unkinded Link.
 fn relations(body: &str) -> serde_json::Map<String, Value> {
     let mut relations = serde_json::Map::new();
     for read in crate::model::read_links(body, str::to_string) {
-        if read.kind != crate::model::RelationKind::Refers {
+        if read.kind.names_a_relation() {
             relations
                 .entry(read.target)
                 .or_insert_with(|| Value::String(read.kind.id().to_string()));

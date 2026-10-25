@@ -21,7 +21,9 @@ use serde_json::{Map, Value, json};
 ///
 /// 3 (S12, #154): the visible-text projection reads a Term link as its label, so
 /// the same text can now be measured and checked differently than under version 2.
-pub const RULE_VERSION: &str = "3";
+/// 4 (S16, #158): a Term use is no reasoning Link, so L1, L2, and L3 read an
+/// ordinary Link only; the same authored text is checked differently than under 3.
+pub const RULE_VERSION: &str = "4";
 
 /// The version of the published diagnostic shape: the eight fields of
 /// `core::Diagnostic::to_json` and the `block`/`advise` and `local`/`graph`

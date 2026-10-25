@@ -97,9 +97,11 @@ fn write_tx(conn: &Connection, request: &Request) -> Result<Outcome> {
         })));
     }
     let parsed = crate::parse_card_text(request.text)?;
+    // A Term use is no reasoned Link (S16, #158): a Reply must name the agent Card with an
+    // ordinary Link, so a word reference to a Term head never counts as its relation.
     let link = crate::model::read_links(&parsed.body, |at| at.to_string())
         .into_iter()
-        .find(|link| link.target == target.address);
+        .find(|link| link.target == target.address && !link.kind.is_term());
     let Some(link) = link else {
         return Ok(Outcome::Refused(json!({
             "saved": false,

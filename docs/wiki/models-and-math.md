@@ -7,6 +7,7 @@ paths:
   - "tests/model_*.rs"
   - "tests/self_sufficient_models.rs"
   - "tests/math_units.rs"
+  - "tests/term_reasoning.rs"
 synced: 7f1c0fcc969d
 updated: 2026-10-25
 ---
@@ -42,10 +43,10 @@ The terms are those of `CONTEXT.md`.
 - `Elaboration level` — `concept` (level 1) or `formal` (level 2), only on a Model Card (`Level` in `src/model.rs`). No level means "not classified"; the build report then applies the formal rules.
 - `Model range` — the Model Card and the parts filed under it (`in_range` in `build_report`).
 - `Model member` — a Card of the range, or a shared part that the Model Card takes in by a Link (`members` in `structure` and `build_report`).
-- `Relation kind` — what a Link says, read from the words before it in its sentence: `rests-on`, `illustrates`, `contrasts`, `relaxes`, `corresponds`, `objects`, `specializes`, `refers` (`RelationKind`, `RELATION_KINDS` in `src/model.rs`). Computed, never stored.
-- `Model relation` — a Link from one part to another part of the same model, once per pair (`relations` in `structure`).
+- `Relation kind` — what a Link says, read from the words before it in its sentence: `rests-on`, `illustrates`, `contrasts`, `relaxes`, `corresponds`, `objects`, `specializes`, `refers` (`RelationKind`, `RELATION_KINDS` in `src/model.rs`). Computed, never stored. `RelationKind::Term` is the one kind assigned by syntax instead: a Term use `[[label@address]]` is `term`, never inferred from prose and never a reasoning kind (S16, #158; design 10.2).
+- `Model relation` — an ordinary Link from one part to another part of the same model, once per pair (`relations` in `structure`); a Term use is no relation.
 - `Loose part` — a part in no relation (`loose`).
-- `Model neighbour` — a Link between a member and a Card outside the model, either way, tree roots excluded (`neighbours`).
+- `Model neighbour` — an ordinary Link between a member and a Card outside the model, either way, tree roots excluded (`neighbours`); a Term use is no neighbour.
 - `Build order` — the members in the order a reader builds the model: shared parts before the main-line step that needs them, the main line from the setting, each step's side parts after it, then unplaced shared parts, then off parts (`build.order`).
 - `Derivation part` — a part whose facet starts with `推导` or (case-insensitive) `derivation` (`is_derivation` in `src/model.rs`; `Role::Derivation` in `src/math.rs`).
 - `Derivation chain` — a run of Derivation parts next to each other in the build order (`build.chains`).
@@ -197,7 +198,8 @@ These interfaces belong to other blocks but are thin wrappers over this one:
 3. If an earlier Link of the same sentence ends after that start, only the words since that Link count; otherwise the words since the sentence start.
 4. `RelationKind::announced_in` lowercases those words and finds every cue of `RELATION_KINDS`. An English cue (one that starts with an ASCII letter) must start a word: the character before it may not be ASCII alphanumeric. The cue that ends last wins, the longer on a tie.
 5. With no cue, a Link right after an earlier Link of the same sentence shares that Link's kind; else it is `refers`. The cue `引出` announces `refers` explicitly, which also stops the sharing.
-6. `sentence_around` builds the note: the whole sentence, each Link replaced by `「name」`, list and heading markers and `**` stripped, whitespace collapsed, clipped to 140 characters with `…`.
+6. A Term use `[[label@address]]` is `term` by its syntax alone (S16, #158; design 10.2): no cue word changes it, it never enters the ordinary state a following Link inherits, and the ordinary state before it survives it — so a later ordinary Link shares the earlier ordinary kind, or is `refers` when there is none. `term` is not in `RELATION_KINDS`, so it is never inferred from prose, and `RelationKind::names_a_relation` (announced relations, not `refers`/`term`) and `is_term` are the one test the consumers use.
+7. `sentence_around` builds the note: the whole sentence, each Link replaced by `「name」`, list and heading markers and `**` stripped, whitespace collapsed, clipped to 140 characters with `…`.
 
 The cue words (`RELATION_KINDS`):
 
@@ -215,17 +217,17 @@ The cue words (`RELATION_KINDS`):
 ### Membership: filed under or linked
 
 1. `find_head` from a part's parent: walk up through Cards of type `model` with a facet; the first Model Card without a facet is the head the part is **filed under**. A non-model Card on the way ends the walk with no head.
-2. `heads` adds every Model Card in `inbound[part]` (a Model Card whose body links the part) other than the filed head, in Folgezettel order. A part's own Link to a Model Card never makes it a member: only the Model Card's Link counts.
-3. `parts_of(head)` lists the parts the head's body links (in body order, each once), then the filed parts it does not name.
+2. `heads` adds every Model Card in `inbound[part]` (a Model Card whose body links the part) other than the filed head, in Folgezettel order. A part's own Link to a Model Card never makes it a member: only the Model Card's Link counts. The inbound map it reads is the ordinary-Link one (`Snapshot::reverse_inbound`), so a Term use never takes a part in (S16, #158; design 10.2).
+3. `parts_of(head)` lists the parts the head's body links (in body order, each once), then the filed parts it does not name. A Term use in the head's body names no part.
 4. `structure` shows the first model of `heads`; `models` lists them all, and each part's `also` lists its other models.
 5. A part in no model gets a reduced report with `head: null`, empty lists, and one `issues` entry: ``…is a Model part (…) but belongs to no model: file it under a Model Card, or link it from one``. That report has no `build` and no `head_links`.
 
 ### The model structure (`structure`)
 
 1. Name each part by its facet and the head by `模型` for notes.
-2. Out-neighbours of the head: each Link from the head to an outside Card (not a member, not a tree root), once per pair.
-3. For each part: a Link to another part is a relation (once per pair, the first Link's kind and note); a Link to an outside Card is an out-neighbour. A part's Link to itself is skipped; a part's Link to the head is neither (it shows in the part's `links`).
-4. In-neighbours: for each member, each outside Card in `inbound[member]` gives one `in` neighbour with the kind and note of its first Link to that member. The `met` set keeps each (from, to) pair once, across both directions.
+2. Out-neighbours of the head: each ordinary Link from the head to an outside Card (not a member, not a tree root), once per pair.
+3. For each part: an ordinary Link to another part is a relation (once per pair, the first Link's kind and note); an ordinary Link to an outside Card is an out-neighbour. A part's Link to itself is skipped; a part's Link to the head is neither (it shows in the part's `links`). A Term use is none of these (S16, #158): it is not a relation, a neighbour, or a part's `links` entry, and `head_links` leaves it out too.
+4. In-neighbours: for each member, each outside Card in `inbound[member]` gives one `in` neighbour with the kind and note of its first ordinary Link to that member. The `met` set keeps each (from, to) pair once, across both directions.
 5. `loose` lists the parts in no relation; `discussion` counts the distinct outside Cards that link any member (tree roots included, unlike neighbours).
 6. `build_report` and the math report complete the value.
 
@@ -482,7 +484,8 @@ cargo test --bin zt ops::tests
 | `tests/model_levels.rs` | Setting and clearing a level (`2`, empty), the refusals on Idea Cards and parts, loss of the level on retype, `beyond_level` in a concept model, `level` in `search_cards` and `get_tree` |
 | `tests/self_sufficient_models.rs` | Build order with main, side, shared, and off lines; `closure` fixes; `forward`; `unanchored`; `tolerated`; Derivation chains and shared chains; `insert_card` and `move_card` with `before` and `alone` (MCP and GUI); `delete_card` with `into` |
 | `tests/math_units.rs` | Math form storage and refusals; cited premises and `reach_in`; tiers, budget, the contrast pair, crux and other unit faults; load and `used_by`; study stations; the theory's dependency order, weights, tools, building block; statement-only premises of a lemma on the study path; `specializes`, including the same kind in the derived Link index's `kinds` map |
-| `src/model.rs` `tests` | Facet parsing, emphasis parsing, `find_head`, `address_order`, sentence notes, kind reading, `印证`/`参照`/`引出`/`来自` |
+| `tests/term_reasoning.rs` | S16 (#158): a Term use gives no Model membership, relation, or neighbour — a retyped Term head keeps its Model part out of the model that only Term-uses it, a part's Term use to a member is no relation, and an ordinary Link to the same target still takes it in; the graph projection keeps every target in `links` and names the Term edges in `term_use_targets`; a cross-Workspace Term use gives no Model evidence; a question walk takes no Term edge; the general readers (Broken links, Term uses) still see every Term use |
+| `src/model.rs` `tests` | Facet parsing, emphasis parsing, `find_head`, `address_order`, sentence notes, kind reading, `印证`/`参照`/`引出`/`来自`, and the Term kind by syntax with the inheritance fixtures |
 | `src/math.rs` `tests` | Form parsing, facet roles, labels, `section_links`, notation tables |
 
 Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `over_budget` (unit or theory), the theory `empty` fault, `no_plan`, a reach-in counted as a theory premise, `users` of a theory, or the `e.g.` cue. The header of `tests/model_levels.rs` names the Session view and the dump manifest, but its tests use MCP only (the dump manifest keys are tested in `src/dump.rs`).
@@ -523,6 +526,7 @@ Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `
 - **A new Math form needs a migration** for archives whose `math_form` column was added by `ALTER TABLE`, because the column CHECK lists the forms of the time.
 
 ## Change history
+- `2026-10-25` — S16 (#158): a Term use is no reasoning Link. `RelationKind::Term` is assigned by the shared lexical scan (`read_links`) and is not in `RELATION_KINDS`, so no prose announces it; the ordinary inheritance across a Term use is kept (a later ordinary Link never inherits `term`), and `RelationKind::names_a_relation`/`is_term` are the one test the consumers use. `model::parts_of` skips Term occurrences, and `structure` reads ordinary Links for its relations, neighbours, `head_links`, part `links`, and `discussion`; `Snapshot::model_head`/`model` pass the ordinary-Link inbound map (`reverse_inbound`), so a Term use never makes a Model part a member, even when the target was retyped from a Term head into a Model part. `tests/term_reasoning.rs` (5 tests) and the `src/model.rs` kind/inheritance fixtures. zt 0.37.0.
 - `2026-10-25` — S10 (#151): `LinkRead` gains `form: LinkForm`, set by the shared lexical scan. A Term use names its head's address, takes `Refers`, and never changes the ordinary Link state a following Link may share, so the reasoning reports see no new kind (the graph filters are S16, #158). `sentence_around` replaces each macro it reports with `「name(target)」` from the same scan, so a Term use's note names its head and never `label@address`; `math::section_links` reads the targets from the shared `LinkBody::for_rendering` occurrences instead of its own `[[` loop, so a code span holds none. zt 0.30.0.
 - `2026-10-24` — S07 (#149): `model::set` also clears `term_name` whenever the new Card type is not `term`, so the table check `term_name IS NULL OR card_type = 'term'` holds when a type change is made without the shared edit path; `ops::edit_tx` clears a removed name before the type change and sets a new one after it.
 

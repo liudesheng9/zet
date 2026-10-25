@@ -134,6 +134,10 @@ pub(crate) fn text_facts(
     let mut links = Vec::new();
     let mut seen = BTreeSet::new();
     let mut kinds = serde_json::Map::new();
+    // The Term uses of this Card, apart from its reasoning kinds (S16, #158; design 10.2): a Term
+    // use is named here so a graph reader can hide it, and never satisfies a reasoning count.
+    let mut term_use_targets = Vec::new();
+    let mut seen_term = BTreeSet::new();
     for row in rows {
         let (target, kind, exists) = row?;
         let first=seen.insert(target.clone());
@@ -141,13 +145,18 @@ pub(crate) fn text_facts(
         if first {
             links.push(target.clone());
         }
-        if let Some(kind) = kind {
+        if kind.as_deref() == Some("term") {
+            if seen_term.insert(target.clone()) {
+                term_use_targets.push(target);
+            }
+        } else if let Some(kind) = kind {
             kinds.entry(target).or_insert(json!(kind));
         }
     }
     value["links"] = json!(links);
     value["outbound_count"] = json!(seen.len());
     value["kinds"] = json!(kinds);
+    value["term_use_targets"] = json!(term_use_targets);
     value["edge"] = json!(crate::ops::edge(card));
     let parent = match crate::parent_location(&card.address) {
         Some(at) if existing(conn, &at)? => Some(at),
@@ -202,14 +211,20 @@ impl<'a> Scope<'a> {
     fn incoming(&mut self, at: &str) -> Result<Vec<String>> {
         let mut statement = self
             .conn
-            .prepare_cached("SELECT DISTINCT source FROM links WHERE target=?1")?;
-        let sources = statement
-            .query_map([at], |r| r.get::<_, String>(0))?
+            .prepare_cached("SELECT DISTINCT source, kind FROM links WHERE target=?1")?;
+        let rows = statement
+            .query_map([at], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        self.inbound
-            .entry(at.to_string())
-            .or_default()
-            .extend(sources.iter().cloned());
+        let sources = rows.iter().map(|(source, _)| source.clone()).collect::<Vec<_>>();
+        // Only an ordinary Link is a reasoning edge: a Term use never makes a Model Card take a
+        // part in, so it is not recorded in the membership view (S16, #158; design 10.2).
+        self.inbound.entry(at.to_string()).or_default().extend(
+            rows.iter()
+                .filter(|(_, kind)| kind.as_deref() != Some("term"))
+                .map(|(source, _)| source.clone()),
+        );
         for source in &sources {
             self.add(source)?;
         }
@@ -262,7 +277,7 @@ impl<'a> Scope<'a> {
             }
             parent = crate::parent_location(&above);
         }
-        let mut statement=self.conn.prepare_cached("SELECT DISTINCT l.source FROM links l JOIN cards c ON c.location=l.source OR c.citation_key=l.source WHERE l.target=?1 AND c.card_type='model' AND c.model_facet IS NULL")?;
+        let mut statement=self.conn.prepare_cached("SELECT DISTINCT l.source FROM links l JOIN cards c ON c.location=l.source OR c.citation_key=l.source WHERE l.target=?1 AND (l.kind IS NULL OR l.kind<>'term') AND c.card_type='model' AND c.model_facet IS NULL")?;
         let heads = statement
             .query_map([at], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -310,7 +325,7 @@ impl<'a> Scope<'a> {
         Ok(members)
     }
     fn theories(&mut self, at: &str) -> Result<()> {
-        let mut statement=self.conn.prepare_cached("SELECT DISTINCT l.source FROM links l JOIN cards c ON c.location=l.source OR c.citation_key=l.source WHERE l.target=?1 AND c.math_form='theory'")?;
+        let mut statement=self.conn.prepare_cached("SELECT DISTINCT l.source FROM links l JOIN cards c ON c.location=l.source OR c.citation_key=l.source WHERE l.target=?1 AND (l.kind IS NULL OR l.kind<>'term') AND c.math_form='theory'")?;
         let sources = statement
             .query_map([at], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

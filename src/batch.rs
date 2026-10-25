@@ -861,7 +861,7 @@ fn simulate(
                 let links = crate::model::read_links(text, str::to_string);
                 let kinds: BTreeSet<_> = links
                     .iter()
-                    .filter(|link| link.kind != crate::model::RelationKind::Refers)
+                    .filter(|link| link.kind.names_a_relation())
                     .map(|link| link.target.clone())
                     .collect();
                 let targets: BTreeSet<_> = links.iter().map(|link| link.target.clone()).collect();

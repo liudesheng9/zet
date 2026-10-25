@@ -56,8 +56,7 @@ fn rows(card: &crate::Card) -> Result<Vec<Row>> {
             let kind = match occurrence.form {
                 crate::link::LinkForm::Term => Some("term".to_string()),
                 crate::link::LinkForm::Ordinary => {
-                    (read.kind != crate::model::RelationKind::Refers)
-                        .then(|| read.kind.id().to_string())
+                    read.kind.names_a_relation().then(|| read.kind.id().to_string())
                 }
             };
             (card.address.clone(), ord as i64, occurrence.target.to_string(), kind)

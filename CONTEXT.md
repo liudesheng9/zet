@@ -48,7 +48,7 @@ A Link from one Model part to another part of the same model. The sentence that 
 _Avoid_: Dependency edge, arrow
 
 **Relation kind**:
-What a Link says about the Card it names, read from the words its author wrote before it in the same sentence: `rests-on` (`依赖`, `基于`, `代入`, `推导自`, `按定义`, `rests on`, `uses`, `cites`), `illustrates` (`例示`, `案例`, `印证`, `for example`), `contrasts` (`对照`, `区别`, `逆命题`, `unlike`), `relaxes` (`放宽`, `推广`, `extends`), `corresponds` (`对应`, `类比`, `参照`, `maps onto`), `objects` (`反驳`, `批评`, `counterexample`), `specializes` (`特例`, `特殊情形`, `special case`: every object of the linking Card is an object of the linked one), or `refers` when no such word stands before it or the word is `引出`, which points the other way (the linked Card builds on this one, and its `承接` carries the relation). A Link right after another in the same sentence shares its kind. Kinds are computed from authored text; a derived Link index may retain the computed value, never independent Card metadata. Only `rests-on` places a part on the Model board.
+What a Link says about the Card it names, read from the words its author wrote before it in the same sentence: `rests-on` (`依赖`, `基于`, `代入`, `推导自`, `按定义`, `rests on`, `uses`, `cites`), `illustrates` (`例示`, `案例`, `印证`, `for example`), `contrasts` (`对照`, `区别`, `逆命题`, `unlike`), `relaxes` (`放宽`, `推广`, `extends`), `corresponds` (`对应`, `类比`, `参照`, `maps onto`), `objects` (`反驳`, `批评`, `counterexample`), `specializes` (`特例`, `特殊情形`, `special case`: every object of the linking Card is an object of the linked one), or `refers` when no such word stands before it or the word is `引出`, which points the other way (the linked Card builds on this one, and its `承接` carries the relation). A Link right after another in the same sentence shares its kind. `term` is the one kind assigned by syntax instead: a Term use reads as `term` whatever word stands before it, and it is no reasoning kind. Kinds are computed from authored text; a derived Link index may retain the computed value, never independent Card metadata. Only `rests-on` places a part on the Model board.
 _Avoid_: Link type, edge label
 
 **Loose part**:
@@ -329,8 +329,12 @@ A Link written `[[<label>@<address>]]` that points from a word in a Card body to
 _Avoid_: Glossary link, keyword link
 
 **Term use**:
-A Card that holds a Term link to a Term Card. The Term Card's generated `## Term uses` section lists them.
+A Card that holds a Term link to a Term Card. The Term Card's generated `## Term uses` section lists them. A Term use reads as the `term` kind in the Link scan, assigned by its syntax and never by a relation word; it is a vocabulary reference, not a reasoning Link, so it gives no Model membership, relation, or neighbour, no Idea/Event/Finding reasoning credit, and no default graph edge. Its Card still appears, with its ordinary Links, and the general Link readers (Broken links, Term uses, Lock pins) see it.
 _Avoid_: Backlink (that is a Reverse link), occurrence
+
+**Term edge**:
+A graph edge drawn from a Card to a Term Card it reaches with a Term use. The Map, the Table and the Constellation leave it out unless the reader turns the Term uses switch on.
+_Avoid_: Term link (the stored macro), keyword edge
 
 **Term rule**:
 One of the T1–T10 checks on a Term Card's authored template: known ordered head lines and sections, title/name/row identity, the mathematical content a math head needs, symbol-table coverage, numbered derivation steps with bases and a result, no unexpanded skipped step, Term-link target and label agreement, one head per row, the measured prose size, and balanced formulas. The checker owns the rules; a rendered draft and a stored Card go through the same evaluator.
