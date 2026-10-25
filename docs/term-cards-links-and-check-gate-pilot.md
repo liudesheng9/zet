@@ -38,6 +38,11 @@ review's mathematical depth, layout judgment and final accept/reject remain the 
 live installed-service qualification remains S31 (#173), and the historical backfill remains S32
 (#174).
 
+**Deferred.** On 2026-10-25 the owner deferred the pilot run: no compatible prepared run exists
+(§2), and only the owner starts the two workflows that produce and use one (§4.2 and §4.5). The
+gate, its tests and this runbook are delivered; the commands below are the owner's to run when the
+pilot is scheduled. Until then, S30-AC01..AC07 are not verified by a real pilot.
+
 ## 2. The book and the one prerequisite
 
 The design names `grossman2002integration` "if still suitable at implementation time". The book is
@@ -99,7 +104,8 @@ of these at `D:\zt`.
 ```powershell
 $Box  = 'D:\zt-pilot-172'
 $Work = "$Box\work"
-New-Item -ItemType Directory -Force "$Box\config", "$Box\archive", $Work | Out-Null
+$Out  = "$Box\staging"
+New-Item -ItemType Directory -Force "$Box\config", "$Box\archive", $Work, $Out | Out-Null
 $env:ZT_CONFIG_DIR = "$Box\config"
 $env:ZT_GUI_PORT   = '48717'
 zt config set archive_root "$Box\archive"
@@ -129,12 +135,13 @@ Set-Content -Path "$Out\zt-box.txt" -Value "$Box\config" -NoNewline
 
 ### 4.2 Produce the compatible prepared run (skip if one exists)
 
-In a Claude Code session, run the installed `zt-econ-digest` workflow in mode `full` with the Term
-layers disabled, on the copied box and a new pilot Citation key:
+The owner starts this run in a Claude Code session opened from `E:\zet` (so the project-scope
+`zt-econ-digest` 6.6.0 loads). Run the installed `zt-econ-digest` workflow in mode `full` with the
+Term layers disabled, on the copied box and a new pilot Citation key:
 
 ```js
 {
-  out: "<$Out>",
+  out: "D:\\zt-pilot-172\\staging",           // the $Out folder from §4.1
   book: "grossman2002integration",          // the Scholar Archive Work id or exact title
   citationKey: "grossman2002integration-pilot",
   termCards: false,
@@ -191,12 +198,12 @@ workflow and `<Staging>\zt-box.txt` still verify and no Term Card is published a
 
 ### 4.5 Run the pilot's one Term run
 
-In a Claude Code session, run the installed `zt-econ-digest` workflow in mode `term-cards` on the
-same staging:
+The owner starts this run in the same Claude Code session from `E:\zet`. Run the installed
+`zt-econ-digest` workflow in mode `term-cards` on the same staging:
 
 ```js
 {
-  out: "<$Out>",
+  out: "D:\\zt-pilot-172\\staging",           // the same $Out folder
   termCards: true,
   termLink: true,
   termCardsPerJob: 4,
