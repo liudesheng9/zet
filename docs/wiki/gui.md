@@ -11,7 +11,7 @@ paths:
   - "tests/integrated_release.rs"
   - "tests/reader_release.rs"
   - "tests/term_reading.rs"
-synced: f0ddf286449c
+synced: 38ca1288b2f1
 updated: 2026-10-25
 ---
 

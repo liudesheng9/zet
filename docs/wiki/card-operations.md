@@ -5,7 +5,7 @@ paths:
   - "src/ops.rs"
   - "src/batch.rs"
   - "src/place.rs"
-synced: 4f21ea0f2a7b
+synced: 38ca1288b2f1
 updated: 2026-10-25
 ---
 
