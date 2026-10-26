@@ -1314,7 +1314,7 @@ pub fn render(
         return Err(DraftFaults::one("render.head", "the draft renders no identity line"));
     }
     let mandatory_prose = units[..mandatory].iter().map(|unit| unit.prose).sum::<i64>();
-    if mandatory_prose + trailer_prose > limits.max_term_prose {
+    if mandatory_prose + trailer_prose > limits.term_prose_bound() {
         return Err(DraftFaults::one(
             "render.head",
             format!(
@@ -1325,7 +1325,7 @@ pub fn render(
         ));
     }
     for unit in &units {
-        if unit.prose > limits.max_term_prose {
+        if unit.prose > limits.term_prose_bound() {
             return Err(DraftFaults::one(
                 "render.block",
                 format!(
@@ -1346,7 +1346,7 @@ pub fn render(
     for (index, unit) in units.iter().enumerate().skip(mandatory) {
         let steps = head_steps + unit.steps();
         if steps > limits.max_term_steps
-            || head_prose + unit.prose + trailer_prose > limits.max_term_prose
+            || head_prose + unit.prose + trailer_prose > limits.term_prose_bound()
         {
             break;
         }
@@ -1367,7 +1367,7 @@ pub fn render(
         let mut prose = part_prefix;
         while end < units.len() {
             let unit = &units[end];
-            if steps + unit.steps() > limits.max_term_steps || prose + unit.prose > limits.max_term_prose
+            if steps + unit.steps() > limits.max_term_steps || prose + unit.prose > limits.term_prose_bound()
             {
                 break;
             }
@@ -1583,7 +1583,7 @@ fn assemble(
     body.push_str(trailer);
     body.push('\n');
     let prose = prose_units(&body);
-    if prose > limits.max_term_prose {
+    if prose > limits.term_prose_bound() {
         return Err(DraftFaults::one(
             "render.card",
             format!(
@@ -2024,6 +2024,15 @@ mod tests {
         }
         // Each Card numbers its own section from 1; the chain keeps every step exactly once.
         assert_eq!(numbers, (1..=12).chain(1..=12).collect::<Vec<i64>>());
+    }
+
+    #[test]
+    fn a_long_term_renders_whole_when_no_prose_limit_is_set() {
+        // 2026-10-26, the user's request: a Term Card's length is not restricted by default.
+        let mut long = parse_draft(&concept_draft(), &rows()).expect("valid");
+        long.explanation = vec!["甲".repeat(4000), "乙".repeat(4000)];
+        let rendered = render(&long, &row("均衡"), "Test2026", "@@term_head", &Limits::default()).expect("renders");
+        assert!(rendered.head.body.contains(&"乙".repeat(4000)), "the whole explanation stays on the card");
     }
 
     #[test]

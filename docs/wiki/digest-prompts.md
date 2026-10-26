@@ -354,6 +354,7 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 - **Per-prompt command budgets** ("全程最多 7 条命令") are part of the cost design: each extra DSH command re-reads the conversation. Do not add steps that read files back to confirm a write.
 
 ## Change history
+- `2026-10-26` — `dsh-term-card-instructions.zh.md` no longer caps a Term Card's prose ("正文长度不限：术语需要多长就写多长，把它讲全为止。"), at the user's request.
 - `2026-10-26` — `dsh-term-review-instructions.zh.md` is the review-and-fix instruction: the job reviews the math draft against eight items, fixes what it finds in the draft file and runs the writer's SELF-CHECK, and refuses only a fault that teaches a wrong result; wording, section numbers, a missing symbol or supplement mark and depth are fixed, not refused.
 - `2026-10-26` — `dsh-term-card-instructions.zh.md` now asks for what the Term-card reviewer checks: every premise a derivation, limit or example uses is a hypothesis (also a condition the book states in passing); every symbol anywhere on the card is in `symbols`, with a type that fits its use; a supplied step carries `（补：书中略去）` in its `basis` and a conclusion the book lacks `（补：书中未写）` in its `claim` (the reviewer's item 9, which the writer was never told); and a closing checklist that mirrors the review. Found on the live run (staging4): 23 of 52 rows were refused after their one fix, mostly for these faults.
 

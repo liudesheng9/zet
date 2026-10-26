@@ -356,7 +356,8 @@ pub struct Limits {
     pub min_reason: i64,
     /// The most derivation steps one Term Card holds (design 11.2, R0289).
     pub max_term_steps: i64,
-    /// The most measured prose units one Term Card holds, formulas and tables excluded.
+    /// The most measured prose units one Term Card holds, formulas and tables excluded; 0 (the
+    /// default since 2026-10-26, the user's request) sets no bound: a long term is not restricted.
     pub max_term_prose: i64,
 }
 
@@ -372,12 +373,17 @@ impl Default for Limits {
             max_idea_chars: 300,
             min_reason: 8,
             max_term_steps: 12,
-            max_term_prose: 1600,
+            max_term_prose: 0,
         }
     }
 }
 
 impl Limits {
+    /// The prose bound a Term Card is held to: `max_term_prose`, or none when it is 0.
+    pub fn term_prose_bound(&self) -> i64 {
+        if self.max_term_prose > 0 { self.max_term_prose } else { i64::MAX }
+    }
+
     /// The eight limits under their flag names, as the check contract publishes
     /// them (design 8.3, R0202).
     pub fn to_json(&self) -> serde_json::Value {
@@ -960,7 +966,7 @@ impl Check {
         self.term_symbols(address, &template, faults);
         self.term_skipped_steps(address, &body, faults);
         let prose = crate::term::prose_units(&body);
-        if prose > self.limits.max_term_prose {
+        if prose > self.limits.term_prose_bound() {
             faults.add(
                 address,
                 "T9",
@@ -4066,10 +4072,21 @@ mod tests {
         );
     }
     #[test]
-    fn term_prose_over_the_limit_reports_t9() {
+    fn term_prose_over_a_set_limit_reports_t9() {
         let long = "甲".repeat(1700);
         let body = format!("术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n{long}。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n");
-        let lines = term_lines(&[term_entry("均衡", &body)]);
+        let limits = Limits { max_term_prose: 1600, ..Limits::default() };
+        let lines: Vec<String> = Check::new(limits, false, "").run(&[term_entry("均衡", &body)]);
         assert!(of_rule(&lines, "T9").iter().any(|line| line.contains("prose units > 1600")), "{lines:#?}");
+    }
+
+    #[test]
+    fn a_long_term_has_no_prose_limit_by_default() {
+        // 2026-10-26, the user's request: some books have very long terms, so a Term Card's length is not
+        // restricted; `max_term_prose` 0 (the default) means no bound.
+        let long = "甲".repeat(9000);
+        let body = format!("术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n{long}。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n");
+        let lines = term_lines(&[term_entry("均衡", &body)]);
+        assert!(of_rule(&lines, "T9").is_empty(), "{lines:#?}");
     }
 }

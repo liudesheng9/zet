@@ -3,7 +3,7 @@
 //!
 //!   zt-digest term-cards -Step plan|jobs|precheck|check|review-plan|fix-plan|apply|report
 //!                        -Staging <folder> [-PerJob 4] [-MathPerJob 1]
-//!                        [-MaxStepsPerCard 12] [-MaxProse 1600]
+//!                        [-MaxStepsPerCard 12] [-MaxProse 0]
 //!                        [-Jobs <ids>] [-Token <claim>] [-Tokens <job:claim,...>] [-Apply]
 //!
 //! `precheck` (S27, #166) is the writer's own SELF-CHECK: it runs the same `check_job` the
@@ -95,13 +95,15 @@ const WORK: &str = "term-cards";
 pub const DEFAULT_PER_JOB: i64 = 4;
 pub const DEFAULT_MATH_PER_JOB: i64 = 1;
 pub const DEFAULT_MAX_STEPS: i64 = 12;
-pub const DEFAULT_MAX_PROSE: i64 = 1600;
+/// 0: no prose bound (2026-10-26, the user's request: some books have very long terms, so a Term
+/// Card's length is not restricted; zt-check reads 0 as no bound).
+pub const DEFAULT_MAX_PROSE: i64 = 0;
 /// The bounds the option parser accepts. They are deliberately wider than the defaults: a slice
-/// may lower a limit for one book, never switch grouping off or set an unbounded prose budget.
+/// may lower a limit for one book and never switch grouping off; a prose budget of 0 is no bound.
 const PER_JOB_RANGE: (i64, i64) = (1, 8);
 const MATH_PER_JOB_RANGE: (i64, i64) = (1, 8);
 const MAX_STEPS_RANGE: (i64, i64) = (1, 64);
-const MAX_PROSE_RANGE: (i64, i64) = (1, 20_000);
+const MAX_PROSE_RANGE: (i64, i64) = (0, 20_000);
 
 /// The managed content role (design 12.4, R0326; S20 / #164): DeepSeek V4.1 Flash from the official
 /// source at high effort writes, reviews and fixes the drafts. The Haiku manager stays the
@@ -4261,7 +4263,7 @@ mod tests {
         assert_eq!(plan["limits"]["per_job"], 4);
         assert_eq!(plan["limits"]["math_per_job"], 1);
         assert_eq!(plan["limits"]["max_steps_per_card"], 12);
-        assert_eq!(plan["limits"]["max_prose"], 1600);
+        assert_eq!(plan["limits"]["max_prose"], 0);
         assert_eq!(plan["versions"]["compiler"], env!("CARGO_PKG_VERSION"));
         assert_eq!(plan["versions"]["checker"], zt_check::VERSION);
         assert_eq!(plan["versions"]["rule"], zt_check::contract::RULE_VERSION);
@@ -4381,7 +4383,7 @@ mod tests {
         assert!(plan.instruction.contains("[[K]]"));
         assert!(plan.instruction.contains(staging));
         assert!(plan.instruction.contains("12"));
-        assert!(plan.instruction.contains("1600"));
+        assert!(plan.instruction.contains("长度不限"));
         assert!(!plan.instruction.contains("{{"));
     }
 
