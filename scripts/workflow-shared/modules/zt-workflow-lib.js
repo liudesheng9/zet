@@ -1,4 +1,4 @@
-// ==== module zt-workflow-lib v5 ====
+// ==== module zt-workflow-lib v6 ====
 // The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6; docs/workflow-module-structure-proposal.md):
 // the digests (zt-digest-lib) and zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
 //  - S6, one lock reader: the owner's typed `card_locked` refusal (#140, R326/R337/R338) is read here and only
@@ -25,6 +25,9 @@
 //    taken, and `ztDrive` has no "any JSON in the text" fallback. The manager prompt says the `answer` field is the
 //    job's final line copied character for character, and every step script prints at most 400 characters
 //    (`scripts/book-digest/step-line.ps1`).
+//  - v6 (live run 2026-10-26, staging4 link start): a Haiku manager copied the line with each `\\` of a Windows path
+//    as one `\`, so the right line did not parse. The reader then doubles the lone backslashes of that same last line
+//    and parses it once more; it is still only the last line, one object with a boolean top-level `ok`.
 const ZT_LOCK = 'card_locked'
 const ZT_DRIVE_MODEL = 'deepseek-official/deepseek-flash'
 const ZT_DRIVE_SCHEMA = {
@@ -56,12 +59,18 @@ function ztLastJson(text) {
 // object (no prose around it, no remark after it), and its top-level `ok` must be a boolean. A retyped or
 // summarized answer, a line the manager rewrote, a nested object without `ok`, and an empty answer are all null:
 // the stage stops with the answer text instead of reading a field the step never printed.
+// The one object of a drive answer's last line, or undefined: the line as given, else (v6) the line with its lone
+// backslashes doubled, as a manager that copied a Windows path unescaped gives it.
+function ztDriveParse(last) {
+  try { return JSON.parse(last) } catch (e) { }
+  if (!last.includes('\\')) return undefined
+  try { return JSON.parse(last.replace(/\\\\/g, '\u0000').replace(/\\/g, '\\\\').replace(/\u0000/g, '\\\\')) } catch (e) { return undefined }
+}
 function ztDriveAnswer(text) {
   const lines = String(text === undefined || text === null ? '' : text).split('\n').map((l) => l.trim()).filter(Boolean)
   if (!lines.length) return null
   const last = lines[lines.length - 1]
-  let v
-  try { v = JSON.parse(last) } catch (e) { return null }
+  const v = ztDriveParse(last)
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null
   if (typeof v.ok !== 'boolean') return null
   return v
@@ -72,8 +81,8 @@ function ztDriveWhy(text) {
   if (!said) return 'the answer is empty'
   const lines = said.split('\n').map((l) => l.trim()).filter(Boolean)
   const last = lines[lines.length - 1]
-  let v
-  try { v = JSON.parse(last) } catch (e) { return 'its last line is not one JSON object' }
+  const v = ztDriveParse(last)
+  if (v === undefined) return 'its last line is not one JSON object'
   if (!v || typeof v !== 'object' || Array.isArray(v)) return 'its last line is not a JSON object'
   if (typeof v.ok !== 'boolean') return 'its last line has no boolean top-level ok'
   return 'it is not a drive answer'
@@ -152,7 +161,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '5', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '6', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====
