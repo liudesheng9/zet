@@ -561,7 +561,7 @@ fn prepare(compiled: &Compiled, fresh: &Fresh, zt: &mut Zt) -> Result<Run> {
         .as_u64()
         .context("the tree read carries no archive revision")?;
     let published = state["published"].clone();
-    let (rows, conflicts) = judge(&plans, &scan, &published);
+    let (rows, conflicts) = judge(&plans, &scan, &published, compiled.revision);
     let retype = retype_item(compiled, &fresh.list, &scan)?;
     Ok(Run {
         plans,
@@ -839,7 +839,7 @@ fn scan_list(zt: &mut Zt, tree: &Value, list: &str) -> Result<Scan> {
 /// exactly the plan's rendered head and whose Direct chain carries exactly the rendered parts.
 /// A Side child that matches no planned row, a second head for one row, or a row's head filed
 /// outside the list is a conflict, and the run writes nothing.
-fn judge(plans: &[RowPlan], scan: &Scan, published: &Value) -> (Vec<RowState>, Vec<Value>) {
+fn judge(plans: &[RowPlan], scan: &Scan, published: &Value, revision: i64) -> (Vec<RowState>, Vec<Value>) {
     let mut heads: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for address in &scan.side {
         let card = scan.cards.get(address).cloned().unwrap_or(Value::Null);
@@ -915,6 +915,24 @@ fn judge(plans: &[RowPlan], scan: &Scan, published: &Value) -> (Vec<RowState>, V
                         };
                         row.status = Status::Committed;
                         row.reason = Some(json!({"code": "committed"}));
+                    } else if published["rows"][plan.number.to_string()]["head"]["address"].as_str() == Some(head.as_str())
+                        && published["rows"][plan.number.to_string()]["plan_revision"].as_i64().is_some_and(|earlier| earlier < revision)
+                    {
+                        // An earlier plan revision published this head (a Term backfill redrafts every row):
+                        // it stays exactly as it is, counts as published, and holds no other row back.
+                        row.slot = Slot::Committed {
+                            head: head.clone(),
+                            parts,
+                        };
+                        row.status = Status::Committed;
+                        row.reason = Some(json!({
+                            "code": "kept_earlier",
+                            "address": head,
+                            "message": format!(
+                                "row {} `{}` keeps the Card `{head}` an earlier revision published; it is never edited from a new draft",
+                                plan.number, plan.term
+                            ),
+                        }));
                     } else {
                         let (kind, message) = conflict_kind(&row, head, &parts, chain, published);
                         row.status = Status::Conflicted;
@@ -1803,7 +1821,7 @@ fn read_back(compiled: &Compiled, run: &Run, zt: &mut Zt, ran: &Ran) -> Result<V
         .as_u64()
         .context("the tree read carries no archive revision")?;
     let scan = scan_list(zt, &tree, &list)?;
-    let (rows, conflicts) = judge(&run.plans, &scan, &run.published);
+    let (rows, conflicts) = judge(&run.plans, &scan, &run.published, compiled.revision);
     let diverged: Vec<u64> = ran
         .batches
         .iter()
@@ -2436,7 +2454,7 @@ mod tests {
     }
 
     fn run_of(plans: Vec<RowPlan>, scan: Scan) -> Run {
-        let (rows, conflicts) = judge(&plans, &scan, &Value::Null);
+        let (rows, conflicts) = judge(&plans, &scan, &Value::Null, 2);
         Run {
             plans,
             rows,
@@ -2552,7 +2570,7 @@ mod tests {
         for (address, number) in [("K/1|a|a", 1), ("K/1|a|b", 2), ("K/1|a|c", 4), ("K/1|a|d", 5)] {
             add_head(&mut committed_scan, address, number);
         }
-        let (rows, conflicts) = judge(&run.plans, &committed_scan, &Value::Null);
+        let (rows, conflicts) = judge(&run.plans, &committed_scan, &Value::Null, 2);
         assert!(conflicts.is_empty());
         let after = Run {
             plans: run.plans.clone(),
@@ -2633,7 +2651,7 @@ mod tests {
         ] {
             add_head(&mut placed, address, number);
         }
-        let (rows, conflicts) = judge(&run.plans, &placed, &Value::Null);
+        let (rows, conflicts) = judge(&run.plans, &placed, &Value::Null, 2);
         assert!(conflicts.is_empty());
         let after = Run {
             plans: run.plans.clone(),
@@ -2736,7 +2754,7 @@ mod tests {
         // exact rendering, so nothing is written again.
         let mut committed = empty_scan();
         add_head(&mut committed, "K/1|a|a", 1);
-        let (rows, conflicts) = judge(&run.plans, &committed, &Value::Null);
+        let (rows, conflicts) = judge(&run.plans, &committed, &Value::Null, 2);
         assert!(conflicts.is_empty());
         let next = Run {
             plans: run.plans.clone(),
@@ -2764,8 +2782,8 @@ mod tests {
             "K/1|a|a".to_string(),
             json!({"address": "K/1|a|a", "type": "term", "term": "词1", "title": "词1", "body": "来源：[[K]] §2"}),
         );
-        let published = json!({"rows": {"1": {"plan_revision": 1, "head": {"address": "K/1|a|a"}, "parts": []}}});
-        let (rows, conflicts) = judge(&plans(1, |_| true), &scan, &published);
+        let published = json!({"rows": {"1": {"plan_revision": 2, "head": {"address": "K/1|a|a"}, "parts": []}}});
+        let (rows, conflicts) = judge(&plans(1, |_| true), &scan, &published, 2);
         assert!(conflicts.is_empty());
         assert_eq!(rows[0].status, Status::Conflicted);
         assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "changed_head");
@@ -2784,12 +2802,44 @@ mod tests {
     }
 
     #[test]
+    fn a_head_accepted_in_an_earlier_revision_is_kept_and_holds_nothing_back() {
+        // Live run 2026-10-26 (staging8): a Term backfill made plan revision 2 and redrafted the 44 rows revision 1
+        // had published; every one was a conflict and the 16 new ready rows were held back. A head an earlier
+        // revision published stays exactly as it is and counts as published; the other rows are written.
+        let mut scan = empty_scan();
+        scan.side.push("K/1|a|a".to_string());
+        scan.cards.insert(
+            "K/1|a|a".to_string(),
+            json!({"address": "K/1|a|a", "type": "term", "term": "词1", "title": "词1", "body": "来源：[[K]] §2"}),
+        );
+        let published = json!({"rows": {"1": {"plan_revision": 1, "head": {"address": "K/1|a|a"}, "parts": []}}});
+        let (rows, conflicts) = judge(&plans(2, |_| true), &scan, &published, 2);
+        assert!(conflicts.is_empty());
+        assert_eq!(rows[0].status, Status::Committed);
+        assert_eq!(rows[0].head().map(String::as_str), Some("K/1|a|a"));
+        assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "kept_earlier");
+        assert_eq!(rows[1].status, Status::ReadyUnpublished);
+        let run = Run {
+            plans: plans(2, |_| true),
+            rows,
+            conflicts,
+            scan,
+            published,
+            retype: None,
+            revision_before: 7,
+        };
+        assert!(run.structural_stop().is_none_or(|stop| stop.code != "conflicted"));
+        let packing = pack(&compiled(2), &run);
+        assert_eq!(packing.batches.iter().flat_map(|batch| batch.rows.iter().copied()).collect::<Vec<_>>(), vec![2]);
+    }
+
+    #[test]
     fn a_second_head_for_one_row_and_a_head_outside_the_list_are_conflicts() {
         // Two Side children carry row 1's term: publication never chooses between them.
         let mut scan = empty_scan();
         add_head(&mut scan, "K/1|a|a", 1);
         add_head(&mut scan, "K/1|a|b", 1);
-        let (rows, conflicts) = judge(&plans(1, |_| true), &scan, &Value::Null);
+        let (rows, conflicts) = judge(&plans(1, |_| true), &scan, &Value::Null, 2);
         assert!(conflicts.is_empty(), "the conflict belongs to the row");
         assert_eq!(rows[0].status, Status::Conflicted);
         assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "duplicate_head");
@@ -2801,7 +2851,7 @@ mod tests {
         let stray = head_only.cards["K/2|a"].clone();
         misplaced.cards.insert("K/2|a".to_string(), stray.clone());
         misplaced.stray.push(stray);
-        let (rows, conflicts) = judge(&plans(1, |_| true), &misplaced, &Value::Null);
+        let (rows, conflicts) = judge(&plans(1, |_| true), &misplaced, &Value::Null, 2);
         assert!(conflicts.is_empty());
         assert_eq!(rows[0].status, Status::Conflicted);
         let reason = rows[0].reason.clone().unwrap();
@@ -2984,7 +3034,7 @@ mod tests {
         );
         let verdict = Verdict {
             rows: {
-                let (rows, _) = judge(&run.plans, &scan, &Value::Null);
+                let (rows, _) = judge(&run.plans, &scan, &Value::Null, 2);
                 rows
             },
             conflicts: Vec::new(),
