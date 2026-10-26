@@ -66,7 +66,7 @@ try {
     $models = @($group.owned | Where-Object { $_ -match '/1\|[a-g]$' } | Sort-Object)
     Assert ($models.Count -eq 7) "the group registers seven Model candidates ($($models -join ', '))"
     $M1, $M2, $M3, $M4, $M5, $M6, $M7 = $models
-    $claims = (Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'models', '-Take', '10', '-Owner', 'model-manager')).units
+    $claims = (Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'models', '-Take', '10', '-Owner', 'model-manager', '-Lease', '7200')).units
     Assert ($claims.Count -eq 7) 'all seven Model units are ready independently'
     $tokenOf = @{}; foreach ($c in $claims) { $tokenOf[$c.inputs.header] = $c.token }
     $unitOf = @{}; foreach ($c in $claims) { $unitOf[$c.inputs.header] = $c.id }
@@ -87,6 +87,12 @@ try {
     Assert ($m2Row.state -eq 'registered' -and $m2Row.attempts -eq 0) 'a dependency wait returns the claim reservation instead of spending an attempt'
     $none = Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'models', '-Take', '10', '-Owner', 'model-manager-2')
     Assert (@($none.units | Where-Object { $_.id -eq $unitOf[$M2] }).Count -eq 0) 'a waiting dependent is never handed out early'
+
+    # Live run 2026-10-26 (staging5): model-deps set the claim's lease to the 120-second base, the two-hour lease the
+    # workflow claimed with was lost, and the batch's claims expired during its fill. It keeps the longer lease.
+    $m1Deps = Run-Digest @('model-deps', '-Out', $out, '-Model', $M1, '-Token', "$($tokenOf[$M1])")
+    $m1Lease = @((Run-Digest @('ledger', 'status', '-Out', $out, '-Layer', 'models')).units | Where-Object { $_.id -eq $unitOf[$M1] })[0].lease_until
+    Assert ($m1Deps.ok -and -not $m1Deps.waiting -and [long]$m1Lease -gt ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 3600)) "model-deps keeps the claim's long lease ($m1Lease)"
 
     # Build and complete M1 through its own compiler and the checked Model completion.
     $null = Run-Digest @('model', '-Step', 'apply', '-Work', $workOf[$M1], '-Staging', $out)

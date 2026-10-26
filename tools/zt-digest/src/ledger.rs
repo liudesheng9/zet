@@ -13148,7 +13148,10 @@ fn model_deps(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
             None => dependency(&tx, unit, producer, "success")?,
         }
     }
-    let lease_until = now_seconds() + lease_seconds();
+    // The claim keeps the longer of the base lease and the lease it already holds (`start_lease`): the
+    // workflow claims a Model unit for its whole batch, and the base 120 s here let it expire during the
+    // fill (live run 2026-10-26, staging5).
+    let lease_until = held_lease(&tx, unit)?;
     tx.execute(
         "UPDATE units SET state='registered',owner=NULL,lease_until=NULL WHERE id=?1",
         params![unit],
