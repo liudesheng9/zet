@@ -1,4 +1,6 @@
-// ==== module zt-digest-lib v42 ====
+// ==== module zt-digest-lib v43 ====
+// 43 (live run 2026-10-26, staging6): a continued job whose conversation the Desktop answers as unknown or closed
+// runs once as a new conversation from its fallback files, instead of failing the close round's repair.
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -274,7 +276,7 @@ ${JSON.stringify(jobs)}`}
 - No continue: deepseek_run with cwd "${o.dsh}", prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, model "${DSH_MODEL}", reasoning_effort "${o.effort}", wait_seconds 0.
 - continue: find the session of the job id named by continue in this table (job id, then session_id):
 ${table || '(empty)'}
-  With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, reasoning_effort "${o.effort}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = fallback.
+  With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills)}, reasoning_effort "${o.effort}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = fallback. When deepseek_prompt answers that the session is unknown or closed, run the job once as a new conversation: deepseek_run as above, with prompt_files = fallback.
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
@@ -408,7 +410,7 @@ ${listed}
 Jobs (for every step that prints them):
 - A compact list (the card compiler's -Compact) is { dir, lead: { fix, orphans }, prompts: { fix, orphans, follow }, jobs: [{ id, kind, file, continue? }] }. Expand each entry: kind "fix" → files [lead.fix, dir\file], prompt prompts.fix; kind "orphans" → files [lead.orphans, dir\file], prompt prompts.orphans; kind "follow" → files [dir\file], prompt prompts.follow, and continue = its "continue" id. Any other entry already names files and prompt.
 - No continue: deepseek_run with cwd "${o.dsh}", prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills || [])}, model "${DSH_MODEL}", reasoning_effort "${o.effort || DSH_EFFORT}", wait_seconds 0.
-- continue: reuse the session_id of the earlier job of this chain with that id (from this chain's own results); without one, deepseek_run with prompt_files = fallback (or files when it names none).
+- continue: reuse the session_id of the earlier job of this chain with that id (from this chain's own results); without one, deepseek_run with prompt_files = fallback (or files when it names none). When deepseek_prompt answers that the session is unknown or closed, run the job once as a new conversation the same way.
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start independent jobs in one message and start the next job when one ends.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 90), then start the next waiting job and keep polling; never wait longer than 90 seconds at once.${renewLine}
@@ -515,7 +517,7 @@ JOBS: read the JSON array in "${o.file}" (Read tool) and run its entries ${o.fro
 - Start each job: deepseek_run with cwd "${o.dsh}", prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills || [])}, model "${DSH_MODEL}", reasoning_effort "${o.effort || DSH_EFFORT}", wait_seconds 0.${o.table === undefined ? '' : `
 - A job with "continue": find the session of the job id it names in this table (job id, then session_id):
 ${o.table || '(empty)'}
-  With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills || [])}, reasoning_effort "${o.effort || DSH_EFFORT}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = the job's fallback.`}
+  With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills || [])}, reasoning_effort "${o.effort || DSH_EFFORT}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = the job's fallback. When deepseek_prompt answers that the session is unknown or closed, run the job once as a new conversation: deepseek_run as above, with prompt_files = the job's fallback.`}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
@@ -1076,7 +1078,7 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '42', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '43', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

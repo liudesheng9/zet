@@ -2894,7 +2894,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '42' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '7' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v42, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '43' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '7' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v42, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3006,6 +3006,11 @@ for (const which of ['econ', 'math']) {
   check(!calls.some((c) => c.agentType === 'zt-relay' && MOVED.test(c.label || '')), 'S1 (#176): no moved book stage step runs as a Claude relay')
   check(bookManagers.length > 0 && bookManagers.every((m) => /book-steps\.ps1" -Step [\w-]+ -Out "[^"]+"/.test(m.cmd)), `#176: every moved book stage step is one book-steps.ps1 call (${bookManagers.length} drive jobs; ${bookManagers.filter((m) => !/book-steps\.ps1/.test(m.cmd)).slice(0, 2).map((m) => m.cmd.slice(0, 80)).join(' | ')})`)
   const idx = (pred) => bookCalls.findIndex(pred)
+  // Live run 2026-10-26 (staging6): a close round's follow-ups continued conversations the Desktop reported closed
+  // ("unknown or closed session") and failed, so five models kept their build faults. A refused continuation runs
+  // as a new conversation from the job's fallback.
+  const continuing = calls.filter((c) => /With a session: deepseek_prompt/.test(c.prompt || ''))
+  check(continuing.length > 0 && continuing.every((c) => /unknown or closed[^\n]*deepseek_run[^\n]*fallback/.test(c.prompt)), `a continuation the Desktop refuses runs as a new conversation from its fallback (${continuing.length} prompts)`)
   // Live run 2026-10-26 (staging5): the whole-book claim held a 300-second lease and expired during its card cycle
   // (`stale_claim` at book-cards-finish); it now claims with the layers' longest lease.
   const cbStart = bookCalls.find((c) => c.step === 'cards-book-start')
