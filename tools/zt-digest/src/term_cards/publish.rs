@@ -915,7 +915,7 @@ fn judge(plans: &[RowPlan], scan: &Scan, published: &Value, revision: i64) -> (V
                         };
                         row.status = Status::Committed;
                         row.reason = Some(json!({"code": "committed"}));
-                    } else if published["rows"][plan.number.to_string()]["head"]["address"].as_str() == Some(head.as_str())
+                    } else if published["rows"][plan.number.to_string()]["head"]["address"].is_string()
                         && published["rows"][plan.number.to_string()]["plan_revision"].as_i64().is_some_and(|earlier| earlier <= revision)
                     {
                         // The publication record names this head: an earlier plan revision published it (a Term
@@ -2774,6 +2774,24 @@ mod tests {
             again.batches.is_empty() && again.holes.is_empty(),
             "no second head"
         );
+    }
+
+    #[test]
+    fn a_kept_head_is_found_by_its_term_after_an_insert_shifted_its_label() {
+        // Live box 2026-10-26 (acemoglu2025nobel): filing row 15 in its place moved every later head one label
+        // down (`|o` -> `|p`), and the record's old addresses made 43 linked heads conflicts.
+        let mut scan = empty_scan();
+        scan.side.push("K/1|a|b".to_string());
+        scan.cards.insert(
+            "K/1|a|b".to_string(),
+            json!({"address": "K/1|a|b", "type": "term", "term": "词1", "title": "词1", "body": "来源：[[K]] §2 已加链接"}),
+        );
+        let published = json!({"rows": {"1": {"plan_revision": 2, "head": {"address": "K/1|a|a"}, "parts": []}}});
+        let (rows, conflicts) = judge(&plans(1, |_| true), &scan, &published, 2);
+        assert!(conflicts.is_empty());
+        assert_eq!(rows[0].status, Status::Committed);
+        assert_eq!(rows[0].head().map(String::as_str), Some("K/1|a|b"));
+        assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "kept_earlier");
     }
 
     #[test]
