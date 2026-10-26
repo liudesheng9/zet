@@ -75,13 +75,23 @@ No other role uses Sonnet. No module starts a Claude agent of any model to run a
 
 ## 3. The reference implementation
 
-The Term stages of base 5.6.2 (2026-10-26, #172) follow this structure:
+The Term stages of base 5.6.2 (2026-10-26, #172) follow this structure and are the first two slices' reference:
 
 - `scripts/book-digest/term-steps.ps1`: the deterministic steps `start`, `review`, `fix`, `finish`,
   `link`. Each prints one JSON line and keeps its files under `<staging>\term-cards\drive`.
 - `zt-term-cards` v4: `drive start` → writers (all jobs, 8 per manager, managers in parallel) →
   `drive review` → reviewers → `drive fix` → fixers → `drive review` → reviewers → `drive finish`.
 - `zt-term-link` v3: one `drive link` job (plan, apply, complete, second plan).
+
+Slice 1 (#175) is the layer driver: `scripts/book-digest/layer-steps.ps1` (`start`, `apply`, `finish`),
+`zt-workflow-lib` v2's `ztDrive`, and `layerRun`/`driveStep`/`runJobs` in `zt-digest-lib` v38.
+
+Slice 2 (#176) is the book-level driver: `scripts/book-digest/book-steps.ps1` (one step per block: the
+preparation and its resume/backfill branches, the Link preparation, a stage publication, the card cycle's
+plan/apply/check/report, the whole-book claim and checked finish, Organize's survey/apply, the skeleton,
+Figures, the Bridge, the audit, the finalization's steps, the Term-link round and the settlement's
+plan/apply/report), `bookStep` and `cardCycle` in `zt-digest-lib` v39, and one Haiku manager that makes the
+one call no script can (`deepseek_settle`).
 
 On the copied grossman book it ran with 15 Claude agents, all Haiku managers, and published 29 Term
 Cards with 593 Term links. The relay version used about 22 Claude agents for one wave of four jobs.
@@ -107,19 +117,21 @@ script steps, run by drive jobs.
 
 | Module | Relay calls | Notes |
 |---|---|---|
-| `zt-digest-lib` | 10 (was 16) | the layer driver moved to script steps (#175); the relay helpers left serve the model layer, the whole-book cycle, the preparation and the settlement |
+| `zt-digest-lib` | 10 | the layer driver (#175) and the book-level driver (#176) moved to script steps; the relay helpers left serve the model and math layers |
 | `zt-model-lib` | 6 | model compiler steps; the Sonnet architect stays (designer role) |
-| `zt-finalize` | 5 | scope, refresh, final audit |
-| `zt-digest-prepare` | 4 | prepare, resume, status |
-| `zt-bridge`, `zt-organize` | 3 each | plan/report/publish; survey/apply/publish |
-| `zt-figures` | 2 | |
-| `zt-term-link-lib` | 2 | the finalization round's Term-link pass |
-| `zt-audit`, `zt-cards-book`, `zt-link-check`, `zt-link-prepare`, `zt-math-lib`, `zt-grow-cycle` | 1 each | |
+| `zt-math-lib` | 4 | the mathematics compiler steps |
+| `zt-grow-cycle` | — | zt-idea-grow's chain driver (slice 5) |
 
 Moved by #175 (workflow structure slice 1): `zt-group-cycle` v7, `zt-cards-layer` v3, `zt-event-layer` v5,
 `zt-finding-layer` v5, `zt-explain` v8, `zt-link-pass` v8 and `zt-book-terms` v5 call `ztRelay`, `runScript`
 and `wfpScript` zero times: their blocks are `layer-steps.ps1` steps run by DeepSeek drive jobs, and `ztDrive`
 (zt-workflow-lib v2) is the one drive helper the Term stages use too. Base 5.6.3, econ 6.6.3, math 5.6.3.
+
+Moved by #176 (workflow structure slice 2): `zt-digest-prepare` v16, `zt-link-prepare` v7, `zt-link-check` v3,
+`zt-cards-book` v5, `zt-figures` v6, `zt-audit` v5, `zt-organize` v9, `zt-bridge` v10, `zt-finalize` v4,
+`zt-term-link-lib` v3 and `zt-dsh-cleanup` v12 call `ztRelay`, `runScript` and `wfpScript` zero times: their
+blocks are `book-steps.ps1` steps run by DeepSeek drive jobs, and one Haiku manager makes the one
+`deepseek_settle` call the settlement needs. Base 5.6.4, econ 6.6.4, math 5.6.4.
 
 ## 5. Review checklist for a module change
 

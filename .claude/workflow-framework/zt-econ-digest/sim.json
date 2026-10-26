@@ -105,7 +105,7 @@
       "label": "^prepare link pass$",
       "answer": {
         "ok": true,
-        "output": "{\"pending\":[1,2],\"no_gap\":[],\"blocked\":[],\"gaps\":{\"1\":2,\"2\":1},\"owned_total\":6,\"gap_total\":3,\"skipped_total\":0,\"unowned\":0}"
+        "output": "{\"pending\":[1,2],\"no_gap\":[],\"blocked\":[],\"gaps\":{\"1\":2,\"2\":1},\"owned_total\":6,\"gap_total\":3,\"skipped_total\":0,\"unowned\":0,\"ok\":true}"
       }
     },
     {
@@ -132,18 +132,10 @@
       }
     },
     {
-      "label": "^cleanup DeepSeek$",
-      "answer": {
-        "late_deleted": 0,
-        "workspace_removed": true,
-        "files_removed": 0
-      }
-    },
-    {
       "label": "^organize: survey$",
       "answer": {
         "ok": true,
-        "output": "{\"survey\":\"x\"}"
+        "output": "{\"survey\":\"x\",\"ok\":true}"
       }
     },
     {
@@ -160,21 +152,21 @@
       "label": "^organize: apply$",
       "answer": {
         "ok": true,
-        "output": "{\"merges\":0,\"moves\":0,\"refused\":0}"
+        "output": "{\"merges\":0,\"moves\":0,\"refused\":0,\"ok\":true}"
       }
     },
     {
       "label": "^show figures$",
       "answer": {
         "ok": true,
-        "output": "{\"shown\":0,\"cards\":0,\"figures\":0,\"labelled\":0,\"literature\":false}"
+        "output": "{\"shown\":0,\"cards\":0,\"figures\":0,\"labelled\":0,\"literature\":false,\"ok\":true}"
       }
     },
     {
       "label": "^audit cards$",
       "answer": {
         "ok": true,
-        "output": "{\"hubs_missing\":0,\"broken_links\":0,\"books\":[]}"
+        "output": "{\"hubs_missing\":0,\"broken_links\":0,\"books\":[],\"ok\":true}"
       }
     },
     {
@@ -261,28 +253,28 @@
       "label": "^finalize plan$",
       "answer": {
         "ok": true,
-        "output": "{\"schema_version\":1,\"kind\":\"audit_plan\",\"step\":\"plan\",\"run_id\":\"r-sim\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"graph_revision\":7,\"audit\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"faults\":{\"total\":2,\"hard\":1,\"advisory\":1,\"by_rule\":{\"R3\":1,\"I1\":1},\"list\":[{\"address\":\"Key/1|a\",\"rule\":\"R3\",\"outcome\":\"fix\",\"reason\":\"\",\"card\":\"Key/1|a\",\"tree\":\"Key\",\"rules\":[\"R3\"]},{\"address\":\"Key/1\",\"rule\":\"I1\",\"outcome\":\"advisory\",\"reason\":\"an advisory rule: it never blocks the run, and the bounded correction does not rewrite for it\"}]},\"counts\":{\"fix\":1,\"conflict\":0,\"blocked\":0,\"stale\":0,\"advisory\":1},\"branch\":\"fix\",\"fix_cycle\":{\"permitted\":1,\"used\":0,\"rules\":[\"R3\"],\"cards\":[\"Key/1|a\"],\"card_list\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix-cards.txt\"},\"refresh\":[]}"
+        "output": "{\"schema_version\":1,\"kind\":\"audit_plan\",\"step\":\"plan\",\"run_id\":\"r-sim\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"graph_revision\":7,\"audit\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"faults\":{\"total\":2,\"hard\":1,\"advisory\":1,\"by_rule\":{\"R3\":1,\"I1\":1},\"list\":[{\"address\":\"Key/1|a\",\"rule\":\"R3\",\"outcome\":\"fix\",\"reason\":\"\",\"card\":\"Key/1|a\",\"tree\":\"Key\",\"rules\":[\"R3\"]},{\"address\":\"Key/1\",\"rule\":\"I1\",\"outcome\":\"advisory\",\"reason\":\"an advisory rule: it never blocks the run, and the bounded correction does not rewrite for it\"}]},\"counts\":{\"fix\":1,\"conflict\":0,\"blocked\":0,\"stale\":0,\"advisory\":1},\"branch\":\"fix\",\"fix_cycle\":{\"permitted\":1,\"used\":0,\"rules\":[\"R3\"],\"cards\":[\"Key/1|a\"],\"card_list\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix-cards.txt\"},\"refresh\":[],\"ok\":true}"
       }
     },
     {
       "label": "^finalize scope$",
       "answer": {
         "ok": true,
-        "output": "{\"schema_version\":1,\"kind\":\"finalize_changes\",\"step\":\"scope\",\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"changed\":[{\"address\":\"Key/1|a\",\"kinds\":[\"structure\"],\"category\":\"idea\",\"tree\":\"Key\",\"fingerprint_before\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"fingerprint_after\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}],\"touched_trees\":[\"Key\"],\"kinds\":[\"structure\"],\"counts\":{\"cards\":1,\"trees\":1},\"refresh\":[{\"layer\":\"link-check\",\"applicable\":true,\"artifacts\":[\"report\"],\"coverage\":\"none\",\"reason\":\"\",\"branch_refreshable\":true},{\"layer\":\"theory\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"the math variant owns this layer\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"skeleton\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"figures\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (figures), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"hubs\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"bridge\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (links), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"applicable\":true,\"artifacts\":[\"report\"],\"coverage\":\"none\",\"reason\":\"\",\"branch_refreshable\":true}]}"
+        "output": "{\"schema_version\":1,\"kind\":\"finalize_changes\",\"step\":\"scope\",\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"changed\":[{\"address\":\"Key/1|a\",\"kinds\":[\"structure\"],\"category\":\"idea\",\"tree\":\"Key\",\"fingerprint_before\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"fingerprint_after\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}],\"touched_trees\":[\"Key\"],\"kinds\":[\"structure\"],\"counts\":{\"cards\":1,\"trees\":1},\"refresh\":[{\"layer\":\"link-check\",\"applicable\":true,\"artifacts\":[\"report\"],\"coverage\":\"none\",\"reason\":\"\",\"branch_refreshable\":true},{\"layer\":\"theory\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"the math variant owns this layer\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"skeleton\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"figures\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (figures), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"hubs\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"bridge\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (links), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"applicable\":true,\"artifacts\":[\"report\"],\"coverage\":\"none\",\"reason\":\"\",\"branch_refreshable\":true}],\"term_link\":{\"schema_version\":1,\"kind\":\"term_link_round\",\"applicable\":true,\"round\":1,\"scope\":\"cards\",\"cards\":[\"Key/1|a\"],\"excluded\":[],\"mapping_changed\":false,\"reasons\":[],\"reason\":\"\",\"list\":\"Key/1|t\",\"current\":{\"list\":\"l1\",\"mapping\":\"m1\",\"autolink\":\"a1\",\"vocabulary\":\"v1\"},\"before\":{\"audit\":{\"list\":\"l1\",\"mapping\":\"m1\",\"autolink\":\"a1\",\"vocabulary\":\"v1\"}}},\"ok\":true}"
       }
     },
     {
       "label": "^finalize refresh link-check$",
       "answer": {
         "ok": true,
-        "output": "{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[],\"changed_cards\":1,\"touched_trees\":[\"Key\"]}"
+        "output": "{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[],\"changed_cards\":1,\"touched_trees\":[\"Key\"],\"ok\":true}"
       }
     },
     {
       "label": "^finalize final$",
       "answer": {
         "ok": true,
-        "output": "{\"schema_version\":1,\"kind\":\"finalize_report\",\"step\":\"final\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"status\":\"done\",\"complete\":true,\"branch\":\"fix\",\"graph_revision\":8,\"audit\":{\"scheduled\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"final\":{\"unit\":\"audit/book@2\",\"revision\":2,\"graph_revision\":8}},\"changes\":{\"cards\":1,\"trees\":1,\"kinds\":[\"structure\"],\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"refresh\":[{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"unit\":\"audit/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"}],\"faults\":{\"total\":0,\"residual\":0,\"advisory\":0,\"by_class\":{},\"list\":[]},\"infrastructure\":[],\"audit_book\":{\"cards\":9,\"orphans\":0,\"figures_missing\":0,\"models_not_self_sufficient\":0},\"report\":{\"path\":\"D:\\\\x\\\\Key\\\\finalize\\\\final-report.json\"}}"
+        "output": "{\"schema_version\":1,\"kind\":\"finalize_report\",\"step\":\"final\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"status\":\"done\",\"complete\":true,\"branch\":\"fix\",\"graph_revision\":8,\"audit\":{\"scheduled\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"final\":{\"unit\":\"audit/book@2\",\"revision\":2,\"graph_revision\":8}},\"changes\":{\"cards\":1,\"trees\":1,\"kinds\":[\"structure\"],\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"refresh\":[{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"unit\":\"audit/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"}],\"faults\":{\"total\":0,\"residual\":0,\"advisory\":0,\"by_class\":{},\"list\":[]},\"infrastructure\":[],\"audit_book\":{\"cards\":9,\"orphans\":0,\"figures_missing\":0,\"models_not_self_sufficient\":0},\"report\":{\"path\":\"D:\\\\x\\\\Key\\\\finalize\\\\final-report.json\"},\"ok\":true}"
       }
     },
     {
@@ -355,6 +347,186 @@
       "label": "^term-link: drive link$",
       "answer": {
         "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/book@1\",\"counts\":{\"cards_changed\":1,\"links_added\":2},\"second\":{\"cards_changed\":0,\"cards_refused\":0}}"
+      }
+    },
+    {
+      "label": "^cards publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"cards-book\",\"unit\":\"cards-book/book@1\",\"revision\":1,\"state\":\"ready\"}"
+      }
+    },
+    {
+      "label": "^cards-book claim$",
+      "answer": {
+        "answer": "{\"ok\":true,\"unit\":\"cards-book/book@1\",\"token\":1,\"input_hash\":\"ih-sim\",\"inputs\":{}}"
+      }
+    },
+    {
+      "label": "^whole book: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"book\":\"Key\",\"picked\":9,\"with_faults\":2,\"review\":0,\"models\":1,\"orphans\":0,\"faults\":2,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards/out/jobs.json\"}"
+      }
+    },
+    {
+      "label": "^whole book: check 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"faults\":0,\"orphans\":0,\"jobs\":0,\"applied\":1,\"file\":null}"
+      }
+    },
+    {
+      "label": "^whole book: report$",
+      "answer": {
+        "answer": "{\"ok\":true,\"cards\":9,\"faults_before\":2,\"faults_after\":0,\"verdicts\":{\"fix\":1},\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"applied\":1}"
+      }
+    },
+    {
+      "label": "^cards-book finish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"state\":\"done\",\"unit\":\"cards-book/book@1\",\"complete\":true,\"disposition\":\"published\"}"
+      }
+    },
+    {
+      "label": "^cards-book fault$",
+      "answer": {
+        "answer": "{\"ok\":true,\"unit\":\"cards-book/book@1\",\"state\":\"retry\"}"
+      }
+    },
+    {
+      "label": "^link check: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"book\":\"Key\",\"picked\":9,\"with_faults\":2,\"review\":0,\"models\":1,\"orphans\":0,\"faults\":2,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards-link/out/jobs.json\"}"
+      }
+    },
+    {
+      "label": "^link check: check 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"faults\":0,\"orphans\":0,\"jobs\":0,\"applied\":1,\"file\":null}"
+      }
+    },
+    {
+      "label": "^link check: report$",
+      "answer": {
+        "answer": "{\"ok\":true,\"cards\":9,\"faults_before\":2,\"faults_after\":0,\"verdicts\":{\"fix\":1},\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"applied\":1}"
+      }
+    },
+    {
+      "label": "^link-check: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"link-check/book@1\"],\"coverage\":{}}"
+      }
+    },
+    {
+      "label": "^organize: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"organize\",\"unit\":\"organize/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"organize/book@1\"],\"coverage\":{}}"
+      }
+    },
+    {
+      "label": "^organize: skeleton$",
+      "answer": {
+        "answer": "{\"ok\":true,\"groups\":2,\"jobs\":0,\"file\":null}"
+      }
+    },
+    {
+      "label": "^organize: skeleton apply$",
+      "answer": {
+        "answer": "{\"ok\":true,\"thesis\":\"论点\",\"argument\":2,\"models\":0,\"events\":0,\"written\":{\"structure\":\"Key/1|b\"}}"
+      }
+    },
+    {
+      "label": "^skeleton: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"skeleton\",\"unit\":\"skeleton/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"skeleton/book@1\"],\"coverage\":{}}"
+      }
+    },
+    {
+      "label": "^figures: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"figures\",\"unit\":\"figures/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"figures/book@1\"],\"coverage\":{}}"
+      }
+    },
+    {
+      "label": "^bridge: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"bridge\",\"unit\":\"bridge/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"bridge/book@1\"],\"coverage\":{}}"
+      }
+    },
+    {
+      "label": "^cleanup: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"kind\":\"cleanup_run\",\"step\":\"plan\",\"deletes\":0,\"workspaces\":0,\"plan_file\":\"D:\\\\x\\\\Key\\\\cleanup\\\\settle-plan.json\",\"results_file\":\"D:\\\\x\\\\Key\\\\cleanup\\\\settle-results.json\"}"
+      }
+    },
+    {
+      "label": "^cleanup: settle the run$",
+      "answer": {
+        "answer": "{\"settle\":\"{\\\"ops\\\":0}\",\"ok\":true}"
+      }
+    },
+    {
+      "label": "^cleanup: apply$",
+      "answer": {
+        "answer": "{\"ok\":true,\"fallback\":false,\"provider\":{\"kind\":\"cleanup_run\",\"step\":\"apply\",\"deleted\":0,\"absent\":0,\"failed_count\":0,\"workspaces_removed\":1,\"workspaces_kept\":0,\"ready\":{\"kind\":\"cleanup_ready\",\"claimed\":0,\"done\":0,\"partial\":0,\"retry_count\":0,\"failed_count\":0,\"book\":{\"unit\":\"cleanup/book@1\",\"ok\":true,\"status\":\"complete\",\"cleanup_complete\":true,\"content_complete\":true,\"partial_reasons\":[],\"reconciliation\":0,\"scratch_removed\":0}}},\"ready\":{\"kind\":\"cleanup_ready\",\"claimed\":0,\"done\":0,\"partial\":0,\"retry_count\":0,\"failed_count\":0,\"book\":{\"unit\":\"cleanup/book@1\",\"ok\":true,\"status\":\"complete\",\"cleanup_complete\":true,\"content_complete\":true,\"partial_reasons\":[],\"reconciliation\":0,\"scratch_removed\":0}}}"
+      }
+    },
+    {
+      "label": "^report the run from the ledger$",
+      "answer": {
+        "answer": "{\"schema_version\":1,\"kind\":\"run_report\",\"report\":{\"run-report.json\":{\"path\":\"D:\\\\x\\\\Key\\\\run-report.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"changed\":true},\"run-report.md\":{\"path\":\"D:\\\\x\\\\Key\\\\run-report.md\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"changed\":true}},\"identity\":{\"run_id\":\"r-sim\",\"invocation\":1,\"resume_count\":0},\"completeness\":{\"settled\":true,\"content_complete\":true,\"quality_complete\":true,\"cleanup_complete\":true,\"complete\":true},\"counts\":{\"declared\":3,\"done\":3,\"noop\":0,\"refused\":0,\"failed\":0,\"blocked\":0,\"open\":0},\"gaps\":[],\"placeholders\":{\"status\":\"verified\",\"count\":0,\"models\":[],\"revision\":7},\"timing\":{\"wall_seconds\":1,\"queue_wait_seconds\":0,\"tool_seconds\":0,\"external_run_seconds\":0,\"critical_path\":{\"seconds\":1,\"units\":[]},\"stages\":[]},\"resume\":{\"available\":false,\"reason\":\"no unresolved work remains\",\"manual\":[]},\"bridge\":null,\"publications\":[],\"usage\":{\"status\":\"complete\",\"source\":\"per-run\",\"known_runs\":1,\"missing_runs\":0,\"missing\":[],\"totals\":{\"input_tokens\":100,\"output_tokens\":20},\"estimates\":null,\"by_phase\":{},\"data_faults\":[]}}"
+      }
+    },
+    {
+      "label": "^zt-finalize: term-link round$",
+      "answer": {
+        "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/final@1\",\"plan\":{\"plan_revision\":1,\"plan_hash\":\"ph-sim\",\"cards_changed\":1,\"cards_refused\":0,\"missing_heads\":0,\"complete\":true},\"counts\":{\"cards_changed\":1,\"links_added\":2},\"no_op\":false,\"completion\":{\"state\":\"done\"},\"second\":{\"cards_changed\":0,\"cards_refused\":0}}"
+      }
+    },
+    {
+      "label": "^prepare resume$",
+      "answer": {
+        "answer": "{\"ok\":true,\"groups\":2,\"resumed\":true,\"resume\":{\"status\":\"resumed\",\"invocation\":2,\"resume_count\":1,\"reset\":[],\"reevaluated\":[],\"reclaimed\":[],\"closure\":{\"downstream\":[]}},\"settings\":{\"max_attempts\":3,\"dsh_run_cap\":1200},\"variant\":\"econ\",\"citation_key\":\"Key\",\"run_options\":null}"
+      }
+    },
+    {
+      "label": " gate$",
+      "answer": {
+        "answer": "{\"ok\":true,\"complete\":true,\"counts\":{\"total\":2,\"done\":2,\"failed\":0,\"open\":0}}"
+      }
+    },
+    {
+      "label": "^final correction: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"book\":\"Key\",\"picked\":1,\"with_faults\":1,\"review\":0,\"models\":0,\"orphans\":0,\"faults\":1,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^final correction: check 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"faults\":0,\"orphans\":0,\"jobs\":0,\"applied\":1}"
+      }
+    },
+    {
+      "label": "^final correction: report$",
+      "answer": {
+        "answer": "{\"ok\":true,\"cards\":1,\"faults_before\":1,\"faults_after\":0,\"verdicts\":{\"fix\":1},\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"applied\":1}"
+      }
+    },
+    {
+      "label": "^organize notes: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"book\":\"Key\",\"picked\":2,\"with_faults\":1,\"review\":0,\"models\":0,\"orphans\":0,\"faults\":1,\"jobs\":0,\"file\":null}"
+      }
+    },
+    {
+      "label": "^organize notes: check 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"faults\":0,\"orphans\":0,\"jobs\":0,\"applied\":0}"
+      }
+    },
+    {
+      "label": "^organize notes: report$",
+      "answer": {
+        "answer": "{\"ok\":true,\"cards\":2,\"faults_before\":1,\"faults_after\":0,\"verdicts\":{},\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"applied\":0}"
       }
     }
   ]

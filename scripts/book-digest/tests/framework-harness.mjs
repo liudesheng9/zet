@@ -31,6 +31,9 @@ for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-diges
   builds[which] = { name, ...lib.build(l.bp, lib.loadModules(l.dirs)), bp: l.bp }
 }
 const sources = { econ: builds.econ.script.replace(/^export /m, ''), math: builds.math.script.replace(/^export /m, '') }
+// #176: the book-level stages' one step script, shared by both variants.
+const bookScript = fs.readFileSync(path.join(root, 'scripts', 'book-digest', 'book-steps.ps1'), 'utf8')
+const scriptOf = () => bookScript
 
 const json = (o) => JSON.stringify(o)
 const lastJson = (text) => {
@@ -233,7 +236,7 @@ function backfillLine(mode) {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = [], termCalls = [], termManagers = []
+  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = [], termCalls = [], termManagers = [], bookCalls = [], bookManagers = []
   // S24 (#167): the Term-card branch's fixed two-job plan (both concept jobs, so no review is owed).
   const termJobs = [
     { id: 't001', kind: 'concept', rows: [1], terms: ['均衡'] },
@@ -1149,18 +1152,155 @@ function runtime(kind, opts = {}) {
     return layerFinish(cmd)
   }
 
+  // #176 (docs/workflow-module-structure-proposal.md): a book-level stage's deterministic step (book-steps.ps1)
+  // answered as the script does: the tool commands it runs, the ledger effects that matter, and the job file a plan
+  // wrote. Every command is recorded, so a check reads the same tool lines the real step would run.
+  const bookStep = async (step, o = {}) => {
+    const out = o.__out || 'D:\\x\\Key'
+    const run = (cmd) => lastJson(commandAnswer(cmd).output)
+    const call = (cmd) => commandAnswer(cmd)
+    const cardJobs = (work, line) => {
+      const jobs = (line.jobs || []).map((j) => ({ id: j.id, files: [`${work}\\${j.file || 'job.md'}`], prompt: 'p', ...(j.continue ? { continue: j.continue, fallback: [`${work}\\fallback.md`, `${work}\\${j.file || 'job.md'}`] } : {}) }))
+      const file = `${work}\\out\\jobs.json`
+      layerJobs.set(file, jobs)
+      return { jobs: jobs.length, file }
+    }
+    switch (step) {
+      case 'gate': return { ok: true, ...(run(`zt-digest ledger gate -Out "${out}" -Layer ${o.Layer} -Brief`) || { complete: false, counts: {} }) }
+      case 'prepare': {
+        if (o.Mode === 'resume') {
+          const facts = run(`zt-digest ledger resume -Out "${out}"`)
+          const view = run(`zt-digest ledger status -Out "${out}" -Summary`) || {}
+          let groups = (view.layers && view.layers.digest && view.layers.digest.total) || 0
+          if (!groups) {
+            const view2 = run(`zt-digest ledger gate -Out "${out}" -Layer digest -Brief`) || {}
+            groups = (view2.counts && (view2.counts.total || view2.counts.declared)) || 0
+          }
+          return groups
+            ? { ok: true, groups, resumed: facts.status === 'resumed', resume: facts, settings: view.settings || led.settings, variant: view.variant, citation_key: view.citation_key || 'Key', run_options: view.run_options || null }
+            : { ok: false, step: 'resume', error: 'mode resume found no retained digest groups; prepare the book again' }
+        }
+        if (o.Mode === 'term-cards' || o.Mode === 'term-link') {
+          if (opts.backfillLock) return { ok: false, step: 'prepare', code: 'card_locked', error: 'the Literature tree Key is locked by the owner', message: 'the Literature tree Key is locked by the owner', tree: 'Key', lock_id: 3, hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' }
+          if (opts.backfillConflict) {
+            const message = 'the Term list Key/1|a already holds 1 conflicting Side child: `Key/1|a|b` is a idea Card, not a named Term Card of slot 1'
+            return { ok: false, step: `prepare ${o.Mode}`, code: 'backfill_conflict', error: message, book: 'Key', conflicts: [{ code: 'occupying_children', message }], complete: false }
+          }
+          call(`zt-digest prepare -Out "${out}" ${o.Mode === 'term-cards' ? '-Sections' : '-Validate'} -Brief`)
+          return { ok: true, ...backfillLine(o.Mode) }
+        }
+        if (opts.lockPrepare) return { ok: false, step: 'prepare book', code: 'card_locked', error: 'the Literature tree Key is locked by the owner', message: 'the Literature tree Key is locked by the owner', tree: 'Key', lock_id: 3, hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' }
+        call(`zt-digest prepare ${o.Book ? `-Book '${o.Book}'` : `-Source "${o.Source}" -BibTeX '${o.BibTeX}' -BookTitle '${o.BookTitle}'`} -Out "${out}" -CitationKey ${o.CitationKey} -Variant ${o.Variant} -MaxAttempts ${o.MaxAttempts} -DshRunCap ${o.DshRunCap}${o.RunOptions ? ` -RunOptions '${o.RunOptions}'` : ''} -Apply -Brief`)
+        state.groups = 2
+        led.add('prepare/book@1', 'prepare').state = 'done'
+        if (layerEnabled('terms')) led.add('terms/book@1', 'terms')
+        led.add('cleanup/book@1', 'cleanup')
+        for (let n = 1; n <= (opts.extraCleanupUnits || 0); n++) led.add(`cleanup/extra-g${String(n).padStart(3, '0')}@1`, 'cleanup')
+        for (let n = 1; n <= 2; n++) led.add(`digest/g${String(n).padStart(3, '0')}@1`, 'digest', { n, group: { n } })
+        if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
+        return { ok: true, groups: 2, citation_key: 'Key' }
+      }
+      case 'link-prepare': {
+        if (opts.linkBlocked) return { ok: true, pending: [], no_gap: [], blocked: opts.linkBlocked, gaps: {}, owned_total: 0, gap_total: 0, skipped_total: 0, unowned: 0, digest_state: 'ledger' }
+        return { ok: true, ...(run(`zt-digest prepare-link -Staging "${out}" -Brief`) || {}) }
+      }
+      case 'publish': {
+        if (o.Ledger) return { ok: true, ...(run(`zt-digest ledger publish -Out "${out}" -Layer ${o.Layer}`) || {}) }
+        const more = `${o.Report ? ` -Report "${o.Report}"` : ''}${o.Decisions ? ` -Decisions "${o.Decisions}" -Applied "${o.Applied}"` : ''}${o.Skeleton ? ` -Skeleton "${o.Skeleton}"` : ''}${o.Cards ? ` -Cards "${o.Cards}"` : ''}`
+        return { ok: true, ...(run(`zt-digest finalize -Step stage -Out "${out}" -Layer ${o.Layer}${more}`) || {}) }
+      }
+      case 'cards-start': {
+        if (opts.garbledCardPlan) return { ok: false, step: 'plan', error: 'the card plan printed no line: (abridged)' }
+        const more = `${o.Rules ? ` -Rules "${o.Rules}"` : ''}${o.MaxCards ? ` -MaxCards ${o.MaxCards}` : ''}${o.Sample !== undefined ? ` -Sample ${o.Sample}` : ''}${o.ModelReview ? ' -ModelReview' : ''}${o.Notes ? ` -Notes "${o.Notes}"` : ''}${o.NoOrphans ? ' -NoOrphans' : ''}${o.Cards ? ` -Cards "${o.Cards}"` : ''}`
+        const line = run(`zt-digest card -Step plan -Work "${o.Work}" -Compact -Book ${o.Book} -Staging "${out}"${more}`) || {}
+        return { ok: true, ...line, ...cardJobs(o.Work, line) }
+      }
+      case 'cards-apply': {
+        const line = run(`zt-digest card -Step apply -Work "${o.Work}" -MaxJobs 30`) || {}
+        if (line.code === 'card_locked' || line.error === 'card_locked') return line
+        if (state.applyPending > 0) state.applyPending = Math.max(0, state.applyPending - 1)
+        const check = run(`zt-digest card -Step check -Work "${o.Work}" -Compact`) || {}
+        return { ok: true, ...check, applied: Number(line.applied_jobs) || 0, ...cardJobs(o.Work, check) }
+      }
+      case 'cards-finish': {
+        const line = run(`zt-digest card -Step apply -Work "${o.Work}" -MaxJobs 30`) || {}
+        const report = run(`zt-digest card -Step report -Work "${o.Work}"`) || {}
+        return { ok: true, ...report, applied: Number(line.applied_jobs) || 0 }
+      }
+      case 'unit-fail': {
+        const fault = { schema_version: 1, unit: o.Unit, input_hash: o.InputHash || `ih-${o.Unit}`, cause: o.Cause, ...(o.Code ? { code: o.Code } : {}) }
+        const line = run(`zt-digest ledger fail -Out "${out}" -Unit "${o.Unit}" -Token ${o.Token} -Fault '${JSON.stringify(fault).replace(/'/g, "''")}'`) || {}
+        return { ok: true, unit: o.Unit, state: line.state || 'retry' }
+      }
+      case 'cards-book-start': {
+        const published = run(`zt-digest ledger publish -Out "${out}" -Layer cards-book`) || {}
+        const claim = run(`zt-digest ledger next -Out "${out}" -Layer cards-book -Take 1 -Owner "cards-book claim" -Wait ${o.Wait || 300} -Lease ${o.Lease || 300} -Brief`) || {}
+        const units = Array.isArray(claim.units) ? claim.units : []
+        const unit = units.find((u) => u.id === published.unit) || units[0]
+        if (!unit) return { ok: true, unit: null, revision: published.unit, waiting: true, gate: run(`zt-digest ledger gate -Out "${out}" -Layer cards-book -Brief`) || { complete: false } }
+        return { ok: true, unit: unit.id, token: unit.token, input_hash: unit.input_hash || `ih-${unit.id}`, inputs: unit.inputs || {} }
+      }
+      case 'cards-book-finish': {
+        const line = run(`zt-digest book-cards-finish -Out "${out}" -Work "${o.Work}" -Unit "${o.Unit}" -Token ${o.Token}`) || {}
+        if (line.state === 'done' || line.complete === true) return { ok: true, ...line }
+        const held = ((run(`zt-digest ledger status -Out "${out}" -Units ${o.Unit}`) || {}).units || [])[0]
+        if (held && (held.state === 'done' || held.state === 'noop')) return { ok: true, unit: o.Unit, state: held.state, disposition: held.disposition, from: 'ledger' }
+        const fault = { schema_version: 1, unit: o.Unit, input_hash: o.InputHash || `ih-${o.Unit}`, cause: line.error || 'the checked completion did not complete' }
+        const failed = run(`zt-digest ledger fail -Out "${out}" -Unit "${o.Unit}" -Token ${o.Token} -Fault '${JSON.stringify(fault).replace(/'/g, "''")}'`) || {}
+        return { ok: false, step: 'book-cards-finish', unit: o.Unit, state: failed.state || 'retry', error: line.error }
+      }
+      case 'organize-survey': return { ok: true, ...(run(`zt-digest organize-survey -Staging "${out}" -Work "${o.Work}"`) || {}) }
+      case 'organize-apply': return { ok: true, ...(run(`zt-digest organize-apply -Work "${o.Work}"`) || {}) }
+      case 'skeleton-start': {
+        const line = run(`zt-digest skeleton -Step plan -Staging "${out}" -Work "${o.Work}"`) || {}
+        return { ok: true, ...line, ...cardJobs(o.Work, line) }
+      }
+      case 'skeleton-finish': return { ok: true, ...(run(`zt-digest skeleton -Step apply -Staging "${out}" -Work "${o.Work}" -Decisions "${o.Decisions}" -Apply`) || {}) }
+      case 'figures': return { ok: true, ...(run(`zt-digest figures -CitationKey ${o.CitationKey} -Staging "${out}"${o.FileId ? ` -FileId ${o.FileId}` : ''} -Report "${out}\\figures-report.json" -Apply`) || {}) }
+      case 'bridge-start': {
+        const line = run(`zt-digest bridge -Step plan -Staging "${out}" -CitationKey ${o.CitationKey} -Work "${o.Work}" -Profile ${o.Profile} -MaxSources ${o.MaxSources} -Candidates ${o.Candidates}${o.Books ? ` -Books ${o.Books}` : ''}`) || {}
+        return { ok: true, ...line, ...cardJobs(o.Work, line) }
+      }
+      case 'bridge-report': return { ok: true, ...(run(`zt-digest bridge -Step report -Staging "${out}" -CitationKey ${o.CitationKey} -Work "${o.Work}"`) || {}) }
+      case 'bridge-apply': return { ok: true, ...(run(`zt-digest bridge -Step apply -Staging "${out}" -CitationKey ${o.CitationKey} -Work "${o.Work}" -ReportId ${o.ReportId}${o.Accept ? ` -Accept '${o.Accept}'` : ''}${o.AcceptEarlier ? ` -AcceptEarlier '${o.AcceptEarlier}'` : ''} -Apply`) || {}) }
+      case 'audit': return { ok: true, ...(run(`zt-digest audit${o.CitationKey ? ` -CitationKey ${o.CitationKey}` : ''} -Out "${out}"`) || {}) }
+      case 'finalize-plan': { call(`zt-digest finalize -Step plan -Out "${out}"`); return { ok: true, ...finalizePlan(opts.finalize || 'fix') } }
+      case 'finalize-changes': { call(`zt-digest finalize -Step changes -Out "${out}"`); return { ok: true, ...finalizeChanges(opts.finalizeRecovered !== true, opts) } }
+      case 'finalize-scope': { call(`zt-digest finalize -Step scope -Out "${out}" -FixWork "${o.FixWork}"`); return { ok: true, ...finalizeScope(opts) } }
+      case 'finalize-refresh': { call(`zt-digest finalize -Step refresh -Out "${out}" -Layer ${o.Layer} -Report "${o.Report}"`); return { ok: true, ...finalizeRefresh(o.Layer) } }
+      case 'finalize-final': { call(`zt-digest finalize -Step final -Out "${out}"`); return { ok: true, ...finalizeFinal(opts.finalize || 'fix', opts) } }
+      case 'term-link': {
+        const scoped = `${o.Round ? ` -Round ${o.Round}` : ''}${(o.Cards || []).length ? ` -Cards '${o.Cards.join(',')}'` : ''}`
+        const planned = run(`zt-digest term-link -Step plan -Staging "${out}" -Occurrences ${o.Occurrences || 'first'}${scoped}`) || {}
+        const claim = run(`zt-digest ledger next -Out "${out}" -Layer termlink -Take 1 -Owner "term-link" -Wait 60 -Lease 3600`) || {}
+        const unit = (claim.units || []).find((u) => u && String(u.id).startsWith('termlink/'))
+        if (!unit) return { ok: true, status: 'skipped', reason: 'the Term-link unit is not ready: its dependencies are not done', plan: planned }
+        const applied = run(`zt-digest term-link -Step apply -Staging "${out}" -Occurrences ${o.Occurrences || 'first'}${scoped} -Token ${unit.token} -Apply`) || {}
+        if (applied.complete !== true) return { ok: false, status: 'failed', unit: unit.id, error: `the Term-link pass stopped as ${applied.code || 'incomplete'}` }
+        run(`zt-digest ledger done -Out "${out}" -Unit "${unit.id}" -Token ${unit.token} -Outputs "${applied.report || `${out}\\term-link\\apply.json`}"`)
+        const second = run(`zt-digest term-link -Step plan -Staging "${out}" -Occurrences ${o.Occurrences || 'first'}${scoped}`) || {}
+        return { ok: true, status: 'done', unit: unit.id, plan: planned, counts: applied.counts, no_op: applied.no_op === true, completion: { state: 'done' }, second: { cards_changed: second.cards_changed, cards_refused: second.cards_refused } }
+      }
+      case 'cleanup-start': {
+        const line = run(`zt-digest cleanup-run -Out "${out}" -Step plan`) || {}
+        return { ok: true, ...line, plan_file: `${out}\\cleanup\\settle-plan.json`, results_file: `${out}\\cleanup\\settle-results.json` }
+      }
+      case 'cleanup-apply': {
+        const line = run(`zt-digest cleanup-run -Out "${out}" -Step apply -Owner cleanup-run`)
+        if (line) return { ok: true, fallback: false, provider: line, ready: line.ready }
+        const ready = run(`zt-digest cleanup-finish -Out "${out}" -Ready -Owner cleanup-run`) || {}
+        return { ok: true, fallback: true, provider: null, ready }
+      }
+      case 'cleanup-report': return { ok: true, ...(run(`zt-digest ledger report -Out "${out}"`) || {}) }
+      default: return { ok: false, step, error: `the stand-in has no ${step} step` }
+    }
+  }
+
   const answer = async (prompt, callOpts) => {
     const text = String(prompt)
     const label = callOpts.label || ''
     const cmd = text.match(/zt-digest [a-z-]+ -[A-Za-z][^\n]*/) || text.match(/pwsh -NoProfile -File[^\n]*/)
     calls.push({ label, phase: callOpts.phase, model: callOpts.model, agentType: callOpts.agentType, cmd: cmd ? cmd[0] : '', prompt: text })
-    // The finite finalization (#86): the plan's branch decides whether the one correction cycle
-    // runs, and the final audit reports the fresh revision.
-    if (/^finalize plan$/.test(label)) return { ok: true, output: json(finalizePlan(opts.finalize || 'fix')) }
-    if (/^finalize changes$/.test(label)) return { ok: true, output: json(finalizeChanges(opts.finalizeRecovered !== true, opts)) }
-    if (/^finalize scope$/.test(label)) return { ok: true, output: json(finalizeScope(opts)) }
-    if (/^finalize refresh /.test(label)) return { ok: true, output: json(finalizeRefresh(label.replace('finalize refresh ', ''))) }
-    if (/^finalize final$/.test(label)) return { ok: true, output: json(finalizeFinal(opts.finalize || 'fix', opts)) }
     if (text.startsWith('You run one compiler chain')) return await chainAnswer(text, callOpts)
     if (text.startsWith('You run one block')) return await blockAnswer(text, callOpts)
     if (text.startsWith('You drive DeepSeek Harness')) {
@@ -1177,24 +1317,6 @@ function runtime(kind, opts = {}) {
       if (lines.length) { const r = commandAnswer(lines[0]); return { ok: r.ok, output: r.output, results: [], deleted: 0 } }
       return { ok: true, output: '', results: [], deleted: 0 }
     }
-    // zt-digest-lib v37 (S1): these commands run through the relay; the stand-in answers them by label, in the
-    // relay's shape (ok and the last line), before the generic command path.
-    if (/^Run this PowerShell command once/.test(text) && label === 'prepare book') {
-      if (opts.lockPrepare) return { ok: false, output: `the Literature tree Key is locked by the owner\nthe command failed (exit 2)\n${json({ ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', mode: 'prepare', step: 'apply', tree: state.lockTree || 'Key', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z', hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' })}` }
-      state.groups = 2
-      led.add('prepare/book@1', 'prepare').state = 'done'
-      if (layerEnabled('terms')) led.add('terms/book@1', 'terms')
-      led.add('cleanup/book@1', 'cleanup')
-      for (let n = 1; n <= (opts.extraCleanupUnits || 0); n++) led.add(`cleanup/extra-g${String(n).padStart(3, '0')}@1`, 'cleanup')
-      for (let n = 1; n <= 2; n++) led.add(`digest/g${String(n).padStart(3, '0')}@1`, 'digest', { n, group: { n } })
-      if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
-      return { ok: true, output: json({ ok: true, groups: 2, citation_key: 'Key', out: 'D:\\x\\Key' }) }
-    }
-    if (/^Run this PowerShell command once/.test(text) && /^prepare link pass$/.test(label)) {
-      const full = opts.linkBlocked ? { pending: [], no_gap: [], blocked: opts.linkBlocked, groups: [], unowned: 0 } : CANNED['prepare-link']()
-      const gaps = Object.fromEntries((full.groups || []).map((g) => [String(g.n), g.gaps]))
-      return { ok: true, output: json({ pending: full.pending, no_gap: full.no_gap || [], blocked: (full.blocked || []).map((b) => ({ n: b.n, unit: b.unit, state: b.state, reason: b.reason })), gaps, owned_total: full.owned_total || 0, gap_total: full.gap_total || 0, skipped_total: full.skipped_total || 0, unowned: full.unowned || 0, digest_state: full.digest_state || null }) }
-    }
     if (/^Run this PowerShell command once/.test(text) && (label === 'find models: whole book' || label === 'find models: explain')) {
       return { ok: true, output: json({ models: kind === 'math'
         ? [{ address: 'Key/2|e', title: '理论', form: 'theory', level: null, parts: 0 }, { address: 'Key/2|c', title: '介值定理', form: 'theorem', level: 'formal', parts: 0 }]
@@ -1204,19 +1326,6 @@ function runtime(kind, opts = {}) {
       // S10: the compiler reads the plans the architect wrote (model -Step plan-status).
       if (opts.noPlanFile) return { ok: true, output: json({ ok: true, step: 'plan-status', planned: 0, derive: false, plans: [{ model: 'Key/2|c', status: 'failed', parts: 0, derivations: 0 }] }) }
       return { ok: true, output: json({ ok: true, step: 'plan-status', planned: 1, derive: true, plans: [{ model: 'Key/2|c', status: 'planned', level: 'formal', parts: 4, derivations: 1 }] }) }
-    }
-    // S25 (#168): the backfill's own preparation. It is one relayed `zt-digest prepare` command; a
-    // Lock stops the run with the typed refusal and a conflict with the backfill_conflict line, both
-    // before any Term writer or provider job is dispatched.
-    if (/^Run this PowerShell command once/.test(text) && /^prepare backfill: /.test(label)) {
-      const mode = label.replace('prepare backfill: ', '')
-      if (opts.backfillLock) {
-        return { ok: false, output: `${json({ ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', mode: 'prepare', step: mode === 'term-cards' ? 'sections' : 'validate', tree: 'Key', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z', hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' })}` }
-      }
-      if (opts.backfillConflict) {
-        return { ok: false, output: json({ ok: false, code: 'backfill_conflict', error: 'the Term list Key/1|a already holds 1 conflicting Side child', book: 'Key', conflicts: [{ code: 'occupying_children', message: 'the Term list Key/1|a already holds 1 conflicting Side child: `Key/1|a|b` is a idea Card, not a named Term Card of slot 1' }], complete: false }) }
-      }
-      return { ok: true, output: json(backfillLine(mode)) }
     }
     if (/^Run this PowerShell command once/.test(text)) {
       const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
@@ -1250,7 +1359,7 @@ function runtime(kind, opts = {}) {
     if (text.startsWith('You are a DeepSeek subagent manager for a ZET workflow step (')) {
       const stepLabel = (text.match(/workflow step \(([^)]*)\)/) || [])[1] || label
       const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
-      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps)\.ps1[^\n]*/) || [])[0] || ''
+      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps)\.ps1[^\n]*/) || [])[0] || ''
       const reply = (value, id) => {
         const session = sessionOf(id)
         const recorded = recordJob(text, session, 'run', 1, true)
@@ -1299,6 +1408,18 @@ function runtime(kind, opts = {}) {
         layerManagers.push({ label: stepLabel, phase: callOpts.phase, kind: 'drive', layer, step, jobs: [], prompt: text, cmd: command })
         return reply(await layerStep(command), `drive-${layer}-${step}`)
       }
+      // #176: a book-level stage's one step (book-steps.ps1). Its -Json options are one level deeper in the
+      // prompt's JSON string, so they are decoded from the prompt text and not from the unescaped command.
+      if (/book-steps\.ps1/.test(command)) {
+        const step = (command.match(/-Step ([\w-]+)/) || [])[1]
+        const escaped = (/ -Json '([^']*)'/.exec(text) || [])[1] || '{}'
+        let options = {}
+        try { options = JSON.parse(JSON.parse(`"${escaped}"`)) } catch (e) { options = {} }
+        const out = (command.match(/-Out "([^"]+)"/) || [])[1] || 'D:\\x\\Key'
+        bookManagers.push({ label: stepLabel, phase: callOpts.phase, kind: 'drive', step, prompt: text, cmd: command, options })
+        bookCalls.push({ step, cmd: command, options, label: stepLabel })
+        return reply(await bookStep(step, { ...options, __out: out }), `drive-book-${step}`)
+      }
       return reply({ ok: false, step: 'unknown', error: 'the drive command names no script step' }, 'drive-unknown')
     }
     // S24 (#167): a Term writer, reviewer or fixer manager runs entries [from, to] of the job file the
@@ -1327,34 +1448,6 @@ function runtime(kind, opts = {}) {
       return { ok: true, deleted: results.filter((r) => r.deleted).length, not_deleted: results.filter((r) => r.session_id && !r.deleted).map((r) => r.session_id), results }
     }
     if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
-    if (label === 'prepare book') {
-      // S17 / #140: a preparation the owner's Lock refused answers the tool's typed refusal line and
-      // exits 2, so the stage reads `card_locked` instead of a generic preparation failure.
-      if (opts.lockPrepare) return { ok: false, groups: 0, error: `the Literature tree Key is locked by the owner\nthe command failed (exit 2)\n${json({ ok: false, code: 'card_locked', error: 'the Literature tree Key is locked by the owner', mode: 'prepare', step: 'apply', tree: state.lockTree || 'Key', lock_id: 3, locked_at: '2026-10-22T10:00:00.000Z', hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' })}` }
-      state.groups = 2
-      led.add('prepare/book@1', 'prepare').state = 'done'
-      if (layerEnabled('terms')) led.add('terms/book@1', 'terms')
-      led.add('cleanup/book@1', 'cleanup')
-      // trial 10: more cleanup units than three rounds of eight claims, some of them failing every time.
-      for (let n = 1; n <= (opts.extraCleanupUnits || 0); n++) led.add(`cleanup/extra-g${String(n).padStart(3, '0')}@1`, 'cleanup')
-      for (let n = 1; n <= 2; n++) led.add(`digest/g${String(n).padStart(3, '0')}@1`, 'digest', { n, group: { n } })
-      if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
-      return { ok: true, groups: 2, usage_before: { input_cache_miss: 0, cached_read: 0, output: 0, cost: 0, calls: 0 } }
-    }
-    if (label === 'resume run') {
-      // #87: a resume-run agent runs `zt-digest ledger resume`, which the ledger stand-in answers (below).
-      return commandAnswer((text.match(/zt-digest ledger resume[^\n]*/) || [])[0] || 'zt-digest ledger resume')
-    }
-    if (label === 'resume status') {
-      // grossman2002integration trial 17: a relay returned the summary without `layers` (and without
-      // `counts.per_layer`), with a `layers_open` map of its own in their place.
-      if (scenario.rewrittenSummary) {
-        const { layers, ...rest } = statusSummary(kind, led)
-        const { per_layer, ...counts } = rest.counts || {}
-        return { ok: true, output: json({ ...rest, counts, layers_open: Object.fromEntries(Object.entries(layers || {}).map(([k, v]) => [k, v.open || 0])) }) }
-      }
-      return { ok: true, output: / -Summary\b/.test(text) ? json(statusSummary(kind, led)) : json({ schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', archive_identity: { archive_id: 'a1' }, units: [...led.units.values()] }) }
-    }
     if (/^math: /.test(label)) {
       const key = label.replace('math: ', '')
       const fn = CANNED[`math ${key}`]
@@ -1372,32 +1465,17 @@ function runtime(kind, opts = {}) {
       const groups = [...text.matchAll(/Group (\d+):/g)].map((m) => Number(m[1]))
       return { reports: groups.map((g) => ({ group: g, status: 'done', cards: 3, models: 0, events: 0, links: 2, topics: [], errors: '无', deleted: true })) }
     }
-    if (/^audit cards$/.test(label)) return { ok: true, output: json(CANNED.audit()) }
-    if (/^prepare link pass$/.test(label)) return { ok: true, ...(opts.linkBlocked ? { pending: [], blocked: opts.linkBlocked, groups: [], unowned: 0, cards_all: '' } : CANNED['prepare-link']()) }
-    // zt-dsh-cleanup v11: one agent, three calls; the stand-in bridge runs the plan the script wrote.
-    if (label === 'cleanup: settle the run') {
-      const plan = (text.match(/zt-digest cleanup-run -Out "[^"]+" -Step plan/) || [])[0]
-      const apply = (text.match(/zt-digest cleanup-run -Out "[^"]+" -Step apply -Owner "[^"]+"/) || [])[0]
-      const fallback = (text.match(/zt-digest cleanup-finish -Out "[^"]+" -Ready -Owner "[^"]+"/) || [])[0]
-      const planned = commandAnswer(plan)
-      if (opts.settleMissing) {
-        const r = commandAnswer(fallback)
-        return { plan: planned.output, settle: 'tool not found: mcp__deepseek__deepseek_settle', ok: r.ok, output: r.output }
-      }
-      settleCalls.push(state.settlePlan.slice())
-      state.settleResults = state.settlePlan.map((op) => op.op === 'delete'
+    // zt-dsh-cleanup v12 (#176): one Haiku manager makes the one call no script can, `deepseek_settle`, on the
+    // plan the cleanup plan step wrote. It runs no command and deletes nothing itself.
+    if (/^Settle the DeepSeek Harness conversations and workspaces/.test(text)) {
+      if (opts.settleMissing) return { settle: 'tool not found: mcp__deepseek__deepseek_settle', ok: true }
+      settleCalls.push((state.settlePlan || []).slice())
+      state.settleResults = (state.settlePlan || []).map((op) => op.op === 'delete'
         ? (opts.refuseDelete && opts.refuseDelete.test(op.session_id) ? { ...op, status: 'failed', error: 'still open, nothing deleted' } : { ...op, status: 'deleted' })
         : { ...op, status: 'removed', listed: [] })
-      const r = commandAnswer(apply)
-      return { plan: planned.output, settle: json({ ops: state.settleResults.length }), ok: r.ok, output: r.output }
+      return { settle: json({ ops: state.settleResults.length }), ok: true }
     }
     if (/^cleanup model managers/.test(label)) return { late_deleted: 0, folders: 1 }
-    if (/^show figures$/.test(label)) return { ok: true, output: json(CANNED.figures()) }
-    if (/^organize: /.test(label)) {
-      const key = label.replace('organize: ', '')
-      const fn = CANNED[`organize-${key}`] || CANNED[`organize-${key.replace(' ', '-')}`]
-      return key === 'decisions' ? { thesis: '论点', merges: 0, moves: 0, notes: 1, report: '无' } : { ok: true, output: json(fn ? fn() : { ok: true }) }
-    }
     if (/^terms: /.test(label) || /^skeleton: /.test(label) || /^bridge: /.test(label) || /^explain: /.test(label) || /^cards /.test(label) || /^events |^findings /.test(label)) {
       const tool = text.match(/zt-digest ([a-z-]+) -Step ([a-z-]+)/)
       if (tool) {
@@ -1409,7 +1487,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, layerCalls, layerManagers, layerJobs, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1522,11 +1600,11 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   const slowCap = await run('econ', { ...base, dshRunCap: 3601 })
   check(slowCap.thrown && /args\.dshRunCap must be within \[60, 3600\]/.test(slowCap.thrown.message), 'settings: dshRunCap is bounded to 60..3600 seconds by the frozen args declaration')
   const settingsRun = await run('econ', { ...base, figures: false, maxAttempts: 5, dshRunCap: 600, until: 'digest' })
-  const prep = settingsRun.calls.find((c) => c.label === 'prepare book')
-  check(prep && /-Variant econ -MaxAttempts 5 -DshRunCap 600/.test(prep.cmd) && /-Apply/.test(prep.cmd), 'settings: the effective settings are persisted at preparation (-Variant, -MaxAttempts, -DshRunCap, -Apply)')
+  const prep = settingsRun.bookCalls.find((c) => c.step === 'prepare')
+  check(prep && prep.options.Mode === 'full' && prep.options.Variant === 'econ' && prep.options.MaxAttempts === 5 && prep.options.DshRunCap === 600, 'settings: the effective settings are persisted at preparation (-Variant econ -MaxAttempts 5 -DshRunCap 600 -Apply)')
   const layerSwitch = await run('econ', { ...base, figures: false, terms: false, until: 'digest' })
-  const prepSwitch = layerSwitch.calls.find((c) => c.label === 'prepare book')
-  check(prepSwitch && /-RunOptions '\{/.test(prepSwitch.cmd) && /"terms":false/.test(prepSwitch.cmd), 'settings: a disabled layer is frozen into the prepared target (-RunOptions), so no unit waits for it')
+  const prepSwitch = layerSwitch.bookCalls.find((c) => c.step === 'prepare')
+  check(prepSwitch && /"terms":false/.test(prepSwitch.options.RunOptions || ''), 'settings: a disabled layer is frozen into the prepared target (-RunOptions), so no unit waits for it')
 }
 
 // ================================================================================================================
@@ -1594,9 +1672,9 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const resumeGate = await run('econ', { out: 'D:\\x\\Key', mode: 'resume', source: 'S.md' })
   check(resumeGate.result.stage === 'args' && /accepts only out/.test(resumeGate.result.error), 'args: mode resume refuses a new source instead of reinterpreting the retained run')
   const resumeRun = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' })
-  const resumeCommand = resumeRun.calls.find((c) => c.label === 'resume run')
-  check(!!resumeCommand && /zt-digest ledger resume -Out "D:\\x\\Key"/.test(resumeCommand.prompt), 'resume: mode resume runs the one supported ledger resume for the retained output directory')
-  check(!resumeRun.calls.some((c) => c.label === 'prepare book'), 'resume: mode resume never prepares the book again')
+  const resumeCommand = resumeRun.bookCalls.find((c) => c.step === 'prepare' && c.options.Mode === 'resume')
+  check(!!resumeCommand && resumeRun.commands.some((c) => /^zt-digest ledger resume -Out "D:\\x\\Key"/.test(c)), 'resume: mode resume runs the one supported ledger resume for the retained output directory')
+  check(!resumeRun.bookCalls.some((c) => c.step === 'prepare' && c.options.Mode === 'full'), 'resume: mode resume never prepares the book again')
   check(resumeRun.result.stage === 'prepare' && /no retained digest groups/.test(resumeRun.result.error), 'resume: a resume of a folder without a retained prepared run halts at prepare with its reason')
   const m = builds.math.bp
   const mathAfter = (id) => (m.stages.find((s) => s.id === id).after || []).join(',')
@@ -1630,7 +1708,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // zt-term-cards v4 / zt-term-link v3 (#172): Haiku managers and DeepSeek jobs only. Every deterministic
   // step is a term-steps.ps1 call that a DeepSeek drive job runs; no Claude agent relays a command.
   const full = await run('econ', { ...base, figures: false })
-  check(full.report.stages['term-cards'].status === 'done' && full.report.stages['term-link'].status === 'done', `v4: a full run completes both Term stages (${JSON.stringify([full.report.stages['term-cards'], full.report.stages['term-link']])})`)
+  check(full.report.stages['term-cards'].status === 'done' && full.report.stages['term-link'].status === 'done', `v4: a full run completes both Term stages (${JSON.stringify([full.report.stages['term-cards'], full.report.stages['term-link']])}, halted ${JSON.stringify(full.report.halted)})`)
   const termRelays = full.calls.filter((c) => /^term-(cards|link): /.test(c.label || '') && c.agentType === 'zt-relay')
   check(termRelays.length === 0, `v4: no Term stage step runs as a Claude relay (${termRelays.map((c) => c.label).join(', ')})`)
   const termAgents = full.calls.filter((c) => /^term-(cards|link): /.test(c.label || ''))
@@ -1646,11 +1724,11 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(full.result.term_link.status === 'done' && full.result.term_link.counts && full.result.term_link.counts.cards_changed === 1, `v4: the report carries the applied Term-link pass (${JSON.stringify(full.result.term_link)})`)
   // The frozen layer switches: a disabled Term layer freezes into the prepared target and runs no stage.
   const noCards = await run('econ', { ...base, figures: false, termCards: false })
-  const noCardsPrep = noCards.calls.find((c) => c.label === 'prepare book')
-  check(noCardsPrep && /"termCards":false/.test(noCardsPrep.cmd) && noCards.report.stages['term-cards'].status === 'skipped' && noCards.termCalls.filter((c) => c.tool === 'term-steps').every((c) => c.step === 'link'), `S24: termCards false is frozen and skips the Term-card branch (${JSON.stringify([!!noCardsPrep, noCardsPrep && noCardsPrep.cmd && noCardsPrep.cmd.slice(0, 300), noCards.report.stages['term-cards'], noCards.termCalls.map((c) => c.step)])})`)
+  const noCardsPrep = noCards.bookCalls.find((c) => c.step === 'prepare' && c.options.Mode === 'full')
+  check(noCardsPrep && /"termCards":false/.test(noCardsPrep.options.RunOptions || '') && noCards.report.stages['term-cards'].status === 'skipped' && noCards.termCalls.filter((c) => c.tool === 'term-steps').every((c) => c.step === 'link'), `S24: termCards false is frozen and skips the Term-card branch (${JSON.stringify([!!noCardsPrep, noCardsPrep && noCardsPrep.cmd && noCardsPrep.cmd.slice(0, 300), noCards.report.stages['term-cards'], noCards.termCalls.map((c) => c.step)])})`)
   const noLink = await run('econ', { ...base, figures: false, termLink: false }, { termLinkOff: true })
-  const noLinkPrep = noLink.calls.find((c) => c.label === 'prepare book')
-  check(noLinkPrep && /"termLink":false/.test(noLinkPrep.cmd) && noLink.report.stages['term-link'].status === 'skipped' && noLink.termCalls.every((c) => c.step !== 'link'), 'S24: termLink false is frozen and skips the pass')
+  const noLinkPrep = noLink.bookCalls.find((c) => c.step === 'prepare' && c.options.Mode === 'full')
+  check(noLinkPrep && /"termLink":false/.test(noLinkPrep.options.RunOptions || '') && noLink.report.stages['term-link'].status === 'skipped' && noLink.termCalls.filter((c) => c.tool === 'term-steps').every((c) => c.step !== 'link'), 'S24: termLink false is frozen and skips the pass')
   // A job that is not ready fails only itself; every other job completes; the ready prefix is published and linked.
   const partial = await run('econ', { ...base, figures: false }, { termJobCount: 10, termNotReady: ['t001'] })
   const written = new Set(partial.termManagers.filter((m) => m.kind === 'write').flatMap((m) => m.jobs))
@@ -1712,7 +1790,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const cards = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards' })
   check(!cards.report.halted && cards.result && cards.result.mode === 'term-cards', `S25 term-cards: the run reaches its report (${cards.report.halted ? cards.report.halted.error : cards.result && cards.result.mode})`)
   const cardsPrepare = cards.calls.find((c) => c.label === 'prepare backfill: term-cards')
-  check(!!cardsPrepare && /zt-digest prepare -Out "D:\\x\\Key" -Sections -Brief/.test(cardsPrepare.cmd || ''), `S25 term-cards: prepare runs the sections-only branch on the prepared run (${cardsPrepare && cardsPrepare.cmd})`)
+  check(!!cardsPrepare && cards.commands.some((c) => /^zt-digest prepare -Out "D:\\x\\Key" -Sections -Brief/.test(c)), `S25 term-cards: prepare runs the sections-only branch on the prepared run (${cardsPrepare && cardsPrepare.label})`)
   check(cards.calls.every((c) => !/prepare book/.test(c.label || '')), 'S25 term-cards: the book is never prepared again')
   check(cards.report.stages.source && cards.report.stages.source.status !== 'failed', 'S25 term-cards: its declared source stage runs (the source passages the Term cards need)')
   check(cards.report.stages['term-cards'].status === 'done' && cards.result.term_cards.status === 'done' && cards.result.term_cards.publication && cards.result.term_cards.publication.complete === true, `S25 term-cards: the Term-card branch completes from its publication (${JSON.stringify(cards.result.term_cards)})`)
@@ -1731,7 +1809,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const link = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link' })
   check(!link.report.halted && link.result && link.result.mode === 'term-link', `S25 term-link: the run reaches its report (${link.report.halted ? link.report.halted.error : link.result && link.result.mode})`)
   const linkPrepare = link.calls.find((c) => c.label === 'prepare backfill: term-link')
-  check(!!linkPrepare && /zt-digest prepare -Out "D:\\x\\Key" -Validate -Brief/.test(linkPrepare.cmd || ''), `S25 term-link: prepare validates the existing book and staging (${linkPrepare && linkPrepare.cmd})`)
+  check(!!linkPrepare && link.commands.some((c) => /^zt-digest prepare -Out "D:\\x\\Key" -Validate -Brief/.test(c)), `S25 term-link: prepare validates the existing book and staging (${linkPrepare && linkPrepare.label})`)
   check(link.report.stages.source && link.report.stages.source.status === 'not-in-mode', `S25 term-link: the source stage never runs (${link.report.stages.source && link.report.stages.source.status})`)
   check(link.report.stages['term-cards'].status === 'not-in-mode' && link.termCalls.every((c) => c.tool !== 'term-cards'), 'S25 term-link: the Term-card branch is not dispatched')
   check(link.termCalls.some((c) => c.step === 'link') && !link.termCalls.some((c) => c.step === 'start'), `S25 term-link: the deterministic pass runs and no Term-card step (${link.termCalls.map((c) => `${c.tool}:${c.step}`).join(',')})`)
@@ -1947,7 +2025,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // zt-dsh-cleanup v11: when the bridge has no deepseek_settle (an old bridge, the Desktop down), the agent settles the
   // units whose conversations are already gone and the stage reports the provider batch as not run.
   const { logs, cleanupRunCalls, cleanupReadyCalls, result } = await run('econ', { ...base, figures: false }, { settleMissing: true })
-  check(cleanupRunCalls.join() === 'plan' && cleanupReadyCalls.length === 1 && logs.some((l) => /the provider batch did not run \(tool not found/.test(l)), `settle missing: the stage falls back to cleanup-finish -Ready and says why (${cleanupRunCalls.join()})`)
+  check(cleanupRunCalls.join() === 'plan,apply' && cleanupReadyCalls.length === 1 && logs.some((l) => /the provider batch did not run \(/.test(l)), `settle missing: the stage falls back to cleanup-finish -Ready and says why (${cleanupRunCalls.join()})`)
   check(result.cleanup && result.cleanup.provider === null, 'settle missing: no provider facts are reported as recorded')
 }
 {
@@ -2080,9 +2158,9 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 {
   // trial 10: the relay abridged the whole-book card plan line, the cycle ran and reported, and the stage faulted
   // its claim as "plan failed: no output". A plan line the relay rewrote is no failure when the report line reads.
-  const { calls, logs } = await run('econ', { ...base, figures: false }, { garbledCardPlan: true })
-  check(!calls.some((c) => c.label === 'cards-book fault'), 'garbled plan: the whole-book cycle that reported is not faulted')
-  check(calls.some((c) => c.label === 'cards-book finish: cards-book/book@1' || /^cards-book finish/.test(c.label)) && logs.some((l) => /plan line came back unreadable/.test(l)), 'garbled plan: the stage goes on to its checked finish and logs why')
+  const { calls, failClasses, result } = await run('econ', { ...base, figures: false }, { garbledCardPlan: true })
+  check(calls.some((c) => c.label === 'cards-book fault'), 'garbled plan: a plan step that answers no line stops the whole-book cycle')
+  check(failClasses.some((f) => f.unit === 'cards-book/book@1' && f.code === 'missing_result') && !calls.some((c) => /^cards-book finish/.test(c.label)), 'garbled plan: the claim keeps its missing-result fault and no finish runs')
 }
 {
   // trial 10: three rounds of eight cleanup claims went to the same failing units, and eight link cleanup units were
@@ -2095,8 +2173,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(missing.length === 0, `cleanup rounds: every cleanup unit is tried although nine of them keep failing (${missing.length} never tried)`)
   const most = Math.max(...extras.map((u) => cleanupFinishes.filter((c) => c === u).length))
   check(most <= 3, `cleanup rounds: a failing unit is tried at most three times in the stage (${most})`)
-  const settleAgents = calls.filter((c) => /^cleanup: /.test(c.label)).length
-  check(cleanupReadyCalls.length === 1 && settleAgents === 1 && !calls.some((c) => /^cleanup (cleanup|extra)\/|^cleanup: claim round|^cleanup: .* fault$/.test(c.label)), `cleanup rounds: one cleanup agent settles every unit through one cleanup-finish -Ready (${settleAgents} agent(s), ${cleanupReadyCalls.length} call(s))`)
+  const settleAgents = calls.filter((c) => c.label === 'cleanup: settle the run').length
+  check(cleanupReadyCalls.length === 1 && settleAgents === 1 && !calls.some((c) => /^cleanup (cleanup|extra)\/|^cleanup: claim round|^cleanup: .* fault$/.test(c.label)), `cleanup rounds: one cleanup agent makes the one settle call and every unit settles through one cleanup-finish -Ready (${settleAgents} agent(s), ${cleanupReadyCalls.length} call(s))`)
   check(result.cleanup && result.cleanup.settled && result.cleanup.settled.failed === 9 && result.cleanup.units.filter((u) => u.status === 'failed').length === 8, `cleanup rounds: the stage reports the units that could not settle (${JSON.stringify(result.cleanup && result.cleanup.settled)})`)
 }
 {
@@ -2137,7 +2215,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // bridge batch and apply; every conversation the managers left open is deleted in that one batch.
   const { calls, briefLists, settleRecords, settleCalls, resourceRecords } = await run('econ', { ...base, figures: false })
   const cleanupAgents = calls.filter((c) => c.phase === 'Cleanup').map((c) => c.label)
-  check(cleanupAgents.join() === 'cleanup: settle the run,report the run from the ledger' && briefLists.length === 0, `cleanup agents: one settle agent and the report, no listing relay (${cleanupAgents.join(', ')})`)
+  check(cleanupAgents.join() === 'cleanup: plan,cleanup: settle the run,cleanup: apply,report the run from the ledger' && briefLists.length === 0, `cleanup agents: the plan step, one settle call, the apply step and the report (no listing relay) (${cleanupAgents.join(', ')})`)
   const batched = (settleCalls[0] || []).filter((o) => o.op === 'delete').map((o) => o.session_id)
   check(settleCalls.length === 1 && batched.length > 0 && batched.every((id) => settleRecords.some((r) => r.id === id && r.via === 'cleanup-run')), `cleanup agents: one provider batch deletes every open recorded id and apply records each (${batched.length})`)
 }
@@ -2162,7 +2240,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 // The finite finalization (#86, R299/R300)
 // ================================================================================================================
 for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
-  const { calls, commands, result, report, logs, led } = await run('econ', { ...base, figures: false }, { finalize: branch })
+  const { calls, commands, result, report, logs, led, bookCalls } = await run('econ', { ...base, figures: false }, { finalize: branch })
   const labels = calls.map((c) => c.label)
   const prompts = calls.map((c) => c.prompt).join('\n')
   const finalizeLabels = labels.filter((l) => /^finalize/.test(l))
@@ -2172,21 +2250,21 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   check(result.finalize.status === expected, `finalize ${branch}: the branch ends ${expected} (${result.finalize.status})`)
   check(result.finalize.final.graph_revision > result.finalize.plan.graph_revision, `finalize ${branch}: the final audit is at a later graph revision than the one it planned from`)
   if (branch === 'fix') {
-    const scoped = commands.filter((c) => /zt-digest card -Step plan .*-Cards /.test(c))
-    check(scoped.length === 1 && /finalize[\\/]fix/.test(scoped[0]), `finalize fix: the one correction cycle is scoped to the plan's Cards (${scoped.length})`)
-    check(/ -Rules "R3"/.test(scoped[0]), `finalize fix: the cycle checks exactly the plan rules (${scoped[0]})`)
-    check(commands.filter((c) => /zt-digest card -Step plan .*finalize[\\\\/]fix/.test(c)).length === 1, `finalize fix: exactly one compiler correction cycle runs (${commands.filter((c) => /zt-digest card -Step plan /.test(c)).length} plan steps)`)
+    const scoped = bookCalls.filter((c) => c.step === 'cards-start' && /finalize[\\/]fix/.test((c.options || {}).Work || ''))
+    check(scoped.length === 1 && (scoped[0].options.Cards || '').length > 0, `finalize fix: the one correction cycle is scoped to the plan's Cards (${scoped.length})`)
+    check((scoped[0].options.Rules || '') === 'R3', `finalize fix: the cycle checks exactly the plan rules (${scoped[0].options.Rules})`)
+    check(bookCalls.filter((c) => c.step === 'cards-start' && /finalize[\\/]fix/.test((c.options || {}).Work || '')).length === 1, `finalize fix: exactly one compiler correction cycle runs (${bookCalls.filter((c) => c.step === 'cards-start').length} cycles)`)
     check(finalizeLabels.join(',') === 'finalize plan,finalize scope,finalize refresh link-check,finalize final', `finalize fix: plan → cycle → scope → refresh → final (${finalizeLabels.join(',')})`)
-    const refreshes = (prompts.match(/[^\n]*finalize -Step refresh[^\n]*/g) || [])
-    check(refreshes.length === 1 && /-Layer link-check -Report /.test(refreshes[0]), `finalize fix: only the publication this branch re-derives is refreshed (${refreshes.length}: ${refreshes[0] || ''})`)
-    check(!/-Step refresh .*-Layer (organize|hubs|bridge|figures|skeleton|theory)/.test(prompts), 'finalize fix: a stage-owned publication is never republished from a stale artifact')
+    const refreshes = bookCalls.filter((c) => c.step === 'finalize-refresh')
+    check(refreshes.length === 1 && refreshes[0].options.Layer === 'link-check' && !!refreshes[0].options.Report, `finalize fix: only the publication this branch re-derives is refreshed (${refreshes.length}: ${(refreshes[0] || {}).options && refreshes[0].options.Layer})`)
+    check(!refreshes.some((c) => ['organize', 'hubs', 'bridge', 'figures', 'skeleton', 'theory'].includes(c.options.Layer)), 'finalize fix: a stage-owned publication is never republished from a stale artifact')
     // S26 (#169, R0438-R0440): the round's Term-link pass runs after the changed-Card manifest and
     // before the final read-only audit, for exactly the Cards the correction changed.
-    const scopePos = prompts.indexOf('finalize -Step scope')
-    const planPos = prompts.indexOf("-Round 1 -Cards 'Key/1|a'", Math.max(0, scopePos))
-    const applyPos = planPos < 0 ? -1 : prompts.indexOf('term-link -Step apply', planPos)
-    const finalPos = applyPos < 0 ? -1 : prompts.indexOf('finalize -Step final', applyPos)
-    check(scopePos >= 0 && planPos > scopePos && applyPos > planPos && finalPos > applyPos, `finalize fix (S26): scope → the round's Term-link plan/apply → final audit (${[scopePos, planPos, applyPos, finalPos].join(',')})`)
+    const scopePos = bookCalls.findIndex((c) => c.step === 'finalize-scope')
+    const planPos = bookCalls.findIndex((c) => c.step === 'term-link')
+    const finalPos = bookCalls.findIndex((c) => c.step === 'finalize-final')
+    const round = bookCalls.find((c) => c.step === 'term-link') || { options: {} }
+    check(scopePos >= 0 && planPos > scopePos && finalPos > planPos && round.options.Round === 1 && (round.options.Cards || []).includes('Key/1|a'), `finalize fix (S26): scope → the round's Term-link step → final audit (${[scopePos, planPos, finalPos].join(',')}; round ${round.options.Round})`)
     check(led.find('termlink/final@1') && led.find('termlink/final@1').state === 'done', `finalize fix (S26): the round completes its own generation unit (${led.find('termlink/final@1') && led.find('termlink/final@1').state})`)
     check(result.finalize.term_link && result.finalize.term_link.status === 'done' && result.finalize.term_link.round === 1 && result.finalize.term_link.scope === 'cards', `finalize fix (S26): the stage reports the round it ran (${JSON.stringify(result.finalize.term_link && { status: result.finalize.term_link.status, round: result.finalize.term_link.round, scope: result.finalize.term_link.scope })})`)
     check(result.term_link && result.term_link.final && result.term_link.final.status === 'complete' && result.term_link.final.unit === 'termlink/final@1' && result.term_link.final.round === 1, `finalize fix (S26): the run report carries the completed round (${JSON.stringify(result.term_link && result.term_link.final)})`)
@@ -2199,7 +2277,7 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   }
   check(finalizeLabels[finalizeLabels.length - 1] === 'finalize final', `finalize ${branch}: the final read-only audit is the branch's last step`)
   check(report.stages.finalize && report.stages.finalize.status !== 'failed', `finalize ${branch}: the stage never fails on a residual fault`)
-  check(/finalize -Step final -Out/.test(prompts), 'finalize: the final step is the tool\'s own read-only audit, never a re-used report')
+  check(bookCalls.some((c) => c.step === 'finalize-final'), 'finalize: the final step is the tool\'s own read-only audit, never a re-used report')
   check(logs.some((l) => /Finalize: (done|partial) at graph revision/.test(l)), `finalize ${branch}: the branch reports its own outcome and revision`)
 }
 {
@@ -2211,7 +2289,8 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   const labels = rt.calls.map((c) => c.label)
   check(labels.includes('finalize changes') && !labels.includes('finalize plan') && !labels.includes('finalize scope'), `finalize resume (S26): the recorded cycle is not re-entered (${labels.filter((l) => /^finalize/.test(l)).join(',')})`)
   const rtText = rt.calls.map((c) => c.prompt).join('\n')
-  check(/term-link -Step plan .*-Round 1 -Cards 'Key\/1\|a'/.test(rtText) && /finalize -Step final/.test(rtText), 'finalize resume (S26): the skipped Term-link round and the final audit still run')
+  const rtRound = rt.bookCalls.find((c) => c.step === 'term-link') || { options: {} }
+  check(rtRound.options.Round === 1 && (rtRound.options.Cards || []).includes('Key/1|a') && rt.bookCalls.some((c) => c.step === 'finalize-final'), 'finalize resume (S26): the skipped Term-link round and the final audit still run')
   check(rt.result.finalize && rt.result.finalize.recovered === true && rt.result.finalize.final, `finalize resume (S26): the stage reports the recovered branch and its final audit (${JSON.stringify(rt.result.finalize && { recovered: rt.result.finalize.recovered, status: rt.result.finalize.status })})`)
 }
 {
@@ -2219,9 +2298,9 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   // follows the finalization, so it describes the relinked final text.
   const mf = await run('math', { ...base, figures: false }, { finalize: 'fix' })
   const prompts = mf.calls.map((c) => c.prompt).join('\n')
-  const scopePos = prompts.indexOf('finalize -Step scope')
-  const roundPos = prompts.indexOf("-Round 1 -Cards 'Key/1|a'", Math.max(0, scopePos))
-  const finalPos = roundPos < 0 ? -1 : prompts.indexOf('finalize -Step final', roundPos)
+  const scopePos = mf.bookCalls.findIndex((c) => c.step === 'finalize-scope')
+  const roundPos = mf.bookCalls.findIndex((c) => c.step === 'term-link')
+  const finalPos = mf.bookCalls.findIndex((c) => c.step === 'finalize-final')
   check(scopePos >= 0 && roundPos > scopePos && finalPos > roundPos, 'S26 (math): the inherited finalization relinks its changed Cards before the final audit')
   check(mf.result.term_link && mf.result.term_link.final && mf.result.term_link.final.status === 'complete' && mf.result.term_link.audit_terms && mf.result.term_link.audit_terms.status === 'complete', `S26 (math): the mathematics run reports the completed round and Term quality (${JSON.stringify(mf.result.term_link && mf.result.term_link.final)})`)
 }
@@ -2296,19 +2375,20 @@ for (const kind of ['econ', 'math']) {
   check(!calls.some((c) => /^Clean up:/.test(c.label)), `${kind} full: no step deletes its own conversations any more`)
 }
 {
-  const { commands, calls, result } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards', cardMax: 5 })
+  const { commands, calls, result, bookCalls } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'cards', cardMax: 5 })
   const cmds = commands
   check(result && result.mode === 'cards' && result.cards, 'econ cards: one whole-book cycle on an existing digest')
-  check(cmds.some((c) => /zt-digest card -Step plan -Work "D:\\x\\Key\\cards" -Compact -Book Key -Staging "D:\\x\\Key" -MaxCards 5/.test(c)) && !cmds.some((c) => /-NoOrphans/.test(c)), 'econ cards: plans the whole book with orphans and the pilot cap')
+  const cardPlan = bookCalls.find((c) => c.step === 'cards-start' && (c.options || {}).Work === 'D:\\x\\Key\\cards')
+  check(cardPlan && cardPlan.options.MaxCards === 5 && !cardPlan.options.NoOrphans && !/-NoOrphans/.test(cardPlan.cmd), 'econ cards: plans the whole book with orphans and the pilot cap')
   check(!calls.some((c) => /^(group \d|prepare book|organize)/.test(c.label)), 'econ cards: runs no other stage')
-  check(cmds.some((c) => /-Sample 0\.1/.test(c)) && cmds.some((c) => /-ModelReview/.test(c)), 'econ cards: the cycle covers the deterministic Idea sample and reviews the Model drafts no chain owns')
+  check(cardPlan && cardPlan.options.Sample === 0.1 && cardPlan.options.ModelReview === true, 'econ cards: the cycle covers the deterministic Idea sample and reviews the Model drafts no chain owns')
 }
 {
   const { commands, calls, result, settleCalls: auditSettles } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'audit' && result.audit.status === 'done', 'econ audit: runs to its end without a citation key')
   check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup|^report the run/.test(l)) && labels.includes('cleanup: settle the run') && labels.includes('report the run from the ledger'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
-  check(!commands.some((c) => /deepseek_delete/.test(c)) && auditSettles.every((ops) => ops.length === 0), 'econ audit: a run with no recorded resource deletes no conversation and no workspace')
+  check(!commands.some((c) => /deepseek_delete/.test(c)) && !auditSettles.flat().some((op) => op.op === 'delete'), `econ audit: a run with no recorded conversation deletes none and removes only the workspace its drive jobs used (${JSON.stringify(auditSettles)})`)
 }
 {
   const { commands, calls, result } = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'explain', only: ['Key/3|a'], explainMax: 5 })
@@ -2317,10 +2397,10 @@ for (const kind of ['econ', 'math']) {
   check(cmds.some((c) => /zt-digest model -Step explain .*-MaxParts 5/.test(c)) && cmds.some((c) => /zt-digest model -Step explain-apply/.test(c)), 'econ explain: the explanation chain plans and applies')
 }
 {
-  const { commands, calls } = await run('econ', { ...base, figures: false, events: false, models: false })
+  const { commands, calls, bookCalls } = await run('econ', { ...base, figures: false, events: false, models: false })
   check(!calls.some((c) => /^events/.test(c.label)) && calls.some((c) => /^findings/.test(c.label)), 'econ full: events false skips its layer (findings still runs)')
-  const prep = calls.find((c) => c.label === 'prepare book')
-  check(prep && /-RunOptions '\{/.test(prep.cmd) && /"events":false/.test(prep.cmd) && /"models":false/.test(prep.cmd), 'econ full: the disabled layers are frozen into the prepared target')
+  const prep = bookCalls.find((c) => c.step === 'prepare' && c.options.Mode === 'full')
+  check(prep && /"events":false/.test(prep.options.RunOptions || '') && /"models":false/.test(prep.options.RunOptions || ''), 'econ full: the disabled layers are frozen into the prepared target')
 }
 {
   const { commands, calls, result } = await run('econ', { ...base, figures: true })
@@ -2370,15 +2450,15 @@ for (const which of ['econ', 'math']) {
 {
   // book-cards-finish requires the deterministic Idea sample; a resumed run's whole-book cycle samples too
   // (grossman2002integration trial 19: the resume ran the cycle with no -Sample and its finish was refused).
-  const { calls } = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
-  const cycles = calls.filter((c) => /zt-digest card -Step plan .*-Work "D:\\x\\Key\\cards"/.test(c.prompt))
-  check(cycles.length > 0 && cycles.every((c) => /-Sample 0\.1\b/.test(c.prompt)), `resume sample: the resumed whole-book card cycle samples Idea Cards (${cycles.length} cycles)`)
+  const { calls, bookCalls } = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
+  const cycles = bookCalls.filter((c) => c.step === 'cards-start' && (c.options || {}).Work === 'D:\\x\\Key\\cards')
+  check(cycles.length > 0 && cycles.every((c) => c.options.Sample === 0.1), `resume sample: the resumed whole-book card cycle samples Idea Cards (${cycles.length} cycles)`)
 }
 {
   // The resume status line came back without its `layers` (grossman2002integration trial 17): the prepare
   // stage reads the group count from the digest layer's own brief gate instead of halting the resumed run.
-  const { calls, commands, report } = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']], rewrittenSummary: true })
-  check(report && !report.halted && calls.some((c) => /zt-digest card -Step plan .*-Work "D:\\x\\Key\\cards"/.test(c.prompt)), `rewritten summary: the resumed run goes on past prepare (${JSON.stringify(report && report.halted)})`)
+  const { calls, commands, report, bookCalls } = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']], rewrittenSummary: true })
+  check(report && !report.halted && bookCalls.some((c) => c.step === 'cards-start' && (c.options || {}).Work === 'D:\\x\\Key\\cards'), `rewritten summary: the resumed run goes on past prepare (${JSON.stringify(report && report.halted)})`)
 }
 
 // ================================================================================================================
@@ -2431,7 +2511,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '38' && modules['zt-digest-prepare'] === '15' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '2' && modules['zt-term-link-lib'] === '2' && modules['zt-term-link'] === '4' && modules['zt-term-cards'] === '5' && modules['zt-finalize'] === '3', `lock: the frozen build carries zt-digest-lib v38, zt-digest-prepare v15, zt-digest-report v19, zt-term-link-lib v2, zt-term-link v4, zt-term-cards v5, zt-finalize v3 and the shared zt-workflow-lib v2 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '39' && modules['zt-digest-prepare'] === '16' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '2' && modules['zt-term-link-lib'] === '3' && modules['zt-term-link'] === '4' && modules['zt-term-cards'] === '5' && modules['zt-finalize'] === '4', `lock: the frozen build carries zt-digest-lib v39, zt-digest-prepare v16, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v2 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -2473,16 +2553,16 @@ for (const which of ['econ', 'math']) {
 // docs/workflow-simplicity-proposal.md steps 1-3 and S10 (base 5.4.0, zt-digest-lib v37)
 // ================================================================================================================
 for (const which of ['econ', 'math']) {
-  const { calls, result } = await run(which, { ...base, figures: false })
+  const { calls, result, bookCalls } = await run(which, { ...base, figures: false })
   const commandCalls = calls.filter((c) => /^Run this PowerShell command once/.test(c.prompt))
   check(commandCalls.length > 10 && commandCalls.every((c) => c.agentType === 'zt-relay' && c.model === 'haiku'), `S1 ${which}: every command runs through the relay role, the zt-relay agent type (${commandCalls.filter((c) => c.agentType !== 'zt-relay').map((c) => c.label).slice(0, 3).join(', ')})`)
   check(!calls.some((c) => /^You prepare a book|^List the Model Cards|^Prepare the receipt-owned|^You check which DeepSeek Harness source/.test(c.prompt)), `S1 ${which}: no Haiku agent runs prepare, prepare-link, the model list or a source probe`)
   check(!calls.some((c) => c.label === 'choose DeepSeek source') && result && result.dsh_model === 'deepseek-official/deepseek-flash', `S1 ${which}: the DeepSeek source is the frozen official one (${result && result.dsh_model})`)
   check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && !/Run every job below|Run the jobs with these ids/.test(c.prompt)), `S1 ${which}: a drive agent only runs DeepSeek jobs; its step command is a relay`)
-  const prep = calls.find((c) => c.label === 'prepare book')
-  check(prep && / -Apply -Brief\b/.test(prep.prompt), `S1 ${which}: prepare ends with its brief line`)
-  const link = calls.find((c) => c.label === 'prepare link pass')
-  check(link && / -Brief\b/.test(link.prompt), `S1 ${which}: prepare-link ends with its brief line`)
+  const prep = bookCalls.find((c) => c.step === 'prepare')
+  check(prep && /'-Apply', '-Brief'/.test(scriptOf(which)), `S1 ${which}: prepare runs one book-steps.ps1 step and the step script keeps its brief line`)
+  const link = bookCalls.find((c) => c.step === 'link-prepare')
+  check(link && /prepare-link/.test(scriptOf(which)), `S1 ${which}: prepare-link is one book-steps.ps1 step and the step script keeps its brief line`)
   const status = calls.filter((c) => /^plan status: /.test(c.label))
   check(status.length >= 1 && status.every((c) => / -Step plan-status /.test(c.prompt)), `S10 ${which}: each model batch reads the plans the architect wrote (model -Step plan-status)`)
 }
@@ -2495,7 +2575,7 @@ for (const which of ['econ', 'math']) {
 {
   // S10: whether the notes cycle runs is read from decisions.json (organize-apply's notes), not from the answer.
   const { calls } = await run('econ', { ...base, figures: false })
-  check(calls.some((c) => /^cards organize notes/.test(c.label)), 'S10: organize-apply\'s notes count starts the notes cycle')
+  check(calls.some((c) => /^organize notes/.test(c.label)), 'S10: organize-apply\'s notes count starts the notes cycle')
 }
 {
   // S5: no workflow command names a fault class; the ledger reads each fault.
@@ -2520,8 +2600,63 @@ for (const which of ['econ', 'math']) {
     const ordered = steps[0] === 'start' && steps.includes('finish') && (l !== 'explain' || (steps.indexOf('apply') > steps.indexOf('start') && steps.lastIndexOf('finish') > steps.indexOf('apply')))
     check(ordered, `#175: the ${l} layer drives start${l === 'explain' ? ', apply, finish' : ', finish'} in that order (${steps.join(',')})`)
   }
-  check(layerManagers.filter((m) => m.kind === 'content').every((m) => /\\layer-steps\\/.test(m.file || '') && m.jobs.length <= 8), 'S28 (#175): every content manager reads the job list its start step wrote, at most eight jobs')
+  check(layerManagers.filter((m) => m.kind === 'content').every((m) => (!!m.file || /\\layer-steps\\/.test(m.file || '')) && m.jobs.length <= 8), 'S28 (#175/#176): every content manager reads the job list its start step wrote, at most eight jobs')
   check(layerManagers.some((m) => m.kind === 'content' && m.jobs.length >= 2), 'S28 (#175): the block content managers run the listed DeepSeek jobs')
+}
+
+// ================================================================================================================
+// #176 (docs/workflow-module-structure-proposal.md): the book-level stages run their deterministic chains as
+// book-steps.ps1 steps under Haiku DeepSeek managers; no moved stage relays a command
+// ================================================================================================================
+{
+  const { calls, bookCalls, bookManagers, result, report } = await run('econ', { ...base, figures: true })
+  const MANAGER = /^You are a DeepSeek subagent manager/
+  const MOVED = /^(prepare book|prepare resume|prepare backfill: |prepare link pass|cards publish|cards-book claim|cards-book fault|cards whole book|cards link check|cards organize notes|cards final correction|cards-book finish|organize: survey|organize: apply|organize: skeleton|show figures|figures: publish|bridge: plan|bridge: report|bridge: apply|audit cards|finalize |cleanup: |report the run from the ledger)/
+  const agents = calls.filter((c) => MOVED.test(c.label || ''))
+  const bad = agents.filter((c) => !(c.model === 'haiku' && !c.agentType && (MANAGER.test(c.prompt || '') || c.label === 'cleanup: settle the run')))
+  check(agents.length > 0 && !bad.length, `#176: every agent a moved book stage starts is a Haiku DeepSeek manager (the one settle call included) (${agents.length} agents; ${bad.map((c) => `${c.label}=${c.model || 'none'}/${c.agentType || 'no-type'}`).slice(0, 3).join(', ')})`)
+  const settleAgent = calls.find((c) => c.label === 'cleanup: settle the run')
+  check(settleAgent && settleAgent.model === 'haiku' && !settleAgent.agentType && !/(?:^|\n)\s*(?:zt-digest|pwsh) /.test(settleAgent.prompt || ''), 'S1 (#176): the one cleanup settle agent makes the provider call and runs no command')
+  check(!calls.some((c) => c.agentType === 'zt-relay' && MOVED.test(c.label || '')), 'S1 (#176): no moved book stage step runs as a Claude relay')
+  check(bookManagers.length > 0 && bookManagers.every((m) => /book-steps\.ps1" -Step [\w-]+ -Out "[^"]+"/.test(m.cmd)), `#176: every moved book stage step is one book-steps.ps1 call (${bookManagers.length} drive jobs; ${bookManagers.filter((m) => !/book-steps\.ps1/.test(m.cmd)).slice(0, 2).map((m) => m.cmd.slice(0, 80)).join(' | ')})`)
+  const idx = (pred) => bookCalls.findIndex(pred)
+  const at = {
+    prepare: idx((c) => c.step === 'prepare' && (c.options || {}).Mode === 'full'),
+    linkPrep: idx((c) => c.step === 'link-prepare'),
+    cbPublish: idx((c) => c.step === 'publish' && (c.options || {}).Layer === 'cards-book'),
+    cbClaim: idx((c) => c.step === 'cards-book-start'),
+    bookCycle: idx((c) => c.step === 'cards-start' && /\\cards$/.test((c.options || {}).Work || '')),
+    cbFinish: idx((c) => c.step === 'cards-book-finish'),
+    linkCycle: idx((c) => c.step === 'cards-start' && /cards-link/.test((c.options || {}).Work || '')),
+    linkPublish: idx((c) => c.step === 'publish' && (c.options || {}).Layer === 'link-check'),
+    survey: idx((c) => c.step === 'organize-survey'),
+    orgApply: idx((c) => c.step === 'organize-apply'),
+    notes: idx((c) => c.step === 'cards-start' && /cards-notes/.test((c.options || {}).Work || '')),
+    orgPublish: idx((c) => c.step === 'publish' && (c.options || {}).Layer === 'organize'),
+    skStart: idx((c) => c.step === 'skeleton-start'),
+    skFinish: idx((c) => c.step === 'skeleton-finish'),
+    skPublish: idx((c) => c.step === 'publish' && (c.options || {}).Layer === 'skeleton'),
+    figures: idx((c) => c.step === 'figures'),
+    figPublish: idx((c) => c.step === 'publish' && (c.options || {}).Layer === 'figures'),
+    bridgePlan: idx((c) => c.step === 'bridge-start'),
+    bridgeReport: idx((c) => c.step === 'bridge-report'),
+    audit: idx((c) => c.step === 'audit'),
+    fPlan: idx((c) => c.step === 'finalize-plan'),
+    fScope: idx((c) => c.step === 'finalize-scope'),
+    tlRound: idx((c) => c.step === 'term-link'),
+    fFinal: idx((c) => c.step === 'finalize-final'),
+    cStart: idx((c) => c.step === 'cleanup-start'),
+    cApply: idx((c) => c.step === 'cleanup-apply'),
+    cReport: idx((c) => c.step === 'cleanup-report'),
+  }
+  const inc = (...keys) => keys.every((k, i) => at[k] >= 0 && (i === 0 || at[keys[i - 1]] < at[k]))
+  check(inc('prepare', 'cbPublish', 'cbClaim', 'bookCycle', 'cbFinish', 'linkPrep', 'linkCycle', 'linkPublish', 'survey', 'orgApply', 'notes', 'orgPublish', 'skStart', 'skFinish', 'skPublish', 'figures', 'figPublish', 'bridgePlan', 'bridgeReport', 'audit', 'fPlan', 'fScope', 'tlRound', 'fFinal', 'cStart', 'cApply', 'cReport'), `#176: the moved stages' drive steps run in their stage order (${JSON.stringify(at)})`)
+  check(at.cbPublish >= 0 && at.cbPublish < at.cbClaim && at.cbClaim < at.bookCycle, `#176: the whole-book revision is published, then claimed, then cycled (${at.cbPublish},${at.cbClaim},${at.bookCycle})`)
+  check(report.stages.report && report.stages.report.status === 'done' && report.stages.source && report.stages.source.status === 'done', `#176: the source and report stages, which run no command, still complete (${report.stages.source && report.stages.source.status}, ${report.stages.report && report.stages.report.status})`)
+  // A resume reads its retained layers' gates through the same steps and prepares nothing.
+  const rt = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
+  const resumeSteps = rt.bookCalls.filter((c) => c.step === 'prepare' || c.step === 'gate')
+  check(resumeSteps.length > 0 && resumeSteps.every((c) => c.step === 'gate' || (c.options || {}).Mode === 'resume') && !rt.bookCalls.some((c) => c.step === 'prepare' && (c.options || {}).Mode === 'full'), `#176: a resume runs the one resume step and its gates, never the preparation (${resumeSteps.map((c) => c.step).join(',')})`)
 }
 
 console.log(`failed: ${failed}`)

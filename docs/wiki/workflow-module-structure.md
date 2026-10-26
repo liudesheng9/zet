@@ -4,6 +4,9 @@ title: Workflow module structure
 paths:
   - "scripts/book-digest/term-steps.ps1"
   - "scripts/book-digest/layer-steps.ps1"
+  - "scripts/book-digest/book-steps.ps1"
+  - "scripts/book-digest/tests/book-steps.tests.ps1"
+  - "docs/workflow-module-structure-proposal.md"
 synced: 8dca3ae084a4
 updated: 2026-10-26
 ---
@@ -14,38 +17,38 @@ updated: 2026-10-26
 
 The basic structure every module of the digest workflows (`zt-econ-digest`, `zt-math-digest`, their base) and of `zt-idea-grow` follows: each feature block is one Haiku manager and several DeepSeek subagents, every deterministic command chain is one script step that a DeepSeek "drive" job runs, and a module is a straight line with as few decision branches as possible. Claude Code tokens are precious; DeepSeek does the labour. The full proposal, with its reasons and the migration table, is [docs/workflow-module-structure-proposal.md](../workflow-module-structure-proposal.md).
 
-**Owns:** the module rules (§ Behaviour), the model policy, the review checklist, and the two reference step scripts `scripts/book-digest/term-steps.ps1` (the Term stages, #172) and `scripts/book-digest/layer-steps.ps1` (the digest layers, #175).
+**Owns:** the module rules (§ Behaviour), the model policy, the review checklist, and the three reference step scripts `scripts/book-digest/term-steps.ps1` (the Term stages, #172), `scripts/book-digest/layer-steps.ps1` (the digest layers, #175) and `scripts/book-digest/book-steps.ps1` (the book-level stages, #176).
 **Does not own:** the stages and modes of each workflow ([Digest workflows](digest-workflows.md), [Idea-grow workflow](idea-grow-workflow.md)), the DeepSeek protocol itself (the global skill `deepseek-subagent-managed-protocol`), and the compilers the steps call ([zt-digest](zt-digest.md)).
 
 ## At a glance
 
 | | |
 |---|---|
-| Entry points | `pwsh -NoProfile -File scripts/book-digest/term-steps.ps1 -Step start\|review\|fix\|finish\|link -Out <staging>`; `pwsh -NoProfile -File scripts/book-digest/layer-steps.ps1 -Step start\|apply\|finish -Out <staging> -Layer <digest\|link\|cards\|events\|findings\|explain\|terms> -Owner <label>` |
-| Key files | `scripts/book-digest/term-steps.ps1` — the Term stages' deterministic steps (reference implementation); `scripts/book-digest/layer-steps.ps1` — the digest layers' deterministic steps (#175); `scripts/workflow-shared/modules/zt-workflow-lib.js` v2 — `ztDrive`, the one drive helper; `zt-term-cards.js` v5, `zt-term-link.js` v4, `zt-digest-lib.js` v38 (`layerRun`, `driveStep`, `runJobs`) and the layer modules built on them; `docs/workflow-module-structure-proposal.md` — the proposal |
-| Depends on | [zt-digest](zt-digest.md) (`group-start`/`group-finish`, `link-start`/`link-finish`, `finish-batch`, `ledger`), the DSMP block inlined by the workflow framework |
-| Used by | [Digest workflows](digest-workflows.md) (the `terms`, `term-cards`, `digest`, `cards`, `events`, `findings`, `explain`, `link`, `term-link` stages); every module change of the digest and idea-grow workflows |
-| Tests | `scripts/book-digest/tests/framework-harness.mjs` (the Term checks and the #175 layer checks: every agent a Haiku DeepSeek manager, no moved layer relays a command, the drive steps in order, the content managers at most eight jobs); `scripts/book-digest/tests/layer-steps.tests.ps1` (the layer steps against a stand-in tool) |
+| Entry points | `pwsh -NoProfile -File scripts/book-digest/term-steps.ps1 -Step start\|review\|fix\|finish\|link -Out <staging>`; `pwsh -NoProfile -File scripts/book-digest/layer-steps.ps1 -Step start\|apply\|finish -Out <staging> -Layer <digest\|link\|cards\|events\|findings\|explain\|terms> -Owner <label>`; `pwsh -NoProfile -File scripts/book-digest/book-steps.ps1 -Step <step> -Out <staging> [-Json '<options>']` |
+| Key files | `scripts/book-digest/term-steps.ps1`; `scripts/book-digest/layer-steps.ps1` (#175); `scripts/book-digest/book-steps.ps1` (#176); `scripts/workflow-shared/modules/zt-workflow-lib.js` v2 — `ztDrive`, the one drive helper; `zt-term-cards.js` v5, `zt-term-link.js` v4; `zt-digest-lib.js` v39 (`layerRun`, `driveStep`, `runJobs`, `bookStep`, `cardCycle`); `zt-term-link-lib.js` v3; the #176 stage modules; `docs/workflow-module-structure-proposal.md` — the proposal |
+| Depends on | [zt-digest](zt-digest.md) (`group-start`/`group-finish`, `link-start`/`link-finish`, `finish-batch`, `ledger`, `card`, `finalize`, `cleanup-run`/`cleanup-finish`, `prepare`, `prepare-link`, `organize-survey`/`organize-apply`, `skeleton`, `figures`, `bridge`, `audit`, `book-cards-finish`), the DSMP block inlined by the workflow framework |
+| Used by | [Digest workflows](digest-workflows.md) (every stage of the base and both variants); every module change of the digest workflow |
+| Tests | `scripts/book-digest/tests/framework-harness.mjs` (the Term, #175 layer and #176 book checks: every agent of a moved stage a Haiku DeepSeek manager, no moved stage relays a command, each step one script call, the drive steps in order, the content managers reading the step's job list); `scripts/book-digest/tests/layer-steps.tests.ps1` (the layer steps against a stand-in tool); `scripts/book-digest/tests/book-steps.tests.ps1` (the book steps against a stand-in tool) |
 
 ## Concepts
 
 - `Feature block` — one Haiku manager and the DeepSeek subagents it runs (at most 8 per manager, at most 8 managers at once).
 - `Content job` — a DeepSeek job that writes Cards, Links, Term drafts, reviews or fixes, runs its own self-check tool and fixes its own faults; it writes large output to a file and answers with one status line.
 - `Drive job` — a DeepSeek job that runs one script step exactly as given and answers with the step's last line (one JSON line). It replaces every Claude agent that only ran a command. `zt-workflow-lib`'s `ztDrive` builds its manager prompt, registers the conversation, collects the answer and deletes the conversation.
-- `Script step` — one PowerShell call that runs a whole deterministic chain (for example plan + claim + list jobs) in one process, records unit outcomes in the run ledger, and prints one compact JSON line.
+- `Script step` — one PowerShell call that runs a whole deterministic chain (for example plan + claim + list jobs, or the whole-book card cycle's apply + check) in one process, records unit outcomes in the run ledger, and prints one compact JSON line.
 - `Relay agent` — a Claude agent that runs one command and returns its line. Not allowed in the migrated modules.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    M["module (JS, straight line)"] --> H1["Haiku manager: drive start"]
-    H1 --> D1["DeepSeek: layer-steps.ps1 -Step start"]
+    M["module (JS, straight line)"] --> H1["Haiku manager: drive a step"]
+    H1 --> D1["DeepSeek: layer-steps / book-steps / term-steps"]
     M --> H2["Haiku managers (≤8 each): content"]
     H2 --> W["DeepSeek content jobs + self-check"]
-    M --> H3["Haiku manager: drive finish"]
-    H3 --> D2["DeepSeek: layer-steps.ps1 -Step finish"]
-    D1 --> L[("run ledger + layer-steps/<layer>/*.json")]
+    M --> H3["Haiku manager: drive the next step"]
+    H3 --> D2["DeepSeek: the finish step"]
+    D1 --> L[("run ledger + the step's files")]
     H2 --> L
     D2 --> L
 ```
@@ -66,19 +69,32 @@ The module holds no per-unit logic: the script step reads and writes the ledger 
 
 ### `layer-steps.ps1`
 
-One call runs one block of one digest layer (#175). `zt-workflow-lib`'s `ztDrive` runs it as a DeepSeek drive job through a Haiku manager, and `zt-digest-lib`'s `layerRun` drives the blocks (`start` → content managers → `finish`; explain adds its second content round through `apply`).
+One call runs one block of one digest layer (#175). `zt-workflow-lib`'s `ztDrive` runs it as a DeepSeek drive job through a Haiku manager, and `zt-digest-lib`'s `layerRun` drives the blocks (`start` → content managers → `finish`; explain adds its second content round through `apply`). The per-layer table is in the block history and in the code's own switch; the Cards layer's `start` claims and finishes a block in one `finish-batch`.
 
-| Layer | `start` | `apply` | `finish` |
-|---|---|---|---|
-| `digest` | claim a block (`ledger next -Brief -Lease 7200`), `group-start` each held group, list its jobs | — | `group-finish` each held unit from its bound draft, fault the rest, brief gate |
-| `link` | claim, `link-start` each held group, list its jobs | — | `link-finish` each held unit, fault the rest, brief gate |
-| `cards` | one `zt-digest finish-batch -Layer cards -Take -Owner` claims and records the block; brief gate | — | — |
-| `events` | claim, `event -Step plan`, list its jobs | — | `event -Step apply -Apply`, `event -Step report`, `finish-batch` the held units, brief gate |
-| `findings` | claim, `finding -Step plan`, list its jobs | — | `finding -Step apply -Apply`, `finding -Step report`, `finish-batch`, brief gate |
-| `explain` | claim, `model -Step explain` with the claimed models and the run limits, list its jobs | `model -Step explain-apply` and the fix jobs it lists (each continues its first conversation) | `model -Step explain-report`, `finish-batch`, brief gate |
-| `terms` | claim the one `terms/book@1` unit, `terms -Step plan` | — | `terms -Step apply -Apply -Token` (the compiler completes the unit) |
+### `book-steps.ps1`
 
-A claim that fails is tried three times; a claim line without its units, and a completion line that came back unreadable, are answered from the ledger (`status -Held`, `status -Units`) before anything is faulted. A failed step prints `{ok:false, step, error}`; the Lock refuses a completion with `{ok:false, code:"card_locked", ...}`, which is that unit's content fault and stops the stage.
+One call runs one block of one book-level stage (#176). `zt-digest-lib`'s `bookStep` runs it as a DeepSeek drive job, and `bookStep`/`cardCycle` drive the stages. The step's options travel in `-Json`; every step prints one compact JSON line and answers `{ok:false, step, error}` for a failed command. A command the owner's Lock refused is answered with the archive's typed `card_locked` JSON and stops the stage.
+
+| Step | Does | Prints |
+|---|---|---|
+| `prepare` | mode `full`: the book preparation (`prepare ... -Apply -Brief`); mode `resume`: `ledger resume`, `ledger status -Summary` and the digest gate fallback; modes `term-cards`/`term-link`: the backfill's `-Sections`/`-Validate` preparation | the tool's line plus `ok` |
+| `prepare-link` (`link-prepare`) | the Link pass's receipt-owned gap set (`prepare-link -Brief`) | the tool's line plus `ok` |
+| `gate` | `ledger gate -Layer -Brief` | the gate line |
+| `publish` | a stage's own revision (`finalize -Step stage` with its declared artifacts), or the ledger's own publication (`Ledger: true`, the whole-book Card revision) | the publication line |
+| `cards-start` | the card cycle's plan and its jobs (`card -Step plan -Compact`) | `{ok, picked, with_faults, faults, review, orphans, jobs, file}` |
+| `cards-apply` | apply every ready draft, then the check (`card -Step apply` until no pending job, then `-Step check -Compact`) | `{ok, applied, faults, orphans, jobs, file}` |
+| `cards-finish` | apply every ready draft, then the report (`card -Step report`) | the cycle's report line |
+| `unit-fail` | record one claimed unit's fault (`ledger fail`) | `{ok, unit, state}` |
+| `cards-book-start` | publish the whole-book revision (`ledger publish`) and claim it (`ledger next -Brief`) | `{ok, unit, token, input_hash, inputs, revision}` or `{ok, unit:null, waiting:true, gate}` |
+| `cards-book-finish` | the whole-book cycle's checked completion (`book-cards-finish`), the ledger read for a cut line, and the claim's fault otherwise | the completion line, or `{ok:false, unit, state, error}` |
+| `organize-survey` / `organize-apply` | Organize's survey and the recorded decisions | the tool's line |
+| `skeleton-start` / `skeleton-finish` | the Literature index and structure Card plan (its job file) and its applied answer (`-Decisions ... -Apply`) | the plan's counts and job count, then the applied skeleton |
+| `figures` | `figures -Report ... -Apply` | the figure pass's summary |
+| `bridge-start` / `bridge-report` / `bridge-apply` | the Bridge plan (its judge job file), the frozen report, and an apply | each step's tool line |
+| `audit` | the read-only audit of the book or the Workspace | the audit summary |
+| `finalize-plan` / `-changes` / `-scope` / `-refresh` / `-final` | the finite finalization's steps | each step's tool line |
+| `term-link` | the finalization's Term-link round: plan, claim, apply under the token, complete, plan again | `{ok, status, unit, plan, counts, no_op, completion, second}` |
+| `cleanup-start` / `cleanup-apply` / `cleanup-report` | the settlement plan and its two paths, the provider results (or `cleanup-finish -Ready` when they are unusable), and the verified run report | the plan line with its paths, `{ok, fallback, provider, ready}`, and the run report |
 
 ## Behaviour
 
@@ -89,19 +105,20 @@ The rules every module follows:
 3. Each content job carries its self-check tool (`zt-check`, the compiler's check or precheck) and fixes its own draft until it passes.
 4. A module is a straight line. Its only branches are "no work" (skip the block) and "a step failed" (stop with the reason). Per-unit outcomes are ledger data, never module branches.
 5. The ledger is the truth: a step records every unit's outcome and prints one JSON line; the module never re-derives state.
-6. One shot, then report: no JavaScript retry loops; a retry is the DSMP retry of one job, or a later run.
+6. One shot, then report: no JavaScript retry loops; a retry is the DSMP retry of one job, or a later run. A declared correction count (the card cycle's `cardFixRounds`, the finalization's one cycle) is part of the plan, not a retry loop.
 7. A step that starts a branch releases claims a stopped run left; a step never keeps a unit it did not ask for.
 8. Every install carries the DSMP block (`dsmpSlot`, `dsCleanupWorkspaces` in the script), project and global scope.
+9. The one Claude agent outside the manager role is the approved judgement role (the Opus Organize decision), and one Haiku manager may make the one call no script can (`deepseek_settle` in the settlement); neither runs a command.
 
 Models: Haiku (effort low) for every manager; DeepSeek V4.1 Flash, official source, effort high, for all labour; Sonnet only for the overall designer of a complicated task (the model architect) and the HTML visual composer; Opus only for the judgement roles the user approved (the Organize decision).
 
 ## Data and storage
 
-The Term steps write only under `<staging>\term-cards\drive`. A digest layer's steps write only under `<staging>\layer-steps\<layer>` (`units.json`, `start.json`, `jobs.json`, `apply-jobs.json`) and the compilers' own staging files; outcomes go to the run ledger (`ledger.sqlite3`).
+The Term steps write only under `<staging>\term-cards\drive`. A digest layer's steps write only under `<staging>\layer-steps\<layer>` (`units.json`, `start.json`, `jobs.json`, `apply-jobs.json`) and the compilers' own staging files. The book steps write under the stage's own folder: `cards\out\jobs.json`, `cards-link\out\jobs.json`, `cards-notes\out\jobs.json`, `finalize\fix\out\jobs.json`, `skeleton\out\jobs.json`, `bridge\out\jobs.json`, and `cleanup\settle-plan.json`/`settle-results.json`; outcomes go to the run ledger (`ledger.sqlite3`).
 
 ## Configuration
 
-`term-steps.ps1`: `-Step`, `-Out`, `-Occurrences first|all`, `-PerJob`, `-MathPerJob`, `-Tool` (default `zt-digest`). `layer-steps.ps1`: `-Step start|apply|finish`, `-Out`, `-Layer`, `-Owner`, `-Take`, `-Wait`, `-Lease`, `-MaxParts`, `-Limits` (the run's `-MaxSentences …` string), `-Tool` (default `zt-digest`). The modules pass the scripts' paths (defaults `E:\zet\scripts\book-digest\term-steps.ps1` and `E:\zet\scripts\book-digest\layer-steps.ps1`; the kernel passes no param defaults, so the module holds its own).
+`term-steps.ps1`: `-Step`, `-Out`, `-Occurrences first|all`, `-PerJob`, `-MathPerJob`, `-Tool` (default `zt-digest`). `layer-steps.ps1`: `-Step start|apply|finish`, `-Out`, `-Layer`, `-Owner`, `-Take`, `-Wait`, `-Lease`, `-MaxParts`, `-Limits` (the run's `-MaxSentences …` string), `-Tool`. `book-steps.ps1`: `-Step`, `-Out`, `-Json` (the step's options), `-Tool`. The modules pass the scripts' paths (defaults `E:\zet\scripts\book-digest\term-steps.ps1`, `layer-steps.ps1` and `book-steps.ps1`; the kernel passes no param defaults, so the module holds its own).
 
 ## Usage
 
@@ -117,9 +134,11 @@ A module change follows the review checklist:
 
 ## Testing
 
-`node scripts/book-digest/tests/framework-harness.mjs`: the stand-in answers each drive step on its in-memory ledger and checks that the moved stages start only Haiku DeepSeek managers, run `start`/`apply`/`finish` in order, give each content manager at most eight jobs, and that no moved layer relays a command; the Term checks cover the drive order, the prefix publication and the link.
+`node scripts/book-digest/tests/framework-harness.mjs`: the stand-in answers each drive step on its in-memory ledger and checks that the moved stages start only Haiku DeepSeek managers, run their steps in order, give each content manager at most eight jobs, and that no moved stage relays a command; the Term and layer checks cover the drive order and the prefix publication; the #176 checks cover the book-level order (prepare → whole-book cycle → Link preparation and check → Organize → skeleton → Figures → Bridge → audit → finalization's round → settlement → report), the resume's gate steps, and the one settle call.
 
-`pwsh -NoProfile -File scripts/book-digest/tests/layer-steps.tests.ps1`: the layer steps run against a stand-in `zt-digest` tool (no archive, model or provider): the claim and the start of every layer, the job lists, the checked finishes, the Cards claim-and-finish, the typed Lock stop, the three claim tries, the ledger fallback for a lost claim line and the empty block.
+`pwsh -NoProfile -File scripts/book-digest/tests/layer-steps.tests.ps1`: the layer steps run against a stand-in `zt-digest` tool (no archive, model or provider).
+
+`pwsh -NoProfile -File scripts/book-digest/tests/book-steps.tests.ps1`: the book steps run against a stand-in `zt-digest` tool: the preparation (full, resume with its summary and gate fallback, and the backfill branches), the Link preparation, the publication, the card cycle's plan/apply/check/report and its job files, the whole-book claim and checked finish (a cut line, a refused completion), the settlement's plan/apply/report with its fallback, the finalization's steps and Term-link round, the skeleton, Figures, the Bridge and the audit.
 
 ## Decisions and pitfalls
 
@@ -129,9 +148,10 @@ A module change follows the review checklist:
 - The ledger's lease is at most 7200 seconds; the migrated layers claim with that lease, because their content jobs are capped by the provider run cap and the explain layer runs two content rounds.
 - Each module carries its own param defaults: the kernel passes only the params a blueprint gives.
 - A relay can no longer cut a claim or a completion line; the steps still ask the ledger when a line cannot be read, because the tool's own line may be cut by a timeout or a broken pipe.
+- A step's answer is authoritative (#176): a plan step that answers no line stops the cycle with its reason, instead of a module trying to read a plan from a late report.
 
 ## Change history
 
-- `2026-10-26` — #175 (workflow structure slice 1): the shared drive helper `ztDrive` (zt-workflow-lib v2) runs one deterministic script step as a DeepSeek drive job through a Haiku manager; `layer-steps.ps1` is the digest layers' step script and zt-digest-lib v38 drives it (`layerRun`, `driveStep`, `runJobs`), replacing the relay-era block driver. zt-group-cycle v7, zt-cards-layer v3, zt-link-pass v8, zt-book-terms v5, zt-event-layer v5, zt-finding-layer v5 and zt-explain v8 no longer call `ztRelay`/`runScript`/`wfpScript`; base 5.6.3, econ 6.6.3, math 5.6.3. The relay helpers stay only for the model layer, the whole-book cycle, the preparation and the settlement (the later slices).
+- `2026-10-26` — #176 (workflow structure slice 2): `scripts/book-digest/book-steps.ps1` is the book-level stages' one step script (the preparation and its resume/backfill branches, the Link preparation, a stage's own publication, the card cycle's plan/apply/check/report, the whole-book claim and checked finish, Organize's survey/apply, the skeleton, Figures, the Bridge, the audit, the finalization's plan/changes/scope/refresh/final, the Term-link round, and the settlement's plan/apply/report). `zt-digest-lib` v39 adds `bookStep` and `cardCycle`, and reads a resume's retained-layer gates through `bookStep`; `zt-term-link-lib` v3 is the finalization round's one drive job. zt-digest-prepare v16, zt-link-prepare v7, zt-link-check v3, zt-cards-book v5, zt-figures v6, zt-audit v5, zt-organize v9, zt-bridge v10, zt-finalize v4 and zt-dsh-cleanup v12 call `ztRelay`/`runScript`/`wfpScript` zero times; one Haiku manager makes the one `deepseek_settle` call. Base 5.6.4, econ 6.6.4, math 5.6.4. The relay helpers stay only for the model and math layers (the later slices).
+- `2026-10-26` — #175 (workflow structure slice 1): the shared drive helper `ztDrive` (zt-workflow-lib v2) runs one deterministic script step as a DeepSeek drive job through a Haiku manager; `layer-steps.ps1` is the digest layers' step script and zt-digest-lib v38 drives it (`layerRun`, `driveStep`, `runJobs`), replacing the relay-era block driver. zt-group-cycle v7, zt-cards-layer v3, zt-link-pass v8, zt-book-terms v5, zt-event-layer v5, zt-finding-layer v5 and zt-explain v8 no longer call the relay helpers; base 5.6.3, econ 6.6.3, math 5.6.3.
 - `2026-10-26` — Created from the user's proposal (#172): the Term stages of base 5.6.2 / econ 6.6.2 / math 5.6.2 are the reference implementation; the other modules move to the structure when next changed (the migration table is in the proposal).
-

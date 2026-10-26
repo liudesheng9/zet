@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v38 ====
+// ==== module zt-digest-lib v39 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -47,6 +47,12 @@
 // blockFinish, blockPrompt) leaves. The relay helpers (`runScript`, `chain`, `claim`, `finishUnits`, `holding`, `gate`,
 // `layer`, `ledgerReport`) stay only for the modules the later slices of the structure migrate (the model layer, the
 // whole-book cycle, the preparation and the settlement).
+// 39 (#176, docs/workflow-module-structure-proposal.md): the book-level stages run their chains as script steps too.
+// `bookStep` runs one `book-steps.ps1` step (the preparation, a stage publication, the card cycle, Organize, Figures,
+// the Bridge, the audit, the finalization, the Term-link round, the settlement) as a DeepSeek drive job; `cardCycle`
+// drives the whole-book and per-scope card cycle in declared rounds; a resume reads its retained layers' gates through
+// `bookStep`; and a content manager records run-level jobs (`run: true`) for a scope that owns no ledger unit. The
+// relay-era driver stays only for the model and math layers (the later slices).
 const ZD_SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 // The digest scripts ported to zt-digest (tools/zt-digest, one fast binary): script name → tool. zdTool(name)
 // is the command that runs a script: `zt-digest <tool>` once it is ported, else pwsh with the script. The
@@ -471,11 +477,11 @@ ${o.table || '(empty)'}
 Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
-- "needs_response": approve (decision "allow") a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), the check zt-check (read-only), a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}, and writing JSON files under "${o.writes || o.dsh}". Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
+- "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), the check zt-check (read-only), a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}, and writing JSON files under "${o.writes || o.dsh}"`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
 - "error", or "finished" without JSON lines: once, deepseek_prompt (same session, the same skills, wait_seconds 600) with "按 resume 行修正失败的调用后重跑，最后只回复 JSON 行。"; if it still fails, the job failed.
 - "finished": answer = its final answer text, unchanged (the JSON lines).
-In the record commands below, <unit_id> and <token> are the entry's own unit and token. Use the session_id that deepseek_run returned, never a word in its place. A step whose job list is empty starts no run: never send a placeholder prompt.
-${recordRules('<unit_id>', '<token>', o.dsh, !o.keep)}
+${o.run ? 'The record commands below name the run unit; use them as written.' : "In the record commands below, <unit_id> and <token> are the entry's own unit and token."} Use the session_id that deepseek_run returned, never a word in its place. A step whose job list is empty starts no run: never send a placeholder prompt.
+${o.run ? recordRules('run', 1, o.dsh, !o.keep) : recordRules('<unit_id>', '<token>', o.dsh, !o.keep)}
 Return ok, deleted, not_deleted and results: one entry per job with id, session_id, status ("done" or "failed"), answer, registered, evidence and deleted.`
   // One manager's share of a step's jobs. A manager that answers no report leaves its jobs undelivered: the
   // finish step faults the units they belonged to.
@@ -547,6 +553,59 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
     const failed = dispositions.filter((d) => d.status === 'failed').length
     const open = Number((final.counts && final.counts.open) || 0)
     return { status: final.complete === true ? 'complete' : failed && !open ? 'partial' : 'active', layer, gate: final, dispositions, claimed, finishes }
+  }
+  // --- The book-level stages: one book-steps.ps1 step per block (#176) -----------------------------------------
+  // The preparation, the whole-book card cycle, Organize, Figures, the Bridge, the audit, the finalization, the
+  // Term-link round and the settlement run their deterministic chains in scripts/book-digest/book-steps.ps1: one
+  // call is one step, run by a DeepSeek drive job (the shared ztDrive), and it prints one compact JSON line. The
+  // module reads that line; it decides nothing per command and relays none.
+  const BOOK_STEPS = p.bookScript || `${SCRIPTS}\\book-steps.ps1`
+  const bookStep = async (label, step, options = {}, o = {}) => {
+    const parts = [`pwsh -NoProfile -File "${BOOK_STEPS}"`, `-Step ${step}`, `-Out "${OUT}"`]
+    if (options && Object.keys(options).length) parts.push(`-Json ${psQuote(JSON.stringify(options))}`)
+    if (o.tool) parts.push(`-Tool ${o.tool}`)
+    const json = await ztDrive(ctx, { label, step, command: parts.join(' '), out: OUT, cwd: o.cwd || OUT, phase: o.phase, ledger: ZD_LEDGER, deepseek: o.deepseek })
+    // R326/R337: a step whose command the owner's Lock refused stops the stage with the archive's typed refusal.
+    const lock = (json && (json.code === ZD_LOCK || json.error === ZD_LOCK)) ? json : ztLockRefusal(JSON.stringify(json || {}))
+    if (lock) throw ztLockStop(label, lock)
+    return json
+  }
+  // The card cycle of one scope (#176): one step plans and lists its DeepSeek jobs, the managers write them, one
+  // step a round applies every ready draft and runs the check (listing the follow-up jobs), and one step applies
+  // the last drafts and reports. `rounds` is the declared correction count (R299), never a retry loop; a step that
+  // answers ok:false stops the cycle with its reason.
+  const cardCycle = async (label, work, o = {}) => {
+    const json = { Work: work, Book: o.book || KEY, Staging: OUT }
+    const rules = o.rules ? o.rules : (A.cardRules || '')
+    if (rules) json.Rules = rules
+    const maxCards = o.maxCards === undefined ? A.cardMax : o.maxCards
+    if (maxCards) json.MaxCards = maxCards
+    if (o.sample !== undefined) json.Sample = o.sample
+    if (o.modelReview) json.ModelReview = true
+    if (o.notes) json.Notes = o.notes
+    if (o.noOrphans) json.NoOrphans = true
+    if (o.cards) json.Cards = o.cards
+    const jobs = { dsh: work, writes: `${work}\\out`, phase: o.phase || 'Cards', skills: CARD_SKILLS, effort: DSH_EFFORT, run: true }
+    const plan = await bookStep(`${label}: plan`, 'cards-start', json, jobs)
+    if (plan.ok !== true) {
+      log(`Cards ${label}: plan failed: ${(plan && plan.error) || 'no output'}.`)
+      return { status: 'failed', label, error: `plan failed: ${(plan && plan.error) || 'no output'}` }
+    }
+    log(`Cards ${label}: ${plan.picked} Cards of the book; ${plan.with_faults} with ${plan.faults} faults, ${plan.review} for review, ${plan.orphans} orphans; ${plan.jobs} DeepSeek jobs.`)
+    if (Number(plan.jobs || 0)) await runJobs(`${label}: write`, plan.file, plan.jobs, jobs)
+    // R299: the finalization spends its one declared correction cycle, so it passes fixRounds 1 whatever the
+    // run's cardFixRounds pilot setting is.
+    const rounds = o.fixRounds === undefined ? CARD_FIX_ROUNDS : Math.max(0, Math.min(12, o.fixRounds))
+    for (let round = 1; round <= rounds; round++) {
+      const step = await bookStep(`${label}: check ${round}`, 'cards-apply', { Work: work }, jobs)
+      if (step.ok !== true) return { status: 'failed', label, plan, error: `check ${round} failed: ${(step && step.error) || 'no output'}` }
+      log(`Cards ${label}: ${step.faults} faults left, ${step.jobs} follow-up jobs.`)
+      if (Number(step.jobs || 0)) await runJobs(`${label}: fix ${round}`, step.file, step.jobs, jobs)
+    }
+    const report = await bookStep(`${label}: report`, 'cards-finish', { Work: work }, jobs)
+    if (report.ok !== true) return { status: 'failed', label, plan, error: `report failed: ${(report && report.error) || 'no output'}` }
+    log(`Cards ${label}: faults ${report.faults_before} → ${report.faults_after} on ${report.cards} Cards; verdicts ${JSON.stringify(report.verdicts)}; ${report.splits} splits, ${report.merges} merge proposals, ${report.refused} refused; ${report.orphan_links} orphan Links (${report.orphans_after} orphans left).`)
+    return { status: 'done', label, plan, applied: { applied_jobs: Number(report.applied) || 0 }, report }
   }
   const stepOf = (driven, name) => ((driven && driven.steps) || []).find(s => s.name === name) || null
   const jsonOf = (driven, name) => zdLastJson((stepOf(driven, name) || {}).output)
@@ -629,7 +688,7 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
   const settledOnResume = async (label, layers) => {
     if (MODE !== 'resume') return false
     for (const name of layers) {
-      const g = await gate(`${label}: ${name} gate`, name)
+      const g = await bookStep(`${label}: ${name} gate`, 'gate', { Layer: name })
       if (!(g && g.complete === true)) return false
     }
     log(`${label}: the retained run completed its ${layers.join(', ')} work; the resume reuses it.`)
@@ -952,6 +1011,8 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
     zAgent, runScript, groupsOf, toBlocks, drive, expandJobs, answerLines,
     // The layer driver (#175): one script step per block, each run by a DeepSeek drive job, and its managers.
     layerRun, driveStep, runJobs, LAYER_STEPS, LAYER_LEASE,
+    // The book-level stages (#176): one book-steps.ps1 step per block, and the card cycle's declared rounds.
+    bookStep, cardCycle, BOOK_STEPS,
     // The ready-work driver (9.3): one manager per declared chain, plus the ledger adapter.
     chain, ANSWERS, stepOf, jsonOf, resultLine, claim, gate, settledOnResume, holding, failUnit, finishOf, finishOrFault, layer, psQuote,
     // 35: a block's checked finishes in one command, and its outcomes.
@@ -968,9 +1029,10 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '38', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
-  summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the model compiler, the card cycle) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
+  id: 'zt-digest-lib', version: '39', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====
+
 
 

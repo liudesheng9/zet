@@ -1,21 +1,24 @@
-// ==== module zt-dsh-cleanup v11 ====
+// ==== module zt-dsh-cleanup v12 ====
 // R231/R322–R330: the run's cleanup is settled from ledger evidence, never from a workspace listing's titles.
-// v11 (2026-10-23): no model reads, relays or decides any cleanup fact. One Haiku agent makes three calls:
-// `zt-digest cleanup-run -Step plan` records the evidence already on disk and writes the plan file (every
-// recorded id still to delete, every recorded workspace not yet removed); the bridge's `deepseek_settle` runs
-// that plan in the MCP server that holds the conversations open (it closes each first) and writes the results
-// file; `cleanup-run -Step apply` records every fact and settles every ready cleanup unit through its checked
-// verifier. No id list passes through the agent: it sees two paths and three short lines. The stage had spent
-// a Haiku agent per 40 conversations, per 8 workspaces and (until v10) per cleanup unit, about 150 agents one
-// after another on ebrill2001modern trial 1. A workspace that still lists a conversation the run did not record
-// is kept and reported (that member is the user's); a refused deletion stays a retryable provider fact.
-// The run report (#85, R331–R346) is rendered here, after cleanup settles: every stage of the run has
-// finished, so the report describes the whole invocation. Its usage section is the exact per-run usage
-// the ledger recorded from each run's own result; this module never reads or differences the account-wide
-// usage ledger, because the difference of two rolling totals is not a run's cost (R344).
+// v11 (2026-10-23): no model reads, relays or decides any cleanup fact. `zt-digest cleanup-run -Step plan` records
+// the evidence already on disk and writes the plan file (every recorded id still to delete, every recorded workspace
+// not yet removed); the bridge's `deepseek_settle` runs that plan in the MCP server that holds the conversations open
+// (it closes each first) and writes the results file; `cleanup-run -Step apply` records every fact and settles every
+// ready cleanup unit through its checked verifier. The run report is rendered after cleanup settles.
+// v12 (#176, docs/workflow-module-structure-proposal.md): the plan, the apply (with the `cleanup-finish -Ready`
+// fallback when the settle tool is missing or its results are unusable) and the run report are book-steps.ps1 steps
+// run by DeepSeek drive jobs. One Haiku manager makes the one call no script can: `deepseek_settle` with the plan
+// file and the results file. No Claude agent runs a command, so no id list passes through an agent: it sees two paths
+// and one answer.
+// A workspace that still lists a conversation the run did not record is kept and reported (that member is the
+// user's); a refused deletion stays a retryable provider fact.
+// The run report (#85, R331–R346) is rendered here, after cleanup settles: every stage of the run has finished, so the
+// report describes the whole invocation. Its usage section is the exact per-run usage the ledger recorded from each
+// run's own result; this module never reads or differences the account-wide usage ledger, because the difference of
+// two rolling totals is not a run's cost (R344).
 defineModule({
-  id: 'zt-dsh-cleanup', version: '11', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: settle every recorded DeepSeek conversation and workspace from ledger evidence, then render the verified run report.',
+  id: 'zt-dsh-cleanup', version: '12', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: settle every recorded DeepSeek conversation and workspace from ledger evidence (one settle call, two steps), then render the verified run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -28,27 +31,34 @@ defineModule({
     const RESULTS = `${OUT}\\cleanup\\settle-results.json`
     const SETTLED = {
       type: 'object',
-      properties: { plan: { type: 'string' }, settle: { type: 'string' }, ok: { type: 'boolean' }, output: { type: 'string' } },
-      required: ['ok', 'output'],
+      properties: { settle: { type: 'string' }, ok: { type: 'boolean' } },
+      required: ['settle'],
     }
-    const step = (name) => `${Z.DIGEST} cleanup-run -Out "${OUT}" -Step ${name}${name === 'apply' ? ' -Owner "cleanup-run"' : ''}`
+    // 1. The plan: every recorded id still open and every recorded workspace not yet removed.
+    const planned = await Z.bookStep('cleanup: plan', 'cleanup-start')
+    if (!planned || planned.ok !== true) {
+      log(`Cleanup: the plan did not run (${(planned && planned.error) || 'no output'}).`)
+      return { status: 'partial', cleanup: { status: 'unsettled' }, error: (planned && planned.error) || 'the cleanup plan did not run' }
+    }
+    // 2. The one provider call no script makes: `deepseek_settle` runs the plan inside the MCP server that holds the
+    //    conversations open. The manager copies one short line; it deletes nothing and reads no id list.
     const got = await dsmpSlot(() => Z.zAgent(
-      `Settle the DeepSeek Harness conversations and workspaces of one digest run. A script decides every id; you make three calls and copy short lines. Never delete, list or remove anything yourself, and never call deepseek_delete or deepseek_remove_workspace.
-${Z.RUNNER}
-1. Run this command once in the foreground with timeout_ms: ${Z.COMMAND_TIMEOUT_MS} and read its last line (JSON; it changes no Card):
-   ${step('plan')}
-2. Load the tool with one ToolSearch call: query "select:mcp__deepseek__deepseek_settle". Call deepseek_settle once with plan_file "${PLAN}" and results_file "${RESULTS}". Put its answer, as one line, in settle. If the tool is missing or fails, put the error in settle and skip to step 4.
-3. Run this command once with timeout_ms: ${Z.COMMAND_TIMEOUT_MS}; it records the results and settles the cleanup units (it changes no Card):
-   ${step('apply')}
-   Return ok (true when it exits without an error) and output = its last line exactly. Stop here.
-4. Only when step 2 failed: run ${Z.DIGEST} cleanup-finish -Out "${OUT}" -Ready -Owner "cleanup-run" once with timeout_ms: ${Z.COMMAND_TIMEOUT_MS} (it settles the units whose conversations are already gone) and return ok and output = its last line exactly.
-Return plan = the last line of step 1.`,
+      `Settle the DeepSeek Harness conversations and workspaces of one digest run. A script decides every id and has already written the plan. You make ONE call and copy its short answer. Never delete, list or remove anything yourself, and never call deepseek_delete or deepseek_remove_workspace.
+1. Load the tool with one ToolSearch call: query "select:mcp__deepseek__deepseek_settle". Call deepseek_settle once with plan_file "${PLAN}" and results_file "${RESULTS}". Put its answer, as one line, in settle. If the tool is missing or fails, put the error in settle.
+2. Return settle = that one line, and ok = true when the call answered.`,
       { label: 'cleanup: settle the run', phase: 'Cleanup', model: 'haiku', schema: SETTLED },
     ))
-    const line = got && got.ok ? zdLastJson(got.output) : null
-    const ran = line && line.kind === 'cleanup_run' ? line : null
-    const ready = ran ? ran.ready : line && line.kind === 'cleanup_ready' ? line : null
-    if (!ran) log(`Cleanup: the provider batch did not run (${String((got && (got.settle || got.output)) || 'no answer').slice(0, 240)}).`)
+    if (!got || !got.ok) log(`Cleanup: the provider batch did not run (${String((got && got.settle) || 'no answer').slice(0, 240)}).`)
+    // 3. Record the results and settle every ready cleanup unit; without usable results the units whose conversations
+    //    are already gone still settle through `cleanup-finish -Ready`.
+    const applied = await Z.bookStep('cleanup: apply', 'cleanup-apply')
+    if (!applied || applied.ok !== true) {
+      log(`Cleanup: the settlement did not run (${(applied && applied.error) || 'no output'}).`)
+      return { status: 'partial', cleanup: { status: 'unsettled' }, error: (applied && applied.error) || 'the cleanup settlement did not run' }
+    }
+    const ran = applied.provider || null
+    const ready = applied.ready || null
+    if (!ran) log(`Cleanup: the provider batch did not run (${String(applied.provider_error || 'the settle results were not usable').slice(0, 240)}).`)
     else log(`Cleanup: deleted ${ran.deleted}, already gone ${ran.absent}, failed ${ran.failed_count}; workspaces removed ${ran.workspaces_removed}, kept ${ran.workspaces_kept}${ran.unknown_count ? `; ${ran.unknown_count} conversation(s) the run did not record stay: ${JSON.stringify(ran.unknown)}` : ''}${ran.unrecorded_count ? `; ${ran.unrecorded_count} fact(s) not recorded: ${JSON.stringify(ran.unrecorded)}` : ''}.`)
     const settled = []
     if (ready) {
@@ -69,37 +79,37 @@ Return plan = the last line of step 1.`,
       status: run ? run.json.status : 'unsettled',
     }
     if (cleanup.status === 'partial') log(`Cleanup is partial: ${JSON.stringify((run.json && run.json.partial_reasons) || [])}`)
-    // R331: the verified run report. Every stage has settled, so the report describes this invocation:
-    // completeness, gaps, current placeholders, timings and exact per-run usage. A failed render leaves the
-    // run partial and names why; it never substitutes an agent's summary for the report.
-    const rendered = await Z.ledgerReport('report the run from the ledger')
-    let facts = null
-    if (!rendered.ok) {
-      log(`The run report failed: ${rendered.error}`)
+    // 4. R331: the verified run report. Every stage has settled, so the report describes this invocation:
+    //    completeness, gaps, current placeholders, timings and exact per-run usage. A failed render leaves the run
+    //    partial and names why; it never substitutes an agent's summary for the report.
+    const facts = await Z.bookStep('report the run from the ledger', 'cleanup-report')
+    let report = null
+    if (!facts || facts.ok !== true) {
+      log(`The run report failed: ${(facts && facts.error) || 'no output'}`)
     } else {
-      facts = rendered.json
+      report = facts
       const c = facts.completeness || {}
       const u = facts.usage || {}
       log(`Run report: settled ${c.settled}, content ${c.content_complete}, quality ${c.quality_complete}, cleanup ${c.cleanup_complete}, complete ${c.complete}; ${(facts.gaps || []).length} gap(s); placeholders ${facts.placeholders && facts.placeholders.count}; usage ${u.known_runs} run(s) known, ${u.missing_runs} missing. Report: ${OUT}\\run-report.md`)
     }
-    const usage = facts ? facts.usage : null
+    const usage = report ? report.usage : null
     return {
-      status: facts ? (facts.completeness && facts.completeness.complete ? 'complete' : 'partial') : (cleanup.status === 'complete' ? 'partial' : cleanup.status),
+      status: report ? (report.completeness && report.completeness.complete ? 'complete' : 'partial') : (cleanup.status === 'complete' ? 'partial' : cleanup.status),
       cleanup,
       usage,
-      report: facts ? {
-        json: (facts.report && facts.report['run-report.json'] && facts.report['run-report.json'].path) || `${OUT}\\run-report.json`,
-        markdown: (facts.report && facts.report['run-report.md'] && facts.report['run-report.md'].path) || `${OUT}\\run-report.md`,
-        completeness: facts.completeness,
-        counts: facts.counts,
-        gaps: facts.gaps,
-        placeholders: facts.placeholders,
-        timing: facts.timing,
-        resume: facts.resume,
-        bridge: facts.bridge,
-        publications: facts.publications,
+      report: report ? {
+        json: (report.report && report.report['run-report.json'] && report.report['run-report.json'].path) || `${OUT}\\run-report.json`,
+        markdown: (report.report && report.report['run-report.md'] && report.report['run-report.md'].path) || `${OUT}\\run-report.md`,
+        completeness: report.completeness,
+        counts: report.counts,
+        gaps: report.gaps,
+        placeholders: report.placeholders,
+        timing: report.timing,
+        resume: report.resume,
+        bridge: report.bridge,
+        publications: report.publications,
       } : null,
-      error: facts ? undefined : rendered.error,
+      error: report ? undefined : ((facts && facts.error) || 'the run report did not render'),
     }
   },
 })

@@ -9,6 +9,8 @@ paths:
   - "scripts/book-digest/tests/audit-bulk-faults-fixture.txt"
   - "!scripts/book-digest/term-steps.ps1"
   - "!scripts/book-digest/layer-steps.ps1"
+  - "!scripts/book-digest/book-steps.ps1"
+  - "!scripts/book-digest/tests/book-steps.tests.ps1"
 synced: 8dca3ae084a4
 updated: 2026-10-26
 ---
@@ -865,6 +867,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+- `2026-10-26` — `book-steps.ps1` is the book-level stages' step script (#176) and belongs to the [Workflow module structure](workflow-module-structure.md) block, like `term-steps.ps1` and `layer-steps.ps1`; `tests/book-steps.tests.ps1` runs it against a stand-in `zt-digest` tool (64 checks).
 - `2026-10-26` — `layer-steps.ps1` is the digest layers' step script (#175) and belongs to the [Workflow module structure](workflow-module-structure.md) block, like `term-steps.ps1`; `tests/layer-steps.tests.ps1` runs it against a stand-in `zt-digest` tool (24 checks).
 
 - `2026-10-26` — `tests/term-cards-fixture.blueprint.json` is removed with the S20 Term-card harness it served (#172); `term-steps.ps1` belongs to the [Workflow module structure](workflow-module-structure.md) block.
