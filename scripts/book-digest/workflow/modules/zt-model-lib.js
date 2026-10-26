@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v12 ====
+// ==== module zt-model-lib v13 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list and the
 // model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill, derive, review, split →
 // report and clean-up. A book type installs the model layer with its profile (economics: the economic
@@ -17,6 +17,10 @@
 // `concept:a,b|formal:c`), a plan is a packed `address:status` list, and a batch's report answers the models'
 // statuses instead of their rows. The per-model rows stay in the compiler's own `report.json` and the step's
 // detail file; the run report's per-model facts come from the archive (`run_report.placeholders.models`).
+// 13 (live run 2026-10-26, staging4): the fill line of six formal models named each one twice in full and overflowed
+// its 400 characters; the overflow answered {ok, detail}, the module read a fill with no jobs and six models stayed
+// unwritten. The steps now name models without the book key (`2|a`) and the module adds it back (`full`); the
+// brief's skipped models travel the same way (a list, no longer a count). An overflow is now a failed step.
 function zmlMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const {
@@ -34,6 +38,9 @@ function zmlMake(ctx, p) {
     const at = entry.indexOf(':')
     return at < 0 ? [entry, ''] : [entry.slice(0, at), entry.slice(at + 1)]
   })
+  // A model the step lines name without its book key (`2|a`), as its full address (`Key/2|a`).
+  const full = (at) => { const t = String(at || '').trim(); return !t || t.includes('/') ? t : `${KEY}/${t}` }
+  const fullPairs = (text) => pairs(text).map(([at, v]) => [full(at), v])
   // One deterministic step: the model-steps.ps1 call a DeepSeek drive job runs and answers with its one JSON line.
   // A failed step is returned for the module to stop with; the owner's typed refusal stops the stage here.
   const modelStep = async (label, step, o = {}) => {
@@ -114,7 +121,7 @@ function zmlMake(ctx, p) {
     const brief = await step('brief', 'brief', { models: addresses, rebuild: REBUILD, level: LEVEL, limits: LIMITS })
     if (!brief.ok) return failed(`brief failed: ${brief.error}`)
     if (Number(brief.jobs || 0)) await content('brief', brief.file, brief.jobs, BRIEF_EFFORT)
-    const skipped = new Set((brief.skipped || []).map(String))
+    const skipped = new Set((Array.isArray(brief.skipped) ? brief.skipped : String(brief.skipped || '').split(',')).map(full).filter(Boolean))
     const todo = addresses.filter((at) => !skipped.has(at))
     if (!todo.length) return addresses.map((model) => ({ model, status: 'skipped' }))
     // 2. Plan: Sonnet reads the briefs and writes plan.json for each model; nothing else.
@@ -140,9 +147,9 @@ Return plans: one entry per model, in this order.`,
     const fill = await step('fill', 'fill', { models: todo, limits: LIMITS })
     if (!fill.ok) return failed(`fill failed: ${fill.error}`)
     const said = (planned && planned.plans) || []
-    const statusOf = new Map(pairs(fill.statuses))
+    const statusOf = new Map(fullPairs(fill.statuses))
     const plans = todo.map((model) => ({ ...(said.find((y) => y.model === model) || {}), model, status: statusOf.get(model) || 'failed', level: levelOf(model) }))
-    const deferred = new Map(pairs(fill.deferred).map(([at, why]) => [at, why || 'refused']))
+    const deferred = new Map(fullPairs(fill.deferred).map(([at, why]) => [at, why || 'refused']))
     if (deferred.size) log(`${tag}: ${[...deferred].map(([at, why]) => `${at} ${why === 'waiting' ? 'waits for the model it takes a part from' : 'has a reference the ledger refused'}`).join('; ')}.`)
     const outcome = (at) => ({ model: at, status: deferred.get(at), issues: [deferred.get(at) === 'waiting' ? 'waits for the model it takes a part from' : 'a reference to another model\'s part was refused'] })
     if (!plans.some((x) => x.status === 'planned' && !deferred.has(x.model))) {
@@ -188,7 +195,7 @@ Return plans: one entry per model, in this order.`,
       const close = await step(round ? `close ${round + 1}` : 'close', 'close')
       if (!close.ok) return failed(`close failed: ${close.error}`)
       // #180: the close round's report is its models' packed statuses, never their rows.
-      if (Number(close.report_models || 0)) reported = new Map(pairs(close.statuses))
+      if (Number(close.report_models || 0)) reported = new Map(fullPairs(close.statuses))
       if (!close.faults) break
       log(`close ${round + 1} ${tag}: ${close.faults} build fault(s) sent back in ${Number(close.jobs || 0)} follow-up(s)${Number(close.unowned || 0) ? `, ${close.unowned} in Cards no job of this batch wrote` : ''}`)
       if (!Number(close.jobs || 0)) break
@@ -199,7 +206,7 @@ Return plans: one entry per model, in this order.`,
     if (!statuses) {
       const report = await step('report', 'report')
       if (!report.ok) return failed(`report failed: ${report.error}`)
-      statuses = new Map(pairs(report.statuses))
+      statuses = new Map(fullPairs(report.statuses))
     }
     return addresses.map((m) => {
       if (skipped.has(m)) return { model: m, status: 'skipped' }
@@ -215,7 +222,7 @@ Return plans: one entry per model, in this order.`,
     const plan = String((started && started.plan) || '')
     const batches = plan.split(';').filter(Boolean).map((entry) => {
       const at = entry.indexOf(':')
-      return { kind: entry.slice(0, at), models: entry.slice(at + 1).split(',').filter(Boolean) }
+      return { kind: entry.slice(0, at), models: entry.slice(at + 1).split(',').filter(Boolean).map(full) }
     }).filter((b) => b.models.length)
     if (!batches.length) {
       log(`${label}: no model of the block is planned; the block builds nothing.`)
@@ -251,7 +258,7 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '12', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '13', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model layer\'s model-steps.ps1 steps (list, claim and batch; brief, fill, derive, review, split, close, report, finish), the Sonnet architect, and the model compiler\'s report and clean-up.',
 })
 // ==== end module zt-model-lib ====

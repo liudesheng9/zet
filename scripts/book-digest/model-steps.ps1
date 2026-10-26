@@ -142,8 +142,15 @@ function Compiler([string]$StepName, [string[]]$Extra = @()) {
 }
 # A model's own status, packed as `address:status` pairs (#180): the module reads a short list, never a row
 # per model. A status is `done`, `failed` or `skipped`.
+# A model's address without its book key (`Key/2|a` -> `2|a`): the step lines name models this way and the module
+# adds the key back, so a batch's line fits its 400 characters (live run 2026-10-26: six full addresses overflowed).
+function Short([string]$Address) {
+    $at = $Address.IndexOf('/')
+    if ($at -lt 0) { return $Address }
+    return $Address.Substring($at + 1)
+}
 function Status-List($Rows) {
-    return (@(@($Rows) | Where-Object { $_ -and $_.model } | ForEach-Object { $st = if ($_.status) { "$($_.status)" } else { 'done' }; "$($_.model):$st" }) -join ';')
+    return (@(@($Rows) | Where-Object { $_ -and $_.model } | ForEach-Object { $st = if ($_.status) { "$($_.status)" } else { 'done' }; "$(Short "$($_.model)"):$st" }) -join ';')
 }
 
 switch ($Step) {
@@ -189,7 +196,7 @@ switch ($Step) {
         for ($i = 0; $i -lt $formal.Count; $i += [Math]::Max(1, $PerSonnet)) { $batches += @{ kind = 'formal'; models = @($formal[$i..([Math]::Min($i + [Math]::Max(1, $PerSonnet) - 1, $formal.Count - 1))] | ForEach-Object { "$($_.address)" }) } }
         Save 'batches.json' $batches
         # The plan as one short string: `concept:a,b|formal:c` (#180).
-        $plan = (@($batches | ForEach-Object { "$($_.kind):$((@($_.models)) -join ',')" }) -join ';')
+        $plan = (@($batches | ForEach-Object { "$($_.kind):$((@($_.models | ForEach-Object { Short "$_" })) -join ',')" }) -join ';')
         $line = @{ ok = $true; units = $claimUnits.Count; claimed = $claimUnits.Count; models = $blockModels.Count; batches = $batches.Count; plan = $plan }
         if ($gate.json -and $gate.json.counts) { $line.gate_complete = ($gate.json.complete -eq $true); $line.gate_open = [int]$gate.json.counts.open }
         Reply $line @{ units = $claimUnits; models = $blockModels; batches = $batches; gate = $gate.json }
@@ -202,7 +209,7 @@ switch ($Step) {
         $r = Compiler 'brief' ($extra + $Limits.Split(' '))
         if (-not $r.json) { Fail 'brief' $r; break }
         $file = Jobs 'jobs.json' $r
-        Reply @{ ok = $true; step = 'brief'; jobs = @($r.json.jobs).Count; file = $file; skipped = @($r.json.skipped | Where-Object { $_ }).Count } $r.json
+        Reply @{ ok = $true; step = 'brief'; jobs = @($r.json.jobs).Count; file = $file; skipped = (@($r.json.skipped | Where-Object { $_ } | ForEach-Object { Short "$(if ($_.model) { $_.model } else { $_ })" }) -join ',') } $r.json
     }
     'fill' {
         Renew
@@ -256,8 +263,7 @@ switch ($Step) {
         }
         $line = @{
             ok = $true; step = 'fill'; plans = $plans.Count; derive = [bool]$derive
-            planned = (@($still | ForEach-Object { "$($_.model)" }) -join ',')
-            deferred = (@($deferred | ForEach-Object { "$($_.model):$($_.why)" }) -join ';')
+            deferred = (@($deferred | ForEach-Object { "$(Short "$($_.model)"):$($_.why)" }) -join ';')
             statuses = (Status-List $plans)
         }
         if (-not $go.Count) {

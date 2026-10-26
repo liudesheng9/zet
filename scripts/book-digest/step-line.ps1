@@ -19,8 +19,9 @@
   top-level `ok`; a prose answer or a nested object fails the stage.
 
   A line that is still over 400 characters after a long error is cut is an authoring fault, not data: the
-  helper writes the whole line to its detail file and answers `{ok, detail}` instead of a broken line, and the
-  step scripts' own tests assert every answer of theirs fits.
+  helper writes the whole line to its detail file and answers `{ok:false, step, error:"line_overflow: ...", detail}`,
+  so the stage stops instead of reading a line without its fields as a success; the step scripts' own tests
+  assert every answer of theirs fits.
 #>
 $StepLineMax = 400
 
@@ -92,7 +93,9 @@ function Step-FitLine($Flat, [string]$Name, [string]$Dir) {
         $path = Join-Path $Dir "$Name.json"
         $Flat | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $path -Encoding utf8
     }
-    $short = [ordered]@{ ok = [bool]$Flat['ok']; detail = $path }
+    # Live run 2026-10-26 (staging4): `{ok:true, detail}` read as a success with no jobs, and six models stayed
+    # unwritten. A line that does not fit is a failed step, never a silent success.
+    $short = [ordered]@{ ok = $false; step = $Name; error = "line_overflow: the step's line is $($text.Length) characters (max $StepLineMax); see the detail file"; detail = $path }
     return ($short | ConvertTo-Json -Depth 4 -Compress)
 }
 

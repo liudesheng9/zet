@@ -135,7 +135,7 @@ $common = @('-Out', $out, '-Tool', $tool)
 $env:MS_STALE = '1'
 $start = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 1') + $common)
 $env:MS_STALE = ''
-Assert ($start.json -and $start.json.ok -eq $true -and $start.json.claimed -eq 3 -and $start.json.units -eq 3 -and $start.json.models -eq 3 -and $start.json.batches -eq 2 -and $start.json.plan -eq 'concept:Key/3|c;formal:Key/2|c') "start: three Model units claimed and the block's three models named ($($start.text))"
+Assert ($start.json -and $start.json.ok -eq $true -and $start.json.claimed -eq 3 -and $start.json.units -eq 3 -and $start.json.models -eq 3 -and $start.json.batches -eq 2 -and $start.json.plan -eq 'concept:3|c;formal:2|c') "start: three Model units claimed and the block's three models named ($($start.text))"
 $callsText = Get-Content -LiteralPath $calls -Raw
 Assert ($callsText -match 'ledger status -Out .* -Layer models' -and $callsText -match 'ledger reclaim -Out .* -Unit models/g001-m0000@1 -Release') 'start: a stopped run''s claim is released before the new plan'
 Assert ($callsText -match 'ledger next .* -Layer models -Take 8 -Owner models block 1 -Lease 7200 -Brief') 'start: one claim carries the owner and the two-hour lease'
@@ -157,7 +157,7 @@ Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $fill = Step (@('-Step', 'fill', '-Work', $work, '-Units', 'models/g001-m0000@1:1,models/g002-m0001@1:1,models/g003-m0002@1:1') + $common)
 $fillCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($fill.json -and $fill.json.ok -eq $true -and $fill.json.plans -eq 3) "fill: the plans the architect wrote are read ($($fill.text))"
-Assert ($fill.json.deferred -eq 'Key/3|c:waiting') 'fill: the model whose producer is not done is released to wait'
+Assert ($fill.json.deferred -eq '3|c:waiting' -and -not $fill.json.planned -and $fill.json.statuses -match '^2\|c:') 'fill: the model whose producer is not done is released to wait; the line names models without the book key (live run 2026-10-26: six full addresses overflowed it)'
 Assert ($fill.json.derive -eq $true -and $fill.json.jobs -eq 1) 'fill: the derivation plans are read from the plans, and the fill jobs are listed'
 Assert ($fillCalls -match 'model -Step plan-status ' -and $fillCalls -match 'model-deps -Out .* -Units models/g001-m0000@1:1,models/g002-m0001@1:1' -and $fillCalls -match 'model -Step defer -Work .* -Models Key/3\|c' -and $fillCalls -match 'model -Step apply -Work .* -MaxSentences 12 ') 'fill: plan-status, one model-deps command, the defer, then the fill — one process, one step'
 
@@ -173,7 +173,7 @@ $closeJobs = Step (@('-Step', 'close', '-Work', $work) + $common)
 $env:MS_CLOSE_JOBS = ''
 Assert ($closeJobs.json -and $closeJobs.json.ok -eq $true -and $closeJobs.json.jobs -eq 1 -and $closeJobs.json.faults -eq 1 -and -not $closeJobs.json.report) "close: a round that sends follow-ups lists them and writes no report ($($closeJobs.text))"
 $close = Step (@('-Step', 'close', '-Work', $work) + $common)
-Assert ($close.json -and $close.json.ok -eq $true -and -not $close.json.jobs -and $close.json.report_models -eq 1 -and $close.json.statuses -eq 'Key/2|c:done') "close: the round that sends nothing back carries the batch report ($($close.text))"
+Assert ($close.json -and $close.json.ok -eq $true -and -not $close.json.jobs -and $close.json.report_models -eq 1 -and $close.json.statuses -eq '2|c:done') "close: the round that sends nothing back carries the batch report ($($close.text))"
 $report = Step (@('-Step', 'report', '-Work', $work) + $common)
 Assert ($report.json -and $report.json.ok -eq $true -and @($report.json.models).Count -eq 1) "report: one report per model of the batch ($($report.text))"
 
@@ -225,6 +225,14 @@ New-Item -ItemType Directory -Force $manOut | Out-Null
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $manStart = Step (@('-Step', 'start', '-Take', '8', '-Owner', 'models block 4', '-Out', $manOut, '-Tool', $tool))
 Assert ($manStart.json -and $manStart.json.ok -eq $true -and (Get-Content -LiteralPath $calls -Raw) -match 'list-models -Staging .* -All -CitationKey ManifestKey') "manifest key: the model listing names the prepared run's Citation key when the step names none ($($manStart.text))"
+
+# 9. Live run 2026-10-26 (staging4): a line over 400 characters was answered as `{ok:true, detail}`, which the module
+# read as a fill with no jobs, so six models stayed unwritten. An overflow is now a failed step, never a silent
+# success.
+$helper = Join-Path $PSScriptRoot '..\step-line.ps1'
+$over = & pwsh -NoProfile -Command ". '$helper'; Send-StepLine @{ ok = `$true; jobs = 24; planned = ('x' * 500) } -Name 'big' -Out '$scratch'" | Select-Object -Last 1
+$overJson = $over | ConvertFrom-Json
+Assert ($overJson.ok -eq $false -and $overJson.error -match '^line_overflow' -and $overJson.detail -and $over.Length -le 400) "overflow: a line over 400 characters fails the step with line_overflow and names its detail file ($over)"
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''

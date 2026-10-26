@@ -1502,7 +1502,9 @@ function runtime(kind, opts = {}) {
 
   // #180: the model steps' compact lines, as model-steps.ps1 prints them: the batching plan as one string, a plan
   // as `address:status` pairs, a report as its models' statuses, and a finish as counts.
-  const modelPairs = (rows, field = 'model') => (rows || []).filter(Boolean).map((r) => `${r[field]}:${r.status}`).join(';')
+  // Live run 2026-10-26 (staging4): the lines name models without the book key (`2|a`); the module adds it back.
+  const shortAt = (a) => { const t = String(a || ''); const i = t.indexOf('/'); return i < 0 ? t : t.slice(i + 1) }
+  const modelPairs = (rows, field = 'model') => (rows || []).filter(Boolean).map((r) => `${shortAt(r[field])}:${r.status}`).join(';')
   const modelPlan = (rows, cmd) => {
     const skip = ((cmd.match(/-SkipForms "([^"]*)"/) || [])[1] || '').split(',').filter(Boolean)
     const only = ((cmd.match(/-Only "([^"]*)"/) || [])[1] || '').split(',').filter(Boolean)
@@ -1515,8 +1517,8 @@ function runtime(kind, opts = {}) {
     const concept = todo.filter((m) => (level || m.level) === 'concept')
     const formal = todo.filter((m) => (level || m.level) !== 'concept')
     const plan = []
-    for (let i = 0; i < concept.length; i += 2) plan.push(`concept:${concept.slice(i, i + 2).map((m) => m.address).join(',')}`)
-    for (let i = 0; i < formal.length; i += 8) plan.push(`formal:${formal.slice(i, i + 8).map((m) => m.address).join(',')}`)
+    for (let i = 0; i < concept.length; i += 2) plan.push(`concept:${concept.slice(i, i + 2).map((m) => shortAt(m.address)).join(',')}`)
+    for (let i = 0; i < formal.length; i += 8) plan.push(`formal:${formal.slice(i, i + 8).map((m) => shortAt(m.address)).join(',')}`)
     return plan.join(';')
   }
   const modelStepAnswer = async (cmd) => {
@@ -1530,10 +1532,10 @@ function runtime(kind, opts = {}) {
       const gate = raw.gate ? { gate_complete: raw.gate.complete === true, gate_open: n(raw.gate.counts && raw.gate.counts.open) } : {}
       return { ok: true, units: list(raw.units), claimed: n(raw.claimed), models: list(raw.models), batches: plan ? plan.split(';').length : 0, plan, file: raw.file, ...gate }
     }
-    if (step === 'brief') return { ok: true, step, jobs: n(raw.jobs), file: raw.file, skipped: list(raw.skipped) }
+    if (step === 'brief') return { ok: true, step, jobs: n(raw.jobs), file: raw.file, skipped: (raw.skipped || []).map((x) => shortAt(x && x.model ? x.model : x)).join(',') }
     if (step === 'fill') {
       const plans = raw.plans || []
-      return { ok: true, step, plans: plans.length, derive: raw.derive === true, planned: plans.filter((p) => p.status === 'planned').map((p) => p.model).join(','), deferred: (raw.deferred || []).map((d) => `${d.model}:${d.why}`).join(';'), statuses: modelPairs(plans), jobs: n(raw.jobs), file: raw.file }
+      return { ok: true, step, plans: plans.length, derive: raw.derive === true, deferred: (raw.deferred || []).map((d) => `${shortAt(d.model)}:${d.why}`).join(';'), statuses: modelPairs(plans), jobs: n(raw.jobs), file: raw.file }
     }
     if (step === 'close') {
       const models = (raw.report && raw.report.models) || []

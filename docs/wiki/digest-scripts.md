@@ -1,5 +1,6 @@
 ---
-block: digest-scripts
+block: diges- `2026-10-26` — `step-line.ps1`: a line still over 400 characters after its error is cut is a failed step, `{ok:false, step, error:"line_overflow: ...", detail}`, never `{ok:true, detail}`: on the live run (staging4) the short success form let the model module read a fill with no jobs (see the [Workflow module structure](workflow-module-structure.md) block).
+t-scripts
 title: Digest scripts
 paths:
   - "scripts/book-digest/*.ps1"
