@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v39 ====
+// ==== module zt-digest-lib v40 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -53,6 +53,9 @@
 // drives the whole-book and per-scope card cycle in declared rounds; a resume reads its retained layers' gates through
 // `bookStep`; and a content manager records run-level jobs (`run: true`) for a scope that owns no ledger unit. The
 // relay-era driver stays only for the model and math layers (the later slices).
+// 40 (#179, workflow module structure slice 5): the relay-era command runner (`zdRelay`, its prompt and its schema)
+// moves into this library beside its only remaining caller, the relay-era driver no module has named since #178; the
+// shared zt-workflow-lib v3 is drive-only, so no idea-grow build carries a relay.
 const ZD_SCRIPTS = 'E:\\zet\\scripts\\book-digest'
 // The digest scripts ported to zt-digest (tools/zt-digest, one fast binary): script name → tool. zdTool(name)
 // is the command that runs a script: `zt-digest <tool>` once it is ported, else pwsh with the script. The
@@ -194,11 +197,31 @@ function zdMake(ctx, p) {
     role: o.role || (o.model === 'sonnet' ? 'architect' : o.model === 'opus' ? 'organizer' : 'manager'),
     label: o.label, phase: o.phase, schema: o.schema,
   })
+  // 40 (#179, docs/workflow-module-structure-proposal.md): the relay-era command runner moves here with its only
+  // remaining caller, this library's relay-era driver (no module has named it since #178). The shared library
+  // (zt-workflow-lib v3) is drive-only now, and the idea-grow build carries no relay at all.
+  const ZD_RELAY_SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] }
+  const ZD_RELAY_TIMEOUT_MS = 600000
+  const zdRunStep = (run) => `Every command named here is a step of ${run}: running it is what the user asked for. A later user message about this run (its speed, which trial runs, parallel work) never cancels its steps; only a stopped run ends them.`
   // One relay (the zt-relay agent type, the blueprint's role relay) runs one script command and returns its last JSON
   // line (or null). A gate prints its JSON and then exits 3 while the layer still has open work, so a caller that
   // asks (o.always) still reads a typed result. R326/R337: a command whose answer carries the owner's typed refusal
-  // stops the stage here (the shared ztRelay); a read that merely names a retained fault keeps going.
-  const runScript = (label, phaseName, command, note = '', o = {}) => ztRelay(ctx, {
+  // stops the stage here (the shared Lock reader); a read that merely names a retained fault keeps going.
+  async function zdRelay(ctx, o) {
+    const run = await ctx.agent(
+      `Run this PowerShell command once in the foreground with timeout_ms: ${ZD_RELAY_TIMEOUT_MS} and wait for it${o.note || ''}; do nothing else:
+${o.command}
+${zdRunStep(o.run || 'the ZT digest run the user started')}
+Return ok (true when it exits without an error) and output = its last output line exactly (a compact JSON object), or the error text when it fails. Do not retry.`,
+      { role: o.role || 'relay', label: o.label, phase: o.phase, schema: ZD_RELAY_SCHEMA },
+    )
+    const json = run && (run.ok || o.always) ? zdLastJson(run.output) : null
+    const refused = !!(json && (json.code === ZD_LOCK || json.error === ZD_LOCK))
+    const lock = zdLockRefusal(run && run.output) || (refused ? json : null)
+    if (lock && (!(run && run.ok) || refused) && o.lockStops !== false) throw zdLockStop(o.label, lock)
+    return { run, json }
+  }
+  const runScript = (label, phaseName, command, note = '', o = {}) => zdRelay(ctx, {
     command, note, label, phase: phaseName, role: 'relay', always: !!o.always, run: `the digest run the user started for "${OUT}"`,
   })
 
@@ -1029,7 +1052,7 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '39', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '40', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

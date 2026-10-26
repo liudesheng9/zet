@@ -2687,13 +2687,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '39' && modules['zt-digest-prepare'] === '16' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '2' && modules['zt-term-link-lib'] === '3' && modules['zt-term-link'] === '4' && modules['zt-term-cards'] === '5' && modules['zt-finalize'] === '4', `lock: the frozen build carries zt-digest-lib v39, zt-digest-prepare v16, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v2 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '40' && modules['zt-digest-prepare'] === '16' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '3' && modules['zt-term-link-lib'] === '3' && modules['zt-term-link'] === '4' && modules['zt-term-cards'] === '5' && modules['zt-finalize'] === '4', `lock: the frozen build carries zt-digest-lib v40, zt-digest-prepare v16, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v3 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '12' && grow.modules['zt-workflow-lib'] === '2', `lock: the idea-grow build carries zt-grow-cycle v12 and the shared zt-workflow-lib v2 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '13' && grow.modules['zt-workflow-lib'] === '3', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v3 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -2902,6 +2902,29 @@ for (const which of ['econ', 'math']) {
   check(failed.report.halted && failed.report.halted.stage === 'math-skeleton' && /no numbered statement/.test(failed.report.halted.error || ''), `#178: a failed mathematics step stops the stage with its reason (${JSON.stringify(failed.report.halted)})`)
   check(failed.mathCalls.filter((c) => c.step === 'boundary').length === 0, '#178: a failed step runs none of the later chains')
 }
+}
+
+// ================================================================================================================
+// #179: the idea-grow stage without relay agents (docs/workflow-module-structure-proposal.md, slice 5)
+// ================================================================================================================
+// The idea-grow workflow is not a digest variant this harness builds: its behaviour is checked by
+// scripts/book-digest/tests/grow-workflow-harness.mjs (the built script run against a stand-in runtime) and its step
+// script by grow-steps.tests.ps1. Here the shared structure is checked at the source, next to the digest slices.
+{
+  const readText = (rel) => fs.readFileSync(path.join(root, rel), 'utf8')
+  const growModule = readText('scripts/idea-grow/workflow/modules/zt-grow-cycle.js')
+  const growSteps = readText('scripts/idea-grow/grow-steps.ps1')
+  const growBp = JSON.parse(readText('scripts/idea-grow/workflow/zt-idea-grow.blueprint.json'))
+  const growSim = JSON.parse(readText('scripts/idea-grow/workflow/zt-idea-grow.sim.json'))
+  check(!/ztRelay\s*\(|runScript\s*\(|wfpScript\s*\(/.test(growModule), '#179: the grow module calls ztRelay, runScript and wfpScript zero times')
+  check(/ztDrive\(ctx/.test(growModule) && /grow-steps\.ps1/.test(growModule) && /dsDispatch\(line\.ids/.test(growModule), '#179: the grow chain is one grow-steps.ps1 step under a DeepSeek drive job, and each checked job set goes to DSMP')
+  check(growBp.roles && !growBp.roles.relay && !growBp.roles.runner && growBp.roles.manager && growBp.roles.manager.model === 'haiku' && growBp.roles.manager.effort === 'low', '#179: the idea-grow blueprint declares the manager role only (no relay role, no zt-relay agent type)')
+  check(!Object.keys(growBp.stages[0].params).includes('relay'), '#179: the grow stage passes no relay role param')
+  check(/\[ValidateSet\('next'\)\]/.test(growSteps) && /Grow 'next'/.test(growSteps) && /Grow 'status'/.test(growSteps), '#179: grow-steps.ps1 has the one next step, the grow command and its one status recovery')
+  check(!/ztRelay|runScript|wfpScript/.test(growSteps), '#179: grow-steps.ps1 names no relay helper')
+  check((growSim.answers || []).filter((a) => a.label === '^grow: next$').every((a) => a.answer && typeof a.answer.answer === 'string' && a.answer.session_id), '#179: the dry run answers each grow step as the drive job it is')
+  const shared = readText('scripts/workflow-shared/modules/zt-workflow-lib.js')
+  check(/version: '3'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared), '#179: zt-workflow-lib v3 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
 }
 
 console.log(`failed: ${failed}`)

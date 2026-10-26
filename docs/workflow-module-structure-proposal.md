@@ -120,14 +120,22 @@ run: async (ctx, p) => {
 ## 4. Moving the other modules
 
 The digest's modules have all moved (slices 1-4, #175-#178): no digest module starts a Claude relay agent
-any more. What remains is `zt-idea-grow`'s chain driver.
+any more. Slice 5 (#179) moved `zt-idea-grow`'s chain driver too: no module of either workflow starts a relay
+agent, and the shared library carries no relay helper.
 
 | Module | Relay calls | Notes |
 |---|---|---|
-| `zt-digest-lib` | 0 in use | the layer driver (#175), the book-level driver (#176), the model layer (#177) and the mathematics stages (#178) moved to script steps; its relay-era helpers have no caller left and can be removed by a later change |
+| `zt-digest-lib` | 0 in use | the layer driver (#175), the book-level driver (#176), the model layer (#177) and the mathematics stages (#178) moved to script steps; its relay-era helpers have no caller left and can be removed by a later change (since #179 the relay-era runner is this library's own private `zdRelay`, and the shared `zt-workflow-lib` v3 carries no relay) |
 | `zt-model-lib` | 0 | moved by #177: every chain is one `model-steps.ps1` step run by a DeepSeek drive job; the Sonnet architect stays (designer role) |
 | `zt-math-lib` | 0 | moved by #178: every chain is one `math-steps.ps1` step run by a DeepSeek drive job, and its writers and reviewers run in Haiku content managers |
-| `zt-grow-cycle` | — | zt-idea-grow's chain driver (slice 5) |
+| `zt-grow-cycle` | 0 | moved by #179 (slice 5): the whole chain is one `grow-steps.ps1 -Step next` step run by a DeepSeek drive job through a Haiku manager; its DeepSeek writer, judge and hub jobs are content jobs |
+
+Moved by #179 (workflow structure slice 5): `zt-grow-cycle` v13 calls `ztRelay`, `runScript` and `wfpScript`
+zero times: the idea-grow stage's chain is `scripts/idea-grow/grow-steps.ps1 -Step next` (the whole
+`zt-digest grow -Step next` command, its FNV-1a job-line check and its one `grow -Step status` recovery) run by
+a DeepSeek drive job through a Haiku manager (`zt-workflow-lib` v3's `ztDrive`, `record: false` because the
+run keeps no ledger), and its writer, judge and hub jobs run in Haiku content managers. The blueprint declares
+the one `manager` role instead of `relay`. `zt-idea-grow` 4.0.2 is installed in both scopes.
 
 Moved by #178 (workflow structure slice 4): `zt-math-lib` v5 and the stage modules `zt-math-skeleton`,
 `zt-math-boundary`, `zt-math-proof`, `zt-math-theory` and `zt-math-check` v2 call `ztRelay`, `runScript` and

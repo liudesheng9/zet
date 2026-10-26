@@ -8,72 +8,99 @@
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"jobs\",\"round\":\"topics-jobs\",\"token\":1,\"ids\":[\"gt-001\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"37ce37ca\"}"
+        "session_id": "s-next-1",
+        "answer": "{\"next\":\"jobs\",\"round\":\"topics-jobs\",\"token\":1,\"ids\":[\"gt-001\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"37ce37ca\"}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"jobs\",\"round\":\"ideas-jobs\",\"token\":2,\"ids\":[\"gw-001\",\"gw-002\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"1a1b3034\"}"
+        "session_id": "s-next-2",
+        "answer": "{\"next\":\"jobs\",\"round\":\"ideas-jobs\",\"token\":2,\"ids\":[\"gw-001\",\"gw-002\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"1a1b3034\"}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"jobs\",\"round\":\"links-jobs\",\"token\":3,\"ids\":[\"gl-001\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"f0da0bf2\"}"
+        "session_id": "s-next-3",
+        "answer": "{\"next\":\"jobs\",\"round\":\"links-jobs\",\"token\":3,\"ids\":[\"gl-001\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"f0da0bf2\"}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"jobs\",\"round\":\"restate-jobs\",\"token\":4,\"ids\":[\"r01\"],\"job\":{\"family\":\"restate\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/restate/{id}/work/dsh-restate-instructions.zh.md\",\"D:/zt-grow/box/restate/{id}/work/rj-01.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"{\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"2ae54ba4\"}"
+        "session_id": "s-next-4",
+        "answer": "{\"next\":\"jobs\",\"round\":\"restate-jobs\",\"token\":4,\"ids\":[\"r01\"],\"job\":{\"family\":\"restate\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/restate/{id}/work/dsh-restate-instructions.zh.md\",\"D:/zt-grow/box/restate/{id}/work/rj-01.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"{\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"2ae54ba4\"}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"jobs\",\"round\":\"fix-jobs\",\"token\":5,\"ids\":[\"fx1-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"858e4524\"}"
+        "session_id": "s-next-5",
+        "answer": "{\"next\":\"jobs\",\"round\":\"fix-jobs\",\"token\":5,\"ids\":[\"fx1-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"858e4524\"}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"jobs\",\"round\":\"organize-jobs\",\"token\":6,\"ids\":[\"go-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"7f5fe055\"}"
+        "session_id": "s-next-6",
+        "answer": "{\"next\":\"jobs\",\"round\":\"organize-jobs\",\"token\":6,\"ids\":[\"go-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"7f5fe055\"}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"jobs\",\"round\":\"concepts-jobs\",\"token\":7,\"ids\":[\"c01\"],\"job\":{\"family\":\"concepts\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/concepts/{id}/work/dsh-concept-instructions.zh.md\",\"D:/zt-grow/box/concepts/{id}/work/cj-01.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"{\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"46eca5c4\"}"
+        "session_id": "s-next-7",
+        "answer": "{\"next\":\"jobs\",\"round\":\"concepts-jobs\",\"token\":7,\"ids\":[\"c01\"],\"job\":{\"family\":\"concepts\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/concepts/{id}/work/dsh-concept-instructions.zh.md\",\"D:/zt-grow/box/concepts/{id}/work/cj-01.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"{\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"46eca5c4\"}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"jobs\",\"round\":\"hubs-jobs\",\"token\":8,\"ids\":[\"gh-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"d49f7b50\"}"
+        "session_id": "s-next-8",
+        "answer": "{\"next\":\"jobs\",\"round\":\"hubs-jobs\",\"token\":8,\"ids\":[\"gh-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"d49f7b50\"}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {
       "label": "^grow: next$",
       "times": 1,
       "answer": {
-        "ok": true,
-        "output": "{\"next\":\"done\",\"mode\":\"full\",\"created\":9,\"topics\":2,\"linked\":5,\"same\":1,\"refused\":1,\"duplicates\":0,\"stopped\":0,\"deeper\":0,\"faults_left\":0,\"share_before\":0.1,\"share_after\":0.4,\"books\":2,\"bridges\":1,\"report\":\"D:/zt-grow/box/grow-report.md\",\"sections\":2,\"left\":0,\"restate\":{\"books\":1,\"resolved\":1,\"pending\":0,\"unresolved\":0},\"concepts\":{\"books\":1,\"findings\":2,\"judged\":2},\"organize\":{\"merges\":1,\"moves\":1,\"refused\":0,\"invalid\":0},\"hubs\":{\"topic\":2,\"line\":1},\"hubs_missing\":0,\"register\":\"published\",\"register_entries\":12}"
+        "session_id": "s-next-9",
+        "answer": "{\"next\":\"done\",\"mode\":\"full\",\"created\":9,\"topics\":2,\"linked\":5,\"same\":1,\"refused\":1,\"duplicates\":0,\"stopped\":0,\"deeper\":0,\"faults_left\":0,\"share_before\":0.1,\"share_after\":0.4,\"books\":2,\"bridges\":1,\"report\":\"D:/zt-grow/box/grow-report.md\",\"sections\":2,\"left\":0,\"restate\":{\"books\":1,\"resolved\":1,\"pending\":0,\"unresolved\":0},\"concepts\":{\"books\":1,\"findings\":2,\"judged\":2},\"organize\":{\"merges\":1,\"moves\":1,\"refused\":0,\"invalid\":0},\"hubs\":{\"topic\":2,\"line\":1},\"hubs_missing\":0,\"register\":\"published\",\"register_entries\":12}",
+        "deleted": true,
+        "registered": false,
+        "evidence": false
       }
     },
     {

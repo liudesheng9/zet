@@ -29,7 +29,8 @@
     "workflow": {
       "base": "5.6.6",
       "zt-econ-digest": "6.6.6",
-      "zt-math-digest": "5.6.6"
+      "zt-math-digest": "5.6.6",
+      "zt-idea-grow": "4.0.2"
     }
   },
   "capabilities": {
@@ -48,6 +49,7 @@
   ],
   "retained_workflows": {
     "zt-econ-digest": "6.6.5",
-    "zt-math-digest": "5.6.5"
+    "zt-math-digest": "5.6.5",
+    "zt-idea-grow": "4.0.1"
   }
 }
