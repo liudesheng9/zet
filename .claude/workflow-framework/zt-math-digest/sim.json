@@ -189,8 +189,7 @@
     {
       "label": "^find models",
       "answer": {
-        "ok": true,
-        "output": "{\"models\":[]}"
+        "answer": "{\"ok\":true,\"units\":[],\"claimed\":0,\"models\":[],\"missing\":[],\"gate\":{\"complete\":true,\"counts\":{}}}"
       }
     },
     {

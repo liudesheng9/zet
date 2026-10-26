@@ -10,7 +10,9 @@ paths:
   - "!scripts/book-digest/term-steps.ps1"
   - "!scripts/book-digest/layer-steps.ps1"
   - "!scripts/book-digest/book-steps.ps1"
+  - "!scripts/book-digest/model-steps.ps1"
   - "!scripts/book-digest/tests/book-steps.tests.ps1"
+  - "!scripts/book-digest/tests/model-steps.tests.ps1"
 synced: 8dca3ae084a4
 updated: 2026-10-26
 ---

@@ -86,6 +86,8 @@ The Term stages of base 5.6.2 (2026-10-26, #172) follow this structure and are t
 Slice 1 (#175) is the layer driver: `scripts/book-digest/layer-steps.ps1` (`start`, `apply`, `finish`),
 `zt-workflow-lib` v2's `ztDrive`, and `layerRun`/`driveStep`/`runJobs` in `zt-digest-lib` v38.
 
+Slice 3 (#177) is the model layer: `scripts/book-digest/model-steps.ps1` (a block's `start` and `finish`, and each batch's brief, fill, derive, review, split, close and report), `zmlMake`'s `start`, `elaborate` and `finish` in `zt-model-lib` v11, and `zt-model-layer` v7 as a straight line of those steps. The Sonnet architect stays.
+
 Slice 2 (#176) is the book-level driver: `scripts/book-digest/book-steps.ps1` (one step per block: the
 preparation and its resume/backfill branches, the Link preparation, a stage publication, the card cycle's
 plan/apply/check/report, the whole-book claim and checked finish, Organize's survey/apply, the skeleton,
@@ -117,8 +119,8 @@ script steps, run by drive jobs.
 
 | Module | Relay calls | Notes |
 |---|---|---|
-| `zt-digest-lib` | 10 | the layer driver (#175) and the book-level driver (#176) moved to script steps; the relay helpers left serve the model and math layers |
-| `zt-model-lib` | 6 | model compiler steps; the Sonnet architect stays (designer role) |
+| `zt-digest-lib` | 10 | the layer driver (#175), the book-level driver (#176) and the model layer (#177) moved to script steps; the relay helpers left serve the math layers |
+| `zt-model-lib` | 0 | moved by #177: every chain is one `model-steps.ps1` step run by a DeepSeek drive job; the Sonnet architect stays (designer role) |
 | `zt-math-lib` | 4 | the mathematics compiler steps |
 | `zt-grow-cycle` | — | zt-idea-grow's chain driver (slice 5) |
 
@@ -126,6 +128,8 @@ Moved by #175 (workflow structure slice 1): `zt-group-cycle` v7, `zt-cards-layer
 `zt-finding-layer` v5, `zt-explain` v8, `zt-link-pass` v8 and `zt-book-terms` v5 call `ztRelay`, `runScript`
 and `wfpScript` zero times: their blocks are `layer-steps.ps1` steps run by DeepSeek drive jobs, and `ztDrive`
 (zt-workflow-lib v2) is the one drive helper the Term stages use too. Base 5.6.3, econ 6.6.3, math 5.6.3.
+
+Moved by #177 (workflow structure slice 3): `zt-model-lib` v11 and `zt-model-layer` v7 call `ztRelay`, `runScript` and `wfpScript` zero times: the model layer's blocks are `model-steps.ps1` steps (a block's `start` and `finish`, and each batch's brief, fill, derive, review, split, close and report) run by DeepSeek drive jobs, its content jobs run in Haiku managers, and the Sonnet architect stays the one designer. No digest run starts a `zt-relay` agent. Base 5.6.5, econ 6.6.5, math 5.6.5.
 
 Moved by #176 (workflow structure slice 2): `zt-digest-prepare` v16, `zt-link-prepare` v7, `zt-link-check` v3,
 `zt-cards-book` v5, `zt-figures` v6, `zt-audit` v5, `zt-organize` v9, `zt-bridge` v10, `zt-finalize` v4,

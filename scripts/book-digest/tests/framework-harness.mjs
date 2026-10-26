@@ -32,6 +32,8 @@ for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-diges
 }
 const sources = { econ: builds.econ.script.replace(/^export /m, ''), math: builds.math.script.replace(/^export /m, '') }
 // #176: the book-level stages' one step script, shared by both variants.
+// #177: the model layer's one step script.
+const modelScript = fs.readFileSync(path.join(root, 'scripts', 'book-digest', 'model-steps.ps1'), 'utf8')
 const bookScript = fs.readFileSync(path.join(root, 'scripts', 'book-digest', 'book-steps.ps1'), 'utf8')
 const scriptOf = () => bookScript
 
@@ -1296,6 +1298,100 @@ function runtime(kind, opts = {}) {
     }
   }
 
+  // #177 (docs/workflow-module-structure-proposal.md): the model layer's deterministic steps (model-steps.ps1)
+  // answered as the script does: the stopped run's claims are released, the listing and the block's claim run,
+  // each batch's chain runs its one compiler command per step, and the finish step records the block's checked
+  // completions. The stand-in keeps each step's job list, so the content managers run exactly those entries.
+  const modelCalls = [], modelManagers = [], modelUnits = new Map()
+  const modelArg = (cmd, name) => (cmd.match(new RegExp(`-${name} "([^"]*)"`)) || cmd.match(new RegExp(`-${name} '([^']*)'`)) || cmd.match(new RegExp(`-${name} (\\S+)`)) || [])[1]
+  const modelGate = (out) => layerGate(out, 'models')
+  const modelStepAnswer = async (cmd) => {
+    const step = modelArg(cmd, 'Step'), out = modelArg(cmd, 'Out') || 'D:\\x\\Key'
+    const work = modelArg(cmd, 'Work') || `${out}\\models\\m-Key_2_c`
+    const models = (modelArg(cmd, 'Models') || '').split(',').filter(Boolean)
+    const call = (line) => lastJson(commandAnswer(line).output) || {}
+    const saved = (name, jobs) => {
+      const file = `${out}\\models\\drive\\${name}`
+      layerJobs.set(file, jobs)
+      return file
+    }
+    const job = (id, more = {}) => ({ id, files: [`D:\\x\\Key\\models\\ctx.md`], prompt: 'p', ...more })
+    if (step === 'start') {
+      for (const u of led.layer('models')) if (u.state === 'claimed') u.state = 'ready'
+      const listed = call(`zt-digest list-models -Staging "${out}" -All -CitationKey Key`)
+      const take = Number(modelArg(cmd, 'Take') || 8)
+      const owner = modelArg(cmd, 'Owner') || 'models'
+      const claim = call(`zt-digest ledger next -Out "${out}" -Layer models -Take ${take} -Owner "${owner}" -Lease 7200 -Brief`)
+      let held = Array.isArray(claim.units) ? claim.units : null
+      // A claim line that lost its units, or their Model address, is answered from the ledger by owner.
+      if (!held || held.some((u) => !(u.inputs && (u.inputs.header || u.inputs.model)))) {
+        const read = call(`zt-digest ledger status -Out "${out}" -Held "${owner}"`)
+        held = Array.isArray(read.units) ? read.units : []
+      }
+      const units = held.map((u) => ({ id: u.id, token: u.token, model: (u.inputs && (u.inputs.header || u.inputs.model)) || '' }))
+      const rows = (listed.models || []).filter((m) => units.some((u) => u.model === m.address)).map((m) => ({ ...m, issues: 0, faults: 0 }))
+      modelUnits.set(out, units)
+      return { ok: true, units, claimed: units.length, models: rows, missing: [], file: `${out}\\models\\drive\\units.json`, gate: modelGate(out) }
+    }
+    const held = modelUnits.get(out) || []
+    if (held.length) call(`zt-digest ledger hold -Out "${out}" -Units "${held.map((u) => `${u.id}:${u.token}`).join(',')}" -Seconds 1 -Every 1`)
+    if (step === 'brief') {
+      const b = call(`zt-digest model -Step brief -Work "${work}" -Staging "${out}" -Models "${models.join(',')}"`)
+      const jobs = (b.jobs || [{ id: 'brief' }]).filter(Boolean).map((j) => job(j.id || 'brief', { files: j.files, prompt: j.prompt }))
+      return { ok: true, step, jobs: jobs.length, file: saved('brief-jobs.json', jobs), skipped: b.skipped || [] }
+    }
+    if (step === 'fill') {
+      // S10: the plans the architect wrote. A plan the architect only claimed (opts.noPlanFile) is a failed
+      // plan: the batch fills nothing, however the answer read.
+      call(`zt-digest model -Step plan-status -Work "${work}" -Staging "${out}"`)
+      const plans = opts.noPlanFile
+        ? [{ model: 'Key/2|c', status: 'failed', parts: 0, derivations: 0 }]
+        : models.map((m) => ({ model: m, status: 'planned', level: 'formal', parts: 4, derivations: 1 }))
+      const planned = held.filter((u) => plans.some((x) => x.model === u.model && x.status === 'planned'))
+      const deferred = []
+      if (planned.length) {
+        // R233/R234: one model-deps command for the batch; the ledger releases a waiting model. A batch line
+        // that did not come back whole is never read as resolved: the ledger decides each unit.
+        const deps = call(`zt-digest model-deps -Out "${out}" -Units "${planned.map((u) => `${u.id}:${u.token}`).join(',')}"`)
+        if (Array.isArray(deps.results)) {
+          for (const row of deps.results) if (row && row.waiting) deferred.push({ model: (held.find((u) => u.id === row.unit) || {}).model, why: 'waiting' })
+        } else {
+          const states = (call(`zt-digest ledger status -Out "${out}" -Units "${planned.map((u) => u.id).join(',')}"`) || {}).units || []
+          for (const u of planned) {
+            const now = states.find((x) => x && x.id === u.id)
+            if (now && now.state === 'registered') { deferred.push({ model: u.model, why: 'waiting' }); continue }
+            if (now && (now.state !== 'claimed' || Number(now.token) !== u.token)) continue
+            const one = call(`zt-digest model-deps -Out "${out}" -Model '${u.model}' -Token ${u.token}`)
+            if (one && one.waiting) deferred.push({ model: u.model, why: 'waiting' })
+          }
+        }
+        if (deferred.length) call(`zt-digest model -Step defer -Work "${work}" -Staging "${out}" -Models "${deferred.map((d) => d.model).filter((m, i, a) => a.indexOf(m) === i).join(',')}"`)
+      }
+      const go = plans.filter((x) => x.status === 'planned' && !deferred.some((d) => d.model === x.model))
+      if (!go.length) return { ok: true, step, plans, deferred, jobs: 0, derive: false, file: saved('fill-jobs.json', []) }
+      call(`zt-digest model -Step apply -Work "${work}" -Staging "${out}"`)
+      const jobs = [job('fill-1')]
+      return { ok: true, step, plans, deferred, jobs: jobs.length, derive: true, file: saved('fill-jobs.json', jobs) }
+    }
+    if (step === 'derive' || step === 'review' || step === 'split' || step === 'close') {
+      const more = step === 'review' ? ' -Changed' : step === 'close' ? ' -Report' : ''
+      const line = call(`zt-digest model -Step ${step} -Work "${work}" -Staging "${out}"${more}`)
+      const jobs = (line.jobs || []).map((j) => job(j.id || `${step}-1`, { continue: j.continue, files: j.files || [`D:\\x\\Key\\${j.id || step}.md`], prompt: j.prompt }))
+      return { ok: true, step, jobs: jobs.length, faults: Number(line.faults || 0), unowned: line.unowned || [], report: line.report || null, file: saved(`${step}-jobs.json`, jobs) }
+    }
+    if (step === 'report') {
+      const r = call(`zt-digest model -Step report -Work "${work}" -Staging "${out}"`)
+      return { ok: true, step, models: r.models || [], file: `${out}\\models\\drive\\report.json` }
+    }
+    if (step === 'finish') {
+      if (!held.length) return { ok: true, results: [], done: [], failed: [], gate: modelGate(out) }
+      const b = call(`zt-digest finish-batch -Out "${out}" -Units "${held.map((u) => `${u.id}:${u.token}`).join(',')}"`)
+      const results = (b.results || []).map((r) => ({ unit: r.unit, token: r.token, status: r.status, disposition: r.disposition, cause: r.cause, code: r.code }))
+      return { ok: true, results, done: results.filter((r) => r.status === 'done' || r.status === 'partial').map((r) => r.unit), failed: results.filter((r) => !(r.status === 'done' || r.status === 'partial')).map((r) => r.unit), gate: modelGate(out) }
+    }
+    return { ok: false, step, error: `the stand-in has no ${step} step` }
+  }
+
   const answer = async (prompt, callOpts) => {
     const text = String(prompt)
     const label = callOpts.label || ''
@@ -1317,15 +1413,11 @@ function runtime(kind, opts = {}) {
       if (lines.length) { const r = commandAnswer(lines[0]); return { ok: r.ok, output: r.output, results: [], deleted: 0 } }
       return { ok: true, output: '', results: [], deleted: 0 }
     }
-    if (/^Run this PowerShell command once/.test(text) && (label === 'find models: whole book' || label === 'find models: explain')) {
+    // #177: the model list and the plan-status read are steps of the model layer's one script, never relays.
+    if (/^Run this PowerShell command once/.test(text) && label === 'find models: explain') {
       return { ok: true, output: json({ models: kind === 'math'
         ? [{ address: 'Key/2|e', title: '理论', form: 'theory', level: null, parts: 0 }, { address: 'Key/2|c', title: '介值定理', form: 'theorem', level: 'formal', parts: 0 }]
         : [{ address: 'Key/2|c', title: '模型', form: null, level: 'formal', parts: 0 }] }) }
-    }
-    if (/^Run this PowerShell command once/.test(text) && /^plan status: /.test(label)) {
-      // S10: the compiler reads the plans the architect wrote (model -Step plan-status).
-      if (opts.noPlanFile) return { ok: true, output: json({ ok: true, step: 'plan-status', planned: 0, derive: false, plans: [{ model: 'Key/2|c', status: 'failed', parts: 0, derivations: 0 }] }) }
-      return { ok: true, output: json({ ok: true, step: 'plan-status', planned: 1, derive: true, plans: [{ model: 'Key/2|c', status: 'planned', level: 'formal', parts: 4, derivations: 1 }] }) }
     }
     if (/^Run this PowerShell command once/.test(text)) {
       const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^(zt-digest|pwsh -NoProfile -File) /.test(l))
@@ -1359,7 +1451,7 @@ function runtime(kind, opts = {}) {
     if (text.startsWith('You are a DeepSeek subagent manager for a ZET workflow step (')) {
       const stepLabel = (text.match(/workflow step \(([^)]*)\)/) || [])[1] || label
       const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
-      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps)\.ps1[^\n]*/) || [])[0] || ''
+      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps|model-steps)\.ps1[^\n]*/) || [])[0] || ''
       const reply = (value, id) => {
         const session = sessionOf(id)
         const recorded = recordJob(text, session, 'run', 1, true)
@@ -1419,6 +1511,14 @@ function runtime(kind, opts = {}) {
         bookManagers.push({ label: stepLabel, phase: callOpts.phase, kind: 'drive', step, prompt: text, cmd: command, options })
         bookCalls.push({ step, cmd: command, options, label: stepLabel })
         return reply(await bookStep(step, { ...options, __out: out }), `drive-book-${step}`)
+      }
+      // #177: the model layer's one step (model-steps.ps1): the listing and claim, a batch's chain, or the
+      // block's checked finish, answered on the in-memory ledger.
+      if (/model-steps\.ps1/.test(command)) {
+        const step = (command.match(/-Step (\w+)/) || [])[1] || 'start'
+        modelManagers.push({ label: stepLabel, phase: callOpts.phase, kind: 'drive', step, prompt: text, cmd: command })
+        modelCalls.push({ step, cmd: command, label: stepLabel })
+        return reply(await modelStepAnswer(command), `drive-model-${step}`)
       }
       return reply({ ok: false, step: 'unknown', error: 'the drive command names no script step' }, 'drive-unknown')
     }
@@ -1487,7 +1587,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1858,7 +1958,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const { commands, calls, pool, logs, report } = await run('econ', { ...base, figures: false })
   const commandPrompts = calls.filter((c) => /Run this PowerShell command|Run this one PowerShell command|You run one compiler chain/.test(c.prompt))
   const slow = commandPrompts.filter((c) => !/timeout_ms: 600000/.test(c.prompt))
-  check(commandPrompts.length > 0 && !slow.length, `runner: every command-bearing step names the exact 600000 ms timeout (${commandPrompts.length} steps, ${slow.length} without: ${slow.slice(0, 1).map((c) => c.label + ' / ' + c.prompt.slice(0, 90)).join('')})`)
+  check(!slow.length, `runner: every command-bearing step names the exact 600000 ms timeout (${commandPrompts.length} steps, ${slow.length} without: ${slow.slice(0, 1).map((c) => c.label + ' / ' + c.prompt.slice(0, 90)).join('')})`)
   const managerPrompts = pool.prompts
   check(managerPrompts.length > 0 && managerPrompts.every((p) => !/Start-Sleep -|open_tab|handoff_to|Monitor\s*\(/.test(p)), 'runner: no manager prompt uses a sleeping, terminal-tab, handoff or Monitor tool')
   check(managerPrompts.every((p) => /no terminal tabs, no Monitor loop, no session handoff/.test(p)), 'runner: every manager prompt states the forbidden tools in the same words')
@@ -1905,9 +2005,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cmds.some((c) => /finding-compiler/.test(c) || /zt-digest finding /.test(c)) && batchFinishes.some((c) => /findings-finish/.test(c)), 'findings: the Finding layer claims its units and records findings-finish')
   check(['events', 'findings', 'explain'].every((l) => batchCalls.some((b) => b.units.some((u) => u.startsWith(l + '/'))) && layerCalls.some((c) => c.layer === l && c.step === 'finish') && !calls.some((c) => c.agentType === 'zt-relay' && new RegExp('^' + l + ' .*: finish$').test(c.label))), 'events, findings, explain: each block finishes through its own finish step, so no finish relay runs')
   check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && /Run this one PowerShell command/.test(c.prompt) && /ToolSearch/.test(c.prompt)), 'drive: a compiler step\'s command agent loads no DeepSeek tool')
-  const gateCmds = cmds.filter((c) => /ledger gate/.test(c))
-  const teed = cmds.filter((c) => /\| Tee-Object -Variable zdLines; .* Set-Content -LiteralPath "D:\\x\\Key\\jobs\\[^"]+\.json"/.test(c))
-  check(teed.length > 0 && driveFiles.length > 0 && driveFiles.every((f) => teed.some((c) => c.includes(f))), `drive: each step command saves its own job line, and every job manager reads that file instead of a retyped list (${teed.length} steps, ${driveFiles.length} managers)`)
+  // #177: the relay-era drive that saved a step line with Tee is gone; every content manager reads the
+  // job file its step wrote (the S28 check below covers it).
+  check(driveFiles.every((f) => /\.json$/.test(f)), `drive: every job manager reads a job file (${driveFiles.length})`)
+  const gateCmds = cmds.filter((c) => / ledger gate /.test(c))
   check(gateCmds.length > 0 && gateCmds.every((c) => / -Brief(?![A-Za-z])/.test(c)), `gate: every layer gate asks for the brief line a relay can return whole (${gateCmds.filter((c) => !/ -Brief(?![A-Za-z])/.test(c)).slice(0, 2).join(' | ')})`)
   check(gateCmds.length >= 3 && gateCmds.some((c) => /-Layer cards/.test(c)) && gateCmds.some((c) => /-Layer models/.test(c)), 'gate: every layer driver settles through the ledger gate')
   check(cmds.some((c) => /ledger publish -Out "D:\\x\\Key" -Layer cards-book/.test(c)) && cmds.some((c) => /book-cards-finish .* -Unit "?cards-book\/book@1"?/.test(c)), 'cards-book: the whole-book cycle publishes its revision and records it with book-cards-finish')
@@ -1978,7 +2079,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 {
   // Every relay prompt says its command is a step of the run the user started, so a later user message about the
   // run (trials 17-19: "accelerate it", "stop trial 18 ... start trial 19") does not read as cancelling it.
-  const { calls } = await run('econ', { ...base, figures: false })
+  const { calls } = await run('math', { ...base, figures: false })
   const relays = calls.filter((c) => /Run this PowerShell command once|^You run one block|You run one compiler chain/.test(c.prompt))
   const missing = relays.filter((c) => !/never cancels its steps/.test(c.prompt))
   check(relays.length > 0 && !missing.length, `run step: every relay prompt names its command a step of the user's run (${relays.length} relays, ${missing.length} without: ${missing.slice(0, 2).map((c) => c.label).join(', ')})`)
@@ -1992,7 +2093,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
     const relays = calls.filter(one)
     const wrong = relays.filter((c) => c.agentType !== 'zt-relay' || c.model !== 'haiku')
     const others = calls.filter((c) => !one(c) && c.agentType === 'zt-relay')
-    check(relays.length > 0 && !wrong.length, `relay role (${variant}): every one-command relay runs as zt-relay on Haiku (${relays.length} relays, ${wrong.length} not: ${wrong.slice(0, 2).map((c) => c.label).join(', ')})`)
+    check((variant === 'math' ? relays.length > 0 : relays.length === 0) && !wrong.length, `relay role (${variant}): every one-command relay runs as zt-relay on Haiku (${relays.length} relays, ${wrong.length} not: ${wrong.slice(0, 2).map((c) => c.label).join(', ')})`)
     check(!others.length, `relay role (${variant}): no manager, architect or organizer runs as zt-relay (${others.slice(0, 2).map((c) => c.label).join(', ')})`)
   }
 }
@@ -2033,7 +2134,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // with the ids only). A missing field is no empty claim: the driver reads the held units from the ledger and
   // builds every model, instead of ending the layer with four models claimed and never built.
   const { led, heldReads } = await run('econ', { ...base, figures: false }, { renamedUnits: 'models' })
-  check(heldReads.some((o) => /^models claim [0-9]+$/.test(o)), `renamed units: the model driver reads its held units from the ledger (${heldReads.join(', ')})`)
+  check(heldReads.some((o) => /^models block [0-9]+$/.test(o)), `renamed units: the model start step reads its held units from the ledger (${heldReads.join(', ')})`)
   check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done'), `renamed units: every model unit is finished (${led.layer('models').filter((u) => u.state === 'done').length}/${led.layer('models').length})`)
 }
 {
@@ -2042,7 +2143,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const { commands, led, heldReads } = await run('econ', { ...base, figures: false }, { droppedInputs: 'models' })
   const cmds = commands
   check(cmds.filter((c) => /ledger next .* -Layer (cards|events|findings|models|explain) /.test(c)).every((c) => / -Brief\b/.test(c)), 'layer claims: every layer driver claims with -Brief')
-  check(heldReads.some((o) => /^models claim [0-9]+$/.test(o)), `dropped inputs: the model driver reads its held units' addresses from the ledger (${heldReads.join(', ')})`)
+  check(heldReads.some((o) => /^models block [0-9]+$/.test(o)), `dropped inputs: the model start step reads its held units' addresses from the ledger (${heldReads.join(', ')})`)
   check(!cmds.some((c) => /-Model 'undefined'|-Model ''/.test(c)), 'dropped inputs: no model-finish names an undefined Model')
   check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done'), `dropped inputs: every model unit is finished (${led.layer('models').filter((u) => u.state === 'done').length}/${led.layer('models').length})`)
 }
@@ -2075,16 +2176,16 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // record, and the driver faulted the done unit (the ledger refused the fault as stale). Every finish that is not
   // plainly done asks the ledger first.
   const { commands, led, logs } = await run('econ', { ...base, figures: false }, { proseFinish: /finish-batch -Out "D:\\x\\Key" -Units "models\/|model-finish / })
-  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units models\/g001-m0000@1$/.test(c)), 'prose finish: the driver reads the unit state from the ledger')
-  check(!commands.some((c) => /ledger fail .*-Unit "?models\//.test(c)), 'prose finish: a unit the ledger holds done is never faulted')
-  check(led.layer('models').every((u) => u.state === 'done') && logs.some((l) => /finish line came back cut/.test(l)), 'prose finish: the unit stays done and the log says why')
+  check(commands.some((c) => /finish-batch .* -Units "models\/g001-m0000@1:\d+/.test(c)), "prose finish: the model block's finish is one finish-batch command")
+  // #177: the finish step prints the tool's own line; a relay can no longer cut it.
+  check(led.layer('models').every((u) => u.state === 'done'), 'prose finish: every model unit is recorded done')
 }
 {
   // A model-deps batch line no relay returned whole is never read as "resolved": the ledger decides each model, and
   // only a unit still claimed under its token runs model-deps on its own.
   const { commands, led, logs } = await run('econ', { ...base, figures: false }, { garbledDeps: true })
-  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units models\//.test(c)) && commands.some((c) => /model-deps -Out .* -Model 'Key\/2\|c' -Token \d+/.test(c)), 'garbled model-deps: the ledger decides each model and a claimed one registers on its own')
-  check(led.layer('models').every((u) => u.state === 'done') && logs.some((l) => /no readable batch line/.test(l)), 'garbled model-deps: the model is still built and recorded')
+  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units "?models\//.test(c)) && commands.some((c) => /model-deps -Out .* -Model 'Key\/2\|c' -Token \d+/.test(c)), 'garbled model-deps: the ledger decides each model and a claimed one registers on its own')
+  check(led.layer('models').every((u) => u.state === 'done'), 'garbled model-deps: the model is still built and recorded')
 }
 {
   // The model compiler's chains outlive a claim's lease (trial 5: four model claims expired mid-build): the model
@@ -2093,7 +2194,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const { commands, holds } = await run('econ', { ...base, figures: false })
   const holdCmds = commands.filter((c) => / ledger hold /.test(c))
   check(holds.some((h) => h.length > 0 && h.every((u) => /^models\//.test(u))), `hold: the model driver holds its block's claims (${holds.map((h) => h.join('+')).join(' | ')})`)
-  check(holdCmds.every((c) => / -Seconds 540 -Every 60$/.test(c) && /-Units "[^"]+:\d+/.test(c)), 'hold: each hold is one bounded command naming every claim by unit and token')
+  // #177: each model step renews its block's claims before it runs the chain, one bounded command.
+  check(holdCmds.length > 0 && holdCmds.every((c) => / -Seconds 1 -Every 1$/.test(c) && /-Units "[^"]+:\d+/.test(c)), "hold: each model step renews its block's claims by unit and token")
   check(!holds.some((h) => h.some((u) => /^(cards|events|findings)\//.test(u))), 'hold: the quick layers never hold')
 }
 {
@@ -2149,7 +2251,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(!resolved.commands.some((c) => /zt-digest model -Step defer /.test(c)), 'model-deps: a batch whose models all resolved defers nothing')
   // trial 9: the fill held jobs for every model of the batch after model-deps had released three of them to wait.
   // A released model leaves the batch (`model -Step defer`) before any fill; a batch left with no model fills nothing.
-  const { commands } = await run('econ', { ...base, figures: false }, { depsWaiting: /Key\/2\|c/ })
+  const { commands, modelCalls } = await run('econ', { ...base, figures: false }, { depsWaiting: /Key\/2\|c/ })
   const defer = commands.findIndex((c) => /zt-digest model -Step defer .* -Models "Key\/2\|c"$/.test(c))
   check(defer > commands.findIndex((c) => /^zt-digest model-deps /.test(c)), `model-deps: the waiting model leaves the batch after its registration (defer at ${defer})`)
   check(!commands.some((c) => /zt-digest model -Step (apply|derive|review|close) /.test(c)), 'model-deps: a batch whose only model waits writes no part (no fill, derive, review or close)')
@@ -2331,7 +2433,7 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
 // ================================================================================================================
 for (const kind of ['econ', 'math']) {
   const mbase = { ...base, figures: false }
-  const { commands, calls, result, led, resourceRecords, evidenceRecords, settleRecords, settleCalls } = await run(kind, { ...mbase, mode: 'full' })
+  const { commands, calls, result, led, resourceRecords, evidenceRecords, settleRecords, settleCalls, modelCalls } = await run(kind, { ...mbase, mode: 'full' })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   const at = (pattern) => labels.findIndex((l) => pattern.test(l))
@@ -2344,7 +2446,7 @@ for (const kind of ['econ', 'math']) {
   check(led.units.get('cards-book/book@1') && led.units.get('cards-book/book@1').state === 'done', `${kind} full: the whole-book card revision is complete`)
   if (kind === 'math') {
     check(cmds.some((c) => /zt-digest math -Step index/.test(c)) && cmds.some((c) => /zt-digest math -Step boundary/.test(c)), 'math full: the mathematics compiler steps run through zt-digest tools')
-    check(cmds.some((c) => /-BriefDoc "D:\\x\\Key\\math\\brief\.zh\.md"/.test(c)), 'math full: the model compiler gets the math instruction files')
+    check(modelCalls.length > 0 && modelCalls.every((x) => /-BriefDoc "D:\\x\\Key\\math\\brief\.zh\.md"/.test(x.cmd)), 'math full: every model step carries the math instruction files')
     check(!calls.some((c) => /^(events|findings)/.test(c.label)), 'math full: no event or finding layer from the economics set')
   } else {
     check(!calls.some((c) => /^math:/.test(c.label)), 'econ full: no mathematics stage runs')
@@ -2553,9 +2655,10 @@ for (const which of ['econ', 'math']) {
 // docs/workflow-simplicity-proposal.md steps 1-3 and S10 (base 5.4.0, zt-digest-lib v37)
 // ================================================================================================================
 for (const which of ['econ', 'math']) {
-  const { calls, result, bookCalls } = await run(which, { ...base, figures: false })
+  const { calls, result, bookCalls, modelCalls } = await run(which, { ...base, figures: false })
   const commandCalls = calls.filter((c) => /^Run this PowerShell command once/.test(c.prompt))
-  check(commandCalls.length > 10 && commandCalls.every((c) => c.agentType === 'zt-relay' && c.model === 'haiku'), `S1 ${which}: every command runs through the relay role, the zt-relay agent type (${commandCalls.filter((c) => c.agentType !== 'zt-relay').map((c) => c.label).slice(0, 3).join(', ')})`)
+  // #177: the digest run has no relay agent left; the mathematics variant still relays its own compiler steps.
+  check((which === 'math' ? commandCalls.length > 10 : commandCalls.length === 0) && commandCalls.every((c) => c.agentType === 'zt-relay' && c.model === 'haiku'), `S1 ${which}: every command runs through the relay role, the zt-relay agent type (${commandCalls.filter((c) => c.agentType !== 'zt-relay').map((c) => c.label).slice(0, 3).join(', ')})`)
   check(!calls.some((c) => /^You prepare a book|^List the Model Cards|^Prepare the receipt-owned|^You check which DeepSeek Harness source/.test(c.prompt)), `S1 ${which}: no Haiku agent runs prepare, prepare-link, the model list or a source probe`)
   check(!calls.some((c) => c.label === 'choose DeepSeek source') && result && result.dsh_model === 'deepseek-official/deepseek-flash', `S1 ${which}: the DeepSeek source is the frozen official one (${result && result.dsh_model})`)
   check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && !/Run every job below|Run the jobs with these ids/.test(c.prompt)), `S1 ${which}: a drive agent only runs DeepSeek jobs; its step command is a relay`)
@@ -2563,13 +2666,14 @@ for (const which of ['econ', 'math']) {
   check(prep && /'-Apply', '-Brief'/.test(scriptOf(which)), `S1 ${which}: prepare runs one book-steps.ps1 step and the step script keeps its brief line`)
   const link = bookCalls.find((c) => c.step === 'link-prepare')
   check(link && /prepare-link/.test(scriptOf(which)), `S1 ${which}: prepare-link is one book-steps.ps1 step and the step script keeps its brief line`)
-  const status = calls.filter((c) => /^plan status: /.test(c.label))
-  check(status.length >= 1 && status.every((c) => / -Step plan-status /.test(c.prompt)), `S10 ${which}: each model batch reads the plans the architect wrote (model -Step plan-status)`)
+  // #177: the plan-status read is the fill step's own first command, in the one model-steps.ps1 call.
+  check(modelCalls.some((c) => /-Step fill /.test(c.cmd)) && /'fill'\s*\{[\s\S]*plan-status/.test(modelScript), `S10 ${which}: each model batch reads the plans the architect wrote (model -Step plan-status, in the fill step)`)
 }
 {
   // S10: the architect answers "planned", but no plan.json was written: the batch builds nothing.
-  const { calls, logs } = await run('econ', { ...base, figures: false }, { noPlanFile: true })
-  check(!calls.some((c) => /^fill: /.test(c.label) || /^derive: /.test(c.label)), 'S10: a plan the architect only claimed (no plan.json) starts no fill and no derivation')
+  const { calls, logs, modelCalls: planCalls } = await run('econ', { ...base, figures: false }, { noPlanFile: true })
+  const planApplied = planCalls.filter((c) => /-Step (derive|review|split|close) /.test(c.cmd))
+  check(planApplied.length === 0, `S10: a plan the architect only claimed (no plan.json) starts no derivation, review, split or close (${planApplied.map((c) => c.step).join(', ')})`)
   check(calls.some((c) => /^plan: /.test(c.label)) && !logs.some((l) => /^Build: [1-9]/.test(l)), 'S10: the architect still ran; its answer decided nothing')
 }
 {
@@ -2657,10 +2761,37 @@ for (const which of ['econ', 'math']) {
   const rt = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
   const resumeSteps = rt.bookCalls.filter((c) => c.step === 'prepare' || c.step === 'gate')
   check(resumeSteps.length > 0 && resumeSteps.every((c) => c.step === 'gate' || (c.options || {}).Mode === 'resume') && !rt.bookCalls.some((c) => c.step === 'prepare' && (c.options || {}).Mode === 'full'), `#176: a resume runs the one resume step and its gates, never the preparation (${resumeSteps.map((c) => c.step).join(',')})`)
+
+// ================================================================================================================
+// #177: the model layer without relay agents (docs/workflow-module-structure-proposal.md)
+// ================================================================================================================
+{
+  const { calls, commands, led, modelCalls, modelManagers } = await run('econ', { ...base, figures: false })
+  const order = modelCalls.map((c) => c.step)
+  check(modelCalls.length > 0 && modelCalls.every((c) => /model-steps\.ps1/.test(c.cmd)), `#177: every model layer step is one model-steps.ps1 call (${modelCalls.length} drive jobs)`)
+  const second = order.indexOf('start', 1)
+  const first = second < 0 ? order : order.slice(0, second)
+  check(first.join(',') === 'start,brief,fill,derive,review,close,finish', `#177: one block's drive steps run start, brief, fill, derive, review, close, finish in that order (${order.join(',')})`)
+  const modelAgents = calls.filter((c) => /^(find models: block|models: finish)/.test(c.label) || /^(brief|fill|derive|review \d+|split|close|report): /.test(c.label) || /^plan: /.test(c.label) || /ZET model compiler/.test(c.prompt || ''))
+  const architects = modelAgents.filter((c) => /^plan: /.test(c.label))
+  check(modelAgents.length > 0 && modelAgents.every((c) => !c.agentType) && architects.length >= 1 && architects.every((c) => c.model === 'sonnet'), `#177: every model layer agent is a Haiku DeepSeek manager, the one designer a Sonnet architect (${modelAgents.length} agents, ${architects.length} architects)`)
+  check(modelAgents.filter((c) => !/^plan: /.test(c.label)).every((c) => c.model === 'haiku' && /You are a DeepSeek subagent manager/.test(c.prompt || '')), '#177: every model layer manager is a Haiku DeepSeek subagent manager')
+  check(!calls.some((c) => c.agentType === 'zt-relay'), '#177: no zt-relay agent of the digest run (the model layer was the last one)')
+  check(!commands.some((c) => /^zt-digest (list-models|model-deps|model |finish-batch)/.test(c) && /undefined/.test(c)), '#177: no model command names an undefined unit or model')
+  check(modelManagers.filter((m) => m.kind === 'drive').length === modelCalls.length && modelManagers.filter((m) => m.kind === 'drive').every((m) => /model-steps\.ps1/.test(m.cmd)), '#177: each model step is one drive job under a Haiku manager')
+  check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done') && commands.some((c) => /finish-batch .* -Units "models\//.test(c)), '#177: the units are recorded by the one finish step')
+}
 }
 
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
+
+
+
+
+
+
+
 
 
 

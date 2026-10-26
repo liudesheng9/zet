@@ -1497,7 +1497,8 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
-- 6-10-26 — 0.29.5: embeds base 5.6.4 / econ 6.6.4 / math 5.6.4 (#176), so a prepared run freezes the book-level stages' blueprint versions; the release manifest names zt_digest 0.29.5 and the 5.6.4/6.6.4/5.6.4 workflows.
+- `2026-10-26` — 0.29.5: embeds base 5.6.4 / econ 6.6.4 / math 5.6.4 (#176), so a prepared run freezes the book-level stages' blueprint versions; the release manifest names zt_digest 0.29.5 and the 5.6.4/6.6.4/5.6.4 workflows.
+- `2026-10-26` — 0.29.6: embeds base 5.6.5 / econ 6.6.5 / math 5.6.5 (#177), so a prepared run freezes the model layer's script steps and no digest stage relays a command; the release manifest names zt_digest 0.29.6 and the 5.6.5/6.6.5/5.6.5 workflows.
 
 - `2026-10-25` — 0.29.4: embeds base 5.6.1 / econ 6.6.1 / math 5.6.1 (patch-compatible with runs prepared under 5.6.0/6.6.0), and `ledger status -Summary` carries the prepared run's `run_options`, which mode resume reads to keep a disabled Term layer off (S30 pilot, #172). Test: `ledger::tests::a_status_summary_counts_the_units_per_layer`. The release manifest names `zt_digest` 0.29.4 and the 5.6.1/6.6.1/5.6.1 workflows.
 
