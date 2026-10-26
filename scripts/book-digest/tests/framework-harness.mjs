@@ -3006,6 +3006,10 @@ for (const which of ['econ', 'math']) {
   check(!calls.some((c) => c.agentType === 'zt-relay' && MOVED.test(c.label || '')), 'S1 (#176): no moved book stage step runs as a Claude relay')
   check(bookManagers.length > 0 && bookManagers.every((m) => /book-steps\.ps1" -Step [\w-]+ -Out "[^"]+"/.test(m.cmd)), `#176: every moved book stage step is one book-steps.ps1 call (${bookManagers.length} drive jobs; ${bookManagers.filter((m) => !/book-steps\.ps1/.test(m.cmd)).slice(0, 2).map((m) => m.cmd.slice(0, 80)).join(' | ')})`)
   const idx = (pred) => bookCalls.findIndex(pred)
+  // Live run 2026-10-26 (staging5): the whole-book claim held a 300-second lease and expired during its card cycle
+  // (`stale_claim` at book-cards-finish); it now claims with the layers' longest lease.
+  const cbStart = bookCalls.find((c) => c.step === 'cards-book-start')
+  check(cbStart && Number((cbStart.options || {}).Lease) >= 7200, `the whole-book Cards claim covers its card cycle (lease ${cbStart && (cbStart.options || {}).Lease})`)
   const at = {
     prepare: idx((c) => c.step === 'prepare' && (c.options || {}).Mode === 'full'),
     linkPrep: idx((c) => c.step === 'link-prepare'),

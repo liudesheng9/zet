@@ -1,4 +1,4 @@
-// ==== module zt-cards-book v5 ====
+// ==== module zt-cards-book v6 ====
 // The whole-book Card cycle as ready ledger work (modes cards and full, R296/R247): publish the current
 // `cards-book` revision from the settled digest, Model and Cards contributions, claim it, run the one cycle in
 // its declared steps (plan → DeepSeek jobs → apply/check rounds → apply → report), and record it with
@@ -7,8 +7,10 @@
 // it (R248). In full it also reviews the source of a Model draft no model chain owns.
 // 5 (#176, docs/workflow-module-structure-proposal.md): the publication, the claim, the cycle's steps and the
 // checked completion are book-steps.ps1 steps run by DeepSeek drive jobs; no Claude relay runs a command.
+// 6 (live run 2026-10-26, staging5): the claim holds the layers' longest lease (LAYER_LEASE): a 300-second lease
+// expired during the cycle and book-cards-finish refused it as stale_claim.
 defineModule({
-  id: 'zt-cards-book', version: '5', requires: ['zt-digest-lib'],
+  id: 'zt-cards-book', version: '6', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the claimed whole-book card cycle (modes cards and full), recorded by book-cards-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -24,7 +26,7 @@ defineModule({
     const published = await Z.bookStep('cards publish', 'publish', { Layer: 'cards-book', Ledger: true })
     const unit = published && published.unit
     if (!unit) return { status: 'failed', error: (published && published.error) || 'the cards-book revision was not registered' }
-    const got = await Z.bookStep('cards-book claim', 'cards-book-start', { Wait: 300, Lease: 300 })
+    const got = await Z.bookStep('cards-book claim', 'cards-book-start', { Wait: 300, Lease: Z.LAYER_LEASE })
     if (!got || got.ok !== true) return { status: 'failed', error: (got && got.error) || 'the cards-book claim failed' }
     const claimed = got.unit ? { id: got.unit, token: got.token, input_hash: got.input_hash, inputs: got.inputs || {} } : null
     if (!claimed) return { status: 'active', error: `the ${unit} revision is waiting for its Model reviews to settle`, gate: got.gate }
