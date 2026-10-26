@@ -120,7 +120,11 @@ switch ($Step) {
             $bookState = 'incomplete'
         }
         $publication = @{ complete = ($a.json.complete -eq $true); rows = [int]$a.json.rows; committed = [int]$a.json.committed; ready_unpublished = [int]$a.json.ready_unpublished; stop = $a.json.stop }
-        Reply @{ ok = $true; done = $done.Count; failed = $failed.Count; book = $bookState; complete = $publication.complete; rows = $publication.rows; committed = $publication.committed; ready_unpublished = $publication.ready_unpublished } @{ done = $done; failed = $failed; publication = $publication }
+        # Live run 2026-10-26 (staging5): an apply that prints no line is named, never read as zero rows.
+        $publishError = if (-not $a.json) { "$($a.tail)".Trim() } else { '' }
+        if ($publishError.Length -gt 160) { $publishError = $publishError.Substring($publishError.Length - 160) }
+        $publication.error = $publishError
+        Reply @{ ok = $true; done = $done.Count; failed = $failed.Count; book = $bookState; complete = $publication.complete; rows = $publication.rows; committed = $publication.committed; ready_unpublished = $publication.ready_unpublished; publish_error = $publishError } @{ done = $done; failed = $failed; publication = $publication; apply = $a.tail }
     }
     'link' {
         $p = Run @('term-link', '-Step', 'plan', '-Staging', $Out, '-Occurrences', $Occurrences)

@@ -79,6 +79,7 @@ switch -Regex ($flat) {
         exit 0
     }
     '^term-cards -Step apply' {
+        if ($env:TS_APPLY_ERROR) { Write-Output 'zt-digest term-cards: the publication was refused: row 1 has no draft'; exit 1 }
         if ($env:TS_PARTIAL) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; complete = $false; rows = 2; committed = 1; ready_unpublished = 1; stop = @{ code = 'not_ready' } }); exit 0 }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; complete = $true; rows = 2; committed = 2; ready_unpublished = 0; stop = $null })
         exit 0
@@ -153,6 +154,14 @@ $partial = Step (@('-Step', 'finish') + $common)
 $env:TS_PARTIAL = ''
 Assert-Line $partial 'finish partial'
 Assert ($partial.json.ok -eq $true -and $partial.json.book -eq 'failed' -and -not $partial.json.complete -and $partial.json.committed -eq 1) "finish: an incomplete publication answers its prefix counts ($($partial.text))"
+
+# Live run 2026-10-26 (staging5): the publication printed no line and the finish answered rows 0 with no reason.
+# An apply that fails is named in the line.
+$env:TS_APPLY_ERROR = '1'
+$noPub = Step (@('-Step', 'finish') + $common)
+$env:TS_APPLY_ERROR = ''
+Assert-Line $noPub 'finish no publication'
+Assert ($noPub.json.ok -eq $true -and $noPub.json.publish_error -match 'row 1 has no draft') "finish: a publication that prints no line names its error ($($noPub.text))"
 
 # 5. link: plan, apply under the claim, plan again; the line answers counts, never the nested plan.
 $link = Step (@('-Step', 'link') + $common)

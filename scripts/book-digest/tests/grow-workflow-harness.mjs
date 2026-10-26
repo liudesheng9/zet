@@ -1,5 +1,5 @@
 // Run: node scripts/book-digest/tests/grow-workflow-harness.mjs
-// The current zt-idea-grow build (zt-grow-cycle v14, zt-workflow-lib v6, #180
+// The current zt-idea-grow build (zt-grow-cycle v14, zt-workflow-lib v7, #180
 // docs/workflow-module-structure-proposal.md) against a stand-in runtime. The build is assembled from its blueprint
 // and its nested script is run with stand-ins for the Workflow runtime, so no model, DeepSeek, zt or archive call
 // happens. The order of the rounds is zt-digest's (grow_next.rs, tested by cargo test and grow.tests.ps1); this
@@ -14,7 +14,7 @@
 //  - every drive answer is at most 400 characters with a boolean top-level `ok`, and a prose or `ok`-less answer
 //    fails the stage instead of reading a nested object (#180);
 //  - the options reach the step as one JSON object (the box copy, the mode, the frozen model, high effort);
-//  - the built script carries zt-grow-cycle v14 and zt-workflow-lib v6, names no relay helper, and carries the DSMP
+//  - the built script carries zt-grow-cycle v14 and zt-workflow-lib v7, names no relay helper, and carries the DSMP
 //    block; the blueprint declares the manager role (no relay role).
 import os from 'node:os'
 import path from 'node:path'
@@ -134,6 +134,10 @@ const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')
   // Live run 2026-10-26 (staging4, link start): the manager copied the line with each `\\` of a Windows path as one
   // `\`. The line is still the step's one object: the reader doubles the lone backslashes and reads it.
   const unescaped = await run({ out: W }, [{ output: JSON.stringify(jobsLine('ideas-jobs', 1, ['gw-001'])).replace(/\\\\/g, '\\') }, done])
+  // Live run 2026-10-26 (staging5, cleanup report): the manager's `answer` carried the end of its own tool call after
+  // the line (`</answer>` and a `<parameter name="session_id">` line). The markup is cut before the last line is read.
+  const leaked = await run({ out: W }, [{ output: `${JSON.stringify(done)}</answer>\n<parameter name="session_id">eb840fdd-c9f8` }])
+  check(!halted(leaked) && leaked.report && leaked.report.result.report.created === 4, `a line followed by leaked tool-call markup is read (${halted(leaked).slice(0, 160)})`)
   check(!halted(unescaped) && unescaped.managers.length === 1 && unescaped.managers[0].file === `${W}\\grow-jobs.json`, `a line copied with unescaped backslashes is read with its paths (${halted(unescaped).slice(0, 160)})`)
 }
 
@@ -172,7 +176,7 @@ const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')
 
 // 7. The frozen build.
 {
-  check(build.modules['zt-grow-cycle'] === '14' && build.modules['zt-workflow-lib'] === '6', `the build carries zt-grow-cycle v14 and zt-workflow-lib v6 (${JSON.stringify(build.modules)})`)
+  check(build.modules['zt-grow-cycle'] === '14' && build.modules['zt-workflow-lib'] === '7', `the build carries zt-grow-cycle v14 and zt-workflow-lib v7 (${JSON.stringify(build.modules)})`)
   const cycle = source.slice(source.indexOf('// ==== module zt-grow-cycle'), source.indexOf('// ==== end module zt-grow-cycle'))
   check(!/ztRelay\s*\(|runScript\s*\(|wfpScript\s*\(/.test(cycle), 'the grow cycle calls no relay helper')
   check(/ztDrive\(ctx/.test(cycle) && /grow-steps\.ps1/.test(cycle) && /dispatch\(line\)/.test(cycle), 'the cycle drives one grow-steps.ps1 step per round and dispatches each checked job set from its file')

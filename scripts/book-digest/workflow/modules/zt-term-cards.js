@@ -1,5 +1,6 @@
-// ==== module zt-term-cards v6 ====
+// ==== module zt-term-cards v7 ====
 // The Term-card branch (S20 #164, S24 #167; v4 #172; v5 #175; v6 #180): Haiku managers and DeepSeek agents only.
+// v7 (live run 2026-10-26, staging5): a publication that printed no line is named in the error (`publish_error`).
 // Every deterministic step is one `term-steps.ps1` call that a DeepSeek agent runs (a "drive" job, the shared
 // zt-workflow-lib helper `ztDrive`), so no Claude agent relays a single command. The flow is linear:
 //   start (plan, claim every ready job unit, list the jobs) -> writers (all jobs, at most eight per
@@ -12,7 +13,7 @@
 // v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
 // only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '6', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '7', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers, reviewers and fixers for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -108,7 +109,7 @@ Each job has id, files, prompt, skills, model, effort.
       report.book_state = finished.book
       if (finished.book !== 'done') {
         report.status = 'failed'
-        report.error = `the Term-card book is incomplete: ${report.not_ready} job(s) not ready; the ready prefix (${report.publication.committed} row(s)) is published`
+        report.error = `the Term-card book is incomplete: ${report.not_ready} job(s) not ready; the ready prefix (${report.publication.committed} row(s)) is published${finished.publish_error ? `; the publication failed: ${finished.publish_error}` : ''}`
       }
     } catch (e) {
       report.status = 'failed'

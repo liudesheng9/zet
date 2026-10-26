@@ -1,0 +1,218 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "name": "zt-idea-grow",
+  "version": "4.0.6",
+  "description": "Grow the ZET Topic trees from the Literature trees of the whole card box, as Luhmann wrote his main-box Cards from all his bibliographic notes: DeepSeek reads each section of every Literature tree against the whole box (the Topic Cards and the other books' notes) and keeps the core, related, useful, interesting and intuitive ideas as standalone Topic-tree Cards filed beside the Cards they continue, one concept gathering its ideas from several sources; zt-digest grow -Step next plans the run's Topics, checks, writes, links across trees, fixes, reviews each source book's term table against the Topics, optionally merges duplicate Topics and moves misplaced Topic Cards, builds the hubs and the register for the grown Topics, and reports the Topic share per book. Since 3.0.0 it is the only workflow that writes Topic trees, Topic Cards, hubs and the register: the digests build only Literature trees",
+  "whenToUse": "When the box holds Literature trees (from the digests or written by hand, either Workspace): give a fresh work folder, and optionally book or books to narrow it; by default every Literature tree of the box is read, so the more books the box holds, the more each idea can relate to. Writes only agent Topic trees, their hubs and the register; the digests write only Literature trees, so run this after a digest to grow its Topics. Mode hubs rebuilds the hubs and the register alone (no new Card; the concept review of the books' term tables still feeds the register): give a fresh work folder, and optionally book or books, hubTrees, hubRebuild, hubLimits. A rerun with the same out and the same args resumes a stopped run. On a copy of the box (ztConfig) every round runs on the copy: the run pins its work folder to it. organize: true adds the Topic maintenance round (duplicate-Topic merges, misplaced-Card moves) before the hubs. Not for building a Literature tree.",
+  "preflight": {
+    "P1": "Goal and result: the reader's own ideas from the box's Literature trees, written as agent Topic-tree Cards that relate them to each other (docs/idea-grow-design.md; the Topic proposals P1-P7 of docs/topic-tree-ideas-proposals.md live here, not in the digests). The box is the unit (user, 2026-10-20): not one book at a time. Result: the plan line (books, sections, left for a rerun), the run Topics, rounds, the report line (Cards, Topics, Links, bridges across books, same, refused, duplicates, faults left, Topic share before and after) and the cleaned workspaces; grow-report.md (with the share per book) in the work folder. 3.0.0 (docs/literature-only-digest-design.md): the owner moved the idea compose, the Topic-tree compose and the hub compose out of every digest; the digests now build only Literature trees and this workflow is the only one that writes Topic trees, Topic Cards, hubs and the register.",
+    "P2": "Inputs: out (the work folder, required; also the DeepSeek workspace); books (Citation keys) or book (one key), both optional: without them every Literature tree of the box (both Workspaces); from/to (an optional anchor range); fixRounds (0-2, default 1); dshModel (default the official DeepSeek V4.1 Flash source, deepseek-official/deepseek-flash: the user wants the official source only); effort (high or max; never lower). At most 120 sections per run: the rest is reported as left and a rerun with the same out takes it. 2.2.0: ztConfig (the ZT_CONFIG_DIR of a copy of the box; every step and the DeepSeek helper line set it, so the run reads and writes only that copy) and tool (a zt-digest binary, so a development build never replaces the installed one under another run). 2.5.0: hubs (default true) and register (apply, plan, off; default apply). 3.0.0: the hub options the digests had (hubTrees, hubRebuild, hubLimits, hubEffort, hubFixRounds) and restate (default true). 3.1.0: concepts (default true: the concept review of each source book's term table, the register plan's -Review), organize (default false: the Topic maintenance round) and organizeTrees (the Topics it surveys; empty: the run's own). 4.0.0 (docs/workflow-simplicity-proposal.md S8/S9): fixRounds and hubFixRounds are frozen at 1, hubEffort merges into effort, dshModel is frozen at the official source (consts.model), register takes apply or off, and organizeTrees leaves (no run used it).",
+    "P3": "Units of work: first one Topic-planning job over every section of every book (gt-001: the anchors grouped by book and the Topic catalogue; it reuses agent Topics and opens at most max(2, ceil(sections/2)) <= 8 new ones), then one section per DeepSeek job: an anchor of a Literature tree (Key/n) with its subtree, or a whole tree that has no anchor; each section file also lists the closest notes of the other books. zt-digest grow -Step plan writes gt-001 and the section files; -Step topics makes the run's Topics and writes jobs\\gw-NNN.md with them; each step prints only counts, and the module names the jobs gw-001..gw-N. Fix jobs are one per section with faults (fxR-NNN), from -Step check's count. 2.5.0: the hubs round wraps each hub compiler job as a grow job (gh-NNN; fix jobs gh<round>-NNN) from -Step hubs-plan and -Step hubs-check, which print counts only. 3.1.0: the concept review is one judge job per source book with an agent term-table Card (cNN-cj; grow -Step concept-books stages at most 24 books: the named ones in mode hubs, else the books the run grew Cards from, else every agent book with a term table); the Topic maintenance round is one decision job (go-001) over the survey of the run's Topics. 3.2.0 (zt-grow-cycle v11): the restatement and concept reviews prepare every book first, then send all the books' judge jobs (rNN-rj, cNN-cj) in one DeepSeek dispatch, side by side under the DSMP limits (8 per manager, 8 managers), then judge, apply and report each book in order; a book whose prepare fails is skipped alone. 4.0.0: zt-digest grow -Step next prints each job set as one line: the round, a token, the job ids, one job template (cwd, files and prompt with {id}, skills, model, effort, expect, the approval rule) and a checksum; the module fills {id} per job.",
+    "P4": "Roles: manager (Haiku, low, the blueprint's one role) runs the grow stage's drive job and every DSMP content manager: the drive job starts one DeepSeek agent that runs the one grow-steps.ps1 step and answers the one JSON line it prints; the content managers (Haiku, fixed by the protocol) run up to 8 DeepSeek conversations each, at most 8 at once, approve only what each job template's rule names (the read-only helper, the precheck or judge self-check, reads under the work folder, JSON writes under its out folder), and delete every conversation. DeepSeek (official source, high effort) writes only its answer file. No Sonnet or Opus role, and no agent decides control flow: zt-digest grow -Step next decides every branch, and the step script only checks the line it prints. 4.0.0 replaced the generic runner with the relay (S1); 4.0.2 replaces the relay with the drive job (#179).",
+    "P5": "Stage graph: grow (one module stage: a loop over zt-digest grow -Step next, which runs plan -> DeepSeek topic plan -> topics -> DeepSeek ideas -> apply -> links -> DeepSeek link jobs -> apply -> restatement review (restate-cards, per book restate prepare -> one dispatch of the judge jobs -> judge, apply, report) -> check -> DeepSeek fix jobs -> apply -> Topic maintenance (optional: organize-plan -> go-001 -> organize-apply) -> concept review (concept-books, per book propose and prepare -> one dispatch -> judge, report) -> hubs-plan -> hub jobs -> hubs-apply -> hubs-check -> hub fix jobs -> hubs-apply -> hubs-report with the register -> report; each DeepSeek job set goes to dsDispatch, then next -After <token>) -> cleanup of the DeepSeek workspace (DSMP rule 5, finally) -> report (value). Mode hubs: the concept review of the named books, the hubs and the register. 4.0.0 (S3): the order of the steps lives in zt-digest (grow_next.rs rounds()), which next.json in the work folder records round by round; zt-digest grow -Step next is the only decider. 4.0.1 (zt-digest 0.13.3): the restatement review runs before the check, so the one fix round also sees the Cards its accepted rewrites changed (the 2026-10-24 pilot: five rewrites that rest on their own book, I7, were left after a check that had found none).",
+    "P6": "Modules: zt-grow-cycle v8 (project folder scripts/idea-grow/workflow/modules; requires the framework's script, deepseek and the DSMP block) and value. The prompt template is scripts/idea-grow/dsh-grow-instructions.zh.md, read by -Step plan from disk. 2.3.0: zt-grow-cycle v7 adds the Tree Lock seam (#140): a grow step or DeepSeek job the owner's Lock refused answers the tool's typed `card_locked` JSON, and the stage stops with it, keeping the Topic Cards already filed and the answer files. 3.0.0: zt-grow-cycle v9 adds mode hubs, the hub options and the restatement round; zt-digest grow adds -Step restate-cards and hubs-plan -Limits/-Trees/-Rebuild (zt-digest 0.10.0, whose digest steps run in the Literature scope). 3.1.0: zt-grow-cycle v10 adds the concept round and the Topic maintenance round; zt-digest grow adds -Step concept-books, organize-plan, organize-apply, the go-NNN precheck (O1-O8) and hubs-report -Concepts; organize-survey adds -Topics (a survey of named Topics, no book); register -Review takes several reports (zt-digest 0.11.0). 3.2.0: zt-grow-cycle v11 (the batched per-book judge jobs; skipped_on_copy). The prompt adds the guidance for a mathematics textbook's sections: a unit's statement, hypotheses and proof stay in the Literature tree; Topic Cards state the idea behind it and link the unit with 例示/对应/对照/特例, never 依赖. 4.0.0: zt-grow-cycle v12 (one loop with three branches: jobs, done, fault) and the shared library zt-workflow-lib v1 (scripts/workflow-shared/modules: the one Lock reader and the one zt-relay command runner, which the digests load too); zt-digest 0.13.0 adds grow -Step next and -Step status (grow_next.rs), the link round naming its unapplied job ids on a rerun (S0), and the report section of the review rounds. 4.0.2 (#179, docs/workflow-module-structure-proposal.md): zt-grow-cycle v13 runs the chain as ONE grow-steps.ps1 -Step next step under a DeepSeek drive job through zt-workflow-lib v3's ztDrive (a manager role, no relay helper); the script checks the line (shape and FNV-1a checksum) and reads grow -Step status once when it is unreadable, so the module dispatches only a checked job set. No stage starts a zt-relay agent.",
+    "P7": "Checks: every DeepSeek job runs its SELF-CHECK (zt-digest grow -Step precheck: G1-G13, with Link kinds read as zt reads them, one root placement per section and Topic (G13), and zt-check on the drafts; the topic job: ids, existing agent roots, near names, sections, the bound) until faults: 0, and its answer must end OK or FLAG; apply validates every answer again and refuses each idea with a fault; check runs zt-check --cards with each Card's own book on every Card the run wrote and turns each hard fault into a fix job; the grow stage expects a report. 2.5.0: each hub job runs the hub compiler's own precheck on every JSON file it writes (grow -Step precheck -Job gh-NNN sums them); hubs-check reads get_hub on every hub and turns each writer's faults into a fix job; the register is published only when its plan has no fault, and read back. 3.1.0: the decision job go-001 runs its SELF-CHECK (grow -Step precheck -Job go-001: O1 shape and reasons, O2 unknown Card, O3 not a surveyed Topic root, O4 a Card that never moves, O5 a Locked Topic, O6 a destination outside the kept Topic or inside the moved Card, O7 Card notes, O8 a Topic dropped twice); organize-apply checks the answer again and drops each faulty decision; organize-apply itself plans every move with the archive first (Lock, pins, Links). Each concept judge job runs zt-digest concepts -Step judge as its self-check; the report is rendered from the frozen files alone. 4.0.2 (#179): the grow-steps.ps1 step checks every jobs line before it returns it: the next shape, the ids, the job template and its FNV-1a checksum (sum); a line that fails is read again from grow -Step status once (S2), a status that only repeats the confirmed set asks next -After again that the same set is never dispatched twice, a second unreadable line answers {ok:false,…}, and the module dispatches only a checked set.",
+    "P8": "Failure policy, modes, checkpoints (4.0.0, S7): grow retries 0 and halts on a fault line, an unreadable line after its status read, or a thrown step; report runs only after grow is done. A rerun with the same out and the same args is the resume: next.json records every round done, the rounds done are skipped, a job set printed but never confirmed is printed again for the jobs without an answer file, and a rerun with other args is refused (options_changed). A destination the owner locked is not a retryable fault: next prints the typed card_locked fault and the stage stops, keeping the Cards it already filed (R326/R337). A restatement or concept review that fails for one book is recorded for that book and the run goes on. The DeepSeek workspace cleanup runs in a finally block. A copy of the box (ztConfig): next writes zt-box.txt into the work folder, so every round runs on the copy (3.2.0 skipped the live-box rounds there). Mode hubs: the concept review, the hubs and the register alone. No checkpoints. 4.0.2 (#179): the grow stage runs its chain as one grow-steps.ps1 step under a DeepSeek drive job, so no Claude agent runs a single command; a step that answers {ok:false,…} stops the stage with its error, and a fault line stops it with its code and cause (a card_locked fault with the owner's typed refusal).",
+    "P9": "Dry run and pilot: zt-idea-grow.sim.json stands in for plan (2 sections), the topic manager, topics (2 jobs), one manager, apply, check (one fix), report and cleanup. Pilot 1 (1.0.0, 2026-10-20): 8 sections of grossman2002integration, 53 Topic Cards, Topic share 1.6% -> 47.4%, 0 faults left, but 8 new Topics (4 on one concept) and every related idea branched off the one earlier Topic Card; 1.1.0 plans the run's Topics first, appends a root-direct idea to the main line, and reads Link kinds as zt does (G10). Pilot 2 (1.1.0): 4 run Topics (3 new, 379/0 reused), 58 Topic Cards, 0 faults, share 49.6%, 5 min; but the main-line append joined five parallel sections into one blind 20-step chain in 389. 1.2.0: a later root placement opens a line beside the doorway (n/1|a …), and the section chains its ideas in it. Pilot 3 (1.2.0): 4 run Topics, 56 Topic Cards, each Topic a doorway with one line per section (391/1|a..f), 0 faults, share 48.7%; but only 6 of 56 Cards linked another Topic tree, all to the one earlier Card 379/1. 1.3.0 adds the link round: one DeepSeek job per Topic tree the run wrote in (gl-NNN), Links to Cards of other trees, at most 2 per Card, each one sentence with its kind (G11), appended to the Card. 2.0.0 (user, 2026-10-20: not locked on one Literature tree): by default every Literature tree of the box; the topic plan groups sections by book; each section lists the closest notes of other books; checks use each section's own book; the report counts bridges (Topic Cards citing two or more books) and the share per book. Pilot 4: the whole box in a fresh folder, e.g. {out: \"D:\\zt-grow\\box-pilot4\"}; back up the archive first. Pilot 4 (2.0.0, the whole box: grossman2002integration and the human sylla2018alexander): 9 sections, 4 run Topics (3 new, 379/0 reused), 57 Topic Cards, 32 Links across trees, 0 faults, share 6.3% -> 50.4%, 10 min; the Hamilton section continued the user's own human Cards (承接 [[0/1|a]], 印证 [[0/1|a|1]]); but the link round appended its sentences after the source line, and a public-credit Topic offered only outsourcing Cards wrote forced analogies. 2.1.0: the Link sentence goes before the source line (edit with base), the link candidates must share wording with the tree's new Cards (a tree with none gets no job), and the prompt asks an analogy to name the shared mechanism. 2.2.0 (user, 2026-10-20: develop idea-grow on a copy of the box while a digest runs on the live one): ztConfig and tool. Pilot 5: the copy D:zt-grow-box (config D:zt-grow-boxconfig, archive D:zt-grow-boxarchive), tool D:zt-grow-targetdebugzt-digest.exe. Pilot 5 (2.2.0, on the copy, 8 min, 15 conversations deleted): 9 sections of 2 books, 5 run Topics (4 new, 379/0 reused), 54 Topic Cards, 42 Links across trees (before the source line), 1 same, 0 faults, share 6.3% -> 49.2%, 0 bridges (the two books share no mechanism); the public-credit Topic wrote 2 Links (one to the user's human Card), not 4 forced ones. 2.2.1: no working folder for the steps (the plan step ran before the folder existed). 2.3.0: the Tree Lock seam (zt-grow-cycle v7) and the instructions' rule that a `card_locked` refusal is final, never retried. Live run (2.3.0, 2026-10-22, D:/zt-grow/live-2026-10-22): 62 Cards, 0 faults, Topic share 11.9% -> 57%, but Topic 412 gathered 9 lines beside its doorway 412/1 (one section put 3 ideas at the root). 2.4.0 (zt-digest 0.9.1, module unchanged): G13 allows one root placement per section and Topic, and a doorway with 7 lines sends the next root placement beside its last line; the report lists those Cards (deeper). 2.5.0 (user, 2026-10-22: the hubs were not well developed or linked): the live box had one field hub and a register whose 37 terms all pointed at Topic roots, and the grown Topics 412-414 were in no hub (list_hubs: missing topic hubs for 412 and 413, a line hub for 412/1, 208 Cards unreached). The hubs round runs the hub compiler and the register compiler after the Cards are written; limits come from the survey by the hub manager's rules; only on the live box (ztConfig empty). 2.5.1 (zt-digest 0.9.3): the first hubs round on the live box built 3 topic, 3 line and 2 field hubs and published a register of 93 terms pointing at specific Cards (42 before, all at Topic roots), hub check 0 faults; but it reported the register partial (the check prints its faults as a list) and wrote a second field hub, leaving the old 411/1|a unanchored (a new hub work folder knew no field hub). 2.5.1 counts a fault list and seeds the box's field hubs into the hub state before the plan, so the field writer keeps and updates them. 3.0.0: the sim adds the restatement round (one book) and tests/grow-workflow-harness.mjs checks mode hubs, the hub options and the restatement review. 3.1.0: the sim adds the Topic maintenance round (organize: true; one merge, one move) and the concept review of one book; tests/grow-workflow-harness.mjs checks both rounds, their order (restate -> organize -> concepts -> hubs), mode hubs with the concept review, and concepts false / organize false. 3.2.0: the sim answers the batched managers (grow restate mgr, grow concepts mgr); tests/grow-workflow-harness.mjs checks three books' judge jobs in one manager each, every prepare before the first judge, the books' order in the result, a failed prepare that skips only its book, and the box-copy log; grow.tests.ps1 plans a mathematics textbook's theorem unit as a section note. 4.0.0: tests/grow-workflow-harness.mjs drives the v12 loop against a stand-in next (jobs, done, fault; the checksum; the status recovery; a resume; the Lock fault); grow.tests.ps1 runs grow -Step next on a scratch archive to the end with canned DeepSeek answers, stops it, and reruns it; cargo test covers rounds(), the job templates, the checksum and the pending job set. Pilot (the proposal's acceptance): the test box D:zt-test-box (its own service on port 48777) with acemoglu2025nobel copied from the live box and grossman2002integration digested on it; one deliberate stop and a rerun with the same folder. Pilot (4.0.0, 2026-10-24, D:zt-test-box, both books, organize on): 16 sections, 8 Topics, 113 Topic Cards, 74 Links across trees, 9 bridges, share 0 -> 44%, restatement 37 resolved by rewrite, concept review 688 findings, 6 topic and 3 field hubs, register published (152 terms); one deliberate stop in the section jobs (7 of 16 answered): the rerun dispatched only the 9 unanswered; a register stop (zt-digest 0.13.2 fix) and a rerun that redid only hubs-report. Left: 5 I7 faults from the restatement rewrites, the cause of 4.0.1."
+  },
+  "roles": {
+    "manager": {
+      "model": "haiku",
+      "effort": "low",
+      "description": "Haiku: runs the grow stage's one drive job and every DSMP content manager; it runs no command of its own"
+    }
+  },
+  "args": {
+    "out": {
+      "type": "string",
+      "required": true,
+      "description": "the work folder: plan files, answers, state, report; also the DeepSeek workspace"
+    },
+    "books": {
+      "type": "array",
+      "description": "the Literature trees to grow from (Citation keys); with neither books nor book, every Literature tree of the box"
+    },
+    "book": {
+      "type": "string",
+      "description": "one Literature tree to grow from (its Citation key)"
+    },
+    "from": {
+      "type": "number",
+      "min": 1,
+      "max": 100000,
+      "description": "the first section (anchor number) to grow"
+    },
+    "to": {
+      "type": "number",
+      "min": 1,
+      "max": 100000,
+      "description": "the last section (anchor number) to grow"
+    },
+    "effort": {
+      "type": "string",
+      "default": "high",
+      "enum": [
+        "high",
+        "max"
+      ],
+      "description": "DeepSeek reasoning effort"
+    },
+    "ztConfig": {
+      "type": "string",
+      "default": "",
+      "description": "the ZT_CONFIG_DIR of a copy of the box with its own zt service (empty: the live box); the run pins its work folder to that box (zt-box.txt), so every round runs on the copy"
+    },
+    "tool": {
+      "type": "string",
+      "default": "zt-digest",
+      "description": "the zt-digest command, or the path of a zt-digest binary"
+    },
+    "hubs": {
+      "type": "boolean",
+      "default": true,
+      "description": "run the hubs round: topic, line and field hubs for the grown Topics (hub compiler, DeepSeek writes each hub), then the register"
+    },
+    "register": {
+      "type": "string",
+      "default": "apply",
+      "enum": [
+        "apply",
+        "off"
+      ],
+      "description": "the register after the hubs: rebuild and publish it from the box's term tables (apply), or leave it (off)"
+    },
+    "hubTrees": {
+      "type": "string",
+      "default": "",
+      "description": "only these Topic trees get hubs (comma-separated Topic numbers; a pilot)"
+    },
+    "hubRebuild": {
+      "type": "boolean",
+      "default": false,
+      "description": "rewrite every hub, not only the hubs of trees that changed"
+    },
+    "hubLimits": {
+      "type": "any",
+      "description": "hub limits that replace the survey's (an object such as {\"line_min\": 12}; the hub compiler clamps them)"
+    },
+    "restate": {
+      "type": "boolean",
+      "default": true,
+      "description": "the restatement review of the run's new Topic Cards (zt-digest restate, one judge job per source book)"
+    },
+    "concepts": {
+      "type": "boolean",
+      "default": true,
+      "description": "the concept review of each source book's term table against the Topics (zt-digest concepts, one judge job per book), read by the register plan as -Review; needs the hubs round and a register"
+    },
+    "organize": {
+      "type": "boolean",
+      "default": false,
+      "description": "the Topic maintenance round before the hubs: duplicate-Topic merges and misplaced Topic Card moves on the run's Topics (one DeepSeek decision job, organize-apply -Open)"
+    }
+  },
+  "consts": {
+    "instructions": "E:\\zet\\scripts\\idea-grow\\dsh-grow-instructions.zh.md",
+    "model": "deepseek-official/deepseek-flash"
+  },
+  "stages": [
+    {
+      "id": "grow",
+      "title": "Grow",
+      "detail": "one loop over the one grow-steps.ps1 -Step next drive job (the command runs plan, apply, check, review, maintain, hubs, register and report; every DeepSeek job set goes to DSMP dsDispatch, then next -After); clean up the DeepSeek workspace (mode hubs: only the concept review, the hubs and the register)",
+      "module": "zt-grow-cycle",
+      "params": {
+        "book": {
+          "$ref": "args.book",
+          "default": null
+        },
+        "books": {
+          "$ref": "args.books",
+          "default": []
+        },
+        "work": "{{args.out}}",
+        "instructions": "{{consts.instructions}}",
+        "from": {
+          "$ref": "args.from",
+          "default": null
+        },
+        "to": {
+          "$ref": "args.to",
+          "default": null
+        },
+        "model": "{{consts.model}}",
+        "effort": "{{args.effort}}",
+        "ztConfig": "{{args.ztConfig}}",
+        "tool": "{{args.tool}}",
+        "hubs": "{{args.hubs}}",
+        "register": "{{args.register}}",
+        "mode": "{{mode}}",
+        "hubTrees": "{{args.hubTrees}}",
+        "hubRebuild": "{{args.hubRebuild}}",
+        "hubLimits": {
+          "$ref": "args.hubLimits",
+          "default": null
+        },
+        "restate": "{{args.restate}}",
+        "concepts": "{{args.concepts}}",
+        "organize": "{{args.organize}}"
+      },
+      "retries": 0,
+      "expect": [
+        {
+          "path": "report",
+          "op": "exists",
+          "message": "the grow stage wrote no report"
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "title": "Report",
+      "detail": "the run's result",
+      "after": [
+        "grow"
+      ],
+      "module": "value",
+      "params": {
+        "value": {
+          "book": {
+            "$ref": "args.book",
+            "default": null
+          },
+          "out": "{{args.out}}",
+          "rounds": {
+            "$ref": "stages.grow.output.rounds",
+            "default": []
+          },
+          "report": {
+            "$ref": "stages.grow.output.report",
+            "default": null
+          },
+          "workspaces": {
+            "$ref": "stages.grow.output.workspaces",
+            "default": []
+          },
+          "books": {
+            "$ref": "args.books",
+            "default": []
+          },
+          "mode": {
+            "$ref": "stages.grow.output.mode",
+            "default": null
+          }
+        }
+      }
+    }
+  ],
+  "modes": {
+    "hubs": [
+      "grow",
+      "report"
+    ]
+  },
+  "checkpoints": [],
+  "result": {
+    "$ref": "stages.report.output"
+  }
+}
