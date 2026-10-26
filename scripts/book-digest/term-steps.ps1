@@ -97,8 +97,11 @@ switch ($Step) {
     'finish' {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
         # The combined job's verdict is bound to the draft it left: when its fix changed the draft, the review the
-        # current draft needs has no answer yet, and the job's own newer `ok` answer is that answer. A verdict
-        # older than the draft (a writer rewrote it later) is never carried over.
+        # current draft needs has no answer yet, and the job's own `ok` answer of this round is that answer. After
+        # the writers no one but that job changes the draft, so an answer written after this round's review plan
+        # (drive\reviews.json) binds, even when the job touched the draft again afterwards (live 2026-10-26,
+        # acemoglu2025nobel row 15); an answer from before this round is never carried over.
+        $round = Get-Item -LiteralPath (Join-Path $Drive 'reviews.json') -ErrorAction SilentlyContinue
         $rp = Run @('term-cards', '-Step', 'review-plan', '-Staging', $Out)
         $answersDir = Join-Path $Work 'review\answers'
         $bound = 0
@@ -106,10 +109,8 @@ switch ($Step) {
             if (Test-Path -LiteralPath $j.answer) { continue }
             $stem = [IO.Path]::GetFileNameWithoutExtension("$($j.answer)")
             $prefix = $stem -replace '^(.+-r\d{3}-).*$', '$1'
-            $writer = "$($j.id)" -replace '-r\d+-review$', ''
-            $draft = Get-Item -LiteralPath (Join-Path $Work "out\$writer.json") -ErrorAction SilentlyContinue
             $old = @(Get-ChildItem -LiteralPath $answersDir -Filter "$prefix*.json" -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -ne $stem } | Sort-Object LastWriteTime -Descending) | Select-Object -First 1
-            if (-not $old -or ($draft -and $old.LastWriteTime -lt $draft.LastWriteTime)) { continue }
+            if (-not $old -or -not $round -or $old.LastWriteTime -lt $round.LastWriteTime) { continue }
             $verdict = $null
             try { $verdict = Get-Content -LiteralPath $old.FullName -Raw -Encoding utf8 | ConvertFrom-Json } catch { $verdict = $null }
             if ($verdict -and $verdict.ok -eq $true) { Copy-Item -LiteralPath $old.FullName -Destination $j.answer; $bound++ }
