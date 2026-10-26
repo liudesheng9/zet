@@ -1,4 +1,4 @@
-// ==== module zt-workflow-lib v3 ====
+// ==== module zt-workflow-lib v4 ====
 // The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6; docs/workflow-module-structure-proposal.md):
 // the digests (zt-digest-lib) and zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
 //  - S6, one lock reader: the owner's typed `card_locked` refusal (#140, R326/R337/R338) is read here and only
@@ -94,10 +94,13 @@ The record commands, when this step has records, are the only commands you run: 
 // parsed last JSON line. o: label, command, out, cwd, phase, ledger, record, answers, deepseek, model, effort.
 // A step that answers no JSON line at all is a transport fault: it throws, and the module stops with it. A step
 // that answers `{ok:false, ...}` is a failed step: the module reads that line and stops with its reason.
+// v4 (live run 2026-10-26): deepseek_run refuses a cwd that does not exist yet, and a stage's own folder is made by its
+// step, so the job runs in the run folder (`out`, which exists before any stage); the stage folder keeps the answers.
 async function ztDrive(ctx, o) {
   const label = o.label || o.step || 'drive'
-  const cwd = String(o.cwd || o.out || '').replace(/[\\/]+$/, '')
-  const run = await dsmpSlot(() => ctx.agent(ztDrivePrompt({ ...o, label, cwd }), {
+  const cwd = String(o.out || o.cwd || '').replace(/[\\/]+$/, '')
+  const answers = o.answers || `${String(o.cwd || cwd).replace(/[\\/]+$/, '')}\\answers`
+  const run = await dsmpSlot(() => ctx.agent(ztDrivePrompt({ ...o, label, cwd, answers }), {
     role: 'manager', label, phase: o.phase, schema: ZT_DRIVE_SCHEMA,
   }))
   const said = run && (run.answer !== undefined ? run.answer : run.output)
@@ -110,7 +113,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '3', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '4', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====

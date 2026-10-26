@@ -1,5 +1,5 @@
 // Run: node scripts/book-digest/tests/grow-workflow-harness.mjs
-// The frozen zt-idea-grow 4.0.2 build (zt-grow-cycle v13, zt-workflow-lib v3, #179
+// The frozen zt-idea-grow 4.0.3 build (zt-grow-cycle v13, zt-workflow-lib v4, #179
 // docs/workflow-module-structure-proposal.md) against a stand-in runtime. The build is assembled from its blueprint
 // and its nested script is run with stand-ins for the Workflow runtime, so no model, DeepSeek, zt or archive call
 // happens. The order of the rounds is zt-digest's (grow_next.rs, tested by cargo test and grow.tests.ps1); this
@@ -16,7 +16,7 @@
 //    line), and the report stage does not run;
 //  - S6: a `card_locked` fault stops the stage with the owner's refusal (tree, Lock id), never retried;
 //  - the options reach the step as one JSON object (the box copy, the mode, the frozen model, high effort);
-//  - the built script carries zt-grow-cycle v13 and zt-workflow-lib v3, names no relay helper in the grow cycle and
+//  - the built script carries zt-grow-cycle v13 and zt-workflow-lib v4, names no relay helper in the grow cycle and
 //    carries the DSMP block, and the blueprint declares the manager role (no relay role).
 import os from 'node:os'
 import path from 'node:path'
@@ -168,7 +168,7 @@ const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')
 
 // 6. The frozen build.
 {
-  check(build.modules['zt-grow-cycle'] === '13' && build.modules['zt-workflow-lib'] === '3', `the build carries zt-grow-cycle v13 and zt-workflow-lib v3 (${JSON.stringify(build.modules)})`)
+  check(build.modules['zt-grow-cycle'] === '13' && build.modules['zt-workflow-lib'] === '4', `the build carries zt-grow-cycle v13 and zt-workflow-lib v4 (${JSON.stringify(build.modules)})`)
   const cycle = source.slice(source.indexOf('// ==== module zt-grow-cycle'), source.indexOf('// ==== end module zt-grow-cycle'))
   check(!/ztRelay\s*\(|runScript\s*\(|wfpScript\s*\(/.test(cycle), 'the grow cycle calls no relay helper')
   check(/ztDrive\(ctx/.test(cycle) && /grow-steps\.ps1/.test(cycle) && /dsDispatch\(line\.ids/.test(cycle), 'the cycle drives one grow-steps.ps1 step per round and dispatches each checked job set')
