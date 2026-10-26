@@ -209,7 +209,27 @@ fn main() {
         "prepare-link" => prepare::link_cli(&rest),
         "snapshot-topics" => snapshot::cli(&rest),
         "version" | "--version" | "-v" => {
-            println!("zt-digest {}", env!("CARGO_PKG_VERSION"));
+            // `-Workflows`: the blueprint versions this binary embeds and stamps into a prepared run's
+            // contract (live run 2026-10-26: a binary built before a blueprint bump stamped the old ones).
+            if rest.iter().any(|a| a.eq_ignore_ascii_case("-Workflows")) {
+                let version = |text: &str| -> String {
+                    serde_json::from_str::<serde_json::Value>(text)
+                        .ok()
+                        .and_then(|v| v["version"].as_str().map(str::to_string))
+                        .unwrap_or_default()
+                };
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "zt_digest": env!("CARGO_PKG_VERSION"),
+                        "base": version(include_str!("../../../scripts/book-digest/workflow/zt-digest-base.blueprint.json")),
+                        "econ": version(include_str!("../../../scripts/book-digest/workflow/zt-econ-digest.blueprint.json")),
+                        "math": version(include_str!("../../../scripts/book-digest/workflow/zt-math-digest.blueprint.json")),
+                    })
+                );
+            } else {
+                println!("zt-digest {}", env!("CARGO_PKG_VERSION"));
+            }
             Ok(0)
         }
         _ => {

@@ -872,6 +872,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+- `2026-10-26` — `tests/release-set.tests.ps1` (114) checks that the installed zt-digest embeds the source blueprints (`zt-digest version -Workflows`).
 - `2026-10-26` — `tests/term-steps.tests.ps1` (49) checks that a Term-card publication refused with `{ok:false, code:plan_stale}` is named in the finish line (`publish_error`).
 - `2026-10-26` — `tests/model-dependencies.tests.ps1` claims the Model units with `-Lease 7200` and asserts `model-deps` keeps that lease (zt-digest 0.29.9).
 - `2026-10-26` — `step-line.ps1`: a line still over 400 characters after its error is cut is a failed step, `{ok:false, step, error:"line_overflow: ...", detail}`, never `{ok:true, detail}`: on the live run (staging4) the short success form let the model module read a fill with no jobs (see the [Workflow module structure](workflow-module-structure.md) block).

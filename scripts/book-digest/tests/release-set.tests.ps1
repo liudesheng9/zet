@@ -116,6 +116,18 @@ foreach ($tool in @(@{ name = 'zt-check'; command = '--version'; version = $exec
         Assert ($printed -match "^$([regex]::Escape($tool.name)) $([regex]::Escape($tool.version))$") "$($tool.name) is $($tool.version) ($printed)"
     }
 }
+# Live run 2026-10-26 (staging7): a zt-digest built before a blueprint bump stamped the old workflow versions into
+# the prepared run, and every later step of that run was refused as an incompatible contract. The installed binary
+# must embed the blueprints the sources hold.
+$digestExe = (Get-Command 'zt-digest' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if ($digestExe) {
+    $embedded = $null
+    try { $embedded = "$(& $digestExe version -Workflows 2>&1 | Select-Object -Last 1)" | ConvertFrom-Json -ErrorAction Stop } catch { $embedded = $null }
+    foreach ($bp in @(@{ key = 'base'; file = 'zt-digest-base' }, @{ key = 'econ'; file = 'zt-econ-digest' }, @{ key = 'math'; file = 'zt-math-digest' })) {
+        $source = (Read-Json (Join-Path $repo "scripts\book-digest\workflow\$($bp.file).blueprint.json")).version
+        Assert ($embedded -and "$($embedded.($bp.key))" -eq "$source") "the installed zt-digest embeds $($bp.file) $source ($($embedded.($bp.key)))"
+    }
+}
 
 # --- both frozen variants are the manifest builds, assembled from the current sources ----------
 $workflow = $manifest.contracts.workflow
