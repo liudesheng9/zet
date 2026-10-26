@@ -79,6 +79,7 @@ switch -Regex ($flat) {
         exit 0
     }
     '^term-cards -Step apply' {
+        if ($env:TS_APPLY_STALE) { Write-Output (ConvertTo-Json -Compress @{ ok = $false; step = 'apply'; code = 'plan_stale'; hint = 'run -Step plan again' }); Write-Output 'zt-digest term-cards: plan_stale: the frozen plan no longer describes this archive'; exit 1 }
         if ($env:TS_APPLY_ERROR) { Write-Output 'zt-digest term-cards: the publication was refused: row 1 has no draft'; exit 1 }
         if ($env:TS_PARTIAL) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; complete = $false; rows = 2; committed = 1; ready_unpublished = 1; stop = @{ code = 'not_ready' } }); exit 0 }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; complete = $true; rows = 2; committed = 2; ready_unpublished = 0; stop = $null })
@@ -162,6 +163,12 @@ $noPub = Step (@('-Step', 'finish') + $common)
 $env:TS_APPLY_ERROR = ''
 Assert-Line $noPub 'finish no publication'
 Assert ($noPub.json.ok -eq $true -and $noPub.json.publish_error -match 'row 1 has no draft') "finish: a publication that prints no line names its error ($($noPub.text))"
+
+# Live run 2026-10-26 (staging6): the apply answered {ok:false, code:plan_stale} and the finish named nothing.
+$env:TS_APPLY_STALE = '1'
+$stale = Step (@('-Step', 'finish') + $common)
+$env:TS_APPLY_STALE = ''
+Assert ($stale.json.ok -eq $true -and $stale.json.publish_error -match 'plan_stale') "finish: a refused publication names its code ($($stale.text))"
 
 # 5. link: plan, apply under the claim, plan again; the line answers counts, never the nested plan.
 $link = Step (@('-Step', 'link') + $common)

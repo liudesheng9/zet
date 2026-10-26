@@ -121,7 +121,8 @@ switch ($Step) {
         }
         $publication = @{ complete = ($a.json.complete -eq $true); rows = [int]$a.json.rows; committed = [int]$a.json.committed; ready_unpublished = [int]$a.json.ready_unpublished; stop = $a.json.stop }
         # Live run 2026-10-26 (staging5): an apply that prints no line is named, never read as zero rows.
-        $publishError = if (-not $a.json) { "$($a.tail)".Trim() } else { '' }
+        # An apply that answers {ok:false, code} (staging6: `plan_stale`) is named by its code and hint.
+        $publishError = if (-not $a.json) { "$($a.tail)".Trim() } elseif ($a.json.ok -eq $false) { "$($a.json.code): $($a.json.hint)".Trim() } else { '' }
         if ($publishError.Length -gt 160) { $publishError = $publishError.Substring($publishError.Length - 160) }
         $publication.error = $publishError
         Reply @{ ok = $true; done = $done.Count; failed = $failed.Count; book = $bookState; complete = $publication.complete; rows = $publication.rows; committed = $publication.committed; ready_unpublished = $publication.ready_unpublished; publish_error = $publishError } @{ done = $done; failed = $failed; publication = $publication; apply = $a.tail }

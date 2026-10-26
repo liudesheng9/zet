@@ -2071,7 +2071,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 {
   const tc = stageOf('econ', 'term-cards')
   const tl = stageOf('econ', 'term-link')
-  check(tc && tc.module === 'zt-term-cards' && (tc.after || []).join(',') === 'terms' && tc.onFail === 'continue', `S24: the Term-card branch runs after the term table beside the digest writers (after ${(tc.after || []).join(',')})`)
+  // Live run 2026-10-26 (staging6): beside the digest writers the Term-card plan went stale before its publication
+  // (`plan_stale`: the notation the models write, the rows' evidence and the job grouping changed), so 0 rows were
+  // published. The branch now starts once the Literature content is settled (after the whole-book Cards cycle).
+  check(tc && tc.module === 'zt-term-cards' && (tc.after || []).join(',') === 'cards-book' && tc.onFail === 'continue', `the Term-card branch starts after the whole-book Cards cycle (after ${(tc.after || []).join(',')})`)
   check(tl && tl.module === 'zt-term-link' && (tl.after || []).join(',') === 'bridge,term-cards' && tl.onFail === 'continue', `S24: the Term-link pass waits for every Card writer and the term-card branch (after ${(tl.after || []).join(',')})`)
   for (const which of ['econ', 'math']) {
     const bp = builds[which].bp
