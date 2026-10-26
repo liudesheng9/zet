@@ -1729,7 +1729,7 @@ function runtime(kind, opts = {}) {
           return reply({ ok: true, jobs: opts.termAlreadyDone ? 0 : termJobs.length, plan_revision: 1 }, 'drive-start')
         }
         if (step === 'review') return reply({ ok: true, reviews: 0 }, 'drive-review')
-        if (step === 'fix') return reply({ ok: true, fixes: 0 }, 'drive-fix')
+        // 2026-10-26: no fix step: one DeepSeek job reviews and fixes a draft.
         if (step === 'finish') {
           const done = [], failed = []
           for (const job of termJobs) {
@@ -2099,7 +2099,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const termAgents = full.calls.filter((c) => /^term-(cards|link): /.test(c.label || ''))
   check(termAgents.length > 0 && termAgents.filter((c) => !/: workspace$/.test(c.label)).every((c) => c.model === 'haiku' && !c.agentType && /You are a DeepSeek subagent manager/.test(c.prompt || '')), `v4: every Term stage agent is a Haiku DeepSeek manager (${termAgents.length})`)
   const drives = full.termCalls.filter((c) => c.tool === 'term-steps').map((c) => c.step)
-  check(drives.join(',') === 'start,review,fix,finish,link', `v4: the drive steps run in order start, review, fix, finish, link (${drives.join(',')})`)
+  check(drives.join(',') === 'start,review,finish,link', `v8: the drive steps run in order start, review (review and fix in one job), finish, link (${drives.join(',')})`)
   check(full.termCalls.filter((c) => c.tool === 'term-steps').every((c) => /term-steps\.ps1" -Step \w+ -Out "/.test(c.cmd)), `v4: each drive job runs the one term-steps.ps1 step (${JSON.stringify(full.termCalls.map((c) => c.cmd))})`)
   check(full.termCalls.some((c) => c.step === 'start' && / -PerJob 4/.test(c.cmd) && / -MathPerJob 1/.test(c.cmd)) && full.termCalls.some((c) => c.step === 'link' && /-Occurrences first/.test(c.cmd)), 'v4: the per-job sizes and the occurrence policy reach the script')
   const writes = full.termManagers.filter((m) => m.kind === 'write')
@@ -2897,7 +2897,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '43' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '7' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v42, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '43' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v42, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

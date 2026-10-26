@@ -3,13 +3,13 @@
   The Term stages' deterministic command chains, one step per call (#172, #180). A DeepSeek job runs one
   step and replies with its last line, so no Claude relay runs a single command.
 
-  pwsh -NoProfile -File term-steps.ps1 -Step start|review|fix|finish|link -Out <staging> [-Occurrences first|all]
+  pwsh -NoProfile -File term-steps.ps1 -Step start|review|finish|link -Out <staging> [-Occurrences first|all]
 
   start   plan the Term cards, claim every ready job unit, list the claimed jobs -> drive\jobs.json
-  review  check the drafts and plan the reviews                               -> drive\reviews.json
-  fix     plan the one fix per job                                            -> drive\fixes.json
+  review  check the drafts and plan the review-and-fix jobs (one DeepSeek job reviews a draft, fixes it
+          and runs its self-check)                                       -> drive\reviews.json
   finish  complete each claimed job from the readiness result (fail the rest), then publish:
-          with the book unit claimed it completes from the report, else the ready prefix is published
+          with the book unit claimed it completes from the report, else every ready row is published (#182)
   link    plan the Term links, apply under the claim (or, when the unit is blocked, the published
           prefix without a claim), then plan again: the second plan must change no Card
 
@@ -19,7 +19,7 @@
   <staging>\term-cards\drive.
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('start', 'review', 'fix', 'finish', 'link')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('start', 'review', 'finish', 'link')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
     [ValidateSet('first', 'all')][string]$Occurrences = 'first',
     [int]$PerJob = 0,
@@ -80,20 +80,41 @@ switch ($Step) {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
         $r = Run @('term-cards', '-Step', 'review-plan', '-Staging', $Out)
         if (-not $r.json -or $r.json.ok -ne $true) { Fail 'review-plan' $r.tail; break }
-        $jobs = @($r.json.jobs | Where-Object { $_.delete_after_collect -eq $true })
+        # 2026-10-26: one DeepSeek job reviews AND fixes a draft. Besides its request it reads the writer's
+        # instructions and the writer's job file (the draft path and its SELF-CHECK), and it may write under the
+        # Term-card folder: the draft it fixes and its answer. There is no separate fix step.
+        $jobs = @($r.json.jobs | Where-Object { $_.delete_after_collect -eq $true } | ForEach-Object {
+                $writer = "$($_.id)" -replace '-r\d+-review$', ''
+                $files = @($_.files)
+                $_ | Add-Member -Force files (@($files[0], (Join-Path $Work 'dsh-term-card-instructions.zh.md'), (Join-Path $Work "jobs\$writer.md")) + @($files | Select-Object -Skip 1))
+                $_ | Add-Member -Force prompt '按审查与修正说明审查这张数学术语卡草稿：先审查，再把错误直接改在草稿文件里并运行自查，然后只写任务文件指定的答案文件，最后只回复一行 JSON。'
+                $_ | Add-Member -Force writes $Work
+                $_
+            })
         Save 'reviews.json' $jobs
         Reply @{ ok = $true; reviews = $jobs.Count; file = (Join-Path $Drive 'reviews.json') } @{ reviews = $jobs; counts = $r.json.counts }
     }
-    'fix' {
-        $f = Run @('term-cards', '-Step', 'fix-plan', '-Staging', $Out)
-        if (-not $f.json -or $f.json.ok -ne $true) { Fail 'fix-plan' $f.tail; break }
-        # A fix runs in a new conversation from its fallback files: the writers are not kept.
-        $jobs = @($f.json.jobs | Where-Object { $_.continue } | ForEach-Object { $_.files = $_.fallback; $_.PSObject.Properties.Remove('continue'); $_ })
-        Save 'fixes.json' $jobs
-        Reply @{ ok = $true; fixes = $jobs.Count; file = (Join-Path $Drive 'fixes.json') } @{ fixes = $jobs; counts = $f.json.counts }
-    }
     'finish' {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
+        # The combined job's verdict is bound to the draft it left: when its fix changed the draft, the review the
+        # current draft needs has no answer yet, and the job's own newer `ok` answer is that answer. A verdict
+        # older than the draft (a writer rewrote it later) is never carried over.
+        $rp = Run @('term-cards', '-Step', 'review-plan', '-Staging', $Out)
+        $answersDir = Join-Path $Work 'review\answers'
+        $bound = 0
+        foreach ($j in @($rp.json.jobs | Where-Object { $_.delete_after_collect -eq $true -and $_.answer })) {
+            if (Test-Path -LiteralPath $j.answer) { continue }
+            $stem = [IO.Path]::GetFileNameWithoutExtension("$($j.answer)")
+            $prefix = $stem -replace '^(.+-r\d{3}-).*$', '$1'
+            $writer = "$($j.id)" -replace '-r\d+-review$', ''
+            $draft = Get-Item -LiteralPath (Join-Path $Work "out\$writer.json") -ErrorAction SilentlyContinue
+            $old = @(Get-ChildItem -LiteralPath $answersDir -Filter "$prefix*.json" -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -ne $stem } | Sort-Object LastWriteTime -Descending) | Select-Object -First 1
+            if (-not $old -or ($draft -and $old.LastWriteTime -lt $draft.LastWriteTime)) { continue }
+            $verdict = $null
+            try { $verdict = Get-Content -LiteralPath $old.FullName -Raw -Encoding utf8 | ConvertFrom-Json } catch { $verdict = $null }
+            if ($verdict -and $verdict.ok -eq $true) { Copy-Item -LiteralPath $old.FullName -Destination $j.answer; $bound++ }
+        }
+        if ($bound) { Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null }
         $done = @(); $failed = @()
         foreach ($u in @(Load 'units.json')) {
             if (-not $u) { continue }

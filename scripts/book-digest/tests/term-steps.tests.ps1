@@ -65,12 +65,11 @@ switch -Regex ($flat) {
     }
     '^term-cards -Step check' { Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 2 }); exit 0 }
     '^term-cards -Step review-plan' {
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @(@{ id = 'r1'; delete_after_collect = $true }, @{ id = 'r2'; delete_after_collect = $false }); counts = @{ rows = 2; needs_review = 1 } })
-        exit 0
-    }
-    '^term-cards -Step fix-plan' {
-        if ($env:TS_FIX_FAIL) { Write-Output 'no answer file'; exit 1 }
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @(@{ id = 'f1'; continue = 't001'; files = @('x'); fallback = @('a', 'b') }); counts = @{ fixes = 1 } })
+        $answers = Join-Path $env:TS_OUT 'term-cards\review\answers'
+        $stem = if ($env:TS_REBIND) { 't001-r001-cccc0000-dddd0000' } else { 't001-r001-aaaa0000-bbbb0000' }
+        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @(
+                    @{ id = 't001-r001-review'; row = 1; delete_after_collect = $true; files = @('instr.md', 'request.md'); prompt = 'p'; answer = (Join-Path $answers "$stem.json"); writes = $answers },
+                    @{ id = 'r2'; delete_after_collect = $false }); counts = @{ rows = 2; needs_review = 1 } })
         exit 0
     }
     '^ledger done' {
@@ -131,15 +130,36 @@ Assert (@($startDetail.detail.units).Count -eq 2 -and @($startDetail.detail.jobs
 $startCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($startCalls -match 'ledger reclaim .*-Unit termcards/t001@1 -Release') 'start: a stopped run''s claim is released before the plan'
 
-# 2. review and fix list their jobs, and their counts stay out of the line.
+# 2. review lists its jobs, and its counts stay out of the line. Since 2026-10-26 one DeepSeek job reviews AND fixes a
+# draft: it reads the writer's instructions and job file (the draft path and its SELF-CHECK), may write under the
+# Term-card folder, and there is no separate fix step.
 $review = Step (@('-Step', 'review') + $common)
 Assert-Line $review 'review'
 Assert ($review.json.ok -eq $true -and $review.json.reviews -eq 1 -and -not $review.json.PSObject.Properties['counts']) "review: one review job, no nested counts in the line ($($review.text))"
-$fix = Step (@('-Step', 'fix') + $common)
-Assert-Line $fix 'fix'
-Assert ($fix.json.ok -eq $true -and $fix.json.fixes -eq 1) "fix: one fix job ($($fix.text))"
-$fixes = Get-Content -Raw (Join-Path $out 'term-cards\drive\fixes.json') | ConvertFrom-Json
-Assert (@($fixes).Count -eq 1 -and @($fixes)[0].files[0] -eq 'a' -and -not @($fixes)[0].PSObject.Properties['continue']) 'fix: a fix runs from its fallback files and keeps no continue'
+$reviews = Get-Content -Raw (Join-Path $out 'term-cards\drive\reviews.json') | ConvertFrom-Json
+$rj = @($reviews)[0]
+Assert ($rj.files[0] -eq 'instr.md' -and @($rj.files -match 'dsh-term-card-instructions\.zh\.md$').Count -eq 1 -and @($rj.files -match 'term-cards\\jobs\\t001\.md$').Count -eq 1 -and $rj.files[-1] -eq 'request.md') "review: the job reads the review instructions, the writer's instructions and job file, then its request ($($rj.files -join ', '))"
+Assert ($rj.writes -eq (Join-Path $out 'term-cards') -and $rj.prompt -match '修正') 'review: the job may write the draft and its answer, and its prompt asks it to fix'
+$noFix = Step (@('-Step', 'fix') + $common)
+Assert (-not ($noFix.json -and $noFix.json.ok -eq $true)) 'review: no separate fix step remains'
+
+# 2b. finish binds the combined job's verdict to the draft it left: an ok answer newer than the draft is copied to the
+# current draft's answer path; a verdict older than the draft is never carried over.
+$answersDir = Join-Path $out 'term-cards\review\answers'
+$outDir = Join-Path $out 'term-cards\out'
+New-Item -ItemType Directory -Force $answersDir, $outDir | Out-Null
+Set-Content -LiteralPath (Join-Path $outDir 't001.json') -Value '{}' -Encoding utf8
+(Get-Item (Join-Path $outDir 't001.json')).LastWriteTime = (Get-Date).AddMinutes(-5)
+Set-Content -LiteralPath (Join-Path $answersDir 't001-r001-aaaa0000-bbbb0000.json') -Value '{"ok":true,"fixed":2}' -Encoding utf8
+$env:TS_REBIND = '1'
+$bound = Step (@('-Step', 'finish') + $common)
+$newAnswer = Join-Path $answersDir 't001-r001-cccc0000-dddd0000.json'
+Assert ((Test-Path -LiteralPath $newAnswer) -and ((Get-Content -Raw $newAnswer | ConvertFrom-Json).ok -eq $true)) "finish: the combined job's ok verdict is bound to the draft it left ($($bound.text))"
+Remove-Item -LiteralPath $newAnswer
+(Get-Item (Join-Path $outDir 't001.json')).LastWriteTime = (Get-Date).AddMinutes(5)
+$null = Step (@('-Step', 'finish') + $common)
+$env:TS_REBIND = ''
+Assert (-not (Test-Path -LiteralPath $newAnswer)) 'finish: a verdict older than the draft is never carried over'
 
 # 3. finish: each claimed job completes from the readiness result and the book publishes; the line answers counts.
 $finish = Step (@('-Step', 'finish') + $common)

@@ -1,20 +1,22 @@
-// ==== module zt-term-cards v7 ====
+// ==== module zt-term-cards v8 ====
 // The Term-card branch (S20 #164, S24 #167; v4 #172; v5 #175; v6 #180): Haiku managers and DeepSeek agents only.
 // v7 (live run 2026-10-26, staging5): a publication that printed no line is named in the error (`publish_error`).
+// v8 (2026-10-26, the user's request): one DeepSeek job reviews AND fixes each math draft (it runs the writer's
+// self-check and writes its verdict for the draft it leaves); the separate fix round and the second review are gone.
 // Every deterministic step is one `term-steps.ps1` call that a DeepSeek agent runs (a "drive" job, the shared
 // zt-workflow-lib helper `ztDrive`), so no Claude agent relays a single command. The flow is linear:
 //   start (plan, claim every ready job unit, list the jobs) -> writers (all jobs, at most eight per
-//   manager, managers in parallel) -> review (check + review plan) -> reviewers -> fix (one fix per
-//   job, in a new conversation) -> fixers -> review again -> reviewers -> finish (complete each job
-//   from the readiness result, fail the rest; publish the book, or its ready prefix when a job failed).
+//   manager, managers in parallel) -> review (check + review plan) -> review-and-fix jobs -> finish
+//   (bind each job's verdict to the draft it left, complete each job from the readiness result, fail the
+//   rest; publish every ready row).
 // A job that is not ready fails only its own unit; the book unit completes only when every row is
 // published (R0343). Every conversation is deleted after its answer is collected; the workspace
 // registration is removed at the end (DSMP).
 // v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
 // only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '7', requires: ['@dsmp', 'zt-workflow-lib'],
-  summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers, reviewers and fixers for the content; each job completes from the readiness result and the book from its publication report.',
+  id: 'zt-term-cards', version: '8', requires: ['@dsmp', 'zt-workflow-lib'],
+  summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers and review-and-fix jobs for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
     key: { type: 'string', required: true, description: 'the book\'s Citation key' },
@@ -32,7 +34,7 @@ defineModule({
     const MODEL = 'deepseek-official/deepseek-flash'
     const phase = ctx.phase
     const tail = (text) => String(text || '').trim().slice(0, 400)
-    const report = { status: 'done', book: p.key, work: WORK, jobs: { total: 0, done: 0, failed: 0 }, reviews: 0, fixes: 0, publication: null, deepseek: { deleted: 0, not_deleted: [] } }
+    const report = { status: 'done', book: p.key, work: WORK, jobs: { total: 0, done: 0, failed: 0 }, reviews: 0, publication: null, deepseek: { deleted: 0, not_deleted: [] } }
 
     // One manager runs the DeepSeek jobs listed inline, or entries [from, to) of a job file.
     const RESULT = {
@@ -89,18 +91,9 @@ Each job has id, files, prompt, skills, model, effort.
       if (started.jobs > 0) {
         const written = await runFile('write', `${DRIVE}\\jobs.json`, started.jobs)
         report.writer_failures = written.filter((j) => j.status !== 'done').length
-        const review = async () => {
-          const r = await drive('review')
-          report.reviews += r.reviews
-          if (r.reviews > 0) await runFile('review', `${DRIVE}\\reviews.json`, r.reviews)
-        }
-        await review()
-        const fix = await drive('fix')
-        report.fixes = fix.fixes
-        if (fix.fixes > 0) {
-          await runFile('fix', `${DRIVE}\\fixes.json`, fix.fixes)
-          await review()
-        }
+        const r = await drive('review')
+        report.reviews = r.reviews
+        if (r.reviews > 0) await runFile('review', `${DRIVE}\\reviews.json`, r.reviews)
       }
       const finished = await drive('finish')
       report.jobs.done = Number(finished.done || 0) || 0
@@ -109,7 +102,7 @@ Each job has id, files, prompt, skills, model, effort.
       report.book_state = finished.book
       if (finished.book !== 'done') {
         report.status = 'failed'
-        report.error = `the Term-card book is incomplete: ${report.not_ready} job(s) not ready; the ready prefix (${report.publication.committed} row(s)) is published${finished.publish_error ? `; the publication failed: ${finished.publish_error}` : ''}`
+        report.error = `the Term-card book is incomplete: ${report.not_ready} job(s) not ready; ${report.publication.committed} ready row(s) are published${finished.publish_error ? `; the publication failed: ${finished.publish_error}` : ''}`
       }
     } catch (e) {
       report.status = 'failed'
@@ -117,7 +110,7 @@ Each job has id, files, prompt, skills, model, effort.
     } finally {
       try { await dsmpSlot(() => dsCleanupWorkspaces([WORK], { label: `${ctx.stage}: workspace`, phase })) } catch (e) { report.deepseek.not_deleted.push(`workspace: ${tail(e && e.message)}`) }
     }
-    log(`Term cards: ${report.jobs.done}/${report.jobs.total} job(s) done, ${report.reviews} review(s), ${report.fixes} fix(es); ${report.status}${report.error ? ` — ${report.error}` : ''}.`)
+    log(`Term cards: ${report.jobs.done}/${report.jobs.total} job(s) done, ${report.reviews} review-and-fix job(s); ${report.status}${report.error ? ` — ${report.error}` : ''}.`)
     return report
   },
 })
