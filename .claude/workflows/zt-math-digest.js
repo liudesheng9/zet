@@ -3185,14 +3185,14 @@ defineModule({
 // deterministic chain of the math compiler in one process (#178); each chain is one DeepSeek drive job, run by a
 // Haiku manager through the shared zt-workflow-lib helper `ztDrive`, and each content round (the notation table,
 // the hypothesis roles, the proof reviews, the Theory answers) is DeepSeek jobs in Haiku managers through
-// zt-digest-lib's `runJobs`. No Claude agent runs a single command: the module calls ztRelay/runScript zero
-// times. Each stage has its own DeepSeek workspace under <out>\math\, and the run cleanup deletes the recorded
+// zt-digest-lib's `runJobs`. No Claude agent runs a single command: the module names no relay helper at all.
+// Each stage has its own DeepSeek workspace under <out>\math\, and the run cleanup deletes the recorded
 // conversations.
-// v3 (P5): a math script step is relayed by the relay role (the zt-relay agent type), as runScript is.
-// v4 (S8): runMathScript is runScript (it had copied it without the Lock check), and the unread option remove: 'delete' leaves.
+// v3 (P5): a math script step ran through the relay role (the zt-relay agent type).
+// v4 (S8): the math script helper was the shared one (it had copied it without the Lock check), and the unread option remove: 'delete' left.
 // v5 (#178, docs/workflow-module-structure-proposal.md): `step` runs one math-steps.ps1 chain as a DeepSeek drive
 // job, `must` is the stage's stop on a failed chain, and `jobs` runs a step's content jobs in Haiku managers.
-// runMathScript, mstep and the relay-era drive leave.
+// The relay-era math helper and the compiler-step drive leave.
 function zmMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const A = Z.A

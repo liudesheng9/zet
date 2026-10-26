@@ -5,7 +5,7 @@
   "scope": "project",
   "script": ".claude/workflows/zt-math-digest.js",
   "scriptRel": "workflows/zt-math-digest.js",
-  "sha256": "65d2a43cedca0c703d535e15e7398904596d67d271c18dc513e5b09bd2099ed4",
+  "sha256": "1fcc7d6ecdbb482685e942127187ba28082c8015506360749132895b6f144b63",
   "fingerprint": "792a8c49ee05a528",
   "blueprintSha256": "9b7d76428ee86f5aa3502fe7f14c155a886c863f4a63a89adce6c1f368004a7b",
   "modules": {
@@ -128,7 +128,7 @@
     },
     "zt-math-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-math-lib.js",
-      "sha256": "00571be749d469b5443060d7f1022340d7824ca2530beaaf18fcbbebd2ab6856"
+      "sha256": "0a04302a3e848b6fdc1cf81cbb275ebeedcc40546f931cc8cf55199c259fbabf"
     },
     "zt-math-boundary": {
       "file": "scripts/book-digest/workflow/modules/zt-math-boundary.js",
@@ -178,7 +178,7 @@
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-26T04:21:37.179Z",
+  "installedAt": "2026-10-26T04:29:14.212Z",
   "dryRun": {
     "agents": 65,
     "order": [
