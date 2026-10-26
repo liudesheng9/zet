@@ -202,7 +202,10 @@ switch ($Step) {
         $key = Book-Key "$(Opt 'CitationKey' '')"
         if ($mode -eq 'resume') {
             # R278-R285: the one supported resume; the retained groups and identity come from the ledger's own
-            # summary, and the digest gate answers a summary that carries no layer counts.
+            # summary, and the digest gate answers a summary that carries no layer counts. A stage that halted left its
+            # claims leased, and the resume refuses `run_active` while one is live: first free the stopped run's quiet
+            # claims (`ledger reclaim -Release` takes only a claim with no recent event and no live registered run).
+            $null = Run @('ledger', 'reclaim', '-Out', $Out, '-Release', '-Take', '64')
             $facts = Run @('ledger', 'resume', '-Out', $Out)
             if (-not $facts.json) { Fail 'resume' "the ledger resume printed no line: $($facts.tail)"; break }
             if (@('resumed', 'nothing_to_resume') -notcontains "$($facts.json.status)") {

@@ -60,6 +60,7 @@ switch -Regex ($cmd) {
         Out @{ ok = $true; groups = 2; citation_key = 'Key'; out = $env:BS_OUT }
     }
     '^prepare-link ' { Out @{ pending = @(1); no_gap = @(2); blocked = @(); gaps = @{ '1' = 2 }; owned_total = 6; gap_total = 2; skipped_total = 4; unowned = 0; digest_state = 'ledger' } }
+    '^ledger reclaim' { Out @{ reclaimed = @(@{ unit = 'link/g001@1' }); skipped = @(); blocked = @() } }
     '^ledger resume' {
         if ($env:BS_RESUME_STATUS) { Out @{ status = $env:BS_RESUME_STATUS; invocation = 2; resume_count = 1; reset = @('x'); reevaluated = @(); reclaimed = @(); closure = @{ downstream = @() }; settings = @{ max_attempts = 3; dsh_run_cap = 1200 } } }
         Out @{ status = 'resumed'; invocation = 2; resume_count = 1; reset = @('digest/g002@1'); reevaluated = @('cards/g002@1'); reclaimed = @(); closure = @{ downstream = @('x') }; settings = @{ max_attempts = 3; dsh_run_cap = 1200 } }
@@ -207,6 +208,9 @@ Assert ((Has $book.calls 'prepare -Book 1234 -Out ') -and $book.calls -notmatch 
 # 2. prepare, mode resume: the one ledger resume and its summarized status give the retained groups.
 $resume = Step 'prepare' @{ Mode = 'resume' }
 Assert ($resume.json -and $resume.json.ok -eq $true -and $resume.json.groups -eq 3 -and $resume.json.resumed -eq $true -and $resume.json.citation_key -eq 'Key') "prepare resume: the retained group count and identity reach the stage ($($resume.text))"
+# Live run 2026-10-26 (staging4): a halted stage leaves its claims leased, so the resume first frees a stopped run's
+# quiet claims (`ledger reclaim -Release`) before the one `ledger resume`, which refuses `run_active` while one is live.
+Assert ("$($resume.calls)" -match '(?s)ledger reclaim -Out \S+ -Release.*ledger resume -Out ') "prepare resume: the stopped run's quiet claims are released before the one resume ($($resume.calls))"
 Assert ((Has $resume.calls 'ledger resume -Out ') -and (Has $resume.calls 'ledger status -Out .* -Summary') -and -not (Has $resume.calls 'ledger gate ')) 'prepare resume: one resume and one summarized status, no gate when the summary carries the layers'
 $env:BS_STATUS_NO_LAYERS = '1'
 $fallback = Step 'prepare' @{ Mode = 'resume' }
