@@ -15,3 +15,7 @@ This is a single-context repository with one root `CONTEXT.md`. See `docs/agents
 ## Wiki
 
 The developer wiki is `docs/wiki/`: one doc per functional block, listed in `docs/wiki/README.md`. Read the block doc before you change a block. When you change code, update its block doc in the same commit (project-wiki skill); `node ~/.claude/skills/project-wiki/scripts/wiki.mjs check` lists stale blocks.
+
+## Workflows
+
+Before you change or run a digest or idea-grow workflow, read `docs/agents/workflow-principles.md`: the user's working rules, the failure classes met on live runs, and the release discipline.
