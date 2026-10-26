@@ -16,8 +16,8 @@ paths:
   - "!.claude/workflow-framework/zt-issue-dev/**"
   - "!.claude/workflows/zt-idea-grow.js"
   - "!.claude/workflow-framework/zt-idea-grow/**"
-synced: f3a3f2be2453
-updated: 2026-10-25
+synced: 8dca3ae084a4
+updated: 2026-10-26
 ---
 
 # Digest workflows
@@ -56,14 +56,13 @@ This block holds the Claude Code Workflow scripts that turn a book from the Scho
 | | `scripts/book-digest/workflow/modules/` — 31 modules: four libraries (`zt-digest-lib`, `zt-model-lib`, `zt-math-lib`, `zt-term-link-lib`) and 27 stage modules (table in Interfaces); `zt-term-cards` v3 is the Term-card branch driver of S20 (#164), wired as the `term-cards` stage by S24 (#167); `zt-term-link` v2 is that slice's deterministic Term-link stage, and `zt-term-link-lib` v2 is the pass it shares with the finite finalization (S26, #169) |
 | | `.claude/workflow-framework/<name>/` — install registry per variant: `blueprint.json` (composed), `lock.json`, `sim.json`, `sources/`, `history/<version>/` |
 | | `scripts/book-digest/tests/framework-harness.mjs` — builds both variants in memory and runs the stand-in runtime checks of each, plus the framework checks |
-| | `scripts/book-digest/tests/term-cards-harness.mjs` — builds the Term-card fixture blueprint and runs the S20 branch against a stand-in compiler and provider: manager roles, the four-writer waves, continuation, deletion, workspace cleanup and the shared pool |
 | | `scripts/book-digest/tests/bridge-workflow-harness.mjs` — builds both variants in memory and checks the Bridge stage |
 | | `scripts/book-digest/watch-run.mjs` — the run watcher: only actionable lines (see Usage, "Watch a run") |
 | | `scripts/book-digest/token-usage.mjs` — the Claude tokens a run spent per agent kind, phase and relay verb, from its transcripts (weighted: input + 1.25 × cache write + 0.1 × cache read + 5 × output); the measurement gate of `docs/digest-claude-token-proposal.md`. On ebrill2001modern trial 1 it gives 876 agents, 68.7M weighted, 613 relays of about 61k first-request context |
 | | `.claude/agents/zt-relay.md` — the agent type of the `relay` role (PowerShell only, a short prompt): every one-command relay (`runScript`, `runMathScript`) runs as it since base 5.3.0; its first request carries about 9k tokens of context instead of about 59k (`docs/digest-claude-token-proposal.md`, "P5 measurement") |
 | Depends on | [Digest scripts](digest-scripts.md) (every PowerShell command a stage runs), [zt-digest](zt-digest.md) (the ported scripts as `zt-digest <tool>`, and the zt helper `zt-digest call`; `zt-digest` must be on PATH), [Digest prompts](digest-prompts.md) (the files the DeepSeek jobs and the architect read), [zt-check](zt-check.md) (the self-checks the managers approve), [MCP server](mcp-server.md) (through the zt helper); external: the Claude Code Workflow runtime (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`), the DeepSeek Harness MCP bridge (`deepseek_run`, `deepseek_wait`, `deepseek_prompt`, `deepseek_respond`, `deepseek_delete`, `deepseek_list`, `deepseek_remove_workspace`, `deepseek_usage`), the global skills `workflow-framework-protocol` (kernel, `assemble.mjs`, `sim.mjs`, module `gate`) and `deepseek-subagent-managed-protocol` (the inlined DSMP v1 block) |
 | Used by | [Agent skills](agent-skills.md) (`skills/zt-digest-protocol/SKILL.md`, `skills/zt-digest-protocol/references/scripts.md`, and `skills/zettelkasten/SKILL.md` name the workflows); the user, who starts a run from a Claude Code session |
-| Tests | `scripts/book-digest/tests/framework-harness.mjs`, `scripts/book-digest/tests/bridge-workflow-harness.mjs`, `scripts/book-digest/tests/term-cards-harness.mjs`; `assemble.mjs verify` |
+| Tests | `scripts/book-digest/tests/framework-harness.mjs`, `scripts/book-digest/tests/bridge-workflow-harness.mjs`; `assemble.mjs verify` |
 
 ## Concepts
 

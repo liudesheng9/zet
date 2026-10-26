@@ -66,6 +66,7 @@ Each block doc's **Testing** section names its own suites.
 | [Digest scripts](digest-scripts.md) | The PowerShell stage scripts and compilers (card, model, event, finding, math, hub, organize, figures, audit) and their tests | `scripts/book-digest/*.ps1`, `scripts/book-digest/tests/` |
 | [Digest prompts](digest-prompts.md) | The DeepSeek instruction files and the model-architect briefs that the digest stages send | `scripts/book-digest/*.md` |
 | [Idea-grow workflow](idea-grow-workflow.md) | The zt-idea-grow Workflow: a finished Literature tree read section by section against the whole box; DeepSeek keeps the core, related, useful, interesting and intuitive ideas as standalone agent Topic-tree Cards filed beside the Cards they continue (Luhmann's main box) | `scripts/idea-grow/`, `.claude/workflows/zt-idea-grow.js`, `tools/zt-digest/src/grow.rs` |
+| [Workflow module structure](workflow-module-structure.md) | The basic structure of every digest and idea-grow module: each feature block is a Haiku manager and DeepSeek subagents, deterministic chains are script steps run by DeepSeek drive jobs, no relay agent, few branches; Sonnet only for the designer roles | `scripts/book-digest/term-steps.ps1`, `docs/workflow-module-structure-proposal.md` |
 | [Issue development workflow](issue-dev-workflow.md) | The zt-issue-dev Workflow: GitHub issues developed one at a time by DeepSeek agents through Haiku managers, with the main agent fulfilling their asks | `scripts/issue-dev/`, `.claude/workflows/zt-issue-dev.js` |
 
 ## Architecture
