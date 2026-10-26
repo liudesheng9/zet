@@ -1,4 +1,4 @@
-// ==== module zt-term-link-lib v3 ====
+// ==== module zt-term-link-lib v4 ====
 // The deterministic Term-link pass of one book's finalization round (S24, #167; S26, #169), shared by the finite
 // finalization. It owns no content decision: one book-steps.ps1 step (`term-link`) freezes the round's plan, claims
 // the pass's ledger unit, applies the exact plan under the claim, completes the unit only from the compiler's own
@@ -42,15 +42,17 @@ async function ztTermLinkPass(ctx, p) {
     report.error = tail((error && error.message) || 'the Term-link pass failed')
     return report
   }
-  report.plan = json.plan ? { revision: json.plan.plan_revision, hash: json.plan.plan_hash, cards_changed: json.plan.cards_changed, cards_refused: json.plan.cards_refused, missing_heads: json.plan.missing_heads, complete: json.plan.complete } : null
-  report.unit = json.unit || (json.plan && json.plan.unit) || null
-  report.counts = json.counts || null
+  // #180: the step answers counts, so the round's plan and application facts are flat fields.
+  const n = (v) => Number(v || 0)
+  report.plan = json.plan_revision !== undefined ? { revision: n(json.plan_revision) } : null
+  report.unit = json.unit || null
+  report.counts = { cards_changed: n(json.cards_changed), links_added: n(json.links_added) }
   report.no_op = json.no_op === true
-  report.completion = json.completion || null
-  report.second = json.second || null
+  report.completion = { state: json.complete === true ? 'done' : null }
+  report.second = { cards_changed: n(json.second_cards_changed), cards_refused: n(json.second_cards_refused) }
   if (json.status === 'done') {
     report.status = 'done'
-    log(`Term link: ${report.unit || 'the round'} complete — ${(report.counts && report.counts.cards_changed) || 0} Card(s) changed, ${(report.counts && report.counts.links_added) || 0} link(s) added${report.no_op ? ', proven no-op' : ''}.`)
+    log(`Term link: ${report.unit || 'the round'} complete — ${report.counts.cards_changed} Card(s) changed, ${report.counts.links_added} link(s) added${report.no_op ? ', proven no-op' : ''}.`)
     return report
   }
   if (json.status === 'skipped') {
@@ -62,13 +64,14 @@ async function ztTermLinkPass(ctx, p) {
   report.status = 'failed'
   report.code = json.code || null
   report.error = tail(json.error || 'the Term-link pass did not complete')
-  if (json.completion && json.completion.state) report.state = json.completion.state
+  if (json.complete !== true) report.state = 'incomplete'
   log(`Term link: failed — ${report.error}.`)
   return report
 }
 
 defineModule({
-  id: 'zt-term-link-lib', version: '3', library: true, requires: ['zt-workflow-lib'],
+  id: 'zt-term-link-lib', version: '4', library: true, requires: ['zt-workflow-lib'],
   summary: 'Library: the finalization\'s deterministic Term-link round (one book-steps.ps1 step: plan, claim, apply, complete, second plan) as one DeepSeek drive job.',
 })
 // ==== end module zt-term-link-lib ====
+

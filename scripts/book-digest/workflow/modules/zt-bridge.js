@@ -65,7 +65,7 @@ defineModule({
     // v9: the stage applies every new-carrier proposal of its own report at once, so no review waits for the user
     // (acemoglu2007equilibrium: 67 proposals left open). The apply publishes the Bridge revision itself.
     // Earlier-carrier proposals write into another book's tree, usually locked: they stay for an explicit apply.
-    if (Number((summary.counts || {}).new) > 0) {
+    if (Number(summary.new || 0) > 0) {
       const result = await Z.bookStep('bridge: apply new', 'bridge-apply', options({ ReportId: summary.report_id, Accept: 'all' }))
       if (!result || result.status === 'failed') return { ...summary, status: 'failed', error: `Bridge apply failed: ${(result && (result.error || result.status)) || 'no detail'}`, applied: result }
       return { ...summary, applied: result, publication: result.publication }
@@ -75,4 +75,5 @@ defineModule({
   },
 })
 // ==== end module zt-bridge ====
+
 

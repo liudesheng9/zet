@@ -36,7 +36,8 @@ $toolBody = @'
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
 $ErrorActionPreference = 'Stop'
 $args2 = $Rest
-Add-Content -LiteralPath $env:LS_CALLS -Value ($args2 -join ' ') -Encoding utf8
+$flat = $args2 -join ' '
+Add-Content -LiteralPath $env:LS_CALLS -Value $flat -Encoding utf8
 $cmd = "$($args2[0]) $($args2[1])"
 $layer = ''
 if (($args2 -join ' ') -match '-Layer (\w+)') { $layer = $Matches[1]; Set-Content -LiteralPath $env:LS_LAYER -Value $layer }
@@ -71,7 +72,11 @@ switch -Regex ($cmd) {
         else { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = @($u | ForEach-Object { @{ id = $_.id; token = $_.token; state = $(if ($env:LS_STATE) { $env:LS_STATE } else { 'done' }); input_hash = $_.input_hash } }) }) }
         exit 0
     }
-    '^ledger gate' { Write-Output (ConvertTo-Json -Compress @{ complete = $true; counts = @{ total = 2; done = 2; failed = 0; open = 0 } }); exit 0 }
+    '^ledger gate' {
+        $open = if ($env:LS_GATE_OPEN) { [int]$env:LS_GATE_OPEN } else { 0 }
+        Write-Output (ConvertTo-Json -Compress @{ complete = ($open -eq 0); counts = @{ total = 2 + $open; done = 2; failed = 0; open = $open } })
+        exit 0
+    }
     '^ledger fail' {
         $flat = $args2 -join ' '
         Add-Content -LiteralPath $env:LS_CALLS -Value "FAULT $flat" -Encoding utf8
@@ -86,6 +91,10 @@ switch -Regex ($cmd) {
     }
     '^group-finish|^link-finish' {
         if ($env:LS_LOCK) { Write-Output (ConvertTo-Json -Compress @{ ok = $false; code = 'card_locked'; error = 'card_locked'; message = 'the Literature tree Key is locked by the owner' }); exit 2 }
+        if ($flat -match '^link-finish') {
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'link_completion'; state = 'done'; complete = $true; disposition = 'linked'; owned = @('Key/1|a'); changed = @('Key/1|a', 'Key/1|b'); counts = @{ owned = 3; gaps = 2; skipped = 1; linked = 1; linked_from = 0; already_linked = 1; no_link = 1 }; quality = @{ rules = 'L1,L2'; faults = 0; checked = 3 } })
+            exit 0
+        }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; state = 'done'; complete = $true; disposition = 'verified'; owned = @('Key/1|a') })
         exit 0
     }
@@ -132,15 +141,25 @@ function Step([string[]]$argv) {
     Remove-Item -LiteralPath $count -ErrorAction SilentlyContinue
     $text = & pwsh -NoProfile -File $script @argv 2>&1
     $code = $LASTEXITCODE
-    $line = @($text | Where-Object { "$_".Trim().StartsWith('{') }) | Select-Object -Last 1
-    $json = if ($line) { $line | ConvertFrom-Json -Depth 16 } else { $null }
-    [pscustomobject]@{ code = $code; json = $json; text = (@($text) -join ' | ') }
+    $lines = @($text | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    $line = if ($lines.Count) { $lines[-1] } else { '' }
+    $json = if ($line.StartsWith('{')) { $line | ConvertFrom-Json -Depth 16 } else { $null }
+    [pscustomobject]@{ code = $code; json = $json; last = $line; text = (@($text) -join ' | ') }
+}
+# #180: every step of the script answers one compact line: at most 400 characters, a boolean top-level `ok`, and
+# the detail file it names exists.
+function Assert-Line([object]$r, [string]$name) {
+    Assert ($r.last.Length -gt 0 -and $r.last.Length -le 400) "compact ${name}: the last line is at most 400 characters ($($r.last.Length))"
+    Assert ($r.json -and $r.json.ok -is [bool]) "compact ${name}: the last line has a boolean top-level ok"
+    Assert ($r.json -and $r.json.detail -and (Test-Path -LiteralPath $r.json.detail)) "compact ${name}: the line names its detail file and it exists"
 }
 $common = @('-Out', $out, '-Tool', $tool)
 
 # 1. start: the digest layer claims two units, runs each group-start, lists both jobs.
 $start = Step (@('-Step', 'start', '-Layer', 'digest', '-Take', '8', '-Owner', 'digest block 1', '-Lease', '7200') + $common)
-Assert ($start.json -and $start.json.ok -eq $true -and $start.json.units -eq 2 -and $start.json.jobs -eq 2) "digest start: two units claimed and two jobs listed ($($start.text))"
+Assert-Line $start 'digest start'
+Assert ($start.json -and $start.json.ok -eq $true -and $start.json.units -eq 2 -and $start.json.jobs -eq 2 -and $start.json.gate_complete -eq $true) "digest start: two units claimed and two jobs listed ($($start.text))"
+Assert (-not $start.json.PSObject.Properties['gate'] -and [int]$start.json.units -eq 2) 'digest start: the line carries no nested gate and its units are one count'
 $units = Get-Content -Raw (Join-Path $out 'layer-steps\digest\units.json') | ConvertFrom-Json
 $jobs = Get-Content -Raw (Join-Path $out 'layer-steps\digest\jobs.json') | ConvertFrom-Json
 Assert (@($units).Count -eq 2 -and @($jobs).Count -eq 2 -and @($jobs)[0].unit -eq 'digest/g001@1' -and @($jobs)[0].token -eq 1) 'digest start: units and jobs carry each job''s own unit and token'
@@ -151,13 +170,17 @@ Assert (($all -split "`n" | Where-Object { $_ -match '^group-start .*-Group 1 -T
 # 2. finish: each held unit's checked completion, then the gate.
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $finish = Step (@('-Step', 'finish', '-Layer', 'digest', '-Owner', 'digest block 1') + $common)
-Assert ($finish.json -and $finish.json.ok -eq $true -and @($finish.json.results).Count -eq 2 -and @($finish.json.done).Count -eq 2 -and $finish.json.gate.complete -eq $true) "digest finish: both units complete and the gate settles ($($finish.text))"
+Assert-Line $finish 'digest finish'
+Assert ($finish.json -and $finish.json.ok -eq $true -and [int]$finish.json.done -eq 2 -and -not $finish.json.PSObject.Properties['failed'] -and $finish.json.gate_complete -eq $true) "digest finish: both units complete and the gate settles ($($finish.text))"
+$finishDetail = Get-Content -LiteralPath $finish.json.detail -Raw | ConvertFrom-Json
+Assert (@($finishDetail.detail.results).Count -eq 2 -and @($finishDetail.detail.results)[0].unit -eq 'digest/g001@1') 'digest finish: the detail file keeps each unit''s own result'
 $fin = Get-Content -LiteralPath $calls -Raw
 Assert (($fin -split "`n" | Where-Object { $_ -match '^group-finish .*-Group 1 -Token 1 -Draft ' }).Count -eq 1 -and ($fin -split "`n" | Where-Object { $_ -match '^ledger gate .*-Layer digest -Brief' }).Count -eq 1) 'digest finish: group-finish runs with the draft the start step bound, then the brief gate'
 
 # 3. the Cards layer claims and finishes a block in one command.
 $cards = Step (@('-Step', 'start', '-Layer', 'cards', '-Take', '4', '-Owner', 'cards block 1', '-Lease', '7200') + $common)
-Assert ($cards.json -and $cards.json.ok -eq $true -and $cards.json.claimed -eq 2 -and @($cards.json.results).Count -eq 2) "cards start: one finish-batch claims and records the block ($($cards.text))"
+Assert-Line $cards 'cards start'
+Assert ($cards.json -and $cards.json.ok -eq $true -and $cards.json.claimed -eq 2 -and $cards.json.done -eq 2) "cards start: one finish-batch claims and records the block ($($cards.text))"
 $cardCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($cardCalls -match 'finish-batch .*-Layer cards -Take 4 -Owner cards block 1 -Lease 7200') 'cards start: the claim-and-finish command carries the owner and lease'
 
@@ -166,7 +189,8 @@ Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $env:LS_LOCK = '1'
 $locked = Step (@('-Step', 'finish', '-Layer', 'digest', '-Owner', 'digest block 1') + $common)
 $env:LS_LOCK = ''
-Assert ($locked.json -and $locked.json.ok -eq $false -and $locked.json.code -eq 'card_locked' -and $locked.json.unit -eq 'digest/g001@1') "digest finish: the Lock stops the step with the typed refusal ($($locked.text))"
+Assert-Line $locked 'digest finish locked'
+Assert ($locked.json -and $locked.json.ok -eq $false -and $locked.json.code -eq 'card_locked' -and $locked.json.unit -eq 'digest/g001@1' -and $locked.json.message) "digest finish: the Lock stops the step with the typed refusal ($($locked.text))"
 $lockCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($lockCalls -match "ledger fail .*-Unit digest/g001@1 .*-Fault .*card_locked.*") 'digest finish: the refused unit keeps card_locked as its content fault'
 Assert (($lockCalls -split "`n" | Where-Object { $_ -match '^group-finish .*-Group 2 ' }).Count -eq 0) 'digest finish: a locked unit stops the step before the next unit'
@@ -174,28 +198,34 @@ Assert (($lockCalls -split "`n" | Where-Object { $_ -match '^group-finish .*-Gro
 # 5. events: start plans the block and lists its job; finish applies, reports and records the block.
 $env:LS_NO_UNITS = ''
 $events = Step (@('-Step', 'start', '-Layer', 'events', '-Take', '4', '-Owner', 'events block 1') + $common)
-Assert ($events.json -and $events.json.ok -eq $true -and $events.json.units -eq 1 -and $events.json.jobs -eq 1 -and $events.json.plan.candidates -eq 3) "events start: the plan runs and its job is listed ($($events.text))"
+Assert-Line $events 'events start'
+Assert ($events.json -and $events.json.ok -eq $true -and $events.json.units -eq 1 -and $events.json.jobs -eq 1 -and $events.json.plan_candidates -eq 3 -and $events.json.plan_groups -eq 1) "events start: the plan runs and its job is listed ($($events.text))"
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $evFinish = Step (@('-Step', 'finish', '-Layer', 'events', '-Owner', 'events block 1') + $common)
 $evCalls = Get-Content -LiteralPath $calls -Raw
-Assert ($evFinish.json -and $evFinish.json.ok -eq $true -and @($evFinish.json.results).Count -eq 1) "events finish: the held unit's checked completion is recorded ($($evFinish.text))"
+Assert-Line $evFinish 'events finish'
+Assert ($evFinish.json -and $evFinish.json.ok -eq $true -and $evFinish.json.done -eq 1 -and -not $evFinish.json.PSObject.Properties['failed']) "events finish: the held unit's checked completion is recorded ($($evFinish.text))"
 Assert ($evCalls -match 'event -Step apply -Staging .* -Apply' -and $evCalls -match 'event -Step report' -and $evCalls -match 'finish-batch .*-Units events/g001@1:1') 'events finish: apply, report and the checked completion run in that one step'
 
 # 6. explain: apply lists the fix jobs, and finish records the block.
 $env:LS_NO_UNITS = ''
 $ex = Step (@('-Step', 'start', '-Layer', 'explain', '-Take', '4', '-Owner', 'explain block 1', '-Limits', '-MaxSentences 12 -MaxChars 400', '-MaxParts', '5') + $common)
-Assert ($ex.json -and $ex.json.ok -eq $true -and $ex.json.units -eq 1 -and $ex.json.jobs -eq 1) "explain start: the plan lists one explanation job ($($ex.text))"
+Assert-Line $ex 'explain start'
+Assert ($ex.json -and $ex.json.ok -eq $true -and $ex.json.units -eq 1 -and $ex.json.jobs -eq 1 -and $ex.json.plan_parts -eq 3) "explain start: the plan lists one explanation job ($($ex.text))"
 $exCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($exCalls -match 'model -Step explain .*-MaxSentences 12 -MaxChars 400.*-Models Key/2\|c.*-MaxParts 5') 'explain start: the compile limits, the claimed models and the part cap reach the plan'
 $apply = Step (@('-Step', 'apply', '-Layer', 'explain', '-Owner', 'explain block 1', '-Limits', '-MaxSentences 12') + $common)
-Assert ($apply.json -and $apply.json.ok -eq $true -and $apply.json.jobs -eq 1 -and $apply.json.applied -eq 2) "explain apply: the drafts are applied and the fix job is listed ($($apply.text))"
+Assert-Line $apply 'explain apply'
+Assert ($apply.json -and $apply.json.ok -eq $true -and $apply.json.jobs -eq 1 -and $apply.json.applied -eq 2 -and -not $apply.json.refused) "explain apply: the drafts are applied and the fix job is listed ($($apply.text))"
 $fix = Get-Content -Raw (Join-Path $out 'layer-steps\explain\apply-jobs.json') | ConvertFrom-Json
 Assert (@($fix).Count -eq 1 -and (Get-Content -Raw (Join-Path $out 'layer-steps\explain\apply-jobs.json')) -match 'continue.*x1' -and @($fix)[0].unit -eq 'explain/g001-m0000@1') 'explain apply: the fix job keeps its continue and the block''s unit'
 
 # 7. terms: start plans the table, finish applies it and completes the unit.
 $terms = Step (@('-Step', 'start', '-Layer', 'terms', '-Take', '1', '-Owner', 'terms block 1') + $common)
 $termsFinish = Step (@('-Step', 'finish', '-Layer', 'terms', '-Owner', 'terms block 1') + $common)
-Assert ($terms.json -and $terms.json.ok -eq $true -and $termsFinish.json -and $termsFinish.json.ok -eq $true -and @($termsFinish.json.results)[0].status -eq 'done') "terms: the plan and the apply complete the one unit ($($termsFinish.text))"
+Assert-Line $terms 'terms start'
+Assert-Line $termsFinish 'terms finish'
+Assert ($terms.json -and $terms.json.ok -eq $true -and $termsFinish.json -and $termsFinish.json.ok -eq $true -and $termsFinish.json.done -eq 1 -and $termsFinish.json.terms -eq 2 -and $termsFinish.json.card -eq 'Key/1|a') "terms: the plan and the apply complete the one unit ($($termsFinish.text))"
 $tCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($tCalls -match 'terms -Step plan -Staging .*-Token 1' -and $tCalls -match 'terms -Step apply -Staging .*-Token 1 -Apply') 'terms: the apply carries the claimed unit''s token'
 
@@ -203,6 +233,7 @@ Assert ($tCalls -match 'terms -Step plan -Staging .*-Token 1' -and $tCalls -matc
 $env:LS_CLAIM_FAIL = '2'
 $retry = Step (@('-Step', 'start', '-Layer', 'digest', '-Take', '8', '-Owner', 'digest block 9') + $common)
 $env:LS_CLAIM_FAIL = ''
+Assert-Line $retry 'claim retry'
 Assert ($retry.json -and $retry.json.ok -eq $true -and $retry.json.units -eq 2) "claim retry: two refused claims are tried again and the block is still claimed ($($retry.text))"
 $env:LS_CLAIM_STRING = '1'
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
@@ -216,12 +247,36 @@ Assert ($lostCalls -match 'ledger status -Out .* -Held explain block 9') 'lost c
 $env:LS_NO_UNITS = '1'
 $empty = Step (@('-Step', 'start', '-Layer', 'digest', '-Take', '8', '-Owner', 'digest block 10') + $common)
 $env:LS_NO_UNITS = ''
-Assert ($empty.json -and $empty.json.ok -eq $true -and $empty.json.units -eq 0 -and $empty.json.jobs -eq 0) "empty claim: a block with no ready unit is an empty success ($($empty.text))"
+Assert-Line $empty 'empty claim'
+Assert ($empty.json -and $empty.json.ok -eq $true -and -not $empty.json.units -and -not $empty.json.jobs) "empty claim: a block with no ready unit is an empty success ($($empty.text))"
+
+# 9b. #180: the Link layer answers the block''s gap and quality totals, never the per-unit rows.
+$linkStart = Step (@('-Step', 'start', '-Layer', 'link', '-Take', '8', '-Owner', 'link block 1') + $common)
+Assert-Line $linkStart 'link start'
+$linkFinish = Step (@('-Step', 'finish', '-Layer', 'link', '-Owner', 'link block 1') + $common)
+Assert-Line $linkFinish 'link finish'
+Assert ($linkFinish.json.done -eq 1 -and $linkFinish.json.link_gaps -eq 2 -and $linkFinish.json.link_linked -eq 1 -and $linkFinish.json.link_already_linked -eq 1 -and $linkFinish.json.link_changed -eq 2 -and $linkFinish.json.link_scheduled -eq 1) "link finish: the block''s gap, link and change totals are flat fields ($($linkFinish.text))"
+Assert (-not $linkFinish.json.PSObject.Properties['results'] -and -not $linkFinish.json.PSObject.Properties['link_quality_faults']) 'link finish: no per-unit results, and a zero fault count stays out of the line'
+Assert (Test-Path -LiteralPath (Join-Path $out 'layer-steps\link\drive-lines\finish.json')) 'link finish: the per-unit results and the gate are in its detail file'
+
+# 10. #180: the live run's failure. A start whose gate names eight unresolved units answers counts only, never a
+# unit list a manager could retype as prose.
+$env:LS_GATE_OPEN = '8'
+$wide = Step (@('-Step', 'start', '-Layer', 'digest', '-Take', '8', '-Owner', 'digest block 11') + $common)
+$env:LS_GATE_OPEN = ''
+Assert-Line $wide 'wide gate'
+Assert ($wide.json.gate_open -eq 8 -and -not $wide.json.gate_complete -and -not $wide.json.PSObject.Properties['unresolved']) 'wide gate: eight open units answer one count, never the gate''s unit list'
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host "layer-steps: $ok passed, $failed failed"
 if ($failed) { exit 1 } else { exit 0 }
+
+
+
+
+
+
 
 
 

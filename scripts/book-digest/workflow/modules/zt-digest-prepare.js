@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v16 ====
+// ==== module zt-digest-prepare v17 ====
 // Prepare (mode full): prepare-book-digest writes the Chinese text, the section groups, the Literature tree with one
 // anchor per group, and the shared prefixes, then binds the immutable run contract with the effective settings
 // (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the account-wide usage ledger: run usage is
@@ -24,7 +24,7 @@
 // (prepare: the full preparation, the one resume with its summary and digest-gate fallback, or a backfill branch),
 // run by a DeepSeek drive job; no Claude relay runs a command.
 defineModule({
-  id: 'zt-digest-prepare', version: '16', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '17', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume), validate or re-stage one already digested book for a Term backfill (modes term-cards and term-link) or take args.groups; output {groups, groupList, citation_key, backfill?}.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -45,21 +45,23 @@ defineModule({
       // the step.
       const resumed = await Z.bookStep('prepare resume', 'prepare', { Mode: 'resume' })
       if (!resumed || resumed.ok !== true) throw new Error(`mode resume needs a resumable prepared run ledger: ${(resumed && resumed.error) || 'no ledger resume'}`)
-      const facts = resumed.resume || {}
-      const view = { settings: resumed.settings || {}, citation_key: resumed.citation_key, variant: resumed.variant, run_options: resumed.run_options || null }
-      groups = Number(resumed.groups) || 0
+      // #180: the resume step answers the retained facts as flat counts; its full tool lines are its detail file.
+      const n = (v) => Number(v || 0)
+      const view = { citation_key: resumed.citation_key, variant: resumed.variant }
+      groups = n(resumed.groups)
       if (!groups) throw new Error('mode resume found no retained digest groups; prepare the book again')
-      const settings = view.settings
-      if (facts.status === 'nothing_to_resume') {
-        log(`Resume: no executable or failed unit remains (${groups} retained groups, invocation ${facts.invocation}); the retained coverage stays what the ledger reports, and no resume was spent.`)
+      const settings = { max_attempts: n(resumed.max_attempts), dsh_run_cap: n(resumed.dsh_run_cap) }
+      if (!resumed.resumed) {
+        log(`Resume: no executable or failed unit remains (${groups} retained groups, invocation ${n(resumed.invocation)}); the retained coverage stays what the ledger reports, and no resume was spent.`)
       } else {
-        const reset = (facts.reset || []).length
-        const reevaluated = (facts.reevaluated || []).length
-        log(`Resume: invocation ${facts.invocation}, resume_count ${facts.resume_count}; ${reset} unresolved unit(s) reset, ${reevaluated} blocked dependant(s) back to dependency evaluation, ${(facts.reclaimed || []).length} lost claim(s) reclaimed, ${((facts.closure && facts.closure.downstream) || []).length} unit(s) in the closure to drain. ${groups} retained groups, variant ${view.variant}, settings maxAttempts ${settings.max_attempts}, dshRunCap ${settings.dsh_run_cap} s.`)
+        log(`Resume: invocation ${n(resumed.invocation)}, resume_count ${n(resumed.resume_count)}; ${n(resumed.reset)} unresolved unit(s) reset, ${n(resumed.reevaluated)} blocked dependant(s) back to dependency evaluation, ${n(resumed.reclaimed)} lost claim(s) reclaimed, ${n(resumed.downstream)} unit(s) in the closure to drain. ${groups} retained groups, variant ${view.variant}, settings maxAttempts ${settings.max_attempts}, dshRunCap ${settings.dsh_run_cap} s.`)
       }
       // v15 (S30 pilot, #172): the prepared run's frozen layer switches. A resume gets only `out`, so the
       // Term stages read termCards/termLink here instead of their args defaults (true).
-      return { groups, groupList: groupList(groups), resumed: facts.status === 'resumed', resume: facts, settings, citation_key: view.citation_key, run_options: view.run_options || null }
+      // #180: the resume step names the frozen switches a layer switched off, as one short list.
+      const off = String(resumed.off || '').split(',').filter(Boolean)
+      const runOptions = off.length ? Object.fromEntries(off.map((k) => [k, false])) : null
+      return { groups, groupList: groupList(groups), resumed: resumed.resumed === true, resume: null, settings, citation_key: view.citation_key, run_options: runOptions }
     }
     if (p.mode === 'term-cards' || p.mode === 'term-link') {
       // S25 (#168): the backfill's own preparation. `-Sections` reuses or reconstructs the staged source slices the
@@ -70,7 +72,8 @@ defineModule({
       if (!line || line.ok !== true) {
         throw new Error(`the backfill of ${(line && line.book) || 'the book'} cannot start: ${(line && line.error) || 'no output'}`)
       }
-      log(`Backfill (${line.step}): ${line.book} — ${line.source.sections} section(s) ${line.source.reused ? 'reused' : 'reconstructed'}${line.source.rebuilt && line.source.rebuilt.length ? ` (${line.source.rebuilt.join(', ')})` : ''}; ${line.list ? `${line.list.rows} Term row(s)${line.list.legacy ? ' in the legacy table' : ''}` : 'no Term list'}; ${line.tree.heads} published head(s), ${line.tree.parts} part(s), ${line.tree.occupying.length} occupying; ${line.conflicts.length} conflict(s).`)
+      const n = (v) => Number(v || 0)
+      log(`Backfill (${line.step}): ${line.book} — ${n(line.sections)} section(s) ${line.reused ? 'reused' : 'reconstructed'}${n(line.rebuilt) ? ` (${n(line.rebuilt)})` : ''}; ${n(line.rows)} Term row(s)${line.legacy ? ' in the legacy table' : ''}; ${n(line.heads)} published head(s), ${n(line.parts)} part(s), ${n(line.occupying)} occupying; ${n(line.conflicts)} conflict(s).`)
       return { groups: 0, groupList: [], citation_key: line.book, backfill: line }
     }
     if (p.mode === 'full') {
@@ -122,3 +125,6 @@ defineModule({
   },
 })
 // ==== end module zt-digest-prepare ====
+
+
+

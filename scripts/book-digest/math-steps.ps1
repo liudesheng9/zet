@@ -34,9 +34,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+. (Join-Path $PSScriptRoot 'step-line.ps1')
 $Out = $Out.TrimEnd('\', '/')
-$Drive = Join-Path (Join-Path $Out 'math') 'drive'
+$Work = Join-Path $Out 'math'
+$Drive = Join-Path $Work 'drive'
 New-Item -ItemType Directory -Force $Drive | Out-Null
+$LineName = $Step
 
 # One command: its last JSON line (or $null), its exit code and the tail of its output.
 function Run([string[]]$CommandArgs) {
@@ -52,21 +55,13 @@ function Save($Path, $Value) {
     $text = if ($list.Count) { $list | ConvertTo-Json -Depth 64 } else { '[]' }
     Set-Content -LiteralPath $Path -Value $text -Encoding utf8
 }
-function Reply($Value) { $Value | ConvertTo-Json -Depth 32 -Compress; exit 0 }
-function Fail([string]$Where, $Result) { Reply @{ ok = $false; step = $Where; error = "$($Result.tail)" } }
-# The fields of a tool line as one ordered answer.
-function Fields($Json) {
-    $out = [ordered]@{}
-    if ($Json -is [System.Collections.IDictionary]) { foreach ($k in $Json.Keys) { $out["$k"] = $Json[$k] } }
-    elseif ($Json) { foreach ($p in $Json.PSObject.Properties) { $out[$p.Name] = $p.Value } }
-    return $out
-}
-# The step's answer: the tool line's own fields, plus this step's, with ok true unless the tool said otherwise.
-function Reply-Fields($Json, [hashtable]$Extra = @{}) {
-    $out = Fields $Json
-    foreach ($k in $Extra.Keys) { $out[$k] = $Extra[$k] }
-    if (-not $out.Contains('ok')) { $out['ok'] = $true }
-    Reply $out
+# The step's answer: its compact line and the detail file beside it (#180).
+function Reply($Value, $Detail = $null) { Send-StepLine -Line $Value -Detail $Detail -Name $LineName -Out $Work }
+function Fail([string]$Where, $Result) { Send-StepFail -Step $Where -Reason "$($Result.tail)" -Name $LineName -Out $Work }
+# How many entries a list-typed field names; 0 when the tool printed none.
+function Count-Of($Value) {
+    if ($null -eq $Value) { return 0 }
+    return @($Value).Count
 }
 # One math compiler step of this staging folder.
 function Math([string]$StepName, [string[]]$Extra = @()) { Run (@('math', '-Step', $StepName, '-Staging', $Out) + $Extra) }
@@ -81,70 +76,81 @@ function Save-Jobs([string]$Name, $Result) {
 switch ($Step) {
     'skeleton' {
         # One process: the statement index, the prompt files the model stage reads, and the unit and Theory Card
-        # skeleton. Each command's own line is kept, because the report reads all three.
+        # skeleton. The line carries their counts; each command's own line is the detail.
         $index = Math 'index'
         if (-not $index.json -or $index.json.ok -ne $true) { Fail 'index' $index }
         $docs = Math 'docs'
         if (-not $docs.json -or $docs.json.ok -ne $true) { Fail 'docs' $docs }
         $skeleton = Math 'skeleton' @('-Apply')
         if (-not $skeleton.json -or $skeleton.json.ok -ne $true) { Fail 'skeleton' $skeleton }
-        Reply @{ ok = $true; index = $index.json; docs = $docs.json; skeleton = $skeleton.json }
+        $ix = $index.json
+        $sk = $skeleton.json
+        Reply @{
+            ok = $true
+            index_units = [int]$ix.units; index_forms = (Keys-Of $ix.forms); index_examples = [int]$ix.examples; index_exercises = [int]$ix.exercises
+            docs_files = (Count-Of $docs.json.files)
+            skeleton_units = $(if ($sk.created -ne $null) { [int]$sk.created } else { Count-Of $sk.units }); skeleton_theories = [int]$sk.theories
+        } @{ index = $ix; docs = $docs.json; skeleton = $sk }
     }
     'notation' {
         $r = Math 'notation'
         if (-not $r.json) { Fail 'notation' $r }
         $saved = Save-Jobs 'notation-jobs.json' $r
-        Reply @{ ok = $true; candidates = $r.json.candidates; jobs = $saved.count; file = $saved.file }
+        Reply @{ ok = $true; candidates = [int]$r.json.candidates; jobs = $saved.count; file = $saved.file } $r.json
     }
     'notation-apply' {
         # A refused table (no answer file) keeps the tool's ok:false and reason, so the caller can go on without it.
         $r = Math 'notation-apply' @('-Apply')
         if (-not $r.json) { Fail 'notation-apply' $r }
-        Reply-Fields $r.json
+        # A refused table (no answer file) keeps the tool's ok:false and reason, so the caller can go on without it.
+        Reply @{ ok = ($r.json.ok -eq $true); symbols = [int]$r.json.symbols; card = "$($r.json.card)"; error = "$($r.json.error)"; disposition = "$($r.json.disposition)" } $r.json
     }
     'boundary' {
         $r = Math 'boundary' @('-UnitsPerJob', "$UnitsPerJob", '-Supply', $Supply)
         if (-not $r.json) { Fail 'boundary' $r }
         $saved = Save-Jobs 'boundary-jobs.json' $r
-        Reply @{ ok = $true; units = $r.json.units; jobs = $saved.count; file = $saved.file }
+        Reply @{ ok = $true; units = [int]$r.json.units; jobs = $saved.count; file = $saved.file } $r.json
     }
     'boundary-apply' {
         $r = Math 'boundary-apply' @('-Supply', $Supply)
         if (-not $r.json) { Fail 'boundary-apply' $r }
         $saved = Save-Jobs 'boundary-review-jobs.json' $r
-        Reply @{ ok = $true; created = $r.json.created; skipped_supplied = $r.json.skipped_supplied; jobs = $saved.count; file = $saved.file }
+        Reply @{ ok = $true; created = [int]$r.json.created; skipped_supplied = [int]$r.json.skipped_supplied; jobs = $saved.count; file = $saved.file } $r.json
     }
     'boundary-settle' {
         $r = Math 'boundary-settle'
         if (-not $r.json) { Fail 'boundary-settle' $r }
-        Reply @{ ok = $true; kept = $r.json.kept; deleted = $r.json.deleted; unreviewed = $r.json.unreviewed }
+        Reply @{ ok = $true; kept = [int]$r.json.kept; deleted = [int]$r.json.deleted; unreviewed = [int]$r.json.unreviewed } $r.json
     }
     'proof' {
         $r = Math 'proof' @('-UnitsPerJob', "$UnitsPerJob")
         if (-not $r.json) { Fail 'proof' $r }
         $saved = Save-Jobs 'proof-jobs.json' $r
-        Reply @{ ok = $true; units = $r.json.units; jobs = $saved.count; file = $saved.file }
+        Reply @{ ok = $true; units = [int]$r.json.units; jobs = $saved.count; file = $saved.file } $r.json
     }
     'proof-apply' {
         # The tool counts its clean steps in `ok`, so its line is the nested answer, not this step's envelope.
+        # The tool counts its clean steps in `ok`; this step's own ok stays a boolean, and its counts are flat.
         $r = Math 'proof-apply'
         if (-not $r.json) { Fail 'proof-apply' $r }
-        Reply @{ ok = $true; applied = $r.json }
+        Reply @{ ok = $true; steps_ok = [int]$r.json.ok; fixed = [int]$r.json.fixed; refused = [int]$r.json.refused; parts = (Count-Of $r.json.parts) } $r.json
     }
     'theory' {
         $r = Math 'theory' @('-MainResults', "$MainResults")
         if (-not $r.json) { Fail 'theory' $r }
         $saved = Save-Jobs 'theory-jobs.json' $r
-        Reply @{ ok = $true; theories = $r.json.theories; jobs = $saved.count; file = $saved.file }
+        Reply @{ ok = $true; theories = [int]$r.json.theories; jobs = $saved.count; file = $saved.file } $r.json
     }
     'theory-apply' {
         $r = Math 'theory-apply' @('-MainResults', "$MainResults")
         if (-not $r.json) { Fail 'theory-apply' $r }
-        Reply-Fields $r.json
+        Reply @{ ok = ($r.json.ok -ne $false); theories = [int]$r.json.theories; answered = [int]$r.json.answered } $r.json
     }
     'check' {
         $r = Math 'check' @('-Out', $Out)
         if (-not $r.json) { Fail 'check' $r }
-        Reply-Fields $r.json
+        Reply @{ ok = ($r.json.ok -ne $false); units = [int]$r.json.units; theories = [int]$r.json.theories; faults = [int]$r.json.faults; rules = (Keys-Of $r.json.by_rule); report = "$($r.json.report)" } $r.json
     }
 }
+
+

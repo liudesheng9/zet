@@ -135,7 +135,7 @@ $common = @('-Out', $out, '-Tool', $tool)
 $env:MS_STALE = '1'
 $start = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 1') + $common)
 $env:MS_STALE = ''
-Assert ($start.json -and $start.json.ok -eq $true -and $start.json.claimed -eq 3 -and @($start.json.units).Count -eq 3 -and @($start.json.units)[0].model -eq 'Key/2|c' -and @($start.json.models).Count -eq 3 -and @($start.json.missing).Count -eq 0) "start: three Model units claimed and the block's three models named ($($start.text))"
+Assert ($start.json -and $start.json.ok -eq $true -and $start.json.claimed -eq 3 -and $start.json.units -eq 3 -and $start.json.models -eq 3 -and $start.json.batches -eq 2 -and $start.json.plan -eq 'concept:Key/3|c;formal:Key/2|c') "start: three Model units claimed and the block's three models named ($($start.text))"
 $callsText = Get-Content -LiteralPath $calls -Raw
 Assert ($callsText -match 'ledger status -Out .* -Layer models' -and $callsText -match 'ledger reclaim -Out .* -Unit models/g001-m0000@1 -Release') 'start: a stopped run''s claim is released before the new plan'
 Assert ($callsText -match 'ledger next .* -Layer models -Take 8 -Owner models block 1 -Lease 7200 -Brief') 'start: one claim carries the owner and the two-hour lease'
@@ -156,8 +156,8 @@ Assert ($briefCalls -match 'ledger hold .* -Units models/g001-m0000@1:1,models/g
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $fill = Step (@('-Step', 'fill', '-Work', $work, '-Units', 'models/g001-m0000@1:1,models/g002-m0001@1:1,models/g003-m0002@1:1') + $common)
 $fillCalls = Get-Content -LiteralPath $calls -Raw
-Assert ($fill.json -and $fill.json.ok -eq $true -and @($fill.json.plans).Count -eq 3) "fill: the plans the architect wrote are read ($($fill.text))"
-Assert (@($fill.json.deferred).Count -eq 1 -and @($fill.json.deferred)[0].model -eq 'Key/3|c' -and @($fill.json.deferred)[0].why -eq 'waiting') 'fill: the model whose producer is not done is released to wait'
+Assert ($fill.json -and $fill.json.ok -eq $true -and $fill.json.plans -eq 3) "fill: the plans the architect wrote are read ($($fill.text))"
+Assert ($fill.json.deferred -eq 'Key/3|c:waiting') 'fill: the model whose producer is not done is released to wait'
 Assert ($fill.json.derive -eq $true -and $fill.json.jobs -eq 1) 'fill: the derivation plans are read from the plans, and the fill jobs are listed'
 Assert ($fillCalls -match 'model -Step plan-status ' -and $fillCalls -match 'model-deps -Out .* -Units models/g001-m0000@1:1,models/g002-m0001@1:1' -and $fillCalls -match 'model -Step defer -Work .* -Models Key/3\|c' -and $fillCalls -match 'model -Step apply -Work .* -MaxSentences 12 ') 'fill: plan-status, one model-deps command, the defer, then the fill — one process, one step'
 
@@ -173,7 +173,7 @@ $closeJobs = Step (@('-Step', 'close', '-Work', $work) + $common)
 $env:MS_CLOSE_JOBS = ''
 Assert ($closeJobs.json -and $closeJobs.json.ok -eq $true -and $closeJobs.json.jobs -eq 1 -and $closeJobs.json.faults -eq 1 -and -not $closeJobs.json.report) "close: a round that sends follow-ups lists them and writes no report ($($closeJobs.text))"
 $close = Step (@('-Step', 'close', '-Work', $work) + $common)
-Assert ($close.json -and $close.json.ok -eq $true -and $close.json.jobs -eq 0 -and @($close.json.report.models).Count -eq 1) "close: the round that sends nothing back carries the batch report ($($close.text))"
+Assert ($close.json -and $close.json.ok -eq $true -and -not $close.json.jobs -and $close.json.report_models -eq 1 -and $close.json.statuses -eq 'Key/2|c:done') "close: the round that sends nothing back carries the batch report ($($close.text))"
 $report = Step (@('-Step', 'report', '-Work', $work) + $common)
 Assert ($report.json -and $report.json.ok -eq $true -and @($report.json.models).Count -eq 1) "report: one report per model of the batch ($($report.text))"
 
@@ -184,21 +184,21 @@ New-Item -ItemType Directory -Force $out2 | Out-Null
 $env:MS_RENAMED = '1'
 $renamed = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 1', '-Out', $out2, '-Tool', $tool))
 $env:MS_RENAMED = ''
-Assert ($renamed.json -and $renamed.json.ok -eq $true -and $renamed.json.claimed -eq 1 -and @($renamed.json.units)[0].model -eq 'Key/2|c') ""lost claim line: the held units come from the ledger ($($renamed.text))""
+Assert ($renamed.json -and $renamed.json.ok -eq $true -and $renamed.json.claimed -eq 1 -and $renamed.json.units -eq 1) "lost claim line: the held units come from the ledger ($($renamed.text))"
 Assert ((Get-Content -LiteralPath $calls -Raw) -match 'ledger status -Out .* -Held models block 1') 'lost claim line: the fallback is the ledger read by owner'
 $env:MS_GARBLED_DEPS = '1'
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $garbled = Step (@('-Step', 'fill', '-Work', $work, '-Units', 'models/g001-m0000@1:1', '-Out', $out2, '-Tool', $tool))
 $env:MS_GARBLED_DEPS = ''
 $garbledCalls = Get-Content -LiteralPath $calls -Raw
-Assert ($garbled.json -and $garbled.json.ok -eq $true -and $garbled.json.jobs -eq 1) ""garbled model-deps: the batch still fills ($($garbled.text))""
+Assert ($garbled.json -and $garbled.json.ok -eq $true -and $garbled.json.jobs -eq 1) "garbled model-deps: the batch still fills ($($garbled.text))"
 Assert ($garbledCalls -match 'ledger status -Out .* -Units models/g001-m0000@1' -and $garbledCalls -match 'model-deps -Out .* -Model Key/2\|c -Token 1') 'garbled model-deps: the ledger decides the unit and only a claimed one registers on its own'
 
 # 6. finish: every named unit's checked completion in one command, then the gate.
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $finish = Step (@('-Step', 'finish', '-Units', 'models/g001-m0000@1:1,models/g002-m0001@1:1') + $common)
 $finishCalls = Get-Content -LiteralPath $calls -Raw
-Assert ($finish.json -and $finish.json.ok -eq $true -and @($finish.json.results).Count -eq 2 -and @($finish.json.done).Count -eq 2 -and $finish.json.gate.complete -eq $true) "finish: both units complete and the gate settles ($($finish.text))"
+Assert ($finish.json -and $finish.json.ok -eq $true -and $finish.json.done -eq 2 -and $finish.json.gate_complete -eq $true -and -not $finish.json.failed) "finish: both units complete and the gate settles ($($finish.text))"
 Assert ($finishCalls -match 'finish-batch -Out .* -Units models/g001-m0000@1:1,models/g002-m0001@1:1' -and $finishCalls -notmatch 'model-finish ') 'finish: one finish-batch command runs each unit''s own verifier'
 
 # 6. a step whose command fails is one ok:false line, never a half-written step.
@@ -211,7 +211,7 @@ Assert ($bad.json -and $bad.json.ok -eq $false -and $bad.json.step -eq 'plan-sta
 $env:MS_NO_UNITS = '1'
 $empty = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 2') + $common)
 $env:MS_NO_UNITS = ''
-Assert ($empty.json -and $empty.json.ok -eq $true -and $empty.json.claimed -eq 0 -and @($empty.json.units).Count -eq 0 -and $empty.json.gate.complete -eq $true) "empty claim: no ready unit is an empty success with the gate ($($empty.text))"
+Assert ($empty.json -and $empty.json.ok -eq $true -and -not $empty.json.claimed -and -not $empty.json.units -and $empty.json.gate_complete -eq $true) "empty claim: no ready unit is an empty success with the gate ($($empty.text))"
 $env:MS_NO_LIST = '1'
 $noList = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 3') + $common)
 $env:MS_NO_LIST = ''
@@ -221,6 +221,11 @@ Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host "model-steps: $ok passed, $failed failed"
 if ($failed) { exit 1 } else { exit 0 }
+
+
+
+
+
 
 
 

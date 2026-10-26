@@ -65,12 +65,24 @@ Emit @{ ok = $true }
 Set-Content -LiteralPath $tool -Value $toolBody -Encoding utf8
 $env:MAS_CALLS = $calls
 
+$script:callsMade = 0
+# #180: every step of the script answers one compact line: at most 400 characters, a boolean top-level `ok`, and
+# the detail file it names exists.
+function Assert-Line([object]$r, [string]$name) {
+    Assert ($r.last.Length -gt 0 -and $r.last.Length -le 400) "compact ${name}: the last line is at most 400 characters ($($r.last.Length))"
+    Assert ($r.json -and $r.json.ok -is [bool]) "compact ${name}: the last line has a boolean top-level ok"
+    Assert ($r.json -and $r.json.detail -and (Test-Path -LiteralPath $r.json.detail)) "compact ${name}: the line names its detail file and it exists"
+}
 function Step([string[]]$argv) {
     $text = & pwsh -NoProfile -File $script @argv 2>&1
     $code = $LASTEXITCODE
-    $line = @($text | Where-Object { "$_".Trim().StartsWith('{') }) | Select-Object -Last 1
-    $json = if ($line) { $line | ConvertFrom-Json -Depth 16 } else { $null }
-    [pscustomobject]@{ code = $code; json = $json; text = (@($text) -join ' | ') }
+    $lines = @($text | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    $line = if ($lines.Count) { $lines[-1] } else { '' }
+    $json = if ($line.StartsWith('{')) { $line | ConvertFrom-Json -Depth 16 } else { $null }
+    $r = [pscustomobject]@{ code = $code; json = $json; last = $line; text = (@($text) -join ' | ') }
+    $script:callsMade++
+    if ($script:callsMade -gt 1) { Assert-Line $r "step $script:callsMade" }
+    $r
 }
 $common = @('-Out', $out, '-Tool', $tool)
 function Calls() { if (Test-Path -LiteralPath $calls) { Get-Content -LiteralPath $calls -Raw } else { '' } }
@@ -80,8 +92,9 @@ Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $skeleton = Step (@('-Step', 'skeleton') + $common)
 $skeletonCalls = Calls
 Assert ($skeleton.code -eq 0 -and $skeleton.json -and $skeleton.json.ok -eq $true) "skeleton: the statement chain answers one ok line ($($skeleton.text))"
-Assert ($skeleton.json.index.units -eq 5 -and $skeleton.json.index.forms.theorem -eq 1 -and $skeleton.json.index.examples -eq 1 -and $skeleton.json.index.exercises -eq 2) 'skeleton: the index line keeps its unit, form, example and exercise counts'
-Assert (@($skeleton.json.docs.files).Count -eq 2 -and $skeleton.json.skeleton.created -eq 5 -and $skeleton.json.skeleton.theories -eq 2 -and $skeleton.json.skeleton.applied -eq $true) 'skeleton: the prompt files and the applied skeleton keep their own counts'
+Assert-Line $skeleton 'skeleton'
+Assert ($skeleton.json.index_units -eq 5 -and $skeleton.json.index_forms -eq 2 -and $skeleton.json.index_examples -eq 1 -and $skeleton.json.index_exercises -eq 2) 'skeleton: the index line keeps its unit, form, example and exercise counts'
+Assert ($skeleton.json.docs_files -eq 2 -and $skeleton.json.skeleton_units -eq 5 -and $skeleton.json.skeleton_theories -eq 2) 'skeleton: the prompt files and the applied skeleton keep their own counts'
 Assert ($skeletonCalls -match 'math -Step index -Staging ' -and $skeletonCalls -match 'math -Step docs -Staging ' -and $skeletonCalls -match 'math -Step skeleton -Staging .* -Apply') 'skeleton: one process runs index, docs and the applied skeleton'
 
 # 2. notation: the plan command's jobs are saved for the stage's content manager.
@@ -103,9 +116,9 @@ Assert ($boundary.json -and $boundary.json.ok -eq $true -and $boundary.json.unit
 Assert ($boundaryCalls -match 'math -Step boundary -Staging .* -UnitsPerJob 6 -Supply none') 'boundary: the per-job size and the supply policy reach the plan'
 $boundaryApply = Step (@('-Step', 'boundary-apply', '-Supply', 'examples') + $common)
 $reviewJobs = Join-Path $out 'math\drive\boundary-review-jobs.json'
-Assert ($boundaryApply.json -and $boundaryApply.json.ok -eq $true -and $boundaryApply.json.created -eq 3 -and $boundaryApply.json.skipped_supplied -eq 0 -and $boundaryApply.json.jobs -eq 1 -and $boundaryApply.json.file -eq $reviewJobs) "boundary-apply: the parts and one review job ($($boundaryApply.text))"
+Assert ($boundaryApply.json -and $boundaryApply.json.ok -eq $true -and $boundaryApply.json.created -eq 3 -and -not $boundaryApply.json.skipped_supplied -and $boundaryApply.json.jobs -eq 1 -and $boundaryApply.json.file -eq $reviewJobs) "boundary-apply: the parts and one review job ($($boundaryApply.text))"
 $boundarySettle = Step (@('-Step', 'boundary-settle') + $common)
-Assert ($boundarySettle.json -and $boundarySettle.json.ok -eq $true -and $boundarySettle.json.kept -eq 1 -and $boundarySettle.json.deleted -eq 0) "boundary-settle: the reviewed parts settle ($($boundarySettle.text))"
+Assert ($boundarySettle.json -and $boundarySettle.json.ok -eq $true -and $boundarySettle.json.kept -eq 1 -and -not $boundarySettle.json.deleted) "boundary-settle: the reviewed parts settle ($($boundarySettle.text))"
 
 # 4. proof: the review plan, and the apply whose counted ok stays nested under applied.
 $proof = Step (@('-Step', 'proof', '-UnitsPerJob', '2') + $common)
@@ -113,7 +126,7 @@ $proofJobs = Join-Path $out 'math\drive\proof-jobs.json'
 Assert ($proof.json -and $proof.json.ok -eq $true -and $proof.json.units -eq 2 -and $proof.json.jobs -eq 1 -and $proof.json.file -eq $proofJobs) "proof: two results reviewed by one job ($($proof.text))"
 Assert ((Calls) -match 'math -Step proof -Staging .* -UnitsPerJob 2') 'proof: the per-job size reaches the review plan'
 $proofApply = Step (@('-Step', 'proof-apply') + $common)
-Assert ($proofApply.json -and $proofApply.json.ok -eq $true -and $proofApply.json.applied.ok -eq 3 -and $proofApply.json.applied.fixed -eq 1 -and $proofApply.json.applied.refused -eq 0) "proof-apply: the counted ok stays nested, so the envelope stays a boolean ($($proofApply.text))"
+Assert ($proofApply.json -and $proofApply.json.ok -eq $true -and $proofApply.json.steps_ok -eq 3 -and $proofApply.json.fixed -eq 1 -and -not $proofApply.json.refused) "proof-apply: the counted ok stays nested, so the envelope stays a boolean ($($proofApply.text))"
 
 # 5. theory: the write plan with the main-results limit, and the applied cards.
 $theory = Step (@('-Step', 'theory', '-MainResults', '9') + $common)
@@ -128,7 +141,7 @@ Assert ((Calls) -match 'math -Step theory-apply -Staging .* -MainResults 9') 'th
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $check = Step (@('-Step', 'check') + $common)
 $checkCalls = Calls
-Assert ($check.json -and $check.json.ok -eq $true -and $check.json.units -eq 5 -and $check.json.theories -eq 2 -and $check.json.faults -eq 0) "check: the rules report answers its counts ($($check.text))"
+Assert ($check.json -and $check.json.ok -eq $true -and $check.json.units -eq 5 -and $check.json.theories -eq 2 -and -not $check.json.faults) "check: the rules report answers its counts ($($check.text))"
 Assert ($checkCalls -match "math -Step check -Staging $([regex]::Escape($out)) -Out $([regex]::Escape($out))") 'check: the audit files are written in the staging folder'
 
 # 7. a plan that prints no JSON line is one failed step, never a half-written one.
@@ -155,3 +168,6 @@ Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host "math-steps: $ok passed, $failed failed"
 if ($failed) { exit 1 } else { exit 0 }
+
+
+

@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v19 ====
+// ==== module zt-digest-report v20 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -27,8 +27,11 @@
 // 19 (S26, #169) adds term_link.final: the finite finalization's own round (generation, scope, unit, status and
 // counts), read from the final report's ledger facts, and the final audit's Term quality under `terms`, so a run
 // that corrected Cards reports whether their Term links were restored and audit-ran never reads as all-terms-passed.
+// 20 (#180): the stage outputs it assembles carry counts only (a step line is at most 400 characters and a module
+// reads no unit list), so `digest`, `link`, `link_blocked` and the Term summaries report totals and how many groups
+// were verified, skipped or blocked; the per-unit facts stay in the ledger's run report (`run_report`).
 defineModule({
-  id: 'zt-digest-report', version: '19', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '20', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -47,7 +50,7 @@ defineModule({
     explain: { type: 'any', description: 'the explain stage output (mode explain)' },
     link: { type: 'any', description: 'the link pass output' },
     linkCheck: { type: 'any', description: 'the link check card cycle' },
-    linkBlocked: { type: 'array', default: [], description: 'the groups the Link pass left blocked because their digest unit is not done (#92)' },
+    linkBlocked: { type: 'number', default: 0, description: 'how many groups the Link pass left blocked because their digest unit is not done (#92)' },
     cleanup: { type: 'any', description: 'the cleanup stage output, with the verified run report' },
     organize: { type: 'any', description: 'the Organize stage output' },
     figures: { type: 'any', description: 'the figures stage output' },
@@ -66,13 +69,12 @@ defineModule({
     // exact per-run usage and one supported resume. It never substitutes for a stage's own checked output.
     const runReport = (p.cleanup && p.cleanup.report) || null
     const runUsage = (p.cleanup && p.cleanup.usage) || (runReport && runReport.usage) || null
-    // The group stage reports one entry per digest unit (blocks of up to eight per manager); an older
-    // per-item stage output (items) is still read the same way.
-    const digestReports = Array.isArray(p.digest && p.digest.items)
-      ? p.digest.items.map(i => ({ group: (i.item && i.item.n) ?? null, ...(i.steps && i.steps.group ? i.steps.group : {}), status: i.ok ? ((i.steps && i.steps.group && i.steps.group.status) || 'done') : 'failed', errors: i.error || null }))
-      : (p.digest && p.digest.reports) || []
-    const layerSummary = (value) => value && value.dispositions
-      ? { status: value.status, verified: value.dispositions.filter(d => d.status === 'done').length, failed: value.dispositions.filter(d => d.status === 'failed').length, retrying: value.dispositions.filter(d => d.status === 'retry').length, open: (value.gate && value.gate.counts && (value.gate.counts.open || 0)) || 0, complete: !!(value.gate && value.gate.complete) }
+    // #180: a layer answers counts (verified and failed units, the gate), never per-unit rows.
+    const digestSummary = p.digest
+      ? { groups: p.digest.groups ?? null, claimed: p.digest.claimed ?? 0, verified: p.digest.verified ?? 0, failed: p.digest.failed ?? 0 }
+      : null
+    const layerSummary = (value) => value && (value.verified !== undefined || value.failed !== undefined || value.gate)
+      ? { status: value.status, verified: value.verified ?? 0, failed: value.failed ?? 0, open: (value.gate && value.gate.counts && (value.gate.counts.open || 0)) || 0, complete: !!(value.gate && value.gate.complete) }
       : null
     // S24 (#167): the two Term stages' own truthful result. A stage that did not run is `skipped` with
     // its reason, never an absent or silently successful entry.
@@ -84,18 +86,18 @@ defineModule({
         pass: value.pass || null,
         round: value.round ?? null,
         plan: value.plan || (value.plan_revision !== undefined ? { revision: value.plan_revision, hash: value.plan_hash } : null),
-        jobs: value.jobs ? { total: value.jobs.total || 0, done: value.jobs.done || 0, failed: (value.jobs.failed || []).map(f => f.id) } : null,
+        jobs: value.jobs ? { total: value.jobs.total || 0, done: value.jobs.done || 0, failed: Number(value.jobs.failed || 0) } : null,
         readiness: value.readiness || null,
         publication: value.publication || null,
         completion: value.completion || null,
         counts: value.counts || null,
         no_op: value.no_op === true,
-        blocked: (value.unresolved || []).slice(0, 32),
+        blocked: Number(value.not_ready || 0),
         reason: value.reason || value.error || null,
       }
     const schedule = {
       settings: { maxAttempts: Z.MAX_ATTEMPTS, dshRunCap: Z.DSH_RUN_CAP },
-      digest: p.digest && (Array.isArray(p.digest.items) || Array.isArray(p.digest.reports)) ? { verified: digestReports.filter(r => r.status === 'done').length, failed: digestReports.filter(r => r.status !== 'done').length } : null,
+      digest: digestSummary ? { verified: digestSummary.verified, failed: digestSummary.failed } : null,
       cards: layerSummary(p.cards),
       models: layerSummary(p.models),
       explain: layerSummary(p.explain),
@@ -142,8 +144,8 @@ defineModule({
       const backfill = (p.prepare && p.prepare.backfill) || null
       const tc = termSummary(p.termCards, 'the Term-card branch')
       const tl = termLinkSummary(p.termLink, p.finalize)
-      const conflicts = (backfill && backfill.conflicts) || []
-      ctx.log(`Backfill ${MODE}: ${tc.status} term-cards, ${tl.status} term-link${backfill ? `; ${backfill.list ? backfill.list.rows : 0} Term row(s), ${backfill.tree.heads} published head(s)` : ''}${conflicts.length ? `, ${conflicts.length} conflict(s)` : ''}.`)
+      const conflicts = Number((backfill && backfill.conflicts) || 0)
+      ctx.log(`Backfill ${MODE}: ${tc.status} term-cards, ${tl.status} term-link${backfill ? `; ${Number(backfill.rows || 0)} Term row(s), ${Number(backfill.heads || 0)} published head(s)` : ''}${conflicts ? `, ${conflicts} conflict(s)` : ''}.`)
       return {
         mode: MODE,
         citation_key: KEY,
@@ -157,9 +159,9 @@ defineModule({
     }
     if (!['full', 'link', 'models', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule }
     const modelReports = (p.models && p.models.models) || []
-    const linkReports = (p.link && p.link.groups) || []
+    // #180: the Link pass answers the run's own totals, never per-group rows.
     const linkGaps = p.link
-      ? { scheduled: p.link.scheduled ?? 0, skipped: p.link.skipped ?? 0, gaps: p.link.gap ?? 0, skipped_cards: p.link.skipped_cards ?? 0, linked: p.link.linked ?? 0, linked_from: p.link.linked_from ?? 0, already_linked: p.link.already_linked ?? 0, no_link: p.link.no_link ?? 0, provider_runs: p.link.provider_runs ?? 0, quality: p.link.quality || null }
+      ? { scheduled: p.link.scheduled ?? 0, skipped: p.link.skipped ?? 0, gaps: p.link.gap ?? 0, skipped_cards: p.link.skipped_cards ?? 0, linked: p.link.linked ?? 0, linked_from: p.link.linked_from ?? 0, already_linked: p.link.already_linked ?? 0, no_link: p.link.no_link ?? 0, changed: p.link.changed ?? 0, provider_runs: p.link.provider_runs ?? 0, verified: p.link.verified ?? 0, failed: p.link.failed ?? 0, blocked: p.link.blocked ?? 0, quality: p.link.quality || null }
       : null
     const groupCount = p.groups || 0
     const next = { workflow: 'zt-idea-grow', script: '.claude/workflows/zt-idea-grow.js', args: { book: KEY, out: '<a fresh work folder>' }, why: 'this digest built only the Literature tree; zt-idea-grow grows its Topic Cards, hubs and register' }
@@ -171,12 +173,12 @@ defineModule({
     }
     return {
       mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, groups: groupCount, managers_per_pass: Z.toBlocks(Z.groupsOf(groupCount)).length,
-      digest: digestReports.map(r => ({ group: r.group, status: r.status, unit: r.unit || null, disposition: r.disposition || null, owned: r.owned ?? null, errors: r.errors || null })),
+      digest: digestSummary,
       models: modelReports.map(r => ({ model: r.model, level: r.level, status: r.status, parts: Array.isArray(r.parts) ? r.parts.length : (Number(r.parts) || 0), relations: r.relations, kinds: r.kinds, charts: r.charts, derivations: r.derivations, split: r.split, moved: r.moved, shared: r.shared, tolerated: r.tolerated, style: r.style, accepted: r.accepted, dsh: r.dsh, issues: r.issues })),
       model_cleanup: (p.models && p.models.model_cleanup) || null,
-      link: linkReports.map(r => ({ group: r.group, status: r.status, unit: r.unit || null, gaps: r.gaps ?? null, skipped: r.skipped ?? null, scheduled: r.scheduled ?? null, linked: r.linked ?? null, linked_from: r.linked_from ?? null, already_linked: r.already_linked ?? null, no_link: r.no_link ?? null, provider_runs: r.provider_runs ?? null, changed: r.changed || [], quality: r.quality || null, errors: r.errors || null })),
+      link: linkGaps ? { scheduled: linkGaps.scheduled, skipped: linkGaps.skipped, verified: linkGaps.verified, failed: linkGaps.failed, provider_runs: linkGaps.provider_runs } : null,
       link_gaps: linkGaps,
-      link_blocked: (p.linkBlocked || []).map(b => ({ group: b.n, unit: b.unit, state: b.state, reason: b.reason })),
+      link_blocked: Number(p.linkBlocked || 0),
       terms: (p.terms && p.terms.report) || null, cards: cardsReport,
       term_cards: termSummary(p.termCards, 'the Term-card branch'),
       term_link: termLinkSummary(p.termLink, p.finalize),
@@ -189,5 +191,7 @@ defineModule({
   },
 })
 // ==== end module zt-digest-report ====
+
+
 
 

@@ -49,7 +49,7 @@
       "label": "^bridge: report$",
       "answer": {
         "ok": true,
-        "output": "{\"ok\":true,\"status\":\"done\",\"report_id\":\"r-sim\",\"counts\":{\"selected\":1,\"new\":1,\"earlier\":0},\"report\":\"report.md\",\"step\":\"report\",\"plan_id\":\"p-sim\"}",
+        "output": "{\"ok\":true,\"step\":\"report\",\"report_id\":\"r-sim\",\"proposals\":1,\"new\":1,\"earlier\":0,\"refused\":0}",
         "results": []
       }
     },
@@ -57,14 +57,14 @@
       "label": "^bridge: apply new$",
       "answer": {
         "ok": true,
-        "output": "{\"ok\":true,\"step\":\"apply\",\"status\":\"done\",\"citation_key\":\"Key\",\"plan_id\":\"p-sim\",\"report_id\":\"r-sim\",\"counts\":{\"selected\":1,\"new\":1,\"earlier\":0},\"outcome_counts\":{\"verified\":1},\"publication\":{\"unit\":\"bridge/book@2\",\"revision\":2,\"coverage\":{\"accepted\":1}}}"
+        "output": "{\"ok\":true,\"status\":\"done\",\"applied\":1,\"refused\":0,\"unit\":\"bridge/book@2\",\"state\":\"done\"}"
       }
     },
     {
       "label": "^prepare book$",
       "answer": {
         "ok": true,
-        "output": "{\"ok\":true,\"groups\":2,\"citation_key\":\"sim\"}"
+        "output": "{\"ok\":true,\"groups\":2,\"citation_key\":\"Key\"}"
       }
     },
     {
@@ -104,7 +104,7 @@
       "label": "^prepare link pass$",
       "answer": {
         "ok": true,
-        "output": "{\"pending\":[1,2],\"no_gap\":[],\"blocked\":[],\"gaps\":{\"1\":2,\"2\":1},\"owned_total\":6,\"gap_total\":3,\"skipped_total\":0,\"unowned\":0,\"ok\":true}"
+        "output": "{\"ok\":true,\"pending\":2,\"no_gap\":0,\"blocked\":0,\"gaps\":3,\"gap_total\":3,\"skipped_total\":0,\"owned_total\":3,\"unowned\":0,\"digest_state\":\"ledger\"}"
       }
     },
     {
@@ -134,7 +134,7 @@
       "label": "^organize: survey$",
       "answer": {
         "ok": true,
-        "output": "{\"survey\":\"x\",\"ok\":true}"
+        "output": "{\"ok\":true,\"merges\":0,\"moves\":0,\"issues\":0}"
       }
     },
     {
@@ -151,21 +151,21 @@
       "label": "^organize: apply$",
       "answer": {
         "ok": true,
-        "output": "{\"merges\":0,\"moves\":0,\"refused\":0,\"ok\":true}"
+        "output": "{\"ok\":true,\"merges\":0,\"moves\":0,\"refused\":0,\"notes\":0,\"thesis\":true}"
       }
     },
     {
       "label": "^show figures$",
       "answer": {
         "ok": true,
-        "output": "{\"shown\":0,\"cards\":0,\"figures\":0,\"labelled\":0,\"literature\":false,\"ok\":true}"
+        "output": "{\"ok\":true,\"shown\":0,\"cards\":0,\"figures\":0,\"labelled\":0,\"literature\":true}"
       }
     },
     {
       "label": "^audit cards$",
       "answer": {
         "ok": true,
-        "output": "{\"hubs_missing\":0,\"broken_links\":0,\"books\":[],\"ok\":true}"
+        "output": "{\"ok\":true,\"books\":1,\"cards\":9,\"style_faults\":0,\"layer_faults\":0,\"orphans\":0,\"no_source\":0,\"unkinded\":0,\"not_self_sufficient\":0,\"models\":0,\"explained\":0,\"derivations\":0,\"figures_missing\":0,\"terms\":\"complete\",\"term_published\":2,\"term_rows\":2,\"term_heads\":2,\"term_uses\":2,\"term_faults\":0,\"hubs_missing\":0,\"broken_links\":0}"
       }
     },
     {
@@ -252,70 +252,70 @@
       "label": "^finalize plan$",
       "answer": {
         "ok": true,
-        "output": "{\"schema_version\":1,\"kind\":\"audit_plan\",\"step\":\"plan\",\"run_id\":\"r-sim\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"graph_revision\":7,\"audit\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"faults\":{\"total\":2,\"hard\":1,\"advisory\":1,\"by_rule\":{\"R3\":1,\"I1\":1},\"list\":[{\"address\":\"Key/1|a\",\"rule\":\"R3\",\"outcome\":\"fix\",\"reason\":\"\",\"card\":\"Key/1|a\",\"tree\":\"Key\",\"rules\":[\"R3\"]},{\"address\":\"Key/1\",\"rule\":\"I1\",\"outcome\":\"advisory\",\"reason\":\"an advisory rule: it never blocks the run, and the bounded correction does not rewrite for it\"}]},\"counts\":{\"fix\":1,\"conflict\":0,\"blocked\":0,\"stale\":0,\"advisory\":1},\"branch\":\"fix\",\"fix_cycle\":{\"permitted\":1,\"used\":0,\"rules\":[\"R3\"],\"cards\":[\"Key/1|a\"],\"card_list\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix-cards.txt\"},\"refresh\":[],\"ok\":true}"
+        "output": "{\"ok\":true,\"step\":\"plan\",\"branch\":\"fix\",\"audit_unit\":\"audit/book@1\",\"audit_revision\":1,\"graph_revision\":7,\"faults\":2,\"hard\":1,\"advisory\":1,\"fix\":1,\"stale\":0,\"conflict\":0,\"blocked\":0,\"cycle_permitted\":1,\"cycle_used\":0,\"cycle_cards\":1,\"cycle_rules\":\"R3\",\"cycle_card_list\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix-cards.txt\",\"refresh\":\"\"}"
       }
     },
     {
       "label": "^finalize scope$",
       "answer": {
         "ok": true,
-        "output": "{\"schema_version\":1,\"kind\":\"finalize_changes\",\"step\":\"scope\",\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"changed\":[{\"address\":\"Key/1|a\",\"kinds\":[\"structure\"],\"category\":\"idea\",\"tree\":\"Key\",\"fingerprint_before\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"fingerprint_after\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}],\"touched_trees\":[\"Key\"],\"kinds\":[\"structure\"],\"counts\":{\"cards\":1,\"trees\":1},\"refresh\":[{\"layer\":\"link-check\",\"applicable\":true,\"artifacts\":[\"report\"],\"coverage\":\"none\",\"reason\":\"\",\"branch_refreshable\":true},{\"layer\":\"theory\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"the math variant owns this layer\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"skeleton\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"figures\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (figures), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"hubs\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"bridge\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (links), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"applicable\":true,\"artifacts\":[\"report\"],\"coverage\":\"none\",\"reason\":\"\",\"branch_refreshable\":true}],\"term_link\":{\"schema_version\":1,\"kind\":\"term_link_round\",\"applicable\":true,\"round\":1,\"scope\":\"cards\",\"cards\":[\"Key/1|a\"],\"excluded\":[],\"mapping_changed\":false,\"reasons\":[],\"reason\":\"\",\"list\":\"Key/1|t\",\"current\":{\"list\":\"l1\",\"mapping\":\"m1\",\"autolink\":\"a1\",\"vocabulary\":\"v1\"},\"before\":{\"audit\":{\"list\":\"l1\",\"mapping\":\"m1\",\"autolink\":\"a1\",\"vocabulary\":\"v1\"}}},\"ok\":true}"
+        "output": "{\"ok\":true,\"step\":\"scope\",\"graph_revision\":8,\"cards\":1,\"trees\":1,\"changes\":\"D:\\\\x\\\\Key\\\\finalize\\\\changes.json\",\"cycle_report\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix\\\\report.json\",\"term_applicable\":true,\"term_scope\":\"cards\",\"term_round\":1,\"term_cards\":1,\"refresh\":\"link-check\"}"
       }
     },
     {
       "label": "^finalize refresh link-check$",
       "answer": {
         "ok": true,
-        "output": "{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[],\"changed_cards\":1,\"touched_trees\":[\"Key\"],\"ok\":true}"
+        "output": "{\"ok\":true,\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"changed_cards\":1}"
       }
     },
     {
       "label": "^finalize final$",
       "answer": {
         "ok": true,
-        "output": "{\"schema_version\":1,\"kind\":\"finalize_report\",\"step\":\"final\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"status\":\"done\",\"complete\":true,\"branch\":\"fix\",\"graph_revision\":8,\"audit\":{\"scheduled\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"final\":{\"unit\":\"audit/book@2\",\"revision\":2,\"graph_revision\":8}},\"changes\":{\"cards\":1,\"trees\":1,\"kinds\":[\"structure\"],\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"refresh\":[{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"unit\":\"audit/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"}],\"faults\":{\"total\":0,\"residual\":0,\"advisory\":0,\"by_class\":{},\"list\":[]},\"infrastructure\":[],\"audit_book\":{\"cards\":9,\"orphans\":0,\"figures_missing\":0,\"models_not_self_sufficient\":0},\"report\":{\"path\":\"D:\\\\x\\\\Key\\\\finalize\\\\final-report.json\"},\"ok\":true}"
+        "output": "{\"ok\":true,\"status\":\"done\",\"branch\":\"fix\",\"graph_revision\":8,\"audit_unit\":\"audit/book@2\",\"audit_revision\":2,\"changes_cards\":1,\"changes_trees\":1,\"term_status\":\"complete\",\"term_round\":1,\"term_scope\":\"cards\",\"term_unit\":\"termlink/final@1\",\"term_state\":\"done\",\"terms_status\":\"complete\",\"terms_published\":2,\"terms_rows\":2,\"terms_heads\":2,\"terms_uses\":2,\"terms_complete\":true}"
       }
     },
     {
       "label": "^terms block \\d+: start$",
       "answer": {
-        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+        "answer": "{\"ok\":true,\"layer\":\"terms\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
       "label": "^digest block \\d+: start$",
       "answer": {
-        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+        "answer": "{\"ok\":true,\"layer\":\"digest\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
       "label": "^events block \\d+: start$",
       "answer": {
-        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+        "answer": "{\"ok\":true,\"layer\":\"events\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
       "label": "^findings block \\d+: start$",
       "answer": {
-        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+        "answer": "{\"ok\":true,\"layer\":\"findings\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
       "label": "^explain block \\d+: start$",
       "answer": {
-        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+        "answer": "{\"ok\":true,\"layer\":\"explain\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
       "label": "^link block \\d+: start$",
       "answer": {
-        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+        "answer": "{\"ok\":true,\"layer\":\"link\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
       "label": "^cards block \\d+: start$",
       "answer": {
-        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+        "answer": "{\"ok\":true,\"layer\":\"cards\",\"units\":0,\"claimed\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
@@ -327,25 +327,25 @@
     {
       "label": "^term-cards: drive review$",
       "answer": {
-        "answer": "{\"ok\":true,\"reviews\":0,\"counts\":{}}"
+        "answer": "{\"ok\":true,\"reviews\":0}"
       }
     },
     {
       "label": "^term-cards: drive fix$",
       "answer": {
-        "answer": "{\"ok\":true,\"fixes\":0,\"counts\":{}}"
+        "answer": "{\"ok\":true,\"fixes\":0}"
       }
     },
     {
       "label": "^term-cards: drive finish$",
       "answer": {
-        "answer": "{\"ok\":true,\"done\":[],\"failed\":[],\"book\":\"done\",\"publication\":{\"complete\":true,\"rows\":0,\"committed\":0,\"ready_unpublished\":0,\"stop\":null}}"
+        "answer": "{\"ok\":true,\"done\":0,\"failed\":0,\"book\":\"done\",\"complete\":true,\"rows\":2,\"committed\":2}"
       }
     },
     {
       "label": "^term-link: drive link$",
       "answer": {
-        "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/book@1\",\"counts\":{\"cards_changed\":1,\"links_added\":2},\"second\":{\"cards_changed\":0,\"cards_refused\":0}}"
+        "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/book@1\",\"cards_changed\":0,\"links_added\":0,\"second_cards_changed\":0,\"second_cards_refused\":0}"
       }
     },
     {
@@ -357,31 +357,31 @@
     {
       "label": "^cards-book claim$",
       "answer": {
-        "answer": "{\"ok\":true,\"unit\":\"cards-book/book@1\",\"token\":1,\"input_hash\":\"ih-sim\",\"inputs\":{}}"
+        "answer": "{\"ok\":true,\"unit\":\"cards-book/book@1\",\"token\":1,\"input_hash\":\"ih-cb\",\"revision\":\"cards-book/book@1\",\"open\":0}"
       }
     },
     {
       "label": "^whole book: plan$",
       "answer": {
-        "answer": "{\"ok\":true,\"book\":\"Key\",\"picked\":9,\"with_faults\":2,\"review\":0,\"models\":1,\"orphans\":0,\"faults\":2,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards/out/jobs.json\"}"
+        "answer": "{\"ok\":true,\"picked\":9,\"with_faults\":2,\"faults\":2,\"review\":0,\"orphans\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^whole book: check 1$",
       "answer": {
-        "answer": "{\"ok\":true,\"faults\":0,\"orphans\":0,\"jobs\":0,\"applied\":1,\"file\":null}"
+        "answer": "{\"ok\":true,\"applied\":1,\"faults\":0,\"orphans\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^whole book: report$",
       "answer": {
-        "answer": "{\"ok\":true,\"cards\":9,\"faults_before\":2,\"faults_after\":0,\"verdicts\":{\"fix\":1},\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"applied\":1}"
+        "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
       }
     },
     {
       "label": "^cards-book finish$",
       "answer": {
-        "answer": "{\"ok\":true,\"state\":\"done\",\"unit\":\"cards-book/book@1\",\"complete\":true,\"disposition\":\"published\"}"
+        "answer": "{\"ok\":true,\"unit\":\"cards-book/book@1\",\"state\":\"done\",\"disposition\":\"published\",\"complete\":true}"
       }
     },
     {
@@ -393,67 +393,67 @@
     {
       "label": "^link check: plan$",
       "answer": {
-        "answer": "{\"ok\":true,\"book\":\"Key\",\"picked\":9,\"with_faults\":2,\"review\":0,\"models\":1,\"orphans\":0,\"faults\":2,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards-link/out/jobs.json\"}"
+        "answer": "{\"ok\":true,\"picked\":9,\"with_faults\":2,\"faults\":2,\"review\":0,\"orphans\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^link check: check 1$",
       "answer": {
-        "answer": "{\"ok\":true,\"faults\":0,\"orphans\":0,\"jobs\":0,\"applied\":1,\"file\":null}"
+        "answer": "{\"ok\":true,\"applied\":1,\"faults\":0,\"orphans\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^link check: report$",
       "answer": {
-        "answer": "{\"ok\":true,\"cards\":9,\"faults_before\":2,\"faults_after\":0,\"verdicts\":{\"fix\":1},\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"applied\":1}"
+        "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
       }
     },
     {
       "label": "^link-check: publish$",
       "answer": {
-        "answer": "{\"ok\":true,\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"link-check/book@1\"],\"coverage\":{}}"
+        "answer": "{\"ok\":true,\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
       }
     },
     {
       "label": "^organize: publish$",
       "answer": {
-        "answer": "{\"ok\":true,\"layer\":\"organize\",\"unit\":\"organize/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"organize/book@1\"],\"coverage\":{}}"
+        "answer": "{\"ok\":true,\"layer\":\"organize\",\"unit\":\"organize/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
       }
     },
     {
       "label": "^organize: skeleton$",
       "answer": {
-        "answer": "{\"ok\":true,\"groups\":2,\"jobs\":0,\"file\":null}"
+        "answer": "{\"ok\":true,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\skeleton\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^organize: skeleton apply$",
       "answer": {
-        "answer": "{\"ok\":true,\"thesis\":\"论点\",\"argument\":2,\"models\":0,\"events\":0,\"written\":{\"structure\":\"Key/1|b\"}}"
+        "answer": "{\"ok\":true,\"structure\":\"Key/1|b\",\"thesis\":\"论点\",\"argument\":2,\"models\":0,\"events\":0}"
       }
     },
     {
       "label": "^skeleton: publish$",
       "answer": {
-        "answer": "{\"ok\":true,\"layer\":\"skeleton\",\"unit\":\"skeleton/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"skeleton/book@1\"],\"coverage\":{}}"
+        "answer": "{\"ok\":true,\"layer\":\"skeleton\",\"unit\":\"skeleton/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
       }
     },
     {
       "label": "^figures: publish$",
       "answer": {
-        "answer": "{\"ok\":true,\"layer\":\"figures\",\"unit\":\"figures/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"figures/book@1\"],\"coverage\":{}}"
+        "answer": "{\"ok\":true,\"layer\":\"figures\",\"unit\":\"figures/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
       }
     },
     {
       "label": "^bridge: publish$",
       "answer": {
-        "answer": "{\"ok\":true,\"layer\":\"bridge\",\"unit\":\"bridge/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\",\"reused\":false,\"superseded\":[\"bridge/book@1\"],\"coverage\":{}}"
+        "answer": "{\"ok\":true,\"layer\":\"bridge\",\"unit\":\"bridge/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
       }
     },
     {
       "label": "^cleanup: plan$",
       "answer": {
-        "answer": "{\"ok\":true,\"kind\":\"cleanup_run\",\"step\":\"plan\",\"deletes\":0,\"workspaces\":0,\"plan_file\":\"D:\\\\x\\\\Key\\\\cleanup\\\\settle-plan.json\",\"results_file\":\"D:\\\\x\\\\Key\\\\cleanup\\\\settle-results.json\"}"
+        "answer": "{\"ok\":true,\"deletes\":0,\"workspaces\":0,\"evidence_recorded\":0,\"evidence_missing\":0,\"plan_file\":\"D:\\\\x\\\\Key\\\\cleanup\\\\settle-plan.json\",\"results_file\":\"D:\\\\x\\\\Key\\\\cleanup\\\\settle-results.json\"}"
       }
     },
     {
@@ -465,25 +465,25 @@
     {
       "label": "^cleanup: apply$",
       "answer": {
-        "answer": "{\"ok\":true,\"fallback\":false,\"provider\":{\"kind\":\"cleanup_run\",\"step\":\"apply\",\"deleted\":0,\"absent\":0,\"failed_count\":0,\"workspaces_removed\":1,\"workspaces_kept\":0,\"ready\":{\"kind\":\"cleanup_ready\",\"claimed\":0,\"done\":0,\"partial\":0,\"retry_count\":0,\"failed_count\":0,\"book\":{\"unit\":\"cleanup/book@1\",\"ok\":true,\"status\":\"complete\",\"cleanup_complete\":true,\"content_complete\":true,\"partial_reasons\":[],\"reconciliation\":0,\"scratch_removed\":0}}},\"ready\":{\"kind\":\"cleanup_ready\",\"claimed\":0,\"done\":0,\"partial\":0,\"retry_count\":0,\"failed_count\":0,\"book\":{\"unit\":\"cleanup/book@1\",\"ok\":true,\"status\":\"complete\",\"cleanup_complete\":true,\"content_complete\":true,\"partial_reasons\":[],\"reconciliation\":0,\"scratch_removed\":0}}}"
+        "answer": "{\"ok\":true,\"fallback\":false,\"deleted\":0,\"absent\":0,\"workspaces_removed\":0,\"workspaces_kept\":0,\"failed\":0,\"unknown\":0,\"unrecorded\":0,\"ready_claimed\":0,\"ready_done\":0,\"ready_partial\":0,\"ready_retry\":0,\"ready_failed\":0,\"book_unit\":\"cleanup/book@1\",\"book_ok\":true,\"book_status\":\"complete\"}"
       }
     },
     {
       "label": "^report the run from the ledger$",
       "answer": {
-        "answer": "{\"schema_version\":1,\"kind\":\"run_report\",\"report\":{\"run-report.json\":{\"path\":\"D:\\\\x\\\\Key\\\\run-report.json\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"changed\":true},\"run-report.md\":{\"path\":\"D:\\\\x\\\\Key\\\\run-report.md\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"changed\":true}},\"identity\":{\"run_id\":\"r-sim\",\"invocation\":1,\"resume_count\":0},\"completeness\":{\"settled\":true,\"content_complete\":true,\"quality_complete\":true,\"cleanup_complete\":true,\"complete\":true},\"counts\":{\"declared\":3,\"done\":3,\"noop\":0,\"refused\":0,\"failed\":0,\"blocked\":0,\"open\":0},\"gaps\":[],\"placeholders\":{\"status\":\"verified\",\"count\":0,\"models\":[],\"revision\":7},\"timing\":{\"wall_seconds\":1,\"queue_wait_seconds\":0,\"tool_seconds\":0,\"external_run_seconds\":0,\"critical_path\":{\"seconds\":1,\"units\":[]},\"stages\":[]},\"resume\":{\"available\":false,\"reason\":\"no unresolved work remains\",\"manual\":[]},\"bridge\":null,\"publications\":[],\"usage\":{\"status\":\"complete\",\"source\":\"per-run\",\"known_runs\":1,\"missing_runs\":0,\"missing\":[],\"totals\":{\"input_tokens\":100,\"output_tokens\":20},\"estimates\":null,\"by_phase\":{},\"data_faults\":[]}}"
+        "answer": "{\"ok\":true,\"settled\":true,\"content_complete\":true,\"quality_complete\":true,\"cleanup_complete\":true,\"complete\":true,\"declared\":3,\"done\":3,\"failed\":0,\"open\":0,\"gaps\":0,\"placeholders\":0,\"resume_available\":false,\"usage\":\"complete,per-run,1,0,100,20\"}"
       }
     },
     {
       "label": "^zt-finalize: term-link round$",
       "answer": {
-        "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/final@1\",\"plan\":{\"plan_revision\":1,\"plan_hash\":\"ph-sim\",\"cards_changed\":1,\"cards_refused\":0,\"missing_heads\":0,\"complete\":true},\"counts\":{\"cards_changed\":1,\"links_added\":2},\"no_op\":false,\"completion\":{\"state\":\"done\"},\"second\":{\"cards_changed\":0,\"cards_refused\":0}}"
+        "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/final@1\",\"cards_changed\":1,\"links_added\":2,\"second_cards_changed\":0,\"second_cards_refused\":0,\"no_op\":false,\"complete\":true}"
       }
     },
     {
       "label": "^prepare resume$",
       "answer": {
-        "answer": "{\"ok\":true,\"groups\":2,\"resumed\":true,\"resume\":{\"status\":\"resumed\",\"invocation\":2,\"resume_count\":1,\"reset\":[],\"reevaluated\":[],\"reclaimed\":[],\"closure\":{\"downstream\":[]}},\"settings\":{\"max_attempts\":3,\"dsh_run_cap\":1200},\"variant\":\"econ\",\"citation_key\":\"Key\",\"run_options\":null}"
+        "answer": "{\"ok\":true,\"groups\":2,\"resumed\":true,\"citation_key\":\"Key\",\"variant\":\"econ\",\"max_attempts\":3,\"dsh_run_cap\":1200}"
       }
     },
     {
@@ -495,37 +495,37 @@
     {
       "label": "^final correction: plan$",
       "answer": {
-        "answer": "{\"ok\":true,\"book\":\"Key\",\"picked\":1,\"with_faults\":1,\"review\":0,\"models\":0,\"orphans\":0,\"faults\":1,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix\\\\out\\\\jobs.json\"}"
+        "answer": "{\"ok\":true,\"picked\":9,\"with_faults\":2,\"faults\":2,\"review\":0,\"orphans\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^final correction: check 1$",
       "answer": {
-        "answer": "{\"ok\":true,\"faults\":0,\"orphans\":0,\"jobs\":0,\"applied\":1}"
+        "answer": "{\"ok\":true,\"applied\":1,\"faults\":0,\"orphans\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^final correction: report$",
       "answer": {
-        "answer": "{\"ok\":true,\"cards\":1,\"faults_before\":1,\"faults_after\":0,\"verdicts\":{\"fix\":1},\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"applied\":1}"
+        "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
       }
     },
     {
       "label": "^organize notes: plan$",
       "answer": {
-        "answer": "{\"ok\":true,\"book\":\"Key\",\"picked\":2,\"with_faults\":1,\"review\":0,\"models\":0,\"orphans\":0,\"faults\":1,\"jobs\":0,\"file\":null}"
+        "answer": "{\"ok\":true,\"picked\":9,\"with_faults\":2,\"faults\":2,\"review\":0,\"orphans\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^organize notes: check 1$",
       "answer": {
-        "answer": "{\"ok\":true,\"faults\":0,\"orphans\":0,\"jobs\":0,\"applied\":0}"
+        "answer": "{\"ok\":true,\"applied\":1,\"faults\":0,\"orphans\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
       }
     },
     {
       "label": "^organize notes: report$",
       "answer": {
-        "answer": "{\"ok\":true,\"cards\":2,\"faults_before\":1,\"faults_after\":0,\"verdicts\":{},\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"applied\":0}"
+        "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
       }
     }
   ]

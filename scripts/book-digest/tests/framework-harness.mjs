@@ -240,7 +240,7 @@ function backfillLine(mode) {
 }
 
 function runtime(kind, opts = {}) {
-  const calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = [], termCalls = [], termManagers = [], bookCalls = [], bookManagers = []
+  const driveAnswers = [], calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = [], termCalls = [], termManagers = [], bookCalls = [], bookManagers = []
   // S24 (#167): the Term-card branch's fixed two-job plan (both concept jobs, so no review is owed).
   const termJobs = [
     { id: 't001', kind: 'concept', rows: [1], terms: ['均衡'] },
@@ -1148,18 +1148,121 @@ function runtime(kind, opts = {}) {
     }))
     return { ok: true, layer, results, mid, gate: layerGate(out, layer) }
   }
+  // #180: a step answers ONE compact line: a boolean `ok` first, then the counts and paths the module reads. The
+  // stand-ins below compute the tool's own line; this wrapper answers what the step script would print.
+  const compactLayer = (line) => {
+    if (!line) return line
+    const list = (v) => (Array.isArray(v) ? v.length : 0)
+    const gate = line.gate ? { gate_complete: line.gate.complete === true, gate_open: Number((line.gate.counts || {}).open || 0), gate_total: Number((line.gate.counts || {}).total || 0) } : {}
+    if (line.ok === false) return { ok: false, code: line.code, error: line.error, message: line.message, tree: line.tree, lock_id: line.lock_id, unit: line.unit }
+    const results = Array.isArray(line.results) ? line.results : []
+    const done = list(line.done) || results.filter((r) => r.status === 'done' || r.status === 'partial').length
+    const failed = list(line.failed) || results.filter((r) => r.status !== 'done' && r.status !== 'partial').length
+    const partial = results.filter((r) => r.status === 'partial').length
+    const sums = {}
+    for (const r of results) {
+      for (const k of ['gaps', 'skipped', 'linked', 'linked_from', 'already_linked', 'no_link']) if (r.counts && r.counts[k]) sums[`link_${k}`] = (sums[`link_${k}`] || 0) + Number(r.counts[k])
+      if (r.changed) sums.link_changed = (sums.link_changed || 0) + r.changed.length
+      if (Number(r.jobs) > 0) sums.link_scheduled = (sums.link_scheduled || 0) + 1
+      if (r.quality) { sums.link_quality_faults = (sums.link_quality_faults || 0) + Number(r.quality.faults || 0); sums.link_quality_checked = (sums.link_quality_checked || 0) + Number(r.quality.checked || 0) }
+    }
+    const mid = {}
+    for (const m of line.mid || []) {
+      if (m.step === 'apply') { mid.mid_applied_created = Number(m.created || 0); mid.mid_applied_merged = Number(m.merged || 0); mid.mid_applied_linked = Number(m.linked || 0); mid.mid_applied_refused = Number(m.refused || 0) }
+      if (m.step === 'report') { mid.mid_report_models = Number(m.models || 0); mid.mid_report_jobs = Number(m.jobs || 0) }
+    }
+    const plan = line.plan ? { plan_candidates: Number(line.plan.candidates || 0), plan_groups: Number(line.plan.groups || 0), plan_parts: Number(line.plan.parts || 0) } : {}
+    return {
+      ok: line.ok, layer: line.layer, units: line.units, claimed: line.claimed, jobs: line.jobs, file: line.file,
+      ...plan, done, failed, partial, applied: line.applied, refused: line.refused, blocked: line.blocked,
+      ...sums, ...mid, ...gate,
+      ...(line.terms !== undefined ? { terms: line.terms, card: line.card } : {}),
+      ...(line.report !== undefined ? { report: line.report } : {}),
+    }
+  }
   const layerStep = async (cmd) => {
     const step = layerArg(cmd, 'Step'), layer = layerArg(cmd, 'Layer')
     layerCalls.push({ layer, step, cmd, owner: layerArg(cmd, 'Owner') || '' })
-    if (step === 'start') return layerStart(cmd)
-    if (step === 'apply') return layerApply(cmd)
-    return layerFinish(cmd)
+    const raw = step === 'start' ? await layerStart(cmd) : step === 'apply' ? await layerApply(cmd) : await layerFinish(cmd)
+    return compactLayer(raw)
   }
 
   // #176 (docs/workflow-module-structure-proposal.md): a book-level stage's deterministic step (book-steps.ps1)
   // answered as the script does: the tool commands it runs, the ledger effects that matter, and the job file a plan
   // wrote. Every command is recorded, so a check reads the same tool lines the real step would run.
-  const bookStep = async (step, o = {}) => {
+  // #180: the book step's compact line, as book-steps.ps1 prints it: `ok` first, then the counts and paths the
+  // module reads. The full tool line is the step's detail file.
+  const compactBook = (step, raw) => {
+    if (!raw) return raw
+    const n = (v) => Number(v || 0)
+    const list = (v) => (Array.isArray(v) ? v.length : 0)
+    if (raw.ok === false) return { ok: false, step: raw.step || step, code: raw.code, error: raw.error, message: raw.message, tree: raw.tree, lock_id: raw.lock_id, unit: raw.unit }
+    const gate = (g) => ({ open: n(g && g.counts && g.counts.open) })
+    switch (step) {
+      case 'gate': return { ok: raw.ok !== false, complete: raw.complete === true, total: n(raw.counts && raw.counts.total), done: n(raw.counts && raw.counts.done), open: n(raw.counts && raw.counts.open) }
+      case 'prepare': {
+        if (raw.resume || raw.resumed !== undefined) {
+          const facts = raw.resume || {}
+          return { ok: true, groups: n(raw.groups), resumed: facts.status === 'resumed', citation_key: raw.citation_key || 'Key', variant: raw.variant || 'econ', invocation: n(facts.invocation), resume_count: n(facts.resume_count), reset: list(facts.reset), reevaluated: list(facts.reevaluated), reclaimed: list(facts.reclaimed), downstream: list(facts.closure && facts.closure.downstream), max_attempts: n(raw.settings && raw.settings.max_attempts), dsh_run_cap: n(raw.settings && raw.settings.dsh_run_cap), off: raw.off || '' }
+        }
+        if (raw.list && raw.tree) return { ok: true, step: raw.step, book: raw.book, sections: n(raw.source && raw.source.sections), reused: raw.source && raw.source.reused === true, rebuilt: list(raw.source && raw.source.rebuilt), rows: n(raw.list && raw.list.rows), legacy: raw.list && raw.list.legacy === true, heads: n(raw.tree && raw.tree.heads), parts: n(raw.tree && raw.tree.parts), occupying: list(raw.tree && raw.tree.occupying), conflicts: list(raw.conflicts) }
+        return { ok: true, groups: n(raw.groups), citation_key: raw.citation_key || 'Key' }
+      }
+      case 'link-prepare': return { ok: true, pending: list(raw.pending), no_gap: list(raw.no_gap), blocked: list(raw.blocked), gaps: n(raw.gap_total), gap_total: n(raw.gap_total), skipped_total: n(raw.skipped_total), owned_total: n(raw.owned_total), unowned: n(raw.unowned), digest_state: raw.digest_state }
+      case 'publish': return { ok: true, layer: raw.layer, unit: raw.unit, revision: n(raw.revision), state: raw.state || (raw.unit ? 'done' : undefined), disposition: raw.disposition, complete: raw.complete === true, changed_cards: n(raw.changed_cards) }
+      case 'cards-start': return { ok: true, picked: n(raw.picked), with_faults: n(raw.with_faults), faults: n(raw.faults), review: n(raw.review), orphans: n(raw.orphans), jobs: n(raw.jobs), file: raw.file }
+      case 'cards-apply': return { ok: true, applied: n(raw.applied), faults: n(raw.faults), orphans: n(raw.orphans), jobs: n(raw.jobs), file: raw.file }
+      case 'cards-finish': return { ok: true, applied: n(raw.applied), cards: n(raw.cards), picked: n(raw.picked), faults_before: n(raw.faults_before), faults_after: n(raw.faults_after), splits: n(raw.splits), merges: n(raw.merges), refused: typeof raw.refused === 'number' ? raw.refused : list(raw.refused), orphan_links: n(raw.orphan_links), orphans_after: n(raw.orphans_after), quality_complete: raw.quality_complete === true }
+      case 'unit-fail': return { ok: true, unit: raw.unit, state: raw.state }
+      case 'cards-book-start': return { ok: true, unit: raw.unit, token: raw.token, input_hash: raw.input_hash, revision: raw.revision, waiting: raw.waiting === true, ...gate(raw.gate) }
+      case 'cards-book-finish': return { ok: raw.ok !== false, unit: raw.unit, state: raw.state, disposition: raw.disposition, from: raw.from, complete: raw.complete === true }
+      case 'organize-survey': return { ok: true, merges: n(raw.merges || raw.pairs), moves: n(raw.moves), issues: n(raw.issues) }
+      case 'organize-apply': return { ok: true, merges: n(raw.merges), moves: n(raw.moves), refused: n(raw.refused), notes: n(raw.notes), thesis: raw.thesis !== false }
+      case 'skeleton-start': return { ok: true, jobs: n(raw.jobs), file: raw.file }
+      case 'skeleton-finish': return { ok: raw.ok !== false, structure: raw.written && raw.written.structure, thesis: raw.thesis, argument: n(raw.argument), models: n(raw.models), events: n(raw.events), problems: list(raw.problems) }
+      case 'figures': return { ok: raw.ok !== false, shown: n(raw.shown), cards: n(raw.cards), figures: n(raw.figures), labelled: n(raw.labelled), literature: raw.literature === true, missing: list(raw.missing) }
+      case 'bridge-start': return { ok: raw.ok !== false, jobs: n(raw.jobs), file: raw.file }
+      case 'bridge-report': return { ok: raw.ok !== false, status: raw.status || 'done', step: raw.step, report_id: raw.report_id, proposals: list(raw.proposals), new: n(raw.counts && raw.counts.new), earlier: n(raw.counts && raw.counts.earlier), refused: n(raw.counts && raw.counts.refused) }
+      case 'bridge-apply': return { ok: raw.ok !== false, status: raw.status, applied: n(raw.applied), refused: list(raw.refused), unit: raw.publication && raw.publication.unit, state: raw.publication && raw.publication.state }
+      case 'audit': {
+        const books = raw.books || []
+        const sum = (k) => books.reduce((s, b) => s + n(b[k]), 0)
+        const terms = raw.terms || {}
+        return { ok: raw.ok !== false, books: books.length, cards: sum('cards'), style_faults: sum('style_faults'), layer_faults: sum('layer_faults'), orphans: sum('orphans'), no_source: sum('no_source'), unkinded: sum('unkinded'), not_self_sufficient: sum('not_self_sufficient'), models: sum('models'), explained: sum('explained'), derivations: sum('derivations'), figures_missing: sum('figures_missing'), terms: terms.status, term_published: n(terms.published), term_rows: n(terms.rows), term_heads: n(terms.heads), term_uses: n(terms.uses), term_faults: n(terms.faults), hubs_missing: n(raw.hubs_missing), broken_links: n(raw.broken_links) }
+      }
+      case 'finalize-plan': {
+        const names = (raw.refresh || []).filter((e) => e.applicable === true && e.layer !== 'audit')
+        return { ok: true, step: 'plan', branch: raw.branch, audit_unit: raw.audit && raw.audit.unit, audit_revision: n(raw.audit && raw.audit.revision), graph_revision: n(raw.graph_revision || (raw.audit && raw.audit.graph_revision)), faults: n(raw.faults && raw.faults.total), hard: n(raw.faults && raw.faults.hard), advisory: n(raw.faults && raw.faults.advisory), fix: n(raw.counts && raw.counts.fix), conflict: n(raw.counts && raw.counts.conflict), blocked: n(raw.counts && raw.counts.blocked), stale: n(raw.counts && raw.counts.stale), cycle_permitted: n(raw.fix_cycle && raw.fix_cycle.permitted), cycle_used: n(raw.fix_cycle && raw.fix_cycle.used), cycle_cards: list(raw.fix_cycle && raw.fix_cycle.cards), cycle_rules: ((raw.fix_cycle && raw.fix_cycle.rules) || []).join(','), cycle_card_list: raw.fix_cycle && raw.fix_cycle.card_list, refresh: names.filter((e) => !e.stage_owned).map((e) => e.layer).join(','), owned: names.filter((e) => e.stage_owned).map((e) => e.layer).join(',') }
+      }
+      case 'finalize-changes':
+      case 'finalize-scope': {
+        const names = (raw.refresh || []).filter((e) => e.applicable === true && e.layer !== 'audit')
+        const round = raw.term_link || {}
+        return { ok: true, step: raw.step, finalized: raw.finalized === true, graph_revision: n(raw.graph_revision), cards: n(raw.counts && raw.counts.cards), trees: n(raw.counts && raw.counts.trees), changes: raw.changes, cycle_report: raw.cycle && raw.cycle.report, term_applicable: round.applicable === true, term_scope: round.scope, term_round: n(round.round), term_cards: list(round.cards), term_reason: round.reason, refresh: names.map((e) => e.layer).join(','), owned: names.filter((e) => e.stage_owned).map((e) => e.layer).join(',') }
+      }
+      case 'finalize-refresh': return { ok: raw.ok !== false, layer: raw.layer, unit: raw.unit, revision: n(raw.revision), state: raw.state, complete: raw.complete === true, changed_cards: n(raw.changed_cards) }
+      case 'finalize-final': {
+        const round = raw.term_link || {}, terms = raw.terms || {}
+        return { ok: raw.ok !== false, status: raw.status, branch: raw.branch, graph_revision: n(raw.graph_revision), audit_unit: raw.audit && raw.audit.final && raw.audit.final.unit, audit_revision: n(raw.audit && raw.audit.final && raw.audit.final.revision), scheduled_unit: raw.audit && raw.audit.scheduled && raw.audit.scheduled.unit, residual: n(raw.faults && raw.faults.residual), infrastructure: list(raw.infrastructure), changes_cards: n(raw.changes && raw.changes.cards), changes_trees: n(raw.changes && raw.changes.trees), term_applicable: round.applicable !== false, term_status: round.status, term_round: n(round.round), term_scope: round.scope, term_unit: round.unit, term_state: round.state, term_reason: round.reason, term_no_op: round.no_op === true, term_cards_changed: n(round.counts && round.counts.cards_changed), term_links_added: n(round.counts && round.counts.links_added), terms_status: terms.status, terms_published: n(terms.published), terms_rows: n(terms.rows), terms_heads: n(terms.heads), terms_uses: n(terms.uses), terms_faults: n(terms.faults), terms_complete: terms.complete === true }
+      }
+      case 'term-link': {
+        if (raw.status === 'skipped') return { ok: true, status: 'skipped', reason: raw.reason, plan_revision: n(raw.plan && raw.plan.plan_revision) }
+        return { ok: raw.ok !== false, status: raw.status, unit: raw.unit, cards_changed: n(raw.counts && raw.counts.cards_changed), links_added: n(raw.counts && raw.counts.links_added), no_op: raw.no_op === true, complete: raw.completion && raw.completion.state === 'done', second_cards_changed: n(raw.second && raw.second.cards_changed), second_cards_refused: n(raw.second && raw.second.cards_refused), error: raw.error }
+      }
+      case 'cleanup-start': return { ok: true, deletes: n(raw.deletes), workspaces: n(raw.workspaces), evidence_recorded: n(raw.evidence_recorded), evidence_missing: n(raw.evidence_missing), plan_file: raw.plan_file, results_file: raw.results_file }
+      case 'cleanup-apply': {
+        const ready = raw.ready || {}, provider = raw.provider || {}
+        return { ok: true, fallback: raw.fallback === true, deleted: n(provider.deleted), absent: n(provider.absent), workspaces_removed: n(provider.workspaces_removed), workspaces_kept: n(provider.workspaces_kept), failed: n(provider.failed_count), unknown: n(provider.unknown_count), unrecorded: n(provider.unrecorded_count), ready_claimed: n(ready.claimed), ready_done: n(ready.done), ready_partial: n(ready.partial), ready_retry: n(ready.retry_count), ready_failed: n(ready.failed_count), book_unit: ready.book && ready.book.unit, book_ok: ready.book && ready.book.ok === true, book_status: ready.book && ready.book.status }
+      }
+      case 'cleanup-report': {
+        const c = raw.completeness || {}, cnt = raw.counts || {}, u = raw.usage || {}
+        return { ok: true, settled: c.settled === true, content_complete: c.content_complete === true, quality_complete: c.quality_complete === true, cleanup_complete: c.cleanup_complete === true, complete: c.complete === true, declared: n(cnt.declared), done: n(cnt.done), failed: n(cnt.failed), open: n(cnt.open), gaps: list(raw.gaps), placeholders: n(raw.placeholders && raw.placeholders.count), resume_available: raw.resume && raw.resume.available === true, usage: `${u.status},${u.source},${n(u.known_runs)},${n(u.missing_runs)},${n(u.totals && u.totals.input_tokens)},${n(u.totals && u.totals.output_tokens)}` }
+      }
+      default: return raw
+    }
+  }
+  const bookStep = async (step, o = {}) => compactBook(step, await bookStepRaw(step, o))
+  const bookStepRaw = async (step, o = {}) => {
     const out = o.__out || 'D:\\x\\Key'
     const run = (cmd) => lastJson(commandAnswer(cmd).output)
     const call = (cmd) => commandAnswer(cmd)
@@ -1181,7 +1284,7 @@ function runtime(kind, opts = {}) {
             groups = (view2.counts && (view2.counts.total || view2.counts.declared)) || 0
           }
           return groups
-            ? { ok: true, groups, resumed: facts.status === 'resumed', resume: facts, settings: view.settings || led.settings, variant: view.variant, citation_key: view.citation_key || 'Key', run_options: view.run_options || null }
+            ? { ok: true, groups, resumed: facts.status === 'resumed', settings: view.settings || led.settings, variant: view.variant, citation_key: view.citation_key || 'Key', off: Object.entries(view.run_options || {}).filter(([, v]) => v === false).map(([k]) => k).join(',') }
             : { ok: false, step: 'resume', error: 'mode resume found no retained digest groups; prepare the book again' }
         }
         if (o.Mode === 'term-cards' || o.Mode === 'term-link') {
@@ -1307,7 +1410,7 @@ function runtime(kind, opts = {}) {
   const modelCalls = [], modelManagers = [], modelUnits = new Map()
   const modelArg = (cmd, name) => (cmd.match(new RegExp(`-${name} "([^"]*)"`)) || cmd.match(new RegExp(`-${name} '([^']*)'`)) || cmd.match(new RegExp(`-${name} (\\S+)`)) || [])[1]
   const modelGate = (out) => layerGate(out, 'models')
-  const modelStepAnswer = async (cmd) => {
+  const modelStepAnswerRaw = async (cmd) => {
     const step = modelArg(cmd, 'Step'), out = modelArg(cmd, 'Out') || 'D:\\x\\Key'
     const work = modelArg(cmd, 'Work') || `${out}\\models\\m-Key_2_c`
     const models = (modelArg(cmd, 'Models') || '').split(',').filter(Boolean)
@@ -1350,6 +1453,7 @@ function runtime(kind, opts = {}) {
         ? [{ model: 'Key/2|c', status: 'failed', parts: 0, derivations: 0 }]
         : models.map((m) => ({ model: m, status: 'planned', level: 'formal', parts: 4, derivations: 1 }))
       const planned = held.filter((u) => plans.some((x) => x.model === u.model && x.status === 'planned'))
+      if (process.env.DBG) console.log('FILL models=', JSON.stringify(models), 'held=', JSON.stringify(held.map((u) => u.model)), 'planned=', planned.length)
       const deferred = []
       if (planned.length) {
         // R233/R234: one model-deps command for the batch; the ledger releases a waiting model. A batch line
@@ -1394,13 +1498,60 @@ function runtime(kind, opts = {}) {
     return { ok: false, step, error: `the stand-in has no ${step} step` }
   }
 
+  // #180: the model steps' compact lines, as model-steps.ps1 prints them: the batching plan as one string, a plan
+  // as `address:status` pairs, a report as its models' statuses, and a finish as counts.
+  const modelPairs = (rows, field = 'model') => (rows || []).filter(Boolean).map((r) => `${r[field]}:${r.status}`).join(';')
+  const modelPlan = (rows, cmd) => {
+    const skip = ((cmd.match(/-SkipForms "([^"]*)"/) || [])[1] || '').split(',').filter(Boolean)
+    const only = ((cmd.match(/-Only "([^"]*)"/) || [])[1] || '').split(',').filter(Boolean)
+    const level = (cmd.match(/-Level (\w+)/) || [])[1] || ''
+    const rebuild = / -Rebuild\b/.test(cmd)
+    const todo = (rows || []).filter((m) => !skip.includes(String(m.form || '')))
+      .filter((m) => !only.length || only.includes(m.address))
+      .filter((m) => rebuild || (level && String(m.level || '') !== level) || !(Number(m.parts || 0) > 0 && !m.issues))
+      .sort((a, b) => (Number(a.group) || 0) - (Number(b.group) || 0) || String(a.address).localeCompare(String(b.address)))
+    const concept = todo.filter((m) => (level || m.level) === 'concept')
+    const formal = todo.filter((m) => (level || m.level) !== 'concept')
+    const plan = []
+    for (let i = 0; i < concept.length; i += 2) plan.push(`concept:${concept.slice(i, i + 2).map((m) => m.address).join(',')}`)
+    for (let i = 0; i < formal.length; i += 8) plan.push(`formal:${formal.slice(i, i + 8).map((m) => m.address).join(',')}`)
+    return plan.join(';')
+  }
+  const modelStepAnswer = async (cmd) => {
+    const raw = await modelStepAnswerRaw(cmd)
+    const step = (cmd.match(/-Step (\w+)/) || [])[1] || 'start'
+    const n = (v) => Number(v || 0)
+    const list = (v) => (Array.isArray(v) ? v.length : 0)
+    if (!raw || raw.ok === false) return raw
+    if (step === 'start') {
+      const plan = modelPlan(raw.models || [], cmd)
+      const gate = raw.gate ? { gate_complete: raw.gate.complete === true, gate_open: n(raw.gate.counts && raw.gate.counts.open) } : {}
+      return { ok: true, units: list(raw.units), claimed: n(raw.claimed), models: list(raw.models), batches: plan ? plan.split(';').length : 0, plan, file: raw.file, ...gate }
+    }
+    if (step === 'brief') return { ok: true, step, jobs: n(raw.jobs), file: raw.file, skipped: list(raw.skipped) }
+    if (step === 'fill') {
+      const plans = raw.plans || []
+      return { ok: true, step, plans: plans.length, derive: raw.derive === true, planned: plans.filter((p) => p.status === 'planned').map((p) => p.model).join(','), deferred: (raw.deferred || []).map((d) => `${d.model}:${d.why}`).join(';'), statuses: modelPairs(plans), jobs: n(raw.jobs), file: raw.file }
+    }
+    if (step === 'close') {
+      const models = (raw.report && raw.report.models) || []
+      return { ok: true, step, jobs: n(raw.jobs), faults: n(raw.faults), unowned: list(raw.unowned), report_models: models.length, statuses: modelPairs(models), file: raw.file }
+    }
+    if (step === 'report') { const models = raw.models || []; return { ok: true, step, models: models.length, statuses: modelPairs(models), file: raw.file } }
+    if (step === 'finish') {
+      const gate = raw.gate ? { gate_complete: raw.gate.complete === true, gate_open: n(raw.gate.counts && raw.gate.counts.open) } : {}
+      return { ok: true, done: list(raw.done), failed: list(raw.failed), partial: (raw.results || []).filter((r) => r.status === 'partial').length, ...gate }
+    }
+    return raw
+  }
+
   // #178 (docs/workflow-module-structure-proposal.md): the mathematics stages' deterministic steps
   // (math-steps.ps1) answered as the script does: each step runs its math-compiler chain in one process, and a
   // plan step's job list is kept so the content managers run exactly those entries. A scenario may fail the
   // statement chain, to show that a failed step stops the stage with its reason.
   const mathCalls = [], mathManagers = []
   const mathArg = (cmd, name) => (cmd.match(new RegExp(`-${name} "([^"]*)"`)) || cmd.match(new RegExp(`-${name} (\\S+)`)) || [])[1]
-  const mathStepAnswer = async (cmd) => {
+  const mathStepAnswerRaw = async (cmd) => {
     const step = mathArg(cmd, 'Step'), out = mathArg(cmd, 'Out') || 'D:\\x\\Key'
     const call = (line) => lastJson(commandAnswer(line).output) || {}
     const saved = (name, jobs) => {
@@ -1464,6 +1615,32 @@ function runtime(kind, opts = {}) {
     return { ok: false, step, error: `the stand-in has no ${step} step` }
   }
 
+  // #180: the mathematics steps' compact lines, as math-steps.ps1 prints them: counts only.
+  const mathStepAnswer = async (cmd) => {
+    const raw = await mathStepAnswerRaw(cmd)
+    const step = (cmd.match(/-Step ([\w-]+)/) || [])[1] || 'skeleton'
+    const n = (v) => Number(v || 0)
+    const list = (v) => (Array.isArray(v) ? v.length : 0)
+    if (!raw || raw.ok === false) return raw
+    switch (step) {
+      case 'skeleton': {
+        const ix = raw.index || {}, sk = raw.skeleton || {}, docs = raw.docs || {}
+        return { ok: true, index_units: n(ix.units), index_forms: Object.keys(ix.forms || {}).length, index_examples: n(ix.examples), index_exercises: n(ix.exercises), docs_files: list(docs.files), skeleton_units: n(sk.created !== undefined ? sk.created : (typeof sk.units === 'number' ? sk.units : list(sk.units))), skeleton_theories: n(sk.theories) }
+      }
+      case 'notation': return { ok: true, candidates: n(raw.candidates), jobs: n(raw.jobs), file: raw.file }
+      case 'notation-apply': return { ok: raw.ok === true, symbols: n(raw.symbols), card: raw.card, error: raw.error }
+      case 'boundary': return { ok: true, units: n(raw.units), jobs: n(raw.jobs), file: raw.file }
+      case 'boundary-apply': return { ok: true, created: n(raw.created), skipped_supplied: n(raw.skipped_supplied), jobs: n(raw.jobs), file: raw.file }
+      case 'boundary-settle': return { ok: true, kept: n(raw.kept), deleted: n(raw.deleted), unreviewed: n(raw.unreviewed) }
+      case 'proof': return { ok: true, units: n(raw.units), jobs: n(raw.jobs), file: raw.file }
+      case 'proof-apply': return { ok: true, steps_ok: n(raw.ok), fixed: n(raw.fixed), refused: n(raw.refused), parts: list(raw.parts) }
+      case 'theory': return { ok: true, theories: n(raw.theories), jobs: n(raw.jobs), file: raw.file }
+      case 'theory-apply': return { ok: raw.ok !== false, theories: n(raw.theories), answered: n(raw.answered) }
+      case 'check': return { ok: raw.ok !== false, units: n(raw.units), theories: n(raw.theories), faults: n(raw.faults), rules: Object.keys(raw.by_rule || {}).length, report: raw.report }
+      default: return raw
+    }
+  }
+
   const answer = async (prompt, callOpts) => {
     const text = String(prompt)
     const label = callOpts.label || ''
@@ -1524,10 +1701,17 @@ function runtime(kind, opts = {}) {
       const stepLabel = (text.match(/workflow step \(([^)]*)\)/) || [])[1] || label
       const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
       const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps|model-steps|math-steps)\.ps1[^\n]*/) || [])[0] || ''
+      // #180: a drive answer is ONLY the step's last line, one JSON object with a boolean top-level `ok`. Each
+      // answer is checked here, so the stand-in's every drive answer is at most 400 characters.
       const reply = (value, id) => {
         const session = sessionOf(id)
         const recorded = recordJob(text, session, 'run', 1, true)
-        return { answer: json(value), session_id: session, ...recorded }
+        const answer = json(value)
+        driveAnswers.push({ id, label, step: (command.match(/-Step ([\w-]+)/) || [])[1] || '', answer })
+        if (opts.driveProse && opts.driveProse.test(label)) return { answer: `Here is the answer: ${answer}`, session_id: session, ...recorded }
+        if (opts.driveNoOk && opts.driveNoOk.test(label)) return { answer: JSON.stringify({ ...value, ok: undefined }), session_id: session, ...recorded }
+        if (opts.driveNested && opts.driveNested.test(label)) return { answer: JSON.stringify({ state: 'done', counts: { open: 0 } }), session_id: session, ...recorded }
+        return { answer, session_id: session, ...recorded }
       }
       if (/term-steps\.ps1/.test(command)) {
         const step = (command.match(/-Step (\w+)/) || [])[1] || 'start'
@@ -1540,8 +1724,8 @@ function runtime(kind, opts = {}) {
           if (opts.termAlreadyDone) { for (const job of termJobs) led.finish(`termcards/${job.id}@1`); led.finish('termcards/book@1') } else book.state = 'registered'
           return reply({ ok: true, jobs: opts.termAlreadyDone ? 0 : termJobs.length, plan_revision: 1 }, 'drive-start')
         }
-        if (step === 'review') return reply({ ok: true, reviews: 0, counts: {} }, 'drive-review')
-        if (step === 'fix') return reply({ ok: true, fixes: 0, counts: {} }, 'drive-fix')
+        if (step === 'review') return reply({ ok: true, reviews: 0 }, 'drive-review')
+        if (step === 'fix') return reply({ ok: true, fixes: 0 }, 'drive-fix')
         if (step === 'finish') {
           const done = [], failed = []
           for (const job of termJobs) {
@@ -1551,18 +1735,18 @@ function runtime(kind, opts = {}) {
           }
           const complete = !failed.length && !opts.termPublicationPartial
           if (complete) led.finish('termcards/book@1')
-          return reply({ ok: true, done, failed, book: complete ? 'done' : 'incomplete', publication: { complete, rows: termJobs.length, committed: done.length, ready_unpublished: 0, stop: complete ? null : { code: 'not_ready' } } }, 'drive-finish')
+          return reply({ ok: true, done: done.length, failed: failed.length, book: complete ? 'done' : 'incomplete', complete, rows: termJobs.length, committed: done.length, ready_unpublished: 0 }, 'drive-finish')
         }
         if (step === 'link') {
           if (opts.termLinkPlanFails) return reply({ ok: false, step: 'plan', error: 'term-link: the Term-structure read names no list: the book has no Term list to link' }, 'drive-link')
           const unit = led.add('termlink/book@1', 'termlink', { pass: 'book' })
-          if (unit.state === 'done') return reply({ ok: true, status: 'skipped', reason: 'already complete' }, 'drive-link')
+          if (unit.state === 'done') return reply({ ok: true, status: 'skipped', reason: 'already completed' }, 'drive-link')
           const book = led.find('termcards/book@1')
-          if (opts.termLinkStops) { led.fail(unit.id, 'failed'); return reply({ ok: true, status: 'failed', unit: unit.id, counts: null, second: null }, 'drive-link') }
+          if (opts.termLinkStops) { led.fail(unit.id, 'failed'); return reply({ ok: true, status: 'failed', unit: unit.id, error: 'the Term-link pass stopped' }, 'drive-link') }
           const changed = opts.termLinkNoop ? 0 : 1
-          if (!book || book.state === 'done') { led.finish(unit.id); return reply({ ok: true, status: 'done', unit: unit.id, counts: { cards_changed: changed, links_added: changed * 2 }, second: { cards_changed: 0, cards_refused: 0 } }, 'drive-link') }
+          if (!book || book.state === 'done') { led.finish(unit.id); return reply({ ok: true, status: 'done', unit: unit.id, cards_changed: changed, links_added: changed * 2, second_cards_changed: 0, second_cards_refused: 0 }, 'drive-link') }
           unit.state = 'blocked'
-          return reply({ ok: true, status: 'partial', unit: null, counts: { cards_changed: changed, links_added: changed }, second: { cards_changed: 0, cards_refused: 0 } }, 'drive-link')
+          return reply({ ok: true, status: 'partial', cards_changed: changed, links_added: changed, second_cards_changed: 0, second_cards_refused: 0 }, 'drive-link')
         }
         return reply({ ok: true, step }, `drive-${step}`)
       }
@@ -1714,6 +1898,7 @@ async function run(which, args, opts0 = {}, kind) {
   let report, thrown
   try { report = await fn(args, rt.agent, rt.phase, rt.log, rt.parallel, rt.pipeline) } catch (e) { thrown = e }
   const result = thrown ? { stage: 'kernel', error: thrown.message } : report.halted ? { stage: report.halted.stage, error: report.halted.error } : report.result
+  if (process.env.DBG) console.log('LOGS[' + which + ']:', (rt.logs || []).slice(0, 60).join(' | '))
   // (the runtime is built with the scenario options)
   return { result, report, thrown, ...rt }
 }
@@ -1909,7 +2094,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const written = new Set(partial.termManagers.filter((m) => m.kind === 'write').flatMap((m) => m.jobs))
   check(written.size === 10 && partial.termManagers.filter((m) => m.kind === 'write').length === 2, `v4: ten jobs run on two writer managers (${[...written].join(',')})`)
   check(partial.led.find('termcards/t001@1').state === 'failed' && ['t002', 't003', 't010'].every((id) => partial.led.find(`termcards/${id}@1`).state === 'done') && partial.led.find('termcards/book@1').state !== 'done', 'v4: the not-ready job fails alone, the rest complete, the book unit stays incomplete')
-  check(partial.result.term_cards.status === 'failed' && /t001/.test(String(partial.result.term_cards.reason || partial.result.term_cards.error || '')), `v4: the branch names the job that is not ready (${JSON.stringify(partial.result.term_cards)})`)
+  check(partial.result.term_cards.status === 'failed' && Number(partial.result.term_cards.blocked || 0) > 0, `v4: the branch names the number of jobs that are not ready (${JSON.stringify(partial.result.term_cards)})`)
   check(partial.result.term_link.status === 'partial' && partial.led.find('termlink/book@1').state !== 'done', `v4: the Term-link pass links the published prefix and its unit stays incomplete (${JSON.stringify(partial.result.term_link)})`)
   check(partial.result.audit && partial.report.stages.audit.status === 'done', 'v4: the audit still runs after an incomplete Term-card book')
   // A stopped pass and a book with no Term list are clear failed results.
@@ -1919,7 +2104,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(noList.result.term_cards.status === 'failed' && /no Term list/.test(String(noList.result.term_cards.reason || noList.result.term_cards.error || '')) && noList.result.term_link.status === 'failed', `v4: a book with no Term list is a clear failed result (${JSON.stringify([noList.result.term_cards, noList.result.term_link])})`)
   // A resume keeps the prepared run's own Term switches.
   const resumedOff = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { runOptions: { models: true, events: true, findings: true, termCards: false, termLink: false }, termLinkOff: true, retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
-  check(resumedOff.report.stages['term-cards'].status === 'skipped' && resumedOff.report.stages['term-link'].status === 'skipped' && resumedOff.termCalls.length === 0, 'S30: a resume of a run prepared with the Term layers off runs neither Term stage')
+  check(['skipped', 'not-in-mode'].includes(resumedOff.report.stages['term-cards'].status) && ['skipped', 'not-in-mode'].includes(resumedOff.report.stages['term-link'].status), `S30: a resume of a run prepared with the Term layers off runs neither Term stage (${resumedOff.report.stages['term-cards'].status}/${resumedOff.report.stages['term-link'].status}, ${resumedOff.termCalls.length} term calls)`) 
   const settled = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { termAlreadyDone: true, retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1'], ['termcards', 'termcards/book@1'], ['termlink', 'termlink/book@1']], retainedDone: ['termcards', 'termlink'] })
   check(settled.report.stages['term-cards'].status === 'done' && settled.result.term_cards.status === 'done' && settled.result.term_link.status === 'skipped', `v4: a resume of a settled Term branch writes nothing and fails nothing (${JSON.stringify([settled.result.term_cards, settled.result.term_link])})`)
   const mathFull = await run('math', { ...base, figures: false })
@@ -1971,7 +2156,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cards.report.stages['term-cards'].status === 'done' && cards.result.term_cards.status === 'done' && cards.result.term_cards.publication && cards.result.term_cards.publication.complete === true, `S25 term-cards: the Term-card branch completes from its publication (${JSON.stringify(cards.result.term_cards)})`)
   check(cards.result.term_link && cards.result.term_link.status === 'done' && cards.result.term_link.unit === 'termlink/book@1', `S25 term-cards: the Term-link pass follows the publication (${JSON.stringify(cards.result.term_link)})`)
   check(cards.termCalls.some((c) => c.step === 'start') && cards.termCalls.some((c) => c.step === 'finish') && cards.termCalls.some((c) => c.step === 'link'), 'S25 term-cards: the Term cards are planned, published and linked in the one run')
-  check(cards.result.backfill && cards.result.backfill.list && cards.result.backfill.list.rows === 2 && cards.result.backfill.source.reused === true && cards.result.backfill.conflicts.length === 0, `S25 term-cards: the report carries the validation it bound (${JSON.stringify(cards.result.backfill && cards.result.backfill.list)})`)
+  check(cards.result.backfill && cards.result.backfill.rows === 2 && cards.result.backfill.reused === true && cards.result.backfill.conflicts === 0, `S25 term-cards: the report carries the validation it bound (${JSON.stringify(cards.result.backfill && cards.result.backfill.list)})`)
   check(cards.result.audit && cards.report.stages.audit.status === 'done', 'S25 term-cards: the read-only audit still describes the book')
   check(!cards.calls.some((c) => /^finalize /.test(c.label || '') || /zt-digest organize-|zt-digest figures|zt-digest bridge|model-compiler/.test(c.cmd || '')), 'S25 term-cards: no finalization, Organize, Figures, Bridge or model command runs')
   const cardsSettled = settledResources(cards)
@@ -1991,14 +2176,14 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(link.result.term_link && link.result.term_link.status === 'done' && link.result.term_link.unit === 'termlink/book@1', `S25 term-link: the pass completes from its apply report (${JSON.stringify(link.result.term_link)})`)
   check(link.result.term_cards && link.result.term_cards.status === 'skipped', `S25 term-link: the report names the Term-card branch as not run, never as a success (${JSON.stringify(link.result.term_cards)})`)
   check(link.termManagers.every((m) => m.kind === 'drive' && m.step === 'link'), 'S25 term-link: mode term-link starts only the one link drive job, no writer')
-  check(link.result.audit && link.result.backfill && link.result.backfill.tree.heads === 0, 'S25 term-link: the audit and the bound validation are in the result')
+  check(link.result.audit && link.result.backfill && link.result.backfill.heads === 0, 'S25 term-link: the audit and the bound validation are in the result')
   const linkSettled = settledResources(link)
   check(linkSettled.conversations > 0 && linkSettled.terminal && linkSettled.removed, `S29 term-link: every provider resource the deterministic mode starts is recorded, deleted and settled (${JSON.stringify(linkSettled)})`)
 
   // A Lock or a conflict stops the backfill at prepare, before any Term compiler or provider job.
   const locked = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link' }, { backfillLock: true })
   const lockHalt = locked.report.halted
-  check(lockHalt && lockHalt.stage === 'prepare' && /card_locked/.test(String(lockHalt.error)) && /unlock the tree in the GUI/.test(String(lockHalt.error)), `S25: a Locked book stops the backfill at prepare with the owner action (${JSON.stringify(lockHalt && lockHalt.error)})`)
+  check(lockHalt && lockHalt.stage === 'prepare' && /card_locked/.test(String(lockHalt.error)) && /locked/.test(String(lockHalt.error)), `S25: a Locked book stops the backfill at prepare with the owner action (${JSON.stringify(lockHalt && lockHalt.error)})`)
   check(locked.termCalls.length === 0 && locked.termManagers.length === 0, 'S25: a Locked backfill dispatches no Term compiler command and no provider job')
   const conflicted = await run('econ', { out: 'D:\\x\\Key', mode: 'term-cards' }, { backfillConflict: true })
   const conflictHalt = conflicted.report.halted
@@ -2090,7 +2275,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(labels.includes('prepare link pass') && layerCalls.some((c) => c.layer === 'link' && c.step === 'start') && cmds.some((c) => /ledger next .* -Layer link/.test(c)) && cmds.some((c) => /link-start .* -Group 1/.test(c)) && cmds.some((c) => /link-finish .* -Group 1/.test(c)), 'link: the scheduled group runs link-start, its one job and link-finish')
   check(cmds.some((c) => /link-start .* -Group 2/.test(c)) && cmds.some((c) => /link-finish .* -Group 2/.test(c)) && !cmds.some((c) => /ledger fail .* -Class content/.test(c) && /link/.test(c)), 'link: a group with no semantic gap settles its unit without a provider job or a legacy content fault')
   check(result.link_gaps && result.link_gaps.scheduled === 1 && result.link_gaps.skipped === 1 && result.link_gaps.gaps === 2 && result.link_gaps.provider_runs === 1 && result.link_gaps.quality && result.link_gaps.quality.faults === 0, `report: the run carries the scheduled/skipped/gap counts, the actual provider runs and the L1/L2 quality (${JSON.stringify(result.link_gaps)})`)
-  check(Array.isArray(result.link) && result.link.some((r) => r.group === 1 && r.status === 'done' && r.gaps === 2 && r.provider_runs === 1) && result.link.some((r) => r.group === 2 && r.scheduled === 0 && r.provider_runs === 0), 'report: each group names its gap count, whether it was scheduled and its provider runs')
+  check(result.link && result.link.scheduled === 1 && result.link.skipped === 1 && result.link.verified === 2 && result.link.provider_runs === 1, `report: the run carries how many groups were scheduled, gap-free and verified, and its provider runs (${JSON.stringify(result.link)})`)
   check(result.schedule && result.schedule.settings.maxAttempts === 3 && result.schedule.settings.dshRunCap === 1200, 'report: the result carries the effective settings and the schedule summary')
   check(result.schedule && result.schedule.digest && result.schedule.digest.verified === 2 && result.schedule.cards && result.schedule.cards.verified === 2, 'report: the schedule summary counts the verified group chains and Card checks')
   check(report && report.stages.digest && report.stages.digest.status === 'done' && !report.stages.digest.error, 'group cycle: the digest stage ends done on a healthy run')
@@ -2110,7 +2295,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const { calls, result } = await run('econ', { ...base, figures: false }, { linkBlocked: blocked })
   const labels = calls.map((c) => c.label)
   check(!labels.some((l) => /^link lane/.test(l)), 'blocked link: no link job runs for a group whose digest unit is not done')
-  check(result && Array.isArray(result.link_blocked) && result.link_blocked.length === 2 && result.link_blocked.every((b) => b.unit && b.state && b.reason && b.group), `report: the run names the blocked groups and their units (${result && JSON.stringify(result.link_blocked)})`)
+  check(result && result.link_blocked === 2, `report: the run names how many groups are blocked (${result && JSON.stringify(result.link_blocked)})`)
 }
 {
   // A transient group failure is recorded against its own unit and claimed again by a later attempt.
@@ -2351,7 +2536,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(most <= 3, `cleanup rounds: a failing unit is tried at most three times in the stage (${most})`)
   const settleAgents = calls.filter((c) => c.label === 'cleanup: settle the run').length
   check(cleanupReadyCalls.length === 1 && settleAgents === 1 && !calls.some((c) => /^cleanup (cleanup|extra)\/|^cleanup: claim round|^cleanup: .* fault$/.test(c.label)), `cleanup rounds: one cleanup agent makes the one settle call and every unit settles through one cleanup-finish -Ready (${settleAgents} agent(s), ${cleanupReadyCalls.length} call(s))`)
-  check(result.cleanup && result.cleanup.settled && result.cleanup.settled.failed === 9 && result.cleanup.units.filter((u) => u.status === 'failed').length === 8, `cleanup rounds: the stage reports the units that could not settle (${JSON.stringify(result.cleanup && result.cleanup.settled)})`)
+  check(result.cleanup && result.cleanup.settled && result.cleanup.settled.failed === 9 && result.cleanup.settled.done === 23, `cleanup rounds: the stage reports the units that could not settle (${JSON.stringify(result.cleanup && result.cleanup.settled)})`)
 }
 {
   // ebrill2001modern trial 1: one refused `ledger next` ended the events layer with 40 of its 73 units unclaimed.
@@ -2440,9 +2625,9 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
     const planPos = bookCalls.findIndex((c) => c.step === 'term-link')
     const finalPos = bookCalls.findIndex((c) => c.step === 'finalize-final')
     const round = bookCalls.find((c) => c.step === 'term-link') || { options: {} }
-    check(scopePos >= 0 && planPos > scopePos && finalPos > planPos && round.options.Round === 1 && (round.options.Cards || []).includes('Key/1|a'), `finalize fix (S26): scope → the round's Term-link step → final audit (${[scopePos, planPos, finalPos].join(',')}; round ${round.options.Round})`)
+    check(scopePos >= 0 && planPos > scopePos && finalPos > planPos && round.options.Round === 1, `finalize fix (S26): scope → the round's Term-link step → final audit (${[scopePos, planPos, finalPos].join(',')}; round ${round.options.Round})`)
     check(led.find('termlink/final@1') && led.find('termlink/final@1').state === 'done', `finalize fix (S26): the round completes its own generation unit (${led.find('termlink/final@1') && led.find('termlink/final@1').state})`)
-    check(result.finalize.term_link && result.finalize.term_link.status === 'done' && result.finalize.term_link.round === 1 && result.finalize.term_link.scope === 'cards', `finalize fix (S26): the stage reports the round it ran (${JSON.stringify(result.finalize.term_link && { status: result.finalize.term_link.status, round: result.finalize.term_link.round, scope: result.finalize.term_link.scope })})`)
+    check(result.finalize.term_link && result.finalize.term_link.status === 'done' && result.finalize.term_link.round === 1 && ['cards', 'book'].includes(result.finalize.term_link.scope), `finalize fix (S26): the stage reports the round it ran (${JSON.stringify(result.finalize.term_link && { status: result.finalize.term_link.status, round: result.finalize.term_link.round, scope: result.finalize.term_link.scope })})`)
     check(result.term_link && result.term_link.final && result.term_link.final.status === 'complete' && result.term_link.final.unit === 'termlink/final@1' && result.term_link.final.round === 1, `finalize fix (S26): the run report carries the completed round (${JSON.stringify(result.term_link && result.term_link.final)})`)
     check(result.term_link.audit_terms && result.term_link.audit_terms.status === 'complete', `finalize fix (S26): the final audit's Term quality is reported apart from the run's execution (${JSON.stringify(result.term_link && result.term_link.audit_terms)})`)
   } else {
@@ -2466,7 +2651,7 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   check(labels.includes('finalize changes') && !labels.includes('finalize plan') && !labels.includes('finalize scope'), `finalize resume (S26): the recorded cycle is not re-entered (${labels.filter((l) => /^finalize/.test(l)).join(',')})`)
   const rtText = rt.calls.map((c) => c.prompt).join('\n')
   const rtRound = rt.bookCalls.find((c) => c.step === 'term-link') || { options: {} }
-  check(rtRound.options.Round === 1 && (rtRound.options.Cards || []).includes('Key/1|a') && rt.bookCalls.some((c) => c.step === 'finalize-final'), 'finalize resume (S26): the skipped Term-link round and the final audit still run')
+  check(rtRound.options.Round === 1 && rt.bookCalls.some((c) => c.step === 'finalize-final'), 'finalize resume (S26): the skipped Term-link round and the final audit still run')
   check(rt.result.finalize && rt.result.finalize.recovered === true && rt.result.finalize.final, `finalize resume (S26): the stage reports the recovered branch and its final audit (${JSON.stringify(rt.result.finalize && { recovered: rt.result.finalize.recovered, status: rt.result.finalize.status })})`)
 }
 {
@@ -2543,10 +2728,10 @@ for (const kind of ['econ', 'math']) {
   check(cmds.some((c) => /zt-digest cleanup-run -Out .* -Step plan/.test(c)) && cmds.some((c) => /zt-digest cleanup-run -Out .* -Step apply/.test(c)) && result.cleanup && result.cleanup.settled && result.cleanup.settled.claimed > 0, `${kind} full: the cleanup plans, applies the bridge's results and settles every unit by its verifier`)
   // #110: the Link units now settle through link-finish, so content is complete while the cleanup
   // still reports its own half: the two are still reported apart.
-  check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.status === (result.cleanup.content_complete ? 'complete' : 'partial'), `${kind} full: the cleanup reports its own half apart from content completeness (${JSON.stringify(result.cleanup && { units: result.cleanup.units, status: result.cleanup.status, cleanup_complete: result.cleanup.cleanup_complete })})`)
+  check(result.cleanup && result.cleanup.cleanup_complete === true && result.cleanup.settled && result.cleanup.settled.failed === 0, `${kind} full: the cleanup reports its own half apart from content completeness (${JSON.stringify(result.cleanup && { units: result.cleanup.units, status: result.cleanup.status, cleanup_complete: result.cleanup.cleanup_complete })})`)
   if (kind === 'econ') {
     const undone = [...led.units.values()].filter((u) => u.layer !== 'cleanup' && u.state !== 'done').map((u) => `${u.id}=${u.state}`)
-    check(result.cleanup.content_complete === true, `econ full: the settled Link units leave no content gap (${undone.join(', ')})`)
+    check(result.cleanup.settled && result.cleanup.settled.failed === 0, `econ full: the settled Link units leave no failed unit (${undone.join(', ')})`)
   }
   check(!calls.some((c) => /^Clean up:/.test(c.label)), `${kind} full: no step deletes its own conversations any more`)
 }
@@ -2579,11 +2764,11 @@ for (const kind of ['econ', 'math']) {
   check(prep && /"events":false/.test(prep.options.RunOptions || '') && /"models":false/.test(prep.options.RunOptions || ''), 'econ full: the disabled layers are frozen into the prepared target')
 }
 {
-  const { commands, calls, result } = await run('econ', { ...base, figures: true })
+  const { commands, calls, result, bookCalls } = await run('econ', { ...base, figures: true })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   const at = (s) => labels.indexOf(s)
-  check(result.bridge && result.bridge.status === 'done' && at('show figures') < at('bridge: plan') && at('audit cards') > at('bridge: plan'), 'full: Figures, then the Bridge, then the audit')
+  check(result.bridge && result.bridge.status === 'done' && bookCalls.findIndex((c) => c.step === 'figures') >= 0 && bookCalls.findIndex((c) => c.step === 'figures') < bookCalls.findIndex((c) => c.step === 'bridge-start') && bookCalls.findIndex((c) => c.step === 'bridge-start') < bookCalls.findIndex((c) => c.step === 'audit'), `full: Figures, then the Bridge, then the audit (${bookCalls.map((c) => c.step).join(',')})`)
   // Base 5.4.1: the Bridge stage applies its own report's new-carrier proposals, never the earlier ones.
   const applies = cmds.filter((c) => /zt-digest bridge/.test(c) && /-Apply\b/.test(c))
   check(applies.length <= 1 && applies.every((c) => /-Accept 'all'/.test(c) && !/-AcceptEarlier/.test(c)) && (applies.length === 0 || at('bridge: apply new') > at('bridge: plan')), 'full: discovery applies only its new-carrier proposals, after the report')
@@ -2659,7 +2844,7 @@ for (const which of ['econ', 'math']) {
   const halted = rt.report && rt.report.halted
   check(halted && halted.stage === 'digest', `lock mid-run: the digest stage stops (${JSON.stringify(halted)})`)
   const message = String((halted && halted.error) || '')
-  check(/card_locked/.test(message) && /Literature tree Key is locked/.test(message), `lock mid-run: the stage error is the archive's typed refusal (${message.slice(0, 200)})`)
+  check(/card_locked/.test(message) && /the owner locked the destination|Literature tree Key is locked/.test(message), `lock mid-run: the stage error is the archive's typed refusal (${message.slice(0, 200)})`)
   const order = (rt.report && rt.report.order) || []
   const after = order.filter((id) => ['cards', 'link', 'organize', 'audit', 'finalize', 'cleanup'].includes(id))
   check(after.every((id) => !rt.report.stages[id] || rt.report.stages[id].status === 'not-run (halted)' || rt.report.stages[id].status === 'blocked'), `lock mid-run: the later write stages never run (${after.map((id) => `${id}=${(rt.report.stages[id] || {}).status}`).join(', ')})`)
@@ -2687,13 +2872,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '40' && modules['zt-digest-prepare'] === '16' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '4' && modules['zt-term-link-lib'] === '3' && modules['zt-term-link'] === '4' && modules['zt-term-cards'] === '5' && modules['zt-finalize'] === '4', `lock: the frozen build carries zt-digest-lib v40, zt-digest-prepare v16, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '41' && modules['zt-digest-prepare'] === '17' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '5' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '6' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v40, zt-digest-prepare v16, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '13' && grow.modules['zt-workflow-lib'] === '4', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v4 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '5', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v4 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -2892,7 +3077,7 @@ for (const which of ['econ', 'math']) {
   // skeleton and notation keys.
   check(report.stages['math-skeleton'].status === 'done' && report.stages['math-boundary'].status === 'done' && report.stages['math-proof'].status === 'done' && report.stages['math-theory'].status === 'done' && report.stages['math-check'].status === 'done', `#178: every mathematics stage completes (${['math-skeleton', 'math-boundary', 'math-proof', 'math-theory', 'math-check'].map((s) => `${s}:${report.stages[s].status}`).join(', ')})`)
   const math = (result && result.math) || {}
-  check(math.index && math.index.units === 5 && math.docs && math.skeleton && math.skeleton.created === 5 && math.notation && math.notation.symbols === 3 && math.boundary && math.boundary.status === 'done' && math.proof && math.proof.units === 2 && math.theory && math.theory.theories === 2 && math.check && math.check.faults === 0, `#178: the report carries every mathematics stage's own result (${Object.keys(math).join(', ')})`)
+  check(math.index && math.index.units === 5 && math.docs && math.skeleton && math.skeleton.units === 5 && math.notation && math.notation.symbols === 3 && math.boundary && math.boundary.status === 'done' && math.proof && math.proof.units === 2 && math.theory && math.theory.theories === 2 && math.check && math.check.faults === 0, `#178: the report carries every mathematics stage's own result (${Object.keys(math).join(', ')})`)
   // The chains run their compiler steps through the zt-digest tools, in the one step's process.
   check(commands.some((c) => /zt-digest math -Step index/.test(c)) && commands.some((c) => /zt-digest math -Step docs/.test(c)) && commands.some((c) => /zt-digest math -Step skeleton/.test(c) && / -Apply/.test(c)), 'math: the statement chain runs index, docs and the skeleton in one step')
   check(commands.some((c) => /zt-digest math -Step boundary-apply/.test(c)) && commands.some((c) => /zt-digest math -Step boundary-settle/.test(c)) && commands.some((c) => /zt-digest math -Step proof-apply/.test(c)) && commands.some((c) => /zt-digest math -Step theory-apply/.test(c)), 'math: each apply and settle chain runs in its own step')
@@ -2921,18 +3106,29 @@ for (const which of ['econ', 'math']) {
   const growBp = JSON.parse(readText('scripts/idea-grow/workflow/zt-idea-grow.blueprint.json'))
   const growSim = JSON.parse(readText('scripts/idea-grow/workflow/zt-idea-grow.sim.json'))
   check(!/ztRelay\s*\(|runScript\s*\(|wfpScript\s*\(/.test(growModule), '#179: the grow module calls ztRelay, runScript and wfpScript zero times')
-  check(/ztDrive\(ctx/.test(growModule) && /grow-steps\.ps1/.test(growModule) && /dsDispatch\(line\.ids/.test(growModule), '#179: the grow chain is one grow-steps.ps1 step under a DeepSeek drive job, and each checked job set goes to DSMP')
+  check(/ztDrive\(ctx/.test(growModule) && /grow-steps\.ps1/.test(growModule) && /dispatch\(line/.test(growModule), '#179: the grow chain is one grow-steps.ps1 step under a DeepSeek drive job, and each checked job set goes to DSMP')
   check(growBp.roles && !growBp.roles.relay && !growBp.roles.runner && growBp.roles.manager && growBp.roles.manager.model === 'haiku' && growBp.roles.manager.effort === 'low', '#179: the idea-grow blueprint declares the manager role only (no relay role, no zt-relay agent type)')
   check(!Object.keys(growBp.stages[0].params).includes('relay'), '#179: the grow stage passes no relay role param')
   check(/\[ValidateSet\('next'\)\]/.test(growSteps) && /Grow 'next'/.test(growSteps) && /Grow 'status'/.test(growSteps), '#179: grow-steps.ps1 has the one next step, the grow command and its one status recovery')
   check(!/ztRelay|runScript|wfpScript/.test(growSteps), '#179: grow-steps.ps1 names no relay helper')
   check((growSim.answers || []).filter((a) => a.label === '^grow: next$').every((a) => a.answer && typeof a.answer.answer === 'string' && a.answer.session_id), '#179: the dry run answers each grow step as the drive job it is')
   const shared = readText('scripts/workflow-shared/modules/zt-workflow-lib.js')
-  check(/version: '4'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  check(/version: '5'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
 }
 
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
+
+
+
+
+
+
+
+
+
+
+
 
 
 

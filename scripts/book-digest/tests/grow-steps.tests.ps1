@@ -104,8 +104,9 @@ $job = New-Job
 $set = Jobs-Line 'ideas-jobs' 3 @('gw-001', 'gw-002') $job
 Set-Queue 'next' @(Entry $set)
 $r = Invoke-Next @('-After', '2')
-Assert ($r.json.next -eq 'jobs' -and (@($r.json.ids) -join ',') -eq 'gw-001,gw-002' -and $r.json.token -eq 3 -and $r.json.job.model -eq 'deepseek-official/deepseek-flash') "next: a checked jobs line is passed on with its ids and template ($($r.last))"
-Assert ($r.json.job.files[1] -eq (Join-Path $work 'jobs\{id}.md') -and $r.json.job.prompt.Contains('「引号」')) 'next: the template keeps its paths and its non-ASCII text'
+Assert ($r.json.next -eq 'jobs' -and $r.json.jobs -eq 2 -and $r.json.token -eq 3 -and $r.json.round -eq 'ideas-jobs' -and $r.json.file) "next: a checked jobs line is passed on with its count and file ($($r.last))"
+$jobs = Get-Content -LiteralPath $r.json.file -Raw | ConvertFrom-Json
+Assert ($jobs.Count -eq 2 -and $jobs[0].run.prompt_files[1] -eq (Join-Path $work "jobs\gw-001.md") -and $jobs[0].run.prompt.Contains("「引号」") -and $jobs[0].expect -eq '(^|\n)(OK|FLAG:)') 'next: the job file keeps each id, its paths and its non-ASCII text'
 Assert ((@(Calls))[0].args -join ' ' -match ' -After 2$') "next: -After reaches the command ($((@(Calls))[0].args -join ' '))"
 
 # --- 3. A jobs line a relay cut (or rewrote) is never dispatched: the status is read once ------------------------
@@ -113,13 +114,13 @@ $cut = $set.Substring(0, [Math]::Min(80, $set.Length - 1))
 Set-Queue 'next' @(Entry $cut)
 Set-Queue 'status' @(Entry $set)
 $r = Invoke-Next
-Assert ($r.json.next -eq 'jobs' -and (@($r.json.ids) -join ',') -eq 'gw-001,gw-002') "next: a cut jobs line is read again from the status ($($r.last))"
+Assert ($r.json.next -eq 'jobs' -and $r.json.jobs -eq 2) "next: a cut jobs line is read again from the status ($($r.last))"
 Assert (@(Calls).Count -eq 2 -and (@(Calls))[1].args -join ' ' -eq "grow -Step status -Work $work -Options {""mode"":""full"",""books"":[]}") "next: exactly one status read follows the unreadable line ($((@(Calls) | ForEach-Object { $_.args[2] }) -join ','))"
 $rewritten = (Jobs-Line 'ideas-jobs' 3 @('gw-001') $job) -replace '"gw-001"', '"gw-001","gw-009"'
 Set-Queue 'next' @(Entry $rewritten)
 Set-Queue 'status' @(Entry $set)
 $r = Invoke-Next
-Assert (@($r.json.ids) -join ',' -eq 'gw-001,gw-002') "next: a jobs line whose checksum fails is never dispatched; the status line is ($($r.last))"
+Assert ($r.json.next -eq 'jobs' -and $r.json.jobs -eq 2) "next: a jobs line whose checksum fails is never dispatched; the status line is ($($r.last))"
 
 # --- 4. Two unreadable lines answer one ok:false line and exit 0 ------------------------------------------------
 Set-Queue 'next' @(Entry 'Command ran fine.')
@@ -140,7 +141,7 @@ Assert ($r.json.ok -eq $false -and $r.json.error -match 'kept answering the disp
 Set-Queue 'next' @((Entry $set), (Entry $advanced))
 Set-Queue 'status' @(Entry $set)
 $r = Invoke-Next @('-After', '3')
-Assert ($r.json.next -eq 'jobs' -and $r.json.token -eq 4 -and (@($r.json.ids) -join ',') -eq 'gl-001') "next: the second ask gets the next round's job set ($($r.last))"
+Assert ($r.json.next -eq 'jobs' -and $r.json.token -eq 4 -and $r.json.jobs -eq 1 -and $r.json.round -eq 'links-jobs') "next: the second ask gets the next round's job set ($($r.last))"
 
 # --- 6. A fault line passes through with its typed fields; the box config reaches the command ------------------
 $fault = '{"next":"fault","code":"card_locked","round":"apply","cause":"the owner locked topic 4/0","tree":"4/0","lock_id":3}'
@@ -154,7 +155,7 @@ Assert ($boxCalls[0].zt_config -eq 'D:\box\config') "next: a box copy's ZT_CONFI
 Set-Queue 'next' @(Entry '' 1)
 Set-Queue 'status' @(Entry $set)
 $r = Invoke-Next
-Assert ($r.json.next -eq 'jobs' -and (@($r.json.ids) -join ',') -eq 'gw-001,gw-002') "next: a failed command is recovered from the status once ($($r.last))"
+Assert ($r.json.next -eq 'jobs' -and $r.json.jobs -eq 2) "next: a failed command is recovered from the status once ($($r.last))"
 
 # --- 8. The step script is a straight line: only the one step, and no relay --------------------------------------------------
 $text = Get-Content -LiteralPath $steps -Raw -Encoding utf8
@@ -164,3 +165,5 @@ Assert (-not ($text -match 'ztRelay|runScript|wfpScript')) 'grow-steps.ps1: no r
 Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 Write-Output $(if ($failed) { "$failed check(s) FAILED" } else { 'all checks passed' })
 exit $(if ($failed) { 1 } else { 0 })
+
+

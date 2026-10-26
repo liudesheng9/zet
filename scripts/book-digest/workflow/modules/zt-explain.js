@@ -1,4 +1,4 @@
-// ==== module zt-explain v8 ====
+// ==== module zt-explain v9 ====
 // Explanations of finished Derivation parts (R219/R301/R302): the ledger's ready `explain/<model-key>@1` work,
 // which a checked Model completion registers. The layer driver runs the stage as script steps: `start` claims a
 // block of ready explanation units and runs the explanation plan (one job per chain), the block's jobs run in
@@ -12,8 +12,10 @@
 // manager; a unit its line does not answer is finished by one relay, then on its own (docs/digest-claude-token-proposal.md P1/P2).
 // 7 (S8): the claimed models, whatever args.only says (the two branches were identical).
 // 8 (#175): the block is three script steps and two content rounds, run by DeepSeek drive jobs under Haiku managers.
+// 9 (#180): a step answers counts (`plan_parts`, `refused`, `done`), so the stage reports the parts it planned, the
+// fixes it refused and how many models were verified; the per-unit outcomes are the ledger's run report.
 defineModule({
-  id: 'zt-explain', version: '8', requires: ['zt-model-lib'],
+  id: 'zt-explain', version: '9', requires: ['zt-model-lib'],
   summary: 'ZT digest: the ledger\'s ready explanations of finished Derivation parts, written in two DeepSeek content rounds and recorded by explain-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -32,16 +34,15 @@ defineModule({
       layer: 'explain', take: 4, rounds: Z.MAX_ATTEMPTS, phase: 'Models', jobs: true, keep: true,
       dsh: work, writes: `${work}\\out`, skills: Z.FILL_SKILLS, effort: Z.DSH_EFFORT, what: 'explanation writers',
       limits: Z.LIMITS, maxParts: A.explainMax || 0, apply: true,
-      onStart: (started) => { tally.parts += Number((started.plan && started.plan.parts) || 0) },
+      onStart: (started) => { tally.parts += Number(started.plan_parts || 0) },
       onApply: (applied) => { tally.refused += Number(applied.refused || 0) },
-      onFinish: (finished) => {
-        const report = (finished.mid || []).find((m) => m.step === 'report') || {}
-        log(`Explain: ${report.models || 0} models reported.`)
-      },
+      onFinish: (finished) => { if (Number(finished.mid_report_models || 0)) log(`Explain: ${finished.mid_report_models} models reported.`) },
     })
-    log(`Explain: ${tally.parts} Derivation part(s) planned; ${tally.refused} refused; ${result.status} — ${result.dispositions.filter(d => d.status === 'done').length} models checked${result.gate && result.gate.counts ? `, ${result.gate.counts.open || 0} open` : ''}.`)
-    if (result.status === 'failed') return { status: 'failed', error: result.error, dispositions: result.dispositions, gate: result.gate }
-    return { status: result.status, dispositions: result.dispositions, gate: result.gate }
+    const verified = Number(result.verified || 0)
+    const failed = Number(result.failed || 0)
+    log(`Explain: ${tally.parts} Derivation part(s) planned; ${tally.refused} refused; ${result.status} — ${verified} models checked${result.gate && result.gate.counts ? `, ${result.gate.counts.open || 0} open` : ''}.`)
+    if (result.status === 'failed') return { status: 'failed', error: result.error, verified, failed, parts: tally.parts, refused: tally.refused, gate: result.gate }
+    return { status: result.status, verified, failed, parts: tally.parts, refused: tally.refused, gate: result.gate }
   },
 })
 // ==== end module zt-explain ====

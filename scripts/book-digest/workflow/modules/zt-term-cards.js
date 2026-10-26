@@ -1,5 +1,5 @@
-// ==== module zt-term-cards v5 ====
-// The Term-card branch (S20 #164, S24 #167; v4 #172; v5 #175): Haiku managers and DeepSeek agents only.
+// ==== module zt-term-cards v6 ====
+// The Term-card branch (S20 #164, S24 #167; v4 #172; v5 #175; v6 #180): Haiku managers and DeepSeek agents only.
 // Every deterministic step is one `term-steps.ps1` call that a DeepSeek agent runs (a "drive" job, the shared
 // zt-workflow-lib helper `ztDrive`), so no Claude agent relays a single command. The flow is linear:
 //   start (plan, claim every ready job unit, list the jobs) -> writers (all jobs, at most eight per
@@ -9,8 +9,10 @@
 // A job that is not ready fails only its own unit; the book unit completes only when every row is
 // published (R0343). Every conversation is deleted after its answer is collected; the workspace
 // registration is removed at the end (DSMP).
+// v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
+// only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '5', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '6', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers, reviewers and fixers for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -29,7 +31,7 @@ defineModule({
     const MODEL = 'deepseek-official/deepseek-flash'
     const phase = ctx.phase
     const tail = (text) => String(text || '').trim().slice(0, 400)
-    const report = { status: 'done', book: p.key, work: WORK, jobs: { total: 0, done: 0, failed: [] }, reviews: 0, fixes: 0, publication: null, deepseek: { deleted: 0, not_deleted: [] } }
+    const report = { status: 'done', book: p.key, work: WORK, jobs: { total: 0, done: 0, failed: 0 }, reviews: 0, fixes: 0, publication: null, deepseek: { deleted: 0, not_deleted: [] } }
 
     // One manager runs the DeepSeek jobs listed inline, or entries [from, to) of a job file.
     const RESULT = {
@@ -85,7 +87,7 @@ Each job has id, files, prompt, skills, model, effort.
       report.plan_revision = started.plan_revision
       if (started.jobs > 0) {
         const written = await runFile('write', `${DRIVE}\\jobs.json`, started.jobs)
-        report.jobs.failed = written.filter((j) => j.status !== 'done').map((j) => ({ id: j.id, answer: tail(j.answer) }))
+        report.writer_failures = written.filter((j) => j.status !== 'done').length
         const review = async () => {
           const r = await drive('review')
           report.reviews += r.reviews
@@ -100,13 +102,13 @@ Each job has id, files, prompt, skills, model, effort.
         }
       }
       const finished = await drive('finish')
-      report.jobs.done = (finished.done || []).length
-      report.not_ready = finished.failed || []
-      report.publication = finished.publication
+      report.jobs.done = Number(finished.done || 0) || 0
+      report.not_ready = Number(finished.failed || 0) || 0
+      report.publication = { complete: finished.complete === true, rows: Number(finished.rows || 0), committed: Number(finished.committed || 0), ready_unpublished: Number(finished.ready_unpublished || 0) }
       report.book_state = finished.book
       if (finished.book !== 'done') {
         report.status = 'failed'
-        report.error = `the Term-card book is incomplete: ${(finished.failed || []).length} job(s) not ready (${(finished.failed || []).join(', ')}); the ready prefix (${(finished.publication && finished.publication.committed) || 0} row(s)) is published`
+        report.error = `the Term-card book is incomplete: ${report.not_ready} job(s) not ready; the ready prefix (${report.publication.committed} row(s)) is published`
       }
     } catch (e) {
       report.status = 'failed'
@@ -119,6 +121,7 @@ Each job has id, files, prompt, skills, model, effort.
   },
 })
 // ==== end module zt-term-cards ====
+
 
 
 

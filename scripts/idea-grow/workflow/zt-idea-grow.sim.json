@@ -9,10 +9,11 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-1",
-        "answer": "{\"next\":\"jobs\",\"round\":\"topics-jobs\",\"token\":1,\"ids\":[\"gt-001\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"37ce37ca\"}",
+        "answer": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"topics-jobs\",\"token\":1,\"sum\":\"37ce37ca\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"topics-jobs\",\"token\":1,\"sum\":\"37ce37ca\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}"
       }
     },
     {
@@ -20,10 +21,11 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-2",
-        "answer": "{\"next\":\"jobs\",\"round\":\"ideas-jobs\",\"token\":2,\"ids\":[\"gw-001\",\"gw-002\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"1a1b3034\"}",
+        "answer": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"ideas-jobs\",\"token\":2,\"sum\":\"1a1b3034\",\"jobs\":2,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"ideas-jobs\",\"token\":2,\"sum\":\"1a1b3034\",\"jobs\":2,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}"
       }
     },
     {
@@ -31,10 +33,11 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-3",
-        "answer": "{\"next\":\"jobs\",\"round\":\"links-jobs\",\"token\":3,\"ids\":[\"gl-001\"],\"job\":{\"family\":\"grow\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/instructions.zh.md\",\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"f0da0bf2\"}",
+        "answer": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"links-jobs\",\"token\":3,\"sum\":\"f0da0bf2\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"links-jobs\",\"token\":3,\"sum\":\"f0da0bf2\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}"
       }
     },
     {
@@ -42,10 +45,11 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-4",
-        "answer": "{\"next\":\"jobs\",\"round\":\"restate-jobs\",\"token\":4,\"ids\":[\"r01\"],\"job\":{\"family\":\"restate\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/restate/{id}/work/dsh-restate-instructions.zh.md\",\"D:/zt-grow/box/restate/{id}/work/rj-01.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"{\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"2ae54ba4\"}",
+        "answer": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"restate-jobs\",\"token\":4,\"sum\":\"2ae54ba4\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"restate-jobs\",\"token\":4,\"sum\":\"2ae54ba4\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}"
       }
     },
     {
@@ -53,10 +57,11 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-5",
-        "answer": "{\"next\":\"jobs\",\"round\":\"fix-jobs\",\"token\":5,\"ids\":[\"fx1-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"858e4524\"}",
+        "answer": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"fix-jobs\",\"token\":5,\"sum\":\"858e4524\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"fix-jobs\",\"token\":5,\"sum\":\"858e4524\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}"
       }
     },
     {
@@ -64,10 +69,11 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-6",
-        "answer": "{\"next\":\"jobs\",\"round\":\"organize-jobs\",\"token\":6,\"ids\":[\"go-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"7f5fe055\"}",
+        "answer": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"organize-jobs\",\"token\":6,\"sum\":\"7f5fe055\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"organize-jobs\",\"token\":6,\"sum\":\"7f5fe055\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}"
       }
     },
     {
@@ -75,10 +81,11 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-7",
-        "answer": "{\"next\":\"jobs\",\"round\":\"concepts-jobs\",\"token\":7,\"ids\":[\"c01\"],\"job\":{\"family\":\"concepts\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/concepts/{id}/work/dsh-concept-instructions.zh.md\",\"D:/zt-grow/box/concepts/{id}/work/cj-01.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"{\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"46eca5c4\"}",
+        "answer": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"concepts-jobs\",\"token\":7,\"sum\":\"46eca5c4\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"concepts-jobs\",\"token\":7,\"sum\":\"46eca5c4\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}"
       }
     },
     {
@@ -86,10 +93,11 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-8",
-        "answer": "{\"next\":\"jobs\",\"round\":\"hubs-jobs\",\"token\":8,\"ids\":[\"gh-001\"],\"job\":{\"family\":\"plain\",\"cwd\":\"D:/zt-grow/box\",\"files\":[\"D:/zt-grow/box/jobs/{id}.md\"],\"prompt\":\"按任务说明完成任务 {id}。SELF-CHECK: zt-digest grow -Step precheck -Work \\\"D:/zt-grow/box\\\" -Job {id}\",\"skills\":[\"zettelkasten\",\"asd-ste100-zh\"],\"model\":\"deepseek-official/deepseek-flash\",\"effort\":\"high\",\"expect\":\"(^|\\n)(OK|FLAG:)\",\"approve\":\"allow only these: reads under \\\"D:/zt-grow/box\\\" and JSON writes under \\\"D:/zt-grow/box/out\\\" for {id}\"},\"sum\":\"d49f7b50\"}",
+        "answer": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"hubs-jobs\",\"token\":8,\"sum\":\"d49f7b50\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"jobs\",\"round\":\"hubs-jobs\",\"token\":8,\"sum\":\"d49f7b50\",\"jobs\":1,\"file\":\"D:/zt-grow/box\\\\grow-jobs.json\"}"
       }
     },
     {
@@ -97,161 +105,138 @@
       "times": 1,
       "answer": {
         "session_id": "s-next-9",
-        "answer": "{\"next\":\"done\",\"mode\":\"full\",\"created\":9,\"topics\":2,\"linked\":5,\"same\":1,\"refused\":1,\"duplicates\":0,\"stopped\":0,\"deeper\":0,\"faults_left\":0,\"share_before\":0.1,\"share_after\":0.4,\"books\":2,\"bridges\":1,\"report\":\"D:/zt-grow/box/grow-report.md\",\"sections\":2,\"left\":0,\"restate\":{\"books\":1,\"resolved\":1,\"pending\":0,\"unresolved\":0},\"concepts\":{\"books\":1,\"findings\":2,\"judged\":2},\"organize\":{\"merges\":1,\"moves\":1,\"refused\":0,\"invalid\":0},\"hubs\":{\"topic\":2,\"line\":1},\"hubs_missing\":0,\"register\":\"published\",\"register_entries\":12}",
+        "answer": "{\"ok\":true,\"next\":\"done\",\"mode\":\"full\",\"created\":9,\"topics\":2,\"linked\":5,\"faults_left\":0,\"share_before\":0.1,\"share_after\":0.4,\"report\":\"D:/zt-grow/box/grow-report.md\",\"hubs\":1,\"register\":\"published\"}",
         "deleted": true,
         "registered": false,
-        "evidence": false
+        "evidence": false,
+        "output": "{\"ok\":true,\"next\":\"done\",\"mode\":\"full\",\"created\":9,\"topics\":2,\"linked\":5,\"faults_left\":0,\"share_before\":0.1,\"share_after\":0.4,\"report\":\"D:/zt-grow/box/grow-report.md\",\"hubs\":1,\"register\":\"published\"}"
       }
     },
     {
       "label": "^grow topics-jobs mgr",
       "answer": {
+        "ok": true,
         "jobs": [
           {
             "id": "gt-001",
-            "ok": true,
-            "reply": "OK",
-            "attempts": 1
+            "session_id": "s-gt-001",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           }
-        ],
-        "started": [
-          "s-gt-001"
-        ],
-        "deleted": 1,
-        "not_deleted": []
+        ]
       }
     },
     {
       "label": "^grow ideas-jobs mgr",
       "answer": {
+        "ok": true,
         "jobs": [
           {
             "id": "gw-001",
-            "ok": true,
-            "reply": "OK",
-            "attempts": 1
+            "session_id": "s-gw-001",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           },
           {
             "id": "gw-002",
-            "ok": true,
-            "reply": "OK",
-            "attempts": 1
+            "session_id": "s-gw-002",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           }
-        ],
-        "started": [
-          "s-gw-001",
-          "s-gw-002"
-        ],
-        "deleted": 2,
-        "not_deleted": []
+        ]
       }
     },
     {
       "label": "^grow links-jobs mgr",
       "answer": {
+        "ok": true,
         "jobs": [
           {
             "id": "gl-001",
-            "ok": true,
-            "reply": "OK",
-            "attempts": 1
+            "session_id": "s-gl-001",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           }
-        ],
-        "started": [
-          "s-gl-001"
-        ],
-        "deleted": 1,
-        "not_deleted": []
+        ]
       }
     },
     {
       "label": "^grow restate-jobs mgr",
       "answer": {
+        "ok": true,
         "jobs": [
           {
             "id": "r01",
-            "ok": true,
-            "reply": "{\"ok\":true}",
-            "attempts": 1
+            "session_id": "s-r01",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           }
-        ],
-        "started": [
-          "s-r01"
-        ],
-        "deleted": 1,
-        "not_deleted": []
+        ]
       }
     },
     {
       "label": "^grow fix-jobs mgr",
       "answer": {
+        "ok": true,
         "jobs": [
           {
             "id": "fx1-001",
-            "ok": true,
-            "reply": "OK",
-            "attempts": 1
+            "session_id": "s-fx1-001",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           }
-        ],
-        "started": [
-          "s-fx1-001"
-        ],
-        "deleted": 1,
-        "not_deleted": []
+        ]
       }
     },
     {
       "label": "^grow organize-jobs mgr",
       "answer": {
+        "ok": true,
         "jobs": [
           {
             "id": "go-001",
-            "ok": true,
-            "reply": "OK",
-            "attempts": 1
+            "session_id": "s-go-001",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           }
-        ],
-        "started": [
-          "s-go-001"
-        ],
-        "deleted": 1,
-        "not_deleted": []
+        ]
       }
     },
     {
       "label": "^grow concepts-jobs mgr",
       "answer": {
+        "ok": true,
         "jobs": [
           {
             "id": "c01",
-            "ok": true,
-            "reply": "{\"ok\":true}",
-            "attempts": 1
+            "session_id": "s-c01",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           }
-        ],
-        "started": [
-          "s-c01"
-        ],
-        "deleted": 1,
-        "not_deleted": []
+        ]
       }
     },
     {
       "label": "^grow hubs-jobs mgr",
       "answer": {
+        "ok": true,
         "jobs": [
           {
             "id": "gh-001",
-            "ok": true,
-            "reply": "OK",
-            "attempts": 1
+            "session_id": "s-gh-001",
+            "status": "done",
+            "answer": "OK",
+            "deleted": true
           }
-        ],
-        "started": [
-          "s-gh-001"
-        ],
-        "deleted": 1,
-        "not_deleted": []
+        ]
       }
     },
     {

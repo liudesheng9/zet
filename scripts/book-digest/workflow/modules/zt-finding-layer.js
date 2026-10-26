@@ -1,4 +1,4 @@
-// ==== module zt-finding-layer v5 ====
+// ==== module zt-finding-layer v6 ====
 // The empirical-results layer of the economics set (docs/finding-cards-design.md): the ledger's ready finding
 // work, worked while the digest groups are still running. `finding-compiler` plans one job per few groups from
 // the sentences that report data with a number and each group's own Idea Cards; DeepSeek writes one Finding
@@ -12,8 +12,10 @@
 // 4: the chain ends with the block's checked finishes in one command (`zt-digest finish-batch`), run by the chain's own
 // manager; a unit its line does not answer is finished by one relay, then on its own (docs/digest-claude-token-proposal.md P1/P2).
 // 5 (#175): the whole block is two script steps and one content round; the relay and the chain are gone.
+// 6 (#180): a step answers counts, so the stage reports the block's created/linked totals and how many group
+// units were verified; the per-unit outcomes are the ledger's run report.
 defineModule({
-  id: 'zt-finding-layer', version: '5', requires: ['zt-digest-lib'],
+  id: 'zt-finding-layer', version: '6', requires: ['zt-digest-lib'],
   summary: 'ZT digest empirical-results layer: the ledger\'s ready Finding work, plan → DeepSeek JSON → apply → per-group checked completion, in two script steps run by DeepSeek drive jobs.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -28,17 +30,19 @@ defineModule({
       layer: 'findings', take: 4, rounds: Math.max(3, Z.MAX_ATTEMPTS), wait: 600, phase: 'Findings',
       dsh: work, writes: `${work}\\out`, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, what: 'finding writers',
       onStart: (started) => {
-        const plan = started.plan || {}
-        log(`Findings: ${plan.candidates || 0} result sentences in ${plan.groups || 0} groups, ${started.jobs || 0} DeepSeek jobs.`)
+        log(`Findings: ${started.plan_candidates || 0} result sentences in ${started.plan_groups || 0} groups, ${started.jobs || 0} DeepSeek jobs.`)
       },
       onFinish: (finished) => {
-        const applied = (finished.mid || []).find((m) => m.step === 'apply') || {}
-        log(`Findings: ${applied.created || 0} Finding Cards made, ${applied.linked || 0} Links, ${applied.refused || 0} refused.`)
+        log(`Findings: ${finished.mid_applied_created || 0} Finding Cards made, ${finished.mid_applied_linked || 0} Links, ${finished.mid_applied_refused || 0} refused.`)
       },
     })
-    log(`Findings: ${result.status} — ${result.dispositions.filter(d => d.status === 'done').length} groups checked${result.gate && result.gate.counts ? `, ${result.gate.counts.open || 0} open` : ''}.`)
-    if (result.status === 'failed') return { status: 'failed', error: result.error, dispositions: result.dispositions, gate: result.gate }
-    return { status: result.status, dispositions: result.dispositions, gate: result.gate }
+    const t = result.totals || {}
+    const applied = { created: Number(t.mid_applied_created || 0), linked: Number(t.mid_applied_linked || 0), refused: Number(t.mid_applied_refused || 0) }
+    const verified = Number(result.verified || 0)
+    const failed = Number(result.failed || 0)
+    log(`Findings: ${result.status} — ${verified} groups checked${result.gate && result.gate.counts ? `, ${result.gate.counts.open || 0} open` : ''}.`)
+    if (result.status === 'failed') return { status: 'failed', error: result.error, verified, failed, applied, gate: result.gate }
+    return { status: result.status, verified, failed, applied, gate: result.gate }
   },
 })
 // ==== end module zt-finding-layer ====

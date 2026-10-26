@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  The Term stages' deterministic command chains, one step per call (#172). A DeepSeek job runs one
+  The Term stages' deterministic command chains, one step per call (#172, #180). A DeepSeek job runs one
   step and replies with its last line, so no Claude relay runs a single command.
 
   pwsh -NoProfile -File term-steps.ps1 -Step start|review|fix|finish|link -Out <staging> [-Occurrences first|all]
@@ -13,7 +13,10 @@
   link    plan the Term links, apply under the claim (or, when the unit is blocked, the published
           prefix without a claim), then plan again: the second plan must change no Card
 
-  Each step prints one compact JSON line. Files stay under <staging>\term-cards\drive.
+  Each step prints ONE compact JSON line (#180): `ok` first, then the counts and file paths the module
+  reads, at most 400 characters; the full data (the units, the publication, the counts) goes to
+  <staging>\term-cards\drive-lines\<step>.json, named in the line as `detail`. Files stay under
+  <staging>\term-cards\drive.
 #>
 param(
     [Parameter(Mandatory)][ValidateSet('start', 'review', 'fix', 'finish', 'link')][string]$Step,
@@ -24,10 +27,12 @@ param(
     [string]$Tool = 'zt-digest'
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'step-line.ps1')
 $Out = $Out.TrimEnd('\', '/')
 $Work = Join-Path $Out 'term-cards'
 $Drive = Join-Path $Work 'drive'
 New-Item -ItemType Directory -Force $Drive | Out-Null
+$LineName = $Step
 
 # One command: its last JSON line (or $null) and its exit code.
 function Run([string[]]$CommandArgs) {
@@ -40,7 +45,9 @@ function Run([string[]]$CommandArgs) {
 }
 function Save($Name, $Value) { $Value | ConvertTo-Json -Depth 64 | Set-Content -LiteralPath (Join-Path $Drive $Name) -Encoding utf8 }
 function Load($Name) { $p = Join-Path $Drive $Name; if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64 } }
-function Reply($Value) { $Value | ConvertTo-Json -Depth 16 -Compress; exit 0 }
+# The step's answer: its compact line and the detail file beside it (#180).
+function Reply($Value, $Detail = $null) { Send-StepLine -Line $Value -Detail $Detail -Name $LineName -Out $Work }
+function Fail($Step, $Reason, $Detail = $null) { Send-StepFail -Step $Step -Reason $Reason -Name $LineName -Out $Work -Detail $Detail }
 function Fail-Unit($Unit, [string]$Cause) {
     $fault = @{ schema_version = 1; unit = $Unit.id; input_hash = $Unit.input_hash; cause = $Cause.Substring(0, [Math]::Min(400, $Cause.Length)) } | ConvertTo-Json -Compress
     Run @('ledger', 'fail', '-Out', $Out, '-Unit', $Unit.id, '-Token', "$($Unit.token)", '-Fault', $fault) | Out-Null
@@ -58,32 +65,32 @@ switch ($Step) {
         if ($PerJob -gt 0) { $planArgs += @('-PerJob', "$PerJob") }
         if ($MathPerJob -gt 0) { $planArgs += @('-MathPerJob', "$MathPerJob") }
         $plan = Run $planArgs
-        if (-not $plan.json -or $plan.json.ok -ne $true) { Reply @{ ok = $false; step = 'plan'; error = $plan.tail } }
+        if (-not $plan.json -or $plan.json.ok -ne $true) { Fail 'plan' $plan.tail; break }
         $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '64', '-Owner', 'term cards', '-Lease', '7200')
         $units = @($claim.json.units | Where-Object { $_.id -like 'termcards/t*' })
         Save 'units.json' $units
-        if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; plan_revision = $plan.json.revision } }
+        if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; plan_revision = [int]$plan.json.revision } @{ units = @(); plan = $plan.json }; break }
         $tokens = ($units | ForEach-Object { "$($_.inputs.job.id):$($_.token)" }) -join ','
         $jobs = Run @('term-cards', '-Step', 'jobs', '-Staging', $Out, '-Tokens', $tokens)
-        if (-not $jobs.json -or $jobs.json.ok -ne $true) { Reply @{ ok = $false; step = 'jobs'; error = $jobs.tail } }
+        if (-not $jobs.json -or $jobs.json.ok -ne $true) { Fail 'jobs' $jobs.tail; break }
         Save 'jobs.json' @($jobs.json.jobs)
-        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; plan_revision = $plan.json.revision; file = (Join-Path $Drive 'jobs.json') }
+        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; plan = $plan.json; jobs = @($jobs.json.jobs) }
     }
     'review' {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
         $r = Run @('term-cards', '-Step', 'review-plan', '-Staging', $Out)
-        if (-not $r.json -or $r.json.ok -ne $true) { Reply @{ ok = $false; step = 'review-plan'; error = $r.tail } }
+        if (-not $r.json -or $r.json.ok -ne $true) { Fail 'review-plan' $r.tail; break }
         $jobs = @($r.json.jobs | Where-Object { $_.delete_after_collect -eq $true })
         Save 'reviews.json' $jobs
-        Reply @{ ok = $true; reviews = $jobs.Count; counts = $r.json.counts; file = (Join-Path $Drive 'reviews.json') }
+        Reply @{ ok = $true; reviews = $jobs.Count; file = (Join-Path $Drive 'reviews.json') } @{ reviews = $jobs; counts = $r.json.counts }
     }
     'fix' {
         $f = Run @('term-cards', '-Step', 'fix-plan', '-Staging', $Out)
-        if (-not $f.json -or $f.json.ok -ne $true) { Reply @{ ok = $false; step = 'fix-plan'; error = $f.tail } }
+        if (-not $f.json -or $f.json.ok -ne $true) { Fail 'fix-plan' $f.tail; break }
         # A fix runs in a new conversation from its fallback files: the writers are not kept.
         $jobs = @($f.json.jobs | Where-Object { $_.continue } | ForEach-Object { $_.files = $_.fallback; $_.PSObject.Properties.Remove('continue'); $_ })
         Save 'fixes.json' $jobs
-        Reply @{ ok = $true; fixes = $jobs.Count; counts = $f.json.counts; file = (Join-Path $Drive 'fixes.json') }
+        Reply @{ ok = $true; fixes = $jobs.Count; file = (Join-Path $Drive 'fixes.json') } @{ fixes = $jobs; counts = $f.json.counts }
     }
     'finish' {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
@@ -112,11 +119,12 @@ switch ($Step) {
             $a = Run @('term-cards', '-Step', 'apply', '-Staging', $Out, '-Apply')
             $bookState = 'incomplete'
         }
-        Reply @{ ok = $true; done = $done; failed = $failed; book = $bookState; publication = @{ complete = $a.json.complete; rows = $a.json.rows; committed = $a.json.committed; ready_unpublished = $a.json.ready_unpublished; stop = $a.json.stop } }
+        $publication = @{ complete = ($a.json.complete -eq $true); rows = [int]$a.json.rows; committed = [int]$a.json.committed; ready_unpublished = [int]$a.json.ready_unpublished; stop = $a.json.stop }
+        Reply @{ ok = $true; done = $done.Count; failed = $failed.Count; book = $bookState; complete = $publication.complete; rows = $publication.rows; committed = $publication.committed; ready_unpublished = $publication.ready_unpublished } @{ done = $done; failed = $failed; publication = $publication }
     }
     'link' {
         $p = Run @('term-link', '-Step', 'plan', '-Staging', $Out, '-Occurrences', $Occurrences)
-        if (-not $p.json -or $p.json.ok -ne $true) { Reply @{ ok = $false; step = 'plan'; error = $p.tail } }
+        if (-not $p.json -or $p.json.ok -ne $true) { Fail 'plan' $p.tail; break }
         $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termlink', '-Take', '1', '-Owner', 'term-link', '-Wait', '60', '-Lease', '3600')
         $u = @($claim.json.units | Where-Object { $_.id -like 'termlink/*' }) | Select-Object -First 1
         if ($u) {
@@ -128,12 +136,17 @@ switch ($Step) {
             } else { $status = 'failed'; Fail-Unit $u "the Term-link pass stopped: $($a.tail)" }
         } else {
             $gate = Run @('ledger', 'gate', '-Out', $Out, '-Layer', 'termlink', '-Brief')
-            if ($gate.json -and $gate.json.complete -eq $true) { Reply @{ ok = $true; status = 'skipped'; reason = 'already complete' } }
+            if ($gate.json -and $gate.json.complete -eq $true) { Reply @{ ok = $true; status = 'skipped'; reason = 'already complete' }; break }
             # The unit is blocked by an incomplete Term-card book: link the published prefix, unit stays open.
             $a = Run @('term-link', '-Step', 'apply', '-Staging', $Out, '-Occurrences', $Occurrences, '-Apply')
             $status = if ($a.json -and $a.json.complete -eq $true) { 'partial' } else { 'failed' }
         }
         $second = Run @('term-link', '-Step', 'plan', '-Staging', $Out, '-Occurrences', $Occurrences)
-        Reply @{ ok = $true; status = $status; unit = $u.id; counts = $a.json.counts; second = @{ cards_changed = $second.json.cards_changed; cards_refused = $second.json.cards_refused } }
+        Reply @{
+            ok = $true; status = $status; unit = "$($u.id)"
+            cards_changed = [int]$a.json.counts.cards_changed; links_added = [int]$a.json.counts.links_added
+            second_cards_changed = [int]$second.json.cards_changed; second_cards_refused = [int]$second.json.cards_refused
+        } @{ counts = $a.json.counts; second = @{ cards_changed = $second.json.cards_changed; cards_refused = $second.json.cards_refused }; plan = $p.json }
     }
 }
+

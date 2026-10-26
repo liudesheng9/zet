@@ -1,4 +1,4 @@
-// ==== module zt-finalize v4 ====
+// ==== module zt-finalize v5 ====
 // The declared finite finalization branch (R299/R300, #86; S26, #169): the read-only audit plan, at
 // most ONE correction cycle scoped to the plan's Cards, the exact changed-Card/touched-tree
 // manifest, a Term-link round for the Cards that cycle actually changed (the whole book when the
@@ -19,7 +19,7 @@
 // steps, the scope, the refreshes and the final audit are book-steps.ps1 steps run by DeepSeek drive jobs, and the
 // Term-link round is zt-term-link-lib's one drive job. No Claude agent runs a command.
 defineModule({
-  id: 'zt-finalize', version: '4', requires: ['zt-digest-lib', 'zt-term-link-lib'],
+  id: 'zt-finalize', version: '5', requires: ['zt-digest-lib', 'zt-term-link-lib'],
   summary: 'ZT digest: the finite finalization (audit plan, one scoped correction cycle, the changed-Card manifest, the round\'s Term-link pass, dependency-scoped publication refresh, final read-only audit).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -28,6 +28,7 @@ defineModule({
   },
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
+    const n = (v) => Number(v || 0)
     let plan = null
     let cycle = null
     let scope = null
@@ -41,7 +42,7 @@ defineModule({
         log('Finalize: the branch already published its final audit; the resume reuses it.')
         return { status: 'done', reused: true }
       }
-      if (retained && retained.ok === true && retained.term_link) {
+      if (retained && retained.ok === true && retained.term_applicable !== undefined) {
         scope = retained
         recovered = true
         log(`Finalize: the resume continues the recorded correction cycle from ${scope.changes}; it does not re-enter the cycle.`)
@@ -49,14 +50,13 @@ defineModule({
     }
     if (!recovered) {
       const planned = await Z.bookStep('finalize plan', 'finalize-plan')
-      if (!planned || planned.ok !== true || !planned.audit) return { status: 'failed', error: (planned && planned.error) || 'the audit plan was not derived' }
+      if (!planned || planned.ok !== true || !planned.audit_unit) return { status: 'failed', error: (planned && planned.error) || 'the audit plan was not derived' }
       plan = planned
-      const counts = plan.counts || {}
-      log(`Finalize: audit ${plan.audit.unit} at graph revision ${plan.audit.graph_revision}; ${plan.faults.total} faults (${counts.fix || 0} correctable, ${counts.conflict || 0} conflicting, ${counts.blocked || 0} blocked, ${counts.advisory || 0} advisory); branch ${plan.branch}.`)
+      log(`Finalize: audit ${plan.audit_unit} at graph revision ${n(plan.graph_revision)}; ${n(plan.faults)} faults (${n(plan.fix)} correctable, ${n(plan.conflict)} conflicting, ${n(plan.blocked)} blocked, ${n(plan.advisory)} advisory); branch ${plan.branch}.`)
       if (plan.branch === 'fix') {
         const work = `${Z.OUT}\\finalize\\fix`
-        const cards = plan.fix_cycle.card_list || ''
-        const rules = (plan.fix_cycle.rules || []).join(',')
+        const cards = plan.cycle_card_list || ''
+        const rules = String(plan.cycle_rules || '').split(',').filter(Boolean).join(',')
         cycle = await Z.cardCycle('final correction', work, { cards, rules, fixRounds: 1 })
         if (cycle.status !== 'done') {
           return { status: 'partial', plan, cycle, error: `the one correction cycle did not complete: ${cycle.error || 'no report'}` }
@@ -68,28 +68,26 @@ defineModule({
       }
     }
     const refreshed = []
-    // The cycle's report artifact is named by the immutable manifest, so a recovered branch refreshes from the same
-    // artifact a fresh run would.
-    const cycleReport = scope && scope.cycle && scope.cycle.report ? String(scope.cycle.report) : ''
-    for (const entry of (scope ? scope.refresh : []) || []) {
-      if (!entry.applicable || entry.layer === 'audit') continue
+    // #180: the manifest step answers the stages to refresh and the stage-owned ones as two packed name lists.
+    const cycleReport = scope && scope.cycle_report ? String(scope.cycle_report) : ''
+    for (const layer of String((scope && scope.refresh) || '').split(',').filter(Boolean)) {
       if (!cycleReport) {
-        log(`Finalize: the ${entry.layer} refresh has no retained cycle report to read; its own stage owns that content.`)
+        log(`Finalize: the ${layer} refresh has no retained cycle report to read; its own stage owns that content.`)
         continue
       }
-      const done = await Z.bookStep(`finalize refresh ${entry.layer}`, 'finalize-refresh', { Layer: entry.layer, Report: cycleReport })
+      const done = await Z.bookStep(`finalize refresh ${layer}`, 'finalize-refresh', { Layer: layer, Report: cycleReport })
       refreshed.push(done && done.ok === true
-        ? { layer: entry.layer, unit: done.unit, revision: done.revision, state: done.state, changed_cards: done.changed_cards }
-        : { layer: entry.layer, error: (done && done.error) || 'the refresh did not complete' })
-      if (!done || done.ok !== true) log(`Finalize: the ${entry.layer} refresh did not complete: ${(done && done.error) || 'no output'}.`)
+        ? { layer, unit: done.unit, revision: done.revision, state: done.state, changed_cards: done.changed_cards }
+        : { layer, error: (done && done.error) || 'the refresh did not complete' })
+      if (!done || done.ok !== true) log(`Finalize: the ${layer} refresh did not complete: ${(done && done.error) || 'no output'}.`)
     }
-    const owned = ((scope && scope.refresh) || []).filter(e => e.stage_owned).map(e => e.layer)
+    const owned = String((scope && scope.owned) || '').split(',').filter(Boolean)
     if (owned.length) log(`Finalize: ${owned.join(', ')} keep their own stage as the owner of that refresh; the changed-Card manifest is recorded for it.`)
 
     // S26 (#169): the round named by the immutable manifest relinks the Cards the correction actually changed (or the
     // whole book when it changed the Term mapping) before the final audit.
     let termLink = null
-    const round = scope && scope.term_link ? scope.term_link : null
+    const round = scope && scope.term_applicable !== undefined ? { applicable: scope.term_applicable, scope: scope.term_scope, round: scope.term_round, cards: n(scope.term_cards), reason: scope.term_reason } : null
     if (round && round.applicable === true && round.scope !== 'none') {
       const occurrences = (Z.A && Z.A.termLinkOccurrences) || 'first'
       termLink = await ztTermLinkPass(ctx, {
@@ -98,7 +96,7 @@ defineModule({
         args: Z.A,
         mode: p.mode,
         occurrences,
-        cards: round.scope === 'cards' ? (round.cards || []) : [],
+        cards: null,
         round: round.round,
         tool: 'zt-digest',
         stage: 'zt-finalize',
@@ -111,18 +109,30 @@ defineModule({
 
     const report = await Z.bookStep('finalize final', 'finalize-final')
     if (!report || report.ok !== true) return { status: 'failed', plan, cycle, scope, refreshed, term_link: termLink, error: (report && report.error) || 'the final audit was not published' }
-    log(`Finalize: ${report.status} at graph revision ${report.graph_revision}; final audit ${report.audit.final.unit} (revision ${report.audit.final.revision}); ${report.faults.residual} residual hard/source faults, ${report.infrastructure.length} infrastructure faults; terms ${(report.terms && report.terms.status) || 'unknown'}.`)
+    // #180: the final step answers counts; the report's nested facts are rebuilt here from them.
+    const final = {
+      status: report.status, branch: report.branch, graph_revision: n(report.graph_revision),
+      audit: { final: { unit: report.audit_unit, revision: n(report.audit_revision) } },
+      faults: { residual: n(report.residual) },
+      infrastructure: [],
+      terms: { status: report.terms_status, published: n(report.terms_published), rows: n(report.terms_rows), heads: n(report.terms_heads), uses: n(report.terms_uses), faults: n(report.terms_faults), complete: report.terms_complete === true },
+      term_link: { applicable: report.term_applicable !== false, round: n(report.term_round), scope: report.term_scope, status: report.term_status, unit: report.term_unit, state: report.term_state, no_op: report.term_no_op === true, counts: { cards_changed: n(report.term_cards_changed), links_added: n(report.term_links_added) }, reason: report.term_reason },
+    }
+    log(`Finalize: ${final.status} at graph revision ${final.graph_revision}; final audit ${final.audit.final.unit} (revision ${final.audit.final.revision}); ${final.faults.residual} residual hard/source faults; terms ${final.terms.status || 'unknown'}.`)
     return {
-      status: report.status === 'done' ? 'done' : 'partial',
-      branch: plan ? plan.branch : report.branch,
+      status: final.status === 'done' ? 'done' : 'partial',
+      branch: plan ? plan.branch : final.branch,
       plan,
       cycle,
       scope,
       recovered,
       refreshed,
       term_link: termLink,
-      final: report,
+      final,
     }
   },
 })
 // ==== end module zt-finalize ====
+
+
+

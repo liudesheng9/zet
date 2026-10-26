@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v40 ====
+// ==== module zt-digest-lib v41 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -465,9 +465,24 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     const json = await ztDrive(ctx, { label, command: parts.join(' '), out: OUT, cwd: o.cwd || OUT, phase: o.phase, ledger: ZD_LEDGER, deepseek: o.deepseek })
     const lock = ztLockRefusal(JSON.stringify(json)) || ((json.code === ZD_LOCK || json.error === ZD_LOCK) ? json : null)
     if (lock) throw ztLockStop(label, lock.refusal || lock)
-    if (json.ok !== true) return { ok: false, error: String(json.error || `the ${step} step failed`).slice(0, 800), gate: json.gate || null, raw: json }
+    if (json.ok !== true) return { ok: false, error: String(json.error || `the ${step} step failed`).slice(0, 800), gate: zdGateOf(json), raw: json }
     return json
   }
+  // The layer gate a step's flat counts describe (#180): the line carries `gate_complete`, `gate_open` and
+  // `gate_total`, never the gate itself. The driver's gate shape stays `{complete, counts}` for the stage modules
+  // and the report, which read only those.
+  const zdGateOf = (json) => (json && (json.gate_complete !== undefined || json.gate_open !== undefined)
+    ? { complete: json.gate_complete === true, counts: { open: Number(json.gate_open || 0), total: Number(json.gate_total || 0) } }
+    : (json && json.gate ? json.gate : null))
+  // The count fields a layer's steps answer; the driver sums them over the layer's blocks, so a stage reports
+  // totals and reads no per-unit list (#180).
+  const LAYER_TOTALS = [
+    'done', 'failed', 'partial', 'applied', 'refused', 'blocked',
+    'link_gaps', 'link_skipped', 'link_linked', 'link_linked_from', 'link_already_linked', 'link_no_link', 'link_changed', 'link_scheduled',
+    'link_quality_faults', 'link_quality_checked',
+    'mid_applied_created', 'mid_applied_merged', 'mid_applied_linked', 'mid_applied_refused', 'mid_report_models', 'mid_report_jobs',
+    'terms',
+  ]
   // The jobs one step listed, run by Haiku managers: one manager per up to DSH_PER_BATCH jobs, in parallel. Each
   // entry names its own files, prompt, unit and token; every manager records its conversations and deletes them
   // (or, when the layer continues them in a second round, leaves them to the run cleanup).
@@ -524,23 +539,27 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
   // Runs one layer in blocks until it offers no ready unit (at most `rounds` claims that found nothing). o:
   // layer, take, rounds, wait, dsh, writes, skills, effort, phase, what (the manager's subject), jobs (false:
   // the layer lists no content job), apply (a second content round between start and finish), maxParts, limits,
-  // deepseek (the deletion tally), onFinish (a module's own reading of the finish line).
+  // deepseek (the deletion tally), onStart/onApply/onFinish (a module's own reading of a step's flat counts).
+  // #180: a step answers counts only, so the driver sums them over the layer's blocks and the stage reports
+  // totals; the per-unit outcomes are the ledger's (its run report), never a module's array.
   const layerRun = async (name, o) => {
     const layer = o.layer || name
     const take = Math.max(1, Math.min(64, o.take || 8))
     const rounds = Math.max(1, Math.min(12, o.rounds || MAX_ATTEMPTS))
     const MAX_BLOCKS = 200
-    const dispositions = []
+    const totals = Object.fromEntries(LAYER_TOTALS.map((k) => [k, 0]))
     const finishes = []
     let claimed = 0
     let idle = 0
     let gate = null
+    const add = (line) => { for (const k of LAYER_TOTALS) if (line && line[k] !== undefined) totals[k] += Number(line[k]) || 0 }
     for (let block = 1; block <= MAX_BLOCKS && idle < rounds; block++) {
       const label = `${name} block ${block}`
       const started = await driveStep(`${label}: start`, 'start', {
         layer, take, owner: label, wait: o.wait, lease: LAYER_LEASE, phase: o.phase, cwd: o.dsh, maxParts: o.maxParts, limits: o.limits, deepseek: o.deepseek,
       })
-      if (!started.ok) return { status: 'failed', layer, error: started.error, dispositions, claimed, gate: started.gate, finishes }
+      if (!started.ok) return { status: 'failed', layer, error: started.error, totals, claimed, gate: started.gate, finishes }
+      add(started)
       gate = started.gate || gate
       if (o.onStart) o.onStart(started, label)
       const units = Number(started.units || 0)
@@ -553,29 +572,30 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
       idle = 0
       claimed += units
       // The Cards layer's work is the checked finish the start step already ran.
-      if (o.jobs === false) {
-        for (const r of started.results || []) dispositions.push(r)
-        continue
-      }
+      if (o.jobs === false) continue
       let sessions = null
       if (Number(started.jobs || 0)) sessions = await runJobs(`${label}: write`, started.file, started.jobs, o)
       if (o.apply) {
         const applied = await driveStep(`${label}: apply`, 'apply', { layer, phase: o.phase, cwd: o.dsh, limits: o.limits })
-        if (!applied.ok) return { status: 'failed', layer, error: applied.error, dispositions, claimed, gate, finishes }
+        if (!applied.ok) return { status: 'failed', layer, error: applied.error, totals, claimed, gate, finishes }
+        add(applied)
         if (o.onApply) o.onApply(applied, label, started)
         if (Number(applied.jobs || 0)) await runJobs(`${label}: apply`, applied.file, applied.jobs, { ...o, table: sessionTable(sessions) })
       }
       const finished = await driveStep(`${label}: finish`, 'finish', { layer, phase: o.phase, cwd: o.dsh, deepseek: o.deepseek })
-      if (!finished.ok) return { status: 'failed', layer, error: finished.error, dispositions, claimed, gate: finished.gate || gate, finishes }
+      if (!finished.ok) return { status: 'failed', layer, error: finished.error, totals, claimed, gate: finished.gate || gate, finishes }
       finishes.push(finished)
-      for (const r of finished.results || []) dispositions.push(r)
+      add(finished)
       gate = finished.gate || gate
       if (o.onFinish) o.onFinish(finished, label, started)
     }
     const final = gate || { complete: false, counts: {} }
-    const failed = dispositions.filter((d) => d.status === 'failed').length
     const open = Number((final.counts && final.counts.open) || 0)
-    return { status: final.complete === true ? 'complete' : failed && !open ? 'partial' : 'active', layer, gate: final, dispositions, claimed, finishes }
+    return {
+      status: final.complete === true ? 'complete' : totals.failed && !open ? 'partial' : 'active',
+      layer, gate: final, totals, claimed, finishes,
+      verified: totals.done, failed: totals.failed, partial: totals.partial,
+    }
   }
   // --- The book-level stages: one book-steps.ps1 step per block (#176) -----------------------------------------
   // The preparation, the whole-book card cycle, Organize, Figures, the Bridge, the audit, the finalization, the
@@ -1052,10 +1072,12 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '40', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '41', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====
+
+
 
 
 

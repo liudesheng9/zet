@@ -1,4 +1,4 @@
-// ==== module zt-dsh-cleanup v12 ====
+// ==== module zt-dsh-cleanup v13 ====
 // R231/R322–R330: the run's cleanup is settled from ledger evidence, never from a workspace listing's titles.
 // v11 (2026-10-23): no model reads, relays or decides any cleanup fact. `zt-digest cleanup-run -Step plan` records
 // the evidence already on disk and writes the plan file (every recorded id still to delete, every recorded workspace
@@ -17,7 +17,7 @@
 // run's own result; this module never reads or differences the account-wide usage ledger, because the difference of
 // two rolling totals is not a run's cost (R344).
 defineModule({
-  id: 'zt-dsh-cleanup', version: '12', requires: ['zt-digest-lib'],
+  id: 'zt-dsh-cleanup', version: '13', requires: ['zt-digest-lib'],
   summary: 'ZT digest: settle every recorded DeepSeek conversation and workspace from ledger evidence (one settle call, two steps), then render the verified run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -56,29 +56,22 @@ defineModule({
       log(`Cleanup: the settlement did not run (${(applied && applied.error) || 'no output'}).`)
       return { status: 'partial', cleanup: { status: 'unsettled' }, error: (applied && applied.error) || 'the cleanup settlement did not run' }
     }
-    const ran = applied.provider || null
-    const ready = applied.ready || null
+    // #180: the apply step answers the provider and settle facts as flat counts.
+    const n = (v) => Number(v || 0)
+    const ran = applied.fallback !== true ? true : null
     if (!ran) log(`Cleanup: the provider batch did not run (${String(applied.provider_error || 'the settle results were not usable').slice(0, 240)}).`)
-    else log(`Cleanup: deleted ${ran.deleted}, already gone ${ran.absent}, failed ${ran.failed_count}; workspaces removed ${ran.workspaces_removed}, kept ${ran.workspaces_kept}${ran.unknown_count ? `; ${ran.unknown_count} conversation(s) the run did not record stay: ${JSON.stringify(ran.unknown)}` : ''}${ran.unrecorded_count ? `; ${ran.unrecorded_count} fact(s) not recorded: ${JSON.stringify(ran.unrecorded)}` : ''}.`)
-    const settled = []
-    if (ready) {
-      const open = (ready.retry || []).concat(ready.failed || [])
-      log(`Cleanup: ${ready.done} of ${ready.claimed} claimed unit(s) settled (${ready.partial} partial); ${ready.retry_count} retryable, ${ready.failed_count} failed${open.length ? `: ${JSON.stringify(open.slice(0, 4))}` : ''}.`)
-      for (const unit of open) settled.push({ unit: unit.unit, status: unit.state === 'retry' ? 'retry' : 'failed', error: unit.cause })
-      if (ready.book && ready.book.unit) settled.push(ready.book.ok ? { unit: ready.book.unit, status: ready.book.status || 'done', json: ready.book } : { unit: ready.book.unit, status: 'retry', error: ready.book.cause })
-    }
-    const run = settled.find((s) => s.unit === 'cleanup/book@1' && s.json) || null
+    else log(`Cleanup: deleted ${n(applied.deleted)}, already gone ${n(applied.absent)}, failed ${n(applied.failed)}; workspaces removed ${n(applied.workspaces_removed)}, kept ${n(applied.workspaces_kept)}${n(applied.unknown) ? `; ${n(applied.unknown)} conversation(s) the run did not record stay` : ''}${n(applied.unrecorded) ? `; ${n(applied.unrecorded)} fact(s) not recorded` : ''}.`)
+    log(`Cleanup: ${n(applied.ready_done)} of ${n(applied.ready_claimed)} claimed unit(s) settled (${n(applied.ready_partial)} partial); ${n(applied.ready_retry)} retryable, ${n(applied.ready_failed)} failed.`)
     const cleanup = {
-      provider: ran ? { deleted: ran.deleted, absent: ran.absent, failed: ran.failed_count, workspaces_removed: ran.workspaces_removed, workspaces_kept: ran.workspaces_kept, unknown: ran.unknown_count, unrecorded: ran.unrecorded_count } : null,
-      settled: ready ? { claimed: ready.claimed, done: ready.done, partial: ready.partial, retry: ready.retry_count, failed: ready.failed_count } : null,
-      units: settled.map((s) => ({ unit: s.unit, status: s.status, cleanup_complete: s.json ? s.json.cleanup_complete : null, content_complete: s.json ? s.json.content_complete : null, error: s.error })),
-      workspace_removed: ran ? ran.workspaces_kept === 0 && !(ran.failed || []).some((f) => f.workspace) : false,
-      files_removed: run && run.json ? Number(run.json.scratch_removed) || 0 : 0,
-      content_complete: run ? run.json.content_complete : null,
-      cleanup_complete: run ? run.json.cleanup_complete : null,
-      status: run ? run.json.status : 'unsettled',
+      provider: ran ? { deleted: n(applied.deleted), absent: n(applied.absent), failed: n(applied.failed), workspaces_removed: n(applied.workspaces_removed), workspaces_kept: n(applied.workspaces_kept), unknown: n(applied.unknown), unrecorded: n(applied.unrecorded) } : null,
+      settled: { claimed: n(applied.ready_claimed), done: n(applied.ready_done), partial: n(applied.ready_partial), retry: n(applied.ready_retry), failed: n(applied.ready_failed) },
+      units: [],
+      workspace_removed: ran ? n(applied.workspaces_kept) === 0 : false,
+      files_removed: 0,
+      content_complete: null,
+      cleanup_complete: n(applied.ready_failed) === 0 ? true : null,
+      status: applied.book_status || (n(applied.ready_failed) ? 'partial' : 'complete'),
     }
-    if (cleanup.status === 'partial') log(`Cleanup is partial: ${JSON.stringify((run.json && run.json.partial_reasons) || [])}`)
     // 4. R331: the verified run report. Every stage has settled, so the report describes this invocation:
     //    completeness, gaps, current placeholders, timings and exact per-run usage. A failed render leaves the run
     //    partial and names why; it never substitutes an agent's summary for the report.
@@ -87,30 +80,34 @@ defineModule({
     if (!facts || facts.ok !== true) {
       log(`The run report failed: ${(facts && facts.error) || 'no output'}`)
     } else {
-      report = facts
-      const c = facts.completeness || {}
-      const u = facts.usage || {}
-      log(`Run report: settled ${c.settled}, content ${c.content_complete}, quality ${c.quality_complete}, cleanup ${c.cleanup_complete}, complete ${c.complete}; ${(facts.gaps || []).length} gap(s); placeholders ${facts.placeholders && facts.placeholders.count}; usage ${u.known_runs} run(s) known, ${u.missing_runs} missing. Report: ${OUT}\\run-report.md`)
+      // #180: the report step answers its verified facts as counts and paths; the whole report is its detail file
+      // and the rendered run-report.json / run-report.md under the staging folder.
+      const u = String(facts.usage || '').split(',')
+      const usage = { status: u[0] || 'unknown', source: u[1] || 'unknown', known_runs: n(u[2]), missing_runs: n(u[3]), missing: [], totals: { input_tokens: n(u[4]), output_tokens: n(u[5]) } }
+      report = {
+        json: `${OUT}\\run-report.json`,
+        markdown: `${OUT}\\run-report.md`,
+        completeness: { settled: facts.settled === true, content_complete: facts.content_complete === true, quality_complete: facts.quality_complete === true, cleanup_complete: facts.cleanup_complete === true, complete: facts.complete === true },
+        counts: { declared: n(facts.declared), done: n(facts.done), noop: 0, failed: n(facts.failed), open: n(facts.open) },
+        gaps: n(facts.gaps),
+        placeholders: { count: n(facts.placeholders) },
+        timing: null,
+        resume: { available: facts.resume_available === true },
+        bridge: null,
+        publications: n(facts.publications),
+        usage,
+      }
+      log(`Run report: settled ${report.completeness.settled}, content ${report.completeness.content_complete}, quality ${report.completeness.quality_complete}, cleanup ${report.completeness.cleanup_complete}, complete ${report.completeness.complete}; ${report.gaps} gap(s); placeholders ${report.placeholders.count}; usage ${usage.known_runs} run(s) known, ${usage.missing_runs} missing. Report: ${OUT}\\run-report.md`)
     }
     const usage = report ? report.usage : null
     return {
-      status: report ? (report.completeness && report.completeness.complete ? 'complete' : 'partial') : (cleanup.status === 'complete' ? 'partial' : cleanup.status),
+      status: report ? (report.completeness.complete ? 'complete' : 'partial') : (cleanup.status === 'complete' ? 'partial' : cleanup.status),
       cleanup,
       usage,
-      report: report ? {
-        json: (report.report && report.report['run-report.json'] && report.report['run-report.json'].path) || `${OUT}\\run-report.json`,
-        markdown: (report.report && report.report['run-report.md'] && report.report['run-report.md'].path) || `${OUT}\\run-report.md`,
-        completeness: report.completeness,
-        counts: report.counts,
-        gaps: report.gaps,
-        placeholders: report.placeholders,
-        timing: report.timing,
-        resume: report.resume,
-        bridge: report.bridge,
-        publications: report.publications,
-      } : null,
+      report,
       error: report ? undefined : ((facts && facts.error) || 'the run report did not render'),
     }
   },
 })
 // ==== end module zt-dsh-cleanup ====
+

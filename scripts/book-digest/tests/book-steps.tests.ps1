@@ -91,7 +91,9 @@ switch -Regex ($cmd) {
     '^ledger publish' { Out @{ unit = 'cards-book/book@1'; revision = 1; state = 'ready' } }
     '^ledger done' { Out @{ state = 'done'; unit = 'termlink/final@1' } }
     '^ledger fail' { if ($flat -match 'card_locked') { Out @{ state = 'failed' } } else { Out @{ state = 'retry' } } }
-    '^ledger report' { Out @{ kind = 'run_report'; completeness = @{ complete = $false }; counts = @{}; gaps = @(); usage = @{} } }
+    '^ledger report' {
+        Out @{ kind = 'run_report'; report = @{ 'run-report.json' = @{ path = (Join-Path $env:BS_OUT 'run-report.json') }; 'run-report.md' = @{ path = (Join-Path $env:BS_OUT 'run-report.md') } }; completeness = @{ settled = $true; content_complete = $false; quality_complete = $true; cleanup_complete = $true; complete = $false }; counts = @{ declared = 3; done = 2; noop = 0; failed = 0; open = 1 }; gaps = @(@{ unit = 'digest/g002@1' }); placeholders = @{ status = 'verified'; count = 0 }; timing = @{ wall_seconds = 12; tool_seconds = 3; external_run_seconds = 9 }; resume = @{ available = $true }; usage = @{ status = 'complete'; source = 'per-run'; known_runs = 1; missing_runs = 0; totals = @{ input_tokens = 100; output_tokens = 20 } }; publications = @() }
+    }
     '^finalize ' {
         if ($flat -match '-Step stage') { Out @{ layer = "$($Matches[0])"; unit = 'organize/book@1'; state = 'done'; disposition = 'published' } }
         if ($flat -match '-Step plan') { Out @{ step = 'plan'; branch = 'fix'; audit = @{ unit = 'audit/book@1'; graph_revision = 7 }; faults = @{ total = 1 }; counts = @{ fix = 1 }; fix_cycle = @{ rules = @('R3'); cards = @('Key/1|a'); card_list = 'D:\x\fix-cards.txt' } } }
@@ -172,6 +174,13 @@ $env:BS_APPLY_COUNT = $applyCount
 $env:BS_PLAN_COUNT = $planCount
 $env:BS_OUT = $out
 
+# #180: every step of the script answers one compact line: at most 400 characters, a boolean top-level `ok`, and
+# the detail file it names exists.
+function Assert-Line([object]$r, [string]$name) {
+    Assert ($r.last.Length -gt 0 -and $r.last.Length -le 400) "compact ${name}: the last line is at most 400 characters ($($r.last.Length))"
+    Assert ($r.json -and $r.json.ok -is [bool]) "compact ${name}: the last line has a boolean top-level ok"
+    Assert ($r.json -and $r.json.detail -and (Test-Path -LiteralPath $r.json.detail)) "compact ${name}: the line names its detail file and it exists"
+}
 function Step([string]$name, [hashtable]$opts = @{}) {
     Remove-Item -LiteralPath $count -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $applyCount -ErrorAction SilentlyContinue
@@ -180,9 +189,12 @@ function Step([string]$name, [hashtable]$opts = @{}) {
     $json = if ($opts.Count) { $opts | ConvertTo-Json -Compress -Depth 8 } else { '{}' }
     $text = & pwsh -NoProfile -File $script -Step $name -Out $out -Json $json -Tool $tool 2>&1
     $code = $LASTEXITCODE
-    $line = @($text | Where-Object { "$_".Trim().StartsWith('{') }) | Select-Object -Last 1
-    $parsed = if ($line) { $line | ConvertFrom-Json -Depth 16 } else { $null }
-    [pscustomobject]@{ code = $code; json = $parsed; text = (@($text) -join ' | '); calls = $(if (Test-Path -LiteralPath $calls) { Get-Content -LiteralPath $calls -Raw } else { '' }) }
+    $lines = @($text | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    $line = if ($lines.Count) { $lines[-1] } else { '' }
+    $parsed = if ($line.StartsWith('{')) { $line | ConvertFrom-Json -Depth 16 } else { $null }
+    $r = [pscustomobject]@{ code = $code; json = $parsed; last = $line; text = (@($text) -join ' | '); calls = $(if (Test-Path -LiteralPath $calls) { Get-Content -LiteralPath $calls -Raw } else { '' }) }
+    Assert-Line $r $name
+    $r
 }
 
 # 1. prepare, mode full: one command prepares the book and its brief line is the step's answer.
@@ -203,7 +215,7 @@ Assert ($fallback.json -and $fallback.json.groups -eq 3 -and (Has $fallback.call
 $env:BS_RESUME_STATUS = 'nothing_to_resume'
 $nothing = Step 'prepare' @{ Mode = 'resume' }
 $env:BS_RESUME_STATUS = ''
-Assert ($nothing.json -and $nothing.json.ok -eq $true -and $nothing.json.resumed -eq $false -and $nothing.json.groups -eq 3) 'prepare resume: a run with nothing to resume still reports its retained groups'
+Assert ($nothing.json -and $nothing.json.ok -eq $true -and -not $nothing.json.resumed -and $nothing.json.groups -eq 3) 'prepare resume: a run with nothing to resume still reports its retained groups'
 $env:BS_NO_LINE = '^ledger resume'
 $lost = Step 'prepare' @{ Mode = 'resume' }
 $env:BS_NO_LINE = ''
@@ -211,7 +223,7 @@ Assert ($lost.json -and $lost.json.ok -eq $false -and $lost.json.step -eq 'resum
 
 # 3. prepare, the Term backfill branches: validate or re-stage only, and a conflict stops before any work.
 $backfill = Step 'prepare' @{ Mode = 'term-cards' }
-Assert ($backfill.json -and $backfill.json.ok -eq $true -and $backfill.json.book -eq 'Key' -and $backfill.json.list.rows -eq 2) "prepare backfill: the validation it bound is the step's answer ($($backfill.text))"
+Assert ($backfill.json -and $backfill.json.ok -eq $true -and $backfill.json.book -eq 'Key' -and $backfill.json.rows -eq 2) "prepare backfill: the validation it bound is the step's answer ($($backfill.text))"
 Assert (Has $backfill.calls 'prepare -Out .* -Sections -Brief') 'prepare backfill: term-cards re-stages the source sections'
 $env:BS_BACKFILL_CONFLICT = '1'
 $conflict = Step 'prepare' @{ Mode = 'term-link' }
@@ -228,7 +240,7 @@ Assert ($locked.code -eq 0) 'prepare lock: a typed refusal is a JSON answer, not
 
 # 5. link-prepare: one brief command returns the gap set.
 $linkPrep = Step 'link-prepare'
-Assert ($linkPrep.json -and $linkPrep.json.ok -eq $true -and @($linkPrep.json.pending).Count -eq 1 -and $linkPrep.json.gap_total -eq 2) "link-prepare: the pending groups and the gap total are the step's answer ($($linkPrep.text))"
+Assert ($linkPrep.json -and $linkPrep.json.ok -eq $true -and $linkPrep.json.pending -eq 1 -and $linkPrep.json.gap_total -eq 2) "link-prepare: the pending groups and the gap total are the step's answer ($($linkPrep.text))"
 Assert (Has $linkPrep.calls 'prepare-link -Staging .* -Brief') 'link-prepare: the step runs the one brief preparation command'
 
 # 6. publish: one stage command records its own book revision and names its declared artifacts.
@@ -252,7 +264,7 @@ $env:BS_APPLY_PENDING = ''
 Assert ($cardsApply.json -and $cardsApply.json.ok -eq $true -and $cardsApply.json.applied -eq 3 -and $cardsApply.json.faults -eq 1 -and $cardsApply.json.jobs -eq 1) "cards apply: every pending share is applied, then the check lists its fix job ($($cardsApply.text))"
 Assert (@(Get-Content -Raw (Join-Path $work 'out\jobs.json') | ConvertFrom-Json).Count -eq 1) 'cards apply: the check writes its own job file for the next content round'
 $cardsFinish = Step 'cards-finish' @{ Work = $work; MaxJobs = 30 }
-Assert ($cardsFinish.json -and $cardsFinish.json.ok -eq $true -and $cardsFinish.json.cards -eq 4 -and $cardsFinish.json.faults_after -eq 0) "cards finish: the cycle's report is the step's answer ($($cardsFinish.text))"
+Assert ($cardsFinish.json -and $cardsFinish.json.ok -eq $true -and $cardsFinish.json.cards -eq 4 -and -not $cardsFinish.json.faults_after) "cards finish: the cycle's report is the step's answer ($($cardsFinish.text))"
 Assert ((Has $cardsFinish.calls 'card -Step report -Work ') -and (Has $cardsFinish.calls 'card -Step apply -Work .* -MaxJobs 30')) 'cards finish: the last drafts are applied before the report'
 
 # 8. unit-fail records one claimed unit's fault, with the claim's own hash.
@@ -273,7 +285,7 @@ $env:BS_NO_UNITS = '1'
 $emptyBook = Step 'cards-book-start' @{ Wait = 300; Lease = 300 }
 $env:BS_HELD_NONE = ''
 $env:BS_NO_UNITS = ''
-Assert ($emptyBook.json -and $emptyBook.json.ok -eq $true -and $emptyBook.json.unit -eq $null -and $emptyBook.json.waiting -eq $true -and $emptyBook.json.gate) "cards-book start: a revision waiting for its Model reviews is an empty success ($($emptyBook.text))"
+Assert ($emptyBook.json -and $emptyBook.json.ok -eq $true -and $emptyBook.json.unit -eq $null -and $emptyBook.json.waiting -eq $true -and $emptyBook.json.open -eq 1) "cards-book start: a revision waiting for its Model reviews is an empty success ($($emptyBook.text))"
 $finish = Step 'cards-book-finish' @{ Unit = 'cards-book/book@1'; Token = 1; InputHash = 'ih-cb'; Work = $work }
 Assert ($finish.json -and $finish.json.ok -eq $true -and $finish.json.state -eq 'done') "cards-book finish: the checked completion is the step's answer ($($finish.text))"
 $env:BS_FINISH_NO_LINE = '1'
@@ -290,14 +302,14 @@ Assert ($badFinish.json -and $badFinish.json.ok -eq $false -and $badFinish.json.
 # 10. Organize: the survey and the applied decisions.
 $org = Join-Path $out 'organize'
 $survey = Step 'organize-survey' @{ Work = $org }
-Assert ($survey.json -and $survey.json.ok -eq $true -and $survey.json.pairs -eq 0 -and (Has $survey.calls 'organize-survey -Staging .* -Work .*organize')) "organize survey: its line is the step's answer ($($survey.text))"
+Assert ($survey.json -and $survey.json.ok -eq $true -and -not $survey.json.merges -and (Has $survey.calls 'organize-survey -Staging .* -Work .*organize')) "organize survey: its line is the step's answer ($($survey.text))"
 $orgApply = Step 'organize-apply' @{ Work = $org }
 Assert ($orgApply.json -and $orgApply.json.ok -eq $true -and $orgApply.json.notes -eq 2 -and (Has $orgApply.calls 'organize-apply -Work .*organize')) "organize apply: the count of notes is the step's answer ($($orgApply.text))"
 
 # 11. the skeleton: its plan lists the one index job, its apply writes the Cards.
 $sk = Join-Path $out 'skeleton'
 $skStart = Step 'skeleton-start' @{ Work = $sk }
-Assert ($skStart.json -and $skStart.json.ok -eq $true -and $skStart.json.groups -eq 2 -and $skStart.json.jobs -eq 1) "skeleton start: the plan's job count is the step's answer ($($skStart.text))"
+Assert ($skStart.json -and $skStart.json.ok -eq $true -and $skStart.json.jobs -eq 1 -and $skStart.json.file) "skeleton start: the plan's job count is the step's answer ($($skStart.text))"
 $skJobs = @(Get-Content -Raw (Join-Path $sk 'out\jobs.json') | ConvertFrom-Json)
 Assert ($skJobs.Count -eq 1 -and $skJobs[0].id -eq 'skeleton' -and $skJobs[0].files.Count -eq 2) 'skeleton start: its own job list reaches the content manager unchanged'
 $skFinish = Step 'skeleton-finish' @{ Work = $sk; Decisions = (Join-Path $org 'decisions.json') }
@@ -311,12 +323,12 @@ Assert (Has $fig.calls 'figures -CitationKey Key -Staging .* -FileId 77 -Report 
 # 13. the Bridge: plan, report and apply are one command each.
 $br = Join-Path $out 'bridge'
 $brPlan = Step 'bridge-start' @{ Work = $br; CitationKey = 'Key'; Profile = 'book'; MaxSources = 40; Candidates = 5; Books = 'Other' }
-Assert ($brPlan.json -and $brPlan.json.ok -eq $true -and $brPlan.json.report_id -eq 'r-1' -and $brPlan.json.jobs -eq 1) "bridge start: the plan's report id and job count are the step's answer ($($brPlan.text))"
+Assert ($brPlan.json -and $brPlan.json.ok -eq $true -and $brPlan.json.jobs -eq 1 -and $brPlan.json.file) "bridge start: the plan's report id and job count are the step's answer ($($brPlan.text))"
 Assert (Has $brPlan.calls 'bridge -Step plan -Staging .* -CitationKey Key -Work .*bridge -Profile book -MaxSources 40 -Candidates 5 -Books Other') 'bridge start: the discovery limits and the book filter reach the plan'
 $brReport = Step 'bridge-report' @{ Work = $br; CitationKey = 'Key' }
 Assert ($brReport.json -and $brReport.json.ok -eq $true -and $brReport.json.report_id -eq 'r-1' -and (Has $brReport.calls 'bridge -Step report -Staging .* -CitationKey Key -Work .*bridge')) "bridge report: the frozen report is the step's answer ($($brReport.text))"
 $brApply = Step 'bridge-apply' @{ Work = $br; CitationKey = 'Key'; ReportId = 'r-1'; Accept = 'all' }
-Assert ($brApply.json -and $brApply.json.ok -eq $true -and $brApply.json.step -eq 'apply' -and (Has $brApply.calls 'bridge -Step apply -Staging .* -CitationKey Key -Work .*bridge -ReportId r-1 -Accept all -Apply')) "bridge apply: the applied report is the step's answer ($($brApply.text))"
+Assert ($brApply.json -and $brApply.json.ok -eq $true -and $brApply.json.status -eq 'done' -and $brApply.json.applied -eq 1 -and (Has $brApply.calls 'bridge -Step apply -Staging .* -CitationKey Key -Work .*bridge -ReportId r-1 -Accept all -Apply')) "bridge apply: the applied report is the step's answer ($($brApply.text))"
 
 # 14. the audit: one read-only pass on the book or on the whole Workspace.
 $audit = Step 'audit' @{ CitationKey = 'Key' }
@@ -326,15 +338,15 @@ Assert ($wsAudit.json -and $wsAudit.json.ok -eq $true -and (Has $wsAudit.calls '
 
 # 15. the finite finalization: each step is the tool's own command and line.
 $fPlan = Step 'finalize-plan'
-Assert ($fPlan.json -and $fPlan.json.ok -eq $true -and $fPlan.json.branch -eq 'fix' -and $fPlan.json.fix_cycle.rules[0] -eq 'R3' -and (Has $fPlan.calls 'finalize -Step plan -Out ')) "finalize plan: the audit plan is the step's answer ($($fPlan.text))"
+Assert ($fPlan.json -and $fPlan.json.ok -eq $true -and $fPlan.json.branch -eq 'fix' -and $fPlan.json.cycle_rules -eq 'R3' -and (Has $fPlan.calls 'finalize -Step plan -Out ')) "finalize plan: the audit plan is the step's answer ($($fPlan.text))"
 $fChanges = Step 'finalize-changes'
-Assert ($fChanges.json -and $fChanges.json.ok -eq $true -and $fChanges.json.step -eq 'changes' -and $fChanges.json.term_link.round -eq 1) "finalize changes: the retained manifest is the step's answer ($($fChanges.text))"
+Assert ($fChanges.json -and $fChanges.json.ok -eq $true -and $fChanges.json.step -eq 'changes' -and $fChanges.json.term_round -eq 1) "finalize changes: the retained manifest is the step's answer ($($fChanges.text))"
 $fScope = Step 'finalize-scope' @{ FixWork = 'D:\x\fix' }
 Assert ($fScope.json -and $fScope.json.ok -eq $true -and $fScope.json.step -eq 'scope' -and (Has $fScope.calls 'finalize -Step scope -Out .* -FixWork D:\\x\\fix')) "finalize scope: the changed-Card manifest is the step's answer ($($fScope.text))"
 $fRefresh = Step 'finalize-refresh' @{ Layer = 'link-check'; Report = 'D:\x\fix\report.json' }
 Assert ($fRefresh.json -and $fRefresh.json.ok -eq $true -and $fRefresh.json.layer -eq 'link-check' -and (Has $fRefresh.calls 'finalize -Step refresh -Out .* -Layer link-check -Report D:\\x\\fix\\report.json')) "finalize refresh: the refreshed publication is the step's answer ($($fRefresh.text))"
 $fFinal = Step 'finalize-final'
-Assert ($fFinal.json -and $fFinal.json.ok -eq $true -and $fFinal.json.step -eq 'final' -and $fFinal.json.graph_revision -eq 8 -and (Has $fFinal.calls 'finalize -Step final -Out ')) "finalize final: the final audit is the step's answer ($($fFinal.text))"
+Assert ($fFinal.json -and $fFinal.json.ok -eq $true -and $fFinal.json.graph_revision -eq 8 -and $fFinal.json.status -eq 'done' -and (Has $fFinal.calls 'finalize -Step final -Out ')) "finalize final: the final audit is the step's answer ($($fFinal.text))"
 $env:BS_LOCK = '^finalize '
 $fLocked = Step 'finalize-final'
 $env:BS_LOCK = ''
@@ -342,7 +354,7 @@ Assert ($fLocked.json -and $fLocked.json.ok -eq $false -and $fLocked.json.code -
 
 # 16. the finalization's Term-link round: plan, apply under the claim, complete, plan again.
 $tl = Step 'term-link' @{ Round = 1; Occurrences = 'first'; Cards = @('Key/1|a') }
-Assert ($tl.json -and $tl.json.ok -eq $true -and $tl.json.status -eq 'done' -and $tl.json.unit -eq 'termlink/final@1' -and $tl.json.counts.cards_changed -eq 1 -and $tl.json.second.cards_changed -eq 0) "term-link: the completed round and the second plan are the step's answer ($($tl.text))"
+Assert ($tl.json -and $tl.json.ok -eq $true -and $tl.json.status -eq 'done' -and $tl.json.unit -eq 'termlink/final@1' -and $tl.json.cards_changed -eq 1 -and -not $tl.json.second_cards_changed) "term-link: the completed round and the second plan are the step's answer ($($tl.text))"
 Assert ((Has $tl.calls 'term-link -Step plan -Staging .* -Occurrences first -Round 1 -Cards Key/1\|a') -and (Has $tl.calls 'ledger next -Out .* -Layer termlink -Take 1 -Owner term-link -Wait 60 -Lease 3600') -and (Has $tl.calls 'term-link -Step apply -Staging .* -Occurrences first -Round 1 -Cards Key/1\|a -Token 1 -Apply') -and (Has $tl.calls 'ledger done -Out .* -Unit termlink/final@1 -Token 1 -Outputs .*apply.json')) 'term-link: the plan, the claim, the apply and the completion are one step'
 $env:BS_NO_UNITS = '1'
 $tlSkipped = Step 'term-link' @{ Round = 1; Occurrences = 'first'; Cards = @('Key/1|a') }
@@ -351,21 +363,26 @@ Assert ($tlSkipped.json -and $tlSkipped.json.ok -eq $true -and $tlSkipped.json.s
 
 # 17. the settlement: its plan, its apply (with the cleanup-finish fallback) and the run report.
 $clStart = Step 'cleanup-start'
-Assert ($clStart.json -and $clStart.json.ok -eq $true -and $clStart.json.kind -eq 'cleanup_run' -and $clStart.json.plan_file -match 'cleanup\\settle-plan.json' -and $clStart.json.results_file -match 'cleanup\\settle-results.json') "cleanup start: the plan and its two paths are the step's answer ($($clStart.text))"
+Assert ($clStart.json -and $clStart.json.ok -eq $true -and $clStart.json.deletes -eq 3 -and $clStart.json.plan_file -match 'cleanup\\settle-plan.json' -and $clStart.json.results_file -match 'cleanup\\settle-results.json') "cleanup start: the plan and its two paths are the step's answer ($($clStart.text))"
 Assert (Has $clStart.calls 'cleanup-run -Out .* -Step plan') 'cleanup start: one plan command records the evidence'
 $clApply = Step 'cleanup-apply'
-Assert ($clApply.json -and $clApply.json.ok -eq $true -and $clApply.json.ready.done -eq 1 -and -not $clApply.json.fallback) "cleanup apply: the settled provider facts are the step's answer ($($clApply.text))"
+Assert ($clApply.json -and $clApply.json.ok -eq $true -and $clApply.json.ready_done -eq 1 -and -not $clApply.json.fallback) "cleanup apply: the settled provider facts are the step's answer ($($clApply.text))"
 Assert ((Has $clApply.calls 'cleanup-run -Out .* -Step apply -Owner cleanup-run') -and -not (Has $clApply.calls 'cleanup-finish ')) 'cleanup apply: the provider results settle the units, with no fallback'
 $env:BS_CLEANUP_FAIL = '1'
 $clFallback = Step 'cleanup-apply'
 $env:BS_CLEANUP_FAIL = ''
-Assert ($clFallback.json -and $clFallback.json.ok -eq $true -and $clFallback.json.fallback -eq $true -and $clFallback.json.ready.claimed -eq 1 -and (Has $clFallback.calls 'cleanup-finish -Out .* -Ready -Owner cleanup-run')) "cleanup apply: without the provider results the finished units still settle ($($clFallback.text))"
+Assert ($clFallback.json -and $clFallback.json.ok -eq $true -and $clFallback.json.fallback -eq $true -and $clFallback.json.ready_claimed -eq 1 -and (Has $clFallback.calls 'cleanup-finish -Out .* -Ready -Owner cleanup-run')) "cleanup apply: without the provider results the finished units still settle ($($clFallback.text))"
 $clReport = Step 'cleanup-report'
-Assert ($clReport.json -and $clReport.json.ok -eq $true -and $clReport.json.kind -eq 'run_report' -and (Has $clReport.calls 'ledger report -Out ')) "cleanup report: the verified run report is the step's answer ($($clReport.text))"
+Assert ($clReport.json -and $clReport.json.ok -eq $true -and -not $clReport.json.complete -and $clReport.json.settled -and $clReport.json.quality_complete -and $clReport.json.usage -and (Has $clReport.calls 'ledger report -Out ')) "cleanup report: the verified run report is the step's answer ($($clReport.text))"
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host "book-steps: $ok passed, $failed failed"
 if ($failed) { exit 1 } else { exit 0 }
+
+
+
+
+
 
 
