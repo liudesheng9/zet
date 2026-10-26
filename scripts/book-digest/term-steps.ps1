@@ -95,6 +95,10 @@ switch ($Step) {
             else { $failed += $u.inputs.job.id; Fail-Unit $u "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
         }
         $book = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '1', '-Owner', 'term cards book', '-Wait', '60', '-Lease', '3600')
+        # `next` hands out any ready unit of the layer: a job unit it gives here is released at once.
+        foreach ($x in @($book.json.units | Where-Object { $_.id -notlike 'termcards/book@*' })) {
+            Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null
+        }
         $bu = @($book.json.units | Where-Object { $_.id -like 'termcards/book@*' }) | Select-Object -First 1
         if ($bu) {
             $a = Run @('term-cards', '-Step', 'apply', '-Staging', $Out, '-Token', "$($bu.token)", '-Apply')
