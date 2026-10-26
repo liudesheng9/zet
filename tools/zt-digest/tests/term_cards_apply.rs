@@ -819,7 +819,7 @@ fn an_unrelated_side_child_stops_publication_without_creating_a_head() {
 }
 
 #[test]
-fn a_changed_accepted_head_is_a_conflict_and_is_never_overwritten() {
+fn a_changed_accepted_head_is_kept_and_never_overwritten() {
     let program = zt_program().expect(
         "this seam needs a zt binary: build the repository (cargo build) or set ZT_TEST_ZT",
     );
@@ -843,10 +843,12 @@ fn a_changed_accepted_head_is_a_conflict_and_is_never_overwritten() {
     );
     let revision = mcp.revision();
 
+    // Since 2026-10-26 (the run's own Term-link pass edits its heads too) a head the publication record
+    // names is kept as it stands and blocks nothing; it is still never rewritten.
     let output = digest(&zt, &staged, "apply", true);
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0));
     let said = last_json(&output);
-    assert_eq!(said["conflicted"], 1, "{said}");
+    assert_eq!(said["conflicted"], 0, "{said}");
     assert_eq!(said["cards_written"], 0);
     assert_eq!(mcp.revision(), revision, "the accepted head is not rewritten");
     assert_eq!(
@@ -855,7 +857,7 @@ fn a_changed_accepted_head_is_a_conflict_and_is_never_overwritten() {
         "the owner's edit stays exactly as authored"
     );
     let json = read_json(&work(&staged).join("report.json"));
-    assert_eq!(json["rows"][0]["publication"]["reason"]["code"], "changed_head");
+    assert_eq!(json["rows"][0]["publication"]["reason"]["code"], "kept_earlier");
 }
 
 #[test]

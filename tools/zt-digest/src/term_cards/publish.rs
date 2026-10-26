@@ -916,10 +916,12 @@ fn judge(plans: &[RowPlan], scan: &Scan, published: &Value, revision: i64) -> (V
                         row.status = Status::Committed;
                         row.reason = Some(json!({"code": "committed"}));
                     } else if published["rows"][plan.number.to_string()]["head"]["address"].as_str() == Some(head.as_str())
-                        && published["rows"][plan.number.to_string()]["plan_revision"].as_i64().is_some_and(|earlier| earlier < revision)
+                        && published["rows"][plan.number.to_string()]["plan_revision"].as_i64().is_some_and(|earlier| earlier <= revision)
                     {
-                        // An earlier plan revision published this head (a Term backfill redrafts every row):
-                        // it stays exactly as it is, counts as published, and holds no other row back.
+                        // The publication record names this head: an earlier plan revision published it (a Term
+                        // backfill redrafts every row), or this one did and it changed since (the run's own
+                        // Term-link pass adds Term links to it). It stays exactly as it is, counts as published,
+                        // and holds no other row back; a head the record does not name is still a conflict.
                         row.slot = Slot::Committed {
                             head: head.clone(),
                             parts,
@@ -2775,7 +2777,10 @@ mod tests {
     }
 
     #[test]
-    fn an_accepted_head_that_changed_is_a_conflict_and_is_never_overwritten() {
+    fn a_head_this_plan_published_that_changed_since_is_kept_and_never_overwritten() {
+        // Live box 2026-10-26 (acemoglu2025nobel): the run's own Term-link pass added Term links to the heads it had
+        // just published; the next run called all 57 conflicted and held row 15 back. A head the publication record
+        // names stays exactly as it is, counts as published and holds no other row back.
         let mut scan = empty_scan();
         scan.side.push("K/1|a|a".to_string());
         scan.cards.insert(
@@ -2783,12 +2788,13 @@ mod tests {
             json!({"address": "K/1|a|a", "type": "term", "term": "词1", "title": "词1", "body": "来源：[[K]] §2"}),
         );
         let published = json!({"rows": {"1": {"plan_revision": 2, "head": {"address": "K/1|a|a"}, "parts": []}}});
-        let (rows, conflicts) = judge(&plans(1, |_| true), &scan, &published, 2);
+        let (rows, conflicts) = judge(&plans(2, |_| true), &scan, &published, 2);
         assert!(conflicts.is_empty());
-        assert_eq!(rows[0].status, Status::Conflicted);
-        assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "changed_head");
+        assert_eq!(rows[0].status, Status::Committed);
+        assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "kept_earlier");
+        assert_eq!(rows[1].status, Status::ReadyUnpublished);
         let run = Run {
-            plans: plans(1, |_| true),
+            plans: plans(2, |_| true),
             rows,
             conflicts,
             scan,
@@ -2796,9 +2802,9 @@ mod tests {
             retype: None,
             revision_before: 7,
         };
-        let packing = pack(&compiled(1), &run);
-        assert!(packing.batches.is_empty() && packing.holes.is_empty());
-        assert_eq!(run.structural_stop().unwrap().code, "conflicted");
+        assert!(run.structural_stop().is_none_or(|stop| stop.code != "conflicted"));
+        let packing = pack(&compiled(2), &run);
+        assert_eq!(packing.batches.iter().flat_map(|batch| batch.rows.iter().copied()).collect::<Vec<_>>(), vec![2]);
     }
 
     #[test]
