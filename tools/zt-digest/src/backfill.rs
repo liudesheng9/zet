@@ -660,10 +660,12 @@ fn pstr(value: &Value, key: &str) -> String {
 }
 
 /// The sort key of one address, so `|a`, `|aa` and `|b` order as the archive orders them.
-fn address_key(address: &str) -> (String, String) {
+/// The archive's order of Side labels under one parent: shorter labels first, so `a` < … < `z` < `aa`
+/// (live run 2026-10-26: as plain text, `aa` sorted before `b`).
+fn address_key(address: &str) -> (String, usize, String) {
     match address.rsplit_once('|') {
-        Some((parent, label)) => (parent.to_string(), label.to_string()),
-        None => (address.to_string(), String::new()),
+        Some((parent, label)) => (parent.to_string(), label.len(), label.to_string()),
+        None => (address.to_string(), 0, String::new()),
     }
 }
 
@@ -767,6 +769,21 @@ mod tests {
         assert!(message.contains("not a row of the list"), "{message}");
         assert!(message.contains("repeats the Term `均衡`"), "{message}");
         assert!(message.contains("publish in table order"), "{message}");
+    }
+
+    #[test]
+    fn side_labels_order_as_the_archive_reads_them_past_z() {
+        // Live run 2026-10-26 (staging8, 44 published heads): `aa` sorted before `b` as plain text, so row 2's
+        // head at `|b` was read as slot 20. The archive orders `a` < … < `z` < `aa`.
+        let terms: Vec<String> = (1..=28).map(|n| format!("术语{n}")).collect();
+        let names: Vec<&str> = terms.iter().map(String::as_str).collect();
+        let labels: Vec<String> = (b'a'..=b'z').map(|c| (c as char).to_string()).chain(["aa".to_string(), "ab".to_string()]).collect();
+        let cards: Vec<Value> = labels.iter().zip(&names).map(|(label, term)| card(&format!("Key/1|a|{label}"), "term", Some(term))).collect();
+        let mut conflicts = Vec::new();
+        let (heads, _parts, occupying) = occupancy(&cards, &list_read(&names), &mut conflicts);
+        assert_eq!(heads, 28);
+        assert!(occupying.is_empty(), "{occupying:?}");
+        assert!(conflicts.is_empty(), "{conflicts:?}");
     }
 
     #[test]
