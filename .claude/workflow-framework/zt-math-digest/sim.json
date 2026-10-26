@@ -61,95 +61,164 @@
       }
     },
     {
-      "label": "^math: index$",
+      "label": "^math-skeleton: start$",
       "answer": {
-        "ok": true,
-        "output": "{\"ok\":true,\"units\":5,\"forms\":{\"theorem\":1},\"examples\":1,\"exercises\":1}"
+        "answer": "{\"ok\":true,\"index\":{\"ok\":true,\"units\":5,\"forms\":{\"theorem\":1},\"examples\":1,\"exercises\":1},\"docs\":{\"ok\":true,\"files\":[]},\"skeleton\":{\"ok\":true,\"units\":5,\"created\":5,\"theories\":2}}"
       }
     },
     {
-      "label": "^math: docs$",
+      "label": "^math-skeleton: notation plan$",
       "answer": {
-        "ok": true,
-        "output": "{\"ok\":true,\"files\":[]}"
+        "answer": "{\"ok\":true,\"candidates\":3,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\math\\\\drive\\\\notation-jobs.json\"}"
       }
     },
     {
-      "label": "^math: skeleton$",
+      "label": "^math-skeleton: notation 1-1$",
       "answer": {
         "ok": true,
-        "output": "{\"ok\":true,\"units\":5,\"created\":5,\"theories\":2}"
+        "deleted": 1,
+        "not_deleted": [],
+        "results": [
+          {
+            "id": "notation",
+            "session_id": "s-notation",
+            "status": "done",
+            "answer": "{}",
+            "registered": true,
+            "evidence": true,
+            "deleted": true
+          }
+        ]
       }
     },
     {
-      "label": "^math: check$",
+      "label": "^math-skeleton: notation apply$",
       "answer": {
-        "ok": true,
-        "output": "{\"ok\":true,\"units\":5,\"theories\":2,\"faults\":0,\"by_rule\":{}}"
+        "answer": "{\"ok\":true,\"symbols\":3,\"card\":\"Key/1|c\"}"
       }
     },
     {
-      "prompt": "zt-digest math -Step notation-apply",
+      "label": "^math-boundary: write$",
       "answer": {
-        "ok": true,
-        "output": "{\"ok\":true,\"symbols\":3,\"card\":\"Key/1|c\"}",
-        "results": []
+        "answer": "{\"ok\":true,\"units\":2,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\math\\\\drive\\\\boundary-jobs.json\"}"
       }
     },
     {
-      "prompt": "zt-digest math -Step boundary -",
+      "label": "^math-boundary: write 1-1$",
       "answer": {
         "ok": true,
-        "output": "{\"units\":2,\"jobs\":[]}",
-        "results": []
+        "deleted": 1,
+        "not_deleted": [],
+        "results": [
+          {
+            "id": "b-01",
+            "session_id": "s-b-01",
+            "status": "done",
+            "answer": "{}",
+            "registered": true,
+            "evidence": true,
+            "deleted": true
+          }
+        ]
       }
     },
     {
-      "prompt": "zt-digest math -Step boundary-apply",
+      "label": "^math-boundary: apply$",
       "answer": {
-        "ok": true,
-        "output": "{\"created\":3,\"skipped_supplied\":0,\"jobs\":[]}",
-        "results": []
+        "answer": "{\"ok\":true,\"created\":3,\"skipped_supplied\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\math\\\\drive\\\\boundary-review-jobs.json\"}"
       }
     },
     {
-      "prompt": "zt-digest math -Step boundary-settle",
+      "label": "^math-boundary: review 1-1$",
       "answer": {
         "ok": true,
-        "output": "{\"kept\":1,\"deleted\":0}",
-        "results": []
+        "deleted": 1,
+        "not_deleted": [],
+        "results": [
+          {
+            "id": "v-b-01",
+            "session_id": "s-v-b-01",
+            "status": "done",
+            "answer": "{}",
+            "registered": true,
+            "evidence": true,
+            "deleted": true
+          }
+        ]
       }
     },
     {
-      "prompt": "zt-digest math -Step proof -",
+      "label": "^math-boundary: settle$",
       "answer": {
-        "ok": true,
-        "output": "{\"units\":2,\"jobs\":[]}",
-        "results": []
+        "answer": "{\"ok\":true,\"kept\":1,\"deleted\":0}"
       }
     },
     {
-      "prompt": "zt-digest math -Step proof-apply",
+      "label": "^math-proof: review$",
       "answer": {
-        "ok": true,
-        "output": "{\"ok\":3,\"fixed\":1,\"refused\":0}",
-        "results": []
+        "answer": "{\"ok\":true,\"units\":2,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\math\\\\drive\\\\proof-jobs.json\"}"
       }
     },
     {
-      "prompt": "zt-digest math -Step theory -",
+      "label": "^math-proof: review 1-1$",
       "answer": {
         "ok": true,
-        "output": "{\"theories\":2,\"jobs\":[]}",
-        "results": []
+        "deleted": 1,
+        "not_deleted": [],
+        "results": [
+          {
+            "id": "p-01",
+            "session_id": "s-p-01",
+            "status": "done",
+            "answer": "{}",
+            "registered": true,
+            "evidence": true,
+            "deleted": true
+          }
+        ]
       }
     },
     {
-      "prompt": "zt-digest math -Step theory-apply",
+      "label": "^math-proof: apply$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":{\"ok\":3,\"fixed\":1,\"refused\":0}}"
+      }
+    },
+    {
+      "label": "^math-theory: write$",
+      "answer": {
+        "answer": "{\"ok\":true,\"theories\":2,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\math\\\\drive\\\\theory-jobs.json\"}"
+      }
+    },
+    {
+      "label": "^math-theory: write 1-1$",
       "answer": {
         "ok": true,
-        "output": "{\"ok\":true,\"theories\":2,\"answered\":2}",
-        "results": []
+        "deleted": 1,
+        "not_deleted": [],
+        "results": [
+          {
+            "id": "t-01",
+            "session_id": "s-t-01",
+            "status": "done",
+            "answer": "{}",
+            "registered": true,
+            "evidence": true,
+            "deleted": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "^math-theory: apply$",
+      "answer": {
+        "answer": "{\"ok\":true,\"theories\":2,\"answered\":2}"
+      }
+    },
+    {
+      "label": "^math-check: check$",
+      "answer": {
+        "answer": "{\"ok\":true,\"units\":5,\"theories\":2,\"faults\":0,\"by_rule\":{}}"
       }
     },
     {

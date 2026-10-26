@@ -1,8 +1,9 @@
-// ==== module zt-math-theory v1 ====
-// Theory: after the link pass, so the cited premises are complete. DeepSeek writes each Theory Card's title,
-// question, main results, and objects; the script writes the dependency order, tools, users, and the map.
+// ==== module zt-math-theory v2 ====
+// Theory (#178): after the link pass, so the cited premises are complete. One math-steps.ps1 drive job plans one
+// DeepSeek job per four Theory Cards for their title, question, main results and objects; the apply step writes
+// the dependency order, tools, users and the map.
 defineModule({
-  id: 'zt-math-theory', version: '1', requires: ['zt-math-lib'],
+  id: 'zt-math-theory', version: '2', requires: ['zt-math-lib'],
   summary: 'ZT math digest: the Theory Cards (question, main results, objects, dependency order, tools, map).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -12,12 +13,13 @@ defineModule({
   },
   run: async (ctx, p) => {
     const M = zmMake(ctx, p)
-    const o = M.mathOpts('theory', 'Theory')
-    const planned = await M.Z.drive('theory: write', { ...o, command: M.mstep('theory', ` -MainResults ${M.MAIN_RESULTS}`) })
-    const plan = zdLastJson(planned && planned.output)
-    const applied = zdLastJson(((await M.Z.drive('theory: apply', { ...o, command: M.mstep('theory-apply', ` -MainResults ${M.MAIN_RESULTS}`), cleanup: true })) || {}).output)
-    log(`Theory: ${applied ? `${applied.theories} Theory Cards written (${applied.answered} answered by DeepSeek)` : 'apply failed'}.`)
-    return { status: plan && applied ? 'done' : 'failed', theories: plan && plan.theories, applied }
+    // One job per four Theory Cards: the question, the main results and the objects.
+    const plan = M.must('theory', await M.step('math-theory', 'theory', 'write'))
+    await M.jobs('math-theory: write', plan, 'theory')
+    // The applied Theory Cards, with their dependency order, tools, users and map.
+    const applied = M.must('theory apply', await M.step('math-theory', 'theory-apply', 'apply'))
+    log(`Theory: ${applied.theories} Theory Cards written (${applied.answered} answered by DeepSeek).`)
+    return { status: 'done', theories: plan.theories, applied, deepseek: M.deepseek }
   },
 })
 // ==== end module zt-math-theory ====

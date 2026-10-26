@@ -33,8 +33,10 @@ for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-diges
 const sources = { econ: builds.econ.script.replace(/^export /m, ''), math: builds.math.script.replace(/^export /m, '') }
 // #176: the book-level stages' one step script, shared by both variants.
 // #177: the model layer's one step script.
+// #178: the mathematics stages' one step script.
 const modelScript = fs.readFileSync(path.join(root, 'scripts', 'book-digest', 'model-steps.ps1'), 'utf8')
 const bookScript = fs.readFileSync(path.join(root, 'scripts', 'book-digest', 'book-steps.ps1'), 'utf8')
+const mathScript = fs.readFileSync(path.join(root, 'scripts', 'book-digest', 'math-steps.ps1'), 'utf8')
 const scriptOf = () => bookScript
 
 const json = (o) => JSON.stringify(o)
@@ -1392,6 +1394,76 @@ function runtime(kind, opts = {}) {
     return { ok: false, step, error: `the stand-in has no ${step} step` }
   }
 
+  // #178 (docs/workflow-module-structure-proposal.md): the mathematics stages' deterministic steps
+  // (math-steps.ps1) answered as the script does: each step runs its math-compiler chain in one process, and a
+  // plan step's job list is kept so the content managers run exactly those entries. A scenario may fail the
+  // statement chain, to show that a failed step stops the stage with its reason.
+  const mathCalls = [], mathManagers = []
+  const mathArg = (cmd, name) => (cmd.match(new RegExp(`-${name} "([^"]*)"`)) || cmd.match(new RegExp(`-${name} (\\S+)`)) || [])[1]
+  const mathStepAnswer = async (cmd) => {
+    const step = mathArg(cmd, 'Step'), out = mathArg(cmd, 'Out') || 'D:\\x\\Key'
+    const call = (line) => lastJson(commandAnswer(line).output) || {}
+    const saved = (name, jobs) => {
+      const file = `${out}\\math\\drive\\${name}`
+      layerJobs.set(file, jobs)
+      return file
+    }
+    const job = (id) => ({ id, files: [`${out}\\math\\job.md`], prompt: 'p' })
+    if (step === 'skeleton') {
+      if (opts.mathSkeletonFails) return { ok: false, step: 'index', error: 'math-compiler: the prepared sections name no numbered statement' }
+      const index = call(`zt-digest math -Step index -Staging "${out}"`)
+      const docs = call(`zt-digest math -Step docs -Staging "${out}"`)
+      const skeleton = call(`zt-digest math -Step skeleton -Staging "${out}" -Apply`)
+      return { ok: true, index, docs, skeleton }
+    }
+    if (step === 'notation') {
+      const plan = call(`zt-digest math -Step notation -Staging "${out}"`)
+      const jobs = (plan.jobs || []).map((j) => job(j.id))
+      return { ok: true, candidates: Number(plan.candidates || 0), jobs: jobs.length, file: saved('notation-jobs.json', jobs) }
+    }
+    if (step === 'notation-apply') {
+      const line = call(`zt-digest math -Step notation-apply -Staging "${out}" -Apply`)
+      return { ...line, ok: line.ok === true }
+    }
+    if (step === 'boundary') {
+      const plan = call(`zt-digest math -Step boundary -Staging "${out}"`)
+      const jobs = (plan.jobs || []).map((j) => job(j.id))
+      return { ok: true, units: Number(plan.units || 0), jobs: jobs.length, file: saved('boundary-jobs.json', jobs) }
+    }
+    if (step === 'boundary-apply') {
+      const line = call(`zt-digest math -Step boundary-apply -Staging "${out}"`)
+      const jobs = (line.jobs || []).map((j) => job(j.id))
+      return { ok: true, created: Number(line.created || 0), skipped_supplied: Number(line.skipped_supplied || 0), jobs: jobs.length, file: saved('boundary-review-jobs.json', jobs) }
+    }
+    if (step === 'boundary-settle') {
+      const line = call(`zt-digest math -Step boundary-settle -Staging "${out}"`)
+      return { ok: true, kept: Number(line.kept || 0), deleted: Number(line.deleted || 0), unreviewed: Number(line.unreviewed || 0) }
+    }
+    if (step === 'proof') {
+      const plan = call(`zt-digest math -Step proof -Staging "${out}"`)
+      const jobs = (plan.jobs || []).map((j) => job(j.id))
+      return { ok: true, units: Number(plan.units || 0), jobs: jobs.length, file: saved('proof-jobs.json', jobs) }
+    }
+    if (step === 'proof-apply') {
+      const line = call(`zt-digest math -Step proof-apply -Staging "${out}"`)
+      return { ok: true, applied: line }
+    }
+    if (step === 'theory') {
+      const plan = call(`zt-digest math -Step theory -Staging "${out}"`)
+      const jobs = (plan.jobs || []).map((j) => job(j.id))
+      return { ok: true, theories: Number(plan.theories || 0), jobs: jobs.length, file: saved('theory-jobs.json', jobs) }
+    }
+    if (step === 'theory-apply') {
+      const line = call(`zt-digest math -Step theory-apply -Staging "${out}"`)
+      return { ok: line.ok === true, theories: Number(line.theories || 0), answered: Number(line.answered || 0) }
+    }
+    if (step === 'check') {
+      const line = call(`zt-digest math -Step check -Staging "${out}" -Out "${out}"`)
+      return { ...line, ok: line.ok === true }
+    }
+    return { ok: false, step, error: `the stand-in has no ${step} step` }
+  }
+
   const answer = async (prompt, callOpts) => {
     const text = String(prompt)
     const label = callOpts.label || ''
@@ -1451,7 +1523,7 @@ function runtime(kind, opts = {}) {
     if (text.startsWith('You are a DeepSeek subagent manager for a ZET workflow step (')) {
       const stepLabel = (text.match(/workflow step \(([^)]*)\)/) || [])[1] || label
       const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
-      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps|model-steps)\.ps1[^\n]*/) || [])[0] || ''
+      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps|model-steps|math-steps)\.ps1[^\n]*/) || [])[0] || ''
       const reply = (value, id) => {
         const session = sessionOf(id)
         const recorded = recordJob(text, session, 'run', 1, true)
@@ -1520,6 +1592,14 @@ function runtime(kind, opts = {}) {
         modelCalls.push({ step, cmd: command, label: stepLabel })
         return reply(await modelStepAnswer(command), `drive-model-${step}`)
       }
+      // #178: a mathematics stage's one step (math-steps.ps1): the statement chain, a plan or apply step, the
+      // check. Its content managers run the job list the step wrote.
+      if (/math-steps\.ps1/.test(command)) {
+        const step = (command.match(/-Step ([\w-]+)/) || [])[1] || 'skeleton'
+        mathManagers.push({ label: stepLabel, phase: callOpts.phase, kind: 'drive', step, prompt: text, cmd: command })
+        mathCalls.push({ step, cmd: command, label: stepLabel })
+        return reply(await mathStepAnswer(command), `drive-math-${step}`)
+      }
       return reply({ ok: false, step: 'unknown', error: 'the drive command names no script step' }, 'drive-unknown')
     }
     // S24 (#167): a Term writer, reviewer or fixer manager runs entries [from, to] of the job file the
@@ -1548,11 +1628,6 @@ function runtime(kind, opts = {}) {
       return { ok: true, deleted: results.filter((r) => r.deleted).length, not_deleted: results.filter((r) => r.session_id && !r.deleted).map((r) => r.session_id), results }
     }
     if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
-    if (/^math: /.test(label)) {
-      const key = label.replace('math: ', '')
-      const fn = CANNED[`math ${key}`]
-      return { ok: true, output: json(fn ? fn() : { ok: true }) }
-    }
     if (/^plan: /.test(label)) return { plans: [{ model: 'Key/2|c', status: 'planned', level: 'formal', parts: 4, derivations: 1 }] }
     if (label === 'find models: whole book' || label === 'find models: explain') {
       return { ok: true, models: kind === 'math'
@@ -1587,7 +1662,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, mathCalls, mathManagers, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -2077,24 +2152,23 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(led.layer('explain').length > 0 && led.layer('explain').every((u) => u.state === 'done'), `summarized layer claim: every explain unit is finished (${led.layer('explain').filter((u) => u.state === 'done').length}/${led.layer('explain').length})`)
 }
 {
-  // Every relay prompt says its command is a step of the run the user started, so a later user message about the
-  // run (trials 17-19: "accelerate it", "stop trial 18 ... start trial 19") does not read as cancelling it.
+  // Every manager that runs a command of the run says it is a step of the run the user started, so a later user
+  // message about the run (trials 17-19: "accelerate it", "stop trial 18 ... start trial 19") does not read as
+  // cancelling it. #178: the digest's content managers carry the sentence; no Claude relay agent is left.
   const { calls } = await run('math', { ...base, figures: false })
-  const relays = calls.filter((c) => /Run this PowerShell command once|^You run one block|You run one compiler chain/.test(c.prompt))
-  const missing = relays.filter((c) => !/never cancels its steps/.test(c.prompt))
-  check(relays.length > 0 && !missing.length, `run step: every relay prompt names its command a step of the user's run (${relays.length} relays, ${missing.length} without: ${missing.slice(0, 2).map((c) => c.label).join(', ')})`)
+  const managers = calls.filter((c) => /Run this PowerShell command once|^You run one block|You run one compiler chain|You never write content and you never run a content command yourself/.test(c.prompt))
+  const missing = managers.filter((c) => !/never cancels its steps/.test(c.prompt))
+  check(managers.length > 0 && !missing.length, `run step: every manager that runs a command names it a step of the user's run (${managers.length} managers, ${missing.length} without: ${missing.slice(0, 2).map((c) => c.label).join(', ')})`)
 }
 {
-  // P5 (docs/digest-claude-token-proposal.md): a one-command relay runs as the zt-relay agent type (PowerShell only, a
-  // short prompt: about 9k tokens of first-request context instead of about 59k). Every other agent keeps its role.
+  // P5 (docs/digest-claude-token-proposal.md) and #178: the digest agents no longer relay commands at all. A
+  // one-command relay ran as the zt-relay agent type on Haiku; no digest agent is that type now, and no manager,
+  // architect or organizer runs as one. The role stays declared for the idea-grow workflow, which still uses it.
   for (const variant of ['econ', 'math']) {
     const { calls } = await run(variant, { ...base, figures: false })
-    const one = (c) => /^Run this PowerShell command once/.test(c.prompt)
-    const relays = calls.filter(one)
-    const wrong = relays.filter((c) => c.agentType !== 'zt-relay' || c.model !== 'haiku')
-    const others = calls.filter((c) => !one(c) && c.agentType === 'zt-relay')
-    check((variant === 'math' ? relays.length > 0 : relays.length === 0) && !wrong.length, `relay role (${variant}): every one-command relay runs as zt-relay on Haiku (${relays.length} relays, ${wrong.length} not: ${wrong.slice(0, 2).map((c) => c.label).join(', ')})`)
-    check(!others.length, `relay role (${variant}): no manager, architect or organizer runs as zt-relay (${others.slice(0, 2).map((c) => c.label).join(', ')})`)
+    const relays = calls.filter((c) => /^Run this PowerShell command once/.test(c.prompt))
+    check(relays.length === 0, `relay role (${variant}): no digest agent relays a command (${relays.length} relays: ${relays.slice(0, 2).map((c) => c.label).join(', ')})`)
+    check(!calls.some((c) => c.agentType === 'zt-relay'), `relay role (${variant}): no agent runs as the zt-relay agent type (${calls.filter((c) => c.agentType === 'zt-relay').slice(0, 2).map((c) => c.label).join(', ')})`)
   }
 }
 {
@@ -2438,9 +2512,9 @@ for (const kind of ['econ', 'math']) {
   const labels = calls.map((c) => c.label)
   const at = (pattern) => labels.findIndex((l) => pattern.test(l))
   check(result && result.mode === 'full', `${kind} full: reaches the report`)
-  check(at(/^prepare book$/) < at(/^math: index$/) || kind === 'econ', `${kind} full: the math skeleton follows Prepare (math only)`)
+  check(at(/^prepare book$/) < at(/^math-skeleton: /) || kind === 'econ', `${kind} full: the math skeleton follows Prepare (math only)`)
   check(cmds.some((c) => /zt-digest audit -CitationKey Key -Out "D:\\x\\Key"/.test(c)), `${kind} full: the read-only audit runs`)
-  const work = labels.filter((l) => !/^cleanup/.test(l) && !/^report the run/.test(l) && !(kind === 'math' && /^math: check$/.test(l)))
+  const work = labels.filter((l) => !/^cleanup/.test(l) && !/^report the run/.test(l) && !(kind === 'math' && /^math-check: /.test(l)))
   check(work[work.length - 1] === 'finalize final', `${kind} full: the finalization's final audit is the last work before the settlement (${work.slice(-3).join(', ')})`)
   check(work.includes('finalize plan') && work.indexOf('finalize plan') === work.indexOf('audit cards') + 1, `${kind} full: the finalization starts from its audit plan right after the audit (${work.slice(-5).join(', ')})`)
   check(led.units.get('cards-book/book@1') && led.units.get('cards-book/book@1').state === 'done', `${kind} full: the whole-book card revision is complete`)
@@ -2449,7 +2523,7 @@ for (const kind of ['econ', 'math']) {
     check(modelCalls.length > 0 && modelCalls.every((x) => /-BriefDoc "D:\\x\\Key\\math\\brief\.zh\.md"/.test(x.cmd)), 'math full: every model step carries the math instruction files')
     check(!calls.some((c) => /^(events|findings)/.test(c.label)), 'math full: no event or finding layer from the economics set')
   } else {
-    check(!calls.some((c) => /^math:/.test(c.label)), 'econ full: no mathematics stage runs')
+    check(!calls.some((c) => /^math-(skeleton|boundary|proof|theory|check):/.test(c.label)), 'econ full: no mathematics stage runs')
     check(cmds.some((c) => /zt-digest event -Step plan/.test(c)) && cmds.some((c) => /zt-digest finding -Step plan/.test(c)), 'econ full: the Event and Finding compiler chains run')
   }
   // #83 / zt-digest-lib v15: each manager records the ids it created and their answers itself, with plain
@@ -2657,11 +2731,12 @@ for (const which of ['econ', 'math']) {
 for (const which of ['econ', 'math']) {
   const { calls, result, bookCalls, modelCalls } = await run(which, { ...base, figures: false })
   const commandCalls = calls.filter((c) => /^Run this PowerShell command once/.test(c.prompt))
-  // #177: the digest run has no relay agent left; the mathematics variant still relays its own compiler steps.
-  check((which === 'math' ? commandCalls.length > 10 : commandCalls.length === 0) && commandCalls.every((c) => c.agentType === 'zt-relay' && c.model === 'haiku'), `S1 ${which}: every command runs through the relay role, the zt-relay agent type (${commandCalls.filter((c) => c.agentType !== 'zt-relay').map((c) => c.label).slice(0, 3).join(', ')})`)
+  // #177/#178: no digest run relays a command any more: the model layer and then the mathematics stages moved
+  // their chains to script steps.
+  check(commandCalls.length === 0 && !calls.some((c) => c.agentType === 'zt-relay'), `S1 ${which}: no agent relays a command (${commandCalls.filter((c) => c.agentType !== 'zt-relay').map((c) => c.label).slice(0, 3).join(', ')})`)
   check(!calls.some((c) => /^You prepare a book|^List the Model Cards|^Prepare the receipt-owned|^You check which DeepSeek Harness source/.test(c.prompt)), `S1 ${which}: no Haiku agent runs prepare, prepare-link, the model list or a source probe`)
   check(!calls.some((c) => c.label === 'choose DeepSeek source') && result && result.dsh_model === 'deepseek-official/deepseek-flash', `S1 ${which}: the DeepSeek source is the frozen official one (${result && result.dsh_model})`)
-  check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && !/Run every job below|Run the jobs with these ids/.test(c.prompt)), `S1 ${which}: a drive agent only runs DeepSeek jobs; its step command is a relay`)
+  check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && !/Run every job below|Run the jobs with these ids/.test(c.prompt)), `S1 ${which}: a DSH drive agent runs only DeepSeek jobs, never its step command`)
   const prep = bookCalls.find((c) => c.step === 'prepare')
   check(prep && /'-Apply', '-Brief'/.test(scriptOf(which)), `S1 ${which}: prepare runs one book-steps.ps1 step and the step script keeps its brief line`)
   const link = bookCalls.find((c) => c.step === 'link-prepare')
@@ -2780,6 +2855,52 @@ for (const which of ['econ', 'math']) {
   check(!commands.some((c) => /^zt-digest (list-models|model-deps|model |finish-batch)/.test(c) && /undefined/.test(c)), '#177: no model command names an undefined unit or model')
   check(modelManagers.filter((m) => m.kind === 'drive').length === modelCalls.length && modelManagers.filter((m) => m.kind === 'drive').every((m) => /model-steps\.ps1/.test(m.cmd)), '#177: each model step is one drive job under a Haiku manager')
   check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done') && commands.some((c) => /finish-batch .* -Units "models\//.test(c)), '#177: the units are recorded by the one finish step')
+}
+
+// ================================================================================================================
+// #178: the mathematics stages without relay agents (docs/workflow-module-structure-proposal.md)
+// ================================================================================================================
+{
+  const { calls, commands, result, report, mathCalls, mathManagers, layerManagers } = await run('math', { ...base, figures: false })
+  const MANAGER = /You are a DeepSeek subagent manager/
+  const MATH = /^math-(skeleton|boundary|proof|theory|check): /
+  // Every agent the mathematics stages start is a Haiku DSMP manager: the drive jobs and the content managers
+  // alike. No relay agent runs, and no Claude agent runs a command.
+  const agents = calls.filter((c) => MATH.test(c.label || ''))
+  const bad = agents.filter((c) => !(c.model === 'haiku' && !c.agentType && MANAGER.test(c.prompt || '')))
+  check(agents.length > 0 && !bad.length, `#178: every agent a mathematics stage starts is a Haiku DeepSeek manager (${agents.length} agents; ${bad.map((c) => `${c.label}=${c.model || 'none'}/${c.agentType || 'no-type'}`).slice(0, 3).join(', ')})`)
+  check(!calls.some((c) => c.agentType === 'zt-relay'), '#178: no mathematics stage runs a Claude relay agent')
+  // Every deterministic chain is one math-steps.ps1 call, run by one drive job.
+  check(mathCalls.length > 0 && mathCalls.every((c) => /math-steps\.ps1" -Step [\w-]+ -Out "[^"]+"/.test(c.cmd)), `#178: every mathematics step is one math-steps.ps1 call (${mathCalls.length} drive jobs; ${mathCalls.filter((c) => !/math-steps\.ps1/.test(c.cmd)).slice(0, 2).map((c) => c.cmd.slice(0, 80)).join(' | ')})`)
+  check(mathManagers.filter((m) => m.kind === 'drive').length === mathCalls.length && mathManagers.filter((m) => m.kind === 'drive').every((m) => /math-steps\.ps1/.test(m.cmd)), '#178: each mathematics step is one drive job under a Haiku manager')
+  // The stages' steps run in their stage order: the statement chain and the notation table, then boundary, then
+  // proof, then Theory (after the Link check) and the read-only check last.
+  const order = mathCalls.map((c) => c.step).join(',')
+  check(order === 'skeleton,notation,notation-apply,boundary,boundary-apply,boundary-settle,proof,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
+  const at = (label) => mathCalls.findIndex((c) => c.step === label)
+  check(at('skeleton') < at('notation') && at('notation') < at('notation-apply') && at('boundary-settle') < at('proof') && at('proof-apply') < at('theory') && at('theory-apply') < at('check'), `#178: one stage finishes before the next starts (${order})`)
+  // Each content round runs the job list its plan step wrote, at most eight jobs per manager.
+  const contents = layerManagers.filter((m) => m.kind === 'content' && /^math-/.test(m.label || ''))
+  const planned = mathCalls.filter((c) => ['notation', 'boundary', 'boundary-apply', 'proof', 'theory'].includes(c.step)).map((c) => c.step)
+  check(contents.length >= planned.length && contents.every((m) => /\\math\\drive\\[\w-]+\.json$/.test(m.file || '') && m.jobs.length <= 8), `#178: every content manager reads the job list its plan step wrote, at most eight jobs (${contents.map((m) => `${(m.file || '').split('\\').pop()}:${m.jobs.length}`).join(', ')})`)
+  check(contents.filter((m) => m.jobs.length > 0).length === planned.length, `#178: each plan step's jobs run once (${contents.filter((m) => m.jobs.length > 0).map((m) => m.jobs.join('+')).join(', ')})`)
+  // The run reports every mathematics stage; the report's own params read the skeleton stage's index, docs,
+  // skeleton and notation keys.
+  check(report.stages['math-skeleton'].status === 'done' && report.stages['math-boundary'].status === 'done' && report.stages['math-proof'].status === 'done' && report.stages['math-theory'].status === 'done' && report.stages['math-check'].status === 'done', `#178: every mathematics stage completes (${['math-skeleton', 'math-boundary', 'math-proof', 'math-theory', 'math-check'].map((s) => `${s}:${report.stages[s].status}`).join(', ')})`)
+  const math = (result && result.math) || {}
+  check(math.index && math.index.units === 5 && math.docs && math.skeleton && math.skeleton.created === 5 && math.notation && math.notation.symbols === 3 && math.boundary && math.boundary.status === 'done' && math.proof && math.proof.units === 2 && math.theory && math.theory.theories === 2 && math.check && math.check.faults === 0, `#178: the report carries every mathematics stage's own result (${Object.keys(math).join(', ')})`)
+  // The chains run their compiler steps through the zt-digest tools, in the one step's process.
+  check(commands.some((c) => /zt-digest math -Step index/.test(c)) && commands.some((c) => /zt-digest math -Step docs/.test(c)) && commands.some((c) => /zt-digest math -Step skeleton/.test(c) && / -Apply/.test(c)), 'math: the statement chain runs index, docs and the skeleton in one step')
+  check(commands.some((c) => /zt-digest math -Step boundary-apply/.test(c)) && commands.some((c) => /zt-digest math -Step boundary-settle/.test(c)) && commands.some((c) => /zt-digest math -Step proof-apply/.test(c)) && commands.some((c) => /zt-digest math -Step theory-apply/.test(c)), 'math: each apply and settle chain runs in its own step')
+  check(!commands.some((c) => /math-steps\.ps1/.test(c)) && mathCalls.every((c) => (c.cmd.match(/ -Step /g) || []).length === 1), 'math: each drive job names exactly one step, so the chain runs in one process')
+  // The step script is the whole chain: index, docs, the skeleton, its notation plan, the applies and the check.
+  for (const needle of ["'index'", "'docs'", "'skeleton'", "'notation'", "'notation-apply'", "'boundary'", "'boundary-apply'", "'boundary-settle'", "'proof'", "'proof-apply'", "'theory'", "'theory-apply'", "'check'"]) {
+    check(mathScript.includes(needle), `#178: math-steps.ps1 carries the ${needle.replace(/'/g, '')} chain`)
+  }
+  // A failed statement chain stops the stage with the step's reason instead of running the later steps.
+  const failed = await run('math', { ...base, figures: false }, { mathSkeletonFails: true })
+  check(failed.report.halted && failed.report.halted.stage === 'math-skeleton' && /no numbered statement/.test(failed.report.halted.error || ''), `#178: a failed mathematics step stops the stage with its reason (${JSON.stringify(failed.report.halted)})`)
+  check(failed.mathCalls.filter((c) => c.step === 'boundary').length === 0, '#178: a failed step runs none of the later chains')
 }
 }
 

@@ -95,6 +95,12 @@ Figures, the Bridge, the audit, the finalization's steps, the Term-link round an
 plan/apply/report), `bookStep` and `cardCycle` in `zt-digest-lib` v39, and one Haiku manager that makes the
 one call no script can (`deepseek_settle`).
 
+Slice 4 (#178) is the mathematics stages: `scripts/book-digest/math-steps.ps1` (`skeleton` runs the statement
+index, the prompt files and the applied skeleton in one process; `notation` and `notation-apply` the Book
+notation table; `boundary`/`boundary-apply`/`boundary-settle`; `proof`/`proof-apply`; `theory`/`theory-apply`;
+`check`), `zmMake`'s `step`, `must` and `jobs` in `zt-math-lib` v5, and `zt-math-skeleton`, `zt-math-boundary`,
+`zt-math-proof`, `zt-math-theory` and `zt-math-check` v2 as straight lines of those steps.
+
 On the copied grossman book it ran with 15 Claude agents, all Haiku managers, and published 29 Term
 Cards with 593 Term links. The relay version used about 22 Claude agents for one wave of four jobs.
 
@@ -113,16 +119,23 @@ run: async (ctx, p) => {
 
 ## 4. Moving the other modules
 
-The modules below still start Claude relay agents (counted by `ztRelay`/`runScript` calls in their
-source on 2026-10-26). Each moves to the structure when it is next changed: its command chains become
-script steps, run by drive jobs.
+The digest's modules have all moved (slices 1-4, #175-#178): no digest module starts a Claude relay agent
+any more. What remains is `zt-idea-grow`'s chain driver.
 
 | Module | Relay calls | Notes |
 |---|---|---|
-| `zt-digest-lib` | 10 | the layer driver (#175), the book-level driver (#176) and the model layer (#177) moved to script steps; the relay helpers left serve the math layers |
+| `zt-digest-lib` | 0 in use | the layer driver (#175), the book-level driver (#176), the model layer (#177) and the mathematics stages (#178) moved to script steps; its relay-era helpers have no caller left and can be removed by a later change |
 | `zt-model-lib` | 0 | moved by #177: every chain is one `model-steps.ps1` step run by a DeepSeek drive job; the Sonnet architect stays (designer role) |
-| `zt-math-lib` | 4 | the mathematics compiler steps |
+| `zt-math-lib` | 0 | moved by #178: every chain is one `math-steps.ps1` step run by a DeepSeek drive job, and its writers and reviewers run in Haiku content managers |
 | `zt-grow-cycle` | — | zt-idea-grow's chain driver (slice 5) |
+
+Moved by #178 (workflow structure slice 4): `zt-math-lib` v5 and the stage modules `zt-math-skeleton`,
+`zt-math-boundary`, `zt-math-proof`, `zt-math-theory` and `zt-math-check` v2 call `ztRelay`, `runScript` and
+`wfpScript` zero times: the mathematics stages' chains are `math-steps.ps1` steps (the statement index, the
+prompt files and the skeleton in one process; the notation plan and its apply; boundary write/apply/settle;
+proof review/apply; Theory write/apply; the read-only check) run by DeepSeek drive jobs, and their DeepSeek
+writers and reviewers run in Haiku content managers. No digest run starts a `zt-relay` agent. Base 5.6.6,
+econ 6.6.6, math 5.6.6.
 
 Moved by #175 (workflow structure slice 1): `zt-group-cycle` v7, `zt-cards-layer` v3, `zt-event-layer` v5,
 `zt-finding-layer` v5, `zt-explain` v8, `zt-link-pass` v8 and `zt-book-terms` v5 call `ztRelay`, `runScript`

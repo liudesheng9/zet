@@ -1,10 +1,11 @@
-// ==== module zt-math-skeleton v1 ====
-// After Prepare (mode full): math-compiler.ps1 finds every numbered statement (index), writes the math prompt
-// files (docs: the shared instructions with the math supplements appended), and builds the skeleton (a unit Model
-// Card per definition, axiom, and result, a Theory Card per chapter). A failed step fails the stage. Then, unless
-// args.notation is false, one DeepSeek job writes the Book notation table (a failure is logged; the digest goes on).
+// ==== module zt-math-skeleton v2 ====
+// After Prepare (mode full): math-steps.ps1's skeleton step runs the statement index, writes the math prompt
+// files (docs: the shared instructions with the math supplements appended) and builds the skeleton (a unit Model
+// Card per definition, axiom, and result, a Theory Card per chapter) in ONE process (#178). Then, unless
+// args.notation is false, one DeepSeek job writes the Book notation table and a second step applies it; a failed
+// notation table is logged and the digest goes on (P8).
 defineModule({
-  id: 'zt-math-skeleton', version: '1', requires: ['zt-math-lib'],
+  id: 'zt-math-skeleton', version: '2', requires: ['zt-math-lib'],
   summary: 'ZT math digest: statement index, math prompt files, unit and Theory Card skeleton, notation table.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -14,20 +15,19 @@ defineModule({
   },
   run: async (ctx, p) => {
     const M = zmMake(ctx, p)
-    const reports = {}
-    for (const [what, s, extra] of [['index', 'index', ''], ['docs', 'docs', ''], ['skeleton', 'skeleton', ' -Apply']]) {
-      const done = await M.runMathScript(what, s, extra, 'Prepare')
-      if (!done) throw new Error(`math ${what}: math-compiler.ps1 -Step ${s} failed`)
-      reports[what] = done
-    }
-    log(`Math: ${reports.index.units} units (${JSON.stringify(reports.index.forms)}), ${reports.index.examples} examples, ${reports.index.exercises} exercises; skeleton ${reports.skeleton.created} units and ${reports.skeleton.theories} Theory Cards.`)
+    // One chain, one drive job: index, the prompt files, and the applied skeleton.
+    const start = M.must('skeleton', await M.step('math-skeleton', 'skeleton', 'start'))
+    log(`Math: ${start.index.units} units (${JSON.stringify(start.index.forms)}), ${start.index.examples} examples, ${start.index.exercises} exercises; skeleton ${start.skeleton.created} units and ${start.skeleton.theories} Theory Cards.`)
+    const reports = { index: start.index, docs: start.docs, skeleton: start.skeleton }
     if (M.A.notation !== false) {
-      const nopts = { ...M.mathOpts('notation', 'Prepare') }
-      await M.Z.drive('notation: plan', { ...nopts, command: M.mstep('notation') })
-      reports.notation = zdLastJson(((await M.Z.drive('notation: apply', { ...nopts, command: M.mstep('notation-apply', ' -Apply'), cleanup: true })) || {}).output)
-      log(reports.notation && reports.notation.ok ? `Notation table: ${reports.notation.symbols} symbols in ${reports.notation.card}.` : 'Notation table failed; the digest goes on without it.')
+      // The notation table: one DeepSeek job over the symbol candidates, then the step that writes the table.
+      const plan = await M.step('math-skeleton', 'notation', 'notation plan')
+      if (plan.ok === true) await M.jobs('math-skeleton: notation', plan, 'notation')
+      const applied = await M.step('math-skeleton', 'notation-apply', 'notation apply')
+      reports.notation = applied
+      log(applied.ok === true ? `Notation table: ${applied.symbols} symbols in ${applied.card}.` : 'Notation table failed; the digest goes on without it.')
     }
-    return reports
+    return { ...reports, deepseek: M.deepseek }
   },
 })
 // ==== end module zt-math-skeleton ====
