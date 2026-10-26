@@ -27,9 +27,9 @@
       "older_binary_refuses": "2"
     },
     "workflow": {
-      "base": "5.6.6",
-      "zt-econ-digest": "6.6.6",
-      "zt-math-digest": "5.6.6",
+      "base": "5.6.7",
+      "zt-econ-digest": "6.6.7",
+      "zt-math-digest": "5.6.7",
       "zt-idea-grow": "4.0.2"
     }
   },

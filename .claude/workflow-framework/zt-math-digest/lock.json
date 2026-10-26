@@ -1,17 +1,17 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.6.6",
+  "version": "5.6.7",
   "scope": "project",
   "script": ".claude/workflows/zt-math-digest.js",
   "scriptRel": "workflows/zt-math-digest.js",
-  "sha256": "1fcc7d6ecdbb482685e942127187ba28082c8015506360749132895b6f144b63",
-  "fingerprint": "792a8c49ee05a528",
-  "blueprintSha256": "9b7d76428ee86f5aa3502fe7f14c155a886c863f4a63a89adce6c1f368004a7b",
+  "sha256": "95c2c018092d1e8a8710376a4a844b926e87124ee17c6519633f5a4c966e2e87",
+  "fingerprint": "6bcaaf6066901bf3",
+  "blueprintSha256": "78c9421b06c7f9aece37f265da39e84782a5350a387ac93cbfbf9cfc16655f83",
   "modules": {
     "gate": "1",
-    "zt-workflow-lib": "2",
-    "zt-digest-lib": "39",
+    "zt-workflow-lib": "3",
+    "zt-digest-lib": "40",
     "zt-audit": "5",
     "zt-book-terms": "5",
     "zt-bridge": "10",
@@ -48,11 +48,11 @@
     },
     "zt-workflow-lib": {
       "file": "scripts/workflow-shared/modules/zt-workflow-lib.js",
-      "sha256": "1eba4c3b62e49ae2c6a7fa680d32e307735d009624a75fa9ea9ac100b5da984e"
+      "sha256": "102baca7f202db91770005c679d3dd4f7569c6af8f661d8e22445a9cbd905c42"
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "8625bbcc3c08a3e483a8e6878e1f9b0f8589f150756b238d76f08e1eda144b15"
+      "sha256": "c08cb2c4713e8a64bdb65aa109061c36eb215f9363b84594bf38ec80ca492696"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -170,15 +170,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-math-digest.blueprint.json",
-      "sha256": "9759ff0b21427492fe4be3c02ad5a6de477a20f7ce61b09b3f3fec2eee5e4082"
+      "sha256": "ce7e510840b0e82099bd8379e08e70016e955774383a75c918aa663effbe29c2"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "f372d7c1cff45eacdaefc50c722c6dc53946a05adbcc09d70ef0414f5f8adb85"
+      "sha256": "c32ca2875942d34a7b820bc6b3ba6f25c11b70e47cf720fed857d01b0bcde6ff"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-26T04:29:14.212Z",
+  "installedAt": "2026-10-26T05:17:26.490Z",
   "dryRun": {
     "agents": 65,
     "order": [
