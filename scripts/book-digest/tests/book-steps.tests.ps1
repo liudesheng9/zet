@@ -375,6 +375,22 @@ Assert ($clFallback.json -and $clFallback.json.ok -eq $true -and $clFallback.jso
 $clReport = Step 'cleanup-report'
 Assert ($clReport.json -and $clReport.json.ok -eq $true -and -not $clReport.json.complete -and $clReport.json.settled -and $clReport.json.quality_complete -and $clReport.json.usage -and (Has $clReport.calls 'ledger report -Out ')) "cleanup report: the verified run report is the step's answer ($($clReport.text))"
 
+# 18. #181: a step whose -Json names no Citation key falls back to the prepared run's manifest.json, so a resume
+# (which names only `out`) can never hand zt-digest an empty -CitationKey or -Book.
+$manifest = Join-Path $out 'manifest.json'
+[IO.File]::WriteAllText($manifest, '{"citation_key":"ManifestKey","book_title":"书","groups":[]}', [Text.UTF8Encoding]::new($false))
+$manFig = Step 'figures' @{}
+Assert ($manFig.json -and $manFig.json.ok -eq $true -and (Has $manFig.calls 'figures -CitationKey ManifestKey -Staging ')) "manifest key: figures reads the prepared run's Citation key when its options name none ($($manFig.text))"
+$manCards = Step 'cards-start' @{ Work = $work }
+Assert (Has $manCards.calls 'card -Step plan -Work .* -Compact -Book ManifestKey -Staging ') 'manifest key: the card plan reads the prepared run''s Citation key when its options name none'
+$manBridge = Step 'bridge-start' @{ Work = $br; Profile = 'book' }
+Assert (Has $manBridge.calls 'bridge -Step plan -Staging .* -CitationKey ManifestKey ') 'manifest key: the Bridge plan reads the prepared run''s Citation key when its options name none'
+$manAudit = Step 'audit' @{}
+Assert (Has $manAudit.calls 'audit -CitationKey ManifestKey -Out ') 'manifest key: a book audit reads the prepared run''s Citation key when its options name none'
+$namedFig = Step 'figures' @{ CitationKey = 'Given' }
+Assert (Has $namedFig.calls 'figures -CitationKey Given -Staging ') 'manifest key: a key the step names still wins over the manifest'
+Remove-Item -LiteralPath $manifest
+
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host "book-steps: $ok passed, $failed failed"

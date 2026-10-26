@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v17 ====
+// ==== module zt-digest-prepare v18 ====
 // Prepare (mode full): prepare-book-digest writes the Chinese text, the section groups, the Literature tree with one
 // anchor per group, and the shared prefixes, then binds the immutable run contract with the effective settings
 // (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the account-wide usage ledger: run usage is
@@ -23,10 +23,15 @@
 // 16 (#176, docs/workflow-module-structure-proposal.md): the stage runs its whole chain as one book-steps.ps1 step
 // (prepare: the full preparation, the one resume with its summary and digest-gate fallback, or a backfill branch),
 // run by a DeepSeek drive job; no Claude relay runs a command.
+// 18 (#181): the stage takes the fresh preparation's Citation key from its own `key` param (the blueprint passes
+// args.citationKey) instead of zdMake reading args.citationKey: the prepared run it creates is the one source every
+// later stage reads the key from (stages.prepare.output.citation_key), so a resume that names only `out` still
+// hands each stage the book's key.
 defineModule({
-  id: 'zt-digest-prepare', version: '17', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '18', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume), validate or re-stage one already digested book for a Term backfill (modes term-cards and term-link) or take args.groups; output {groups, groupList, citation_key, backfill?}.',
   params: {
+    key: { type: 'any', description: "a fresh preparation's Citation key (args.citationKey): the prepared run this stage creates is what every later stage reads it from (#181)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },
     needGroups: { type: 'array', default: ['full', 'link'], description: 'modes that need a group count' },
@@ -36,7 +41,7 @@ defineModule({
   },
   run: async (ctx, p) => {
     const A = p.args
-    const Z = zdMake(ctx, { args: A, mode: p.mode })
+    const Z = zdMake(ctx, { args: A, mode: p.mode, key: p.key })
     const groupList = (count) => Array.from({ length: count || 0 }, (_, i) => ({ n: i + 1, nn: String(i + 1).padStart(2, '0') }))
     let groups = A.groups || 0
     if (p.mode === 'resume') {

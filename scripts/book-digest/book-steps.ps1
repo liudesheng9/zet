@@ -70,6 +70,21 @@ function Opt([string]$Name, $Default = $null) {
 }
 function Flag([string]$Name) { return ($o.ContainsKey($Name) -and $o[$Name] -eq $true) }
 function At([string]$Value) { return $Value.TrimEnd('\', '/') }
+# The book's Citation key: the step's own option, else the prepared run's manifest.json. A resume names only `out`,
+# so this is the one place its stages find the book's identity, and an empty -CitationKey or -Book never reaches
+# the tool (#181).
+function Book-Key([string]$Value) {
+    $v = "$Value".Trim()
+    if ($v) { return $v }
+    $manifest = Join-Path $Out 'manifest.json'
+    if (Test-Path -LiteralPath $manifest) {
+        try {
+            $doc = Get-Content -LiteralPath $manifest -Raw -Encoding utf8 | ConvertFrom-Json -Depth 8
+            if ($doc -and "$($doc.citation_key)".Trim()) { return "$($doc.citation_key)".Trim() }
+        } catch { }
+    }
+    return $v
+}
 
 # One command: its last JSON line (or $null), its exit code and its last lines.
 function Run([string[]]$CommandArgs) {
@@ -184,7 +199,7 @@ function Refresh-Names($Entries) {
 switch ($Step) {
     'prepare' {
         $mode = "$(Opt 'Mode' 'full')"
-        $key = "$(Opt 'CitationKey' '')"
+        $key = Book-Key "$(Opt 'CitationKey' '')"
         if ($mode -eq 'resume') {
             # R278-R285: the one supported resume; the retained groups and identity come from the ledger's own
             # summary, and the digest gate answers a summary that carries no layer counts.
@@ -314,7 +329,7 @@ switch ($Step) {
     'cards-start' {
         $work = At "$(Opt 'Work')"
         [void][System.IO.Directory]::CreateDirectory($work)
-        $argv = @('card', '-Step', 'plan', '-Work', $work, '-Compact', '-Book', "$(Opt 'Book')", '-Staging', $Out)
+        $argv = @('card', '-Step', 'plan', '-Work', $work, '-Compact', '-Book', (Book-Key "$(Opt 'Book')"), '-Staging', $Out)
         if (Opt 'Rules') { $argv += @('-Rules', "$(Opt 'Rules')") }
         if (Opt 'MaxCards') { $argv += @('-MaxCards', "$(Opt 'MaxCards')") }
         if (Opt 'Sample') { $argv += @('-Sample', "$(Opt 'Sample')") }
@@ -475,7 +490,7 @@ switch ($Step) {
         Reply @{ ok = ($s.ok -ne $false); structure = "$($s.written.structure)"; thesis = "$($s.thesis)"; argument = [int]$s.argument; models = [int]$s.models; events = [int]$s.events; problems = (Count-Of $s.problems) } $s
     }
     'figures' {
-        $argv = @('figures', '-CitationKey', "$(Opt 'CitationKey')", '-Staging', $Out)
+        $argv = @('figures', '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Staging', $Out)
         if (Opt 'FileId') { $argv += @('-FileId', "$(Opt 'FileId')") }
         $argv += @('-Report', "$(At $Out)\figures-report.json", '-Apply')
         $r = Run $argv
@@ -486,7 +501,7 @@ switch ($Step) {
     'bridge-start' {
         $work = At "$(Opt 'Work')"
         [void][System.IO.Directory]::CreateDirectory($work)
-        $argv = @('bridge', '-Step', 'plan', '-Staging', $Out, '-CitationKey', "$(Opt 'CitationKey')", '-Work', $work,
+        $argv = @('bridge', '-Step', 'plan', '-Staging', $Out, '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Work', $work,
             '-Profile', "$(Opt 'Profile')", '-MaxSources', "$(Opt 'MaxSources' 60)", '-Candidates', "$(Opt 'Candidates' 5)")
         if (Opt 'Books') { $argv += @('-Books', "$(Opt 'Books')") }
         $r = Run $argv
@@ -498,14 +513,14 @@ switch ($Step) {
     }
     'bridge-report' {
         $work = At "$(Opt 'Work')"
-        $r = Run @('bridge', '-Step', 'report', '-Staging', $Out, '-CitationKey', "$(Opt 'CitationKey')", '-Work', $work)
+        $r = Run @('bridge', '-Step', 'report', '-Staging', $Out, '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Work', $work)
         if (-not $r.json) { Fail 'bridge report' "the Bridge report printed no line: $($r.tail)"; break }
         $b = $r.json
         Reply @{ ok = ($b.ok -ne $false); step = "$($b.step)"; report_id = "$($b.report_id)"; proposals = (Count-Of $b.proposals); new = [int]$b.counts.new; earlier = [int]$b.counts.earlier; refused = [int]$b.counts.refused } $b
     }
     'bridge-apply' {
         $work = At "$(Opt 'Work')"
-        $argv = @('bridge', '-Step', 'apply', '-Staging', $Out, '-CitationKey', "$(Opt 'CitationKey')", '-Work', $work,
+        $argv = @('bridge', '-Step', 'apply', '-Staging', $Out, '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Work', $work,
             '-ReportId', "$(Opt 'ReportId')")
         if (Opt 'Accept') { $argv += @('-Accept', "$(Opt 'Accept')") }
         if (Opt 'AcceptEarlier') { $argv += @('-AcceptEarlier', "$(Opt 'AcceptEarlier')") }
@@ -519,7 +534,8 @@ switch ($Step) {
     }
     'audit' {
         $argv = @('audit')
-        if (Opt 'CitationKey') { $argv += @('-CitationKey', "$(Opt 'CitationKey')") }
+        $auditKey = Book-Key "$(Opt 'CitationKey')"
+        if ($auditKey) { $argv += @('-CitationKey', $auditKey) }
         $argv += @('-Out', $Out)
         $r = Run $argv
         if (-not $r.json) { Fail 'audit cards' "the audit printed no line: $($r.tail)"; break }

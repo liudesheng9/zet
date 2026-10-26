@@ -217,6 +217,15 @@ $noList = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner
 $env:MS_NO_LIST = ''
 Assert ($noList.json -and $noList.json.ok -eq $false -and $noList.json.step -eq 'list') "no listing: the start step stops with the listing's error ($($noList.text))"
 
+# 8. #181: a start whose -CitationKey is empty falls back to the prepared run's manifest.json, so a resume's model
+# listing is the book's Models, never every Model of the Workspace.
+$manOut = Join-Path $scratch 'out-manifest'
+New-Item -ItemType Directory -Force $manOut | Out-Null
+[IO.File]::WriteAllText((Join-Path $manOut 'manifest.json'), '{"citation_key":"ManifestKey"}', [Text.UTF8Encoding]::new($false))
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$manStart = Step (@('-Step', 'start', '-Take', '8', '-Owner', 'models block 4', '-Out', $manOut, '-Tool', $tool))
+Assert ($manStart.json -and $manStart.json.ok -eq $true -and (Get-Content -LiteralPath $calls -Raw) -match 'list-models -Staging .* -All -CitationKey ManifestKey') "manifest key: the model listing names the prepared run's Citation key when the step names none ($($manStart.text))"
+
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host "model-steps: $ok passed, $failed failed"

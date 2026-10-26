@@ -61,6 +61,21 @@ $ModelWork = Join-Path $Out 'models'
 $Drive = Join-Path $ModelWork 'drive'
 New-Item -ItemType Directory -Force $Drive | Out-Null
 $LineName = $Step
+# The book's Citation key: the step's own option, else the prepared run's manifest.json. A resume names only `out`,
+# so this is where its model layer finds the book's identity (#181).
+function Book-Key([string]$Value) {
+    $v = "$Value".Trim()
+    if ($v) { return $v }
+    $manifest = Join-Path $Out 'manifest.json'
+    if (Test-Path -LiteralPath $manifest) {
+        try {
+            $doc = Get-Content -LiteralPath $manifest -Raw -Encoding utf8 | ConvertFrom-Json -Depth 8
+            if ($doc -and "$($doc.citation_key)".Trim()) { return "$($doc.citation_key)".Trim() }
+        } catch { }
+    }
+    return $v
+}
+$CitationKey = Book-Key $CitationKey
 $Limits = "-MaxSentences $MaxSentences -MaxChars $MaxChars -MaxSteps $MaxSteps -MaxExplainSentences $MaxExplainSentences -MaxExplainChars $MaxExplainChars"
 # The math variant's own instruction files (base 5.6.5 / math): every compiler step takes them.
 $Docs = @()

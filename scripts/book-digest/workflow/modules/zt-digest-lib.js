@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v41 ====
+// ==== module zt-digest-lib v42 ====
 // The shared machinery of the ZT digest workflows (docs/zt-digest-framework.md), first ported from the
 // hand-written zt-book-digest.js (since removed): the settings read from the args, the digest and link managers, the
 // compiler-step driver (drive), the ready-work driver (chain), and the card layer cycle (runCards). The model
@@ -9,7 +9,11 @@
 // 11 adds `fixRounds`: the finalization's one correction cycle is declared, not inherited from the pilot
 // setting (#86, R299). 12 resolves the run's Citation key from the prepared run (parameter `key`, from
 // `stages.prepare.output.citation_key`), so mode resume uses the ledger's retained key instead of requiring
-// the operator to repeat args.citationKey (#87, R274/R276). 13 makes every claim cover the provider run it
+// the operator to repeat args.citationKey (#87, R274/R276). 41 (#181) makes that the ONE source: a module reads
+// the key from its own `key` param only (the blueprint passes args.citationKey to prepare, which creates the
+// prepared run, and stages.prepare.output.citation_key everywhere else), so no module reads args.citationKey and
+// a resume, which carries only `out`, never loses the book's identity; each step script reads the same key from
+// <out>\manifest.json when its options name none. 13 makes every claim cover the provider run it
 // starts: `ledger next -Lease <dshRunCap + 300>` (#92), and a chain renews that claim after every wait that
 // reports a running job, so a healthy job that outlives the 120-second base lease is never re-readied.
 // Every Haiku, Sonnet, and Opus agent goes through ctx.agent, so the blueprint's roles decide the models:
@@ -115,7 +119,7 @@ function zdDefaultModel() {
 function zdMake(ctx, p) {
   const A = p.args || {}
   const MODE = p.mode || 'full'
-  const KEY = (p && p.key) || A.citationKey
+  const KEY = (p && p.key) || ''
   const OUT = A.out
   const profile = p.profile || {}
   const SCRIPTS = ZD_SCRIPTS
@@ -628,7 +632,7 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
     if (o.notes) json.Notes = o.notes
     if (o.noOrphans) json.NoOrphans = true
     if (o.cards) json.Cards = o.cards
-    const jobs = { dsh: work, writes: `${work}\\out`, phase: o.phase || 'Cards', skills: CARD_SKILLS, effort: DSH_EFFORT, run: true }
+    const jobs = { dsh: work, writes: `${work}\\out`, phase: o.phase || 'Cards', skills: CARD_SKILLS, effort: DSH_EFFORT, what: 'card writers', run: true }
     const plan = await bookStep(`${label}: plan`, 'cards-start', json, jobs)
     if (plan.ok !== true) {
       log(`Cards ${label}: plan failed: ${(plan && plan.error) || 'no output'}.`)
@@ -1072,7 +1076,7 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '41', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '42', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

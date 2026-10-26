@@ -46,7 +46,7 @@ defineModule({
       const result = await Z.bookStep('bridge: apply', 'bridge-apply', options({ ReportId: A.bridgeReport, ...(accept ? { Accept: accept } : {}), ...(earlier ? { AcceptEarlier: earlier } : {}) }))
       return result || { status: 'failed', error: 'no output' }
     }
-    const jobs = { dsh: work, writes: `${work}\\out`, phase: 'Bridge', skills: ['zettelkasten', 'asd-ste100-zh'], effort: Z.DSH_EFFORT, readOnly: true, run: true }
+    const jobs = { dsh: work, writes: `${work}\\out`, phase: 'Bridge', skills: ['zettelkasten', 'asd-ste100-zh'], effort: Z.DSH_EFFORT, what: 'bridge judge writers', readOnly: true, run: true }
     // A report freezes its plan and proposals. So publish only after a plan whose jobs all answered; otherwise keep the
     // folder unpublished, so a rerun of mode bridge on the same out resumes it.
     let plan, error

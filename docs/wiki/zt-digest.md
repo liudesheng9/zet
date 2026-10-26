@@ -4,8 +4,8 @@ title: zt-digest
 paths:
   - "tools/zt-digest/**"
   - "scripts/install-zt-digest.ps1"
-synced: 79e9c5f847a1
-updated: 2026-10-25
+synced: HEAD
+updated: 2026-10-26
 ---
 
 # zt-digest
@@ -1500,6 +1500,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - `2026-10-26` — 0.29.5: embeds base 5.6.4 / econ 6.6.4 / math 5.6.4 (#176), so a prepared run freezes the book-level stages' blueprint versions; the release manifest names zt_digest 0.29.5 and the 5.6.4/6.6.4/5.6.4 workflows.
 - `2026-10-26` — 0.29.6: embeds base 5.6.5 / econ 6.6.5 / math 5.6.5 (#177), so a prepared run freezes the model layer's script steps and no digest stage relays a command; the release manifest names zt_digest 0.29.6 and the 5.6.5/6.6.5/5.6.5 workflows.
 - `2026-10-26` — 0.29.7: embeds base 5.6.6 / econ 6.6.6 / math 5.6.6 (#178), so a prepared run freezes the mathematics stages' script steps and no digest stage relays a command at all; the release manifest names zt_digest 0.29.7 and the 5.6.6/6.6.6/5.6.6 workflows.
+- `2026-10-26` — 0.29.8: embeds base 5.6.11 / econ 6.6.11 / math 5.6.11 (#181), whose stages take the book's Citation key from the prepared run (`stages.prepare.output.citation_key`) and never from `args.citationKey`, and whose `book-steps.ps1`/`model-steps.ps1` fall back to `<out>\manifest.json`'s `citation_key` when their options name none; the release manifest names zt_digest 0.29.8 and the 5.6.11/6.6.11/5.6.11 workflows.
 
 - `2026-10-25` — 0.29.4: embeds base 5.6.1 / econ 6.6.1 / math 5.6.1 (patch-compatible with runs prepared under 5.6.0/6.6.0), and `ledger status -Summary` carries the prepared run's `run_options`, which mode resume reads to keep a disabled Term layer off (S30 pilot, #172). Test: `ledger::tests::a_status_summary_counts_the_units_per_layer`. The release manifest names `zt_digest` 0.29.4 and the 5.6.1/6.6.1/5.6.1 workflows.
 

@@ -49,7 +49,7 @@ defineModule({
     if (!survey || survey.ok !== true) log(`Organize: the survey failed (${(survey && survey.error) || 'no output'}).`)
     // 2. Opus decides; it writes decisions.json and nothing else.
     const decided = survey && survey.ok === true ? await Z.zAgent(
-      `You decide the structure of the ZET digest of 《${A.bookTitle}》 (Literature Card [[${KEY}]], anchors [[${KEY}/1]] … [[${KEY}/${groupCount}]]). Scripts and DeepSeek do every edit; you only decide. You make no zt write.
+      `You decide the structure of the ZET digest of 《${A.bookTitle || KEY}》 (Literature Card [[${KEY}]], anchors [[${KEY}/1]] … [[${KEY}/${groupCount}]]). Scripts and DeepSeek do every edit; you only decide. You make no zt write.
 Read ${ORG}\\survey.md first (Read tool). It lists the Card merge proposals, the models with faults, and broken Links (it may also list Topics and hubs: they are not yours; ignore them). The digest writes only the book's Literature tree: Topic trees, Topic bodies, hubs and the register belong to the zt-idea-grow workflow. When a decision needs a Card's text, read it through the helper (read-only calls only: get_card, get_tree, get_model, search_cards), always with -Allow "${ORG}\\read-only.allow.txt" (the survey's empty list: reads only), e.g.
 @'
 [{"tool":"get_tree","arguments":{"tree":"${KEY}"}},{"tool":"get_card","arguments":{"at":"${KEY}/1"}}]
@@ -80,7 +80,7 @@ Return thesis, notes (the count), and report: a short Chinese report of what you
     const SK = `${OUT}\\skeleton`
     const planned = await Z.bookStep('organize: skeleton', 'skeleton-start', { Work: SK })
     if (planned && planned.ok === true && Number(planned.jobs || 0)) {
-      await Z.runJobs('organize: skeleton write', planned.file, planned.jobs, { dsh: SK, writes: `${SK}\\out`, phase: 'Organize', skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, run: true })
+      await Z.runJobs('organize: skeleton write', planned.file, planned.jobs, { dsh: SK, writes: `${SK}\\out`, phase: 'Organize', skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, what: 'skeleton writer', run: true })
     }
     const sk = planned && planned.ok === true
       ? await Z.bookStep('organize: skeleton apply', 'skeleton-finish', { Work: SK, Decisions: `${ORG}\\decisions.json` })

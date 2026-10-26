@@ -61,7 +61,7 @@ function statusSummary(kind, led) {
     l.total += 1
   }
   // S30 (#172): the prepared run's frozen layer switches, as `ledger status -Summary` prints them.
-  return { schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: 'Key', run_options: led.runOptions || { models: true, events: true, findings: true, termCards: true, termLink: true }, layers }
+  return { schema_version: 1, variant: kind === 'math' ? 'math' : 'econ', settings: led.settings, citation_key: led.key || 'Key', run_options: led.runOptions || { models: true, events: true, findings: true, termCards: true, termLink: true }, layers }
 }
 
 // --- the in-memory ledger: units are claimed, completed and gated for real -------------------------------------
@@ -251,6 +251,8 @@ function runtime(kind, opts = {}) {
   const termNotReady = new Set(opts.termNotReady || [])
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
+  // #181: the prepared run's Citation key, which a resume must take from its prepare stage.
+  led.key = opts.key || 'Key'
   if (opts.runOptions) led.runOptions = opts.runOptions
   // A resumed run reads the units its prepared run retained; the stand-in re-adds exactly those, so the
   // resume path drains a real closure instead of halting on an empty ledger.
@@ -303,7 +305,7 @@ function runtime(kind, opts = {}) {
       // #87: the one supported resume: invocation 2, resume_count 1, only unresolved units reset.
       return { ok: true, output: json({
         schema_version: 1, status: 'resumed', resumed: true, run_id: 'r1', invocation: 2, resume_count: 1,
-        citation_key: 'Key', variant: kind === 'math' ? 'math' : 'econ', settings: led.settings,
+        citation_key: led.key || 'Key', variant: kind === 'math' ? 'math' : 'econ', settings: led.settings,
         archive_identity: { archive_id: 'a1' }, reclaimed: [],
         reset: [{ unit: 'digest/g001@1', layer: 'digest', prior_state: 'failed', prior_attempts: 3 }],
         reevaluated: [{ unit: 'events/g001@1', layer: 'events', prior_state: 'blocked' }],
@@ -1305,7 +1307,7 @@ function runtime(kind, opts = {}) {
         for (let n = 1; n <= (opts.extraCleanupUnits || 0); n++) led.add(`cleanup/extra-g${String(n).padStart(3, '0')}@1`, 'cleanup')
         for (let n = 1; n <= 2; n++) led.add(`digest/g${String(n).padStart(3, '0')}@1`, 'digest', { n, group: { n } })
         if (kind === 'math') for (const l of ['math-index', 'math-docs', 'math-skeleton', 'notation']) led.add(`${l}/book@1`, l)
-        return { ok: true, groups: 2, citation_key: 'Key' }
+        return { ok: true, groups: 2, citation_key: o.CitationKey || 'Key' }
       }
       case 'link-prepare': {
         if (opts.linkBlocked) return { ok: true, pending: [], no_gap: [], blocked: opts.linkBlocked, gaps: {}, owned_total: 0, gap_total: 0, skipped_total: 0, unowned: 0, digest_state: 'ledger' }
@@ -2029,6 +2031,24 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
     check(/resume/.test(when), `resume: the ${stage} stage declares mode resume in its own condition`)
   }
   check(builds.econ.bp.stages.concat(builds.math.bp.stages).filter((s) => s.params && !['args', 'source', 'prepare'].includes(s.id)).every((s) => s.params.key && s.params.key.$ref === 'stages.prepare.output.citation_key'), 'resume: every stage downstream of prepare reads the Citation key from the prepared run, so mode resume never repeats args.citationKey')
+  // #181: mode resume carries only `out`, so every stage takes the book's Citation key from the prepared run. No
+  // command and no agent prompt may name `undefined`; no step may hand zt-digest an empty -CitationKey/-Book; and
+  // Organize, Figures, the link-check card cycle and the Bridge must name the prepared run's key.
+  const RESUME_KEY = 'Book2026'
+  const resumeKey = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { key: RESUME_KEY, retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
+  const resumeTexts = [...resumeKey.commands, ...resumeKey.calls.map((c) => String(c.prompt))]
+  const undefinedTexts = resumeTexts.filter((t) => /undefined/.test(t))
+  check(!undefinedTexts.length, `#181: no command and no agent prompt of a resume names undefined (${undefinedTexts.length} do: ${JSON.stringify((undefinedTexts[0] || '').slice(0, 200))})`)
+  const emptyKeyTexts = resumeTexts.filter((t) => /-CitationKey ""|"CitationKey":""|-Book ""|"Book":""/.test(t))
+  check(!emptyKeyTexts.length, `#181: no step of a resume hands zt-digest an empty -CitationKey or -Book (${emptyKeyTexts.length} do: ${JSON.stringify((emptyKeyTexts[0] || '').slice(0, 200))})`)
+  const organizeDecides = resumeKey.calls.find((c) => c.label === 'organize: decisions')
+  check(!!organizeDecides && organizeDecides.prompt.includes(`[[${RESUME_KEY}]]`) && organizeDecides.prompt.includes(`[[${RESUME_KEY}/1]]`), `#181: the Organize decision names the prepared run's Citation key (${JSON.stringify((organizeDecides && organizeDecides.prompt) || '').slice(0, 160)})`)
+  const figuresStep = resumeKey.bookCalls.find((c) => c.step === 'figures')
+  check(!!figuresStep && figuresStep.options.CitationKey === RESUME_KEY, `#181: Figures names the prepared run's Citation key (${JSON.stringify(figuresStep && figuresStep.options)})`)
+  const linkCheckPlan = resumeKey.bookCalls.find((c) => c.step === 'cards-start' && /cards-link/.test((c.options || {}).Work || ''))
+  check(!!linkCheckPlan && linkCheckPlan.options.Book === RESUME_KEY, `#181: the link check's card plan names the prepared run's Citation key (${JSON.stringify(linkCheckPlan && linkCheckPlan.options)})`)
+  const bridgePlan = resumeKey.bookCalls.find((c) => c.step === 'bridge-start')
+  check(!!bridgePlan && bridgePlan.options.CitationKey === RESUME_KEY, `#181: the Bridge plan names the prepared run's Citation key (${JSON.stringify(bridgePlan && bridgePlan.options)})`)
   const resumeGate = await run('econ', { out: 'D:\\x\\Key', mode: 'resume', source: 'S.md' })
   check(resumeGate.result.stage === 'args' && /accepts only out/.test(resumeGate.result.error), 'args: mode resume refuses a new source instead of reinterpreting the retained run')
   const resumeRun = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' })
@@ -2872,7 +2892,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '41' && modules['zt-digest-prepare'] === '17' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '5' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '6' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v40, zt-digest-prepare v16, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '42' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '5' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '6' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v42, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
