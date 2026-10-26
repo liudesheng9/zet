@@ -53,9 +53,10 @@
 //! conversation ends once its answer is collected. The Haiku manager role stays the workflow's; the
 //! job never picks a model and no skill text is copied.
 //!
-//! `apply` (S21 / #165, design 12.5–12.6) publishes the longest ready ordered row prefix as Side
-//! children of the Term list with their continuation parts, verifies every committed Card by
-//! reading it back and writes the publication coverage; `report` is the same read without a write.
+//! `apply` (S21 / #165, S33 / #182, design 12.5–12.6) publishes every ready row as a Side child of
+//! the Term list with its continuation parts — a refused row holds back no row after it, and a row
+//! repaired later is filed in its table place before the next published row — then reads the
+//! publication back by identity and writes the coverage; `report` is the same read without a write.
 //! They live in `publish.rs` beside this file.
 
 mod publish;

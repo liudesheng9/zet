@@ -1014,4 +1014,152 @@ mod tests {
             "2caa06f0e57fa7874839259b3bfa5f8d05e60c75c6266198a57869ad03726cee"
         );
     }
+
+    /// S33 (#182): a Side placement is one identified batch item. The first call takes the named
+    /// sibling's label and shifts it one on; the same operation key replays the stored receipt, so a
+    /// lost reply never shifts the list a second time.
+    #[test]
+    fn a_side_placement_batch_item_replays_under_its_operation_key_without_moving_again() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::initialize_database(temp.path()).expect("initialize");
+        let root = temp.path();
+        {
+            let mut conn = crate::open_db(root).expect("open");
+            let (topic, _) = crate::create_topic(&mut conn, crate::Workspace::Agent, "# 书\n")
+                .expect("topic");
+            let parent = format!("{}/1", crate::tree_id(&topic));
+            for (at, text) in [
+                (parent.clone(), "# 列表\n\n第一行。\n"),
+                (format!("{parent}|a"), "# 甲\n\n第一张。\n"),
+                (format!("{parent}|b"), "# 乙\n\n第二张。\n"),
+            ] {
+                crate::insert_card_with_term(
+                    &mut conn,
+                    &at,
+                    false,
+                    crate::Workspace::Agent,
+                    crate::CardType::Idea,
+                    None,
+                    None,
+                    text,
+                )
+                .expect("card");
+            }
+        }
+        let items = json!([{
+            "op_key": "term-cards-0123456789abcdef/K/2/apply/r003",
+            "client_ref": "r003",
+            "tool": "create_successor",
+            "arguments": {
+                "at": "0/1",
+                "kind": "side",
+                "before": "0/1|b",
+                "type": "term",
+                "term": "丙",
+                "title": "丙",
+                "body": "术语：丙\n",
+            },
+        }]);
+        let first = apply(root, &json!({ "items": items })).expect("first batch");
+        assert_eq!(first["results"][0]["replayed"], json!(false));
+        assert_eq!(first["results"][0]["result"]["address"], json!("0/1|b"));
+        assert_eq!(
+            first["results"][0]["result"]["moved"],
+            json!({"0/1|b": "0/1|c"}),
+            "the reply names every shifted Card"
+        );
+        {
+            let conn = crate::open_db(root).expect("open");
+            assert!(crate::load_card(&conn, "0/1|b").expect("new").text.contains("术语：丙"));
+            assert!(crate::load_card(&conn, "0/1|c").expect("shifted").text.contains("# 乙\n"));
+        }
+        let again = apply(root, &json!({ "items": items })).expect("replayed batch");
+        assert_eq!(again["results"][0]["replayed"], json!(true));
+        assert_eq!(again["results"][0]["result"]["address"], json!("0/1|b"));
+        let conn = crate::open_db(root).expect("open");
+        assert!(
+            crate::load_card(&conn, "0/1|c").expect("shifted once").text.contains("# 乙\n"),
+            "a replay shifts nothing again"
+        );
+        let later: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cards WHERE location = '0/1|d'", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(later, 0, "no Card was shifted twice");
+        let receipts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM applied_ops", [], |row| row.get(0))
+            .expect("receipts");
+        assert_eq!(receipts, 1, "one operation key holds one receipt");
+        drop(conn);
+        // The named sibling is part of the request identity: the same key with another `before`
+        // conflicts instead of silently replaying a different placement.
+        let mut changed = items.clone();
+        changed[0]["arguments"]["before"] = json!("0/1|a");
+        let error = apply(root, &json!({ "items": changed }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("operation key conflict"), "{error}");
+    }
+
+    /// S33 (#182): the placement names an immediate Side sibling, and only `kind` `side` files one.
+    #[test]
+    fn a_side_placement_needs_the_side_kind_and_an_immediate_side_sibling() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::initialize_database(temp.path()).expect("initialize");
+        let root = temp.path();
+        {
+            let mut conn = crate::open_db(root).expect("open");
+            let (topic, _) = crate::create_topic(&mut conn, crate::Workspace::Agent, "# 书\n")
+                .expect("topic");
+            let parent = format!("{}/1", crate::tree_id(&topic));
+            for (at, text) in [
+                (parent.clone(), "# 列表\n\n第一行。\n"),
+                (format!("{parent}|a"), "# 甲\n\n第一张。\n"),
+            ] {
+                crate::insert_card_with_term(
+                    &mut conn,
+                    &at,
+                    false,
+                    crate::Workspace::Agent,
+                    crate::CardType::Idea,
+                    None,
+                    None,
+                    text,
+                )
+                .expect("card");
+            }
+        }
+        let item = |kind: &str, before: &str| {
+            json!({"items": [{
+                "op_key": "term-cards-0123456789abcdef/K/2/apply/r002",
+                "client_ref": "r002",
+                "tool": "create_successor",
+                "arguments": {
+                    "at": "0/1",
+                    "kind": kind,
+                    "before": before,
+                    "type": "term",
+                    "term": "丙",
+                    "title": "丙",
+                    "body": "术语：丙\n",
+                },
+            }]})
+        };
+        let error = apply(root, &item("direct", "0/1|a")).unwrap_err().to_string();
+        assert!(error.contains("pass kind `side`"), "{error}");
+        let error = apply(root, &item("side", "0/1")).unwrap_err().to_string();
+        assert!(error.contains("immediate Side successor"), "{error}");
+        let conn = crate::open_db(root).expect("open");
+        assert!(
+            crate::load_card(&conn, "0/1|a").expect("sibling").text.contains("# 甲\n"),
+            "a refused placement moves nothing"
+        );
+        let receipts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM applied_ops", [], |row| row.get(0))
+            .unwrap_or(0);
+        assert_eq!(receipts, 0, "a refused placement stores no receipt");
+        let written: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cards WHERE location = '0/1|b'", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(written, 0, "a refused placement writes no Card");
+    }
 }

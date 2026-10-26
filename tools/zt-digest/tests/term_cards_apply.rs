@@ -1,7 +1,8 @@
-//! The Term-card publication seam (S21, #165): `terms -Step apply` writes a new book's list as a
-//! nameless Term Card, and `term-cards -Step apply|report` publish the longest ready contiguous row
-//! prefix as Side children of that list with their continuation parts, then verify every committed
-//! Card by reading it back.
+//! The Term-card publication seam (S21, #165; S33 / #182): `terms -Step apply` writes a new book's
+//! list as a nameless Term Card, and `term-cards -Step apply|report` publish every ready row as a
+//! Side child of that list with its continuation parts — a refused row holds back no row after it,
+//! and a row repaired later is filed in its table place before the next published row — then read
+//! the publication back by identity to decide what is committed and where it stands.
 //!
 //! The commands run over a real scratch archive and a staged source fixture. A stand-in writer
 //! writes the exact JSON drafts and a stand-in reviewer answers the mathematics review, so every
@@ -570,7 +571,7 @@ fn the_report_reads_publication_coverage_without_writing_a_card() {
 }
 
 #[test]
-fn apply_publishes_the_ready_prefix_as_side_children_with_their_parts_and_verifies_them() {
+fn apply_publishes_every_ready_row_as_side_children_with_their_parts_and_verifies_them() {
     let program = zt_program().expect(
         "this seam needs a zt binary: build the repository (cargo build) or set ZT_TEST_ZT",
     );
@@ -699,7 +700,7 @@ fn concept_draft_for(term: &str, section: &str, meaning: &str) -> Value {
 }
 
 #[test]
-fn the_prefix_stops_at_the_first_unready_row_and_a_repair_continues_it_in_order() {
+fn a_refused_row_holds_nothing_back_and_a_later_repair_is_filed_in_its_place() {
     let program = zt_program().expect(
         "this seam needs a zt binary: build the repository (cargo build) or set ZT_TEST_ZT",
     );
@@ -716,25 +717,29 @@ fn the_prefix_stops_at_the_first_unready_row_and_a_repair_continues_it_in_order(
     let revision = mcp.revision();
     let applied = ok_json(&digest(&zt, &staged, "apply", true), "apply");
     assert_eq!(applied["complete"], false);
-    assert_eq!(applied["committed"], 1, "{applied}");
-    assert_eq!(applied["ready_unpublished"], 1, "row 3 stays staged: {applied}");
+    assert_eq!(applied["committed"], 2, "row 3 is published past the refused row 2: {applied}");
+    assert_eq!(applied["ready_unpublished"], 0, "{applied}");
     assert_eq!(applied["refused"], 1);
     assert_eq!(applied["code"], "not_ready");
     assert_eq!(applied["stopped"], 2, "{applied}");
-    // Exactly row 1's head was published: row 2 has no placeholder and row 3 waits in order.
+    // Rows 1 and 3 are published in table order; row 2 has no placeholder Card.
     let sides = side_children(&mut mcp, "testbook2026", &list);
-    assert_eq!(sides.len(), 1, "{sides:?}");
-    assert_eq!(sides[0]["term"], "均衡");
+    let terms: Vec<String> = sides
+        .iter()
+        .map(|card| card["term"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(terms, ["均衡", "企业边界"], "{sides:?}");
+    let row3_head = sides[1]["address"].as_str().unwrap().to_string();
     let json = read_json(&work(&staged).join("report.json"));
     assert_eq!(json["rows"][1]["publication"]["status"], "refused");
     assert_eq!(json["rows"][1]["publication"]["head"], Value::Null);
-    assert_eq!(json["rows"][2]["publication"]["status"], "ready_unpublished");
-    assert_eq!(json["staged"].as_array().map_or(0, Vec::len), 1);
+    assert_eq!(json["rows"][2]["publication"]["status"], "committed");
+    assert_eq!(json["staged"].as_array().map_or(0, Vec::len), 0);
     let md = std::fs::read_to_string(work(&staged).join("report.md")).unwrap();
     assert!(md.contains("Stopped: not_ready"), "{md}");
 
-    // The writer repairs row 2. The next check makes it ready and the next apply publishes rows 2
-    // and 3 in table order, after the row 1 head that is already accepted.
+    // The writer repairs row 2. The next check makes it ready and the next apply files its head in
+    // its table place, before the row 3 head already published, which moves one label on.
     write_output(
         &staged,
         "t002",
@@ -747,7 +752,7 @@ fn the_prefix_stops_at_the_first_unready_row_and_a_repair_continues_it_in_order(
     assert_eq!(checked["counts"]["ready"], 3, "{checked}");
     let applied = ok_json(&digest(&zt, &staged, "apply", true), "apply 2");
     assert_eq!(applied["complete"], true, "{applied}");
-    assert_eq!(applied["cards_written"].as_u64().unwrap() >= 2, true, "{applied}");
+    assert_eq!(applied["cards_written"].as_u64().unwrap() >= 1, true, "{applied}");
     assert!(mcp.revision() > revision);
     let sides = side_children(&mut mcp, "testbook2026", &list);
     let terms: Vec<String> = sides
@@ -755,6 +760,30 @@ fn the_prefix_stops_at_the_first_unready_row_and_a_repair_continues_it_in_order(
         .map(|card| card["term"].as_str().unwrap_or_default().to_string())
         .collect();
     assert_eq!(terms, ["均衡", "剩余控制权", "企业边界"], "{sides:?}");
+    assert_eq!(
+        sides[1]["address"].as_str().unwrap(),
+        row3_head,
+        "the repaired row takes the place of the row published after it"
+    );
+    assert_ne!(
+        sides[2]["address"].as_str().unwrap(),
+        row3_head,
+        "the later row moved one label on"
+    );
+    let json = read_json(&work(&staged).join("report.json"));
+    assert_eq!(
+        json["rows"][1]["publication"]["head"],
+        json!(sides[1]["address"].as_str().unwrap()),
+        "the report names the archive's current address"
+    );
+    assert_eq!(json["rows"][2]["publication"]["head"], sides[2]["address"]);
+    // A third run finds everything by identity and writes nothing.
+    let revision = mcp.revision();
+    let again = ok_json(&digest(&zt, &staged, "apply", true), "apply 3");
+    assert_eq!(again["complete"], true, "{again}");
+    assert_eq!(again["cards_written"], 0);
+    assert_eq!(again["batches"], 0);
+    assert_eq!(mcp.revision(), revision, "a completed publication writes nothing on a retry");
 }
 
 #[test]
@@ -765,7 +794,7 @@ fn an_unrelated_side_child_stops_publication_without_creating_a_head() {
     let zt = Zt::new(program);
     let mut mcp = zt.mcp();
     let (_holder, staged, list) = ready_book(&zt, &mut mcp);
-    // Someone else filed a note beside the list: it occupies the first row's slot.
+    // Someone else filed a note beside the list: it is no row of the frozen plan.
     mcp.call(
         "create_successor",
         json!({"at":list,"kind":"side","title":"一条笔记","body":"这不是术语卡。"}),
@@ -776,16 +805,16 @@ fn an_unrelated_side_child_stops_publication_without_creating_a_head() {
     let said = last_json(&output);
     assert_eq!(said["complete"], false);
     assert_eq!(said["conflicted"], 1, "{said}");
+    assert_eq!(said["conflicts"], 1, "{said}");
     assert_eq!(said["code"], "conflicted", "{said}");
     assert_eq!(said["cards_written"], 0, "no head is inserted beside the note: {said}");
     assert_eq!(mcp.revision(), revision, "a conflict writes no Card");
     let json = read_json(&work(&staged).join("report.json"));
-    assert_eq!(json["rows"][0]["publication"]["status"], "conflicted");
-    assert_eq!(json["rows"][0]["publication"]["reason"]["code"], "unrelated_side");
-    assert_eq!(
-        json["rows"][0]["publication"]["reason"]["address"],
-        json!(format!("{list}|a"))
-    );
+    assert_eq!(json["rows"][0]["publication"]["status"], "ready_unpublished");
+    assert_eq!(json["conflicts"][0]["code"], "unrelated_side");
+    assert_eq!(json["conflicts"][0]["address"], json!(format!("{list}|a")));
+    let md = std::fs::read_to_string(work(&staged).join("report.md")).unwrap();
+    assert!(md.contains("## Conflicts"), "{md}");
     assert_eq!(side_children(&mut mcp, "testbook2026", &list).len(), 1);
 }
 

@@ -103,6 +103,53 @@ pub(crate) fn insert_plan(conn: &Connection, before: &str) -> Result<InsertPlan>
     })
 }
 
+/// Plan a new Card as an immediate Side successor of `before`'s parent, in `before`'s place: the
+/// new Card takes that Side label, and that Card and every later Side child of the same parent move
+/// one label on, each with its whole subtree. Unlike [`insert_plan`], nothing moves down a Direct
+/// successor line, so a Term list keeps its rows as Side children in table order.
+pub(crate) fn insert_side_plan(conn: &Connection, before: &str) -> Result<InsertPlan> {
+    let card = crate::load_card(conn, before)?;
+    let parent = crate::parent_location(&card.address).with_context(|| {
+        format!("`{before}` is a Tree root; a Side successor needs a parent Card")
+    })?;
+    let label = crate::immediate_side_label(&card.address, &parent).with_context(|| {
+        format!("`{before}` is not a Side successor of `{parent}`; name the Side child the new Card takes the place of")
+    })?;
+    let locations = all_locations(conn)?;
+    let mapping = shift_later_siblings(&locations, &parent, crate::side_label_to_number(&label))?;
+    let rewritten_links = crate::count_rewritten_links(conn, &mapping)?;
+    Ok(InsertPlan {
+        location: card.address,
+        mapping,
+        rewritten_links,
+    })
+}
+
+/// The mapping that frees the Side label `label` of `parent`: every immediate Side child of
+/// `parent` at that label or later moves one label on, each with its whole subtree.
+fn shift_later_siblings(
+    locations: &BTreeSet<String>,
+    parent: &str,
+    label: u64,
+) -> Result<BTreeMap<String, String>> {
+    let mut later: Vec<(u64, String)> = locations
+        .iter()
+        .filter(|location| crate::parent_location(location).as_deref() == Some(parent))
+        .filter_map(|location| {
+            crate::immediate_side_label(location, parent)
+                .map(|label| (crate::side_label_to_number(&label), location.clone()))
+        })
+        .filter(|(number, _)| *number >= label)
+        .collect();
+    later.sort();
+    let mut mapping = BTreeMap::new();
+    for (number, location) in later {
+        let to = format!("{parent}|{}", crate::number_to_side_label(number + 1));
+        mapping.extend(shift(locations, &location, &to)?);
+    }
+    Ok(mapping)
+}
+
 pub(crate) fn insert_verification_lines(plan: &InsertPlan) -> Vec<String> {
     let mut lines = vec![
         "insert verification:".to_string(),
@@ -116,11 +163,27 @@ pub(crate) fn insert_verification_lines(plan: &InsertPlan) -> Vec<String> {
     lines
 }
 
-/// Apply an insert plan in one transaction: move the Cards down, then write the
-/// new Card. Links in `text` name today's addresses; they follow the move too,
-/// so a Link to the Card that moves down still reaches it.
+/// Apply an insert plan in one transaction: move the Cards, then write the new Card. Links in
+/// `text` name today's addresses; they follow the move too, so a Link to a Card that moves still
+/// reaches it.
 pub(crate) fn apply_insert_plan(
     conn: &mut Connection,
+    plan: &InsertPlan,
+    card_type: CardType,
+    part: Option<&model::Part>,
+    term_name: Option<&str>,
+    text: &str,
+) -> Result<crate::gate::Accepted> {
+    let tx = conn.transaction()?;
+    let accepted = apply_insert_plan_tx(&tx, plan, card_type, part, term_name, text)?;
+    tx.commit()?;
+    Ok(accepted)
+}
+
+/// [`apply_insert_plan`] inside the caller's transaction, for an identified batch item: the mapping,
+/// the new Card and the rebuilt Link index commit together or not at all.
+pub(crate) fn apply_insert_plan_tx(
+    conn: &Connection,
     plan: &InsertPlan,
     card_type: CardType,
     part: Option<&model::Part>,
@@ -134,8 +197,8 @@ pub(crate) fn apply_insert_plan(
     model::ensure_allowed(conn, None, card_type, facet, emphasis)?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::Mapping(&plan.mapping))?;
     crate::tree_lock::ensure_unlocked(conn, crate::tree_lock::Change::CreateAt(&plan.location))?;
-    // The Card that will be stored: Links to Cards that move down are rewritten first, so the
-    // check reads the exact committed text.
+    // The Card that will be stored: Links to Cards that move are rewritten first, so the check reads
+    // the exact committed text.
     let text = crate::replace_link_locations(text, &plan.mapping)?;
     let accepted = crate::gate::check_proposed(
         conn,
@@ -149,9 +212,8 @@ pub(crate) fn apply_insert_plan(
         )
         .with_term(term_name),
     )?;
-    let tx = conn.transaction()?;
-    crate::apply_location_mapping_tx(&tx, &plan.mapping)?;
-    tx.execute(
+    crate::apply_location_mapping_tx(conn, &plan.mapping)?;
+    conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, term_name)
          VALUES(?1, NULL, 0, 0, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
@@ -164,8 +226,7 @@ pub(crate) fn apply_insert_plan(
             term_name
         ],
     )?;
-    crate::regenerate_reverse_links_tx(&tx)?;
-    tx.commit()?;
+    crate::regenerate_reverse_links_tx(conn)?;
     Ok(accepted)
 }
 
@@ -411,6 +472,62 @@ mod tests {
                 ("3/1|a|1|a", "3/1|a|2|a"),
                 ("3/1|a|b", "3/1|a|1|b")
             ]
+        );
+    }
+
+    #[test]
+    fn a_side_placement_shifts_the_named_sibling_and_every_later_one_one_label() {
+        let locations = set(&[
+            "3/0",
+            "3/1",
+            "3/1|a",
+            "3/1|a|a",
+            "3/1|a|a|1",
+            "3/1|a|a|1|a",
+            "3/1|a|b",
+            "3/1|a|b|1",
+            "3/1|a|c",
+            "3/1|a|c|a",
+        ]);
+        // Before `3/1|a|b`: the new Card takes |b, and |b and |c each move one label on.
+        let mapping = shift_later_siblings(&locations, "3/1|a", 2).unwrap();
+        assert_eq!(
+            pairs(&mapping),
+            [
+                ("3/1|a|b", "3/1|a|c"),
+                ("3/1|a|b|1", "3/1|a|c|1"),
+                ("3/1|a|c", "3/1|a|d"),
+                ("3/1|a|c|a", "3/1|a|d|a")
+            ]
+        );
+        // No two Cards land on one Location, and |a stays exactly where it was.
+        assert_eq!(
+            after(&locations, &mapping),
+            [
+                "3/0",
+                "3/1",
+                "3/1|a",
+                "3/1|a|a",
+                "3/1|a|a|1",
+                "3/1|a|a|1|a",
+                "3/1|a|c",
+                "3/1|a|c|1",
+                "3/1|a|d",
+                "3/1|a|d|a"
+            ]
+        );
+        assert!(!mapping.contains_key("3/1|a|a") && !mapping.contains_key("3/1|a|a|1"));
+        // Before the last sibling only that sibling and its subtree move.
+        let mapping = shift_later_siblings(&locations, "3/1|a", 3).unwrap();
+        assert_eq!(
+            pairs(&mapping),
+            [("3/1|a|c", "3/1|a|d"), ("3/1|a|c|a", "3/1|a|d|a")]
+        );
+        // A parent with no Side child at or after the label has nothing to move.
+        assert!(
+            shift_later_siblings(&locations, "3/1|a", 4)
+                .unwrap()
+                .is_empty()
         );
     }
 

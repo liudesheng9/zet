@@ -71,6 +71,37 @@ pub(crate) fn create_successor(
     create_successor_with_term(root, access, kind, at, card_type, part, None, text)
 }
 
+/// The Side placement with a Term Card's exact name, for the tests: production routes reach
+/// [`create_side_before_tx_with_term`] through `write_card_tx` (S33, #182).
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_side_before(
+    root: &Path,
+    access: Access,
+    at: &str,
+    before: &str,
+    card_type: CardType,
+    part: Option<&Part>,
+    term_name: Option<&str>,
+    text: &str,
+) -> Result<(String, crate::gate::Accepted)> {
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_side_before")?;
+    let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let (plan, accepted) = create_side_before_tx_with_term(
+        &tx,
+        access,
+        at,
+        before,
+        card_type,
+        part,
+        term_name,
+        text,
+    )?;
+    tx.commit()?;
+    Ok((plan.location, accepted))
+}
+
 /// The same create with a Term Card's exact name (S07, #149).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_successor_with_term(
@@ -170,6 +201,37 @@ pub(crate) fn create_successor_tx_with_term(
         text,
     )?;
     Ok((location, accepted))
+}
+
+/// Create one Card as an immediate Side successor of `at`, in the place of its Side child `before`:
+/// the new Card takes that Side label, and `before` and every later Side successor of `at` move one
+/// label on with their whole subtrees (S33, #182). Nothing moves down a Direct successor line, so a
+/// Term list keeps its rows as Side children in table order; the operation is identified, so a
+/// publication batch commits it with its receipt.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_side_before_tx_with_term(
+    conn: &Connection,
+    access: Access,
+    at: &str,
+    before: &str,
+    card_type: CardType,
+    part: Option<&Part>,
+    term_name: Option<&str>,
+    text: &str,
+) -> Result<(crate::place::InsertPlan, crate::gate::Accepted)> {
+    let parent = crate::load_card(conn, at)?;
+    access.ensure_writable(parent.workspace)?;
+    let sibling = crate::load_card(conn, before)?;
+    if crate::parent_location(&sibling.address).as_deref() != Some(parent.address.as_str()) {
+        bail!(
+            "`before` must be an immediate Side successor of `{}`, not `{before}`",
+            parent.address
+        );
+    }
+    let plan = crate::place::insert_side_plan(conn, &sibling.address)?;
+    let accepted =
+        crate::place::apply_insert_plan_tx(conn, &plan, card_type, part, term_name, text)?;
+    Ok((plan, accepted))
 }
 
 /// `text` is the Card text after the generated title: only its body is kept,
@@ -1633,6 +1695,90 @@ The model"
             emphasis: Some(emphasis),
             ..TypeChange::default()
         }
+    }
+
+    #[test]
+    fn a_side_placement_takes_the_named_sibling_and_shifts_every_later_one_with_its_links() {
+        let temp = archive();
+        let root = temp.path();
+        let owner = Access::Owner;
+        create_topic(root, owner, Workspace::Agent, "# 书\n").unwrap();
+        create_successor(root, owner, Successor::Direct, "0/0", CardType::Idea, None, "# 列表\n\n第一行。\n").unwrap();
+        for title in ["# 甲\n\n第一张。\n", "# 乙\n\n第二张。\n", "# 丙\n\n第三张。\n"] {
+            create_successor(root, owner, Successor::Side, "0/1", CardType::Idea, None, title).unwrap();
+        }
+        // |b carries one Direct continuation part, so the whole chain must follow it.
+        create_successor(root, owner, Successor::Direct, "0/1|b", CardType::Idea, None, "# 乙的续篇\n\n续：\n").unwrap();
+        // A reader Card links both the Head and its part.
+        create_successor(root, owner, Successor::Direct, "0/1|c", CardType::Idea, None, "# 引用\n\n见 [[0/1|b]] 与 [[0/1|b|1]]。\n").unwrap();
+
+        let (address, _) = create_side_before(
+            root,
+            owner,
+            "0/1",
+            "0/1|b",
+            CardType::Term,
+            None,
+            Some("新词"),
+            "# 新词\n\n术语：新词\n",
+        )
+        .unwrap();
+        assert_eq!(address, "0/1|b", "the new Card takes the named sibling's label");
+        assert!(text_of(root, "0/1|b").contains("术语：新词"));
+        assert!(text_of(root, "0/1|c").contains("# 乙\n"), "the old |b moved one label on");
+        assert!(
+            text_of(root, "0/1|c|1").contains("# 乙的续篇\n"),
+            "its Direct part moved with it"
+        );
+        assert!(text_of(root, "0/1|d").contains("# 丙\n"), "the later sibling moved too");
+        assert!(text_of(root, "0/1|a").contains("# 甲\n"), "the earlier sibling stayed");
+        assert!(
+            text_of(root, "0/1|d|1").contains("[[0/1|c]]") && text_of(root, "0/1|d|1").contains("[[0/1|c|1]]"),
+            "the reader's Links follow the moved Cards: {}",
+            text_of(root, "0/1|d|1")
+        );
+        // A second activation is a second, different Card: the archive never applies a placement
+        // twice by itself; the identification is the caller's operation key.
+        let (again, _) = create_side_before(
+            root,
+            owner,
+            "0/1",
+            "0/1|b",
+            CardType::Term,
+            None,
+            Some("另一个词"),
+            "# 另一个词\n\n术语：另一个词\n",
+        )
+        .unwrap();
+        assert_eq!(again, "0/1|b");
+        assert!(text_of(root, "0/1|c").contains("# 新词\n"), "the previous |b moved on");
+    }
+
+    #[test]
+    fn a_side_placement_refuses_a_sibling_of_another_parent_and_a_locked_tree() {
+        let temp = archive();
+        let root = temp.path();
+        let owner = Access::Owner;
+        create_topic(root, owner, Workspace::Agent, "# 书\n").unwrap();
+        create_successor(root, owner, Successor::Direct, "0/0", CardType::Idea, None, "# 列表\n\n第一行。\n").unwrap();
+        create_successor(root, owner, Successor::Side, "0/1", CardType::Idea, None, "# 甲\n\n第一张。\n").unwrap();
+        create_successor(root, owner, Successor::Side, "0/1", CardType::Idea, None, "# 乙\n\n第二张。\n").unwrap();
+
+        let error = create_side_before(root, owner, "0/1", "0/1", CardType::Idea, None, None, "# 新\n\n新。\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("immediate Side successor"), "{error}");
+
+        // A Locked tree refuses the whole placement: nothing moves and no Card is written.
+        let conn = crate::open_db(root).unwrap();
+        let plan = crate::tree_lock::plan(&conn, "0/0", None).unwrap();
+        crate::tree_lock::lock_tx(&conn, &plan).unwrap();
+        let before = text_of(root, "0/1|a");
+        let error = create_side_before(root, owner, "0/1", "0/1|a", CardType::Idea, None, None, "# 新\n\n新。\n")
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("locked tree"), "{error:#}");
+        assert_eq!(text_of(root, "0/1|a"), before, "the sibling stayed exactly where it was");
+        assert!(text_of(root, "0/1|b").contains("# 乙\n"), "the later sibling stayed");
     }
 
     #[test]

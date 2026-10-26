@@ -1,11 +1,10 @@
 //! `term-cards -Step apply|report`: publication of one book's Term Cards (design §12.5–§12.6,
-//! S21 / #165).
+//! S21 / #165, S33 / #182).
 //!
-//! `apply` publishes only the longest **ready ordered row prefix**: for each ready row in table
-//! order its head and its complete continuation chain, as Side children of the Term list and Direct
-//! successors of the head. A row that is not ready stops the prefix; every later ready draft stays
-//! staged, and no placeholder head, reserved address, insertion, move or deletion is ever written
-//! (R0337, R0340, R0344–R0350).
+//! `apply` publishes **every ready row**, in table order, as Side children of the Term list with
+//! their complete continuation chains; a row whose content is not ready is left unpublished and
+//! holds back no row after it. No placeholder head, no reserved address and no blind overwrite is
+//! ever written (R0337, R0340, R0344–R0350).
 //!
 //! Before one Card is written the frozen plan is revalidated against a fresh coherent read: the
 //! plan content hash (list rows/title, staged source, notation, limits, compiler/checker/rule and
@@ -14,13 +13,20 @@
 //! a legacy `术语表` Idea Card is retyped to `term` metadata-only in the first batch, with its
 //! authored title, body, Links, address and row identity kept byte for byte (R0336).
 //!
-//! The existing publication is then read, not assumed: the list's immediate Side children are the
-//! slots of rows 1..n in address order. A slot whose Term Card carries exactly the plan's rendered
-//! head — and whose Direct chain carries exactly its rendered parts — is a committed row; its
-//! addresses are reused and nothing is written again, so a lost publication reply cannot create a
-//! second head (R0341). A slot holding another Card, or one whose authored content differs from the
-//! plan's rendering, is a conflict: the step stops instead of inserting, moving or editing an
-//! accepted head (R0339, R0342).
+//! The existing publication is then read by **identity**, never by position: a Side child of the
+//! list is the committed row whose Term Card carries exactly the plan's rendered head — title and
+//! body — and whose Direct chain carries exactly the rendered parts. Its addresses are reused and
+//! nothing is written again, so a lost publication reply cannot create a second head (R0341). A
+//! Side child that matches no planned row, a second head for one row, or a head filed outside the
+//! list is a conflict: the step writes nothing instead of inserting, moving or editing an accepted
+//! head (R0339, R0342).
+//!
+//! A row published later goes to **its table position**. When a ready row stands before rows that
+//! are already published, its head is filed in the place of the next published row with one
+//! identified `create_successor -Kind side -Before` item: that row and every later Side child of the
+//! list move one label on inside the same archive transaction, so the list keeps its order (S33,
+//! #182). Rows after the last published row are appended in table order. Each placement is its own
+//! call, highest table position first, so the next placement names the head the previous one filed.
 //!
 //! Chains are packed into the archive's existing identified calls: at most 64 items and 1 MiB of
 //! authored bytes per call, several complete chains in one call, a whole chain never split. A chain
@@ -31,17 +37,21 @@
 //!
 //! The operation keys are the stable `term-cards-<plan hash>/<book>/<plan revision>/apply/<row>`
 //! identities, so a retry of the same plan replays the archive's own receipts and a new plan
-//! revision is a new operation (R0341). Every committed Card is read back and compared with the
-//! plan's rendering; a divergence is a typed stop, never a silent success.
+//! revision is a new operation (R0341). The retype of a legacy list is its own `…/apply/list` call.
+//! After every write the archive's publication is read once more and judged by the same identity
+//! rule: the report carries the archive's current addresses (a placement moved the rows after it),
+//! and a row this run wrote whose content is not the plan's rendering is a typed stop, never a
+//! silent success.
 //!
 //! Both steps write `<Staging>/term-cards/report.json` and `report.md`, the publication coverage per
 //! row (R0344–R0350): the source row and exact term, the math/concept classification and whether
 //! promoted, the writer job, draft/check/review/fix facts, the row's own status (`committed`,
 //! `ready_unpublished`, `pending`, `refused`, `conflicted`), the head/part addresses and receipt
-//! keys, and why publication stopped plus which later ready drafts remain staged. `report` is the
-//! same read without any write: the read-only audit an incomplete stage still runs (R0351). A book
-//! unit is done only when every required row and part is verified; a partial prefix is useful
-//! committed work that leaves the book incomplete (R0343).
+//! keys, every structural conflict, and why publication stopped — naming each refused row — plus
+//! which ready drafts remain staged. `report` is the same read without any write: the read-only
+//! audit an incomplete stage still runs (R0351). A book unit is done only when every required row
+//! and part is verified; committed work that leaves some row refused keeps the book incomplete
+//! (R0343).
 
 use super::*;
 use crate::calls;
@@ -63,7 +73,8 @@ const FORBIDDEN_NAME_CHARS: [char; 5] = ['[', ']', '@', '|', '`'];
 
 // --- the two steps -------------------------------------------------------------------------------
 
-/// `-Step apply`: revalidate the frozen plan, publish the ready row prefix, verify it and report.
+/// `-Step apply`: revalidate the frozen plan, publish every ready row, verify the publication by
+/// reading it back and report.
 pub fn apply(p: &Params) -> Result<i32> {
     let compiled = Compiled::load(p)?;
     let manifest = book_manifest(p)?;
@@ -87,20 +98,21 @@ pub fn apply(p: &Params) -> Result<i32> {
     }
     let mut run = prepare(&compiled, &fresh, &mut zt)?;
     let packing = pack(&compiled, &run);
-    let mut ran = execute(&packing.batches, |items| send_batch(&mut zt, items))?;
+    let mut ran = execute(&compiled, &packing, &run, |items| {
+        send_batch(&mut zt, items)
+    })?;
+    // The archive's own publication decides what is committed and where it stands: a placement
+    // moved the rows after it, and a receipt names the address its own call returned.
+    let verdict = read_back(&compiled, &run, &mut zt, &ran)?;
     if ran.stop.is_none() {
-        ran.stop = packing.stop;
+        ran.stop = verdict.stop.clone();
     }
-    let verified = verify_written(&mut zt, &compiled, &run, &ran)?;
-    if ran.stop.is_none() {
-        ran.stop = verified.stop.clone();
-    }
-    run.settle(&ran, &verified.diverged_rows);
+    run.settle(&ran, &verdict);
     // The publication record is derived progress for the next run and the next plan revision
     // (R0341, R0349); it is never the authority for what the archive holds.
     save_published(&compiled, &run)?;
     let stop = final_stop(&run, &ran);
-    let report = build_report(p, &compiled, &fresh, &run, &ran, &verified, stop.as_ref());
+    let report = build_report(p, &compiled, &fresh, &run, &ran, &verdict, stop.as_ref());
     let exit = stop.as_ref().map_or(0, |stop| stop.exit);
     finish(p, &compiled, &report, stop.as_ref(), exit)
 }
@@ -120,12 +132,18 @@ pub fn report(p: &Params) -> Result<i32> {
     if let Some(code) = stale_stop(p, &compiled, &fresh)? {
         return Ok(code);
     }
-    let mut run = prepare(&compiled, &fresh, &mut zt)?;
+    let run = prepare(&compiled, &fresh, &mut zt)?;
     let ran = Ran::default();
-    let verified = Verified::default();
-    run.settle(&ran, &[]);
+    let verdict = Verdict {
+        rows: run.rows.clone(),
+        conflicts: run.conflicts.clone(),
+        revision: run.revision_before,
+        retyped: None,
+        diverged: Vec::new(),
+        stop: None,
+    };
     let stop = final_stop(&run, &ran);
-    let report = build_report(p, &compiled, &fresh, &run, &ran, &verified, stop.as_ref());
+    let report = build_report(p, &compiled, &fresh, &run, &ran, &verdict, stop.as_ref());
     // The audit itself completes whenever it could read and write its report: an incomplete book is
     // what `complete` and the stop name, never a failed audit (R0351).
     finish(p, &compiled, &report, stop.as_ref(), 0)
@@ -179,7 +197,7 @@ fn frozen_params(p: &Params, compiled: &Compiled) -> Params {
 }
 
 /// The stop publication ended with: the batch or packing stop when one happened, else the
-/// structure's own first unresolved row (a conflict, an unready draft, a divergence).
+/// structure's own conflicts and unready rows.
 fn final_stop(run: &Run, ran: &Ran) -> Option<Stop> {
     if let Some(stop) = &ran.stop {
         return Some(stop.clone());
@@ -279,13 +297,13 @@ struct Paper {
 enum Status {
     /// The row's head and parts carry exactly the plan's rendering in the archive.
     Committed,
-    /// Ready, and no Card exists at its slot yet: its draft stays staged for the next run.
+    /// Ready, and the archive holds no head for it yet: its draft stays staged for the next run.
     ReadyUnpublished,
     /// A batch that carried the row got no answer, so its commit cannot be claimed.
     Pending,
     /// The row's content is not ready (or the archive refused its write): it cannot be published.
     Refused,
-    /// The slot holds a Card this plan did not publish, or its authored content changed.
+    /// A Card this plan did not publish holds the row's name, or an accepted head changed.
     Conflicted,
 }
 
@@ -301,17 +319,18 @@ impl Status {
     }
 }
 
-/// What the archive holds at one row's structural slot.
+/// What the archive holds for one row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Slot {
-    /// No Card at this slot yet: publication has produced nothing beyond it.
+    /// No Card carries the row's name as a Side child of the list yet.
     Absent,
     /// The head and its continuation parts, in address order.
     Committed { head: String, parts: Vec<String> },
 }
 
-/// One frozen row, its rendered chain and what the archive holds for it.
-struct RowState {
+/// One frozen row, before the archive's publication is read.
+#[derive(Clone)]
+struct RowPlan {
     number: u64,
     term: String,
     job: String,
@@ -319,6 +338,20 @@ struct RowState {
     /// The S19 readiness entry, carried verbatim into the report (R0347).
     readiness: Value,
     /// The rendered chain when the row is ready; `None` when its content is not ready.
+    chain: Option<Vec<Paper>>,
+    /// Why the row's content is not ready (`not_ready`, or the bounded reason publication refuses
+    /// it for): the reason a row keeps while the archive holds no head for it.
+    blocked: Option<Value>,
+}
+
+/// One frozen row, its rendered chain and what the archive holds for it.
+#[derive(Clone)]
+struct RowState {
+    number: u64,
+    term: String,
+    job: String,
+    planned_category: String,
+    readiness: Value,
     chain: Option<Vec<Paper>>,
     slot: Slot,
     status: Status,
@@ -349,7 +382,8 @@ impl RowState {
 }
 
 /// The list's existing publication, read once: its immediate Side children in address order, each
-/// child's Direct chain of continuation parts, and the authored facts of every one of them.
+/// child's Direct chain of continuation parts, the authored facts of every one of them, and every
+/// Term Card of the tree that the publication does not hold (a head filed elsewhere).
 #[derive(Default)]
 struct Scan {
     /// The list's own text read, for the retype's base fingerprint.
@@ -357,119 +391,161 @@ struct Scan {
     side: Vec<String>,
     chain: BTreeMap<String, Vec<String>>,
     cards: BTreeMap<String, Value>,
+    /// Term Cards of the tree that are neither an immediate Side child of the list nor in one of
+    /// their chains, with their authored facts: a head filed outside the list is a conflict.
+    stray: Vec<Value>,
 }
 
-/// Everything the two steps decide before a write: the rows, the archive's current publication,
-/// the legacy list's retype item, and the archive revision the read saw.
+/// Everything the two steps decide before a write: the frozen plans, the rows, the structural
+/// conflicts, the archive's current publication, the legacy list's retype item, and the archive
+/// revision the read saw.
 struct Run {
+    plans: Vec<RowPlan>,
     rows: Vec<RowState>,
+    /// Problems with no owning row: a Side child the plan did not publish, a second head for one
+    /// row. Any of them stops publication before a write.
+    conflicts: Vec<Value>,
     scan: Scan,
+    /// The publication record this run started from, for a conflict's own vocabulary.
+    published: Value,
     retype: Option<Value>,
     revision_before: u64,
 }
 
 impl Run {
-    /// The structure's own stop: a conflict, or the first row that is not committed. An unready
-    /// draft is a degraded run (exit 0); every other stop needs the operator (exit 1).
+    /// The structure's own stop: a conflict first, then the rows that are not committed. A row
+    /// whose content is not ready is a degraded run (exit 0); a conflict, a refusal or a row that
+    /// is ready but still unpublished needs the operator (exit 1). The line names every row that
+    /// held publication back instead of the first one.
     fn structural_stop(&self) -> Option<Stop> {
         if let Some(row) = self.rows.iter().find(|row| row.status == Status::Conflicted) {
             let reason = row.reason.clone().unwrap_or(Value::Null);
             return Some(Stop {
                 code: "conflicted",
                 message: pstr(&reason, "message"),
-                detail: json!({"row": row.number, "term": row.term, "reason": reason}),
+                detail: json!({"row": row.number, "term": row.term, "reason": reason, "conflicts": self.conflicts}),
                 exit: STOP_EXIT,
             });
         }
-        let row = self.rows.iter().find(|row| row.status != Status::Committed)?;
-        let reason = row.reason.clone().unwrap_or(Value::Null);
-        // A prefix that simply has not published every row yet is degraded, not failed: the report
-        // and the workflow read `complete`, and the stage continues to its audit (R0351).
-        let (code, exit) = match pstr(&reason, "code").as_str() {
-            "not_ready" => ("not_ready", 0),
-            "ready_unpublished" => ("ready_unpublished", 0),
-            _ => ("refused", STOP_EXIT),
+        if let Some(conflict) = self.conflicts.first() {
+            return Some(Stop {
+                code: "conflicted",
+                message: pstr(conflict, "message"),
+                detail: json!({"conflicts": self.conflicts}),
+                exit: STOP_EXIT,
+            });
+        }
+        let open: Vec<&RowState> = self
+            .rows
+            .iter()
+            .filter(|row| row.status != Status::Committed)
+            .collect();
+        if open.is_empty() {
+            return None;
+        }
+        let reason_of = |row: &RowState| row.reason.clone().unwrap_or(Value::Null);
+        let failed = open
+            .iter()
+            .any(|row| !matches!(pstr(&reason_of(row), "code").as_str(), "not_ready" | "ready_unpublished"));
+        let ready = open
+            .iter()
+            .any(|row| pstr(&reason_of(row), "code") == "ready_unpublished");
+        let (code, exit) = if failed {
+            ("refused", STOP_EXIT)
+        } else if ready {
+            ("ready_unpublished", 0)
+        } else {
+            ("not_ready", 0)
+        };
+        let rows: Vec<Value> = open
+            .iter()
+            .map(|row| {
+                json!({
+                    "row": row.number,
+                    "term": row.term,
+                    "status": row.status.id(),
+                    "reason": reason_of(row),
+                })
+            })
+            .collect();
+        let named: Vec<String> = open
+            .iter()
+            .map(|row| format!("{} `{}`", row.number, row.term))
+            .collect();
+        let message = match code {
+            "refused" => format!(
+                "{} row(s) are refused ({}); every ready row is published and the book unit stays incomplete",
+                open.len(),
+                named.join(", ")
+            ),
+            "ready_unpublished" => format!(
+                "{} ready row(s) are not published yet ({}); the book unit stays incomplete",
+                open.len(),
+                named.join(", ")
+            ),
+            _ => format!(
+                "{} row(s) are not ready ({}); every ready row is published and the book unit stays incomplete",
+                open.len(),
+                named.join(", ")
+            ),
         };
         Some(Stop {
             code,
-            message: pstr(&reason, "message"),
-            detail: json!({
-                "row": row.number,
-                "term": row.term,
-                "status": row.status.id(),
-                "reason": reason,
-            }),
+            message,
+            detail: json!({"rows": rows, "conflicts": self.conflicts}),
             exit,
         })
     }
 
-    /// Fold the batch results into the rows: a settled batch's receipts prove the row's Cards
-    /// exist; an unknown batch leaves it pending; a refused one names the archive's answer.
-    fn settle(&mut self, ran: &Ran, diverged: &[u64]) {
+    /// Fold the readback into the rows: the archive's own content and address decide the state,
+    /// and the call that carried a row still contributes its receipts and the answer it gave.
+    fn settle(&mut self, ran: &Ran, verdict: &Verdict) {
+        for (row, observed) in self.rows.iter_mut().zip(verdict.rows.iter()) {
+            row.slot = observed.slot.clone();
+            row.status = observed.status;
+            row.reason = observed.reason.clone();
+            row.receipts = ran.receipts_of(row.number);
+        }
         for row in &mut self.rows {
             let Some(batch) = ran.rows_of(row.number) else {
                 continue;
             };
             match batch.state {
                 "committed" | "replayed" => {
-                    let mut receipts = Vec::new();
-                    let mut head = None;
-                    let mut parts = Vec::new();
-                    for (item, result) in batch.batch.items.iter().zip(&batch.results) {
-                        let Some((number, role, _)) = ref_role(&pstr(item, "client_ref")) else {
-                            continue;
-                        };
-                        if number != row.number {
-                            continue;
-                        }
-                        let address = pstr(&result["result"], "address");
-                        receipts.push(json!({
-                            "op_key": item["op_key"],
-                            "address": address,
-                            "role": if role == "card" { "card" } else { "part" },
-                            "replayed": result["replayed"],
-                        }));
-                        if role == "card" {
-                            head = Some(address);
-                        } else {
-                            parts.push(address);
-                        }
-                    }
-                    if let Some(head) = head {
-                        row.slot = Slot::Committed { head, parts };
-                    }
-                    row.receipts = receipts;
-                    if diverged.contains(&row.number) {
+                    if verdict.diverged.contains(&row.number) {
                         row.status = Status::Conflicted;
                         row.reason = Some(json!({
                             "code": "output_diverged",
                             "message": "the committed Card no longer carries the plan's rendering",
                         }));
-                    } else {
-                        row.status = Status::Committed;
-                        row.reason = Some(json!({"code": "committed"}));
                     }
                 }
+                // The read proved the row's Cards exist; otherwise the lost answer stands.
                 "unknown" => {
-                    row.status = Status::Pending;
-                    row.reason = Some(json!({"code": "interrupted", "message": batch.message}));
+                    if row.status != Status::Committed {
+                        row.status = Status::Pending;
+                        row.reason = Some(json!({"code": "interrupted", "message": batch.message}));
+                    }
                 }
                 "refused" => {
-                    row.status = Status::Refused;
-                    let code = batch
-                        .refusal
-                        .as_ref()
-                        .map(|refusal| pstr(refusal, "error"))
-                        .unwrap_or_default();
-                    row.reason = Some(json!({
-                        "code": code,
-                        "message": batch.message,
-                        "refusal": batch.refusal,
-                    }));
+                    if row.status != Status::Committed {
+                        row.status = Status::Refused;
+                        let code = batch
+                            .refusal
+                            .as_ref()
+                            .map(|refusal| pstr(refusal, "error"))
+                            .unwrap_or_default();
+                        row.reason = Some(json!({
+                            "code": code,
+                            "message": batch.message,
+                            "refusal": batch.refusal,
+                        }));
+                    }
                 }
                 _ => {}
             }
         }
+        self.conflicts = verdict.conflicts.clone();
     }
 }
 
@@ -478,17 +554,21 @@ fn prepare(compiled: &Compiled, fresh: &Fresh, zt: &mut Zt) -> Result<Run> {
     let state = local_state(compiled)?;
     let checks = current_checks(compiled)?;
     let readiness = readiness_of(compiled, &checks, &state, &[]);
-    let rows = row_plans(compiled, &readiness, &checks)?;
+    let plans = row_plans(compiled, &readiness, &checks)?;
     let list_address = fresh.list.address.clone();
     let scan = scan_list(zt, &fresh.tree, &list_address)?;
     let revision_before = fresh.tree["archive_revision"]
         .as_u64()
         .context("the tree read carries no archive revision")?;
-    let rows = judge(rows, &scan, &state["published"]);
+    let published = state["published"].clone();
+    let (rows, conflicts) = judge(&plans, &scan, &published);
     let retype = retype_item(compiled, &fresh.list, &scan)?;
     Ok(Run {
+        plans,
         rows,
+        conflicts,
         scan,
+        published,
         retype,
         revision_before,
     })
@@ -502,7 +582,7 @@ fn row_plans(
     compiled: &Compiled,
     readiness: &Value,
     checks: &BTreeMap<String, Value>,
-) -> Result<Vec<RowState>> {
+) -> Result<Vec<RowPlan>> {
     let limits = compiled.checker_limits()?;
     let rows = compiled.row_terms();
     let book = compiled.book();
@@ -512,41 +592,29 @@ fn row_plans(
         let term = pstr(entry, "term");
         let job = pstr(entry, "job");
         let status = pstr(entry, "status");
-        let mut row = RowState {
+        let mut plan = RowPlan {
             number,
             term: term.clone(),
             job: job.clone(),
             planned_category: pstr(entry, "planned_category"),
             readiness: entry.clone(),
             chain: None,
-            slot: Slot::Absent,
-            status: Status::Refused,
-            reason: None,
-            receipts: Vec::new(),
+            blocked: None,
         };
         if status != "ready" {
-            row.reason = Some(json!({
+            plan.blocked = Some(json!({
                 "code": "not_ready",
                 "status": status,
-                "message": format!(
-                    "row {number} `{term}` is `{status}`; its later ready drafts stay staged"
-                ),
+                "message": format!("row {number} `{term}` is `{status}`"),
             }));
-            plans.push(row);
+            plans.push(plan);
             continue;
         }
         match chain_of(compiled, &limits, &rows, checks, &job, number, &term, &book) {
-            Ok(chain) => {
-                row.chain = Some(chain);
-                row.status = Status::ReadyUnpublished;
-                row.reason = Some(json!({
-                    "code": "ready_unpublished",
-                    "message": format!("row {number} `{term}` is ready and not published yet"),
-                }));
-            }
-            Err(reason) => row.reason = Some(reason),
+            Ok(chain) => plan.chain = Some(chain),
+            Err(reason) => plan.blocked = Some(reason),
         }
-        plans.push(row);
+        plans.push(plan);
     }
     Ok(plans)
 }
@@ -683,12 +751,16 @@ fn chain_of(
 }
 
 /// Read the list's immediate Side children and their Direct chains through `get_tree`, then read
-/// the authored facts of exactly those Cards in bounded `get_cards` reads.
+/// the authored facts of exactly those Cards in bounded `get_cards` reads, together with every Term
+/// Card of the tree that the publication does not hold (a head filed outside the list, S33 / #182).
 fn scan_list(zt: &mut Zt, tree: &Value, list: &str) -> Result<Scan> {
     let cards = tree["cards"].as_array().cloned().unwrap_or_default();
     let mut by_parent: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for card in cards {
-        by_parent.entry(pstr(&card, "parent")).or_default().push(card);
+    for card in &cards {
+        by_parent
+            .entry(pstr(card, "parent"))
+            .or_default()
+            .push(card.clone());
     }
     let mut side: Vec<String> = by_parent
         .get(list)
@@ -725,117 +797,191 @@ fn scan_list(zt: &mut Zt, tree: &Value, list: &str) -> Result<Scan> {
         chain.insert(head.clone(), parts);
     }
     addresses.extend(side.iter().cloned());
+    // A Term Card of the tree that neither stands beside the list nor continues one of its rows is
+    // read too: publication reports it instead of writing a second head for its term.
+    let published: BTreeSet<&String> = addresses.iter().collect();
+    let stray: Vec<String> = cards
+        .iter()
+        .filter(|card| pstr(card, "type") == "term")
+        .map(|card| pstr(card, "address"))
+        .filter(|address| !address.is_empty() && !published.contains(address))
+        .collect();
+    addresses.extend(stray.iter().cloned());
     let read = zt.cards(&addresses, "text")?;
+    let revision = tree["archive_revision"]
+        .as_u64()
+        .context("the tree read carries no archive revision")?;
+    if read.archive_revision != revision {
+        bail!("the archive changed while reading the publication; run the step again");
+    }
     let mut facts = BTreeMap::new();
     for card in &read.cards {
         facts.insert(pstr(card, "address"), card.clone());
     }
     let list_card = facts.get(list).cloned().unwrap_or(Value::Null);
+    let strays = stray
+        .iter()
+        .filter_map(|address| facts.get(address).cloned())
+        .collect();
     Ok(Scan {
         list: list_card,
         side,
         chain,
         cards: facts,
+        stray: strays,
     })
 }
 
 // --- the structural judgement -------------------------------------------------------------------
 
-/// Align every row to the list's Side children in row order and decide what is already committed
-/// (R0339, R0340, R0341, R0348). A slot that does not hold the expected head stops the alignment:
-/// publication never inserts before an existing accepted head, so every later row keeps its draft.
-fn judge(rows: Vec<RowState>, scan: &Scan, published: &Value) -> Vec<RowState> {
-    let mut out: Vec<RowState> = Vec::new();
-    let mut slot = 0usize;
-    let mut broken = false;
-    for mut row in rows {
-        if broken {
-            row.reason = Some(json!({
-                "code": "unaligned",
-                "message": format!(
-                    "row {} `{}` follows a publication conflict; its draft stays staged",
-                    row.number, row.term
-                ),
-            }));
-            out.push(row);
-            continue;
+/// Judge every row against the archive by **identity**, never by position (R0339, R0340, R0341,
+/// R0348; S33 / #182): a Side child of the list is the committed row whose Term Card carries
+/// exactly the plan's rendered head and whose Direct chain carries exactly the rendered parts.
+/// A Side child that matches no planned row, a second head for one row, or a row's head filed
+/// outside the list is a conflict, and the run writes nothing.
+fn judge(plans: &[RowPlan], scan: &Scan, published: &Value) -> (Vec<RowState>, Vec<Value>) {
+    let mut heads: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for address in &scan.side {
+        let card = scan.cards.get(address).cloned().unwrap_or(Value::Null);
+        let term = pstr(&card, "term");
+        if pstr(&card, "type") == "term" && !term.is_empty() {
+            heads.entry(term).or_default().push(address.clone());
         }
-        let Some(head) = scan.side.get(slot).cloned() else {
-            // No Card at this slot: the publication prefix ends here. Later rows cannot have a slot
-            // either, because nothing is ever published after a gap.
-            out.push(row);
-            continue;
-        };
-        let observed = scan.cards.get(&head).cloned().unwrap_or(Value::Null);
-        let same_name = pstr(&observed, "type") == "term" && pstr(&observed, "term") == row.term;
-        if !same_name {
-            row.status = Status::Conflicted;
-            row.reason = Some(json!({
-                "code": "unrelated_side",
-                "kind": "unrelated_side",
-                "address": head,
-                "observed": {
-                    "type": pstr(&observed, "type"),
-                    "term": observed["term"].clone(),
-                    "title": pstr(&observed, "title"),
-                },
-                "message": format!(
-                    "the list's Side child `{head}` is not row {} `{}`; publication does not insert, move or delete it",
-                    row.number, row.term
-                ),
-            }));
-            broken = true;
-            out.push(row);
-            continue;
-        }
-        let parts = scan.chain.get(&head).cloned().unwrap_or_default();
-        let Some(chain) = row.chain.as_ref() else {
-            // The row's draft is not ready, but its earlier accepted head stays exactly as it is.
-            row.slot = Slot::Committed {
-                head: head.clone(),
-                parts: parts.clone(),
-            };
-            row.reason = Some(json!({
-                "code": "not_ready",
-                "status": pstr(&row.readiness, "status"),
-                "address": head,
-                "parts": parts,
-                "message": format!(
-                    "row {} `{}` is not ready; its earlier accepted Card `{head}` stays in place and is never edited from a new draft",
-                    row.number, row.term
-                ),
-            }));
-            slot += 1;
-            out.push(row);
-            continue;
-        };
-        let expected = expected_chain(chain, &row.term, &head);
-        let found = chain_contents(scan, &head, &parts);
-        if found != expected {
-            let (kind, message) = conflict_kind(&row, &head, &parts, chain, published);
-            row.status = Status::Conflicted;
-            row.reason = Some(json!({
-                "code": kind,
-                "kind": kind,
-                "address": head,
-                "expected": expected.iter().map(|(role, sha)| json!({"role": role, "sha256": sha})).collect::<Vec<_>>(),
-                "observed": found.iter().map(|(role, sha)| json!({"role": role, "sha256": sha})).collect::<Vec<_>>(),
-                "message": message,
-            }));
-            broken = true;
-            out.push(row);
-            continue;
-        }
-        row.slot = Slot::Committed {
-            head: head.clone(),
-            parts,
-        };
-        row.status = Status::Committed;
-        row.reason = Some(json!({"code": "committed"}));
-        slot += 1;
-        out.push(row);
     }
-    out
+    let mut rows: Vec<RowState> = Vec::new();
+    let mut conflicts: Vec<Value> = Vec::new();
+    let mut claimed: BTreeSet<String> = BTreeSet::new();
+    for plan in plans {
+        let mut row = RowState {
+            number: plan.number,
+            term: plan.term.clone(),
+            job: plan.job.clone(),
+            planned_category: plan.planned_category.clone(),
+            readiness: plan.readiness.clone(),
+            chain: plan.chain.clone(),
+            slot: Slot::Absent,
+            status: Status::Refused,
+            reason: plan.blocked.clone(),
+            receipts: Vec::new(),
+        };
+        let found = heads.get(&plan.term).cloned().unwrap_or_default();
+        if found.len() > 1 {
+            // Two heads for one row: publication files one head per row and never picks between
+            // them, and it never deletes the second (R0339, R0342).
+            claimed.extend(found.iter().cloned());
+            row.status = Status::Conflicted;
+            row.reason = Some(json!({
+                "code": "duplicate_head",
+                "kind": "duplicate_head",
+                "term": plan.term,
+                "heads": found,
+                "message": format!(
+                    "{} Term Cards carry row {} `{}`; publication files one head per row and never chooses between them",
+                    found.len(), plan.number, plan.term
+                ),
+            }));
+            rows.push(row);
+            continue;
+        }
+        if let Some(head) = found.first() {
+            claimed.insert(head.clone());
+            let parts = scan.chain.get(head).cloned().unwrap_or_default();
+            match plan.chain.as_ref() {
+                // The row's draft is not ready, but its earlier accepted head stays exactly as it
+                // is and is never edited from a new draft.
+                None => {
+                    row.slot = Slot::Committed {
+                        head: head.clone(),
+                        parts: parts.clone(),
+                    };
+                    row.reason = Some(json!({
+                        "code": "not_ready",
+                        "status": pstr(&plan.readiness, "status"),
+                        "address": head,
+                        "parts": parts,
+                        "message": format!(
+                            "row {} `{}` is not ready; its earlier accepted Card `{head}` stays in place and is never edited from a new draft",
+                            plan.number, plan.term
+                        ),
+                    }));
+                }
+                Some(chain) => {
+                    let expected = expected_chain(chain, &plan.term, head);
+                    let observed = chain_contents(scan, head, &parts);
+                    if observed == expected {
+                        row.slot = Slot::Committed {
+                            head: head.clone(),
+                            parts,
+                        };
+                        row.status = Status::Committed;
+                        row.reason = Some(json!({"code": "committed"}));
+                    } else {
+                        let (kind, message) = conflict_kind(&row, head, &parts, chain, published);
+                        row.status = Status::Conflicted;
+                        row.reason = Some(json!({
+                            "code": kind,
+                            "kind": kind,
+                            "address": head,
+                            "expected": expected.iter().map(|(role, sha)| json!({"role": role, "sha256": sha})).collect::<Vec<_>>(),
+                            "observed": observed.iter().map(|(role, sha)| json!({"role": role, "sha256": sha})).collect::<Vec<_>>(),
+                            "message": message,
+                        }));
+                    }
+                }
+            }
+            rows.push(row);
+            continue;
+        }
+        // No Side child of the list carries this row's term. A Term Card elsewhere in the tree does:
+        // the row's head was filed outside the list, and publication never writes a second head.
+        if let Some(stray) = scan
+            .stray
+            .iter()
+            .find(|card| pstr(card, "term") == plan.term)
+        {
+            let address = pstr(stray, "address");
+            row.status = Status::Conflicted;
+            row.reason = Some(json!({
+                "code": "misplaced_head",
+                "kind": "misplaced_head",
+                "address": address,
+                "message": format!(
+                    "the Term Card `{address}` carries row {} `{}` but is not an immediate Side child of the list; publication writes no second head (move it under the list first)",
+                    plan.number, plan.term
+                ),
+            }));
+            rows.push(row);
+            continue;
+        }
+        if plan.chain.is_some() {
+            row.status = Status::ReadyUnpublished;
+            row.reason = Some(json!({
+                "code": "ready_unpublished",
+                "message": format!("row {} `{}` is ready and not published yet", plan.number, plan.term),
+            }));
+        }
+        rows.push(row);
+    }
+    for head in &scan.side {
+        if claimed.contains(head) {
+            continue;
+        }
+        let observed = scan.cards.get(head).cloned().unwrap_or(Value::Null);
+        conflicts.push(json!({
+            "code": "unrelated_side",
+            "kind": "unrelated_side",
+            "address": head,
+            "observed": {
+                "type": pstr(&observed, "type"),
+                "term": observed["term"].clone(),
+                "title": pstr(&observed, "title"),
+            },
+            "message": format!(
+                "the list's Side child `{head}` is not a row of the frozen plan; publication does not insert, move or delete it"
+            ),
+        }));
+    }
+    (rows, conflicts)
 }
 
 /// What kind of conflict a mismatching slot is, and the sentence that names it. A Card this work
@@ -994,10 +1140,39 @@ struct Batch {
     items: Vec<Value>,
     rows: Vec<u64>,
     bytes: usize,
+    /// `before` for a placement in the place of a published row, `append` for a chain after the last
+    /// published row, `list` for the legacy list's retype.
+    placement: &'static str,
 }
 
-/// The packed publication, and the row that stopped further packing.
+/// One ready row whose table position is before rows that are already published: it is filed in the
+/// place of the next published row, and that call's answer names the address the row took.
+struct Hole {
+    /// The row's index in the frozen table, for the placement order.
+    index: usize,
+    row: u64,
+    term: String,
+    chain: Vec<Paper>,
+    /// Which address the head is filed before: a published head read at the start of the run, or the
+    /// head the previous placement of this run created.
+    before: Before,
+}
+
+/// The address a hole's head is filed before.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Before {
+    /// The head of the next published row, as the run's first read found it.
+    Published(String),
+    /// The head the placement sent immediately before this one created.
+    Placed,
+}
+
+/// The packed publication: the repaired rows' placements, one call each, and the chains appended
+/// after the last published row, packed into bounded calls.
 struct Packing {
+    /// The placements in sending order: the highest table position first, so the next placement
+    /// names the head the previous one filed.
+    holes: Vec<Hole>,
     batches: Vec<Batch>,
     stop: Option<Stop>,
 }
@@ -1021,56 +1196,94 @@ impl Blocked {
     }
 }
 
-/// Pack the ready chains after the committed prefix into identified batches: several complete
-/// chains in one call, at most 64 items and 1 MiB each, a whole chain never split. The first batch
-/// may also carry the list's retype (R0337, R0338).
+/// Pack every ready row that is not published yet. A row whose table position is before published
+/// rows becomes one placement of its own, highest table position first; the rows after the last
+/// published row are packed into identified calls, several complete chains in one call, at most 64
+/// items and 1 MiB each, a whole chain never split (R0337, R0338; S33 / #182). A conflict stops
+/// everything before the first call.
 fn pack(compiled: &Compiled, run: &Run) -> Packing {
-    let mut batches: Vec<Batch> = Vec::new();
+    let mut packing = Packing {
+        holes: Vec::new(),
+        batches: Vec::new(),
+        stop: None,
+    };
+    if run
+        .rows
+        .iter()
+        .any(|row| row.status == Status::Conflicted)
+        || !run.conflicts.is_empty()
+    {
+        return packing;
+    }
+    let published: Vec<bool> = run.rows.iter().map(|row| row.is_committed()).collect();
+    let last_published = published.iter().rposition(|committed| *committed);
+    // The nearest published row after each table position, so a repaired row knows the head it
+    // must stand before.
+    let next_published: Vec<Option<usize>> = (0..run.rows.len())
+        .map(|index| {
+            (index + 1..run.rows.len())
+                .find(|later| published[*later])
+        })
+        .collect();
+    let mut ready: Vec<usize> = Vec::new();
+    for (index, row) in run.rows.iter().enumerate() {
+        if row.is_committed() || row.status != Status::ReadyUnpublished {
+            continue;
+        }
+        let Some(chain) = row.chain.as_ref() else {
+            continue;
+        };
+        let before = match next_published[index] {
+            Some(next) => match run.rows[next].head() {
+                Some(head) => Before::Published(head.clone()),
+                None => continue,
+            },
+            // After every published row: the chain is appended in table order below.
+            None => {
+                ready.push(index);
+                continue;
+            }
+        };
+        packing.holes.push(Hole {
+            index,
+            row: row.number,
+            term: row.term.clone(),
+            chain: chain.clone(),
+            before,
+        });
+    }
+    // A placement names a head, so the highest table position is filed first; each later placement
+    // before the head the previous one filed, unless its own next published row stands in between.
+    let mut previous: Option<usize> = None;
+    for hole in packing.holes.iter_mut().rev() {
+        let next = next_published[hole.index].expect("a placement has a published row after it");
+        hole.before = match previous {
+            Some(sent) if sent < next => Before::Placed,
+            _ => Before::Published(
+                run.rows[next]
+                    .head()
+                    .cloned()
+                    .expect("a committed row has a head"),
+            ),
+        };
+        previous = Some(hole.index);
+    }
+    packing.holes.reverse();
+    // The rows after the last published row append in table order; `at` names the list itself.
     let mut items: Vec<Value> = Vec::new();
     let mut rows: Vec<u64> = Vec::new();
     let mut bytes = 0usize;
-    let mut reserved_items = run.retype.is_some() as usize;
-    let mut reserved_bytes = run
-        .retype
-        .as_ref()
-        .map(|item| authored_bytes(&item["arguments"]))
-        .unwrap_or(0);
-    // Only the rows at and after the first empty slot are published, and only while they are ready:
-    // the first row whose draft is not ready stops the prefix, and every later draft stays staged
-    // (R0340). A conflict stops everything before the first batch.
-    if run.rows.iter().any(|row| row.status == Status::Conflicted) {
-        return Packing {
-            batches,
-            stop: None,
-        };
-    }
-    let Some(start) = run.rows.iter().position(|row| !row.is_committed()) else {
-        return Packing {
-            batches,
-            stop: None,
-        };
-    };
-    for row in &run.rows[start..] {
-        if row.is_committed() || row.status != Status::ReadyUnpublished {
-            break;
-        }
+    let after = last_published.map_or(0, |index| index + 1);
+    for index in ready.into_iter().filter(|index| *index >= after) {
+        let row = &run.rows[index];
         let Some(chain) = row.chain.as_ref() else {
-            break;
+            continue;
         };
-        let chain_items = match chain_items(compiled, row, chain) {
+        let chain_items = match chain_items(compiled, row.number, &row.term, chain, None) {
             Ok(chain_items) => chain_items,
             Err(blocked) => {
-                if !items.is_empty() {
-                    batches.push(Batch {
-                        items: std::mem::take(&mut items),
-                        rows: std::mem::take(&mut rows),
-                        bytes,
-                    });
-                }
-                return Packing {
-                    batches,
-                    stop: Some(blocked.stop()),
-                };
+                packing.stop = Some(blocked.stop());
+                break;
             }
         };
         let chain_bytes: usize = chain_items
@@ -1078,79 +1291,72 @@ fn pack(compiled: &Compiled, run: &Run) -> Packing {
             .map(|item| authored_bytes(&item["arguments"]))
             .sum();
         if chain_items.len() > CHUNK_ITEMS || chain_bytes > CHUNK_BYTES {
-            if !items.is_empty() {
-                batches.push(Batch {
-                    items: std::mem::take(&mut items),
-                    rows: std::mem::take(&mut rows),
-                    bytes,
-                });
-            }
-            return Packing {
-                batches,
-                stop: Some(
-                    Blocked {
-                        code: "chain_too_large",
-                        message: format!(
-                            "row {} `{}` renders {} Card(s) and {chain_bytes} authored bytes; one identified call carries at most {CHUNK_ITEMS} Cards and {CHUNK_BYTES} bytes, and a chain is never split: split the content and run the check again",
-                            row.number,
-                            row.term,
-                            chain_items.len()
-                        ),
-                        row: row.number,
-                    }
-                    .stop(),
-                ),
-            };
-        }
-        if !items.is_empty()
-            && (items.len() + chain_items.len() + reserved_items > CHUNK_ITEMS
-                || bytes + chain_bytes + reserved_bytes > CHUNK_BYTES)
-        {
-            batches.push(Batch {
+            packing.batches.push(Batch {
                 items: std::mem::take(&mut items),
                 rows: std::mem::take(&mut rows),
                 bytes,
+                placement: "append",
+            });
+            packing.stop = Some(too_large(row.number, &row.term, chain_items.len(), chain_bytes));
+            break;
+        }
+        if !items.is_empty() && items.len() + chain_items.len() > CHUNK_ITEMS
+            || !items.is_empty() && bytes + chain_bytes > CHUNK_BYTES
+        {
+            packing.batches.push(Batch {
+                items: std::mem::take(&mut items),
+                rows: std::mem::take(&mut rows),
+                bytes,
+                placement: "append",
             });
             bytes = 0;
-            reserved_items = 0;
-            reserved_bytes = 0;
         }
         items.extend(chain_items);
         bytes += chain_bytes;
         rows.push(row.number);
     }
     if !items.is_empty() {
-        batches.push(Batch {
+        packing.batches.push(Batch {
             items,
             rows,
             bytes,
+            placement: "append",
         });
     }
-    // The retype belongs to the first batch, before the heads it makes legal.
-    if let Some(retype) = run.retype.as_ref()
-        && let Some(first) = batches.first_mut()
-    {
-        first.items.insert(0, retype.clone());
-        first.bytes += authored_bytes(&retype["arguments"]);
+    packing
+        .batches
+        .retain(|batch| !batch.items.is_empty());
+    packing
+}
+
+/// One row's chain that does not fit a single identified call: a bounded split/content fix, never a
+/// new larger batch API (R0337).
+fn too_large(row: u64, term: &str, cards: usize, bytes: usize) -> Stop {
+    Blocked {
+        code: "chain_too_large",
+        message: format!(
+            "row {row} `{term}` renders {cards} Card(s) and {bytes} authored bytes; one identified call carries at most {CHUNK_ITEMS} Cards and {CHUNK_BYTES} bytes, and a chain is never split: split the content and run the check again"
+        ),
+        row,
     }
-    Packing {
-        batches,
-        stop: None,
-    }
+    .stop()
 }
 
 /// One row's items: its head as a Side child of the list, then each part as the next Direct
 /// successor of the previous Card, so a part references an earlier item instead of an address
-/// (R0338). The keys are stable per run, book, plan revision, step and row (R0341).
+/// (R0338). `before` files the head in the place of that published Side child. The keys are stable
+/// per run, book, plan revision, step and row (R0341).
 fn chain_items(
     compiled: &Compiled,
-    row: &RowState,
+    number: u64,
+    term: &str,
     chain: &[Paper],
+    before: Option<&str>,
 ) -> std::result::Result<Vec<Value>, Blocked> {
     let blocked = |message: String| Blocked {
         code: "unpublishable",
         message,
-        row: row.number,
+        row: number,
     };
     let list = compiled.plan["list"]["address"]
         .as_str()
@@ -1161,7 +1367,7 @@ fn chain_items(
     let revision = compiled.revision;
     let mut items = Vec::new();
     for (index, paper) in chain.iter().enumerate() {
-        let head_ref = format!("r{:03}", row.number);
+        let head_ref = format!("r{number:03}");
         let (client_ref, at, kind, key) = if index == 0 {
             (head_ref.clone(), list.to_string(), "side", head_ref.clone())
         } else {
@@ -1178,18 +1384,24 @@ fn chain_items(
             )
         };
         let body = paper.body.replace(HEAD_REFERENCE, &format!("@@{head_ref}"));
+        let mut arguments = json!({
+            "at": at,
+            "kind": kind,
+            "type": "term",
+            "term": term,
+            "title": paper.title,
+            "body": body,
+        });
+        if index == 0
+            && let Some(before) = before
+        {
+            arguments["before"] = json!(before);
+        }
         items.push(json!({
             "op_key": format!("{run}/{unit}/{revision}/apply/{key}"),
             "client_ref": client_ref,
             "tool": "create_successor",
-            "arguments": {
-                "at": at,
-                "kind": kind,
-                "type": "term",
-                "term": row.term,
-                "title": paper.title,
-                "body": body,
-            },
+            "arguments": arguments,
         }));
     }
     Ok(items)
@@ -1238,6 +1450,8 @@ struct BatchState {
     state: &'static str,
     replayed: usize,
     results: Vec<Value>,
+    /// The `moved` maps this call reported: every Card a placement shifted, old address to new.
+    moved: Vec<BTreeMap<String, String>>,
     refusal: Option<Value>,
     message: String,
 }
@@ -1259,12 +1473,6 @@ struct Ran {
 }
 
 impl Ran {
-    fn settled(&self) -> impl Iterator<Item = &BatchState> {
-        self.batches
-            .iter()
-            .filter(|batch| batch.state == "committed" || batch.state == "replayed")
-    }
-
     /// The batch that carried one row, when a batch carried it.
     fn rows_of(&self, row: u64) -> Option<&BatchState> {
         self.batches
@@ -1272,18 +1480,54 @@ impl Ran {
             .find(|batch| batch.batch.rows.contains(&row))
     }
 
-    /// The receipt of one row's head, from the batch that carried the row.
-    fn head_receipt(&self, row: u64) -> Option<String> {
-        let batch = self.rows_of(row)?;
-        for (item, result) in batch.batch.items.iter().zip(&batch.results) {
-            if let Some((number, "card", _)) = ref_role(&pstr(item, "client_ref"))
-                && number == row
-            {
-                return Some(pstr(&result["result"], "address"));
-            }
+    /// One row's receipts in chain order, each address as it stands after every *later* placement:
+    /// a call's own `moved` map shifts the rows after it, never the chain it just filed.
+    fn receipts_of(&self, row: u64) -> Vec<Value> {
+        let Some(index) = self
+            .batches
+            .iter()
+            .position(|batch| batch.batch.rows.contains(&row))
+        else {
+            return Vec::new();
+        };
+        let batch = &self.batches[index];
+        if !matches!(batch.state, "committed" | "replayed") {
+            return Vec::new();
         }
-        None
+        let later: Vec<&BTreeMap<String, String>> = self
+            .batches
+            .iter()
+            .skip(index + 1)
+            .flat_map(|batch| batch.moved.iter())
+            .collect();
+        let mut receipts = Vec::new();
+        for (item, result) in batch.batch.items.iter().zip(&batch.results) {
+            let Some((number, role, _)) = ref_role(&pstr(item, "client_ref")) else {
+                continue;
+            };
+            if number != row {
+                continue;
+            }
+            receipts.push(json!({
+                "op_key": item["op_key"],
+                "address": through(&later, &pstr(&result["result"], "address")),
+                "role": if role == "card" { "card" } else { "part" },
+                "replayed": result["replayed"],
+            }));
+        }
+        receipts
     }
+}
+
+/// An address after a run of sequential renames: each call's `moved` map applies in call order.
+fn through(moves: &[&BTreeMap<String, String>], address: &str) -> String {
+    let mut current = address.to_string();
+    for map in moves {
+        if let Some(next) = map.get(&current) {
+            current = next.clone();
+        }
+    }
+    current
 }
 
 fn pending_state(batch: &Batch) -> BatchState {
@@ -1292,69 +1536,171 @@ fn pending_state(batch: &Batch) -> BatchState {
         state: "pending",
         replayed: 0,
         results: Vec::new(),
+        moved: Vec::new(),
         refusal: None,
         message: String::new(),
     }
 }
 
-/// Send every batch in row order. A committed batch's receipts stay; a refused batch stops the run
-/// with the archive's typed answer; a lost answer stops it with the batch unknown, because its
-/// commit cannot be claimed. Later batches stay pending (R0341).
-fn execute<F>(batches: &[Batch], mut send: F) -> Result<Ran>
+/// Send the publication in its order: the legacy list's retype first, then each placement of a
+/// repaired row — the highest table position first, so the next one names the head the previous
+/// one filed — then the chains after the last published row. A committed call's receipts stay; a
+/// refused call stops the run with the archive's typed answer; a lost answer stops it with that
+/// call unknown, because its commit cannot be claimed (R0341).
+fn execute<F>(
+    compiled: &Compiled,
+    packing: &Packing,
+    run: &Run,
+    mut send: F,
+) -> Result<Ran>
 where
     F: FnMut(&[Value]) -> Result<Reply>,
 {
-    let mut states = Vec::new();
+    let mut ran = Ran::default();
     let mut stop: Option<Stop> = None;
-    for (index, batch) in batches.iter().enumerate() {
+    // A legacy list is retyped only when a head is filed under it: the retype exists to make the
+    // heads legal, so a run with nothing to publish writes no Card at all.
+    let publishing = !packing.holes.is_empty() || !packing.batches.is_empty();
+    if let Some(retype) = run.retype.as_ref().filter(|_| publishing) {
+        let batch = Batch {
+            items: vec![retype.clone()],
+            rows: Vec::new(),
+            bytes: authored_bytes(&retype["arguments"]),
+            placement: "list",
+        };
+        stop = send_call(&batch, &mut send, &mut ran)?;
+    }
+    let mut placed: Option<String> = None;
+    for hole in &packing.holes {
         if stop.is_some() {
-            states.push(pending_state(batch));
-            continue;
+            break;
         }
-        match send(&batch.items)? {
-            Reply::Done(results) => states.push(done_state(batch, results)?),
-            Reply::Refused(refusal) => {
-                let code = pstr(&refusal, "error");
-                let (stop_code, exit) = stop_of(&code);
-                let message = refusal["message"]
-                    .as_str()
-                    .filter(|message| !message.trim().is_empty())
-                    .or_else(|| refusal["error"].as_str())
-                    .unwrap_or("the archive refused the batch")
-                    .to_string();
-                let mut state = pending_state(batch);
-                state.state = "refused";
-                state.refusal = Some(refusal.clone());
-                state.message = message.clone();
-                states.push(state);
-                stop = Some(Stop {
-                    code: stop_code,
-                    message,
-                    detail: refusal,
-                    exit,
-                });
+        let before = match &hole.before {
+            Before::Published(head) => head.clone(),
+            Before::Placed => placed.clone().unwrap_or_default(),
+        };
+        if before.is_empty() {
+            stop = Some(Stop {
+                code: "conflicted",
+                message: format!(
+                    "row {} `{}` must stand before the head the previous placement filed, and this run has no such answer; run -Step apply again",
+                    hole.row, hole.term
+                ),
+                detail: json!({"row": hole.row, "term": hole.term}),
+                exit: STOP_EXIT,
+            });
+            break;
+        }
+        let items = match chain_items(compiled, hole.row, &hole.term, &hole.chain, Some(&before)) {
+            Ok(items) => items,
+            Err(blocked) => {
+                stop = Some(blocked.stop());
+                break;
             }
-            Reply::Lost(message) => {
-                let mut state = pending_state(batch);
-                state.state = "unknown";
-                state.message = message.clone();
-                states.push(state);
-                stop = Some(Stop {
-                    code: "interrupted",
-                    message: format!(
-                        "batch {} got no answer ({message}); it may or may not have committed: run -Step apply again to verify its Cards before publishing more",
-                        index + 1
-                    ),
-                    detail: json!({"batch": index, "rows": batch.rows, "reason": message}),
-                    exit: STOP_EXIT,
-                });
-            }
+        };
+        let bytes: usize = items
+            .iter()
+            .map(|item| authored_bytes(&item["arguments"]))
+            .sum();
+        if items.len() > CHUNK_ITEMS || bytes > CHUNK_BYTES {
+            stop = Some(too_large(hole.row, &hole.term, items.len(), bytes));
+            break;
+        }
+        let batch = Batch {
+            items,
+            rows: vec![hole.row],
+            bytes,
+            placement: "before",
+        };
+        stop = send_call(&batch, &mut send, &mut ran)?;
+        if stop.is_none() {
+            placed = ran.batches.iter().rev().find_map(|state| {
+                state
+                    .batch
+                    .items
+                    .iter()
+                    .zip(&state.results)
+                    .find_map(|(item, result)| {
+                        match ref_role(&pstr(item, "client_ref")) {
+                            Some((number, "card", _)) if number == hole.row => {
+                                Some(pstr(&result["result"], "address"))
+                            }
+                            _ => None,
+                        }
+                    })
+            });
         }
     }
-    Ok(Ran {
-        batches: states,
-        stop,
-    })
+    for batch in &packing.batches {
+        if stop.is_some() {
+            break;
+        }
+        stop = send_call(batch, &mut send, &mut ran)?;
+    }
+    ran.stop = stop.or_else(|| packing.stop.clone());
+    Ok(ran)
+}
+
+/// Send one identified call and keep what it answered.
+fn send_call<F>(batch: &Batch, send: &mut F, ran: &mut Ran) -> Result<Option<Stop>>
+where
+    F: FnMut(&[Value]) -> Result<Reply>,
+{
+    match send(&batch.items)? {
+        Reply::Done(results) => {
+            let mut state = done_state(batch, results)?;
+            for result in &state.results {
+                if let Some(moved) = result["result"]["moved"].as_object() {
+                    state.moved.push(
+                        moved
+                            .iter()
+                            .map(|(from, to)| {
+                                (from.clone(), to.as_str().unwrap_or_default().to_string())
+                            })
+                            .collect(),
+                    );
+                }
+            }
+            ran.batches.push(state);
+            Ok(None)
+        }
+        Reply::Refused(refusal) => {
+            let code = pstr(&refusal, "error");
+            let (stop_code, exit) = stop_of(&code);
+            let message = refusal["message"]
+                .as_str()
+                .filter(|message| !message.trim().is_empty())
+                .or_else(|| refusal["error"].as_str())
+                .unwrap_or("the archive refused the batch")
+                .to_string();
+            let mut state = pending_state(batch);
+            state.state = "refused";
+            state.refusal = Some(refusal.clone());
+            state.message = message.clone();
+            ran.batches.push(state);
+            Ok(Some(Stop {
+                code: stop_code,
+                message,
+                detail: refusal,
+                exit,
+            }))
+        }
+        Reply::Lost(message) => {
+            let mut state = pending_state(batch);
+            state.state = "unknown";
+            state.message = message.clone();
+            ran.batches.push(state);
+            Ok(Some(Stop {
+                code: "interrupted",
+                message: format!(
+                    "the call for row(s) {} got no answer ({message}); it may or may not have committed: run -Step apply again to verify its Cards before publishing more",
+                    batch.rows.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+                ),
+                detail: json!({"rows": batch.rows, "reason": message}),
+                exit: STOP_EXIT,
+            }))
+        }
+    }
 }
 
 /// One answered batch: verify every result's identity and order before its commit is believed.
@@ -1392,6 +1738,7 @@ fn done_state(batch: &Batch, results: Vec<Value>) -> Result<BatchState> {
         state,
         replayed,
         results,
+        moved: Vec::new(),
         refusal: None,
         message: String::new(),
     })
@@ -1432,142 +1779,99 @@ fn send_batch(zt: &mut Zt, items: &[Value]) -> Result<Reply> {
 
 // --- readback -----------------------------------------------------------------------------------
 
-/// What the readback observed: the archive revision after the writes, the retype's effect, the
-/// rows whose committed content diverged from the plan, and the stop that divergence is.
+/// What the readback observed: the rows judged from the archive's own content, its structural
+/// conflicts, the archive revision after the writes, the retype's effect, the written rows whose
+/// content diverged from the plan, and the stop that divergence is.
 #[derive(Default)]
-struct Verified {
-    revision: Option<u64>,
+struct Verdict {
+    rows: Vec<RowState>,
+    conflicts: Vec<Value>,
+    revision: u64,
     retyped: Option<Value>,
-    diverged_rows: Vec<u64>,
+    diverged: Vec<u64>,
     stop: Option<Stop>,
 }
 
-/// Read every Card this run committed and compare it with the plan's rendering in the row's own
-/// head address; read a retyped list and prove its authored title and body did not change. A
-/// divergence is a typed stop, never a silent success (S21-AC01, S21-AC07).
-fn verify_written(zt: &mut Zt, compiled: &Compiled, run: &Run, ran: &Ran) -> Result<Verified> {
-    let mut verified = Verified::default();
-    // A stop does not exempt the batches that did settle: their Cards are committed work, and the
-    // report must say whether the archive carries the plan's rendering or the step's end.
-    let settled: Vec<&BatchState> = ran.settled().collect();
-    if settled.is_empty() {
-        return Ok(verified);
-    }
-    let mut addresses: Vec<String> = Vec::new();
-    let mut retyped_in: Option<&str> = None;
-    for batch in &settled {
-        for (item, result) in batch.batch.items.iter().zip(&batch.results) {
-            if ref_role(&pstr(item, "client_ref")).is_none() {
-                retyped_in = item["op_key"].as_str();
-                continue;
-            }
-            let address = pstr(&result["result"], "address");
-            if !addresses.contains(&address) {
-                addresses.push(address);
-            }
-        }
-    }
+/// Read the archive once more and judge the publication by identity, not by receipt: the report's
+/// addresses are the archive's current ones (a placement moved the rows after it), and a row this
+/// run wrote that the archive does not hold as the plan rendered it is a typed stop, never a silent
+/// success (S21-AC01, S21-AC07).
+fn read_back(compiled: &Compiled, run: &Run, zt: &mut Zt, ran: &Ran) -> Result<Verdict> {
     let list = pstr(&run.scan.list, "address");
-    if !list.is_empty() && !addresses.contains(&list) {
-        addresses.push(list.clone());
-    }
-    let observed = zt.cards(&addresses, "text")?;
-    verified.revision = Some(observed.archive_revision);
-    let mut by_address: BTreeMap<String, &Value> = BTreeMap::new();
-    for card in &observed.cards {
-        by_address.insert(pstr(card, "address"), card);
-    }
-    let mut diverged: Vec<Value> = Vec::new();
-    for batch in &settled {
-        for (item, result) in batch.batch.items.iter().zip(&batch.results) {
-            let Some((number, role, index)) = ref_role(&pstr(item, "client_ref")) else {
-                continue;
-            };
-            let address = pstr(&result["result"], "address");
-            let Some(row) = run.rows.iter().find(|row| row.number == number) else {
-                continue;
-            };
-            let Some(chain) = row.chain.as_ref() else {
-                continue;
-            };
-            let Some(paper) = chain.get(index).filter(|paper| paper.role == role) else {
-                continue;
-            };
-            // The head's own address; a part resolves its `@@term_head` to that same address.
-            let head = if role == "card" {
-                address.clone()
-            } else {
-                ran.head_receipt(number).unwrap_or_default()
-            };
-            let expected = content_hash(&paper.title, &published_body(paper, &head), Some(&row.term));
-            match by_address.get(&address) {
-                Some(card) if observed_hash(card) == expected => {}
-                Some(card) => {
-                    diverged.push(json!({
-                        "address": address,
-                        "role": role,
-                        "observed": observed_hash(card),
-                        "planned": expected,
-                    }));
-                    if !verified.diverged_rows.contains(&number) {
-                        verified.diverged_rows.push(number);
-                    }
-                }
-                None => {
-                    diverged.push(json!({"address": address, "role": role, "observed": Value::Null, "planned": expected}));
-                    if !verified.diverged_rows.contains(&number) {
-                        verified.diverged_rows.push(number);
-                    }
-                }
-            }
-        }
-    }
-    // A retyped list keeps its authored title and body byte for byte and becomes a Term Card.
-    if retyped_in.is_some()
-        && let Some(card) = by_address.get(&list)
-    {
+    let tree = zt.call("get_tree", json!({"tree": compiled.book()}))?;
+    let revision = tree["archive_revision"]
+        .as_u64()
+        .context("the tree read carries no archive revision")?;
+    let scan = scan_list(zt, &tree, &list)?;
+    let (rows, conflicts) = judge(&run.plans, &scan, &run.published);
+    let diverged: Vec<u64> = ran
+        .batches
+        .iter()
+        .filter(|batch| matches!(batch.state, "committed" | "replayed"))
+        .flat_map(|batch| batch.batch.rows.iter().copied())
+        .filter(|row| {
+            rows.iter()
+                .find(|state| state.number == *row)
+                .is_none_or(|state| state.status != Status::Committed)
+        })
+        .collect();
+    let mut detail = json!({"rows": diverged});
+    let mut retyped = None;
+    // The retype is verified only when this run sent it: a run with nothing to publish writes no
+    // Card, so the list's kind is the read's business alone.
+    let sent_retype = ran
+        .batches
+        .iter()
+        .any(|batch| batch.batch.placement == "list");
+    if run.retype.is_some() && sent_retype {
+        // A retyped list keeps its authored title and body byte for byte and becomes a Term Card.
         let planned = &compiled.plan["list"];
-        let title_sha = canon::sha256_hex(pstr(card, "title").as_bytes());
-        let body_sha = canon::sha256_hex(pstr(card, "body").as_bytes());
-        let retyped = json!({
+        let card = scan.cards.get(&list).cloned().unwrap_or(Value::Null);
+        let title_sha = canon::sha256_hex(pstr(&card, "title").as_bytes());
+        let body_sha = canon::sha256_hex(pstr(&card, "body").as_bytes());
+        let observed = json!({
             "address": list,
             "from": planned["type"],
-            "to": pstr(card, "type"),
+            "to": pstr(&card, "type"),
             "title_sha256": title_sha,
             "body_sha256": body_sha,
         });
-        if title_sha != pstr(planned, "title_sha256") || body_sha != pstr(planned, "body_sha256") {
-            diverged.push(json!({
-                "address": list,
-                "role": "list",
-                "observed": {"title_sha256": title_sha, "body_sha256": body_sha},
-                "planned": {"title_sha256": planned["title_sha256"], "body_sha256": planned["body_sha256"]},
-                "message": "the retype changed the list's authored title or body",
-            }));
+        if title_sha != pstr(planned, "title_sha256")
+            || body_sha != pstr(planned, "body_sha256")
+            || pstr(&card, "type") != "term"
+        {
+            detail["list"] = observed.clone();
         }
-        if pstr(card, "type") != "term" {
-            diverged.push(json!({
-                "address": list,
-                "role": "list",
-                "observed": pstr(card, "type"),
-                "planned": "term",
-                "message": "the legacy list was not retyped",
-            }));
-        }
-        verified.retyped = Some(retyped);
+        retyped = Some(observed);
     }
-    if !diverged.is_empty() {
-        verified.stop = Some(Stop {
-            code: "output_diverged",
-            message: format!(
-                "{} committed Card(s) do not carry the plan's rendering; keep them and replan",
-                diverged.len()
-            ),
-            detail: json!({"diverged": diverged}),
-            exit: STOP_EXIT,
-        });
+    let stop = divergence_stop(&detail);
+    Ok(Verdict {
+        rows,
+        conflicts,
+        revision,
+        retyped,
+        diverged,
+        stop,
+    })
+}
+
+/// The typed stop a divergence is, or `None` when the archive holds every written Card.
+fn divergence_stop(detail: &Value) -> Option<Stop> {
+    let rows = detail["rows"].as_array().map_or(0, Vec::len);
+    let list = !detail["list"].is_null();
+    if rows == 0 && !list {
+        return None;
     }
-    Ok(verified)
+    let mut what = format!("{rows} committed row(s)");
+    if list {
+        what.push_str(" and the retyped list");
+    }
+    Some(Stop {
+        code: "output_diverged",
+        message: format!("{what} do not carry the plan's rendering; keep them and replan"),
+        detail: detail.clone(),
+        exit: STOP_EXIT,
+    })
 }
 
 // --- the publication record ---------------------------------------------------------------------
@@ -1630,7 +1934,7 @@ fn build_report(
     fresh: &Fresh,
     run: &Run,
     ran: &Ran,
-    verified: &Verified,
+    verdict: &Verdict,
     stop: Option<&Stop>,
 ) -> Value {
     let mut rows = Vec::new();
@@ -1681,11 +1985,6 @@ fn build_report(
         }));
     }
     let ready = run.rows.iter().filter(|row| row.chain.is_some()).count();
-    let ready_prefix = run
-        .rows
-        .iter()
-        .take_while(|row| row.chain.is_some())
-        .count();
     let committed = run
         .rows
         .iter()
@@ -1693,10 +1992,12 @@ fn build_report(
         .count();
     let complete = !run.rows.is_empty()
         && committed == run.rows.len()
-        && stop.is_none();
+        && stop.is_none()
+        && run.conflicts.is_empty();
+    let conflicted = counts.get("conflicted").copied().unwrap_or(0) + run.conflicts.len();
     let archives = json!({
         "revision_before": run.revision_before,
-        "revision_after": verified.revision.unwrap_or(run.revision_before),
+        "revision_after": verdict.revision,
     });
     let stop_value = stop.map(|stop| {
         json!({
@@ -1713,6 +2014,7 @@ fn build_report(
         .map(|(index, state)| {
             json!({
                 "batch": index + 1,
+                "placement": state.batch.placement,
                 "state": state.state,
                 "items": state.batch.items.len(),
                 "rows": state.batch.rows,
@@ -1734,6 +2036,15 @@ fn build_report(
             })
         })
         .collect();
+    // The first row the stop names, for a caller that reads one address instead of the whole list.
+    let stopped = match stop_value.as_ref() {
+        Some(stop) => stop["detail"]["rows"]
+            .as_array()
+            .and_then(|rows| rows.first())
+            .map(|row| row["row"].clone())
+            .unwrap_or_else(|| stop["detail"]["row"].clone()),
+        None => Value::Null,
+    };
     let summary = json!({
         "schema_version": 1,
         "ok": stop.is_none_or(|stop| stop.exit == 0),
@@ -1748,18 +2059,18 @@ fn build_report(
         "retyped": run.retype.is_some(),
         "rows": rows.len(),
         "ready": ready,
-        "ready_prefix": ready_prefix,
         "committed": committed,
         "ready_unpublished": counts.get("ready_unpublished").copied().unwrap_or(0),
         "pending": counts.get("pending").copied().unwrap_or(0),
         "refused": counts.get("refused").copied().unwrap_or(0),
-        "conflicted": counts.get("conflicted").copied().unwrap_or(0),
+        "conflicted": conflicted,
+        "conflicts": run.conflicts.len(),
         "cards_written": written,
         "cards_replayed": replayed,
         "batches": batches.len(),
         "complete": complete,
         "code": stop_value.as_ref().map(|stop| stop["code"].clone()),
-        "stopped": stop_value.as_ref().map(|stop| stop["detail"]["row"].clone()),
+        "stopped": stopped,
     });
     json!({
         "schema_version": 1,
@@ -1786,7 +2097,7 @@ fn build_report(
                 "op_key": item["op_key"],
                 "arguments": item["arguments"],
             })),
-            "observed": verified.retyped,
+            "observed": verdict.retyped,
         },
         "source": compiled.plan["source"],
         "limits": compiled.plan["limits"],
@@ -1796,17 +2107,18 @@ fn build_report(
         "counts": {
             "rows": rows.len(),
             "ready": ready,
-            "ready_prefix": ready_prefix,
             "committed": committed,
             "ready_unpublished": counts.get("ready_unpublished").copied().unwrap_or(0),
             "pending": counts.get("pending").copied().unwrap_or(0),
             "refused": counts.get("refused").copied().unwrap_or(0),
-            "conflicted": counts.get("conflicted").copied().unwrap_or(0),
+            "conflicted": conflicted,
+            "conflicts": run.conflicts.len(),
             "cards_written": written,
             "cards_replayed": replayed,
             "batches": batches.len(),
         },
         "stop": stop_value,
+        "conflicts": run.conflicts,
         "staged": staged,
         "batches": batches,
         "rows": rows,
@@ -1874,10 +2186,9 @@ fn report_md(report: &Value) -> String {
     ));
     let counts = &report["counts"];
     out.push_str(&format!(
-        "{} row(s): {} ready (prefix {}) · {} committed · {} ready-unpublished · {} pending · {} refused · {} conflicted.\n\n",
+        "{} row(s): {} ready · {} committed · {} ready-unpublished · {} pending · {} refused · {} conflicted.\n\n",
         counts["rows"],
         counts["ready"],
-        counts["ready_prefix"],
         counts["committed"],
         counts["ready_unpublished"],
         counts["pending"],
@@ -1885,7 +2196,7 @@ fn report_md(report: &Value) -> String {
         counts["conflicted"]
     ));
     out.push_str(&format!(
-        "Archive revision {} → {}. {} Card(s) written, {} replayed, in {} batch(es).\n\n",
+        "Archive revision {} → {}. {} Card(s) written, {} replayed, in {} call(s).\n\n",
         report["archive"]["revision_before"],
         report["archive"]["revision_after"],
         counts["cards_written"],
@@ -1896,7 +2207,7 @@ fn report_md(report: &Value) -> String {
         out.push_str("Every row and part is committed and read back: the book unit may complete.\n\n");
     } else {
         out.push_str(
-            "Not complete: the committed prefix is useful work, and the book unit stays incomplete.\n\n",
+            "Not complete: the committed rows are useful work, and the book unit stays incomplete.\n\n",
         );
     }
     if let Some(stop) = report["stop"].as_object() {
@@ -1906,6 +2217,19 @@ fn report_md(report: &Value) -> String {
             stop["exit"],
             stop["message"].as_str().unwrap_or_default()
         ));
+    }
+    let conflicts = report["conflicts"].as_array().cloned().unwrap_or_default();
+    if !conflicts.is_empty() {
+        out.push_str("## Conflicts\n\n");
+        for conflict in &conflicts {
+            out.push_str(&format!(
+                "- `{}` ({}): {}\n",
+                conflict["address"].as_str().unwrap_or_default(),
+                conflict["code"].as_str().unwrap_or_default(),
+                conflict["message"].as_str().unwrap_or_default()
+            ));
+        }
+        out.push('\n');
     }
     out.push_str("## Rows\n\n");
     out.push_str("| Row | Term | Job | Category | Status | Head / parts |\n");
@@ -1956,14 +2280,15 @@ fn report_md(report: &Value) -> String {
         out.push('\n');
     }
     let batches = report["batches"].as_array().cloned().unwrap_or_default();
-    out.push_str("## Batches\n\n");
+    out.push_str("## Calls\n\n");
     if batches.is_empty() {
         out.push_str("No identified call was sent.\n\n");
     }
     for batch in &batches {
         out.push_str(&format!(
-            "- batch {}: {} · {} item(s) · {} bytes\n",
+            "- call {} ({}): {} · {} item(s) · {} bytes\n",
             batch["batch"],
+            batch["placement"].as_str().unwrap_or_default(),
             batch["state"].as_str().unwrap_or_default(),
             batch["items"],
             batch["bytes"]
@@ -1991,9 +2316,11 @@ fn address_order(a: &str, b: &str) -> std::cmp::Ordering {
     segments(a).cmp(&segments(b)).then_with(|| a.cmp(b))
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     fn compiled(rows: usize) -> Compiled {
         let plan = json!({
@@ -2021,33 +2348,131 @@ mod tests {
         }
     }
 
-    fn row_state(number: u64, chain: Option<Vec<Paper>>) -> RowState {
+    /// One row's rendered head.
+    fn head(number: u64) -> Paper {
+        paper(
+            &format!("词{number}"),
+            &format!("术语：词{number}\n来源：[[K]] §1"),
+            "card",
+        )
+    }
+
+    /// One row's chain: the head, then one continuation part that names it.
+    fn chain_with_part(number: u64) -> Vec<Paper> {
+        vec![
+            head(number),
+            paper(
+                &format!("推导（续 2/2）：词{number}"),
+                "续：[[@@term_head]] 本卡沿用该卡的符号表。",
+                "part",
+            ),
+        ]
+    }
+
+    fn plan(number: u64, chain: Option<Vec<Paper>>) -> RowPlan {
         let ready = chain.is_some();
-        RowState {
+        RowPlan {
             number,
             term: format!("词{number}"),
             job: format!("t{number:03}"),
             planned_category: "concept".to_string(),
             readiness: json!({"row": number, "status": if ready { "ready" } else { "needs_review" }}),
             chain,
-            slot: Slot::Absent,
-            status: if ready {
-                Status::ReadyUnpublished
-            } else {
-                Status::Refused
-            },
-            reason: None,
-            receipts: Vec::new(),
+            blocked: (!ready).then(|| {
+                json!({
+                    "code": "not_ready",
+                    "status": "needs_review",
+                    "message": format!("row {number} `词{number}` is `needs_review`"),
+                })
+            }),
         }
     }
 
-    fn run_of(rows: Vec<RowState>) -> Run {
+    /// The frozen plans of `count` rows, ready exactly where `ready` says so.
+    fn plans(count: usize, ready: impl Fn(u64) -> bool) -> Vec<RowPlan> {
+        (1..=count as u64)
+            .map(|number| plan(number, ready(number).then(|| vec![head(number)])))
+            .collect()
+    }
+
+    fn empty_scan() -> Scan {
+        Scan {
+            list: json!({"address": "K/1|a", "type": "term"}),
+            ..Scan::default()
+        }
+    }
+
+    /// The exact rendering of one row's head, as the archive stores it at `address`.
+    fn add_head(scan: &mut Scan, address: &str, number: u64) {
+        scan.side.push(address.to_string());
+        scan.cards.insert(
+            address.to_string(),
+            json!({
+                "address": address,
+                "type": "term",
+                "term": format!("词{number}"),
+                "title": format!("词{number}"),
+                "body": format!("术语：词{number}\n来源：[[K]] §1"),
+            }),
+        );
+    }
+
+    /// The exact rendering of one row's continuation part, filed under `head`.
+    fn add_part(scan: &mut Scan, head: &str, address: &str, number: u64) {
+        scan.chain
+            .entry(head.to_string())
+            .or_default()
+            .push(address.to_string());
+        scan.cards.insert(
+            address.to_string(),
+            json!({
+                "address": address,
+                "type": "term",
+                "term": format!("词{number}"),
+                "title": format!("推导（续 2/2）：词{number}"),
+                "body": format!("续：[[{head}]] 本卡沿用该卡的符号表。"),
+            }),
+        );
+    }
+
+    fn run_of(plans: Vec<RowPlan>, scan: Scan) -> Run {
+        let (rows, conflicts) = judge(&plans, &scan, &Value::Null);
         Run {
+            plans,
             rows,
-            scan: Scan::default(),
+            conflicts,
+            scan,
+            published: Value::Null,
             retype: None,
             revision_before: 7,
         }
+    }
+
+    /// The answer to one sent call, as `apply_batch` returns it: the head at `address`, its parts
+    /// under it, and the `moved` map the placement reported.
+    fn answers(items: &[Value], address: &str, moved: Value) -> Vec<Value> {
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let mut result = json!({
+                    "address": if index == 0 {
+                        address.to_string()
+                    } else {
+                        format!("{address}|{index}")
+                    },
+                });
+                if index == 0 && !moved.is_null() {
+                    result["moved"] = moved.clone();
+                }
+                json!({
+                    "op_key": item["op_key"],
+                    "client_ref": item["client_ref"],
+                    "replayed": false,
+                    "result": result,
+                })
+            })
+            .collect()
     }
 
     #[test]
@@ -2063,22 +2488,19 @@ mod tests {
     #[test]
     fn the_chain_is_the_head_then_direct_parts_that_reference_it() {
         let compiled = compiled(1);
-        let row = row_state(
-            1,
-            Some(vec![
-                paper("词1", "术语：词1\n来源：[[K]] §1", "card"),
-                paper("推导（续 2/3）：第一步", "续：[[@@term_head]] 本卡沿用该卡的符号表。", "part"),
-                paper("推导（续 3/3）：第二步", "续：[[@@term_head]] 本卡沿用该卡的符号表。", "part"),
-            ]),
-        );
-        let chain = row.chain.clone().unwrap();
-        let items = chain_items(&compiled, &row, &chain).unwrap();
+        let chain = vec![
+            paper("词1", "术语：词1\n来源：[[K]] §1", "card"),
+            paper("推导（续 2/3）：第一步", "续：[[@@term_head]] 本卡沿用该卡的符号表。", "part"),
+            paper("推导（续 3/3）：第二步", "续：[[@@term_head]] 本卡沿用该卡的符号表。", "part"),
+        ];
+        let items = chain_items(&compiled, 1, "词1", &chain, None).unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0]["client_ref"], "r001");
         assert_eq!(items[0]["arguments"]["at"], "K/1|a");
         assert_eq!(items[0]["arguments"]["kind"], "side");
         assert_eq!(items[0]["arguments"]["type"], "term");
         assert_eq!(items[0]["arguments"]["term"], "词1");
+        assert!(items[0]["arguments"].get("before").is_none());
         assert_eq!(items[1]["arguments"]["at"], "@@r001");
         assert_eq!(items[1]["arguments"]["kind"], "direct");
         assert_eq!(items[2]["arguments"]["at"], "@@r001-p01");
@@ -2086,160 +2508,319 @@ mod tests {
             items[1]["arguments"]["body"],
             "续：[[@@r001]] 本卡沿用该卡的符号表。"
         );
-        assert_eq!(items[0]["op_key"], format!("term-cards-{}/K/2/apply/r001", "a".repeat(16)));
+        assert_eq!(
+            items[0]["op_key"],
+            format!("term-cards-{}/K/2/apply/r001", "a".repeat(16))
+        );
         assert_eq!(
             items[2]["op_key"],
             format!("term-cards-{}/K/2/apply/r001-p02", "a".repeat(16))
         );
+        // A placement files the head in a published sibling's place; only the head carries `before`.
+        let placed = chain_items(&compiled, 1, "词1", &chain, Some("K/1|a|b")).unwrap();
+        assert_eq!(placed[0]["arguments"]["at"], "K/1|a");
+        assert_eq!(placed[0]["arguments"]["before"], "K/1|a|b");
+        assert!(placed[1]["arguments"].get("before").is_none());
     }
 
+    /// S33 (#182) acceptance (a): rows 1, 2, 4 and 5 are ready and row 3 is refused, so every ready
+    /// row is published in table order and only row 3 keeps the book incomplete.
     #[test]
-    fn chains_are_packed_into_calls_of_at_most_sixty_four_items() {
-        let compiled = compiled(200);
-        let rows: Vec<RowState> = (1..=200).map(|number| row_state(number, Some(vec![paper(&format!("词{number}"), "来源：[[K]] §1", "card")]))).collect();
-        let run = run_of(rows);
+    fn every_ready_row_past_a_refused_one_is_published_in_table_order() {
+        let compiled = compiled(5);
+        let run = run_of(plans(5, |number| number != 3), empty_scan());
+        assert_eq!(run.rows[2].status, Status::Refused);
+        assert_eq!(run.rows[3].status, Status::ReadyUnpublished);
+        assert!(run.conflicts.is_empty());
+
         let packing = pack(&compiled, &run);
         assert!(packing.stop.is_none());
-        assert_eq!(packing.batches.len(), 4);
-        assert!(packing.batches.iter().all(|batch| batch.items.len() <= CHUNK_ITEMS));
-        assert_eq!(
-            packing.batches.iter().map(|batch| batch.items.len()).sum::<usize>(),
-            200
-        );
-        assert_eq!(packing.batches[0].rows, (1..=64).collect::<Vec<u64>>());
-    }
+        assert!(packing.holes.is_empty());
+        assert_eq!(packing.batches.len(), 1, "one appended call carries every ready row");
+        assert_eq!(packing.batches[0].rows, vec![1, 2, 4, 5]);
+        assert_eq!(packing.batches[0].placement, "append");
+        let refs: Vec<String> = packing.batches[0]
+            .items
+            .iter()
+            .map(|item| pstr(item, "client_ref"))
+            .collect();
+        assert_eq!(refs, ["r001", "r002", "r004", "r005"]);
 
-    #[test]
-    fn a_chain_that_does_not_fit_one_call_is_refused_and_the_prefix_stays_packed() {
-        let compiled = compiled(2);
-        let mut huge = vec![paper("词2", "来源：[[K]] §1", "card")];
-        for index in 1..70 {
-            huge.push(paper(&format!("续 {index}"), "续：[[@@term_head]] 沿用。", "part"));
+        // A committed call leaves every ready row committed and row 3 refused: the book unit stays
+        // incomplete because a run's own publication does not complete a refused row.
+        let mut committed_scan = empty_scan();
+        for (address, number) in [("K/1|a|a", 1), ("K/1|a|b", 2), ("K/1|a|c", 4), ("K/1|a|d", 5)] {
+            add_head(&mut committed_scan, address, number);
         }
-        let rows = vec![
-            row_state(1, Some(vec![paper("词1", "来源：[[K]] §1", "card")])),
-            row_state(2, Some(huge)),
-        ];
-        let packing = pack(&compiled, &run_of(rows));
-        let stop = packing.stop.expect("a 70-Card chain is refused");
-        assert_eq!(stop.code, "chain_too_large");
-        assert_eq!(stop.exit, STOP_EXIT);
-        assert_eq!(packing.batches.len(), 1, "the prefix before the refusal stays packed");
-        assert_eq!(packing.batches[0].rows, vec![1]);
-    }
-
-    #[test]
-    fn the_prefix_ends_at_the_first_unready_row_and_later_drafts_stay_staged() {
-        let compiled = compiled(3);
-        let rows = vec![
-            row_state(1, Some(vec![paper("词1", "来源：[[K]] §1", "card")])),
-            row_state(2, None),
-            row_state(3, Some(vec![paper("词3", "来源：[[K]] §1", "card")])),
-        ];
-        let packing = pack(&compiled, &run_of(rows));
-        assert!(packing.stop.is_none());
-        assert_eq!(packing.batches.len(), 1);
-        assert_eq!(packing.batches[0].rows, vec![1], "row 3 waits behind row 2");
-    }
-
-    #[test]
-    fn the_retype_rides_in_the_first_batch_before_its_heads() {
-        let compiled = compiled(1);
-        let mut run = run_of(vec![row_state(
-            1,
-            Some(vec![paper("词1", "来源：[[K]] §1", "card")]),
-        )]);
-        run.retype = Some(json!({
-            "op_key": "term-cards-x/K/2/apply/list",
-            "client_ref": "list",
-            "tool": "edit_card",
-            "arguments": {"at": "K/1|a", "type": "term", "base_fingerprint": "b".repeat(64)},
-        }));
-        let packing = pack(&compiled, &run);
-        assert_eq!(packing.batches.len(), 1);
-        assert_eq!(packing.batches[0].items[0]["client_ref"], "list");
-        assert_eq!(packing.batches[0].items[1]["client_ref"], "r001");
-    }
-
-    fn scan_of(side: Vec<&str>, chains: &[(&str, &[&str])], cards: Vec<Value>) -> Scan {
-        let mut scan = Scan {
-            list: json!({"address": "K/1|a", "type": "term"}),
-            side: side.into_iter().map(str::to_string).collect(),
-            ..Scan::default()
+        let (rows, conflicts) = judge(&run.plans, &committed_scan, &Value::Null);
+        assert!(conflicts.is_empty());
+        let after = Run {
+            plans: run.plans.clone(),
+            rows,
+            conflicts,
+            scan: committed_scan,
+            published: Value::Null,
+            retype: None,
+            revision_before: 7,
         };
-        for (head, parts) in chains {
-            scan.chain.insert(
-                head.to_string(),
-                parts.iter().map(|part| part.to_string()).collect(),
-            );
-        }
-        for card in cards {
-            scan.cards.insert(pstr(&card, "address"), card);
-        }
-        scan
+        let packing = pack(&compiled, &after);
+        assert!(packing.batches.is_empty() && packing.holes.is_empty());
+        assert_eq!(
+            after.rows.iter().filter(|row| row.status == Status::Committed).count(),
+            4
+        );
+        assert_eq!(after.rows[2].status, Status::Refused);
+        let stop = after
+            .structural_stop()
+            .expect("the refused row keeps the book open");
+        assert_eq!(stop.code, "not_ready");
+        assert_eq!(stop.exit, 0, "a refused draft is a degraded run");
+        assert!(stop.message.contains("3 `词3`"), "{}", stop.message);
+        assert!(!stop.message.contains("row 3"), "the line names the row, not a sentence");
     }
 
-    fn term_card(address: &str, term: &str, title: &str, body: &str) -> Value {
-        json!({"address": address, "type": "term", "term": term, "title": title, "body": body})
-    }
-
+    /// S33 (#182) acceptance (b): a repaired row is filed between its neighbours — before the next
+    /// published head, never at the end — and the rows already published are never sent again.
     #[test]
-    fn a_slot_that_carries_the_plans_rendering_is_committed_and_never_sent_again() {
-        let compiled = compiled(1);
-        let head = paper("词1", "术语：词1\n来源：[[K]] §1", "card");
-        let scan = scan_of(
-            vec!["K/1|a|a"],
-            &[("K/1|a|a", &[])],
-            vec![term_card(
-                "K/1|a|a",
-                "词1",
-                "词1",
-                "术语：词1\n来源：[[K]] §1",
-            )],
+    fn a_repaired_row_is_filed_between_its_neighbours_and_the_published_rows_replay() {
+        let compiled = compiled(5);
+        let mut published = empty_scan();
+        for (address, number) in [("K/1|a|a", 1), ("K/1|a|b", 2), ("K/1|a|c", 4), ("K/1|a|d", 5)] {
+            add_head(&mut published, address, number);
+        }
+        let run = run_of(plans(5, |_| true), published);
+        assert_eq!(run.rows[0].status, Status::Committed);
+        assert_eq!(run.rows[2].status, Status::ReadyUnpublished);
+        assert_eq!(run.rows[3].status, Status::Committed);
+        assert_eq!(run.rows[3].head(), Some(&"K/1|a|c".to_string()));
+
+        let packing = pack(&compiled, &run);
+        assert!(packing.batches.is_empty(), "the published rows are never sent again");
+        assert_eq!(packing.holes.len(), 1);
+        assert_eq!(packing.holes[0].row, 3);
+        assert_eq!(
+            packing.holes[0].before,
+            Before::Published("K/1|a|c".to_string()),
+            "row 3 stands before row 4's head, never after the last row"
         );
-        let rows = judge(
-            vec![row_state(1, Some(vec![head]))],
-            &scan,
-            &Value::Null,
+
+        // The archive files row 3 in that place: it takes |c, and rows 4 and 5 move one label on.
+        let first = RefCell::new(Vec::<Value>::new());
+        let ran = execute(&compiled, &packing, &run, |items| {
+            first.borrow_mut().push(items[0].clone());
+            Ok(Reply::Done(answers(
+                items,
+                "K/1|a|c",
+                json!({"K/1|a|c": "K/1|a|d", "K/1|a|d": "K/1|a|e"}),
+            )))
+        })
+        .unwrap();
+        assert!(ran.stop.is_none(), "{:?}", ran.stop);
+        assert_eq!(first.borrow().len(), 1, "one call files the one repaired row");
+        assert_eq!(first.borrow()[0]["arguments"]["before"], "K/1|a|c");
+        let receipts = ran.receipts_of(3);
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["address"], "K/1|a|c");
+
+        // Reading the placement back finds every row where it now stands; nothing is written again.
+        let mut placed = empty_scan();
+        for (address, number) in [
+            ("K/1|a|a", 1),
+            ("K/1|a|b", 2),
+            ("K/1|a|c", 3),
+            ("K/1|a|d", 4),
+            ("K/1|a|e", 5),
+        ] {
+            add_head(&mut placed, address, number);
+        }
+        let (rows, conflicts) = judge(&run.plans, &placed, &Value::Null);
+        assert!(conflicts.is_empty());
+        let after = Run {
+            plans: run.plans.clone(),
+            rows,
+            conflicts,
+            scan: placed,
+            published: Value::Null,
+            retype: None,
+            revision_before: 7,
+        };
+        assert!(after.rows.iter().all(|row| row.status == Status::Committed));
+        assert_eq!(after.rows[3].head(), Some(&"K/1|a|d".to_string()));
+        assert_eq!(after.rows[4].head(), Some(&"K/1|a|e".to_string()));
+        let packing = pack(&compiled, &after);
+        assert!(
+            packing.batches.is_empty() && packing.holes.is_empty(),
+            "the repaired row and every shifted row replay with no new write"
         );
-        assert_eq!(rows[0].status, Status::Committed);
-        assert_eq!(rows[0].head(), Some(&"K/1|a|a".to_string()));
-        assert!(pack(&compiled, &run_of(rows)).batches.is_empty());
     }
 
+    /// S33 (#182): two repaired rows are filed highest table position first, and the next placement
+    /// names the head the previous one filed.
     #[test]
-    fn a_slot_that_holds_another_card_is_a_conflict_and_stops_the_alignment() {        let rows = vec![
-            row_state(1, Some(vec![paper("词1", "来源：[[K]] §1", "card")])),
-            row_state(2, Some(vec![paper("词2", "来源：[[K]] §1", "card")])),
-        ];
-        let scan = scan_of(
-            vec!["K/1|a|a"],
-            &[("K/1|a|a", &[])],
-            vec![term_card("K/1|a|a", "别的词", "别的词", "x")],
+    fn two_repaired_rows_are_filed_highest_first_and_the_next_names_the_head_just_filed() {
+        let compiled = compiled(5);
+        let mut published = empty_scan();
+        for (address, number) in [("K/1|a|a", 1), ("K/1|a|b", 2), ("K/1|a|c", 5)] {
+            add_head(&mut published, address, number);
+        }
+        let run = run_of(plans(5, |number| number == 3 || number == 4), published);
+        let packing = pack(&compiled, &run);
+        let rows: Vec<u64> = packing.holes.iter().map(|hole| hole.row).collect();
+        assert_eq!(rows, vec![4, 3], "the highest table position is sent first");
+        assert_eq!(
+            packing.holes[0].before,
+            Before::Published("K/1|a|c".to_string())
         );
-        let rows = judge(rows, &scan, &Value::Null);
-        assert_eq!(rows[0].status, Status::Conflicted);
-        assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "unrelated_side");
-        assert_eq!(rows[1].status, Status::ReadyUnpublished);
-        assert_eq!(pstr(&rows[1].reason.clone().unwrap(), "code"), "unaligned");
-        let run = run_of(rows);
-        let stop = run.structural_stop().unwrap();
+        assert_eq!(packing.holes[1].before, Before::Placed);
+
+        let sent = RefCell::new(Vec::<Value>::new());
+        let ran = execute(&compiled, &packing, &run, |items| {
+            sent.borrow_mut().push(items[0].clone());
+            Ok(Reply::Done(answers(items, "K/1|a|c", Value::Null)))
+        })
+        .unwrap();
+        assert!(ran.stop.is_none(), "{:?}", ran.stop);
+        assert_eq!(sent.borrow().len(), 2);
+        assert_eq!(sent.borrow()[0]["arguments"]["before"], "K/1|a|c");
+        assert_eq!(
+            sent.borrow()[1]["arguments"]["before"], "K/1|a|c",
+            "row 3 is filed before the head row 4 just took"
+        );
+    }
+
+    /// S33 (#182) acceptance (c): a Side child that matches no planned row is a conflict, and the
+    /// step writes nothing.
+    #[test]
+    fn a_side_child_that_matches_no_planned_row_is_a_conflict() {
+        let compiled = compiled(2);
+        let mut scan = empty_scan();
+        scan.side.push("K/1|a|a".to_string());
+        scan.cards.insert(
+            "K/1|a|a".to_string(),
+            json!({"address": "K/1|a|a", "type": "idea", "title": "一条笔记", "body": "这不是术语卡。"}),
+        );
+        let run = run_of(plans(2, |_| true), scan);
+        assert_eq!(run.conflicts.len(), 1);
+        assert_eq!(pstr(&run.conflicts[0], "code"), "unrelated_side");
+        assert_eq!(pstr(&run.conflicts[0], "address"), "K/1|a|a");
+        assert_eq!(run.rows[0].status, Status::ReadyUnpublished);
+        let packing = pack(&compiled, &run);
+        assert!(
+            packing.batches.is_empty() && packing.holes.is_empty(),
+            "a conflict writes nothing"
+        );
+        let stop = run.structural_stop().expect("a conflict stops publication");
         assert_eq!(stop.code, "conflicted");
         assert_eq!(stop.exit, STOP_EXIT);
     }
 
+    /// S33 (#182) acceptance (d): a lost publication reply replays from the identity read and never
+    /// creates a second head.
     #[test]
-    fn a_changed_accepted_head_is_never_overwritten() {
-        let head = paper("词1", "来源：[[K]] §1", "card");
-        let scan = scan_of(
-            vec!["K/1|a|a"],
-            &[("K/1|a|a", &[])],
-            vec![term_card("K/1|a|a", "词1", "词1", "来源：[[K]] §2")],
+    fn a_lost_answer_replays_from_the_identity_read_without_a_second_head() {
+        let compiled = compiled(1);
+        let run = run_of(plans(1, |_| true), empty_scan());
+        let packing = pack(&compiled, &run);
+        assert_eq!(packing.batches.len(), 1);
+        let ran = execute(&compiled, &packing, &run, |_| {
+            Ok(Reply::Lost("the service closed the pipe".to_string()))
+        })
+        .unwrap();
+        assert_eq!(ran.batches[0].state, "unknown");
+        let stop = ran.stop.expect("a lost answer stops the run");
+        assert_eq!(stop.code, "interrupted");
+        assert_eq!(stop.exit, STOP_EXIT);
+        assert!(stop.message.contains("run -Step apply again"), "{}", stop.message);
+
+        // The archive did commit the head before the answer was lost; the next read finds it by its
+        // exact rendering, so nothing is written again.
+        let mut committed = empty_scan();
+        add_head(&mut committed, "K/1|a|a", 1);
+        let (rows, conflicts) = judge(&run.plans, &committed, &Value::Null);
+        assert!(conflicts.is_empty());
+        let next = Run {
+            plans: run.plans.clone(),
+            rows,
+            conflicts,
+            scan: committed,
+            published: Value::Null,
+            retype: None,
+            revision_before: 7,
+        };
+        assert_eq!(next.rows[0].status, Status::Committed);
+        assert_eq!(next.rows[0].head(), Some(&"K/1|a|a".to_string()));
+        let again = pack(&compiled, &next);
+        assert!(
+            again.batches.is_empty() && again.holes.is_empty(),
+            "no second head"
+        );
+    }
+
+    #[test]
+    fn an_accepted_head_that_changed_is_a_conflict_and_is_never_overwritten() {
+        let mut scan = empty_scan();
+        scan.side.push("K/1|a|a".to_string());
+        scan.cards.insert(
+            "K/1|a|a".to_string(),
+            json!({"address": "K/1|a|a", "type": "term", "term": "词1", "title": "词1", "body": "来源：[[K]] §2"}),
         );
         let published = json!({"rows": {"1": {"plan_revision": 1, "head": {"address": "K/1|a|a"}, "parts": []}}});
-        let rows = judge(vec![row_state(1, Some(vec![head]))], &scan, &published);
+        let (rows, conflicts) = judge(&plans(1, |_| true), &scan, &published);
+        assert!(conflicts.is_empty());
         assert_eq!(rows[0].status, Status::Conflicted);
         assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "changed_head");
+        let run = Run {
+            plans: plans(1, |_| true),
+            rows,
+            conflicts,
+            scan,
+            published,
+            retype: None,
+            revision_before: 7,
+        };
+        let packing = pack(&compiled(1), &run);
+        assert!(packing.batches.is_empty() && packing.holes.is_empty());
+        assert_eq!(run.structural_stop().unwrap().code, "conflicted");
+    }
+
+    #[test]
+    fn a_second_head_for_one_row_and_a_head_outside_the_list_are_conflicts() {
+        // Two Side children carry row 1's term: publication never chooses between them.
+        let mut scan = empty_scan();
+        add_head(&mut scan, "K/1|a|a", 1);
+        add_head(&mut scan, "K/1|a|b", 1);
+        let (rows, conflicts) = judge(&plans(1, |_| true), &scan, &Value::Null);
+        assert!(conflicts.is_empty(), "the conflict belongs to the row");
+        assert_eq!(rows[0].status, Status::Conflicted);
+        assert_eq!(pstr(&rows[0].reason.clone().unwrap(), "code"), "duplicate_head");
+
+        // The row's head exists in the tree, but not as an immediate Side child of the list.
+        let mut misplaced = empty_scan();
+        let mut head_only = empty_scan();
+        add_head(&mut head_only, "K/2|a", 1);
+        let stray = head_only.cards["K/2|a"].clone();
+        misplaced.cards.insert("K/2|a".to_string(), stray.clone());
+        misplaced.stray.push(stray);
+        let (rows, conflicts) = judge(&plans(1, |_| true), &misplaced, &Value::Null);
+        assert!(conflicts.is_empty());
+        assert_eq!(rows[0].status, Status::Conflicted);
+        let reason = rows[0].reason.clone().unwrap();
+        assert_eq!(pstr(&reason, "code"), "misplaced_head");
+        assert_eq!(pstr(&reason, "address"), "K/2|a");
+    }
+
+    #[test]
+    fn a_committed_row_with_its_part_is_identified_by_its_content() {
+        let compiled = compiled(1);
+        let plans = vec![plan(1, Some(chain_with_part(1)))];
+        let mut scan = empty_scan();
+        add_head(&mut scan, "K/1|a|a", 1);
+        add_part(&mut scan, "K/1|a|a", "K/1|a|a|1", 1);
+        let run = run_of(plans, scan);
+        assert_eq!(run.rows[0].status, Status::Committed);
+        assert_eq!(run.rows[0].head(), Some(&"K/1|a|a".to_string()));
+        assert_eq!(run.rows[0].parts(), ["K/1|a|a|1"]);
+        assert!(pack(&compiled, &run).batches.is_empty());
     }
 
     #[test]
@@ -2261,47 +2842,118 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_answer_leaves_its_batch_unknown_and_never_claims_completion() {
-        let compiled = compiled(3);
-        let rows: Vec<RowState> = (1..=3)
-            .map(|number| row_state(number, Some(vec![paper(&format!("词{number}"), "来源：[[K]] §1", "card")])))
-            .collect();
-        let packing = pack(&compiled, &run_of(rows));
+    fn chains_are_packed_into_calls_of_at_most_sixty_four_items() {
+        let compiled = compiled(200);
+        let run = run_of(plans(200, |_| true), empty_scan());
+        let packing = pack(&compiled, &run);
+        assert!(packing.stop.is_none());
+        assert_eq!(packing.batches.len(), 4);
+        assert!(
+            packing
+                .batches
+                .iter()
+                .all(|batch| batch.items.len() <= CHUNK_ITEMS)
+        );
+        assert_eq!(
+            packing
+                .batches
+                .iter()
+                .map(|batch| batch.items.len())
+                .sum::<usize>(),
+            200
+        );
+        assert_eq!(packing.batches[0].rows, (1..=64).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn a_chain_that_does_not_fit_one_call_is_refused_and_the_earlier_rows_stay_packed() {
+        let compiled = compiled(2);
+        let mut huge = vec![head(2)];
+        for index in 1..70 {
+            huge.push(paper(
+                &format!("续 {index}"),
+                "续：[[@@term_head]] 沿用。",
+                "part",
+            ));
+        }
+        let plans = vec![plan(1, Some(vec![head(1)])), plan(2, Some(huge))];
+        let run = run_of(plans, empty_scan());
+        let packing = pack(&compiled, &run);
+        let stop = packing.stop.expect("a 70-Card chain is refused");
+        assert_eq!(stop.code, "chain_too_large");
+        assert_eq!(stop.exit, STOP_EXIT);
+        assert_eq!(packing.batches.len(), 1, "the rows before it stay packed");
+        assert_eq!(packing.batches[0].rows, vec![1]);
+    }
+
+    #[test]
+    fn the_retype_is_sent_as_its_own_call_before_the_heads_it_makes_legal() {
+        let compiled = compiled(1);
+        let mut run = run_of(plans(1, |_| true), empty_scan());
+        run.retype = Some(json!({
+            "op_key": "term-cards-x/K/2/apply/list",
+            "client_ref": "list",
+            "tool": "edit_card",
+            "arguments": {"at": "K/1|a", "type": "term", "base_fingerprint": "b".repeat(64)},
+        }));
+        let packing = pack(&compiled, &run);
         assert_eq!(packing.batches.len(), 1);
-        let ran = execute(&packing.batches, |_| {
-            Ok(Reply::Lost("the service closed the pipe".to_string()))
+        assert!(
+            packing.batches[0]
+                .items
+                .iter()
+                .all(|item| pstr(item, "client_ref") != "list"),
+            "the retype is no longer prepended to a head call"
+        );
+        let calls = RefCell::new(Vec::<Vec<Value>>::new());
+        let ran = execute(&compiled, &packing, &run, |items| {
+            calls.borrow_mut().push(items.to_vec());
+            Ok(Reply::Done(answers(items, "K/1|a|a", Value::Null)))
         })
         .unwrap();
-        assert_eq!(ran.batches[0].state, "unknown");
-        let stop = ran.stop.unwrap();
-        assert_eq!(stop.code, "interrupted");
-        assert_eq!(stop.exit, STOP_EXIT);
-        assert!(stop.message.contains("run -Step apply again"), "{}", stop.message);
+        assert_eq!(calls.borrow().len(), 2);
+        assert_eq!(calls.borrow()[0][0]["client_ref"], "list");
+        assert_eq!(calls.borrow()[1][0]["client_ref"], "r001");
+        assert_eq!(ran.batches[0].batch.placement, "list");
+        assert_eq!(ran.batches[1].batch.placement, "append");
+    }
+
+    #[test]
+    fn a_refused_call_stops_with_the_archive_answer_and_keeps_earlier_receipts() {
+        let compiled = compiled(2);
+        let run = run_of(plans(2, |_| true), empty_scan());
+        let packing = pack(&compiled, &run);
+        assert_eq!(packing.batches.len(), 1);
         // A Lock keeps exit 2; a blocking Card check and a stale base are content stops.
         let locked = json!({"error": "card_locked", "message": "card `K/1|a` is inside locked tree `K`"});
-        let ran = execute(&packing.batches, |_| Ok(Reply::Refused(locked.clone()))).unwrap();
+        let ran = execute(&compiled, &packing, &run, |_| {
+            Ok(Reply::Refused(locked.clone()))
+        })
+        .unwrap();
         let stop = ran.stop.unwrap();
         assert_eq!(stop.code, "card_locked");
         assert_eq!(stop.exit, lockcheck::LOCKED_EXIT);
+        assert_eq!(ran.batches[0].state, "refused");
         let check = json!({"error": "card_check", "blocking": 1, "faults": ["K/1 R3 甲"]});
-        let ran = execute(&packing.batches, |_| Ok(Reply::Refused(check.clone()))).unwrap();
+        let ran = execute(&compiled, &packing, &run, |_| {
+            Ok(Reply::Refused(check.clone()))
+        })
+        .unwrap();
         let stop = ran.stop.unwrap();
         assert_eq!(stop.code, "card_check");
         assert_eq!(stop.exit, STOP_EXIT);
     }
 
     #[test]
-    fn an_answered_batch_must_name_every_item_in_order() {
+    fn an_answered_call_must_name_every_item_in_order() {
         let compiled = compiled(2);
-        let rows: Vec<RowState> = (1..=2)
-            .map(|number| row_state(number, Some(vec![paper(&format!("词{number}"), "来源：[[K]] §1", "card")])))
-            .collect();
-        let packing = pack(&compiled, &run_of(rows));
-        let error = execute(&packing.batches, |_| Ok(Reply::Done(vec![])))
+        let run = run_of(plans(2, |_| true), empty_scan());
+        let packing = pack(&compiled, &run);
+        let error = execute(&compiled, &packing, &run, |_| Ok(Reply::Done(vec![])))
             .unwrap_err()
             .to_string();
         assert!(error.contains("0 of 2"), "{error}");
-        let error = execute(&packing.batches, |items| {
+        let error = execute(&compiled, &packing, &run, |items| {
             let answers: Vec<Value> = items
                 .iter()
                 .rev()
@@ -2315,43 +2967,42 @@ mod tests {
     }
 
     #[test]
-    fn a_committed_row_whose_readback_differs_is_a_conflict_not_a_success() {
+    fn a_written_row_the_archive_does_not_hold_is_a_divergence_not_a_success() {
         let compiled = compiled(1);
-        let rows = vec![row_state(
-            1,
-            Some(vec![paper("词1", "术语：词1\n来源：[[K]] §1", "card")]),
-        )];
-        let packing = pack(&compiled, &run_of(rows));
-        let ran = execute(&packing.batches, |items| {
-            let answers: Vec<Value> = items
-                .iter()
-                .map(|item| {
-                    json!({
-                        "op_key": item["op_key"],
-                        "client_ref": item["client_ref"],
-                        "replayed": false,
-                        "result": {"address": "K/1|a|a", "after_fingerprint": "c".repeat(64)},
-                    })
-                })
-                .collect();
-            Ok(Reply::Done(answers))
+        let run = run_of(plans(1, |_| true), empty_scan());
+        let packing = pack(&compiled, &run);
+        let ran = execute(&compiled, &packing, &run, |items| {
+            Ok(Reply::Done(answers(items, "K/1|a|a", Value::Null)))
         })
         .unwrap();
-        let mut run = run_of(vec![row_state(
-            1,
-            Some(vec![paper("词1", "术语：词1\n来源：[[K]] §1", "card")]),
-        )]);
-        run.settle(&ran, &[1]);
+        // The readback does not find the row: the archive holds something else at the head.
+        let mut scan = empty_scan();
+        scan.side.push("K/1|a|a".to_string());
+        scan.cards.insert(
+            "K/1|a|a".to_string(),
+            json!({"address": "K/1|a|a", "type": "term", "term": "词1", "title": "词1", "body": "别的内容"}),
+        );
+        let verdict = Verdict {
+            rows: {
+                let (rows, _) = judge(&run.plans, &scan, &Value::Null);
+                rows
+            },
+            conflicts: Vec::new(),
+            revision: 8,
+            retyped: None,
+            diverged: vec![1],
+            stop: divergence_stop(&json!({"rows": [1]})),
+        };
+        let mut run = run;
+        run.settle(&ran, &verdict);
         assert_eq!(run.rows[0].status, Status::Conflicted);
         assert_eq!(
             pstr(&run.rows[0].reason.clone().unwrap(), "code"),
             "output_diverged"
         );
-        assert_eq!(run.rows[0].head(), Some(&"K/1|a|a".to_string()));
-        assert_eq!(run.structural_stop().unwrap().code, "conflicted");
+        let stop = verdict.stop.expect("a divergence stops the run");
+        assert_eq!(stop.code, "output_diverged");
+        assert_eq!(stop.exit, STOP_EXIT);
+        assert!(stop.message.contains("1 committed row(s)"), "{}", stop.message);
     }
 }
-
-
-
-

@@ -719,6 +719,12 @@ pub(crate) fn write_card_tx(
         }
         "create_successor" => {
             let kind = successor_kind(args)?;
+            let before = optional_string(args, "before")?;
+            if !before.is_empty() && kind != Successor::Side {
+                bail!(
+                    "`before` files a Side successor in the place of that sibling; pass kind `side`"
+                );
+            }
             let (part, card_type) = successor_part_type(args)?;
             let term = term_for_type(args, card_type)?;
             let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
@@ -733,16 +739,31 @@ pub(crate) fn write_card_tx(
             if hub_level.is_some() && card_type != CardType::Hub {
                 bail!(crate::hub::LEVEL_NEEDS_HUB_CARD);
             }
-            let (address, checked) = ops::create_successor_tx_with_term(
-                conn,
-                ACCESS,
-                kind,
-                &string_arg(args, "at")?,
-                card_type,
-                part.as_ref(),
-                term.as_deref(),
-                &text,
-            )?;
+            let (address, checked, moved) = if before.is_empty() {
+                let (address, checked) = ops::create_successor_tx_with_term(
+                    conn,
+                    ACCESS,
+                    kind,
+                    &string_arg(args, "at")?,
+                    card_type,
+                    part.as_ref(),
+                    term.as_deref(),
+                    &text,
+                )?;
+                (address, checked, None)
+            } else {
+                let (plan, checked) = ops::create_side_before_tx_with_term(
+                    conn,
+                    ACCESS,
+                    &string_arg(args, "at")?,
+                    &before,
+                    card_type,
+                    part.as_ref(),
+                    term.as_deref(),
+                    &text,
+                )?;
+                (plan.location.clone(), checked, Some(plan))
+            };
             accepted = checked;
             let card = crate::load_card(conn, &address)?;
             if level.is_some() {
@@ -754,7 +775,14 @@ pub(crate) fn write_card_tx(
             if form.is_some() {
                 crate::math::set_form(conn, &card, form)?;
             }
-            json!({"address":address,"type":card_type.id(),"facet":part.as_ref().map(|p|p.facet.id()),"emphasis":part.and_then(|p|p.emphasis).map(Emphasis::id),"level":level.map(Level::id).or(hub_level.map(crate::hub::HubLevel::id)),"form":form.map(crate::math::MathForm::id)})
+            let mut result = json!({"address":address,"type":card_type.id(),"facet":part.as_ref().map(|p|p.facet.id()),"emphasis":part.and_then(|p|p.emphasis).map(Emphasis::id),"level":level.map(Level::id).or(hub_level.map(crate::hub::HubLevel::id)),"form":form.map(crate::math::MathForm::id)});
+            if let Some(plan) = moved {
+                // The whole renamed mapping, as `insert_card` verification reports it: a caller
+                // re-reads every shifted address (S33, #182).
+                result["moved"] = json!(plan.mapping);
+                result["rewritten_links"] = json!(plan.rewritten_links);
+            }
+            result
         }
         other => bail!("unsupported batch tool `{other}`"),
     };
@@ -830,6 +858,11 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
             );
             canonical["title"] = json!(title_arg(args)?);
             canonical["body"] = json!(optional_string(args, "body")?);
+            // A named Side sibling is part of the request identity; an omitted one stays absent, so
+            // a receipt written before `before` existed keeps its exact hash (S33, #182).
+            if canonical.get("before").is_some() {
+                canonical["before"] = json!(optional_string(args, "before")?);
+            }
         }
         "edit_card" => {
             if let Some(value) = args.get("base_fingerprint").and_then(Value::as_str) {
@@ -1300,7 +1333,7 @@ fn tool_definitions() -> Vec<Value> {
             let mut batch = tool(
                 "apply_batch",
                 "Apply identified Card writes",
-                "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input including nested paragraph text. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. Edits require exactly one authored base_fingerprint or same-Card base_receipt, excluding generated Reverse links. An edit may instead of body/metadata supply owned_paragraph {text, replaces_receipt?, adopt_legacy?}: append or replace exactly the named receipt's single paragraph; explicit legacy adoption requires one exact existing span. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. preview:true validates the same transaction and returns complete draft Cards/paragraph facts, then rolls back all changes; a preview is never a commit receipt. A preview simulates each item in its own savepoint, so a Tree Lock or blocking Card-check refusal answers complete:false with every independently refused item in refusals and its dependents in blocked, while the other items still simulate; a real batch names its first blocking item instead. Ordinary validation failures still fail the whole request. Agent Access and ordinary Card/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path.",
+                "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input including nested paragraph text. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. A `create_successor` item may pass `before` with `kind` `side` to take the place of that Side child, shifting it and every later Side successor one label on in the same transaction. Edits require exactly one authored base_fingerprint or same-Card base_receipt, excluding generated Reverse links. An edit may instead of body/metadata supply owned_paragraph {text, replaces_receipt?, adopt_legacy?}: append or replace exactly the named receipt's single paragraph; explicit legacy adoption requires one exact existing span. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. preview:true validates the same transaction and returns complete draft Cards/paragraph facts, then rolls back all changes; a preview is never a commit receipt. A preview simulates each item in its own savepoint, so a Tree Lock or blocking Card-check refusal answers complete:false with every independently refused item in refusals and its dependents in blocked, while the other items still simulate; a real batch names its first blocking item instead. Ordinary validation failures still fail the whole request. Agent Access and ordinary Card/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path.",
                 json!({"preview":{"type":"boolean","description":"Validate and return the transaction draft, then roll back all Cards, receipts, allocation and index changes. No write is applied; Tree Lock and Card-check refusals are aggregated with complete:false, refusals and blocked items."},"items":{"type":"array","minItems":1,"maxItems":64,"items":batch_item},"preview_items":{"type":"array","minItems":1,"maxItems":1024,"items":batch_item,"description":"Read-only complete sequence, exclusive with items and requiring preview:true. At most 8 MiB authored input. Numeric client_ref equals the zero-based sequence index; references to earlier chunks bind exactly as the thin client's 64-item/1-MiB writes. Tree Lock and Card-check refusals aggregate across chunk boundaries. All simulated changes roll back."}}),
                 &[],
                 false,
@@ -1338,10 +1371,11 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "create_successor",
             "Create successor card",
-            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event), `finding` for a Finding Card (one empirical result from a source), `model` for a Model Card (one whole model), `hub` for a Hub Card (a way into one subject), or `term` for a Term Card (one term's explanation, with its exact `term` name; a named Term Card is a head only as an immediate Side successor of a Term list). Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`. A Model Card (type model, no facet) may carry its model's elaboration `level`.",
+            "Add a Card to an agent tree after the Card at `at`: a direct successor continues the line (`3/1` -> `3/2`), a side successor branches (`3/1` -> `3/1|a`; not from a tree root). Set `type` to `event` for an Event Card (one real-world event), `finding` for a Finding Card (one empirical result from a source), `model` for a Model Card (one whole model), `hub` for a Hub Card (a way into one subject), or `term` for a Term Card (one term's explanation, with its exact `term` name; a named Term Card is a head only as an immediate Side successor of a Term list). With `kind` `side`, `before` files the new Card in the place of that Side child: it takes that sibling's label, and that sibling and every later Side successor of `at` move one label on with their whole subtrees (the reply's `moved` map lists every new address), so a list keeps its order when a row is added between published rows. Set `facet` to make a Model part: a Model Card presenting one part of a model. It belongs to the Model Card it is filed under, if any, and to every Model Card that links it, so it may be filed wherever it first connects; `emphasis` marks it `core` or `aside`. A Model Card (type model, no facet) may carry its model's elaboration `level`.",
             json!({
                 "at": at,
                 "kind": { "type": "string", "enum": ["direct", "side"], "description": "Default direct." },
+                "before": { "type": "string", "description": "For `kind` side: the immediate Side successor of `at` whose place the new Card takes; it and every later Side successor move one label on. Needs `kind` side; with a Direct successor the new Card takes the next place after `at`." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
                 "type": card_type("The Card type: idea (default), event, finding, model, hub, or term."),
