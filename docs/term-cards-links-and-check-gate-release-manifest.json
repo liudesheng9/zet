@@ -3,7 +3,7 @@
   "issue": 170,
   "slice": "S28",
   "release": "term-cards-links-and-check-gate",
-  "generated": "2026-10-25",
+  "generated": "2026-10-26",
   "scope": "The candidate compatible release set of the Term Cards, Term Links and shared Card check work (PRD #142, slices S01-S27): one executable set, one frozen digest pair, and the installed agent guidance. It names the versions; it does not migrate the live archive, rerun a digest, backfill a book, unlock a tree or promote the gate.",
   "contracts": {
     "executable": {
@@ -27,9 +27,9 @@
       "older_binary_refuses": "2"
     },
     "workflow": {
-      "base": "5.6.2",
-      "zt-econ-digest": "6.6.2",
-      "zt-math-digest": "5.6.2"
+      "base": "5.6.3",
+      "zt-econ-digest": "6.6.3",
+      "zt-math-digest": "5.6.3"
     }
   },
   "capabilities": {
@@ -51,3 +51,4 @@
     "zt-math-digest": "5.5.5"
   }
 }
+

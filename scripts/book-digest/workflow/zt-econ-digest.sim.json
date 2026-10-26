@@ -284,6 +284,78 @@
         "ok": true,
         "output": "{\"schema_version\":1,\"kind\":\"finalize_report\",\"step\":\"final\",\"citation_key\":\"Key\",\"variant\":\"econ\",\"status\":\"done\",\"complete\":true,\"branch\":\"fix\",\"graph_revision\":8,\"audit\":{\"scheduled\":{\"unit\":\"audit/book@1\",\"revision\":1,\"graph_revision\":7},\"final\":{\"unit\":\"audit/book@2\",\"revision\":2,\"graph_revision\":8}},\"changes\":{\"cards\":1,\"trees\":1,\"kinds\":[\"structure\"],\"graph_revision\":8,\"change_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"refresh\":[{\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"},{\"layer\":\"organize\",\"applicable\":false,\"stage_owned\":true,\"reason\":\"its own stage generates this content (structure), so that stage owns the refresh; the changed-Card manifest is its input and is recorded here\"},{\"layer\":\"audit\",\"unit\":\"audit/book@2\",\"revision\":2,\"state\":\"done\",\"refreshed\":true,\"applicable\":true,\"reason\":\"\"}],\"faults\":{\"total\":0,\"residual\":0,\"advisory\":0,\"by_class\":{},\"list\":[]},\"infrastructure\":[],\"audit_book\":{\"cards\":9,\"orphans\":0,\"figures_missing\":0,\"models_not_self_sufficient\":0},\"report\":{\"path\":\"D:\\\\x\\\\Key\\\\finalize\\\\final-report.json\"}}"
       }
+    },
+    {
+      "label": "^terms block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+      }
+    },
+    {
+      "label": "^digest block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+      }
+    },
+    {
+      "label": "^events block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+      }
+    },
+    {
+      "label": "^findings block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+      }
+    },
+    {
+      "label": "^explain block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+      }
+    },
+    {
+      "label": "^link block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+      }
+    },
+    {
+      "label": "^cards block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"claimed\":0,\"units\":0,\"jobs\":0,\"gate\":{\"complete\":true,\"counts\":{\"total\":0,\"done\":0,\"failed\":0,\"open\":0}}}"
+      }
+    },
+    {
+      "label": "^term-cards: drive start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"jobs\":0,\"plan_revision\":1}"
+      }
+    },
+    {
+      "label": "^term-cards: drive review$",
+      "answer": {
+        "answer": "{\"ok\":true,\"reviews\":0,\"counts\":{}}"
+      }
+    },
+    {
+      "label": "^term-cards: drive fix$",
+      "answer": {
+        "answer": "{\"ok\":true,\"fixes\":0,\"counts\":{}}"
+      }
+    },
+    {
+      "label": "^term-cards: drive finish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"done\":[],\"failed\":[],\"book\":\"done\",\"publication\":{\"complete\":true,\"rows\":0,\"committed\":0,\"ready_unpublished\":0,\"stop\":null}}"
+      }
+    },
+    {
+      "label": "^term-link: drive link$",
+      "answer": {
+        "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/book@1\",\"counts\":{\"cards_changed\":1,\"links_added\":2},\"second\":{\"cards_changed\":0,\"cards_refused\":0}}"
+      }
     }
   ]
 }

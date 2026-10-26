@@ -1,6 +1,6 @@
-// ==== module zt-workflow-lib v1 ====
-// The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6): the digests (zt-digest-lib) and
-// zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
+// ==== module zt-workflow-lib v2 ====
+// The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6; docs/workflow-module-structure-proposal.md):
+// the digests (zt-digest-lib) and zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
 //  - S6, one lock reader: the owner's typed `card_locked` refusal (#140, R326/R337/R338) is read here and only
 //    here. A refusal is a destination decision, never a provider fault: the stage stops with it and nothing
 //    is retried, unlocked or re-pointed through another Access.
@@ -8,9 +8,23 @@
 //    (the blueprints' role `relay`), which runs one PowerShell line and returns its exit state and its last
 //    line. The relay decides nothing; the caller reads the line.
 //  - the JSON line reader both workflows use on a relayed line.
+//  - v2 (#175, workflow module structure): `ztDrive`, the ONE shared drive helper. It runs one deterministic
+//    script step as a DeepSeek drive job through a Haiku DSMP manager and returns the step's parsed last JSON
+//    line. No Claude agent runs a single command for a driver: the script step does the whole chain in one
+//    process and the DeepSeek job answers with its one JSON line. The helper records and deletes the
+//    conversation it starts, so the run cleanup can verify every provider resource it created.
+//    `ztRelay` stays only until the later slices remove its last callers.
 const ZT_LOCK = 'card_locked'
 const ZT_COMMAND_TIMEOUT_MS = 600000
 const ZT_RELAY_SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] }
+const ZT_DRIVE_MODEL = 'deepseek-official/deepseek-flash'
+const ZT_DRIVE_SCHEMA = {
+  type: 'object',
+  properties: {
+    session_id: { type: 'string' }, answer: { type: 'string' }, deleted: { type: 'boolean' }, registered: { type: 'boolean' }, evidence: { type: 'boolean' },
+  },
+  required: ['answer'],
+}
 
 // The JSON object in a line, also after prose on the same line ("…保留原样。{"address":…}"): the longest object
 // from the first brace that parses (a relay may add a remark after the line, "(abridged)").
@@ -71,8 +85,51 @@ Return ok (true when it exits without an error) and output = its last output lin
   if (lock && (!(run && run.ok) || refused) && o.lockStops !== false) throw ztLockStop(o.label, lock)
   return { run, json }
 }
+// The exact prompt a drive job runs: the one command as given, then only its last line.
+function ztDriveCommand(command) {
+  return `在 PowerShell 里原样运行下面这一条命令，不改写它，不运行别的命令，不修改任何文件。命令结束后，只回复它输出的最后一行（一行 JSON），不加任何别的字。\n\n${command}`
+}
+// The one manager prompt of a drive job: start it, wait, retry once, record and delete the conversation.
+function ztDrivePrompt(o) {
+  const answers = o.answers || `${String(o.cwd || '').replace(/[\\/]+$/, '')}\\answers`
+  return `You are a DeepSeek subagent manager for a ZET workflow step (${o.label}). You start one DeepSeek agent, wait for it, collect its answer, record it and delete its conversation. You never write content and you never run the step's command yourself. Keep your messages short.
+
+First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete".
+
+1. Start the job: mcp__deepseek__deepseek_run with cwd "${o.cwd}", prompt ${JSON.stringify(ztDriveCommand(o.command))}, skills [], model "${o.model || ZT_DRIVE_MODEL}", reasoning_effort "${o.effort || 'high'}", wait_seconds 0.
+2. Wait with mcp__deepseek__deepseek_wait (wait_seconds ${DSMP.pollSeconds}) until it ends. A job asking a question: answer "按任务说明自行决定，不需要询问。". A job asking approval for the one command, or for writing the answer file under "${answers}": allow; anything else: reject.
+3. A job that failed or gave an empty answer gets ONE more attempt in a new conversation. Never a third.
+4. Records (each record command changes no Card; run it at the moment named, in the same message as your next call when you can):
+- The moment deepseek_run returns a session_id: ${o.ledger || 'zt-digest ledger'} resource -Out "${o.out}" -Unit run -RegisterId <session_id> -Workspace "${o.cwd}". Use the session_id that deepseek_run returned, never a word in its place.
+- A step whose job list is empty starts no run: never send a placeholder prompt.
+- When the job ends: write its final answer text, unchanged, to "${answers}\\<session_id>.txt", then ${o.ledger || 'zt-digest ledger'} resource -Out "${o.out}" -EvidenceFor <session_id> -Evidence "${answers}\\<session_id>.txt".
+- Then delete the conversation (mcp__deepseek__deepseek_delete, never archive) and record it: ${o.ledger || 'zt-digest ledger'} resource -Out "${o.out}" -Settle <session_id> -State finished -Deleted confirmed (-State error when the job ended in an error; -Deleted failed -Message '<the error>' when the delete fails).
+- A record command that fails does not stop the work: report registered or evidence false and go on.
+The record commands are the only commands you run: each in the foreground with timeout_ms: 600000. You have no terminal tabs, no Monitor loop, no session handoff and no general shell: never start another agent, never hand the work on, never poll with Start-Sleep or any other timer, and wait only with deepseek_wait. Keep at most 8 jobs running at a time.
+5. Return answer (its final answer verbatim, at most 4000 characters), session_id, deleted, registered and evidence.`
+}
+// ONE deterministic script step, run as a DeepSeek drive job through a Haiku DSMP manager. Returns the step's
+// parsed last JSON line. o: label, command, out, cwd, phase, ledger, answers, deepseek, model, effort.
+// A step that answers no JSON line at all is a transport fault: it throws, and the module stops with it. A step
+// that answers `{ok:false, ...}` is a failed step: the module reads that line and stops with its reason.
+async function ztDrive(ctx, o) {
+  const label = o.label || o.step || 'drive'
+  const cwd = String(o.cwd || o.out || '').replace(/[\\/]+$/, '')
+  const run = await dsmpSlot(() => ctx.agent(ztDrivePrompt({ ...o, label, cwd }), {
+    role: 'manager', label, phase: o.phase, schema: ZT_DRIVE_SCHEMA,
+  }))
+  const said = run && (run.answer !== undefined ? run.answer : run.output)
+  if (o.deepseek) {
+    if (run && run.deleted === true) o.deepseek.deleted = (o.deepseek.deleted || 0) + 1
+    else if (run && run.session_id) (o.deepseek.not_deleted = o.deepseek.not_deleted || []).push(run.session_id)
+  }
+  const json = ztLastJson(said)
+  if (!json) throw new Error(`${label}: no JSON line from the step: ${String(said || 'no answer').trim().slice(0, 400)}`)
+  return json
+}
 defineModule({
-  id: 'zt-workflow-lib', version: '1', library: true,
-  summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the one zt-relay command runner, and the JSON line reader.',
+  id: 'zt-workflow-lib', version: '2', requires: ['@dsmp'], library: true,
+  summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the one zt-relay command runner, the JSON line reader, and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager.',
 })
 // ==== end module zt-workflow-lib ====
+

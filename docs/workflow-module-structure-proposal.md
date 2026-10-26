@@ -107,14 +107,19 @@ script steps, run by drive jobs.
 
 | Module | Relay calls | Notes |
 |---|---|---|
-| `zt-digest-lib` | 16 | group claim/start/finish/fault/gate relays of every layer driver |
+| `zt-digest-lib` | 10 (was 16) | the layer driver moved to script steps (#175); the relay helpers left serve the model layer, the whole-book cycle, the preparation and the settlement |
 | `zt-model-lib` | 6 | model compiler steps; the Sonnet architect stays (designer role) |
 | `zt-finalize` | 5 | scope, refresh, final audit |
 | `zt-digest-prepare` | 4 | prepare, resume, status |
 | `zt-bridge`, `zt-organize` | 3 each | plan/report/publish; survey/apply/publish |
 | `zt-figures` | 2 | |
 | `zt-term-link-lib` | 2 | the finalization round's Term-link pass |
-| `zt-audit`, `zt-cards-book`, `zt-link-check`, `zt-link-prepare`, `zt-math-lib`, `zt-grow-cycle`, `zt-workflow-lib` | 1 each | |
+| `zt-audit`, `zt-cards-book`, `zt-link-check`, `zt-link-prepare`, `zt-math-lib`, `zt-grow-cycle` | 1 each | |
+
+Moved by #175 (workflow structure slice 1): `zt-group-cycle` v7, `zt-cards-layer` v3, `zt-event-layer` v5,
+`zt-finding-layer` v5, `zt-explain` v8, `zt-link-pass` v8 and `zt-book-terms` v5 call `ztRelay`, `runScript`
+and `wfpScript` zero times: their blocks are `layer-steps.ps1` steps run by DeepSeek drive jobs, and `ztDrive`
+(zt-workflow-lib v2) is the one drive helper the Term stages use too. Base 5.6.3, econ 6.6.3, math 5.6.3.
 
 ## 5. Review checklist for a module change
 
@@ -125,3 +130,4 @@ script steps, run by drive jobs.
 - [ ] The module is a straight line; its only branches are "no work" and "a step failed".
 - [ ] The harness checks the drive steps' order and that no relay agent runs.
 - [ ] The install carries the DSMP block in both scopes and `verify` is ok.
+

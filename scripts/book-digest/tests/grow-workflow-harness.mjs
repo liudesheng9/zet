@@ -15,7 +15,7 @@
 //  - S6: a `card_locked` fault stops the stage with the owner's refusal (tree, Lock id), never retried, and the
 //    report stage does not run;
 //  - the options reach `next` as one JSON object (the box copy, the mode, the frozen model, high effort);
-//  - the built script carries zt-grow-cycle v12 and zt-workflow-lib v1, and reads a Lock in one place.
+//  - the built script carries zt-grow-cycle v12 and zt-workflow-lib v2, and reads a Lock in one place.
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -172,7 +172,7 @@ const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')
 
 // 7. The frozen build.
 {
-  check(build.modules['zt-grow-cycle'] === '12' && build.modules['zt-workflow-lib'] === '1', `the build carries zt-grow-cycle v12 and zt-workflow-lib v1 (${JSON.stringify(build.modules)})`)
+  check(build.modules['zt-grow-cycle'] === '12' && build.modules['zt-workflow-lib'] === '2', `the build carries zt-grow-cycle v12 and zt-workflow-lib v2 (${JSON.stringify(build.modules)})`)
   const cycle = source.slice(source.indexOf('// ==== module zt-grow-cycle'), source.indexOf('// ==== end module zt-grow-cycle'))
   check((cycle.match(/ZT_LOCK/g) || []).length === 1 && !/JSON\.parse/.test(cycle) && (source.match(/function ztLockRefusal/g) || []).length === 1, 'the cycle checks the Lock once, on the typed fault line; the one reader is the shared library\'s')
   check(!/You run one compiler chain|You drive DeepSeek Harness|You manage \d+ DeepSeek/.test(source) && /dsDispatch\(line\.ids/.test(cycle), 'every DeepSeek job goes through dsDispatch; no hand-written manager prompt')
@@ -180,3 +180,4 @@ const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')
 
 console.log(failed ? `${failed} check(s) FAILED` : 'all checks passed')
 process.exit(failed ? 1 : 0)
+

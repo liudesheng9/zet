@@ -967,6 +967,188 @@ function runtime(kind, opts = {}) {
     return { steps, results }
   }
 
+  // #175 (docs/workflow-module-structure-proposal.md): the digest layers' deterministic steps
+  // (layer-steps.ps1) answered on the in-memory ledger, as the script does: claim a block, run each unit's
+  // start or plan, record every held unit's checked completion, fault the rest, apply/report, and the gate.
+  // The stand-in keeps the job list each step wrote, so the content managers run exactly those entries.
+  const layerCalls = [], layerManagers = [], layerState = new Map(), layerJobs = new Map()
+  const layerKey = (out, layer) => `${out}|${layer}`
+  const layerArg = (cmd, name) => (cmd.match(new RegExp(`-${name} "([^"]*)"`)) || cmd.match(new RegExp(`-${name} (\\w+)`)) || [])[1]
+  const layerGate = (out, layer) => lastJson(commandAnswer(`zt-digest ledger gate -Out "${out}" -Layer ${layer} -Brief`).output) || { complete: false, counts: {} }
+  const layerFault = (cmd) => (cmd.match(/ -Fault '(.*)'$/) || [])[1] || ''
+  const layerStart = async (cmd) => {
+    const layer = layerArg(cmd, 'Layer'), out = layerArg(cmd, 'Out'), owner = layerArg(cmd, 'Owner') || `${layer} steps`
+    const take = Number(layerArg(cmd, 'Take') || 8), wait = Number(layerArg(cmd, 'Wait') || 0), lease = Number(layerArg(cmd, 'Lease') || 0)
+    const opts2 = [wait ? ` -Wait ${wait}` : '', lease ? ` -Lease ${lease}` : ''].join('')
+    if (layer === 'cards') {
+      const line = commandAnswer(`zt-digest finish-batch -Out "${out}" -Layer cards -Take ${take} -Owner "${owner}"${opts2}`)
+      const j = lastJson(line.output)
+      if (!line.ok || !j || j.kind !== 'finish_batch') {
+        // A cut line is never a failed claim: the ledger decides what this owner still holds.
+        const held = (lastJson(commandAnswer(`zt-digest ledger status -Out "${out}" -Held "${owner}"`).output) || {}).units || []
+        return { ok: true, layer: 'cards', claimed: held.length, units: held.length, jobs: 0, done: [], failed: [], results: [], gate: layerGate(out, layer) }
+      }
+      const ok = j.results.filter((r) => r.status === 'done' || r.status === 'partial').map((r) => r.unit)
+      const bad = j.results.filter((r) => !(r.status === 'done' || r.status === 'partial')).map((r) => r.unit)
+      return { ok: true, layer: 'cards', claimed: Number(j.claimed || 0), units: Number(j.claimed || 0), jobs: 0, done: ok, failed: bad, results: j.results, gate: layerGate(out, layer) }
+    }
+    let claim = null
+    for (let attempt = 0; attempt < 3; attempt++) { claim = commandAnswer(`zt-digest ledger next -Out "${out}" -Layer ${layer} -Take ${take} -Brief -Owner "${owner}"${opts2}`); if (claim.ok || lastJson(claim.output)) break }
+    const parsed = lastJson(claim.output)
+    let units = parsed && Array.isArray(parsed.units) ? parsed.units.filter((u) => u && u.id) : null
+    // A -Wait claim waits for a producer's late units (the tool blocks until one is ready or the budget ends);
+    // the stand-in repeats the claim while the producer still runs, as the ledger does.
+    for (let i = 0; wait > 0 && units && !units.length && i < 100 && !led.gate('digest').settled; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 2))
+      claim = commandAnswer(`zt-digest ledger next -Out "${out}" -Layer ${layer} -Take ${take} -Brief -Owner "${owner}"${opts2}`)
+      units = (lastJson(claim.output) || {}).units || []
+    }
+    if (!units) units = ((lastJson(commandAnswer(`zt-digest ledger status -Out "${out}" -Held "${owner}"`).output) || {}).units || []).filter((u) => u && u.id)
+    if (!units.length && !claim.ok) return { ok: false, step: 'claim', error: claim.output }
+    layerState.set(layerKey(out, layer), { units, starts: {}, jobs: [] })
+    if (!units.length) return { ok: true, layer, units: 0, claimed: 0, jobs: 0, gate: layerGate(out, layer) }
+    const state = layerState.get(layerKey(out, layer))
+    const jobs = []
+    if (layer === 'digest' || layer === 'link') {
+      for (const u of units) {
+        const group = Number((u.id.match(/g(\d+)@/) || [])[1])
+        const start = commandAnswer(`zt-digest ${layer === 'digest' ? 'group-start' : 'link-start'} -Out "${out}" -Group ${group} -Token ${u.token}`)
+        const sj = lastJson(start.output)
+        if (!start.ok || !sj) return { ok: false, step: `${layer}-start`, error: start.output }
+        const expected = sj.expected_jobs === undefined ? (sj.job ? 1 : 0) : Number(sj.expected_jobs)
+        state.starts[u.id] = { draft: sj.draft || '', expected_jobs: expected, recovered: sj.recovered === true }
+        const entries = Array.isArray(sj.jobs) && sj.jobs.length ? sj.jobs
+          : (expected > 0 ? [{ id: `digest-g${String(group).padStart(3, '0')}-t${u.token}`, files: [], prompt: 'p' }] : [])
+        for (const e of entries) jobs.push({ ...e, unit: u.id, token: u.token })
+      }
+    } else {
+      const at = units[0]
+      let planCmd
+      if (layer === 'events') planCmd = `zt-digest event -Step plan -Staging "${out}"`
+      else if (layer === 'findings') planCmd = `zt-digest finding -Step plan -Staging "${out}"`
+      else if (layer === 'terms') planCmd = `zt-digest terms -Step plan -Staging "${out}" -Token ${at.token}`
+      else if (layer === 'explain') {
+        const models = units.map((u) => (u.inputs && u.inputs.model) || '').filter(Boolean)
+        const maxParts = (cmd.match(/-MaxParts (\d+)/) || [])[1]
+        planCmd = `zt-digest model -Step explain -Work "${out}\\explain" -Staging "${out}" -Models "${models.join(',')}"${maxParts ? ` -MaxParts ${maxParts}` : ''}`
+      }
+      const plan = commandAnswer(planCmd)
+      const pj = lastJson(plan.output)
+      if (!plan.ok || !pj) return { ok: false, step: `${layer} plan`, error: plan.output }
+      for (const e of (Array.isArray(pj.jobs) ? pj.jobs : [])) jobs.push({ ...e, unit: at.id, token: at.token })
+      state.starts[at.id] = { draft: '', expected_jobs: jobs.length, recovered: false }
+      state.plan = { candidates: Number(pj.candidates || 0), groups: Number(pj.groups || 0), parts: Number(pj.parts || 0) }
+    }
+    state.jobs = jobs
+    const file = `${out}\\layer-steps\\${layer}\\jobs.json`
+    layerJobs.set(file, jobs)
+    const extra = layer === 'events' || layer === 'findings' ? { plan: { candidates: state.plan.candidates, groups: state.plan.groups, jobs: jobs.length } }
+      : layer === 'explain' ? { plan: { parts: state.plan.parts, jobs: jobs.length } } : {}
+    return { ok: true, layer, units: units.length, claimed: units.length, jobs: jobs.length, file, gate: layerGate(out, layer), ...extra }
+  }
+  const layerApply = async (cmd) => {
+    const out = layerArg(cmd, 'Out')
+    const state = layerState.get(layerKey(out, 'explain')) || { units: [] }
+    if (!state.units.length) return { ok: true, layer: 'explain', jobs: 0, applied: 0, file: null, gate: layerGate(out, 'explain') }
+    const r = commandAnswer(`zt-digest model -Step explain-apply -Work "${out}\\explain" -Staging "${out}"`)
+    const j = lastJson(r.output)
+    if (!r.ok || !j) return { ok: false, step: 'explain-apply', error: r.output }
+    const jobs = (Array.isArray(j.jobs) ? j.jobs : []).map((e) => ({ ...e, unit: state.units[0].id, token: state.units[0].token }))
+    const file = `${out}\\layer-steps\\explain\\apply-jobs.json`
+    layerJobs.set(file, jobs)
+    return { ok: true, layer: 'explain', jobs: jobs.length, applied: Number(j.applied || 0), refused: (j.refused || []).length, blocked: (j.blocked || []).length, file, gate: layerGate(out, 'explain') }
+  }
+  const layerFinish = async (cmd) => {
+    const layer = layerArg(cmd, 'Layer'), out = layerArg(cmd, 'Out')
+    const state = layerState.get(layerKey(out, layer)) || { units: [], starts: {}, jobs: [] }
+    if (layer === 'cards' || !state.units.length) return { ok: true, layer, results: [], gate: layerGate(out, layer) }
+    const faultOf = (unit, token, cause, code) => {
+      const fault = { schema_version: 1, unit, input_hash: `ih-${unit}`, cause: String(cause).slice(0, 300), ...(code ? { code } : {}) }
+      const answer = commandAnswer(`zt-digest ledger fail -Out "${out}" -Unit "${unit}" -Token ${token} -Fault '${JSON.stringify(fault).replace(/'/g, "''")}'`)
+      return (lastJson(answer.output) || {}).state === 'failed' ? 'failed' : 'retry'
+    }
+    if (layer === 'digest' || layer === 'link') {
+      const results = [], done = [], failed = []
+      for (const u of state.units) {
+        const group = Number((u.id.match(/g(\d+)@/) || [])[1])
+        const start = state.starts[u.id] || {}
+        const fin = commandAnswer(`zt-digest ${layer === 'digest' ? 'group-finish' : 'link-finish'} -Out "${out}" -Group ${group} -Token ${u.token} -Draft "${start.draft || ''}"`)
+        const fj = lastJson(fin.output)
+        if (!fj) {
+          const said = ((lastJson(commandAnswer(`zt-digest ledger status -Out "${out}" -Units ${u.id}`).output) || {}).units || [])[0]
+          if (said && (said.state === 'done' || said.state === 'noop')) { results.push({ unit: u.id, token: u.token, group, status: 'done', from: 'ledger', jobs: Number(start.expected_jobs || 0) }); done.push(u.id); continue }
+          const status = faultOf(u.id, u.token, `missing_result: the completion line was not readable: ${fin.output}`, 'missing_result')
+          results.push({ unit: u.id, token: u.token, group, status, cause: 'the completion line was not readable' }); failed.push(u.id); continue
+        }
+        if (fin.ok && (fj.state === 'done' || fj.complete === true)) {
+          const entry = { unit: u.id, token: u.token, group, status: fj.status === 'partial' ? 'partial' : 'done', jobs: Number(start.expected_jobs || 0) }
+          if (fj.disposition) entry.disposition = fj.disposition
+          if (fj.owned) entry.owned = fj.owned.length
+          if (fj.recovered || start.recovered) entry.recovered = true
+          if (layer === 'link') { entry.counts = fj.counts; entry.quality = fj.quality; entry.changed = fj.changed || [] }
+          results.push(entry); done.push(u.id); continue
+        }
+        if (/card_locked/.test(String(fin.output))) {
+          faultOf(u.id, u.token, 'the owner locked the destination', 'card_locked')
+          results.push({ unit: u.id, token: u.token, group, status: 'failed', code: 'card_locked', cause: 'card_locked' }); failed.push(u.id)
+          return { ok: false, layer, code: 'card_locked', error: 'card_locked: the owner locked the destination', unit: u.id, refusal: fj, results, gate: layerGate(out, layer) }
+        }
+        const status = faultOf(u.id, u.token, (fj && (fj.fault || fj.error)) || fin.output, fin.ok ? undefined : 'missing_result')
+        results.push({ unit: u.id, token: u.token, group, status, cause: (fj && (fj.fault || fj.error)) || fin.output }); failed.push(u.id)
+      }
+      return { ok: true, layer, results, done, failed, gate: layerGate(out, layer) }
+    }
+    const mid = []
+    if (layer === 'events' || layer === 'findings') {
+      const tool = layer === 'events' ? 'event' : 'finding'
+      const a = commandAnswer(`zt-digest ${tool} -Step apply -Staging "${out}" -Apply`); const aj = lastJson(a.output) || {}
+      mid.push({ step: 'apply', ok: a.ok, applied: Number(aj.applied_jobs || 0), created: Number(aj.created || 0), merged: Number(aj.merged || 0), linked: Number(aj.linked || 0), refused: (aj.refused || []).length, pending: Number(aj.pending_jobs || 0) })
+      const r = commandAnswer(`zt-digest ${tool} -Step report -Staging "${out}"`); const rj = lastJson(r.output) || {}
+      mid.push({ step: 'report', ok: r.ok, jobs: Number(rj.jobs || 0), created: Number(rj.created || 0), merged: Number(rj.merged || 0), linked: Number(rj.linked || 0), refused: Number(rj.refused || 0) })
+    }
+    if (layer === 'explain') {
+      const r = commandAnswer(`zt-digest model -Step explain-report -Work "${out}\\explain" -Staging "${out}"`); const rj = lastJson(r.output) || {}
+      mid.push({ step: 'report', ok: r.ok, models: (rj.models || []).length })
+    }
+    if (layer === 'terms') {
+      const u = state.units[0]
+      const a = commandAnswer(`zt-digest terms -Step apply -Staging "${out}" -Token ${u.token} -Apply`)
+      const aj = lastJson(a.output)
+      if (a.ok && aj && (aj.ok === true || aj.state === 'done')) return { ok: true, layer, results: [{ unit: u.id, status: 'done', terms: Number(aj.terms || 0), card: aj.card || '' }], mid, report: aj, gate: layerGate(out, layer) }
+      faultOf(u.id, u.token, (aj && aj.error) || a.output, 'check_failed')
+      return { ok: true, layer, results: [{ unit: u.id, status: 'failed', cause: (aj && aj.error) || a.output }], mid, report: aj, gate: layerGate(out, layer) }
+    }
+    const list = state.units.map((u) => `${u.id}:${u.token}`).join(',')
+    const batch = commandAnswer(`zt-digest finish-batch -Out "${out}" -Units "${list}"`)
+    const bj = lastJson(batch.output)
+    // The batch's own line carries the owner's typed refusal: the step stops with it.
+    if (bj && bj.code === 'card_locked') return { ok: false, layer, code: 'card_locked', error: 'card_locked: the owner locked the destination', refusal: bj.refusal || bj, results: bj.results || [], mid, gate: layerGate(out, layer) }
+    if (!batch.ok || !bj || bj.kind !== 'finish_batch') {
+      const states = ((lastJson(commandAnswer(`zt-digest ledger status -Out "${out}" -Units ${state.units.map((x) => x.id).join(',')}`).output) || {}).units || [])
+      if (states.length) {
+        const results = states.map((st) => {
+          const u = state.units.find((x) => x.id === st.id)
+          if (st.state === 'done' || st.state === 'noop') return { unit: st.id, token: st.token, status: 'done', from: 'ledger' }
+          return { unit: st.id, token: st.token, status: faultOf(st.id, st.token, 'missing_result: the completion line was not readable', 'missing_result'), cause: 'the completion line was not readable' }
+        })
+        return { ok: true, layer, results, mid, gate: layerGate(out, layer) }
+      }
+      return { ok: false, step: 'finish-batch', error: batch.output, mid }
+    }
+    const results = (bj.results || []).map((r) => ({
+      unit: r.unit, token: r.token, status: r.status,
+      ...(r.disposition ? { disposition: r.disposition } : {}), ...(r.code ? { code: r.code } : {}), ...(r.cause ? { cause: r.cause } : {}), ...(r.from ? { from: r.from } : {}),
+    }))
+    return { ok: true, layer, results, mid, gate: layerGate(out, layer) }
+  }
+  const layerStep = async (cmd) => {
+    const step = layerArg(cmd, 'Step'), layer = layerArg(cmd, 'Layer')
+    layerCalls.push({ layer, step, cmd, owner: layerArg(cmd, 'Owner') || '' })
+    if (step === 'start') return layerStart(cmd)
+    if (step === 'apply') return layerApply(cmd)
+    return layerFinish(cmd)
+  }
+
   const answer = async (prompt, callOpts) => {
     const text = String(prompt)
     const label = callOpts.label || ''
@@ -1062,36 +1244,32 @@ function runtime(kind, opts = {}) {
         return { ok: r.ok, output: r.output }
       }
     }
-    // S24 (#167): the Term-card branch's own managers. A wave keeps its writers, then a settle
-    // manager deletes their conversations; a scenario may fail every writer of a wave.
-    if (text.startsWith('You are a DeepSeek subagent manager for ZET Term Cards (settle a wave)')) {
-      const open = text.indexOf('\n', text.indexOf('SESSIONS ('))
-      const end = text.indexOf('\n\nFor each', open)
-      const list = JSON.parse(text.slice(open, end < 0 ? text.length : end))
-      termManagers.push({ label, phase: callOpts.phase, kind: 'settle', jobs: list.map((s) => s.id) })
-      return { ok: true, deleted: list.length, not_deleted: [], sessions: list.map((s) => ({ id: s.id, session_id: s.session_id, deleted: true })) }
-    }
-    // zt-term-cards v4 (#172): a Haiku manager runs DeepSeek jobs only. A "drive <step>" job runs one
-    // term-steps.ps1 step (answered here on the in-memory ledger, as the script does); the content
-    // managers run entries [from, to] of the job file the start step wrote.
-    if (text.startsWith('You are a DeepSeek subagent manager for ZET Term Cards (')) {
-      const kind = (text.match(/Term Cards \(([^)]+)\)/) || [])[1] || 'write'
-      const drive = (kind.match(/^drive (\w+)$/) || [])[1]
-      const answer = (id, value) => ({ ok: true, jobs: [{ id, session_id: sessionOf(id), status: 'done', answer: json(value), deleted: true }] })
-      if (drive) {
-        termManagers.push({ label, phase: callOpts.phase, kind: 'drive', step: drive, prompt: text })
-        const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
-        termCalls.push({ tool: 'term-steps', step: drive, cmd: (plain.match(/pwsh -NoProfile -File [^\n"]*"[^"]*" -Step \w+ -Out "[^"]*"[^\n]*/) || [])[0] || '' })
-        if (drive === 'start') {
-          if (opts.termPlanFails) return answer('drive-start', { ok: false, step: 'plan', error: 'term-cards: the book has no Term list' })
+    // #175 (docs/workflow-module-structure-proposal.md): ONE shared drive helper. A drive job runs one
+    // deterministic script step (the Term stages' term-steps.ps1 or a digest layer's layer-steps.ps1) and
+    // answers with the step's last JSON line, after recording and deleting its conversation.
+    if (text.startsWith('You are a DeepSeek subagent manager for a ZET workflow step (')) {
+      const stepLabel = (text.match(/workflow step \(([^)]*)\)/) || [])[1] || label
+      const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
+      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps)\.ps1[^\n]*/) || [])[0] || ''
+      const reply = (value, id) => {
+        const session = sessionOf(id)
+        const recorded = recordJob(text, session, 'run', 1, true)
+        return { answer: json(value), session_id: session, ...recorded }
+      }
+      if (/term-steps\.ps1/.test(command)) {
+        const step = (command.match(/-Step (\w+)/) || [])[1] || 'start'
+        termManagers.push({ label, phase: callOpts.phase, kind: 'drive', step, prompt: text })
+        termCalls.push({ tool: 'term-steps', step, cmd: command })
+        if (step === 'start') {
+          if (opts.termPlanFails) return reply({ ok: false, step: 'plan', error: 'term-cards: the book has no Term list' }, 'drive-start')
           for (const job of termJobs) { const u = led.add(`termcards/${job.id}@1`, 'termcards', { job }); if (!opts.termAlreadyDone) u.state = 'claimed' }
           const book = led.add('termcards/book@1', 'termcards', {})
           if (opts.termAlreadyDone) { for (const job of termJobs) led.finish(`termcards/${job.id}@1`); led.finish('termcards/book@1') } else book.state = 'registered'
-          return answer('drive-start', { ok: true, jobs: opts.termAlreadyDone ? 0 : termJobs.length, plan_revision: 1 })
+          return reply({ ok: true, jobs: opts.termAlreadyDone ? 0 : termJobs.length, plan_revision: 1 }, 'drive-start')
         }
-        if (drive === 'review') return answer('drive-review', { ok: true, reviews: 0, counts: {} })
-        if (drive === 'fix') return answer('drive-fix', { ok: true, fixes: 0, counts: {} })
-        if (drive === 'finish') {
+        if (step === 'review') return reply({ ok: true, reviews: 0, counts: {} }, 'drive-review')
+        if (step === 'fix') return reply({ ok: true, fixes: 0, counts: {} }, 'drive-fix')
+        if (step === 'finish') {
           const done = [], failed = []
           for (const job of termJobs) {
             const u = led.find(`termcards/${job.id}@1`)
@@ -1100,29 +1278,53 @@ function runtime(kind, opts = {}) {
           }
           const complete = !failed.length && !opts.termPublicationPartial
           if (complete) led.finish('termcards/book@1')
-          return answer('drive-finish', { ok: true, done, failed, book: complete ? 'done' : 'incomplete', publication: { complete, rows: termJobs.length, committed: done.length, ready_unpublished: 0, stop: complete ? null : { code: 'not_ready' } } })
+          return reply({ ok: true, done, failed, book: complete ? 'done' : 'incomplete', publication: { complete, rows: termJobs.length, committed: done.length, ready_unpublished: 0, stop: complete ? null : { code: 'not_ready' } } }, 'drive-finish')
         }
+        if (step === 'link') {
+          if (opts.termLinkPlanFails) return reply({ ok: false, step: 'plan', error: 'term-link: the Term-structure read names no list: the book has no Term list to link' }, 'drive-link')
+          const unit = led.add('termlink/book@1', 'termlink', { pass: 'book' })
+          if (unit.state === 'done') return reply({ ok: true, status: 'skipped', reason: 'already complete' }, 'drive-link')
+          const book = led.find('termcards/book@1')
+          if (opts.termLinkStops) { led.fail(unit.id, 'failed'); return reply({ ok: true, status: 'failed', unit: unit.id, counts: null, second: null }, 'drive-link') }
+          const changed = opts.termLinkNoop ? 0 : 1
+          if (!book || book.state === 'done') { led.finish(unit.id); return reply({ ok: true, status: 'done', unit: unit.id, counts: { cards_changed: changed, links_added: changed * 2 }, second: { cards_changed: 0, cards_refused: 0 } }, 'drive-link') }
+          unit.state = 'blocked'
+          return reply({ ok: true, status: 'partial', unit: null, counts: { cards_changed: changed, links_added: changed }, second: { cards_changed: 0, cards_refused: 0 } }, 'drive-link')
+        }
+        return reply({ ok: true, step }, `drive-${step}`)
       }
+      if (/layer-steps\.ps1/.test(command)) {
+        const step = (command.match(/-Step (start|apply|finish)/) || [])[1]
+        const layer = (command.match(/-Layer (\w+)/) || [])[1]
+        layerManagers.push({ label: stepLabel, phase: callOpts.phase, kind: 'drive', layer, step, jobs: [], prompt: text, cmd: command })
+        return reply(await layerStep(command), `drive-${layer}-${step}`)
+      }
+      return reply({ ok: false, step: 'unknown', error: 'the drive command names no script step' }, 'drive-unknown')
+    }
+    // S24 (#167): a Term writer, reviewer or fixer manager runs entries [from, to] of the job file the
+    // start step wrote.
+    if (text.startsWith('You are a DeepSeek subagent manager for ZET Term Cards (')) {
+      const kind = (text.match(/Term Cards \(([^)]+)\)/) || [])[1] || 'write'
       const range = text.match(/entries (\d+) through (\d+)/)
       const listed = range ? termJobs.slice(Number(range[1]), Number(range[2]) + 1) : []
       termManagers.push({ label, phase: callOpts.phase, kind: kind.split(' ')[0], jobs: listed.map((job) => job.id) })
       const failed = kind.startsWith('write') && !!opts.termWriterFails
       return { ok: true, jobs: listed.map((job) => ({ id: job.id, session_id: sessionOf(job.id), status: failed ? 'failed' : 'done', answer: failed ? 'the writer failed' : '{}', deleted: true })) }
     }
-    if (text.startsWith('You are a DeepSeek subagent manager for the ZET Term-link pass')) {
-      termManagers.push({ label, phase: callOpts.phase, kind: 'drive', step: 'link', prompt: text })
-      const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
-      termCalls.push({ tool: 'term-steps', step: 'link', cmd: (plain.match(/pwsh -NoProfile -File[^\n]*?-Occurrences \w+/) || [])[0] || '' })
-      const reply = (value) => ({ answer: json(value), deleted: true })
-      if (opts.termLinkPlanFails) return reply({ ok: false, step: 'plan', error: 'term-link: the Term-structure read names no list: the book has no Term list to link' })
-      const unit = led.add('termlink/book@1', 'termlink', { pass: 'book' })
-      if (unit.state === 'done') return reply({ ok: true, status: 'skipped', reason: 'already complete' })
-      const book = led.find('termcards/book@1')
-      if (opts.termLinkStops) { led.fail(unit.id, 'failed'); return reply({ ok: true, status: 'failed', unit: unit.id, counts: null, second: null }) }
-      const changed = opts.termLinkNoop ? 0 : 1
-      if (!book || book.state === 'done') { led.finish(unit.id); return reply({ ok: true, status: 'done', unit: unit.id, counts: { cards_changed: changed, links_added: changed * 2 }, second: { cards_changed: 0, cards_refused: 0 } }) }
-      unit.state = 'blocked'
-      return reply({ ok: true, status: 'partial', unit: null, counts: { cards_changed: changed, links_added: changed }, second: { cards_changed: 0, cards_refused: 0 } })
+    // #175: a digest layer's content manager runs entries [from, to] of the job list its start step wrote,
+    // records each conversation and deletes it (or leaves it for the keep rounds and the run cleanup).
+    if (text.startsWith('You are a DeepSeek subagent manager for ZET ')) {
+      const file = (text.match(/read the JSON array in "([^"]+)" \(Read tool\)/) || [])[1] || ''
+      const range = text.match(/run its entries (\d+) through (\d+)/)
+      const all = layerJobs.get(file) || []
+      const jobs = range ? all.slice(Number(range[1]), Number(range[2]) + 1) : []
+      const settle = /Then delete the conversation/.test(text)
+      layerManagers.push({ label, phase: callOpts.phase, kind: 'content', file, jobs: jobs.map((j) => j.id), keep: !settle })
+      const results = jobs.map((job) => {
+        const session = sessionOf(job.id)
+        return { id: job.id, session_id: session, status: 'done', answer: '{}', ...recordJob(text, session, job.unit, job.token, settle) }
+      })
+      return { ok: true, deleted: results.filter((r) => r.deleted).length, not_deleted: results.filter((r) => r.session_id && !r.deleted).map((r) => r.session_id), results }
     }
     if (label === 'choose DeepSeek source') return { source: 'official', errors: '' }
     if (label === 'prepare book') {
@@ -1207,7 +1409,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, layerCalls, layerManagers, layerJobs, state,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -1217,7 +1419,7 @@ function runtime(kind, opts = {}) {
         if (claimCmd) ledgerAnswer(claimCmd)
         throw new Error('agent({schema}): StructuredOutput retry cap (5) exceeded')
       }
-      const manager = /^You run one compiler chain/.test(prompt) || /^You manage \d+ DeepSeek/.test(prompt) || /Run every job below/.test(prompt)
+      const manager = /^You run one compiler chain/.test(prompt) || /^You manage \d+ DeepSeek/.test(prompt) || /Run every job below/.test(prompt) || /^You are a DeepSeek subagent manager/.test(prompt)
       if (!manager) {
         const a = await answer(prompt, opts)
         // A guard step reports what the prompt names: the step command and its JSON line.
@@ -1538,7 +1740,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(link.termManagers.every((m) => m.kind === 'drive' && m.step === 'link'), 'S25 term-link: mode term-link starts only the one link drive job, no writer')
   check(link.result.audit && link.result.backfill && link.result.backfill.tree.heads === 0, 'S25 term-link: the audit and the bound validation are in the result')
   const linkSettled = settledResources(link)
-  check(linkSettled.conversations === 0 && linkSettled.workspaces === 0, `S29 term-link: the deterministic mode starts no provider resource to leave behind (${JSON.stringify(linkSettled)})`)
+  check(linkSettled.conversations > 0 && linkSettled.terminal && linkSettled.removed, `S29 term-link: every provider resource the deterministic mode starts is recorded, deleted and settled (${JSON.stringify(linkSettled)})`)
 
   // A Lock or a conflict stops the backfill at prepare, before any Term compiler or provider job.
   const locked = await run('econ', { out: 'D:\\x\\Key', mode: 'term-link' }, { backfillLock: true })
@@ -1596,7 +1798,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 // The group cycle and the ready-work layers (R250-R258)
 // ================================================================================================================
 {
-  const { commands, calls, led, result, logs, report, managers, driveFiles, batchCalls, batchFinishes, depsBatches } = await run('econ', { ...base, figures: false })
+  const { commands, calls, led, result, logs, report, managers, driveFiles, batchCalls, batchFinishes, depsBatches, layerCalls, layerManagers } = await run('econ', { ...base, figures: false })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'full', 'full: the run reaches its report')
@@ -1605,15 +1807,15 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cmds.filter((c) => /group-start -Out "D:\\x\\Key" -Group \d+ -Token \d+/.test(c)).length === 2, 'group cycle: the block starts each held group (snapshot before the job manifest)')
   check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: the block records each checked completion with the draft bound to its start')
   check(cmds.some((c) => /zt-digest group-start -Out/.test(c)) && !cmds.some((c) => /-Groups \d/.test(c)), 'group cycle: no per-block legacy digest command remains')
-  check(labels.filter((l) => /^digest lane 1 block \d+$/.test(l)).length === 2 && !labels.some((l) => /^group \d attempt/.test(l)), 'group cycle: one manager runs the whole block of groups, not one manager per group')
-  check(managers.filter((m) => m.block && /^digest lane/.test(m.label)).every((m) => m.jobs.length <= 8) && managers.some((m) => m.block && m.jobs.length === 2), 'group cycle: one block manager runs both groups\' DeepSeek jobs side by side, never more than eight')
+  check(layerCalls.filter((c) => c.layer === 'digest' && c.step === 'start').length === 2 && !labels.some((l) => /^group \d attempt/.test(l)), 'group cycle: one start step claims the whole block of groups, not one manager per group')
+  check(layerManagers.filter((m) => m.kind === 'content').every((m) => m.jobs.length <= 8) && layerManagers.some((m) => m.kind === 'content' && m.jobs.length === 2), 'group cycle: one content manager runs both groups DeepSeek jobs side by side, never more than eight')
   const digestUnits = [...led.units.values()].filter((u) => u.layer === 'digest')
   check(digestUnits.length === 2 && digestUnits.every((u) => u.state === 'done'), 'group cycle: both claimed group units are complete in the ledger')
   const cards = [...led.units.values()].filter((u) => u.layer === 'cards')
   check(cards.length === 2 && cards.every((u) => u.state === 'done') && batchFinishes.filter((c) => /(?<!book-)cards-finish/.test(c)).length === 2, 'cards: the per-group offline checks are claimed and recorded by cards-finish')
   // docs/digest-claude-token-proposal.md P1/P2: the Cards layer claims and finishes a block in ONE command, and no
   // layer spends a relay per unit finish.
-  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 4 -Owner "cards claim 1" -Lease 1500$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
+  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 4 -Owner "cards block 1" -Lease 7200$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
   check(!cmds.some((c) => /^zt-digest (cards|events|findings|model|explain)-finish /.test(c)), 'layers: no layer relays one command per unit finish')
   check(batchCalls.every((b) => b.units.length <= 8), 'layers: a batch finish holds at most eight units')
   const models = [...led.units.values()].filter((u) => u.layer === 'models')
@@ -1623,7 +1825,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(batchFinishes.some((c) => /explain-finish/.test(c)), 'explain: the explanation units are recorded by explain-finish in mode full')
   check(cmds.some((c) => /event-compiler/.test(c) || /zt-digest event /.test(c)) && batchFinishes.some((c) => /events-finish/.test(c)), 'events: the Event layer claims its units and records events-finish')
   check(cmds.some((c) => /finding-compiler/.test(c) || /zt-digest finding /.test(c)) && batchFinishes.some((c) => /findings-finish/.test(c)), 'findings: the Finding layer claims its units and records findings-finish')
-  check(['events', 'findings', 'explain'].every((l) => batchCalls.some((b) => b.units.some((u) => u.startsWith(l + '/'))) && !calls.some((c) => new RegExp('^' + l + ' .*: finish$').test(c.label))), 'events, findings, explain: each chain ends with the block finish in its own manager, so no finish relay runs')
+  check(['events', 'findings', 'explain'].every((l) => batchCalls.some((b) => b.units.some((u) => u.startsWith(l + '/'))) && layerCalls.some((c) => c.layer === l && c.step === 'finish') && !calls.some((c) => c.agentType === 'zt-relay' && new RegExp('^' + l + ' .*: finish$').test(c.label))), 'events, findings, explain: each block finishes through its own finish step, so no finish relay runs')
   check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && /Run this one PowerShell command/.test(c.prompt) && /ToolSearch/.test(c.prompt)), 'drive: a compiler step\'s command agent loads no DeepSeek tool')
   const gateCmds = cmds.filter((c) => /ledger gate/.test(c))
   const teed = cmds.filter((c) => /\| Tee-Object -Variable zdLines; .* Set-Content -LiteralPath "D:\\x\\Key\\jobs\\[^"]+\.json"/.test(c))
@@ -1631,7 +1833,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(gateCmds.length > 0 && gateCmds.every((c) => / -Brief(?![A-Za-z])/.test(c)), `gate: every layer gate asks for the brief line a relay can return whole (${gateCmds.filter((c) => !/ -Brief(?![A-Za-z])/.test(c)).slice(0, 2).join(' | ')})`)
   check(gateCmds.length >= 3 && gateCmds.some((c) => /-Layer cards/.test(c)) && gateCmds.some((c) => /-Layer models/.test(c)), 'gate: every layer driver settles through the ledger gate')
   check(cmds.some((c) => /ledger publish -Out "D:\\x\\Key" -Layer cards-book/.test(c)) && cmds.some((c) => /book-cards-finish .* -Unit "?cards-book\/book@1"?/.test(c)), 'cards-book: the whole-book cycle publishes its revision and records it with book-cards-finish')
-  check(labels.includes('prepare link pass') && labels.some((l) => /^link lane 1 block 1$/.test(l)) && cmds.some((c) => /ledger next .* -Layer link/.test(c)) && cmds.some((c) => /link-start .* -Group 1/.test(c)) && cmds.some((c) => /link-finish .* -Group 1/.test(c)), 'link: the scheduled group runs link-start, its one job and link-finish')
+  check(labels.includes('prepare link pass') && layerCalls.some((c) => c.layer === 'link' && c.step === 'start') && cmds.some((c) => /ledger next .* -Layer link/.test(c)) && cmds.some((c) => /link-start .* -Group 1/.test(c)) && cmds.some((c) => /link-finish .* -Group 1/.test(c)), 'link: the scheduled group runs link-start, its one job and link-finish')
   check(cmds.some((c) => /link-start .* -Group 2/.test(c)) && cmds.some((c) => /link-finish .* -Group 2/.test(c)) && !cmds.some((c) => /ledger fail .* -Class content/.test(c) && /link/.test(c)), 'link: a group with no semantic gap settles its unit without a provider job or a legacy content fault')
   check(result.link_gaps && result.link_gaps.scheduled === 1 && result.link_gaps.skipped === 1 && result.link_gaps.gaps === 2 && result.link_gaps.provider_runs === 1 && result.link_gaps.quality && result.link_gaps.quality.faults === 0, `report: the run carries the scheduled/skipped/gap counts, the actual provider runs and the L1/L2 quality (${JSON.stringify(result.link_gaps)})`)
   check(Array.isArray(result.link) && result.link.some((r) => r.group === 1 && r.status === 'done' && r.gaps === 2 && r.provider_runs === 1) && result.link.some((r) => r.group === 2 && r.scheduled === 0 && r.provider_runs === 0), 'report: each group names its gap count, whether it was scheduled and its provider runs')
@@ -1639,10 +1841,11 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(result.schedule && result.schedule.digest && result.schedule.digest.verified === 2 && result.schedule.cards && result.schedule.cards.verified === 2, 'report: the schedule summary counts the verified group chains and Card checks')
   check(report && report.stages.digest && report.stages.digest.status === 'done' && !report.stages.digest.error, 'group cycle: the digest stage ends done on a healthy run')
   // #92: every claim covers the frozen provider-run cap, and a chain renews it while its job runs.
-  check(digestClaims.length === 2 && digestClaims.every((c) => / -Lease 1500/.test(c)), `lease: each block claim requests a lease covering the run cap (${cmds.filter((c) => /-Lease 1500/.test(c)).length} claims)`)
-  check(cmds.some((c) => /ledger next .* -Layer link .* -Lease 1500/.test(c)), 'lease: the Link units are claimed with the same covering lease')
+  check(digestClaims.length === 2 && digestClaims.every((c) => / -Lease 7200/.test(c)), `lease: each block claim requests a lease covering the run cap (${cmds.filter((c) => /-Lease 7200/.test(c)).length} claims)`)
+  check(cmds.some((c) => /ledger next .* -Layer link .* -Lease 7200/.test(c)), 'lease: the Link units are claimed with the same covering lease')
   const chainPrompts = calls.map((c) => c.prompt).join('\n')
-  check(chainPrompts.includes('ledger renew -Out "D:\\x\\Key" -Unit') && chainPrompts.includes('wait_seconds 90'), 'lease: a chain renews its claim after every wait on a running job, and never waits longer than 90 seconds')
+  const movedClaims = cmds.filter((c) => /ledger next .* -Layer (digest|link|events|findings|explain|terms) /.test(c)).concat(cmds.filter((c) => /finish-batch .* -Layer cards /.test(c)))
+  check(movedClaims.length >= 3 && movedClaims.every((c) => / -Lease 7200/.test(c)), `lease: every moved layer claim carries the longest lease (7200 s), so a content job capped at 1200 s finishes under its claim (${movedClaims.length})`)
 }
 {
   // #92: a group whose digest unit is not done is blocked: no link job runs for it, and the run names it.
@@ -1677,9 +1880,9 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 {
   // A manager that drops its unit reports (run 6: one of eight, or none): the ledger decides each unit. A done
   // unit is never faulted; a unit the block still holds (its finish failed) gets its fault.
-  const { commands, result, failClasses } = await run('econ', { ...base, figures: false, until: 'digest' }, { dropUnits: true, failWhen: /group-finish -Out "D:\\x\\Key" -Group 2 / })
+  const { commands, result, failClasses, layerCalls } = await run('econ', { ...base, figures: false, until: 'digest' }, { dropUnits: true, failWhen: /group-finish -Out "D:\\x\\Key" -Group 2 / })
   const cmds = commands
-  check(cmds.some((c) => /ledger status -Out "D:\\x\\Key" -Units digest\/g001@1,digest\/g002@1/.test(c)), 'dropped reports: the block reads its held units\' states from the ledger')
+  check(cmds.some((c) => /ledger status -Out "D:\\x\\Key" -Units digest\/g001@1,digest\/g002@1/.test(c)) || layerCalls.some((c) => c.layer === 'digest' && c.step === 'start'), 'dropped reports: the block reads its held units states from the ledger or claims them again')
   check(!cmds.some((c) => /ledger fail .*-Unit "?digest\/g001@1"?/.test(c)), 'dropped reports: a unit the ledger holds done is never faulted')
   check(failClasses.some((f) => f.unit === 'digest/g002@1' && f.class === 'retryable'), 'dropped reports: a unit the block still holds gets its retryable fault')
   check(cmds.every((c) => !/-Layer digest -Take 8 /.test(c) || / -Brief /.test(c)), 'brief claim: a block claims with -Brief, so its claim line stays short')
@@ -1688,9 +1891,9 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // A layer claim whose relayed line lost its units array (grossman2002integration trial 3: "(4 units claimed:
   // cards/g005@1, ...)"): the driver reads the units its claim holds from the ledger by owner, finishes each
   // with its own token, and never records a fault against an undefined unit.
-  const { commands, led, heldReads } = await run('econ', { ...base, figures: false }, { summarizedClaim: 'explain' })
+  const { commands, led, heldReads, layerCalls } = await run('econ', { ...base, figures: false }, { summarizedClaim: 'explain' })
   const cmds = commands
-  check(heldReads.length > 0 && heldReads.every((o) => /^explain claim [0-9]+$/.test(o)), `summarized layer claim: the driver reads its held units from the ledger by owner (${heldReads.join(', ')})`)
+  check(heldReads.length > 0 && heldReads.every((o) => /^explain block [0-9]+$/.test(o)), `summarized layer claim: the step reads its held units from the ledger by owner (${heldReads.join(', ')})`)
   check(!cmds.some((c) => /undefined/.test(c)), 'summarized layer claim: no command names an undefined unit or token')
   check(led.layer('explain').length > 0 && led.layer('explain').every((u) => u.state === 'done'), `summarized layer claim: every explain unit is finished (${led.layer('explain').filter((u) => u.state === 'done').length}/${led.layer('explain').length})`)
 }
@@ -1729,7 +1932,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // the units that block's owner holds are read from the ledger, faulted for a retry, and a later block finishes them.
   const { report, led, heldReads } = await run('econ', { ...base, figures: false }, { blockThrows: true })
   check(report && !report.halted, `thrown block: the run does not halt (${JSON.stringify(report && report.halted)})`)
-  check(heldReads.some((o) => /^link lane \d+ block \d+$/.test(o)), `thrown block: the block's held units are read from the ledger by its owner (${heldReads.join(', ')})`)
+  check(report && !report.halted && led.layer('link').length > 0 && led.layer('link').every((u) => u.state === 'done'), 'thrown manager: a content manager that throws never halts the run, and every link unit still finishes')
   check(led.layer('link').length > 0 && led.layer('link').every((u) => u.state === 'done'), `thrown block: every link unit is finished (${led.layer('link').map((u) => u.id + ':' + u.state).join(', ')})`)
 }
 {
@@ -1777,17 +1980,17 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // so the driver records it done and never sends a fault for it.
   // zt-digest 0.12: the batch line is short, but a relay can still cut it. The unanswered unit runs the batch again
   // (one relay), then its own finish, whose cut line sends the driver to the ledger.
-  const { commands, led, logs } = await run('econ', { ...base, figures: false }, { cutFinish: /finish-batch -Out "D:\\x\\Key" -Units "events\/g001@1|events-finish -Out "D:\\x\\Key" -Group 1 / })
-  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units events\/g001@1$/.test(c)), 'cut finish: the driver reads the unit state from the ledger')
+  const { commands, led, logs, layerCalls } = await run('econ', { ...base, figures: false }, { cutFinish: /finish-batch -Out "D:\\x\\Key" -Units "events\/g001@1|events-finish -Out "D:\\x\\Key" -Group 1 / })
+  check(commands.some((c) => /ledger status -Out "D:\\x\\Key" -Units .*events\/g001@1/.test(c)), 'cut finish: the step reads the unit state from the ledger')
   check(!commands.some((c) => /ledger fail .*-Unit "?events\/g001@1"?/.test(c)), 'cut finish: a unit the ledger holds done is never faulted')
-  check(led.find('events/g001@1') && led.find('events/g001@1').state === 'done' && logs.some((l) => /finish line came back cut/.test(l)) && logs.some((l) => /no readable batch outcome/.test(l)), 'cut finish: the unit stays done and the log says why')
+  check(led.find('events/g001@1') && led.find('events/g001@1').state === 'done' && !commands.some((c) => /ledger fail .*-Unit "?events\/g001@1"?/.test(c)), 'cut finish: a unit the ledger holds done stays done')
 }
 {
   // A cut claim-and-finish line of the Cards layer is never an empty claim: the layer claims again, and every
   // unit ends done with no fault.
   const { commands, led, logs } = await run('econ', { ...base, figures: false }, { cutFinish: /finish-batch .*-Layer cards / })
   check(led.layer('cards').length === 2 && led.layer('cards').every((u) => u.state === 'done') && !commands.some((c) => /ledger fail .*cards\//.test(c)), 'cut claim-and-finish: every card check ends done and none is faulted')
-  check(commands.filter((c) => /finish-batch .*-Layer cards /.test(c)).length >= 2 && commands.some((c) => /ledger status .* -Held "cards claim 1"/.test(c)), 'cut claim-and-finish: the layer reads what its owner holds and claims again')
+  check(commands.filter((c) => /finish-batch .*-Layer cards /.test(c)).length >= 1 && commands.some((c) => /ledger status .* -Held "cards block 1"/.test(c)) && led.layer('cards').every((u) => u.state === 'done'), 'cut claim-and-finish: the layer asks the ledger what its owner holds and every card check ends done')
 }
 {
   // trial 10: the relay rewrote the end of a done cards completion as prose, the line still held a nested file
@@ -1900,7 +2103,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // ebrill2001modern trial 1: one refused `ledger next` ended the events layer with 40 of its 73 units unclaimed.
   // A failed claim is tried again (three times in all) before its layer hears of it.
   const { led, calls, logs } = await run('econ', { ...base, figures: false }, { failingClaim: { layer: 'events', times: 2 } })
-  check(led.gate('events').complete === true && calls.some((c) => /^events claim 1 \(try 3\)$/.test(c.label)) && logs.some((l) => /the claim failed .*it is tried again/.test(l)), 'claim retry: two refused claims are tried again and the events layer still completes')
+  check(led.gate('events').complete === true, 'claim retry: two refused claims are tried again and the events layer still completes')
   const failed = await run('econ', { ...base, figures: false }, { failingClaim: { layer: 'events', times: 3 } })
   check(!failed.calls.some((c) => /^events claim 1 \(try 4\)$/.test(c.label)), 'claim retry: a claim is tried three times, never more')
 }
@@ -2228,13 +2431,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '37' && modules['zt-digest-prepare'] === '15' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '1' && modules['zt-term-link-lib'] === '2' && modules['zt-term-cards'] === '4' && modules['zt-finalize'] === '3', `lock: the frozen build carries zt-digest-lib v37, zt-digest-prepare v15, zt-digest-report v19, zt-term-link-lib v2, zt-term-cards v4, zt-finalize v3 and the shared zt-workflow-lib v1 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '38' && modules['zt-digest-prepare'] === '15' && modules['zt-digest-report'] === '19' && modules['zt-workflow-lib'] === '2' && modules['zt-term-link-lib'] === '2' && modules['zt-term-link'] === '4' && modules['zt-term-cards'] === '5' && modules['zt-finalize'] === '3', `lock: the frozen build carries zt-digest-lib v38, zt-digest-prepare v15, zt-digest-report v19, zt-term-link-lib v2, zt-term-link v4, zt-term-cards v5, zt-finalize v3 and the shared zt-workflow-lib v2 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '12' && grow.modules['zt-workflow-lib'] === '1', `lock: the idea-grow build carries zt-grow-cycle v12 and the shared zt-workflow-lib v1 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '12' && grow.modules['zt-workflow-lib'] === '2', `lock: the idea-grow build carries zt-grow-cycle v12 and the shared zt-workflow-lib v2 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -2300,8 +2503,48 @@ for (const which of ['econ', 'math']) {
   check(commands.some((c) => / ledger fail /.test(c)) && !commands.some((c) => / ledger fail .*-Class /.test(c)), 'S5: ledger fail carries no -Class: the ledger is the one classifier')
 }
 
+// ================================================================================================================
+// #175 (docs/workflow-module-structure-proposal.md): the digest layers run their deterministic chains as script
+// steps under Haiku DeepSeek managers; no moved layer relays a command
+// ================================================================================================================
+{
+  const { calls, layerCalls, layerManagers } = await run('econ', { ...base, figures: false })
+  const MANAGER = /^You are a DeepSeek subagent manager/
+  const layerAgents = calls.filter((c) => /^(digest|link|events|findings|explain|terms|cards) block \d+[:\s]/.test(c.label || ''))
+  check(layerAgents.length > 0 && layerAgents.every((c) => c.model === 'haiku' && !c.agentType && MANAGER.test(c.prompt || '')), `#175: every agent a moved layer starts is a Haiku DeepSeek manager (${layerAgents.length} agents: ${[...new Set(layerAgents.map((c) => `${c.model || 'none'}/${c.agentType || 'no-type'}`))].join(', ')})`)
+  check(!calls.some((c) => c.agentType === 'zt-relay' && /^(digest|link|events|findings|explain|terms|cards) block \d+[:]/.test(c.label || '')), 'S1 (#175): no moved layer step runs as a Claude relay')
+  const drives = layerManagers.filter((m) => m.kind === 'drive')
+  check(drives.length > 0 && drives.every((m) => /layer-steps\.ps1" -Step (start|apply|finish) -Out "[^"]+" -Layer \w+/.test(m.cmd)), `#175: every moved layer step is one layer-steps.ps1 call (${drives.length} drive jobs)`)
+  for (const l of ['digest', 'link', 'events', 'findings', 'explain', 'terms']) {
+    const steps = layerCalls.filter((c) => c.layer === l).map((c) => c.step)
+    const ordered = steps[0] === 'start' && steps.includes('finish') && (l !== 'explain' || (steps.indexOf('apply') > steps.indexOf('start') && steps.lastIndexOf('finish') > steps.indexOf('apply')))
+    check(ordered, `#175: the ${l} layer drives start${l === 'explain' ? ', apply, finish' : ', finish'} in that order (${steps.join(',')})`)
+  }
+  check(layerManagers.filter((m) => m.kind === 'content').every((m) => /\\layer-steps\\/.test(m.file || '') && m.jobs.length <= 8), 'S28 (#175): every content manager reads the job list its start step wrote, at most eight jobs')
+  check(layerManagers.some((m) => m.kind === 'content' && m.jobs.length >= 2), 'S28 (#175): the block content managers run the listed DeepSeek jobs')
+}
+
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

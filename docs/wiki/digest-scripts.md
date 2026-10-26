@@ -8,6 +8,7 @@ paths:
   - "scripts/book-digest/tests/*.cmd"
   - "scripts/book-digest/tests/audit-bulk-faults-fixture.txt"
   - "!scripts/book-digest/term-steps.ps1"
+  - "!scripts/book-digest/layer-steps.ps1"
 synced: 8dca3ae084a4
 updated: 2026-10-26
 ---
@@ -864,6 +865,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+- `2026-10-26` — `layer-steps.ps1` is the digest layers' step script (#175) and belongs to the [Workflow module structure](workflow-module-structure.md) block, like `term-steps.ps1`; `tests/layer-steps.tests.ps1` runs it against a stand-in `zt-digest` tool (24 checks).
 
 - `2026-10-26` — `tests/term-cards-fixture.blueprint.json` is removed with the S20 Term-card harness it served (#172); `term-steps.ps1` belongs to the [Workflow module structure](workflow-module-structure.md) block.
 - `2026-10-25` — S31 (#173): new `tests/release-live.tests.ps1`, the suite of `scripts/release-live.ps1` ([Service and CLI](service-and-cli.md)). On an isolated archive it covers the live-release preflight (active-digest refusal inside the 300 s `zt.digest.run` TTL, stale marker accepted), the consistent backup and its scratch validation with the same identity/revision/Cards/Locks, the owner-decision guard, a promote → refusal → rollback round with an unchanged Card-text digest, the mandatory Term-link invariant refusing in both stages, and the read-only observation over every Card. It writes no live Card and starts no provider work. No shipped script changed.
@@ -987,4 +989,5 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `2026-10-12`–`2026-10-13` `7a878da`, `7d636e4`, `1bec685`, `eaf854c`, `b61f2c4`, `96def45` — self-sufficient models, Elaboration levels, Derivation chains, the UTF-8 fix in `zt-calls.ps1`, and `zt-calls.tests.ps1`.
 - `2026-10-10`–`2026-10-12` `fcc5226`, `eec0940`, `2b05ba6`, `d92f367`, `c9b01a2`, `6ad10ed` — the first digest scripts (`prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-link-pass.ps1`, `list-models.ps1`, `model-context.ps1`, `zt-calls.ps1`) and Model parts.
 - `2026-10-16` — Wiki doc created.
+
 
