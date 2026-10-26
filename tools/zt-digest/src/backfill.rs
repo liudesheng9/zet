@@ -410,7 +410,11 @@ fn source_state(
     };
     facts["sections"] = json!(names.len());
 
-    if !sections {
+    // An adopted legacy run (`ledger adopt`) freezes no heading selection, so no reconstruction can
+    // reproduce it: its staged slices, bound by the contract's own book hash, are the source the
+    // Term work reads (live run 2026-10-26, acemoglu2025nobel).
+    let adopted = start.is_empty() && end.is_empty();
+    if !sections || adopted {
         if names.is_empty() || book_text.is_none() {
             conflicts.push(conflict(
                 "missing_sections",
@@ -769,6 +773,32 @@ mod tests {
         assert!(message.contains("not a row of the list"), "{message}");
         assert!(message.contains("repeats the Term `均衡`"), "{message}");
         assert!(message.contains("publish in table order"), "{message}");
+    }
+
+    #[test]
+    fn an_adopted_run_reuses_its_staged_slices_when_no_selection_is_frozen() {
+        // Live run 2026-10-26 (acemoglu2025nobel, adopted under 5.7.1): a legacy staging's adopted contract
+        // freezes no heading selection, so `-Sections` could not rebuild the slices it compares; the staged
+        // slices bound by the contract's own book hash are reused.
+        let dir = std::env::temp_dir().join(format!("zt-backfill-adopted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sections")).unwrap();
+        let book = "# 第一节\n\n正文。\n";
+        std::fs::write(dir.join("book.zh.md"), book).unwrap();
+        std::fs::write(dir.join("sections").join("s01.md"), book).unwrap();
+        let source = dir.join("source.md");
+        std::fs::write(&source, "source").unwrap();
+        let manifest = json!({"source": source.to_string_lossy(), "source_sha256": canon::sha256_hex(b"source")});
+        let contract = json!({
+            "options": {"start_heading": "", "end_heading": "", "skip_headings": [], "min_unit_chars": 1000},
+            "artifacts": {"book": {"sha256": canon::sha256_hex(book.as_bytes())}},
+        });
+        let mut conflicts = Vec::new();
+        let facts = source_state(&dir.to_string_lossy(), &manifest, &contract, true, &mut conflicts);
+        assert!(conflicts.is_empty(), "{conflicts:?}");
+        assert_eq!(facts["reused"], json!(true));
+        assert_eq!(facts["bound"], json!(true));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
