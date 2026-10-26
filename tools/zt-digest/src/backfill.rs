@@ -288,6 +288,7 @@ fn occupancy(cards: &[Value], list: &ListRead, conflicts: &mut Vec<Conflict>) ->
     let mut occupying: Vec<String> = Vec::new();
     let mut why: Vec<String> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut last_row = 0usize;
     for (index, child) in children.iter().enumerate() {
         let at = pstr(child, "address");
         let card_type = pstr(child, "type");
@@ -303,8 +304,10 @@ fn occupancy(cards: &[Value], list: &ListRead, conflicts: &mut Vec<Conflict>) ->
             why.push(format!("`{at}` repeats the Term `{term}`"));
             continue;
         }
+        // #182: a refused row leaves no slot, so a published head is read by its Term and only has to keep
+        // table order after the head before it.
         match row_of.get(term.as_str()) {
-            Some(row) if *row == slot => {}
+            Some(row) if *row > last_row => last_row = *row,
             Some(row) => {
                 occupying.push(at.clone());
                 why.push(format!("`{at}` holds row {row}'s Term `{term}` at slot {slot}; the rows publish in table order"));
@@ -750,12 +753,13 @@ mod tests {
         let cards = vec![
             card("Key/1|a|b", "idea", None),
             card("Key/1|a|c", "term", Some("另一个术语")),
-            card("Key/1|a|d", "term", Some("均衡")),
+            card("Key/1|a|d", "term", Some("剩余控制权")),
             card("Key/1|a|e", "term", Some("均衡")),
+            card("Key/1|a|f", "term", Some("均衡")),
         ];
-        let (heads, _parts, occupying) = occupancy(&cards, &list_read(&["均衡"]), &mut conflicts);
-        assert_eq!(heads, 4);
-        assert_eq!(occupying, vec!["Key/1|a|b", "Key/1|a|c", "Key/1|a|d", "Key/1|a|e"]);
+        let (heads, _parts, occupying) = occupancy(&cards, &list_read(&["均衡", "剩余控制权"]), &mut conflicts);
+        assert_eq!(heads, 5);
+        assert_eq!(occupying, vec!["Key/1|a|b", "Key/1|a|c", "Key/1|a|e", "Key/1|a|f"]);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].code, "occupying_children");
         let message = &conflicts[0].message;
@@ -763,6 +767,21 @@ mod tests {
         assert!(message.contains("not a row of the list"), "{message}");
         assert!(message.contains("repeats the Term `均衡`"), "{message}");
         assert!(message.contains("publish in table order"), "{message}");
+    }
+
+    #[test]
+    fn a_refused_row_leaves_no_slot_and_the_later_rows_keep_table_order() {
+        // #182 publishes every ready row past a refused one (live run 2026-10-26, staging8: row 2 was refused,
+        // row 3's head took the second slot); a backfill reads that publication by identity, in table order.
+        let mut conflicts = Vec::new();
+        let cards = vec![
+            card("Key/1|a|b", "term", Some("均衡")),
+            card("Key/1|a|c", "term", Some("外包")),
+        ];
+        let (heads, _parts, occupying) = occupancy(&cards, &list_read(&["均衡", "剩余控制权", "外包"]), &mut conflicts);
+        assert_eq!(heads, 2);
+        assert!(occupying.is_empty(), "{occupying:?}");
+        assert!(conflicts.is_empty(), "{conflicts:?}");
     }
 
     #[test]
