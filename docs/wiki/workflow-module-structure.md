@@ -223,6 +223,7 @@ A module change follows the review checklist:
   Claude agents instead of one per relayed command.
 
 ## Change history
+- `2026-10-26` — `tests/grow-steps.tests.ps1` checks that a `-ZtConfig` named with doubled separators reaches the tool with one per step (live run grow5).
 
 - `2026-10-26` — base **5.6.15**, econ **6.6.15**, math **5.6.15**, idea-grow **4.0.6** (zt-workflow-lib v7, zt-term-cards v7): `ztDriveText` cuts a drive answer at the first leaked tool-call tag (`</answer>`, `<parameter …>`, `<invoke …>`) before its last line is read; `term-steps.ps1 -Step finish` names a publication that printed no line (`publish_error`) and the module puts it in the Term-card error, never zero rows with no reason. Found on the live run (staging5): the cleanup report's right line came back followed by `</answer>` and a `<parameter name="session_id">` line and failed the stage; the Term-card publication answered rows 0 with no reason. Tests: `grow-workflow-harness.mjs` reads a line followed by leaked markup; `term-steps.tests.ps1` (48) names a failed publication.
 - `2026-10-26` — base **5.6.14**, econ **6.6.14**, math **5.6.14** (zt-cards-book v6): the whole-book Cards claim (`cards-book-start`) requests `LAYER_LEASE` (7200 s) instead of 300 s. On the live run (staging5) the 300-second lease expired during the whole-book card cycle and `book-cards-finish` refused it as `stale_claim`, leaving the cards-book unit in retry. Test: `framework-harness.mjs` asserts the claim's lease is at least 7200.

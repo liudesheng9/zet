@@ -8,8 +8,8 @@
   "contracts": {
     "executable": {
       "zt": "0.40.0",
-      "zt_check": "0.14.0",
-      "zt_digest": "0.29.9"
+      "zt_check": "0.14.1",
+      "zt_digest": "0.29.10"
     },
     "rule": {
       "rule_version": "4",

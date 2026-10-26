@@ -63,7 +63,17 @@ pub fn find(argv: &[String], cwd: Option<&Path>) -> Result<Option<Pin>> {
 }
 
 fn same(a: &str, b: &str) -> bool {
-    let norm = |s: &str| s.trim().trim_end_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase();
+    // One separator per step: a JSON-escaped command can name `D:\\box\\config` (live run 2026-10-26, grow5).
+    let norm = |s: &str| {
+        let t = s.trim().trim_end_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase();
+        let mut out = String::with_capacity(t.len());
+        for c in t.chars() {
+            if !(c == '\\' && out.ends_with('\\')) {
+                out.push(c);
+            }
+        }
+        out
+    };
     norm(a) == norm(b)
 }
 
@@ -124,6 +134,14 @@ mod tests {
         std::fs::write(out.join(PIN), "D:\\box\\config").unwrap();
         let argv = vec!["-Tool".into(), "get_card".into()];
         assert_eq!(find(&argv, Some(&out.join("cards"))).unwrap().unwrap().config, "D:\\box\\config");
+    }
+
+    #[test]
+    fn a_config_named_with_doubled_separators_is_the_same_box() {
+        // Live run 2026-10-26 (grow5): a JSON-escaped command set ZT_CONFIG_DIR to `D:\\zt-pilot-172\\config`.
+        assert!(same(r"D:\\zt-pilot-172\\config", r"D:\zt-pilot-172\config"));
+        assert!(same("D://box//config/", r"d:\box\config"));
+        assert!(!same(r"D:\box\config", r"D:\box2\config"));
     }
 
     #[test]

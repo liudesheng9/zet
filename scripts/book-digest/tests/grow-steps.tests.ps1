@@ -150,6 +150,11 @@ $r = Invoke-Next @('-ZtConfig', 'D:\box\config')
 Assert ($r.json.next -eq 'fault' -and $r.json.code -eq 'card_locked' -and $r.json.tree -eq '4/0' -and $r.json.lock_id -eq 3) "next: a fault line passes through with its tree and Lock id ($($r.last))"
 $boxCalls = @(Calls)
 Assert ($boxCalls[0].zt_config -eq 'D:\box\config') "next: a box copy's ZT_CONFIG_DIR reaches the tool ($($boxCalls[0].zt_config))"
+# Live run 2026-10-26 (grow5): a JSON-escaped command named the box with doubled separators; the tool gets one each.
+Set-Queue 'next' @(Entry $fault)
+$null = Invoke-Next @('-ZtConfig', 'D:\\box\\config')
+$dupCalls = @(Calls)
+Assert ($dupCalls[-1].zt_config -eq 'D:\box\config') "next: a box named with doubled separators reaches the tool with single ones ($($dupCalls[-1].zt_config))"
 
 # --- 7. A tool that fails with no line, then a good status line, still answers ----------------------------------
 Set-Queue 'next' @(Entry '' 1)

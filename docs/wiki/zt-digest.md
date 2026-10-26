@@ -1497,6 +1497,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
+- `2026-10-26` — 0.29.10: carries zt-check 0.14.1 (the box pin compares configs with one separator per step).
 - `2026-10-26` — 0.29.9: `model-deps` keeps the claim's longer lease (`held_lease`, the `start_lease` rule) instead of setting it to the 120-second base. The workflow claims a Model unit for its whole batch with `-Lease`; on the live run (staging5) model-deps cut that to two minutes, the claims expired during the fill, the first `finish-batch` found them stale and a second block had to reclaim them. Test: `model-dependencies.tests.ps1` claims with `-Lease 7200` and asserts model-deps keeps it.
 - `2026-10-26` — 0.29.5: embeds base 5.6.4 / econ 6.6.4 / math 5.6.4 (#176), so a prepared run freezes the book-level stages' blueprint versions; the release manifest names zt_digest 0.29.5 and the 5.6.4/6.6.4/5.6.4 workflows.
 - `2026-10-26` — 0.29.6: embeds base 5.6.5 / econ 6.6.5 / math 5.6.5 (#177), so a prepared run freezes the model layer's script steps and no digest stage relays a command; the release manifest names zt_digest 0.29.6 and the 5.6.5/6.6.5/5.6.5 workflows.

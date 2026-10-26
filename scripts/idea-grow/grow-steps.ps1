@@ -35,7 +35,9 @@ $ErrorActionPreference = 'Stop'
 $Work = $Work.TrimEnd('\', '/')
 $LineName = "grow-$Step"
 # A copy of the box runs its own zt service: the step, and every child process it starts, names its config.
-if ($ZtConfig) { $env:ZT_CONFIG_DIR = $ZtConfig }
+# A JSON-escaped command can name it with doubled separators (`D:\\box\\config`, live run 2026-10-26); the box pin
+# compares the text, so each run of separators after the first character becomes one.
+if ($ZtConfig) { $env:ZT_CONFIG_DIR = ($ZtConfig -replace '(?<=.)[\\/]{2,}', '\') }
 
 # One command: its exit code, its last JSON line (or $null) and the tail of its output.
 function Run([string[]]$CommandArgs) {
