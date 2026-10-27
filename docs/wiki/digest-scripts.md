@@ -16,7 +16,7 @@ paths:
   - "!scripts/book-digest/tests/model-steps.tests.ps1"
   - "!scripts/book-digest/tests/math-steps.tests.ps1"
   - "!scripts/book-digest/tests/grow-steps.tests.ps1"
-synced: HEAD
+synced: 0bdb5b18049e
 updated: 2026-10-27
 ---
 
