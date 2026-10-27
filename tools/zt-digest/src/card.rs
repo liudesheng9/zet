@@ -50,6 +50,11 @@ static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^#\s").unwra
 static SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)§\s?([0-9A-Za-z.]+)").unwrap());
 static SEMICOLON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[；;]").unwrap());
 static RULE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^[RIEL]\d+$").unwrap());
+
+/// A rule the card cycle checks and records; `book-cards-finish` re-derives the same set.
+pub(crate) fn cycle_rule(rule: &str) -> bool {
+    RULE_NAME.is_match(rule)
+}
 static R_RULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^R\d+$").unwrap());
 static TERMS_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
 static OK_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) ok (.+)$").unwrap());

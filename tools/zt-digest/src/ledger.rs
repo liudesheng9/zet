@@ -3603,6 +3603,14 @@ fn pass_entry(card: &Value) -> Value {
     entry
 }
 
+/// Whether one checker line belongs to the whole-book pass: a checked Card's fault under a rule
+/// the card cycle records (`card::cycle_rule`), as the cycle's own `audit-faults.txt` does.
+fn pass_line_counts(line: &str, checked: &[String]) -> bool {
+    let mut parts = line.splitn(3, ' ');
+    let (at, rule) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+    parts.next().is_some() && checked.iter().any(|known| known == at) && crate::card::cycle_rule(rule)
+}
+
 /// R217, R247, R296-R298: the checked coverage of one whole-book Card cycle revision.
 ///
 /// The cycle's report must describe the exact Cards it checked, and the deterministic pass is
@@ -3704,10 +3712,7 @@ fn verify_cards_book_coverage(
         .context("the whole-book deterministic pass did not report completeness")?;
     let derived: BTreeSet<String> = lines[..lines.len() - 1]
         .iter()
-        .filter(|line| {
-            let at = line.split(' ').next().unwrap_or_default();
-            checked.iter().any(|known| known == at)
-        })
+        .filter(|line| pass_line_counts(line, &checked))
         .cloned()
         .collect();
     let recorded: BTreeSet<String> = std::fs::read_to_string(&faults_file)
@@ -3781,7 +3786,7 @@ fn verify_cards_book_coverage(
             .map(crate::calls::authored_fingerprint)
             .unwrap_or_default();
         if models_enabled {
-            let (unit, _) = model_unit_for_header(&conn, at)?.with_context(|| {
+            let (unit, inputs) = model_unit_for_header(&conn, at)?.with_context(|| {
                 format!("the Model draft `{at}` has no registered model unit; register its chain first")
             })?;
             let state: String = conn.query_row("SELECT state FROM units WHERE id=?1", [&unit], |row| row.get(0))?;
@@ -3790,6 +3795,15 @@ fn verify_cards_book_coverage(
                 continue;
             }
             let result = unit_result(p, &unit)?;
+            // An adopted Model was reviewed in its legacy run, which kept no source-review
+            // artifact; the adoption owns it while the Card is the one the adoption recorded.
+            if inputs["kind"] == "model_adopted" {
+                if result["card_fingerprints"].get(at.as_str()).and_then(Value::as_str) != Some(fingerprint.as_str()) {
+                    bail!("the adopted Model draft `{at}` changed after its adoption; the Card cycle must not rewrite it");
+                }
+                covered.push(json!({"kind":"model","ref":at,"owner":"adoption","outcome":"adopted","unit":unit}));
+                continue;
+            }
             let review = &result["source_review"];
             let path = review["path"].as_str().unwrap_or_default();
             let artifact = crate::model::source_review::read(path, at, &s(&result["plan_hash"]))
@@ -12297,7 +12311,8 @@ fn model_unit_for_header(conn: &Connection, header: &str) -> Result<Option<(Stri
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, raw) in rows {
         let inputs: Value = serde_json::from_str(&raw)?;
-        if inputs["header"] == json!(header) {
+        let adopted = inputs["kind"] == "model_adopted" && inputs["model"] == json!(header);
+        if inputs["header"] == json!(header) || adopted {
             return Ok(Some((id, inputs)));
         }
     }
@@ -17687,6 +17702,33 @@ mod tests {
         let mut bare = card.clone();
         bare.as_object_mut().unwrap().retain(|k, _| k != "links" && k != "kinds");
         assert!(pass_entry(&bare)["links"].as_array().is_some_and(|l| !l.is_empty()));
+    }
+
+    // An adopted model unit names its Model under `model`, not `header`; the whole-book finish
+    // finds it all the same, and a chain's own unit still wins by its `header`.
+    #[test]
+    fn an_adopted_model_unit_owns_its_model_draft() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE units(id TEXT, layer TEXT, inputs_json TEXT);
+             INSERT INTO units VALUES('models/adopted-b-1-d@1','models','{\"kind\":\"model_adopted\",\"model\":\"b/1|d\"}');
+             INSERT INTO units VALUES('models/b-2-a@1','models','{\"header\":\"b/2|a\"}');",
+        )
+        .unwrap();
+        assert_eq!(model_unit_for_header(&conn, "b/1|d").unwrap().unwrap().0, "models/adopted-b-1-d@1");
+        assert_eq!(model_unit_for_header(&conn, "b/2|a").unwrap().unwrap().0, "models/b-2-a@1");
+        assert!(model_unit_for_header(&conn, "b/3|a").unwrap().is_none());
+    }
+
+    // The cycle records only the rules it repairs (R, I, E, L); a Finding's F rule is the
+    // Finding layer's, so the re-derived pass leaves it out as the recorded pass did.
+    #[test]
+    fn the_whole_book_pass_keeps_only_the_cycle_rules() {
+        let checked = vec!["b/7|d".to_string()];
+        assert!(pass_line_counts("b/7|d L1 (advisory) (1 Links read as refers) [[b/7]]", &checked));
+        assert!(pass_line_counts("b/7|d R3 too long", &checked));
+        assert!(!pass_line_counts("b/7|d F1 missing labels: 测量", &checked));
+        assert!(!pass_line_counts("b/8 R3 too long", &checked));
     }
 
     // relocate: the owned and source manifests follow a recorded move; other lines and files stay as they are.
