@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "5.8.2",
+  "version": "5.8.3",
   "description": "The shared base of the ZT digest workflows. A digest builds only the book's Literature tree: Prepare, the book term table, the ledger-driven group cycle, the per-group Card checks, the whole-book card cycle, Link, Organize (the Literature index and the structure Card), Figures and the report-first Bridge between Literature trees, joined by the final audit, with slots where a book type installs its own layers (models, explanations, events, findings, math stages). Topic trees, Topic Cards, hubs and the concept register belong to zt-idea-grow. Modes term-cards and term-link backfill the Terms of one already digested book: they validate it and reuse or reconstruct only its staged source slices, run the Term stages and the read-only audit, and never rerun its digest, model, organize or Bridge stages (S25, #168).",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [

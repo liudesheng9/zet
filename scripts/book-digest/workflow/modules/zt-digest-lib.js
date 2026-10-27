@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v45 ====
+// ==== module zt-digest-lib v46 ====
 // 44 (#187): the card layer's review-and-fill job runs two read-only SELF-CHECK commands, the Card
 // check and the coverage measurement; the manager's allow-list names both, and the group draft check
 // (group-finish -CheckOnly) the digest group job runs (#186).
@@ -516,7 +516,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     },
     required: ['ok', 'results'],
   }
-  const contentPrompt = (label, o) => `You are a DeepSeek subagent manager for ZET ${o.what} (${label}). You start DeepSeek agents, wait for them, collect their answers, record each conversation and delete it. You never write content and you never run a content command yourself. Keep your messages short.
+  const contentPrompt = (label, o) => `You are a DeepSeek subagent manager for ZET ${o.what} (${label}). You start DeepSeek agents, wait for them, collect their answers and record each conversation${o.keep ? ' (keep it open: a later round of this cycle continues it, and the cycle deletes it after its last round)' : ', then delete it'}. You never write content and you never run a content command yourself. Keep your messages short.
 ${RUNNER}
 Load the DSH tools with one ToolSearch call: query "${DRIVE_TOOLS}".
 JOBS: read the JSON array in "${o.file}" (Read tool) and run its entries ${o.from} through ${o.to - 1} (0-based), and only those. Each entry has id, files, prompt, unit and token.
@@ -564,8 +564,8 @@ Load the DSH tools with one ToolSearch call: query "${DRIVE_TOOLS}".
 CONVERSATIONS (job id and session_id), and no others: ${JSON.stringify(sessions.map((r) => ({ id: r.id, session_id: r.session_id })))}
 For each conversation: deepseek_delete with its session_id, then run this record command (it changes no Card):
   ${ZD_LEDGER} resource -Out "${OUT}" -Settle <session_id> -State finished -Deleted confirmed
-When a delete fails: -State error -Deleted failed -Message '<the error>'. A record command that fails does not stop the work.
-Return ok (true when every conversation was deleted), deleted and not_deleted (the session_ids that stayed open).`
+When deepseek_delete answers that the conversation is unknown or already gone, it is deleted: record it with -Deleted already_absent instead of confirmed. When a delete fails otherwise: -State error -Deleted failed -Message '<the error>'. A record command that fails does not stop the work.
+Return ok (true when no conversation stayed open), deleted (deleted or already gone) and not_deleted (the session_ids that stayed open).`
   const deleteConversations = async (label, sessions) => {
     const list = (sessions || []).filter((r) => r && r.session_id)
     if (!list.length) return { deleted: 0, not_deleted: [] }
@@ -1121,7 +1121,7 @@ Return ok (true when every conversation was deleted), deleted and not_deleted (t
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '45', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '46', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

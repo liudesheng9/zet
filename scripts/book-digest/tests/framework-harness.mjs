@@ -2946,7 +2946,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '45' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v45, zt-digest-prepare v18, zt-digest-report v22, zt-workflow-lib v7, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v5 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '46' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v46, zt-digest-prepare v18, zt-digest-report v22, zt-workflow-lib v7, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v5 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3214,6 +3214,10 @@ for (const which of ['econ', 'math']) {
   check(write && /Do not close, archive, or delete the conversation: later rounds may continue it/.test(write.prompt) && !/Then delete the conversation/.test(write.prompt), '#191: the write round keeps its conversations for the later rounds')
   check(fix && /With a session: deepseek_prompt/.test(fix.prompt) && /fix-01 s-fix-01-\d+/.test(fix.prompt) && /orphans-99 s-orphans-99-\d+/.test(fix.prompt), '#191: the fix round gets the write round\'s sessions and continues them with deepseek_prompt')
   check(fix && /Do not close, archive, or delete the conversation: later rounds may continue it/.test(fix.prompt) && !/Then delete the conversation/.test(fix.prompt), '#191: a fix round keeps its own conversation too, for a later round')
+  // #189 pilot 5: the managers' first line still said "record each conversation and delete it", so they deleted
+  // the kept conversations and the delete manager found none left (9 reported not deleted).
+  check(write && fix && ![write, fix].some((c) => /and delete it\b/.test(c.prompt)), '#191: no kept-round manager is told to delete its conversations')
+  check(del && /already_absent/.test(del.prompt), '#191: the delete manager records a conversation that is already gone as deleted (already_absent), not as one left open')
   check(!!del && !!report && calls.indexOf(del) < calls.indexOf(report) && calls.indexOf(del) > calls.indexOf(fix), '#191: the cycle deletes its conversations after its last round, before the report')
   // Every card cycle in the run deletes its own conversations; this one is the whole book's.
   const bookDeletes = deleteManagers.filter((d) => /^whole book: delete/.test(d.label || ''))
