@@ -16,7 +16,7 @@ paths:
   - "!scripts/book-digest/tests/model-steps.tests.ps1"
   - "!scripts/book-digest/tests/math-steps.tests.ps1"
   - "!scripts/book-digest/tests/grow-steps.tests.ps1"
-synced: a8c2c1ea718c
+synced: 716dd95259ac
 updated: 2026-10-27
 ---
 
@@ -874,6 +874,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+- `2026-10-27` — S28 (#188): `tests/coverage-audit.tests.ps1` (new) runs the real `zt-digest audit` against a scratch archive and a prepared staging folder: the audit's `coverage` section lists the unit the run's source log does not cover and the C3 numbers, names the book the staging folder names, and leaves the audit complete; a folder that is no prepared run carries no coverage.
 - `2026-10-27` — S28 (#186): the script tests cover the Literature-note digest job. `tests/digest-prompt.tests.ps1` (new) pins the Idea-card rules out of `dsh-digest-base.zh.md` and the Literature-note rules, the JSON draft and the double SELF-CHECK in; `tests/ledger-group-start.tests.ps1` reads the published task file's two `SELF-CHECK:` lines and runs both on a complete draft (`faults: 0` twice) and a file-only `src` (C2); `tests/standalone-placement.tests.ps1` reads the preview's `faults: 0` and the new assembled placement rules.
 - `2026-10-26` — `term-steps.ps1`: the `fix` step is removed; `review` builds review-and-fix jobs and `finish` binds each job's `ok` verdict to the draft it left; `tests/term-steps.tests.ps1` covers both.
 - `2026-10-26` — `tests/release-set.tests.ps1` (114) checks that the installed zt-digest embeds the source blueprints (`zt-digest version -Workflows`).
