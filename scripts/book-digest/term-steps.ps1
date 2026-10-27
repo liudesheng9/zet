@@ -11,7 +11,8 @@
   finish  complete each claimed job from the readiness result (fail the rest), then publish:
           with the book unit claimed it completes from the report, else every ready row is published (#182)
   link    plan the Term links, apply under the claim (or, when the unit is blocked, the published
-          prefix without a claim), then plan again: the second plan must change no Card
+          prefix without a claim; when the unit is already done, the whole book again without a
+          claim, status relinked), then plan again: the second plan must change no Card
 
   Each step prints ONE compact JSON line (#180): `ok` first, then the counts and file paths the module
   reads, at most 400 characters; the full data (the units, the publication, the counts) goes to
@@ -163,10 +164,11 @@ switch ($Step) {
             } else { $status = 'failed'; Fail-Unit $u "the Term-link pass stopped: $($a.tail)" }
         } else {
             $gate = Run @('ledger', 'gate', '-Out', $Out, '-Layer', 'termlink', '-Brief')
-            if ($gate.json -and $gate.json.complete -eq $true) { Reply @{ ok = $true; status = 'skipped'; reason = 'already complete' }; break }
-            # The unit is blocked by an incomplete Term-card book: link the published prefix, unit stays open.
+            # A complete pass still links the Cards a later writer changed (mode cards); its unit stays done.
+            # A unit blocked by an incomplete Term-card book links the published prefix; the unit stays open.
+            $complete = $gate.json -and $gate.json.complete -eq $true
             $a = Run @('term-link', '-Step', 'apply', '-Staging', $Out, '-Occurrences', $Occurrences, '-Apply')
-            $status = if ($a.json -and $a.json.complete -eq $true) { 'partial' } else { 'failed' }
+            $status = if (-not ($a.json -and $a.json.complete -eq $true)) { 'failed' } elseif ($complete) { 'relinked' } else { 'partial' }
         }
         $second = Run @('term-link', '-Step', 'plan', '-Staging', $Out, '-Occurrences', $Occurrences)
         Reply @{

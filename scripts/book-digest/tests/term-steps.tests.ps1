@@ -202,12 +202,16 @@ Assert ($link.json.ok -eq $true -and $link.json.status -eq 'done' -and $link.jso
 Assert ($link.json.second_cards_changed -eq 1 -and -not $link.json.second_cards_refused) 'link: the second plan''s counts are flat fields'
 Assert (-not $link.json.PSObject.Properties['counts'] -and -not $link.json.PSObject.Properties['second']) 'link: no nested counts or plan object is in the line'
 
-# 6. no ready unit: the link pass is skipped with its reason, never a failed line.
+# 6. no ready unit because the pass is already complete: the book is linked again, never skipped.
+# Live 2026-10-27: mode cards rewrote 421 Literature notes after the pass; a skip left them without Term links.
+Set-Content -LiteralPath $calls -Value '' -Encoding utf8
 $env:TS_NO_LINK_UNIT = '1'
-$skipped = Step (@('-Step', 'link') + $common)
+$relinked = Step (@('-Step', 'link') + $common)
 $env:TS_NO_LINK_UNIT = ''
-Assert-Line $skipped 'link skipped'
-Assert ($skipped.json.ok -eq $true -and $skipped.json.status -eq 'skipped' -and $skipped.json.reason) "link: an already complete pass answers skipped with its reason ($($skipped.text))"
+Assert-Line $relinked 'link relinked'
+Assert ($relinked.json.ok -eq $true -and $relinked.json.status -eq 'relinked' -and $relinked.json.cards_changed -eq 1) "link: an already complete pass links the Cards changed since ($($relinked.text))"
+$relinkCalls = @(Get-Content -LiteralPath $calls | Where-Object { $_ -match '^term-link -Step apply' })
+Assert ($relinkCalls.Count -eq 1 -and $relinkCalls[0] -notmatch '-Token') 'link: the relink applies without a claim, so the done unit stays done'
 
 # 7. a failed command answers one compact `{ok:false, step, error}` line.
 $env:TS_PLAN_FAIL = '1'
