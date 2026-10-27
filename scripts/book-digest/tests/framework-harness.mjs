@@ -1260,7 +1260,7 @@ function runtime(kind, opts = {}) {
       case 'finalize-refresh': return { ok: raw.ok !== false, layer: raw.layer, unit: raw.unit, revision: n(raw.revision), state: raw.state, complete: raw.complete === true, changed_cards: n(raw.changed_cards) }
       case 'finalize-final': {
         const round = raw.term_link || {}, terms = raw.terms || {}
-        return { ok: raw.ok !== false, status: raw.status, branch: raw.branch, graph_revision: n(raw.graph_revision), audit_unit: raw.audit && raw.audit.final && raw.audit.final.unit, audit_revision: n(raw.audit && raw.audit.final && raw.audit.final.revision), scheduled_unit: raw.audit && raw.audit.scheduled && raw.audit.scheduled.unit, residual: n(raw.faults && raw.faults.residual), infrastructure: list(raw.infrastructure), changes_cards: n(raw.changes && raw.changes.cards), changes_trees: n(raw.changes && raw.changes.trees), term_applicable: round.applicable !== false, term_status: round.status, term_round: n(round.round), term_scope: round.scope, term_unit: round.unit, term_state: round.state, term_reason: round.reason, term_no_op: round.no_op === true, term_cards_changed: n(round.counts && round.counts.cards_changed), term_links_added: n(round.counts && round.counts.links_added), terms_status: terms.status, terms_published: n(terms.published), terms_rows: n(terms.rows), terms_heads: n(terms.heads), terms_uses: n(terms.uses), terms_faults: n(terms.faults), terms_complete: terms.complete === true }
+        return { ok: raw.ok !== false, status: raw.status, branch: raw.branch, graph_revision: n(raw.graph_revision), audit_unit: raw.audit && raw.audit.final && raw.audit.final.unit, audit_revision: n(raw.audit && raw.audit.final && raw.audit.final.revision), residual: n(raw.faults && raw.faults.residual), term_inapplicable: round.applicable === false, term_status: round.status, term_round: n(round.round), term_scope: round.scope, term_unit: round.unit, term_state: round.state, term_reason: round.reason, term_no_op: round.no_op === true, term_cards_changed: n(round.counts && round.counts.cards_changed), term_links_added: n(round.counts && round.counts.links_added), terms_status: terms.status, terms_published: n(terms.published), terms_rows: n(terms.rows), terms_heads: n(terms.heads), terms_uses: n(terms.uses), terms_faults: n(terms.faults), terms_complete: terms.complete === true }
       }
       case 'term-link': {
         if (raw.status === 'skipped') return { ok: true, status: 'skipped', reason: raw.reason, plan_revision: n(raw.plan && raw.plan.plan_revision) }
@@ -2970,13 +2970,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '46' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v46, zt-digest-prepare v18, zt-digest-report v22, zt-workflow-lib v7, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v5 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '47' && modules['zt-digest-prepare'] === '19' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '8' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '6', `lock: the frozen build carries zt-digest-lib v47, zt-digest-prepare v19, zt-digest-report v22, zt-workflow-lib v8, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v6 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '7', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v4 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '8', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v4 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -3149,8 +3149,14 @@ for (const which of ['econ', 'math']) {
   check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done') && commands.some((c) => /finish-batch .* -Units "models\//.test(c)), '#177: the units are recorded by the one finish step')
   // Live run 2026-10-26 (staging3): deepseek_run refuses a cwd that does not exist yet, and a stage's own folder
   // (terms, events, group-jobs) is made by its step. Every drive job runs in the run's staging folder.
-  const driveCwds = calls.filter((c) => /^You are a DeepSeek subagent manager for a ZET workflow step \(/.test(c.prompt || '')).map((c) => (String(c.prompt).match(/deepseek_run with cwd "([^"]*)"/) || [])[1])
-  check(driveCwds.length > 0 && driveCwds.every((cwd) => cwd === base.out), `drive jobs: every drive job runs in the staging folder, which exists before the stage (${[...new Set(driveCwds)].slice(0, 4).join(', ')})`)
+  // Live run 2026-10-27 (becker2025division): a fresh run's staging folder does not exist before the preparation,
+  // which creates it, so the fresh preparation's drive job runs in the staging folder's parent.
+  const drivePrompts = calls.filter((c) => /^You are a DeepSeek subagent manager for a ZET workflow step \(/.test(c.prompt || ''))
+  const cwdOf = (c) => (String(c.prompt).match(/deepseek_run with cwd "([^"]*)"/) || [])[1]
+  const prepDrives = drivePrompts.filter((c) => /workflow step \(prepare book\)/.test(c.prompt))
+  const driveCwds = drivePrompts.filter((c) => !prepDrives.includes(c)).map(cwdOf)
+  check(driveCwds.length > 0 && driveCwds.every((cwd) => cwd === base.out), `drive jobs: every drive job after the preparation runs in the staging folder, which exists before the stage (${[...new Set(driveCwds)].slice(0, 4).join(', ')})`)
+  check(prepDrives.length === 1 && cwdOf(prepDrives[0]) === 'D:\\x' && prepDrives[0].prompt.includes('-Out "D:\\x\\Key"') && prepDrives[0].prompt.includes('D:\\x\\Key\\answers'), `drive jobs: the fresh preparation runs in the staging folder's parent, which exists before the run, and keeps its answer in the staging folder (${prepDrives.map(cwdOf).join(', ')})`)
 }
 
 // ================================================================================================================
@@ -3220,7 +3226,7 @@ for (const which of ['econ', 'math']) {
   check(!/ztRelay|runScript|wfpScript/.test(growSteps), '#179: grow-steps.ps1 names no relay helper')
   check((growSim.answers || []).filter((a) => a.label === '^grow: next$').every((a) => a.answer && typeof a.answer.answer === 'string' && a.answer.session_id), '#179: the dry run answers each grow step as the drive job it is')
   const shared = readText('scripts/workflow-shared/modules/zt-workflow-lib.js')
-  check(/version: '7'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  check(/version: '8'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
 }
 
 // ================================================================================================================

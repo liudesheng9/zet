@@ -1,4 +1,6 @@
-// ==== module zt-digest-lib v46 ====
+// ==== module zt-digest-lib v47 ====
+// 47 (live run 2026-10-27): `bookStep` passes its `workspace` option to the drive job (zt-workflow-lib v8), so the
+// fresh preparation can run before the staging folder exists.
 // 44 (#187): the card layer's review-and-fill job runs two read-only SELF-CHECK commands, the Card
 // check and the coverage measurement; the manager's allow-list names both, and the group draft check
 // (group-finish -CheckOnly) the digest group job runs (#186).
@@ -644,7 +646,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
     const parts = [`pwsh -NoProfile -File "${BOOK_STEPS}"`, `-Step ${step}`, `-Out "${OUT}"`]
     if (options && Object.keys(options).length) parts.push(`-Json ${psQuote(JSON.stringify(options))}`)
     if (o.tool) parts.push(`-Tool ${o.tool}`)
-    const json = await ztDrive(ctx, { label, step, command: parts.join(' '), out: OUT, cwd: o.cwd || OUT, phase: o.phase, ledger: ZD_LEDGER, deepseek: o.deepseek })
+    const json = await ztDrive(ctx, { label, step, command: parts.join(' '), out: OUT, cwd: o.cwd || OUT, workspace: o.workspace, phase: o.phase, ledger: ZD_LEDGER, deepseek: o.deepseek })
     // R326/R337: a step whose command the owner's Lock refused stops the stage with the archive's typed refusal.
     const lock = (json && (json.code === ZD_LOCK || json.error === ZD_LOCK)) ? json : ztLockRefusal(JSON.stringify(json || {}))
     if (lock) throw ztLockStop(label, lock)
@@ -1121,7 +1123,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '46', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '47', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

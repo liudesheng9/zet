@@ -1,4 +1,4 @@
-// ==== module zt-workflow-lib v7 ====
+// ==== module zt-workflow-lib v8 ====
 // The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6; docs/workflow-module-structure-proposal.md):
 // the digests (zt-digest-lib) and zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
 //  - S6, one lock reader: the owner's typed `card_locked` refusal (#140, R326/R337/R338) is read here and only
@@ -31,6 +31,9 @@
 //  - v7 (live run 2026-10-26, staging5 cleanup report): a manager's `answer` carried the end of its own tool call after
 //    the line (`…}</answer>` and a `<parameter name="session_id">` line). The answer is cut at the first such tag
 //    (`ztDriveText`) before its last line is read; nothing else about the reading changes.
+//  - v8 (live run 2026-10-27, becker2025division): a fresh run's staging folder does not exist before the
+//    preparation, which creates it, so deepseek_run refused the preparation's cwd. `workspace` names the folder a
+//    job runs in before the run folder exists; the fresh preparation passes the staging folder's parent.
 const ZT_LOCK = 'card_locked'
 const ZT_DRIVE_MODEL = 'deepseek-official/deepseek-flash'
 const ZT_DRIVE_SCHEMA = {
@@ -148,12 +151,14 @@ The record commands, when this step has records, are the only commands you run: 
 }
 // ONE deterministic script step, run as a DeepSeek drive job through a Haiku DSMP manager. Returns the step's
 // parsed last line (#180: only its last non-empty line, one JSON object with a boolean top-level `ok`).
-// o: label, command, out, cwd, phase, ledger, record, answers, deepseek, model, effort.
+// o: label, command, out, cwd, workspace, phase, ledger, record, answers, deepseek, model, effort.
+// `workspace` is the folder the job runs in when the run folder does not exist yet: a fresh run's preparation,
+// which creates it (live run 2026-10-27). Every other job runs in `out`; the answers stay under `cwd`.
 // An answer that is not that line is a transport fault: it throws and the module stops with the answer text. A
 // step that answers `{ok:false, ...}` is a failed step: the module reads that line and stops with its reason.
 async function ztDrive(ctx, o) {
   const label = o.label || o.step || 'drive'
-  const cwd = String(o.out || o.cwd || '').replace(/[\\/]+$/, '')
+  const cwd = String(o.workspace || o.out || o.cwd || '').replace(/[\\/]+$/, '')
   const answers = o.answers || `${String(o.cwd || cwd).replace(/[\\/]+$/, '')}\\answers`
   const run = await dsmpSlot(() => ctx.agent(ztDrivePrompt({ ...o, label, cwd, answers }), {
     role: 'manager', label, phase: o.phase, schema: ZT_DRIVE_SCHEMA,
@@ -170,7 +175,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '7', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '8', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====

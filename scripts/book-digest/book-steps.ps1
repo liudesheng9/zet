@@ -636,6 +636,10 @@ switch ($Step) {
         Reply @{ ok = ($f.ok -ne $false); layer = "$($f.layer)"; unit = "$($f.unit)"; revision = [int]$f.revision; state = "$($f.state)"; complete = ($f.complete -eq $true); changed_cards = [int]$f.changed_cards } $f
     }
     'finalize-final' {
+        # Live run 2026-10-27 (becker2025division): the line carried the scheduled audit, the infrastructure and
+        # change counts, which the module never reads, and overflowed at 429 characters. It carries only what the
+        # module reads; the detail file keeps the whole report. A line drops every false, so the Term round's
+        # applicability is sent as `term_inapplicable` (an absent `term_applicable` had read as applicable).
         $r = Run @('finalize', '-Step', 'final', '-Out', $Out)
         if (-not $r.json) { Fail 'finalize final' $r.tail; break }
         $refusal = Refuse $r.json $r.tail
@@ -646,10 +650,8 @@ switch ($Step) {
         Reply @{
             ok = ($f.ok -ne $false); status = "$($f.status)"; branch = "$($f.branch)"; graph_revision = [int]$f.graph_revision
             audit_unit = "$($f.audit.final.unit)"; audit_revision = [int]$f.audit.final.revision
-            scheduled_unit = "$($f.audit.scheduled.unit)"; scheduled_revision = [int]$f.audit.scheduled.revision
-            residual = [int]$f.faults.residual; infrastructure = (Count-Of $f.infrastructure)
-            changes_cards = [int]$f.changes.cards; changes_trees = [int]$f.changes.trees
-            term_applicable = ($round.applicable -ne $false); term_status = "$($round.status)"; term_round = [int]$round.round
+            residual = [int]$f.faults.residual
+            term_inapplicable = ($round.applicable -eq $false); term_status = "$($round.status)"; term_round = [int]$round.round
             term_scope = "$($round.scope)"; term_unit = "$($round.unit)"; term_state = "$($round.state)"; term_reason = "$($round.reason)"
             term_no_op = ($round.no_op -eq $true); term_cards_changed = [int]$round.counts.cards_changed; term_links_added = [int]$round.counts.links_added
             terms_status = "$($t.status)"; terms_published = [int]$t.published; terms_rows = [int]$t.rows; terms_heads = [int]$t.heads

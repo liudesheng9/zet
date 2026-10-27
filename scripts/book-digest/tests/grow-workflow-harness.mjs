@@ -176,7 +176,7 @@ const optionsOf = (command) => JSON.parse((command.match(/-Options '((?:[^']|'')
 
 // 7. The frozen build.
 {
-  check(build.modules['zt-grow-cycle'] === '14' && build.modules['zt-workflow-lib'] === '7', `the build carries zt-grow-cycle v14 and zt-workflow-lib v7 (${JSON.stringify(build.modules)})`)
+  check(build.modules['zt-grow-cycle'] === '14' && build.modules['zt-workflow-lib'] === '8', `the build carries zt-grow-cycle v14 and zt-workflow-lib v8 (${JSON.stringify(build.modules)})`)
   const cycle = source.slice(source.indexOf('// ==== module zt-grow-cycle'), source.indexOf('// ==== end module zt-grow-cycle'))
   check(!/ztRelay\s*\(|runScript\s*\(|wfpScript\s*\(/.test(cycle), 'the grow cycle calls no relay helper')
   check(/ztDrive\(ctx/.test(cycle) && /grow-steps\.ps1/.test(cycle) && /dispatch\(line\)/.test(cycle), 'the cycle drives one grow-steps.ps1 step per round and dispatches each checked job set from its file')

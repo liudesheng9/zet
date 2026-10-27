@@ -1832,6 +1832,18 @@ fn termcards_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result
             if parts.iter().any(|part| part.as_str().is_none_or(str::is_empty)) {
                 bail!("row {number} names an empty continuation part");
             }
+            // A row whose Card an earlier plan revision published keeps that Card unedited
+            // (`kept_earlier`): its parts are the earlier Card's own, not the parts the current
+            // draft renders, so each must sit under the kept head (live run 2026-10-27; the
+            // receipts there name rows by number, which shifts between revisions).
+            if publication["reason"]["code"] == "kept_earlier" {
+                let under = format!("{head}|");
+                if parts.iter().filter_map(Value::as_str).any(|part| !part.starts_with(&under)) {
+                    bail!("row {number} keeps an earlier Card whose parts are not under its head `{head}`");
+                }
+                verified.push(json!({"row":number,"term":row["term"],"head":head,"parts":parts}));
+                continue;
+            }
             let expected = row["readiness"]["cards"]
                 .as_array()
                 .map(|cards| cards.iter().filter(|card| card["role"] == "part").count())
@@ -10058,6 +10070,29 @@ fn link_verify(
     Ok((detail, changed))
 }
 
+/// The checker's lines read for the Link SELF-CHECK: every line before `faults: N`, and the Link-rule
+/// faults among them. `N` counts only the blocking lines; an `(advisory)` line is printed and never
+/// counted (live run 2026-10-27), so a report whose blocking lines differ from `N` is incomplete.
+fn link_check_lines(lines: &[String]) -> Result<(&[String], Vec<String>)> {
+    let count = lines
+        .last()
+        .and_then(|line| line.strip_prefix("faults: "))
+        .and_then(|n| n.parse::<usize>().ok())
+        .context("Link self-check did not report completeness")?;
+    let observed = &lines[..lines.len() - 1];
+    let advisory = |line: &String| line.contains("(advisory)");
+    if observed.iter().filter(|line| !advisory(line)).count() != count {
+        bail!("incomplete Link self-check count");
+    }
+    let link_rule = |line: &String| {
+        line.split_whitespace()
+            .nth(1)
+            .is_some_and(|rule| LINK_RULES.split(',').any(|known| known == rule))
+    };
+    let faults = observed.iter().filter(|line| !advisory(line) && link_rule(line)).cloned().collect();
+    Ok((observed, faults))
+}
+
 /// The Link SELF-CHECK: the existing checker's Link rules over every owned Card.
 /// A language fault the group already deferred stays the card cycle's obligation.
 fn link_self_check(cards: &[Value], p: &Prepared) -> Result<Value> {
@@ -10092,25 +10127,7 @@ fn link_self_check(cards: &[Value], p: &Prepared) -> Result<Value> {
     };
     let lines =
         zt_check::check::run_lines(&check.args(), None).context("Link self-check did not run")?;
-    let count = lines
-        .last()
-        .and_then(|line| line.strip_prefix("faults: "))
-        .and_then(|n| n.parse::<usize>().ok())
-        .context("Link self-check did not report completeness")?;
-    if lines.len() != count + 1 {
-        bail!("incomplete Link self-check count");
-    }
-    let observed = &lines[..lines.len() - 1];
-    let link_rule = |line: &String| {
-        line.split_whitespace()
-            .nth(1)
-            .is_some_and(|rule| LINK_RULES.split(',').any(|known| known == rule))
-    };
-    let faults: Vec<String> = observed
-        .iter()
-        .filter(|line| !line.contains("(advisory)") && link_rule(line))
-        .cloned()
-        .collect();
+    let (observed, faults) = link_check_lines(&lines)?;
     if !faults.is_empty() {
         bail!("Link SELF-CHECK found faults: {}", faults.join("; "));
     }
@@ -17412,6 +17429,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_link_self_check_counts_only_blocking_lines_against_the_faults_count() {
+        // Live run 2026-10-27 (becker2025division): zt-check prints advisory lines beside the blocking
+        // ones and counts only the blocking ones in `faults: N`, so 7 of 8 Link groups failed as
+        // "incomplete Link self-check count" although no Link rule had a fault.
+        let lines = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let advisory = lines(&["K/3 R6 (advisory) uses `卖资产` for `清算`: 双方卖资产。", "K/4 I6 (advisory) a title very similar to [[K/5]]", "faults: 0"]);
+        let (observed, faults) = link_check_lines(&advisory).unwrap();
+        assert_eq!((observed.len(), faults.len()), (2, 0));
+        let blocking = lines(&["K/3 R3 甲；乙。", "K/4 L1 a Link without its reason", "K/5 R6 (advisory) uses `卖资产`。", "faults: 2"]);
+        let (observed, faults) = link_check_lines(&blocking).unwrap();
+        assert_eq!(observed.len(), 3);
+        assert_eq!(faults, vec!["K/4 L1 a Link without its reason".to_string()]);
+        // A cut report (a blocking line missing against its count) is still refused.
+        assert!(link_check_lines(&lines(&["K/3 R3 甲；乙。", "faults: 2"])).is_err());
+        assert!(link_check_lines(&lines(&["K/3 R3 甲；乙。"])).is_err());
+    }
+
+    #[test]
     fn the_accepted_terms_call_of_a_new_book_is_the_term_typed_side_successor_term_call_writes() {
         // The S30 pilot (#172): term_call writes a new book's list as a Term Card (S21, #165), and
         // the claimed apply refused it because its own expected call still lacked the type.
@@ -18861,6 +18896,39 @@ mod term_completion_tests {
         assert_eq!(result["kind"], json!("termcards_book_completion"));
         assert_eq!(result["rows"][0]["head"], json!("K/2|a"));
         assert_eq!(fixture.state("termcards/book@1").0, "done");
+    }
+
+    #[test]
+    fn a_kept_earlier_row_is_read_back_against_its_own_receipts_not_the_new_draft() {
+        // Live run 2026-10-27 (becker2025division): the resume's plan revision 2 rendered row 2 with two
+        // continuation parts, publication kept the Card revision 1 had published with one, and the book
+        // unit was refused because the kept parts were counted against the new draft (18 of 57 rows).
+        let fixture = fixture(&[("termcards/book@1", book_inputs())]);
+        let mut kept = report();
+        kept["rows"][0]["readiness"]["cards"] = json!([{"role": "card"}, {"role": "part"}, {"role": "part"}]);
+        kept["rows"][0]["publication"]["reason"] = json!({"code": "kept_earlier", "address": "K/2|a"});
+        kept["rows"][0]["publication"]["receipts"] = json!([
+            {"address": "K/2|a", "role": "card", "plan_revision": 1},
+            {"address": "K/2|a|a", "role": "part", "plan_revision": 1},
+        ]);
+        let path = fixture.write("term-cards/report.json", &kept);
+        let result = termcards_finish(&fixture.prepared(), "termcards/book@1", 3, &path).unwrap();
+        assert_eq!(result["rows"][0]["parts"], json!(["K/2|a|a"]));
+        assert_eq!(fixture.state("termcards/book@1").0, "done");
+    }
+
+    #[test]
+    fn a_kept_earlier_row_whose_parts_are_not_under_its_head_never_completes() {
+        let fixture = fixture(&[("termcards/book@1", book_inputs())]);
+        let mut kept = report();
+        kept["rows"][0]["publication"]["reason"] = json!({"code": "kept_earlier", "address": "K/2|a"});
+        kept["rows"][0]["publication"]["parts"] = json!(["K/2|b|a"]);
+        let path = fixture.write("term-cards/report.json", &kept);
+        let error = termcards_finish(&fixture.prepared(), "termcards/book@1", 3, &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not under its head"), "{error}");
+        assert_eq!(fixture.state("termcards/book@1").0, "claimed");
     }
 
     #[test]

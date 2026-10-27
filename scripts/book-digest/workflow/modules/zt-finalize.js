@@ -1,4 +1,7 @@
-// ==== module zt-finalize v5 ====
+// ==== module zt-finalize v6 ====
+// 6 (live run 2026-10-27, becker2025division): the final step's line overflowed at 429 characters and failed the
+// stage. It now carries only what this module reads, and the Term round's applicability arrives as
+// `term_inapplicable`, because a step line drops every false and an absent `term_applicable` read as applicable.
 // The declared finite finalization branch (R299/R300, #86; S26, #169): the read-only audit plan, at
 // most ONE correction cycle scoped to the plan's Cards, the exact changed-Card/touched-tree
 // manifest, a Term-link round for the Cards that cycle actually changed (the whole book when the
@@ -19,7 +22,7 @@
 // steps, the scope, the refreshes and the final audit are book-steps.ps1 steps run by DeepSeek drive jobs, and the
 // Term-link round is zt-term-link-lib's one drive job. No Claude agent runs a command.
 defineModule({
-  id: 'zt-finalize', version: '5', requires: ['zt-digest-lib', 'zt-term-link-lib'],
+  id: 'zt-finalize', version: '6', requires: ['zt-digest-lib', 'zt-term-link-lib'],
   summary: 'ZT digest: the finite finalization (audit plan, one scoped correction cycle, the changed-Card manifest, the round\'s Term-link pass, dependency-scoped publication refresh, final read-only audit).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -116,7 +119,7 @@ defineModule({
       faults: { residual: n(report.residual) },
       infrastructure: [],
       terms: { status: report.terms_status, published: n(report.terms_published), rows: n(report.terms_rows), heads: n(report.terms_heads), uses: n(report.terms_uses), faults: n(report.terms_faults), complete: report.terms_complete === true },
-      term_link: { applicable: report.term_applicable !== false, round: n(report.term_round), scope: report.term_scope, status: report.term_status, unit: report.term_unit, state: report.term_state, no_op: report.term_no_op === true, counts: { cards_changed: n(report.term_cards_changed), links_added: n(report.term_links_added) }, reason: report.term_reason },
+      term_link: { applicable: report.term_inapplicable !== true, round: n(report.term_round), scope: report.term_scope, status: report.term_status, unit: report.term_unit, state: report.term_state, no_op: report.term_no_op === true, counts: { cards_changed: n(report.term_cards_changed), links_added: n(report.term_links_added) }, reason: report.term_reason },
     }
     log(`Finalize: ${final.status} at graph revision ${final.graph_revision}; final audit ${final.audit.final.unit} (revision ${final.audit.final.revision}); ${final.faults.residual} residual hard/source faults; terms ${final.terms.status || 'unknown'}.`)
     return {

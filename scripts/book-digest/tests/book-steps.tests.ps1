@@ -101,6 +101,8 @@ switch -Regex ($cmd) {
         if ($flat -match '-Step changes') { Out @{ step = 'changes'; finalized = $false; term_link = @{ applicable = $true; round = 1; scope = 'cards'; cards = @('Key/1|a') }; changes = 'D:\x\fix\state.json'; cycle = @{ report = 'D:\x\fix\report.json' }; refresh = @() } }
         if ($flat -match '-Step scope') { Out @{ step = 'scope'; term_link = @{ applicable = $true; round = 1; scope = 'cards'; cards = @('Key/1|a') }; cycle = @{ report = 'D:\x\fix\report.json' }; refresh = @(@{ layer = 'link-check'; applicable = $true }) } }
         if ($flat -match '-Step refresh') { Out @{ layer = 'link-check'; unit = 'link-check/book@2'; state = 'done'; changed_cards = 1 } }
+        # The live final report of 2026-10-27 (becker2025division): its line was 429 characters and failed the step.
+        if ($flat -match '-Step final' -and $env:BS_FINAL_LIVE) { Out @{ step = 'final'; status = 'partial'; branch = 'unresolved'; graph_revision = 10282; audit = @{ final = @{ unit = 'audit/book@3'; revision = 3 }; scheduled = @{ unit = 'audit/book@2'; revision = 2 } }; faults = @{ residual = 7 }; infrastructure = @('a'); changes = @{ cards = 12; trees = 3 }; term_link = @{ applicable = $true; status = 'skipped'; round = 2 }; terms = @{ status = 'complete'; published = 57; rows = 57; heads = 57; uses = 2285 } } }
         if ($flat -match '-Step final') { Out @{ step = 'final'; status = 'done'; graph_revision = 8; audit = @{ final = @{ unit = 'audit/book@2'; revision = 2 } }; faults = @{ residual = 0 }; infrastructure = @(); terms = @{ status = 'complete' } } }
         Out @{ ok = $true }
     }
@@ -366,6 +368,10 @@ $fRefresh = Step 'finalize-refresh' @{ Layer = 'link-check'; Report = 'D:\x\fix\
 Assert ($fRefresh.json -and $fRefresh.json.ok -eq $true -and $fRefresh.json.layer -eq 'link-check' -and (Has $fRefresh.calls 'finalize -Step refresh -Out .* -Layer link-check -Report D:\\x\\fix\\report.json')) "finalize refresh: the refreshed publication is the step's answer ($($fRefresh.text))"
 $fFinal = Step 'finalize-final'
 Assert ($fFinal.json -and $fFinal.json.ok -eq $true -and $fFinal.json.graph_revision -eq 8 -and $fFinal.json.status -eq 'done' -and (Has $fFinal.calls 'finalize -Step final -Out ')) "finalize final: the final audit is the step's answer ($($fFinal.text))"
+$env:BS_FINAL_LIVE = '1'
+$fLive = Step 'finalize-final'
+$env:BS_FINAL_LIVE = ''
+Assert ($fLive.json -and $fLive.json.ok -eq $true -and $fLive.json.residual -eq 7 -and $fLive.json.terms_uses -eq 2285 -and $fLive.json.term_status -eq 'skipped') "finalize final: the live final report's line fits, carrying only what the module reads ($($fLive.text))"
 $env:BS_LOCK = '^finalize '
 $fLocked = Step 'finalize-final'
 $env:BS_LOCK = ''

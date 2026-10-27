@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v18 ====
+// ==== module zt-digest-prepare v19 ====
 // Prepare (mode full): prepare-book-digest writes the Chinese text, the section groups, the Literature tree with one
 // anchor per group, and the shared prefixes, then binds the immutable run contract with the effective settings
 // (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the account-wide usage ledger: run usage is
@@ -27,8 +27,10 @@
 // args.citationKey) instead of zdMake reading args.citationKey: the prepared run it creates is the one source every
 // later stage reads the key from (stages.prepare.output.citation_key), so a resume that names only `out` still
 // hands each stage the book's key.
+// 19 (live run 2026-10-27, becker2025division): the fresh preparation's drive job runs in the staging folder's
+// parent, because the staging folder does not exist until this step creates it and deepseek_run refuses a missing cwd.
 defineModule({
-  id: 'zt-digest-prepare', version: '18', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '19', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume), validate or re-stage one already digested book for a Term backfill (modes term-cards and term-link) or take args.groups; output {groups, groupList, citation_key, backfill?}.',
   params: {
     key: { type: 'any', description: "a fresh preparation's Citation key (args.citationKey): the prepared run this stage creates is what every later stage reads it from (#181)" },
@@ -111,7 +113,7 @@ defineModule({
       // v12 (S1): the preparation ends with one short line (the group count), which a Haiku agent had counted out of
       // the whole manifest. Exit 3 with needs_selection names the Works or files to choose from: the run halts for the
       // choice (pass one Work id as args.book, or one file id as args.fileId).
-      const prepared = await Z.bookStep('prepare book', 'prepare', options)
+      const prepared = await Z.bookStep('prepare book', 'prepare', options, { workspace: String(Z.OUT).replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '') })
       const prep = prepared && prepared.ok === true && Number(prepared.groups) > 0
         ? { ok: true, groups: Number(prepared.groups) }
         : { ok: false, error: prepared ? JSON.stringify(prepared) : 'no output' }

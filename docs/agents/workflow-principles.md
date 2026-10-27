@@ -9,7 +9,7 @@ What the 2026-10-26 migration to the Haiku-manager + DeepSeek module structure t
 - Claude tokens are precious: no Claude agent that only runs a command, no per-item agents for script work. Claude does design roles only (model architect, HTML visual composer, organize); DeepSeek does content; scripts do the rest.
 - Keep it simple: one manager, many DeepSeek subagents, straight-line modules, one job that reviews and fixes (not a review job plus a fix job). Add a self-check tool for a job that fails often instead of orchestration around it. Do not overbuild.
 - Test by resuming (`mode resume`) or a single-stage mode (e.g. `mode term-cards`) on the last staging folder. Never rerun a whole digest to verify; a full run costs about two hours. A run has one resume; when it is spent, a fresh run needs a new key and staging folder.
-- Fix workflow bugs you meet during a run without asking: stop the run, fix test-first, update the wiki, reinstall, resume. Watch the journal and the ledger; a failed stage, repeated empty claims or a long-claimed unit is abnormal.
+- Fix workflow bugs you meet during a run without asking, test-first, with the wiki, then reinstall. Stop a run only when it crashes or a stage cannot go on (2026-10-27: "unless … conditions that crash the workflow, there's no need to stop"); then fix and resume at the break. A failed unit or a bug found in passing waits until the run finishes. Watch the journal and the ledger; a failed stage, repeated empty claims or a long-claimed unit is abnormal.
 - A trial that works is not reworked: updates found in it wait for the next trial; a broken trial is fixed and resumed at its break.
 
 ## Principles added 2026-10-27 (Literature notes, #183–#192)
@@ -57,6 +57,11 @@ Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 
 | A prompt's first line overrides its rules | The managers' lead line said "record each conversation and delete it", so kept conversations were deleted at collection | The first line of a manager prompt must agree with every later rule. Test the rendered prompt, not only the rule (lib v46). |
 | Faithful to what? | Rewritten legacy notes kept cross-card claims (`依赖 [[…]]：…`) that their own source lines did not support | Every sentence rests on the note's own source lines. A Link without support stays as a neutral `另见 [[…]]`. |
 | Contract between majors | A 5.7 staging folder cannot be driven by 5.8 | Copy it, strip `run_contract` and the ledger, repoint the manifest paths, then adopt it again. |
+| Only resumes tested | The first fresh full run after the drive migration stopped at its first step: `deepseek_run` refused a staging folder that only that step creates (2026-10-27) | A harness check covers the fresh path as well as the resume. A job that runs before its folder exists names a `workspace` that does (base 5.8.6). |
+| A count read as a line count | `faults: N` counts blocking lines only; the Link SELF-CHECK compared it with every line and refused 7 of 8 groups for advisory lines | Read a checker's count against the lines it counts (zt-digest 0.33.7). |
+| A kept Card checked against a new draft | On a resume, plan revision 2 re-rendered 18 Term rows; publication kept the revision-1 Cards, and the book completion compared their parts with the new draft | A kept row is checked against what was kept (its head), never against a later plan (zt-digest 0.33.7). |
+| Lines that carry unread fields | `finalize-final` overflowed at 429 characters with fields no module reads; a line also drops every false, so a `false` flag reads as its default | A step line carries only what its module reads; a flag whose meaning is `false` is sent under its positive name (zt-finalize v6). |
+| Resume right after a stop | The first resume after a TaskStop refused: two Link claims had recorded activity in the last 120 s | After a stop, check that no DeepSeek job runs, wait out the 120-second quiet period (`ledger reclaim -Release`), then resume; a refused resume does not spend the run's one resume. |
 
 ## Release discipline
 
@@ -72,6 +77,8 @@ Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 
 - A bug fix comes with a test that fails before the fix and reproduces the live case. When a small fixture passes, rebuild the real input (the book's vocabulary or the Card's old body from the backup) until the test fails.
 
 ## Known limitations still open
+
+- A `kept_earlier` Term row's receipts name rows by number, and the numbering shifts between plan revisions (becker2025division row 45 kept `1|a|as` with receipts for `1|a|ar`). The book completion no longer reads them; the receipts themselves are still wrong.
 
 - The last Term rerun on staging8 (zt-digest 0.29.16, `kept_earlier`) was never rerun live; the fix has tests only.
 - Model parts can still fail on content (closure, unanchored); expect 5–6 of 7 models on a small book.
