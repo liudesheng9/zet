@@ -26,7 +26,7 @@ paths:
   - "tests/fixtures/**"
   - "scripts/verify-release.ps1"
   - "scripts/release-live.ps1"
-synced: 0fa10e89b776
+synced: b8021f267504
 updated: 2026-10-27
 ---
 
