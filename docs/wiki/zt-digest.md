@@ -222,7 +222,7 @@ zt-digest term-link -Step plan|apply -Staging <folder>
   first-occurrence allowance. Duplicate list rows stop the plan before anything is frozen.
 - **Protected spans.** Without reserializing Markdown, the pass protects fenced and inline code,
   chart fences, dollar and LaTeX math, every Link macro, Markdown links and images (inline,
-  reference, definition and autolink forms), raw HTML, headings, table rows, `来源`/`出处` lines,
+  reference, definition and autolink forms), raw HTML, headings, table rows (a `|` inside a `[[…]]` Link is its address, never a cell separator), `来源`/`出处` lines,
   Term head metadata lines, generated Reverse text, the current term in its own head and parts, and
   the uncertain tail of an unclosed code or math delimiter. Emphasis delimiters and backslash
   escapes split the eligible runs as well, so a term split by markup is never linked.
@@ -1515,6 +1515,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
+- `2026-10-27` — 0.33.5: `spans::is_table_line` counts `|` only outside `[[…]]` Links. Term addresses hold `|` (`[[免税@K/1|a|al]]`), so every prose line with one Term link was read as a table row and no other term on it was linked; the relink after the #190 backfill left one Card that a second plan still changed (ebrill2001modern/31|c|1|a|1), which exposed it. With the fix the five live books gained 1140 more links in 648 Cards, and a second plan changes none. Test: `term_link::card::tests::a_line_with_a_piped_term_address_is_prose_not_a_table`.
 - `2026-10-27` — 0.33.4: no code change; it embeds the base 5.8.4 / econ 6.8.4 / math 5.8.4 contracts (mode `cards` now runs the `term-link` pass after the card cycle).
 - `2026-10-27` — 0.33.3 (#190 backfill): the card cycle reads an `owned-gNN.txt` manifest through `owned_lines`, which keeps only the addresses of the book's own Literature tree (the group audit, the whole-book declared set, `-Groups` scoping and the group map). grossman2002integration's pre-5.0 manifests also name the Topic Cards that digest wrote, and the plan refused "incomplete Card read: 193 of 200 … missing 408/0 …". Test: `an_owned_manifest_names_only_the_books_own_cards`.
 - `2026-10-27` — 0.33.2 (#190 backfill): `ledger adopt` counts a Card an owned log names but the archive lacks as lost group work only when it belongs to the book's own Literature tree (`lost_in_book`). grossman2002integration's pre-5.0 owned logs name the Topic Cards that digest wrote (`408/0`, `409/1`, `410/2`); zt-idea-grow owns Topic trees now, and their absence left groups 1, 2 and 8 `registered`, so the whole-book card cycle waited for them forever. Test: `a_lost_log_entry_counts_only_inside_the_books_literature_tree`.

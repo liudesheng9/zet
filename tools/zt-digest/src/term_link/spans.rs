@@ -665,13 +665,30 @@ fn is_source_line(trimmed: &str) -> bool {
 }
 
 /// A table row, with or without the edge pipes GFM allows (`| a | b |` or `a | b`), and a
-/// delimiter row (`--- | :---:`). Cells are labels, never prose.
+/// delimiter row (`--- | :---:`). Cells are labels, never prose. A `|` inside a `[[…]]` Link is part
+/// of its address (`[[免税@K/1|a|al]]`), never a cell separator.
 fn is_table_line(trimmed: &str) -> bool {
+    let unlinked = without_link_macros(trimmed);
+    let trimmed = unlinked.as_str();
     if trimmed.starts_with('|') || trimmed.matches('|').count() >= 2 || trimmed.contains(" | ") {
         return true;
     }
     let cells: Vec<&str> = trimmed.split('|').map(str::trim).collect();
     cells.len() >= 2 && cells.iter().all(|cell| is_table_rule(cell))
+}
+
+/// The line with every closed `[[…]]` Link replaced by one placeholder, so its address pipes vanish.
+fn without_link_macros(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find("[[") {
+        let Some(close) = rest[open + 2..].find("]]") else { break };
+        out.push_str(&rest[..open]);
+        out.push('L');
+        rest = &rest[open + 2 + close + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// One table delimiter cell: three or more hyphens with an optional alignment colon.

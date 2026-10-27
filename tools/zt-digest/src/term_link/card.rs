@@ -711,6 +711,29 @@ mod tests {
         assert_eq!(again.new_body, planned.new_body);
     }
     #[test]
+    fn a_line_with_a_piped_term_address_is_prose_not_a_table() {
+        // Live 2026-10-27 (ebrill2001modern/31|c|1|a|1): Term addresses hold `|`, so a line with one
+        // Term link was read as a table row and no other term on it was ever linked.
+        let vocabulary = Vocabulary::build(
+            &[term(1, "增值税", &[], &["K/1|a|a"], true), term(38, "免税", &[], &["K/1|a|al"], true)],
+            &[],
+        );
+        let body = "公共部门免税的困难。
+退还其[[免税@K/1|a|al]]活动所缴纳的增值税。
+常规增值税制度。";
+        let planned = plan_card(body, &Profile::default(), &vocabulary, Policy::First, "K");
+        assert_preserved(body, &planned);
+        assert_eq!(
+            planned.new_body,
+            "公共部门[[免税@K/1|a|al]]的困难。
+退还其免税活动所缴纳的[[增值税@K/1|a|a]]。
+常规增值税制度。"
+        );
+        let again = plan_card(&planned.new_body, &Profile::default(), &vocabulary, Policy::First, "K");
+        assert!(again.edits.is_empty(), "{:?}", again.edits);
+    }
+
+    #[test]
     fn foreign_and_non_book_macros_are_retained_and_reported() {
         let body = "[[均衡@bookB/3]] 与 [[均衡@12/3]] 与 均衡";
         let planned = plan(body, Policy::First);
