@@ -2897,7 +2897,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '43' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v42, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '44' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v44, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

@@ -631,12 +631,33 @@ fn comma_folded(text: &str) -> String {
     out
 }
 
-/// `zt-digest coverage`: the command line.
-pub fn cli(argv: &[String]) -> Result<i32> {
-    let params = ["Out", "Group", "Draft"];
-    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["Step"])?;
-    let out = a.required("Out")?;
-    let staging = PathBuf::from(&out);
+/// One prepared run as the coverage command reads it: the manifest's groups and the files the
+/// report is built from. The card cycle (#187) reads the same way, so a plan can tell a job what
+/// the run's own coverage measurement says.
+pub struct Run {
+    pub book: String,
+    pub input: Input,
+    /// The Card snapshot the numbers are read from, and how many Cards it holds.
+    pub snapshot_path: String,
+    pub snapshot_cards: usize,
+}
+
+/// The manifest's groups of a staging folder.
+pub fn staging_groups(staging: &Path) -> Result<Vec<Group>> {
+    let manifest_path = staging.join("manifest.json");
+    if !manifest_path.is_file() {
+        bail!("{} holds no manifest.json: coverage reads a prepared staging folder", staging.display());
+    }
+    let manifest = util::read_json(&manifest_path)?;
+    let groups = read_groups(&manifest)?;
+    if groups.is_empty() {
+        bail!("manifest.json names no group");
+    }
+    Ok(groups)
+}
+
+/// The staged sections, source logs, recorded skips and Cards of one prepared run.
+pub fn read_run(staging: &Path, group: Option<i64>) -> Result<Run> {
     let manifest_path = staging.join("manifest.json");
     if !manifest_path.is_file() {
         bail!("{} holds no manifest.json: coverage reads a prepared staging folder", staging.display());
@@ -647,37 +668,55 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if groups.is_empty() {
         bail!("manifest.json names no group");
     }
+    let sections = read_sections(staging, &groups, group)?;
+    let sources = read_sources(staging, &groups, group, &book)?;
+    let skips = read_skips(staging, &groups, group)?;
+    let snapshot = read_snapshot(staging)?;
+    let snapshot_cards = snapshot.cards.len();
+    Ok(Run {
+        book,
+        input: Input { groups, sections, sources, skips, cards: snapshot.cards, group },
+        snapshot_path: snapshot.path,
+        snapshot_cards,
+    })
+}
+
+/// `zt-digest coverage`: the command line.
+pub fn cli(argv: &[String]) -> Result<i32> {
+    let params = ["Out", "Group", "Draft"];
+    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["Step"])?;
+    let out = a.required("Out")?;
+    let staging = PathBuf::from(&out);
     let group = if a.has("Group") { Some(a.int_or("Group", 0)?) } else { None };
+    let mut run = read_run(&staging, group)?;
     if let Some(wanted) = group
-        && !groups.iter().any(|g| g.n == wanted)
+        && !run.input.groups.iter().any(|g| g.n == wanted)
     {
         bail!("-Group {wanted} names no group of this run");
     }
-    let sections = read_sections(&staging, &groups, group)?;
-    let sources = read_sources(&staging, &groups, group, &book)?;
-    let mut skips = read_skips(&staging, &groups, group)?;
-    let snapshot = read_snapshot(&staging)?;
-    let mut cards = snapshot.cards.clone();
-    let mut sources = sources;
     let mut draft_record = Value::Null;
     if a.has("Draft") {
         let path = a.required("Draft")?;
         let draft = util::read_json(&path)?;
         let (adds, add_sources, draft_skips, record) = read_draft(&path, &draft)?;
-        cards.extend(adds);
-        sources.extend(add_sources);
-        skips.extend(draft_skips);
+        run.input.cards.extend(adds);
+        run.input.sources.extend(add_sources);
+        run.input.skips.extend(draft_skips);
         draft_record = record;
     }
-    let input = Input { groups, sections, sources, skips, cards, group };
-    finish(&input, &staging, group, &book, &snapshot, &draft_record, a.flag("Step"))
+    finish(&run, &staging, group, &draft_record, a.flag("Step"))
 }
 
-fn finish(input: &Input, staging: &Path, group: Option<i64>, book: &str, snapshot: &Snapshot, draft: &Value, step: bool) -> Result<i32> {
+fn finish(run: &Run, staging: &Path, group: Option<i64>, draft: &Value, step: bool) -> Result<i32> {
+    let input = &run.input;
+    let book = run.book.as_str();
+    let snapshot_path = run.snapshot_path.as_str();
+    let snapshot_cards = run.snapshot_cards;
     let coverage = report(input);
     if step {
         let detail = staging.join("coverage.json");
-        util::write_atomic(&detail, &format!("{}\n", serde_json::to_string_pretty(&coverage_json(&coverage, staging, group, book, snapshot, draft))?))?;
+        let record = coverage_json(&coverage, staging, group, book, snapshot_path, snapshot_cards, draft);
+        util::write_atomic(&detail, &format!("{}\n", serde_json::to_string_pretty(&record)?))?;
         util::print_line(&util::compact(&step_line(&coverage, &detail)))?;
         return Ok(0);
     }
@@ -701,7 +740,7 @@ fn step_line(coverage: &Coverage, detail: &Path) -> Value {
 }
 
 /// `coverage.json`: the per-section and per-Card facts of the run.
-fn coverage_json(coverage: &Coverage, staging: &Path, group: Option<i64>, book: &str, snapshot: &Snapshot, draft: &Value) -> Value {
+fn coverage_json(coverage: &Coverage, staging: &Path, group: Option<i64>, book: &str, snapshot_path: &str, snapshot_cards: usize, draft: &Value) -> Value {
     let sections: Vec<Value> = coverage
         .sections
         .iter()
@@ -740,7 +779,7 @@ fn coverage_json(coverage: &Coverage, staging: &Path, group: Option<i64>, book: 
         "faults": {"c1": coverage.faults_c1, "c2": coverage.faults_c2, "c3": coverage.faults_c3, "c4": coverage.faults_c4, "counted": coverage.counted()},
         "sections": sections,
         "cards": cards,
-        "card_source": {"path": snapshot.path, "cards": snapshot.cards.len()},
+        "card_source": {"path": snapshot_path, "cards": snapshot_cards},
         "draft": draft,
     })
 }
