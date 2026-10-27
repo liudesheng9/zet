@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.8.4",
+  "version": "6.8.5",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree with Idea, Event, Finding, and Model Cards (economic models at concept or formal level). It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those from the Literature trees afterwards. Modes link, models, cards, explain, events, findings, figures, audit and bridge re-run single stages on an existing digest.",
   "preflight": {
@@ -1195,7 +1195,7 @@
             {
               "path": "mode",
               "op": "matches",
-              "value": "^(full|resume|cards|term-cards|term-link)$"
+              "value": "^(full|resume|cards|link|figures|bridge|models|explain|events|findings|math|term-cards|term-link)$"
             },
             {
               "path": "args.termLink",
@@ -1405,6 +1405,7 @@
       "link-check",
       "organize",
       "figures",
+      "term-link",
       "cleanup",
       "report"
     ],
@@ -1419,6 +1420,7 @@
     "figures": [
       "args",
       "figures",
+      "term-link",
       "report"
     ],
     "audit": [
@@ -1431,6 +1433,7 @@
       "args",
       "source",
       "bridge",
+      "term-link",
       "report"
     ],
     "term-cards": [
@@ -1461,6 +1464,7 @@
       "link",
       "link-check",
       "organize",
+      "term-link",
       "audit",
       "cleanup",
       "report"
@@ -1474,6 +1478,7 @@
       "link",
       "link-check",
       "organize",
+      "term-link",
       "audit",
       "cleanup",
       "report"
@@ -1487,6 +1492,7 @@
       "link",
       "link-check",
       "organize",
+      "term-link",
       "audit",
       "cleanup",
       "report"
@@ -1500,6 +1506,7 @@
       "link",
       "link-check",
       "organize",
+      "term-link",
       "audit",
       "cleanup",
       "report"
@@ -1537,6 +1544,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.8.4"
+    "version": "5.8.5"
   }
 }

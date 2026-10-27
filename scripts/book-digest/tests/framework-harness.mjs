@@ -2169,6 +2169,30 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 }
 
 // ================================================================================================================
+// Live 2026-10-27: mode cards rewrote 421 Literature notes and ran no Term-link pass. Every mode that writes a Card
+// runs term-link after all its writers (only the read-only audit mode does not).
+// ================================================================================================================
+{
+  const WRITERS = ['digest', 'cards', 'events', 'findings', 'models', 'explain', 'cards-book', 'link', 'link-check', 'organize', 'figures', 'bridge', 'term-cards', 'math-skeleton', 'math-boundary', 'math-proof', 'math-theory']
+  for (const which of ['econ', 'math']) {
+    const bp = builds[which].bp
+    const byId = Object.fromEntries(bp.stages.map((s) => [s.id, s]))
+    const ancestors = new Set()
+    const walk = (id) => { for (const up of (byId[id] && byId[id].after) || []) if (!ancestors.has(up)) { ancestors.add(up); walk(up) } }
+    walk('term-link')
+    const gate = JSON.stringify(byId['term-link'].when || [])
+    for (const [mode, stages] of Object.entries(bp.modes)) {
+      const writers = stages.filter((id) => WRITERS.includes(id))
+      if (!writers.length) continue
+      check(stages.includes('term-link'), `Term links (${which}): mode ${mode} writes Cards (${writers.join(',')}) and runs term-link`)
+      check(new RegExp(JSON.parse(gate).flatMap((c) => c.value || []).find((c) => c.path === 'mode').value).test(mode), `Term links (${which}): the term-link stage's when accepts mode ${mode}`)
+      const late = writers.filter((id) => !ancestors.has(id))
+      check(!late.length, `Term links (${which}): mode ${mode} links after every writer (${late.join(',') || 'none late'})`)
+    }
+  }
+}
+
+// ================================================================================================================
 // S25 (#168): the dedicated Term backfill modes of one selected book
 // ================================================================================================================
 {
