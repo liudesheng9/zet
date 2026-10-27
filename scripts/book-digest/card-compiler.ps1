@@ -45,7 +45,7 @@
 
   Parameters: -Step plan|apply|check|report|precheck and -Work <folder> (required); -Book,
   -Staging, -Groups, -PerJob 8, -Sample 0, -Seed 1, -Rules (default
-  R2,R3,R4,R5,R7,R9,R12,I1,I2,I3,I4,L1,L2,E1,E2: R6 is left out), -MaxCards 0, -NoOrphans,
+  R2,R3,R4,R5,R7,R9,R12,R18,R19,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2: R6 is left out), -MaxCards 0, -NoOrphans,
   -Notes (Organize notes: each note is a fault N1 of its Card), -Compact (compact job lists),
   -MaxJobs 0 (apply: at most this many jobs per call), -Job and -File (precheck).
 

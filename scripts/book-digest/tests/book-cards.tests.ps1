@@ -45,7 +45,9 @@ function New-PreparedBook([string]$key, [bool]$models, [switch]$Faulty) {
     if (-not $models) { $flags.models = $false }
     Save-Json $options $flags
     if ($Faulty) {
-        $ideaBody = "融资成本影响企业的生产选择。贷款收紧使企业减少设备投入；投入下降。依赖 [[$key]]，后者给出全书的问题范围。来源：[[$key/1]]"
+        # An open formula (R22) keeps its blocking level on a Literature note since #184, while
+        # the Idea-card sentence rules (R2 to R5, R7) only advise there.
+        $ideaBody = "融资成本 `$r 影响企业的生产选择，因为贷款收紧使企业减少设备投入。依赖 [[$key]]，后者给出全书的问题范围。来源：[[$key/1]]"
     } else {
         $ideaBody = "融资成本影响企业的生产选择。贷款收紧使企业减少设备投入。依赖 [[$key]]，后者给出全书的问题范围。来源：[[$key/1]]"
     }
@@ -222,14 +224,16 @@ try {
     $validate = @(& $Digest @('model', '-Step', 'validate', '-Work', $reviewWork, '-Staging', $chainOut, '-Plan', $planFile) 2>&1)
     Assert (($validate -join "`n") -match 'which the prepared source does not hold') "a span the prepared source does not hold is refused [$($validate -join ' | ')]"
 
-    # The established supplied-step markers are the only labels the card cycle accepts.
+    # The established supplied-step markers are the only labels the card cycle accepts. The job is
+    # the one that holds the sampled Idea Card; every other Card of it answers `ok`.
     $markerIdea = @($cycle.report.sample.addresses)[0]
-    $markerJob = @($cycle.state.jobs.Keys)[0]
+    $markerJob = @($cycle.state.jobs.Keys | Where-Object { $markerIdea -in @($cycle.state.jobs[$_].cards) })[0]
+    $markerRest = @(@($cycle.state.jobs[$markerJob].cards) | Where-Object { $_ -ne $markerIdea } | ForEach-Object { @{ address = $_; verdict = 'ok'; note = '对照原文核对无误。' } })
     $markerDraft = Join-Path $scratch 'marker-draft.json'
-    Save-Json $markerDraft @{ cards = @(@{ address = $markerIdea; verdict = 'unfaithful'; title = '贷款收紧使企业减少设备投入'; body = '贷款收紧使企业减少设备投入。这一步（补充：由我补上）得到结论。' }, @{ address = $modelDraft; verdict = 'ok'; note = '对照原文核对无误。' }) }
+    Save-Json $markerDraft @{ cards = @(@{ address = $markerIdea; verdict = 'unfaithful'; title = '贷款收紧使企业减少设备投入'; body = '贷款收紧使企业减少设备投入。这一步（补充：由我补上）得到结论。' }) + $markerRest }
     $pre = @(& $Digest @('card', '-Step', 'precheck', '-Work', $cycle.work, '-Job', "$markerJob", '-File', $markerDraft) 2>&1)
     Assert (($pre -join "`n") -match 'supplied-step marker must be exactly' -and $pre[-1] -ne 'faults: 0') "a malformed supplied-step marker is refused [$($pre -join ' | ')]"
-    Save-Json $markerDraft @{ cards = @(@{ address = $markerIdea; verdict = 'unfaithful'; title = '贷款收紧使企业减少设备投入'; body = '贷款收紧使企业减少设备投入。（补：书中略去）这一句由读者验证。依赖 [[CycleBook]]，后者给出全书的问题范围。来源：[[CycleBook/1]]' }, @{ address = $modelDraft; verdict = 'ok'; note = '对照原文核对无误。' }) }
+    Save-Json $markerDraft @{ cards = @(@{ address = $markerIdea; verdict = 'unfaithful'; title = '贷款收紧使企业减少设备投入'; body = '贷款收紧使企业减少设备投入。（补：书中略去）这一句由读者验证。依赖 [[CycleBook]]，后者给出全书的问题范围。来源：[[CycleBook/1]]' }) + $markerRest }
     $pre = @(& $Digest @('card', '-Step', 'precheck', '-Work', $cycle.work, '-Job', "$markerJob", '-File', $markerDraft) 2>&1)
     Assert ($pre[-1] -eq 'faults: 0') "the established marker passes the precheck [$($pre -join ' | ')]"
 } finally {

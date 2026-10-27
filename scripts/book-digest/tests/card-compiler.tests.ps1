@@ -49,12 +49,15 @@ try {
     $made = Write-Calls @(
         @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'side'; title = '所有者在契约空白处决定资产用法'
                 body = "契约无法写明所有情形。所有者决定空白处的资产用法。依赖 [[$key/1]] 的前提：契约不完全。对照 [[$key/2]]：那里是债务转移控制权。`n`n来源：[[$key]] §1.1" } },
+        # A Literature note keeps its own rule row since #184: a missing source line (I3) is a hard
+        # fault there, while the Idea-card sentence rules (R3, R4, R12) only advise. The fixture's
+        # faults must therefore come from a rule that still blocks on a note.
         @{ tool = 'create_successor'; arguments = @{ at = '@@0'; title = '剩余控制权给所有者谈判地位'
-                body = "谈判地位被剩余控制权提高。这一点见 [[@@0]] 的论证，所有者可以拒绝合作。`n`n来源：[[$key]] §1.1" } },
+                body = "谈判地位被剩余控制权提高。这一点见 [[@@0]] 的论证，所有者可以拒绝合作。" } },
         @{ tool = 'create_successor'; arguments = @{ at = '@@0'; kind = 'side'; title = '所有权的配置影响事前投资'
                 body = "所有权决定谈判地位。谈判地位决定事后剩余的分配。依赖 [[@@0]]：事前投资取决于这个分配。`n`n来源：[[$key]] §1.1" } },
         @{ tool = 'create_successor'; arguments = @{ at = "$key/2"; kind = 'side'; title = '债权人在违约时取得控制权'
-                body = "债务规定一个还款额。违约时控制权转给债权人。这一点被很多人引用，见 [[@@1]]。`n`n来源：[[$key]] §2.1" } },
+                body = "债务规定一个还款额。违约时控制权转给债权人。这一点被很多人引用，见 [[@@1]]。" } },
         @{ tool = 'create_successor'; arguments = @{ at = "$key/1"; kind = 'side'; type = 'event'; title = '通用汽车收购费雪车身公司'
                 body = "通用汽车买下了费雪车身公司。`n`n来源：[[$key]] §1.1" } }
     )
@@ -71,12 +74,12 @@ try {
     Assert ($fix.Count -eq 1) "plan: one fix job ($($fix.Count))"
     Assert ($orph.Count -eq 1) "plan: one orphan job ($($orph.Count))"
     $fixCards = @($state.jobs[$fix[0].id].cards)
-    Assert ($b -in $fixCards -and $d -in $fixCards -and $e -in $fixCards) "plan: the passive, refers, and event Cards have faults ($($fixCards -join ', '))"
+    Assert ($b -in $fixCards -and $d -in $fixCards -and $e -notin $fixCards) "plan: the Cards without a source line have faults, and the Event Card is no Literature note ($($fixCards -join ', '))"
     Assert ($a -notin $fixCards) 'plan: the good Card has no fault'
     $orphanCards = @($state.jobs[$orph[0].id].cards)
-    Assert ($e -in $orphanCards -and $c -in $orphanCards) "plan: the event and the unlinked Card are orphans ($($orphanCards -join ', '))"
+    Assert ($c -in $orphanCards -and $e -notin $orphanCards) "plan: the unlinked Literature note is an orphan; the Event Card belongs to its own layer ($($orphanCards -join ', '))"
     $jobText = Get-Content $state.jobs[$fix[0].id].file -Raw -Encoding utf8
-    Assert ($jobText -match "卡片 ``$([regex]::Escape($b))``" -and $jobText -match 'R4') 'plan: the job file lists the Card and its faults'
+    Assert ($jobText -match "卡片 ``$([regex]::Escape($b))``" -and $jobText -match 'I3') 'plan: the job file lists the Card and its faults'
     Assert ((Test-Path (Join-Path $work 'dsh-card-instructions.zh.md')) -and (Get-Content (Join-Path $work 'dsh-card-instructions.zh.md') -Raw -Encoding utf8) -match "\[\[$key\]\]") 'plan: the instruction file names the book'
     $selfCheck = "(?m)^SELF-CHECK: zt-digest card -Step precheck -Work ""$([regex]::Escape((Resolve-Path $work).Path))"" -Job "
     Assert ($jobText -match ($selfCheck + [regex]::Escape($fix[0].id) + '\s*$')) 'plan: the fix job file names its precheck command'
@@ -98,11 +101,15 @@ try {
     Assert ($pre[-1] -eq 'faults: 0') "precheck: a clean draft gives faults: 0 ($($pre -join ' | '))"
     $pre = Precheck $fixId @{ cards = @(@{ address = $b; verdict = 'fix'; title = '剩余控制权给所有者谈判地位'; body = '剩余控制权提高所有者在事后谈判中的地位，所有者可以拒绝合作并带走资产。' }) + $okRest }
     Assert (@($pre | Where-Object { $_ -like "$b refuse lost Links*" }).Count -eq 1 -and $pre[-1] -match '^faults: [1-9]') "precheck: a draft that loses a Link is a refuse line ($($pre -join ' | '))"
+    # R3 is off on a Literature note (#184): a semicolon sentence is no fault. A real advisory
+    # still prints its own line, and an advisory is never counted as a fault.
     $pre = Precheck $fixId @{ cards = @(@{ address = $b; verdict = 'fix'; title = '剩余控制权给所有者谈判地位'; body = $cleanB.Replace('地位。依赖', '地位；依赖') }) + $okRest }
-    Assert (@($pre | Where-Object { $_ -like "$b R3 *" }).Count -ge 1 -and @($pre | Where-Object { $_ -like '* refuse *' }).Count -eq 0) "precheck: a semicolon is R3 ($($pre -join ' | '))"
+    Assert ($pre[-1] -eq 'faults: 0' -and @($pre | Where-Object { $_ -like "$b R3 *" }).Count -eq 0) "precheck: a semicolon is no fault of a Literature note ($($pre -join ' | '))"
+    $pre = Precheck $fixId @{ cards = @(@{ address = $b; verdict = 'fix'; title = '剩余控制权给所有者谈判地位'; body = $cleanB.Replace("依赖 [[$a]] 的论证：所有者可以拒绝合作并带走资产。", "依赖 [[$a]]：所有者。") }) + $okRest }
+    Assert (@($pre | Where-Object { $_ -like "$b L2 (advisory) *" }).Count -eq 1 -and $pre[-1] -eq 'faults: 0') "precheck: an advisory prints and is not counted as a fault ($($pre -join ' | '))"
     $pre = Precheck $fixId @{ cards = @(@{ address = $b; verdict = 'split'; title = '剩余控制权给所有者谈判地位'; body = $cleanB
                 split = @(@{ title = '拒绝合作的权利来自所有权'; body = "依赖 [[$b]] 的结论：所有者可以拒绝合作，这个权利来自所有权本身。`n`n来源：[[$key]] §1.1" }) }) + $okRest }
-    Assert (@($pre | Where-Object { $_ -like "$b+split1 I4 *" }).Count -eq 1) "precheck: a split Card that links only its origin is I4 ($($pre -join ' | '))"
+    Assert (@($pre | Where-Object { $_ -like "$b+split1 I4 *" }).Count -eq 1) "precheck: a split Card that links only its origin is I4, as advice on a note ($($pre -join ' | '))"
     $pre = Precheck $fixId $null
     Assert ($pre.Count -eq 2 -and $pre[0] -like "$fixId json *" -and $pre[-1] -eq 'faults: 1') "precheck: a missing JSON file is one fault line ($($pre -join ' | '))"
     $orphId = $orph[0].id
@@ -120,38 +127,37 @@ try {
     Assert ((Get-Content (Join-Path $work 'state.json') -Raw -Encoding utf8) -eq $stateBefore) 'precheck: state.json is unchanged'
 
     # --- DeepSeek stand-in: the fix job ---
-    # b: a good rewrite. d: a rewrite that loses a Link (refused). e: the event template.
+    # b: a rewrite that fixes I3 and splits; the split Card leaves its source line out on purpose,
+    # so the follow-up round has a real fault to repair. d: a rewrite that loses a Link (refused).
     $fixOut = @{ cards = @(
             @{ address = $b; verdict = 'split'; title = '剩余控制权给所有者谈判地位'
                 body = "剩余控制权提高所有者的谈判地位。依赖 [[$a]] 的论证：所有者可以拒绝合作。`n`n来源：[[$key]] §1.1"
-                split = @(@{ title = '拒绝合作的权利来自所有权'; body = "依赖 [[$b]]：所有者可以拒绝合作；这个权利来自所有权。`n`n来源：[[$key]] §1.1" }) },
+                split = @(@{ title = '拒绝合作的权利来自所有权'; body = "依赖 [[$b]]：所有者可以拒绝合作，这个权利来自所有权。" }) },
             @{ address = $d; verdict = 'fix'; title = '债权人在违约时取得控制权'
-                body = "债务规定一个还款额。违约时控制权转给债权人。`n`n来源：[[$key]] §2.1" },
-            @{ address = $e; verdict = 'fix'; title = '1926 年通用汽车收购费雪车身公司'
-                body = "时间：1926 年。`n地点：美国底特律。`n参与者：通用汽车、费雪车身公司。`n经过：通用汽车买下费雪车身公司其余的股份。`n来源：[[$key]] §1.1" }
+                body = "债务规定一个还款额。违约时控制权转给债权人。`n`n来源：[[$key]] §2.1" }
         ) }
     Save-Json $state.jobs[$fix[0].id].out $fixOut
-    # The orphan job: the event gets a Link from an Idea Card; the unlinked Card from a candidate.
+    # The orphan job: the unlinked Card gets a Link from a candidate.
     $cands = $state.jobs[$orph[0].id].candidates
     $links = @()
     if (@($cands[$c]).Count) { $links += @{ to = $c; from = @($cands[$c])[0]; text = "对照 [[$c]]：那里讨论的是所有权的配置怎样通过事后剩余的分配影响事前的专用性投资，这里讨论的是谈判地位本身的来源。" } }
-    if (@($cands[$e]).Count) { $links += @{ to = $e; from = @($cands[$e])[0]; text = "例示 [[$e]]：这次收购说明所有权怎样改变谈判地位。" } }
     $links += @{ to = $c; from = $key; text = "对照 [[$c]]：这一条不是候选。" }
     Save-Json $state.jobs[$orph[0].id].out @{ links = $links; none = @() }
-    Assert (@($cands[$e]) -notcontains $key -and -not @(@($cands[$e]) | Where-Object { $_ -like "$key/*" -and $_ -notmatch '\|' }).Count) 'plan: an event gets only Idea Cards as candidates'
 
     # A Card that changes after the plan is refused, not overwritten.
     $null = Write-Calls @(@{ tool = 'append_card'; arguments = @{ at = $d; text = '一位作者另外加了一句。' } })
 
     # --- apply ---
     $applied = Last (Run 'apply')
-    Assert ($applied.counts.fix -eq 2) "apply: two rewrites ($($applied.counts.fix))"
+    # One rewrite is written (b's split). d's rewrite is refused as changed, and the Event Card is
+    # never the cycle's to write (#189).
+    Assert ($applied.counts.fix -eq 1) "apply: one rewrite is written ($($applied.counts.fix))"
     Assert ($applied.counts.refused -ge 2) "apply: the changed Card and the non-candidate are refused ($($applied.counts.refused))"
     Assert ($applied.counts.orphan_links -eq @($links).Count - 1) "apply: the orphan Links are written ($($applied.counts.orphan_links))"
     $bNow = Get-Card $b
     Assert ($bNow.body -match '依赖 \[\[' -and $bNow.body -notmatch '被') 'apply: the rewrite is in the Card'
     $eNow = Get-Card $e
-    Assert ($eNow.title -match '1926' -and $eNow.body -match '(?m)^参与者：') 'apply: the event follows the template'
+    Assert ($eNow.title -eq '通用汽车收购费雪车身公司' -and $eNow.body -match '通用汽车买下了费雪车身公司') 'apply: the Event Card is left to its own layer, unwritten'
     Assert ((Get-Card $d).body -match '一位作者另外加了一句') 'apply: a Card changed since the plan keeps its new text'
     $state = Get-Content (Join-Path $work 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     Assert ($state.refused[$d].reason -match 'changed') "apply: the refusal names the change ($($state.refused[$d].reason))"
@@ -159,7 +165,7 @@ try {
 
     # A rewrite that loses a Link is refused: a second fix job on a fresh plan of one Card.
     $lossWork = Join-Path $scratch 'loss'
-    $lines = @(pwsh -NoProfile -File $compiler -Step plan -Work $lossWork -Book $key -NoOrphans -Rules 'R4' 2>&1)
+    $lines = @(pwsh -NoProfile -File $compiler -Step plan -Work $lossWork -Book $key -NoOrphans -Rules 'I3' 2>&1)
     $lossPlan = [string]$lines[-1] | ConvertFrom-Json -AsHashtable
     $lossState = Get-Content (Join-Path $lossWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $lossJob = $lossState.jobs[$lossPlan.jobs[0].id]
@@ -189,13 +195,20 @@ try {
     Assert ((Get-Content $fjob.file -Raw -Encoding utf8) -match ($selfCheck + [regex]::Escape($follow[0].id) + '\s*$')) 'check: the follow-up job file names its own precheck command'
     Assert ($s1 -in @($fjob.cards)) 'check: the follow-up holds the split Card with its fault'
     Assert ($newOrphans.Count -eq 1 -and $s1 -in @($state.jobs[$newOrphans[0].id].cards)) 'check: the split Card gets an orphan job'
-    if (@($cands[$c]).Count) { Assert ($freshFix.Count -eq 1 -and @($cands[$c])[0] -in @($state.jobs[$freshFix[0].id].cards)) 'check: the Card that took a long orphan Link gets a fresh fix job' }
+    # The appended Link sentence cannot make a hard fault on a note (its style rules advise since
+    # #184), so a fresh fix job opens exactly when the Card that took the Link still has one.
+    if (@($cands[$c]).Count) {
+        $linked = @($cands[$c])[0]
+        $linkedHard = @(Get-Content (Join-Path $work 'after\audit-faults.txt') -Encoding utf8 | Where-Object { $_ -notmatch '\(advisory\)' -and $_.StartsWith("$linked ") }).Count
+        Assert (($freshFix.Count -eq 1) -eq ($linkedHard -gt 0)) "check: a fresh fix job opens exactly when the Card that took an orphan Link still has a hard fault [$linkedHard]"
+        if ($freshFix.Count) { Assert (@($state.jobs[$freshFix[0].id].cards) -contains $linked) 'check: the fresh fix job holds the Card that took the orphan Link' }
+    }
     $dNow = Get-Card $d
     $sNow = Get-Card $s1
     Save-Json $fjob.out @{ cards = @(
             @{ address = $d; verdict = 'fix'; title = $dNow.title
                 body = "债务规定一个还款额。违约时控制权转给债权人。依赖 [[$b]]：控制权的配置决定谈判地位。一位作者另外加了一句。`n`n来源：[[$key]] §2.1" },
-            @{ address = $s1; verdict = 'fix'; title = $sNow.title; body = ($sNow.body -replace '；', '。') }
+            @{ address = $s1; verdict = 'fix'; title = $sNow.title; body = ($sNow.body.TrimEnd() + "`n`n来源：[[$key]] §1.1") }
         ) }
     $ojob = $state.jobs[$newOrphans[0].id]
     Save-Json $ojob.out @{ links = @(@{ to = $s1; from = @($ojob.candidates[$s1])[0]; text = "对照 [[$s1]]：那里谈拒绝合作，这里谈控制权的来源。" }); none = @() }
@@ -241,7 +254,7 @@ try {
     $rPlan = [string]@(pwsh -NoProfile -File $compiler -Step plan -Work $rWork -Book $key -Staging (Join-Path $scratch 'staging') -Sample 1 -Rules 'R4' -NoOrphans 2>&1)[-1] | ConvertFrom-Json -AsHashtable
     $rState = Get-Content (Join-Path $rWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $rText = (@($rPlan.jobs) | ForEach-Object { Get-Content $rState.jobs[$_.id].file -Raw -Encoding utf8 }) -join "`n"
-    Assert ($rPlan.review -ge 1 -and $rText -match '这是抽查' -and $rText -match '原文：') "plan -Sample: a sampled Card gets the review instruction and its source ($($rPlan.review) sampled)"
+    Assert ($rPlan.review -ge 1 -and $rText -match '对照原文核实这张卡' -and $rText -match '原文：') "plan -Sample: a sampled Card gets the review instruction and its source ($($rPlan.review) sampled)"
     Assert ($rText -notmatch "问题：`r?`n`r?`n") 'plan -Sample: no empty fault list'
 
     # --- a stopped apply: the rerun makes a missing split Card once, and -MaxJobs leaves the rest ---
