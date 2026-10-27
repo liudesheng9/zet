@@ -99,9 +99,10 @@ try {
     [IO.File]::WriteAllBytes($ownedPath,$ownedBytes)
     Assert ((Run-Digest $finishArgs).reused) 'the restored owned enumeration recovers the same completion'
 
-    # A group whose owned Cards carry a real quality fault hands that work to the book
+    # A group whose owned Cards carry a real quality fault (an open formula, R22, which keeps its
+    # level on a Literature note since #184) hands that work to the book
     # Card cycle instead of claiming a clean result.
-    $faultyBody='融资成本影响企业的生产选择。贷款收紧使企业减少设备投入；投入下降。依赖 [[CardsFault]]，后者给出全书的问题范围。来源：[[CardsFault/1]]'
+    $faultyBody='融资成本 $r 影响企业的生产选择，因为贷款收紧使企业减少设备投入。依赖 [[CardsFault]]，后者给出全书的问题范围。来源：[[CardsFault/1]]'
     $faultBook=New-PreparedBook 'CardsFault' $faultyBody '贷款收紧'
     $faultOut=$faultBook.out; $faultGroup=$faultBook.group
     Assert ($faultGroup.disposition -eq 'deferred' -and $faultGroup.self_check.count -eq 1) 'the group completes with its own fault deferred to the Cards obligation'
@@ -110,7 +111,7 @@ try {
     $faultCheckArgs=$faultArgs+@('-CheckOnly')
     $faultPreview=Run-Digest $faultCheckArgs
     Assert ($faultPreview.disposition -eq 'deferred' -and @($faultPreview.deferred).Count -eq 1 -and $faultPreview.deferred[0].consumer -eq 'cards-book/book@1') 'every hard fault of the offline check names the registered book Card cycle consumer'
-    Assert ($faultPreview.deferred[0].fault.StartsWith("$($faultGroup.substantive[0]) R3 ") -and $faultPreview.self_check.count -eq 1) 'the deferred fault is the real reported line of an owned Card'
+    Assert ($faultPreview.deferred[0].fault.StartsWith("$($faultGroup.substantive[0]) R22 ") -and $faultPreview.self_check.count -eq 1) 'the deferred fault is the real reported line of an owned Card'
     function Set-UnitState([string]$Database,[string]$Unit,[string]$State) {
         $seed=@'
 const {DatabaseSync}=require('node:sqlite');const path=require('node:path');

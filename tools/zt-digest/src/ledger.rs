@@ -3897,12 +3897,13 @@ fn verify_cards_book_coverage(
         }));
     }
     // R298: a residual hard fault stays an explicit targeted-correction obligation. The cycle's
-    // own rule set decides what it undertakes; a rule it does not run is not its obligation.
+    // own rule set decides what it undertakes; a rule it does not run is not its obligation,
+    // and an advisory line (a rule the Literature-note profile only advises) is no fault.
     for line in &recorded {
         let mut parts = line.splitn(3, ' ');
         let at = parts.next().unwrap_or_default();
         let rule = parts.next().unwrap_or_default();
-        if !declared_rules.contains(rule) {
+        if !declared_rules.contains(rule) || parts.next().unwrap_or_default().starts_with("(advisory)") {
             continue;
         }
         covered.push(json!({"kind":"fault","ref":line,"at":at,"rule":rule,"outcome":"unresolved","obligation":"final-fix"}));

@@ -37,7 +37,9 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 /// A Finding Card is writable as before the audit gave it its own category.
-const WRITABLE: &[&str] = &["idea", "event", "finding", "anchor"];
+/// The Cards the card cycle writes: the Literature notes and the group anchors. Event and
+/// Finding Cards keep the labelled formats their own layers write and check (#189).
+const WRITABLE: &[&str] = &["idea", "anchor"];
 /// Rules that need the whole Workspace: only the audit checks them.
 const WHOLE_WORKSPACE: &[&str] = &["I5", "E4", "I6", "E5", "L3"];
 const FIX_PROMPT: &str = "按以上说明处理任务文件中的每张卡，写出 JSON 文件。最后只回复一行 JSON。";
@@ -1224,7 +1226,7 @@ impl Compiler {
         }
     }
 
-    /// A Card this cycle may write: the Idea/Event/Finding/anchor layers, and, when this cycle
+    /// A Card this cycle may write: the Idea and anchor layers, and, when this cycle
     /// owns the review of a Model draft no model chain elaborates, that Model Card itself (R247).
     fn writable(&self, address: &str, category: &str) -> bool {
         is_in(category, WRITABLE)
@@ -2904,6 +2906,16 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_cycle_writes_only_literature_notes_and_anchors() {
+        // #189 pilot: the cycle rewrote Event and Finding Cards as prose notes and dropped a
+        // Finding's labelled fields (F1). Those Cards belong to their own layers.
+        assert!(is_in("idea", WRITABLE) && is_in("anchor", WRITABLE));
+        for category in ["event", "finding", "model", "term", "context"] {
+            assert!(!is_in(category, WRITABLE), "{category} must not be writable by the card cycle");
+        }
+    }
 
     #[test]
     fn a_rewrite_may_write_a_terms_visible_word_plainly_but_never_lose_it() {
