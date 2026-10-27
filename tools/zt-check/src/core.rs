@@ -74,6 +74,12 @@ pattern!(YEAR, r"(1[0-9]{3}|20[0-9]{2})");
 
 pattern!(LIST_ITEM, r"^\s*([-*+]|\d+[.、)])\s+");
 
+/// The title and prose bounds of a Literature note (issue #184): a title of at most 60 characters
+/// and a body of at least 80. Both advise; neither blocks a write, and a note has no upper size
+/// bound, because it carries the source's argument rather than one claim.
+pub const LITERATURE_TITLE_CHARS: i64 = 60;
+pub const LITERATURE_MIN_CHARS: i64 = 80;
+
 const HEDGES: [&str; 18] = [
     "值得注意的是",
     "需要注意的是",
@@ -688,20 +694,37 @@ impl Check {
         ) || is_term;
         let shared = ps_in(address, &self.shared);
         let derivation = is_derivation_facet(&facet);
+        // A Literature note carries the source's argument, not one claim: its row turns the
+        // claim-title and sentence rules off and only advises on a long title (issue #184).
+        let literature = is_literature_note(card);
         if !title.is_empty() {
             let measure = measure(&title);
-            let limit = if measure.words { 25 } else { 40 };
+            let limit = if literature {
+                LITERATURE_TITLE_CHARS
+            } else if measure.words {
+                25
+            } else {
+                40
+            };
             if measure.size > limit {
-                faults.add(
+                faults.add_row(
                     address,
                     "R12",
                     "title_size",
                     &format!("{} {} > {limit}: {title}", measure.size, measure.unit()),
                     &format!("({} {} > {limit}) {title}", measure.size, measure.unit()),
+                    literature,
                 );
             }
             if SEMICOLON.is_match(&plain(&title)) {
-                faults.add(address, "R12", "two_claims", &title, &format!("two claims: {title}"));
+                faults.add_row(
+                    address,
+                    "R12",
+                    "two_claims",
+                    &title,
+                    &format!("two claims: {title}"),
+                    literature,
+                );
             }
             if open_math(&title) {
                 faults.add(
@@ -794,7 +817,7 @@ impl Check {
             // acemoglu2007equilibrium: the Bridge judge measured its sentence without the label it is applied under.
             let line_text = BRIDGE_LABEL.replace(&line_text, "").into_owned();
             for sentence in split_sentences(&line_text) {
-                self.sentence(faults, address, shared, &sentence, is_step);
+                self.sentence(faults, address, shared, &sentence, is_step, literature);
                 // A source locator (`来源：[[book]] §11.D`) may carry the number.
                 if !navigation && !SOURCE_LINE.is_match(&line.text) {
                     local_reference(faults, address, &sentence);
@@ -1667,7 +1690,9 @@ impl Check {
         }
     }
 
-    /// R2 to R9 for one sentence.
+    /// R2 to R9 for one sentence. A Literature note's row turns the sentence rules R2, R3, R4,
+    /// R5 and R7 off and lets R9 advise (issue #184); a rule the row does not name keeps its own
+    /// severity.
     pub(crate) fn sentence(
         &self,
         faults: &mut Faults,
@@ -1675,6 +1700,7 @@ impl Check {
         shared: bool,
         sentence: &str,
         step: bool,
+        literature: bool,
     ) {
         let plain = plain(sentence);
         let measure = measure(sentence);
@@ -1685,23 +1711,24 @@ impl Check {
             (true, false) => 25,
         };
         if measure.size > limit {
-            faults.add(
+            faults.add_row(
                 address,
                 "R2",
                 "sentence_length",
                 &format!("{} {} > {limit}: {sentence}", measure.size, measure.unit()),
                 &format!("({} {} > {limit}) {sentence}", measure.size, measure.unit()),
+                literature,
             );
         }
         if SEMICOLON.is_match(&plain) {
-            faults.add(address, "R3", "semicolon", sentence, sentence);
+            faults.add_row(address, "R3", "semicolon", sentence, sentence, literature);
         }
         // `被收购方`, `被投资方`: a party, not a passive (and a 被 that names the party has its actor).
         if passive(&plain) {
-            faults.add(address, "R4", "passive", sentence, sentence);
+            faults.add_row(address, "R4", "passive", sentence, sentence, literature);
         }
         if LIGHT_VERB.is_match(&plain) {
-            faults.add(address, "R5", "light_verb", sentence, sentence);
+            faults.add_row(address, "R5", "light_verb", sentence, sentence, literature);
         }
         if !shared {
             // A rejected word inside a term the table keeps is that term, not the word: 税率差 is
@@ -1729,15 +1756,16 @@ impl Check {
             }
         }
         if NOUN_PHRASE.is_match(&plain) {
-            faults.add(address, "R7", "noun_phrase", sentence, sentence);
+            faults.add_row(address, "R7", "noun_phrase", sentence, sentence, literature);
         }
         if let Some(word) = HEDGES.iter().find(|word| plain.contains(*word)) {
-            faults.add(
+            faults.add_row(
                 address,
                 "R9",
                 "hedge",
                 &format!("{word}|{sentence}"),
                 &format!("`{word}`: {sentence}"),
+                literature,
             );
         }
     }
@@ -1888,6 +1916,8 @@ impl Check {
             let parent = text(prop(card, "parent"));
             let links = strings(prop(card, "links"));
             let kinds = strings(prop(card, "kinds"));
+            // A Literature note's row decides I1, I2, I4, I6, I7, L1, L2 and L3 (issue #184).
+            let literature = is_literature_note(card);
             let title_plain = SPACE
                 .replace_all(&PLACEHOLDERS.replace_all(&plain(&title), ""), "")
                 .into_owned();
@@ -1895,15 +1925,30 @@ impl Check {
                 && length(&title_plain) <= 6
                 && !CLAIM_VERB.is_match(&title_plain)
             {
-                faults.add(
+                faults.add_row(
                     &address,
                     "I1",
                     "no_claim_title",
                     &title,
                     &format!("the title states no claim: {title}"),
+                    literature,
                 );
             }
-            if is(&["idea"]) {
+            if is(&["idea"]) && literature {
+                // A note carries the source's argument, so only a body too thin to hold one is
+                // advised, and no upper bound applies.
+                let size = prose_chars.get(&key(&address)).copied().unwrap_or(0);
+                if size < LITERATURE_MIN_CHARS {
+                    faults.add_row(
+                        &address,
+                        "I2",
+                        "idea_size",
+                        &format!("{size} characters < {LITERATURE_MIN_CHARS}"),
+                        &format!("({size} characters < {LITERATURE_MIN_CHARS}) merge candidate"),
+                        literature,
+                    );
+                }
+            } else if is(&["idea"]) {
                 let size = prose_chars.get(&key(&address)).copied().unwrap_or(0);
                 if size > limits.max_idea_chars {
                     faults.add(
@@ -1953,12 +1998,13 @@ impl Check {
                 }
             }
             if is(&["idea"]) && has("kinds") && !kinds.iter().any(|kind| !ps_eq(kind, &parent)) {
-                faults.add(
+                faults.add_row(
                     &address,
                     "I4",
                     "no_kinded_link",
                     "",
                     "no kinded Link to a Card other than the parent",
+                    literature,
                 );
             }
             if has("inbound") {
@@ -2055,12 +2101,13 @@ impl Check {
                     // The identity is the set of unkinded Links, so reordering them is no new fault.
                     let mut identity = refers.clone();
                     identity.sort();
-                    faults.add(
+                    faults.add_row(
                         &address,
                         "L1",
                         "unkinded_links",
                         &identity.join(","),
                         &format!("({} Links read as refers) {shown}", refers.len()),
+                        literature,
                     );
                 }
             }
@@ -2101,7 +2148,7 @@ impl Check {
                     let reason = REASON_STRIP.replace_all(&reason, "");
                     // A formula states the reason too (`代入 [[…]] 的定义得 $MRTS=…$`).
                     if length(&reason) < limits.min_reason && !INLINE_MATH.is_match(&sentence) {
-                        faults.add(
+                        faults.add_row(
                             &address,
                             "L2",
                             "no_reason",
@@ -2115,6 +2162,7 @@ impl Check {
                                 length(&reason),
                                 limits.min_reason
                             ),
+                            literature,
                         );
                     }
                 }
@@ -2122,23 +2170,31 @@ impl Check {
             paragraphs.sort_by(|a, b| culture_cmp(&a.0, &b.0));
             for (target, seen) in &paragraphs {
                 if seen.len() >= 2 {
-                    faults.add(
+                    faults.add_row(
                         &address,
                         "L3",
                         "repeated_paragraph_link",
                         target,
                         &format!("[[{target}]] is linked in {} paragraphs", seen.len()),
+                        literature,
                     );
                 }
             }
             // I7 reads the relationship evidence, so only a Card that carries it is in scope.
             if is(&["idea"]) {
-                own_source_dependency(card, &address, faults);
+                own_source_dependency(card, &address, faults, literature);
             }
         }
         // I6: the checked Idea titles against their Workspace. It reads the context, not
-        // only this run, so a tree-only read is never reported as a Workspace-wide check.
-        self.similar_titles(&layer, faults);
+        // only this run, so a tree-only read is never reported as a Workspace-wide check. A
+        // Literature note's row turns the duplicate-title rule off (issue #184), so the note is
+        // neither checked nor offered as a pair.
+        let idea_titles = layer
+            .iter()
+            .copied()
+            .filter(|card| !is_literature_note(card))
+            .collect::<Vec<_>>();
+        self.similar_titles(&idea_titles, faults);
         let events = layer
             .iter()
             .filter(|card| ps_eq(&text(prop(card, "category")), "event"))
@@ -2168,6 +2224,13 @@ impl Check {
             }
         }
     }
+}
+
+/// Whether a rule's Literature-note row turns the rule off for this entry (issue #184): the fault
+/// is not reported at all, so no archive policy can bring it back.
+fn row_hides(rule: &str, literature: bool) -> bool {
+    literature
+        && crate::policy::literature_setting(rule) == Some(crate::policy::Setting::Off)
 }
 
 /// The targets a body reaches only by Term uses (S16, #158; design 10.2): a vocabulary reference,
@@ -2370,6 +2433,26 @@ pub fn category(
     category_with_parts(card, literature, anchors, &HashSet::new())
 }
 
+/// Whether one entry is a Literature note (issue #184): a Regular Card of type `idea` filed in a
+/// Literature tree, other than the tree's root, with a Section anchor counting as one too. The
+/// layer category names the Idea role; the entry's own `tree` — or, for a draft that names no
+/// tree, the `book` it belongs to — says whether that tree is a book. An Event, Finding, Model or
+/// Term Card keeps its category and its rules.
+pub fn is_literature_note(entry: &Value) -> bool {
+    if !ps_in(
+        &text(prop(entry, "category")),
+        &["idea", "anchor", "restatement-entry"],
+    ) {
+        return false;
+    }
+    let tree = text(prop(entry, "tree"));
+    if !tree.is_empty() {
+        return literature_tree(&tree).is_some();
+    }
+    let book = text(prop(entry, "book"));
+    !book.is_empty() && literature_tree(&book).is_some()
+}
+
 /// The same classification, with the addresses a register's root declares under `词条分册` (§8.5,
 /// D188): a register part is a navigation Card holding term rows, not a substantive Idea, so it
 /// triggers no claim-title or Idea-size rule and needs no topic hub of its own.
@@ -2503,7 +2586,12 @@ pub fn source_evidence(card: &Value) -> Vec<String> {
 /// tree. The claim has to carry its necessary conditions instead. A Card filed in
 /// that tree rests on it by design, and an `illustrates`, `corresponds`, or
 /// `contrasts` Link is no dependency.
-fn own_source_dependency(card: &Value, address: &str, faults: &mut Faults) {
+/// I7: an Idea Card of a Topic tree resting on its own source's Literature tree. A Literature
+/// note's row turns the rule off (issue #184), so the note reports nothing.
+fn own_source_dependency(card: &Value, address: &str, faults: &mut Faults, literature: bool) {
+    if row_hides("I7", literature) {
+        return;
+    }
     let Some(relations) = card.get("relations").and_then(Value::as_object) else {
         return;
     };
@@ -2676,6 +2764,31 @@ impl Faults {
             crate::policy::scope(rule),
             true,
         );
+    }
+
+    /// One fault of a rule whose Literature-note row may set its level (issue #184): `off` reports
+    /// nothing, `advise` is advice whatever the archive policy decides for the rule, and a rule
+    /// with no row — or a Card that is no Literature note — keeps the rule's own severity.
+    pub(crate) fn add_row(
+        &mut self,
+        address: &str,
+        rule: &str,
+        fault: &str,
+        key: &str,
+        message: &str,
+        literature: bool,
+    ) {
+        if literature {
+            match crate::policy::literature_setting(rule) {
+                Some(crate::policy::Setting::Off) => return,
+                Some(crate::policy::Setting::Advise) => {
+                    self.advise(address, rule, fault, key, message);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        self.add(address, rule, fault, key, message);
     }
 
     fn push(
@@ -3326,7 +3439,7 @@ mod tests {
         let check = Check::new(Limits::default(), false, "").with_terms(Some(body));
         let r6 = |sentence: &str| {
             let mut faults = Faults::default();
-            check.sentence(&mut faults, "K/1", false, sentence, false);
+            check.sentence(&mut faults, "K/1", false, sentence, false, false);
             faults
                 .diagnostics
                 .iter()
@@ -3349,7 +3462,7 @@ mod tests {
         let check = Check::new(Limits::default(), false, "").with_terms(Some(table));
         let rules = |sentence: &str| {
             let mut faults = Faults::default();
-            check.sentence(&mut faults, "K/1", false, sentence, false);
+            check.sentence(&mut faults, "K/1", false, sentence, false, false);
             faults
                 .diagnostics
                 .iter()
@@ -4088,5 +4201,368 @@ mod tests {
         let body = format!("术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n{long}。\n\n## 区别\n\n- 与 弹性：不同。\n\n来源：[[Test2026]] §1.1\n");
         let lines = term_lines(&[term_entry("均衡", &body)]);
         assert!(of_rule(&lines, "T9").is_empty(), "{lines:#?}");
+    }
+
+    // --- the Literature-note category (issue #184) ---------------------------------------------
+
+    /// One card of a Literature tree (`K`) and the same authored text in a Topic tree (`40`), so a
+    /// test can read a rule's level for a Literature note beside the unchanged Idea level.
+    fn literature_pair(title: &str, body: &str) -> (Value, Value) {
+        let note = json!({
+            "address": "K/1|a", "category": "idea", "tree": "K", "book": "K", "workspace": "agent",
+            "title": title, "body": body, "links": [], "kinds": [], "parent": "K/1"
+        });
+        let idea = json!({
+            "address": "40/1|a", "category": "idea", "tree": "40", "workspace": "agent",
+            "title": title, "body": body, "links": [], "kinds": [], "parent": "40/1"
+        });
+        (note, idea)
+    }
+
+    /// The rules of one report, in order, as `(address, rule, advisory)`.
+    fn levels(lines: &[String]) -> Vec<(String, String, bool)> {
+        lines
+            .iter()
+            .filter_map(|line| {
+                let mut parts = line.splitn(3, ' ');
+                let address = parts.next()?;
+                let rule = parts.next()?;
+                if !rule.chars().next().is_some_and(|first| "RIELFT".contains(first)) {
+                    return None;
+                }
+                Some((
+                    address.to_string(),
+                    rule.to_string(),
+                    line.contains(" (advisory) "),
+                ))
+            })
+            .collect()
+    }
+
+    fn level_of(lines: &[String], address: &str, rule: &str) -> Option<bool> {
+        levels(lines)
+            .into_iter()
+            .find(|(at, id, _)| at == address && id == rule)
+            .map(|(_, _, advisory)| advisory)
+    }
+
+    /// The classification itself: a Regular Card of type `idea` in a Literature tree, including an
+    /// anchor, and no other Card. A Topic Card, a Finding, a Model part and a Term Card keep their
+    /// categories.
+    #[test]
+    fn only_an_idea_in_a_literature_tree_is_a_literature_note() {
+        let note = |extra: Value| {
+            let mut entry = json!({ "category": "idea" });
+            entry
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            is_literature_note(&entry)
+        };
+        assert!(note(json!({ "tree": "K" })), "a Citation-key tree is a book");
+        assert!(note(json!({ "tree": "K", "category": "anchor" })), "an anchor is a note");
+        assert!(
+            note(json!({ "book": "K" })),
+            "a draft that names its book and no tree is a note"
+        );
+        assert!(
+            note(json!({ "tree": "K/3" })),
+            "a Card read by its anchor address is a note"
+        );
+        assert!(!note(json!({ "tree": "40" })), "a Topic tree is no book");
+        assert!(!note(json!({})), "no tree and no book names no book");
+        assert!(!note(json!({ "tree": "40", "book": "K" })), "the tree decides when both are named");
+        assert!(!is_literature_note(&json!({ "category": "finding", "tree": "K" })));
+        assert!(!is_literature_note(&json!({ "category": "part", "facet": "设定", "tree": "K" })));
+        assert!(!is_literature_note(&json!({ "category": "term", "tree": "K" })));
+        assert!(!is_literature_note(&json!({ "category": "root", "tree": "K" })));
+        assert!(!is_literature_note(&json!({ "tree": "K" })), "no category, no layer rule");
+    }
+
+    /// I1: a note has no claim-title rule, while the same title in a Topic tree keeps it.
+    #[test]
+    fn a_literature_note_has_no_claim_title() {
+        let (note, idea) = literature_pair("税", "税是一种强制征收，由国家对个人征收。");
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I1"),
+            ["40/1|a I1 (advisory) the title states no claim: 税"],
+            "{lines:#?}"
+        );
+        assert_eq!(level_of(&lines, "K/1|a", "I1"), None);
+    }
+
+    /// R12: a note's title advises at 60 characters; the Idea title still blocks at 40.
+    #[test]
+    fn a_literature_note_title_advises_at_sixty_characters() {
+        let title = "甲".repeat(45);
+        let (note, idea) = literature_pair(&title, "所有者决定空白处，所以控制权归所有者。");
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "R12"),
+            [format!("40/1|a R12 (45 characters > 40) {title}")],
+            "a 45-character title passes a note and blocks an Idea Card: {lines:#?}"
+        );
+        let title = "甲".repeat(61);
+        let (note, idea) = literature_pair(&title, "所有者决定空白处，所以控制权归所有者。");
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        let r12 = of_rule(&lines, "R12");
+        assert_eq!(r12.len(), 2, "{lines:#?}");
+        assert!(r12[0].starts_with("K/1|a R12 (advisory) (61 characters > 60) "), "{lines:#?}");
+        assert!(r12[1].starts_with("40/1|a R12 (61 characters > 40) "), "{lines:#?}");
+        assert_eq!(level_of(&lines, "K/1|a", "R12"), Some(true));
+    }
+
+    /// I2: a note advises only below 80 characters and has no upper bound; an Idea Card keeps the
+    /// merge candidate at 40 and the split candidate above 300.
+    #[test]
+    fn a_literature_note_advises_only_a_thin_body() {
+        // About fifty characters: thin for a note, a normal size for an Idea Card.
+        let middle =
+            "税是一种强制征收，由国家对个人征收，并且用于公共支出、社会保险与基础建设；它不直接换取具体的服务，因此纳税与受益并不一一对应。"
+                .to_string();
+        let measured = measure(&middle).size;
+        assert!((41..80).contains(&measured), "{measured}");
+        let (note, idea) = literature_pair("强制征收的来源", &middle);
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I2"),
+            [format!("K/1|a I2 (advisory) ({measured} characters < 80) merge candidate")],
+            "{lines:#?}"
+        );
+        // Four hundred characters: no bound on a note, a split candidate for an Idea Card.
+        let long = "税是一种强制征收，由国家对个人征收，并且用于公共支出。".repeat(16);
+        let (note, idea) = literature_pair("强制征收的来源与用途", &long);
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        let i2 = of_rule(&lines, "I2");
+        assert_eq!(i2.len(), 1, "only the Idea Card has a split candidate: {lines:#?}");
+        assert!(i2[0].starts_with("40/1|a I2 ("), "{lines:#?}");
+        assert!(i2[0].contains("characters > 300) split candidate"), "{lines:#?}");
+    }
+
+    /// R2, R3, R4, R5 and R7: the sentence rules of the Idea standard do not reach a note, and the
+    /// same body in a Topic tree still fails all five.
+    #[test]
+    fn the_idea_sentence_rules_do_not_reach_a_literature_note() {
+        let body = format!(
+            "{}。这一条使用了分号；它在同一句里。这一句被改写成了被动语态。作者对这一组数据进行了处理。这一种的甲的那个的形式已经出现。",
+            "甲".repeat(41)
+        );
+        let (note, idea) = literature_pair("制度与投资的关系", &body);
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        for rule in ["R2", "R3", "R4", "R5", "R7"] {
+            assert_eq!(level_of(&lines, "K/1|a", rule), None, "the note has no {rule}: {lines:#?}");
+            assert_eq!(
+                level_of(&lines, "40/1|a", rule),
+                Some(false),
+                "the Idea Card still fails {rule}: {lines:#?}"
+            );
+        }
+    }
+
+    /// R9: a hedge is advice on a note, a blocking fault on an Idea Card.
+    #[test]
+    fn a_hedge_in_a_literature_note_is_advice() {
+        let body = "值得注意的是，这条结论在样本之外也成立，因为机制并不依赖样本。";
+        let (note, idea) = literature_pair("结论在样本之外成立", body);
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(level_of(&lines, "K/1|a", "R9"), Some(true), "{lines:#?}");
+        assert_eq!(level_of(&lines, "40/1|a", "R9"), Some(false), "{lines:#?}");
+    }
+
+    /// I6: a note is not checked for a near-duplicate title, while the Topic Idea Card beside it
+    /// still reports the pair against the same Workspace title context.
+    #[test]
+    fn a_literature_note_has_no_duplicate_title_row() {
+        let title = "剩余控制权决定契约空白处";
+        let body = "所有者能拒绝合作，所以契约的空白处由所有者决定。";
+        let (note, idea) = literature_pair(title, body);
+        let context = title_context(
+            &json!([
+                { "address": "41/1|b", "title": title, "workspace": "agent", "tree": "41" }
+            ]),
+            true,
+        );
+        let note_lines = run_with_context(&json!([note]), context.clone(), Limits::default());
+        assert!(of_rule(&note_lines, "I6").is_empty(), "the note is not compared: {note_lines:#?}");
+        let idea_lines = run_with_context(&json!([idea]), context, Limits::default());
+        assert_eq!(
+            of_rule(&idea_lines, "I6"),
+            ["40/1|a I6 (advisory) a title very similar to [[41/1|b]]"],
+            "the Idea Card keeps the rule: {idea_lines:#?}"
+        );
+    }
+
+    /// I7: a note resting on another book's Literature tree is not an own-source dependency; the
+    /// Topic Idea Card with the same evidence still reports it.
+    #[test]
+    fn a_literature_note_has_no_own_source_row() {
+        let (mut note, mut idea) = literature_pair(
+            "制度决定长期增长",
+            "制度把剩余控制权分配给所有者，所以投资激励与所有权配置一致。",
+        );
+        for card in [&mut note, &mut idea] {
+            card["relations"] = json!({ "Other/2": "rests-on" });
+            card["sources"] = json!(["Other"]);
+        }
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I7"),
+            ["40/1|a I7 `rests-on` [[Other/2]] enters its own source `Other`"],
+            "{lines:#?}"
+        );
+        assert_eq!(level_of(&lines, "K/1|a", "I7"), None);
+    }
+
+    /// I4: a note's missing kinded Link is advice; the Idea Card's is a blocking fault.
+    #[test]
+    fn a_literature_note_needs_no_kinded_link() {
+        let (note, idea) = literature_pair(
+            "制度把控制权分配给所有者",
+            "所有权把控制权交给承担成本的一方，所以投资激励与所有权配置一致。",
+        );
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(level_of(&lines, "K/1|a", "I4"), Some(true), "{lines:#?}");
+        assert_eq!(level_of(&lines, "40/1|a", "I4"), Some(false), "{lines:#?}");
+    }
+
+    /// L1: an unkinded Link is advice on a note and a blocking fault on an Idea Card.
+    #[test]
+    fn a_literature_note_link_needs_no_relation_kind() {
+        let body = "这里是另一个机制 [[41/2]]，它在别处出现并且解释得很清楚。";
+        let (mut note, mut idea) = literature_pair("两种机制各自解释一部分结果", body);
+        for card in [&mut note, &mut idea] {
+            card["links"] = json!(["41/2"]);
+        }
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "L1"),
+            [
+                "K/1|a L1 (advisory) (1 Links read as refers) [[41/2]]",
+                "40/1|a L1 (1 Links read as refers) [[41/2]]",
+            ],
+            "{lines:#?}"
+        );
+    }
+
+    /// L2: a short Link reason is advice on a note and a blocking fault on an Idea Card.
+    #[test]
+    fn a_literature_note_link_reason_is_advice() {
+        let body = "依赖 [[41/2]] 的结论。";
+        let (mut note, mut idea) = literature_pair("两种机制各自解释一部分结果", body);
+        for card in [&mut note, &mut idea] {
+            card["links"] = json!(["41/2"]);
+            card["kinds"] = json!(["41/2"]);
+        }
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "L2"),
+            [
+                "K/1|a L2 (advisory) (5 characters < 8) a Link with no reason: 依赖 [[41/2]] 的结论。",
+                "40/1|a L2 (5 characters < 8) a Link with no reason: 依赖 [[41/2]] 的结论。",
+            ],
+            "{lines:#?}"
+        );
+    }
+
+    /// L3, R20 and R21 stay advice on a note, as they are on an Idea Card.
+    #[test]
+    fn the_advisory_rows_stay_advice_on_a_literature_note() {
+        let body = "这是第一个机制，[[41/2]] 在这里出现并且解释得很清楚。\n\n这是第二个机制，[[41/2]] 也在别处出现并且同样清楚。";
+        let (mut note, mut idea) = literature_pair("两种机制各自解释一部分结果", body);
+        for card in [&mut note, &mut idea] {
+            card["links"] = json!(["41/2"]);
+            card["kinds"] = json!(["41/2"]);
+        }
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(level_of(&lines, "K/1|a", "L3"), Some(true), "{lines:#?}");
+        assert_eq!(level_of(&lines, "40/1|a", "L3"), Some(true), "{lines:#?}");
+
+        let body = "该卡说明了结果。";
+        let (note, idea) = literature_pair("这条结论说明了结果", body);
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(level_of(&lines, "K/1|a", "R21"), Some(true), "{lines:#?}");
+        assert_eq!(level_of(&lines, "40/1|a", "R21"), Some(true), "{lines:#?}");
+
+        let body = "式 (12) 有该项。";
+        let (note, idea) = literature_pair("这条结论说明了结果", body);
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(level_of(&lines, "K/1|a", "R20"), Some(true), "{lines:#?}");
+        assert_eq!(level_of(&lines, "40/1|a", "R20"), Some(true), "{lines:#?}");
+    }
+
+    /// I3: the source line still blocks on a note, as it does on an Idea Card.
+    #[test]
+    fn a_literature_note_still_needs_its_source_line() {
+        let (note, idea) = literature_pair(
+            "制度把控制权分配给所有者",
+            "所有权把控制权交给承担成本的一方，所以投资激励与所有权配置一致。",
+        );
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(
+            of_rule(&lines, "I3"),
+            ["K/1|a I3 no source line: no Link to [[K]] or one of its anchors"],
+            "{lines:#?}"
+        );
+        assert_eq!(level_of(&lines, "K/1|a", "I3"), Some(false), "{lines:#?}");
+    }
+
+    /// R22: a note with an unclosed formula still blocks, as an Idea Card does.
+    #[test]
+    fn a_literature_note_still_fails_an_open_formula() {
+        let body = "成立条件是 $A_I<A_O，所以均衡稳定。\n\n来源：[[K]] §4";
+        let (mut note, mut idea) = literature_pair("均衡稳定当且仅当门槛比较", body);
+        for card in [&mut note, &mut idea] {
+            card["links"] = json!(["K"]);
+        }
+        let lines = run_json(&json!([note, idea]), "", Limits::default(), false, "");
+        assert_eq!(level_of(&lines, "K/1|a", "R22"), Some(false), "{lines:#?}");
+        assert_eq!(level_of(&lines, "40/1|a", "R22"), Some(false), "{lines:#?}");
+    }
+
+    /// The acceptance case: a 1,500-character connected note — 60-character sentences, semicolons
+    /// and passives — passes with no blocking fault, while the same body as a Topic Idea Card
+    /// still blocks. The rows' advice is not promoted by the agent Workspace policy.
+    #[test]
+    fn a_long_connected_literature_note_passes_with_no_blocking_fault() {
+        let subjects = [
+            "制度", "产权", "契约", "投资", "谈判", "激励", "剩余", "配置", "组织", "边界", "企业",
+            "市场", "价格", "成本", "收益", "风险", "信息", "监督", "协调", "分工", "规模", "技术",
+            "资本", "劳动", "产出", "结构", "监管",
+        ];
+        let mut body = String::new();
+        for (index, subject) in subjects.iter().enumerate() {
+            // Some sentences join two clauses with a semicolon, and some state the passive.
+            let join = if index % 2 == 0 { "；" } else { "，" };
+            let passive = if index % 3 == 0 { "被" } else { "" };
+            body.push_str(&format!(
+                "{subject}方面的证据表明，所有权把控制权交给承担成本的一方{join}因为这一方事后{passive}要求补偿，所以投资激励与所有权配置一致。"
+            ));
+        }
+        body.push_str("这一段的机制承接 [[K/9]] 的推导，说明成本由谁承担。\n\n来源：[[K]] §2");
+        let note = json!({
+            "address": "K/1|a", "category": "idea", "tree": "K", "book": "K", "workspace": "agent",
+            "title": "制度把剩余控制权分配给所有者并决定长期投资",
+            "body": body, "links": ["K", "K/9"], "kinds": ["K/9"], "parent": "K/1"
+        });
+        let report = Check::new(Limits::default(), false, "")
+            .with_policies(crate::policy::PolicySet::new())
+            .report(std::slice::from_ref(&note));
+        let lines = report.iter().map(Diagnostic::line).collect::<Vec<_>>();
+        assert_eq!(CheckReport::of(report).blockers, 0, "{lines:#?}");
+        assert!(lines.iter().all(|line| line.contains(" (advisory) ")), "{lines:#?}");
+        // The prose is not a short claim: it is about 1,500 measured characters.
+        let prose = body.split("\n\n").next().unwrap();
+        let measured = measure(prose).size;
+        assert!((1400..1600).contains(&measured), "the note's prose is {measured} characters");
+        // One of its sentences is over the Idea-card limit, so the same body still blocks there.
+        let sentence = "制度方面的证据表明，所有权把控制权交给承担成本的一方；因为这一方事后要求补偿，所以投资激励与所有权配置一致。";
+        assert!(measure(sentence).size > 40 && measure(sentence).size <= 60, "{}", measure(sentence).size);
+        let mut topic = note.clone();
+        topic["address"] = json!("45/1|a");
+        topic["tree"] = json!("45");
+        topic["parent"] = json!("45/1");
+        let blockers = CheckReport::of(Check::new(Limits::default(), false, "").report(&[topic])).blockers;
+        assert!(blockers > 20, "the Topic Idea Card keeps the Idea rules: {blockers}");
     }
 }

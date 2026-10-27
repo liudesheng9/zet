@@ -33,7 +33,11 @@ pub const DIAGNOSTIC_SCHEMA: &str = "1";
 /// The version of the rule-applicability signatures `policy::Applicability`
 /// reads (design 6.3). Adding or changing a rule's signature bumps it, because
 /// a legacy allowance decided by another signature set is a different decision.
-pub const APPLICABILITY_VERSION: &str = "2";
+///
+/// 3 (issue #184): a Literature note takes its own row for R2–R12, I1, I2, I4, I7 and L1–L3, so
+/// the same authored text is decided differently in a Literature tree than in a Topic tree, and
+/// the signatures carry that fact.
+pub const APPLICABILITY_VERSION: &str = "3";
 
 /// The effective policy came from the archive that would decide the write.
 pub const POLICY_SOURCE_ARCHIVE: &str = "archive";
@@ -466,12 +470,33 @@ mod tests {
         assert!(gaps[1].contains("says 2"));
     }
 
+    /// Issue #184: the Literature-note rows are a service contract change. A client that holds the
+    /// old applicability version (2) refuses a service that publishes 3 instead of reporting a
+    /// check it cannot compare, and the published policy hash covers the rows.
+    #[test]
+    fn a_client_with_the_old_applicability_contract_is_refused() {
+        let served = Contract::served(&PolicySet::new(), &Limits::default(), archive());
+        assert_eq!(served.applicability_version, "3");
+        assert!(
+            served.version_gaps().is_empty(),
+            "the current client shares the current service's contract"
+        );
+        let mut old_service = served;
+        old_service.applicability_version = "2".to_string();
+        let gaps = old_service.version_gaps();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(
+            gaps[0].contains("applicability_version: this zt-check uses 3"),
+            "{gaps:?}"
+        );
+        assert!(gaps[0].contains("says 2"), "{gaps:?}");
+    }
+
     /// S17 (#155)/R0477: the published syntax capabilities are a compatibility
     /// floor, not decoration. A service that does not announce Term links or
     /// Term Cards does not share this build's syntax, so an answer computed
     /// against it is never comparable — even if every version string matched.
-    #[test]
-    fn a_service_without_the_term_syntax_is_a_contract_gap() {
+    #[test]    fn a_service_without_the_term_syntax_is_a_contract_gap() {
         let served = Contract::served(&policy(), &Limits::default(), archive());
         assert!(
             served.version_gaps().is_empty(),

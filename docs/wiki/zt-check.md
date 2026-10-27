@@ -5,8 +5,8 @@ paths:
   - "tools/zt-check/**"
   - "tests/term_cards.rs"
   - "scripts/install-zt-check.ps1"
-synced: 38ca1288b2f1
-updated: 2026-10-25
+synced: 0fa10e89b776
+updated: 2026-10-27
 ---
 
 # zt-check
@@ -39,7 +39,7 @@ Since #152 the crate also owns the **Term content contract** (`term.rs`, always 
 | | `tools/zt-check/Cargo.lock` — pinned versions (regex 1.13.1, anyhow 1.0.104, serde_json) |
 | | `tools/zt-check/src/lib.rs` — exports `VERSION`, `core`, `text`, `policy` always; `check`, `graph`, `mcp` only with `cli` |
 | | `tools/zt-check/src/main.rs` — collects the arguments, calls `zt_check::check::run_cli`, prints `zt-check: <error>` and exits 1 on an error |
-| | `tools/zt-check/src/core.rs` — the rule core: `Check` (the language, layer, and title rules), `Diagnostic`/`Severity`/`Scope` (the structured fault contract), `Faults` (the diagnostics a run raises), `Limits`, the corruption scan, the derivation-facet predicate, and the orphan predicate; its unit tests |
+| | `tools/zt-check/src/core.rs` — the rule core: `Check` (the language, layer, and title rules), `Diagnostic`/`Severity`/`Scope` (the structured fault contract), `Faults` (the diagnostics a run raises, including `add_row` for the Literature-note rows), `Limits`, `is_literature_note` (the note category of issue #184), the corruption scan, the derivation-facet predicate, and the orphan predicate; its unit tests |
 | | `tools/zt-check/src/text.rs` — the PowerShell text semantics (UTF-16 form and lengths, culture comparisons, JSON conversions), the prose projection and the shared visible-text projection (`strip_term_links`, `LinkOccurrence::is_valid_term_macro`), sentence splitting, the term-table parse, the title context, the shared lexical Link scan (`LinkForm`, `LinkOccurrence`, `LinkFault`, `LinkFaultAt`, `link_occurrences`, `parse_links`, `parse_links_at`, `code_ranges`, `fenced_code_ranges`, `math_ranges`, `MAX_TERM_NAME`), the envelope operations, and the public `literature_tree` book identity the service gate shares; its unit tests |
 | | `tools/zt-check/src/term.rs` — the Term content contract (S09, #152; design 11): the Appendix-C draft schema and its validation (`Draft`, `BookDefinition`, `Hypothesis`, `Definition`, `Symbol`, `EquivalentForm`, `Derivation`, `Step`, `LimitCase`, `Distinction`, `DraftFault`, `parse_terms`, `parse_draft`), the deterministic renderer and continuation partition (`render`, `Rendered`, `RenderedCard`, `CONTINUES`), the template parse the T rules read (`Template`, `parse_template`, `TemplateSection`, `step_blocks`, `result_line`, `symbol_table`), the shared prose measurement (`prose_units`), and the LaTeX identifier scan (`latex_identifiers`); its unit tests |
 | | `tools/zt-check/src/policy.rs` — the rule catalog (`DEFAULT_RULES`, `ADVISORY_RULES`, `GRAPH_RULES`, `severity`, `scope`), the gate policy catalog (`Workspace`, `Setting`, `RuleState`, `RuleSpec`, `catalog`, `rule_of`, `Invariant`, `invariants`, `invariant`), the declared-key grammar (`gate_key`, `parse_gate_key`), the change values (`Change`), the effective policy (`Policy`, `PolicySet`, `POLICY_SCHEMA`), `CheckReport` (diagnostics and blockers), `Applicability` (the per-rule signature a metadata change compares), and `ratchet` (the legacy comparison); its unit tests |
@@ -65,7 +65,8 @@ Since #152 the crate also owns the **Term content contract** (`term.rs`, always 
 - `Gate policy` — the severity the write gate gives every catalogued rule in one archive, separately for the human and the agent Workspace (design 6.1 and 6.2). The checker owns the catalog and the defaults; the service stores only the `gate.<workspace>.<rule>` overrides (`Policy::overrides`). A missing override means the default; `default` removes the row (`Change::Reset`).
 - `Setting` — one configured severity: `block` (the gate refuses), `advise` (the line is reported), `off` (the rule is not reported). `Setting::parse` accepts exactly those three names; `Change::parse` also accepts `default`.
 - `RuleState` — how a catalogued rule takes part: `configurable` (mechanically implemented and settable), `mandatory` (an existing service invariant no policy can change; T7 is the one rule id here), or `pending` (catalogued with its design default for a later slice: not enforced and not settable). Since S09 (#152) every catalogued rule is implemented, so the catalog names no pending rule; the variant remains for a future slice that catalogues a rule before implementing it.
-- `Policy hash` — the SHA-256 of `PolicySet::canonical`: the schema marker `zt-gate-policy/1`, both Workspaces, and the effective setting of every catalogued rule, in catalog order. An override that changes a decision changes the hash; pinning a rule to its current default does not. A check-contract reader compares it (design 6.1, R0120); it is not persisted, because two processes with the same effective policy compute the same value.
+- `Policy hash` — the SHA-256 of `PolicySet::canonical`: the schema marker `zt-gate-policy/2`, both Workspaces, and the effective setting of every catalogued rule, in catalog order, then the Literature-note rows (issue #184). An override that changes a decision changes the hash; pinning a rule to its current default does not, and the fixed rows are covered so a changed row changes it. A check-contract reader compares it (design 6.1, R0120); it is not persisted, because two processes with the same effective policy compute the same value.
+- `Literature note` — a Regular Card of type `idea` in a Literature tree, other than the tree's root; a Section anchor is one too (`core::is_literature_note`). It takes the fixed `policy::LITERATURE_ROWS` instead of the Idea-card levels, because it carries the source's argument rather than one claim (issue #184).
 - `Policy snapshot` — one `PolicySet` value passed to `Check::with_policies`, so an entire run (both sides of a legacy comparison included) uses one policy and each entry takes its own Workspace's setting (design 6.1, S03-AC05). An entry that names no Workspace is a draft in the agent Workspace.
 - `Advisory subcase` — a diagnostic the core marks `subcase` (`Faults::advise`): I7's unknown source. It stays advice whatever its rule's setting, so a blocking I7 default can never promote an unknown-evidence finding to a refusal.
 - `Advisory` — a diagnostic whose severity is `advise`: its line carries `(advisory)`. The default advisory rules are `R20`, `R21`, `I1`, `I6`, `L3`, `E5`, plus I7's unknown-source subcase (`policy::ADVISORY_RULES`). In `--cards` mode it is printed but not counted (`filter_rules`); in `--json`, `--model`, `--addresses` every line counts; in a `before` bundle the count is the number of blockers.
@@ -334,7 +335,11 @@ Each card carries its exact `text` (the first line is `# <title>`, the rest is t
 
 ### Rules
 
-The default column is the default rule set of `--cards` (`DEFAULT_RULES`). The other modes print every rule they check.
+A **Literature note** — a Regular Card of type `idea` in a Literature tree, other than the tree's
+root, including a Section anchor — takes the rows of the next section instead of the `Applies to`
+column below wherever that section names its rule. Every other Card reads this table as written.
+The default column is the default rule set of `--cards` (`DEFAULT_RULES`). The other modes print
+every rule they check.
 
 | Rule | Checks | Applies to | Default | Fault text |
 |---|---|---|---|---|
@@ -386,6 +391,37 @@ The default column is the default rule set of `--cards` (`DEFAULT_RULES`). The o
 | T10 | A Term Card's title or body leaves an inline formula open: an odd number of unescaped `$` after `$$` blocks and code are set aside (the R22 predicate under its Term-facing rule id) | a Term Card | yes | `the body leaves an inline formula open …` / `the title leaves an inline formula open …` |
 
 Rules R1, R8, R10, R11, and E3 exist in the design docs but zt-check does not check them.
+
+### The Literature-note rows (issue #184)
+
+`core::is_literature_note(entry)` decides the category: the entry's layer category is `idea`,
+`anchor` or `restatement-entry`, and its `tree` (else its `book`, which a draft names) is a
+Literature tree. A Topic tree is numbered, so `12` is no book and `K` is. The rows are
+`policy::LITERATURE_ROWS`, in catalog order, and `policy::literature_setting(rule)` answers one:
+
+| Rule | Literature note | Idea Card in a Topic tree (unchanged) |
+|---|---|---|
+| R2, R3, R4, R5, R7 | off | block |
+| R9 | advise | block |
+| R12 | advise: title at most 60 characters, one line, no `；` (`LITERATURE_TITLE_CHARS`) | block: 40 characters / 25 words, no `；` |
+| I1 | off | advise |
+| I2 | advise below 80 characters only, no upper bound (`LITERATURE_MIN_CHARS`) | block above `max_idea_chars`, advise below `min_idea_chars` |
+| I4, L1, L2 | advise | block |
+| I6 | off (the note is neither checked nor offered as a pair) | advise |
+| I7 | off | block |
+| L3, R20, R21 | advise | advise |
+| I3, R22, F1–F4, E/F, T1–T10 | as now | as now |
+
+The row is a fixed catalog default, not an archive setting: it is not a
+`gate.<workspace>.<rule>` override, so no archive can promote or silence it, and it applies in
+both Workspaces. `Faults::add_row` is the one place a rule site consults it (`off` reports
+nothing, `advise` is an advisory `subcase` that no policy setting can promote, and a rule with
+no row keeps its own severity). `PolicySet::canonical` covers the rows under the schema marker
+`zt-gate-policy/2`, so the policy hash — and therefore the published check contract — changes
+with them: `APPLICABILITY_VERSION` is 3, and `policy::Applicability` carries the flag in the
+signatures of the rules a row changes, so the ratchet never inherits a fault across that
+transition. zt-check 0.15.0 and zt 0.42.0 carry it. D1 (a note that restates a Model part) is the
+digest card cycle's rule, not a zt-check rule; it is unchanged here.
 
 ### Fault codes and semantic keys (`core::Faults::add` call sites)
 
@@ -740,6 +776,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **A duplicate-title envelope refusal is not a diagnostic.** The repeated leading title and the multiple Reverse markers are storage envelope invariants in the service (`validate_card_text`, `parse_card_text`), so the ratchet cannot inherit them; `src/main.rs` keeps the `authored_changed` allowance and the test `the_leading_title_allowance_follows_the_authored_change` pins it. This is also the one-owner boundary of the repeated title: the envelope refuses a body that opens with the title before any check runs, so R19 is the checker's only repeated-title diagnostic for a body that reached it, and the catalog has no envelope rule id that could double-count the same fault.
 - **The gate defaults are a second table.** `policy::severity`/`ADVISORY_RULES` remain the core's own fallback severity (used only by a `Check` with no policy snapshot, and by the zt-digest test fixtures), and `policy::catalog()` is the gate's design-6.2 policy every command-line mode now applies. They deliberately differ for R6 (checker `block`, gate `off`/`advise`) and for the graph rules (checker `block` for I5/E4/F4, gate `advise`); a new rule must be added to both tables, and the catalog test pins both Workspaces' defaults.
 - **`off` is not an empty advice line.** `Policy::decide` drops the diagnostic, so the rule is not reported, counted, or ratcheted; `advise` keeps the line with the `(advisory)` prefix. Only the two advisory subcases the core marks (`subcase`) are exempt from a `block` setting.
+- **A Literature note's row is a catalog default, not a Workspace setting.** `policy::LITERATURE_ROWS` decides R2–R12, I1, I2, I4, I6, I7 and L1–L3 for a note, and no `gate.<workspace>.<rule>` override can promote or silence them; the source line (I3), the open formula (R22) and the E/F, model and Term rules still take their Workspace setting. The note is excluded from the I6 check and from the checked-title list, so a Topic Idea Card can still report a similar title against it (advice only). D1 is the digest card cycle's rule and is not a zt-check rule.
 - **Pending rules cannot be configured.** A slice that implements a `pending` Term rule must flip its `RuleState` to `Configurable` in `policy::catalog`; until then `zt config set` refuses the override with the rule's future default, so a policy can neither enforce nor silence a rule the checker does not evaluate.
 - **The policy hash is effective-policy only.** Storing an override equal to the current default changes the archive's metadata row (and its revision) but not the effective policy or its hash; a check-contract reader therefore compares what a rule decides, not how many rows the owner wrote.
 - **`--cards` never fires I5, E4, F4.** `check_cards` sets no `inbound` or `inbound_kinded`, so those rules need `--json` entries that carry them (as `digest-audit.ps1` writes). They are also outside `DEFAULT_RULES`.
@@ -761,6 +798,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **R16 does not report an empty 思路 or 解读**, although [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) lists "an empty section" as an R16 fault; only too many sentences are reported.
 
 ## Change history
+- `2026-10-26` — #184 (L1): the **Literature-note** category. `core::is_literature_note` classifies a Regular Card of type `idea` in a Literature tree (a Section anchor included) and leaves every other Card as it was. Its fixed rows (`policy::LITERATURE_ROWS`, `policy::literature_setting`) turn R2–R7 and I1, I6, I7 off; advise R9, R12 (60-character title), I2 (below 80 only, no upper bound), I4, L1, L2, L3, R20 and R21; and keep I3, R22, the E/F formats, the model rules and T1–T10 as they were. `Faults::add_row` reads one row at the rule site: `off` reports nothing, `advise` is an advisory subcase no policy setting can promote. The rows are covered by `PolicySet::canonical` (`zt-gate-policy/2`), so the policy hash and the check contract move with them; `APPLICABILITY_VERSION` is 3 and `policy::Applicability` carries the flag. zt-check 0.15.0, zt 0.42.0. Tests: `only_an_idea_in_a_literature_tree_is_a_literature_note` and one test per changed row (`a_literature_note_has_no_claim_title`, `a_literature_note_title_advises_at_sixty_characters`, `a_literature_note_advises_only_a_thin_body`, `the_idea_sentence_rules_do_not_reach_a_literature_note`, `a_hedge_in_a_literature_note_is_advice`, `a_literature_note_has_no_duplicate_title_row`, `a_literature_note_has_no_own_source_row`, `a_literature_note_needs_no_kinded_link`, `a_literature_note_link_needs_no_relation_kind`, `a_literature_note_link_reason_is_advice`, `the_advisory_rows_stay_advice_on_a_literature_note`), the acceptance cases `a_long_connected_literature_note_passes_with_no_blocking_fault`, `a_literature_note_still_needs_its_source_line` and `a_literature_note_still_fails_an_open_formula`, `the_literature_note_rows_are_the_design_levels`, `the_policy_hash_covers_the_literature_note_rows`, `a_client_with_the_old_applicability_contract_is_refused`, and the live `tests/check_contract.rs::the_live_contract_publishes_the_literature_note_rows`.
 - `2026-10-26` — 0.14.2, at the user's request (some books have very long terms): `Limits::max_term_prose` defaults to 0, which sets no prose bound (`term_prose_bound()`); T9 and the Term render's head/block/part prose checks apply only to a bound that is set. The derivation-step bound (12 per Card) still splits a long derivation into continuation parts. Tests: `a_long_term_has_no_prose_limit_by_default`, `a_long_term_renders_whole_when_no_prose_limit_is_set`; the T9 test sets its bound explicitly. zt 0.41.1 carries it in the archive gate.
 - `2026-10-26` — 0.14.1: the box pin (`mcp::boxpin::same`) compares configs with one separator per step, so `D:\\box\\config` (a JSON-escaped command) names the same box as `D:\box\config`. Found on the live run (grow5): `grow-steps.ps1` set ZT_CONFIG_DIR from a doubled-separator `-ZtConfig` and zt-digest refused the pin. Test: `a_config_named_with_doubled_separators_is_the_same_box`. zt 0.40.0 rebuilt to carry it (no service restart).
 - `2026-10-25` — S28 (#170): the release version. `tools/zt-check/Cargo.toml` rises to 0.14.0 with no rule, diagnostic schema, applicability, limit, fixture, public type or behavior change; the build is the same checker shipped with zt 0.40.0 and zt-digest 0.28.0 as one compatible set (`docs/term-cards-links-and-check-gate-release-manifest.json`). The independent rule contract stays `rule_version` 4, diagnostic schema 1, applicability 2. `tests/release_manifest.rs` and `scripts/book-digest/tests/release-set.tests.ps1` check the version against the manifest.

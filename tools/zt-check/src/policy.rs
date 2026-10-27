@@ -275,6 +275,47 @@ pub fn catalog() -> &'static [RuleSpec] {
     CATALOG
 }
 
+// --- the Literature-note rows (issue #184) -----------------------------------------------------
+
+/// The fixed level each named rule takes on a Literature note, in catalog order: the reading
+/// prose of a Literature tree follows the source's own argument, so the Idea-card title, size and
+/// sentence rules leave it alone (or only advise), while the source line, the formula rule, the
+/// layer formats and the Term rules keep the level they have. The row is not an archive setting:
+/// every archive uses it, so it is part of the published policy and its hash, never a
+/// `gate.<workspace>.<rule>` override. A rule absent from this table keeps its Workspace setting.
+static LITERATURE_ROWS: &[(&str, Setting)] = &[
+    ("R2", Setting::Off),
+    ("R3", Setting::Off),
+    ("R4", Setting::Off),
+    ("R5", Setting::Off),
+    ("R7", Setting::Off),
+    ("R9", Setting::Advise),
+    ("R12", Setting::Advise),
+    ("I1", Setting::Off),
+    ("I2", Setting::Advise),
+    ("I4", Setting::Advise),
+    ("I6", Setting::Off),
+    ("I7", Setting::Off),
+    ("R20", Setting::Advise),
+    ("R21", Setting::Advise),
+    ("L1", Setting::Advise),
+    ("L2", Setting::Advise),
+    ("L3", Setting::Advise),
+];
+
+/// The Literature-note row of one rule, or `None` when the rule keeps its Workspace setting there.
+pub fn literature_setting(rule: &str) -> Option<Setting> {
+    LITERATURE_ROWS
+        .iter()
+        .find(|(id, _)| *id == rule)
+        .map(|(_, setting)| *setting)
+}
+
+/// Every Literature-note row, in catalog order, as the published policy covers it.
+pub fn literature_rows() -> &'static [(&'static str, Setting)] {
+    LITERATURE_ROWS
+}
+
 /// The catalog entry of one rule id.
 pub fn rule_of(rule: &str) -> Option<&'static RuleSpec> {
     CATALOG.iter().find(|spec| spec.rule == rule)
@@ -554,7 +595,10 @@ fn validate_rule(rule: &str) -> Result<&'static RuleSpec, String> {
 
 /// The schema marker of the hashed policy text, so a later layout is a different
 /// policy hash rather than a silent reinterpretation.
-pub const POLICY_SCHEMA: &str = "zt-gate-policy/1";
+///
+/// 2 (issue #184): the text also covers the Literature-note rows, so the level a rule takes on a
+/// note is part of the contract a check-contract reader compares.
+pub const POLICY_SCHEMA: &str = "zt-gate-policy/2";
 
 /// One archive's effective policy: both Workspaces, loaded once per operation
 /// (design 6.1, S03-AC05).
@@ -631,13 +675,20 @@ impl PolicySet {
         Ok(set)
     }
 
-    /// The effective policy as the stable text its hash covers.
+    /// The effective policy as the stable text its hash covers: the schema marker, both
+    /// Workspaces, and the Literature-note rows every archive uses (issue #184), so a changed row
+    /// is a changed check contract.
     pub fn canonical(&self) -> String {
-        format!(
+        let mut text = format!(
             "{POLICY_SCHEMA}\n{}\n{}",
             self.human.canonical(),
             self.agent.canonical()
-        )
+        );
+        text.push_str("\nliterature\n");
+        for (rule, setting) in LITERATURE_ROWS {
+            text.push_str(&format!("{rule}={}\n", setting.as_str()));
+        }
+        text
     }
 
     /// The policy hash a check-contract reader compares (design 6.1, R0120).
@@ -727,6 +778,9 @@ pub struct Applicability {
     term_type: bool,
     /// The computed Term role (`card`, `part`, `list`, `unfiled`) when the entry names one.
     term_role: String,
+    /// The Card is a Literature note (issue #184): several rules take their Literature-note row,
+    /// so the same text means another thing in a book and in a Topic tree.
+    literature: bool,
 }
 
 impl Applicability {
@@ -747,6 +801,7 @@ impl Applicability {
             term: ps_string(prop(entry, "term")),
             term_type: ps_eq(&text(prop(entry, "type")), "term"),
             term_role: ps_string(prop(entry, "term_role")).to_lowercase(),
+            literature: crate::core::is_literature_note(entry),
         }
     }
 
@@ -758,9 +813,12 @@ impl Applicability {
     fn signature(&self, rule: &str) -> String {
         match rule {
             // The plain text rules read the authored text the same way whatever
-            // the Card's type is: a moved or retyped Card keeps those faults.
-            "R2" | "R3" | "R4" | "R5" | "R7" | "R9" | "R12" | "R18" | "R19" | "R20" | "R21"
-            | "R22" => "text".to_string(),
+            // the Card's type is: a moved or retyped Card keeps those faults. The rules a
+            // Literature-note row changes mean another thing in a book (issue #184).
+            "R2" | "R3" | "R4" | "R5" | "R7" | "R9" | "R12" => {
+                format!("text:{}", self.literature)
+            }
+            "R18" | "R19" | "R20" | "R21" | "R22" => "text".to_string(),
             // A shared part follows its home model's term table; leaving the
             // shared list or changing the table changes what R6 means.
             "R6" => format!("terms:{}", self.shared),
@@ -770,8 +828,16 @@ impl Applicability {
                 format!("derivation:{}:{}", self.derivation, self.level)
             }
             // The Idea rules apply to an Idea or an anchor.
-            "I1" => format!("claim:{}", self.in_category(&["idea", "anchor"])),
-            "I2" | "I4" | "I7" => format!("idea:{}", self.in_category(&["idea"])),
+            "I1" => format!(
+                "claim:{}:{}",
+                self.in_category(&["idea", "anchor"]),
+                self.literature
+            ),
+            "I2" | "I4" | "I7" => format!(
+                "idea:{}:{}",
+                self.in_category(&["idea"]),
+                self.literature
+            ),
             "I3" => format!(
                 "source:{}:{}",
                 self.in_category(&["idea", "event", "restatement-entry"]),
@@ -790,14 +856,15 @@ impl Applicability {
                 self.book
             ),
             "L1" | "L2" | "L3" => format!(
-                "layer:{}",
+                "layer:{}:{}",
                 self.in_category(&[
                     "idea",
                     "anchor",
                     "event",
                     "finding",
                     "restatement-entry",
-                ])
+                ]),
+                self.literature
             ),
             // The Term content rules apply by the authored name and the computed role: a Card
             // that is retyped away, renamed, or moved between a head and a part is a different
@@ -815,7 +882,7 @@ impl Applicability {
             // rule cannot inherit across a retype, a shared-list, book or term
             // transition before its own signature is named here.
             _ => format!(
-                "other:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "other:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 self.category,
                 self.level,
                 self.part,
@@ -824,7 +891,8 @@ impl Applicability {
                 self.book,
                 self.term,
                 self.term_type,
-                self.term_role
+                self.term_role,
+                self.literature
             ),
         }
     }
@@ -1065,6 +1133,17 @@ mod tests {
         let same = Applicability::of(&json!({ "category": "event", "level": "formal", "facet": "设定" }));
         let also = Applicability::of(&json!({ "category": "event", "level": "formal", "facet": "设定" }));
         assert!(same.comparable(&also, "E2"));
+        // Issue #184: the same text in a Literature tree and in a Topic tree is a different
+        // requirement for the rules the Literature-note row changes, while the source line, the
+        // open formula and the exact-corruption rules mean the same in both.
+        let note = Applicability::of(&json!({ "category": "idea", "tree": "K" }));
+        let topic = Applicability::of(&json!({ "category": "idea", "tree": "40" }));
+        for rule in ["R2", "R3", "R4", "R5", "R7", "R9", "R12", "I1", "I2", "I4", "I7", "L1", "L2", "L3", "I6"] {
+            assert!(!note.comparable(&topic, rule), "{rule} takes a Literature-note row");
+        }
+        for rule in ["I3", "R18", "R19", "R20", "R21", "R22"] {
+            assert!(note.comparable(&topic, rule), "{rule} means the same on both");
+        }
         // A card retyped from Idea to Event keeps a style fault but not an Idea one.
         let before = [diagnostic("K/9", "E2", "missing_labels", "labels:参与者", "missing labels: 参与者")];
         let report = ratchet(&before, before.to_vec(), |diagnostic| {
@@ -1183,6 +1262,71 @@ mod tests {
         assert_eq!(default("T10", Workspace::Agent), Setting::Block);
         // T7 wrong/nonexistent targets are the existing Link write invariant.
         assert_eq!(rule_of("T7").unwrap().state, RuleState::Mandatory);
+    }
+
+    /// Issue #184: the Literature-note rows are the design levels — the Idea-card title, size and
+    /// sentence rules off or advice, the source, formula, layer and Term rules unchanged — and
+    /// every row names a catalogued rule the archive can also configure for other Cards.
+    #[test]
+    fn the_literature_note_rows_are_the_design_levels() {
+        let row = |rule: &str| literature_setting(rule);
+        // Off: the note states no claim, keeps no Idea title, size, duplicate-title or
+        // own-source rule, and the Idea-card sentence rules do not read its prose.
+        for rule in ["R2", "R3", "R4", "R5", "R7", "I1", "I6", "I7"] {
+            assert_eq!(row(rule), Some(Setting::Off), "{rule}");
+        }
+        // Advice: a long title, a thin body, a hedge, a link with no relation word or reason,
+        // and the existing advisory rows.
+        for rule in ["R9", "R12", "I2", "I4", "R20", "R21", "L1", "L2", "L3"] {
+            assert_eq!(row(rule), Some(Setting::Advise), "{rule}");
+        }
+        // Unchanged: the source line, the open formula, the Event/Finding formats, the link
+        // target invariant and the Term rules keep the level their Workspace setting gives them.
+        for rule in [
+            "R6", "R13", "R14", "R15", "R16", "R17", "R18", "R19", "R22", "I3", "I5", "E1", "E2",
+            "E4", "E5", "F1", "F2", "F3", "F4", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8",
+            "T9", "T10",
+        ] {
+            assert_eq!(row(rule), None, "{rule} keeps its Workspace setting on a note");
+        }
+        // Every row names a catalogued rule, so a row can never outlive its rule, and the row is
+        // not an archive setting: the declared overrides hold only the `gate.<workspace>.<rule>`
+        // keys, so no archive can promote or silence one.
+        for (rule, _) in literature_rows() {
+            assert!(rule_of(rule).is_some(), "the catalog names {rule}");
+        }
+        assert_eq!(literature_rows().len(), 17, "every changed row is named once");
+        let mut seen = std::collections::HashSet::new();
+        for (rule, _) in literature_rows() {
+            assert!(seen.insert(*rule), "{rule} is named once");
+        }
+        let set = PolicySet::new();
+        assert!(set.overrides().is_empty(), "the rows are no stored override");
+    }
+
+    /// Issue #184: the policy hash covers the Literature-note rows. Two policies with the same
+    /// Workspace settings therefore publish different hashes once a row changes, which is why the
+    /// check contract moves with this change.
+    #[test]
+    fn the_policy_hash_covers_the_literature_note_rows() {
+        let set = PolicySet::new();
+        let canonical = set.canonical();
+        assert!(canonical.starts_with("zt-gate-policy/2\n"), "{canonical}");
+        let literature = canonical
+            .split_once("\nliterature\n")
+            .map(|(_, rows)| rows)
+            .expect("the hashed policy text names the Literature-note rows");
+        for (rule, setting) in literature_rows() {
+            assert!(
+                literature.lines().any(|line| line == format!("{rule}={}", setting.as_str())),
+                "the hash covers {rule}={setting}: {literature}"
+            );
+        }
+        // The same Workspace settings without the rows hash differently: the rows are covered.
+        let workspaces = canonical.split_once("\nliterature\n").unwrap().0;
+        assert_ne!(set.hash(), sha256_hex(workspaces.as_bytes()));
+        // A changed row changes the hash, a stored override equal to a default does not.
+        assert_eq!(set.hash(), PolicySet::new().hash());
     }
 
     /// S03-AC02/AC06: the catalog names every mechanically implemented rule once,

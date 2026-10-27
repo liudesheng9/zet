@@ -19,6 +19,10 @@ _Avoid_: Card kind (kind means Topic, Literature, or Regular), tag, category
 **Idea Card**:
 A Card of type `idea`: one idea or claim, in the Card's own words. Most Cards are Idea Cards.
 
+**Literature note**:
+A Regular Card of type `idea` in a Literature tree, other than the tree's root; a Section anchor is one too. It is a reading note that carries the source's argument, so the Card check judges it by its own rules: the Idea-card sentence, claim-title, duplicate-title and own-source rules are off or advice, and it has no upper size bound. The source line, the formula rule, the Event and Finding formats and the Term rules still apply. An Idea Card in a Topic tree is no Literature note.
+_Avoid_: Reading card, book note, summary card
+
 **Event Card**:
 A Regular Card of type `event`: it records one event that happened in the real world (what, when, where, who, and the source that reports it), not an idea or an argument. Idea Cards that use the event as evidence or illustration link to it.
 _Avoid_: Fact card, case

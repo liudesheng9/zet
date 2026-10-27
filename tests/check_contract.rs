@@ -293,6 +293,50 @@ fn a_write_reply_names_the_same_rule_contract_as_the_read() {
     assert_eq!(written["check"]["stage"], json!("advisory"));
 }
 
+/// Issue #184: the Literature-note rows are part of the published contract. A running service
+/// publishes applicability version 3 and a policy hash that covers the rows, so a client that
+/// holds the old contract (applicability 2, hash 447f8a4a…) refuses it instead of predicting
+/// acceptance from rules it cannot compare.
+#[test]
+fn the_live_contract_publishes_the_literature_note_rows() {
+    let home = Home::new();
+    let mut mcp = home.mcp();
+    let view = mcp.call("get_cards", json!({"addresses": [], "view": "text"}));
+    let served =
+        Contract::read(&view["check_contract"]).expect("the read reply publishes a contract");
+    assert_eq!(served.applicability_version, "3");
+    assert_eq!(view["check_contract"]["applicability_version"], json!("3"));
+    assert!(served.version_gaps().is_empty());
+    // The rows are covered by the hash, not by a stored override: a fresh archive has none and
+    // its hash is still not the 0.41.1 default.
+    assert_eq!(served.policy_hash, PolicySet::new().hash());
+    assert_ne!(
+        served.policy_hash, "447f8a4aa5f8f6248497910e17974275459c1e310343b550cfd3eb3551aa2190",
+        "the Literature-note rows change the effective policy"
+    );
+    assert_eq!(view["check_contract"]["policy"]["agent"]["R2"], json!("block"));
+    assert_eq!(view["check_contract"]["policy"]["human"]["R2"], json!("advise"));
+    // The client's own catalog covers the rows, so a check of a Literature-note entry applies
+    // them under the served policy.
+    let note = json!({
+        "address": "K/1|a", "category": "idea", "tree": "K", "workspace": "agent",
+        "title": "税", "body": "税是一种强制征收，由国家对个人征收。",
+    });
+    let report = zt_check::core::Check::new(zt_check::core::Limits::default(), false, "")
+        .with_policies(served.policy.clone())
+        .report(std::slice::from_ref(&note));
+    assert!(
+        report.iter().all(|diagnostic| diagnostic.rule != "I1"),
+        "a note has no claim-title rule: {report:#?}"
+    );
+    let i2 = report
+        .iter()
+        .find(|diagnostic| diagnostic.rule == "I2")
+        .expect("the note's thin body advises under its own 80-character row");
+    assert_eq!(i2.key, "18 characters < 80");
+    assert_eq!(i2.severity, zt_check::core::Severity::Advise);
+}
+
 /// S06-AC08: no extra check tool or policy endpoint is added. The existing
 /// verified read publishes the contract, and the existing write reply/preview
 /// carries the version and hash that decided.

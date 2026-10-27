@@ -4,8 +4,8 @@ title: Agent skills and integrations
 paths:
   - "skills/**"
   - "scripts/install-agent-integrations.ps1"
-synced: 7ef99bd606f8
-updated: 2026-10-25
+synced: 0fa10e89b776
+updated: 2026-10-27
 ---
 
 # Agent skills and integrations
@@ -103,7 +103,7 @@ flowchart LR
 
 - `skills/zt/SKILL.md` is the tool manual. It restates, in agent-facing prose, what `src/mcp.rs` exposes: the tool names, their arguments, the report fields of `get_model`, `get_hub`, `list_hubs`, the confirm flow, the Scholar Archive tools, and the fallback through the helper.
 - `skills/zettelkasten/SKILL.md` is the writing manual. It owns the conventions the server does not check: the body templates, placement rules, Link wording, model design, chart palette, entry points, maintenance. It sends the reader to `references/luhmann-and-practice.md` for the reasons, and to the `zt` skill for the mechanics.
-- `skills/zt-digest-protocol/SKILL.md` is the operator's manual for the digest base (`zt-digest-base.blueprint.json`), not for a variant's layers. It names the roles, the compiler cycle, the base stages, the checks, and the operating rules; `references/scripts.md` lists the base's tools with the script each replaced (`zt-digest call`, `card`, `terms`, `skeleton`, `hub`, `bridge`, `prepare`, `snapshot-topics`, `prepare-link`, `organize-survey`, `organize-apply`, `figures`, `audit`; installed beside `zt.exe` by `scripts/install-zt-digest.ps1`; the workflows run them through `zdTool`) and names the variants' tools (`model`, `model-context`, `list-models`, `event`, `finding`, `math`) only to point to their docs. Since #93 S02 and S03 its quality-check section states the current rule set (R2 to R21 and the layer rules I, E, F, L, including I7), that R20, R21, I7's unknown-source line, and I6 are advice split from blocking faults, that the pilot's outcome target is under 30% of new Topic Idea Cards with an own-source `rests-on` dependency, and that a similar title never merges or deletes a Card.
+- `skills/zt-digest-protocol/SKILL.md` is the operator's manual for the digest base (`zt-digest-base.blueprint.json`), not for a variant's layers. It names the roles, the compiler cycle, the base stages, the checks, and the operating rules; `references/scripts.md` lists the base's tools with the script each replaced (`zt-digest call`, `card`, `terms`, `skeleton`, `hub`, `bridge`, `prepare`, `snapshot-topics`, `prepare-link`, `organize-survey`, `organize-apply`, `figures`, `audit`; installed beside `zt.exe` by `scripts/install-zt-digest.ps1`; the workflows run them through `zdTool`) and names the variants' tools (`model`, `model-context`, `list-models`, `event`, `finding`, `math`) only to point to their docs. Since #93 S02 and S03 its quality-check section states the current rule set (R2 to R21 and the layer rules I, E, F, L, including I7), that R20, R21, I7's unknown-source line, and I6 are advice split from blocking faults, that the pilot's outcome target is under 30% of new Topic Idea Cards with an own-source `rests-on` dependency, and that a similar title never merges or deletes a Card. Since issue #184 it also states the Literature-note row (`applicability_version` 3, zt-check 0.15.0): the Idea-card sentence, claim-title, duplicate-title and own-source rules are off or advice for a note, R12 advises at 60 characters, I2 advises only below 80, and I3, R22, the Event/Finding formats and the Term rules keep their level.
 - `skills/zt/agents/openai.yaml` and `skills/zettelkasten/agents/openai.yaml` hold an `interface` map with `display_name` and `short_description`, the names Codex shows for the skill. `skills/zt-digest-protocol` has no such file.
 
 ### The helper (`skills/zt/scripts/zt-mcp.ps1`)
