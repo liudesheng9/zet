@@ -119,7 +119,7 @@ try {
     # writer reads the assembled shared-prefix.md. The S06 filing decision has to reach that prompt,
     # not only the standalone `dsh-instructions.zh.md` the workflows no longer load.
     $prefixText = [IO.File]::ReadAllText((Join-Path $out 'shared-prefix.md'))
-    Assert ($prefixText.Contains('依附本书才能读懂的内容')) 'the live digest prompt states the ordered filing decision'
+    Assert ($prefixText.Contains('直接后继') -and $prefixText.Contains('锚点的侧后继')) 'the live digest prompt states the reading thread and the anchor placement'
     # docs/literature-only-digest-design.md: a digest files every Card in its book's Literature tree, so
     # the prompt offers no earlier Topic Card to continue and names no -Beneath call.
     Assert (-not $prefixText.Contains('可续写的早前主题卡') -and -not $prefixText.Contains('-Beneath')) 'the live digest prompt offers no place beside an earlier Topic Card'
@@ -154,8 +154,10 @@ try {
     Assert ($topicGroup.code -eq 1 -and $topicGroup.text.Contains("Literature tree") -and $topicGroup.text.Contains($earlier)) "the group refuses a Card beside the earlier Topic Card ($($topicGroup.text))"
     $draft.calls = @($draft.calls[0], $draft.calls[2])
     [IO.File]::WriteAllText($draftPath, ($draft | ConvertTo-Json -Depth 10), $utf8)
-    $check = Run-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath,'-CheckOnly')
-    Assert ($check.preview -eq $true -or $check.check_only -eq $true) 'the group preview accepts the Card under its anchor'
+    # The writer's SELF-CHECK prints the checker's fault lines and `faults: N`, like every other
+    # read-only draft precheck (S28, #186): the writer reads a count, never a JSON shape.
+    $check = @(& $Digest group-finish -Out $out -Group 1 -Token $unit.token -Draft $draftPath -CheckOnly 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and @($check)[-1] -eq 'faults: 0' -and -not (@($check) -match '^\{')) "the group preview accepts the Card under its anchor and prints faults: 0 ($(@($check) -join ' | '))"
     $finished = Run-Digest @('group-finish','-Out',$out,'-Group','1','-Token',"$($unit.token)",'-Draft',$draftPath)
     Assert (@($finished.owned | Where-Object { $_.StartsWith("$earlier|") }).Count -eq 0 -and @($finished.owned) -contains $anchor -and @($finished.owned | Where-Object { $_.StartsWith("$anchor|") }).Count -eq 1) "the group owns its anchor and one Card under it ($(($finished.owned) -join ', '))"
     Assert (@($finished.receipt_keys).Count -eq 2) 'the creation and the anchor edit have receipts'

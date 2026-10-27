@@ -52,6 +52,28 @@ const db=new DatabaseSync(p);db.prepare("update units set lease_until=? where id
     $trace=@(Get-Content $env:ZT_TRACE_TOOLS | ForEach-Object {$_ | ConvertFrom-Json -AsHashtable})
     Assert (@($trace | Where-Object tool -EQ export_titles).Count -eq 1 -and @($trace.process_id | Select-Object -Unique).Count -eq 1) 'one fresh title export shares the command MCP process'
     Remove-Item Env:ZT_TRACE_TOOLS
+    # S28 (#186): the group task file carries the double SELF-CHECK — the Card check (zt-check over
+    # the draft's preview Cards, Literature-note profile) and the coverage check. Both run on the
+    # group's own draft before it is applied, and both answer fault lines then `faults: N`.
+    $task=[IO.File]::ReadAllText($started.prompt)
+    $selfChecks=@($task -split "`r?`n" | Where-Object { $_ -match '^SELF-CHECK: ' })
+    Assert ($selfChecks.Count -eq 2 -and $selfChecks[0] -match '^SELF-CHECK: zt-digest group-finish .* -Group 1 -Token \d+ -Draft ".*draft\.json" -CheckOnly$' -and $selfChecks[1] -match '^SELF-CHECK: zt-digest coverage .* -Group 1 -Draft ".*draft\.json"$') "the group task file carries the double SELF-CHECK (the Card check and coverage) ($($selfChecks -join ' | '))"
+    $section=[IO.File]::ReadAllLines((Join-Path $out 'sections\s01.md'))
+    $unitLine=@(1..$section.Count | Where-Object { $section[$_-1] -match '企业的融资约束影响生产选择' })[0]
+    $draft=@{ schema_version=1; unit=$claim.id; token=$claim.token; input_hash=$started.input_hash; disposition='cards'; calls=@(
+        @{ tool='create_successor'; arguments=@{ at='StartBook/1'; kind='side'; title='融资约束改变企业的生产选择'; body="企业的融资约束影响生产选择。`n`n来源：[[StartBook]] §导论"; src="sections/s01.md:$unitLine-$unitLine" } },
+        @{ tool='edit_card'; arguments=@{ at='StartBook/1'; title='融资约束与生产选择'; body="本部分说明融资约束如何改变生产选择。`n`n来源：[[StartBook]] 导论`n`n在全书中的位置：本书的引言部分。"; base_fingerprint=[string]$job.inputs.anchor.fingerprint } }
+    ) }
+    [IO.File]::WriteAllText($started.draft, ($draft | ConvertTo-Json -Depth 10), $utf8)
+    $cardCheck=@(& $Digest group-finish -Out $out -Group 1 -Token $claim.token -Draft $started.draft -CheckOnly 2>&1)
+    $covered=@(& $Digest coverage -Out $out -Group 1 -Draft $started.draft 2>&1)
+    Assert ($cardCheck[-1] -eq 'faults: 0' -and $covered[-1] -eq 'faults: 0') "both SELF-CHECK commands pass on a draft that covers its unit ($($cardCheck[-1]) / $($covered[-1]))"
+    $draft.calls[0].arguments.src='sections/s01.md'
+    [IO.File]::WriteAllText($started.draft, ($draft | ConvertTo-Json -Depth 10), $utf8)
+    $fileOnly=@(& $Digest coverage -Out $out -Group 1 -Draft $started.draft 2>&1)
+    Assert ($LASTEXITCODE -eq 1 -and ($fileOnly -join ' ') -match 'C2' -and $fileOnly[-1] -ne 'faults: 0') "a file-only span is a coverage fault the writer must fix ($($fileOnly[-1]))"
+    $draft.calls[0].arguments.src="sections/s01.md:$unitLine-$unitLine"
+    [IO.File]::WriteAllText($started.draft, ($draft | ConvertTo-Json -Depth 10), $utf8)
     $archiveAfter=Invoke-Zt @(@{tool='get_cards';arguments=@{addresses=@();view='text'}})
     Assert ($archiveAfter.archive_revision -eq $started.snapshot_revision) 'startup publishes input evidence without changing Cards or their archive revision'
     $beforeHash=(Get-FileHash -LiteralPath $started.job -Algorithm SHA256).Hash

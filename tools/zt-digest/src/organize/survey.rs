@@ -5,7 +5,8 @@
 //! and survey.json: the book's Topics; duplicate candidates (pairs of agent Topics, one of them the
 //! book's, whose titles are similar (character bigrams, -Similar) or one inside the other, or that
 //! link each other -CrossLinks times); small Topics (-Small Cards or fewer); merge proposals of the
-//! card cycles and the audit (I6, I2); models with faults and the architect's notes (-Notes);
+//! card cycles (a Literature note reports no Idea-card size or title merge); models with faults and
+//! the architect's notes (-Notes);
 //! broken Links and missing hubs, and an empty read-only.allow.txt for the decision agent's helper
 //! reads. Prints one compact JSON summary line last.
 //!
@@ -27,9 +28,6 @@ use std::sync::LazyLock;
 
 static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+$").unwrap());
 static NOT_LETTERS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\s\p{P}\p{S}]").unwrap());
-static I6: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^(\S+) I6 \(advisory\) a title very similar to \[\[([^\]]+)\]\]").unwrap());
-static I2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(\S+) I2 \((\d+) characters < \d+\) merge candidate").unwrap());
 
 struct Params {
     staging: String,
@@ -439,14 +437,10 @@ fn survey(
             proposals.push(json!({ "card": field(n, "orphan"), "with": "", "why": format!("no related Card: {}", field(n, "note")), "from": "orphan pass" }));
         }
     }
-    for f in faults {
-        if let Some(m) = I6.captures(f) {
-            proposals.push(json!({ "card": &m[1], "with": &m[2], "why": "similar titles (I6)", "from": "audit" }));
-        } else if let Some(m) = I2.captures(f) {
-            proposals.push(json!({ "card": &m[1], "with": "", "why": format!("short Card ({} characters, I2)", &m[2]), "from": "audit" }));
-        }
-    }
-
+    // S28 (#186): no audit-derived merge proposal. The book's Cards are Literature notes, so the
+    // audit's Idea-card size and title advice (I2 `merge candidate`/`split candidate`, I6 similar
+    // title) never asks for a merge; only the card cycles' own recorded decisions are listed above.
+    proposals.extend(audit_merge_proposals(&faults));
     // --- models and notes ---
     let models: Vec<Value> =
         ps::ps_items(&book["models"]["list"]).into_iter().filter(|m| !ps::truthy(&m["self_sufficient"]) || ps::truthy(&m["issues"])).collect();
@@ -584,6 +578,14 @@ fn survey(
     Ok(0)
 }
 
+/// The merge proposals the book's audit faults once gave the Organize stage (S28, #186). A digest
+/// writes only Literature notes, so I2's `merge candidate`/`split candidate` and I6's similar-title
+/// advice belong to the Idea-card standard the notes do not use: they name no merge. The one place
+/// that would read such a fault reads none, so a later rule that does name a merge has one home.
+fn audit_merge_proposals(_faults: &[String]) -> Vec<Value> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +624,20 @@ mod tests {
         assert_eq!(moves[0]["links_to"], json!(2));
         assert_eq!(moves[0]["links_home"], json!(1));
         assert_eq!(moves[0]["title"], json!("错放的卡"));
+    }
+
+    // S28 (#186): a digest writes only Literature notes, so the audit's Idea-card size and title
+    // advice (I2 `merge candidate` / `split candidate`, I6 similar-title) is no longer a merge
+    // proposal for the Organize stage. Only the card cycles' own recorded decisions are.
+    #[test]
+    fn the_audit_idea_card_advice_is_no_merge_proposal() {
+        let faults = vec![
+            "Key/1|a I2 (60 characters < 80) merge candidate".to_string(),
+            "Key/1|a I2 (400 characters > 300) split candidate".to_string(),
+            "Key/1|a I6 (advisory) a title very similar to [[Key/1|b]]".to_string(),
+            "Key/1|a I3 no source line: no Link to [[Key]] or one of its anchors".to_string(),
+        ];
+        assert!(audit_merge_proposals(&faults).is_empty(), "{:?}", audit_merge_proposals(&faults));
     }
 
     #[test]

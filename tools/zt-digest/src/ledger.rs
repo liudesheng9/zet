@@ -7396,13 +7396,22 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     } else {
         None
     };
-    let self_check_command = format!(
+    // S28 (#186): the writer's double SELF-CHECK. The first line runs the Card check over the draft's
+    // preview Cards (zt-check in the Literature-note profile, in-process); the second runs the
+    // coverage measurement over the group's own sections and this draft. Both answer fault lines and
+    // `faults: N`, so the writer fixes the draft until both print `faults: 0` (at most three runs).
+    let card_check_command = format!(
         "zt-digest group-finish -Out \"{}\" -Group {number} -Token {token} -Draft \"{}\" -CheckOnly",
         p.out.display(),
         draft_path.display()
     );
+    let coverage_command = format!(
+        "zt-digest coverage -Out \"{}\" -Group {number} -Draft \"{}\"",
+        p.out.display(),
+        draft_path.display()
+    );
     let prompt = format!(
-        "# 第 {number} 组\n\n本任务只生成 JSON 草稿，写入 `{}`。将共享规则中的写入操作表示为 calls 提案。归档写入和实际 SELF-CHECK 由 group-finish 工具完成。\nSELF-CHECK: {self_check_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n全部卡片都写在本书的文献树里：不新建主题，不写主题树的卡，不写枢纽卡，不链接主题树的卡（主题树归 zt-idea-grow）。\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。仅有空数组或原始占位锚点不能建立覆盖。创建锚点后的卡片时使用 Side successor，保留其他组的直接锚点位置。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
+        "# 第 {number} 组\n\n本任务只把本组的小节写成 ZET 卡片，表示成 JSON 草稿，写入 `{}`：`calls` 里每项是一次写入提案（`tool` 和 `arguments`），归档写入由 group-finish 工具完成，你不调用 zt，也不自己写卡片。写完后按顺序运行下面两条 SELF-CHECK，改到两条都打印 `faults: 0`；最多运行三次，仍有问题就照常回复，并在 `errors` 里写出剩下的问题。\nSELF-CHECK: {card_check_command}\nSELF-CHECK: {coverage_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n全部卡片都写在本书的文献树里：不新建主题，不写主题树的卡，不写枢纽卡，不链接主题树的卡（主题树归 zt-idea-grow）。\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。每个 `create_successor` 的 `arguments` 里写 `src`（小节文件和行号范围）：不写行号会被 coverage 记为 C2。仅有空数组或原始占位锚点不能建立覆盖。第一张卡建成本组锚点的侧后继，其余按阅读顺序建成前一张卡的直接后继；不要建锚点的直接后继（锚点的直接位置留给其他组）。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
         draft_path.display(),
         field(&inputs["prefix"], "path")?,
         snapshot_path.display(),
@@ -7938,6 +7947,14 @@ fn group_quality(cards: &[Value], p: &Prepared) -> Result<Value> {
     let lines = zt_check::check::run_lines(&check.args(), None)
         .context("group draft checker did not run")?;
     checked_lines(lines)
+}
+
+/// The writer's SELF-CHECK answer of the group draft (S28, #186): the checker's own lines, with
+/// `faults: N` last, exactly as `zt-digest card -Step precheck` answers. The shared writer guidance
+/// block treats a run without a `faults:` line as no check, so the group's check must print one.
+fn print_self_check(self_check: &Value) -> Result<()> {
+    let lines: Vec<String> = self_check["lines"].as_array().map(|list| list.iter().map(ps::s).collect()).unwrap_or_default();
+    util::print_lines(&lines)
 }
 
 fn checked_lines(lines: Vec<String>) -> Result<Value> {
@@ -8882,7 +8899,7 @@ fn group_finish(
     token: i64,
     draft_path: &str,
     check_only: bool,
-) -> Result<Value> {
+) -> Result<Option<Value>> {
     use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
     let unit = format!("digest/g{number:03}@1");
     finish_claim(p, &unit, token)?;
@@ -9046,12 +9063,13 @@ fn group_finish(
         bail!("accepted_plan_changed: group calls differ from the immutable accepted plan");
     }
     if done {
-        let mut result = verify_done_group(p, zt, &unit, token)?;
+        let result = verify_done_group(p, zt, &unit, token)?;
         if check_only {
-            result["check_only"] = json!(true);
-            result["applied"] = json!(false);
+            // S28 (#186): the writer's SELF-CHECK answers the checker's fault lines and `faults: N`.
+            print_self_check(&result["self_check"])?;
+            return Ok(None);
         }
-        return Ok(result);
+        return Ok(Some(result));
     }
     let prefix = format!(
         "{}/digest-g{number:03}/1/apply",
@@ -9123,9 +9141,10 @@ fn group_finish(
     }
     check_file(&draft_record, "group draft")?;
     if check_only {
-        return Ok(
-            json!({"schema_version":1,"unit":unit,"token":token,"input_hash":job["input_hash"],"check_only":true,"applied":false,"complete":true,"owned":owned,"substantive":substantive,"self_check":self_check,"no_cards":no_cards}),
-        );
+        // S28 (#186): the same answer every read-only draft precheck gives — the checker's lines,
+        // then `faults: N` — so the writer reads a count and never a JSON shape.
+        print_self_check(&self_check)?;
+        return Ok(None);
     }
     renew(p, &unit, token)?;
     let accepted = accept_plan(&accepted_path, &plan)?;
@@ -9417,7 +9436,7 @@ fn group_finish(
     completion_fault(p, "before_commit")?;
     tx.commit()?;
     completion_fault(p, "after_commit")?;
-    Ok(result)
+    Ok(Some(result))
 }
 
 pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
@@ -9455,8 +9474,10 @@ pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
     };
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
-    let result = group_finish(&p, &mut zt, group, token, &draft, check_only)?;
-    util::print_line(&serde_json::to_string(&result)?)?;
+    // `-CheckOnly` prints the checker's own answer (`faults: N` last) and returns no JSON line.
+    if let Some(result) = group_finish(&p, &mut zt, group, token, &draft, check_only)? {
+        util::print_line(&serde_json::to_string(&result)?)?;
+    }
     Ok(0)
 }
 
@@ -17262,6 +17283,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     field(&evidence["draft"], "path")?,
                     false,
                 )?
+                .context("group completion returned no result")?
             }
         } else if command == "fail" {
             let given = a.str("Fault");
