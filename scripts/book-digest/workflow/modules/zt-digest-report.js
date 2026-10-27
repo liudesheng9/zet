@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v21 ====
+// ==== module zt-digest-report v22 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -33,8 +33,11 @@
 // 21 (#188): every mode's result carries `coverage` (units, covered, skipped, uncovered, pct), measured by the one
 // read-only `coverage` step (zt-digest coverage -Step) after the run's writers settled, so an operator sees how
 // much of the source the Literature notes cover and a later mode cards run can fill the gaps it names.
+// 22 (#188): a variant's own mode (`events`, `findings`, `math`) also carries that coverage, so a measured count is
+// never thrown away; a successful measurement of zero units is `coverage` 0/0/0/0/100, not "not measured" (the
+// step line omits zero fields, so its `ok:true` is the measurement's own answer).
 defineModule({
-  id: 'zt-digest-report', version: '21', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '22', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -134,11 +137,12 @@ defineModule({
     }
     // #188: the run's Literature-note coverage, one read-only measurement step. Its one drive job settles
     // itself; a failed measurement is reported as no coverage with its reason, never as a failed stage: the
-    // audit lists the gaps as findings, and a later `mode cards` run fills them.
+    // audit lists the gaps as findings, and a later `mode cards` run fills them. The step line leaves zero
+    // fields out (#180), so its own `ok:true` is the measurement's answer: 0 units is 0/0/0/0/100.
     let coverage = null, coverageError = null
     try {
       const measured = await Z.bookStep('report: coverage', 'coverage')
-      if (measured && measured.ok === true && measured.units !== undefined) {
+      if (measured && measured.ok === true) {
         const count = (v) => Number(v || 0)
         coverage = {
           units: count(measured.units), covered: count(measured.covered), skipped: count(measured.skipped),
@@ -183,7 +187,7 @@ defineModule({
         ...coverageField,
       }
     }
-    if (!['full', 'link', 'models', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule }
+    if (!['full', 'link', 'models', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule, ...coverageField }
     const modelReports = (p.models && p.models.models) || []
     // #180: the Link pass answers the run's own totals, never per-group rows.
     const linkGaps = p.link

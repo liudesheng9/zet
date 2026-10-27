@@ -1377,7 +1377,14 @@ function runtime(kind, opts = {}) {
       }
       case 'bridge-report': return { ok: true, ...(run(`zt-digest bridge -Step report -Staging "${out}" -CitationKey ${o.CitationKey} -Work "${o.Work}"`) || {}) }
       case 'bridge-apply': return { ok: true, ...(run(`zt-digest bridge -Step apply -Staging "${out}" -CitationKey ${o.CitationKey} -Work "${o.Work}" -ReportId ${o.ReportId}${o.Accept ? ` -Accept '${o.Accept}'` : ''}${o.AcceptEarlier ? ` -AcceptEarlier '${o.AcceptEarlier}'` : ''} -Apply`) || {}) }
-      case 'coverage': { const c = run(`zt-digest coverage -Out "${out}" -Step`) || {}; return { ok: c.ok !== false, units: c.units, covered: c.covered, skipped: c.skipped, uncovered: c.uncovered, pct: c.pct } }
+      case 'coverage': {
+        // #188: a failed measurement answers `ok:false` with its reason (the stage must go on), and a step
+        // line whose counts are all zero keeps only its `ok` and `pct` (#180 drops zero fields).
+        if (opts.coverageFails) return { ok: false, step: 'coverage', error: 'the staging folder holds no manifest.json: coverage reads a prepared staging folder' }
+        if (opts.coverageZero) return { ok: true, pct: 100, detail: `${out}\\coverage.json` }
+        const c = run(`zt-digest coverage -Out "${out}" -Step`) || {}
+        return { ok: c.ok !== false, units: c.units, covered: c.covered, skipped: c.skipped, uncovered: c.uncovered, pct: c.pct }
+      }
       case 'audit': return { ok: true, ...(run(`zt-digest audit${o.CitationKey ? ` -CitationKey ${o.CitationKey}` : ''} -Out "${out}"`) || {}) }
       case 'finalize-plan': { call(`zt-digest finalize -Step plan -Out "${out}"`); return { ok: true, ...finalizePlan(opts.finalize || 'fix') } }
       case 'finalize-changes': { call(`zt-digest finalize -Step changes -Out "${out}"`); return { ok: true, ...finalizeChanges(opts.finalizeRecovered !== true, opts) } }
@@ -2781,6 +2788,17 @@ for (const kind of ['econ', 'math']) {
   check(!calls.some((c) => /^(group \d|prepare book|organize)/.test(c.label)), 'econ cards: runs no other stage')
   check(cardPlan && cardPlan.options.Sample === 0.1 && cardPlan.options.ModelReview === true, 'econ cards: the cycle covers the deterministic Idea sample and reviews the Model drafts no chain owns')
 }
+// #188: the coverage field's own boundaries — a failed measurement is reported with its reason and never fails
+// the stage, a measurement of zero units is a count, and a variant's own mode carries the same field.
+{
+  const failed = await run('econ', { ...base, figures: false }, { coverageFails: true })
+  check(failed.result && failed.result.coverage === null && /manifest/.test(failed.result.coverage_error || ''), `report: a failed coverage measurement is no coverage with its reason (${JSON.stringify(failed.result && { coverage: failed.result.coverage, error: failed.result.coverage_error })})`)
+  check(failed.report && !failed.report.halted && failed.report.stages.report.status === 'done', 'report: a failed coverage measurement never fails the report stage')
+  const zero = await run('econ', { ...base, figures: false }, { coverageZero: true })
+  check(zero.result && zero.result.coverage && zero.result.coverage.units === 0 && zero.result.coverage.covered === 0 && zero.result.coverage.skipped === 0 && zero.result.coverage.uncovered === 0 && zero.result.coverage.pct === 100, `report: a successful measurement of zero units is 0/0/0/0/100, not "not measured" (${JSON.stringify(zero.result && zero.result.coverage)})`)
+  const mathMode = await run('math', { ...base, figures: false, mode: 'math' })
+  check(mathMode.result && mathMode.result.mode === 'math' && mathMode.result.math && mathMode.result.coverage && mathMode.result.coverage.units === 12, `report: the variant's own mode (math) carries the measured coverage (${JSON.stringify(mathMode.result && { mode: mathMode.result.mode, coverage: mathMode.result.coverage })})`)
+}
 {
   const { commands, calls, result, settleCalls: auditSettles } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
   const labels = calls.map((c) => c.label)
@@ -2909,7 +2927,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '44' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '21' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v44, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '44' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v44, zt-digest-prepare v18, zt-digest-report v22, zt-workflow-lib v7, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v5 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
