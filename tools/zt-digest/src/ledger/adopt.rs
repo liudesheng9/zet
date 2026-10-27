@@ -594,6 +594,13 @@ fn log_lines(path: &Option<PathBuf>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Whether a Card an owned log names but the archive lacks is lost work of this book: only a
+/// Card of the book's own Literature tree. A digest builds Literature trees only, so a Topic or
+/// another tree's Card a pre-5.0 log names was another workflow's to keep or remove.
+fn lost_in_book(address: &str, key: &str) -> bool {
+    address == key || address.strip_prefix(key).is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// The group's written Cards, from the Cards the group actually produced. A skeleton anchor
 /// is never one of them: the anchor alone proves no digest success (R411/T14).
 fn group_fact(
@@ -623,9 +630,12 @@ fn group_fact(
     let entries = log_lines(&group.owned_log);
     let mut lost_log_entries = Vec::new();
     let mut logged_written = 0usize;
+    let key = citation_key_of(&group.anchor);
     for address in &entries {
         if !cards.contains_key(address) {
-            lost_log_entries.push(address.clone());
+            if lost_in_book(address, &key) {
+                lost_log_entries.push(address.clone());
+            }
         } else if written.iter().any(|(at, _)| at == address) {
             logged_written += 1;
         }
@@ -2157,6 +2167,18 @@ mod tests {
         assert_eq!(rows[2].anchor, "Key2014/2");
         assert_eq!(citation_key_of(&rows[2].anchor), "Key2014");
         assert!(parse_index("# nothing here").is_err());
+    }
+
+    #[test]
+    fn a_lost_log_entry_counts_only_inside_the_books_literature_tree() {
+        // #190 backfill: grossman2002integration's owned logs name the Topic Cards its pre-5.0
+        // digest wrote (408/0, 409/1); zt-idea-grow owns Topic trees now, so their absence is no
+        // lost group work. A missing Card of the book's own tree still is.
+        assert!(!lost_in_book("408/0", "Book2002"));
+        assert!(!lost_in_book("Other2001/3|a", "Book2002"));
+        assert!(lost_in_book("Book2002/1|a", "Book2002"));
+        assert!(lost_in_book("Book2002", "Book2002"));
+        assert!(!lost_in_book("Book20021/1", "Book2002"));
     }
 
     #[test]
