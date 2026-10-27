@@ -12,7 +12,7 @@ paths:
   - "scripts/book-digest/tests/model-steps.tests.ps1"
   - "scripts/book-digest/tests/math-steps.tests.ps1"
   - "docs/workflow-module-structure-proposal.md"
-synced: HEAD
+synced: 7e5dad0bec38
 updated: 2026-10-26
 ---
 
