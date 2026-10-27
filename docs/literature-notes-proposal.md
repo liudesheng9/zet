@@ -1,4 +1,4 @@
-| L7 / [#190](https://github.com/liudesheng9/zet/issues/190) || L6 / [#189](https://github.com/liudesheng9/zet/issues/189) || L5 / [#188](https://github.com/liudesheng9/zet/issues/188) || L4 / [#187](https://github.com/liudesheng9/zet/issues/187) || L3 / [#186](https://github.com/liudesheng9/zet/issues/186) || L2 / [#185](https://github.com/liudesheng9/zet/issues/185) || L1 / [#184](https://github.com/liudesheng9/zet/issues/184) |# Faithful Literature notes: proposal and design
+# Faithful Literature notes: proposal and design
 
 Status: proposal (2026-10-26), published as PRD [#183](https://github.com/liudesheng9/zet/issues/183) with slices #184–#190. Scope: the Literature-tree Cards that the digest workflows (`zt-digest-base` 5.7.1, `zt-econ-digest` 6.7.1, `zt-math-digest` 5.7.1) write. The proposal changes no Topic tree and no part of `zt-idea-grow`. Every change follows the module structure in [workflow-module-structure](wiki/workflow-module-structure.md) and the rules in [workflow-principles](agents/workflow-principles.md).
 
@@ -165,10 +165,10 @@ A minor blueprint bump makes the prepared runs of 5.7 non-drivable. Old staging 
 
 | Slice | Delivers | Blocked by | Type |
 |---|---|---|---|
-| L1 | `zt-check` Literature-note category and applicability 3; `zt` 0.42.0 contract | none | AFK |
-| L2 | `zt-digest coverage` (units, spans, skips, numbers, `-Group`, `-Draft`, `-Step`) | none | AFK |
-| L3 | The digest group prompt and its double self-check (§3.4) | L1, L2 | AFK |
-| L4 | The card layer's review, fix and fill job, with the `add`/`skip` apply (§3.5) | L1, L2 | AFK |
-| L5 | Report and audit coverage; the blueprint release 5.8.0 / 6.8.0 / 5.8.0; harnesses, installs, wiki | L3, L4 | AFK |
-| L6 | Pilot `mode cards` on an adopted Nobel copy in a copied box, against the acceptance list in §3.8 | L5 | AFK |
-| L7 | Backfill the five live books with `mode cards` on adopted copies | L6 and the user's go-ahead | owner gate |
+| L1 [#184](https://github.com/liudesheng9/zet/issues/184) | `zt-check` Literature-note category and applicability 3; `zt` 0.42.0 contract | none | AFK |
+| L2 [#185](https://github.com/liudesheng9/zet/issues/185) | `zt-digest coverage` (units, spans, skips, numbers, `-Group`, `-Draft`, `-Step`) | none | AFK |
+| L3 [#186](https://github.com/liudesheng9/zet/issues/186) | The digest group prompt and its double self-check (§3.4) | L1, L2 | AFK |
+| L4 [#187](https://github.com/liudesheng9/zet/issues/187) | The card layer's review, fix and fill job, with the `add`/`skip` apply (§3.5) | L1, L2 | AFK |
+| L5 [#188](https://github.com/liudesheng9/zet/issues/188) | Report and audit coverage; the blueprint release 5.8.0 / 6.8.0 / 5.8.0; harnesses, installs, wiki | L3, L4 | AFK |
+| L6 [#189](https://github.com/liudesheng9/zet/issues/189) | Pilot `mode cards` on an adopted Nobel copy in a copied box, against the acceptance list in §3.8 | L5 | AFK |
+| L7 [#190](https://github.com/liudesheng9/zet/issues/190) | Backfill the five live books with `mode cards` on adopted copies | L6 and the user's go-ahead | owner gate |
