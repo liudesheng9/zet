@@ -15,6 +15,7 @@
 //!   zt-digest resolve -Step plan|apply|check -Work <folder> [-File <s>] ...   (a separately selected historical resolution batch, #122)
 //!   zt-digest term-cards -Step plan|jobs|precheck|check|... -Staging <folder> ...   (the Term-card compiler, #159, #166)
 //!   zt-digest term-link  -Step plan|apply -Staging <folder> ...   (the deterministic Term-link pass, #160)
+//!   zt-digest coverage -Out <staging> [-Group N] [-Draft <file>] [-Step]   (the notes coverage, #185)
 //!
 //! Each tool takes the parameters of the PowerShell script it replaces, in the
 //! same `-Name value` form (names ignore case; a switch is `-Name` alone), and
@@ -31,6 +32,7 @@ mod canon;
 mod card;
 mod check;
 mod concepts;
+mod coverage;
 mod earlier;
 mod event;
 mod faults;
@@ -162,6 +164,7 @@ fn main() {
         "service-wait" => service_wait_cli(&rest),
         "audit" => audit::cli(&rest),
         "card" => card::cli(&rest),
+        "coverage" => coverage::cli(&rest),
         "model" => model::cli(&rest),
         "model-context" => model::context_cli(&rest),
         "list-models" => model::list_cli(&rest),
@@ -233,7 +236,7 @@ fn main() {
             Ok(0)
         }
         _ => {
-            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, card, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,
+            eprintln!("usage: zt-digest <tool> [-Name value ...]\ntools: call, grow, service-wait, audit, card, coverage, model, model-context, list-models, hub, register, join, topic-home, bridge, math, event, finding, gate,
        terms, term-cards, term-link, term-pilot, skeleton, organize-survey, organize-apply, figures, prepare, prepare-link, source-faults, snapshot-topics, ledger, finalize, concepts, pilot, publish, resolve, group-start, group-finish, link-finish, cards-finish, book-cards-finish, events-finish, findings-finish, model-finish, explain-finish, cleanup-finish, cleanup-run, model-deps, finish-batch");
             Ok(2)
         }
