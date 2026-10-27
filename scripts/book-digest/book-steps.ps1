@@ -155,6 +155,12 @@ function Expand-Cards($Json) {
                     $entry.files = @("$($Json.lead.orphans)", (Join-Path $dir "$($j.file)"))
                     $entry.prompt = "$($Json.prompts.orphans)"
                 }
+                'both' {
+                    # #191: one group job holds the group's Cards and its orphan Links: both shared
+                    # instruction files first, so DeepSeek caches that prefix.
+                    $entry.files = @("$($Json.lead.fix)", "$($Json.lead.orphans)", (Join-Path $dir "$($j.file)"))
+                    $entry.prompt = "$($Json.prompts.both)"
+                }
                 default {
                     $entry.files = @("$($Json.lead.fix)", (Join-Path $dir "$($j.file)"))
                     $entry.prompt = "$($Json.prompts.fix)"

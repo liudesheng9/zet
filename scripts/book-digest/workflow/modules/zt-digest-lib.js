@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v44 ====
+// ==== module zt-digest-lib v45 ====
 // 44 (#187): the card layer's review-and-fill job runs two read-only SELF-CHECK commands, the Card
 // check and the coverage measurement; the manager's allow-list names both, and the group draft check
 // (group-finish -CheckOnly) the digest group job runs (#186).
@@ -298,6 +298,9 @@ Return ok=true, output="", and results: one entry per job with id, session_id, s
     return list.map(j => {
       if (j.files) return j
       if (j.kind === 'follow') return { id: j.id, continue: j.continue, files: [at(j.file)], fallback: [parsed.lead.fix, at(j.file)], prompt: parsed.prompts.follow }
+      // #191: one group job holds the group's Cards and its orphan Links: both shared instruction
+      // files first, so DeepSeek caches that prefix.
+      if (j.kind === 'both') return { id: j.id, files: [parsed.lead.fix, parsed.lead.orphans, at(j.file)], prompt: parsed.prompts.both }
       const lead = j.kind === 'orphans' ? parsed.lead.orphans : parsed.lead.fix
       return { id: j.id, files: [lead, at(j.file)], prompt: parsed.prompts[j.kind] }
     })
@@ -545,6 +548,31 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
   }
   // The session table a second content round continues: the plan round's job ids and session ids.
   const sessionTable = (results) => (results || []).filter((r) => r && r.session_id).map((r) => `${r.id} ${r.session_id}`).join('\n')
+  // #191: the conversations one card cycle kept open, deleted after its last round. One Haiku manager makes the
+  // one provider call no script can and records each deletion against the run. A delete that fails is reported,
+  // never retried here: the run cleanup stays the backstop.
+  const DELETE = {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' }, deleted: { type: 'number' }, not_deleted: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['ok'],
+  }
+  const deletePrompt = (label, sessions) => `You are the DeepSeek conversation cleaner for ZET card writers (${label}). The card cycle has finished: delete exactly these DeepSeek conversations, one deepseek_delete each, and record each deletion. You never write content. Keep your messages short.
+${RUNNER}
+Load the DSH tools with one ToolSearch call: query "${DRIVE_TOOLS}".
+CONVERSATIONS (job id and session_id), and no others: ${JSON.stringify(sessions.map((r) => ({ id: r.id, session_id: r.session_id })))}
+For each conversation: deepseek_delete with its session_id, then run this record command (it changes no Card):
+  ${ZD_LEDGER} resource -Out "${OUT}" -Settle <session_id> -State finished -Deleted confirmed
+When a delete fails: -State error -Deleted failed -Message '<the error>'. A record command that fails does not stop the work.
+Return ok (true when every conversation was deleted), deleted and not_deleted (the session_ids that stayed open).`
+  const deleteConversations = async (label, sessions) => {
+    const list = (sessions || []).filter((r) => r && r.session_id)
+    if (!list.length) return { deleted: 0, not_deleted: [] }
+    const answer = await dsmpSlot(() => zAgent(deletePrompt(label, list), { label, phase: 'Cards', model: 'haiku', schema: DELETE }))
+    const notDeleted = (answer && Array.isArray(answer.not_deleted)) ? answer.not_deleted : list.map((r) => r.session_id)
+    return { deleted: Number((answer && answer.deleted) || 0), not_deleted: notDeleted }
+  }
   // Runs one layer in blocks until it offers no ready unit (at most `rounds` claims that found nothing). o:
   // layer, take, rounds, wait, dsh, writes, skills, effort, phase, what (the manager's subject), jobs (false:
   // the layer lists no content job), apply (a second content round between start and finish), maxParts, limits,
@@ -626,6 +654,9 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
   // step a round applies every ready draft and runs the check (listing the follow-up jobs), and one step applies
   // the last drafts and reports. `rounds` is the declared correction count (R299), never a retry loop; a step that
   // answers ok:false stops the cycle with its reason.
+  // #191: one DeepSeek conversation per job across the whole cycle. The write round's conversations are kept,
+  // every fix round continues the conversation of the job it follows (its `continue` id), and the cycle deletes
+  // all of them after its last round; the run cleanup stays the backstop.
   const cardCycle = async (label, work, o = {}) => {
     const json = { Work: work, Book: o.book || KEY, Staging: OUT }
     const rules = o.rules ? o.rules : (A.cardRules || '')
@@ -637,14 +668,21 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
     if (o.notes) json.Notes = o.notes
     if (o.noOrphans) json.NoOrphans = true
     if (o.cards) json.Cards = o.cards
-    const jobs = { dsh: work, writes: `${work}\\out`, phase: o.phase || 'Cards', skills: CARD_SKILLS, effort: DSH_EFFORT, what: 'card writers', run: true }
+    const jobs = { dsh: work, writes: `${work}\\out`, phase: o.phase || 'Cards', skills: CARD_SKILLS, effort: DSH_EFFORT, what: 'card writers', run: true, keep: true }
+    const sessions = []
+    const runRound = async (what, file, count) => {
+      if (!Number(count || 0)) return
+      const round = sessions.length ? { ...jobs, table: sessionTable(sessions) } : jobs
+      const results = await runJobs(what, file, count, round)
+      sessions.push(...(results || []).filter((r) => r && r.session_id))
+    }
     const plan = await bookStep(`${label}: plan`, 'cards-start', json, jobs)
     if (plan.ok !== true) {
       log(`Cards ${label}: plan failed: ${(plan && plan.error) || 'no output'}.`)
       return { status: 'failed', label, error: `plan failed: ${(plan && plan.error) || 'no output'}` }
     }
     log(`Cards ${label}: ${plan.picked} Cards of the book; ${plan.with_faults} with ${plan.faults} faults, ${plan.review} for review, ${plan.orphans} orphans; ${plan.jobs} DeepSeek jobs.`)
-    if (Number(plan.jobs || 0)) await runJobs(`${label}: write`, plan.file, plan.jobs, jobs)
+    await runRound(`${label}: write`, plan.file, plan.jobs)
     // R299: the finalization spends its one declared correction cycle, so it passes fixRounds 1 whatever the
     // run's cardFixRounds pilot setting is.
     const rounds = o.fixRounds === undefined ? CARD_FIX_ROUNDS : Math.max(0, Math.min(12, o.fixRounds))
@@ -652,12 +690,14 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
       const step = await bookStep(`${label}: check ${round}`, 'cards-apply', { Work: work }, jobs)
       if (step.ok !== true) return { status: 'failed', label, plan, error: `check ${round} failed: ${(step && step.error) || 'no output'}` }
       log(`Cards ${label}: ${step.faults} faults left, ${step.jobs} follow-up jobs.`)
-      if (Number(step.jobs || 0)) await runJobs(`${label}: fix ${round}`, step.file, step.jobs, jobs)
+      await runRound(`${label}: fix ${round}`, step.file, step.jobs)
     }
+    const cleaned = await deleteConversations(`${label}: delete`, sessions)
+    if (cleaned.not_deleted.length) log(`Cards ${label}: ${cleaned.not_deleted.length} conversation(s) stayed open; the run cleanup settles them.`)
     const report = await bookStep(`${label}: report`, 'cards-finish', { Work: work }, jobs)
     if (report.ok !== true) return { status: 'failed', label, plan, error: `report failed: ${(report && report.error) || 'no output'}` }
     log(`Cards ${label}: faults ${report.faults_before} → ${report.faults_after} on ${report.cards} Cards; verdicts ${JSON.stringify(report.verdicts)}; ${report.splits} splits, ${report.merges} merge proposals, ${report.refused} refused; ${report.orphan_links} orphan Links (${report.orphans_after} orphans left).`)
-    return { status: 'done', label, plan, applied: { applied_jobs: Number(report.applied) || 0 }, report }
+    return { status: 'done', label, plan, applied: { applied_jobs: Number(report.applied) || 0 }, report, deleted: cleaned.deleted }
   }
   const stepOf = (driven, name) => ((driven && driven.steps) || []).find(s => s.name === name) || null
   const jsonOf = (driven, name) => zdLastJson((stepOf(driven, name) || {}).output)
@@ -1081,7 +1121,7 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '44', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '45', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

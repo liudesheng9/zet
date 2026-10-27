@@ -58,7 +58,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $staging 'src-g01.txt'), "$n1`tsections/s01.md:1-2`n$n2`tsections/s01.md`n", $utf8)
 
     # --- plan: one review-and-fill job for the group ---
-    $plan = Last (Run-Digest @('card', '-Step', 'plan', '-Work', $work, '-Compact', '-Book', $key, '-Staging', $staging))
+    $plan = Last (Run-Digest @('card', '-Step', 'plan', '-Work', $work, '-Compact', '-Book', $key, '-Staging', $staging, '-NoOrphans'))
     $jobs = @($plan.jobs | Where-Object { $_.kind -eq 'fix' })
     Assert ($jobs.Count -eq 1) "plan: one fix job for the one group ($($jobs.Count))"
     $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
@@ -120,6 +120,39 @@ try {
     Save-Json $state2.jobs[$job2].out @{ cards = @(@{ address = $target; verdict = 'fix'; title = $current.title; body = '改写时丢掉了全部 Link。' }) }
     $refused = Last (Run-Digest @('card', '-Step', 'apply', '-Work', (Join-Path $scratch 'again')))
     Assert ([int]$refused.counts.refused -ge 1) "apply: a fix that loses a Link is refused ($($refused.counts | ConvertTo-Json -Compress))"
+    # --- #191: one group job carries the group's review, fix, fill and its orphan Links ---
+    $orphan = (Write-Calls @(@{ tool = 'create_successor'; arguments = @{ at = $anchor; kind = 'side'; title = '没有链接的笔记'
+                    body = '这一段没有链接到任何卡片，也没有记录来源行。' } }))[0]
+    $bothWork = Join-Path $scratch 'both'
+    $both = Last (Run-Digest @('card', '-Step', 'plan', '-Work', $bothWork, '-Compact', '-Book', $key, '-Staging', $staging))
+    $bothJobs = @($both.jobs)
+    Assert ($bothJobs.Count -eq 1 -and $bothJobs[0].kind -eq 'both') "plan: one job holds the group's Cards and its orphan Links ($(@($bothJobs | ForEach-Object { "$($_.id):$($_.kind)" }) -join ', '))"
+    Assert (@($bothJobs | Where-Object { $_.id -like 'orphans-*' }).Count -eq 0) 'plan: no separate orphan job for a group that has a job'
+    Assert ($both.prompts.both -and $both.lead.fix -and $both.lead.orphans) 'plan: the compact list names both instruction files and the one combined prompt'
+    $bothState = Get-Content -LiteralPath (Join-Path $bothWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    $bothJob = $bothState.jobs[$bothJobs[0].id]
+    Assert (@($bothJob.orphans) -contains $orphan -and @($bothJob.candidates[$orphan]).Count -ge 1) "plan: the job names its orphan and its candidates ($(@($bothJob.orphans) -join ', '))"
+    $bothTask = Get-Content -LiteralPath $bothJob.file -Raw -Encoding utf8
+    Assert ($bothTask -match '## 本组孤立卡片' -and $bothTask -match [regex]::Escape($orphan) -and $bothTask -match '候选卡片') 'plan: the task file carries the orphan-link section'
+    $bothPrecheck = "(?m)^SELF-CHECK: zt-digest card -Step precheck -Work ""$([regex]::Escape((Resolve-Path $bothWork).Path))"" -Job $([regex]::Escape($bothJobs[0].id))\s*$"
+    Assert ($bothTask -match $bothPrecheck -and $bothTask -match 'SELF-CHECK: zt-digest coverage') 'plan: the one job keeps both SELF-CHECK lines'
+    # A group draft answers for every orphan it names: `links` or `none` per orphan, in the same JSON.
+    $bothDraft = $bothJob.out
+    $okCards = @(@($bothJob.cards) | ForEach-Object { @{ address = $_; verdict = 'ok'; note = '与原文一致。' } })
+    $otherOrphans = @(@($bothJob.orphans) | Where-Object { $_ -ne $orphan })
+    Save-Json $bothDraft @{ cards = $okCards; adds = @(); skips = @(); links = @(); none = @() }
+    $bothPre = Run-Digest @('card', '-Step', 'precheck', '-Work', $bothWork, '-Job', $bothJobs[0].id)
+    Assert (@($bothPre | Where-Object { $_ -match [regex]::Escape($orphan) -and $_ -match 'no entry for this orphan' }).Count -eq 1) "precheck: the group job answers for its orphan Link ($($bothPre -join ' | '))"
+    $from = @($bothJob.candidates[$orphan])[0]
+    Save-Json $bothDraft @{ cards = $okCards; adds = @(); skips = @()
+        links = @(@{ to = $orphan; from = $from; text = "对照 [[$orphan]]：这里讨论的是没有链接的笔记。" })
+        none = @($otherOrphans | ForEach-Object { @{ orphan = $_; note = '本组的候选卡片都不合适。' } }) }
+    $bothPre = @(Run-Digest @('card', '-Step', 'precheck', '-Work', $bothWork, '-Job', $bothJobs[0].id))
+    Assert ($bothPre[-1] -eq 'faults: 0') "precheck: a group draft with a clean orphan Link gives faults: 0 ($($bothPre -join ' | '))"
+    # Apply writes the group's orphan Link in the same job.
+    $bothApplied = Last (Run-Digest @('card', '-Step', 'apply', '-Work', $bothWork))
+    Assert ($bothApplied.counts.orphan_links -eq 1) "apply: the group job writes its orphan Link ($($bothApplied.counts | ConvertTo-Json -Compress))"
+    Assert ((Get-Card $from).body -match "对照 \[\[$([regex]::Escape($orphan))\]\]") 'apply: the candidate links the orphan'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

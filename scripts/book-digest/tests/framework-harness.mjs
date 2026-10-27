@@ -840,6 +840,14 @@ function runtime(kind, opts = {}) {
         if (tool[1] === 'card' && tool[2] === 'apply' && state.applyPending > 0) { value.pending_jobs = state.applyPending - 1 }
         if (tool[1] === 'card' && tool[2] === 'plan' && state.planJobs !== 21) value.jobs = Array.from({ length: state.planJobs }, (_, i) => ({ id: `fix-${i + 1}`, kind: 'fix', file: `fix-${i + 1}.md` }))
         if (tool[1] === 'terms' && tool[2] === 'apply') led.finish('terms/book@1')
+        // #191: the whole-book cycle's check lists one follow-up job that continues its write round,
+        // so a fix round runs and the cycle's conversations can be followed and deleted.
+        if (tool[1] === 'card' && tool[2] === 'check' && opts.cardFollowRounds && /-Work "D:\\x\\Key\\cards"/.test(cmd)) {
+          state.cardChecks = (state.cardChecks || 0) + 1
+          if (state.cardChecks <= opts.cardFollowRounds) {
+            return { ok: true, exit: 0, output: json({ faults: 1, orphans: 0, dir: 'D:\\x\\Key\\cards', lead: { fix: 'D:\\x\\Key\\cards\\card.md', orphans: 'D:\\x\\Key\\cards\\orphan.md' }, prompts: { fix: 'pf', orphans: 'po', follow: 'pw', both: 'pb' }, jobs: [{ id: 'fix-01-r2', kind: 'follow', file: 'fix-01-r2.md', continue: 'fix-01' }] }) }
+          }
+        }
         // trial 10: a relay abridged the whole-book plan line inside its jobs array.
         if (tool[1] === 'card' && tool[2] === 'plan' && opts.garbledCardPlan && cmd.includes('-Work "D:\\x\\Key\\cards" ')) return { ok: true, exit: 0, output: '{"book":"Key","picked":69,"jobs":[fix-01 (fix), orphans-02 (orphans)]} (abridged: full JSON had a sample block)' }
         return { ok: true, exit: 0, output: json(value) }
@@ -986,6 +994,8 @@ function runtime(kind, opts = {}) {
   // start or plan, record every held unit's checked completion, fault the rest, apply/report, and the gate.
   // The stand-in keeps the job list each step wrote, so the content managers run exactly those entries.
   const layerCalls = [], layerManagers = [], layerState = new Map(), layerJobs = new Map()
+  // #191: the manager that deletes one card cycle's kept conversations after its last round.
+  const deleteManagers = []
   const layerKey = (out, layer) => `${out}|${layer}`
   const layerArg = (cmd, name) => (cmd.match(new RegExp(`-${name} "([^"]*)"`)) || cmd.match(new RegExp(`-${name} (\\w+)`)) || [])[1]
   const layerGate = (out, layer) => lastJson(commandAnswer(`zt-digest ledger gate -Out "${out}" -Layer ${layer} -Brief`).output) || { complete: false, counts: {} }
@@ -1813,6 +1823,15 @@ function runtime(kind, opts = {}) {
       const failed = kind.startsWith('write') && !!opts.termWriterFails
       return { ok: true, jobs: listed.map((job) => ({ id: job.id, session_id: sessionOf(job.id), status: failed ? 'failed' : 'done', answer: failed ? 'the writer failed' : '{}', deleted: true })) }
     }
+    // #191: one card cycle's conversations are deleted after its last round, by one manager that names
+    // exactly the sessions the cycle kept. It deletes each and answers not_deleted with what stayed open.
+    if (/^You are the DeepSeek conversation cleaner for ZET card writers/.test(text) && /The card cycle has finished: delete exactly these DeepSeek conversations/.test(text)) {
+      const listed = JSON.parse((text.match(/CONVERSATIONS \(job id and session_id\), and no others: (\[[^\n]*\])/) || [null, '[]'])[1])
+      const left = opts.cardDeleteFails ? listed.map((x) => x.session_id) : []
+      const answer = { deleted: listed.length - left.length, not_deleted: left }
+      deleteManagers.push({ label, sessions: listed.map((x) => x.session_id), ...answer })
+      return { ok: true, ...answer }
+    }
     // #175: a digest layer's content manager runs entries [from, to] of the job list its start step wrote,
     // records each conversation and deletes it (or leaves it for the keep rounds and the run cleanup).
     if (text.startsWith('You are a DeepSeek subagent manager for ZET ')) {
@@ -1863,7 +1882,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, mathCalls, mathManagers, state,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, mathCalls, mathManagers, state, deleteManagers,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -2927,7 +2946,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '44' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v44, zt-digest-prepare v18, zt-digest-report v22, zt-workflow-lib v7, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v5 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '45' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v45, zt-digest-prepare v18, zt-digest-report v22, zt-workflow-lib v7, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v5 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3178,6 +3197,29 @@ for (const which of ['econ', 'math']) {
   check((growSim.answers || []).filter((a) => a.label === '^grow: next$').every((a) => a.answer && typeof a.answer.answer === 'string' && a.answer.session_id), '#179: the dry run answers each grow step as the drive job it is')
   const shared = readText('scripts/workflow-shared/modules/zt-workflow-lib.js')
   check(/version: '7'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+}
+
+// ================================================================================================================
+// #191: one DeepSeek conversation per card-cycle job. The write round keeps its conversations, each fix
+// round continues the conversation of the job it follows, and the cycle deletes all of them after its
+// last round (the run cleanup stays the backstop).
+// ================================================================================================================
+{
+  const { calls, deleteManagers } = await run('econ', { ...base, figures: false }, { cardFollowRounds: 1 })
+  const write = calls.find((c) => /^whole book: write /.test(c.label || ''))
+  const fix = calls.find((c) => /^whole book: fix 1 /.test(c.label || ''))
+  const report = calls.find((c) => c.label === 'whole book: report')
+  const del = calls.find((c) => /^whole book: delete/.test(c.label || ''))
+  check(!!write && !!fix, `#191: the card cycle runs a write round and a fix round through content managers (${!!write}, ${!!fix})`)
+  check(write && /Do not close, archive, or delete the conversation: later rounds may continue it/.test(write.prompt) && !/Then delete the conversation/.test(write.prompt), '#191: the write round keeps its conversations for the later rounds')
+  check(fix && /With a session: deepseek_prompt/.test(fix.prompt) && /fix-01 s-fix-01-\d+/.test(fix.prompt) && /orphans-99 s-orphans-99-\d+/.test(fix.prompt), '#191: the fix round gets the write round\'s sessions and continues them with deepseek_prompt')
+  check(fix && /Do not close, archive, or delete the conversation: later rounds may continue it/.test(fix.prompt) && !/Then delete the conversation/.test(fix.prompt), '#191: a fix round keeps its own conversation too, for a later round')
+  check(!!del && !!report && calls.indexOf(del) < calls.indexOf(report) && calls.indexOf(del) > calls.indexOf(fix), '#191: the cycle deletes its conversations after its last round, before the report')
+  // Every card cycle in the run deletes its own conversations; this one is the whole book's.
+  const bookDeletes = deleteManagers.filter((d) => /^whole book: delete/.test(d.label || ''))
+  check(bookDeletes.length === 1 && bookDeletes[0].sessions.length === 3 && bookDeletes[0].sessions.every((s) => /^s-(fix-01-r2|fix-01|orphans-99)-\d+$/.test(s)), `#191: the one delete manager names every kept conversation (${(bookDeletes[0] && bookDeletes[0].sessions.join(', ')) || 'none'})`)
+  check(bookDeletes.length === 1 && bookDeletes[0].deleted === 3 && bookDeletes[0].not_deleted.length === 0, `#191: every kept conversation is deleted (DSMP notDeleted empty; ${JSON.stringify(bookDeletes[0] || null)})`)
+
 }
 
 console.log(`failed: ${failed}`)

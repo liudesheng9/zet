@@ -224,6 +224,7 @@ A module change follows the review checklist:
   Claude agents instead of one per relayed command.
 
 ## Change history
+- `2026-10-27` — #191: `book-steps.ps1` `Expand-Cards` expands the card plan's compact kind `both` to both shared instruction files and the job's own file, in that order; the card cycle's module `zt-digest-lib` v45 keeps one DeepSeek conversation per job, continues it in the fix rounds and deletes every kept conversation after the last round.
 - `2026-10-26` — `term-steps.ps1 -Step finish` binds a review-and-fix job's `ok` verdict when it was written after this round's review plan (`drive\reviews.json`), not only when it is newer than the draft: on the live box (acemoglu2025nobel row 15) the job touched the draft again after writing its answer and the row stayed `needs_review`. An answer from before the round is never carried over. Test: `term-steps.tests.ps1` (49).
 - `2026-10-26` — `tests/grow-steps.tests.ps1` checks that a `-ZtConfig` named with doubled separators reaches the tool with one per step (live run grow5).
 

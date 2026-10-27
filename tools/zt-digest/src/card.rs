@@ -45,6 +45,10 @@ const WHOLE_WORKSPACE: &[&str] = &["I5", "E4", "I6", "E5", "L3"];
 const FIX_PROMPT: &str = "按以上说明处理任务文件中的每张卡，写出 JSON 文件。最后只回复一行 JSON。";
 const ORPHAN_PROMPT: &str = "按以上说明为每张孤立卡片选出链接，写出 JSON 文件。最后只回复一行 JSON。";
 const FOLLOW_PROMPT: &str = "按以上问题修正这些卡片，写出 JSON 文件。最后只回复一行 JSON。";
+/// One group job holds the group's review, fix and fill Cards and its orphan-link candidates
+/// (#191): one prompt, one draft, and both instruction files as `prompt_files`.
+const BOTH_PROMPT: &str =
+    "按以上说明处理任务文件中的每张卡和每张孤立卡片：改写要修的卡、补写缺失的段落，并为孤立卡片选出链接，写进同一个 JSON 文件。最后只回复一行 JSON。";
 
 static RULE_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[,\s]+").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
@@ -61,6 +65,13 @@ static R_RULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^R\d+$").unwr
 static TERMS_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语表").unwrap());
 static OK_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) ok (.+)$").unwrap());
 static ERROR_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) error (.*)$").unwrap());
+
+/// One count of an apply run's outcome table.
+fn bump(counts: &mut [(&str, i64)], k: &str) {
+    if let Some(c) = counts.iter_mut().find(|(n, _)| *n == k) {
+        c.1 += 1;
+    }
+}
 
 struct Params {
     step: String,
@@ -520,7 +531,19 @@ impl Compiler {
 
     /// One review-and-fill job of one group (#187): every writable Card of the group with the text
     /// of its source lines, the group's uncovered units and C3 numbers, and both SELF-CHECK lines.
-    fn group_job(&mut self, audit: &AuditView, group: &coverage::Group, cards: &[Value], fills: &[Fill], c3: &[(String, Vec<String>)]) -> Result<Value> {
+    /// #191: the same job carries the group's orphan-link candidates, under the same prompt and
+    /// self-checks, so review, fix, fill and orphan Links are one DeepSeek conversation.
+    #[allow(clippy::too_many_arguments)]
+    fn group_job(
+        &mut self,
+        audit: &AuditView,
+        model: Option<&Relatedness>,
+        group: &coverage::Group,
+        cards: &[Value],
+        fills: &[Fill],
+        c3: &[(String, Vec<String>)],
+        orphans: &[Value],
+    ) -> Result<Value> {
         let seq = self.next_seq();
         let id = format!("fix-{seq:02}");
         let out = join_path(&self.out_dir, &format!("{id}.json"));
@@ -558,6 +581,12 @@ impl Compiler {
             let text = span_text(&self.p.staging, &span);
             sb.push_str(&format_card(card, &faults, &parent_title(&field(card, "parent")), "", &span, &text));
         }
+        // #191: the group's orphan Links, in the same task and the same draft.
+        let (block, candidates) = match model {
+            Some(model) => self.orphan_block(audit, model, orphans, "本组孤立卡片"),
+            None => (String::new(), Map::new()),
+        };
+        sb.push_str(&block);
         let file = join_path(&self.p.work, &format!("{id}.md"));
         util::write_text(&file, &sb)?;
         let addresses: Vec<String> = cards.iter().map(|c| field(c, "address")).collect();
@@ -565,11 +594,25 @@ impl Compiler {
             .iter()
             .map(|f| json!({"unit": f.unit(), "section": f.section, "start": f.start, "end": f.end, "text": f.text, "parent": f.parent}))
             .collect();
-        self.state["jobs"][&id] = json!({
+        let mut job = json!({
             "kind": "fix", "file": file, "out": out, "cards": addresses, "applied": false,
             "group": n, "fills": fill_json,
         });
-        Ok(json!({ "id": id, "files": [self.fix_doc(), file], "prompt": FIX_PROMPT }))
+        if !orphans.is_empty() {
+            job["orphans"] = json!(orphans.iter().map(|o| field(o, "address")).collect::<Vec<_>>());
+            job["candidates"] = Value::Object(candidates);
+        }
+        self.state["jobs"][&id] = job;
+        // Both instruction files, the shared ones first: DeepSeek caches that prefix (#191).
+        if orphans.is_empty() {
+            Ok(json!({ "id": id, "files": [self.fix_doc(), file], "prompt": FIX_PROMPT }))
+        } else {
+            Ok(json!({
+                "id": id, "files": [self.fix_doc(), self.orphan_doc(), file], "prompt": BOTH_PROMPT,
+                // The compact list reads the job's orphan half from this field (#191).
+                "orphans": orphans.iter().map(|o| field(o, "address")).collect::<Vec<_>>()
+            }))
+        }
     }
 
     // --- the audit -------------------------------------------------------------------------------
@@ -1412,20 +1455,70 @@ impl Compiler {
         flagged
     }
 
+    /// The Cards of an orphan job, or of the orphan half of a group job (#191).
+    fn orphan_cards(job: &Value) -> Vec<String> {
+        let listed: Vec<String> = ps_items(&job["orphans"]).iter().map(s).collect();
+        if listed.is_empty() { ps_items(&job["cards"]).iter().map(s).collect() } else { listed }
+    }
+
+    /// The orphan-link section of a job file, with each orphan's best candidates among the Idea
+    /// Cards, Event Cards, and anchors. A group job and an orphan job both use it (#191).
+    fn orphan_block(&self, audit: &AuditView, model: &Relatedness, orphans: &[Value], heading: &str) -> (String, Map<String, Value>) {
+        let mut sb = String::new();
+        let mut candidates = Map::new();
+        if orphans.is_empty() {
+            return (sb, candidates);
+        }
+        sb.push_str(&format!("## {heading}（{}）{NL}{NL}为每张卡片各写一条 `links`（选出候选卡片的一句话：句子里用 `[[地址|按规则写的链接文字]]` 链上它），或一条 `none`（写出没有合适候选的理由）。{NL}{NL}", orphans.len()));
+        for o in orphans {
+            let a = field(o, "address");
+            // An Event or Finding Card is linked from Idea Cards only (E4, F4).
+            let is_event = is_in(&field(o, "category"), &["event", "finding"]);
+            let linking: Vec<String> = audit
+                .cards
+                .iter()
+                .filter(|c| ps_items(&c["links"]).iter().any(|l| eq(&s(l), &a)))
+                .map(|c| field(c, "address"))
+                .collect();
+            let parent = field(o, "parent");
+            let cands = model.find(&a, 5, |id| {
+                let Some(card) = audit.card(id) else { return true };
+                let category = field(card, "category");
+                eq(id, &parent) || is_in(id, &linking) || !is_in(&category, WRITABLE) || (is_event && !eq(&category, "idea"))
+            });
+            candidates.insert(a.clone(), json!(cands));
+            sb.push_str(&format!("### `{a}`（{}）{NL}{NL}", field(o, "category")));
+            sb.push_str(&format!("#### {}{NL}{NL}````markdown{NL}{}{NL}````{NL}{NL}", field(o, "title"), trim_end(&field(o, "body"))));
+            sb.push_str(&format!("候选卡片：{NL}{NL}"));
+            for cand in &cands {
+                let card = audit.card(cand).cloned().unwrap_or(Value::Null);
+                let mut cb = SPACES.replace_all(&field(&card, "body"), " ").trim().to_string();
+                if cb.encode_utf16().count() > 160 {
+                    let mut cut = String::new();
+                    let mut units = 0;
+                    for ch in cb.chars() {
+                        units += ch.len_utf16();
+                        if units > 160 {
+                            break;
+                        }
+                        cut.push(ch);
+                    }
+                    cb = format!("{cut}…");
+                }
+                sb.push_str(&format!("- `{cand}` {}：{cb}{NL}", field(&card, "title")));
+            }
+            sb.push_str(NL);
+        }
+        (sb, candidates)
+    }
+
     /// `New-OrphanJobs`: one orphan job per 2 x -PerJob orphans, each orphan with its best
     /// candidates among the Idea Cards, Event Cards, and anchors.
-    fn orphan_jobs(&mut self, audit: &AuditView, orphans: &[Value]) -> Result<Vec<Value>> {
+    fn orphan_jobs(&mut self, audit: &AuditView, model: &Relatedness, orphans: &[Value]) -> Result<Vec<Value>> {
         let mut made = Vec::new();
         if orphans.is_empty() {
             return Ok(made);
         }
-        let docs: Vec<(String, String)> = audit
-            .cards
-            .iter()
-            .filter(|c| is_in(&field(c, "category"), &["idea", "event", "finding", "anchor"]))
-            .map(|c| (field(c, "address"), format!("{} {} {}", field(c, "title"), field(c, "title"), field(c, "body"))))
-            .collect();
-        let model = Relatedness::new(&docs, 80);
         let size = (2 * self.p.per_job).max(1) as usize;
         for chunk in orphans.chunks(size) {
             let seq = self.next_seq();
@@ -1433,46 +1526,8 @@ impl Compiler {
             let out = join_path(&self.out_dir, &format!("{id}.json"));
             let mut sb = format!("# 任务 {id}{NL}{NL}把结果写入 `{out}`。本任务共 {} 张孤立卡片。{NL}{NL}", chunk.len());
             self.add_self_check(&mut sb, &id)?;
-            let mut candidates = Map::new();
-            for o in chunk {
-                let a = field(o, "address");
-                // An Event or Finding Card is linked from Idea Cards only (E4, F4).
-                let is_event = is_in(&field(o, "category"), &["event", "finding"]);
-                let linking: Vec<String> = audit
-                    .cards
-                    .iter()
-                    .filter(|c| ps_items(&c["links"]).iter().any(|l| eq(&s(l), &a)))
-                    .map(|c| field(c, "address"))
-                    .collect();
-                let parent = field(o, "parent");
-                let cands = model.find(&a, 5, |id| {
-                    let Some(card) = audit.card(id) else { return true };
-                    let category = field(card, "category");
-                    eq(id, &parent) || is_in(id, &linking) || !is_in(&category, WRITABLE) || (is_event && !eq(&category, "idea"))
-                });
-                candidates.insert(a.clone(), json!(cands));
-                sb.push_str(&format!("## 孤立卡片 `{a}`（{}）{NL}{NL}", field(o, "category")));
-                sb.push_str(&format!("### {}{NL}{NL}````markdown{NL}{}{NL}````{NL}{NL}", field(o, "title"), trim_end(&field(o, "body"))));
-                sb.push_str(&format!("候选卡片：{NL}{NL}"));
-                for cand in &cands {
-                    let card = audit.card(cand).cloned().unwrap_or(Value::Null);
-                    let mut cb = SPACES.replace_all(&field(&card, "body"), " ").trim().to_string();
-                    if cb.encode_utf16().count() > 160 {
-                        let mut cut = String::new();
-                        let mut units = 0;
-                        for ch in cb.chars() {
-                            units += ch.len_utf16();
-                            if units > 160 {
-                                break;
-                            }
-                            cut.push(ch);
-                        }
-                        cb = format!("{cut}…");
-                    }
-                    sb.push_str(&format!("- `{cand}` {}：{cb}{NL}", field(&card, "title")));
-                }
-                sb.push_str(NL);
-            }
+            let (block, candidates) = self.orphan_block(audit, model, chunk, "孤立卡片");
+            sb.push_str(&block);
             let file = join_path(&self.p.work, &format!("{id}.md"));
             util::write_text(&file, &sb)?;
             let cards: Vec<String> = chunk.iter().map(|c| field(c, "address")).collect();
@@ -1490,6 +1545,9 @@ impl Compiler {
         for j in jobs {
             let kind = if truthy(&j["continue"]) {
                 "follow"
+            } else if !ps_items(&j["orphans"]).is_empty() {
+                // #191: one group job reviews, fixes, fills and links the group's orphans.
+                "both"
             } else if ps::starts_ci(&field(j, "id"), "orphans-") {
                 "orphans"
             } else {
@@ -1755,9 +1813,22 @@ impl Compiler {
             audit.card(a).map(|c| field(c, "title")).unwrap_or_default()
         };
         let mut jobs: Vec<Value> = Vec::new();
+        // #191: the candidates of every orphan this plan links are measured once, against the Cards the
+        // audit read, and used by the group jobs and the orphan-only jobs alike.
+        let orphan_model = (!orphans.is_empty()).then(|| {
+            let docs: Vec<(String, String)> = audit
+                .cards
+                .iter()
+                .filter(|c| is_in(&field(c, "category"), &["idea", "event", "finding", "anchor"]))
+                .map(|c| (field(c, "address"), format!("{} {} {}", field(c, "title"), field(c, "title"), field(c, "body"))))
+                .collect();
+            Relatedness::new(&docs, 80)
+        });
+        // The orphans a group job took: an orphan job is written only for an orphan no group job holds.
+        let mut absorbed: HashSet<String> = HashSet::new();
         if let (Some(groups), Some(cov)) = (&staging_groups, &group_coverage) {
             // One job per group: every Card of the group, its source lines, the group's uncovered
-            // units and C3 numbers, and the double SELF-CHECK (#187).
+            // units and C3 numbers, its orphan-link candidates and the double SELF-CHECK (#187, #191).
             let only: Option<HashSet<i64>> = if self.p.groups.is_empty() {
                 None
             } else {
@@ -1770,10 +1841,20 @@ impl Compiler {
                 let cards: Vec<Value> = targets.iter().filter(|c| group_of(&self.p.book, &field(c, "address")) == Some(group.n)).cloned().collect();
                 let fills = self.fills_of_group(&audit, cov, group);
                 let c3 = Self::c3_of_group(cov, &self.book_key(), group.n);
-                if cards.is_empty() && fills.is_empty() && c3.is_empty() {
+                let group_orphans: Vec<Value> = orphans
+                    .iter()
+                    .filter(|c| group_of(&self.p.book, &field(c, "address")) == Some(group.n))
+                    .cloned()
+                    .collect();
+                if cards.is_empty() && fills.is_empty() && c3.is_empty() && group_orphans.is_empty() {
                     continue;
                 }
-                jobs.push(self.group_job(&audit, group, &cards, &fills, &c3)?);
+                let model = orphan_model.as_ref();
+                let job = self.group_job(&audit, model, group, &cards, &fills, &c3, &group_orphans)?;
+                for o in &group_orphans {
+                    absorbed.insert(ci(&field(o, "address")));
+                }
+                jobs.push(job);
             }
         } else {
             let fix_cards: Vec<(Value, bool)> = with_faults
@@ -1828,7 +1909,12 @@ impl Compiler {
                 jobs.push(json!({ "id": id, "files": [self.fix_doc(), file], "prompt": FIX_PROMPT }));
             }
         }
-        jobs.extend(self.orphan_jobs(&audit, &orphans)?);
+        // An orphan no group job holds (a group outside -Groups, a Card a split made in a later round)
+        // still gets its own job.
+        let rest: Vec<Value> = orphans.iter().filter(|o| !absorbed.contains(&ci(&field(o, "address")))).cloned().collect();
+        if let Some(model) = &orphan_model {
+            jobs.extend(self.orphan_jobs(&audit, model, &rest)?);
+        }
         // The instruction files name the book.
         for doc in [self.fix_doc(), self.orphan_doc()] {
             let text = util::read_text(&doc)?.replace("{{KEY}}", &self.p.book);
@@ -1916,11 +2002,6 @@ impl Compiler {
             .iter()
             .map(|k| (*k, 0))
             .collect();
-        let bump = |counts: &mut Vec<(&str, i64)>, k: &str| {
-            if let Some(c) = counts.iter_mut().find(|(n, _)| *n == k) {
-                c.1 += 1;
-            }
-        };
         for id in &to_apply {
             let job = self.state["jobs"][id.as_str()].clone();
             let only: Option<HashSet<String>> =
@@ -2106,66 +2187,12 @@ impl Compiler {
                         bump(&mut counts, "skip");
                     }
                 }
+                // #191: a group job's second half: its orphan Links, in the same draft.
+                if !Self::orphan_cards(&job).is_empty() && job["candidates"].is_object() {
+                    self.apply_orphan_links(id, &job, &result, &current, &mut counts)?;
+                }
             } else {
-                let mut calls: Vec<Value> = Vec::new();
-                let mut what: Vec<(String, String)> = Vec::new();
-                for l in ps_array(&answer("links")) {
-                    let to = field(&l, "to");
-                    let from = field(&l, "from");
-                    let text = field(&l, "text").trim().to_string();
-                    if !is_in(&to, &job_cards) {
-                        continue;
-                    }
-                    let cands: Vec<String> = ps_array(&job["candidates"][&to]).iter().map(s).collect();
-                    let mut reason = None;
-                    if !is_in(&from, &cands) {
-                        reason = Some(format!("`{from}` is not a candidate"));
-                    } else if !text.contains(&format!("[[{to}]]")) {
-                        reason = Some("the text does not link the orphan".into());
-                    } else if !text::kinded(&text, &to) {
-                        reason = Some("no kind word before the Link".into());
-                    } else if SEMICOLON.is_match(&text) {
-                        reason = Some("a semicolon".into());
-                    } else {
-                        let raw: Vec<String> = text::LINK.captures_iter(&text).map(|c| c[1].to_string()).collect();
-                        let known = self.known()?;
-                        if raw.iter().any(|t| !known.contains(t) && !eq(t, &to)) {
-                            reason = Some("a Link to a Card that does not exist".into());
-                        }
-                    }
-                    if let Some(reason) = reason {
-                        self.state["refused"][&format!("{to}<-{from}")] = json!({ "job": id, "reason": reason });
-                        bump(&mut counts, "refused");
-                        continue;
-                    }
-                    // Already appended by a run that stopped part way: record it, do not append it twice.
-                    if let Some(card) = current.get(&ci(&from))
-                        && field(card, "body").contains(&text)
-                    {
-                        push(&mut self.state["orphan_links"], json!({ "to": to, "from": from }));
-                        bump(&mut counts, "orphan_links");
-                        continue;
-                    }
-                    calls.push(json!({ "tool": "append_card", "arguments": { "at": from, "text": text } }));
-                    what.push((to, from));
-                }
-                for n in ps_array(&answer("none")) {
-                    push(&mut self.state["orphan_none"], json!({ "orphan": field(&n, "orphan"), "note": field(&n, "note") }));
-                    bump(&mut counts, "orphan_none");
-                }
-                let done = self.invoke_writes(&calls)?;
-                for (k, (to, from)) in what.iter().enumerate() {
-                    match done.get(k).cloned().unwrap_or_else(|| Err("no result".into())) {
-                        Ok(_) => {
-                            push(&mut self.state["orphan_links"], json!({ "to": to, "from": from }));
-                            bump(&mut counts, "orphan_links");
-                        }
-                        Err(error) => {
-                            self.state["refused"][&format!("{to}<-{from}")] = json!({ "job": id, "reason": format!("zt: {error}") });
-                            bump(&mut counts, "refused");
-                        }
-                    }
-                }
+                self.apply_orphan_links(id, &job, &result, &current, &mut counts)?;
             }
             self.state["jobs"][id.as_str()]["applied"] = json!(true);
             // After every job: a run stopped part way loses at most the job it was writing.
@@ -2179,8 +2206,97 @@ impl Compiler {
         }))
     }
 
+    /// The orphan-link half of a job's draft (#191): a `links` entry appends one sentence to a
+    /// candidate Card, a `none` entry records why no candidate fits. A group job and an orphan job
+    /// both use it; the Cards it answers for are the job's `orphans`, else its `cards`.
+    fn apply_orphan_links(
+        &mut self,
+        id: &str,
+        job: &Value,
+        result: &Value,
+        current: &HashMap<String, Value>,
+        counts: &mut Vec<(&str, i64)>,
+    ) -> Result<()> {
+        let answer = |name: &str| if result.is_object() { result[name].clone() } else { Value::Null };
+        let job_cards = Self::orphan_cards(job);
+        let mut calls: Vec<Value> = Vec::new();
+        let mut what: Vec<(String, String)> = Vec::new();
+        for l in ps_array(&answer("links")) {
+            let to = field(&l, "to");
+            let from = field(&l, "from");
+            let text = field(&l, "text").trim().to_string();
+            if !is_in(&to, &job_cards) {
+                continue;
+            }
+            let cands: Vec<String> = ps_array(&job["candidates"][&to]).iter().map(s).collect();
+            let mut reason = None;
+            if !is_in(&from, &cands) {
+                reason = Some(format!("`{from}` is not a candidate"));
+            } else if !text.contains(&format!("[[{to}]]")) {
+                reason = Some("the text does not link the orphan".into());
+            } else if !text::kinded(&text, &to) {
+                reason = Some("no kind word before the Link".into());
+            } else if SEMICOLON.is_match(&text) {
+                reason = Some("a semicolon".into());
+            } else {
+                let raw: Vec<String> = text::LINK.captures_iter(&text).map(|c| c[1].to_string()).collect();
+                let known = self.known()?;
+                if raw.iter().any(|t| !known.contains(t) && !eq(t, &to)) {
+                    reason = Some("a Link to a Card that does not exist".into());
+                }
+            }
+            if let Some(reason) = reason {
+                self.state["refused"][&format!("{to}<-{from}")] = json!({ "job": id, "reason": reason });
+                bump(counts, "refused");
+                continue;
+            }
+            // Already appended by a run that stopped part way: record it, do not append it twice.
+            if let Some(card) = current.get(&ci(&from))
+                && field(card, "body").contains(&text)
+            {
+                push(&mut self.state["orphan_links"], json!({ "to": to, "from": from }));
+                bump(counts, "orphan_links");
+                continue;
+            }
+            calls.push(json!({ "tool": "append_card", "arguments": { "at": from, "text": text } }));
+            what.push((to, from));
+        }
+        for n in ps_array(&answer("none")) {
+            push(&mut self.state["orphan_none"], json!({ "orphan": field(&n, "orphan"), "note": field(&n, "note") }));
+            bump(counts, "orphan_none");
+        }
+        let done = self.invoke_writes(&calls)?;
+        for (k, (to, from)) in what.iter().enumerate() {
+            match done.get(k).cloned().unwrap_or_else(|| Err("no result".into())) {
+                Ok(_) => {
+                    push(&mut self.state["orphan_links"], json!({ "to": to, "from": from }));
+                    bump(counts, "orphan_links");
+                }
+                Err(error) => {
+                    self.state["refused"][&format!("{to}<-{from}")] = json!({ "job": id, "reason": format!("zt: {error}") });
+                    bump(counts, "refused");
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn split_recorded(&self, from: &str, job: &str) -> bool {
         ps_items(&self.state["splits"]).iter().any(|x| eq(&field(x, "from"), from) && eq(&field(x, "job"), job))
+    }
+
+    /// Whether one Card of an applied job belongs in its follow-up job: it still has a blocking fault,
+    /// or its rewrite was refused. #191: a Card this cycle cannot write stays refused and reported —
+    /// a follow-up job would only repeat the same `not writable` refusal, so it is never sent again.
+    /// A Card its job already wrote as `ok` or `merge` stays out too.
+    fn follows_up(left: &[(String, String)], refused: &Value, applied: &Value) -> bool {
+        if truthy(refused) && field(refused, "reason").ends_with("is not writable") {
+            return false;
+        }
+        if left.is_empty() && !truthy(refused) {
+            return false;
+        }
+        !(truthy(applied) && is_in(&field(applied, "verdict"), &["ok", "merge"]) && !truthy(refused))
     }
 
     // --- check -----------------------------------------------------------------------------------
@@ -2213,11 +2329,7 @@ impl Compiler {
             for a in addresses {
                 let left = self.hard_faults(&audit, &a);
                 let refused = self.state["refused"].get(&a).cloned().unwrap_or(Value::Null);
-                if left.is_empty() && !truthy(&refused) {
-                    continue;
-                }
-                let applied = &self.state["applied"][&a];
-                if truthy(applied) && is_in(&field(applied, "verdict"), &["ok", "merge"]) && !truthy(&refused) {
+                if !Self::follows_up(&left, &refused, &self.state["applied"][&a]) {
                     continue;
                 }
                 open.push((a, left, refused));
@@ -2232,9 +2344,13 @@ impl Compiler {
                 "# 任务 {fid}（第二轮）{NL}{NL}检查脚本核对了你写入的卡片。下面的卡片仍有问题，或你的改写被拒绝。只修正这些卡片，把结果写入 `{out}`（格式同前）。{NL}{NL}"
             );
             // The follow-up has its own id and file: its own self-check line, not the first job's.
-            // A group job's follow-up also carries the group's remaining fill targets (#187).
+            // A group job's follow-up also carries the group's remaining fill targets (#187) and the
+            // orphan Links still open in it (#191).
             let mut fills_line: Vec<Value> = Vec::new();
             let mut fill_block = String::new();
+            let mut follow_orphans: Vec<String> = Vec::new();
+            let mut follow_candidates = Map::new();
+            let mut orphan_block = String::new();
             let follow_group = job["group"].as_i64();
             if let Some(n) = follow_group {
                 if let (Some(cov), Some(g)) = (&group_coverage, groups.iter().find(|g| g.n == n)) {
@@ -2263,6 +2379,31 @@ impl Compiler {
                 self.add_self_check(&mut sb, &fid)?;
             }
             sb.push_str(&fill_block);
+            // #191: a group job's orphan Links that are still open, and whose writer has not answered
+            // `none` already, go back in the same conversation's follow-up.
+            if !ps_items(&job["orphans"]).is_empty() {
+                let answered: HashSet<String> = ps_items(&self.state["orphan_none"]).iter().map(|x| ci(&field(x, "orphan"))).collect();
+                let listed: HashSet<String> = ps_items(&job["orphans"]).iter().map(s).collect();
+                let still: Vec<Value> = open
+                    .iter()
+                    .filter(|(a, _, _)| listed.contains(a) && !answered.contains(&ci(a)) && Self::has_orphan_fault(&audit, a, &["I5", "E4", "F4"]))
+                    .filter_map(|(a, _, _)| audit.card(a).cloned())
+                    .collect();
+                if !still.is_empty() {
+                    let docs: Vec<(String, String)> = audit
+                        .cards
+                        .iter()
+                        .filter(|c| is_in(&field(c, "category"), &["idea", "event", "finding", "anchor"]))
+                        .map(|c| (field(c, "address"), format!("{} {} {}", field(c, "title"), field(c, "title"), field(c, "body"))))
+                        .collect();
+                    let model = Relatedness::new(&docs, 80);
+                    let (block, candidates) = self.orphan_block(&audit, &model, &still, "仍未链接的孤立卡片");
+                    orphan_block = block;
+                    follow_orphans = still.iter().map(|c| field(c, "address")).collect();
+                    follow_candidates = candidates;
+                }
+            }
+            sb.push_str(&orphan_block);
             for (a, left, refused) in &open {
                 let Some(card) = audit.card(a) else { continue };
                 self.state["plan"][a.as_str()] = json!({ "title": field(card, "title"), "body": field(card, "body"), "category": field(card, "category") });
@@ -2294,15 +2435,24 @@ impl Compiler {
                 follow["group"] = json!(n);
                 follow["fills"] = json!(fills_line);
             }
+            if !follow_orphans.is_empty() {
+                follow["orphans"] = json!(follow_orphans);
+                follow["candidates"] = Value::Object(follow_candidates);
+            }
             self.state["jobs"][&fid] = follow;
             for (a, _, _) in &open {
                 if let Some(m) = self.state["refused"].as_object_mut() {
                     m.shift_remove(a);
                 }
             }
+            let mut fallback = vec![join_path(&self.p.work, &leaf(&self.fix_doc()))];
+            if !follow_orphans.is_empty() {
+                fallback.push(join_path(&self.p.work, &leaf(&self.orphan_doc())));
+            }
+            fallback.push(file.clone());
             jobs.push(json!({
                 "id": fid, "continue": id, "files": [file],
-                "fallback": [join_path(&self.p.work, &leaf(&self.fix_doc())), file], "prompt": FOLLOW_PROMPT
+                "fallback": fallback, "prompt": FOLLOW_PROMPT
             }));
         }
         self.save_state()?;
@@ -2370,7 +2520,14 @@ impl Compiler {
                     self.state["before"][a.as_str()] = json!([]);
                 }
             }
-            jobs.extend(self.orphan_jobs(&audit, &orphans)?);
+            let docs: Vec<(String, String)> = audit
+                .cards
+                .iter()
+                .filter(|c| is_in(&field(c, "category"), &["idea", "event", "finding", "anchor"]))
+                .map(|c| (field(c, "address"), format!("{} {} {}", field(c, "title"), field(c, "title"), field(c, "body"))))
+                .collect();
+            let model = Relatedness::new(&docs, 80);
+            jobs.extend(self.orphan_jobs(&audit, &model, &orphans)?);
         }
         self.save_state()?;
         let mut out = json!({ "jobs": jobs, "faults": total, "orphans": audit.orphan_check["count"], "inbound_repair_cards": orphans.len() });
@@ -2669,7 +2826,7 @@ impl Compiler {
         let job = self.p.job.clone();
         let mut rules: Vec<String> = self.rule_list().into_iter().filter(|r| (R_RULE.is_match(r) && !eq(r, "R3")) || eq(r, "L1")).collect();
         rules.push("L2".into());
-        let job_cards: Vec<String> = ps_items(&the_job["cards"]).iter().map(s).collect();
+        let job_cards: Vec<String> = Self::orphan_cards(the_job);
         let book = field(&self.state, "book");
         let mut entries: Vec<Value> = Vec::new();
         let mut done: HashSet<String> = HashSet::new();
@@ -2766,6 +2923,10 @@ impl Compiler {
                 if let Some(result) = result {
                     if eq(&field(&the_job, "kind"), "fix") {
                         self.fix_draft(&the_job, &result, &mut add)?;
+                        // #191: a group job answers for its orphan Links in the same draft.
+                        if the_job["candidates"].is_object() && !Self::orphan_cards(&the_job).is_empty() {
+                            self.orphan_draft(&the_job, &result, &mut add)?;
+                        }
                     } else {
                         self.orphan_draft(&the_job, &result, &mut add)?;
                     }
@@ -3018,6 +3179,38 @@ mod tests {
         faults.insert(ci("K/6|g"), vec![("I6".into(), "(advisory) a title very similar to [[K/6|h]]".into())]);
         let audit = AuditView { faults, cards, by, orphan_check: json!({}), archive_revision: json!(1) };
         assert_eq!(super::model_part_duplicates(&audit), vec![("K/6|f".to_string(), "K/6|a|a|13".to_string())]);
+    }
+
+    #[test]
+    fn a_card_the_cycle_cannot_write_is_not_resent() {
+        // #191: the #189 pilot sent a Model-review job's Model Cards back in the fix round, and the
+        // round only repeated `category model is not writable`. Such a Card stays refused and is
+        // reported; a follow-up job is never written for it.
+        let model_refusal = json!({"job": "fix-03", "reason": "category model is not writable"});
+        let fault = vec![("R4".to_string(), "被动语态".to_string())];
+        assert!(!Compiler::follows_up(&fault, &model_refusal, &Value::Null));
+        // A refused rewrite the cycle can write is sent back with that refusal; a Card whose rewrite
+        // the checker still faults is sent back; a clean `ok` Card is not.
+        let zt_refusal = json!({"job": "fix-03", "reason": "zt: the Card changed since the plan"});
+        assert!(Compiler::follows_up(&fault, &zt_refusal, &Value::Null));
+        assert!(Compiler::follows_up(&fault, &Value::Null, &json!({"verdict": "fix"})));
+        assert!(!Compiler::follows_up(&[], &Value::Null, &json!({"verdict": "ok"})));
+        // A Card an `ok` or `merge` verdict recorded, but whose rewrite was refused, is still sent back.
+        assert!(Compiler::follows_up(&[], &zt_refusal, &json!({"verdict": "ok"})));
+    }
+
+    #[test]
+    fn a_group_job_answers_for_its_own_orphans() {
+        // #191: one group job carries the group's Cards and its orphan Links; the orphan half answers
+        // only for the listed orphans, never for every Card of the draft.
+        let both = json!({"kind": "fix", "cards": ["K/1|a", "K/1|b"], "orphans": ["K/1|b"], "candidates": {"K/1|b": ["K/1|a"]}});
+        assert_eq!(Compiler::orphan_cards(&both), vec!["K/1|b".to_string()]);
+        // An orphan-only job names its Cards as the orphans.
+        let orphans = json!({"kind": "orphans", "cards": ["K/1|c"]});
+        assert_eq!(Compiler::orphan_cards(&orphans), vec!["K/1|c".to_string()]);
+        // A plain fix job has no orphan half.
+        let fix = json!({"kind": "fix", "cards": ["K/1|a"]});
+        assert!(fix["candidates"].is_null());
     }
 
     #[test]
