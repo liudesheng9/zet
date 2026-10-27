@@ -329,6 +329,20 @@ fn file_lines(path: &str) -> Result<Vec<String>> {
     Ok(util::read_text(path)?.lines().map(str::to_string).collect())
 }
 
+/// The addresses of an `owned-gNN.txt` manifest that belong to the book's own Literature tree.
+/// A digest builds Literature trees only; a pre-5.0 manifest also names the Topic Cards that
+/// digest wrote, which zt-idea-grow now owns or removed (#190). An empty `book` keeps every line.
+fn owned_lines(path: &str, book: &str) -> Result<Vec<String>> {
+    Ok(file_lines(path)?
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|at| {
+            !at.is_empty()
+                && (book.is_empty() || at == book || at.strip_prefix(book).is_some_and(|rest| rest.starts_with('/')))
+        })
+        .collect())
+}
+
 /// The files of a folder matching `prefix*.txt`, in name order (Get-ChildItem -Filter).
 fn matching_files(dir: &str, prefix: &str) -> Vec<String> {
     let mut found: Vec<String> = std::fs::read_dir(dir)
@@ -635,12 +649,7 @@ impl Compiler {
             if !Path::new(&path).is_file() {
                 bail!("incomplete group input: missing owned manifest `{path}`");
             }
-            addresses.extend(
-                file_lines(&path)?
-                    .into_iter()
-                    .map(|line| line.trim().to_string())
-                    .filter(|line| !line.is_empty()),
-            );
+            addresses.extend(owned_lines(&path, &book)?);
         }
         Ok(addresses.into_iter().collect())
     }
@@ -700,12 +709,7 @@ impl Compiler {
                         bail!("owned manifest is not a file: {}", entry.path().display());
                     }
                     let path = entry.path().to_string_lossy().into_owned();
-                    declared.extend(
-                        file_lines(&path)?
-                            .into_iter()
-                            .map(|line| line.trim().to_string())
-                            .filter(|line| !line.is_empty()),
-                    );
+                    declared.extend(owned_lines(&path, &self.book_key())?);
                 }
             }
             let mut selected = declared.clone();
@@ -1420,11 +1424,8 @@ impl Compiler {
                 .parse()
                 .unwrap_or(0);
             let path = join_path(staging, &name);
-            for line in ps::read_lines(&path)? {
-                let at = line.trim();
-                if !at.is_empty() {
-                    groups.insert(ci(at), number);
-                }
+            for at in owned_lines(&path, &self.book_key())? {
+                groups.insert(ci(&at), number);
             }
         }
         Ok(groups)
@@ -1672,11 +1673,7 @@ impl Compiler {
                 set.insert(format!("{}/{n}", p.book));
                 let file = join_path(&p.staging, &format!("owned-g{n:02}.txt"));
                 if Path::new(&file).exists() {
-                    for a in file_lines(&file)? {
-                        if !a.trim().is_empty() {
-                            set.insert(a.trim().to_string());
-                        }
-                    }
+                    set.extend(owned_lines(&file, &p.book)?);
                 }
             }
             owned = Some(set);
@@ -3067,6 +3064,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_owned_manifest_names_only_the_books_own_cards() {
+        // #190 backfill: grossman2002integration's pre-5.0 owned-g01.txt names the Topic Cards that
+        // digest wrote (408/0); the card plan read them as required and refused an incomplete read.
+        let path = unique_temp("owned-g01");
+        util::write_text(&path, "Book2002/1\n408/0\n Book2002/1|a \n\nOther2001/2\nBook20021/1\n").unwrap();
+        assert_eq!(owned_lines(&path, "Book2002").unwrap(), vec!["Book2002/1", "Book2002/1|a"]);
+        assert_eq!(owned_lines(&path, "").unwrap().len(), 5, "no book named: every line stays");
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn the_card_cycle_writes_only_literature_notes_and_anchors() {
