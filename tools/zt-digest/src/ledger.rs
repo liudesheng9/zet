@@ -3588,6 +3588,21 @@ fn verify_coverage(
     }
     Ok(json!(checked))
 }
+/// One Card of the re-derived whole-book pass: the recorded Card view as the cycle checked it.
+/// The archive's own `links`, `kinds` and `term_use_targets` stay, so a Term link is read as
+/// the cycle read it; links re-parsed from the body would turn Term links into plain refers.
+fn pass_entry(card: &Value) -> Value {
+    let body = s(&card["body"]);
+    let mut entry = card.clone();
+    if entry["links"].is_null() {
+        entry["links"] = json!(crate::card::text::link_targets(&body));
+    }
+    if entry["kinds"].is_null() {
+        entry["kinds"] = json!(crate::card::text::link_kinds(&body));
+    }
+    entry
+}
+
 /// R217, R247, R296-R298: the checked coverage of one whole-book Card cycle revision.
 ///
 /// The cycle's report must describe the exact Cards it checked, and the deterministic pass is
@@ -3662,24 +3677,7 @@ fn verify_cards_book_coverage(
         let card = by_address
             .get(&ps::key(at))
             .with_context(|| format!("the checked pass names `{at}`, which its Card view does not hold"))?;
-        let body = s(&card["body"]);
-        let mut entry = json!({
-            "address": s(&card["address"]),
-            "title": card["title"],
-            "body": body,
-            "category": card["category"],
-            "book": card["book"],
-            "parent": card["parent"],
-            "links": crate::card::text::link_targets(&body),
-            "kinds": crate::card::text::link_kinds(&body),
-        });
-        if card["inbound"].is_array() {
-            entry["inbound"] = card["inbound"].clone();
-        }
-        if !card["inbound_kinded"].is_null() {
-            entry["inbound_kinded"] = card["inbound_kinded"].clone();
-        }
-        entries.push(entry);
+        entries.push(pass_entry(card));
     }
     let setting = term.as_ref().map(|card| s(&card["address"])).unwrap_or_default();
     let mut all = entries.clone();
@@ -17666,6 +17664,29 @@ mod tests {
         assert_eq!(resource_counts(&brief)["workspaces"][1], json!({"id":"W2","path":"D:/w2","recorded":1,"open":1,"bare":1}));
         assert_eq!(resource_brief_of(&brief, "D:/w1")["workspace"]["open"], json!(["b"]));
         assert_eq!(resource_brief_of(&brief, "D:/none")["workspace"]["open"], json!([]));
+    }
+
+    // The re-derived whole-book pass reads a Card exactly as the cycle's recorded view holds it:
+    // a Term link and the archive's stored kinds give the same fault lines both ways.
+    #[test]
+    fn pass_entry_checks_like_the_recorded_view() {
+        let card = json!({
+            "address":"b/1","title":"制度怎样决定繁荣","tree":"b","type":"idea","workspace":"agent",
+            "body":"作者认为[[制度@b/1|a|a]]决定繁荣，这一点依赖 [[b/2]]，并参照 [[b/3]]。\n\n来源：[[b]] §1",
+            "links":["b/1|a|a","b/2","b/3","b"],"kinds":["b/2"],"term_use_targets":["b/1|a|a"],
+            "category":"idea","book":"b","parent":"b","inbound":[],"inbound_kinded":0,
+        });
+        let lines = |cards: Vec<Value>| {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            serde_json::to_writer(&mut file, &Value::Array(cards)).unwrap();
+            std::io::Write::flush(&mut file).unwrap();
+            let check = crate::check::Check { json: file.path().to_string_lossy().into_owned(), ..Default::default() };
+            zt_check::check::run_lines(&check.args(), None).unwrap()
+        };
+        assert_eq!(lines(vec![pass_entry(&card)]), lines(vec![card.clone()]));
+        let mut bare = card.clone();
+        bare.as_object_mut().unwrap().retain(|k, _| k != "links" && k != "kinds");
+        assert!(pass_entry(&bare)["links"].as_array().is_some_and(|l| !l.is_empty()));
     }
 
     // relocate: the owned and source manifests follow a recorded move; other lines and files stay as they are.
