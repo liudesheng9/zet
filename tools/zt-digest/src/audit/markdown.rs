@@ -273,6 +273,32 @@ pub fn render(report: &Value, p: &Params) -> String {
         } else {
             line(&format!("- **Term generation**: not known ({}).", n(&g["reason"])));
         }
+        // #188: the run's Literature-note coverage, listed as findings that never fail the audit.
+        let cov = &b["coverage"];
+        if cov["status"] == "complete" {
+            line(&format!(
+                "- **Coverage** (Literature notes): {} units: {} covered, {} skipped, {} uncovered ({}%). Numbers a Card states that its source lines do not (C3, advisory): {}. A finding does not fail the audit.",
+                n(&cov["units"]),
+                n(&cov["covered"]),
+                n(&cov["skipped"]),
+                n(&cov["uncovered"]),
+                n(&cov["pct"]),
+                n(&cov["faults"]["c3"])
+            ));
+            let uncovered: Vec<String> = ps_items(&cov["uncovered_units"])
+                .iter()
+                .map(|u| format!("`{}:{}` {}", n(&u["section"]), n(&u["line"]), n(&u["text"])))
+                .collect();
+            if !uncovered.is_empty() {
+                line(&format!("  - Uncovered units: {}", cut(&uncovered, p.sample)));
+            }
+            let c3: Vec<String> = ps_items(&cov["c3"]).iter().map(|c| format!("`{}` {}", n(&c["address"]), n(&c["number"]))).collect();
+            if !c3.is_empty() {
+                line(&format!("  - C3 numbers: {}", cut(&c3, p.sample)));
+            }
+        } else if cov["status"] == "unavailable" {
+            line(&format!("- **Coverage** (Literature notes): unavailable ({}).", n(&cov["reason"])));
+        }
         line(&format!(
             "- **Orphans** (no inbound Link): {} ({}): {}",
             n(&b["orphans"]["count"]),

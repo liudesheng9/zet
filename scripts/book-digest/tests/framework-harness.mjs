@@ -775,6 +775,11 @@ function runtime(kind, opts = {}) {
       }
       return { ok: true, exit: 0, output: json({ ok: true, step }) }
     }
+    // #188: the report's one read-only coverage measurement. Its step line carries the counts only.
+    if (/^zt-digest coverage /.test(cmd)) {
+      const out = (cmd.match(/-Out "([^"]+)"/) || [])[1] || 'D:\\x\\Key'
+      return { ok: true, exit: 0, output: json({ ok: true, units: 12, covered: 10, skipped: 1, uncovered: 1, pct: 92, detail: out + '\\coverage.json' }) }
+    }
     // S17 / #140 (Tree Lock): the owner locks the run's destination mid-run. The refused command answers
     // the archive's own typed refusal (the shape lockcheck::refusal prints) and exits 2, once: a stage that
     // retried it, or re-pointed the write, would run a second command or show it in `lockedRetries`.
@@ -1372,6 +1377,7 @@ function runtime(kind, opts = {}) {
       }
       case 'bridge-report': return { ok: true, ...(run(`zt-digest bridge -Step report -Staging "${out}" -CitationKey ${o.CitationKey} -Work "${o.Work}"`) || {}) }
       case 'bridge-apply': return { ok: true, ...(run(`zt-digest bridge -Step apply -Staging "${out}" -CitationKey ${o.CitationKey} -Work "${o.Work}" -ReportId ${o.ReportId}${o.Accept ? ` -Accept '${o.Accept}'` : ''}${o.AcceptEarlier ? ` -AcceptEarlier '${o.AcceptEarlier}'` : ''} -Apply`) || {}) }
+      case 'coverage': { const c = run(`zt-digest coverage -Out "${out}" -Step`) || {}; return { ok: c.ok !== false, units: c.units, covered: c.covered, skipped: c.skipped, uncovered: c.uncovered, pct: c.pct } }
       case 'audit': return { ok: true, ...(run(`zt-digest audit${o.CitationKey ? ` -CitationKey ${o.CitationKey}` : ''} -Out "${out}"`) || {}) }
       case 'finalize-plan': { call(`zt-digest finalize -Step plan -Out "${out}"`); return { ok: true, ...finalizePlan(opts.finalize || 'fix') } }
       case 'finalize-changes': { call(`zt-digest finalize -Step changes -Out "${out}"`); return { ok: true, ...finalizeChanges(opts.finalizeRecovered !== true, opts) } }
@@ -2261,7 +2267,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 // The group cycle and the ready-work layers (R250-R258)
 // ================================================================================================================
 {
-  const { commands, calls, led, result, logs, report, managers, driveFiles, batchCalls, batchFinishes, depsBatches, layerCalls, layerManagers } = await run('econ', { ...base, figures: false })
+  const { commands, calls, led, result, logs, report, managers, driveFiles, batchCalls, batchFinishes, depsBatches, layerCalls, layerManagers, bookCalls } = await run('econ', { ...base, figures: false })
   const cmds = commands
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'full', 'full: the run reaches its report')
@@ -2304,6 +2310,11 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(result.schedule && result.schedule.settings.maxAttempts === 3 && result.schedule.settings.dshRunCap === 1200, 'report: the result carries the effective settings and the schedule summary')
   check(result.schedule && result.schedule.digest && result.schedule.digest.verified === 2 && result.schedule.cards && result.schedule.cards.verified === 2, 'report: the schedule summary counts the verified group chains and Card checks')
   check(report && report.stages.digest && report.stages.digest.status === 'done' && !report.stages.digest.error, 'group cycle: the digest stage ends done on a healthy run')
+  // #188: the report carries the run's Literature-note coverage, measured once through the coverage
+  // step after every writer settled, so a later mode cards run can fill the gaps it names.
+  check(result.coverage && result.coverage.units === 12 && result.coverage.covered === 10 && result.coverage.skipped === 1 && result.coverage.uncovered === 1 && result.coverage.pct === 92, `report: the run carries the Literature-note coverage (${JSON.stringify(result.coverage)})`)
+  const coverageAt = bookCalls.findIndex((c) => c.step === 'coverage')
+  check(coverageAt > bookCalls.findIndex((c) => c.step === 'cleanup-report') && /-Step coverage\b/.test(bookCalls[coverageAt].cmd) && /book-steps\.ps1/.test(bookCalls[coverageAt].cmd), `report: the coverage step is one book-steps.ps1 call after the settlement (${coverageAt})`)
   // #92: every claim covers the frozen provider-run cap, and a chain renews it while its job runs.
   check(digestClaims.length === 2 && digestClaims.every((c) => / -Lease 7200/.test(c)), `lease: each block claim requests a lease covering the run cap (${cmds.filter((c) => /-Lease 7200/.test(c)).length} claims)`)
   check(cmds.some((c) => /ledger next .* -Layer link .* -Lease 7200/.test(c)), 'lease: the Link units are claimed with the same covering lease')
@@ -2724,7 +2735,7 @@ for (const kind of ['econ', 'math']) {
   check(result && result.mode === 'full', `${kind} full: reaches the report`)
   check(at(/^prepare book$/) < at(/^math-skeleton: /) || kind === 'econ', `${kind} full: the math skeleton follows Prepare (math only)`)
   check(cmds.some((c) => /zt-digest audit -CitationKey Key -Out "D:\\x\\Key"/.test(c)), `${kind} full: the read-only audit runs`)
-  const work = labels.filter((l) => !/^cleanup/.test(l) && !/^report the run/.test(l) && !(kind === 'math' && /^math-check: /.test(l)))
+  const work = labels.filter((l) => !/^cleanup/.test(l) && !/^report the run/.test(l) && !/^report: coverage$/.test(l) && !(kind === 'math' && /^math-check: /.test(l)))
   check(work[work.length - 1] === 'finalize final', `${kind} full: the finalization's final audit is the last work before the settlement (${work.slice(-3).join(', ')})`)
   check(work.includes('finalize plan') && work.indexOf('finalize plan') === work.indexOf('audit cards') + 1, `${kind} full: the finalization starts from its audit plan right after the audit (${work.slice(-5).join(', ')})`)
   check(led.units.get('cards-book/book@1') && led.units.get('cards-book/book@1').state === 'done', `${kind} full: the whole-book card revision is complete`)
@@ -2766,6 +2777,7 @@ for (const kind of ['econ', 'math']) {
   check(result && result.mode === 'cards' && result.cards, 'econ cards: one whole-book cycle on an existing digest')
   const cardPlan = bookCalls.find((c) => c.step === 'cards-start' && (c.options || {}).Work === 'D:\\x\\Key\\cards')
   check(cardPlan && cardPlan.options.MaxCards === 5 && !cardPlan.options.NoOrphans && !/-NoOrphans/.test(cardPlan.cmd), 'econ cards: plans the whole book with orphans and the pilot cap')
+  check(result.coverage && result.coverage.units === 12 && result.coverage.pct === 92 && bookCalls.some((c) => c.step === 'coverage'), `econ cards: the result carries the coverage the report measured (${JSON.stringify(result.coverage)})`)
   check(!calls.some((c) => /^(group \d|prepare book|organize)/.test(c.label)), 'econ cards: runs no other stage')
   check(cardPlan && cardPlan.options.Sample === 0.1 && cardPlan.options.ModelReview === true, 'econ cards: the cycle covers the deterministic Idea sample and reviews the Model drafts no chain owns')
 }
@@ -2773,7 +2785,7 @@ for (const kind of ['econ', 'math']) {
   const { commands, calls, result, settleCalls: auditSettles } = await run('econ', { out: 'D:\\x\\audit', mode: 'audit' })
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'audit' && result.audit.status === 'done', 'econ audit: runs to its end without a citation key')
-  check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup|^report the run/.test(l)) && labels.includes('cleanup: settle the run') && labels.includes('report the run from the ledger'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
+  check(labels[0] === 'audit cards' && labels.slice(1).every((l) => /^cleanup|^report the run|^report: coverage$/.test(l)) && labels.includes('cleanup: settle the run') && labels.includes('report the run from the ledger'), `econ audit: the audit and its ledger-driven settlement, no source probe and no layer (${labels.join(', ')})`)
   check(!commands.some((c) => /deepseek_delete/.test(c)) && !auditSettles.flat().some((op) => op.op === 'delete'), `econ audit: a run with no recorded conversation deletes none and removes only the workspace its drive jobs used (${JSON.stringify(auditSettles)})`)
 }
 {
@@ -2897,7 +2909,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '44' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '20' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v44, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '44' && modules['zt-digest-prepare'] === '18' && modules['zt-digest-report'] === '21' && modules['zt-workflow-lib'] === '7' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '5', `lock: the frozen build carries zt-digest-lib v44, zt-digest-prepare v18, zt-digest-report v19, zt-term-link-lib v3, zt-term-link v4, zt-term-cards v5, zt-finalize v4 and the shared zt-workflow-lib v4 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3152,6 +3164,7 @@ for (const which of ['econ', 'math']) {
 
 console.log(`failed: ${failed}`)
 process.exit(failed ? 1 : 0)
+
 
 
 

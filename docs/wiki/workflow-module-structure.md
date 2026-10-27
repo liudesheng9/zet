@@ -119,6 +119,7 @@ One call runs one block of one book-level stage (#176). `zt-digest-lib`'s `bookS
 | `figures` | `figures -Report ... -Apply` | the figure pass's summary |
 | `bridge-start` / `bridge-report` / `bridge-apply` | the Bridge plan (its judge job file), the frozen report, and an apply | each step's tool line |
 | `audit` | the read-only audit of the book or the Workspace | the audit summary |
+| `coverage` | the Literature-note coverage measurement (`coverage -Step`), one read-only command (#188) | `{ok, units, covered, skipped, uncovered, pct}` |
 | `finalize-plan` / `-changes` / `-scope` / `-refresh` / `-final` | the finite finalization's steps | each step's tool line |
 | `term-link` | the finalization's Term-link round: plan, claim, apply under the token, complete, plan again | `{ok, status, unit, plan, counts, no_op, completion, second}` |
 | `cleanup-start` / `cleanup-apply` / `cleanup-report` | the settlement plan and its two paths, the provider results (or `cleanup-finish -Ready` when they are unusable), and the verified run report | the plan line with its paths, `{ok, fallback, provider, ready}`, and the run report |

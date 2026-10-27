@@ -148,6 +148,7 @@ switch -Regex ($cmd) {
         Out @{ ok = $true; step = 'apply'; status = 'done'; report_id = 'r-1'; applied = 1; publication = @{ state = 'done' } }
     }
     '^audit ' { Out @{ hubs_missing = 0; broken_links = 0; books = @(@{ key = 'Key'; cards = 9; style_faults = 0; orphans = 0; models = 0; not_self_sufficient = 0; figures_missing = 0 }) } }
+    '^coverage ' { Out @{ ok = $true; units = 200; covered = 159; skipped = 0; uncovered = 41; pct = 80; detail = (Join-Path $env:BS_OUT 'coverage.json') } }
     '^term-link ' {
         if ($flat -match '-Step plan') {
             $n = 0
@@ -339,6 +340,10 @@ $audit = Step 'audit' @{ CitationKey = 'Key' }
 Assert ($audit.json -and $audit.json.ok -eq $true -and @($audit.json.books).Count -eq 1 -and (Has $audit.calls 'audit -CitationKey Key -Out ')) "audit: the read-only summary is the step's answer ($($audit.text))"
 $wsAudit = Step 'audit' @{}
 Assert ($wsAudit.json -and $wsAudit.json.ok -eq $true -and (Has $wsAudit.calls 'audit -Out ') -and $wsAudit.calls -notmatch '-CitationKey') 'audit: a Workspace audit names no Citation key'
+# #188: the report's coverage measurement is one read-only step and answers its counts only.
+$coverage = Step 'coverage'
+Assert ($coverage.json -and $coverage.json.ok -eq $true -and $coverage.json.units -eq 200 -and $coverage.json.covered -eq 159 -and [int]$coverage.json.skipped -eq 0 -and $coverage.json.uncovered -eq 41 -and $coverage.json.pct -eq 80) "coverage: the step line carries the run's unit counts ($($coverage.text))"
+Assert ((Has $coverage.calls 'coverage -Out .* -Step')) 'coverage: the step runs the one read-only measurement command'
 
 # 15. the finite finalization: each step is the tool's own command and line.
 $fPlan = Step 'finalize-plan'

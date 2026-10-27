@@ -527,6 +527,13 @@
       "answer": {
         "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
       }
+    },
+    {
+      "label": "^report: coverage$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"units\":200,\"covered\":159,\"skipped\":0,\"uncovered\":41,\"pct\":80,\"detail\":\"D:\\\\\\\\x\\\\\\\\Key\\\\\\\\coverage.json\"}"
+      }
     }
   ]
 }

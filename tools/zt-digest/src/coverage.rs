@@ -430,6 +430,66 @@ pub fn report(input: &Input) -> Coverage {
     out
 }
 
+/// The audit's coverage finding (#188): one prepared run's counts, its uncovered units and its C3
+/// numbers, ready to be listed in `audit.json` and `audit.md`. `null` when the folder is no
+/// prepared staging folder; `{status:"unavailable", reason}` when it is one but cannot be read.
+///
+/// The audit writes its own `audit-cards.json` first, so the numbers are checked against the
+/// Cards this audit just read. An uncovered unit and a number that no source line states are
+/// findings, not faults: no count here fails the audit or the run.
+pub fn audit_findings(staging: &Path) -> Value {
+    if !staging.join("manifest.json").is_file() {
+        return Value::Null;
+    }
+    let run = match read_run(staging, None) {
+        Ok(run) => run,
+        Err(error) => {
+            let reason: String = format!("{error:#}").chars().take(400).collect();
+            return json!({"status": "unavailable", "reason": reason});
+        }
+    };
+    let coverage = report(&run.input);
+    let line = |start: usize, end: usize| if end > start { format!("{start}-{end}") } else { start.to_string() };
+    let mut uncovered = Vec::new();
+    for section in &coverage.sections {
+        for unit in &section.detail {
+            if unit.covered_by.is_empty() && unit.skip.is_none() {
+                uncovered.push(json!({
+                    "section": section.file,
+                    "line": line(unit.start, unit.end),
+                    "text": clip(&unit.text, 60),
+                }));
+            }
+        }
+    }
+    let c3: Vec<Value> = coverage
+        .cards
+        .iter()
+        .flat_map(|card| {
+            card.missing
+                .iter()
+                .map(move |number| json!({"address": card.address, "number": number}))
+        })
+        .collect();
+    json!({
+        "status": "complete",
+        "book": run.book,
+        "units": coverage.units,
+        "covered": coverage.covered,
+        "skipped": coverage.skipped,
+        "uncovered": coverage.uncovered,
+        "pct": coverage.pct(),
+        "faults": {
+            "c1": coverage.faults_c1, "c2": coverage.faults_c2,
+            "c3": coverage.faults_c3, "c4": coverage.faults_c4,
+            "counted": coverage.counted(),
+        },
+        "uncovered_units": uncovered,
+        "c3": c3,
+        "card_source": {"path": run.snapshot_path, "cards": run.snapshot_cards},
+    })
+}
+
 /// Whether a span covers a unit: a line range covers each unit it overlaps.
 fn overlaps(span: &Span, unit: &Unit) -> bool {
     match (span.start, span.end) {
@@ -1287,6 +1347,52 @@ mod tests {
         input.skips = vec![skip("s01.md", 5, 6, "版式", "")];
         let coverage = report(&input);
         assert_eq!((coverage.covered, coverage.skipped, coverage.uncovered), (2, 1, 7));
+    }
+
+    #[test]
+    fn the_audit_finding_lists_uncovered_units_and_c3_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sections")).unwrap();
+        let manifest = json!({"citation_key": "K", "groups": [{"n": 1, "id": "g01", "anchor": "K/1", "sections": ["s01.md"]}]});
+        std::fs::write(root.join("manifest.json"), manifest.to_string()).unwrap();
+        let text = [
+            "第一段的正文，长度超过二十个字，这里没有数字。",
+            "",
+            "第二段的正文，长度超过二十个字，也没有数字。",
+            "",
+            "第三段的正文，长度超过二十个字，是一个段落单元。",
+            "",
+        ]
+        .join("\n");
+        std::fs::write(root.join("sections/s01.md"), text).unwrap();
+        std::fs::write(root.join("src-g01.txt"), "K/1|a\tsections/s01.md:1\n").unwrap();
+        std::fs::write(
+            root.join("audit-cards.json"),
+            json!([{"address": "K/1|a", "category": "idea", "body": "作者给出 63 倍的结果。"}]).to_string(),
+        )
+        .unwrap();
+        let findings = audit_findings(root);
+        assert_eq!(findings["status"], json!("complete"));
+        assert_eq!(findings["book"], json!("K"));
+        assert_eq!(findings["units"], json!(3));
+        assert_eq!((findings["covered"].as_u64(), findings["uncovered"].as_u64()), (Some(1), Some(2)));
+        assert_eq!(findings["pct"], json!(33));
+        let uncovered = findings["uncovered_units"].as_array().unwrap();
+        assert_eq!(uncovered.len(), 2);
+        assert_eq!(uncovered[0]["section"], json!("s01.md"));
+        assert_eq!(uncovered[0]["line"], json!("3"));
+        assert!(uncovered[0]["text"].as_str().unwrap().contains("第二段"));
+        assert_eq!(findings["c3"], json!([{"address": "K/1|a", "number": "63"}]));
+        assert_eq!(findings["card_source"]["cards"], json!(1));
+        // Not a prepared run: no coverage finding at all, not a zero.
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(audit_findings(plain.path()), Value::Null);
+        // A prepared run whose section cannot be read names why, never a successful count.
+        std::fs::remove_file(root.join("sections/s01.md")).unwrap();
+        let unavailable = audit_findings(root);
+        assert_eq!(unavailable["status"], json!("unavailable"));
+        assert!(unavailable["reason"].as_str().unwrap().contains("s01.md"));
     }
 
     #[test]

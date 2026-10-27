@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v20 ====
+// ==== module zt-digest-report v21 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -30,8 +30,11 @@
 // 20 (#180): the stage outputs it assembles carry counts only (a step line is at most 400 characters and a module
 // reads no unit list), so `digest`, `link`, `link_blocked` and the Term summaries report totals and how many groups
 // were verified, skipped or blocked; the per-unit facts stay in the ledger's run report (`run_report`).
+// 21 (#188): every mode's result carries `coverage` (units, covered, skipped, uncovered, pct), measured by the one
+// read-only `coverage` step (zt-digest coverage -Step) after the run's writers settled, so an operator sees how
+// much of the source the Literature notes cover and a later mode cards run can fill the gaps it names.
 defineModule({
-  id: 'zt-digest-report', version: '20', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '21', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -129,14 +132,36 @@ defineModule({
       if (finalize && finalize.final && finalize.final.terms) summary.audit_terms = finalize.final.terms
       return summary
     }
-    if (MODE === 'bridge') return { mode: MODE, citation_key: KEY, bridge: or(p.bridge, { status: 'failed', error: 'Bridge stage produced no summary' }) }
-    if (MODE === 'cards') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, cards: or(p.cardsBook, null), schedule, run_report: runReport }
+    // #188: the run's Literature-note coverage, one read-only measurement step. Its one drive job settles
+    // itself; a failed measurement is reported as no coverage with its reason, never as a failed stage: the
+    // audit lists the gaps as findings, and a later `mode cards` run fills them.
+    let coverage = null, coverageError = null
+    try {
+      const measured = await Z.bookStep('report: coverage', 'coverage')
+      if (measured && measured.ok === true && measured.units !== undefined) {
+        const count = (v) => Number(v || 0)
+        coverage = {
+          units: count(measured.units), covered: count(measured.covered), skipped: count(measured.skipped),
+          uncovered: count(measured.uncovered), pct: count(measured.pct),
+        }
+        log(`Coverage: ${coverage.covered} of ${coverage.units} unit(s) covered, ${coverage.skipped} skipped, ${coverage.uncovered} uncovered (${coverage.pct}%).`)
+      } else {
+        coverageError = String((measured && measured.error) || 'the coverage step printed no line')
+        log(`Coverage: not measured: ${coverageError}`)
+      }
+    } catch (error) {
+      coverageError = String((error && error.message) || error)
+      log(`Coverage: not measured: ${coverageError}`)
+    }
+    const coverageField = coverage ? { coverage } : { coverage: null, coverage_error: coverageError }
+    if (MODE === 'bridge') return { mode: MODE, citation_key: KEY, bridge: or(p.bridge, { status: 'failed', error: 'Bridge stage produced no summary' }), ...coverageField }
+    if (MODE === 'cards') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, cards: or(p.cardsBook, null), schedule, run_report: runReport, ...coverageField }
     // One whole-book card cycle (R296): book is that cycle's report, link the link check's, groups the per-group checks.
     const cardsReport = { book: or(p.cardsBook, null), link: or(p.linkCheck, null), groups: layerSummary(p.cards) }
-    if (MODE === 'explain') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, explain: or(p.explain, null), schedule, run_report: runReport }
-    if (MODE === 'figures') return { mode: MODE, citation_key: KEY, figures: or(p.figures, null), run_report: runReport }
-    if (MODE === 'audit') return { mode: MODE, citation_key: KEY || null, audit: or(p.audit, null), run_report: runReport }
-    if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, models: (p.models && p.models.models) || [], model_cleanup: (p.models && p.models.model_cleanup) || null, schedule, run_report: runReport }
+    if (MODE === 'explain') return { mode: MODE, dsh_model: dshModel, citation_key: KEY, explain: or(p.explain, null), schedule, run_report: runReport, ...coverageField }
+    if (MODE === 'figures') return { mode: MODE, citation_key: KEY, figures: or(p.figures, null), run_report: runReport, ...coverageField }
+    if (MODE === 'audit') return { mode: MODE, citation_key: KEY || null, audit: or(p.audit, null), run_report: runReport, ...coverageField }
+    if (MODE === 'models' && !A.organize) return { mode: MODE, dsh_model: dshModel, book: A.bookTitle, citation_key: KEY, models: (p.models && p.models.models) || [], model_cleanup: (p.models && p.models.model_cleanup) || null, schedule, run_report: runReport, ...coverageField }
     // S25 (#168): one selected book's Term backfill. The result carries the pre-dispatch validation it ran
     // (Workspace, list, occupancy, source/sections fingerprints, Lock and conflicts), each Term stage's own
     // truthful result and the read-only audit; it is never a fresh digest's report.
@@ -155,6 +180,7 @@ defineModule({
         audit: or(p.audit, null),
         schedule,
         run_report: runReport,
+        ...coverageField,
       }
     }
     if (!['full', 'link', 'models', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule }
@@ -186,11 +212,13 @@ defineModule({
       organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), audit: or(p.audit, null), finalize: or(p.finalize, null),
       schedule,
       next,
+      ...coverageField,
       ...extra,
     }
   },
 })
 // ==== end module zt-digest-report ====
+
 
 
 

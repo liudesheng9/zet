@@ -24,6 +24,7 @@
   bridge-report     freeze the Bridge report
   bridge-apply      apply a Bridge report's proposals
   audit             the read-only audit of the book
+  coverage          the Literature-note coverage measurement (coverage -Step) -> its counts
   finalize-plan     the audit plan (at most one correction cycle)
   finalize-changes  the retained changed-Card manifest
   finalize-scope    record the one cycle's changed Cards
@@ -48,7 +49,7 @@ param(
         'unit-fail', 'cards-book-start', 'cards-book-finish',
         'organize-survey', 'organize-apply', 'skeleton-start', 'skeleton-finish',
         'figures', 'bridge-start', 'bridge-report', 'bridge-apply',
-        'audit', 'finalize-plan', 'finalize-changes', 'finalize-scope', 'finalize-refresh', 'finalize-final',
+        'audit', 'coverage', 'finalize-plan', 'finalize-changes', 'finalize-scope', 'finalize-refresh', 'finalize-final',
         'term-link', 'cleanup-start', 'cleanup-apply', 'cleanup-report')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
     [string]$Json = '{}',
@@ -534,6 +535,17 @@ switch ($Step) {
         if ($refusal) { Reply $refusal.line $refusal.raw; break }
         $a = $r.json
         Reply @{ ok = ($a.ok -ne $false); status = "$($a.status)"; applied = [int]$a.applied; refused = (Count-Of $a.refused); unit = "$($a.publication.unit)"; state = "$($a.publication.state)" } $a
+    }
+    'coverage' {
+        # #188: the run's own Literature-note coverage, one read-only measurement. Its only write is
+        # <staging>\coverage.json; a file-only span or an uncovered unit is a finding, not a step failure.
+        $r = Run @('coverage', '-Out', $Out, '-Step')
+        if (-not $r.json) { Fail 'coverage' "the coverage measurement printed no line: $($r.tail)"; break }
+        $c = $r.json
+        Reply @{
+            ok = ($c.ok -ne $false); units = [int]$c.units; covered = [int]$c.covered
+            skipped = [int]$c.skipped; uncovered = [int]$c.uncovered; pct = [int]$c.pct
+        } $c
     }
     'audit' {
         $argv = @('audit')

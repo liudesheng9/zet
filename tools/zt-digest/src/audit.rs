@@ -554,6 +554,10 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
     let addresses: String = cards.iter().map(|c| format!("{}{}", field(c, "address"), ps::NL)).collect();
     util::write_text(ps::join_path(&out_dir, "audit-addresses.txt"), &addresses)?;
     util::write_text(ps::join_path(&out_dir, "audit-cards.json"), &ps::json_pretty(&Value::Array(rest.clone())))?;
+    // #188: the Literature-note coverage of this run, read after the snapshot above so the C3 numbers
+    // are checked against the Cards this audit just read. An uncovered unit and a number no source
+    // line states are findings, not faults: no count here fails the audit or the run.
+    let coverage = crate::coverage::audit_findings(std::path::Path::new(&out_dir));
     // One call per book, with the book's term table (R6) when it has one.
     for (name, group) in group_by(&rest, |e| field(e, "book")) {
         let setting = if !name.is_empty() { term_card.get(&ci(&name)).cloned().unwrap_or_default() } else { String::new() };
@@ -852,6 +856,8 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
                 "list": named
             },
             "terms": book_terms,
+            // #188: the run's Literature-note coverage belongs to the book its staging folder names.
+            "coverage": if coverage["status"] == json!("complete") && eq(&ps::s(&coverage["book"]), key) { coverage.clone() } else { Value::Null },
             "broken_links": broken_from.iter().filter(|a| mine_set.contains_key(&ci(a))).count()
         }));
     }
@@ -895,6 +901,7 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         "limits": limits,
         "seconds": seconds,
         "workspace": workspace,
+        "coverage": coverage,
         "books": book_reports,
         // The running service's own check contract (R0441): rule version, effective policy,
         // limits, stage and syntax capabilities. An audit answers under these facts, so a reader
@@ -927,6 +934,18 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         // S26 (#169): the Term quality of the whole scope and of each book, beside the audit's own
         // completion. `terms.status` is the quality; `complete` above only says the read finished.
         "terms": w["terms"],
+        // #188: the prepared run's Literature-note coverage, as findings that never fail the audit.
+        "coverage": {
+            "status": report["coverage"]["status"],
+            "book": report["coverage"]["book"],
+            "units": report["coverage"]["units"],
+            "covered": report["coverage"]["covered"],
+            "skipped": report["coverage"]["skipped"],
+            "uncovered": report["coverage"]["uncovered"],
+            "pct": report["coverage"]["pct"],
+            "c3": ps_count(&report["coverage"]["c3"]),
+            "uncovered_units": ps_count(&report["coverage"]["uncovered_units"]),
+        },
         "gate": {
             "stage": report["gate"]["stage"], "rule_version": report["gate"]["rule_version"],
             "policy_hash": report["gate"]["policy_hash"],
