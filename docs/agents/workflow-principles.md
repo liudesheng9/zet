@@ -12,6 +12,19 @@ What the 2026-10-26 migration to the Haiku-manager + DeepSeek module structure t
 - Fix workflow bugs you meet during a run without asking: stop the run, fix test-first, update the wiki, reinstall, resume. Watch the journal and the ledger; a failed stage, repeated empty claims or a long-claimed unit is abnormal.
 - A trial that works is not reworked: updates found in it wait for the next trial; a broken trial is fixed and resumed at its break.
 
+## Principles added 2026-10-27 (Literature notes, #183–#192)
+
+From the Literature-note pilot (#189), the one-conversation card cycle (#191) and the live backfill and relink (#190; final versions base 5.8.5, econ 6.8.5, math 5.8.5, zt-digest 0.33.6).
+
+- One DeepSeek conversation does a whole job: review, fix, fill and its own check (the output check tool). A later round continues the same conversation with `deepseek_prompt`, and the cycle deletes every kept conversation after its last round. Why: it saves tokens and time and keeps quality, because the job's SELF-CHECK gates it (user, 2026-10-27).
+- Run on the live archive only when the user names it ("only on the current main running service"), one book at a time, and back it up first with `VACUUM INTO` and an integrity check. Every other trial runs on a copied box.
+- A gap that a deterministic pass can close is closed by that pass alone (for example `zt-digest term-link -Step plan|apply`). Do not rerun the workflow and do not start an agent. Plan first, read-only, and apply only after the counts make sense.
+- Every mode that writes a Card runs the Term-link pass after its writers. `framework-harness.mjs` guards it for both variants. A new writer stage or mode must join that guard.
+- A pass is done when a second plan changes nothing. Check it after every apply. When the second plan still changes a Card, that is a bug in the pass, not noise.
+- A typed refusal such as `card_locked` is the owner's decision. Stop, write nothing, report it, and give the exact command to run after the owner acts. Never unlock a tree or work around a Lock.
+- After a job, remove its test boxes, copies, scratch files and test services. Use the Recycle Bin. Before deleting a folder, check whether it holds a book's hash-pinned source: `D:\zt-digest\grossman2002integration-test` is Grossman's source, not test data. Delete backups only when the user asks.
+- A finished book is never rerun. A legacy book is adopted on a copy of its staging folder (`ledger adopt`), and only the needed mode runs.
+
 ## Module structure in one paragraph
 
 Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 managers alive at once) plus DeepSeek subagents. Content jobs write Cards, Links, Term drafts, reviews and fixes and run their own self-check. Deterministic chains are one script step (`term-steps`, `layer-steps`, `book-steps`, `model-steps`, `math-steps`, `grow-steps`) run by a DeepSeek drive job through `ztDrive`. No relay agents. A step answers with one compact JSON line of ≤400 characters. The DSMP block is inlined in every install, in project and global scope. Conversations are deleted, never archived.
@@ -35,6 +48,15 @@ Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 
 | Cwd that does not exist yet | Drive jobs failed because the stage folder was not created | Drive cwd is the run out folder. |
 | `resume` lacks args | Resume has no `args.citationKey`, so the key was undefined downstream | Read the key from the run, not from args (#181). |
 | Copies in the box | The register stayed `planned` with 156 `ambiguous` faults | Five copies of one paper in a pilot box cause it; not a bug. |
+| A mode without the pass after it | Mode `cards` rewrote 421 Literature notes and ran no Term-link pass, so a term's first use carried no link. Seven more modes had the same gap. | A stage that changes Cards must be followed by every pass that derives from Card text. The harness checks mode membership, the stage's `when` and the upstream order (base 5.8.4–5.8.5). |
+| A done unit that skips later changes | `term-steps.ps1 -Step link` answered `skipped` when `termlink/book@1` was already done, even though Cards changed after it | An idempotent pass reruns without a claim (`relinked`); the done unit stays done. |
+| Address characters read as syntax | The table check counted every `\|` on a line, and Term addresses hold `\|` (`[[免税@K/1\|a\|al]]`), so each line with one Term link was a "table" and no other term on it was linked (1,140 links missing) | Parse `[[…]]` before any line-level heuristic (zt-digest 0.33.5). Look for whole skip classes with unexpected counts (3,936 `table` skips on prose). |
+| Legacy shapes in old runs | Adoption and the card plan read `owned-gNN.txt` logs that named Topic Cards now owned by zt-idea-grow, and refused a correct book | Old artifacts only count inside the book's own Literature tree (`owned_lines`, `lost_in_book`, 0.33.2–0.33.3). |
+| Checks that re-derive instead of read | `book-cards-finish` re-parsed links from bodies and kept rules the cycle never records, so it refused a clean cycle | A finish check reads the recorded view and keeps only the rules the cycle owns (0.32.2–0.32.3). |
+| Writers beyond their scope | The card cycle rewrote Event and Finding Cards as prose, and a Finding lost its labelled fields | A cycle declares the Card types it may write (`WRITABLE = idea, anchor`). Check the per-type diff of the tree after a pilot. |
+| A prompt's first line overrides its rules | The managers' lead line said "record each conversation and delete it", so kept conversations were deleted at collection | The first line of a manager prompt must agree with every later rule. Test the rendered prompt, not only the rule (lib v46). |
+| Faithful to what? | Rewritten legacy notes kept cross-card claims (`依赖 [[…]]：…`) that their own source lines did not support | Every sentence rests on the note's own source lines. A Link without support stays as a neutral `另见 [[…]]`. |
+| Contract between majors | A 5.7 staging folder cannot be driven by 5.8 | Copy it, strip `run_contract` and the ledger, repoint the manifest paths, then adopt it again. |
 
 ## Release discipline
 
@@ -46,11 +68,15 @@ Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 
 - Rust changes need `cargo` on `D:` and deploy. On Windows a running `zt.exe` or `zt-digest.exe` is locked: rename it first, then copy the new one.
 - Never rebuild zt-digest under a run you still mean to resume.
 - Run commands that take over 2 minutes in the background.
+- A change to a mode or a stage's `when` is a blueprint bump: raise the patch version of base, econ and math together, rebuild zt-digest (it embeds them), and install both workflows in both scopes. Dry-run the changed modes with `assemble.mjs simulate --mode <m>` and read the stage order.
+- A bug fix comes with a test that fails before the fix and reproduces the live case. When a small fixture passes, rebuild the real input (the book's vocabulary or the Card's old body from the backup) until the test fails.
 
 ## Known limitations still open
 
 - The last Term rerun on staging8 (zt-digest 0.29.16, `kept_earlier`) was never rerun live; the fix has tests only.
 - Model parts can still fail on content (closure, unanchored); expect 5–6 of 7 models on a small book.
 - Term-card pass rate is content-bound: 38/38 jobs ready after review-and-fix v8, but publication was untested live.
-- The pilot box `D:\zt-pilot-172` was removed except `grow5b` and `staging6`, held open by the DeepSeek Desktop; recycle them after a Desktop restart.
+- `D:\zt-digest\grossman2002integration-terms` (a Term-backfill copy) is held open by another program; recycle it once that program closes. The other pilot boxes and backups were recycled on 2026-10-27.
+- The 10-note faithfulness read of the Literature notes was not repeated on the live books after the 另见 prompt fix.
+- `tests/term_pilot.rs` fails because the installed `zt-check` lacks `--report`; reinstall zt-check from the repo.
 - The math digest has been built and harnessed but never run live (no math material).
