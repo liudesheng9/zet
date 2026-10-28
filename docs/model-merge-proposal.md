@@ -158,3 +158,21 @@ The owner decided (2026-10-28): §5 and §6 are segments of the one model, and t
 Two rules of zt decide this order. A Card that is a Model Card of parts cannot be retyped (`model::ensure_allowed`), and a Model Card's body Link to any Model part counts as a part. So a rests-on line added before step 5, or a Link to a lead that was retyped earlier, refuses the retype.
 
 **Left as it is.** The lead parts keep the full text of the former Model Cards, so the checker gives R13 advisories (13 to 45 sentences against 12) and some R2 advisories. Splitting the leads is a separate Card-quality task. The Becker staging folder `D:\zt-digest\becker2025division` names the old addresses. Its ledger and model batches describe the old 11 models, so a later digest mode on that book has to adopt a fresh copy.
+
+### 9.1 The readable structure (2026-10-28)
+
+The owner found the merged model hard to read: a flat main line of 17 steps, each segment a former Model Card. The model was regrouped by role on the live box (backup `D:\zt-merge-backup\zt-before-becker-structure.sqlite3`, revision 10380 to 10429). The main line is now seven groups:
+
+| Main step | Facet | Holds (Side successors) |
+|---|---|---|
+| `4|a|a` | 设定 | every setting of the model: 信息与努力, 工资表 (7), 三阶段时序 (with 进入条件 and 固定成本), 三元正态抽签, 开放经济, 基准开放经济, 估计的数据 |
+| `4|a|a|1` | 过程一：生产技术 (new header) | the production chain (1)–(6) and its conclusion |
+| `4|a|a|2` | 过程二：工资与离散度 | the wage chain (8)–(10) and the η proxy |
+| `4|a|a|3` | 求解：三阶段逆向归纳 | 第三阶段, 第二阶段, 第一阶段, each with its own setting and chain |
+| `4|a|a|4` | 变体：三种均衡 (new header) | 变体一 封闭经济均衡, 变体二 开放经济, 变体三 开放经济基准 |
+| `4|a|a|5` | 量化：结构估计与反事实 | the estimation chain, tables 2 and 3, the counterfactual, the limitation |
+| `4|a|a|6` | 主要结论 (new) | links to the core result of each group |
+
+The introduction's verbal version stays the aside part `4|a|b`. The head's **结构** section lists the seven groups and the cards one level below each. Result: 141 members, `self_sufficient` true, 421 Cards in the tree (418 plus the three new cards), no broken Link.
+
+This is the target shape for §4.1: a merged model's architect plan should name these groups (settings, processes, solution, variants, quantification, conclusions), not only the segments of the source sections.
