@@ -684,6 +684,8 @@ pre, .md pre { font-variant-ligatures: none; font: 12.5px/1.6 var(--mono); backg
   font: 600 .92em var(--mono); background: var(--link); color: var(--paper);
   padding: 2px 7px; margin-right: 6px; border-radius: 5px 0 0 5px; white-space: nowrap;
 }
+/* A Link to a Model part names the part by its facet, in the prose face; the address is its tooltip. */
+.zt-link .zt-link-addr.zt-link-facet { font: 600 .92em var(--sans); }
 .zt-link .zt-link-title:empty { display: none; }
 .zt-link:has(.zt-link-title:empty) { padding-right: 0; }
 .zt-link:has(.zt-link-title:empty) .zt-link-addr { margin-right: 0; border-radius: 5px; }

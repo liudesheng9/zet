@@ -4772,9 +4772,10 @@
         const cross = targetWorkspace && targetWorkspace !== here ? targetWorkspace : null;
         if (cross) anchor.classList.add('cross', cross);
         // A quiet Term link keeps its meaning and address and adds the Workspace to them; an
-        // ordinary chip already shows its address, so its title names the Workspace alone.
+        // ordinary chip shows its address (a Model part's chip its facet, with the address as the
+        // tooltip), so its title adds the Workspace to what it already has.
         if (anchor.classList.contains('zt-term')) wireTermLink(anchor, cross);
-        else if (cross) anchor.title = `${wsLabel(cross)} workspace`;
+        else if (cross) anchor.title = anchor.title ? `${wsLabel(cross)} workspace · ${anchor.title}` : `${wsLabel(cross)} workspace`;
         anchor.addEventListener('click', (event) => { event.preventDefault(); go(anchor.dataset.target); });
       } else {
         anchor.target = '_blank';

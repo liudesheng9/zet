@@ -176,3 +176,12 @@ The owner found the merged model hard to read: a flat main line of 17 steps, eac
 The introduction's verbal version stays the aside part `4|a|b`. The head's **结构** section lists the seven groups and the cards one level below each. Result: 141 members, `self_sufficient` true, 421 Cards in the tree (418 plus the three new cards), no broken Link.
 
 This is the target shape for §4.1: a merged model's architect plan should name these groups (settings, processes, solution, variants, quantification, conclusions), not only the segments of the source sections.
+
+### 9.2 Readable cards and a consistent notation (2026-10-28)
+
+The owner found the cards themselves hard to read: settings scattered with their own symbol tables, derivation cards that did not say what they were for, unexplained marks such as 「（补：书中未写）」, and messy relations. A third pass (backup `D:\zt-merge-backup\zt-before-becker-cards.sqlite3`) did four things:
+
+1. **One notation card.** `4|a|a|a` (符号表与读法) holds every symbol of the model, grouped by block, and a legend of the marks: equation numbers, 「（论文略去，此处补出）」, 「推导链第 k 步，共 n 步」, the subscripts a/1/x/0. The 8 local symbol tables (79 symbols, 25 defined twice) were removed. One conflict was settled against the source: $\pi$ is the circle constant (it enters (10) as $\sqrt{4-\pi(\pi-2)}$), not a wage parameter.
+2. **Every card rewritten to one format by its role** (rules in `D:\zt-model-tidy\becker\style.md`): a group card opens with one sentence, the question, the key points, the reading order and its premises; a setting card says what it sets and why it is needed; a derivation card opens with 「目的：」 in words, keeps 思路/起点/步骤/结果/解读, lists each premise once, and names its temporary symbols; a result card gives the result in words, then the exact statement, the meaning and the basis. DeepSeek V4.1 Flash (official, high) drafted the 141 cards in 11 group jobs; a script checked them (every display formula and equation number kept, Links only to existing Cards, no 「本模型」, the required sections) and put back verbatim the 14 quoted premise formulas that drafts had dropped.
+3. **Relations.** The pointer to the notation card is written without a premise cue, so it is a plain reference. Result: 446 relations, 302 rests-on and 134 refers, no duplicate pair, no internal 对应 left; `self_sufficient` true, no broken Link.
+4. **GUI (zt 0.42.1).** A Link to a Model part shows the part's facet in its chip (for example 推导：利润 (13)) instead of the full address, which moves to the tooltip.

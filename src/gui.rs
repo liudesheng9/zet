@@ -2448,10 +2448,19 @@ fn link_html(link: &ClassifiedLink, snapshot: &Snapshot) -> String {
         );
     }
     match link.status {
-        LinkStatus::Valid => format!(
-            "<a class=\"zt-link\" href=\"#/card/{route}\" data-target=\"{target}\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">{}</span></a>",
-            escape_html(&snapshot.title(link.target)),
-        ),
+        // A Model part is named by its facet, the label a reader understands inside the model;
+        // its address stays one hover away.
+        LinkStatus::Valid => match snapshot.by_address.get(link.target).and_then(|card| card.facet.as_ref()) {
+            Some(facet) => format!(
+                "<a class=\"zt-link\" href=\"#/card/{route}\" data-target=\"{target}\" title=\"{target}\"><span class=\"zt-link-addr zt-link-facet\">{}</span><span class=\"zt-link-title\">{}</span></a>",
+                escape_html(facet.id()),
+                escape_html(&snapshot.title(link.target)),
+            ),
+            None => format!(
+                "<a class=\"zt-link\" href=\"#/card/{route}\" data-target=\"{target}\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">{}</span></a>",
+                escape_html(&snapshot.title(link.target)),
+            ),
+        },
         LinkStatus::Broken => format!(
             "<span class=\"zt-link broken\" title=\"Broken link\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">missing</span></span>"
         ),
@@ -4296,7 +4305,7 @@ mod tests {
         let wire = js_function("function wireMarkdown(root)");
         assert!(
             wire.contains("if (anchor.classList.contains('zt-term')) wireTermLink(anchor, cross);")
-                && wire.contains("else if (cross) anchor.title = `${wsLabel(cross)} workspace`;"),
+                && wire.contains("else if (cross) anchor.title = anchor.title ? `${wsLabel(cross)} workspace · ${anchor.title}` : `${wsLabel(cross)} workspace`;"),
             "{wire}"
         );
         assert!(
@@ -6167,6 +6176,56 @@ mod render_tests {
         let code = render_markdown("```html\n<div>x</div>\n```", &snapshot, &charts);
         assert!(code.contains("&lt;div&gt;x&lt;/div&gt;"), "{code}");
         assert!(!code.contains("zt-chart"), "{code}");
+    }
+
+    /// A Link to a Model part names the part by its facet, the label a reader understands, and
+    /// keeps the address in the tooltip; a Link to any other Card keeps its address chip.
+    #[test]
+    fn a_link_to_a_model_part_shows_its_facet_and_keeps_the_address_as_a_tooltip() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        crate::initialize_database(root).expect("initialize database");
+        ops::create_topic(root, Access::Owner, Workspace::Human, "# Firms\n").unwrap();
+        let (head, _) = ops::create_successor(
+            root,
+            Access::Owner,
+            Successor::Direct,
+            "0/0",
+            CardType::Model,
+            None,
+            "# 一个模型\n\n问题：工厂选多少职业？\n",
+        )
+        .unwrap();
+        let part = crate::model::Part {
+            facet: crate::model::Facet::parse("推导：利润 (13)").unwrap(),
+            emphasis: None,
+        };
+        let (setting, _) = ops::create_successor(
+            root,
+            Access::Owner,
+            Successor::Side,
+            &head,
+            CardType::Model,
+            Some(part),
+            "# 推导：把 (12) 代入 (11) 得利润 (13)\n\n利润。\n",
+        )
+        .unwrap();
+        let snapshot = Snapshot::read(root).expect("snapshot");
+        let html = render_markdown(
+            &format!("依赖 [[{setting}]] 的结果；参照 [[0/0]]。"),
+            &snapshot,
+            &Charts::default(),
+        );
+        assert!(
+            html.contains(&format!(
+                "data-target=\"{setting}\" title=\"{setting}\"><span class=\"zt-link-addr zt-link-facet\">推导：利润 (13)</span>"
+            )),
+            "a Model part's chip shows its facet and keeps the address as the tooltip: {html}"
+        );
+        assert!(
+            html.contains("<span class=\"zt-link-addr\">0/0</span>"),
+            "another Card keeps its address chip: {html}"
+        );
     }
 
     #[test]
