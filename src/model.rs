@@ -1033,6 +1033,12 @@ pub(crate) fn structure(
         ),
         None => Value::Null,
     };
+    let (blocks, block_edges) = blocks_report(
+        &head,
+        build["order"].as_array().map_or(&[][..], Vec::as_slice),
+        &relations,
+        body_of(&head),
+    );
     Some(json!({
         "head": reference(&head),
         "level": level.map(Level::id),
@@ -1053,7 +1059,152 @@ pub(crate) fn structure(
         "discussion": discussion.len(),
         "issues": [],
         "build": build,
+        "blocks": blocks,
+        "block_edges": block_edges,
     }))
+}
+
+/// #199 (B1, docs/model-board-blocks-proposal.md P1/P7): the model as blocks for the GUI. A block is
+/// one main-line part with every part filed under it; its direct Side parts are its children, each
+/// with the chain filed under it as its proof. A model whose main-line parts hold no Side parts (a
+/// flat model) starts a block at each main-line part that is not a Derivation part instead. Parts
+/// filed under the Model Card itself, or shared from other models, make one last `aside` block.
+/// The parts (range blocks) come from the head's `**分部**` section: `- <name>：[[<main part>]] 起`.
+/// `block_edges` aggregates the relations between Cards of different blocks by block pair and kind.
+pub(crate) fn blocks_report(head: &str, order: &[Value], relations: &[Value], head_body: &str) -> (Vec<Value>, Vec<Value>) {
+    let s = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
+    let mains: Vec<&Value> = order.iter().filter(|e| e["line"] == "main").collect();
+    let under = |a: &str, b: &str| a.len() > b.len() && a.starts_with(b) && a.as_bytes()[b.len()] == b'|';
+    let chaptered = order
+        .iter()
+        .any(|e| e["line"] != "main" && mains.iter().any(|m| under(&s(e, "address"), &s(m, "address"))));
+    // The block of each main-line part.
+    let mut block_of_main: BTreeMap<String, usize> = BTreeMap::new();
+    let mut heads: Vec<&Value> = Vec::new();
+    for m in &mains {
+        let derivation = m["derivation"] == json!(true);
+        if chaptered || !derivation || heads.is_empty() {
+            heads.push(m);
+        }
+        block_of_main.insert(s(m, "address"), heads.len() - 1);
+    }
+    let aside = heads.len();
+    let block_of = |address: &str| -> Option<usize> {
+        if let Some(&b) = block_of_main.get(address) {
+            return Some(b);
+        }
+        block_of_main
+            .iter()
+            .filter(|(m, _)| under(address, m))
+            .max_by_key(|(m, _)| m.len())
+            .map(|(_, &b)| b)
+    };
+    let mut members: Vec<Vec<&Value>> = vec![Vec::new(); heads.len() + 1];
+    let mut card_block: BTreeMap<String, usize> = BTreeMap::new();
+    for e in order {
+        let at = s(e, "address");
+        let b = block_of(&at).unwrap_or(aside);
+        members[b].push(e);
+        card_block.insert(at, b);
+    }
+    // Parts from the head's `**分部**` section.
+    let mut starts: BTreeMap<String, String> = BTreeMap::new();
+    let mut in_parts = false;
+    for line in head_body.lines() {
+        let t = line.trim();
+        if t == "**分部**" {
+            in_parts = true;
+            continue;
+        }
+        if !in_parts {
+            continue;
+        }
+        if t.is_empty() {
+            if !starts.is_empty() {
+                in_parts = false;
+            }
+            continue;
+        }
+        let Some(item) = t.strip_prefix("- ") else {
+            in_parts = false;
+            continue;
+        };
+        let name = item.split(['：', ':']).next().unwrap_or_default().trim().to_string();
+        if let (Some(open), Some(close)) = (item.find("[["), item.find("]]")) {
+            starts.insert(item[open + 2..close].to_string(), name);
+        }
+    }
+    let mut part: Option<String> = None;
+    let mut blocks = Vec::new();
+    for (i, h) in heads.iter().enumerate() {
+        let at = s(h, "address");
+        if let Some(name) = starts.get(&at) {
+            part = Some(name.clone());
+        }
+        let children: Vec<Value> = members[i]
+            .iter()
+            .filter(|e| s(e, "address") != at && (if chaptered { e["line"] != "main" && is_child(&s(e, "address"), &at) } else { true }))
+            .map(|e| child_value(e, &members[i]))
+            .collect();
+        let kind = if i == 0 && s(h, "facet").starts_with("设定") { "setting" } else { "chapter" };
+        blocks.push(json!({
+            "id": format!("b{i}"), "head": at, "title": s(h, "title"), "facet": h["facet"], "emphasis": h["emphasis"],
+            "kind": kind, "part": part, "members": members[i].len(), "chaptered": chaptered, "children": children,
+        }));
+    }
+    if !members[aside].is_empty() {
+        let children: Vec<Value> = members[aside]
+            .iter()
+            .filter(|e| is_child(&s(e, "address"), head) || e["line"] == "shared")
+            .map(|e| child_value(e, &members[aside]))
+            .collect();
+        blocks.push(json!({
+            "id": format!("b{aside}"), "head": head, "title": "旁注与共用", "facet": null, "emphasis": null,
+            "kind": "aside", "part": null, "members": members[aside].len(), "chaptered": chaptered, "children": children,
+        }));
+    }
+    let mut edges: Vec<Value> = Vec::new();
+    for r in relations {
+        let (from, to) = (s(r, "from"), s(r, "to"));
+        let (Some(&bf), Some(&bt)) = (card_block.get(&from), card_block.get(&to)) else {
+            continue;
+        };
+        if bf == bt {
+            continue;
+        }
+        let (from_block, to_block, kind) = (format!("b{bf}"), format!("b{bt}"), s(r, "kind"));
+        match edges.iter_mut().find(|e| e["from_block"] == from_block && e["to_block"] == to_block && e["kind"] == kind) {
+            Some(e) => {
+                e["count"] = json!(e["count"].as_u64().unwrap_or(0) + 1);
+                e["pairs"].as_array_mut().unwrap().push(json!({"from": from, "to": to}));
+            }
+            None => edges.push(json!({"from_block": from_block, "to_block": to_block, "kind": kind, "count": 1, "pairs": [{"from": from, "to": to}]})),
+        }
+    }
+    (blocks, edges)
+}
+
+/// Whether `address` is a direct Side successor of `parent` (`<parent>|<letters>`).
+fn is_child(address: &str, parent: &str) -> bool {
+    address
+        .strip_prefix(parent)
+        .and_then(|rest| rest.strip_prefix('|'))
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_lowercase()))
+}
+
+/// A block's child: the part, and the chain filed under it as its proof.
+fn child_value(e: &Value, block: &[&Value]) -> Value {
+    let at = e["address"].as_str().unwrap_or_default();
+    let proof: Vec<&str> = block
+        .iter()
+        .filter_map(|m| m["address"].as_str())
+        .filter(|a| a.len() > at.len() && a.starts_with(at) && a.as_bytes()[at.len()] == b'|')
+        .collect();
+    json!({
+        "address": at, "title": e["title"], "facet": e["facet"], "emphasis": e["emphasis"],
+        "derivation": e["derivation"] == json!(true),
+        "proof": if proof.is_empty() { Value::Null } else { json!({"first": proof[0], "steps": proof.len(), "addresses": proof}) },
+    })
 }
 
 /// Whether a facet names a Derivation part: one step of a derivation.
@@ -1525,6 +1676,81 @@ fn build_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(address: &str, facet: &str, line: &str) -> Value {
+        let mut value = json!({"address": address, "title": format!("{facet} title"), "facet": facet, "emphasis": "core", "line": line});
+        if facet.starts_with("推导") {
+            value["derivation"] = json!(true);
+        }
+        value
+    }
+
+    /// #199 (B1): a model built as a spine reads as blocks: each main-line part with everything
+    /// filed under it, its direct Side parts as results (with their proof chains), the parts of a
+    /// `**分部**` section, and the Links between blocks aggregated by kind.
+    #[test]
+    fn a_spine_model_reads_as_blocks_with_parts_results_proofs_and_edges() {
+        let h = "K/4|a";
+        let order = vec![
+            entry("K/4|a|a", "设定", "main"),
+            entry("K/4|a|a|a", "符号表", "side"),
+            entry("K/4|a|a|1", "第 1 章：生产", "main"),
+            entry("K/4|a|a|1|a", "结果：效率", "side"),
+            entry("K/4|a|a|1|a|a", "推导：错配", "side"),
+            entry("K/4|a|a|1|a|a|1", "推导：效率", "side"),
+            entry("K/4|a|a|2", "第 2 章：工资", "main"),
+            entry("K/4|a|a|2|a", "结果：离散度", "side"),
+            entry("K/4|a|a|2|a|a", "推导：方差", "side"),
+            entry("K/4|a|a|2|b", "局限", "side"),
+            entry("K/4|a|b", "概述", "off"),
+        ];
+        let relations = vec![
+            json!({"from": "K/4|a|a|2|a|a", "to": "K/4|a|a|1|a", "kind": "rests-on", "note": ""}),
+            json!({"from": "K/4|a|a|2", "to": "K/4|a|a|1", "kind": "rests-on", "note": ""}),
+            json!({"from": "K/4|a|a|2|a", "to": "K/4|a|a|1|a|a|1", "kind": "refers", "note": ""}),
+            json!({"from": "K/4|a|a|1|a|a|1", "to": "K/4|a|a|1|a|a", "kind": "rests-on", "note": ""}),
+        ];
+        let body = "问题：…\n\n**分部**\n\n- 第一部分 构件：[[K/4|a|a]] 起\n- 第二部分 工资：[[K/4|a|a|2]] 起\n\n来源：…\n";
+        let (blocks, edges) = blocks_report(h, &order, &relations, body);
+        let ids: Vec<&str> = blocks.iter().map(|b| b["head"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["K/4|a|a", "K/4|a|a|1", "K/4|a|a|2", "K/4|a"], "one block per main-line part, then the asides: {blocks:?}");
+        assert_eq!(blocks[0]["part"], "第一部分 构件");
+        assert_eq!(blocks[1]["part"], "第一部分 构件");
+        assert_eq!(blocks[2]["part"], "第二部分 工资");
+        assert_eq!(blocks[1]["members"], 4, "the chapter, its result and two proof steps");
+        let result = &blocks[1]["children"][0];
+        assert_eq!(result["address"], "K/4|a|a|1|a");
+        assert_eq!(result["proof"]["steps"], 2);
+        assert_eq!(result["proof"]["first"], "K/4|a|a|1|a|a");
+        assert_eq!(result["proof"]["addresses"], json!(["K/4|a|a|1|a|a", "K/4|a|a|1|a|a|1"]));
+        assert!(blocks[2]["children"][1]["proof"].is_null(), "an aside has no proof");
+        assert_eq!(blocks[3]["kind"], "aside", "parts filed under the head itself make the aside block");
+        assert_eq!(blocks[0]["chaptered"], true);
+        // Links inside a block are no edge; across blocks they aggregate by block pair and kind.
+        assert_eq!(edges.len(), 2, "{edges:?}");
+        let rests = edges.iter().find(|e| e["kind"] == "rests-on").unwrap();
+        assert_eq!((rests["from_block"].as_str(), rests["to_block"].as_str()), (Some("b2"), Some("b1")));
+        assert_eq!(rests["count"], 2);
+        assert_eq!(rests["pairs"].as_array().unwrap().len(), 2);
+        assert_eq!(edges.iter().find(|e| e["kind"] == "refers").unwrap()["count"], 1);
+    }
+
+    /// A flat model (no main-line part has Side parts) still reads as blocks: each main-line part
+    /// that is not a Derivation part starts one, and the Derivation parts after it join it.
+    #[test]
+    fn a_flat_model_groups_each_result_with_the_derivation_steps_after_it() {
+        let order = vec![
+            entry("K/1|a|a", "设定", "main"),
+            entry("K/1|a|a|1", "推导：一阶条件", "main"),
+            entry("K/1|a|a|2", "结论", "main"),
+            entry("K/1|a|a|3", "推导：比较静态", "main"),
+            entry("K/1|a|a|4", "推导：符号", "main"),
+        ];
+        let (blocks, _) = blocks_report("K/1|a", &order, &[], "");
+        let sizes: Vec<u64> = blocks.iter().map(|b| b["members"].as_u64().unwrap()).collect();
+        assert_eq!(sizes, [2, 3], "{blocks:?}");
+        assert_eq!(blocks[0]["chaptered"], false);
+    }
 
     #[test]
     fn facets_are_short_free_labels_and_common_facets_are_normalized() {

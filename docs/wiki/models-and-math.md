@@ -230,6 +230,7 @@ The cue words (`RELATION_KINDS`):
 4. In-neighbours: for each member, each outside Card in `inbound[member]` gives one `in` neighbour with the kind and note of its first ordinary Link to that member. The `met` set keeps each (from, to) pair once, across both directions.
 5. `loose` lists the parts in no relation; `discussion` counts the distinct outside Cards that link any member (tree roots included, unlike neighbours).
 6. `build_report` and the math report complete the value.
+7. `blocks_report` (#199) adds `blocks` and `block_edges` for the GUI's model board. A block is one main-line part with every part filed under it (longest main-line prefix); its `children` are its direct Side parts, each with the chain filed under it as `proof` (`first`, `steps`, `addresses`). A flat model (no main-line part has Side parts, `chaptered: false`) starts a block at each main-line part that is not a Derivation part instead. Parts filed under the Model Card itself, or shared, make a last `aside` block. A block's `part` comes from the head's `**分部**` section (`- <name>：[[<main part>]] 起`). `block_edges` aggregates the relations between Cards of different blocks by (`from_block` = the linking Card's block, `to_block`, `kind`) with `count` and the Card `pairs`; plain references are kept as `refers` for the GUI to switch.
 
 ### The build report (`build_report`)
 
