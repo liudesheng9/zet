@@ -244,11 +244,21 @@ fn planned_link_entries(
     resolve: &dyn Fn(&str) -> Option<String>,
     parts: &BTreeSet<String>,
     pairs: &BTreeSet<(String, String)>,
+    rests: &BTreeSet<(String, String)>,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
+    // #197: the model's takes. Only a rests-on Link takes a shared part in, so a planned relation to a take
+    // is authored by a rests-on Link alone; a `参照` leaves the take outside the build order.
+    let taken: BTreeSet<String> = plan_parts
+        .iter()
+        .filter(|p| truthy(&p["take"]))
+        .map(|p| s(&ids[&s(&p["id"])]))
+        .filter(|a| !a.is_empty() && !a.contains('#'))
+        .collect();
     for part in plan_parts {
         let id = s(&part["id"]);
-        if id.is_empty() || truthy(&part["take"]) || truthy(&part["existing"]) {
+        // A refilled part is rewritten by this build, so it authors its planned Links like a new one.
+        if id.is_empty() || truthy(&part["take"]) || (truthy(&part["existing"]) && !truthy(&part["refill"])) {
             continue;
         }
         let address = s(&ids[&id]);
@@ -267,17 +277,25 @@ fn planned_link_entries(
         }
         for (reference, why) in wanted {
             let Some(target) = resolve(&reference) else { continue };
-            if ps::eq(&target, model) || !parts.contains(&target) {
+            let take = taken.contains(&target);
+            if ps::eq(&target, model) || (!parts.contains(&target) && !take) {
                 continue;
             }
             let mut pieces = reference_pieces(ids, models, &reference);
             if pieces.is_empty() {
                 pieces.push(target.clone());
             }
-            if pieces.iter().any(|piece| pairs.contains(&(address.clone(), piece.clone()))) {
+            let authored = if take { rests } else { pairs };
+            if pieces.iter().any(|piece| authored.contains(&(address.clone(), piece.clone()))) {
                 continue;
             }
             let reason = if why.is_empty() { String::new() } else { format!("计划写的关系：{why}。") };
+            if take {
+                out.push((address.clone(), format!(
+                    "## 修正：[[{address}]]\n\n构建检查（计划的取用）：模型 [[{model}]] 的计划取用 [[{target}]]，并要求这张分卡依赖它。{reason}本模型没有分卡依赖 [[{target}]]，所以它不在模型里。在用到它的那句话里写「依赖 [[{target}]]：用到……」；「参照」「对应」只是提到，不会把它取进本模型。不要增删其余内容，不要移动卡片。改完照常运行 CHECK。\n"
+                )));
+                continue;
+            }
             let split = if pieces.len() > 1 {
                 let named: Vec<String> = pieces.iter().map(|p| format!("[[{p}]]")).collect();
                 format!("[[{target}]] 已拆成 {}，Link 到给出所用结果的那一张即可。", named.join("、"))
@@ -998,6 +1016,26 @@ impl Compiler {
         for m in list(&plan["merge"]) {
             if !ids.contains(&s(&m["into"])) && !members.contains(&s(&m["into"])) {
                 faults.push(format!("merge into '{}' is not a part", s(&m["into"])));
+            }
+        }
+        if !list(&plan["merge"]).is_empty() {
+            let tree = self.tree_addresses(model)?;
+            faults.extend(Self::merge_faults(plan, &tree)?);
+        }
+        Ok(faults)
+    }
+
+    /// #197: the merges the build cannot carry out. `apply` deletes a merged part only when it has no
+    /// successor (a delete takes its successors with it); any other merge leaves the part in the model
+    /// without a plan id, and `model-finish` refuses the model at the end of the batch.
+    fn merge_faults(plan: &Value, tree: &HashSet<String>) -> Result<Vec<String>> {
+        let mut faults = Vec::new();
+        for m in list(&plan["merge"]) {
+            let from = s(&m["from"]);
+            if !from.is_empty() && Self::has_successors(&from, tree)? {
+                faults.push(format!(
+                    "merge from {from}: it has successors, so it cannot be deleted; list it with existing (refill: true to rewrite it) instead"
+                ));
             }
         }
         Ok(faults)
@@ -2648,8 +2686,13 @@ impl Compiler {
                 };
                 let parts: BTreeSet<String> = list(&st["parts"]).into_iter().map(|p| s(&p["address"])).filter(|a| !a.is_empty()).collect();
                 let pairs: BTreeSet<(String, String)> = list(&st["relations"]).into_iter().map(|r| (s(&r["from"]), s(&r["to"]))).collect();
+                let rests: BTreeSet<(String, String)> = list(&st["relations"])
+                    .into_iter()
+                    .filter(|r| ps::eq(&s(&r["kind"]), "rests-on"))
+                    .map(|r| (s(&r["from"]), s(&r["to"])))
+                    .collect();
                 let plan_parts: Vec<Value> = list(&plan["parts"]).into_iter().cloned().collect();
-                entries.extend(planned_link_entries(&model, &plan_parts, &own, &models, &resolve, &parts, &pairs));
+                entries.extend(planned_link_entries(&model, &plan_parts, &own, &models, &resolve, &parts, &pairs, &rests));
             }
             let review_path = ps::join(&self.dir(&model), "source-review.json");
             if ps::exists(&review_path)
@@ -3699,10 +3742,47 @@ mod tests {
         let resolve = |r: &str| -> Option<String> { let v = ids[r].as_str().unwrap_or_default().to_string(); if v.is_empty() || v.contains('#') { None } else { Some(v) } };
         let parts: BTreeSet<String> = ["K/7|a|a|5", "K/7|a|a|1", "K/3|a|a|2"].into_iter().map(String::from).collect();
         let pairs: BTreeSet<(String, String)> = [("K/7|a|a|5".to_string(), "K/7|a|a|1".to_string())].into_iter().collect();
-        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &pairs);
+        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &pairs, &pairs);
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].0, "K/7|a|a|5");
         assert!(entries[0].1.contains("[[K/3|a|a|2]]") && entries[0].1.contains("用到均衡条件"));
+    }
+
+    // #197 pilot: a refilled part kept its old `参照 [[K/5|a|a|4]]` where the plan says it rests on the taken
+    // definition (G3 = K/5|a#DEF). Only a rests-on Link takes a shared part in, so the take was outside the
+    // build order and model-finish refused the model ("mapped but belongs to no model"). Close sends it back.
+    #[test]
+    fn a_refilled_part_that_only_refers_to_its_take_is_a_close_entry() {
+        use std::collections::BTreeSet;
+
+        let plan_parts = vec![
+            json!({"id":"G3","take":"K/5|a#DEF"}),
+            json!({"id":"COR","existing":"K/7|a|a|3","refill":true,"rests":[["G3","用到两类技术的定义"]]}),
+            json!({"id":"KEEP","existing":"K/7|a|a|4","rests":[["G3","用到定义"]]}),
+        ];
+        let ids = json!({"G3":"K/5|a|a|4","COR":"K/7|a|a|3","KEEP":"K/7|a|a|4"});
+        let resolve = |r: &str| -> Option<String> { ids[r].as_str().map(str::to_string) };
+        let parts: BTreeSet<String> = ["K/7|a|a|3", "K/7|a|a|4"].into_iter().map(String::from).collect();
+        let refers: BTreeSet<(String, String)> = [("K/7|a|a|3".to_string(), "K/5|a|a|4".to_string())].into_iter().collect();
+        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &refers, &BTreeSet::new());
+        assert_eq!(entries.len(), 1, "the refilled part goes back, the kept part does not: {entries:?}");
+        assert_eq!(entries[0].0, "K/7|a|a|3");
+        assert!(entries[0].1.contains("依赖 [[K/5|a|a|4]]") && entries[0].1.contains("参照"), "{}", entries[0].1);
+        assert!(super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &refers, &refers).is_empty(), "a rests-on Link to the take authors it");
+    }
+
+    // #197 pilot: the architect merged `7|b|a|6` into a take; the apply step skipped the merge because the
+    // part has a successor, the part stayed unmapped, and model-finish refused `7|b` and `8|a`. plan-status
+    // refuses a merge that the build cannot carry out, so the architect revises the plan first.
+    #[test]
+    fn a_merge_of_a_part_with_successors_is_a_plan_fault() {
+        use std::collections::HashSet;
+
+        let plan = json!({"merge":[{"from":"K/7|b|a|6","into":"G5"},{"from":"K/7|b|a|9","into":"E2"}]});
+        let tree: HashSet<String> = ["K/7|b", "K/7|b|a", "K/7|b|a|6", "K/7|b|a|7", "K/7|b|a|9"].into_iter().map(String::from).collect();
+        let faults = super::Compiler::merge_faults(&plan, &tree).unwrap();
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("K/7|b|a|6") && faults[0].contains("existing"), "{}", faults[0]);
     }
 
     // A split Derivation part is one planned target in several pieces (`D11`, `D11~2`, `D11~3`): a Link to
@@ -3722,9 +3802,9 @@ mod tests {
         let resolve = |r: &str| -> Option<String> { ids[r].as_str().map(str::to_string) };
         let parts: BTreeSet<String> = ["K/7|a|a|16", "K/7|a|a|17", "K/7|a|a|18", "K/7|a|a|19"].into_iter().map(String::from).collect();
         let to_last: BTreeSet<(String, String)> = [("K/7|a|a|19".to_string(), "K/7|a|a|18".to_string())].into_iter().collect();
-        assert!(super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &to_last).is_empty());
+        assert!(super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &to_last, &to_last).is_empty());
         let none = BTreeSet::new();
-        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &none);
+        let entries = super::planned_link_entries("K/7|a", &plan_parts, &ids, &json!({}), &resolve, &parts, &none, &none);
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert!(entries[0].1.contains("[[K/7|a|a|16]]") && entries[0].1.contains("[[K/7|a|a|18]]"), "{}", entries[0].1);
     }
