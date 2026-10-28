@@ -1212,6 +1212,13 @@ button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
 .model-board:not(.on-head) .mb-head { opacity: .8; }
 .model-board:not(.on-head) .mb-head .mb-title { -webkit-line-clamp: 1; font-size: 13px; }
 
+/* A part (range block) of the open model starts at this Map node (#203). */
+.node[data-part]::before {
+  content: attr(data-part); position: absolute; left: 0; top: -17px; white-space: nowrap;
+  font: 600 10.5px var(--sans); letter-spacing: .04em; color: var(--ink-soft);
+  padding-left: 6px; border-left: 3px solid color-mix(in srgb, var(--ink-soft) 45%, transparent);
+}
+
 /* The board in blocks (#200–#202): a reading line, a column of trays, ribbons in the right gutter.
    One focus tray is lifted; up to four supporting trays keep their ink; every other tray recedes to
    one pale line. Colour is spent only on the forward fault. */

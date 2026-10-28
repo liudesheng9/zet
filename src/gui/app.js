@@ -1581,7 +1581,17 @@
       const outline = state.outline;
       if (!card || !outline) return;
       const inTree = (address) => outline.card.has(address) && address !== card.address;
-      const outbound = card.outbound.map((link) => link.address).filter(inTree);
+      // A Model Card's Links to its own parts are its table of contents (its 结构 list), not its
+      // reasoning: they draw no pointer thread (#203).
+      const ownParts = card.model && card.model.head && card.model.head.address === card.address ? new Set((card.model.parts || []).map((p) => p.address)) : null;
+      const outbound = card.outbound.map((link) => link.address).filter(inTree).filter((at) => !(ownParts && ownParts.has(at)));
+      // Where a part (range block) of the open Card's model starts on the main line, its node
+      // carries the part's name (#203); the label is drawn above the node and moves no Card.
+      const partStarts = new Map();
+      if (card.model && card.model.blocks) {
+        let last = null;
+        for (const b of card.model.blocks) if (b.part && b.part !== last) { partStarts.set(b.head, b.part); last = b.part; }
+      }
       const inbound = card.inbound.map((link) => link.address).filter(inTree);
       // The lens shows the same Cards whether Term edges are drawn or not (S16, #158): the switch
       // only adds or removes the dotted Term arcs, so no Card moves when it is pressed.
@@ -1631,6 +1641,8 @@
           setTimeout(() => el.classList.remove('entering'), 400);
         }
         content(el, outline.card.get(n.address), n, outline);
+        if (partStarts.has(n.address)) el.dataset.part = partStarts.get(n.address);
+        else delete el.dataset.part;
       }
       for (const [address, el] of els) {
         if (to.has(address)) continue;

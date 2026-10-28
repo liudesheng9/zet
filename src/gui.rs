@@ -4987,6 +4987,19 @@ mod tests {
         }
     }
 
+    /// #203 (B5): on the Map, a Model Card's Links to its own parts draw no pointer thread (they are
+    /// its table of contents), and the node where a part of the open model starts carries the
+    /// part's name, drawn above it so the lens moves no Card.
+    #[test]
+    fn the_map_names_the_parts_of_a_model_and_leaves_out_its_table_of_contents() {
+        let map = APP_JS;
+        assert!(map.contains("const ownParts = card.model && card.model.head && card.model.head.address === card.address ? new Set((card.model.parts || []).map((p) => p.address)) : null;"));
+        assert!(map.contains(".filter((at) => !(ownParts && ownParts.has(at)));"));
+        assert!(map.contains("if (partStarts.has(n.address)) el.dataset.part = partStarts.get(n.address);"));
+        let label = css_rule(".node[data-part]::before");
+        assert!(label.contains("content: attr(data-part)") && label.contains("position: absolute"), "{label}");
+    }
+
     /// S16 (#158, S16-AC05; design 15.2): a default graph view draws no Term edge, the one switch
     /// draws them as their own edges, and neither state adds, removes or moves a Card or an
     /// ordinary edge. `A -> B` is a Term edge iff `A.term_use_targets` names `B`, inbound and
