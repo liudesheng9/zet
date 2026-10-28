@@ -16,8 +16,8 @@ paths:
   - "!scripts/book-digest/tests/model-steps.tests.ps1"
   - "!scripts/book-digest/tests/math-steps.tests.ps1"
   - "!scripts/book-digest/tests/grow-steps.tests.ps1"
-synced: 7e5dad0bec38
-updated: 2026-10-27
+synced: ca4d311e93aa
+updated: 2026-10-28
 ---
 
 # Digest scripts
@@ -905,6 +905,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `2026-10-24` — #146 S04: two tool fixtures now ignore the write gate's `check:` warning lines when they read the address from `zt b` merged output (`earlier-context.tests.ps1`, `orphan-scope.tests.ps1`); the shell keeps its machine-readable address on stdout and its warnings on the diagnostic stream, so a fixture that merged both must filter them. No tool behavior changed.
 - `2026-10-23` — `grow.tests.ps1` adds the zt-idea-grow 4.0.0 run as one command: `grow -Step next` on a scratch archive from the first job set to the done line with canned answers, the checksum computed in PowerShell against the command's, the box pin, `-Step status`, a rerun before the answers (the same set under a new token), `options_changed` and `bad_options`, `next.json`'s rounds, and a finished run that redoes nothing. `prepare -Brief`, `prepare-link -Brief` and the ledger's one classifier (no `-Class`) keep the suites green (run-all 92/92).
 - `2026-10-23` — `organize.tests.ps1` checks that `organize-survey` leaves an empty `read-only.allow.txt` in its work folder (zt-digest 0.12.1): the Organize decision agent passes it to its helper reads with `-Allow`, so they are reads only and a run on a box copy reads that box.
+- `2026-10-27` — #194: `model-resume.tests.ps1` now expects `apply`'s ONE fill job per model (the Model Card and every fill part), and `model-compiler.tests.ps1`/`model-steps.tests.ps1` stay green with the one-conversation jobs (`continue: <slug>:brief`, a `fallback`, one review job, `<slug>:review` with `-IndependentReview`). zt-digest 0.33.8; see [zt-digest](zt-digest.md).
 - `2026-10-23` — `finish-batch.tests.ps1` (zt-digest 0.12.0, `docs/digest-claude-token-proposal.md` P1/P2): the batch finish against a real scratch archive, its short line and full file, its per-unit faults and its argument refusals. `model-compiler.tests.ps1` checks that `-Step close -Report` on a clean round carries the batch report and writes report.json, and that a close line without `-Report` carries none.
 - `2026-10-23` — `attach-figures.tests.ps1` (zt-digest 0.11.8) adds a second panel of 图 IV whose path sorts before the first: the run shows four figures, both panels of 图 IV in the book's order.
 - `2026-10-23` — `cleanup-resources.tests.ps1` (zt-digest 0.11.7) checks `cleanup-run`: the plan names every recorded id still to delete and each workspace once after the evidence sweep, results that do not answer the plan are refused, apply records deleted, absent and refused deletions with no agent in between, keeps a terminal outcome already recorded, reports a member the run did not record as the user's, settles the unit whose conversation is gone and leaves none claimed, and a new plan names only the id still owed.
