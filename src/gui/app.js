@@ -3648,6 +3648,8 @@
     if (!model.head) {
       return h('div', { class: 'model-issues' }, model.issues.map((issue) => h('p', { text: issue })));
     }
+    // A model laid out in chapters, or too large for rows by depth, is shown in blocks (#200).
+    if (model.blocks && model.blocks.length > 1 && (model.blocks[0].chaptered || model.parts.length > 20)) return blockBoard(card, model);
     const parts = model.parts;
     const here = card.address;
     const onHead = here === model.head.address;
@@ -3881,6 +3883,248 @@
           folded.map(outsideRow)) : null) : null,
       model.issues && model.issues.length ? h('div', { class: 'model-issues', title: 'A part that belongs to no model' },
         model.issues.map((issue) => h('p', { text: issue }))) : null,
+      buildFaults(model),
+    ];
+  }
+
+  // An element's layout position inside an ancestor: offsets summed up the offsetParent chain, so
+  // neither a running transform nor the page's scroll changes it.
+  const offsetIn = (el, root) => {
+    let top = 0;
+    let left = 0;
+    for (let at = el; at && at !== root; at = at.offsetParent) { top += at.offsetTop; left += at.offsetLeft; }
+    return { top, left };
+  };
+  // Where each block's tray last stood, so a tray that moves is seen to move (object permanence).
+  const blockRects = new Map();
+  const readRefers = () => { try { return localStorage.getItem('zt-refers-edges') === 'on'; } catch { return false; } };
+  let refersOn = readRefers();
+
+  /**
+   * The model board in blocks (#200–#202; docs/model-board-blocks-proposal.md, §3a). A column of
+   * trays in reading order, one per block, with the parts as bars on the reading line beside it.
+   * The open block (the one holding the open Card) is the focus: lifted, its results in a row, each
+   * with its proof as a stack that fans when the open Card is in it or the reader opens it. Its
+   * neighbours and the two blocks it shares most Links with are inked; the other trays recede to
+   * their divider tabs. Links between blocks are ribbons in the right gutter, one per block pair and
+   * kind, as thick as their count; plain references only behind the Refers switch.
+   */
+  function blockBoard(card, model) {
+    const blocks = model.blocks;
+    const here = card.address;
+    const onHead = here === model.head.address;
+    // The open Card's block: the one whose head is the longest prefix of its address (as on the
+    // server), else the one that lists it as a child or a proof step.
+    const holds = (b) => b.children.some((c) => c.address === here || (c.proof && c.proof.addresses.includes(here)));
+    const byPrefix = blocks
+      .filter((b) => b.kind !== 'aside' && (b.head === here || here.startsWith(b.head + '|')))
+      .sort((a, b) => b.head.length - a.head.length)[0];
+    const open = onHead ? null : (byPrefix || blocks.find(holds) || null);
+    const layout = ZtLayout.blockLayout(blocks, model.block_edges || [], open && open.id, { refers: refersOn, focusOnly: true });
+    const level = new Map(layout.trays.map((t) => [t.id, t.level]));
+    const index = new Map(blocks.map((b, i) => [b.id, i]));
+    const nameOf = (id) => {
+      const b = blocks[index.get(id)];
+      return b ? (b.kind === 'aside' ? '旁注' : facetLabel(b.facet).split('：')[0]) : id;
+    };
+    const tabs = new Map();
+    const trays = new Map();
+    let fanned = null;
+    for (const c of (open ? open.children : [])) if (c.proof && (c.address === here || c.proof.addresses.includes(here))) fanned = c.address;
+
+    const portsOf = (addresses) => {
+      const sum = new Map();
+      for (const at of addresses) for (const p of layout.ports[at] || []) {
+        const key = p.dir + ' ' + p.block;
+        sum.set(key, { ...p, count: (sum.get(key)?.count || 0) + p.count });
+      }
+      return [...sum.values()].sort((a, b) => (a.dir === b.dir ? index.get(a.block) - index.get(b.block) : a.dir === 'in' ? -1 : 1));
+    };
+    // Ports, one quiet line per direction: the blocks this Card's Links come from (←) and go to
+    // (→); each names its block by its short label, the counts are in the tooltips.
+    const shortName = (id) => {
+      const name = nameOf(id);
+      const m = name.match(/^第\s*(\d+)\s*章$/);
+      return m ? m[1] : name;
+    };
+    const portRow = (ports) => {
+      if (!ports.length) return null;
+      const line = (dir) => {
+        const list = ports.filter((p) => p.dir === dir);
+        if (!list.length) return null;
+        return h('div', { class: 'mbk-port-line ' + dir },
+          h('span', { class: 'arrow', text: dir === 'out' ? '→' : '←', title: dir === 'out' ? 'Links from here to other blocks' : 'Links from other blocks to here' }),
+          list.map((p, i) => [i ? h('span', { class: 'dot', text: '·' }) : null, h('button', {
+            class: 'mbk-port',
+            title: `${p.count} Link${p.count === 1 ? '' : 's'} ${dir === 'out' ? 'to' : 'from'} ${nameOf(p.block)}`,
+            onclick: (event) => { event.stopPropagation(); go(blocks[index.get(p.block)].head); },
+            text: shortName(p.block),
+          })]));
+      };
+      return h('div', { class: 'mbk-ports' }, line('in'), line('out'));
+    };
+
+    const stackOf = (c) => {
+      if (!c.proof) return null;
+      const label = `▤ ${c.facet && /^结果/.test(c.facet) ? '证明' : '下面'} ${c.proof.steps} ${c.facet && /^结果/.test(c.facet) ? '步' : '张'}`;
+      if (fanned !== c.address) {
+        return h('button', { class: 'mbk-stack', title: 'Open this proof', onclick: (event) => { event.stopPropagation(); go(c.proof.first); } }, label);
+      }
+      return h('ol', { class: 'mbk-fan', 'aria-label': 'Proof chain' }, c.proof.addresses.map((at) => {
+        const part = model.parts.find((p) => p.address === at);
+        const title = part ? part.title : at;
+        return h('li', { class: at === here ? 'here' : '' },
+          h('button', { onclick: (event) => { event.stopPropagation(); go(at); }, title: at }, titleNodes(title)));
+      }));
+    };
+    const childCard = (c) => h('div', { class: 'mbk-child' + (c.address === here ? ' here' : '') + (c.facet && /^结果/.test(c.facet) ? ' result' : ' aside') },
+      h('button', { class: 'mbk-card', onclick: () => go(c.address), title: c.address },
+        h('span', { class: 'mb-facet', text: facetLabel(c.facet) }),
+        h('span', { class: 'mbk-title' }, titleNodes(c.title))),
+      stackOf(c),
+      portRow(portsOf([c.address, ...((c.proof && c.proof.addresses) || [])])));
+
+    const column = [];
+    let part = null;
+    for (const b of blocks) {
+      if (b.part && b.part !== part) {
+        part = b.part;
+        column.push(h('div', { class: 'mbk-part', text: b.part }));
+      }
+      const lv = level.get(b.id);
+      const isOpen = open && b.id === open.id;
+      const results = b.children.filter((c) => c.proof && c.facet && /^结果/.test(c.facet));
+      const tray = h('div', {
+        class: `mbk-tray level-${lv}` + (b.kind === 'aside' ? ' aside' : '') + (b.head === here ? ' here' : ''),
+        'data-block': b.id,
+        onclick: isOpen ? null : () => go(b.head),
+        title: isOpen ? null : `Open ${nameOf(b.id)}`,
+      },
+        h('div', { class: 'mbk-tab', text: b.kind === 'aside' ? '旁注与共用' : facetLabel(b.facet) }),
+        lv === 'far' ? h('div', { class: 'mbk-line' }, titleNodes(b.title)) : [
+          h(isOpen ? 'button' : 'div', { class: 'mbk-chapter', onclick: isOpen ? () => go(b.head) : null }, titleNodes(b.title)),
+          isOpen
+            ? h('div', { class: 'mbk-children' }, b.children.map(childCard))
+            : h('div', { class: 'mbk-summary' },
+              results.map((c) => h('span', { class: 'mbk-result', text: facetLabel(c.facet) })),
+              b.members > 1 ? h('span', { class: 'mbk-count', text: `${b.members} 张` }) : null),
+          isOpen ? portRow(portsOf([b.head])) : null,
+        ]);
+      trays.set(b.id, tray);
+      column.push(tray);
+    }
+
+    // The reading line: every block's divider tab in order, the parts as bars; ↑/↓ walk it.
+    const rail = h('nav', { class: 'mbk-rail', 'aria-label': 'Blocks of the model', tabindex: '0' },
+      blocks.map((b) => {
+        const tab = h('button', {
+          class: 'mbk-rail-tab' + (open && b.id === open.id ? ' open' : ''),
+          title: b.kind === 'aside' ? '旁注与共用' : `${facetLabel(b.facet)} — ${b.title}`,
+          onclick: () => go(b.head),
+          text: nameOf(b.id),
+        });
+        tabs.set(b.id, tab);
+        return tab;
+      }));
+    rail.addEventListener('keydown', (event) => {
+      const at = open ? index.get(open.id) : -1;
+      const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+      if (step) {
+        event.preventDefault();
+        const next = blocks[Math.min(blocks.length - 1, Math.max(0, at + step))];
+        if (next) go(next.head);
+      } else if (event.key === 'ArrowLeft' && open) {
+        event.preventDefault();
+        go(model.head.address);
+      }
+    });
+
+    const refers = h('button', {
+      class: 'mbk-switch lens-toggle', 'aria-pressed': String(refersOn),
+      title: 'Show the plain references between blocks',
+      onclick: () => {
+        refersOn = !refersOn;
+        try { localStorage.setItem('zt-refers-edges', refersOn ? 'on' : 'off'); } catch { /* the switch still works this session */ }
+        renderReader();
+      },
+    }, 'Refers');
+
+    const ribbons = svg('svg', { class: 'mbk-ribbons', 'aria-hidden': 'true' });
+    const columnBox = h('div', { class: 'mbk-column' }, column);
+    const board = h('div', { class: 'model-board blocks' + (onHead ? ' on-head' : '') + (open ? ' has-focus' : '') }, rail, columnBox, ribbons);
+    board.style.setProperty('--lanes', layout.lanes);
+
+    // Ribbons run in the right gutter from the block rested on down to the block that rests on it.
+    const draw = () => {
+      const box = board.getBoundingClientRect();
+      if (!box.width) return;
+      ribbons.setAttribute('width', box.width);
+      ribbons.setAttribute('height', box.height);
+      ribbons.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
+      ribbons.replaceChildren();
+      // Layout positions (offsets inside the board), never the screen boxes: a tray that is still
+      // sliding into place, or a scrolled page, must not bend a ribbon.
+      const colRight = offsetIn(columnBox, board).left + columnBox.offsetWidth;
+      const mid = (id) => {
+        const t = trays.get(id);
+        if (!t) return null;
+        const o = offsetIn(t, board);
+        return { y: o.top + Math.min(22, t.offsetHeight / 2), right: o.left + t.offsetWidth };
+      };
+      const ordered = [...layout.ribbons].sort((a, b) => Number(a.hot) - Number(b.hot));
+      for (const r of ordered) {
+        const premise = mid(r.to_block);
+        const dependent = mid(r.from_block);
+        if (!premise || !dependent) continue;
+        const x = colRight + 14 + r.lane * 9;
+        const width = Math.min(7, 1 + Math.log2(r.count + 1) * 1.4);
+        const d = `M ${premise.right} ${premise.y} H ${x - 4} Q ${x} ${premise.y} ${x} ${premise.y + Math.sign(dependent.y - premise.y) * 4} V ${dependent.y - Math.sign(dependent.y - premise.y) * 4} Q ${x} ${dependent.y} ${x - 4} ${dependent.y} H ${dependent.right + 3}`;
+        const tip = `M ${dependent.right + 8} ${dependent.y - 3.5} L ${dependent.right + 3} ${dependent.y} L ${dependent.right + 8} ${dependent.y + 3.5}`;
+        const kind = KINDS[r.kind] ? r.kind : 'refers';
+        const group = svg('g', { class: `mbk-ribbon kind-${kind}` + (r.hot ? ' hot' : '') + (r.up ? ' up' : '') });
+        const hit = svg('path', { d, class: 'hit' });
+        const label = svg('title', {});
+        const pairs = (r.pairs || []).slice(0, 12).map((p) => `${facetLabel(model.parts.find((q) => q.address === p.from)?.facet) || p.from} ${KINDS[kind].fwd} ${facetLabel(model.parts.find((q) => q.address === p.to)?.facet) || p.to}`);
+        label.textContent = `${nameOf(r.from_block)} ${KINDS[kind].fwd} ${nameOf(r.to_block)} ×${r.count}${r.up ? ' — rests on a later block (forward)' : ''}\n${pairs.join('\n')}${r.pairs && r.pairs.length > 12 ? `\n+${r.pairs.length - 12} more` : ''}`;
+        hit.append(label);
+        hit.addEventListener('click', () => r.pairs && r.pairs[0] && go(r.pairs[0].from));
+        group.append(svg('path', { d, class: 'line', 'stroke-width': width }), svg('path', { d: tip, class: 'tip' }), hit);
+        if (r.hot) {
+          const word = svg('text', { x: x + 4, y: (premise.y + dependent.y) / 2, class: 'word' });
+          // The relation word is in the tooltip; the gutter has room for the count alone.
+          word.textContent = `×${r.count}`;
+          group.append(word);
+        }
+        ribbons.append(group);
+      }
+    };
+
+    // Object permanence: a tray that moved since the last board slides from where it stood.
+    const settle = () => {
+      for (const [id, tray] of trays) {
+        const now = { top: offsetIn(tray, board).top, height: tray.offsetHeight };
+        const before = blockRects.get(model.head.address + ' ' + id);
+        if (before && tray.animate && (Math.abs(before.top - now.top) > 1 || Math.abs(before.height - now.height) > 1)) {
+          tray.animate([
+            { transform: `translateY(${before.top - now.top}px)` },
+            { transform: 'translateY(0)' },
+          ], { duration: 300, easing: 'ease-in-out' });
+        }
+        blockRects.set(model.head.address + ' ' + id, { top: now.top, height: now.height });
+      }
+    };
+    setTimeout(() => { draw(); settle(); });
+    new ResizeObserver(draw).observe(board);
+
+    return [
+      h('div', { class: 'section-label mbk-label' },
+        h('span', { text: [
+          `Model · ${blocks.filter((b) => b.kind !== 'aside').length} blocks`,
+          `${model.parts.length} parts`,
+          layout.ribbons.length ? `${layout.ribbons.length} ribbon${layout.ribbons.length === 1 ? '' : 's'} between blocks` : null,
+        ].filter(Boolean).join(' · ') }),
+        refers),
+      board,
       buildFaults(model),
     ];
   }

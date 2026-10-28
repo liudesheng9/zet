@@ -39,6 +39,10 @@ Below a Model Card or Model part, on the desk, the GUI lays out the model:
 - **Loose tray.** Loose parts lie apart below a dashed rule.
 - **Tabs.** Divider tabs along the card's top edge name the Model Card and each part by its facet in filing order; the open Card's tab stands up, core tabs are inked with a dot, aside tabs are narrow and pale.
 
+### The board in blocks (#200–#202)
+
+A model laid out in chapters (or one of more than 20 parts) is shown in blocks instead of rows by depth: one tray per main-line part with everything filed under it, in reading order, top to bottom; the reading line beside them; one lifted focus tray (the open Card's block) with its results as cards and each proof as a stack that fans; its neighbours and the two blocks it shares most Links with stay inked, every other tray recedes to one line; the Links between blocks as counted ribbons in the right gutter (only the open block's, or all when the Model Card is open), plain references behind the Refers switch, and per card the blocks its Links come from and go to. The rules and their check against the GUI first principles: [model-board-blocks-proposal.md](model-board-blocks-proposal.md).
+
 ## Rendering
 
 - **Math.** pulldown-cmark parses `$...$` and `$$...$$` (`ENABLE_MATH`) into `math-inline` / `math-display` spans, so `_`, `*`, and `\\` inside TeX are never Markdown. `\(...\)` and `\[...\]` in prose are rewritten to dollars first; code keeps its text. The page typesets the spans with KaTeX 0.16.22, bundled in the binary with its WOFF2 fonts (`/vendor/katex/…`), and typesets `$...$` runs in titles.

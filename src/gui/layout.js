@@ -663,7 +663,66 @@
     run.push(...mains.map((at) => own({ pass: 'recall', focus: [at], face_down: true })));
     return run;
   }
+  /**
+   * The model board in blocks (#200, #201; docs/model-board-blocks-proposal.md §3a). `blocks` are
+   * the model's blocks in reading order (`id` at least), `edges` its `block_edges`, `focus` the open
+   * block's id or null (the Model Card itself is open).
+   *
+   * Attention: the focus block; its previous and next block and the two blocks it shares the most
+   * Links with are `support`; every other block is `far`. With no focus every block is `near`.
+   * Ribbons: one per block pair and kind (`refers` only with `options.refers`), each in a lane of the
+   * right gutter; a ribbon never shares a lane with one whose span overlaps it, shorter spans
+   * inside. `up` marks a rests-on ribbon from a block to a later one (the forward fault); `hot` one
+   * that touches the focus. Ports: per Card, the blocks its Links leave to (`out`) or come from (`in`).
+   * Linear in blocks plus edges, apart from the lane search over the lanes in use.
+   */
+  function blockLayout(blocks, edges, focus, options = {}) {
+    const at = new Map(blocks.map((b, i) => [b.id, i]));
+    const shown = edges.filter((e) => at.has(e.from_block) && at.has(e.to_block) && (options.refers || e.kind !== 'refers'));
+    const f = focus != null && at.has(focus) ? at.get(focus) : null;
+    // With `focusOnly`, an open block draws only its own ribbons: the others would compete with it.
+    const drawn = options.focusOnly && f != null ? shown.filter((e) => at.get(e.from_block) === f || at.get(e.to_block) === f) : shown;
+    const support = new Set();
+    if (f != null) {
+      if (f > 0) support.add(f - 1);
+      if (f < blocks.length - 1) support.add(f + 1);
+      const weight = new Map();
+      for (const e of shown) {
+        const a = at.get(e.from_block);
+        const b = at.get(e.to_block);
+        const other = a === f ? b : b === f ? a : null;
+        if (other != null && other !== f) weight.set(other, (weight.get(other) || 0) + e.count);
+      }
+      [...weight.entries()].filter(([i]) => !support.has(i)).sort((x, y) => y[1] - x[1] || x[0] - y[0]).slice(0, 2).forEach(([i]) => support.add(i));
+    }
+    const trays = blocks.map((b, i) => ({ id: b.id, level: f == null ? 'near' : i === f ? 'focus' : support.has(i) ? 'support' : 'far' }));
+    const lanes = [];
+    const ribbons = drawn
+      .map((e) => {
+        const a = at.get(e.from_block);
+        const b = at.get(e.to_block);
+        return { ...e, lo: Math.min(a, b), hi: Math.max(a, b), up: e.kind === 'rests-on' && a < b, hot: f != null && (a === f || b === f) };
+      })
+      .sort((x, y) => (x.hi - x.lo) - (y.hi - y.lo) || x.lo - y.lo)
+      .map((r) => {
+        let lane = 0;
+        while ((lanes[lane] || []).some(([lo, hi]) => r.lo < hi && lo < r.hi)) lane += 1;
+        (lanes[lane] ||= []).push([r.lo, r.hi]);
+        return { ...r, lane };
+      });
+    const ports = {};
+    const add = (card, dir, block) => {
+      const list = (ports[card] ||= []);
+      const found = list.find((p) => p.dir === dir && p.block === block);
+      if (found) found.count += 1;
+      else list.push({ dir, block, count: 1 });
+    };
+    for (const e of shown) for (const p of e.pairs || []) { add(p.from, 'out', e.to_block); add(p.to, 'in', e.from_block); }
+    return { trays, ribbons, ports, lanes: lanes.length };
+  }
+
   return {
+    blockLayout,
     sideRank, outline, pathTo, focusLens, edgePath, elbow, edgeSplit, isTermEdge, focusEdges, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,
     theoryRows, labelsIn, studyStations, theoryRun,

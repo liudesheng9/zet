@@ -4882,6 +4882,111 @@ mod tests {
         page_module_js("layout.js", LAYOUT_JS, "L", expression)
     }
 
+    /// #200/#201 (B2, B3; docs/model-board-blocks-proposal.md §3a): the block board's attention and
+    /// ribbons. One focus block, at most four supporting blocks (previous, next, the two most linked),
+    /// every other block at one receded level; one ribbon per block pair and kind, refers only behind
+    /// the switch, lanes that never overlap where they share blocks, an upward rests-on ribbon marked
+    /// as the forward fault, and ports per Card for the Links that leave its block.
+    #[test]
+    fn the_block_board_spends_attention_on_one_focus_and_bundles_links_between_blocks() {
+        let Some(out) = layout_js(
+            "(() => {
+               const blocks = ['b0','b1','b2','b3','b4','b5','b6','b7'].map((id) => ({ id }));
+               const e = (from_block, to_block, kind, count, pairs) => ({ from_block, to_block, kind, count, pairs: pairs || [] });
+               const edges = [
+                 e('b3', 'b1', 'rests-on', 3, [{ from: 'x3', to: 'x1' }, { from: 'x3b', to: 'x1' }]),
+                 e('b3', 'b6', 'rests-on', 1, [{ from: 'y3', to: 'y6' }]),
+                 e('b3', 'b0', 'rests-on', 9),
+                 e('b3', 'b7', 'contrasts', 1),
+                 e('b5', 'b3', 'refers', 4),
+                 e('b2', 'b1', 'rests-on', 2),
+               ];
+               const off = L.blockLayout(blocks, edges, 'b3', { refers: false });
+               const on = L.blockLayout(blocks, edges, 'b3', { refers: true });
+               const head = L.blockLayout(blocks, edges, null, { refers: false });
+               const only = L.blockLayout(blocks, edges, 'b3', { refers: false, focusOnly: true });
+               const headOnly = L.blockLayout(blocks, edges, null, { refers: false, focusOnly: true });
+               const lanes = off.ribbons.map((r) => [r.from_block, r.to_block, r.kind, r.lane, r.up, r.hot]);
+               return {
+                 levels: off.trays.map((t) => t.level),
+                 headLevels: [...new Set(head.trays.map((t) => t.level))],
+                 ribbonsOff: off.ribbons.length, ribbonsOn: on.ribbons.length,
+                 ribbonsOnly: only.ribbons.length, ribbonsHeadOnly: headOnly.ribbons.length,
+                 lanes,
+                 portsX3: off.ports['x3'], portsX1: off.ports['x1'],
+               };
+             })()",
+        ) else {
+            return;
+        };
+        // b3 is the focus; b2 and b4 are its neighbours; b0 (9) and b1 (3) are its most linked.
+        assert_eq!(
+            out["levels"],
+            json!(["support", "support", "support", "focus", "support", "far", "far", "far"]),
+            "{out}"
+        );
+        assert_eq!(out["headLevels"], json!(["near"]), "with no focus every tray is at one level: {out}");
+        assert_eq!(out["ribbonsOff"], json!(5), "refers hidden by default: {out}");
+        assert_eq!(out["ribbonsOn"], json!(6), "the switch adds the refers ribbon: {out}");
+        assert_eq!(out["ribbonsOnly"], json!(4), "an open block draws only its own ribbons: {out}");
+        assert_eq!(out["ribbonsHeadOnly"], json!(5), "with no open block every ribbon is drawn: {out}");
+        let lanes = out["lanes"].as_array().unwrap();
+        let up = lanes.iter().find(|l| l[0] == "b3" && l[1] == "b6").unwrap();
+        assert_eq!(up[4], json!(true), "resting on a later block points up: the forward fault: {out}");
+        let down = lanes.iter().find(|l| l[0] == "b3" && l[1] == "b1").unwrap();
+        assert_eq!(down[4], json!(false), "{out}");
+        // Two ribbons that share blocks never share a lane.
+        let span = |l: &Value| {
+            let i = |s: &Value| s.as_str().unwrap()[1..].parse::<i64>().unwrap();
+            (i(&l[0]).min(i(&l[1])), i(&l[0]).max(i(&l[1])), l[3].as_i64().unwrap())
+        };
+        for a in lanes {
+            for b in lanes {
+                if a == b {
+                    continue;
+                }
+                let ((a0, a1, la), (b0, b1, lb)) = (span(a), span(b));
+                if a0 < b1 && b0 < a1 {
+                    assert_ne!(la, lb, "overlapping ribbons in one lane: {out}");
+                }
+            }
+        }
+        assert_eq!(out["portsX3"], json!([{ "dir": "out", "block": "b1", "count": 1 }]), "{out}");
+        assert_eq!(out["portsX1"], json!([{ "dir": "in", "block": "b3", "count": 2 }]), "{out}");
+    }
+
+    /// #200–#202 (B2–B4; docs/model-board-blocks-proposal.md §3a): the page builds the block board.
+    /// A model in chapters (or over 20 parts) goes to `blockBoard`; the Refers switch sits next to
+    /// the board it changes and is kept apart from the Term switch; an open block draws only its own
+    /// ribbons; trays are measured by layout offsets and slide from where they stood (300 ms,
+    /// ease-in-out); proofs are stacks that fan; the reading line walks with the arrow keys; the
+    /// focus tray is lifted and colour is spent only on the forward fault.
+    #[test]
+    fn the_front_end_shows_a_large_model_in_blocks_with_one_lifted_focus() {
+        let board = app_function("modelBoard");
+        assert!(board.contains("if (model.blocks && model.blocks.length > 1 && (model.blocks[0].chaptered || model.parts.length > 20)) return blockBoard(card, model);"));
+        let blocks = app_function("blockBoard");
+        assert!(blocks.contains("{ refers: refersOn, focusOnly: true }"), "an open block draws only its own ribbons");
+        assert!(APP_JS.contains("localStorage.getItem('zt-refers-edges') === 'on'"), "the Refers switch has its own key");
+        assert!(blocks.contains("class: 'mbk-switch lens-toggle', 'aria-pressed': String(refersOn)"));
+        assert!(blocks.contains("const o = offsetIn(t, board);"), "ribbons follow layout, not a sliding tray");
+        assert!(blocks.contains("{ duration: 300, easing: 'ease-in-out' }"), "a moved tray slides from where it stood");
+        assert!(blocks.contains("class: 'mbk-stack'") && blocks.contains("h('ol', { class: 'mbk-fan'"), "proofs fold into stacks and fan");
+        for key in ["'ArrowDown'", "'ArrowUp'", "'ArrowLeft'"] {
+            assert!(blocks.contains(key), "the reading line answers {key}");
+        }
+        assert!(css_rule(".mbk-tray.level-focus").contains("var(--shadow-lift)"), "the focus is lifted");
+        assert!(css_rule(".mbk-tray.level-far").contains("background: transparent"), "far trays recede uniformly");
+        let up = css_rule(".mbk-ribbon.up .line, .mbk-ribbon.up .tip");
+        assert!(up.contains("var(--broken)"), "the forward fault is the one coloured ribbon");
+        for kind in ["contrasts", "refers"] {
+            assert!(
+                css_rule(&format!(".mbk-ribbon.kind-{kind} .line")).contains("stroke-dasharray"),
+                "kind {kind} is told apart by pattern, not hue"
+            );
+        }
+    }
+
     /// S16 (#158, S16-AC05; design 15.2): a default graph view draws no Term edge, the one switch
     /// draws them as their own edges, and neither state adds, removes or moves a Card or an
     /// ordinary edge. `A -> B` is a Term edge iff `A.term_use_targets` names `B`, inbound and
