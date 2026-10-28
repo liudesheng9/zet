@@ -128,6 +128,7 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | `move` | move an outside agent Card into the range at this place |
 | `take`, `use` | take in a shared part, with one line on what this model uses from it |
 | `merge` | `[{"from": address, "into": id}]` |
+| `divisions` | optional: the model's parts (分部), `[{"name": "第一部分 构件", "start": id}]`, each starting at a main-line part; the compiler writes them as the Model Card's **分部** section, and the GUI shows each as a range of blocks (see "Divide a long model into parts") |
 | `notes` | Cards outside the model that should link a new part, or that misstate the model |
 | `explain` | the design of every chain of Derivation parts: the chain's route and each part's shows, notes and meaning (see "Design the explanations of each chain") |
 | `source_review` | the reviewed outcome of a part whose source does not simply support it (see "Review the source") |
@@ -193,3 +194,7 @@ Run `<COMPILER> -Step validate -Work "<WORK>" -Plan "<DIR>\plan.json" <LIMITS>`.
 ## Report
 
 Return one entry per model: `model`, `status` (`planned`, `skipped`, or `failed`), `level`, `parts` (how many), `derivations` (how many Derivation parts, and in how many chains), `notes` (from the plan), and `summary` (one paragraph in Chinese: the model and its structure).
+
+## Divide a long model into parts
+
+When the main line holds five or more chapters (main-line parts with results filed under them), group consecutive chapters into two to five parts in `divisions`: a part is a stretch the book itself treats as one stage (the building blocks, the solution, the equilibria, the quantification). Name each part by what it does (`第二部分 求解`), and start it at the id of its first main-line part. A short model needs no divisions. The plan check refuses a division that starts off the main line.

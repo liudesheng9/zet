@@ -51,6 +51,7 @@ Main line   设定 → 第 1 章：直觉 → 第 2 章 … → 第 k 章：主�
 - Under a chapter: its local setting (本章设定) first, then its results, then asides (footnotes, limitations, extensions).
 - Under a result: the derivation chain that ends in it, as one Direct chain.
 - All settings and the **notation card** hang under the setting card.
+- A model of five or more chapters gets **parts** (分部): a `**分部**` section in the Model Card, one line per part, `- 第二部分 求解：[[<first chapter card>]] 起`. The GUI draws each part as a range of blocks on the model board and labels it on the Map; zt reports a part that starts off the main line as a build fault. New models get it from the architect's `divisions`.
 
 Two build rules make this pass zt's checks:
 
@@ -73,7 +74,7 @@ Draft the text with DeepSeek: one job per chapter or per group, each with the fo
 - `scripts/check-model.mjs <head>`: the main line, and the `closure`, `forward`, `reach_in`, `unanchored` faults; `self_sufficient` must be true.
 - `list_broken_links` is empty; the tree has the same number of Cards plus the ones you created; no title vanished except the ones you renamed.
 - Rebuild the head's **结构** section from the tree (two levels: the main line and one level under each main card).
-- Look at it in the GUI: the Map's **Focus** mode (`x`) shows the low-memory view (the main line as slips, the selected chapter's results, every proof folded into `+N`); "Whole tree" unfolds everything.
+- Look at it in the GUI: the **model board** (zt 0.43+) shows the model in blocks, one tray per chapter with its results and folded proofs, the Links between blocks as counted ribbons; and the Map's **Focus** mode (`x`) shows the low-memory view (the main line as slips, the selected chapter's results, every proof folded into `+N`); "Whole tree" unfolds everything.
 - Record the pass in the project docs and tell the user which tree is still unlocked.
 
 ## Helper facts (zt-digest call)

@@ -829,7 +829,7 @@ impl Compiler {
 
     /// `Test-Plan`: one fault per line; none for a plan the apply step can build.
     fn test_plan(&mut self, plan: &Value, structure: &Value, model: &str) -> Result<Vec<String>> {
-        let mut faults = Vec::new();
+        let mut faults = division_faults(plan);
         if !ps::eq(&s(&plan["model"]), model) || plan["model"].is_null() {
             faults.push(format!("plan.model is '{}', expected '{model}'", s(&plan["model"])));
         }
@@ -2097,7 +2097,11 @@ impl Compiler {
         }
         let card = self.card(&json!(model))?;
         let structure = self.structure_list(&plan, model)?;
-        edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": text::set_section(&s(&card["body"]), "结构", &structure) } }));
+        let mut body = text::set_section(&s(&card["body"]), "结构", &structure);
+        if let Some(divisions) = divisions_section(&plan, |id| self.resolve(&json!(id), model))? {
+            body = text::set_section(&body, "分部", &divisions);
+        }
+        edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": body } }));
         self.edits(edits)?;
         {
             let main_ids: Vec<Value> = main.iter().map(|&i| parts[i]["id"].clone()).collect();
@@ -3711,10 +3715,74 @@ fn lacks_main_line(structure: &Value, current_main: &[String], main: &[&Value]) 
     current_main.is_empty() && has_filed && main.iter().any(|p| !truthy(&p["existing"]))
 }
 
+/// #204 (B6): the faults of the plan's `divisions` (the model's parts, 分部): each needs a name and
+/// a `start` that is the id of a main-line part of the plan.
+fn division_faults(plan: &Value) -> Vec<String> {
+    let mut faults = Vec::new();
+    let parts = list(&plan["parts"]);
+    for (i, d) in list(&plan["divisions"]).iter().enumerate() {
+        let start = s(&d["start"]);
+        if s(&d["name"]).trim().is_empty() {
+            faults.push(format!("division {} has no name", i + 1));
+            continue;
+        }
+        match parts.iter().find(|p| ps::eq(&s(&p["id"]), &start)) {
+            None => faults.push(format!("division {}: start {start} is no part of the plan", i + 1)),
+            Some(p) if !ps::eq(&text::line_of(p), "main") => {
+                faults.push(format!("division {}: start {start} is not on the main line; a division starts at a main-line part", i + 1))
+            }
+            Some(_) => {}
+        }
+    }
+    faults
+}
+
+/// #204 (B6): the Model Card's 分部 section from the plan's `divisions`, or `None` without any.
+fn divisions_section(plan: &Value, resolve: impl Fn(&str) -> Result<String>) -> Result<Option<String>> {
+    let divisions = list(&plan["divisions"]);
+    if divisions.is_empty() {
+        return Ok(None);
+    }
+    let mut lines = Vec::new();
+    for d in divisions {
+        lines.push(format!("- {}：[[{}]] 起", s(&d["name"]).trim(), resolve(&s(&d["start"]))?));
+    }
+    Ok(Some(format!("**分部**\n\n{}", lines.join("\n"))))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{close_entries, lacks_main_line, marker_entries, shared_lines, supplied_entries};
+    use super::{close_entries, division_faults, divisions_section, lacks_main_line, marker_entries, shared_lines, supplied_entries};
     use serde_json::json;
+
+    // #204 (B6): the architect's divisions (the model's parts, 分部) start at main-line parts; the
+    // compiler writes them as the Model Card's 分部 section, which the GUI reads as range blocks.
+    #[test]
+    fn divisions_start_at_main_line_parts_and_become_the_parts_section() {
+        let plan = json!({
+            "parts": [
+                {"id": "S", "facet": "设定", "line": "main"},
+                {"id": "C1", "facet": "第 1 章：生产", "line": "main"},
+                {"id": "R1", "facet": "结果：效率", "line": "side", "under": "C1"},
+                {"id": "C2", "facet": "第 2 章：均衡", "line": "main"}
+            ],
+            "divisions": [
+                {"name": "第一部分 构件", "start": "S"},
+                {"name": "第二部分 均衡", "start": "C2"}
+            ]
+        });
+        assert!(division_faults(&plan).is_empty(), "{:?}", division_faults(&plan));
+        let section = divisions_section(&plan, |id| Ok(format!("K/4|a|{id}"))).unwrap().unwrap();
+        assert_eq!(section, "**分部**\n\n- 第一部分 构件：[[K/4|a|S]] 起\n- 第二部分 均衡：[[K/4|a|C2]] 起");
+        let bad = json!({
+            "parts": plan["parts"],
+            "divisions": [{"name": "第一部分", "start": "R1"}, {"name": "", "start": "C2"}, {"name": "第三部分", "start": "X"}]
+        });
+        let faults = division_faults(&bad);
+        assert_eq!(faults.len(), 3, "{faults:?}");
+        assert!(faults[0].contains("R1") && faults[0].contains("main line"));
+        assert!(divisions_section(&json!({"parts": []}), |id| Ok(id.to_string())).unwrap().is_none(), "no divisions, no section");
+    }
 
     // `close`: each build fault becomes one 修正 note for the Card it sits in.
     #[test]

@@ -4154,6 +4154,8 @@
       ...(build.closure || []).map((f) => ({ at: f.from, kind: 'outside', text: f.fix })),
       ...(build.forward || []).map((f) => ({ at: f.from, kind: 'forward', text: f.fix })),
       ...(build.unanchored || []).map((f) => ({ at: f.address, kind: 'unanchored', text: f.fix })),
+      // A part (分部) that starts off the main line (#204).
+      ...(build.parts || []).map((f) => ({ at: model.head.address, kind: 'part', text: f.fix })),
     ];
     const tolerated = (build.tolerated || []).length;
     if (!rows.length) {

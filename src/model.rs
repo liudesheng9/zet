@@ -1033,6 +1033,8 @@ pub(crate) fn structure(
         ),
         None => Value::Null,
     };
+    let mut build = build;
+    build["parts"] = json!(part_faults(build["order"].as_array().map_or(&[][..], Vec::as_slice), body_of(&head)));
     let (blocks, block_edges) = blocks_report(
         &head,
         build["order"].as_array().map_or(&[][..], Vec::as_slice),
@@ -1108,32 +1110,7 @@ pub(crate) fn blocks_report(head: &str, order: &[Value], relations: &[Value], he
         card_block.insert(at, b);
     }
     // Parts from the head's `**分部**` section.
-    let mut starts: BTreeMap<String, String> = BTreeMap::new();
-    let mut in_parts = false;
-    for line in head_body.lines() {
-        let t = line.trim();
-        if t == "**分部**" {
-            in_parts = true;
-            continue;
-        }
-        if !in_parts {
-            continue;
-        }
-        if t.is_empty() {
-            if !starts.is_empty() {
-                in_parts = false;
-            }
-            continue;
-        }
-        let Some(item) = t.strip_prefix("- ") else {
-            in_parts = false;
-            continue;
-        };
-        let name = item.split(['：', ':']).next().unwrap_or_default().trim().to_string();
-        if let (Some(open), Some(close)) = (item.find("[["), item.find("]]")) {
-            starts.insert(item[open + 2..close].to_string(), name);
-        }
-    }
+    let starts: BTreeMap<String, String> = parse_divisions(head_body).into_iter().map(|(name, at)| (at, name)).collect();
     let mut part: Option<String> = None;
     let mut blocks = Vec::new();
     for (i, h) in heads.iter().enumerate() {
@@ -1182,6 +1159,52 @@ pub(crate) fn blocks_report(head: &str, order: &[Value], relations: &[Value], he
         }
     }
     (blocks, edges)
+}
+
+/// The `**分部**` section of a Model Card body: each line `- <name>：[[<main part>]] 起` as
+/// (name, address), in order.
+fn parse_divisions(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in body.lines() {
+        let t = line.trim();
+        if t == "**分部**" {
+            inside = true;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if t.is_empty() {
+            if !out.is_empty() {
+                inside = false;
+            }
+            continue;
+        }
+        let Some(item) = t.strip_prefix("- ") else {
+            inside = false;
+            continue;
+        };
+        let name = item.split(['：', ':']).next().unwrap_or_default().trim().to_string();
+        if let (Some(open), Some(close)) = (item.find("[["), item.find("]]")) {
+            out.push((name, item[open + 2..close].to_string()));
+        }
+    }
+    out
+}
+
+/// #204 (B6): the `**分部**` lines that name a Card off the main line, each with its fix.
+pub(crate) fn part_faults(order: &[Value], head_body: &str) -> Vec<Value> {
+    let main: BTreeSet<&str> = order.iter().filter(|e| e["line"] == "main").filter_map(|e| e["address"].as_str()).collect();
+    parse_divisions(head_body)
+        .into_iter()
+        .filter(|(_, at)| !main.contains(at.as_str()))
+        .map(|(name, at)| json!({
+            "name": name,
+            "at": at,
+            "fix": format!("the part `{name}` starts at `{at}`, which is not on the main line: name the main-line part (a chapter card) it starts at"),
+        }))
+        .collect()
 }
 
 /// Whether `address` is a direct Side successor of `parent` (`<parent>|<letters>`).
@@ -1733,6 +1756,19 @@ mod tests {
         assert_eq!(rests["count"], 2);
         assert_eq!(rests["pairs"].as_array().unwrap().len(), 2);
         assert_eq!(edges.iter().find(|e| e["kind"] == "refers").unwrap()["count"], 1);
+    }
+
+    /// #204 (B6): a `**分部**` line that names a Card off the main line is a build issue with its fix.
+    #[test]
+    fn a_part_that_starts_off_the_main_line_is_a_build_issue() {
+        let order = vec![entry("K/4|a|a", "设定", "main"), entry("K/4|a|a|1", "第 1 章", "main"), entry("K/4|a|a|1|a", "结果：x", "side")];
+        let body = "**分部**\n\n- 第一部分：[[K/4|a|a]] 起\n- 第二部分：[[K/4|a|a|1|a]] 起\n";
+        let faults = part_faults(&order, body);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert_eq!(faults[0]["name"], "第二部分");
+        assert_eq!(faults[0]["at"], "K/4|a|a|1|a");
+        assert!(faults[0]["fix"].as_str().unwrap().contains("main line"));
+        assert!(part_faults(&order, "问题：x").is_empty());
     }
 
     /// A flat model (no main-line part has Side parts) still reads as blocks: each main-line part

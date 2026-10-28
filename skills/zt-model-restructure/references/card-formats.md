@@ -22,6 +22,19 @@ One sentence: what this chapter takes from earlier chapters, and what the next c
 - Title: `第 k 章：` plus the chapter's intuition in one line (40 characters at most). Facet: `第 k 章：<short name>`, emphasis core.
 - Only `结果：` before the Links to its own results. `依赖` and the other premise words point only to earlier chapter cards (the first chapter rests on the setting card).
 
+## Parts section of the Model Card (分部)
+
+For a model of five or more chapters, add to the Model Card, after **结构**:
+
+```
+**分部**
+
+- 第一部分 构件：[[setting card]] 起
+- 第二部分 求解：[[first chapter card of the part]] 起
+```
+
+Each line names a part by what it does and links the main-line card it starts at. Two to five parts.
+
 ## Result card (Side branch of a chapter)
 
 ```
