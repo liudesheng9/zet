@@ -6,7 +6,8 @@
 //!   zt-digest model -Step brief|validate|apply|derive|review|split|close|report|resume
 //!                         |explain|explain-check|explain-apply|explain-report
 //!                   -Work <folder> [-Staging <folder>] [-Models a,b] [-Plan <file>] [-Need a=N;b=M]
-//!                   [-Changed] [-Rebuild] [-Level concept|formal] [-MaxSentences 12] [-MaxChars 400]
+//!                   [-Changed] [-Rebuild] [-IndependentReview] [-Level concept|formal]
+//!                   [-MaxSentences 12] [-MaxChars 400]
 //!                   [-MaxSteps 6] [-MaxExplainSentences 16] [-MaxExplainChars 600] [-MaxParts 0]
 //!                   [-BriefDoc f] [-FillDoc f] [-ReviewDoc f] [-Job <id>] [-File <file>]
 //!
@@ -65,6 +66,8 @@ pub(crate) fn slug_of(address: &str) -> String {
 }
 /// A premise that states a mathematical unit (a Model Card with a unit form) is cited, not taken in.
 const UNIT_FORMS: [&str; 6] = ["definition", "axiom", "theorem", "proposition", "lemma", "corollary"];
+/// The CRLF line end the ported PowerShell job texts kept.
+const CR: &str = "\r\n";
 
 struct Params {
     step: String,
@@ -77,6 +80,8 @@ struct Params {
     rebuild: bool,
     /// close only: when nothing goes back to a writer, the batch report runs in the same process.
     report: bool,
+    /// review only: the reviewer is its own conversation (`<slug>:review`) instead of the model's.
+    independent_review: bool,
     level: String,
     max_sentences: i64,
     max_chars: i64,
@@ -147,21 +152,29 @@ struct Follow {
     job: Option<String>,
     text: String,
     ids: Vec<String>,
+    /// The Cards a note is about when no job of this batch wrote them: the new follow-up job's
+    /// allow list names them, so a Card of a model of this batch is never `unowned`.
+    cards: Vec<String>,
 }
 
 /// Adds one follow-up to the conversation it belongs to (`new:<model>` when no job wrote it yet).
 fn add_follow(follow: &mut CiMap<Follow>, r: Follow) {
     let key = r.job.clone().unwrap_or_else(|| format!("new:{}", r.model));
-    let (text, mut ids) = match follow.get(&key) {
-        Some(was) => (was.text.clone(), was.ids.clone()),
-        None => (String::new(), Vec::new()),
+    let (text, mut ids, mut cards) = match follow.get(&key) {
+        Some(was) => (was.text.clone(), was.ids.clone(), was.cards.clone()),
+        None => (String::new(), Vec::new(), Vec::new()),
     };
     for i in r.ids {
         if !ids.contains(&i) {
             ids.push(i);
         }
     }
-    let entry = Follow { model: r.model, job: r.job, text: format!("{text}{}\n", r.text), ids };
+    for a in r.cards {
+        if !cards.contains(&a) {
+            cards.push(a);
+        }
+    }
+    let entry = Follow { model: r.model, job: r.job, text: format!("{text}{}\n", r.text), ids, cards };
     follow.insert(&key, entry);
 }
 
@@ -412,7 +425,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             "Job",
             "File",
         ],
-        &["Changed", "Rebuild", "Report"],
+        &["Changed", "Rebuild", "Report", "IndependentReview"],
     )?;
     let step = a.choice("Step", &STEPS)?;
     let work = a.required("Work")?;
@@ -428,6 +441,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         need: a.str("Need"),
         changed: a.flag("Changed"),
         report: a.flag("Report"),
+        independent_review: a.flag("IndependentReview"),
         rebuild: a.flag("Rebuild"),
         level: a.str("Level"),
         max_sentences: a.int_or("MaxSentences", 12)?,
@@ -1781,10 +1795,8 @@ impl Compiler {
         };
         util::write_text(ps::join(&dir, "setting.md"), &setting_text)?;
 
-        // Round 1: the Model Card, then every part that is not a Derivation part, at most three per job.
-        let mut jobs = Vec::new();
-        let job = self.fill_head_job(model, &plan)?;
-        jobs.push(job);
+        // Round 1: ONE job per model holding the Model Card and every part that is not a Derivation
+        // part, in build order, continuing the model's conversation (`<slug>:brief`, #194).
         let todo: Vec<Value> = parts
             .iter()
             .filter(|p| {
@@ -1792,14 +1804,8 @@ impl Compiler {
             })
             .cloned()
             .collect();
-        for group in todo.chunks(3) {
-            let mut blocks = Vec::new();
-            for (n, p) in group.iter().enumerate() {
-                blocks.push(self.part_block(n + 1, p, model, false)?);
-            }
-            let ids = group.iter().map(|p| p["id"].clone()).collect();
-            jobs.push(self.new_job(model, "f", ids, &blocks.join("\n"), "按以上说明完成你的任务，最后每张分卡回复一行 JSON。")?);
-        }
+        let head_job = self.fill_job(model, &plan, &todo)?;
+        let jobs = vec![head_job];
         let fill_addresses = todo.iter().filter_map(|p| self.m(model)["ids"].get(s(&p["id"])).map(s)).collect::<Vec<_>>();
         self.record_step(
             model,
@@ -1832,15 +1838,21 @@ impl Compiler {
                 }
             }
             let before = jobs.len();
+            // One job per model holds every chain in order, continuing the model's conversation (#194).
+            let mut blocks = Vec::new();
+            let mut plan_ids = Vec::new();
+            let mut n = 0;
             for c in chains {
-                for group in c.chunks(3) {
-                    let mut blocks = Vec::new();
-                    for (n, p) in group.iter().enumerate() {
-                        blocks.push(self.part_block(n + 1, p, &model, true)?);
-                    }
-                    let ids = group.iter().map(|p| p["id"].clone()).collect();
-                    jobs.push(self.new_job(&model, "d", ids, &blocks.join("\n"), "按以上说明完成你的推导分卡，最后每张分卡回复一行 JSON。")?);
+                for p in c {
+                    n += 1;
+                    blocks.push(self.part_block(n, &p, &model, true)?);
+                    plan_ids.push(p["id"].clone());
                 }
+            }
+            if !plan_ids.is_empty() {
+                let mut job = self.new_job(&model, "d", plan_ids, &blocks.join("\n"), "按以上说明完成你的推导分卡，最后每张分卡回复一行 JSON。")?;
+                self.continue_model(&mut job, &model, &self.docs.fill)?;
+                jobs.push(job);
             }
             let jobs_now = jobs.len() - before;
             self.m_mut(&model)["status"] = json!("derived");
@@ -1850,8 +1862,13 @@ impl Compiler {
         self.out_last(&json!({ "jobs": jobs }))
     }
 
+    /// `review` (#194): one job per model. By default it continues the model's conversation, and its
+    /// job file tells the reviewer to re-read the stored Derivation Cards from the archive instead of
+    /// trusting its memory. With `-IndependentReview` the first round is a new conversation
+    /// (`<slug>:review`) whose job file carries the Card bodies, and a later round continues it.
     fn step_review(&mut self) -> Result<()> {
         let mut jobs = Vec::new();
+        let independent = self.p.independent_review;
         for model in self.order() {
             let m = self.m(&model);
             if !ps::is_in(&s(&m["status"]), &["derived", "reviewed"]) || list(&m["derive"]).is_empty() {
@@ -1874,7 +1891,10 @@ impl Compiler {
                     own.push(self.id_address(&model, &id));
                 }
             }
-            let before = jobs.len();
+            // A round that continues a conversation re-reads the Cards from the archive (its memory may
+            // hold an older body); a new conversation gets the bodies in its job file.
+            let continuing = !independent || self.p.changed;
+            let mut chains: Vec<(Vec<String>, String, String)> = Vec::new();
             for c in list(&st["build"]["chains"]) {
                 let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, &own)).collect();
                 if parts.is_empty() {
@@ -1883,34 +1903,57 @@ impl Compiler {
                 if self.p.changed && !parts.iter().any(|a| ps::is_in(a, &touched)) {
                     continue;
                 }
-                for group in parts.chunks(6) {
-                    let n = self.next_seq();
-                    let dir = self.dir(&model);
-                    let out = ps::join(&dir, &format!("review-{n}.json"));
-                    let mut text = format!(
-                        "# 复核任务 {}:r{n}\n\n结果文件: {out}\nMaxSteps: {}\n模型卡: [[{model}]]\n\r\n",
-                        Self::slug(&model),
-                        self.p.max_steps
-                    );
-                    for (label, at) in [("链之前的分卡（推导从它出发）", &c["after"]), ("链之后的分卡（它用推导的结果）", &c["before"])] {
-                        if truthy(at)
-                            && let Some(b) = bodies.get(&s(at)).filter(|b| truthy(b))
-                        {
-                            text += &format!("## {label}：[[{}]] {}\n\n{}\n\r\n", s(at), s(&b["title"]), s(&b["body"]));
+                chains.push((parts, s(&c["after"]), s(&c["before"])));
+            }
+            let before = jobs.len();
+            if !chains.is_empty() {
+                let seq = self.next_seq();
+                let dir = self.dir(&model);
+                let out = ps::join(&dir, &format!("review-{seq}.json"));
+                let id = if independent {
+                    // The reviewer's own conversation: named by the workflow on its first round.
+                    if self.p.changed { format!("{}:review+{seq}", Self::slug(&model)) } else { format!("{}:review", Self::slug(&model)) }
+                } else {
+                    format!("{}:r{seq}", Self::slug(&model))
+                };
+                let mut text = format!(
+                    "# 复核任务 {id}\n\n结果文件: {out}\nMaxSteps: {}\n模型卡: [[{model}]]\n\r\n",
+                    self.p.max_steps
+                );
+                if continuing {
+                    text += CR;
+                    text += &self.review_reread_text(&chains)?;
+                } else {
+                    text += CR;
+                    for (_, after, before) in &chains {
+                        for (label, at) in [("链之前的分卡（推导从它出发）", after), ("链之后的分卡（它用推导的结果）", before)] {
+                            if !at.is_empty()
+                                && let Some(b) = bodies.get(at).filter(|b| truthy(b))
+                            {
+                                text += &format!("## {label}：[[{}]] {}\n\n{}\n\r\n", at, s(&b["title"]), s(&b["body"]));
+                            }
                         }
                     }
-                    for a in group {
-                        let b = bodies.get(a).cloned().unwrap_or(Value::Null);
-                        text += &format!("## 推导分卡 [[{a}]] {}\n\n{}\n\r\n", s(&b["title"]), s(&b["body"]));
+                    for (parts, _, _) in &chains {
+                        for a in parts {
+                            let b = bodies.get(a).cloned().unwrap_or(Value::Null);
+                            text += &format!("## 推导分卡 [[{a}]] {}\n\n{}\n\r\n", s(&b["title"]), s(&b["body"]));
+                        }
                     }
-                    let file = ps::join(&dir, &format!("review-{n}.md"));
-                    util::write_text(&file, &text)?;
-                    jobs.push(json!({
-                        "id": format!("{}:r{n}", Self::slug(&model)),
-                        "files": [self.docs.review, ps::join(&dir, "setting.md"), file],
-                        "prompt": format!("按以上说明复核这些推导分卡，把结果写进 {out}，最后只回复一行 JSON。"),
-                    }));
                 }
+                let file = ps::join(&dir, &format!("review-{seq}.md"));
+                util::write_text(&file, &text)?;
+                let mut job = json!({
+                    "id": id,
+                    "files": [self.docs.review, ps::join(&dir, "setting.md"), file],
+                    "prompt": format!("按以上说明复核这些推导分卡，把结果写进 {out}，最后只回复一行 JSON。"),
+                });
+                if continuing {
+                    let into = if independent { format!("{}:review", Self::slug(&model)) } else { format!("{}:brief", Self::slug(&model)) };
+                    job["continue"] = json!(into);
+                    job["fallback"] = json!([self.docs.review, ps::join(&dir, "setting.md"), file]);
+                }
+                jobs.push(job);
             }
             self.m_mut(&model)["status"] = json!("reviewed");
             self.record_step(&model, "review", json!({"jobs":jobs.len()-before,"changed":self.p.changed,"rounds":1}));
@@ -1918,6 +1961,41 @@ impl Compiler {
         self.state["rereview"] = json!([]);
         self.save_state()?;
         self.out_last(&json!({ "jobs": jobs }))
+    }
+
+    /// The job text of a review that continues a conversation: the reviewer must read the stored Cards
+    /// back from the archive, because the conversation's memory may hold a body a fix or split replaced.
+    fn review_reread_text(&self, chains: &[(Vec<String>, String, String)]) -> Result<String> {
+        let mut text = String::from(
+            "这次复核接着你写这些分卡的对话。分卡可能已经被后续的修正和拆分改过：先用一条命令从档案读回它们的当前正文，不要凭记忆复核。\r\n\r\n读法：把下面每个地址写成一条 `get_card`，一次传给助手（HELPER）：\r\n\r\n```text\r\n@'\r\n[{\"tool\":\"get_card\",\"arguments\":{\"at\":\"<地址>\"}},…]\r\n'@ | zt-digest call -\r\n```\r\n\r\n## 要复核的推导分卡\r\n\r\n",
+        );
+        let mut seen: Vec<String> = Vec::new();
+        for (parts, _, _) in chains {
+            for a in parts {
+                if !seen.contains(a) {
+                    seen.push(a.clone());
+                    text += &format!("- [[{a}]]\r\n");
+                }
+            }
+        }
+        let mut around: Vec<(&str, String)> = Vec::new();
+        for (_, after, before) in chains {
+            if !after.is_empty() {
+                around.push(("链之前的分卡（推导从它出发）", after.clone()));
+            }
+            if !before.is_empty() {
+                around.push(("链之后的分卡（它用推导的结果）", before.clone()));
+            }
+        }
+        let mut named: Vec<String> = Vec::new();
+        for (label, at) in around {
+            if seen.contains(&at) || named.contains(&at) {
+                continue;
+            }
+            named.push(at.clone());
+            text += &format!("\r\n## {label}：[[{at}]]\r\n");
+        }
+        Ok(text)
     }
 
     /// `Find-Owner`: the model and plan id of a part this batch built (never a shared part).
@@ -2117,7 +2195,7 @@ impl Compiler {
         }
         let mut ids = vec![id.to_string()];
         ids.extend(new);
-        Ok(Follow { model: model.to_string(), job, text, ids })
+        Ok(Follow { model: model.to_string(), job, text, ids, cards: Vec::new() })
     }
 
     fn step_split(&mut self) -> Result<()> {
@@ -2187,7 +2265,7 @@ impl Compiler {
                 let job = self.find_job(&a.model, &a.id);
                 let at = self.resolve(&json!(a.id), &a.model)?;
                 let text = format!("## 修正：[[{at}]]\n\n{}\n", s(&a.reason));
-                add(&mut follow, Follow { model: a.model.clone(), job, text, ids: vec![a.id.clone()] });
+                add(&mut follow, Follow { model: a.model.clone(), job, text, ids: vec![a.id.clone()], cards: Vec::new() });
             }
         }
         // A split changes the length of its chain: every member gets its new position line.
@@ -2206,11 +2284,12 @@ impl Compiler {
     }
 
     /// `close`: the build faults each model of the batch still has after its last fill, derive or
-    /// split (closure, forward, reach-in, unanchored) go back once, as 修正 notes, to the conversation
-    /// that wrote the Card they sit in: the Model Card's own job for the Model Card, the part's job for a
-    /// part. `model-finish` refuses a model with any of these faults, and before this step nothing
-    /// sent them back (a concept model has no review round at all). A fault in a Card no job of this
-    /// batch wrote (a shared part of another model) is listed under `unowned`.
+    /// split (closure, forward, reach-in, unanchored) go back once, as 修正 notes, to the model's own
+    /// conversation (#194); the note carries the allow list of the job that wrote the Card, or a new
+    /// job of the model's conversation whose allow list names the Card. `model-finish` refuses a model
+    /// with any of these faults, and before this step nothing sent them back (a concept model has no
+    /// review round at all). A fault in a Card of another model (a shared part of a model this batch
+    /// does not hold) is listed under `unowned`.
     /// `-Step defer -Models "a,b"`: a model `model-deps` released to wait (a part it takes from a model of
     /// another batch is not built yet) leaves this batch before the fill, and its plan.json is set aside as
     /// plan-deferred.json, so the batch that claims it again plans it afresh and the ledger finds one plan.
@@ -2302,20 +2381,27 @@ impl Compiler {
             }
             for (at, text) in entries {
                 faults += 1;
-                let (job, ids) = if ps::eq(&at, &model) {
-                    (self.head_job(&model), Vec::new())
+                // #194: a fault in a Card of a model of this batch is never `unowned`: when no job of this
+                // batch wrote it, the model's conversation gets a new job whose allow list names the Card.
+                let (job, ids, cards) = if ps::eq(&at, &model) {
+                    match self.head_job(&model) {
+                        Some(job) => (Some(job), Vec::new(), Vec::new()),
+                        None => (None, Vec::new(), vec![at.clone()]),
+                    }
                 } else {
                     match self.find_owner(&at)? {
                         Some((owner, id)) if ps::eq(&owner, &model) => {
                             let job = self.find_job(&model, &id);
-                            (job, vec![id])
+                            let cards = if job.is_some() { Vec::new() } else { vec![at.clone()] };
+                            (job, vec![id], cards)
                         }
-                        _ => (None, Vec::new()),
+                        _ => (None, Vec::new(), Vec::new()),
                     }
                 };
-                match job {
-                    Some(job) => add_follow(&mut follow, Follow { model: model.clone(), job: Some(job), text, ids }),
-                    None => unowned.push(json!({ "model": model, "card": at })),
+                match (job, cards.is_empty()) {
+                    (Some(job), _) => add_follow(&mut follow, Follow { model: model.clone(), job: Some(job), text, ids, cards }),
+                    (None, false) => add_follow(&mut follow, Follow { model: model.clone(), job: None, text, ids, cards }),
+                    (None, true) => unowned.push(json!({ "model": model, "card": at })),
                 }
             }
         }
@@ -2399,7 +2485,8 @@ impl Compiler {
         Ok(n)
     }
 
-    /// The job that wrote a model's Model Card (`fill_head_job`): the last job whose addresses name it.
+    /// The job that wrote a model's Model Card (the model's one fill job): the last job whose
+    /// addresses name it.
     fn head_job(&self, model: &str) -> Option<String> {
         let mut found = None;
         for k in ps::keys(&self.state["jobs"]) {
@@ -2411,13 +2498,17 @@ impl Compiler {
         found
     }
 
-    /// The follow-up jobs of a split or close round: a note for a conversation that is still known
-    /// continues it (its ALLOW file, a fresh-conversation fallback); a note with no job yet becomes a
-    /// new job with the parts' blocks.
+    /// The follow-up jobs of a split or close round (#194): every follow-up continues the model's
+    /// conversation (`<slug>:brief`), with a fallback to the files of a fresh conversation. The note
+    /// carries the ALLOW file of the job that wrote the Card; a Card no job of this batch wrote gets a
+    /// new job whose own allow list names it, so a Card of a model of this batch is never `unowned`.
     fn follow_jobs(&mut self, follow: &CiMap<Follow>) -> Result<Vec<Value>> {
         let mut jobs = Vec::new();
-        for (key, f) in follow.iter().map(|(k, f)| (k.clone(), (f.model.clone(), f.text.clone(), f.ids.clone()))).collect::<Vec<_>>() {
-            let (model, text, ids) = f;
+        let entries: Vec<(String, String, String, Vec<String>, Vec<String>)> = follow
+            .iter()
+            .map(|(k, f)| (k.clone(), f.model.clone(), f.text.clone(), f.ids.clone(), f.cards.clone()))
+            .collect();
+        for (key, model, text, ids, cards) in entries {
             let seq = self.next_seq();
             let dir = self.dir(&model);
             let file = ps::join(&dir, &format!("follow-{seq}.md"));
@@ -2432,28 +2523,49 @@ impl Compiler {
                     }
                 }
                 let ids = ids.iter().map(|i| json!(i)).collect();
-                jobs.push(self.new_job(
+                let mut job = self.new_job(
                     &model,
                     "d",
                     ids,
                     &format!("{text}\n{}", blocks.join("\n")),
                     "按以上说明完成你的分卡，最后每张分卡回复一行 JSON。",
-                )?);
+                )?;
+                self.add_cards_to_job(&mut job, &cards)?;
+                self.continue_model(&mut job, &model, &self.docs.fill)?;
+                jobs.push(job);
                 continue;
             }
             let allow = s(&allow);
             util::write_text(&file, &format!("# 补充任务（接着你刚才的分卡写）\n\nALLOW 已更新：{allow}\n\n{text}\n写完后照常运行 CHECK（地址加上新分卡）。"))?;
-            // fallback: the files of a fresh conversation, when the one that wrote the part is gone
+            // fallback: the files of a fresh conversation, when the model's conversation is gone
             let fallback = json!([self.docs.fill, ps::join(&dir, "setting.md"), self.state["jobs"][&key]["file"], file]);
             jobs.push(json!({
                 "id": format!("{key}+{seq}"),
-                "continue": key,
+                "continue": format!("{}:brief", Self::slug(&model)),
                 "files": [file],
                 "fallback": fallback,
                 "prompt": "按以上补充说明修改和续写你的分卡，最后每张分卡回复一行 JSON。",
             }));
         }
         Ok(jobs)
+    }
+
+    /// Names extra Cards in a job's allow list and addresses (a note for a Card no job wrote).
+    fn add_cards_to_job(&mut self, job: &Value, cards: &[String]) -> Result<()> {
+        if cards.is_empty() {
+            return Ok(());
+        }
+        let job_id = s(&job["id"]);
+        let mut addresses = strings(&self.state["jobs"][&job_id]["addresses"]);
+        for at in cards {
+            if !addresses.contains(at) {
+                addresses.push(at.clone());
+            }
+        }
+        self.state["jobs"][&job_id]["addresses"] = json!(addresses);
+        let allow = s(&self.state["jobs"][&job_id]["allow"]);
+        util::write_text(&allow, &(addresses.join("\n") + "\n"))?;
+        Ok(())
     }
 
     fn step_report(&mut self) -> Result<()> {
@@ -2709,47 +2821,58 @@ impl Compiler {
         let mut emitted_derive: Vec<String> = Vec::new();
         if head_missing {
             round = "fill";
-            let mut job = self.fill_head_job(model, &plan)?;
-            job["addresses"] = json!([model]);
-            emitted_fill.push(model.to_string());
-            emitted.push(json!({"tool":"head","job":job["id"],"addresses":[model]}));
+            // #194: one job per model holds the Model Card and every missing fill part, continuing the
+            // model's conversation; a resume's own batch has no session table, so the job runs once from
+            // its fallback files.
+            let start = from.as_ref().and_then(|first| fill.iter().position(|a| a == first)).unwrap_or(0);
+            let mut todo: Vec<Value> = Vec::new();
+            for address in fill.iter().skip(start) {
+                let id = missing_id.get(address).context("missing part map id")?;
+                let part = plan_parts.iter().find(|p| ps::eq(&s(&p["id"]), id)).context("missing plan part")?;
+                todo.push(part.clone());
+            }
+            let job = self.fill_job(model, &plan, &todo)?;
+            let addresses = self.state["jobs"][s(&job["id"])]["addresses"].clone();
+            for address in list(&addresses) {
+                emitted_fill.push(s(address));
+            }
+            emitted.push(json!({"tool":"fill","job":job["id"],"addresses":addresses}));
             jobs.push(job);
         } else if let Some(first) = from.clone() {
             if fill.iter().any(|a| *a == first) {
                 round = "fill";
                 let start = fill.iter().position(|a| *a == first).unwrap_or(0);
-                for group in fill[start..].chunks(3) {
-                    let mut blocks = Vec::new();
-                    let mut plan_ids = Vec::new();
-                    for (n, address) in group.iter().enumerate() {
-                        let key: &str = address;
-                        let id = missing_id.get(key).context("missing part map id")?;
-                        let part = plan_parts.iter().find(|p| ps::eq(&s(&p["id"]), id)).context("missing plan part")?;
-                        plan_ids.push(json!(id));
-                        blocks.push(self.part_block(n + 1, part, model, false)?);
-                    }
-                    let job = self.new_job(model, "f", plan_ids, &blocks.join("\n"), "按以上说明完成你的任务，最后每张分卡回复一行 JSON。")?;
-                    let addresses = self.state["jobs"][s(&job["id"])]["addresses"].clone();
-                    for address in list(&addresses) {
-                        emitted_fill.push(s(address));
-                    }
-                    emitted.push(json!({"tool":"fill","job":job["id"],"addresses":addresses}));
-                    jobs.push(job);
+                let mut blocks = Vec::new();
+                let mut plan_ids = Vec::new();
+                for (n, address) in fill.iter().skip(start).enumerate() {
+                    let key: &str = address;
+                    let id = missing_id.get(key).context("missing part map id")?;
+                    let part = plan_parts.iter().find(|p| ps::eq(&s(&p["id"]), id)).context("missing plan part")?;
+                    plan_ids.push(json!(id));
+                    blocks.push(self.part_block(n + 1, part, model, false)?);
                 }
+                let mut job = self.new_job(model, "f", plan_ids, &blocks.join("\n"), "按以上说明完成你的任务，最后每张分卡回复一行 JSON。")?;
+                self.continue_model(&mut job, model, &self.docs.fill)?;
+                let addresses = self.state["jobs"][s(&job["id"])]["addresses"].clone();
+                for address in list(&addresses) {
+                    emitted_fill.push(s(address));
+                }
+                emitted.push(json!({"tool":"fill","job":job["id"],"addresses":addresses}));
+                jobs.push(job);
             } else {
                 round = "derive";
                 let start = derive.iter().position(|a| *a == first).unwrap_or(0);
-                let group: Vec<&String> = derive.iter().skip(start).take(3).collect();
                 let mut blocks = Vec::new();
                 let mut plan_ids = Vec::new();
-                for (n, address) in group.iter().enumerate() {
+                for (n, address) in derive.iter().skip(start).enumerate() {
                     let key: &str = address;
                     let id = missing_id.get(key).context("missing part map id")?;
                     let part = plan_parts.iter().find(|p| ps::eq(&s(&p["id"]), id)).context("missing plan part")?;
                     plan_ids.push(json!(id));
                     blocks.push(self.part_block(n + 1, part, model, true)?);
                 }
-                let job = self.new_job(model, "d", plan_ids, &blocks.join("\n"), "按以上说明完成你的推导分卡，最后每张分卡回复一行 JSON。")?;
+                let mut job = self.new_job(model, "d", plan_ids, &blocks.join("\n"), "按以上说明完成你的推导分卡，最后每张分卡回复一行 JSON。")?;
+                self.continue_model(&mut job, model, &self.docs.fill)?;
                 let addresses = self.state["jobs"][s(&job["id"])]["addresses"].clone();
                 for address in list(&addresses) {
                     emitted_derive.push(s(address));
@@ -2783,8 +2906,8 @@ impl Compiler {
         }))
     }
 
-    /// The Model Card's own fill job (round 1), as `apply` writes it for a fresh model.
-    fn fill_head_job(&mut self, model: &str, plan: &Value) -> Result<Value> {
+    /// The Model Card's block in the model's one fill job.
+    fn head_text(&mut self, model: &str, plan: &Value) -> Result<String> {
         let card = self.card(&json!(model))?;
         let id_values: Vec<String> = self.m(model)["ids"].as_object().map(|ids| ids.values().map(s).collect()).unwrap_or_default();
         let outside: Vec<String> = pipe(&card["outbound"])
@@ -2806,12 +2929,38 @@ impl Compiler {
             }
             card_text += &format!("\n### 模型卡现在的正文（结构一节除外）\n{current}\n");
         }
-        let job = self.new_job(model, "f", Vec::new(), &card_text, "按以上说明完成你的任务，最后每张分卡回复一行 JSON。")?;
+        Ok(card_text)
+    }
+
+    /// Round 1 of a model: ONE job holding the Model Card and every part the plan fills, in build
+    /// order, continuing the model's conversation (#194). Its allow list names the Model Card and
+    /// every part, and the state's `jobs` map records them, so `close` still finds both.
+    fn fill_job(&mut self, model: &str, plan: &Value, todo: &[Value]) -> Result<Value> {
+        let mut text = self.head_text(model, plan)?;
+        for (n, p) in todo.iter().enumerate() {
+            text += "\n";
+            text += &self.part_block(n + 1, p, model, false)?;
+        }
+        let ids: Vec<Value> = todo.iter().map(|p| p["id"].clone()).collect();
+        let mut job = self.new_job(model, "f", ids, &text, "按以上说明完成你的任务，最后每张分卡回复一行 JSON。")?;
         let job_id = s(&job["id"]);
-        self.state["jobs"][&job_id]["addresses"] = json!([model]);
+        let mut addresses = vec![json!(model)];
+        addresses.extend(list(&self.state["jobs"][&job_id]["addresses"]).into_iter().cloned());
+        self.state["jobs"][&job_id]["addresses"] = Value::Array(addresses.clone());
         let allow = s(&self.state["jobs"][&job_id]["allow"]);
-        util::write_text(&allow, &format!("{model}\n"))?;
+        util::write_text(&allow, &(addresses.iter().map(s).collect::<Vec<_>>().join("\n") + "\n"))?;
+        self.continue_model(&mut job, model, &self.docs.fill)?;
         Ok(job)
+    }
+
+    /// A content job that continues the model's conversation: `continue` names the brief's job id,
+    /// and `fallback` holds the files of a fresh conversation when that session is gone (#194).
+    fn continue_model(&self, job: &mut Value, model: &str, first: &str) -> Result<()> {
+        let job_id = s(&job["id"]);
+        let dir = self.dir(model);
+        job["continue"] = json!(format!("{}:brief", Self::slug(model)));
+        job["fallback"] = json!([first, ps::join(&dir, "setting.md"), self.state["jobs"][&job_id]["file"]]);
+        Ok(())
     }
 
     // --- explain --------------------------------------------------------------------------------

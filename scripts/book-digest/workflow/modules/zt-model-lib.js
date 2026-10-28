@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v13 ====
+// ==== module zt-model-lib v14 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list and the
 // model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill, derive, review, split →
 // report and clean-up. A book type installs the model layer with its profile (economics: the economic
@@ -21,6 +21,11 @@
 // its 400 characters; the overflow answered {ok, detail}, the module read a fill with no jobs and six models stayed
 // unwritten. The steps now name models without the book key (`2|a`) and the module adds it back (`full`); the
 // brief's skipped models travel the same way (a list, no longer a count). An overflow is now a failed step.
+// 14 (#194, docs/model-one-conversation-proposal.md §7): one DeepSeek conversation per model. The brief job
+// (`<slug>:brief`) starts it; the compiler's fill, derive, review, split and close jobs name `continue` for it,
+// so the brief round's sessions are kept and every later content round gets the session table. The math variant
+// (`profile.independentReview`) reviews in the reviewer's own conversation (`<slug>:review`), and the review
+// step is told so with `-IndependentReview`.
 function zmlMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const {
@@ -59,6 +64,8 @@ function zmlMake(ctx, p) {
     if (o.skipForms && o.skipForms.length) parts.push(`-SkipForms "${o.skipForms.join(',')}"`)
     if (o.perConcept) parts.push(`-PerConcept ${o.perConcept}`)
     if (o.perSonnet) parts.push(`-PerSonnet ${o.perSonnet}`)
+    // #194: the math variant's reviewer opens its own conversation; the compiler names it `<slug>:review`.
+    if (o.independentReview) parts.push('-IndependentReview')
     if (o.limits) parts.push(o.limits)
     // The math variant's own instruction files: every compiler command of that variant takes them.
     for (const [flag, file] of Object.entries(profile.compilerDocs || {})) parts.push(`-${flag} "${OUT}\\${file}"`)
@@ -174,7 +181,7 @@ Return plans: one entry per model, in this order.`,
       if (!derive.ok) return failed(`derive failed: ${derive.error}`)
       await splitNeeds(await content('derive', derive.file, derive.jobs, DERIVE_EFFORT))
       for (let round = 0; round < REVIEW_ROUNDS; round++) {
-        const review = await step(`review ${round + 1}`, 'review', { changed: round > 0 })
+        const review = await step(`review ${round + 1}`, 'review', { changed: round > 0, independentReview: !!profile.independentReview })
         if (!review.ok) return failed(`review failed: ${review.error}`)
         if (!Number(review.jobs || 0)) break
         const verdicts = answerLines({ results: await content(`review ${round + 1}`, review.file, review.jobs, REVIEW_EFFORT) })
@@ -258,9 +265,10 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '13', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '14', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model layer\'s model-steps.ps1 steps (list, claim and batch; brief, fill, derive, review, split, close, report, finish), the Sonnet architect, and the model compiler\'s report and clean-up.',
 })
 // ==== end module zt-model-lib ====
+
 
 

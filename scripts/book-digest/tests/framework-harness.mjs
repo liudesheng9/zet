@@ -1432,7 +1432,7 @@ function runtime(kind, opts = {}) {
   // answered as the script does: the stopped run's claims are released, the listing and the block's claim run,
   // each batch's chain runs its one compiler command per step, and the finish step records the block's checked
   // completions. The stand-in keeps each step's job list, so the content managers run exactly those entries.
-  const modelCalls = [], modelManagers = [], modelUnits = new Map()
+  const modelCalls = [], modelManagers = [], modelUnits = new Map(), modelJobLists = []
   const modelArg = (cmd, name) => (cmd.match(new RegExp(`-${name} "([^"]*)"`)) || cmd.match(new RegExp(`-${name} '([^']*)'`)) || cmd.match(new RegExp(`-${name} (\\S+)`)) || [])[1]
   const modelGate = (out) => layerGate(out, 'models')
   const modelStepAnswerRaw = async (cmd) => {
@@ -1464,10 +1464,22 @@ function runtime(kind, opts = {}) {
       return { ok: true, units, claimed: units.length, models: rows, missing: [], file: `${out}\\models\\drive\\units.json`, gate: modelGate(out) }
     }
     const held = modelUnits.get(out) || []
+    // #194: one DeepSeek conversation per model. The stand-in names the jobs as the compiler does: the brief
+    // starts `<slug>:brief`, every later content job continues it with a fallback, and the math reviewer's
+    // first round starts its own `<slug>:review` conversation (only `-IndependentReview` asks for that).
+    const batchModels = models.length ? models : [...new Set(held.map((u) => u.model))].filter(Boolean)
+    const jobOf = (m, step) => `${String(m).replace(/[\/|]/g, '_')}:${step}`
+    const continueJob = (m, step) => job(jobOf(m, step), {
+      continue: jobOf(m, 'brief'),
+      fallback: [`D:\\x\\Key\\fill.md`, `D:\\x\\Key\\setting.md`, `D:\\x\\Key\\${jobOf(m, step)}.md`],
+    })
     if (held.length) call(`zt-digest ledger hold -Out "${out}" -Units "${held.map((u) => `${u.id}:${u.token}`).join(',')}" -Seconds 1 -Every 1`)
     if (step === 'brief') {
       const b = call(`zt-digest model -Step brief -Work "${work}" -Staging "${out}" -Models "${models.join(',')}"`)
-      const jobs = (b.jobs || [{ id: 'brief' }]).filter(Boolean).map((j) => job(j.id || 'brief', { files: j.files, prompt: j.prompt }))
+      // #194: the brief starts each model's conversation, named `<slug>:brief`; every later job continues it.
+      const real = (b.jobs || []).filter(Boolean)
+      const jobs = real.length ? real.map((j) => job(j.id || 'brief', { files: j.files, prompt: j.prompt })) : batchModels.map((m) => job(jobOf(m, 'brief')))
+      modelJobLists.push({ step, jobs })
       return { ok: true, step, jobs: jobs.length, file: saved('brief-jobs.json', jobs), skipped: b.skipped || [] }
     }
     if (step === 'fill') {
@@ -1501,13 +1513,37 @@ function runtime(kind, opts = {}) {
       const go = plans.filter((x) => x.status === 'planned' && !deferred.some((d) => d.model === x.model))
       if (!go.length) return { ok: true, step, plans, deferred, jobs: 0, derive: false, file: saved('fill-jobs.json', []) }
       call(`zt-digest model -Step apply -Work "${work}" -Staging "${out}"`)
-      const jobs = [job('fill-1')]
+      // #194: one fill job per model, holding all of its parts and continuing its brief conversation.
+      const jobs = batchModels.map((m) => continueJob(m, 'fill'))
+      modelJobLists.push({ step, jobs })
       return { ok: true, step, plans, deferred, jobs: jobs.length, derive: true, file: saved('fill-jobs.json', jobs) }
     }
     if (step === 'derive' || step === 'review' || step === 'split' || step === 'close') {
       const more = step === 'review' ? ' -Changed' : step === 'close' ? ' -Report' : ''
+      const independent = step === 'review' && / -IndependentReview\b/.test(cmd)
       const line = call(`zt-digest model -Step ${step} -Work "${work}" -Staging "${out}"${more}`)
-      const jobs = (line.jobs || []).map((j) => job(j.id || `${step}-1`, { continue: j.continue, files: j.files || [`D:\\x\\Key\\${j.id || step}.md`], prompt: j.prompt }))
+      let jobs = (line.jobs || []).map((j) => job(j.id || `${step}-1`, { continue: j.continue, fallback: j.fallback, files: j.files || [`D:\\x\\Key\\${j.id || step}.md`], prompt: j.prompt }))
+      // A close round that sends follow-ups: the first round names one per model, the next one is clean.
+      if (step === 'close' && opts.modelCloseFollows) {
+        if (!state.modelCloseRounds) {
+          state.modelCloseRounds = 1
+          jobs = batchModels.map((m) => continueJob(m, 'close'))
+          modelJobLists.push({ step, jobs })
+          return { ok: true, step, jobs: jobs.length, faults: 1, unowned: [], report: null, file: saved(`${step}-jobs.json`, jobs) }
+        }
+        jobs = []
+        modelJobLists.push({ step, jobs })
+        return { ok: true, step, jobs: 0, faults: 0, unowned: [], report: CANNED['model report'](), file: saved(`${step}-jobs.json`, jobs) }
+      }
+      if (!jobs.length && batchModels.length) {
+        if (step === 'review' && independent) {
+          // The independent reviewer opens its own conversation: `<slug>:review`, no continue.
+          jobs = batchModels.map((m) => job(jobOf(m, 'review')))
+        } else {
+          jobs = batchModels.map((m) => continueJob(m, step))
+        }
+      }
+      modelJobLists.push({ step, jobs })
       return { ok: true, step, jobs: jobs.length, faults: Number(line.faults || 0), unowned: line.unowned || [], report: line.report || null, file: saved(`${step}-jobs.json`, jobs) }
     }
     if (step === 'report') {
@@ -1882,7 +1918,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, mathCalls, mathManagers, state, deleteManagers,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, modelJobLists, mathCalls, mathManagers, state, deleteManagers,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -3157,6 +3193,38 @@ for (const which of ['econ', 'math']) {
   const driveCwds = drivePrompts.filter((c) => !prepDrives.includes(c)).map(cwdOf)
   check(driveCwds.length > 0 && driveCwds.every((cwd) => cwd === base.out), `drive jobs: every drive job after the preparation runs in the staging folder, which exists before the stage (${[...new Set(driveCwds)].slice(0, 4).join(', ')})`)
   check(prepDrives.length === 1 && cwdOf(prepDrives[0]) === 'D:\\x' && prepDrives[0].prompt.includes('-Out "D:\\x\\Key"') && prepDrives[0].prompt.includes('D:\\x\\Key\\answers'), `drive jobs: the fresh preparation runs in the staging folder's parent, which exists before the run, and keeps its answer in the staging folder (${prepDrives.map(cwdOf).join(', ')})`)
+}
+
+// ================================================================================================================
+// #194: one DeepSeek conversation per model (docs/model-one-conversation-proposal.md §7). The brief starts
+// `<slug>:brief`; every later content job (fill, derive, review, split, close) names it in `continue` and
+// carries the files of a fresh conversation as `fallback`, with one job per model per step. The math variant
+// reviews in its own `<slug>:review` conversation (`-IndependentReview`).
+// ================================================================================================================
+{
+  const { modelCalls, modelJobLists } = await run('econ', { ...base, figures: false }, { modelCloseFollows: true })
+  const after = modelJobLists.filter((list) => list.step !== 'brief' && list.jobs.length)
+  const loose = after.flatMap((list) => list.jobs.filter((j) => !j.continue).map((j) => `${list.step}:${j.id}`))
+  check(after.length >= 4 && !loose.length, `#194: every content job after the brief names the conversation it continues (${loose.slice(0, 4).join(', ') || 'none'} loose of ${after.flatMap((l) => l.jobs).length})`)
+  const wrong = after.flatMap((list) => list.jobs.filter((j) => !/:brief$/.test(String(j.continue))).map((j) => `${list.step}:${j.id}->${j.continue}`))
+  check(!wrong.length, `#194: an economics content job continues the model's brief conversation (${wrong.slice(0, 4).join(', ') || 'all brief'})`)
+  const noFallback = after.flatMap((list) => list.jobs.filter((j) => !Array.isArray(j.fallback) || !j.fallback.length).map((j) => `${list.step}:${j.id}`))
+  check(!noFallback.length, `#194: every continued job carries the files of a fresh conversation as a fallback (${noFallback.slice(0, 4).join(', ') || 'all'})`)
+  const doubled = modelJobLists.flatMap((list) => {
+    const seen = new Set(), twice = []
+    for (const j of list.jobs) {
+      const model = String(j.id).split(':')[0]
+      if (seen.has(model)) twice.push(`${list.step}:${model}`)
+      seen.add(model)
+    }
+    return twice
+  })
+  check(modelJobLists.length > 0 && !doubled.length, `#194: no step lists two jobs for one model (${doubled.slice(0, 4).join(', ') || 'none'})`)
+  check(modelCalls.some((c) => c.step === 'review') && !modelCalls.some((c) => / -IndependentReview\b/.test(c.cmd)), '#194: the economics variant never asks for an independent reviewer')
+  const math = await run('math', { ...base, figures: false })
+  check(math.modelCalls.some((c) => c.step === 'review' && / -IndependentReview\b/.test(c.cmd)), `#194: the math variant reviews with -IndependentReview (${math.modelCalls.filter((c) => c.step === 'review').map((c) => c.cmd.slice(-60)).join(' | ') || 'no review step'})`)
+  const mathReview = math.modelJobLists.filter((list) => list.step === 'review' && list.jobs.length)
+  check(mathReview.length > 0 && mathReview.every((list) => list.jobs.every((j) => /:review$/.test(String(j.id)) && !j.continue)), `#194: the math reviewer's first round opens its own <slug>:review conversation (${mathReview.flatMap((l) => l.jobs.map((j) => j.id)).join(', ') || 'none'})`)
 }
 
 // ================================================================================================================

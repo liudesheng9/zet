@@ -57,7 +57,7 @@ try {
     }
     Save-Json (Join-Path $dir 'plan.json') $plan
     $applied = & $step 'apply'
-    Assert ($applied.models[0].status -eq 'built' -and @($applied.jobs).Count -eq 3) "apply: the skeleton is built and its fill jobs are planned ($($applied.models[0].error))"
+    Assert ($applied.models[0].status -eq 'built' -and @($applied.jobs).Count -eq 1) "apply: the skeleton is built and its one fill job per model is planned ($($applied.models[0].error))"
     $state = State $work
     $ids = $state.models[$model].ids
     Assert (@($ids.Keys | Where-Object { $_ -in 'S', 'A', 'D', 'P', 'E' }).Count -eq 5) 'apply: every planned part has an address in the part map'
@@ -144,3 +144,4 @@ try {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Output 'all passed'
+

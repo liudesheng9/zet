@@ -12,7 +12,8 @@
   fill    plan-status, the batch's model-deps references, the defer of the models they release, and the
           fill jobs                                                             -> drive\jobs.json
   derive  the Derivation jobs of the batch                                      -> drive\jobs.json
-  review  one review job per Derivation chain of the batch                      -> drive\jobs.json
+  review  one review job per model: it continues the model's conversation (the math variant, with
+          -IndependentReview, starts the reviewer's own `<slug>:review` conversation)  -> drive\jobs.json
   split   apply the review verdicts (and the composers' -Need requests)         -> drive\jobs.json
   close   the build faults back to the writers once; the last round that sends nothing back also writes
           the batch report (-Report)                                            -> drive\jobs.json
@@ -50,6 +51,7 @@ param(
     [int]$MaxExplainChars = 600,
     [switch]$Rebuild,
     [switch]$Changed,
+    [switch]$IndependentReview,
     [switch]$SkipRenew,
     [string]$Tool = 'zt-digest'
 )
@@ -291,6 +293,9 @@ switch ($Step) {
         Renew
         $extra = @()
         if ($Changed) { $extra += '-Changed' }
+        # #194: the math variant reviews in its own conversation (`<slug>:review`); the economics
+        # variant's reviewer continues the model's conversation.
+        if ($IndependentReview) { $extra += '-IndependentReview' }
         $r = Compiler 'review' $extra
         if (-not $r.json) { Fail 'review' $r; break }
         $file = Jobs 'jobs.json' $r
