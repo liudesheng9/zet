@@ -16,8 +16,8 @@ paths:
   - "!.claude/workflow-framework/zt-issue-dev/**"
   - "!.claude/workflows/zt-idea-grow.js"
   - "!.claude/workflow-framework/zt-idea-grow/**"
-synced: 7e5dad0bec38
-updated: 2026-10-27
+synced: 173a5d9ef229
+updated: 2026-10-28
 ---
 
 # Digest workflows
