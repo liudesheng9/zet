@@ -1022,7 +1022,35 @@ impl Compiler {
             let tree = self.tree_addresses(model)?;
             faults.extend(Self::merge_faults(plan, &tree)?);
         }
+        faults.extend(Self::take_faults(plan));
         Ok(faults)
+    }
+
+    /// #197: the takes no part of the plan uses. A taken part joins the model only through a rests-on
+    /// Link (or as the part a side part is `of`), so a take nothing names stays outside the build order and
+    /// `model-finish` refuses the model ("mapped but belongs to no model").
+    fn take_faults(plan: &Value) -> Vec<String> {
+        let parts = list(&plan["parts"]);
+        let mut used: HashSet<String> = HashSet::new();
+        for p in &parts {
+            for r in list(&p["rests"]) {
+                used.insert(s(&ps::at(&pipe(r), 0)));
+            }
+            if truthy(&p["of"]) {
+                used.insert(s(&p["of"]));
+            }
+        }
+        parts
+            .iter()
+            .filter(|p| truthy(&p["take"]) && !used.contains(&s(&p["id"])))
+            .map(|p| {
+                format!(
+                    "take {} ({}): no part rests on it; a taken part joins the model only through rests, so name it in the rests of the part that uses it, or drop the take and refer to it with a Link in prose",
+                    s(&p["id"]),
+                    s(&p["take"])
+                )
+            })
+            .collect()
     }
 
     /// #197: the merges the build cannot carry out. `apply` deletes a merged part only when it has no
@@ -2776,6 +2804,51 @@ impl Compiler {
         Ok(n)
     }
 
+    /// #197: puts the compiler's 结构 list back on a Model Card whose list does not name every mapped part.
+    /// The model's one fill job writes the Model Card too, so a writer may drop the list (or a line of it)
+    /// before `close` records it, and `model-finish` refuses a list that misses a part. The list is rebuilt
+    /// from the plan and the part map, each split piece after the part it continues; the rest of the body stays.
+    fn complete_structures(&mut self) -> Result<usize> {
+        let mut edits = Vec::new();
+        for model in self.order() {
+            let Ok(plan) = self.plan(&model) else { continue };
+            let addresses: Vec<String> = self.m(&model)["ids"]
+                .as_object()
+                .map(|ids| ids.values().map(s).filter(|a| !a.is_empty() && !a.contains('#')).collect())
+                .unwrap_or_default();
+            if addresses.is_empty() {
+                continue;
+            }
+            let card = self.card(&json!(model))?;
+            let body = s(&card["body"]);
+            let section = text::get_section(&body, "结构").unwrap_or_default();
+            if addresses.iter().all(|a| section.contains(&format!("[[{a}]]"))) {
+                continue;
+            }
+            let rebuilt = self.structure_list(&plan, &model)?;
+            let mut lines: Vec<String> = rebuilt.split('\n').map(str::to_string).collect();
+            let main = strings(&self.m(&model)["main"]);
+            for (k, id) in main.iter().enumerate() {
+                let added = self.m(&model)["added"][id].clone();
+                if !added.is_object() || k == 0 {
+                    continue;
+                }
+                let link = format!("[[{}]]", self.id_address(&model, &main[k - 1]));
+                let line = format!("- {} [[{}]]：{}", s(&added["facet"]), self.id_address(&model, id), s(&added["title"]));
+                match lines.iter().rposition(|l| l.contains(&link)) {
+                    Some(at) => lines.insert(at + 1, line),
+                    None => lines.push(line),
+                }
+            }
+            let list = lines.join("\n");
+            let list = list.strip_prefix("**结构**\n\n").unwrap_or(&list).to_string();
+            edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": text::set_section(&body, "结构", &format!("**结构**\n\n{list}")) } }));
+        }
+        let n = edits.len();
+        self.edits(edits)?;
+        Ok(n)
+    }
+
     /// Keeps each Model Card's 结构 list as the compiler wrote it across a close round: `close` records the
     /// list, and `report` puts it back when a writer re-sent the whole body from an older copy.
     fn snapshot_structures(&mut self) -> Result<()> {
@@ -2900,6 +2973,7 @@ impl Compiler {
         // A close writer may have re-sent a whole Model Card from an older copy: its 结构 list goes back
         // to the one the compiler wrote, and the 共用 lines follow the current addresses.
         self.restore_structures()?;
+        self.complete_structures()?;
         self.refresh_shared()?;
         let mut reports = Vec::new();
         for model in self.order() {
@@ -3783,6 +3857,24 @@ mod tests {
         let faults = super::Compiler::merge_faults(&plan, &tree).unwrap();
         assert_eq!(faults.len(), 1, "{faults:?}");
         assert!(faults[0].contains("K/7|b|a|6") && faults[0].contains("existing"), "{}", faults[0]);
+    }
+
+    // #197 pilot run 5: `3|a` took `2|a#D5` "for comparison" and no part rested on it, so the take stayed
+    // outside the build order and model-finish refused the model. A take joins a model only through a
+    // rests-on Link, so a take that no part names in `rests` or `of` is a plan fault.
+    #[test]
+    fn a_take_no_part_rests_on_is_a_plan_fault() {
+        let plan = json!({"parts":[
+            {"id":"S","line":"main"},
+            {"id":"TS","take":"K/2|a#S"},
+            {"id":"TD","take":"K/2|a#D5"},
+            {"id":"TX","take":"K/2|a#X"},
+            {"id":"D1","line":"main","rests":[["TS","用到设定"]]},
+            {"id":"N","line":"side","of":"TX"}
+        ]});
+        let faults = super::Compiler::take_faults(&plan);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("TD") && faults[0].contains("rests"), "{}", faults[0]);
     }
 
     // A split Derivation part is one planned target in several pieces (`D11`, `D11~2`, `D11~3`): a Link to

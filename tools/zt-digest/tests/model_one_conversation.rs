@@ -347,6 +347,11 @@ fn every_content_job_of_a_model_continues_its_brief() {
     assert_eq!(jobs[0]["continue"], json!(format!("{slug}:brief")), "a split follow-up continues the model's conversation");
     assert_eq!(jobs[0]["fallback"].as_array().map(Vec::len), Some(4));
 
+    // The writer re-writes the Model Card without the compiler's 结构 list before the close (see step 6).
+    let mut mcp = zt.mcp();
+    mcp.call("edit_card", json!({"at": model, "body": "**问题**\n\n买者如何选择数量。\n\n**概要**\n\n买者按价格选数量。\n\n**来源**\n\n第一章。"}));
+    drop(mcp);
+
     // 5. Close: the unanchored part goes back to the model's conversation, never to `unowned`.
     let close = ok_json(&zt.digest(&["model", "-Step", "close", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap()]), "close");
     assert!(close["faults"].as_u64().unwrap_or(0) > 0, "the close round sees the unanchored part: {close}");
@@ -355,6 +360,20 @@ fn every_content_job_of_a_model_continues_its_brief() {
     assert_eq!(jobs.len(), 1, "close lists one follow-up per model conversation: {close}");
     assert_eq!(jobs[0]["continue"], json!(format!("{slug}:brief")));
     assert_eq!(jobs[0]["fallback"].as_array().map(Vec::len), Some(4));
+
+    // 6. #197 pilot: the model's one fill job writes the Model Card too, and a writer that re-wrote the head
+    //    without the compiler's 结构 list made model-finish refuse the model. report puts the list back from
+    //    the plan and the part map, split pieces included, before the finish reads it.
+    ok_json(&zt.digest(&["model", "-Step", "report", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap()]), "report");
+    let head = zt.mcp().call("get_card", json!({"at": model}));
+    let body = head["body"].as_str().unwrap_or_default().to_string();
+    let structure = body.split("**结构**").nth(1).unwrap_or_default().to_string();
+    let ids = state_of(&work)["models"][&model]["ids"].clone();
+    for (id, address) in ids.as_object().expect("the part map") {
+        let address = address.as_str().unwrap_or_default();
+        assert!(structure.contains(&format!("[[{address}]]")), "the 结构 list names part {id} {address}: {body}");
+    }
+    assert!(body.contains("买者按价格选数量"), "the writer's own sections stay: {body}");
 }
 
 #[test]
