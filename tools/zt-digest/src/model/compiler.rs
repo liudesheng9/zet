@@ -1224,7 +1224,9 @@ impl Compiler {
             )?;
             let mut context = "无".to_string();
             if !self.p.staging.is_empty() {
-                context = ps::join(&dir, "context.md");
+                // Its own file: the brief's context.md is the source review's evidence, which
+                // model-finish checks byte for byte, and §3.7 runs this round before the finish.
+                context = ps::join(&dir, "explain-context.md");
                 if self.context(&model, &context).is_err() {
                     context = "无".into();
                 }

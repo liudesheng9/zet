@@ -1494,6 +1494,26 @@ fn adopted_group_result(fact: &GroupFact, plan: &Value, revision: u64) -> Value 
     })
 }
 
+/// The inputs of a Model unit that adoption leaves open: the facts it found, and the `header` and
+/// `producer` binding of a prepared Model unit, so the models stage builds the model and
+/// `model-finish` checks it like any other (#197: without them the finish refused every rebuilt
+/// model with "incomplete prepared contract: header").
+fn need_inputs(fact: &ModelFact, producer: &str, producer_hash: &str) -> Value {
+    json!({
+        "schema_version":1,
+        "kind":"model_adoption_need",
+        "model":fact.address,
+        "header":fact.address,
+        "fingerprint":fact.fingerprints.iter().find(|(address, _)| *address == fact.address).map(|(_, fingerprint)| fingerprint.clone()),
+        "producer":{"producer":producer,"producer_input_hash":producer_hash},
+        "status":fact.status,
+        "parts":fact.parts,
+        "placeholders":fact.placeholders,
+        "faults":fact.faults,
+        "reason":fact.reason,
+    })
+}
+
 fn adopted_model_result(
     fact: &ModelFact,
     unit: &str,
@@ -1657,6 +1677,11 @@ fn apply_plan(
         adopted.push(json!({"unit":unit,"kind":"terms"}));
     }
     for fact in model_facts {
+        let group_unit = format!("digest/g{:03}@1", group_of_address(&fact.address));
+        let group_hash: Option<String> = tx
+            .query_row("SELECT input_hash FROM units WHERE id=?1", [&group_unit], |row| row.get(0))
+            .optional()?;
+        let producer = if group_hash.is_some() { group_unit.as_str() } else { "prepare/book@1" };
         let inputs = if fact.state == "verified" {
             json!({
                 "schema_version":1,
@@ -1669,32 +1694,18 @@ fn apply_plan(
                 "explanation_needs":fact.needs,
             })
         } else {
-            json!({
-                "schema_version":1,
-                "kind":"model_adoption_need",
-                "model":fact.address,
-                "status":fact.status,
-                "parts":fact.parts,
-                "placeholders":fact.placeholders,
-                "faults":fact.faults,
-                "reason":fact.reason,
-            })
+            let hash: String = match group_hash {
+                Some(hash) => hash,
+                None => tx.query_row("SELECT input_hash FROM units WHERE id=?1", [producer], |row| row.get(0))?,
+            };
+            need_inputs(fact, producer, &hash)
         };
         let key = model_key(&fact.address);
         let registered = register(&tx, "models", &key, 1, &inputs, None, false)?;
         if registered != fact.unit {
             bail!("the registered Model unit id changed: {registered}");
         }
-        let group_unit = format!("digest/g{:03}@1", group_of_address(&fact.address));
-        let known: Option<i64> = tx
-            .query_row("SELECT 1 FROM units WHERE id=?1", [&group_unit], |row| row.get(0))
-            .optional()?;
-        dependency(
-            &tx,
-            &fact.unit,
-            if known.is_some() { &group_unit } else { "prepare/book@1" },
-            "success",
-        )?;
+        dependency(&tx, &fact.unit, producer, "success")?;
         let input_hash: String = tx.query_row(
             "SELECT input_hash FROM units WHERE id=?1",
             [&fact.unit],
@@ -2187,6 +2198,38 @@ mod tests {
         assert!(!is_skeleton("§前言 - 首场讲座用学习的洞见重审自由贸易。"));
         assert!(is_placeholder("第一节。\n待写\n"));
         assert!(!is_placeholder("第一节。\n待写部分已经补齐的程度说明。\n"));
+    }
+
+    #[test]
+    fn an_open_adopted_model_names_its_header_and_producer() {
+        // #197 pilot: an adopted Model unit left open was built, then refused by model-finish
+        // with "incomplete prepared contract: header".
+        let fact = ModelFact {
+            address: "Book/2|a".into(),
+            unit: "models/adopted-Book-2-a@1".into(),
+            state: "incomplete",
+            reason: "the retained compiler state records `planned`, not a completed build".into(),
+            status: "planned".into(),
+            level: "formal".into(),
+            parts: 3,
+            placeholders: Vec::new(),
+            faults: BTreeMap::new(),
+            order: Vec::new(),
+            derivations: Vec::new(),
+            needs: Vec::new(),
+            chains: json!([]),
+            plan_hash: String::new(),
+            plan_identity: "verified_build",
+            notes: Vec::new(),
+            review_retained: false,
+            fingerprints: vec![("Book/2|a|a".into(), "fa".into()), ("Book/2|a".into(), "fh".into())],
+        };
+        let inputs = need_inputs(&fact, "digest/g002@1", "h2");
+        assert_eq!(inputs["kind"], "model_adoption_need");
+        assert_eq!(inputs["header"], "Book/2|a");
+        assert_eq!(inputs["fingerprint"], "fh", "model-finish records the head's start fingerprint");
+        assert_eq!(inputs["producer"]["producer"], "digest/g002@1");
+        assert_eq!(inputs["producer"]["producer_input_hash"], "h2");
     }
 
     #[test]

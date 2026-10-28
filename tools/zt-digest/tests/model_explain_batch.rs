@@ -328,6 +328,8 @@ fn the_batch_explain_job_is_one_per_model_continuing_its_conversation_from_the_d
     drop(mcp);
     ok_json(&zt.digest(&step("report")), "report");
     ok_json(&zt.digest(&step("derive")), "derive");
+    let brief_context = |w: &Path| std::fs::read(w.join(&slug).join("context.md")).expect("the brief's context pack");
+    let before = brief_context(&work);
 
     // §3.7: the batch's explain round is ONE job for the model, continuing its conversation,
     // carrying the architect's design of the chain.
@@ -335,6 +337,9 @@ fn the_batch_explain_job_is_one_per_model_continuing_its_conversation_from_the_d
         &zt.digest(&["model", "-Step", "explain", "-Work", work_arg.as_str(), "-Staging", staged_arg.as_str(), "-Models", &model, "-Batch"]),
         "explain",
     );
+    // #197 pilot: model-finish judges the source review against the brief's context pack, so the
+    // explain round inside the batch must not rewrite it.
+    assert!(brief_context(&work) == before, "the explain round keeps the brief's context pack byte for byte");
     assert_eq!(explain["parts"].as_f64(), Some(2.0), "the job covers both unexplained Derivation parts: {explain}");
     let jobs = explain["jobs"].as_array().expect("explain jobs");
     assert_eq!(jobs.len(), 1, "one explain job for the model: {explain}");
