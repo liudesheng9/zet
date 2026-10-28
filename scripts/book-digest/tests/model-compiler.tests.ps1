@@ -60,6 +60,13 @@ try {
             [ordered]@{ id = 'H'; line = 'off'; facet = '历史'; emphasis = 'aside'; title = '历史：抵押融资的来历'; spec = '历史'; src = @('sections/s01.md:1-1') },
             [ordered]@{ id = 'T'; take = $shared; use = '还款上限的另一种推导' }
         )
+        explain = @([ordered]@{
+            chain = @('D1', 'D2'); route = '先求还款上限，再把上限代入参与约束。'
+            parts = @(
+                [ordered]@{ id = 'D1'; shows = '还款不超过清算价值'; notes = '第 2 步分情形讨论'; meaning = '还款上限由清算价值决定' },
+                [ordered]@{ id = 'D2'; shows = '融资条件'; notes = ''; meaning = '项目价值超过成本时投资者参与' }
+            )
+        })
     }
     $planFile = Join-Path $dir 'plan.json'
     $plan.Remove('card')
@@ -91,10 +98,10 @@ try {
     $v = @(pwsh -NoProfile -File $compiler -Step validate -Work $batch -Plan $figurePlanFile 2>&1)
     Assert ($v -match "figure '9.F.9' is not a book figure") "validate: a figure the book does not hold is a fault ($($v -join ' / '))"
 
-    # apply: skeleton in build order, 结构 list, fill jobs
+    # apply: skeleton in build order, 结构 list, one fill job per model (#194)
     $apply = Last (Run 'apply')
     Assert ($apply.models[0].status -eq 'built') "apply: model built ($($apply.models[0].error))"
-    Assert ($apply.jobs.Count -eq 3) "apply: three fill jobs (Model Card + 4 parts in 2 jobs), got $($apply.jobs.Count)"
+    Assert ($apply.jobs.Count -eq 1) "apply: one fill job for the model (the Model Card and the four parts), got $($apply.jobs.Count)"
     $s = Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $model } })
     $main = @($s.build.order | Where-Object { $_.line -eq 'main' } | ForEach-Object { $_.facet })
     Assert (($main -join ',') -eq '设定,假设,推导：还款上限,推导：融资条件,命题') "apply: main line in build order ($($main -join ','))"
@@ -103,7 +110,7 @@ try {
     Assert ($head.body -match '\*\*结构\*\*' -and $head.body -match '来源') 'apply: Model Card has a 结构 list and keeps 来源'
     $setting = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $s.build.setting } })
     Assert ($setting.body -match '术语表' -and $setting.body -match '符号表') 'apply: setting skeleton has both tables'
-    $jobText = Get-Content -LiteralPath $apply.jobs[1].files[2] -Raw -Encoding utf8
+    $jobText = Get-Content -LiteralPath $apply.jobs[0].files[2] -Raw -Encoding utf8
     Assert ($jobText -match '清算价值为' -and $jobText -match 'ALLOW:') 'apply: job file carries the source lines and its allow file'
     $cardJob = Get-Content -LiteralPath $apply.jobs[0].files[2] -Raw -Encoding utf8
     Assert ($cardJob -match '模型卡现在的正文' -and $cardJob -match '企业能否融到' -and $cardJob -match '内容：问题、机制、结论') 'apply: the Model Card job carries the plan''s card and the current body'
@@ -163,9 +170,10 @@ try {
     Assert ($d12.body -match '^\*\*思路\*\*\n第 2 张，共 4 张：从 \$P=B\$ 推到 \$B\\le L\$。\n待写' -and $d12.body -match '\*\*解读\*\*\n待写$') "split: a new part has 思路 with its position, and 解读 ($($d12.body))"
     $head = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })
     Assert ($head.body.Contains("[[$($ids['D1~2'])]]") -and $head.body.Contains("[[$($ids['A~2'])]]")) 'split: the 结构 list names the new parts'
-    Assert (@($split.jobs | Where-Object { $_.continue }).Count -eq 2) "split: follow-ups continue the two conversations, got $($split.jobs.Count) jobs"
-    $allow = Get-Content -LiteralPath $state.jobs[$split.jobs[-1].continue].allow -Encoding utf8
-    Assert ($allow.Count -ge 2) 'split: the allow file lists the new parts'
+    $follows = @($split.jobs | Where-Object { $_.continue })
+    Assert ($follows.Count -eq 2 -and @($follows | Where-Object { $_.continue -eq 'Test2020_1_a:brief' }).Count -eq 2) "split: follow-ups continue the model's own conversation, got $($split.jobs | ConvertTo-Json -Compress -Depth 3)"
+    $followText = ($follows | ForEach-Object { Get-Content -LiteralPath $_.files[0] -Raw -Encoding utf8 }) -join "`n"
+    Assert ($followText.Contains("[[$($ids['D1~2'])]]") -and @($follows | Where-Object { @($_.fallback).Count -ge 3 }).Count -eq 2) 'split: a follow-up names the new parts it writes and carries a fresh-conversation fallback'
 
     # re-review only the changed chain; report
     $again = Last (Run 'review' @('-Changed'))
@@ -194,7 +202,7 @@ try {
     # `7|a|a|5` lacked its Link to `3|a|a|2` and close had reported no fault). The fixture's fill wrote P and E
     # without their planned relations to D2 and to P.
     $planned = Last (Run 'close')
-    $plannedText = (@($planned.jobs) | ForEach-Object { Get-Content -LiteralPath $_.files[0] -Raw -Encoding utf8 }) -join "`n"
+    $plannedText = (@($planned.jobs) | ForEach-Object { Get-Content -LiteralPath $_.files[-1] -Raw -Encoding utf8 }) -join "`n"
     Assert ($plannedText.Contains("修正：[[$($ids['P'])]]") -and $plannedText.Contains('计划的关系') -and $plannedText.Contains("[[$($ids['D2'])]]")) "close: a planned rests-on Link the part does not author goes back to its writer ($($planned.faults) faults)"
     $pPlain = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['P'] } })).body
     $ePlain = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['E'] } })).body
@@ -209,16 +217,14 @@ try {
         @{ tool = 'edit_card'; arguments = @{ at = $ids['A']; body = "$aBefore`n依赖 [[$($ids['P'])]]：用到命题。" } }
     )
     $close = Last (Run 'close')
-    $headJob = @($state.jobs.Keys | Where-Object { @($state.jobs[$_].addresses) -contains $model })[-1]
-    $aJob = @($state.jobs.Keys | Where-Object { @($state.jobs[$_].ids) -contains 'A' })[-1]
     Assert ($close.faults -eq 2 -and @($close.jobs).Count -eq 2 -and @($close.unowned).Count -eq 0) "close: two build faults, two follow-ups ($($close | ConvertTo-Json -Compress -Depth 4))"
-    $toHead = @($close.jobs | Where-Object { $_.continue -eq $headJob })[0]
-    $toA = @($close.jobs | Where-Object { $_.continue -eq $aJob })[0]
-    Assert ($toHead -and $toA) "close: each note continues the conversation that wrote its Card (head $headJob, A $aJob)"
-    $headNote = Get-Content -LiteralPath $toHead.files[0] -Raw -Encoding utf8
-    $aNote = Get-Content -LiteralPath $toA.files[0] -Raw -Encoding utf8
-    Assert ($headNote.Contains("修正：[[$model]]") -and $headNote.Contains("[[$outside]]") -and $headNote -match '参照') "close: the Model Card's note names the outside Card and the wording to use ($headNote)"
-    Assert ($aNote.Contains("修正：[[$($ids['A'])]]") -and $aNote.Contains("[[$($ids['P'])]] 用到本卡")) "close: the part's note says how to turn the forward sentence around ($aNote)"
+    # #194: every close note continues the model's own conversation; the note file names its Card.
+    $notes = @($close.jobs | ForEach-Object { Get-Content -LiteralPath $_.files[-1] -Raw -Encoding utf8 })
+    $headNote = @($notes | Where-Object { $_.Contains("修正：[[$model]]") })[0]
+    $aNote = @($notes | Where-Object { $_.Contains("修正：[[$($ids['A'])]]") })[0]
+    Assert (@($close.jobs | Where-Object { $_.continue -eq 'Test2020_1_a:brief' }).Count -eq 2) "close: each note continues the model's conversation, got $($close.jobs | ConvertTo-Json -Compress -Depth 3)"
+    Assert ($headNote.Contains("[[$outside]]") -and $headNote -match '参照') "close: the Model Card's note names the outside Card and the wording to use ($headNote)"
+    Assert ($aNote.Contains("[[$($ids['P'])]] 用到本卡")) "close: the part's note says how to turn the forward sentence around ($aNote)"
     Write-Calls @(
         @{ tool = 'edit_card'; arguments = @{ at = $model; body = $headBefore } },
         @{ tool = 'edit_card'; arguments = @{ at = $ids['A']; body = $aBefore } }
@@ -247,9 +253,8 @@ try {
     $close3 = Last (Run 'close')
     $headFixed = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
     Assert ($close3.refreshed -eq 1 -and $headFixed.Contains("[[$shared]]（共用）")) "close: a 共用 line with an old address is rebuilt from the plan ($($close3 | ConvertTo-Json -Compress -Depth 4))"
-    $pJob = @($state.jobs.Keys | Where-Object { @($state.jobs[$_].ids) -contains 'P' })[-1]
-    $toP = @($close3.jobs | Where-Object { $_.continue -eq $pJob })[0]
-    Assert ($close3.faults -eq 1 -and $toP -and ((Get-Content -LiteralPath $toP.files[0] -Raw -Encoding utf8) -match '补出标记')) "close: a malformed marker goes back to its part's conversation ($($close3.faults) faults)"
+    $toP = @($close3.jobs | Where-Object { (Get-Content -LiteralPath $_.files[-1] -Raw -Encoding utf8) -match "修正：\[\[$([regex]::Escape($ids['P']))\]\]" })[0]
+    Assert ($close3.faults -eq 1 -and $toP -and ((Get-Content -LiteralPath $toP.files[-1] -Raw -Encoding utf8) -match '补出标记')) "close: a malformed marker goes back to its part's conversation ($($close3.faults) faults)"
     $eLine = [regex]::Escape("[[$($ids['E'])]]")
     Write-Calls @(@{ tool = 'edit_card'; arguments = @{ at = $model; body = (($headFixed -split "`n") | Where-Object { $_ -notmatch $eLine }) -join "`n" } })
     Assert (-not (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body.Contains("[[$($ids['E'])]]")) 'close: (stand-in) a writer re-sends the Model Card without one 结构 line'
@@ -270,28 +275,25 @@ try {
     $null = Invoke-Zt @(@{ tool = 'edit_card'; arguments = @{ at = $d2; body = ($d2old -replace '\*\*步骤\*\*', "- 这里对上界进行代入。`n`n**步骤**").TrimEnd() + "`n`n来源：原书 §5.2" } })
     $d2before = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $d2 } })).body
     $explain = Last (Run 'explain' @('-Models', $model))
-    Assert ($explain.jobs.Count -eq 2 -and $explain.parts -eq 4) "explain: a chain of four parts gives two jobs ($($explain.jobs.Count) jobs, $($explain.parts) parts)"
+    Assert ($explain.jobs.Count -eq 1 -and $explain.parts -eq 4) "explain: one job for the model's chain of four parts ($($explain.jobs.Count) job(s), $($explain.parts) parts)"
     $again = Last (Run 'explain' @('-Models', $model))
     Assert (@($again.jobs).Count -eq 0) 'explain: a part already in a job gets no second job'
     $xstate = (Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable).explain
-    $j1 = $xstate.jobs[$explain.jobs[0].id]; $j2 = $xstate.jobs[$explain.jobs[1].id]
-    Assert (@($j2.addresses)[0] -eq $d2 -and $j2.positions[$d2] -match '^第 4 张，共 4 张') "explain: the job holds D2 and its position line ($($j2.positions[$d2]))"
-    $jobFile = Get-Content -LiteralPath $explain.jobs[1].files[2] -Raw -Encoding utf8
-    Assert ($explain.jobs[1].files[0] -match 'dsh-explain-instructions' -and $jobFile -match '结果文件:' -and $jobFile.Contains("[[$d2]]")) 'explain: the job opens with the explain instructions and names its result file'
+    $j1 = $xstate.jobs[$explain.jobs[0].id]
+    Assert (@($j1.addresses).Count -eq 4 -and @($j1.addresses) -contains $d2 -and $j1.positions[$d2] -match '^第 4 张，共 4 张') "explain: the job holds every part and D2's position line ($($j1.positions[$d2]))"
+    $jobFile = Get-Content -LiteralPath $explain.jobs[0].files[2] -Raw -Encoding utf8
+    Assert ($explain.jobs[0].files[0] -match 'dsh-explain-instructions' -and $jobFile -match '结果文件:' -and $jobFile.Contains("[[$d2]]")) 'explain: the job opens with the explain instructions and names its result file'
     $long = (1..6 | ForEach-Object { "第 $_ 句。" }) -join ''
     [IO.File]::WriteAllText($j1.out, (ConvertTo-Json -Depth 5 -InputObject @(
         [ordered]@{ address = $ids['D1']; idea = $long; notes = @{}; meaning = '它给出上界。' },
-        [ordered]@{ address = $ids['D1~2']; blocked = '步骤还没写' }
-    )), $utf8)
-    [IO.File]::WriteAllText($j2.out, (ConvertTo-Json -Depth 5 -InputObject @(
+        [ordered]@{ address = $ids['D1~2']; blocked = '步骤还没写' },
         [ordered]@{ address = $d2; idea = '把上界代入融资条件。（补：书中未写）'; notes = @{ '1' = '这一步代入上一张的结果。' }; meaning = '清算价值够大，项目才借得到钱。' }
     )), $utf8)
     # explain-check: the writer's own check prints what explain-apply will refuse, and writes nothing.
-    Assert ($jobFile -match "SELF-CHECK: zt-digest model -Step explain-check -Work `"[^`"]+`" -Job `"$([regex]::Escape($explain.jobs[1].id))`" -MaxSentences 12 .*-MaxExplainChars 600") "explain: the job file names its SELF-CHECK command ($(($jobFile -split "`n") -match 'SELF-CHECK'))"
+    Assert ($jobFile -match "SELF-CHECK: zt-digest model -Step explain-check -Work `"[^`"]+`" -Job `"$([regex]::Escape($explain.jobs[0].id))`" -MaxSentences 12 .*-MaxExplainChars 600") "explain: the job file names its SELF-CHECK command ($(($jobFile -split "`n") -match 'SELF-CHECK'))"
     $c1 = @(Run 'explain-check' @('-Job', $explain.jobs[0].id))
     Assert ($c1[-1] -eq 'faults: 2' -and @($c1 | Where-Object { $_ -match "^$([regex]::Escape($ids['D1'])) explain R16 " }).Count -eq 1 -and @($c1 | Where-Object { $_ -match "^$([regex]::Escape($ids['D1~3'])) explain no entry" }).Count -eq 1 -and @($c1 | Where-Object { $_ -match '^\(blocked, not counted\)' }).Count -eq 1) "explain-check: the long 思路 and the missing entry are faults, the blocked part is not counted ($($c1 -join ' / '))"
-    $c2 = @(Run 'explain-check' @('-Job', $explain.jobs[1].id))
-    Assert ($c2[-1] -eq 'faults: 0' -and @($c2 | Where-Object { $_ -eq "$d2 ok" }).Count -eq 1 -and @($c2 | Where-Object { $_ -match '^\(kept: .*R5 ' }).Count -eq 1) "explain-check: D2 passes; its old R5 fault is kept, not counted ($($c2 -join ' / '))"
+    Assert (@($c1 | Where-Object { $_ -eq "$d2 ok" }).Count -eq 1 -and @($c1 | Where-Object { $_ -match '^\(kept: .*R5 ' }).Count -eq 1) "explain-check: D2 passes; its old R5 fault is kept, not counted ($($c1 -join ' / '))"
     Assert ((Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $d2 } })).body -eq $d2before) 'explain-check: writes nothing'
     $ap = Last (Run 'explain-apply')
     Assert ($ap.applied -eq 1 -and @($ap.blocked).Count -eq 1 -and @($ap.jobs).Count -eq 1 -and $ap.jobs[0].continue -eq $explain.jobs[0].id) "explain-apply: one part written, one blocked, one follow-up to the same conversation ($($ap | ConvertTo-Json -Compress -Depth 4))"

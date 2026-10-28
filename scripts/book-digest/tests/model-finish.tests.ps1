@@ -79,6 +79,10 @@ try {
             [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D', '用到 (5.10)')); src = @('sections/s01.md:5-5') }
             [ordered]@{ id = 'E'; line = 'side'; of = 'P'; facet = '数值例子'; emphasis = 'aside'; title = '例子：L=6 时能融资'; spec = '代入数字'; src = @('sections/s01.md:3-3') }
         )
+        explain = @([ordered]@{
+            chain = @('D'); route = '从清算价值直接得到还款上限。'
+            parts = @([ordered]@{ id = 'D'; shows = '还款不超过清算价值'; notes = '第 1 步取两种情形'; meaning = '还款上限由清算价值决定' })
+        })
     }
     Save-Json (Join-Path $dir 'plan.json') $plan
     $null = & $step 'apply'

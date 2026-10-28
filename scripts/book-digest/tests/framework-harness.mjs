@@ -259,7 +259,7 @@ function runtime(kind, opts = {}) {
   if (opts.retained) for (const [layer, id] of opts.retained) led.add(id, layer)
   if (opts.retainedDone) for (const u of led.units.values()) if (opts.retainedDone.includes(u.layer)) led.finish(u.id)
   const scenario = opts
-  const state = { groups: 0, applyPending: 0, planJobs: 21, modelFinish: 0, resources: new Map() }
+  const state = { groups: 0, applyPending: 0, planJobs: 21, modelFinish: 0, resources: new Map(), explainedModels: new Set() }
   const failedStep = []
 
   const layerEnabled = (name) => ({ econ: { terms: true, models: true, events: true, findings: true, hubs: false, figures: false, bridge: false }, math: { terms: true, models: true, events: false, findings: false, hubs: true, figures: false, bridge: false } })[kind === 'math' ? 'math' : 'econ'][name]
@@ -670,6 +670,7 @@ function runtime(kind, opts = {}) {
     }
     batchCalls.push({ cmd, units: targets.map((t) => t.unit) })
     const results = []
+    const explains = []
     let lock = null
     for (const t of targets) {
       if (lock) { results.push({ unit: t.unit, token: t.token, status: 'not_run' }); continue }
@@ -690,7 +691,19 @@ function runtime(kind, opts = {}) {
       else { const r = ledgerAnswer(one); answer = { ok: r.ok, json: lastJson(r.output), text: r.output } }
       batchFinishes.push(one)
       const j = answer.json
-      if (answer.ok && j && (j.state === 'done' || j.complete === true)) { results.push({ unit: t.unit, token: t.token, status: j.status === 'partial' ? 'partial' : 'done', disposition: j.disposition || null }); continue }
+      if (answer.ok && j && (j.state === 'done' || j.complete === true)) {
+        results.push({ unit: t.unit, token: t.token, status: j.status === 'partial' ? 'partial' : 'done', disposition: j.disposition || null })
+        // #195 (§3.7): right after the Model's own completion, the batch records the Explain unit of a model
+        // whose explanations it wrote. A model whose explanations are still open leaves its unit ready.
+        if (layer === 'models' && state.explainedModels.has(model)) {
+          const explain = led.layer('explain').find((u) => u.inputs && u.inputs.model === model)
+          if (explain) {
+            led.finish(explain.id)
+            explains.push({ unit: explain.id, token: explain.token, status: 'done' })
+          }
+        }
+        continue
+      }
       if (j && j.code === 'card_locked') { led.fail(t.unit, 'failed'); lock = j; results.push({ unit: t.unit, token: t.token, status: 'failed', code: 'card_locked', recorded: true }); continue }
       const u = led.find(t.unit)
       if (u && u.state === 'done') { results.push({ unit: t.unit, token: t.token, status: 'done', disposition: 'verified', from: 'ledger' }); continue }
@@ -703,6 +716,7 @@ function runtime(kind, opts = {}) {
     }
     const count = (s) => results.filter((r) => r.status === s).length
     const line = { schema_version: 1, kind: 'finish_batch', units: results.length, done: count('done'), partial: count('partial'), retry: count('retry'), failed: count('failed'), not_run: count('not_run'), results, file: `${out}\\finish\\batch.json` }
+    if (explains.length) Object.assign(line, { explain: explains, explain_done: explains.filter((e) => e.status === 'done').length, explain_ready: explains.filter((e) => e.status === 'ready').length })
     if (claimed) Object.assign(line, { layer: claimed.layer, settled: claimed.settled, complete: claimed.complete, counts: claimed.counts, claimed: targets.length })
     if (lock) return { ok: false, exit: 2, output: json({ ...line, code: 'card_locked', error: 'card_locked', message: lock.error, refusal: lock }) }
     return { ok: true, exit: 0, output: json(line) }
@@ -850,6 +864,10 @@ function runtime(kind, opts = {}) {
         }
         // trial 10: a relay abridged the whole-book plan line inside its jobs array.
         if (tool[1] === 'card' && tool[2] === 'plan' && opts.garbledCardPlan && cmd.includes('-Work "D:\\x\\Key\\cards" ')) return { ok: true, exit: 0, output: '{"book":"Key","picked":69,"jobs":[fix-01 (fix), orphans-02 (orphans)]} (abridged: full JSON had a sample block)' }
+        // #195 (§3.7): a batch's explain job runs in the models' own conversations, from the architect's design.
+        if (tool[1] === 'model' && tool[2] === 'explain' && / -Batch\b/.test(cmd)) {
+          for (const m of ((cmd.match(/-Models "([^"]*)"/) || [])[1] || '').split(',').filter(Boolean)) state.explainedModels.add(m)
+        }
         return { ok: true, exit: 0, output: json(value) }
       }
     }
@@ -1199,9 +1217,11 @@ function runtime(kind, opts = {}) {
   }
   const layerStep = async (cmd) => {
     const step = layerArg(cmd, 'Step'), layer = layerArg(cmd, 'Layer')
-    layerCalls.push({ layer, step, cmd, owner: layerArg(cmd, 'Owner') || '' })
     const raw = step === 'start' ? await layerStart(cmd) : step === 'apply' ? await layerApply(cmd) : await layerFinish(cmd)
-    return compactLayer(raw)
+    const line = compactLayer(raw)
+    // The compact line the module reads is kept with the call, so a check can read the counts it answered.
+    layerCalls.push({ layer, step, cmd, owner: layerArg(cmd, 'Owner') || '', line })
+    return line
   }
 
   // #176 (docs/workflow-module-structure-proposal.md): a book-level stage's deterministic step (book-steps.ps1)
@@ -1516,7 +1536,9 @@ function runtime(kind, opts = {}) {
       // #194: one fill job per model, holding all of its parts and continuing its brief conversation.
       const jobs = batchModels.map((m) => continueJob(m, 'fill'))
       modelJobLists.push({ step, jobs })
-      return { ok: true, step, plans, deferred, jobs: jobs.length, derive: true, file: saved('fill-jobs.json', jobs) }
+      // #195: a scenario that needs the explain stage to have ready work keeps the batch from writing the
+      // explanations itself (`batchExplain: false`); every other run explains in the batch.
+      return { ok: true, step, plans, deferred, jobs: jobs.length, derive: opts.batchExplain === false ? false : true, file: saved('fill-jobs.json', jobs) }
     }
     if (step === 'derive' || step === 'review' || step === 'split' || step === 'close') {
       const more = step === 'review' ? ' -Changed' : step === 'close' ? ' -Report' : ''
@@ -1550,6 +1572,21 @@ function runtime(kind, opts = {}) {
       const r = call(`zt-digest model -Step report -Work "${work}" -Staging "${out}"`)
       return { ok: true, step, models: r.models || [], file: `${out}\\models\\drive\\report.json` }
     }
+    if (step === 'explain') {
+      // #195 (§3.7): after the close rounds, one explain job per model that still needs its explanations,
+      // continuing the model's conversation (the compiler's job file carries the architect's design entry).
+      const line = call(`zt-digest model -Step explain -Work "${work}" -Staging "${out}" -Models "${batchModels.join(',')}"${/ -Batch\b/.test(cmd) ? ' -Batch' : ''}`)
+      const count = Array.isArray(line.jobs) ? line.jobs.length : 0
+      const jobs = batchModels.slice(0, count || batchModels.length).map((m) => continueJob(m, 'explain'))
+      modelJobLists.push({ step, jobs })
+      return { ok: true, step, jobs: jobs.length, parts: Number(line.parts || 0), file: saved('explain-jobs.json', jobs) }
+    }
+    if (step === 'explain-apply') {
+      const line = call(`zt-digest model -Step explain-apply -Work "${work}" -Staging "${out}"`)
+      const jobs = (line.jobs || []).map((j) => job(j.id || 'explain-fix', { continue: j.continue, fallback: j.fallback, files: j.files || [] }))
+      modelJobLists.push({ step, jobs })
+      return { ok: true, step, jobs: jobs.length, applied: Number(line.applied || 0), refused: (line.refused || []).length, blocked: (line.blocked || []).length, file: saved('apply-jobs.json', jobs) }
+    }
     if (step === 'finish') {
       if (!held.length) return { ok: true, results: [], done: [], failed: [], gate: modelGate(out) }
       const b = call(`zt-digest finish-batch -Out "${out}" -Units "${held.map((u) => `${u.id}:${u.token}`).join(',')}"`)
@@ -1582,7 +1619,7 @@ function runtime(kind, opts = {}) {
   }
   const modelStepAnswer = async (cmd) => {
     const raw = await modelStepAnswerRaw(cmd)
-    const step = (cmd.match(/-Step (\w+)/) || [])[1] || 'start'
+    const step = (cmd.match(/-Step ([\w-]+)/) || [])[1] || 'start'
     const n = (v) => Number(v || 0)
     const list = (v) => (Array.isArray(v) ? v.length : 0)
     if (!raw || raw.ok === false) return raw
@@ -1834,7 +1871,7 @@ function runtime(kind, opts = {}) {
       // #177: the model layer's one step (model-steps.ps1): the listing and claim, a batch's chain, or the
       // block's checked finish, answered on the in-memory ledger.
       if (/model-steps\.ps1/.test(command)) {
-        const step = (command.match(/-Step (\w+)/) || [])[1] || 'start'
+        const step = (command.match(/-Step ([\w-]+)/) || [])[1] || 'start'
         modelManagers.push({ label: stepLabel, phase: callOpts.phase, kind: 'drive', step, prompt: text, cmd: command })
         modelCalls.push({ step, cmd: command, label: stepLabel })
         return reply(await modelStepAnswer(command), `drive-model-${step}`)
@@ -2377,10 +2414,23 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(models.length > 0 && models.every((u) => u.state === 'done') && batchFinishes.some((c) => /model-finish/.test(c)), 'models: each registered Model unit is built and recorded by model-finish')
   check(depsBatches.length > 0 && !cmds.some((c) => /model-deps .*-Model /.test(c)), 'models: a batch registers its references with one model-deps command, not one per model')
   check(!cmds.some((c) => /zt-digest model -Step report /.test(c)) && cmds.some((c) => /zt-digest model -Step close .* -Report\b/.test(c)), `models: a close round that sends nothing back writes the batch report, so no report step runs (${labels.filter((l) => /^(close|report)/.test(l)).join(', ')})`)
-  check(batchFinishes.some((c) => /explain-finish/.test(c)), 'explain: the explanation units are recorded by explain-finish in mode full')
+  // #195 (§3.7): the batch writes its models' explanations in their own conversations after the close
+  // rounds and before the Model finish, from the Sonnet architect's design entry; finish-batch records the
+  // Explain unit of a model the batch explained, so the explain stage starts no job for it.
+  const lastAt = (re) => { let found = -1; cmds.forEach((c, i) => { if (re.test(c)) found = i }); return found }
+  const closeAt = lastAt(/^zt-digest model -Step close /)
+  const explainAt = lastAt(/^zt-digest model -Step explain /)
+  const explainApplyAt = lastAt(/^zt-digest model -Step explain-apply /)
+  const modelFinishAt = lastAt(/^zt-digest finish-batch .* -Units "models\//)
+  check(closeAt >= 0 && explainAt > closeAt && explainApplyAt > explainAt && modelFinishAt > explainApplyAt, `explain (#195): the batch explains after close and before the Model finish (close ${closeAt}, explain ${explainAt}, apply ${explainApplyAt}, finish ${modelFinishAt})`)
+  check(cmds.some((c) => /^zt-digest model -Step explain .* -Models "[^"]+" -Batch$/.test(c)), 'explain (#195): the batch explain step names the batch\'s models and asks for the architect\'s design (-Batch)')
+  const explainUnits = [...led.units.values()].filter((u) => u.layer === 'explain')
+  const explainClaim = layerCalls.find((c) => c.layer === 'explain' && c.step === 'start')
+  check(explainUnits.length > 0 && explainUnits.every((u) => u.state === 'done'), `explain: the explanation units are recorded (finish-batch completes the one the batch wrote) (${explainUnits.map((u) => `${u.id}:${u.state}`).join(', ')})`)
+  check(explainClaim && Number((explainClaim.line && explainClaim.line.units) || 0) === 0, `explain (#195): the explain stage starts no job for a model the batch explained (units ${explainClaim && explainClaim.line && explainClaim.line.units})`)
   check(cmds.some((c) => /event-compiler/.test(c) || /zt-digest event /.test(c)) && batchFinishes.some((c) => /events-finish/.test(c)), 'events: the Event layer claims its units and records events-finish')
   check(cmds.some((c) => /finding-compiler/.test(c) || /zt-digest finding /.test(c)) && batchFinishes.some((c) => /findings-finish/.test(c)), 'findings: the Finding layer claims its units and records findings-finish')
-  check(['events', 'findings', 'explain'].every((l) => batchCalls.some((b) => b.units.some((u) => u.startsWith(l + '/'))) && layerCalls.some((c) => c.layer === l && c.step === 'finish') && !calls.some((c) => c.agentType === 'zt-relay' && new RegExp('^' + l + ' .*: finish$').test(c.label))), 'events, findings, explain: each block finishes through its own finish step, so no finish relay runs')
+  check(['events', 'findings'].every((l) => batchCalls.some((b) => b.units.some((u) => u.startsWith(l + '/'))) && layerCalls.some((c) => c.layer === l && c.step === 'finish') && !calls.some((c) => c.agentType === 'zt-relay' && new RegExp('^' + l + ' .*: finish$').test(c.label))), 'events, findings: each block finishes through its own finish step, so no finish relay runs')
   check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && /Run this one PowerShell command/.test(c.prompt) && /ToolSearch/.test(c.prompt)), 'drive: a compiler step\'s command agent loads no DeepSeek tool')
   // #177: the relay-era drive that saved a step line with Tee is gone; every content manager reads the
   // job file its step wrote (the S28 check below covers it).
@@ -2452,7 +2502,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // A layer claim whose relayed line lost its units array (grossman2002integration trial 3: "(4 units claimed:
   // cards/g005@1, ...)"): the driver reads the units its claim holds from the ledger by owner, finishes each
   // with its own token, and never records a fault against an undefined unit.
-  const { commands, led, heldReads, layerCalls } = await run('econ', { ...base, figures: false }, { summarizedClaim: 'explain' })
+  const { commands, led, heldReads, layerCalls } = await run('econ', { ...base, figures: false }, { summarizedClaim: 'explain', batchExplain: false })
   const cmds = commands
   check(heldReads.length > 0 && heldReads.every((o) => /^explain block [0-9]+$/.test(o)), `summarized layer claim: the step reads its held units from the ledger by owner (${heldReads.join(', ')})`)
   check(!cmds.some((c) => /undefined/.test(c)), 'summarized layer claim: no command names an undefined unit or token')
@@ -2658,7 +2708,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(most <= 3, `cleanup rounds: a failing unit is tried at most three times in the stage (${most})`)
   const settleAgents = calls.filter((c) => c.label === 'cleanup: settle the run').length
   check(cleanupReadyCalls.length === 1 && settleAgents === 1 && !calls.some((c) => /^cleanup (cleanup|extra)\/|^cleanup: claim round|^cleanup: .* fault$/.test(c.label)), `cleanup rounds: one cleanup agent makes the one settle call and every unit settles through one cleanup-finish -Ready (${settleAgents} agent(s), ${cleanupReadyCalls.length} call(s))`)
-  check(result.cleanup && result.cleanup.settled && result.cleanup.settled.failed === 9 && result.cleanup.settled.done === 23, `cleanup rounds: the stage reports the units that could not settle (${JSON.stringify(result.cleanup && result.cleanup.settled)})`)
+  check(result.cleanup && result.cleanup.settled && result.cleanup.settled.failed === 9 && result.cleanup.settled.done === 22, `cleanup rounds: the stage reports the units that could not settle (${JSON.stringify(result.cleanup && result.cleanup.settled)})`)
 }
 {
   // ebrill2001modern trial 1: one refused `ledger next` ended the events layer with 40 of its 73 units unclaimed.
@@ -3093,10 +3143,17 @@ for (const which of ['econ', 'math']) {
   check(!calls.some((c) => c.agentType === 'zt-relay' && /^(digest|link|events|findings|explain|terms|cards) block \d+[:]/.test(c.label || '')), 'S1 (#175): no moved layer step runs as a Claude relay')
   const drives = layerManagers.filter((m) => m.kind === 'drive')
   check(drives.length > 0 && drives.every((m) => /layer-steps\.ps1" -Step (start|apply|finish) -Out "[^"]+" -Layer \w+/.test(m.cmd)), `#175: every moved layer step is one layer-steps.ps1 call (${drives.length} drive jobs)`)
-  for (const l of ['digest', 'link', 'events', 'findings', 'explain', 'terms']) {
+  for (const l of ['digest', 'link', 'events', 'findings', 'terms']) {
     const steps = layerCalls.filter((c) => c.layer === l).map((c) => c.step)
-    const ordered = steps[0] === 'start' && steps.includes('finish') && (l !== 'explain' || (steps.indexOf('apply') > steps.indexOf('start') && steps.lastIndexOf('finish') > steps.indexOf('apply')))
-    check(ordered, `#175: the ${l} layer drives start${l === 'explain' ? ', apply, finish' : ', finish'} in that order (${steps.join(',')})`)
+    check(steps[0] === 'start' && steps.includes('finish'), `#175: the ${l} layer drives start, finish in that order (${steps.join(',')})`)
+  }
+  // #195 (§3.7): in mode full the batch wrote its model's explanations and finish-batch recorded the
+  // Explain unit, so the explain layer's claim finds nothing: it runs its start step and ends there.
+  {
+    const calls = layerCalls.filter((c) => c.layer === 'explain')
+    const steps = calls.map((c) => c.step)
+    const empty = calls.length && Number((calls[0].line && calls[0].line.units) || 0) === 0
+    check(steps[0] === 'start' && (steps.includes('finish') || empty), `#175/#195: the explain layer claims first and, with no ready unit, ends after its start step (${steps.join(',')})`)
   }
   check(layerManagers.filter((m) => m.kind === 'content').every((m) => (!!m.file || /\\layer-steps\\/.test(m.file || '')) && m.jobs.length <= 8), 'S28 (#175/#176): every content manager reads the job list its start step wrote, at most eight jobs')
   check(layerManagers.some((m) => m.kind === 'content' && m.jobs.length >= 2), 'S28 (#175): the block content managers run the listed DeepSeek jobs')
@@ -3174,8 +3231,8 @@ for (const which of ['econ', 'math']) {
   check(modelCalls.length > 0 && modelCalls.every((c) => /model-steps\.ps1/.test(c.cmd)), `#177: every model layer step is one model-steps.ps1 call (${modelCalls.length} drive jobs)`)
   const second = order.indexOf('start', 1)
   const first = second < 0 ? order : order.slice(0, second)
-  check(first.join(',') === 'start,brief,fill,derive,review,close,finish', `#177: one block's drive steps run start, brief, fill, derive, review, close, finish in that order (${order.join(',')})`)
-  const modelAgents = calls.filter((c) => /^(find models: block|models: finish)/.test(c.label) || /^(brief|fill|derive|review \d+|split|close|report): /.test(c.label) || /^plan: /.test(c.label) || /ZET model compiler/.test(c.prompt || ''))
+  check(first.join(',') === 'start,brief,fill,derive,review,close,explain,explain-apply,finish', `#177/#195: one block's drive steps run start, brief, fill, derive, review, close, explain, explain-apply, finish in that order (${order.join(',')})`)
+  const modelAgents = calls.filter((c) => /^(find models: block|models: finish)/.test(c.label) || /^(brief|fill|derive|review \d+|split|close|report|explain): /.test(c.label) || /^plan: /.test(c.label) || /ZET model compiler/.test(c.prompt || ''))
   const architects = modelAgents.filter((c) => /^plan: /.test(c.label))
   check(modelAgents.length > 0 && modelAgents.every((c) => !c.agentType) && architects.length >= 1 && architects.every((c) => c.model === 'sonnet'), `#177: every model layer agent is a Haiku DeepSeek manager, the one designer a Sonnet architect (${modelAgents.length} agents, ${architects.length} architects)`)
   check(modelAgents.filter((c) => !/^plan: /.test(c.label)).every((c) => c.model === 'haiku' && /You are a DeepSeek subagent manager/.test(c.prompt || '')), '#177: every model layer manager is a Haiku DeepSeek subagent manager')

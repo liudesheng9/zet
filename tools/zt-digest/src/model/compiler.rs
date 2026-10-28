@@ -6,7 +6,7 @@
 //!   zt-digest model -Step brief|validate|apply|derive|review|split|close|report|resume
 //!                         |explain|explain-check|explain-apply|explain-report
 //!                   -Work <folder> [-Staging <folder>] [-Models a,b] [-Plan <file>] [-Need a=N;b=M]
-//!                   [-Changed] [-Rebuild] [-IndependentReview] [-Level concept|formal]
+//!                   [-Changed] [-Rebuild] [-IndependentReview] [-Batch] [-Level concept|formal]
 //!                   [-MaxSentences 12] [-MaxChars 400]
 //!                   [-MaxSteps 6] [-MaxExplainSentences 16] [-MaxExplainChars 600] [-MaxParts 0]
 //!                   [-BriefDoc f] [-FillDoc f] [-ReviewDoc f] [-Job <id>] [-File <file>]
@@ -82,6 +82,9 @@ struct Params {
     report: bool,
     /// review only: the reviewer is its own conversation (`<slug>:review`) instead of the model's.
     independent_review: bool,
+    /// explain only (§3.7): the batch's own explain round — one job per model continuing `<slug>:brief`,
+    /// with the architect's design entry from `plan.json`.
+    batch: bool,
     level: String,
     max_sentences: i64,
     max_chars: i64,
@@ -117,15 +120,6 @@ struct Compiler {
     source_report: Option<Value>,
     /// plan.json per model folder, as Get-PlanPart reads it (the step never writes it).
     plans: HashMap<String, Value>,
-}
-
-/// One chain of Derivation parts the explain step plans a job for.
-struct Group {
-    parts: Vec<String>,
-    chain: Vec<String>,
-    tos: Vec<String>,
-    after: Value,
-    before: Value,
 }
 
 /// What explain-apply would do with one job's result file.
@@ -425,7 +419,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             "Job",
             "File",
         ],
-        &["Changed", "Rebuild", "Report", "IndependentReview"],
+        &["Changed", "Rebuild", "Report", "IndependentReview", "Batch"],
     )?;
     let step = a.choice("Step", &STEPS)?;
     let work = a.required("Work")?;
@@ -442,6 +436,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         changed: a.flag("Changed"),
         report: a.flag("Report"),
         independent_review: a.flag("IndependentReview"),
+        batch: a.flag("Batch"),
         rebuild: a.flag("Rebuild"),
         level: a.str("Level"),
         max_sentences: a.int_or("MaxSentences", 12)?,
@@ -997,6 +992,9 @@ impl Compiler {
         if lacks_main_line(structure, &current_main, &main) {
             faults.push("the model has parts but no main line: list the part that should become the setting as existing, line main".into());
         }
+        // §3.7: the architect designs the explanations of every chain of Derivation parts, so a
+        // missing design is a plan fault and never a gap the writer fills alone.
+        faults.extend(Self::plan_explain_faults(plan));
         for m in list(&plan["merge"]) {
             if !ids.contains(&s(&m["into"])) && !members.contains(&s(&m["into"])) {
                 faults.push(format!("merge into '{}' is not a part", s(&m["into"])));
@@ -1053,6 +1051,269 @@ impl Compiler {
             run.clear();
         }
         out
+    }
+
+    /// §3.7 (`docs/model-one-conversation-proposal.md`): the chains of Derivation parts a plan's main
+    /// line holds, each as its plan ids in build order.
+    fn plan_derivation_chains(plan: &Value) -> Vec<Vec<String>> {
+        let main: Vec<&Value> = list(&plan["parts"]).into_iter().filter(|p| ps::eq(&line_of(p), "main")).collect();
+        let mut chains: Vec<Vec<String>> = Vec::new();
+        let mut run: Vec<String> = Vec::new();
+        for part in main.into_iter().map(Some).chain(std::iter::once(None)) {
+            if let Some(part) = part.filter(|p| derives(p)) {
+                let id = s(&part["id"]);
+                if !id.is_empty() {
+                    run.push(id);
+                }
+                continue;
+            }
+            if !run.is_empty() {
+                chains.push(std::mem::take(&mut run));
+            }
+        }
+        chains
+    }
+
+    /// §3.7: the architect's `explain` design of every chain of Derivation parts — the chain's route,
+    /// and each part's shows, notes and meaning. The batch's explain job writes 思路/说明/解读 from this
+    /// entry, so a chain without one, or an incomplete one, is a plan fault (the writer must not invent
+    /// the design alone).
+    fn plan_explain_faults(plan: &Value) -> Vec<String> {
+        let mut faults = Vec::new();
+        let chains = Self::plan_derivation_chains(plan);
+        let entries: Vec<Value> = list(&plan["explain"]).into_iter().cloned().collect();
+        for chain in &chains {
+            let named = chain.join(",");
+            let Some(entry) = entries.iter().find(|e| pipe(&e["chain"]).into_iter().map(s).collect::<Vec<_>>() == *chain) else {
+                faults.push(format!(
+                    "chain {named} has no explain entry: design the chain's route and each part's shows, notes and meaning (model-architect.md)"
+                ));
+                continue;
+            };
+            if s(&entry["route"]).trim().is_empty() {
+                faults.push(format!("explain chain {named}: route is empty (the key move of the whole chain, and why it works)"));
+            }
+            let designed: Vec<Value> = list(&entry["parts"]).into_iter().cloned().collect();
+            for id in chain {
+                let Some(part) = designed.iter().find(|p| ps::eq(&s(&p["id"]), id)) else {
+                    faults.push(format!("explain chain {named}: part {id} has no shows, notes and meaning"));
+                    continue;
+                };
+                for field in ["shows", "meaning"] {
+                    if s(&part[field]).trim().is_empty() {
+                        faults.push(format!("explain chain {named}: part {id} has no {field}"));
+                    }
+                }
+                if !part["notes"].is_null() && !part["notes"].is_string() {
+                    faults.push(format!("explain chain {named}: part {id}: notes must be one string of the steps that need a 说明 line"));
+                }
+            }
+            for part in &designed {
+                let id = s(&part["id"]);
+                if !id.is_empty() && !chain.contains(&id) {
+                    faults.push(format!("explain chain {named}: part {id} is not in the chain"));
+                }
+            }
+        }
+        for entry in &entries {
+            let ids: Vec<String> = pipe(&entry["chain"]).into_iter().map(s).collect();
+            if !ids.is_empty() && !chains.contains(&ids) {
+                faults.push(format!(
+                    "explain entry names chain {}, which is not a chain of Derivation parts",
+                    ids.join(",")
+                ));
+            }
+        }
+        faults
+    }
+
+    /// §3.7: the design section of a batch explain job, for every plan chain that still has a part to
+    /// write. A missing entry here is a stale plan (the plan's own rules refuse it): the writer is never
+    /// asked to invent the design alone.
+    fn explain_design(&mut self, model: &str, missing: &[String]) -> Result<String> {
+        let plan_path = ps::join(&self.dir(model), "plan.json");
+        let plan = util::read_json(&plan_path).with_context(|| format!("no plan.json holds the explain design of {model}"))?;
+        let entries: Vec<Value> = list(&plan["explain"]).into_iter().cloned().collect();
+        let ids = self.m(model)["ids"].clone();
+        let mut out = String::new();
+        for chain in Self::plan_derivation_chains(&plan) {
+            let addresses: Vec<String> = chain.iter().map(|id| s(&ids[id])).collect();
+            if !addresses.iter().any(|a| ps::is_in(a, missing)) {
+                continue;
+            }
+            let named = chain.join(",");
+            let entry = entries
+                .iter()
+                .find(|e| pipe(&e["chain"]).into_iter().map(s).collect::<Vec<_>>() == chain)
+                .with_context(|| format!("plan.json of {model} has no explain entry for chain {named}; the plan must be designed again"))?;
+            if out.is_empty() {
+                out = "## 解释设计（Sonnet 建筑师为本模型写下的；照它写思路、说明和解读）\n\n".into();
+            }
+            out += &format!("### 链 {named}\n\n全链路线：{}\n", s(&entry["route"]));
+            for part in list(&entry["parts"]) {
+                let id = s(&part["id"]);
+                if !chain.contains(&id) {
+                    continue;
+                }
+                out += &format!("- [[{}]] {}\n", s(&ids[id]), s(&part["shows"]));
+                let notes = s(&part["notes"]);
+                if !notes.trim().is_empty() {
+                    out += &format!("  - 需要说明的步骤：{}\n", notes.trim());
+                }
+                out += &format!("  - 结果的解读：{}\n", s(&part["meaning"]));
+            }
+            out += "\n";
+        }
+        Ok(out)
+    }
+
+    /// One explain job for one model (§3.7, mode `explain`): every Derivation part that still lacks
+    /// 思路 or 解读, in its chain's order, with the compiler's position line and (with `-Batch`) the
+    /// architect's design entry, continuing the model's own conversation.
+    fn step_explain(&mut self) -> Result<()> {
+        self.explain_state();
+        let mut jobs = Vec::new();
+        let mut left: i64 = if self.p.max_parts > 0 { self.p.max_parts } else { i32::MAX as i64 };
+        let mut pending: CiMap<bool> = CiMap::new();
+        for k in ps::keys(&self.state["explain"]["jobs"]) {
+            let j = &self.state["explain"]["jobs"][&k];
+            let done = strings(&j["done"]);
+            for a in pipe(&j["addresses"]) {
+                if !ps::is_in(&s(a), &done) {
+                    pending.insert(&s(a), true);
+                }
+            }
+        }
+        for model in self.model_list() {
+            if left <= 0 {
+                break;
+            }
+            let st = self.model_of(&json!(model))?;
+            if !truthy(&st["head"]) || (ps::eq(&s(&st["level"]), "concept") && !st["level"].is_null()) {
+                continue;
+            }
+            let bodies = Self::bodies_of(&st);
+            let mut titles: CiMap<String> = CiMap::new();
+            for p in list(&st["parts"]) {
+                titles.insert(&s(&p["address"]), s(&p["title"]));
+            }
+            let body = |a: &str| bodies.get(a).cloned().unwrap_or_default();
+            let own = Self::own_derivations(&st);
+            // A part whose 思路 is not where the current chain puts it is unfinished too: the
+            // writer's answer rewrites the position line from the chain (R301).
+            let misplaced: Vec<String> = Self::misplaced(&st, &own, &body);
+            let missing: Vec<String> = own
+                .iter()
+                .filter(|a| (!text::explained(&body(a)) || misplaced.contains(a)) && !pending.contains(a))
+                .cloned()
+                .collect();
+            if missing.is_empty() {
+                continue;
+            }
+            let dir = self.dir(&model);
+            if !ps::is_in(&model, &strings(&self.state["explain"]["models"])) {
+                let mut models: Vec<Value> = pipe(&self.state["explain"]["models"]).into_iter().cloned().collect();
+                models.push(json!(model));
+                self.state["explain"]["models"] = Value::Array(models);
+            }
+            self.state["explain"]["settings"][&model] = json!(s(&st["build"]["setting"]));
+            let setting = self.card(&st["build"]["setting"])?;
+            util::write_text(
+                ps::join(&dir, "setting.md"),
+                &format!("# 本模型的设定：[[{}]] {}\n\n{}\n", s(&setting["address"]), s(&setting["title"]), s(&setting["body"])),
+            )?;
+            let mut context = "无".to_string();
+            if !self.p.staging.is_empty() {
+                context = ps::join(&dir, "context.md");
+                if self.context(&model, &context).is_err() {
+                    context = "无".into();
+                }
+            }
+            let head = self.card(&json!(model))?;
+            let mut head_body = s(&head["body"]);
+            if ps::len16(&head_body) > 3000 {
+                head_body = ps::cut16(&head_body, 3000) + "……";
+            }
+            // §3.7: the batch's job carries the architect's design of every chain it writes.
+            let design = if self.p.batch { self.explain_design(&model, &missing)? } else { String::new() };
+            let todo: Vec<String> = missing.iter().take(left as usize).cloned().collect();
+            left -= todo.len() as i64;
+            let seq = self.next_seq();
+            let id = format!("{}:x{seq}", Self::slug(&model));
+            let out = ps::join(&ps::join(&self.p.work, "out"), &format!("explain-{seq}.json"));
+            let file = ps::join(&dir, &format!("explain-{seq}.md"));
+            let mut text = format!(
+                "# 讲解任务 {id}\n\n结果文件: {out}\nSELF-CHECK: {}\n上下文包: {context}\n模型卡: [[{model}]] {}\n\n## 模型卡的正文\n\n{head_body}\n\r\n",
+                self.explain_check_command(&id),
+                s(&head["title"])
+            );
+            text += &design;
+            let around = |at: &Value| -> Option<(String, String, String)> {
+                if !truthy(at) {
+                    return None;
+                }
+                let a = s(at);
+                let b = body(&a);
+                if b.is_empty() {
+                    return None;
+                }
+                Some((a.clone(), titles.get(&a).cloned().unwrap_or_default(), b))
+            };
+            let mut positions = Map::new();
+            for c in list(&st["build"]["chains"]) {
+                let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, &own)).collect();
+                let want: Vec<String> = parts.iter().filter(|a| ps::is_in(a, &todo)).cloned().collect();
+                if want.is_empty() {
+                    continue;
+                }
+                let tos: Vec<String> = parts.iter().map(|a| text::result_of(&body(a))).collect();
+                if let Some((a, t, b)) = around(&c["after"]) {
+                    text += &format!("## 链之前的分卡（推导从它出发）：[[{a}]] {t}\n\n{b}\n\r\n");
+                }
+                let n = parts.len();
+                for a in &want {
+                    let k = (ps::index_of(&parts, a) + 1) as usize;
+                    positions.insert(a.clone(), json!(text::chain_line(k, n, &tos)));
+                    let place = if n >= 2 { format!("（第 {k} 张，共 {n} 张）") } else { String::new() };
+                    text += &format!("## 推导分卡 [[{a}]] {}{place}\n\n{}\n\r\n", titles.get(a).cloned().unwrap_or_default(), body(a));
+                }
+                if let Some((a, t, b)) = around(&c["before"]) {
+                    text += &format!("## 链之后的分卡（它用推导的结果）：[[{a}]] {t}\n\n{b}\n\r\n");
+                }
+            }
+            // A Derivation part no chain holds (a split can leave one beside the chain): still its own job part.
+            let loose: Vec<String> = todo.iter().filter(|a| !positions.contains_key(*a)).cloned().collect();
+            for a in &loose {
+                positions.insert(a.clone(), json!(""));
+                text += &format!("## 推导分卡 [[{a}]] {}\n\n{}\n\r\n", titles.get(a).cloned().unwrap_or_default(), body(a));
+            }
+            util::write_text(&file, &text)?;
+            let mut job_bodies = Map::new();
+            for a in &todo {
+                job_bodies.insert(a.clone(), json!(body(a)));
+            }
+            let mut job = json!({
+                "id": id,
+                "files": [self.docs.explain, ps::join(&dir, "setting.md"), file],
+                "prompt": format!("按以上说明写出结果文件 {out}，最后只回复一行 JSON。"),
+            });
+            // §3.7: the batch's explain job continues the model's conversation; a lost session runs
+            // once from the instruction files and the job file.
+            if self.p.batch {
+                job["continue"] = json!(format!("{}:brief", Self::slug(&model)));
+                job["fallback"] = json!([self.docs.explain, ps::join(&dir, "setting.md"), file]);
+            }
+            self.state["explain"]["jobs"][&id] = json!({
+                "model": model, "file": file, "out": out, "addresses": todo, "done": [], "round": 1,
+                "bodies": job_bodies, "positions": positions,
+            });
+            jobs.push(job);
+        }
+        std::fs::create_dir_all(ps::join(&self.p.work, "out"))?;
+        self.save_state()?;
+        // Measure-Object -Sum: a double.
+        let parts = jobs.iter().fold(0.0_f64, |sum, j| sum + pipe(&self.state["explain"]["jobs"][s(&j["id"])]["addresses"]).len() as f64);
+        self.out_last(&json!({ "jobs": jobs, "parts": parts }))
     }
 
     /// `Get-Skeleton`: the body a new part starts with.
@@ -2313,9 +2574,11 @@ impl Compiler {
 
     /// `-Step plan-status` (docs/workflow-simplicity-proposal.md S10): read-only. What the architect planned,
     /// read from the files it wrote: one entry per model of the batch, in order, with `status` (planned when its
-    /// plan.json exists, skipped when the brief skipped it, else failed), `level`, `parts` and `derivations` (the
-    /// parts with `derive: true`). The model layer chooses fill-only or derive-and-review from this line, never
-    /// from the architect's answer.
+    /// plan.json exists and passes the plan's own rules, skipped when the brief skipped it, else failed),
+    /// `level`, `parts`, `derivations` (the parts with `derive: true`) and, for a plan that breaks a rule, its
+    /// `faults` count and first `fault` (§3.7: a chain without the architect's `explain` entry is a fault, so
+    /// the batch never builds it and asks a writer to invent the design). The model layer chooses fill-only or
+    /// derive-and-review from this line, never from the architect's answer.
     fn step_plan_status(&mut self) -> Result<()> {
         let mut plans = Vec::new();
         for model in self.order() {
@@ -2325,14 +2588,28 @@ impl Compiler {
                 let plan = util::read_json(&path).with_context(|| format!("{model}: plan.json is not JSON"))?;
                 let parts = list(&plan["parts"]);
                 let derivations = parts.iter().filter(|p| truthy(&p["derive"])).count();
-                plans.push(json!({"model": model, "status": "planned", "level": plan["level"], "parts": parts.len(), "derivations": derivations}));
+                // A plan the batch must not build: a skip is the architect's own decision, a fault is not.
+                let faults = if ps::eq(&s(&plan["status"]), "skip") && !plan["status"].is_null() {
+                    Vec::new()
+                } else {
+                    Self::plan_explain_faults(&plan)
+                };
+                let status = if faults.is_empty() { "planned" } else { "failed" };
+                plans.push(json!({
+                    "model": model, "status": status, "level": plan["level"], "parts": parts.len(),
+                    "derivations": derivations, "faults": faults.len(), "fault": faults.first().cloned().unwrap_or_default(),
+                }));
             } else {
-                plans.push(json!({"model": model, "status": if ps::eq(&status, "skipped") { "skipped" } else { "failed" }, "parts": 0, "derivations": 0}));
+                plans.push(json!({"model": model, "status": if ps::eq(&status, "skipped") { "skipped" } else { "failed" }, "parts": 0, "derivations": 0, "faults": 0}));
             }
         }
         let planned = plans.iter().filter(|p| p["status"] == json!("planned")).count();
-        let derive = plans.iter().any(|p| p["derivations"].as_u64().unwrap_or(0) > 0);
-        self.out_last(&json!({"ok": true, "step": "plan-status", "planned": planned, "derive": derive, "plans": plans}))
+        let derive = plans
+            .iter()
+            .filter(|p| p["status"] == json!("planned"))
+            .any(|p| p["derivations"].as_u64().unwrap_or(0) > 0);
+        let faults = plans.iter().filter_map(|p| p["faults"].as_u64()).sum::<u64>();
+        self.out_last(&json!({"ok": true, "step": "plan-status", "planned": planned, "derive": derive, "faults": faults, "plans": plans}))
     }
 
     fn step_close(&mut self) -> Result<()> {
@@ -3020,156 +3297,6 @@ impl Compiler {
         }
     }
 
-    fn step_explain(&mut self) -> Result<()> {
-        self.explain_state();
-        let mut jobs = Vec::new();
-        let mut left: i64 = if self.p.max_parts > 0 { self.p.max_parts } else { i32::MAX as i64 };
-        let mut pending: CiMap<bool> = CiMap::new();
-        for k in ps::keys(&self.state["explain"]["jobs"]) {
-            let j = &self.state["explain"]["jobs"][&k];
-            let done = strings(&j["done"]);
-            for a in pipe(&j["addresses"]) {
-                if !ps::is_in(&s(a), &done) {
-                    pending.insert(&s(a), true);
-                }
-            }
-        }
-        for model in self.model_list() {
-            if left <= 0 {
-                break;
-            }
-            let st = self.model_of(&json!(model))?;
-            if !truthy(&st["head"]) || (ps::eq(&s(&st["level"]), "concept") && !st["level"].is_null()) {
-                continue;
-            }
-            let bodies = Self::bodies_of(&st);
-            let mut titles: CiMap<String> = CiMap::new();
-            for p in list(&st["parts"]) {
-                titles.insert(&s(&p["address"]), s(&p["title"]));
-            }
-            let body = |a: &str| bodies.get(a).cloned().unwrap_or_default();
-            let own = Self::own_derivations(&st);
-            // A part whose 思路 is not where the current chain puts it is unfinished too: the
-            // writer's answer rewrites the position line from the chain (R301).
-            let misplaced: Vec<String> = Self::misplaced(&st, &own, &body);
-            let missing: Vec<String> = own
-                .iter()
-                .filter(|a| (!text::explained(&body(a)) || misplaced.contains(a)) && !pending.contains(a))
-                .cloned()
-                .collect();
-            if missing.is_empty() {
-                continue;
-            }
-            let dir = self.dir(&model);
-            if !ps::is_in(&model, &strings(&self.state["explain"]["models"])) {
-                let mut models: Vec<Value> = pipe(&self.state["explain"]["models"]).into_iter().cloned().collect();
-                models.push(json!(model));
-                self.state["explain"]["models"] = Value::Array(models);
-            }
-            self.state["explain"]["settings"][&model] = json!(s(&st["build"]["setting"]));
-            let setting = self.card(&st["build"]["setting"])?;
-            util::write_text(
-                ps::join(&dir, "setting.md"),
-                &format!("# 本模型的设定：[[{}]] {}\n\n{}\n", s(&setting["address"]), s(&setting["title"]), s(&setting["body"])),
-            )?;
-            let mut context = "无".to_string();
-            if !self.p.staging.is_empty() {
-                context = ps::join(&dir, "context.md");
-                if self.context(&model, &context).is_err() {
-                    context = "无".into();
-                }
-            }
-            let head = self.card(&json!(model))?;
-            let mut head_body = s(&head["body"]);
-            if ps::len16(&head_body) > 3000 {
-                head_body = ps::cut16(&head_body, 3000) + "……";
-            }
-            // Groups: up to three neighbouring parts of one chain, with the members around them.
-            let mut groups: Vec<Group> = Vec::new();
-            let mut covered: CiMap<bool> = CiMap::new();
-            for c in list(&st["build"]["chains"]) {
-                let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, &own)).collect();
-                let tos: Vec<String> = parts.iter().map(|a| text::result_of(&body(a))).collect();
-                let todo: Vec<String> = parts.iter().filter(|a| ps::is_in(a, &missing)).cloned().collect();
-                for g in todo.chunks(3) {
-                    groups.push(Group { parts: g.to_vec(), chain: parts.clone(), tos: tos.clone(), after: c["after"].clone(), before: c["before"].clone() });
-                    for a in g {
-                        covered.insert(a, true);
-                    }
-                }
-            }
-            for a in missing.iter().filter(|a| !covered.contains(a)) {
-                groups.push(Group {
-                    parts: vec![a.clone()],
-                    chain: vec![a.clone()],
-                    tos: vec![text::result_of(&body(a))],
-                    after: Value::Null,
-                    before: Value::Null,
-                });
-            }
-            for mut g in groups {
-                if left <= 0 {
-                    break;
-                }
-                g.parts.truncate(left as usize);
-                left -= g.parts.len() as i64;
-                let seq = self.next_seq();
-                let id = format!("{}:x{seq}", Self::slug(&model));
-                let out = ps::join(&ps::join(&self.p.work, "out"), &format!("explain-{seq}.json"));
-                let file = ps::join(&dir, &format!("explain-{seq}.md"));
-                let mut text = format!(
-                    "# 讲解任务 {id}\n\n结果文件: {out}\nSELF-CHECK: {}\n上下文包: {context}\n模型卡: [[{model}]] {}\n\n## 模型卡的正文\n\n{head_body}\n\r\n",
-                    self.explain_check_command(&id),
-                    s(&head["title"])
-                );
-                let around = |at: &Value| -> Option<(String, String, String)> {
-                    if !truthy(at) {
-                        return None;
-                    }
-                    let a = s(at);
-                    let b = body(&a);
-                    if b.is_empty() {
-                        return None;
-                    }
-                    Some((a.clone(), titles.get(&a).cloned().unwrap_or_default(), b))
-                };
-                if let Some((a, t, b)) = around(&g.after) {
-                    text += &format!("## 链之前的分卡（推导从它出发）：[[{a}]] {t}\n\n{b}\n\r\n");
-                }
-                let mut positions = Map::new();
-                let n = g.chain.len();
-                for a in &g.parts {
-                    let k = (ps::index_of(&g.chain, a) + 1) as usize;
-                    positions.insert(a.clone(), json!(text::chain_line(k, n, &g.tos)));
-                    let place = if n >= 2 { format!("（第 {k} 张，共 {n} 张）") } else { String::new() };
-                    text += &format!("## 推导分卡 [[{a}]] {}{place}\n\n{}\n\r\n", titles.get(a).cloned().unwrap_or_default(), body(a));
-                }
-                if let Some((a, t, b)) = around(&g.before) {
-                    text += &format!("## 链之后的分卡（它用推导的结果）：[[{a}]] {t}\n\n{b}\n\r\n");
-                }
-                util::write_text(&file, &text)?;
-                let mut job_bodies = Map::new();
-                for a in &g.parts {
-                    job_bodies.insert(a.clone(), json!(body(a)));
-                }
-                self.state["explain"]["jobs"][&id] = json!({
-                    "model": model, "file": file, "out": out, "addresses": g.parts, "done": [], "round": 1,
-                    "bodies": job_bodies, "positions": positions,
-                });
-                jobs.push(json!({
-                    "id": id,
-                    "files": [self.docs.explain, ps::join(&dir, "setting.md"), file],
-                    "prompt": format!("按以上说明写出结果文件 {out}，最后只回复一行 JSON。"),
-                }));
-            }
-        }
-        std::fs::create_dir_all(ps::join(&self.p.work, "out"))?;
-        self.save_state()?;
-        // Measure-Object -Sum: a double.
-        let parts = jobs.iter().fold(0.0_f64, |sum, j| sum + pipe(&self.state["explain"]["jobs"][s(&j["id"])]["addresses"]).len() as f64);
-        self.out_last(&json!({ "jobs": jobs, "parts": parts }))
-    }
-
     /// `Test-ExplainJob`: what explain-apply would do with one job's result
     /// file, without a write.
     fn test_explain_job(&mut self, id: &str, file: &str) -> Result<ExplainCheck> {
@@ -3377,17 +3504,20 @@ impl Compiler {
             if r.faults.is_empty() {
                 continue;
             }
-            if ps::int(&j["round"]).unwrap_or(0) >= 2 {
+            // §3.7: a refused part goes back to the same conversation, at most three rounds.
+            if ps::int(&j["round"]).unwrap_or(0) >= 3 {
                 for (a, f) in r.faults.iter() {
                     refused.push((model.clone(), format!("{a}: {f}")));
                     done.push((id.clone(), a.clone()));
                 }
                 continue;
             }
-            // Once: the same conversation rewrites the refused parts into a new result file.
+            // Once per round: the same conversation rewrites the refused parts into a new result file
+            // (§3.7: at most three rounds, so round 2 and round 3 each get one follow-up).
+            let round = ps::int(&j["round"]).unwrap_or(1) + 1;
             let seq = self.next_seq();
             let out = ps::join(&ps::join(&self.p.work, "out"), &format!("explain-{seq}.json"));
-            self.state["explain"]["jobs"][&id]["round"] = json!(2);
+            self.state["explain"]["jobs"][&id]["round"] = json!(round);
             self.state["explain"]["jobs"][&id]["out"] = json!(out);
             let dir = self.dir(&model);
             let follow = ps::join(&dir, &format!("explain-follow-{seq}.md"));
@@ -3401,7 +3531,7 @@ impl Compiler {
                 ),
             )?;
             jobs.push(json!({
-                "id": format!("{id}+2"),
+                "id": format!("{id}+{round}"),
                 "continue": id,
                 "files": [follow],
                 "fallback": [self.docs.explain, ps::join(&dir, "setting.md"), s(&j["file"]), follow],

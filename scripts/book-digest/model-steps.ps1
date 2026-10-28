@@ -4,7 +4,7 @@
   The model layer's deterministic command chains, one step per call (#177, #180). A DeepSeek job runs one step
   and replies with its last line, so no Claude relay runs a single command.
 
-  pwsh -NoProfile -File model-steps.ps1 -Step start|brief|fill|derive|review|split|close|report|finish -Out <staging>
+  pwsh -NoProfile -File model-steps.ps1 -Step start|brief|fill|derive|review|split|close|report|explain|explain-apply|finish -Out <staging>
 
   start   release the Model claims a stopped run left, list the Model Cards of the book, claim a block of
           up to -Take ready Model units (lease 7200 s), plan the block's architect batches, and name them
@@ -18,6 +18,10 @@
   close   the build faults back to the writers once; the last round that sends nothing back also writes
           the batch report (-Report)                                            -> drive\jobs.json
   report  one report per model of the batch
+  explain one explain job per model of the batch, continuing the model's conversation, with the
+          architect's explain design (-Batch, §3.7)                             -> drive\jobs.json
+  explain-apply the explanation answers of the batch (and one fix job per refused part)
+                                                                                -> drive\apply-jobs.json
   finish  every named unit's checked completion, in one command, and the layer gate
 
   #180: each step prints ONE compact JSON line: `ok` first, then the counts, the packed plans and the file paths
@@ -27,7 +31,7 @@
   Files stay under <staging>\models\drive.
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('start', 'brief', 'fill', 'derive', 'review', 'split', 'close', 'report', 'finish')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('start', 'brief', 'fill', 'derive', 'review', 'split', 'close', 'report', 'explain', 'explain-apply', 'finish')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
     [string]$Work = '',
     [string]$Models = '',
@@ -52,6 +56,7 @@ param(
     [switch]$Rebuild,
     [switch]$Changed,
     [switch]$IndependentReview,
+    [switch]$Batch,
     [switch]$SkipRenew,
     [string]$Tool = 'zt-digest'
 )
@@ -87,8 +92,8 @@ if ($ReviewDoc) { $Docs += @('-ReviewDoc', "$ReviewDoc") }
 
 # One command: its last JSON line (or $null), its exit code and the tail of its output.
 function Run([string[]]$CommandArgs) {
-    $text = & $Tool @CommandArgs 2>&1 | ForEach-Object { "$_" }
     $code = $LASTEXITCODE
+    $text = & $Tool @CommandArgs 2>&1 | ForEach-Object { "$_" }
     $line = @($text | Where-Object { $_.Trim().StartsWith('{') }) | Select-Object -Last 1
     $json = $null
     if ($line) { try { $json = $line | ConvertFrom-Json -Depth 64 } catch { $json = $null } }
@@ -226,9 +231,9 @@ switch ($Step) {
         if ($held.Count) {
             $planned = @($held | Where-Object { $at = Address $_; $plans | Where-Object { $_.model -eq $at -and $_.status -eq 'planned' } })
             if ($planned.Count) {
-                $batch = Run @('model-deps', '-Out', $Out, '-Units', (($planned | ForEach-Object { "$($_.id):$($_.token)" }) -join ','))
+                $deps = Run @('model-deps', '-Out', $Out, '-Units', (($planned | ForEach-Object { "$($_.id):$($_.token)" }) -join ','))
                 $rows = @()
-                if ($batch.json -and $batch.json.kind -eq 'model_deps_batch' -and ($batch.json.results -is [Array])) { $rows = @($batch.json.results) }
+                if ($deps.json -and $deps.json.kind -eq 'model_deps_batch' -and ($deps.json.results -is [Array])) { $rows = @($deps.json.results) }
                 else {
                     # A batch line that did not come back whole is never read as "resolved": the ledger says
                     # which units model-deps already released, and only a unit still claimed runs it alone.
@@ -332,6 +337,27 @@ switch ($Step) {
         $reportRows = @($r.json.models | Where-Object { $_ })
         Reply @{ ok = $true; step = 'report'; models = $reportRows.Count; statuses = (Status-List $reportRows); file = (Join-Path $Drive 'report.json') } $r.json
     }
+    'explain' {
+        # §3.7: after the close rounds the batch writes the explanations in its models' own
+        # conversations, from the architect's explain design. One job per model; a model whose
+        # Derivation parts are all explained needs no job.
+        Renew
+        $extra = @('-Models', $Models)
+        if ($Batch) { $extra += '-Batch' }
+        $r = Compiler 'explain' $extra
+        if (-not $r.json) { Fail 'explain' $r; break }
+        $file = Jobs 'jobs.json' $r
+        Reply @{ ok = $true; step = 'explain'; jobs = @($r.json.jobs).Count; parts = [int]$r.json.parts; file = $file } $r.json
+    }
+    'explain-apply' {
+        # The answers of the batch's explain jobs: accepted text is written; a refused part comes
+        # back as one fix job in the same conversation (at most three rounds in all).
+        Renew
+        $r = Compiler 'explain-apply' $Limits.Split(' ')
+        if (-not $r.json) { Fail 'explain-apply' $r; break }
+        $file = Jobs 'apply-jobs.json' $r
+        Reply @{ ok = $true; step = 'explain-apply'; jobs = @($r.json.jobs).Count; applied = [int]$r.json.applied; refused = @($r.json.refused).Count; blocked = @($r.json.blocked).Count; file = $file } $r.json
+    }
     'finish' {
         $held = @(Load 'units.json' | Where-Object { $_ -and $_.id -and $_.token })
         if ($Units) { $held = @(Held) }
@@ -346,7 +372,12 @@ switch ($Step) {
         $done = @($results | Where-Object { $_.status -eq 'done' -or $_.status -eq 'partial' }).Count
         $failed = @($results | Where-Object { $_.status -ne 'done' -and $_.status -ne 'partial' }).Count
         $partial = @($results | Where-Object { $_.status -eq 'partial' }).Count
-        Reply (@{ ok = $true; done = $done; failed = $failed; partial = $partial } + $gateFields) @{ results = $results; gate = $gate.json }
+        # §3.7: finish-batch also records the Explain completion of a model whose explanations the
+        # batch wrote. Those units are not Model results; their counts travel beside them.
+        $line = @{ ok = $true; done = $done; failed = $failed; partial = $partial }
+        if ([int]$b.json.explain_done -gt 0) { $line.explain_done = [int]$b.json.explain_done }
+        if ([int]$b.json.explain_ready -gt 0) { $line.explain_ready = [int]$b.json.explain_ready }
+        Reply ($line + $gateFields) @{ results = $results; explain = $b.json.explain; gate = $gate.json }
     }
 }
 

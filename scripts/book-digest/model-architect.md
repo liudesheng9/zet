@@ -37,6 +37,33 @@ The chapter's endnotes in `context.md` are source text: use a definition the bod
 - Mark one to three parts `core`; detail and Derivation parts are `aside`.
 - A part of a formal model holds at most 12 sentences and 400 characters of prose. Plan two parts where one statement will not fit.
 
+## Design the explanations of each chain
+
+A reader can check every line of a Derivation part but cannot see why the chain goes that way or what its results mean. DeepSeek writes three kinds of text in the model's own conversation after the build: 思路 (the part's idea, and on the chain's first part the route of the whole chain), 说明 (one line under a step a reader may not see at once) and 解读 (what the result means, the check it gives, and what the next part does with it). You design that text: what each section says is your judgement, not the writer's.
+
+For every chain of Derivation parts (the run of consecutive Derivation parts on the main line), add ONE entry to `plan.json`'s `explain` array:
+
+| Field | What you decide |
+| --- | --- |
+| `chain` | the chain's part ids in build order: `["D1", "D2"]` |
+| `route` | the whole chain's route: the key move and why it works, and why the obvious route fails when the book says so. The first part's 思路 states it |
+| `parts[].id` | the part this design describes |
+| `parts[].shows` | what this part shows, in one phrase, for its 思路 |
+| `parts[].notes` | the steps that must get a 说明 line and the kind of choice each makes: a case split, an approximation, a change of variable, a limit, or a step a reader may not see at once. One short line; leave it empty when every step is mechanical |
+| `parts[].meaning` | what the result means for the model, the check 解读 gives (a special case, a sign, a limit), and what the next part does with the result |
+
+```json
+"explain": [
+  {"chain": ["D1", "D2"], "route": "先求还款上限，再把上限代入参与约束；直接比较还款与项目价值看不出上限。",
+   "parts": [
+     {"id": "D1", "shows": "还款不超过清算价值", "notes": "第 2 步分情形讨论清算与不清算", "meaning": "还款上限由清算价值决定"},
+     {"id": "D2", "shows": "融资条件", "notes": "", "meaning": "项目价值超过成本时投资者参与；下一张命题用它"}
+   ]}
+]
+```
+
+The compiler writes the chain position line into 思路 itself. Do not write Card text in the design: the writer sets the wording from it and from the derivation it wrote. A chain without an entry is a plan fault (`validate` and `plan-status` refuse the plan), so a missing design is never left to the writer.
+
 ## Existing parts
 
 An earlier build may have left parts. List every part filed under the Model Card, either with `existing` (keep it; set `refill: true` when its body must be rewritten) or in `merge` (its content goes into another part, and it is deleted; only a part without successors can merge). Keep the existing main-line parts in their present order. New parts go between them.
@@ -70,7 +97,14 @@ Write `<DIR>\plan.json` (UTF-8). Example:
     {"id": "H", "line": "off", "facet": "历史", "emphasis": "aside", "title": "历史：抵押贷款的来历", "spec": "书中的历史段落"}
   ],
   "merge": [],
-  "notes": ["Key/7|c 讨论本模型的假设，应链接 A。"]
+  "notes": ["Key/7|c 讨论本模型的假设，应链接 A。"],
+  "explain": [
+    {"chain": ["D1", "D2"], "route": "先求还款上限，再把上限代入参与约束。",
+     "parts": [
+       {"id": "D1", "shows": "还款不超过清算价值", "notes": "第 2 步分情形讨论", "meaning": "还款上限由清算价值决定"},
+       {"id": "D2", "shows": "融资条件", "notes": "", "meaning": "项目价值超过成本时投资者参与"}
+     ]}
+  ]
 }
 ```
 
@@ -95,6 +129,7 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | `take`, `use` | take in a shared part, with one line on what this model uses from it |
 | `merge` | `[{"from": address, "into": id}]` |
 | `notes` | Cards outside the model that should link a new part, or that misstate the model |
+| `explain` | the design of every chain of Derivation parts: the chain's route and each part's shows, notes and meaning (see "Design the explanations of each chain") |
 | `source_review` | the reviewed outcome of a part whose source does not simply support it (see "Review the source") |
 | `source_faults` | the source's own faults you observed (see below) |
 

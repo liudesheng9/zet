@@ -1,7 +1,7 @@
-// ==== module zt-explain v9 ====
+// ==== module zt-explain v10 ====
 // Explanations of finished Derivation parts (R219/R301/R302): the ledger's ready `explain/<model-key>@1` work,
 // which a checked Model completion registers. The layer driver runs the stage as script steps: `start` claims a
-// block of ready explanation units and runs the explanation plan (one job per chain), the block's jobs run in
+// block of ready explanation units and runs the explanation plan (ONE job per model), the block's jobs run in
 // Haiku managers, `apply` writes 思路/说明/解读 through `explain-apply` (which refuses a changed 起点/step/结果 and
 // lists one fix job per refused part, run in that part's own conversation), and `finish` reports and records
 // every unit through `explain-finish`, which re-reads the parts and refuses a part that still lacks text. Every
@@ -14,9 +14,11 @@
 // 8 (#175): the block is three script steps and two content rounds, run by DeepSeek drive jobs under Haiku managers.
 // 9 (#180): a step answers counts (`plan_parts`, `refused`, `done`), so the stage reports the parts it planned, the
 // fixes it refused and how many models were verified; the per-unit outcomes are the ledger's run report.
+// 10 (#195, docs/model-one-conversation-proposal.md §3.7): the explanation plan lists ONE job per model instead of
+// one per chain, and a batch that already wrote its models' explanations leaves no ready unit here.
 defineModule({
-  id: 'zt-explain', version: '9', requires: ['zt-model-lib'],
-  summary: 'ZT digest: the ledger\'s ready explanations of finished Derivation parts, written in two DeepSeek content rounds and recorded by explain-finish.',
+  id: 'zt-explain', version: '10', requires: ['zt-model-lib'],
+  summary: 'ZT digest: the ledger\'s ready explanations of finished Derivation parts, written one job per model in two DeepSeek content rounds and recorded by explain-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },

@@ -39,6 +39,7 @@ The boundary pass writes the `假设作用` and `反例` parts that the book doe
 ## The proof
 
 - The main line is the proof at three levels. First `证明思路`. Then one `证明：…` part per top-level step. Then Derivation parts for each step the book skips or compresses.
+- A chain of `推导：…` parts also needs the `explain` entry of `model-architect.md` ("Design the explanations of each chain"): the chain's route and each part's shows, notes and meaning. `validate` refuses a chain without it.
 - Write each `证明：…` title so that the main-line titles, read in order, state the proof in outline.
 - A step that two proofs need is a lemma. Do not plan it as a shared part. Name it in `notes` ("the step … of … is a lemma that … also needs").
 

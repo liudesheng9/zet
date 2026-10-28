@@ -12917,13 +12917,17 @@ fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: b
         result["applied"] = json!(false);
         return Ok(result);
     }
-    // Newly discovered explanation work becomes its own registered unit; the model's
-    // build still completes when explanations remain open (R302 keeps them visible).
+    // Explanation work is registered from the model's own completion: a Derivation part that still
+    // lacks 思路 or 解读 keeps the Model build complete and is the Explain unit's exact scope. A
+    // model whose explanations the batch already wrote registers the same unit with no open part,
+    // so `finish-batch` records its checked completion right after the Model's (§3.7). A model with
+    // no Derivation part, or a concept model, records the layer as inapplicable and registers nothing.
     let key = unit
         .strip_prefix("models/")
         .and_then(|v| v.strip_suffix("@1"))
         .with_context(|| format!("not a Model unit: {unit}"))?;
-    let explain = if result["explanation"]["status"] == json!("required") {
+    let own_derivations = result["explanation"]["derivations"].as_u64().unwrap_or(0);
+    let explain = if result["explanation"]["applicable"] == json!(true) && own_derivations > 0 {
         let wanted = json!({
             "schema_version":1,
             "model":field(&inputs, "header")?,

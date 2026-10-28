@@ -210,6 +210,13 @@ fn plan(model: &str) -> Value {
             {"id":"F7","facet":"旁注","title":"数值例子","spec":"价格为一时的数量。","line":"side","of":"F2","src":["sections/s01.md:25-28"]},
             {"id":"D1","facet":"推导：均衡","title":"推导均衡条件","line":"main","derive":true,"from":"效用函数","to":"$$u'(x)=p$$","rests":[["F2","用到均衡"]],"src":["sections/s01.md:29-36"]},
             {"id":"D2","facet":"推导：结果","title":"推导数量","line":"main","derive":true,"to":"$$x=p^{-1}$$","src":["sections/s01.md:37-44"]}
+        ],
+        "explain": [
+            {"chain": ["D1", "D2"], "route": "对效用函数求导得到一阶条件，再由一阶条件解出数量。",
+             "parts": [
+                {"id": "D1", "shows": "一阶条件把数量与价格连起来", "notes": "第 1 步对效用函数求导", "meaning": "均衡数量由边际效用等于价格决定"},
+                {"id": "D2", "shows": "由一阶条件解出数量", "notes": "", "meaning": "价格上升时数量下降"}
+             ]}
         ]
     })
 }

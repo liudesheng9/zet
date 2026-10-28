@@ -1,4 +1,4 @@
-// ==== module zt-model-layer v8 ====
+// ==== module zt-model-layer v9 ====
 // The model layer: the ledger's ready `models/gNNN-mIIII@1` work, released as the digest groups settle. Each
 // claimed block of Model units is built by the existing model compiler chain (one Sonnet architect per batch,
 // DeepSeek writers, the late clean-up sweep) and every unit is then recorded through `model-finish`, which
@@ -15,8 +15,11 @@
 // outcomes are ledger data.
 // 8 (#180): the block's units and batches are the start step's counts and packed plan, and its finished,
 // failed and deferred models are counts; the layer logs and reports totals, never a per-unit row.
+// 9 (#195, §3.7): a batch writes its models' explanations in their own conversations after the close rounds,
+// and `finish-batch` records each explained model's Explain completion right after its Model completion; the
+// finish step's counts name those Explain units beside the Model ones, so the layer logs them too.
 defineModule({
-  id: 'zt-model-layer', version: '8', requires: ['zt-model-lib'],
+  id: 'zt-model-layer', version: '9', requires: ['zt-model-lib'],
   summary: 'ZT digest model layer: the ledger\'s ready Model units built by the model compiler chain and recorded by model-finish, as model-steps.ps1 steps run by DeepSeek drive jobs.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -35,7 +38,7 @@ defineModule({
     const TAKE = 8
     const ROUNDS = Z.MAX_ATTEMPTS
     const deepseek = { deleted: 0, not_deleted: [] }
-    const totals = { verified: 0, failed: 0, deferred: 0, skipped: 0 }
+    const totals = { verified: 0, failed: 0, deferred: 0, skipped: 0, explained: 0 }
     let claimed = 0
     let idle = 0
     let gate = null
@@ -81,14 +84,15 @@ defineModule({
         return { status: 'failed', ...totals, gate: finished.gate || gate, error: finished.error, model_cleanup: cleanup }
       }
       totals.verified += n(finished.done)
-      log(`Models block ${block}: ${n(finished.done)} finished, ${n(finished.failed)} not recorded.`)
+      totals.explained += n(finished.explain_done)
+      log(`Models block ${block}: ${n(finished.done)} finished, ${n(finished.failed)} not recorded${n(finished.explain_done) ? `, ${n(finished.explain_done)} explanation(s) recorded` : ''}.`)
       gate = finished.gate || gate
     }
     const final = gate || { complete: false, counts: {} }
     const unresolved = n(final.counts && final.counts.open)
     const status = final.complete === true ? 'complete' : totals.failed && !unresolved ? 'partial' : 'active'
     const modelCleanup = await M.modelCleanup()
-    log(`Models: ${status} — ${totals.verified} models checked${final.counts ? `, ${unresolved} open` : ''} (${claimed} unit(s) claimed, ${totals.deferred} deferred).`)
+    log(`Models: ${status} — ${totals.verified} models checked, ${totals.explained} explanation(s) recorded${final.counts ? `, ${unresolved} open` : ''} (${claimed} unit(s) claimed, ${totals.deferred} deferred).`)
     return { status, ...totals, gate: final, model_cleanup: modelCleanup }
   },
 })

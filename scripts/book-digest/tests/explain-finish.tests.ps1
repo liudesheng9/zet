@@ -87,6 +87,14 @@ try {
             [ordered]@{ id = 'D3'; line = 'main'; derive = $true; facet = '推导：净资产条件'; title = '推导：净资产要为正'; from = '(5.10)'; to = '$$K-w\le L$$'; steps = 2; rests = @(, @('D2', '用到 (5.10)')); src = @('sections/s01.md:5-5') }
             [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D3', '用到净资产条件')); src = @('sections/s01.md:5-5') }
         )
+        explain = @([ordered]@{
+            chain = @('D1', 'D2', 'D3'); route = '先求还款上限，再代入参与约束，最后看净资产条件。'
+            parts = @(
+                [ordered]@{ id = 'D1'; shows = '还款不超过清算价值'; notes = '第 2 步分情形讨论'; meaning = '还款上限由清算价值决定' },
+                [ordered]@{ id = 'D2'; shows = '项目价值超过成本'; notes = ''; meaning = '项目价值够大时投资者参与' },
+                [ordered]@{ id = 'D3'; shows = '净资产为正'; notes = '第 1 步移项'; meaning = '企业家自己的财富也要够' }
+            )
+        })
     }
     Save-Json (Join-Path $dir 'plan.json') $plan
     $null = & $step 'apply'

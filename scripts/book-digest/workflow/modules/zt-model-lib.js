@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v14 ====
+// ==== module zt-model-lib v15 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list and the
 // model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill, derive, review, split →
 // report and clean-up. A book type installs the model layer with its profile (economics: the economic
@@ -26,6 +26,12 @@
 // so the brief round's sessions are kept and every later content round gets the session table. The math variant
 // (`profile.independentReview`) reviews in the reviewer's own conversation (`<slug>:review`), and the review
 // step is told so with `-IndependentReview`.
+// 15 (#195, §3.7): after the close rounds the batch runs the explain round: one job per model of the batch that
+// still has a Derivation part without 思路 or 解读, continuing the model's conversation, carrying the Sonnet
+// architect's `explain` design from plan.json. `explain-apply` writes the accepted text and lists a fix job for
+// a refused part, which the same conversation works (the compiler allows three rounds in all). `finish-batch`
+// then records the Explain unit of a model whose explanations the batch wrote; a model whose explanation stays
+// open leaves its unit ready for the explain stage.
 function zmlMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const {
@@ -66,6 +72,8 @@ function zmlMake(ctx, p) {
     if (o.perSonnet) parts.push(`-PerSonnet ${o.perSonnet}`)
     // #194: the math variant's reviewer opens its own conversation; the compiler names it `<slug>:review`.
     if (o.independentReview) parts.push('-IndependentReview')
+    // #195: the batch's explain round, in the models' own conversations, from the architect's design.
+    if (o.batch) parts.push('-Batch')
     if (o.limits) parts.push(o.limits)
     // The math variant's own instruction files: every compiler command of that variant takes them.
     for (const [flag, file] of Object.entries(profile.compilerDocs || {})) parts.push(`-${flag} "${OUT}\\${file}"`)
@@ -208,6 +216,24 @@ Return plans: one entry per model, in this order.`,
       if (!Number(close.jobs || 0)) break
       await content(`close ${round + 1}`, close.file, close.jobs, DERIVE_EFFORT)
     }
+    // 7.5 Explain (#195, §3.7): after the close rounds the batch's models write 思路, 说明 and 解读 in
+    // their own conversations, from the architect's explain design. A refused part goes back to the
+    // same conversation; the compiler allows three rounds in all, and explain-finish later records the
+    // unit (finish-batch, or the explain stage when a part stays refused).
+    let explained = 0
+    if (fill.derive) {
+      const planned = await step('explain', 'explain', { models: todo, batch: true })
+      if (!planned.ok) return failed(`explain failed: ${planned.error}`)
+      if (Number(planned.jobs || 0)) await content('explain', planned.file, planned.jobs, DSH_EFFORT)
+      for (let round = 0; round < 3; round++) {
+        const applied = await step(round ? `explain-apply ${round + 1}` : 'explain-apply', 'explain-apply')
+        if (!applied.ok) return failed(`explain failed: ${applied.error}`)
+        explained += Number(applied.applied || 0)
+        if (!Number(applied.jobs || 0)) break
+        await content(`explain fix ${round + 1}`, applied.file, applied.jobs, DSH_EFFORT)
+      }
+      log(`explain ${tag}: ${explained} Derivation part(s) written in the models' own conversations, ${Number(planned.parts || 0)} planned.`)
+    }
     // 8. Report, when the last close round sent follow-ups and wrote none.
     let statuses = reported
     if (!statuses) {
@@ -265,8 +291,8 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '14', library: true, requires: ['zt-digest-lib'],
-  summary: 'Library: the model layer\'s model-steps.ps1 steps (list, claim and batch; brief, fill, derive, review, split, close, report, finish), the Sonnet architect, and the model compiler\'s report and clean-up.',
+  id: 'zt-model-lib', version: '15', library: true, requires: ['zt-digest-lib'],
+  summary: 'Library: the model layer\'s model-steps.ps1 steps (list, claim and batch; brief, fill, derive, review, split, close, report, explain, explain-apply, finish), the Sonnet architect, and the model compiler\'s report and clean-up.',
 })
 // ==== end module zt-model-lib ====
 

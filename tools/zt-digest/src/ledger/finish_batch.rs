@@ -155,12 +155,129 @@ fn settle_one(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> (Value, Valu
     )
 }
 
+/// One named ready unit claimed for a checked finish (§3.7: the Explain unit a Model completion just
+/// registered). `None` when the unit is claimed elsewhere, done, or still waiting on a dependency.
+fn claim_named(p: &Prepared, unit: &str, owner: &str) -> Result<Option<i64>> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let now = now_seconds();
+    reconcile(&tx, now)?;
+    let row: Option<(String, i64, String)> = tx
+        .query_row("SELECT state,claim_token,input_hash FROM units WHERE id=?1", [unit], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .optional()?;
+    let Some((state, old_token, input_hash)) = row else {
+        bail!("unknown unit {unit}");
+    };
+    if state != "ready" {
+        tx.commit()?;
+        return Ok(None);
+    }
+    let token = old_token.checked_add(1).context("claim token exhausted")?;
+    let lease_until = now + claim_lease(lease_seconds(), 0);
+    tx.execute(
+        "UPDATE units SET state='claimed',owner=?2,claim_token=?3,lease_until=?4,retry_after=NULL,attempts=attempts+1 WHERE id=?1",
+        params![unit, owner, token, lease_until],
+    )?;
+    event(
+        &tx,
+        unit,
+        Some(owner),
+        Some(token),
+        "claimed",
+        &json!({"input_hash":input_hash,"lease_until":lease_until,"follow":"model-finish","process":{"pid":std::process::id()}}),
+    )?;
+    tx.commit()?;
+    Ok(Some(token))
+}
+
+/// The unit's state after a dependency reconciliation, without claiming it.
+fn ready_state(p: &Prepared, unit: &str) -> Result<Option<String>> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    reconcile(&tx, now_seconds())?;
+    let state: Option<String> = tx
+        .query_row("SELECT state FROM units WHERE id=?1", [unit], |r| r.get(0))
+        .optional()?;
+    tx.commit()?;
+    Ok(state)
+}
+
+/// A claim released for the Explain stage: the unit's own work is still open, and this is not its fault.
+fn release_named(p: &Prepared, unit: &str, token: i64) -> Result<()> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let changed = tx.execute(
+        "UPDATE units SET state='ready',owner=NULL,claim_token=?2,lease_until=NULL,retry_after=NULL WHERE id=?1 AND state='claimed' AND claim_token=?3",
+        params![unit, token.checked_add(1).context("claim token exhausted")?, token],
+    )?;
+    if changed > 0 {
+        event(
+            &tx,
+            unit,
+            None,
+            None,
+            "released",
+            &json!({"reason":"the Model's explanations are not complete","claim_token":token}),
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// §3.7: `finish-batch` records the Explain completion of a Model whose explanations the batch wrote,
+/// right after the Model's own completion, so the Explain stage starts no job for it. A Model whose
+/// explanations are still open leaves its unit ready for that stage; this never faults it.
+fn finish_explained(p: &Prepared, zt: &mut Zt, completion: &Value) -> Result<Option<Value>> {
+    let unit = completion["explain_unit"].as_str().unwrap_or_default();
+    if unit.is_empty() {
+        return Ok(None);
+    }
+    let needs = completion["explanation"]["needs"].as_array().map(Vec::len).unwrap_or(0);
+    if needs > 0 {
+        let state = ready_state(p, unit)?.unwrap_or_else(|| "unknown".into());
+        return Ok(Some(json!({"unit": unit, "status": state, "open": needs})));
+    }
+    let Some(token) = claim_named(p, unit, "finish-batch")? else {
+        let state = ready_state(p, unit)?.unwrap_or_else(|| "unknown".into());
+        return Ok(Some(json!({"unit": unit, "status": state})));
+    };
+    let finished = explain_finish(p, zt, unit, token, false);
+    let (status, cause) = match &finished {
+        Ok(v) if v["state"] == json!("done") || v["complete"] == json!(true) => ("done", None),
+        Ok(v) => (
+            "ready",
+            Some(
+                v["fault"]
+                    .as_str()
+                    .or_else(|| v["error"].as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "the checked explanation completion did not complete".into()),
+            ),
+        ),
+        Err(error) => ("ready", Some(format!("{error:#}"))),
+    };
+    if status != "done" {
+        release_named(p, unit, token)?;
+    }
+    let mut entry = json!({"unit": unit, "token": token, "status": status});
+    if let Some(cause) = cause {
+        entry["cause"] = json!(short(&cause, 200));
+    }
+    Ok(Some(entry))
+}
+
 /// Finishes the listed claims in turn; returns the printed line and the exit code.
 pub(super) fn finish_batch(p: &Prepared, targets: &[(String, i64)], claim: Option<&Value>) -> Result<(Value, i32)> {
     let started = std::time::Instant::now();
     let mut zt = crate::zt::start()?;
     let mut entries = Vec::new();
     let mut records = Vec::new();
+    let mut explains = Vec::new();
     let mut lock: Option<Value> = None;
     for (unit, token) in targets {
         if lock.is_some() || started.elapsed().as_secs() > BUDGET_SECONDS {
@@ -169,6 +286,13 @@ pub(super) fn finish_batch(p: &Prepared, targets: &[(String, i64)], claim: Optio
             continue;
         }
         let (entry, record, refusal) = settle_one(p, &mut zt, unit, *token);
+        if unit.starts_with("models/") && matches!(entry["status"].as_str(), Some("done" | "partial")) {
+            match finish_explained(p, &mut zt, &record["result"]) {
+                Ok(Some(explain)) => explains.push(explain),
+                Ok(None) => {}
+                Err(error) => explains.push(json!({"unit": Value::Null, "status": "error", "cause": short(&format!("{error:#}"), 200)})),
+            }
+        }
         entries.push(entry);
         records.push(record);
         if refusal.is_some() {
@@ -181,12 +305,20 @@ pub(super) fn finish_batch(p: &Prepared, targets: &[(String, i64)], claim: Optio
     let folder = p.out.join("finish");
     std::fs::create_dir_all(&folder)?;
     let file = folder.join(format!("{layer}-{}.json", &canon::sha256_hex(names.join(",").as_bytes())[..12]));
-    util::write_atomic(&file, &serde_json::to_string_pretty(&json!({"schema_version": 1, "kind": "finish_batch", "units": records, "claim": claim}))?)?;
+    util::write_atomic(&file, &serde_json::to_string_pretty(&json!({"schema_version": 1, "kind": "finish_batch", "units": records, "explain": explains, "claim": claim}))?)?;
+    let explain_count = |status: &str| explains.iter().filter(|e| e["status"] == json!(status)).count();
     let mut line = json!({
         "schema_version": 1, "kind": "finish_batch", "units": entries.len(),
         "done": count("done"), "partial": count("partial"), "retry": count("retry"), "failed": count("failed"), "not_run": count("not_run"),
         "results": entries, "file": file.display().to_string(),
     });
+    // §3.7: the Explain units this batch recorded or left for the Explain stage, beside the units it
+    // was asked to finish (they are not among `results`, so a Model block's counts stay Model counts).
+    if !explains.is_empty() {
+        line["explain"] = json!(explains);
+        line["explain_done"] = json!(explain_count("done"));
+        line["explain_ready"] = json!(explain_count("ready"));
+    }
     if let Some(claim) = claim {
         for key in ["layer", "settled", "complete", "counts"] {
             line[key] = claim[key].clone();
