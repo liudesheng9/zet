@@ -206,3 +206,30 @@ The release follows the release discipline in `workflow-principles.md`:
 1. **No dsh goal.** The model job uses a plain prompt with SELF-CHECK lines, as the card cycle does. The pause between the brief and the build prompt needs two prompts in any case.
 2. **Explanations go into the model job, and Sonnet completes their design** (§3.7). The architect plans an `explain` entry for each derivation chain, and DeepSeek writes the text in task T6.
 3. **The math profile keeps one independent reviewer per model for now** (§3.6). Economics reviews inside the model job.
+
+## 7. The simplest implementation (2026-10-27)
+
+The owner asked for the simplest design that reaches the goal. The full design of §3.2–§3.5 moves the step sequence into the DeepSeek conversation: a task file, per-model state files, and per-model compiler commands that DeepSeek runs. The simplest design keeps the step sequence where it is today, in `compileBatch` and the compiler steps. It changes only **which conversation each content job goes to**. The machinery for this exists already: a job that names `continue` is sent with `deepseek_prompt` to the session of the job id it names, and a job whose session is gone runs once from its `fallback` files (`zt-digest-lib` `runJobs`, the follow-up jobs of `close`).
+
+**Rule.** The brief job of a model (`<slug>:brief`) starts **the model's conversation**. Every later content job of that model names `continue: "<slug>:brief"`:
+
+| Step | Today | Simplest design |
+|---|---|---|
+| brief | one job per model | unchanged; its conversation is kept (`keep`) |
+| fill | one job per 3 parts | **one job per model**, all its parts in order, continuing the model's conversation |
+| derive | one job per 3 chain parts | **one job per model**, all its chains in order, continuing |
+| review | one job per chain group, new conversations | economics: **one job per model, continuing** (it re-reads the stored Cards from the archive); math (`profile.independentReview`): one reviewer job per model in its own conversation (`<slug>:review`), which the later review rounds continue |
+| split | continues the writer | continues the model's conversation |
+| close | continues the writer; `unowned` for others | continues the model's conversation; a fault in a Card of a batch model is never unowned |
+| explain (mode `full`) | separate stage, one job per chain | **one job per model after close, continuing**, written to the architect's `explain` design (§3.7); `finish-batch` runs `explain-finish` after `model-finish` |
+
+Every continued job carries `fallback` files (the instruction files, `setting.md` and its own task file), so a lost conversation costs one fresh conversation, not a failed step. A job that holds all parts of a model has a larger command budget in `fill.zh.md` and the derive instructions. The jobs of one step still run in parallel across models, and a model never has two jobs in one step, so no conversation receives two prompts at once.
+
+**What stays.** The drive steps, the per-batch `state.json`, the approvals, the Sonnet plan and every check stay as they are. The Claude saving is smaller than in §3: a step still costs its drive job, but its content jobs fit one manager per 8 models. The DeepSeek saving is the full one: one conversation per model (two for a math model), with the cached prefix kept across every step.
+
+**Slices.** The §5 slices are replaced by:
+
+1. The model compiler and `zt-model-lib` v14: one job per model per step, continuing the brief's conversation; the math reviewer conversation; fallbacks; tests and harness checks.
+2. Explanations in the batch: the architect's `explain` entry (`model-architect.md`, `plan-status`); the explain job after close; `explain-finish` in `finish-batch`; mode `explain` with one job per model.
+3. Release 5.9.0 / 6.9.0 / 5.9.0: rebuild `zt-digest`, install both scopes, simulate, wiki.
+4. Pilot (owner gate), as §3.8.
