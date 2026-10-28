@@ -85,5 +85,5 @@ Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 
 - Term-card pass rate is content-bound: 38/38 jobs ready after review-and-fix v8, but publication was untested live.
 - `D:\zt-digest\grossman2002integration-terms` (a Term-backfill copy) is held open by another program; recycle it once that program closes. The other pilot boxes and backups were recycled on 2026-10-27.
 - The 10-note faithfulness read of the Literature notes was not repeated on the live books after the 另见 prompt fix.
-- `tests/term_pilot.rs` fails because the installed `zt-check` lacks `--report`; reinstall zt-check from the repo.
+- `tests/term_pilot.rs` failed because a stale `zt-check 0.1.0` sat beside the test binary in `D:\zt-target\debug` (and `release`), and the seam's `find_program` prefers that sibling over PATH, before the installed `zt-check 0.15.0`; `--report` has been in the checker since 0.5.0. Rebuild `zt-check` with `CARGO_TARGET_DIR=D:\zt-target` (debug and release) before running the suite.
 - The math digest has been built and harnessed but never run live (no math material).
