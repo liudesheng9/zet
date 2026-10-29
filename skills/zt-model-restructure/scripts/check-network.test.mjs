@@ -15,7 +15,7 @@ const fixture = () => ({
   head: { address: H },
   build: { parts: [] },
   blocks: [
-    block(0, 'K/4|a|a', 'setting', '设定', null, [child('K/4|a|a|a', '符号表与读法'), child('K/4|a|a|b', '设定：信息')]),
+    block(0, 'K/4|a|a', 'setting', '设定', null, [child('K/4|a|a|a', '符号表与读法'), child('K/4|a|a|b', '设定：信息'), child('K/4|a|a|c', '推导：管理跨度项')]),
     block(1, 'K/4|a|a|1', 'chapter', '第 1 章：直觉', '很短。', [child('K/4|a|a|1|a', '结果：效率', ['K/4|a|a|1|a|a'])]),
     block(2, 'K/4|a|a|2', 'chapter', '第 2 章：生产', '多一个职业，边际成本降一点，管理跨度成本升一点。', [child('K/4|a|a|2|a', '结果：离散度', ['K/4|a|a|2|a|a'])]),
     block(3, 'K/4|a|a|3', 'chapter', '第 3 章：工资', null, []),
@@ -24,7 +24,7 @@ const fixture = () => ({
   block_edges: [
     { from_block: 'b1', to_block: 'b0', kind: 'rests-on', count: 2, pairs: [] },
     { from_block: 'b2', to_block: 'b1', kind: 'rests-on', count: 3, pairs: [] },
-    { from_block: 'b0', to_block: 'b2', kind: 'rests-on', count: 1, pairs: [{ from: 'K/4|a|a|b', to: 'K/4|a|a|2|a|a' }] },
+    { from_block: 'b0', to_block: 'b2', kind: 'rests-on', count: 1, pairs: [{ from: 'K/4|a|a|b', to: 'K/4|a|a|2|a|a' }, { from: 'K/4|a|a|c', to: 'K/4|a|a|2|a' }] },
     { from_block: 'b4', to_block: 'b2', kind: 'rests-on', count: 1, pairs: [] },
     { from_block: 'b4', to_block: 'b1', kind: 'refers', count: 5, pairs: [] },
   ],
@@ -34,12 +34,15 @@ test('the network check reads the tree, the faults and their fixes the way the G
   const L = await loadLayout()
   const r = analyse(fixture(), L)
   assert.deepEqual(r.parent, { b0: null, b1: 'b0', b2: 'b1', b3: null, b4: 'b2' })
-  assert.deepEqual(r.forward.map((f) => [f.from_block, f.to_block, f.cards]), [['b0', 'b2', ['K/4|a|a|b']]])
-  assert.match(r.forward[0].fix, /K\/4\|a\|a\|b.*K\/4\|a\|a\|2/, 'file the card under the chapter of its latest premise')
+  assert.deepEqual(r.forward.map((f) => [f.from_block, f.to_block, f.cards]), [['b0', 'b2', ['K/4|a|a|b', 'K/4|a|a|c']]])
+  const [setting, derivation] = r.moves
+  assert.match(setting.fix, /K\/4\|a\|a\|b is a setting.*reversed.*keep it in the setting part/, 'a setting keeps its place; its relation is turned')
+  assert.doesNotMatch(setting.fix, /file K\/4\|a\|a\|b under/)
+  assert.match(derivation.fix, /move K\/4\|a\|a\|c after its latest premise.*K\/4\|a\|a\|2/, 'a derivation filed too early moves')
   assert.deepEqual(r.unanchored.map((u) => u.block), ['b3'])
   assert.deepEqual(r.leads.map((l) => [l.block, l.why]), [['b1', 'short'], ['b3', 'missing']])
   assert.deepEqual(r.empty.map((e) => e.block), ['b3', 'b4'], 'a chapter with no result card (advice)')
-  assert.deepEqual(r.moves.map((x) => x.card), ['K/4|a|a|b'], 'one move per Card')
+  assert.deepEqual(r.moves.map((x) => x.card), ['K/4|a|a|b', 'K/4|a|a|c'], 'one fix per Card')
   assert.equal(r.ok, false)
   assert.ok(r.lines.some((l) => /^ {2}1 /.test(l)) && r.lines.some((l) => /^ {6}4 /.test(l)), r.lines.join('\n'))
   assert.ok(r.threads.head > 0 && r.threads.head < 60, 'paths drawn with the Model Card open')

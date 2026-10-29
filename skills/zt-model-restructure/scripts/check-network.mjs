@@ -2,7 +2,8 @@
 // Checks a model the way the GUI's model network (zt 0.44+) draws it, with the GUI's own layout
 // code: each block (a main-line card with everything filed under it) hangs under the earlier
 // block it rests on most. Prints that tree and every fault the network shows a reader:
-//   forward     a card rests on a later block (a red thread): file it under its latest premise's chapter
+//   forward     a card rests on a later block (a red thread): a derivation moves after its latest
+//               premise; a setting stays and its reversed relation is turned the right way
 //   unanchored  a chapter rests on no earlier block (a root with a red mark)
 //   parts       a **分部** line that starts off the main line
 //   lead        a chapter's 直觉 opening, the first line of the open block, is missing or short
@@ -38,6 +39,7 @@ export function analyse(m, L) {
   const edges = m.block_edges || []
   const at = new Map(blocks.map((b, i) => [b.id, i]))
   const byId = new Map(blocks.map((b) => [b.id, b]))
+  const facetOf = new Map([...blocks.map((b) => [b.head, b.facet]), ...blocks.flatMap((b) => b.children.map((c) => [c.address, c.facet]))])
   const name = (id) => {
     const b = byId.get(id)
     if (!b) return id
@@ -58,9 +60,13 @@ export function analyse(m, L) {
       // The latest block among everything this card rests on decides where it can stand.
       const premises = edges.filter((x) => x.kind === 'rests-on' && x.from_block === e.from_block).flatMap((x) => (x.pairs || []).filter((p) => p.from === card).map(() => x.to_block))
       const latest = premises.sort((a, b) => at.get(b) - at.get(a))[0] || e.to_block
-      return `file ${card} under ${byId.get(latest).head} (a setting or aside of chapter ${name(latest)}), or move what it rests on before it`
+      // A setting is a primitive: it rests on nothing derived later, so the relation is reversed.
+      if (/^设定/.test(facetOf.get(card) || '')) {
+        return `${card} is a setting: a setting rests on nothing derived later, so this relation is reversed. If the later card (in ${byId.get(latest).head}, chapter ${name(latest)}) works with the setting's variable or definition, let it rest on ${card} and let the setting only point to it; keep it in the setting part. A derived fact the setting states moves to the card that derives it`
+      }
+      return `move ${card} after its latest premise: file it under ${byId.get(latest).head} (chapter ${name(latest)}) or later, with every card that rests on it`
     })
-    forward.push({ from_block: e.from_block, to_block: e.to_block, count: e.count, cards, pairs: e.pairs || [], fix: fixes.join('; ') || `block ${name(e.from_block)} rests on the later block ${name(e.to_block)}` })
+    forward.push({ from_block: e.from_block, to_block: e.to_block, count: e.count, cards, pairs: e.pairs || [], fixes, fix: fixes.join(' | ') || `block ${name(e.from_block)} rests on the later block ${name(e.to_block)}` })
   }
   const unanchored = layout.unanchored.map((id) => ({ block: id, fix: `chapter ${name(id)} rests on no earlier block: add a 依赖 line from ${byId.get(id).head} to the chapter it builds on` }))
   const chapters = blocks.filter((b) => b.kind === 'chapter')
@@ -75,7 +81,7 @@ export function analyse(m, L) {
   const moves = []
   for (const f of forward) for (const [i, card] of f.cards.entries()) {
     if (moves.some((x) => x.card === card)) continue
-    moves.push({ card, fix: f.fix.split('; ')[i] })
+    moves.push({ card, fix: f.fixes[i] })
   }
 
   // Shape: the tree laid out at the board's card size; threads drawn with the Model Card open.

@@ -216,3 +216,13 @@ The owner's rule: a forward fault is fixed by moving cards, never by deleting a 
 - The derivation of (3), `4|a|a|2|a|a|2`, listed formula (4) as a starting formula, which its steps never use and the next card derives; an earlier restore had put it there. Its start is back to the original: the sum of the two integrals.
 
 The other hits are pointers (the notation table, "provides the parts for (6)", where π appears in (8)) and roadmaps (the chapter 4 solution guide, the three-variants overview). After: `check-network` clean, `self_sufficient` true, 142 members, no broken Link.
+
+### 9.6 Settings back in the setting part (2026-10-28)
+
+The owner corrected §9.4: the forward Links came from settings, and a setting belongs in the setting part. A setting is a primitive and rests on nothing derived later, so those Links pointed the wrong way. Backup `D:zt-merge-backupzt-before-becker-settings-back.sqlite3`.
+
+- `设定：信息与努力` claimed to rest on (4). It only names the efficiency variables λ(i,ω) and λ(ω); (4) derives their formula. Its item 4 now names them and points to chapter 2 (式 (4)) without claiming a premise.
+- `设定：固定成本` claimed to rest on the derivation `推导：管理跨度项`. The setting defines f(ω) directly; the derivation shows its bracket equals average efficiency by (2) and (8). Now the derivation rests on the setting (`依赖` the fixed cost), the setting points to the derivation, and the setting no longer states the derived fact.
+- Moved back: the information setting and the wage table to `4|a|a|b`, `4|a|a|c` (the original letters), the fixed cost to `4|a|a|d|2` after the entry condition; the setting sides repacked `a`–`h`. The derivation `推导：管理跨度项` stays in chapter 3 (`4|a|a|3|c`), after (8) it uses; chapter 3 repacked to result `3|a`, inversion `3|b`, interpretation `3|c`. The head's 结构 rebuilt from the tree.
+
+After: the setting part rests on nothing outside it; `check-network` clean (chapter 4 hangs under chapter 2 again); `self_sufficient` true, 142 members, no broken Link. The skill (Step 3, and `check-network.mjs`'s fix text) now says a setting with a forward Link has a reversed relation and stays in the setting part.
