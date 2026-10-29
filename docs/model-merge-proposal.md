@@ -297,3 +297,28 @@ The first run of `zt-model-settings` after Becker, on `acemoglu2010labor/2|a` (l
 - Helper fix met on the way: `zt-digest call` exits 1 when one call of a batch fails, and `zt.mjs` threw away its output; it now returns it, so `writes()` reports the error lines (all three skill copies).
 
 After: `check-settings` all in the setting part, as a dependency tree; `check-network` clean; `check-premises` 7 hits, all look-up rows of the local tables (`由 (14) 给出`) and chapter 10's roadmap; `self_sufficient` true; 462 Cards, no broken Link. The head's 结构 rebuilt.
+
+## 11. The Acemoglu 2007 fold (2026-10-29)
+
+The `zt-model-fold` skill folded `acemoglu2007equilibrium` on the live box at the owner's request (`/zt-model-fold acemoglu2007equilibrium`). The backup is `D:\zt-merge-backup\zt-before-acemoglu2007equilibrium-fold.sqlite3` (`VACUUM INTO`, integrity `ok`). The tree was not locked, and no other tree pinned its cards.
+
+**Decision.** The book holds one model. Every Model Card keeps the same primitives: final-good firms that use the factors Z and L, a technology θ, the production function G, the cost C and the net production function F = G − C. Every Model Card also asks the same question: does an increase in the supply of a factor induce technology biased toward that factor? Economies C, M and O change one assumption of economy D (who chooses the technology), and each shows that the equilibrium technology maximizes F. The three bias sections answer the paper's question on that reduced form. The concept card of §1 is the verbal version of the formal model.
+
+| Model Card | Model | Surviving head | Reason |
+|---|---|---|---|
+| `2/a` 经济 D | the model | `2/a` | first formal Model Card: competitive firms choose θ; equilibrium θ maximizes F |
+| `1/b` 拟鞍点 (concept) | the model | `2/a` | verbal version of the formal model (§1): same F, same question; becomes the intuition chapter |
+| `3/a` 经济 C | the model | `2/a` | same G, C, F; changes only who chooses θ (a research firm); Proposition 2 = same rule |
+| `4/a` 经济 M | the model | `2/a` | same primitives; a monopolist sells the technology in intermediates; Proposition 3 = same rule |
+| `5/a` 经济 O | the model | `2/a` | economy M with S technology producers; equilibrium θ is a fixed point of the same problems |
+| `6/a` 相对均衡偏向 | the model | `2/a` | the paper's question on the same F, with θ = (A_Z, A_L) factor-augmenting |
+| `7/a` 绝对均衡偏向 | the model | `2/a` | the paper's question on the reduced form "θ maximizes F" (Theorem 2) |
+| `8/a` 强绝对均衡偏向 | the model | `2/a` | continues `7/a` (rests on its technology response (37)); Corollary 1 is about economy D |
+
+(The table writes `/` for `|` in addresses.) The evidence settled every row, so the fold ran without a question to the owner.
+
+**Procedure.** The §10 one-head-per-run script, with the book's key, in the book's order: 1|b (facet `直觉`), 3|a (`经济 C`), 4|a (`经济 M`), 5|a (`经济 O`), 6|a (`相对均衡偏向`), 7|a (`绝对均衡偏向`), 8|a (`强绝对均衡偏向`), all `core`. Four Links to Model Cards were masked during the retypes and restored after them.
+
+**Result.** `acemoglu2007equilibrium/2|a` is the only Model Card of the book, with 83 members. The main line holds economy D's own chain (`2|a|a` to `2|a|a|9`) and seven leads `2|a|a|10` to `2|a|a|16` (直觉, 经济 C, 经济 M, 经济 O, 相对均衡偏向, 绝对均衡偏向, 强绝对均衡偏向). Each lead keeps its former parts as Side parts. The tree still holds 302 Cards, and `list_broken_links` is empty. `self_sufficient` is false: the seven leads have no rests-on line back to the setting. `zt-model-restructure` adds them, when it writes each chapter's `依赖` line. The head's text still describes economy D only. The restructure rewrites it.
+
+**Next.** `zt-model-settings`, then `zt-model-restructure`, on `acemoglu2007equilibrium/2|a`.
