@@ -56,9 +56,12 @@ Main line   设定 → 第 1 章：直觉 → 第 2 章 … → 第 k 章：主�
 
 Two build rules make this pass zt's checks:
 
-- A chapter card rests (`依赖`, `用到`, `沿用`, `基于`, `代入`…) **only on earlier chapter cards**. It names its own results with a cue-free word (`结果：[[…]]`). A main-line card that rests on its own Side branch is a **forward** fault, because Side parts are built after their step.
+- **Every premise comes first.** A card rests (`依赖`, `用到`, `沿用`, `基于`, `代入`…) only on cards built before it: a chapter card on earlier chapters, a result or proof step on its own chapter's earlier cards or on earlier chapters. Side parts are built after their step, so a main-line card that rests on its own Side branch is a **forward** fault.
 - Every main-line card needs a rests-on path back to the setting, or it is **unanchored**.
-- Write the pointer to the notation card without a premise cue: `符号与记号的含义见符号表 [[…]]` (a line with `用到` becomes a rests-on Link).
+
+**A forward fault is a placement fault: fix it by moving cards, never by deleting a Link or dropping its cue.** If a card uses another card's result, the Link is a premise and stays one; move the card that rests to after its premise (into the premise's chapter, or later), or move the premise to before it, and move with it every card that rests on the moved card (simulate the moves against all rests-on Links first, as `scripts/check-network.mjs` reports them). Rewording `依赖` to `参见`, removing the Link, or changing the cue to silence the check hides a real dependency and leaves the reader with a step whose premise comes later.
+
+What is not a premise is written as a pointer from the first draft, never as a repair: a chapter card's list of its own results is its table of contents (`结果：[[…]]`), and a card's line to the notation card says where to look up a symbol (`符号与记号的含义见符号表 [[…]]`). Decide this by the meaning of the line (does the card use that result, or only point to it?), not by whether the check passes.
 
 ### What the GUI draws from it: the model network
 
@@ -69,7 +72,7 @@ The GUI (zt 0.44+) draws a model in chapters as a **network of blocks**. A block
 - **A chapter with no rests-on Link to an earlier block is unanchored**: it becomes a root of the network with a red mark.
 - **The first sentence of a chapter's `**直觉**` opens its block** (the `lead`). Make it state the mechanism, 20 characters or more; a shorter first sentence takes the second along.
 - **Parts (`**分部**`)** name runs of chapters in reading order; they read best when each part is one branch of the tree.
-- Plain references (`参照`, no cue) are not drawn by default; they cost nothing in the network.
+- Plain references (`参照`, no cue) are not drawn by default. Use them only where a card points without using; a red thread in the network is fixed by moving cards (above), never by turning a premise into a reference.
 
 Write the target as a JSON spec (format in `scripts/tree-mover.mjs`) by card identity, then rebuild with `scripts/tree-mover.mjs plan` and `run`. The mover detaches every card leaf-first onto a parking chain, then places each card top-down into its slot, and follows every card through each move's rename map. It saves its state after every move and resumes after a failure. Freeze the tree first (it does this on the first run), and never change the spec mid-run.
 

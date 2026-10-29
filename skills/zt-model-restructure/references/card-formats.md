@@ -22,7 +22,7 @@ One sentence: what this chapter takes from earlier chapters, and what the next c
 - Title: `第 k 章：` plus the chapter's intuition in one line (40 characters at most). Facet: `第 k 章：<short name>`, emphasis core. The GUI shows the title without `第 k 章：` under the facet, so the title alone must read as the chapter's claim.
 - The first sentence of **直觉** opens the chapter's block in the model network: it states the mechanism in 20 characters or more (`这一章解第二阶段。` alone is too short; the GUI then takes the second sentence along).
 - `依赖` names the earlier chapter this one builds on most: in the model network the chapter hangs under it.
-- Only `结果：` before the Links to its own results. `依赖` and the other premise words point only to earlier chapter cards (the first chapter rests on the setting card).
+- Only `结果：` before the Links to its own results: the list is the chapter's table of contents, not a premise. `依赖` and the other premise words point only to earlier chapter cards (the first chapter rests on the setting card). If a card truly uses a later card, move one of the cards; never drop the cue or the Link to pass the check.
 
 ## Parts section of the Model Card (分部)
 

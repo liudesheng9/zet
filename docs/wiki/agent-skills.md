@@ -454,6 +454,7 @@ Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`;
 - **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
 
 ## Change history
+- `2026-10-28` — `zt-model-restructure`: a forward fault is a placement fault, fixed by moving cards (the dependent after its premise, or the premise first, with every card that rests on the moved one), never by deleting a Link or dropping its premise cue; a pointer (a chapter's list of its results, the notation-card line) is written as a pointer from the first draft, decided by meaning, not by the check (owner correction).
 - `2026-10-28` — `zt-model-restructure` follows the model network (zt 0.44): the network's rules in Step 3 (a chapter hangs under the block it rests on most; a card rests only on its own block or earlier ones, so a setting that rests on a chapter's proof is that chapter's 本章设定; the 直觉 opening is the block's lead), the network check `scripts/check-network.mjs` in Step 5 (tree, `forward` with its move, `unanchored`, `parts`, `lead`, `advice`; test `check-network.test.mjs`), and the chapter-card rules for the lead and `依赖` in `references/card-formats.md`.
 - `2026-10-28` — `zt-model-restructure` added (94dac75) and given the parts section (`**分部**`, #204); the release manifest lists it with the other installable skills.
 
