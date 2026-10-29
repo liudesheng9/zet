@@ -401,3 +401,26 @@ Every other Model Card is a model of its own: `14/a`, `15/a`, `22/a`, `23/a`, `2
 **Result.** `model-survey.mjs` lists exactly the 25 decided heads. The four folded models are `3|a` (13 members, lead `3|a|a|5`), `11|a` (14, lead `11|a|a|7`), `24|a` (22, lead `24|a|a|6`) and `40|a` (20, lead `40|a|a|6`); each lead keeps its former parts as Side parts. The tree still holds 1420 Cards, and `list_broken_links` is empty. `40|a` is self-sufficient. The other three report the new lead as unanchored (no rests-on line back to the setting yet); `zt-model-restructure` adds it. `11|a` also rests on `6|b|a|1` through the former `10|a` mechanism (`11|a|a|7|a|1`): a borrowed result of the Diamond-Mirrlees model, kept as a cross-model premise. The heads' texts still describe their base models only; the restructure rewrites them.
 
 **Next.** `zt-model-settings`, then `zt-model-restructure`, on `ebrill2001modern/3|a`, `ebrill2001modern/11|a`, `ebrill2001modern/24|a` and `ebrill2001modern/40|a`.
+
+### 12.1 The setting parts as dependency trees (2026-10-29)
+
+`zt-model-settings` ran on the four folded models of `ebrill2001modern` (`3|a`, `11|a`, `24|a`, `40|a`) on the live box at the owner's request. The backup is `D:\zt-merge-backup\zt-before-ebrill2001modern-settings.sqlite3` (`VACUUM INTO`, integrity `ok`).
+
+**Faults before.** None of the four had a notation card or a **起点** section. Each folded Model Card had brought its setting into its chapter (`3|a|a|5|a`, `11|a|a|7|a`, `24|a|a|6|a`, `40|a|a|6|a`). In `24|a` the assumption card `24|a|a|1` was the first step of the proof chain. `11|a|a|2` carried a copy of the setting's symbol and term tables.
+
+**Moves.** A notation card (`符号表与读法`) became the first Side of each setting card. Each misplaced setting moved `alone` into the setting part, so its derivation chain closed up and stays in its chapter:
+
+| Model | Setting part after the pass |
+|---|---|
+| `3/a` | `3/a/a` 设定 (原始设定) · `a` 符号表 · `b` 设定：概述 (直觉), the verbal setting of the former `2/a` (原始设定, no symbols) |
+| `11/a` | `11/a/a` 设定 (原始设定) · `a` 符号表 · `b` 设定：理论框架, the §3 framework of the former `10/a` (原始设定, no symbols) |
+| `24/a` | `24/a/a` 设定 (原始设定, Box 7.4) · `a` 符号表 · `b` 假设 (← 设定) · `c` 设定：筹资需要与管理成本, the Box 7.5 variant (← 设定, 假设) |
+| `40/a` | `40/a/a` 设定 (原始设定, §11.2) · `a` 符号表 · `b` 设定：起征点以下的流转税, the variant (← 设定) |
+
+(The table writes `/` for `|` in addresses.) The proof chain of `24/a` closed up: its steps are now `24/a/a/1` to `24/a/a/4`, and the extension lead is `24/a/a/5`.
+
+**Text.** Every setting card has a **起点** section (`原始设定`, or `依赖 [[…]] 的设定：…` lines; each variant names what it changes). The setting cards' symbol and term tables moved to the notation cards, and each notation card lists every symbol with the card where it is first used, in sections for the base setting, the variant and the auxiliary symbols of the derivations (for example N, D, M and z_0 in `40/a`, the regression coefficients and the fitted values in `11/a`). The notation card of `24/a` states that `s` changes meaning between the two boxes: a subsidy rate in Box 7.4 and a net tax rate of the opposite sign in Box 7.5. Three symbols lost their definition with the tables, so one sentence now defines each where it is first used: Y, OPEN and AGR in `11/a/a`, w_1 and w_2 in `24/a/a`, z* in `40/a/a`. The copied tables left `11/a/a/2`, which already rests on the setting. Each head's **结构** list was rebuilt from the tree: the setting part first, then the main line with its Side parts.
+
+**Result.** `check-settings.mjs` prints `settings: all in the setting part, as a dependency tree` for all four models, and `check-premises.mjs` finds no premise used before its card. The tree holds 1424 Cards (1420 and the four notation cards), and `list_broken_links` is empty. `40/a` is self-sufficient. The leads `3/a/a/5`, `11/a/a/7` and `24/a/a/5` are still unanchored, and `11/a` still rests on `6/b/a/1` (a cross-model premise, §12). `check-network.mjs` also advises that no chapter has a result card. Both belong to `zt-model-restructure`.
+
+**Next.** `zt-model-restructure` on the four heads.
