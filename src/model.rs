@@ -1039,7 +1039,7 @@ pub(crate) fn structure(
         &head,
         build["order"].as_array().map_or(&[][..], Vec::as_slice),
         &relations,
-        body_of(&head),
+        &body_of,
     );
     Some(json!({
         "head": reference(&head),
@@ -1072,8 +1072,10 @@ pub(crate) fn structure(
 /// flat model) starts a block at each main-line part that is not a Derivation part instead. Parts
 /// filed under the Model Card itself, or shared from other models, make one last `aside` block.
 /// The parts (range blocks) come from the head's `**分部**` section: `- <name>：[[<main part>]] 起`.
+/// Each block's `lead` is the first sentence of its card's `**直觉**`, the line its tray opens with.
 /// `block_edges` aggregates the relations between Cards of different blocks by block pair and kind.
-pub(crate) fn blocks_report(head: &str, order: &[Value], relations: &[Value], head_body: &str) -> (Vec<Value>, Vec<Value>) {
+pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value], body_of: &dyn Fn(&str) -> &'b str) -> (Vec<Value>, Vec<Value>) {
+    let head_body = body_of(head);
     let s = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
     let mains: Vec<&Value> = order.iter().filter(|e| e["line"] == "main").collect();
     let under = |a: &str, b: &str| a.len() > b.len() && a.starts_with(b) && a.as_bytes()[b.len()] == b'|';
@@ -1127,6 +1129,7 @@ pub(crate) fn blocks_report(head: &str, order: &[Value], relations: &[Value], he
         blocks.push(json!({
             "id": format!("b{i}"), "head": at, "title": s(h, "title"), "facet": h["facet"], "emphasis": h["emphasis"],
             "kind": kind, "part": part, "members": members[i].len(), "chaptered": chaptered, "children": children,
+            "lead": lead(body_of(&at)),
         }));
     }
     if !members[aside].is_empty() {
@@ -1159,6 +1162,40 @@ pub(crate) fn blocks_report(head: &str, order: &[Value], relations: &[Value], he
         }
     }
     (blocks, edges)
+}
+
+/// The opening of a card's `**直觉**` section (the marker on its own line or before the text):
+/// its first sentence, and the second too when the first is shorter than 20 characters; or None.
+fn lead(body: &str) -> Option<String> {
+    let mut lines = body.lines();
+    let mut text = String::new();
+    while let Some(line) = lines.next() {
+        if let Some(rest) = line.trim().strip_prefix("**直觉**") {
+            text.push_str(rest.trim_start_matches(['：', ':', ' ']).trim());
+            for next in lines.by_ref() {
+                let next = next.trim();
+                if next.is_empty() {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    break;
+                }
+                if next.starts_with("**") {
+                    break;
+                }
+                text.push_str(next);
+            }
+            break;
+        }
+    }
+    let ends: Vec<usize> = text.char_indices().filter(|(_, c)| matches!(c, '。' | '！' | '？')).map(|(i, c)| i + c.len_utf8()).collect();
+    let end = match ends.as_slice() {
+        [first, second, ..] if text[..*first].chars().count() < 20 => Some(*second),
+        [first, ..] => Some(*first),
+        [] => None,
+    };
+    let sentence = end.map_or(text.as_str(), |end| &text[..end]).trim();
+    (!sentence.is_empty()).then(|| sentence.to_string())
 }
 
 /// The `**分部**` section of a Model Card body: each line `- <name>：[[<main part>]] 起` as
@@ -1734,13 +1771,22 @@ mod tests {
             json!({"from": "K/4|a|a|1|a|a|1", "to": "K/4|a|a|1|a|a", "kind": "rests-on", "note": ""}),
         ];
         let body = "问题：…\n\n**分部**\n\n- 第一部分 构件：[[K/4|a|a]] 起\n- 第二部分 工资：[[K/4|a|a|2]] 起\n\n来源：…\n";
-        let (blocks, edges) = blocks_report(h, &order, &relations, body);
+        let bodies = |at: &str| match at {
+            "K/4|a" => body,
+            "K/4|a|a|1" => "**直觉**\n错配越少，效率越高。代价是管理跨度。\n\n**本章结果**\n- 结果：[[K/4|a|a|1|a]]\n",
+            "K/4|a|a|2" => "**直觉** 工资随效率走，离散度取决于绩效敏感度和监督的强弱。第二句。\n",
+            _ => "设定：x\n",
+        };
+        let (blocks, edges) = blocks_report(h, &order, &relations, &bodies);
         let ids: Vec<&str> = blocks.iter().map(|b| b["head"].as_str().unwrap()).collect();
         assert_eq!(ids, ["K/4|a|a", "K/4|a|a|1", "K/4|a|a|2", "K/4|a"], "one block per main-line part, then the asides: {blocks:?}");
         assert_eq!(blocks[0]["part"], "第一部分 构件");
         assert_eq!(blocks[1]["part"], "第一部分 构件");
         assert_eq!(blocks[2]["part"], "第二部分 工资");
         assert_eq!(blocks[1]["members"], 4, "the chapter, its result and two proof steps");
+        assert_eq!(blocks[1]["lead"], "错配越少，效率越高。代价是管理跨度。", "a short first sentence of 直觉 takes the second along");
+        assert_eq!(blocks[2]["lead"], "工资随效率走，离散度取决于绩效敏感度和监督的强弱。", "one sentence when it is long enough; the marker may stand on its line");
+        assert!(blocks[0]["lead"].is_null(), "a card without 直觉 has no lead");
         let result = &blocks[1]["children"][0];
         assert_eq!(result["address"], "K/4|a|a|1|a");
         assert_eq!(result["proof"]["steps"], 2);
@@ -1782,7 +1828,7 @@ mod tests {
             entry("K/1|a|a|3", "推导：比较静态", "main"),
             entry("K/1|a|a|4", "推导：符号", "main"),
         ];
-        let (blocks, _) = blocks_report("K/1|a", &order, &[], "");
+        let (blocks, _) = blocks_report("K/1|a", &order, &[], &|_| "");
         let sizes: Vec<u64> = blocks.iter().map(|b| b["members"].as_u64().unwrap()).collect();
         assert_eq!(sizes, [2, 3], "{blocks:?}");
         assert_eq!(blocks[0]["chaptered"], false);

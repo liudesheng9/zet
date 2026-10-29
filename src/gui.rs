@@ -4955,30 +4955,232 @@ mod tests {
         assert_eq!(out["portsX1"], json!([{ "dir": "in", "block": "b3", "count": 2 }]), "{out}");
     }
 
-    /// #200–#202 (B2–B4; docs/model-board-blocks-proposal.md §3a): the page builds the block board.
-    /// A model in chapters (or over 20 parts) goes to `blockBoard`; the Refers switch sits next to
-    /// the board it changes and is kept apart from the Term switch; an open block draws only its own
-    /// ribbons; trays are measured by layout offsets and slide from where they stood (300 ms,
-    /// ease-in-out); proofs are stacks that fan; the reading line walks with the arrow keys; the
-    /// focus tray is lifted and colour is spent only on the forward fault.
+    /// #201 (B3; docs/model-board-blocks-proposal.md §5.2, §5.5, §5.6): with no open block the
+    /// overview draws only a backbone (each block's heaviest rests-on ribbon to an earlier block,
+    /// and every forward-fault ribbon), so the column stays readable; pointing at a block draws its
+    /// own ribbons. A chapter block with no rests-on ribbon to an earlier block is unanchored. Each
+    /// ribbon has its own slot where it meets a tray, so ribbons that end at one tray do not merge.
+    /// Layout stays linear: a 500-part model lays out well under 50 ms.
     #[test]
-    fn the_front_end_shows_a_large_model_in_blocks_with_one_lifted_focus() {
+    fn the_block_overview_draws_a_backbone_and_marks_unanchored_blocks() {
+        let Some(out) = layout_js(
+            "(() => {
+               const blocks = [{ id: 'b0', kind: 'setting' }, ...['b1','b2','b3','b4','b5'].map((id) => ({ id, kind: 'chapter' })), { id: 'b6', kind: 'aside' }];
+               const e = (from_block, to_block, kind, count) => ({ from_block, to_block, kind, count, pairs: [] });
+               const edges = [
+                 e('b1', 'b0', 'rests-on', 1),
+                 e('b2', 'b1', 'rests-on', 3), e('b2', 'b0', 'rests-on', 5),
+                 e('b3', 'b2', 'rests-on', 1), e('b3', 'b0', 'rests-on', 2),
+                 e('b4', 'b5', 'rests-on', 1),
+                 e('b5', 'b3', 'rests-on', 2), e('b5', 'b1', 'contrasts', 1), e('b5', 'b2', 'refers', 6),
+               ];
+               const head = L.blockLayout(blocks, edges, null, { focusOnly: true, backbone: true });
+               const hover = L.blockLayout(blocks, edges, null, { focusOnly: true, backbone: true, hover: 'b2' });
+               const all = L.blockLayout(blocks, edges, null, { focusOnly: true });
+               const slots = head.ribbons.filter((r) => r.to_block === 'b0').map((r) => r.toSlot).sort();
+               // A model of 500 parts: 40 blocks, 1,500 relations across them.
+               const big = Array.from({ length: 40 }, (_, i) => ({ id: 'c' + i, kind: i ? 'chapter' : 'setting' }));
+               const many = Array.from({ length: 1500 }, (_, i) => { const from = 1 + (i * 7) % 39; return e('c' + from, 'c' + ((i * 13) % from), i % 5 ? 'rests-on' : 'refers', 1 + (i % 3)); });
+               const t0 = performance.now();
+               for (let k = 0; k < 10; k += 1) L.blockLayout(big, many, null, { focusOnly: true, backbone: true });
+               const ms = (performance.now() - t0) / 10;
+               const bigHead = L.blockLayout(big, many, null, { focusOnly: true, backbone: true });
+               return {
+                 head: head.ribbons.map((r) => r.from_block + '>' + r.to_block).sort(),
+                 hover: hover.ribbons.map((r) => r.from_block + '>' + r.to_block).sort(),
+                 hoverLevels: [...new Set(hover.trays.map((t) => t.level))],
+                 all: all.ribbons.length,
+                 folded: head.folded,
+                 unanchored: head.unanchored,
+                 slots,
+                 ms,
+                 bigRibbons: bigHead.ribbons.length,
+               };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(out["head"], json!(["b1>b0", "b2>b0", "b3>b0", "b4>b5", "b5>b3"]), "the backbone and the forward fault: {out}");
+        assert_eq!(out["hover"], json!(["b2>b0", "b2>b1", "b3>b2"]), "pointing at a block draws its own ribbons: {out}");
+        assert_eq!(out["hoverLevels"], json!(["near"]), "pointing moves no tray: {out}");
+        assert_eq!(out["all"], json!(8), "without the backbone every ribbon but refers: {out}");
+        assert_eq!(out["folded"], json!(3), "the overview says how many ribbons it folds: {out}");
+        assert_eq!(out["unanchored"], json!(["b4"]), "b4 rests only on a later block: {out}");
+        assert_eq!(out["slots"], json!([0, 1, 2]), "three ribbons end at b0 in three slots: {out}");
+        assert!(out["bigRibbons"].as_u64().unwrap() <= 40, "one backbone ribbon per block at most, plus faults: {out}");
+        assert!(out["ms"].as_f64().unwrap() < 50.0, "layout is linear: {out}");
+    }
+
+    /// The model network (#200, #201): each block hangs under the earlier block it rests on most
+    /// (ties go to the later block), so a spine model reads as the tree of what each chapter builds
+    /// on; a block with no earlier premise is a root (the setting, or an unanchored chapter). The
+    /// tree is laid out top to bottom: one layer per depth, siblings in reading order, a parent
+    /// centred over its children, no two cards overlapping, the same model always the same way.
+    #[test]
+    fn the_model_network_hangs_each_block_under_its_main_premise_and_lays_the_tree_top_down() {
+        let Some(out) = layout_js(
+            "(() => {
+               const blocks = ['b0','b1','b2','b3','b4','b5','b6'].map((id, i) => ({ id, kind: i ? 'chapter' : 'setting' }));
+               const e = (from_block, to_block, kind, count) => ({ from_block, to_block, kind, count, pairs: [] });
+               const edges = [
+                 e('b1', 'b0', 'rests-on', 2),
+                 e('b2', 'b1', 'rests-on', 1), e('b2', 'b0', 'rests-on', 1),
+                 e('b3', 'b2', 'rests-on', 5), e('b4', 'b2', 'rests-on', 7), e('b4', 'b3', 'rests-on', 3),
+                 e('b5', 'b4', 'refers', 9), e('b5', 'b6', 'rests-on', 2),
+                 e('b6', 'b4', 'rests-on', 1),
+               ];
+               const tree = L.blockTree(blocks, edges);
+               const size = (id) => (id === 'b4' ? { w: 160, h: 80 } : { w: 100, h: 50 });
+               const lay = L.treeLayout(tree.roots, tree.children, size, { gapX: 10, gapY: 30 });
+               const again = L.treeLayout(tree.roots, tree.children, size, { gapX: 10, gapY: 30 });
+               const boxes = Object.values(lay.pos);
+               let overlap = false;
+               for (const a of boxes) for (const b of boxes) if (a !== b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) overlap = true;
+               return { parent: tree.parent, roots: tree.roots, children: tree.children, pos: lay.pos, width: lay.width, height: lay.height, overlap, same: JSON.stringify(lay) === JSON.stringify(again) };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(
+            out["parent"],
+            json!({ "b0": null, "b1": "b0", "b2": "b1", "b3": "b2", "b4": "b2", "b5": null, "b6": "b4" }),
+            "heaviest earlier premise, ties to the later block; refers and later blocks never parent: {out}"
+        );
+        assert_eq!(out["roots"], json!(["b0", "b5"]), "{out}");
+        assert_eq!(out["children"]["b2"], json!(["b3", "b4"]), "siblings in reading order: {out}");
+        let pos = &out["pos"];
+        let cx = |id: &str| pos[id]["cx"].as_f64().unwrap();
+        let y = |id: &str| pos[id]["y"].as_f64().unwrap();
+        assert!(y("b0") < y("b1") && y("b1") < y("b2") && y("b2") < y("b3") && y("b3") < y("b6"), "top to bottom by depth: {out}");
+        assert_eq!(pos["b3"]["depth"], pos["b4"]["depth"], "siblings share a layer: {out}");
+        assert!(cx("b3") < cx("b4"), "reading order left to right: {out}");
+        assert!((cx("b2") - (cx("b3") + cx("b4")) / 2.0).abs() < 0.5, "a parent centred over its children: {out}");
+        assert!((cx("b4") - cx("b6")).abs() < 0.5, "an only child under its parent: {out}");
+        assert!(cx("b5") > cx("b0"), "a second root stands to the right: {out}");
+        assert_eq!(out["overlap"], json!(false), "no two cards overlap: {out}");
+        assert_eq!(out["same"], json!(true), "deterministic: {out}");
+        // A small subtree tucks in beside a wide one where their layers do not meet (contours).
+        let Some(tuck) = layout_js(
+            "(() => {
+               const children = { r: ['a', 'b'], b: ['c'], c: ['d', 'e', 'f'] };
+               const lay = L.treeLayout(['r'], children, () => ({ w: 100, h: 40 }), { gapX: 14, gapY: 20 });
+               return { width: lay.width, a: lay.pos.a, b: lay.pos.b, d: lay.pos.d };
+             })()",
+        ) else {
+            return;
+        };
+        assert_eq!(tuck["width"], json!(328), "three cards and two gaps, not the naive 442: {tuck}");
+        assert!(tuck["a"]["x"].as_f64().unwrap() + 100.0 + 14.0 <= tuck["b"]["x"].as_f64().unwrap() + 0.01, "a beside b: {tuck}");
+    }
+
+    /// A thread that skips layers of the network never runs behind a card: it drops into the gap
+    /// below its premise, runs along the free corridor between the cards of the layers it passes
+    /// (the corridor nearest its own line), and enters its dependent from the gap above it. A thread
+    /// between neighbouring layers stays one smooth curve.
+    #[test]
+    fn a_thread_that_skips_layers_runs_in_a_free_corridor_not_behind_a_card() {
+        let Some(out) = layout_js(
+            "(() => {
+               const between = [{ x: 60, y: 100, w: 80, h: 40 }, { x: 160, y: 100, w: 80, h: 40 }];
+               const routed = L.threadPath({ x: 100, y: 40 }, { x: 100, y: 240 }, between, { half: 17 });
+               const up = L.threadPath({ x: 100, y: 240 }, { x: 100, y: 40 }, between, { half: 17 });
+               const near = L.threadPath({ x: 100, y: 40 }, { x: 180, y: 90 }, [], { half: 17 });
+               return { routed, up, near };
+             })()",
+        ) else {
+            return;
+        };
+        let lane = out["routed"]["lane"].as_f64().unwrap();
+        assert!((lane - 150.0).abs() < 0.01, "the corridor between the two cards, nearest the line: {out}");
+        let d = out["routed"]["d"].as_str().unwrap();
+        assert!(d.starts_with("M 100 40 V "), "down from the premise first: {d}");
+        assert!(d.contains(" 57 ") || d.contains(" 57\n") || d.contains(",57"), "the gap below the premise (17 down): {d}");
+        assert!(d.ends_with(" 240"), "into the dependent: {d}");
+        assert!(out["up"]["d"].as_str().unwrap().contains(" 223"), "an upward thread leaves by the gap above its premise: {out}");
+        assert!(out["near"]["d"].as_str().unwrap().contains(" C "), "neighbouring layers: one smooth curve: {out}");
+        assert!(out["near"]["lane"].is_null(), "{out}");
+    }
+
+    /// #201 (B3; P3): clicking a ribbon opens its two blocks side by side. The premises (the Cards
+    /// of the block rested on) stand on the left, the Cards that rest on them on the right, each
+    /// once and in Folgezettel order, and one thread per Card pair joins them.
+    #[test]
+    fn the_two_block_view_puts_premises_left_and_dependents_right_with_one_thread_per_pair() {
+        let Some(out) = layout_js(
+            "L.bridgeLayout({ from_block: 'b5', to_block: 'b3', kind: 'rests-on', count: 3, pairs: [
+               { from: 'K/5|b|a', to: 'K/3|a' }, { from: 'K/5|b', to: 'K/3|a' }, { from: 'K/5|b', to: 'K/3|b|a' } ] })",
+        ) else {
+            return;
+        };
+        assert_eq!(
+            out,
+            json!({ "left": ["K/3|a", "K/3|b|a"], "right": ["K/5|b", "K/5|b|a"], "threads": [[0, 1], [0, 0], [1, 0]] }),
+            "{out}"
+        );
+    }
+
+    /// #200–#202 (B2–B4; docs/model-board-blocks-proposal.md §3a): the page builds the model network.
+    /// A model in chapters (or over 20 parts) goes to `blockBoard`: index cards placed by the tree
+    /// layout, joined by threads (the tree, the forward faults, and the open or pointed block's own),
+    /// a strip of the parts that walks the blocks by key, the open block close up with its results
+    /// hanging from it and its proofs stacked; cards slide from where they stood (300 ms,
+    /// ease-in-out); colour only for the forward fault and the unanchored mark.
+    #[test]
+    fn the_front_end_shows_a_large_model_as_a_network_with_one_lifted_focus() {
         let board = app_function("modelBoard");
         assert!(board.contains("if (model.blocks && model.blocks.length > 1 && (model.blocks[0].chaptered || model.parts.length > 20)) return blockBoard(card, model);"));
         let blocks = app_function("blockBoard");
-        assert!(blocks.contains("{ refers: refersOn, focusOnly: true }"), "an open block draws only its own ribbons");
+        assert!(
+            blocks.contains("{ refers: refersOn, focusOnly: true, backbone: true, hover }"),
+            "an open block draws only its own threads; a pointed block its own"
+        );
+        assert!(blocks.contains("const tree = ZtLayout.blockTree(blocks, edges);"), "each block hangs under its main premise");
+        assert!(blocks.contains("ZtLayout.treeLayout(tree.roots, tree.children, sizeOf, { gapX: 14, gapY: 34 })"), "the tree laid out top to bottom");
+        assert!(blocks.contains("let route = ZtLayout.threadPath(p1, p2, between, { half: 17 });"), "threads that skip layers run in free corridors");
+        assert!(blocks.contains("const k = Math.min(30, 16 + Math.abs(p2.x - p1.x) * 0.08);"), "a thread within one layer sags only inside the gap below it");
+        assert!(blocks.contains("const faults = edges.filter((e) => e.kind === 'rests-on' && index.get(e.from_block) < index.get(e.to_block));"), "forward faults are always drawn");
+        assert!(blocks.contains("node.addEventListener('mouseenter', () => { if (drawnFor !== id) draw(id); });"), "pointing at a block draws its threads");
+        assert!(blocks.contains("layer.style.transform = `translateX(${place.offset}px) scale(${place.scale})`;"), "a wide tree scales as a whole, its text with it");
         assert!(APP_JS.contains("localStorage.getItem('zt-refers-edges') === 'on'"), "the Refers switch has its own key");
         assert!(blocks.contains("class: 'mbk-switch lens-toggle', 'aria-pressed': String(refersOn)"));
-        assert!(blocks.contains("const o = offsetIn(t, board);"), "ribbons follow layout, not a sliding tray");
-        assert!(blocks.contains("{ duration: 300, easing: 'ease-in-out' }"), "a moved tray slides from where it stood");
+        assert!(blocks.contains("{ duration: 300, easing: 'ease-in-out' }"), "a moved card slides from where it stood");
         assert!(blocks.contains("class: 'mbk-stack'") && blocks.contains("h('ol', { class: 'mbk-fan'"), "proofs fold into stacks and fan");
-        for key in ["'ArrowDown'", "'ArrowUp'", "'ArrowLeft'"] {
-            assert!(blocks.contains(key), "the reading line answers {key}");
+        for key in ["'ArrowDown'", "'ArrowUp'", "'ArrowLeft'", "'ArrowRight'", "'Enter'", "'Escape'"] {
+            assert!(blocks.contains(key), "the strip answers {key}");
         }
-        assert!(css_rule(".mbk-tray.level-focus").contains("var(--shadow-lift)"), "the focus is lifted");
-        assert!(css_rule(".mbk-tray.level-far").contains("background: transparent"), "far trays recede uniformly");
-        let up = css_rule(".mbk-ribbon.up .line, .mbk-ribbon.up .tip");
-        assert!(up.contains("var(--broken)"), "the forward fault is the one coloured ribbon");
+        // Cards read as index cards: the role on the header line, the claim without the role
+        // repeated, the open chapter's intuition first, ports in on the left and out on the right.
+        assert!(blocks.contains("h('span', { class: 'mbn-title' }, titleNodes(bareTitle(b.title)))"), "the claim without `第 k 章：`");
+        assert!(blocks.contains("open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null"), "the open block opens with its intuition");
+        assert!(blocks.contains("dir === 'in' ? [h('span', { class: 'arrow', text: '←' }), names] : [names, h('span', { class: 'arrow', text: '→' })]"));
+        assert!(blocks.contains("Unanchored: nothing in ${nameOf(b.id)} rests on an earlier block."), "an unanchored block carries the fault mark and its fix");
+        assert!(blocks.contains("// The stem: from the chapter card down, across to the trunk, down to the last rail."), "results hang from the chapter by threads that cross no card");
+        assert!(blocks.contains("el.addEventListener('mouseenter', () => linked.forEach((id) => nodes.get(id)?.classList.add('linked')));"), "a result marks the blocks its Links reach");
+        // Threads: one arrowhead per state, the pairs card on hover, the two-block view on click.
+        assert!(blocks.contains("'marker-end': `url(#mbk-arrow-${state})`"));
+        assert!(blocks.contains("hit.addEventListener('mouseenter', () => showPairs(r, group, mx, my));"), "hovering a thread lists its Card pairs");
+        assert!(blocks.contains("hit.addEventListener('click', () => openBridge(r));"), "clicking a thread lays its blocks side by side");
+        assert!(blocks.contains("h('button', { class: 'mbk-pairs-from', onclick: () => go(from), title: from }, cardName(from))"), "each pair opens its Card");
+        assert!(blocks.contains("bridgeView(model, bridgeEdge,"), "the board gives way to the two-block view");
+        let bridge = app_function("bridgeView");
+        assert!(bridge.contains("ZtLayout.bridgeLayout(edge)"));
+        assert!(bridge.contains("if (event.key === 'Escape' && document.body.contains(view))"), "Esc puts the blocks back");
+        assert!(bridge.contains("'marker-end': 'url(#mbk-thread-arrow)'"), "one thread per pair, arrow at the Card that rests");
+        assert!(blocks.contains("if (bridgeOpen && (bridgeOpen.head !== model.head.address || !bridgeOpen.cards.includes(here))) bridgeOpen = null;"), "the view stays while the reader moves among its own Cards");
+        // A search marks the blocks that hold a hit on their tabs; nothing moves.
+        assert!(APP_JS.contains("return { open, close, hits: foundCards, get isOpen() { return isOpen; } };"));
+        assert!(blocks.contains("const found = finder.hits();"));
+        assert!(blocks.contains("(holdsHit(b) ? ' found' : '')"), "the network card and the strip tab carry the mark");
+        assert!(css_rule(".mbn-tick.found::after, .mbn-node.found::after").contains("var(--link)"));
+        assert!(css_rule(".mbn-node.level-focus").contains("var(--card-shadow-lift)"), "the focus is lifted");
+        let far = css_rule(".mbn-node.level-far");
+        assert!(far.contains("var(--stock)") && far.contains("var(--desk)"), "far blocks shrink to their tab: {far}");
+        assert!(css_rule(".mbn-head").contains("var(--paper-margin)"), "the red margin line of an index card");
+        assert!(css_rule(".mbk-child.has-proof .mbk-card").contains("6px 6px 0 -1px var(--stock)"), "a proof lies stacked behind its result");
+        assert!(css_rule(".mbn-node.here, .mbn-node.open").contains("var(--pointer)"), "the open block keeps the Map's pointer mark");
+        assert!(css_rule(".mbk-ribbon.up .line").contains("var(--broken)"), "the forward fault is the one coloured thread");
+        assert!(css_rule(".mbk-fault").contains("var(--broken)"), "and the unanchored mark");
+        assert!(css_rule(".mbk-ribbons.hovering .mbk-ribbon .line").contains("opacity: .12"), "hovering one thread fades the rest");
         for kind in ["contrasts", "refers"] {
             assert!(
                 css_rule(&format!(".mbk-ribbon.kind-{kind} .line")).contains("stroke-dasharray"),

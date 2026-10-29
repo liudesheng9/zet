@@ -1,6 +1,6 @@
 # Model board in blocks: a comprehensible model network
 
-Status: proposal (2026-10-28), not implemented. Owner decision: blocks top to bottom (§8.1); decisions 2–4 open, with the proposed defaults. Scope: the GUI's **model board** (`modelBoard` in `src/gui/app.js`, design in [model-structure-design.md](model-structure-design.md) "The model board"), the model data the GUI reads (`get_model` / the card summary), and the Map's view of a model. It changes no Card and no archive rule.
+Status: built (2026-10-28, #199–#204), as a **network** of blocks after the owner's review of the first build (§9). Owner decision: top to bottom (§8.1); decisions 2–4 use the proposed defaults. Scope: the GUI's **model board** (`modelBoard` in `src/gui/app.js`, design in [model-structure-design.md](model-structure-design.md) "The model board"), the model data the GUI reads (`get_model` / the card summary), and the Map's view of a model. It changes no Card and no archive rule.
 
 ## 1. Problem
 
@@ -208,3 +208,24 @@ The architect already plans each model; with this proposal its plan also names t
 3. **Refers:** hidden behind a switch (proposed), or dropped from the board entirely?
 4. **Old models:** fall back to blocks by source section (proposed), or keep today's depth rows for them?
 
+
+## 9. As built: the model network (2026-10-28)
+
+The first build (zt 0.43.0) drew the blocks as a column of trays with ribbons in a right gutter. The owner judged it "not aesthetically pleasing" and asked for "a network-like structure". The board is now a network; P1–P7 hold, with these forms:
+
+| Proposal | As built |
+|---|---|
+| P1 blocks, parts | One card per block. Each block hangs by a thread under the earlier block it rests on most (`ZtLayout.blockTree`), so a spine model reads as the tree of what each chapter builds on (Becker: 设定 → 1 → 2 → {3, 4}; 4 → 5 → {6, 7, 8}; 8 → {9, 10}; 10 → 11). The parts (`**分部**`) name their runs of tabs in the strip above the network. |
+| P2 overview, attention | The tree laid out top to bottom (`treeLayout`: one layer per depth, siblings in reading order, subtrees packed by their contours). With the Model Card open every block is a card and only the tree threads and the forward faults are drawn. With a block open: the focus card lifted and larger, its previous and next block and its two most linked blocks as cards, every other block a tab with its number. |
+| P3 Links between blocks | One thread per block pair and kind, width by count, arrow at the dependent; the open block's own threads inked and counted; pointing at a card draws its own. A thread that skips layers runs in the free corridor between the cards it passes (`threadPath`), never behind a card. Hover: the other threads fade, both cards are outlined, the Card pairs are listed (one row per Card that writes the Links). Click: the two-block view (premises left, dependents right, one thread per pair). The forward fault is always drawn in red; an unanchored block is a root with a red `!` and its fix. Plain references behind the Refers switch. |
+| P4 open block | Below the network, close up: the chapter card with the opening of its 直觉 (`block.lead` from the backend), its results in a grid hanging from it by org-chart threads, each proof stacked behind its result and fanned into the chain when the open Card is in it. Pointing at a result marks the network cards its Links reach. |
+| P5 reading line | The strip of parts and tabs: `↓`/`→` next block, `↑`/`←` previous, Enter opens the focused tab, Esc or Home returns to the Model Card. |
+| P6 Map | As in #203: part labels on the main line, the head's 结构 Links draw no thread. |
+| P7 backend | `blocks`, `block_edges`, and `lead` per block. |
+| §3a search marks | The blocks that hold a hit of the last search carry a blue mark on their card and tab; nothing moves. |
+
+Measured on `becker2025division/4|a` (test copy of the archive): 29 SVG paths with the Model Card open and 37–41 with a chapter open (acceptance 2: fewer than 60; before: 1,215); one focus, four supporting cards, seven tabs (acceptance 1); a 500-part synthetic model lays out in about 2 ms (acceptance 6).
+
+Deviation kept: the Refers switch sits beside the board it changes (first principle: a control next to what it changes), not in the Map's stage bar.
+
+Found by the network on the live model: two cards filed under 设定 rest on proof steps of chapters 2 and 3 (`4|a|a|b` → `4|a|a|2|a|a|3`; `4|a|a|d|2` → `4|a|a|2|a|a|1` and `4|a|a|3|a|a`), so 设定 draws two red forward threads. That is a content fault of the restructure, left for the owner.

@@ -674,14 +674,37 @@
    * right gutter; a ribbon never shares a lane with one whose span overlaps it, shorter spans
    * inside. `up` marks a rests-on ribbon from a block to a later one (the forward fault); `hot` one
    * that touches the focus. Ports: per Card, the blocks its Links leave to (`out`) or come from (`in`).
+   *
+   * With `options.backbone` and no focus (the Model Card is open), the overview draws only each
+   * block's heaviest rests-on ribbon to an earlier block and every `up` ribbon; `folded` counts
+   * the rest. `options.hover` (a block id) draws that block's ribbons instead and moves no tray.
+   * `unanchored`: the chapter blocks after the first with no rests-on edge to an earlier block.
+   * Each ribbon has a `fromSlot` and a `toSlot`: its rank among the ribbons that meet that tray,
+   * so two ribbons never leave or reach a tray at one point.
    * Linear in blocks plus edges, apart from the lane search over the lanes in use.
    */
   function blockLayout(blocks, edges, focus, options = {}) {
     const at = new Map(blocks.map((b, i) => [b.id, i]));
     const shown = edges.filter((e) => at.has(e.from_block) && at.has(e.to_block) && (options.refers || e.kind !== 'refers'));
     const f = focus != null && at.has(focus) ? at.get(focus) : null;
-    // With `focusOnly`, an open block draws only its own ribbons: the others would compete with it.
-    const drawn = options.focusOnly && f != null ? shown.filter((e) => at.get(e.from_block) === f || at.get(e.to_block) === f) : shown;
+    // With `focusOnly`, an open block (or the block pointed at) draws only its own ribbons: the
+    // others would compete with it. With no focus, the backbone stands for the whole model.
+    const lens = f != null ? f : options.hover != null && at.has(options.hover) ? at.get(options.hover) : null;
+    const isUp = (e) => e.kind === 'rests-on' && at.get(e.from_block) < at.get(e.to_block);
+    let drawn = shown;
+    if (options.focusOnly && lens != null) drawn = shown.filter((e) => at.get(e.from_block) === lens || at.get(e.to_block) === lens);
+    else if (options.backbone && f == null) {
+      const best = new Map();
+      for (const e of shown) {
+        if (e.kind !== 'rests-on' || isUp(e)) continue;
+        const was = best.get(e.from_block);
+        if (!was || e.count > was.count || (e.count === was.count && at.get(e.to_block) > at.get(was.to_block))) best.set(e.from_block, e);
+      }
+      const keep = new Set(best.values());
+      drawn = shown.filter((e) => keep.has(e) || isUp(e));
+    }
+    const anchored = new Set(edges.filter((e) => e.kind === 'rests-on' && at.has(e.from_block) && at.has(e.to_block) && !isUp(e) && e.from_block !== e.to_block).map((e) => e.from_block));
+    const unanchored = blocks.filter((b, i) => i > 0 && b.kind === 'chapter' && !anchored.has(b.id)).map((b) => b.id);
     const support = new Set();
     if (f != null) {
       if (f > 0) support.add(f - 1);
@@ -701,7 +724,7 @@
       .map((e) => {
         const a = at.get(e.from_block);
         const b = at.get(e.to_block);
-        return { ...e, lo: Math.min(a, b), hi: Math.max(a, b), up: e.kind === 'rests-on' && a < b, hot: f != null && (a === f || b === f) };
+        return { ...e, lo: Math.min(a, b), hi: Math.max(a, b), up: isUp(e), hot: lens != null && (a === lens || b === lens) };
       })
       .sort((x, y) => (x.hi - x.lo) - (y.hi - y.lo) || x.lo - y.lo)
       .map((r) => {
@@ -718,11 +741,178 @@
       else list.push({ dir, block, count: 1 });
     };
     for (const e of shown) for (const p of e.pairs || []) { add(p.from, 'out', e.to_block); add(p.to, 'in', e.from_block); }
-    return { trays, ribbons, ports, lanes: lanes.length };
+    // Slots: where several ribbons meet one tray, the outer lane meets it lowest.
+    const meet = new Map();
+    for (const r of ribbons) for (const end of [r.from_block, r.to_block]) (meet.get(end) || meet.set(end, []).get(end)).push(r);
+    for (const list of meet.values()) list.sort((x, y) => x.lane - y.lane);
+    for (const r of ribbons) {
+      r.fromSlot = meet.get(r.from_block).indexOf(r);
+      r.toSlot = meet.get(r.to_block).indexOf(r);
+    }
+    return { trays, ribbons, ports, lanes: lanes.length, folded: shown.length - drawn.length, unanchored };
+  }
+
+  /**
+   * The two-block view of one ribbon (#201): the Cards of the block rested on (`to`) on the left,
+   * the Cards that rest on them on the right, each once in Folgezettel order, and per Card pair one
+   * thread `[left index, right index]`.
+   */
+  /**
+   * The model network's tree (#200, #201): each block's parent is the earlier block it rests on
+   * most (ties to the later block); a block with none is a root. `children` lists each parent's
+   * blocks in reading order. Plain references and rests-on Links to later blocks never make a parent.
+   */
+  function blockTree(blocks, edges) {
+    const at = new Map(blocks.map((b, i) => [b.id, i]));
+    const best = new Map();
+    for (const e of edges) {
+      if (e.kind !== 'rests-on' || !at.has(e.from_block) || !at.has(e.to_block) || at.get(e.to_block) >= at.get(e.from_block)) continue;
+      const was = best.get(e.from_block);
+      if (!was || e.count > was.count || (e.count === was.count && at.get(e.to_block) > at.get(was.to_block))) best.set(e.from_block, e);
+    }
+    const parent = {};
+    const children = {};
+    const roots = [];
+    for (const b of blocks) {
+      const p = best.get(b.id);
+      parent[b.id] = p ? p.to_block : null;
+      if (p) (children[p.to_block] ||= []).push(b.id);
+      else roots.push(b.id);
+    }
+    return { parent, children, roots };
+  }
+
+  /**
+   * A tidy tree laid out top to bottom (#200, #201): one layer per depth, as tall as its tallest
+   * card; siblings left to right in the given order, each subtree packed against the one before it
+   * by their contours (layer by layer, so a small subtree tucks in beside a wide one); a parent
+   * centred over its first and last child; roots side by side. `size(id)` gives `{w, h}`. Returns
+   * each card's box `{x, y, w, h, cx, depth}` and the whole width and height. Cards times layers.
+   */
+  function treeLayout(roots, children, size, options = {}) {
+    const gapX = options.gapX ?? 14;
+    const gapY = options.gapY ?? 34;
+    const kids = (id) => children[id] || [];
+    const depth = {};
+    const layerH = [];
+    // Each subtree is laid out on its own, x relative to its left edge, with its contour: the
+    // leftmost and rightmost x it holds on each layer below its root.
+    const sub = (id, d) => {
+      depth[id] = d;
+      const s = size(id);
+      layerH[d] = Math.max(layerH[d] || 0, s.h);
+      const list = kids(id).map((c) => sub(c, d + 1));
+      const xs = { [id]: 0 };
+      let left = [];
+      let right = [];
+      let cx;
+      if (!list.length) {
+        cx = s.w / 2;
+      } else {
+        const offsets = [];
+        list.forEach((t, i) => {
+          let off = 0;
+          if (i) for (let k = 0; k < Math.min(right.length, t.left.length); k += 1) off = Math.max(off, right[k] + gapX - t.left[k]);
+          offsets.push(off);
+          for (let k = 0; k < t.left.length; k += 1) {
+            left[k] = left[k] === undefined ? t.left[k] + off : Math.min(left[k], t.left[k] + off);
+            right[k] = right[k] === undefined ? t.right[k] + off : Math.max(right[k], t.right[k] + off);
+          }
+          for (const [n, x] of Object.entries(t.xs)) xs[n] = x + off;
+        });
+        cx = (list[0].cx + offsets[0] + list[list.length - 1].cx + offsets[list.length - 1]) / 2;
+      }
+      xs[id] = cx - s.w / 2;
+      left = [xs[id], ...left];
+      right = [xs[id] + s.w, ...right];
+      // Normalise: the subtree's leftmost point is 0.
+      const min = Math.min(...left);
+      if (min) {
+        for (const n of Object.keys(xs)) xs[n] -= min;
+        left = left.map((x) => x - min);
+        right = right.map((x) => x - min);
+        cx -= min;
+      }
+      return { xs, left, right, cx };
+    };
+    const forest = { xs: {}, left: [], right: [] };
+    roots.forEach((r, i) => {
+      const t = sub(r, 0);
+      let off = 0;
+      if (i) for (let k = 0; k < Math.min(forest.right.length, t.left.length); k += 1) off = Math.max(off, forest.right[k] + gapX * 2 - t.left[k]);
+      for (let k = 0; k < t.left.length; k += 1) {
+        forest.left[k] = forest.left[k] === undefined ? t.left[k] + off : Math.min(forest.left[k], t.left[k] + off);
+        forest.right[k] = forest.right[k] === undefined ? t.right[k] + off : Math.max(forest.right[k], t.right[k] + off);
+      }
+      for (const [n, x] of Object.entries(t.xs)) forest.xs[n] = x + off;
+    });
+    const top = [];
+    layerH.reduce((y, h, d) => { top[d] = y; return y + h + gapY; }, 0);
+    const pos = {};
+    for (const [id, x] of Object.entries(forest.xs)) {
+      const s = size(id);
+      const d = depth[id];
+      pos[id] = { x, y: top[d] + (layerH[d] - s.h) / 2, w: s.w, h: s.h, cx: x + s.w / 2, depth: d };
+    }
+    const width = forest.right.length ? Math.max(...forest.right) - Math.min(0, ...forest.left) : 0;
+    const height = layerH.length ? top[layerH.length - 1] + layerH[layerH.length - 1] : 0;
+    return { pos, width, height };
+  }
+
+  /**
+   * A thread of the model network from `p1` (on its premise's edge) to `p2` (on its dependent's
+   * edge). With no card in the layers between them it is one curve. Otherwise it leaves into the
+   * gap beside its premise (`half` the layer gap away), runs along the free corridor between the
+   * cards `between` (the one nearest its own line, `shift` apart from its neighbours), and enters
+   * its dependent from the gap beside it, corners rounded. Returns `{ d, mid, lane }`.
+   */
+  function threadPath(p1, p2, between, options = {}) {
+    const half = options.half ?? 17;
+    const down = p1.y < p2.y;
+    if (!between.length) {
+      const k = Math.max(18, Math.abs(p2.y - p1.y) * 0.45) * (down ? 1 : -1);
+      return { d: `M ${p1.x} ${p1.y} C ${p1.x} ${p1.y + k} ${p2.x} ${p2.y - k} ${p2.x} ${p2.y}`, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }, lane: null };
+    }
+    const spans = between.map((b) => [b.x - 6, b.x + b.w + 6]).sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const s of spans) {
+      const last = merged[merged.length - 1];
+      if (last && s[0] <= last[1]) last[1] = Math.max(last[1], s[1]);
+      else merged.push([...s]);
+    }
+    const free = [merged[0][0] - 8, merged[merged.length - 1][1] + 8];
+    for (let i = 1; i < merged.length; i += 1) if (merged[i][0] - merged[i - 1][1] >= 8) free.push((merged[i][0] + merged[i - 1][1]) / 2);
+    const line = (p1.x + p2.x) / 2;
+    const lane = free.sort((a, b) => Math.abs(a - line) - Math.abs(b - line) || b - a)[0] + (options.shift || 0);
+    const g1 = p1.y + (down ? half : -half);
+    const g2 = p2.y + (down ? -half : half);
+    const pts = [[p1.x, p1.y], [p1.x, g1], [lane, g1], [lane, g2], [p2.x, g2], [p2.x, p2.y]]
+      .filter((p, i, all) => i === 0 || p[0] !== all[i - 1][0] || p[1] !== all[i - 1][1]);
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    const seg = (a, b) => (a[0] === b[0] ? `V ${b[1]}` : `H ${b[0]}`);
+    for (let i = 1; i < pts.length - 1; i += 1) {
+      const [a, c, b] = [pts[i - 1], pts[i], pts[i + 1]];
+      const r = Math.min(10, Math.hypot(c[0] - a[0], c[1] - a[1]) / 2, Math.hypot(b[0] - c[0], b[1] - c[1]) / 2);
+      const before = [c[0] - Math.sign(c[0] - a[0]) * r, c[1] - Math.sign(c[1] - a[1]) * r];
+      const after = [c[0] + Math.sign(b[0] - c[0]) * r, c[1] + Math.sign(b[1] - c[1]) * r];
+      d += ` ${seg(a, before)} Q ${c[0]} ${c[1]} ${after[0]} ${after[1]}`;
+      pts[i] = after;
+    }
+    d += ` ${seg(pts[pts.length - 2], pts[pts.length - 1])}`;
+    return { d, mid: { x: lane, y: (g1 + g2) / 2 }, lane };
+  }
+
+  function bridgeLayout(edge) {
+    const pairs = edge.pairs || [];
+    const left = [...new Set(pairs.map((p) => p.to))].sort(addressOrder);
+    const right = [...new Set(pairs.map((p) => p.from))].sort(addressOrder);
+    const li = new Map(left.map((a, i) => [a, i]));
+    const ri = new Map(right.map((a, i) => [a, i]));
+    return { left, right, threads: pairs.map((p) => [li.get(p.to), ri.get(p.from)]) };
   }
 
   return {
-    blockLayout,
+    blockLayout, bridgeLayout, blockTree, treeLayout, threadPath,
     sideRank, outline, pathTo, focusLens, edgePath, elbow, edgeSplit, isTermEdge, focusEdges, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,
     theoryRows, labelsIn, studyStations, theoryRun,
