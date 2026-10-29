@@ -207,3 +207,12 @@ The model network (zt 0.44.0) and `scripts/check-network.mjs` of the restructure
 - Chapter 3's result and derivation moved to `3|c`, `3|d`; the setting's remaining sides were repacked to `a`–`f` (side slots take only the next free letter, so the cards were parked under chapter 11 and brought back in order). The head's 结构 section follows.
 
 After: `check-network` prints `network: clean` (chapter 4 now hangs under chapter 3, whose wage table it uses); the build is self-sufficient with the same 142 members; no broken Link. Chapters 1 (直觉) and 11 (主要结论) have no result card by design.
+
+### 9.5 Hidden premises (2026-10-28)
+
+The owner's rule: a forward fault is fixed by moving cards, never by deleting a Link or dropping its cue. The earlier passes had written Links to later cards without a premise cue, so a dependency could hide in prose. All 114 plain references to later cards were read, and `scripts/check-premises.mjs` (new) listed every card naming an equation a later card derives. Two were real uses, both fixed:
+
+- The setting cards `4|a|a|b` (three-stage timing) and `4|a|a|b|1` (entry) stated "β̃ 与 n 重复，可由式 (2) 忽略", a result of chapter 2's (2). The statement moved to the card of (2), `4|a|a|2|a|a|1` (item 5), and the two setting cards no longer state it.
+- The derivation of (3), `4|a|a|2|a|a|2`, listed formula (4) as a starting formula, which its steps never use and the next card derives; an earlier restore had put it there. Its start is back to the original: the sum of the two integrals.
+
+The other hits are pointers (the notation table, "provides the parts for (6)", where π appears in (8)) and roadmaps (the chapter 4 solution guide, the three-variants overview). After: `check-network` clean, `self_sufficient` true, 142 members, no broken Link.
