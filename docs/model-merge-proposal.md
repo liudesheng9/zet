@@ -322,3 +322,38 @@ The `zt-model-fold` skill folded `acemoglu2007equilibrium` on the live box at th
 **Result.** `acemoglu2007equilibrium/2|a` is the only Model Card of the book, with 83 members. The main line holds economy D's own chain (`2|a|a` to `2|a|a|9`) and seven leads `2|a|a|10` to `2|a|a|16` (直觉, 经济 C, 经济 M, 经济 O, 相对均衡偏向, 绝对均衡偏向, 强绝对均衡偏向). Each lead keeps its former parts as Side parts. The tree still holds 302 Cards, and `list_broken_links` is empty. `self_sufficient` is false: the seven leads have no rests-on line back to the setting. `zt-model-restructure` adds them, when it writes each chapter's `依赖` line. The head's text still describes economy D only. The restructure rewrites it.
 
 **Next.** `zt-model-settings`, then `zt-model-restructure`, on `acemoglu2007equilibrium/2|a`.
+
+### 11.1 The setting part as a dependency tree (2026-10-29)
+
+`zt-model-settings` ran on `acemoglu2007equilibrium/2|a` on the live box at the owner's request. The backup is `D:\zt-merge-backup\zt-before-acemoglu2007equilibrium-settings.sqlite3` (`VACUUM INTO`, integrity `ok`).
+
+Before the pass, the fold had left each former Model Card's setting in its chapter. Seven settings, Assumption 1, Assumption 2 (twice) and A1 were outside the setting part. The setting part had no notation card, and no setting had a **起点** section.
+
+**The tree.** The setting card `2|a|a` (the common environment of economies D, C, M and O) is the only primitive. Its Sides are:
+
+```
+2|a|a 设定（共同环境）                      原始设定
+├ a 符号表与读法                            new card
+├ b 设定：概述 (引言)                       ← 2|a|a (the one-factor verbal version of §1)
+├ c 设定：经济 D 的企业问题 (2)              ← 2|a|a
+│   c|1 设定：净生产函数 (4) → c|2 假设 1
+├ d 设定：经济 C                            变体一 ← 2|a|a, 净生产函数
+│   d|1 企业问题 (6) → d|2 研究企业问题 (7);  d|a 假设 2
+├ e 设定：经济 M                            变体二 ← 2|a|a, 假设 2, 市场出清 (3)
+│   e|1 企业问题 (10)
+├ f 设定：经济 O                            变体三 ← 经济 M
+│   f|1 假设 2：经济 O
+├ g 设定：相对均衡偏向                      ← 经济 C, M, O, 净生产函数
+└ h 设定：绝对均衡偏向 (34), 定义 8–9         ← 净生产函数, 经济 D, C, M
+    h|1 假设 A1 → h|2 设定：强绝对均衡偏向 (定义 12)
+```
+
+The firm problems, the research-firm problem and the net production function set up the agents' problems, so they became settings with `设定：…` facets. The monopolist's problem (12) and the oligopoly equilibrium (Definition 4) stay in their chapters, because each rests on a derived demand curve ((11), (15)). Each setting moved `alone`, so its derivation chain closed up in its chapter. The paper's reduction "each economy's equilibrium technology solves (34)" is a pointer from `h` to Propositions 1–3, not a premise.
+
+**Text.**
+- Every setting has a **起点**. Ten bare `依赖` lines moved into it.
+- The setting card's symbol table and term table moved to the notation card. The notation card groups the symbols by block, gives each one's first card, and lists the derivations' auxiliary symbols ($G_1$, $h$, $B$, $x$, $H$, $Q$, $b$, $v$, $\mathcal D_C$). It notes that $B$ means two things and that $\Pi$ means two things. The variants' local tables stay.
+- One stated assumption in the strong-bias proof was rewritten: 「假设 1 或 2 使 F 关于 Z 凹」 became 「由假设 1 或 2，F 关于 Z 凹」, and the proof now rests on both assumption cards.
+- Seven chapter leads (直觉 through the intro setting, 经济 C, 经济 M, 经济 O, 相对均衡偏向, 绝对均衡偏向, 强绝对均衡偏向) got one `依赖 [[setting]] 的设定` line each in **关联**. The head's 结构 was rebuilt.
+
+**After.** `check-settings` reports every setting in the setting part, as a dependency tree. `self_sufficient` is true. `check-premises` has one hit, a roadmap line of the economy M chain. The tree holds 303 Cards (302 plus the notation card), and `list_broken_links` is empty. `check-network` asks for chapter cards with **直觉** sections and result cards: that is the spine work of `zt-model-restructure`.
