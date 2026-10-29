@@ -8,8 +8,8 @@ paths:
   - "tests/self_sufficient_models.rs"
   - "tests/math_units.rs"
   - "tests/term_reasoning.rs"
-synced: f0ddf286449c
-updated: 2026-10-25
+synced: 49255babb82c
+updated: 2026-10-29
 ---
 
 # Model structure and math units

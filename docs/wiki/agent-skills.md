@@ -4,8 +4,8 @@ title: Agent skills and integrations
 paths:
   - "skills/**"
   - "scripts/install-agent-integrations.ps1"
-synced: b8021f267504
-updated: 2026-10-27
+synced: 49255babb82c
+updated: 2026-10-29
 ---
 
 # Agent skills and integrations
