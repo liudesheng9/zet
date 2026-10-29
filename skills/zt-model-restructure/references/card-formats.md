@@ -86,8 +86,12 @@ Two to four sentences: what the result means, and which card uses it.
 ```
 一句话：what this card sets.
 
+**起点**
+- 依赖 [[earlier setting]] 的…：what this card uses from it.   (or: 原始设定：不依赖其他设定。)
+- 变体二：… (a variant's setting says which variant it is and what it changes)
+
 **内容**
-1. Agents, choices, timing, assumptions; one per item; formulas unchanged.
+1. Agents, choices, timing, assumptions; one per item; formulas unchanged. A symbol the reader meets here first is defined here.
 
 **为什么需要它**
 One sentence: which chapter uses this setting.

@@ -1,4 +1,4 @@
-// node check-settings.mjs <modelHead> [--json]
+// node check-settings.mjs <modelHead> [--json] [--symbols]
 // Checks that a model keeps every setting, assumption and symbol in its setting part, and nothing
 // else there. The setting part is the setting card (get_model's build.setting) with everything filed
 // in its Side branches; the chapters are its Direct successors. Faults:
@@ -10,8 +10,15 @@
 //             a line that opens with 假设/假定, a symbol table): write it in a setting card, point to it
 //   notation  a symbol a card introduces (记 $X$ …, 记号：$X=…$) that the notation card does not define
 //   missing   no notation card in the setting part
+// and that the setting part reads as a dependency tree, so a reader builds the settings from scratch:
+//   start     a setting with no **起点** section (its premises, or 原始设定 for a primitive)
+//   misfiled  a setting filed under another setting it does not rest on: file it under its main
+//             premise, or as a top-level Side of the setting card (a new block, a model variant)
+//   order     a setting that rests on a card later in the reading order (a later setting, a chapter)
 // Advice (`uses`): lines that use an assumption mid-sentence (由于假设 …); read them, they normally stay.
-// Exit 0 when every setting is in the setting part, 1 otherwise.
+// Advice (`introduces`): the notation symbols each setting uses first, in reading order; each must
+// be defined in that card (or the card moves after the one that defines it).
+// Exit 0 when every setting is in the setting part and the part is a dependency tree, 1 otherwise.
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,8 +33,48 @@ const isNotation = (c) => NOTATION.test(c.facet || '') || NOTATION.test(c.title 
 const symbolOf = (tex) => tex.split(/=|\\equiv|\\coloneqq/)[0].replace(/\s+/g, '')
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-/** The settings audit of a model: `m` is get_model output, `cards` maps address -> {facet, title, body}. */
-export function audit(m, cards) {
+/** The symbols of the notation card's tables: the first cell of each row, split at 、 , ； and cut at = > < \in. */
+export function notationSymbols(body) {
+  const out = []
+  for (const line of (body || '').split('\n')) {
+    const cell = line.match(/^\|\s*([^|]+?)\s*\|/)
+    if (!cell || /符号|---/.test(cell[1])) continue
+    for (const tex of [...cell[1].matchAll(/\$([^$]+)\$/g)].map((x) => x[1])) {
+      for (const part of splitTop(tex)) {
+        const sym = part.split(/=|>|<|\\in\b|\\le\b|\\ge\b|\\equiv/)[0].replace(/\s+/g, '')
+        if (sym && !out.includes(sym)) out.push(sym)
+      }
+    }
+  }
+  return out
+}
+/** A list of symbols split at the commas and semicolons outside any bracket. */
+function splitTop(tex) {
+  const out = ['']
+  let depth = 0
+  for (const ch of tex) {
+    if ('({['.includes(ch)) depth++
+    if (')}]'.includes(ch)) depth--
+    if (depth === 0 && ',，；'.includes(ch)) out.push('')
+    else out[out.length - 1] += ch
+  }
+  return out
+}
+/** Whether a body uses a symbol in its formulas: the symbol, not part of a longer command, name or subscript. */
+const usesSymbol = (body, sym) => {
+  const flat = [...(body || '').matchAll(/\$\$?([^$]+)\$\$?/g)].map((x) => x[1].replace(/\s+/g, '')).join('|')
+  let i = flat.indexOf(sym)
+  while (i >= 0) {
+    const before = flat[i - 1] || '', next = flat[i + sym.length] || ''
+    if (!/[A-Za-z\\_^]/.test(before) && !/[A-Za-z]/.test(next)) return true
+    i = flat.indexOf(sym, i + 1)
+  }
+  return false
+}
+
+/** The settings audit of a model: `m` is get_model output (build, relations), `cards` maps address ->
+ * {facet, title, body}, `parents` maps address -> the card it is filed under (get_tree's parent). */
+export function audit(m, cards, parents = new Map()) {
   const S = m.build.setting
   const order = m.build.order
   const inPart = (a) => a === S || (a.startsWith(S + '|') && /^\|[a-z]/.test(a.slice(S.length)))
@@ -83,25 +130,54 @@ export function audit(m, cards) {
   for (const s of stated) s.fix = `${s.card} states an assumption itself (${s.what.slice(0, 60)}): write it in a setting card and let ${s.card} rest on it (依赖 [[setting]])`
   for (const n of notation) n.fix = `${n.card} introduces $${n.symbol}$: define it in the notation card${notes[0] ? ' ' + notes[0].address : ''}`
 
-  const ok = !missing.length && !outside.length && !inside.length && !stated.length && !notation.length
-  return { setting: S, notation_card: notes[0]?.address || null, outside, inside, stated, notation, missing, uses, ok }
+  // The dependency tree of the setting part.
+  const pos = new Map(order.map((o, i) => [o.address, i]))
+  const settings = all.filter((c) => inPart(c.address) && (isSetting(c) || c.address === S) && !isNotation(c))
+  const rests = (m.relations || []).filter((r) => r.kind === 'rests-on')
+  const premisesOf = (a) => [...new Set(rests.filter((r) => r.from === a).map((r) => r.to))]
+  const start = settings.filter((c) => !/^\*\*起点\*\*/m.test(c.body || '')).map((c) => ({ card: c.address, fix: `${c.address} (${c.facet}) has no **起点** section: list the settings it builds on (依赖 [[…]] 的设定：…), or write 原始设定 for a primitive` }))
+  const misfiled = []
+  const order2 = []
+  for (const c of settings) {
+    const prem = premisesOf(c.address)
+    for (const p of prem) {
+      if (!pos.has(p) || pos.get(p) > pos.get(c.address)) order2.push({ card: c.address, premise: p, fix: `${c.address} (${c.facet}) rests on ${p}, which a reader meets later: move the setting after it, or turn the relation (the later card rests on the setting)` })
+    }
+    const parent = parents.get(c.address)
+    if (!parent || parent === S || !inPart(parent) || isNotation(row(parent)) || prem.includes(parent)) continue
+    const main = prem.filter((p) => inPart(p) && pos.get(p) < pos.get(c.address)).sort((x, y) => pos.get(y) - pos.get(x))[0]
+    misfiled.push({ card: c.address, parent, fix: `${c.address} (${c.facet}) is filed under ${parent} but does not build on it: file it under ${main ? 'its main premise ' + main : 'the setting it builds on'}, or as a top-level Side of ${S}; if it does build on ${parent}, say so in its **起点**` })
+  }
+  const known = new Set()
+  const syms = notes.length ? notationSymbols(notes.map((c) => c.body).join('\n')) : []
+  const introduces = []
+  for (const c of settings) {
+    const fresh = syms.filter((x) => !known.has(x) && usesSymbol(c.body, x))
+    fresh.forEach((x) => known.add(x))
+    if (fresh.length) introduces.push({ card: c.address, symbols: fresh })
+  }
+
+  const ok = !missing.length && !outside.length && !inside.length && !stated.length && !notation.length && !start.length && !misfiled.length && !order2.length
+  return { setting: S, notation_card: notes[0]?.address || null, outside, inside, stated, notation, missing, start, misfiled, order: order2, uses, introduces, ok }
 }
 
 async function main() {
   const [head, flag] = process.argv.slice(2)
   if (!head) { console.error('usage: node check-settings.mjs <modelHead> [--json]'); process.exit(2) }
-  const { model, cards } = await import('./zt.mjs')
+  const { model, cards, tree } = await import('./zt.mjs')
   const m = model(head)
   if (!m.head || m.head.address !== head) { console.error(`${head} is not a Model Card${m.head ? `: it belongs to the model ${m.head.address}; give that address` : ''}`); process.exit(2) }
   const order = m.build.order.map((o) => o.address)
-  const r = audit(m, new Map(cards(order).map((c) => [c.address, c])))
+  const parents = new Map(tree(head.split('/')[0]).map((c) => [c.address, c.parent]))
+  const r = audit(m, new Map(cards(order).map((c) => [c.address, c])), parents)
   if (flag === '--json') { console.log(JSON.stringify(r, null, 2)); process.exit(r.ok ? 0 : 1) }
   const sh = (a) => (a && a.startsWith(head) ? 'H' + a.slice(head.length) : a)
   const say = (kind, list) => list.forEach((f) => console.log(`${kind}: ${f.fix.replaceAll(head, 'H')}`))
   console.log(`setting part: ${sh(r.setting)}, notation card: ${sh(r.notation_card) || 'none'}`)
-  say('missing', r.missing); say('outside', r.outside); say('inside', r.inside); say('stated', r.stated); say('notation', r.notation)
+  say('missing', r.missing); say('outside', r.outside); say('inside', r.inside); say('stated', r.stated); say('notation', r.notation); say('start', r.start); say('misfiled', r.misfiled); say('order', r.order)
+  if (process.argv.includes('--symbols')) r.introduces.forEach((x) => console.log(`reads: ${sh(x.card)} first uses ${x.symbols.map((y) => '$' + y + '$').join(' ')}`))
   r.uses.forEach((u) => console.log(`advice: ${sh(u.card)} uses an assumption: ${u.line.slice(0, 120)}`))
-  console.log(r.ok ? 'settings: all in the setting part' : 'settings: faults above; move cards, never delete a Link')
+  console.log(r.ok ? 'settings: all in the setting part, as a dependency tree' : 'settings: faults above; move cards, never delete a Link')
   process.exit(r.ok ? 0 : 1)
 }
 

@@ -45,8 +45,40 @@ test('an assumption stated in a chapter card is a fault; a use of one is advice;
   assert.deepEqual(r.notation.map((f) => [f.card, f.symbol]), [[S + '|2|a|a|1', 'Q(\\omega)']])
 })
 
+const start = (deps) => '**起点**\n' + (deps.length ? deps.map((d) => `- 依赖 [[${d}]] 的设定。`).join('\n') : '- 原始设定：不依赖其他设定。') + '\n\n**内容**\n1. x'
+const tree = (rows) => {
+  const order = rows.map(([address, facet, parent, deps, body = '']) => ({ address, facet, title: facet, line: parent ? 'side' : 'main' }))
+  const cards = new Map(rows.map(([address, facet, , deps, body = '']) => [address, { facet, title: facet, body: deps === null ? body : start(deps) + body }]))
+  const parents = new Map(rows.map(([address, , parent]) => [address, parent]))
+  const relations = rows.flatMap(([from, , , deps]) => (deps || []).map((to) => ({ from, to, kind: 'rests-on' })))
+  return { m: { build: { setting: S, order }, relations }, cards, parents }
+}
+
+test('a setting part reads as a dependency tree: each setting declares its start, rests on its parent, and on nothing later', () => {
+  const { m, cards, parents } = tree([
+    [S, '设定', null, []],
+    [S + '|a', '符号表与读法', S, null, '| 符号 | 含义 |\n| $L$ | 工人数 |\n| $b(\\omega)$ | 任务范围 |'],
+    [S + '|b', '设定：任务配置 (2)', S, [S], '\n任务范围 $b(\\omega)$，$L$ 个工人。'],
+    [S + '|b|1', '设定：信息', S + '|b', [S + '|b']],
+    [S + '|b|2', '设定：加总', S + '|b|1', [S + '|b']],          // filed after the information, rests only on b
+    [S + '|c', '设定：时序', S, [S + '|d']],                      // rests on a later setting
+    [S + '|d', '设定：开放经济', S, null, '**内容**\n1. 两国。'],   // no start section
+    [S + '|1', '第 1 章：直觉', S, [S]],
+  ])
+  const r = audit(m, cards, parents)
+  assert.deepEqual(r.start.map((f) => f.card), [S + '|d'])
+  assert.deepEqual(r.misfiled.map((f) => [f.card, f.parent]), [[S + '|b|2', S + '|b|1']])
+  assert.deepEqual(r.order.map((f) => [f.card, f.premise]), [[S + '|c', S + '|d']])
+  // The reading aid: the notation symbols each setting uses first, in reading order.
+  assert.deepEqual(r.introduces.find((x) => x.card === S + '|b').symbols, ['L', 'b(\\omega)'])
+  assert.equal(r.ok, false)
+})
+
 test('a clean model passes', () => {
   const keep = order.filter((o) => [S, S + '|a', S + '|b', S + '|1', S + '|2', S + '|2|a'].includes(o.address))
-  const r = audit({ build: { setting: S, order: keep } }, cards)
+  const clean = new Map([...cards].map(([a, c]) => [a, isSettingRow(c) ? { ...c, body: start(a === S ? [] : [S]) } : c]))
+  const r = audit({ build: { setting: S, order: keep }, relations: [{ from: S + '|b', to: S, kind: 'rests-on' }] }, clean, new Map(keep.map((o) => [o.address, o.address === S ? null : S])))
   assert.equal(r.ok, true, JSON.stringify(r))
 })
+
+function isSettingRow(c) { return /^设定/.test(c.facet) || /^设定/.test(c.title) }

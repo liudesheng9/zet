@@ -274,3 +274,15 @@ The `zt-model-restructure` pass ran on `acemoglu2010labor/2|a` on the live box. 
 - **Head and notation.** The 结构 lists the main line and one level under each main card. **分部**: 三种经济 (from the setting), 劳动力稀缺与工资 (chapter 4), 技术类型的例子 (chapter 8), 扩展 (chapter 11), 附录的一般结果 (chapter 14). The notation card gained a legend of the marks (**怎样读卡片上的记号**).
 
 After the pass, `check-model` reports `self_sufficient` true and `check-settings` reports every setting in the setting part. `check-network` reports `network: clean` (16 blocks, 6 layers; chapters hang under 1, 3 or 4 as their rests-on Links say). The 7 remaining `check-premises` hits are symbol-table rows and chain roadmaps. `list_broken_links` is empty, and the tree holds 462 Cards (460 + the notation card + the chapter 1 card).
+
+### 9.8 The setting part as a dependency tree (2026-10-29)
+
+The owner judged §9.7 unreadable: the settings were appended one after another, with no sign of which setting builds on which or which variant uses it, so a reader could not build the setting from scratch. The setting part is now a dependency tree, and the rule is in `zt-model-settings`. Backup `D:\zt-merge-backup\zt-before-becker-settings-tree.sqlite3`.
+
+- Blocks of the base model: the setting card (原始设定); the overview; technology as one chain, 任务配置 (2) → 信息与努力 → 职业加总 (5) → 工资表 (7); timing, 三阶段时序 → 进入条件, with the fixed cost and the two stage settings as its Sides; the draws.
+- Variants: `设定：封闭经济` (变体一) and `设定：开放经济` (变体二), with the benchmark (δ̃=1) and the estimation under the open economy.
+- Every setting card has a **起点** section naming its premises (`依赖 [[…]] 的…`) or `原始设定`; 16 cards, 28 new rests-on Links, all to earlier settings.
+- Symbols at first use: the information card defines the sensitivity η (used first by the fixed cost); the draws card defines the augmented productivity θ̂ and ξ (used by the draws and every variant); the timing card points to the fixed cost for the form of f(ω); the notation card separates the utility U from the auxiliary U=v+ιu.
+- Facets name the role and the variant: `设定：概述`, `设定：任务配置 (2)`, `设定：职业加总 (5)`, `设定：第二阶段`, `设定：第三阶段`, `设定：封闭经济`.
+
+After: `check-settings` reports all in the setting part, as a dependency tree; `check-network` clean; `check-premises` only pointers and roadmaps; `self_sufficient` true; 422 Cards, no broken Link. The head's 结构 rebuilt.
