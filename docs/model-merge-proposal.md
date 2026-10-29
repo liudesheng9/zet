@@ -197,3 +197,13 @@ The owner's principle: comprehension costs working memory, so the reader must ho
 A chapter never rests on its own results, so the build has no forward fault, and every main step rests on an earlier one. Result: 142 members, 12 main steps, `self_sufficient` true, no broken Link. In the GUI, the Map's Focus mode (`x`) then shows the low-memory view by itself: the main line as slips, the selected chapter's results, every proof branch folded into a "+N" count.
 
 This three-level shape (intuition spine, results, proofs) is the target for §4: the architect's plan should name the chapters and their results, and the compiler should file each derivation chain under the result it proves.
+
+### 9.4 The network repair (2026-10-28)
+
+The model network (zt 0.44.0) and `scripts/check-network.mjs` of the restructure skill showed two forward faults: settings filed under 设定 that rest on proof steps of later chapters. Simulated against all 240 rests-on Links first, then moved on the live box (backup `D:\zt-merge-backup\zt-before-becker-network.sqlite3`; the tree was unlocked):
+
+- `设定：信息与努力` (was `4|a|a|b`, rests on the efficiency step of chapter 2) and the wage table it supports (`4|a|a|c`, which rests on it) became chapter 3's own settings `4|a|a|3|a` and `4|a|a|3|b`, before the chapter's result (whose proof rests on the wage table).
+- The derivation chain `推导：管理跨度项` → `设定：固定成本` (was `4|a|a|d|2`, `4|a|a|d|3`; rests on (2) of chapter 2 and (8) of chapter 3) became `4|a|a|3|e`, `4|a|a|3|e|1`.
+- Chapter 3's result and derivation moved to `3|c`, `3|d`; the setting's remaining sides were repacked to `a`–`f` (side slots take only the next free letter, so the cards were parked under chapter 11 and brought back in order). The head's 结构 section follows.
+
+After: `check-network` prints `network: clean` (chapter 4 now hangs under chapter 3, whose wage table it uses); the build is self-sufficient with the same 142 members; no broken Link. Chapters 1 (直觉) and 11 (主要结论) have no result card by design.

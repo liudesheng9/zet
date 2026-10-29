@@ -228,4 +228,4 @@ Measured on `becker2025division/4|a` (test copy of the archive): 29 SVG paths wi
 
 Deviation kept: the Refers switch sits beside the board it changes (first principle: a control next to what it changes), not in the Map's stage bar.
 
-Found by the network on the live model: two cards filed under 设定 rest on proof steps of chapters 2 and 3 (`4|a|a|b` → `4|a|a|2|a|a|3`; `4|a|a|d|2` → `4|a|a|2|a|a|1` and `4|a|a|3|a|a`), so 设定 draws two red forward threads. That is a content fault of the restructure, left for the owner.
+Found by the network on the live model: two cards filed under 设定 rest on proof steps of chapters 2 and 3 (`4|a|a|b` → `4|a|a|2|a|a|3`; `4|a|a|d|2` → `4|a|a|2|a|a|1` and `4|a|a|3|a|a`), so 设定 draws two red forward threads. That was a content fault of the restructure; it was repaired the same day (model-merge-proposal.md §9.4), and the network is clean.
