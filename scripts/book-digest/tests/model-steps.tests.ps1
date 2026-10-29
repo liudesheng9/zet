@@ -147,10 +147,15 @@ Assert (@($units).Count -eq 3 -and @($units)[0].id -eq 'models/g001-m0000@1') 's
 
 # 2. brief: one compiler command, its jobs saved for the writers.
 $brief = Step (@('-Step', 'brief', '-Work', $work, '-Models', 'Key/2|c,Key/5|c', '-MaxSentences', '10') + $common)
-Assert ($brief.json -and $brief.json.ok -eq $true -and $brief.json.jobs -eq 1 -and $brief.json.file -like '*drive*jobs.json') "brief: the brief job is listed and saved ($($brief.text))"
+Assert ($brief.json -and $brief.json.ok -eq $true -and $brief.json.jobs -eq 1 -and $brief.json.file -like '*drive*jobs.m-Key_2_c.json') "brief: the brief job is listed and saved ($($brief.text))"
 $briefCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($briefCalls -match 'model -Step brief -Work .* -Staging .* -Models Key/2\|c,Key/5\|c -MaxSentences 10 ') 'brief: the models and the compile limits reach the one compiler command'
 Assert ($briefCalls -match 'ledger hold .* -Units models/g001-m0000@1:1,models/g002-m0001@1:1,models/g003-m0002@1:1') 'brief: the step renews the block''s claims before it runs the chain'
+# Live run 2026-10-29 (hart1995firms): two batches run side by side; a shared drive\jobs.json let the second
+# batch's brief overwrite the first's before its writers read it, so five formal models got no brief.
+$otherWork = Join-Path $out 'models\m-Key_3_c'
+$otherBrief = Step (@('-Step', 'brief', '-Work', $otherWork, '-Models', 'Key/3|c') + $common)
+Assert ($otherBrief.json -and $brief.json -and $otherBrief.json.file -ne $brief.json.file -and (Test-Path -LiteralPath $brief.json.file) -and (Test-Path -LiteralPath $otherBrief.json.file)) "brief: each batch saves its jobs in its own file, so a parallel batch never overwrites them ($($brief.json.file) / $($otherBrief.json.file))"
 
 # 3. fill: plan-status, one model-deps command, the defer, and the fill — in one step.
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue

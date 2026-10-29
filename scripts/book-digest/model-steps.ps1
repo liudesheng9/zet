@@ -28,7 +28,7 @@
   the module reads, at most 400 characters. The full data (the tool's own lines, the per-model report rows) goes
   to <staging>\models\drive-lines\<step>.json, named in the line as `detail`. The architect batching is step
   logic now: `start` reads the listing and answers `batches` as `concept:<addresses>|formal:<addresses>`.
-  Files stay under <staging>\models\drive.
+  Files stay under <staging>\models\drive; a batch step names its files after its batch folder (jobs.<batch>.json).
 #>
 param(
     [Parameter(Mandatory)][ValidateSet('start', 'brief', 'fill', 'derive', 'review', 'split', 'close', 'report', 'explain', 'explain-apply', 'finish')][string]$Step,
@@ -135,8 +135,17 @@ function Renew() {
     if (-not $list) { return }
     Run @('ledger', 'hold', '-Out', $Out, '-Units', "$list", '-Seconds', '1', '-Every', '1') | Out-Null
 }
+# A batch's own file name: `jobs.json` -> `jobs.m-Key_3_a.json` for the batch in models\m-Key_3_a. Batches run
+# side by side (live run 2026-10-29: a shared jobs.json let one batch's brief overwrite the other's before its
+# writers read it), so no batch step writes a file another batch writes.
+function Batch-File([string]$Name) {
+    if (-not $Work) { return $Name }
+    $leaf = Split-Path $Work.TrimEnd('\', '/') -Leaf
+    return "$([IO.Path]::GetFileNameWithoutExtension($Name)).$leaf$([IO.Path]::GetExtension($Name))"
+}
 # The jobs one compiler command printed, saved for the batch's writers.
 function Jobs($Name, $Result) {
+    $Name = Batch-File $Name
     $jobs = @($Result.json.jobs | Where-Object { $_ })
     Save $Name $jobs
     return (Join-Path $Drive $Name)
@@ -223,7 +232,7 @@ switch ($Step) {
         $status = Compiler 'plan-status'
         if (-not $status.json -or -not ($status.json.plans -is [Array])) { Fail 'plan-status' $status; break }
         $plans = @($status.json.plans)
-        Save 'plan-status.json' $plans
+        Save (Batch-File 'plan-status.json') $plans
         # R233/R234: the batch's planned models register their references before the fill: one command for
         # the block, then each unit the command does not answer on its own, as the ledger decides it.
         $held = if ($Models) { @(Held-Of $Models) } else { @(Held) }
@@ -274,9 +283,9 @@ switch ($Step) {
             statuses = (Status-List $plans)
         }
         if (-not $go.Count) {
-            Save 'jobs.json' @()
+            Save (Batch-File 'jobs.json') @()
             $line.jobs = 0
-            $line.file = (Join-Path $Drive 'jobs.json')
+            $line.file = (Join-Path $Drive (Batch-File 'jobs.json'))
             Reply $line @{ plans = $plans; deferred = $deferred }
             break
         }
@@ -333,9 +342,9 @@ switch ($Step) {
         Renew
         $r = Compiler 'report'
         if (-not $r.json) { Fail 'report' $r; break }
-        Save 'report.json' $r.json
+        Save (Batch-File 'report.json') $r.json
         $reportRows = @($r.json.models | Where-Object { $_ })
-        Reply @{ ok = $true; step = 'report'; models = $reportRows.Count; statuses = (Status-List $reportRows); file = (Join-Path $Drive 'report.json') } $r.json
+        Reply @{ ok = $true; step = 'report'; models = $reportRows.Count; statuses = (Status-List $reportRows); file = (Join-Path $Drive (Batch-File 'report.json')) } $r.json
     }
     'explain' {
         # §3.7: after the close rounds the batch writes the explanations in its models' own

@@ -108,6 +108,78 @@ pub(crate) fn job_id(prefix: &str, groups: &[i64]) -> String {
     }
 }
 
+/// The layer's jobs. An accepted job (`known`, from the accepted plan) keeps its groups; a group no accepted
+/// job covers joins a new job of `per` groups once `ready` says its digest unit is done. A digest writer rewrites
+/// its group's anchor, so a Link written beside a group still being digested is lost (hart1995firms run 1). Each
+/// group is in one job only, so the names `job_id` gives stay unique.
+pub(crate) fn assign_jobs(prefix: &str, groups: &[i64], ready: &dyn Fn(i64) -> bool, known: &[(String, Vec<i64>)], per: usize) -> Vec<(String, Vec<i64>)> {
+    let mut jobs: Vec<(String, Vec<i64>)> = known.to_vec();
+    let covered: Vec<i64> = known.iter().flat_map(|(_, g)| g.iter().copied()).collect();
+    let open: Vec<i64> = groups.iter().copied().filter(|n| !covered.contains(n) && ready(*n)).collect();
+    for chunk in open.chunks(per.max(1)) {
+        jobs.push((job_id(prefix, chunk), chunk.to_vec()));
+    }
+    jobs
+}
+
+/// The Link lines of applied entries that their supported Cards no longer hold, per supported Card: a line
+/// counts as held when a line of the body starts with `<kind> [[card]]`, as the layer's completion reads it.
+pub(crate) fn missing_links(kind: &str, entries: &[Value], body: &dyn Fn(&str) -> String) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for e in entries {
+        let card = ps::s(prop(e, "card"));
+        if card.is_empty() {
+            continue;
+        }
+        let head = format!("{kind} [[{card}]]");
+        for s in supports(e) {
+            if body(&s).lines().any(|l| l.trim_start().starts_with(&head)) {
+                continue;
+            }
+            let line = link_line(kind, &card, &ps::s(prop(e, "title")));
+            match out.iter_mut().find(|(at, _)| *at == s) {
+                Some((_, lines)) => lines.push(line),
+                None => out.push((s, vec![line])),
+            }
+        }
+    }
+    out
+}
+
+/// The digest state of each group, from the run ledger: true when the group's latest digest unit is done (or a
+/// no-op), or when the ledger has no digest unit for it. None when the staging folder has no ledger (a legacy
+/// or test folder): every group counts as ready.
+fn digest_ready(staging: &str) -> Result<Option<std::collections::HashMap<String, bool>>> {
+    let path = std::path::Path::new(staging).join("ledger.sqlite3");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn = crate::ledger::connect(&path, false)?;
+    let mut stmt = conn.prepare("SELECT logical_key, state FROM units WHERE layer='digest' ORDER BY revision")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (key, state) = row?;
+        map.insert(key, state == "done" || state == "noop");
+    }
+    Ok(Some(map))
+}
+
+/// The jobs of the accepted plan manifest, with their groups.
+fn accepted_jobs(ctx: &Ctx) -> Result<Vec<(String, Vec<i64>)>> {
+    let path = plan_path(ctx);
+    if !ps::exists(&path) {
+        return Ok(Vec::new());
+    }
+    let plan = ps::parse_json(&util::read_text(&path)?)?;
+    let mut jobs = Vec::new();
+    for job in plan["jobs"].as_array().cloned().unwrap_or_default() {
+        let groups: Vec<i64> = job["groups"].as_array().map(|g| g.iter().filter_map(Value::as_i64).collect()).unwrap_or_default();
+        jobs.push((ps::s(prop(&job, "id")), groups));
+    }
+    Ok(jobs)
+}
+
 pub(crate) fn d2(n: i64) -> String {
     if n < 0 { format!("-{:02}", n.unsigned_abs()) } else { format!("{n:02}") }
 }
@@ -556,13 +628,10 @@ pub(crate) fn plan(layer: &dyn Layer, ctx: &mut Ctx, per_job: i64) -> Result<()>
     let mut jobs: Vec<Value> = Vec::new();
     let mut planned: Vec<Value> = Vec::new();
     let per = per_job.max(1) as usize;
-    let mut j = 0usize;
-    while j * per < groups.len() {
-        let start = j * per;
-        j += 1;
-        let end = (start + per).min(groups.len());
-        let job_groups: Vec<i64> = groups[start..end].to_vec();
-        let id = job_id(spec.prefix, &job_groups);
+    let digest = digest_ready(&ctx.staging)?;
+    let ready = |n: i64| digest.as_ref().is_none_or(|map| map.get(&group_key(n)).copied().unwrap_or(true));
+    let known = accepted_jobs(ctx)?;
+    for (id, job_groups) in assign_jobs(spec.prefix, &groups, &ready, &known, per) {
         // The answer does not exist yet at the first plan; its folder does, so the accepted
         // plan records a stable path. A job is recorded even after it was applied, so a plan
         // pass that follows an apply still states which groups each answer covers.
@@ -574,8 +643,8 @@ pub(crate) fn plan(layer: &dyn Layer, ctx: &mut Ctx, per_job: i64) -> Result<()>
             continue;
         }
         let mut blocks: Vec<GroupBlock> = Vec::new();
-        for k in start..end {
-            let n = groups[k];
+        for &n in &job_groups {
+            let Some(k) = groups.iter().position(|&g| g == n) else { continue };
             let g = ctx.group(n)?.cloned().unwrap_or(Value::Null);
             let headings: Vec<String> = ps::pipe(prop(&g, "headings")).into_iter().map(ps::s).collect();
             let mut listed = Vec::new();
@@ -681,6 +750,7 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
     }
     let mut ok = true;
     let (mut applied_jobs, mut created, mut merged, mut linked, mut pending_jobs) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let mut relinked = 0i64;
     let mut refused: Vec<Value> = Vec::new();
     let mut files = ps::child_files(&ctx.out, &format!("{}-", spec.prefix), ".json");
     ps::ps_sort(&mut files, |a, b| ps::culture_cmp(a, b));
@@ -696,6 +766,11 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
         let previous = state["applied"].get(&id).cloned();
         if let Some(entry) = &previous {
             if entry["answer"]["sha256"].as_str() == Some(answer_hash.as_str()) && !refused_by_advice(entry) {
+                // An applied job is not applied again, but a Link a later writer dropped from a supported Card
+                // is written back, so the unit's completion finds it.
+                if write {
+                    relinked += relink(ctx, spec, entry)?;
+                }
                 continue;
             }
             // A revised answer is a new attempt at the same job: its Cards are reused by
@@ -919,9 +994,54 @@ pub(crate) fn apply(layer: &dyn Layer, ctx: &mut Ctx, write: bool) -> Result<()>
         summary.insert("merged".into(), json!(merged));
     }
     summary.insert("linked".into(), json!(linked));
+    if relinked > 0 {
+        summary.insert("relinked".into(), json!(relinked));
+    }
     summary.insert("refused".into(), Value::Array(refused));
     summary.insert("pending_jobs".into(), json!(pending_jobs));
     util::print_line(&ps::json_compact(&Value::Object(summary)))
+}
+
+/// Writes back the Link lines of an applied job that its supported Cards no longer hold, one edit per Card on
+/// the text it read (a Card changed in between is refused, not overwritten). Returns the lines written.
+fn relink(ctx: &mut Ctx, spec: &Spec, entry: &Value) -> Result<i64> {
+    let entries = entry["entries"].as_array().cloned().unwrap_or_default();
+    let mut at: Vec<String> = Vec::new();
+    for e in &entries {
+        for s in supports(e) {
+            if !at.contains(&s) {
+                at.push(s);
+            }
+        }
+    }
+    if at.is_empty() {
+        return Ok(0);
+    }
+    let cards = ctx.get_cards(&at)?;
+    let field = |s: &str, name: &str| at.iter().position(|a| a == s).and_then(|k| cards.get(k)).map(|c| ps::s(prop(c, name))).unwrap_or_default();
+    let missing = missing_links(spec.kind, &entries, &|s| field(s, "body"));
+    let mut calls: Vec<Value> = Vec::new();
+    let mut counts: Vec<usize> = Vec::new();
+    for (s, lines) in &missing {
+        let body = field(s, "body");
+        if body.is_empty() {
+            continue;
+        }
+        calls.push(json!({ "tool": "edit_card", "arguments": { "at": s, "body": format!("{}\n\n{}", body.trim_end(), lines.join("\n")), "base": field(s, "text") } }));
+        counts.push(lines.len());
+    }
+    if calls.is_empty() {
+        return Ok(0);
+    }
+    let mut error = String::new();
+    let result = ctx.write(&calls, &mut error)?;
+    let mut written = 0i64;
+    for (c, n) in counts.iter().enumerate() {
+        if result.iter().any(|l| l.starts_with(&format!("{c} ok "))) {
+            written += *n as i64;
+        }
+    }
+    Ok(written)
 }
 
 /// The steps of both tools, after the parameters.
@@ -1046,5 +1166,41 @@ mod tests {
         assert_eq!(job_id("fd", &[2, 3, 4, 5]), "fd-g002-g005");
         assert_eq!(job_id("ev", &[12, 13]), "ev-g012-g013");
         assert_ne!(job_id("fd", &[1]), job_id("fd", &[2, 3]));
+    }
+
+    // hart1995firms run 1 (2026-10-29): the findings plan ran while the digest writers of groups 15 and 18-20
+    // were still writing; their anchors were rewritten after the apply had linked them, so four units failed on a
+    // missing 印证 Link. A group joins a job only once its digest unit is done, and a job, once accepted, keeps
+    // its groups.
+    #[test]
+    fn a_group_joins_a_job_only_once_its_digest_is_done() {
+        let ready = |n: i64| n != 15 && n < 18;
+        let first = assign_jobs("fd", &[3, 12, 14, 15, 18, 19, 20], &ready, &[], 3);
+        assert_eq!(first, vec![("fd-g003-g014".to_string(), vec![3, 12, 14])]);
+        // Later every group is done: the accepted job keeps its groups and the rest are chunked anew.
+        let later = assign_jobs("fd", &[3, 12, 14, 15, 18, 19, 20], &|_| true, &first, 3);
+        assert_eq!(
+            later,
+            vec![
+                ("fd-g003-g014".to_string(), vec![3, 12, 14]),
+                ("fd-g015-g019".to_string(), vec![15, 18, 19]),
+                ("fd-g020".to_string(), vec![20]),
+            ]
+        );
+        // With every group done from the start the jobs are the plain chunks.
+        assert_eq!(
+            assign_jobs("ev", &[1, 2, 3, 4], &|_| true, &[], 3),
+            vec![("ev-g001-g003".to_string(), vec![1, 2, 3]), ("ev-g004".to_string(), vec![4])]
+        );
+    }
+
+    #[test]
+    fn missing_link_lines_are_the_ones_a_rewrite_dropped() {
+        let entries = json!([
+            { "card": "K/15|b", "title": "逾九成限制新增债务", "supports": ["K/15"] },
+            { "card": "K/12|b", "title": "失败率超过 50%", "supports": ["K/12"] }
+        ]);
+        let body = |at: &str| if at == "K/12" { "正文\n\n印证 [[K/12|b]]：失败率超过 50%。".to_string() } else { "正文".to_string() };
+        assert_eq!(missing_links("印证", entries.as_array().unwrap(), &body), vec![("K/15".to_string(), vec!["印证 [[K/15|b]]：逾九成限制新增债务。".to_string()])]);
     }
 }
