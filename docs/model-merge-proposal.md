@@ -534,3 +534,30 @@ The former heads remain unanchored chapters (`5/a/a/20`–`23`, `11/a/12/f/7`–
 (Addresses here write `/` for `|`.)
 
 **Next.** `zt-model-restructure` on `hart1995firms/5|a`, `hart1995firms/11|a|12` and `hart1995firms/20|d`.
+
+### 13.2 The intuition spines (2026-10-29)
+
+`zt-model-restructure` ran on the three folded models of `hart1995firms` on the live box at the owner's request. The backup is `D:\zt-merge-backup\zt-before-hart1995firms-spine.sqlite3` (`VACUUM INTO`).
+
+**Spines.** Each main line is the setting, then chapter cards in the book's order. Seven chapter cards are new; the others are the former Model Cards the fold made into leads.
+
+| Model | Chapters | Results (proof chain) |
+|---|---|---|
+| `20/d` | 1 一方私人收益显著 (new), 2 双方私人收益都显著 (new), 3 部分要约 (former `21/a`) | 1: the conclusion (cases one's chain of three), case two; 2: cases three and four, proposition 1; 3: the mechanism, case one's loss (one derivation), case two's loss (two), the conclusion, with the limitation and its example as asides |
+| `11/a/12` | 1 两期债务契约 (new), 2 多期债务 (former `12/d`), 3 不确定性 (former `12/e`) | 1: the proposition (chain (5.4)–(5.10), five cards) with examples 1 and 2 and the Aghion–Bolton correspondence; 2: the two propositions (four derivations each), durability (one), front-loading; 3: the participation condition (two derivations, examples 3 and 4), the conclusion |
+| `5/a` | 1 产权方法的直觉 (former `4/a`), 2 议价与一阶最优, 3 投资不足, 4 一体化的非对称效应, 5 谁应拥有资产 (all new), 6 工人投资 (former `7/a`), 7 实物资本投资 (former `8/a`), 8 随机所有权 (former `9/c`) | proposition 1 (one derivation), the asymmetric effect (two), proposition 2 (A)(B) and (C)(D) with their definitions; the workers' conclusion, the physical-capital proposition, the random-ownership mechanism |
+
+(Addresses relative to each setting card; the table writes `/` for `|`.) `tree-mover.mjs` made 204 moves (42, 72, 90). `5/a` has eight chapters and so three **分部**: 文字框架 (ch. 1), 基准模型 (ch. 2–5), 扩展 (ch. 6–8).
+
+**Text.** DeepSeek V4.1 Flash (official source, effort high) drafted 69 cards in 14 jobs under two Haiku managers: the 14 chapter cards (**直觉**, **本章结果**, **承上启下** with one `依赖` line), the result cards and the asides. All conversations were deleted and the workspaces removed. `check-drafts` found no lost formula or equation number.
+
+Two drafts were not written: `11/a/12/f/2/c` and `f/2/d` are derivation cards (durability, front-loading) that the spine files as results, and they keep their derivation text. The `本模型` that `check-drafts` reports on `11/a/12/f/3` is inside a Bridge `跨书关联` line, which stays verbatim.
+
+The verbal framework `5/a/a/b` now rests on the formal setting (as in Acemoglu 2007 and Modern VAT), so chapter 1 has a path to it. Each Model Card's question and summary now cover the whole model. Each 结构 lists the main line and one level under each main card.
+
+**After.**
+- `check-model`: `self_sufficient` is true for all three.
+- `check-settings`: every setting is in the setting part, as a dependency tree.
+- `check-network`: `network: clean` for all three.
+- `check-premises`: no premise used before its card.
+- `list_broken_links` is empty. The tree holds 839 Cards (832 + the seven chapter cards).
