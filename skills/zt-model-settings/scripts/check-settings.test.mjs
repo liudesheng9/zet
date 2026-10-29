@@ -1,7 +1,7 @@
 // node --test check-settings.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { audit } from './check-settings.mjs'
+import { audit, notationSymbols } from './check-settings.mjs'
 
 const S = 'K/4|a|a'
 const row = (address, facet, title, line = 'side') => ({ address, facet, title, line })
@@ -72,6 +72,10 @@ test('a setting part reads as a dependency tree: each setting declares its start
   // The reading aid: the notation symbols each setting uses first, in reading order.
   assert.deepEqual(r.introduces.find((x) => x.card === S + '|b').symbols, ['L', 'b(\\omega)'])
   assert.equal(r.ok, false)
+})
+
+test('notation symbols: split outside brackets, TeX spaces dropped, cut at = and \\in', () => {
+  assert.deepEqual(notationSymbols('| 符号 | 含义 |\n| --- | --- |\n| $L,\\ Z=(Z_1,\\dots,Z_N)$ | 要素 |\n| $\\lambda(i,\\omega)$、$\\theta\\in\\Theta$ | x |'), ['L', 'Z', '\\lambda(i,\\omega)', '\\theta'])
 })
 
 test('a clean model passes', () => {

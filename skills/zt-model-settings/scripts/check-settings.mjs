@@ -41,7 +41,7 @@ export function notationSymbols(body) {
     if (!cell || /符号|---/.test(cell[1])) continue
     for (const tex of [...cell[1].matchAll(/\$([^$]+)\$/g)].map((x) => x[1])) {
       for (const part of splitTop(tex)) {
-        const sym = part.split(/=|>|<|\\in\b|\\le\b|\\ge\b|\\equiv/)[0].replace(/\s+/g, '')
+        const sym = part.replace(/\\[ ,;:!]/g, '').split(/=|>|<|\\in\b|\\le\b|\\ge\b|\\equiv/)[0].replace(/\s+/g, '')
         if (sym && !out.includes(sym)) out.push(sym)
       }
     }

@@ -19,7 +19,13 @@ export function call(calls, { allow, movesLog } = {}) {
     args.push('-Allow', allowFile)
   }
   if (movesLog) args.push('-Moves', movesLog)
-  return execFileSync('zt-digest', args, { maxBuffer: 1 << 28 }).toString()
+  // zt-digest exits 1 when any call in the batch fails; its output still names every call's result.
+  try {
+    return execFileSync('zt-digest', args, { maxBuffer: 1 << 28 }).toString()
+  } catch (e) {
+    if (e.stdout && /^\d+ (ok|error) /m.test(e.stdout.toString())) return e.stdout.toString()
+    throw e
+  }
 }
 
 /** The JSON results of read calls, in order. */
