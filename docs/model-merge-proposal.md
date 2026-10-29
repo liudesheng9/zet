@@ -378,3 +378,26 @@ The firm problems, the research-firm problem and the net production function set
 - `check-network`: `network: clean` (10 blocks, 3 layers). Chapter 5 hangs under chapter 4; the other chapters hang under the setting, as their rests-on Links say.
 - `check-premises`: one hit, the roadmap line of the economy M chain.
 - `list_broken_links` is empty. The tree holds 304 Cards (302 + the notation card + the chapter 2 card).
+
+## 12. The Modern VAT fold (2026-10-29)
+
+The `zt-model-fold` skill folded `ebrill2001modern` on the live box at the owner's request (`/zt-model-fold ebrill2001modern`, live box confirmed in the same session). The backup is `D:\zt-merge-backup\zt-before-ebrill2001modern-fold.sqlite3` (`VACUUM INTO`, integrity `ok`). The tree was not locked. Two of its cards are pinned by other locked trees (`14/a/b` by `becker2025division`, `22/d/2/a` by `acemoglu2010labor`); the fold moved neither.
+
+**Decision.** The book is a policy book. Most of its 29 Model Cards ask their own question with their own primitives, so most stay alone. Four pairs are one model each: a verbal or framing card joins its formal model, and two extensions join the base model whose setting they keep. The book holds 25 models.
+
+| Model Card | Model | Surviving head | Reason |
+|---|---|---|---|
+| `2/a` 抵扣机制 (concept) | invoice-credit VAT | `3/a` | verbal version of `3/a`: the same two-stage example (10 + 30 = 40) and the same question; becomes the intuition chapter |
+| `10/a` 效率收益的收入检验 (concept) | VAT revenue test | `11/a` | the framing of §3 that `11/a` estimates (revenue ratio with and without a VAT); facet `理论框架` |
+| `26/a` 税率差异化模型 | indirect-tax redistribution | `24/a` | keeps `24/a`'s two types, two goods and single government goal; adds the revenue need g and the administration cost γ; its bound falls to `w1/w2` at g = γ = 0 |
+| `41/a` 流转税模型 | VAT threshold | `40/a` | keeps `40/a`'s balance condition and (11.1); adds a turnover tax below the threshold; falls to (11.1) at t = 0, A' = C' = 0 |
+
+Every other Model Card is a model of its own: `14/a`, `15/a`, `22/a`, `23/a`, `25/a`, `28/a`, `29/a`, `30/a`, `31/a`, `32/a`, `32/b`, `33/a`, `33/d`, `36/a`, `37/a`, `47/a`, `48/a`, `49/a`, `50/a`, `51/a`, `53/a`. The survey's `read` pairs among them are comparisons or borrowed results (for example `49/a` measures readiness against `48/a`'s seven conditions, `51/a` gives the deterrence mechanism behind `50/a`'s audit design, `14/a` meets `11/a` only at the Δ of note 53). Three pairs needed judgement, and the owner decided them. `32/a` (the pure interest rate splits the bank spread) and `32/b` (cash-flow VAT taxes the spread without it) are two models. `33/a` (cash-flow VAT on pure insurance) is its own model; it shares `32/b`'s cash-flow rule as a part, and that rule stays a cross-model premise. `36/a` (lifetime-consumption framework) and `37/a` (progressivity by benchmark and base structure) are two models.
+
+(The table writes `/` for `|` in addresses.)
+
+**Procedure.** The §11 one-head-per-run script with the head given by title: 2|a into 3|a (facet `直觉`), 10|a into 11|a (`理论框架`), 26|a into 24|a (`扩展：筹资需要与管理成本`), 41|a into 40|a (`扩展：起征点以下的流转税`), all `core`. Six Links to Model Cards were masked during the retypes and restored after them.
+
+**Result.** `model-survey.mjs` lists exactly the 25 decided heads. The four folded models are `3|a` (13 members, lead `3|a|a|5`), `11|a` (14, lead `11|a|a|7`), `24|a` (22, lead `24|a|a|6`) and `40|a` (20, lead `40|a|a|6`); each lead keeps its former parts as Side parts. The tree still holds 1420 Cards, and `list_broken_links` is empty. `40|a` is self-sufficient. The other three report the new lead as unanchored (no rests-on line back to the setting yet); `zt-model-restructure` adds it. `11|a` also rests on `6|b|a|1` through the former `10|a` mechanism (`11|a|a|7|a|1`): a borrowed result of the Diamond-Mirrlees model, kept as a cross-model premise. The heads' texts still describe their base models only; the restructure rewrites them.
+
+**Next.** `zt-model-settings`, then `zt-model-restructure`, on `ebrill2001modern/3|a`, `ebrill2001modern/11|a`, `ebrill2001modern/24|a` and `ebrill2001modern/40|a`.
