@@ -349,6 +349,13 @@ fn corruption(body: &str, title: &str, address: &str, faults: &mut Faults) {
     flush(&mut paragraph, &mut seen, address, faults);
 }
 
+/// A size limit as it holds for one Card: a Model Card (a Model Card or a Model part) is held to
+/// every size limit 50% looser, rounded up (the owner, 2026-10-28; rule version 5), because a model
+/// states mechanisms and derivations that need room. Other Cards keep the limit.
+pub fn loosen(limit: i64, model: bool) -> i64 {
+    if model { (limit * 3 + 1) / 2 } else { limit }
+}
+
 /// The limits of card-style-check.ps1 and self-check.ps1.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -697,14 +704,16 @@ impl Check {
         // A Literature note carries the source's argument, not one claim: its row turns the
         // claim-title and sentence rules off and only advises on a long title (issue #184).
         let literature = is_literature_note(card);
+        // A Model Card or a Model part: every size limit is half again as loose (`loosen`).
+        let model = ps_eq(&text(prop(card, "type")), "model") || !facet.is_empty();
         if !title.is_empty() {
             let measure = measure(&title);
             let limit = if literature {
                 LITERATURE_TITLE_CHARS
             } else if measure.words {
-                25
+                loosen(25, model)
             } else {
-                40
+                loosen(40, model)
             };
             if measure.size > limit {
                 faults.add_row(
@@ -817,7 +826,7 @@ impl Check {
             // acemoglu2007equilibrium: the Bridge judge measured its sentence without the label it is applied under.
             let line_text = BRIDGE_LABEL.replace(&line_text, "").into_owned();
             for sentence in split_sentences(&line_text) {
-                self.sentence(faults, address, shared, &sentence, is_step, literature);
+                self.sentence(faults, address, shared, &sentence, is_step, literature, model);
                 // A source locator (`来源：[[book]] §11.D`) may carry the number.
                 if !navigation && !SOURCE_LINE.is_match(&line.text) {
                     local_reference(faults, address, &sentence);
@@ -864,57 +873,54 @@ impl Check {
                         &format!("sections {found}; want {}", SECTIONS.join(", ")),
                     );
                 }
-                if order.iter().any(|name| name == "思路") && thought > 5 {
+                // Derivation parts are Model parts: each count is half again as loose (`loosen`).
+                let (max_thought, max_reading, max_note) = (loosen(5, true), loosen(6, true), loosen(2, true));
+                if order.iter().any(|name| name == "思路") && thought > max_thought {
                     faults.add(
                         address,
                         "R16",
                         "thought_sentences",
-                        &format!("{thought} sentences > 5"),
-                        &format!("(思路 has {thought} sentences > 5)"),
+                        &format!("{thought} sentences > {max_thought}"),
+                        &format!("(思路 has {thought} sentences > {max_thought})"),
                     );
                 }
-                if order.iter().any(|name| name == "解读") && reading > 6 {
+                if order.iter().any(|name| name == "解读") && reading > max_reading {
                     faults.add(
                         address,
                         "R16",
                         "reading_sentences",
-                        &format!("{reading} sentences > 6"),
-                        &format!("(解读 has {reading} sentences > 6)"),
+                        &format!("{reading} sentences > {max_reading}"),
+                        &format!("(解读 has {reading} sentences > {max_reading})"),
                     );
                 }
                 for (step, count) in &notes {
-                    if *count > 2 {
+                    if *count > max_note {
                         faults.add(
                             address,
                             "R17",
                             "note_sentences",
-                            &format!("{step}:{count} sentences > 2"),
-                            &format!("(说明 under step {step} has {count} sentences > 2)"),
+                            &format!("{step}:{count} sentences > {max_note}"),
+                            &format!("(说明 under step {step} has {count} sentences > {max_note})"),
                         );
                     }
                 }
-                let limits = &self.limits;
-                if explain_sentences > limits.max_explain_sentences {
+                let max_explain_sentences = loosen(self.limits.max_explain_sentences, true);
+                let max_explain_chars = loosen(self.limits.max_explain_chars, true);
+                if explain_sentences > max_explain_sentences {
                     faults.add(
                         address,
                         "R17",
                         "explanation_size",
-                        &format!("sentences:{explain_sentences}/{}", limits.max_explain_sentences),
-                        &format!(
-                            "({explain_sentences} explanation sentences > {}) shorten the explanation",
-                            limits.max_explain_sentences
-                        ),
+                        &format!("sentences:{explain_sentences}/{max_explain_sentences}"),
+                        &format!("({explain_sentences} explanation sentences > {max_explain_sentences}) shorten the explanation"),
                     );
-                } else if explain_chars > limits.max_explain_chars {
+                } else if explain_chars > max_explain_chars {
                     faults.add(
                         address,
                         "R17",
                         "explanation_size",
-                        &format!("characters:{explain_chars}/{}", limits.max_explain_chars),
-                        &format!(
-                            "({explain_chars} explanation characters > {}) shorten the explanation",
-                            limits.max_explain_chars
-                        ),
+                        &format!("characters:{explain_chars}/{max_explain_chars}"),
+                        &format!("({explain_chars} explanation characters > {max_explain_chars}) shorten the explanation"),
                     );
                 }
             }
@@ -924,42 +930,36 @@ impl Check {
         if ps_eq(&level, "concept") {
             return chars;
         }
-        let limits = &self.limits;
+        // Model parts only, so each limit is half again as loose (`loosen`).
+        let max_sentences = loosen(self.limits.max_sentences, true);
+        let max_chars = loosen(self.limits.max_chars, true);
+        let max_steps = loosen(self.limits.max_steps, true);
         if !facet.is_empty() {
-            if sentences > limits.max_sentences {
+            if sentences > max_sentences {
                 faults.add(
                     address,
                     "R13",
                     "part_size",
-                    &format!("sentences:{sentences}/{}", limits.max_sentences),
-                    &format!(
-                        "({sentences} sentences > {}) split the part into two or more parts",
-                        limits.max_sentences
-                    ),
+                    &format!("sentences:{sentences}/{max_sentences}"),
+                    &format!("({sentences} sentences > {max_sentences}) split the part into two or more parts"),
                 );
-            } else if chars > limits.max_chars {
+            } else if chars > max_chars {
                 faults.add(
                     address,
                     "R13",
                     "part_size",
-                    &format!("characters:{chars}/{}", limits.max_chars),
-                    &format!(
-                        "({chars} characters > {}) split the part into two or more parts",
-                        limits.max_chars
-                    ),
+                    &format!("characters:{chars}/{max_chars}"),
+                    &format!("({chars} characters > {max_chars}) split the part into two or more parts"),
                 );
             }
         }
-        if steps > limits.max_steps {
+        if steps > max_steps {
             faults.add(
                 address,
                 "R14",
                 "steps",
-                &format!("steps:{steps}/{}", limits.max_steps),
-                &format!(
-                    "({steps} steps > {}) split the derivation into a chain of Derivation parts",
-                    limits.max_steps
-                ),
+                &format!("steps:{steps}/{max_steps}"),
+                &format!("({steps} steps > {max_steps}) split the derivation into a chain of Derivation parts"),
             );
         }
         chars
@@ -1692,7 +1692,8 @@ impl Check {
 
     /// R2 to R9 for one sentence. A Literature note's row turns the sentence rules R2, R3, R4,
     /// R5 and R7 off and lets R9 advise (issue #184); a rule the row does not name keeps its own
-    /// severity.
+    /// severity. In a Model Card (`model`) R2's limit is half again as loose.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn sentence(
         &self,
         faults: &mut Faults,
@@ -1701,15 +1702,19 @@ impl Check {
         sentence: &str,
         step: bool,
         literature: bool,
+        model: bool,
     ) {
         let plain = plain(sentence);
         let measure = measure(sentence);
-        let limit = match (measure.words, step) {
-            (false, true) => 30,
-            (false, false) => 40,
-            (true, true) => 20,
-            (true, false) => 25,
-        };
+        let limit = loosen(
+            match (measure.words, step) {
+                (false, true) => 30,
+                (false, false) => 40,
+                (true, true) => 20,
+                (true, false) => 25,
+            },
+            model,
+        );
         if measure.size > limit {
             faults.add_row(
                 address,
@@ -2898,9 +2903,10 @@ mod tests {
                 .map(|d| d.key.clone())
                 .expect("R13")
         };
-        assert_eq!(key(13), "sentences:13/12");
-        assert_eq!(key(14), "sentences:14/12");
-        assert_ne!(key(13), key(14), "a larger part is a new fault");
+        // A Model part is held to 18 sentences (12, half again as loose).
+        assert_eq!(key(19), "sentences:19/18");
+        assert_eq!(key(20), "sentences:20/18");
+        assert_ne!(key(19), key(20), "a larger part is a new fault");
 
         let event = |labels: &str| {
             json!({ "address": "K/6|b", "category": "event", "title": "1999 年的一笔交易",
@@ -3164,11 +3170,42 @@ mod tests {
     #[test]
     fn the_structure_list_of_a_model_card_is_not_prose() {
         let cards = json!([{ "address": "K/7|a", "type": "model", "title": "匹配规模报酬递增模型", "level": "formal",
-            "body": "问题：经济规模怎样改变均衡组织模式？\n\n**结构**\n\n- 推导：μL 增大时两个交点的移动（2/2） [[K/7|a|a|15]]：推导：μL 增大，两个交点沿 VV 线移动，外包均衡出现\n- 设定 [[K/7|a|a]]：设定\n\n**来源**\n\n企业在进入阶段比较两种组织模式的预期利润，然后选择利润更高的那一种组织模式进入行业。\n\n来源：[[K]] §7" }]);
+            "body": "问题：经济规模怎样改变均衡组织模式？\n\n**结构**\n\n- 推导：μL 增大时两个交点的移动（2/2） [[K/7|a|a|15]]：推导：μL 增大，两个交点沿 VV 线移动，外包均衡出现\n- 设定 [[K/7|a|a]]：设定\n\n**来源**\n\n企业在进入阶段比较两种组织模式的预期利润，然后选择利润更高的那一种组织模式进入行业，并且在之后每一期都重新比较两种组织模式在不同规模下的利润差距。\n\n来源：[[K]] §7" }]);
         let lines = run_json(&cards, "", Limits::default(), false, "");
         let r2: Vec<&String> = lines.iter().filter(|l| l.contains(" R2 ")).collect();
         assert_eq!(r2.len(), 1, "{lines:#?}");
         assert!(r2[0].contains("企业在进入阶段"), "{lines:#?}");
+    }
+
+    /// A Model Card (a Model Card or a Model part) is held to every size limit 50% looser, rounded
+    /// up (the owner, 2026-10-28): R2 60 characters, R12 60, R13 18 sentences or 600 characters,
+    /// R14 9 steps. An Idea Card keeps the strict limits.
+    #[test]
+    fn a_model_card_has_size_limits_half_again_as_loose() {
+        assert_eq!([loosen(40, true), loosen(25, true), loosen(12, true), loosen(400, true), loosen(6, true), loosen(5, true), loosen(2, true)], [60, 38, 18, 600, 9, 8, 3]);
+        assert_eq!(loosen(40, false), 40);
+        let s50 = format!("{}。", "甲".repeat(50));
+        let s61 = format!("{}。", "乙".repeat(61));
+        let title50 = "丙".repeat(50);
+        let card = |kind: &str, facet: &str, title: &str, body: &str| {
+            json!({ "address": "K/7|a|a|1", "type": kind, "facet": facet, "level": "formal", "title": title, "body": body })
+        };
+        let lines = |c: Value| run_json(&json!([c]), "", Limits::default(), false, "");
+        let model = lines(card("model", "设定", &title50, &s50));
+        assert!(of_rule(&model, "R2").is_empty() && of_rule(&model, "R12").is_empty(), "50 characters fit a Model Card: {model:#?}");
+        let long = lines(card("model", "设定", "设定", &s61));
+        assert_eq!(of_rule(&long, "R2").len(), 1, "61 characters do not: {long:#?}");
+        assert!(of_rule(&long, "R2")[0].contains("> 60"), "{long:#?}");
+        let idea = lines(card("idea", "", &title50, &s50));
+        assert_eq!((of_rule(&idea, "R2").len(), of_rule(&idea, "R12").len()), (1, 1), "an Idea Card keeps 40: {idea:#?}");
+        // R13: 15 short sentences fit a Model part (18), 19 do not.
+        let sentences = |n: usize| (0..n).map(|i| format!("价格在第{i}期上升。")).collect::<Vec<_>>().join("");
+        assert!(of_rule(&lines(card("model", "设定", "设定", &sentences(15))), "R13").is_empty());
+        assert_eq!(of_rule(&lines(card("model", "设定", "设定", &sentences(19))), "R13").len(), 1);
+        // R14: 8 steps fit a Derivation part (9), 10 do not.
+        let steps = |n: usize| (1..=n).map(|i| format!("{i}. 第{i}步代入上式。")).collect::<Vec<_>>().join("\n");
+        assert!(of_rule(&lines(card("model", "推导", "推导", &steps(8))), "R14").is_empty());
+        assert_eq!(of_rule(&lines(card("model", "推导", "推导", &steps(10))), "R14").len(), 1);
     }
 
     fn small() -> Value {
@@ -3181,9 +3218,10 @@ mod tests {
     /// R13 counts prose characters too; a Derivation part's steps count under R14 only.
     #[test]
     fn card_size_counts_characters_and_steps() {
+        // Model parts take each limit half again as loose (`loosen`): 20 and 1 hold them to 30 and 2.
         let limits = Limits {
-            max_chars: 30,
-            max_steps: 2,
+            max_chars: 20,
+            max_steps: 1,
             ..Limits::default()
         };
         let size = run_json(&small(), "", limits.clone(), false, "");
@@ -3206,7 +3244,7 @@ mod tests {
         let good = format!(
             "**思路**\nE 只在还款后所得超过 $w$ 时参与。先求 E 还款后剩下的现金 $R$。\n\n**起点**\n- 依赖设定 [[X/1|a|a]]：E 参与，须所得高于 $w$。\n\n{steps}\n\n**结果**\n$$y_1+fy_2>K$$\n\n**解读**\n$w$ 在两边相消，所以 E 的财富不影响参与。检验：$f=1$ 时它是普通的净现值条件。"
         );
-        let long = (1..=17)
+        let long = (1..=25)
             .map(|n| format!("第 {n} 句解释推导的一步。"))
             .collect::<String>();
         let without_reading = good[..good.find("**解读**").unwrap()].trim().to_string();
@@ -3229,8 +3267,8 @@ mod tests {
             &[
                 "X/1|a|a|2 R15 sections 思路, 起点, 步骤, 结果; want 思路, 起点, 步骤, 结果, 解读",
                 "X/1|a|a|3 R17 a second 说明 line under step 2",
-                "X/1|a|a|4 R16 (解读 has 19 sentences > 6)",
-                "X/1|a|a|4 R17 (22 explanation sentences > 16)",
+                "X/1|a|a|4 R16 (解读 has 27 sentences > 9)",
+                "X/1|a|a|4 R17 (30 explanation sentences > 24)",
                 "faults: 4",
             ],
         );
@@ -3439,7 +3477,7 @@ mod tests {
         let check = Check::new(Limits::default(), false, "").with_terms(Some(body));
         let r6 = |sentence: &str| {
             let mut faults = Faults::default();
-            check.sentence(&mut faults, "K/1", false, sentence, false, false);
+            check.sentence(&mut faults, "K/1", false, sentence, false, false, false);
             faults
                 .diagnostics
                 .iter()
@@ -3462,7 +3500,7 @@ mod tests {
         let check = Check::new(Limits::default(), false, "").with_terms(Some(table));
         let rules = |sentence: &str| {
             let mut faults = Faults::default();
-            check.sentence(&mut faults, "K/1", false, sentence, false, false);
+            check.sentence(&mut faults, "K/1", false, sentence, false, false, false);
             faults
                 .diagnostics
                 .iter()
@@ -3794,7 +3832,7 @@ mod tests {
     /// the rule itself grants.
     #[test]
     fn a_policy_does_not_bypass_the_concept_model_exemption() {
-        let body = (1..=13)
+        let body = (1..=19)
             .map(|n| format!("第{n}句说明一个条件。"))
             .collect::<Vec<_>>()
             .join("");

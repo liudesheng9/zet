@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $fixture = Join-Path $PSScriptRoot 'card-style-fixture.json'
 $lines = @(Invoke-ZtCheck -Json $fixture -Setting 'K/1|a|a')
 $expected = @(
-    'K/1|a|a|1 R12 (49 characters > 40) 清算比例：E 付不出 P 时'
+    'K/1|a|a|1 R12 (71 characters > 60) 清算比例：E 付不出 P 时'
     'K/1|a|a|1 R3 E 在时点 1 付不出去；E 能部分付出。'
     'K/1|a|a|1 R4 资产被清算。'
     'K/1|a|a|1 R5 双方进行谈判。'
@@ -16,11 +16,11 @@ $expected = @(
     'K/1|a|a|1 R6 (advisory) uses `卖资产` for `清算`: 值得注意的是，C 会卖资产。'
     'K/1|a|a|1 R9 `值得注意的是`: 值得注意的是，C 会卖资产。'
     'K/1|a|a|1 R6 (advisory) uses `还款额` for `可承诺的还款`: 可承诺的还款等于 $B$，还款额不会更高。'
-    'K/1|a|a|1 R2 (50 characters > 40) 这一句很长很长'
-    'K/1|a|a|2 R2 (34 characters > 30) 代入 $P=B$ 以后'
+    'K/1|a|a|1 R2 (65 characters > 60) 这一句很长很长'
+    'K/1|a|a|2 R2 (50 characters > 45) 代入 $P=B$ 以后'
     'K/1|a|a|3 R3 The creditor cannot verify the return; it cannot enforce a payment from it either.'
-    'K/1|a|a|4 R13 (13 sentences > 12) split the part'
-    'K/1|a|a|5 R14 (7 steps > 6) split the derivation into a chain of Derivation parts'
+    'K/1|a|a|4 R13 (19 sentences > 18) split the part'
+    'K/1|a|a|5 R14 (10 steps > 9) split the derivation into a chain of Derivation parts'
     'Other/1|a|a R21 (advisory) unnamed referent `这张卡` with no named Link in its sentence: 这张卡属于另一个模型。'
     'faults: 11'
 )
@@ -49,9 +49,10 @@ $small = Join-Path ([IO.Path]::GetTempPath()) "card-style-size-$PID.json"
     [pscustomobject]@{ address = 'S/1|a|a'; facet = '设定'; title = '设定'; body = 'E 有一个项目，项目在时点 2 产生收益。C 出资，换取时点 1 的还款。E 可以挪用一部分收益。' }
     [pscustomobject]@{ address = 'S/1|a|a|1'; facet = '推导'; title = '推导'; body = "1. E 在时点 1 还款以后，手里剩下项目的收益。`n2. E 在时点 2 挪用一部分收益，留下其余部分。`n3. 两边加上初始财富，得到参与约束。" }
 ) | ConvertTo-Json | Set-Content -LiteralPath $small -Encoding utf8
-$size = @(Invoke-ZtCheck -Json $small -MaxChars 30 -MaxSteps 2)
+# A Model part takes each limit half again as loose: 20 and 1 hold it to 30 and 2.
+$size = @(Invoke-ZtCheck -Json $small -MaxChars 20 -MaxSteps 1)
 # A concept model keeps its few parts whole: no size faults.
-$concept = @(Invoke-ZtCheck -Json $small -MaxChars 30 -MaxSteps 2 -Level concept)
+$concept = @(Invoke-ZtCheck -Json $small -MaxChars 20 -MaxSteps 1 -Level concept)
 Remove-Item -LiteralPath $small
 if ($concept[-1] -ne 'faults: 0') { Write-Output "a concept model must raise no size fault:"; $concept | ForEach-Object { Write-Output "  $_" }; $failed++ }
 $expectedSize = @(
@@ -69,7 +70,7 @@ else {
 # R15 to R17: the explanation of a Derivation part (docs/derivation-explanations-proposal.md).
 $steps = "**步骤**`n1. 参与约束：E 的所得高于 `$w`$，即 `$R+fy_2>w`$。`n2. 情形 `$f=1`$：`$R=c-P`$。`n   说明：不清算时，现金够还款，E 留下差额。`n3. 两边加 `$K-w`$，得 `$y_1+fy_2>K`$。"
 $good = "**思路**`nE 只在还款后所得超过 `$w`$ 时参与。先求 E 还款后剩下的现金 `$R`$。`n`n**起点**`n- 依赖设定 [[X/1|a|a]]：E 参与，须所得高于 `$w`$。`n`n$steps`n`n**结果**`n`$`$y_1+fy_2>K`$`$`n`n**解读**`n`$w`$ 在两边相消，所以 E 的财富不影响参与。检验：`$f=1`$ 时它是普通的净现值条件。"
-$long = (1..17 | ForEach-Object { "第 $_ 句解释推导的一步。" }) -join ''
+$long = (1..25 | ForEach-Object { "第 $_ 句解释推导的一步。" }) -join ''
 $explainCards = @(
     [pscustomobject]@{ address = 'X/1|a|a|1'; facet = '推导：参与约束'; title = '推导：参与约束'; body = $good }
     [pscustomobject]@{ address = 'X/1|a|a|2'; facet = '推导：缺解读'; title = '推导：缺解读'; body = ($good -replace '(?s)\*\*解读\*\*.*$', '').Trim() }
@@ -87,8 +88,8 @@ Remove-Item -LiteralPath $explainFile
 $expectedExplain = @(
     'X/1|a|a|2 R15 sections 思路, 起点, 步骤, 结果; want 思路, 起点, 步骤, 结果, 解读'
     'X/1|a|a|3 R17 a second 说明 line under step 2'
-    'X/1|a|a|4 R16 (解读 has 19 sentences > 6)'
-    'X/1|a|a|4 R17 (22 explanation sentences > 16)'
+    'X/1|a|a|4 R16 (解读 has 27 sentences > 9)'
+    'X/1|a|a|4 R17 (30 explanation sentences > 24)'
     'faults: 4'
 )
 if ($plainRun.Count -ne $expectedExplain.Count) { Write-Output "explain check: expected $($expectedExplain.Count) lines, got:"; $plainRun | ForEach-Object { Write-Output "  $_" }; $failed++ }

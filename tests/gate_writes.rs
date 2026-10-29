@@ -1267,7 +1267,7 @@ fn promoting_a_concept_model_to_formal_runs_the_new_formal_checks() {
         .as_str()
         .expect("model address")
         .to_string();
-    let long_body: String = (1..=13).map(|n| format!("第 {n} 句说明这一步。")).collect();
+    let long_body: String = (1..=19).map(|n| format!("第 {n} 句说明这一步。")).collect();
     let part = mcp.ok(
         "create_successor",
         json!({
@@ -1280,7 +1280,7 @@ fn promoting_a_concept_model_to_formal_runs_the_new_formal_checks() {
         .to_string();
     home.run(&["config", "set", "gate.stage", "enforce"]);
     // A concept model skips the formal size rule, so the part's edit is stored.
-    let concept_body = format!("{long_body}第 14 句说明这一步。");
+    let concept_body = format!("{long_body}第 20 句说明这一步。");
     mcp.ok("edit_card", json!({ "at": part, "body": concept_body }));
 
     // The promotion is a metadata-only edit of the Model Card.
@@ -1307,7 +1307,7 @@ fn promoting_a_concept_model_to_formal_runs_the_new_formal_checks() {
     let revision = home.revision();
     let (refusal, is_error) = mcp.call(
         "edit_card",
-        json!({ "at": part, "body": format!("{concept_body}第 15 句说明这一步。") }),
+        json!({ "at": part, "body": format!("{concept_body}第 21 句说明这一步。") }),
     );
     assert!(is_error, "the formal rule now applies: {refusal}");
     assert_eq!(refusal["error"], json!("card_check"), "{refusal}");

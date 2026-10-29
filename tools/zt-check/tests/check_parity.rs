@@ -147,7 +147,7 @@ fn the_legacy_bundle_reports_the_same_ordered_lines_everywhere() {
 }
 
 /// S02-AC07/R0150/R0151: a changed rule version is one current snapshot applied
-/// to both sides. The tightened `--max-sentences 8` makes the old authored
+/// to both sides. The tightened `--max-sentences 6` (9 for a Model part, half again as loose) makes the old authored
 /// version faulty too, so the unchanged part stays editable as legacy advice,
 /// while a new part with the same body must meet the current requirement.
 #[test]
@@ -157,7 +157,7 @@ fn a_changed_rule_version_is_applied_to_both_sides() {
         "--json",
         LEGACY_RULE_VERSION_BUNDLE,
         "--max-sentences",
-        "8",
+        "6",
     ];
     assert_eq!(binary(&args), expected);
     assert_eq!(library(&args), expected);

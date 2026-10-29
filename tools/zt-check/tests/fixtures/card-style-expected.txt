@@ -1,4 +1,4 @@
-K/1|a|a|1 R12 (49 characters > 40) 清算比例：E 付不出 P 时，C 清算部分资产，所以事后可能低效率，而且这一点在书中的两个数值例子里都很明显
+K/1|a|a|1 R12 (71 characters > 60) 清算比例：E 付不出 P 时，C 清算部分资产，所以事后可能低效率，而且这一点在书中的两个数值例子里都很明显，在第三章的推广模型里也同样…
 K/1|a|a|1 R3 E 在时点 1 付不出去；E 能部分付出。
 K/1|a|a|1 R4 资产被清算。
 K/1|a|a|1 R5 双方进行谈判。
@@ -6,10 +6,10 @@ K/1|a|a|1 R7 E 在时点 1 的用来还债的现金的上限是 $P$。
 K/1|a|a|1 R6 (advisory) uses `卖资产` for `清算`: 值得注意的是，C 会卖资产。
 K/1|a|a|1 R9 `值得注意的是`: 值得注意的是，C 会卖资产。
 K/1|a|a|1 R6 (advisory) uses `还款额` for `可承诺的还款`: 可承诺的还款等于 $B$，还款额不会更高。
-K/1|a|a|1 R2 (50 characters > 40) 这一句很长很长，它同时包含一个条件、一个原因和一个结果，所以读者要停下来才能看懂它到底在说什么事情。
-K/1|a|a|2 R2 (34 characters > 30) 代入 $P=B$ 以后，时点 1 剩下的现金化为一个只与项目收益和清算价值有关的式子。
+K/1|a|a|1 R2 (65 characters > 60) 这一句很长很长，它同时包含一个条件、一个原因和一个结果，还附带一段很长很长的补充说明，所以读者要停下来才能看懂它到底在说什么事情。
+K/1|a|a|2 R2 (50 characters > 45) 代入 $P=B$ 以后，时点 1 剩下的现金化为一个只与项目收益、清算价值、初始财富和出资额这四个量有关的较长的式子。
 K/1|a|a|3 R3 The creditor cannot verify the return; it cannot enforce a payment from it either.
-K/1|a|a|4 R13 (13 sentences > 12) split the part into two or more parts
-K/1|a|a|5 R14 (7 steps > 6) split the derivation into a chain of Derivation parts
+K/1|a|a|4 R13 (19 sentences > 18) split the part into two or more parts
+K/1|a|a|5 R14 (10 steps > 9) split the derivation into a chain of Derivation parts
 Other/1|a|a R21 (advisory) unnamed referent `这张卡` with no named Link in its sentence: 这张卡属于另一个模型。
 faults: 11

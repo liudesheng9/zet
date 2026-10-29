@@ -1983,35 +1983,35 @@ mod tests {
                 .collect::<String>()
         };
         let promoted = json!({ "cards": [{
-            "address": "K/17|a", "category": "part", "facet": "设定", "title": "设定", "body": long(13),
-            "before": { "address": "K/17|a", "category": "idea", "title": "设定", "body": long(13) }
+            "address": "K/17|a", "category": "part", "facet": "设定", "title": "设定", "body": long(19),
+            "before": { "address": "K/17|a", "category": "idea", "title": "设定", "body": long(19) }
         }]});
         assert_eq!(
             run_json(&promoted, "", Limits::default(), false, ""),
             [
-                "K/17|a R13 (13 sentences > 12) split the part into two or more parts",
+                "K/17|a R13 (19 sentences > 18) split the part into two or more parts",
                 "faults: 1",
             ]
         );
         let demoted = json!({ "cards": [{
-            "address": "K/17|b", "category": "idea", "title": "均衡稳定提高社会福利", "body": long(13),
-            "before": { "address": "K/17|b", "category": "part", "facet": "设定", "title": "设定", "body": long(13) }
+            "address": "K/17|b", "category": "idea", "title": "均衡稳定提高社会福利", "body": long(19),
+            "before": { "address": "K/17|b", "category": "part", "facet": "设定", "title": "设定", "body": long(19) }
         }]});
         assert_eq!(
             run_json(&demoted, "", Limits::default(), false, ""),
             ["faults: 0"]
         );
         let refaceted = json!({ "cards": [{
-            "address": "K/17|c", "category": "part", "facet": "设定", "title": "设定", "body": long(13),
+            "address": "K/17|c", "category": "part", "facet": "设定", "title": "设定", "body": long(19),
             "before": {
                 "address": "K/17|c", "category": "part", "facet": "推导：参与约束",
-                "title": "推导：参与约束", "body": long(13)
+                "title": "推导：参与约束", "body": long(19)
             }
         }]});
         assert_eq!(
             run_json(&refaceted, "", Limits::default(), false, "formal"),
             [
-                "K/17|c R13 (advisory) (13 sentences > 12) split the part into two or more parts",
+                "K/17|c R13 (advisory) (19 sentences > 18) split the part into two or more parts",
                 "faults: 0",
             ]
         );
@@ -2172,16 +2172,16 @@ mod tests {
             }]})
         };
         assert_eq!(
-            run_json(&bundle(13, 14), "", Limits::default(), false, ""),
+            run_json(&bundle(19, 20), "", Limits::default(), false, ""),
             [
-                "K/6|a R13 (14 sentences > 12) split the part into two or more parts",
+                "K/6|a R13 (20 sentences > 18) split the part into two or more parts",
                 "faults: 1",
             ]
         );
         assert_eq!(
-            run_json(&bundle(13, 13), "", Limits::default(), false, ""),
+            run_json(&bundle(19, 19), "", Limits::default(), false, ""),
             [
-                "K/6|a R13 (advisory) (13 sentences > 12) split the part into two or more parts",
+                "K/6|a R13 (advisory) (19 sentences > 18) split the part into two or more parts",
                 "faults: 0",
             ]
         );
@@ -2444,7 +2444,7 @@ mod tests {
     /// reclassify a draft that names its own Workspace.
     #[test]
     fn the_workspace_flag_decides_a_draft_under_that_workspaces_policy() {
-        let long = (1..=13)
+        let long = (1..=19)
             .map(|n| format!("第 {n} 句说明这一步的推理。"))
             .collect::<String>();
         let raw = json!({ "cards": [{ "address": "K/1", "facet": "设定", "text": format!("# 设定\n\n{long}") }] });

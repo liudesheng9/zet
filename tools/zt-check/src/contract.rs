@@ -23,7 +23,10 @@ use serde_json::{Map, Value, json};
 /// the same text can now be measured and checked differently than under version 2.
 /// 4 (S16, #158): a Term use is no reasoning Link, so L1, L2, and L3 read an
 /// ordinary Link only; the same authored text is checked differently than under 3.
-pub const RULE_VERSION: &str = "4";
+/// 5 (the owner, 2026-10-28): a Model Card (a Model Card or a Model part) is held to every
+/// size limit half again as loose (`core::loosen`: R2, R12, R13, R14, R16, R17), so the same
+/// authored text is decided differently than under 4.
+pub const RULE_VERSION: &str = "5";
 
 /// The version of the published diagnostic shape: the eight fields of
 /// `core::Diagnostic::to_json` and the `block`/`advise` and `local`/`graph`

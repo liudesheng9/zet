@@ -1655,7 +1655,7 @@ mod write_gate_tests {
             facet: facet.clone(),
             emphasis: None,
         };
-        let body = (1..=13)
+        let body = (1..=19)
             .map(|n| format!("第 {n} 句说明这一步。"))
             .collect::<String>();
         let text = format!("# 设定\n\n{body}");
