@@ -1,6 +1,6 @@
 ---
 name: zt-model-restructure
-description: "Make a ZET model that a human can read: find a model that the digest split into several Model Cards and fold them into one Model Card, then build its inner structure as an intuition spine (a short main line of plain-language chapter cards, each chapter's results as Side branches, each result's proof chain as a Side branch of the result), with one notation card, one card format per role, and clean relations. Use when the user says a model is split, parted, messy, hard to understand, or wants model cards combined, regrouped, made more human friendly, or wants a model's inner structure or network improved; also use before you change Model Card structure by hand in any ZT tree."
+description: "Make a ZET model that a human can read: find a model that the digest split into several Model Cards and fold them into one Model Card, then build its inner structure as an intuition spine (a short main line of plain-language chapter cards, each chapter's results as Side branches, each result's proof chain as a Side branch of the result), with one notation card, one card format per role, and clean relations, so that the GUI's model network (zt 0.44+: each chapter hangs under the chapter it builds on most) reads as a clean tree with no forward or unanchored fault. Use when the user says a model is split, parted, messy, hard to understand, or wants model cards combined, regrouped, made more human friendly, or wants a model's inner structure or network improved; also use before you change Model Card structure by hand in any ZT tree, and to check a model's network (scripts/check-network.mjs)."
 ---
 
 # Restructure a ZET model for a human reader
@@ -50,14 +50,26 @@ Main line   设定 → 第 1 章：直觉 → 第 2 章 … → 第 k 章：主�
 - The **main line** is the setting, then chapter cards in the book's order. A chapter card states one mechanism in plain words. Put the book's verbal model (often in the introduction) first as 第 1 章：直觉.
 - Under a chapter: its local setting (本章设定) first, then its results, then asides (footnotes, limitations, extensions).
 - Under a result: the derivation chain that ends in it, as one Direct chain.
-- All settings and the **notation card** hang under the setting card.
-- A model of five or more chapters gets **parts** (分部): a `**分部**` section in the Model Card, one line per part, `- 第二部分 求解：[[<first chapter card>]] 起`. The GUI draws each part as a range of blocks on the model board and labels it on the Map; zt reports a part that starts off the main line as a build fault. New models get it from the architect's `divisions`.
+- The shared settings and the **notation card** hang under the setting card; a chapter's own settings hang under that chapter (see below).
+- A model of five or more chapters gets **parts** (分部): a `**分部**` section in the Model Card, one line per part, `- 第二部分 求解：[[<first chapter card>]] 起`. The GUI names each part over its run of tabs in the network's strip and labels it on the Map; zt reports a part that starts off the main line as a build fault. New models get it from the architect's `divisions`.
+- Settings: the setting card holds what every chapter uses (agents, timing, the notation card). A setting that one chapter introduces, or that rests on a chapter's result or proof, is that chapter's 本章设定.
 
 Two build rules make this pass zt's checks:
 
 - A chapter card rests (`依赖`, `用到`, `沿用`, `基于`, `代入`…) **only on earlier chapter cards**. It names its own results with a cue-free word (`结果：[[…]]`). A main-line card that rests on its own Side branch is a **forward** fault, because Side parts are built after their step.
 - Every main-line card needs a rests-on path back to the setting, or it is **unanchored**.
 - Write the pointer to the notation card without a premise cue: `符号与记号的含义见符号表 [[…]]` (a line with `用到` becomes a rests-on Link).
+
+### What the GUI draws from it: the model network
+
+The GUI (zt 0.44+) draws a model in chapters as a **network of blocks**. A block is one main-line card with everything filed under it. The rests-on Links decide its shape, so design them for it:
+
+- **Each chapter hangs under the earlier block it rests on most** (the most rests-on Links from any of its cards into that block; ties go to the later block). A chapter's `依赖` line names the chapter it really builds on, and its results' and proofs' premises count too. A spine where every chapter rests mainly on the one before it reads as a chain; where the book branches (two chapters both build on chapter 2), let the Links say so and the network shows the branch. Becker: 设定 → 1 → 2 → {3, 4}; 4 → 5 → {6, 7, 8}; 8 → {9, 10}; 10 → 11.
+- **A card filed in a block must rest only on that block or earlier ones.** A card that rests on a later block is a **forward** thread, drawn in red. The usual cause: a setting or derivation parked under 设定 that rests on a chapter's proof step. File such a card in the chapter of its latest premise (as that chapter's 本章设定 or an aside), not under 设定. Becker had two: `4|a|a|b` and `4|a|a|d|2`.
+- **A chapter with no rests-on Link to an earlier block is unanchored**: it becomes a root of the network with a red mark.
+- **The first sentence of a chapter's `**直觉**` opens its block** (the `lead`). Make it state the mechanism, 20 characters or more; a shorter first sentence takes the second along.
+- **Parts (`**分部**`)** name runs of chapters in reading order; they read best when each part is one branch of the tree.
+- Plain references (`参照`, no cue) are not drawn by default; they cost nothing in the network.
 
 Write the target as a JSON spec (format in `scripts/tree-mover.mjs`) by card identity, then rebuild with `scripts/tree-mover.mjs plan` and `run`. The mover detaches every card leaf-first onto a parking chain, then places each card top-down into its slot, and follows every card through each move's rename map. It saves its state after every move and resumes after a failure. Freeze the tree first (it does this on the first run), and never change the spec mid-run.
 
@@ -74,7 +86,8 @@ Draft the text with DeepSeek: one job per chapter or per group, each with the fo
 - `scripts/check-model.mjs <head>`: the main line, and the `closure`, `forward`, `reach_in`, `unanchored` faults; `self_sufficient` must be true.
 - `list_broken_links` is empty; the tree has the same number of Cards plus the ones you created; no title vanished except the ones you renamed.
 - Rebuild the head's **结构** section from the tree (two levels: the main line and one level under each main card).
-- Look at it in the GUI: the **model board** (zt 0.43+) shows the model in blocks, one tray per chapter with its results and folded proofs, the Links between blocks as counted ribbons; and the Map's **Focus** mode (`x`) shows the low-memory view (the main line as slips, the selected chapter's results, every proof folded into `+N`); "Whole tree" unfolds everything.
+- `scripts/check-network.mjs <head>`: the network as the GUI draws it, with the GUI's own layout code (the running service's `/layout.js`, or `ZT_LAYOUT`). It prints the tree each chapter hangs in and every fault the network shows a reader: `forward` (with the move that fixes it: the card and the chapter to file it under), `unanchored`, `parts`, `lead` (a missing or short 直觉 opening); `advice` names chapters with no result card (right for an intuition or summary chapter). It must print `network: clean`; `--json` gives the full report. Apply a `forward` move with `scripts/zt.mjs` `move` (or the tree mover), then run the check again.
+- Look at it in the GUI: the **model network** under the Model Card (zt 0.44+) shows each chapter as an index card hanging under what it builds on, red threads for forward faults; open a chapter to see it lifted with its own counted threads, and below it close up (its 直觉 opening, its results, each proof stacked behind its result). Hovering a thread lists its Card pairs; clicking it lays the two blocks side by side. The Map's **Focus** mode (`x`) shows the low-memory view (the main line as slips, the selected chapter's results, every proof folded into `+N`); "Whole tree" unfolds everything.
 - Record the pass in the project docs and tell the user which tree is still unlocked.
 
 ## Helper facts (zt-digest call)

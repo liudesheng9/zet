@@ -19,7 +19,9 @@ One sentence: what this chapter takes from earlier chapters, and what the next c
 来源：[[citationKey]] §x
 ```
 
-- Title: `第 k 章：` plus the chapter's intuition in one line (40 characters at most). Facet: `第 k 章：<short name>`, emphasis core.
+- Title: `第 k 章：` plus the chapter's intuition in one line (40 characters at most). Facet: `第 k 章：<short name>`, emphasis core. The GUI shows the title without `第 k 章：` under the facet, so the title alone must read as the chapter's claim.
+- The first sentence of **直觉** opens the chapter's block in the model network: it states the mechanism in 20 characters or more (`这一章解第二阶段。` alone is too short; the GUI then takes the second sentence along).
+- `依赖` names the earlier chapter this one builds on most: in the model network the chapter hangs under it.
 - Only `结果：` before the Links to its own results. `依赖` and the other premise words point only to earlier chapter cards (the first chapter rests on the setting card).
 
 ## Parts section of the Model Card (分部)
@@ -33,7 +35,7 @@ For a model of five or more chapters, add to the Model Card, after **结构**:
 - 第二部分 求解：[[first chapter card of the part]] 起
 ```
 
-Each line names a part by what it does and links the main-line card it starts at. Two to five parts.
+Each line names a part by what it does and links the main-line card it starts at. Two to five parts. The GUI names each part over its run of tabs above the model network.
 
 ## Result card (Side branch of a chapter)
 
