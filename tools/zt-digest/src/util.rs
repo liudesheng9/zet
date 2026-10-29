@@ -123,6 +123,58 @@ pub fn writes_cards(tool: &str, argv: &[String]) -> bool {
         )
 }
 
+/// The waits (seconds) before each rerun of a read-only step whose read set saw the archive
+/// revision change. The revision is global: a write to any tree (another digest on the same box,
+/// a hand edit) changes it under a whole-book read (live run hansen2021demand 2026-10-29: the
+/// link-check plan, the Organize survey and the Term-link plan all refused while a second digest
+/// wrote). The design rule is to retry the read set, then report the changing view.
+pub const CHANGING_VIEW_WAITS: [u64; 5] = [5, 10, 20, 40, 60];
+
+/// The steps that only read the archive and then write their own staging file, so a rerun repeats
+/// the whole read set and nothing else (no ledger claim, no Card write).
+pub fn rereads_on_changing_view(tool: &str, argv: &[String]) -> bool {
+    let step = argv
+        .iter()
+        .position(|a| a.eq_ignore_ascii_case("-Step"))
+        .and_then(|at| argv.get(at + 1))
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    match tool.to_ascii_lowercase().as_str() {
+        "audit" | "organize-survey" => true,
+        "card" | "term-link" => step == "plan",
+        _ => false,
+    }
+}
+
+/// A refusal of a read set whose archive revision changed while it was read.
+pub fn is_changing_view(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("changing view") || text.contains("changing read view")
+}
+
+/// Runs `step` and reruns it after each wait of `waits` while it fails with a changing view.
+/// A step that writes Cards is never rerun: only a read-only step's whole read set is repeated.
+pub fn retry_changing_view<T>(
+    read_only: bool,
+    waits: &[u64],
+    mut sleep: impl FnMut(u64),
+    mut step: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let mut tries = waits.iter();
+    loop {
+        match step() {
+            Err(error) if read_only && is_changing_view(&error) => match tries.next() {
+                Some(&wait) => {
+                    eprintln!("changing view; reading again in {wait} s: {error:#}");
+                    sleep(wait);
+                }
+                None => return Err(error),
+            },
+            other => return other,
+        }
+    }
+}
+
 /// The last line of a compiler step: the step's result as compact JSON.
 #[allow(dead_code)]
 pub fn print_last(value: &Value) -> Result<()> {
@@ -201,5 +253,68 @@ mod tests {
             assert!(!writes_cards("model", &argv(&["-Step", step])), "{step}");
         }
         assert_eq!(WRITE_EDIT_PATIENCE_SECONDS, 180);
+    }
+
+    #[test]
+    fn a_read_only_step_reads_again_after_a_changing_view() {
+        // Live run hansen2021demand: a second digest wrote while the Term-link plan read the book.
+        let mut calls = 0;
+        let mut slept = Vec::new();
+        let got = retry_changing_view(true, &[1, 2, 3], |s| slept.push(s), || {
+            calls += 1;
+            if calls < 3 {
+                anyhow::bail!("incomplete Card read: changing view across archive revisions")
+            }
+            Ok(7)
+        });
+        assert_eq!(got.unwrap(), 7);
+        assert_eq!(calls, 3);
+        assert_eq!(slept, vec![1, 2]);
+    }
+
+    #[test]
+    fn only_the_pure_read_steps_read_again() {
+        assert!(rereads_on_changing_view("audit", &argv(&["-CitationKey", "K"])));
+        assert!(rereads_on_changing_view("organize-survey", &argv(&["-Work", "D:\\w"])));
+        assert!(rereads_on_changing_view("card", &argv(&["-Step", "plan", "-Work", "D:\\w"])));
+        assert!(rereads_on_changing_view("term-link", &argv(&["-Step", "plan", "-Staging", "D:\\s"])));
+        assert!(!rereads_on_changing_view("term-link", &argv(&["-Step", "apply", "-Staging", "D:\\s"])));
+        assert!(!rereads_on_changing_view("card", &argv(&["-Step", "apply", "-Work", "D:\\w"])));
+        // A step that claims a ledger unit is never rerun.
+        assert!(!rereads_on_changing_view("group-start", &argv(&["-Out", "D:\\o"])));
+        assert!(!rereads_on_changing_view("ledger", &argv(&["claim"])));
+    }
+
+    #[test]
+    fn a_changing_view_that_never_settles_is_still_reported() {
+        let mut calls = 0;
+        let got: Result<()> = retry_changing_view(true, &[1, 1], |_| {}, || {
+            calls += 1;
+            anyhow::bail!("incomplete Card inputs: changing read view")
+        });
+        assert!(is_changing_view(&got.unwrap_err()));
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn a_write_step_or_another_fault_is_never_rerun() {
+        let mut calls = 0;
+        let got: Result<()> = retry_changing_view(false, &[1, 1], |_| {}, || {
+            calls += 1;
+            anyhow::bail!("incomplete Card read: changing view across archive revisions")
+        });
+        assert!(got.is_err());
+        assert_eq!(calls, 1);
+        let mut calls = 0;
+        let got: Result<()> = retry_changing_view(true, &[1, 1], |_| {}, || {
+            calls += 1;
+            anyhow::bail!("incomplete Card read: 3 of 4 required addresses")
+        });
+        assert!(got.is_err());
+        assert_eq!(calls, 1);
+        // The organize survey wraps the audit's refusal in its own context.
+        let wrapped = anyhow::anyhow!("incomplete Card read: changing view across archive revisions")
+            .context("digest-audit failed");
+        assert!(is_changing_view(&wrapped));
     }
 }

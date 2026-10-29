@@ -159,7 +159,7 @@ fn main() {
     // docs/literature-only-digest-design.md: a digest step writes only the book's Literature tree.
     // The Topic-tree, hub and register tools (idea-grow's) keep the open scope.
     zt_check::mcp::scope::set_literature_only(literature_scope(&tool, &rest));
-    let result = match tool.to_ascii_lowercase().as_str() {
+    let dispatch = || match tool.to_ascii_lowercase().as_str() {
         "call" => calls::cli(&rest),
         "service-wait" => service_wait_cli(&rest),
         "audit" => audit::cli(&rest),
@@ -241,6 +241,13 @@ fn main() {
             Ok(2)
         }
     };
+    // A pure-read step whose read set saw the archive revision change reads it again (util::CHANGING_VIEW_WAITS).
+    let result = util::retry_changing_view(
+        util::rereads_on_changing_view(&tool, &rest),
+        &util::CHANGING_VIEW_WAITS,
+        |seconds| std::thread::sleep(std::time::Duration::from_secs(seconds)),
+        dispatch,
+    );
     match result {
         Ok(code) => std::process::exit(code),
         Err(error) => {

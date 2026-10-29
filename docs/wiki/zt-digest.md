@@ -775,6 +775,8 @@ The retained 10,895-Card release comparison in `docs/digest-bulk-command-benchma
 
 ### Command line
 
+A pure-read step (`audit`, `organize-survey`, `card -Step plan`, `term-link -Step plan`) that fails because the archive revision changed while it read its read set reads the whole set again after 5, 10, 20, 40 and 60 seconds, and reports the changing view only after the last wait (`util::retry_changing_view`, `util::rereads_on_changing_view`, 0.35.2). The revision is global, so a write to any tree changes it: on 2026-10-29 a second digest on the same box made the hansen2021demand link-check plan, Organize survey and Term-link plan refuse. A step that claims a ledger unit or writes a Card is never rerun.
+
 ```text
 zt-digest call <file|-> [-Open] [-From N -Addresses a0,a1,...] [-Log f] [-Allow f] [-Beneath f] [-Moves f] [-SrcLog f] [-TopicGate f] [-TopicSimilarity 0.8]
 zt-digest call [-Open] -Tool <tool> [-Json '{...}']
