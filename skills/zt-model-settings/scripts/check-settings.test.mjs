@@ -86,3 +86,10 @@ test('a clean model passes', () => {
 })
 
 function isSettingRow(c) { return /^设定/.test(c.facet) || /^设定/.test(c.title) }
+
+test('a setting shared from another model is not filed outside: its home model checks where it is filed', () => {
+  const shared = [...order, row('K/9|a|a|b', '设定：现金流量规则', '规则：资金流入视同销售', 'shared')]
+  const cs = new Map([...cards, ['K/9|a|a|b', { ...shared.at(-1), body: '' }]])
+  const r = audit({ build: { setting: S, order: shared } }, cs)
+  assert.ok(!r.outside.some((f) => f.card === 'K/9|a|a|b'))
+})

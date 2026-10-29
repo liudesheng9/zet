@@ -88,7 +88,8 @@ export function audit(m, cards, parents = new Map()) {
   const noteText = notes.map((c) => c.body || '').join('\n').replace(/\s+/g, '')
 
   const outside = []
-  const placed = all.filter((c) => !inPart(c.address) && (isSetting(c) || isNotation(c)))
+  // A part shared from another model (line 'shared') is filed in its home model, whose own audit checks it.
+  const placed = all.filter((c) => !inPart(c.address) && c.line !== 'shared' && (isSetting(c) || isNotation(c)))
   for (const c of placed) {
     // A setting filed under another misplaced setting moves with it.
     if (placed.some((p) => p !== c && c.address.startsWith(p.address + '|'))) continue
