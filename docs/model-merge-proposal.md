@@ -506,3 +506,31 @@ Every other Model Card is a model of its own: `1/b`, `3/a`, `3/b`, `3/c`, `3/d`,
 **Result.** `model-survey.mjs` lists exactly the 19 decided heads. The folded models are `5/a` (48 members, the four former heads at `5/a/a/21`–`24`), `11/a/12` (39, at `11/a/12/f/8` and `f/9`) and `20/d` (22, at `20/d/a/10`). The tree still holds 829 Cards, and `list_broken_links` is empty. Each former head is unanchored (no rests-on line back to the setting yet), so the three models are not yet self-sufficient. `zt-model-restructure` adds those lines.
 
 **Next.** `zt-model-settings`, then `zt-model-restructure`, on `hart1995firms/5|a`, `hart1995firms/11|a|12` and `hart1995firms/20|d`.
+
+### 13.1 The setting parts as dependency trees (2026-10-29)
+
+`zt-model-settings` ran on the three folded models of `hart1995firms` (`5|a`, `11|a|12`, `20|d`) on the live box at the owner's request. The backup is `D:\zt-merge-backup\zt-before-hart1995firms-settings.sqlite3` (`VACUUM INTO`).
+
+**Faults before.** None of the three had a notation card or a **起点** section. Each base assumption card (`假设：…`) was the first step of the main line. Every folded Model Card had brought its setting into its chapter (`5/a/a/21/a`–`24/a`, `11/a/12/f/8/a`, `f/9/a`, `20/d/a/10/a`). The workers chapter card `互补资产` stated its own assumption ("假设 M1 还拥有 $a_1$"). The uncertainty setting of `11/a/12` restated (5.4)–(5.6), which the base chapters derive.
+
+**Trees after.** In each model the setting card is the primitive (`原始设定`). Its Sides, in order:
+
+- `5/a`: `a` notation; `b` 设定：概述 (the chapter's verbal framework, also primitive); `c` 设定：关系专用性 (the base assumptions (2.1)–(2.3)); `d` 设定：工人投资 (variant one); `e` 设定：实物资本 (variant two); `f` 设定：随机所有权 (variant three).
+- `11/a/12`: `a` notation; `b` 设定：两期假设 ((5.2)–(5.3)); `c` 设定：多期 (variant one, T dates, (5.11)); `d` 设定：不确定性 (variant two, (5.20)–(5.21)).
+- `20/d`: `a` notation; `b` 设定：要约与股东 (the base assumption); `c` 设定：部分要约 (the variant, which replaces the any-or-all offers).
+
+Each variant's **起点** says which variant it is, what it keeps from the setting card and which base assumption it changes. Each moved setting went `alone`, so its derivation chain closed up and stays a Side branch of its chapter.
+
+**Text.**
+- The symbol and term tables of the settings moved into the notation cards. Each card lists every symbol with its first card, with the variants' symbols marked by variant. The book's own clash of $\sigma$ (definition 1's range parameter, the random-ownership probability) and of $R$ (the revenue function, the physical-capital value increase) is stated in the rows, not renamed.
+- The workers setting now states the extension's asset $a_1$, and `互补资产` rests on it.
+- The uncertainty setting keeps an `另见` pointer to the base chapters for (5.4)–(5.6). The two variant derivations that use those formulas now name `推导：实际还款额` and `推导：清算比例` as premises.
+- Each head's **结构** was rebuilt in reading order.
+
+**Result.** `check-settings.mjs` prints `settings: all in the setting part, as a dependency tree` for all three, and `check-premises.mjs` finds no premise used before its card. The tree holds 832 Cards (829 plus three notation cards), and `list_broken_links` is empty.
+
+The former heads remain unanchored chapters (`5/a/a/20`–`23`, `11/a/12/f/7`–`8`, `20/d/a/9`), so no model is self-sufficient yet. `check-network.mjs` reports spine work: no lead **直觉** sections and no result cards.
+
+(Addresses here write `/` for `|`.)
+
+**Next.** `zt-model-restructure` on `hart1995firms/5|a`, `hart1995firms/11|a|12` and `hart1995firms/20|d`.
