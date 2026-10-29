@@ -452,3 +452,29 @@ Every other Model Card is a model of its own: `14/a`, `15/a`, `22/a`, `23/a`, `2
 - `check-network`: `network: clean` for `3/a`, `24/a` and `40/a`. `11/a` reports one forward thread: its chapter 1 mechanism rests on the shared part `6/b/a/1`, and `get_model` files shared parts in an aside block after the chapters. No move inside this model can fix it; the Link is a cross-model premise and stays. Whether a rests-on Link to a tolerated shared part should count as forward is a question for zt's block builder.
 - `check-premises`: no premise used before its card.
 - `list_broken_links` is empty. The tree holds 1429 Cards (1424 + the five chapter cards).
+
+### 12.3 The other formal models, and why the concept models stay (2026-10-29)
+
+The owner left the rest of the book to my judgement. After the four folded models, 21 models of `ebrill2001modern` had had neither the settings pass nor the restructure.
+
+**Which models.** 17 of the 21 are concept models (`15/a`, `22/a`, `23/a`, `25/a`, `28/a`, `29/a`, `30/a`, `31/a`, `32/a`, `33/d`, `36/a`, `37/a`, `47/a`, `48/a`, `49/a`, `50/a`, `51/a`). Each has three or four parts on one main line (设定 → 机制 → 结论), and `check-model` already reports each as self-sufficient. zt defines a concept model as the Model Card and at most four parts, so a notation card and chapter cards would push each one past its level, and the main line already is the short spine the restructure aims at. They stay as they are. Their only network advice is that the main-line cards have no **直觉** section, and a concept model's cards are plain-language in full. The four formal models (`14/a`, `32/b`, `33/a`, `53/a`) went through both passes, on the live box. The backups are `D:\zt-merge-backup\zt-before-ebrill2001modern-formal-settings.sqlite3` and `…-formal-spine.sqlite3` (`VACUUM INTO`, integrity `ok`).
+
+**Settings.** Each setting card has a notation card (`符号表与读法`, with the legend **怎样读卡片上的记号**) and a **起点** section. Its symbol and term tables moved to the notation card. One sentence (`本设定的记号：…`) now defines each symbol that was defined only in a table, for example τ, L, r_B, r_L and p of `32/b`, and i, z, α, λ and e of `53/a`. The assumption card of `14/a` (`假设：规则随环境而定`) left the main line for the setting part. So did the cash-flow rule of `32/b` (`设定：现金流量规则`), which `33/a` shares with a `共用` line. The regression card of `14/a` lost its copied tables. Its notation card gained the rows r⁺(m) and r⁻(m).
+
+**Spines.**
+
+| Model | Chapters | Results (proof chain) |
+|---|---|---|
+| `14/a` | 1 简化式框架, 2 税率弹性, 3 环境与结构变量 | ch. 1: two framework derivations, no result card; ch. 2: the regression, the elasticity 0.70 (one step); ch. 3: openness and capacity, rate range (each with its derivation as aside) |
+| `32/b` | 1 现金流量增值税 | the tax on unregistered spreads (four steps), two examples, the limit |
+| `33/a` | 1 保险人的净税额, 2 被保险人的两种情形 | the net tax 20% of value added (one step); the consumer case (one), the registered case (two), the comparison, the limit |
+| `53/a` | 1 退税基准 | the refund ratio (four steps), the example, the comparative statics |
+
+The limitation card `14/a/b` stays a Side card of its head: the locked tree `becker2025division` pins it (`card_locked`), so it was not moved. DeepSeek V4.1 Flash (official source, effort high) drafted 28 cards in 7 jobs under one Haiku manager. One job needed its retry. All 8 conversations were deleted and the workspace removed. `check-drafts` found no lost formula. Five derivation asides got a `目的：` line by hand. Each head's 结构 was rebuilt; the summaries already described one model each.
+
+**Tool fixes met on the way.**
+- `check-settings.mjs` reported the shared cash-flow rule as a setting "filed in null" in `33/a`. It now skips a part shared from another model, whose home model checks it (test added).
+- `tree-mover.mjs` saved its step before advancing it, so a resume repeated the last move: after the `card_locked` stop, it tried to park a card into a slot under itself. It now saves the next step.
+- The forward thread of `11/a` (§12.2) was a defect of zt's block builder. A separate session fixed it (zt 0.46.1, commit 592b9b3: a part shared from another model is a premise block before the setting). It is merged into main, and `11/a` is clean with no card changed.
+
+**After.** All eight formal models of the book (`3/a`, `11/a`, `14/a`, `24/a`, `32/b`, `33/a`, `40/a`, `53/a`) report `self_sufficient` true, `network: clean`, `settings: all in the setting part, as a dependency tree`, and no premise used before its card. `list_broken_links` is empty. The tree holds 1440 Cards (1429 + four notation cards + seven chapter cards).
