@@ -871,7 +871,7 @@
     const down = p1.y < p2.y;
     if (!between.length) {
       const k = Math.max(18, Math.abs(p2.y - p1.y) * 0.45) * (down ? 1 : -1);
-      return { d: `M ${p1.x} ${p1.y} C ${p1.x} ${p1.y + k} ${p2.x} ${p2.y - k} ${p2.x} ${p2.y}`, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }, lane: null };
+      return { d: `M ${p1.x} ${p1.y} C ${p1.x} ${p1.y + k} ${p2.x} ${p2.y - k} ${p2.x} ${p2.y}`, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }, lane: null, points: [[p1.x, p1.y], [p2.x, p2.y]] };
     }
     const spans = between.map((b) => [b.x - 6, b.x + b.w + 6]).sort((a, b) => a[0] - b[0]);
     const merged = [];
@@ -888,6 +888,7 @@
     const g2 = p2.y + (down ? -half : half);
     const pts = [[p1.x, p1.y], [p1.x, g1], [lane, g1], [lane, g2], [p2.x, g2], [p2.x, p2.y]]
       .filter((p, i, all) => i === 0 || p[0] !== all[i - 1][0] || p[1] !== all[i - 1][1]);
+    const points = pts.map((p) => [...p]);
     let d = `M ${pts[0][0]} ${pts[0][1]}`;
     const seg = (a, b) => (a[0] === b[0] ? `V ${b[1]}` : `H ${b[0]}`);
     for (let i = 1; i < pts.length - 1; i += 1) {
@@ -899,7 +900,39 @@
       pts[i] = after;
     }
     d += ` ${seg(pts[pts.length - 2], pts[pts.length - 1])}`;
-    return { d, mid: { x: lane, y: (g1 + g2) / 2 }, lane };
+    return { d, mid: { x: lane, y: (g1 + g2) / 2 }, lane, points };
+  }
+
+  /**
+   * How far a pinned card leans about its pin (#201): a small angle from its address, -1.2° to
+   * 1.2°, so the board looks pinned by hand and the same card always hangs the same way.
+   */
+  function tilt(address) {
+    let hash = 2166136261;
+    for (const ch of String(address)) {
+      hash ^= ch.codePointAt(0);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return Math.round(((hash % 2401) / 1000 - 1.2) * 100) / 100;
+  }
+
+  /**
+   * A transit line along an orthogonal route (#201): straight legs, and each corner rounded by
+   * `radius`, or by half the shorter leg beside it when that is less, as on a metro map.
+   */
+  function roundedPath(points, radius) {
+    const pts = points.map((p) => [...p]);
+    const seg = (a, b) => (a[0] === b[0] ? `V ${b[1]}` : `H ${b[0]}`);
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i += 1) {
+      const [a, c, b] = [pts[i - 1], pts[i], pts[i + 1]];
+      const r = Math.min(radius, Math.hypot(c[0] - a[0], c[1] - a[1]) / 2, Math.hypot(b[0] - c[0], b[1] - c[1]) / 2);
+      const before = [c[0] - Math.sign(c[0] - a[0]) * r, c[1] - Math.sign(c[1] - a[1]) * r];
+      const after = [c[0] + Math.sign(b[0] - c[0]) * r, c[1] + Math.sign(b[1] - c[1]) * r];
+      d += ` ${seg(a, before)} Q ${c[0]} ${c[1]} ${after[0]} ${after[1]}`;
+      pts[i] = after;
+    }
+    return `${d} ${seg(pts[pts.length - 2], pts[pts.length - 1])}`;
   }
 
   function bridgeLayout(edge) {
@@ -912,7 +945,7 @@
   }
 
   return {
-    blockLayout, bridgeLayout, blockTree, treeLayout, threadPath,
+    blockLayout, bridgeLayout, blockTree, treeLayout, threadPath, roundedPath, tilt,
     sideRank, outline, pathTo, focusLens, edgePath, elbow, edgeSplit, isTermEdge, focusEdges, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,
     theoryRows, labelsIn, studyStations, theoryRun,

@@ -41,6 +41,21 @@
   --broken: #b3261e;
   --broken-soft: #f8dfdc;
   --pointer: #d19a1f;
+  --cork: #e6d3b1;
+  --cork-deep: #dcc59c;
+  --cork-grain: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='d'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.42 0 0 0 0 0.3 0 0 0 0 0.16 2.4 0 0 0 -1.2'/></filter><filter id='l'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='2' seed='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 0.94 0 0 0 0 0.82 0 2.4 0 0 -1.3'/></filter><rect width='100%' height='100%' filter='url(%23d)'/><rect width='100%' height='100%' filter='url(%23l)' opacity='0.6'/></svg>");
+  --cork-fleck: rgba(92, 60, 24, .2);
+  --cork-light: rgba(255, 246, 228, .5);
+  --cork-ink: rgba(72, 48, 20, .85);
+  --frame: #b89064;
+  --frame-deep: #8c6a43;
+  --line-ink: #8c8478;
+  --line-hot: #4a443b;
+  --pin: #cbbd9f;
+  --flag-premise: #cfdbe7;
+  --flag-premise-ink: #2c4a69;
+  --flag-dependent: #ecdcb6;
+  --flag-dependent-ink: #6a4b17;
   --human: #8a5a2b;
   --human-soft: #f3e7d8;
   --agent: #5a4fb0;
@@ -99,6 +114,21 @@
   --broken: #f2837a;
   --broken-soft: #3b2222;
   --pointer: #f2c14e;
+  --cork: #56463a;
+  --cork-deep: #493b30;
+  --cork-grain: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='d'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.9 0 0 0 -1.08'/></filter><filter id='l'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='2' seed='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.62 0 0 0 0 0.5 0 0 0 0 0.36 0 2.4 0 0 -1.3'/></filter><rect width='100%' height='100%' filter='url(%23d)'/><rect width='100%' height='100%' filter='url(%23l)' opacity='0.08'/></svg>");
+  --cork-fleck: rgba(0, 0, 0, .38);
+  --cork-light: rgba(255, 220, 170, .09);
+  --cork-ink: rgba(255, 238, 215, .74);
+  --frame: #3a2c1f;
+  --frame-deep: #241a11;
+  --line-ink: #9a9284;
+  --line-hot: #e6dccb;
+  --pin: #b9ab8e;
+  --flag-premise: #33475c;
+  --flag-premise-ink: #cfe0f2;
+  --flag-dependent: #5a4a2e;
+  --flag-dependent-ink: #f0dfb8;
   --human: #dcab76;
   --human-soft: #33281c;
   --agent: #ada1f7;
@@ -123,6 +153,21 @@
     --stock-edge: rgba(0, 0, 0, .5);
     --stock-shade: rgba(0, 0, 0, .18);
     --grain-blend: screen;
+    --cork: #56463a;
+    --cork-deep: #493b30;
+    --cork-grain: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='d'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.9 0 0 0 -1.08'/></filter><filter id='l'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='2' seed='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.62 0 0 0 0 0.5 0 0 0 0 0.36 0 2.4 0 0 -1.3'/></filter><rect width='100%' height='100%' filter='url(%23d)'/><rect width='100%' height='100%' filter='url(%23l)' opacity='0.08'/></svg>");
+    --cork-fleck: rgba(0, 0, 0, .38);
+    --cork-light: rgba(255, 220, 170, .09);
+    --cork-ink: rgba(255, 238, 215, .74);
+    --frame: #3a2c1f;
+    --frame-deep: #241a11;
+    --line-ink: #9a9284;
+    --line-hot: #e6dccb;
+    --pin: #b9ab8e;
+    --flag-premise: #33475c;
+    --flag-premise-ink: #cfe0f2;
+    --flag-dependent: #5a4a2e;
+    --flag-dependent-ink: #f0dfb8;
     --card-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 1px 2px rgba(0, 0, 0, .4), 0 8px 14px -4px rgba(0, 0, 0, .45), 0 22px 36px -10px rgba(0, 0, 0, .6);
     --card-shadow-lift: 0 0 0 1px rgba(0, 0, 0, .45), 0 4px 8px rgba(0, 0, 0, .4), 0 16px 26px -6px rgba(0, 0, 0, .5), 0 34px 54px -14px rgba(0, 0, 0, .7);
     --ink: #efe9de;
@@ -1219,35 +1264,39 @@ button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
   padding-left: 6px; border-left: 3px solid color-mix(in srgb, var(--ink-soft) 45%, transparent);
 }
 
-/* The model board as a network (#200–#202): index cards on the desk, joined by threads, read top
-   to bottom. Each block hangs under the block it rests on most; the open block is lifted, its
-   neighbours and closest blocks stay cards, the rest shrink to their tabs. Below, the open block
-   close up. The same card stock, red margin line and pointer mark as the Map's cards. Colour is
-   spent only on the forward fault and the unanchored mark. */
-.model-board.blocks {
-  position: relative; margin: 0; padding: 12px 14px 16px; border-radius: 8px; outline: none;
+/* The model board (#200–#202, docs/model-board-blocks-proposal.md §9): index cards pinned on a cork
+   board, and no line drawn anywhere. A block's card is pinned under the block it rests on most; its
+   Links to other blocks are page flags on its edges (left: the blocks it rests on; right: the
+   blocks that rest on it); the open block's cards are tucked under its chapter card in a cascade
+   that shows each one's top strip, the open Card pulled out in full. One lifted focus, up to four
+   supporting cards, every other block a small tab. Colour only where there is state: the open
+   card's pin (the pointer's colour), a forward fault's flag and an unanchored block's mark. */
+.model-board.blocks, .mbk-bridge {
+  position: relative; margin: 0; outline: none;
+  border: 7px solid var(--frame); border-radius: 7px; padding: 14px 18px 24px;
   background:
-    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--ink-faint) 22%, transparent) 1px, transparent 1.5px) 0 0 / 18px 18px,
-    color-mix(in srgb, var(--desk) 70%, var(--panel));
-  box-shadow: inset 0 1px 3px rgba(52, 40, 20, .08), inset 0 0 0 1px var(--hairline);
+    var(--cork-grain) 0 0 / 220px 220px,
+    radial-gradient(ellipse at 20% 10%, var(--cork-light), transparent 60%),
+    linear-gradient(160deg, var(--cork), var(--cork-deep));
+  box-shadow: inset 0 0 0 1px var(--frame-deep), inset 0 3px 10px rgba(40, 24, 8, .35), 0 0 0 1px var(--frame-deep), var(--card-shadow);
 }
 .mbk-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .mbk-switch { font-size: 11px; padding: 2px 8px; }
 
-/* The strip: the parts as labelled runs of tabs in reading order; the open block's tab pulled up. */
-.mbn-strip { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 14px; margin: 0 0 16px; outline: none; }
+/* The strip: the parts as labelled runs of tabs in reading order; the open block's tab pulled down. */
+.mbn-strip { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 14px; margin: 0 0 18px; outline: none; }
 .mbn-strip:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--model) 35%, transparent); border-radius: 6px; }
 .mbn-seg { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-.mbn-seg-name { font: 600 9.5px var(--sans); letter-spacing: .08em; color: var(--ink-faint); white-space: nowrap; }
-.mbn-ticks { display: flex; gap: 2px; padding-top: 2px; border-top: 1.5px solid color-mix(in srgb, var(--ink-faint) 45%, transparent); }
+.mbn-seg-name { font: 600 9.5px var(--sans); letter-spacing: .08em; color: var(--cork-ink); white-space: nowrap; }
+.mbn-ticks { display: flex; gap: 2px; padding-top: 2px; border-top: 1.5px solid color-mix(in srgb, var(--cork-ink) 45%, transparent); }
 .mbn-seg.plain .mbn-ticks { border-top-color: transparent; }
 .mbn-tick {
   min-width: 22px; height: 20px; padding: 0 5px; border: 0; border-radius: 0 0 4px 4px; cursor: pointer;
-  font: 600 10px/20px var(--sans); color: var(--ink-faint); background: color-mix(in srgb, var(--stock) 70%, var(--desk));
-  box-shadow: 0 1px 0 var(--stock-edge); transition: transform .25s ease-in-out, color .2s, background .2s;
+  font: 600 10px/20px var(--sans); color: var(--ink-soft); background: color-mix(in srgb, var(--stock) 82%, var(--cork));
+  box-shadow: 0 1px 2px rgba(30, 18, 6, .3); transition: transform .25s ease-in-out, color .2s, background .2s;
 }
 .mbn-tick:hover { color: var(--ink); background: var(--stock); }
-.mbn-tick.open { color: var(--ink); background: var(--stock); transform: translateY(2px); box-shadow: var(--card-shadow), inset 0 -2px 0 var(--pointer); }
+.mbn-tick.open { color: var(--ink); background: var(--stock); transform: translateY(3px); box-shadow: var(--card-shadow), inset 0 -2px 0 var(--pointer); }
 .mbn-tick.fault { color: var(--broken); }
 /* A block that holds a hit of the last search: a mark on its tab, as a search marks a card. */
 .mbn-tick.found { position: relative; }
@@ -1256,168 +1305,162 @@ button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
   background: var(--link); box-shadow: 0 0 0 1.5px var(--stock);
 }
 
-/* The network: cards placed by the tree layout, threads behind them. */
+/* A pinned card: the pin at its top centre; the card leans a little about it, and hangs straight
+   while the reader points at it or has it open. */
+.mbn-chapter, .mbk-bcard { --pin-y: 3px; }
+.mbn-chapter::before, .mbk-bcard::before {
+  content: ""; position: absolute; left: 50%; top: var(--pin-y); width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; z-index: 3;
+  background: radial-gradient(circle at 35% 32%, rgba(255, 255, 255, .85) 0 1.4px, var(--pin) 2.6px);
+  box-shadow: 1.5px 2px 1.5px rgba(30, 18, 6, .38), inset 0 0 0 .7px rgba(60, 40, 15, .35);
+}
+.mbn-chapter.here::before, .mbk-bcard.here::before {
+  background: radial-gradient(circle at 35% 32%, rgba(255, 255, 255, .8) 0 1.4px, var(--pointer) 2.6px);
+}
+
+/* The transit map between blocks: uniform lines with smooth bends under the cards, a station on
+   each card's upper edge over them. The tree's lines are the main lines; the open (or pointed)
+   block's own lines are inked; a forward fault is the one red line. Other kinds differ by dash. */
+.mbn-lines, .mbn-stations { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.mbn-lines { z-index: 0; }
+.mbn-stations { z-index: 5; }
+.mbn-lines .line { fill: none; stroke: var(--line-ink); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; opacity: .75; transition: opacity .2s ease-in-out, stroke .2s ease-in-out; }
+.mbn-lines .tree .line { stroke-width: 4; opacity: .9; }
+.mbn-lines .hot .line { stroke: var(--line-hot); opacity: 1; }
+.mbn-lines .up .line { stroke: var(--broken); opacity: 1; }
+.mbn-lines .kind-contrasts .line { stroke-dasharray: 7 5; }
+.mbn-lines .kind-refers .line { stroke-dasharray: 1 6; }
+.mbn-lines .kind-illustrates .line, .mbn-lines .kind-relaxes .line, .mbn-lines .kind-corresponds .line { stroke-dasharray: 9 4 1 4; }
+.mbn-lines .hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
+.mbn-lines .mbk-ribbon:hover .line { stroke: var(--line-hot); opacity: 1; }
+.mbn-lines .mbk-ribbon.up:hover .line { stroke: var(--broken); }
+.mbn-stations .station { fill: var(--stock); stroke: var(--line-hot); stroke-width: 2.5; }
+.mbn-stations .station.here { fill: var(--pointer); }
+.mbn-stations .station.fault { stroke: var(--broken); }
+
+/* The board: cards placed by the tree layout. */
 .mbn-net { position: relative; min-height: 40px; transition: height .3s ease-in-out; }
 .mbn-layer { position: absolute; left: 0; top: 0; transform-origin: 0 0; transition: transform .3s ease-in-out; }
-.mbn-threads { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .mbn-node {
-  position: absolute; display: flex; flex-direction: column; overflow: hidden; text-align: left; padding: 0 9px 6px;
+  position: absolute; z-index: 1; display: flex; flex-direction: column; text-align: left; padding: 0 9px 6px;
   border: 1px solid var(--stock-edge); border-radius: 3px; background: var(--stock); color: var(--ink); cursor: pointer;
-  box-shadow: var(--card-shadow);
-  transition: box-shadow .22s ease-in-out, translate .22s ease-in-out, opacity .25s ease-in-out, background-color .25s ease-in-out;
+  box-shadow: var(--card-shadow); rotate: var(--tilt, 0deg); transform-origin: 50% 8px;
+  transition: box-shadow .22s ease-in-out, rotate .25s ease-in-out, opacity .25s ease-in-out, background-color .25s ease-in-out;
 }
-.mbn-node:hover { translate: 0 -2px; box-shadow: var(--card-shadow-lift); z-index: 2; }
+.mbn-node:hover, .mbn-node:focus-visible, .mbn-node.level-focus, .mbn-node.open { rotate: 0deg; box-shadow: var(--card-shadow-lift); z-index: 2; }
+.mbn-node:focus-visible { outline: 2px solid color-mix(in srgb, var(--model) 45%, transparent); outline-offset: 2px; }
 .mbn-head {
-  display: flex; align-items: center; gap: 5px; flex: none; height: 19px; margin: 0 -9px 4px; padding: 0 9px;
+  display: flex; align-items: center; gap: 5px; flex: none; height: 27px; padding: 8px 9px 0; margin: 0 -9px 4px;
   border-bottom: 1px solid var(--paper-margin);
 }
 .mbn-tab { font: 600 9.5px var(--sans); letter-spacing: .03em; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mbn-title {
-  font: 500 11.5px/1.4 var(--serif); color: var(--ink);
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
-}
-/* A far block: only its tab, a small slip with its number. */
+.mbn-title { font: 500 11.5px/1.4 var(--serif); color: var(--ink); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+/* A far block: only its tab, a small pinned slip with its number. */
 .mbn-node.level-far {
-  align-items: center; justify-content: center; flex-direction: row; gap: 3px; padding: 0 4px; border-radius: 3px;
-  background: color-mix(in srgb, var(--stock) 75%, var(--desk)); color: var(--ink-faint);
-  box-shadow: 0 1px 0 var(--stock-edge), 0 2px 4px -3px rgba(60, 45, 20, .3);
+  align-items: center; justify-content: flex-end; flex-direction: row; gap: 3px; padding: 0 4px 5px;
+  background: color-mix(in srgb, var(--stock) 80%, var(--cork)); color: var(--ink-soft); box-shadow: 0 1px 3px rgba(30, 18, 6, .35);
+  justify-content: center; align-items: flex-end;
 }
 .mbn-node.level-far:hover { background: var(--stock); color: var(--ink); }
 .mbn-num { font: 600 10.5px var(--sans); }
 /* The open block: lifted, a little larger, its title in full ink. */
-.mbn-node.level-focus { box-shadow: var(--card-shadow-lift); z-index: 3; padding: 0 11px 8px; }
-.mbn-node.level-focus .mbn-head { height: 22px; margin: 0 -11px 5px; padding: 0 11px; border-bottom-width: 1.5px; }
+.mbn-node.level-focus { z-index: 3; padding: 0 11px 8px; }
+.mbn-node.level-focus .mbn-head { height: 30px; margin: 0 -11px 5px; padding: 8px 11px 0; border-bottom-width: 1.5px; }
 .mbn-node.level-focus .mbn-tab { color: var(--ink); font-size: 10px; }
 .mbn-node.level-focus .mbn-title { font: 600 12.5px/1.45 var(--serif); -webkit-line-clamp: 3; }
-.mbn-node.here, .mbn-node.open { box-shadow: inset 3px 0 0 var(--pointer), var(--card-shadow-lift); }
-.mbn-node.linked { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink-soft) 60%, transparent), var(--card-shadow-lift); color: var(--ink); }
-.mbn-node.ribbon-end { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink-soft) 55%, transparent), var(--card-shadow-lift); z-index: 2; }
-.model-board.blocks.pointing .mbn-node:not(:hover):not(.ribbon-end):not(.open) { opacity: .82; }
+/* Pointing at a card or a flag: the cards it links lift, the rest dim a little. */
+.model-board.blocks.pointing .mbn-node:not(.linked):not(:hover) { opacity: .55; }
+.mbn-node.linked { rotate: 0deg; z-index: 2; box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink-soft) 55%, transparent), var(--card-shadow-lift); }
 .mbk-fault {
   font: 700 9.5px var(--sans); color: var(--broken); padding: 0 5px; border-radius: 99px; line-height: 14px;
   background: var(--broken-soft); white-space: nowrap; flex: none; margin-left: auto;
 }
 .mbn-node.unanchored { border-color: color-mix(in srgb, var(--broken) 45%, var(--stock-edge)); }
 
-/* The open block close up: its chapter card, its results hanging from it by threads. */
-.mbn-close { position: relative; margin-top: 22px; padding-top: 16px; border-top: 1px dashed color-mix(in srgb, var(--ink-faint) 40%, transparent); }
-.mbn-hang { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-.mbn-hang-thread { fill: none; stroke: color-mix(in srgb, var(--ink-soft) 60%, transparent); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
-.mbn-hang-thread.aside { stroke-dasharray: 2 4; stroke: var(--ink-faint); }
+/* Page flags: small paper flags stuck to the back of a card, sticking out of its edges. Left: the
+   blocks it rests on; right: the blocks that rest on it. A forward fault's flag is red. */
+.mbn-flags { position: absolute; top: 24px; z-index: -1; display: flex; flex-direction: column; gap: 3px; }
+.mbn-flags.left { right: 100%; align-items: flex-end; }
+.mbn-flags.right { left: 100%; align-items: flex-start; }
+.mbn-flag {
+  min-width: 22px; height: 15px; padding: 0 4px; border: 0; cursor: pointer; text-align: center;
+  font: 600 9.5px/15px var(--sans); white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(30, 18, 6, .3); transition: translate .2s ease-in-out, filter .2s;
+}
+.mbn-flags.left .mbn-flag { border-radius: 3px 0 0 3px; margin-right: -3px; padding-right: 7px; background: var(--flag-premise); color: var(--flag-premise-ink); }
+.mbn-flags.right .mbn-flag { border-radius: 0 3px 3px 0; margin-left: -3px; padding-left: 7px; background: var(--flag-dependent); color: var(--flag-dependent-ink); }
+.mbn-flags.left .mbn-flag:hover { translate: -3px 0; }
+.mbn-flags.right .mbn-flag:hover { translate: 3px 0; }
+.mbn-flag.up, .mbn-flags .mbn-flag.up { background: var(--broken-soft); color: var(--broken); }
+.mbn-flag.more { cursor: default; opacity: .8; }
+
+/* The open block close up: its chapter card pinned on top, its cards tucked under it. */
+.mbn-close { position: relative; margin: 30px 18px 0; }
 .mbn-chapter {
-  position: relative; z-index: 1; padding: 0 16px 12px; border: 1px solid var(--stock-edge); border-radius: 3px;
+  position: relative; padding: 0 16px 14px; border: 1px solid var(--stock-edge); border-radius: 3px;
   background: var(--stock); box-shadow: var(--card-shadow-lift);
   background-image: repeating-linear-gradient(transparent 0 23px, color-mix(in srgb, var(--paper-rule) 55%, transparent) 23px 24px);
   background-position: 0 38px; background-repeat: repeat-y;
 }
-.mbn-chapter.here { box-shadow: inset 3px 0 0 var(--pointer), var(--card-shadow-lift); }
-.mbn-chapter .mbk-head { margin: 0 -16px 8px; padding: 0 16px; height: 30px; }
-.mbn-chapter .mbk-tab { color: var(--ink); font-size: 11px; }
-.mbn-chapter .mbk-chapter { font: 600 16.5px/1.45 var(--serif); }
-.mbk-head {
-  display: flex; align-items: center; gap: 8px; height: 26px; border-bottom: 1.5px solid var(--paper-margin);
-}
-.mbk-tab { font: 600 10.5px var(--sans); letter-spacing: .04em; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.mbn-chapter { --pin-y: 4px; }
+.mbn-chapter .mbn-flags { top: 40px; }
+.mbk-head { display: flex; align-items: center; gap: 8px; height: 32px; padding-top: 8px; margin: 0 -16px 8px; padding-left: 16px; padding-right: 16px; border-bottom: 1.5px solid var(--paper-margin); }
+.mbk-tab { font: 600 11px var(--sans); letter-spacing: .04em; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .mbk-count { font: 10.5px var(--sans); color: var(--ink-faint); margin-left: auto; white-space: nowrap; }
-.mbk-chapter {
-  display: block; width: 100%; text-align: left; font: 500 14px/1.5 var(--serif); color: var(--ink);
-  background: none; border: 0; padding: 0; cursor: pointer;
-}
+.mbk-chapter { display: block; width: 100%; text-align: left; font: 600 16.5px/1.45 var(--serif); color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; }
 .mbk-lead { margin: 6px 0 0; font: 13.5px/1.65 var(--serif); color: var(--ink-soft); }
-.mbn-children {
-  position: relative; z-index: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 26px 12px; margin-top: 30px; align-items: start;
+/* The cascade: each tucked card shows its top strip; a later card lies over the one before. The
+   open Card is pulled out in full; pointing at a strip draws its card out a little. */
+.mbn-cascade { display: flex; flex-direction: column; margin: -10px 10px 0; }
+.mbn-tuck {
+  position: relative; margin-top: -9px; padding: 9px 12px 9px; border: 1px solid var(--stock-edge); border-radius: 3px;
+  background: var(--stock); color: var(--ink); cursor: pointer;
+  box-shadow: 0 -1px 2px rgba(30, 18, 6, .12), 0 2px 5px -2px rgba(30, 18, 6, .35);
+  rotate: var(--tilt, 0deg); transform-origin: 50% 0;
+  transition: translate .25s ease-in-out, rotate .25s ease-in-out, box-shadow .25s ease-in-out;
 }
-
-/* The open block's cards: one under the other, each a small index card; a proof lies stacked behind. */
-.mbk-children { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
-.mbk-child { display: flex; flex-direction: column; }
-.mbk-card {
-  display: block; text-align: left; padding: 0 12px 8px; border: 1px solid var(--stock-edge); border-radius: 3px;
-  background: var(--stock); box-shadow: var(--card-shadow); cursor: pointer; color: var(--ink);
-  transition: box-shadow .22s ease-in-out, translate .22s ease-in-out;
+.mbn-tuck:first-child { margin-top: 0; padding-top: 18px; }
+.mbn-tuck:not(.pulled):hover { translate: 0 4px; rotate: 0deg; }
+.mbn-tuck:focus-visible { outline: 2px solid color-mix(in srgb, var(--model) 45%, transparent); outline-offset: 2px; }
+.mbn-tuck.aside { background: color-mix(in srgb, var(--stock) 88%, var(--cork)); }
+.mbn-tuck-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mbk-facet { font: 600 10px var(--sans); letter-spacing: .04em; color: var(--ink-soft); white-space: nowrap; flex: none; }
+.mbn-tuck-line { flex: 1; min-width: 0; font: 12.5px/1.3 var(--serif); color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mbn-tuck.pulled {
+  margin: 4px -8px 14px; padding: 12px 16px 14px; rotate: 0deg; cursor: default; z-index: 60 !important;
+  box-shadow: var(--card-shadow-lift);
 }
-.mbk-card:hover { translate: 0 -1px; box-shadow: var(--card-shadow-lift); }
-.mbk-card:focus-visible { outline: 2px solid color-mix(in srgb, var(--model) 45%, transparent); outline-offset: 2px; }
-.mbk-child.has-proof .mbk-card {
-  box-shadow: 3px 3px 0 -1px var(--stock), 3px 3px 0 0 var(--stock-edge), 6px 6px 0 -1px var(--stock), 6px 6px 0 0 var(--stock-edge), var(--card-shadow);
-  margin-right: 6px;
-}
-.mbk-child.has-proof.is-fanned .mbk-card { box-shadow: var(--card-shadow); margin-right: 0; }
-.mbk-child.here .mbk-card { box-shadow: inset 3px 0 0 var(--pointer), var(--card-shadow-lift); }
-.mbk-child.aside .mbk-card { background: color-mix(in srgb, var(--stock) 85%, var(--desk)); box-shadow: 0 1px 0 var(--stock-edge); }
-.mbk-child.aside .mbk-title { font-size: 12.5px; color: var(--ink-soft); }
-.mbk-card-head {
-  display: flex; align-items: center; gap: 8px; height: 24px; margin: 0 -12px 5px; padding: 0 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--paper-margin) 75%, transparent);
-}
-.mbk-facet { font: 600 10px var(--sans); letter-spacing: .04em; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mbk-title { display: block; font: 13.5px/1.5 var(--serif); color: var(--ink); }
+.mbn-tuck.pulled .mbn-tuck-head { padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid color-mix(in srgb, var(--paper-margin) 75%, transparent); }
+.mbn-tuck.pulled + .mbn-tuck { margin-top: 0; }
+.mbn-tuck.here { box-shadow: inset 3px 0 0 var(--pointer), var(--card-shadow-lift); }
+.mbn-tuck .mbn-flags { top: 34px; }
+.mbk-title { display: block; font: 14px/1.55 var(--serif); color: var(--ink); }
 .mbk-stack {
   margin-left: auto; flex: none; font: 10.5px var(--sans); color: var(--ink-soft); padding: 1px 7px; border: 0; cursor: pointer;
   background: color-mix(in srgb, var(--desk) 60%, var(--stock)); border-radius: 3px;
 }
 .mbk-stack:hover { color: var(--ink); background: var(--desk); }
-.mbk-stack.fanned { color: var(--ink); }
-
-/* A fanned proof: the steps hang below their result on one thread, the step being read lifted. */
-.mbk-fan {
-  list-style: none; margin: 0 0 0 14px; padding: 8px 0 2px 14px; display: flex; flex-direction: column; gap: 4px;
-  border-left: 1.5px solid color-mix(in srgb, var(--ink-faint) 55%, transparent); animation: mbk-fan .3s ease-in-out;
+/* A proof under its pulled-out result: its steps as small slips in their own cascade. */
+.mbn-proof { list-style: none; margin: 12px 0 0 10px; padding: 0; display: flex; flex-direction: column; }
+.mbn-slip { position: relative; margin-top: -5px; }
+.mbn-slip:first-child { margin-top: 0; }
+.mbn-slip button {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; padding: 6px 10px; cursor: pointer;
+  font: 12.5px/1.45 var(--serif); color: var(--ink-soft); border: 1px solid var(--stock-edge); border-radius: 3px;
+  background: color-mix(in srgb, var(--stock) 90%, var(--desk)); box-shadow: 0 2px 4px -2px rgba(30, 18, 6, .3);
+  transition: translate .2s ease-in-out;
 }
-.mbk-fan li { position: relative; }
-.mbk-fan li::before {
-  content: ""; position: absolute; left: -18px; top: 12px; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--panel); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink-faint) 80%, transparent);
-}
-.mbk-fan li button {
-  display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; padding: 5px 10px; cursor: pointer;
-  font: 12.5px/1.45 var(--serif); color: var(--ink-soft); border: 1px solid transparent; border-radius: 3px;
-  background: color-mix(in srgb, var(--stock) 75%, var(--desk)); box-shadow: 0 1px 0 var(--stock-edge);
-}
-.mbk-fan li button:hover { background: var(--stock); color: var(--ink); }
-.mbk-fan li.here::before { background: var(--pointer); box-shadow: none; }
-.mbk-fan li.here button { color: var(--ink); background: var(--stock); border-color: var(--stock-edge); box-shadow: inset 3px 0 0 var(--pointer), var(--card-shadow-lift); font-weight: 600; }
+.mbn-slip button:hover { translate: 4px 0; color: var(--ink); }
+.mbn-slip.here { z-index: 40 !important; margin: 2px -4px 6px; }
+.mbn-slip.here button { color: var(--ink); background: var(--stock); font-weight: 600; box-shadow: inset 3px 0 0 var(--pointer), var(--card-shadow-lift); }
 .mbk-step { font: 600 9.5px var(--sans); color: var(--ink-faint); flex: none; min-width: 26px; }
-@keyframes mbk-fan { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 
-/* Ports: in on the left, out on the right, the side the ribbons leave from. */
-.mbk-ports { display: flex; justify-content: space-between; gap: 10px; margin-top: 7px; font: 10.5px var(--sans); color: var(--ink-faint); }
-.mbk-port-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 3px; }
-.mbk-port-line.out { justify-content: flex-end; text-align: right; }
-.mbk-port-line .arrow { color: var(--ink-faint); margin: 0 3px; }
-.mbk-port-line .dot { color: color-mix(in srgb, var(--ink-faint) 60%, transparent); }
-.mbk-port { font: inherit; color: var(--ink-soft); background: none; border: 0; padding: 0 2px; cursor: pointer; border-radius: 3px; }
-.mbk-port:hover { color: var(--ink); background: var(--desk); }
-
-/* Ribbons: quiet threads in the gutter; the open block's own are inked; the forward fault is red. */
-.mbk-ribbons { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
-.mbk-ribbon .line { fill: none; stroke: var(--ink-faint); opacity: .5; stroke-linecap: round; stroke-linejoin: round; transition: opacity .2s ease-in-out, stroke .2s ease-in-out; }
-.mbk-ribbon.hot .line { stroke: var(--ink-soft); opacity: .6; }
-.mbk-ribbon.kind-contrasts .line { stroke-dasharray: 6 4; }
-.mbk-ribbon.kind-refers .line { stroke-dasharray: 1 4; }
-.mbk-ribbon.kind-illustrates .line, .mbk-ribbon.kind-relaxes .line, .mbk-ribbon.kind-corresponds .line { stroke-dasharray: 8 3 1 3; }
-.mbk-ribbon.up .line { stroke: var(--broken); opacity: .85; }
-.mbk-arrowhead { fill: var(--ink-faint); }
-.mbk-arrowhead.hot { fill: var(--ink-soft); }
-.mbk-arrowhead.up { fill: var(--broken); }
-.mbk-ribbon .hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
-.mbk-ribbon .word {
-  font: 600 9.5px var(--sans); fill: var(--ink-soft); paint-order: stroke; stroke: color-mix(in srgb, var(--desk) 70%, var(--panel)); stroke-width: 3.5px; stroke-linejoin: round;
-  transition: opacity .2s ease-in-out;
-}
-.mbk-ribbons.hovering .mbk-ribbon .line { opacity: .12; }
-.mbk-ribbons.hovering .mbk-ribbon .word { opacity: .2; }
-.mbk-ribbons.hovering .mbk-ribbon.on .line { stroke: var(--ink); opacity: 1; }
-.mbk-ribbons.hovering .mbk-ribbon.on.up .line { stroke: var(--broken); }
-.mbk-ribbons.hovering .mbk-ribbon.on .word { opacity: 1; fill: var(--ink); }
-
-/* The pairs of one ribbon: a small card beside it, each row opening a Card. */
+/* The Card pairs behind one flag: a small card beside it, each row opening a Card. */
 .mbk-pairs {
-  position: absolute; z-index: 5; display: none; padding: 10px 12px 10px; border: 1px solid var(--stock-edge); border-radius: 4px;
+  position: absolute; z-index: 70; display: none; padding: 10px 12px 10px; border: 1px solid var(--stock-edge); border-radius: 4px;
   background: var(--stock); box-shadow: var(--card-shadow-lift); font: 11.5px/1.45 var(--sans); color: var(--ink-soft);
 }
-.mbk-pairs.shown { display: block; animation: mbk-fan .2s ease-in-out; }
+.mbk-pairs.shown { display: block; animation: mbk-in .2s ease-in-out; }
+@keyframes mbk-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .mbk-pairs-head { padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid color-mix(in srgb, var(--paper-margin) 75%, transparent); color: var(--ink); }
 .mbk-pairs ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .mbk-pairs li { display: grid; grid-template-columns: 1fr; gap: 1px; }
@@ -1430,35 +1473,24 @@ button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
 .mbk-pairs-open { margin-top: 8px; width: 100%; font: 600 11px var(--sans); color: var(--ink-soft); padding: 5px 8px; border: 1px dashed var(--stock-edge); border-radius: 3px; background: none; cursor: pointer; }
 .mbk-pairs-open:hover { color: var(--ink); background: var(--desk); }
 
-/* The two-block view: the block rested on left, the block resting on it right, one thread per pair. */
-.mbk-bridge {
-  padding: 12px 12px 16px; border-radius: 8px; animation: mbk-fan .3s ease-in-out;
-  background: color-mix(in srgb, var(--desk) 70%, var(--panel)); box-shadow: inset 0 1px 3px rgba(52, 40, 20, .08), inset 0 0 0 1px var(--hairline);
-}
-.mbk-bridge-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font: 12px var(--sans); color: var(--ink-soft); }
-.mbk-bridge-bar b { color: var(--ink); }
+/* The two-block view: one row per Link, the premise on the left, the Card resting on it on the right. */
+.mbk-bridge { animation: mbk-in .3s ease-in-out; }
+.mbk-bridge-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font: 12px var(--sans); color: var(--cork-ink); }
+.mbk-bridge-bar b { color: var(--cork-ink); font-weight: 700; }
 .mbk-bridge-close { font: 600 11px var(--sans); color: var(--ink-soft); padding: 3px 9px; border: 1px solid var(--stock-edge); border-radius: 99px; background: var(--stock); cursor: pointer; }
 .mbk-bridge-close:hover { color: var(--ink); box-shadow: var(--card-shadow); }
-.mbk-bridge-body { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr); align-items: start; }
-.mbk-bcol { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.mbk-bcol-head { display: flex; flex-direction: column; gap: 2px; padding: 0 2px 6px; border-bottom: 1.5px solid var(--paper-margin); margin-bottom: 2px; }
+.mbk-bridge-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 22px; align-items: start; }
+.mbk-bcol-head { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px 8px; border-radius: 3px; background: color-mix(in srgb, var(--stock) 85%, var(--cork)); box-shadow: 0 1px 3px rgba(30, 18, 6, .3); }
 .mbk-bcol-title { text-align: left; font: 600 13px/1.4 var(--serif); color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; }
 .mbk-bcol-title:hover { text-decoration: underline; }
 .mbk-bcard {
-  display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 6px 10px 8px; cursor: pointer; color: var(--ink);
+  position: relative; display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 16px 10px 8px; cursor: pointer; color: var(--ink);
   border: 1px solid var(--stock-edge); border-radius: 3px; background: var(--stock); box-shadow: var(--card-shadow);
-  transition: box-shadow .22s ease-in-out, translate .22s ease-in-out;
+  rotate: var(--tilt, 0deg); transform-origin: 50% 8px; transition: box-shadow .22s ease-in-out, rotate .25s ease-in-out;
 }
-.mbk-bcard:hover { translate: 0 -1px; box-shadow: var(--card-shadow-lift); }
+.mbk-bcard:hover { rotate: 0deg; box-shadow: var(--card-shadow-lift); }
 .mbk-bcard.here { box-shadow: inset 3px 0 0 var(--pointer), var(--card-shadow-lift); }
 .mbk-bcard .mbk-title { font-size: 12.5px; }
-.mbk-threads { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
-.mbk-thread { fill: none; stroke: var(--ink-soft); stroke-width: 1.4; opacity: .55; transition: opacity .2s ease-in-out; }
-.mbk-thread.kind-contrasts { stroke-dasharray: 6 4; }
-.mbk-thread.kind-refers { stroke-dasharray: 1 4; }
-.mbk-bridge.up .mbk-thread { stroke: var(--broken); }
-.mbk-threads.pointing .mbk-thread { opacity: .1; }
-.mbk-threads.pointing .mbk-thread.on { opacity: 1; stroke-width: 2; }
 button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-2px) rotate(-.4deg); box-shadow: var(--card-shadow-lift); }
 /* Attention levels. */
 .mb-slip { flex: 0 1 172px; width: 172px; min-width: 104px; }

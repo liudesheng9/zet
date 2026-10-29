@@ -5073,7 +5073,7 @@ mod tests {
         assert!(tuck["a"]["x"].as_f64().unwrap() + 100.0 + 14.0 <= tuck["b"]["x"].as_f64().unwrap() + 0.01, "a beside b: {tuck}");
     }
 
-    /// A thread that skips layers of the network never runs behind a card: it drops into the gap
+    /// A transit line that skips layers of the board never runs behind a card: it drops into the gap
     /// below its premise, runs along the free corridor between the cards of the layers it passes
     /// (the corridor nearest its own line), and enters its dependent from the gap above it. A thread
     /// between neighbouring layers stays one smooth curve.
@@ -5101,7 +5101,34 @@ mod tests {
         assert!(out["near"]["lane"].is_null(), "{out}");
     }
 
-    /// #201 (B3; P3): clicking a ribbon opens its two blocks side by side. The premises (the Cards
+    /// A transit line turns with a smooth bend, as on a metro map: each corner of its route is
+    /// rounded by the radius, or less where a leg is short, and the straight legs stay straight.
+    #[test]
+    fn a_transit_line_turns_with_smooth_bends() {
+        let Some(out) = layout_js(
+            "({ bend: L.roundedPath([[0, 0], [0, 40], [60, 40], [60, 80]], 9), short: L.roundedPath([[0, 0], [0, 6], [30, 6]], 9), straight: L.roundedPath([[0, 0], [0, 50]], 9) })",
+        ) else {
+            return;
+        };
+        assert_eq!(out["bend"], json!("M 0 0 V 31 Q 0 40 9 40 H 51 Q 60 40 60 49 V 80"), "{out}");
+        assert_eq!(out["short"], json!("M 0 0 V 3 Q 0 6 3 6 H 30"), "a short leg takes a tighter bend: {out}");
+        assert_eq!(out["straight"], json!("M 0 0 V 50"), "{out}");
+    }
+
+    /// The board (#201, mental mapping): a pinned card leans a little about its pin, -1.2° to 1.2°,
+    /// and the same card always leans the same way, so the board looks pinned by hand and stays put.
+    #[test]
+    fn a_pinned_card_leans_a_little_and_always_the_same_way() {
+        let Some(out) = layout_js("({ tilts: ['K/4|a|a|5', 'K/4|a|a|5|b', 'K/4|a|a|5|c', 'K/4|a|a|7', 'K/4|a'].map(L.tilt), again: L.tilt('K/4|a|a|5') })") else {
+            return;
+        };
+        let tilts: Vec<f64> = out["tilts"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert!(tilts.iter().all(|t| t.abs() <= 1.2), "a small lean: {out}");
+        assert!(tilts.windows(2).any(|w| w[0] != w[1]), "cards lean differently: {out}");
+        assert_eq!(out["again"].as_f64().unwrap(), tilts[0], "the same card always leans the same way");
+    }
+
+    /// #201 (B3; P3): a flag opens its two blocks side by side: one row per Link. The premises (the Cards
     /// of the block rested on) stand on the left, the Cards that rest on them on the right, each
     /// once and in Folgezettel order, and one thread per Card pair joins them.
     #[test]
@@ -5119,73 +5146,67 @@ mod tests {
         );
     }
 
-    /// #200–#202 (B2–B4; docs/model-board-blocks-proposal.md §3a): the page builds the model network.
-    /// A model in chapters (or over 20 parts) goes to `blockBoard`: index cards placed by the tree
-    /// layout, joined by threads (the tree, the forward faults, and the open or pointed block's own),
-    /// a strip of the parts that walks the blocks by key, the open block close up with its results
-    /// hanging from it and its proofs stacked; cards slide from where they stood (300 ms,
-    /// ease-in-out); colour only for the forward fault and the unanchored mark.
+    /// #200–#202 (B2–B4; docs/model-board-blocks-proposal.md §9): the page builds the model board
+    /// in the owner's two forms. Between blocks, a transit map: each block's card hangs below its
+    /// station, placed by the tree of main premises; its Links are uniform lines with smooth bends
+    /// (the tree's and the faults always, the open block's own inked), a line that skips layers in a
+    /// free corridor; pointing at a line lists its Card pairs and clicking it opens the two-block
+    /// view. Inside a block, nesting and flags: its cards tucked under its chapter card in a cascade,
+    /// the open Card pulled out with page flags on its edges. Cards slide from where they stood
+    /// (300 ms, ease-in-out); colour only for the open block's station and the faults.
     #[test]
-    fn the_front_end_shows_a_large_model_as_a_network_with_one_lifted_focus() {
+    fn the_front_end_shows_blocks_as_a_transit_map_and_a_block_inside_as_tucked_cards_with_flags() {
         let board = app_function("modelBoard");
         assert!(board.contains("if (model.blocks && model.blocks.length > 1 && (model.blocks[0].chaptered || model.parts.length > 20)) return blockBoard(card, model);"));
         let blocks = app_function("blockBoard");
-        assert!(
-            blocks.contains("{ refers: refersOn, focusOnly: true, backbone: true, hover }"),
-            "an open block draws only its own threads; a pointed block its own"
-        );
         assert!(blocks.contains("const tree = ZtLayout.blockTree(blocks, edges);"), "each block hangs under its main premise");
-        assert!(blocks.contains("ZtLayout.treeLayout(tree.roots, tree.children, sizeOf, { gapX: 14, gapY: 34 })"), "the tree laid out top to bottom");
-        assert!(blocks.contains("let route = ZtLayout.threadPath(p1, p2, between, { half: 17 });"), "threads that skip layers run in free corridors");
-        assert!(blocks.contains("const k = Math.min(30, 16 + Math.abs(p2.x - p1.x) * 0.08);"), "a thread within one layer sags only inside the gap below it");
-        assert!(blocks.contains("const faults = edges.filter((e) => e.kind === 'rests-on' && index.get(e.from_block) < index.get(e.to_block));"), "forward faults are always drawn");
-        assert!(blocks.contains("node.addEventListener('mouseenter', () => { if (drawnFor !== id) draw(id); });"), "pointing at a block draws its threads");
-        assert!(blocks.contains("layer.style.transform = `translateX(${place.offset}px) scale(${place.scale})`;"), "a wide tree scales as a whole, its text with it");
-        assert!(APP_JS.contains("localStorage.getItem('zt-refers-edges') === 'on'"), "the Refers switch has its own key");
-        assert!(blocks.contains("class: 'mbk-switch lens-toggle', 'aria-pressed': String(refersOn)"));
+        assert!(blocks.contains("ZtLayout.treeLayout(tree.roots, tree.children, sizeOf, { gapX: 34, gapY: 30 })"));
+        // The transit map between blocks.
+        assert!(blocks.contains("const layer = h('div', { class: 'mbn-layer' }, lines, [...nodes.values()], stations);"), "lines under the cards, stations over them");
+        assert!(blocks.contains("let route = ZtLayout.threadPath(p1, p2, between, { half: 15 });"), "a line that skips layers takes a free corridor");
+        assert!(blocks.contains("d = ZtLayout.roundedPath(route.points, 9);"), "smooth bends");
+        assert!(blocks.contains("for (const e of faults) if (!list.has(key(e))) list.set(key(e), { ...e, up: true });"), "the forward faults are always drawn");
+        assert!(blocks.contains("stations.append(svg('circle', { cx: q.cx, cy: q.y, r: q.h < 40 ? 4.5 : 6, class: 'station' + state }));"), "a station on each card's upper edge");
+        assert!(blocks.contains("hit.addEventListener('click', () => openBridge(flag));"), "clicking a line opens the two-block view");
+        assert!(blocks.contains("showPairs(flag, x.from_block, x.to_block,"), "pointing at a line lists its Card pairs");
+        assert!(blocks.contains("if (drawnFor !== b.id) draw(b.id);"), "pointing at a card draws its own lines");
+        assert!(!blocks.contains("flagStrip"), "the cards on the map carry no flags: their lines show their Links");
+        // Inside a block: nesting and flags.
+        assert!(blocks.contains("class: 'mbn-tuck' + (pulled ? ' pulled' : '')"));
+        assert!(blocks.contains("pulled ? null : h('span', { class: 'mbn-tuck-line' }"), "a tucked card shows its top strip");
+        assert!(blocks.contains("cardFlags([c.address, ...((c.proof && c.proof.addresses) || [])])"), "the pulled-out Card carries its page flags");
+        assert!(blocks.contains("const side = p.dir === 'out' ? 'left' : 'right';"), "left: the blocks it rests on; right: the blocks that rest on it");
+        assert!(blocks.contains("h('ol', { class: 'mbn-proof', 'aria-label': 'Proof chain' }"), "a proof cascades under its result");
+        assert!(blocks.contains("open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null"), "the open block opens with its intuition");
+        assert!(blocks.contains("node.style.setProperty('--tilt', `${ZtLayout.tilt(b.head)}deg`);"), "a card leans a little");
         assert!(blocks.contains("{ duration: 300, easing: 'ease-in-out' }"), "a moved card slides from where it stood");
-        assert!(blocks.contains("class: 'mbk-stack'") && blocks.contains("h('ol', { class: 'mbk-fan'"), "proofs fold into stacks and fan");
+        assert!(blocks.contains("layer.style.transform = `translateX(${place.offset}px) scale(${place.scale})`;"), "a wide tree scales as a whole");
         for key in ["'ArrowDown'", "'ArrowUp'", "'ArrowLeft'", "'ArrowRight'", "'Enter'", "'Escape'"] {
             assert!(blocks.contains(key), "the strip answers {key}");
         }
-        // Cards read as index cards: the role on the header line, the claim without the role
-        // repeated, the open chapter's intuition first, ports in on the left and out on the right.
-        assert!(blocks.contains("h('span', { class: 'mbn-title' }, titleNodes(bareTitle(b.title)))"), "the claim without `第 k 章：`");
-        assert!(blocks.contains("open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null"), "the open block opens with its intuition");
-        assert!(blocks.contains("dir === 'in' ? [h('span', { class: 'arrow', text: '←' }), names] : [names, h('span', { class: 'arrow', text: '→' })]"));
-        assert!(blocks.contains("Unanchored: nothing in ${nameOf(b.id)} rests on an earlier block."), "an unanchored block carries the fault mark and its fix");
-        assert!(blocks.contains("// The stem: from the chapter card down, across to the trunk, down to the last rail."), "results hang from the chapter by threads that cross no card");
-        assert!(blocks.contains("el.addEventListener('mouseenter', () => linked.forEach((id) => nodes.get(id)?.classList.add('linked')));"), "a result marks the blocks its Links reach");
-        // Threads: one arrowhead per state, the pairs card on hover, the two-block view on click.
-        assert!(blocks.contains("'marker-end': `url(#mbk-arrow-${state})`"));
-        assert!(blocks.contains("hit.addEventListener('mouseenter', () => showPairs(r, group, mx, my));"), "hovering a thread lists its Card pairs");
-        assert!(blocks.contains("hit.addEventListener('click', () => openBridge(r));"), "clicking a thread lays its blocks side by side");
-        assert!(blocks.contains("h('button', { class: 'mbk-pairs-from', onclick: () => go(from), title: from }, cardName(from))"), "each pair opens its Card");
-        assert!(blocks.contains("bridgeView(model, bridgeEdge,"), "the board gives way to the two-block view");
-        let bridge = app_function("bridgeView");
-        assert!(bridge.contains("ZtLayout.bridgeLayout(edge)"));
-        assert!(bridge.contains("if (event.key === 'Escape' && document.body.contains(view))"), "Esc puts the blocks back");
-        assert!(bridge.contains("'marker-end': 'url(#mbk-thread-arrow)'"), "one thread per pair, arrow at the Card that rests");
-        assert!(blocks.contains("if (bridgeOpen && (bridgeOpen.head !== model.head.address || !bridgeOpen.cards.includes(here))) bridgeOpen = null;"), "the view stays while the reader moves among its own Cards");
-        // A search marks the blocks that hold a hit on their tabs; nothing moves.
+        assert!(APP_JS.contains("localStorage.getItem('zt-refers-edges') === 'on'"), "the Refers switch has its own key");
+        assert!(blocks.contains("class: 'mbk-switch lens-toggle', 'aria-pressed': String(refersOn)"));
+        assert!(blocks.contains("Unanchored: nothing in ${nameOf(b.id)} rests on an earlier block."), "an unanchored block carries its mark and fix");
+        assert!(blocks.contains("if (bridgeOpen && (bridgeOpen.head !== model.head.address || !bridgeOpen.cards.includes(here))) bridgeOpen = null;"));
         assert!(APP_JS.contains("return { open, close, hits: foundCards, get isOpen() { return isOpen; } };"));
-        assert!(blocks.contains("const found = finder.hits();"));
-        assert!(blocks.contains("(holdsHit(b) ? ' found' : '')"), "the network card and the strip tab carry the mark");
-        assert!(css_rule(".mbn-tick.found::after, .mbn-node.found::after").contains("var(--link)"));
-        assert!(css_rule(".mbn-node.level-focus").contains("var(--card-shadow-lift)"), "the focus is lifted");
-        let far = css_rule(".mbn-node.level-far");
-        assert!(far.contains("var(--stock)") && far.contains("var(--desk)"), "far blocks shrink to their tab: {far}");
-        assert!(css_rule(".mbn-head").contains("var(--paper-margin)"), "the red margin line of an index card");
-        assert!(css_rule(".mbk-child.has-proof .mbk-card").contains("6px 6px 0 -1px var(--stock)"), "a proof lies stacked behind its result");
-        assert!(css_rule(".mbn-node.here, .mbn-node.open").contains("var(--pointer)"), "the open block keeps the Map's pointer mark");
-        assert!(css_rule(".mbk-ribbon.up .line").contains("var(--broken)"), "the forward fault is the one coloured thread");
-        assert!(css_rule(".mbk-fault").contains("var(--broken)"), "and the unanchored mark");
-        assert!(css_rule(".mbk-ribbons.hovering .mbk-ribbon .line").contains("opacity: .12"), "hovering one thread fades the rest");
-        for kind in ["contrasts", "refers"] {
-            assert!(
-                css_rule(&format!(".mbk-ribbon.kind-{kind} .line")).contains("stroke-dasharray"),
-                "kind {kind} is told apart by pattern, not hue"
-            );
+        assert!(blocks.contains("(holdsHit(b) ? ' found' : '')"), "a search marks the blocks that hold a hit");
+        // The two-block view: one row per Link, the two Cards side by side.
+        let bridge = app_function("bridgeView");
+        assert!(bridge.contains("threads.map(([li, ri]) => [cardEl(left[li]), cardEl(right[ri])])"), "each pair side by side in one row");
+        assert!(bridge.contains("if (event.key === 'Escape' && document.body.contains(view))"), "Esc puts the blocks back");
+        // The look.
+        let cork = css_rule(".model-board.blocks, .mbk-bridge");
+        assert!(cork.contains("var(--frame)") && cork.contains("var(--cork)") && cork.contains("var(--cork-grain)"), "a cork board in a frame: {cork}");
+        assert!(css_rule(".mbn-lines .line").contains("var(--line-ink)"), "uniform muted lines");
+        assert!(css_rule(".mbn-lines .tree .line").contains("stroke-width: 4"), "the main lines are bolder");
+        assert!(css_rule(".mbn-lines .up .line").contains("var(--broken)"), "the forward fault is the one red line");
+        assert!(css_rule(".mbn-stations .station.here").contains("var(--pointer)"), "the open block's station is the pointer's colour");
+        assert!(css_rule(".mbn-flags.left .mbn-flag").contains("var(--flag-premise)"));
+        assert!(css_rule(".mbn-flags.right .mbn-flag").contains("var(--flag-dependent)"));
+        assert!(css_rule(".mbn-tuck").contains("margin-top: -9px"), "tucked cards overlap like a fanned cascade");
+        assert!(css_rule(".mbn-tuck.pulled").contains("var(--card-shadow-lift)"), "the open Card is pulled out and lifted");
+        for token in ["--cork:", "--cork-grain:", "--frame:", "--line-ink:", "--line-hot:", "--flag-premise:", "--flag-dependent:"] {
+            assert_eq!(APP_CSS.matches(token).count(), 3, "{token} in the light block and both dark blocks");
         }
     }
 

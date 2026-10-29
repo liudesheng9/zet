@@ -3909,28 +3909,30 @@
     for (let at = el; at && at !== root; at = at.offsetParent) { top += at.offsetTop; left += at.offsetLeft; }
     return { top, left };
   };
-  // Where each block's tray last stood, so a tray that moves is seen to move (object permanence).
+  // Where each card last stood, so a card that moves is seen to move (object permanence).
   const blockRects = new Map();
   const readRefers = () => { try { return localStorage.getItem('zt-refers-edges') === 'on'; } catch { return false; } };
   let refersOn = readRefers();
-  // The two-block view of one ribbon, while it is open: { head, from_block, to_block, kind, cards }.
+  // The two-block view of one pair of blocks, while it is open: { head, from_block, to_block, kind, cards }.
   let bridgeOpen = null;
   // Card sizes in the model network, by attention level.
-  const NET = { near: { w: 124, h: 66 }, support: { w: 124, h: 66 }, focus: { w: 176, h: 86 }, far: { w: 44, h: 26 } };
+  const NET = { near: { w: 124, h: 74 }, support: { w: 124, h: 74 }, focus: { w: 176, h: 96 }, far: { w: 44, h: 30 } };
+  // The most page flags one edge of a card carries; the rest fold into a `+N` flag.
+  const FLAGS = 4;
 
   /**
-   * The model board as a network (#200–#202; docs/model-board-blocks-proposal.md, §3a). The whole
-   * model reads top to bottom as a tree of index cards: each block (a chapter with its results and
-   * proofs) hangs by a thread under the earlier block it rests on most, so a reader sees what each
-   * chapter builds on; a strip above names the parts and walks the blocks. The open block (the one
-   * holding the open Card) is lifted with its own threads inked and counted; its neighbours and the
-   * two blocks it shares most Links with stay cards; every other block shrinks to its tab. Below the
-   * network the open block lies close up: its chapter card, threads down to its results, each with
-   * its proof stacked behind it; the stack fans into the proof chain. With the Model Card open every
-   * block is a card and only the tree and the faults are drawn; pointing at a block draws its own
-   * threads. Hovering a thread lists its Card pairs; clicking it lays the two blocks side by side.
-   * Colour is spent on the forward fault and the unanchored mark only; the open Card keeps the
-   * pointer's mark it has on the Map.
+   * The model board (#200–#202; docs/model-board-blocks-proposal.md, §9): a cork board, read top to
+   * bottom, with the owner's two forms. Between blocks, a transit map: each block's card hangs below
+   * its station, under the earlier block it rests on most; the Links between blocks are uniform
+   * lines from station to station, with smooth bends, a line that skips layers taking a free
+   * corridor between the cards; the tree's lines and the forward faults (red) always, the open or
+   * pointed block's own lines inked. Pointing at a line lists its Card pairs; clicking it lays the
+   * two blocks side by side. Inside a block, nesting and flags: below the board the open block close
+   * up, its cards tucked under its chapter card in a cascade that shows each one's top strip, the
+   * open Card pulled out in full with page flags on its edges (left: the blocks it rests on; right:
+   * the blocks that rest on it), a proof cascading under its result. The open block is lifted; its
+   * neighbours and two closest blocks stay cards; every other block shrinks to a tab. Colour only
+   * where there is state: the open block's station (the pointer's colour) and the faults.
    */
   function blockBoard(card, model) {
     const blocks = model.blocks;
@@ -3973,62 +3975,81 @@
       ? edges.find((e) => e.from_block === bridgeOpen.from_block && e.to_block === bridgeOpen.to_block && e.kind === bridgeOpen.kind)
       : null;
     if (bridgeOpen && !bridgeEdge) bridgeOpen = null;
-    let fanned = null;
-    for (const c of (open ? open.children : [])) if (c.proof && (c.address === here || c.proof.addresses.includes(here))) fanned = c.address;
     // The blocks that hold a hit of the last search get a mark on their tab; nothing moves.
     const found = finder.hits();
     const holdsHit = (b) => found.size > 0 && (found.has(b.head) || b.children.some((c) => found.has(c.address) || (c.proof && c.proof.addresses.some((at) => found.has(at)))));
+    const isUp = (e) => e.kind === 'rests-on' && index.get(e.from_block) < index.get(e.to_block);
 
-    // Ports, one quiet line per Card: the blocks its Links come from on the left (←), the blocks it
-    // rests on or points to on the right (→). Counts in the tooltips.
-    const portsOf = (addresses) => {
-      const sum = new Map();
-      for (const at of addresses) for (const p of layout.ports[at] || []) {
-        const key = p.dir + ' ' + p.block;
-        sum.set(key, { ...p, count: (sum.get(key)?.count || 0) + p.count });
+    // A block's page flags: the blocks it rests on (left) and the blocks that rest on it (right),
+    // each with its Links between the two blocks, in reading order.
+    const flagsOf = (id) => {
+      const sides = { left: new Map(), right: new Map() };
+      for (const e of edges) {
+        if (!refersOn && e.kind === 'refers') continue;
+        const side = e.from_block === id ? 'left' : e.to_block === id ? 'right' : null;
+        if (!side || e.from_block === e.to_block) continue;
+        const other = side === 'left' ? e.to_block : e.from_block;
+        const flag = sides[side].get(other) || { block: other, count: 0, edges: [], up: false };
+        flag.count += e.count;
+        flag.edges.push(e);
+        flag.up ||= isUp(e);
+        sides[side].set(other, flag);
       }
-      return [...sum.values()].sort((a, b) => index.get(a.block) - index.get(b.block));
-    };
-    const portRow = (ports) => {
-      if (!ports.length) return null;
-      const side = (dir) => {
-        const list = ports.filter((p) => p.dir === dir);
-        const names = list.map((p, i) => [i ? h('span', { class: 'dot', text: '·' }) : null, h('button', {
-          class: 'mbk-port',
-          title: `${p.count} Link${p.count === 1 ? '' : 's'} ${dir === 'out' ? 'to' : 'from'} ${nameOf(p.block)}`,
-          onclick: (event) => { event.stopPropagation(); go(blocks[index.get(p.block)].head); },
-          text: shortName(p.block),
-        })]);
-        return h('div', { class: 'mbk-port-line ' + dir, title: dir === 'out' ? 'Links from here to other blocks' : 'Links from other blocks to here' },
-          list.length ? (dir === 'in' ? [h('span', { class: 'arrow', text: '←' }), names] : [names, h('span', { class: 'arrow', text: '→' })]) : null);
-      };
-      return h('div', { class: 'mbk-ports' }, side('in'), side('out'));
+      const order = (m) => [...m.values()].sort((a, b) => index.get(a.block) - index.get(b.block));
+      return { left: order(sides.left), right: order(sides.right) };
     };
 
-    const isResult = (c) => Boolean(c.facet && /^结果/.test(c.facet));
-    const stackOf = (c) => {
-      if (!c.proof) return null;
-      const label = `▤ ${isResult(c) ? '证明' : '下面'} ${c.proof.steps} ${isResult(c) ? '步' : '张'}`;
-      return h('button', {
-        class: 'mbk-stack' + (fanned === c.address ? ' fanned' : ''),
-        title: fanned === c.address ? 'The proof is open below' : 'Open this proof: its first step',
-        onclick: (event) => { event.stopPropagation(); go(c.proof.first); },
-      }, label);
-    };
-    const fanOf = (c) => {
-      if (!c.proof || fanned !== c.address) return null;
-      const n = c.proof.addresses.length;
-      return h('ol', { class: 'mbk-fan', 'aria-label': 'Proof chain' }, c.proof.addresses.map((at, i) => {
-        const part = partOf.get(at);
-        return h('li', { class: at === here ? 'here' : '' },
-          h('button', { onclick: (event) => { event.stopPropagation(); go(at); }, title: at },
-            h('span', { class: 'mbk-step', text: `${i + 1}/${n}` }),
-            h('span', { class: 'mbk-step-title' }, titleNodes(part ? bareTitle(part.title) : at))));
-      }));
-    };
-
-    // ---- the network: one card (or tab) per block, threads between them ----
     const nodes = new Map();
+    const pairsCard = h('div', { class: 'mbk-pairs', role: 'dialog', 'aria-label': 'The Links between two blocks' });
+    let board = null;
+    // Pointing at a card or a flag lifts the cards it links and dims the rest.
+    const lift = (ids) => {
+      board.classList.add('pointing');
+      for (const [id, node] of nodes) node.classList.toggle('linked', ids.has(id));
+    };
+    const unlift = () => {
+      board.classList.remove('pointing');
+      for (const node of nodes.values()) node.classList.remove('linked');
+    };
+    const openBridge = (flag) => {
+      const edge = flag.edges.find((e) => e.kind === 'rests-on') || flag.edges[0];
+      const cards = [here, ...(edge.pairs || []).flatMap((p) => [p.from, p.to]), ...[edge.from_block, edge.to_block].map((id) => blocks[index.get(id)].head)];
+      bridgeOpen = { head: model.head.address, from_block: edge.from_block, to_block: edge.to_block, kind: edge.kind, cards };
+      renderReader();
+    };
+    // The Card pairs behind one flag, beside it: one row per Card that writes the Links.
+    let hideTimer = 0;
+    const hidePairs = () => {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => { pairsCard.classList.remove('shown'); unlift(); }, 220);
+    };
+    pairsCard.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+    pairsCard.addEventListener('mouseleave', hidePairs);
+    const showPairs = (flag, from, to, point) => {
+      clearTimeout(hideTimer);
+      lift(new Set([from, to]));
+      const byFrom = new Map();
+      for (const e of flag.edges) for (const p of e.pairs || []) (byFrom.get(p.from) || byFrom.set(p.from, []).get(p.from)).push([p.to, e.kind]);
+      const rows = [...byFrom.entries()].slice(0, 6);
+      const more = byFrom.size - rows.length;
+      pairsCard.replaceChildren(...[
+        h('div', { class: 'mbk-pairs-head' },
+          h('b', { text: nameOf(from) }), ' rests on ', h('b', { text: nameOf(to) }),
+          h('span', { class: 'mbk-count', text: ` · ${flag.count} Link${flag.count === 1 ? '' : 's'}` })),
+        flag.up ? h('p', { class: 'mbk-pairs-fault', text: 'Forward: this block rests on a later one. File the premise before it, or move the Card that rests on it after the premise.' }) : null,
+        h('ul', {}, rows.map(([at, tos]) => h('li', {},
+          h('button', { class: 'mbk-pairs-from', onclick: () => go(at), title: at }, cardName(at)),
+          tos.map(([to2, kind]) => h('button', { class: 'mbk-pairs-to', onclick: () => go(to2), title: `${(KINDS[kind] || KINDS.refers).fwd} ${to2}` }, h('span', { class: 'arrow', text: '→' }), cardName(to2)))))),
+        more > 0 ? h('p', { class: 'mbk-pairs-more', text: `+${more} more Card${more === 1 ? '' : 's'}` }) : null,
+        h('button', { class: 'mbk-pairs-open', onclick: () => openBridge(flag) }, 'Lay the two blocks side by side'),
+      ].filter(Boolean));
+      const width = Math.min(320, board.clientWidth - 24);
+      pairsCard.style.width = `${width}px`;
+      pairsCard.style.left = `${Math.min(board.clientWidth - width - 8, Math.max(8, point.x + 14))}px`;
+      pairsCard.style.top = `${Math.max(0, point.y - 16)}px`;
+      pairsCard.classList.add('shown');
+    };
+    // ---- the board: one card (or tab) per block, hanging below its station ----
     const sizeOf = (id) => {
       const b = blocks[index.get(id)];
       return b.kind === 'aside' ? NET.far : NET[level.get(id)] || NET.near;
@@ -4040,10 +4061,13 @@
         ? h('span', { class: 'mbk-fault', text: '!', title: `Unanchored: nothing in ${nameOf(b.id)} rests on an earlier block. Add a 依赖 line from its chapter card to the chapter it builds on.` })
         : null;
       const full = b.kind === 'aside' ? '旁注与共用' : `${facetLabel(b.facet)} — ${bareTitle(b.title)}`;
-      const node = h('button', {
+      const flags = flagsOf(b.id);
+      const node = h('div', {
         class: `mbn-node level-${lv}` + (isOpen ? ' open' : '') + (b.head === here ? ' here' : '') + (unanchored.has(b.id) ? ' unanchored' : '') + (holdsHit(b) ? ' found' : ''),
+        role: 'button', tabindex: '0',
         title: `${b.part ? b.part + ' · ' : ''}${full}${b.members > 1 ? ` · ${b.members} 张` : ''}${holdsHit(b) ? ' · holds a search hit' : ''}`,
         onclick: () => go(b.head),
+        onkeydown: (event) => { if (event.key === 'Enter') go(b.head); },
       },
         lv === 'far'
           ? [h('span', { class: 'mbn-num', text: shortName(b.id) }), fault]
@@ -4054,11 +4078,18 @@
             h('span', { class: 'mbn-title' }, titleNodes(bareTitle(b.title))),
           ]);
       node.dataset.block = b.id;
+      node.style.setProperty('--tilt', `${ZtLayout.tilt(b.head)}deg`);
+      // Pointing at a card draws its own lines and lifts every card it is linked with.
+      const linked = new Set([b.id, ...(flags ? [...flags.left, ...flags.right].map((f) => f.block) : [])]);
+      node.addEventListener('mouseenter', () => { clearTimeout(hideTimer); lift(linked); if (drawnFor !== b.id) draw(b.id); });
+      node.addEventListener('mouseleave', () => { if (!pairsCard.classList.contains('shown')) { unlift(); if (drawnFor != null) draw(null); } });
       nodes.set(b.id, node);
     }
-    const threads = svg('svg', { class: 'mbk-ribbons mbn-threads', 'aria-hidden': 'true' });
-    // The cards and threads lie on one layer, scaled as a whole when the tree is wider than the board.
-    const layer = h('div', { class: 'mbn-layer' }, threads, [...nodes.values()]);
+    // The lines lie under the cards and the stations over them, all on one layer, scaled as a whole
+    // when the tree is wider than the board.
+    const lines = svg('svg', { class: 'mbk-ribbons mbn-lines', 'aria-hidden': 'true' });
+    const stations = svg('svg', { class: 'mbn-stations', 'aria-hidden': 'true' });
+    const layer = h('div', { class: 'mbn-layer' }, lines, [...nodes.values()], stations);
     const net = h('div', { class: 'mbn-net' }, layer);
 
     // The strip: the parts and their blocks in reading order; the open block's tab pulled out.
@@ -4109,260 +4140,177 @@
       },
     }, 'Refers');
 
-    // ---- the open block close up: its chapter card, its results on threads, proofs stacked ----
+    // ---- the open block close up: the chapter card, its cards tucked under it ----
     let close = null;
-    const childEls = [];
-    let chapterEl = null;
     if (open) {
-      const childCard = (c) => {
-        const el = h('div', { class: 'mbk-child' + (c.address === here ? ' here' : '') + (isResult(c) ? ' result' : ' aside') + (c.proof ? ' has-proof' : '') + (fanned === c.address ? ' is-fanned' : '') },
-          h('div', { class: 'mbk-card', role: 'button', tabindex: '0', title: c.address, onclick: () => go(c.address), onkeydown: (event) => { if (event.key === 'Enter') go(c.address); } },
-            h('div', { class: 'mbk-card-head' },
-              h('span', { class: 'mbk-facet', text: headLabel(c.facet) }),
-              stackOf(c)),
+      const isResult = (c) => Boolean(c.facet && /^结果/.test(c.facet));
+      // A Card's own page flags in the close-up: the blocks its Links reach (left) and the blocks
+      // whose Links reach it (right); pointing lifts those blocks' cards on the board.
+      const cardFlags = (addresses) => {
+        const sides = { left: new Map(), right: new Map() };
+        for (const at of addresses) for (const p of layout.ports[at] || []) {
+          const side = p.dir === 'out' ? 'left' : 'right';
+          sides[side].set(p.block, (sides[side].get(p.block) || 0) + p.count);
+        }
+        return ['left', 'right'].map((side) => {
+          const list = [...sides[side].entries()].sort((a, b) => index.get(a[0]) - index.get(b[0]));
+          if (!list.length) return null;
+          return h('span', { class: `mbn-flags ${side}` }, list.slice(0, FLAGS + 2).map(([block, count]) => {
+            const el = h('button', {
+              class: 'mbn-flag',
+              title: `${count} Link${count === 1 ? '' : 's'} ${side === 'left' ? 'to' : 'from'} ${nameOf(block)}`,
+              onclick: (event) => { event.stopPropagation(); go(blocks[index.get(block)].head); },
+              text: shortName(block),
+            });
+            el.addEventListener('mouseenter', () => lift(new Set([open.id, block])));
+            el.addEventListener('mouseleave', unlift);
+            return el;
+          }));
+        });
+      };
+      // The proof under a pulled-out result: its steps as small slips, the step being read pulled out.
+      const proofOf = (c) => {
+        if (!c.proof) return null;
+        const inProof = c.proof.addresses.includes(here);
+        if (!inProof && c.address !== here) return null;
+        const n = c.proof.addresses.length;
+        return h('ol', { class: 'mbn-proof', 'aria-label': 'Proof chain' }, c.proof.addresses.map((at, i) => {
+          const part = partOf.get(at);
+          return h('li', { class: 'mbn-slip' + (at === here ? ' here' : ''), style: `z-index: ${i + 1}` },
+            h('button', { onclick: (event) => { event.stopPropagation(); go(at); }, title: at },
+              h('span', { class: 'mbk-step', text: `${i + 1}/${n}` }),
+              h('span', { class: 'mbk-step-title' }, titleNodes(part ? bareTitle(part.title) : at))));
+        }));
+      };
+      const stackLabel = (c) => c.proof ? `▤ ${isResult(c) ? '证明' : '下面'} ${c.proof.steps} ${isResult(c) ? '步' : '张'}` : null;
+      const tuck = (c, i) => {
+        const pulled = c.address === here || (c.proof && c.proof.addresses.includes(here));
+        const el = h('div', {
+          class: 'mbn-tuck' + (pulled ? ' pulled' : '') + (c.address === here ? ' here' : '') + (isResult(c) ? ' result' : ' aside'),
+          style: `z-index: ${i + 2}; --tilt: ${ZtLayout.tilt(c.address)}deg`,
+          role: 'button', tabindex: '0', title: c.address,
+          onclick: () => go(c.address),
+          onkeydown: (event) => { if (event.key === 'Enter') go(c.address); },
+        },
+          h('div', { class: 'mbn-tuck-head' },
+            h('span', { class: 'mbk-facet', text: headLabel(c.facet) }),
+            pulled ? null : h('span', { class: 'mbn-tuck-line' }, titleNodes(bareTitle(c.title))),
+            c.proof ? h('button', {
+              class: 'mbk-stack', title: 'Open this proof: its first step',
+              onclick: (event) => { event.stopPropagation(); go(c.proof.first); },
+            }, stackLabel(c)) : null),
+          pulled ? [
             h('div', { class: 'mbk-title' }, titleNodes(bareTitle(c.title))),
-            portRow(portsOf([c.address, ...((c.proof && c.proof.addresses) || [])]))),
-          fanOf(c));
-        // Pointing at a Card marks, in the network, the blocks its Links reach.
-        const linked = portsOf([c.address, ...((c.proof && c.proof.addresses) || [])]).map((p) => p.block);
-        el.addEventListener('mouseenter', () => linked.forEach((id) => nodes.get(id)?.classList.add('linked')));
-        el.addEventListener('mouseleave', () => linked.forEach((id) => nodes.get(id)?.classList.remove('linked')));
-        childEls.push(el);
+            cardFlags([c.address, ...((c.proof && c.proof.addresses) || [])]),
+            proofOf(c),
+          ] : null);
         return el;
       };
-      chapterEl = h('div', { class: 'mbn-chapter' + (open.head === here ? ' here' : '') },
+      const chapterEl = h('div', { class: 'mbn-chapter' + (open.head === here ? ' here' : ''), style: `z-index: ${open.children.length + 3}` },
         h('div', { class: 'mbk-head' },
           h('span', { class: 'mbk-tab', text: headLabel(open.facet) }),
           open.members > 1 ? h('span', { class: 'mbk-count', text: `${open.members} 张` }) : null),
         h('button', { class: 'mbk-chapter', onclick: () => go(open.head), title: open.head }, titleNodes(bareTitle(open.title))),
         open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null,
-        portRow(portsOf([open.head])));
-      const hang = svg('svg', { class: 'mbn-hang', 'aria-hidden': 'true' });
-      close = h('div', { class: 'mbn-close' }, hang, chapterEl, h('div', { class: 'mbn-children' }, open.children.map(childCard)));
-      // The results hang by threads from the chapter card.
-      const drawHang = () => {
-        const box = close.getBoundingClientRect();
-        if (!box.width) return;
-        hang.setAttribute('width', box.width);
-        hang.setAttribute('height', box.height);
-        hang.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
-        hang.replaceChildren();
-        const from = offsetIn(chapterEl, close);
-        const x0 = from.left + chapterEl.offsetWidth / 2;
-        const y0 = from.top + chapterEl.offsetHeight;
-        const cards = childEls.map((el) => {
-          const o = offsetIn(el, close);
-          const face = el.querySelector('.mbk-card') || el;
-          return { el, x: o.left, y: o.top, w: face.offsetWidth, aside: el.classList.contains('aside') };
-        });
-        if (!cards.length) return;
-        // Rows of the grid, and the trunk: down the gap after the first column (or the stem's line).
-        const rows = [...new Set(cards.map((c) => c.y))].sort((a, b) => a - b);
-        const firstRow = cards.filter((c) => c.y === rows[0]).sort((a, b) => a.x - b.x);
-        const trunk = firstRow.length > 1 ? (firstRow[0].x + firstRow[0].w + firstRow[1].x) / 2 : x0;
-        const railY = (y) => y - 12;
-        const path = (d, aside) => hang.append(svg('path', { d, class: 'mbn-hang-thread' + (aside ? ' aside' : '') }));
-        const r = 5;
-        // The stem: from the chapter card down, across to the trunk, down to the last rail.
-        const yLast = railY(rows[rows.length - 1]);
-        const turn = Math.sign(trunk - x0);
-        path(turn
-          ? `M ${x0} ${y0} V ${railY(rows[0]) - r} Q ${x0} ${railY(rows[0])} ${x0 + turn * r} ${railY(rows[0])} H ${trunk}${rows.length > 1 ? ` V ${yLast}` : ''}`
-          : `M ${x0} ${y0} V ${yLast}`);
-        for (const y of rows) {
-          const row = cards.filter((c) => c.y === y);
-          const xs = row.map((c) => c.x + Math.min(c.w / 2, 70));
-          const lo = Math.min(trunk, ...xs);
-          const hi = Math.max(trunk, ...xs);
-          if (hi - lo > 1) path(`M ${lo} ${railY(y)} H ${hi}`);
-          row.forEach((c, i) => path(`M ${xs[i]} ${railY(y)} V ${y}`, c.aside));
-        }
-      };
-      setTimeout(drawHang);
-      new ResizeObserver(drawHang).observe(close);
+        cardFlags([open.head]));
+      close = h('div', { class: 'mbn-close' }, chapterEl, h('div', { class: 'mbn-cascade' }, open.children.map(tuck)));
     }
 
-    const pairsCard = h('div', { class: 'mbk-pairs', role: 'dialog', 'aria-label': 'The Links of this thread' });
-    const board = h('div', { class: 'model-board blocks network' + (onHead ? ' on-head' : '') + (open ? ' has-focus' : ''), tabindex: '-1' }, strip, net, close, pairsCard);
+    board = h('div', { class: 'model-board blocks network' + (onHead ? ' on-head' : '') + (open ? ' has-focus' : ''), tabindex: '-1' }, strip, net, close, pairsCard);
 
-    // The Card pairs of one thread, beside it: one row per Card that writes the Links.
-    let hideTimer = 0;
-    const hidePairs = () => {
-      clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => {
-        pairsCard.classList.remove('shown');
-        threads.classList.remove('hovering');
-        board.querySelectorAll('.ribbon-end').forEach((t) => t.classList.remove('ribbon-end'));
-        threads.querySelectorAll('.mbk-ribbon.on').forEach((g) => g.classList.remove('on'));
-      }, 220);
-    };
-    pairsCard.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-    pairsCard.addEventListener('mouseleave', hidePairs);
-    const openBridge = (r) => {
-      const cards = [here, ...(r.pairs || []).flatMap((p) => [p.from, p.to]), ...[r.from_block, r.to_block].map((id) => blocks[index.get(id)].head)];
-      bridgeOpen = { head: model.head.address, from_block: r.from_block, to_block: r.to_block, kind: r.kind, cards };
-      renderReader();
-    };
-    const showPairs = (r, group, x, y) => {
-      clearTimeout(hideTimer);
-      const kind = KINDS[r.kind] ? r.kind : 'refers';
-      threads.classList.add('hovering');
-      threads.querySelectorAll('.mbk-ribbon.on').forEach((g) => g.classList.remove('on'));
-      group.classList.add('on');
-      board.querySelectorAll('.ribbon-end').forEach((t) => t.classList.remove('ribbon-end'));
-      for (const id of [r.from_block, r.to_block]) nodes.get(id)?.classList.add('ribbon-end');
-      const byFrom = new Map();
-      for (const p of r.pairs || []) (byFrom.get(p.from) || byFrom.set(p.from, []).get(p.from)).push(p.to);
-      const rows = [...byFrom.entries()].slice(0, 6);
-      const more = byFrom.size - rows.length;
-      pairsCard.replaceChildren(...[
-        h('div', { class: 'mbk-pairs-head' },
-          h('b', { text: nameOf(r.from_block) }), ` ${KINDS[kind].fwd} `, h('b', { text: nameOf(r.to_block) }),
-          h('span', { class: 'mbk-count', text: ` · ${r.count} Link${r.count === 1 ? '' : 's'}` })),
-        r.up ? h('p', { class: 'mbk-pairs-fault', text: 'Forward: this block rests on a later one. File the premise before it, or move the Card that rests on it after the premise.' }) : null,
-        h('ul', {}, rows.map(([from, tos]) => h('li', {},
-          h('button', { class: 'mbk-pairs-from', onclick: () => go(from), title: from }, cardName(from)),
-          tos.map((to) => h('button', { class: 'mbk-pairs-to', onclick: () => go(to), title: `${KINDS[kind].fwd} ${to}` }, h('span', { class: 'arrow', text: '→' }), cardName(to)))))),
-        more > 0 ? h('p', { class: 'mbk-pairs-more', text: `+${more} more Card${more === 1 ? '' : 's'}` }) : null,
-        h('button', { class: 'mbk-pairs-open', onclick: () => openBridge(r) }, 'Lay the two blocks side by side'),
-      ].filter(Boolean));
-      const width = Math.min(320, board.clientWidth - 24);
-      const netBox = offsetIn(net, board);
-      const bx = netBox.left + place.offset + x * place.scale;
-      const by = netBox.top + y * place.scale;
-      pairsCard.style.width = `${width}px`;
-      pairsCard.style.left = `${Math.min(board.clientWidth - width - 8, Math.max(8, bx + 14))}px`;
-      pairsCard.style.top = `${Math.max(0, by - 16)}px`;
-      pairsCard.classList.add('shown');
-    };
-
-    // Place the cards (the tree laid out top to bottom, scaled to the board's width) and draw the
-    // threads: every tree thread and every forward fault always; the open or pointed block's own
-    // threads inked and counted. A thread runs from the premise's lower edge down to the top edge of
-    // the block that rests on it, arrow at the dependent; one that points up is the forward fault.
+    // Place the cards: the tree laid out top to bottom, scaled to the board's width.
     let place = null;
-    let drawnFor = null;
-    const treeEdges = new Set();
-    for (const b of blocks) {
-      const p = tree.parent[b.id];
-      if (p) {
-        const best = edges.filter((e) => e.kind === 'rests-on' && e.from_block === b.id && e.to_block === p).sort((a, c) => c.count - a.count)[0];
-        if (best) treeEdges.add(best);
-      }
-    }
-    // A forward fault is always drawn, whichever block is open.
-    const faults = edges.filter((e) => e.kind === 'rests-on' && index.get(e.from_block) < index.get(e.to_block));
     const layoutTree = () => {
-      const lay = ZtLayout.treeLayout(tree.roots, tree.children, sizeOf, { gapX: 14, gapY: 34 });
+      const lay = ZtLayout.treeLayout(tree.roots, tree.children, sizeOf, { gapX: 34, gapY: 30 });
       const avail = Math.max(200, net.clientWidth);
       const scale = Math.min(1, avail / Math.max(1, lay.width));
       return { at: lay.pos, width: lay.width, height: lay.height, scale, offset: (avail - lay.width * scale) / 2 };
     };
+    // The transit map: the tree's lines and the forward faults always, the open (or pointed) block's
+    // own lines inked. A line leaves its premise's card from the lower edge and ends at the station
+    // of the card that rests on it; within one layer it runs through the gap below the cards; one
+    // that skips layers takes a free corridor; a forward fault leaves its premise's station upward.
+    const treeEdges = new Set();
+    for (const b of blocks) {
+      const parent = tree.parent[b.id];
+      if (!parent) continue;
+      const best = edges.filter((e) => e.kind === 'rests-on' && e.from_block === b.id && e.to_block === parent).sort((x, y) => y.count - x.count)[0];
+      if (best) treeEdges.add(best);
+    }
+    const faults = edges.filter(isUp);
+    let drawnFor = null;
     const draw = (hover = null) => {
-      if (!place || !net.clientWidth) return;
+      if (!place) return;
       drawnFor = hover;
       const lens = hover == null ? layout : layoutFor(hover);
-      const width = place.width;
-      const height = place.height;
-      threads.setAttribute('width', width);
-      threads.setAttribute('height', height);
-      threads.setAttribute('viewBox', `0 0 ${width} ${height}`);
-      const defs = svg('defs', {});
-      for (const name of ['base', 'hot', 'up']) {
-        const marker = svg('marker', { id: `mbk-arrow-${name}`, viewBox: '0 0 8 8', refX: '7', refY: '4', markerWidth: '7', markerHeight: '7', markerUnits: 'userSpaceOnUse', orient: 'auto' });
-        marker.append(svg('path', { d: 'M 0 0.8 L 7 4 L 0 7.2 z', class: `mbk-arrowhead ${name}` }));
-        defs.append(marker);
+      for (const svgEl of [lines, stations]) {
+        svgEl.setAttribute('width', place.width);
+        svgEl.setAttribute('height', place.height);
+        svgEl.setAttribute('viewBox', `0 0 ${place.width} ${place.height}`);
+        svgEl.replaceChildren();
       }
-      threads.replaceChildren(defs);
-      board.classList.toggle('pointing', hover != null);
-      // Which threads: the tree, the faults, and the lens block's own (hot).
-      const hotKeys = new Set(lens.ribbons.filter((r) => r.hot).map((r) => `${r.from_block}>${r.to_block}>${r.kind}`));
+      const key = (e) => `${e.from_block}>${e.to_block}>${e.kind}`;
+      const hot = new Set(lens.ribbons.filter((x) => x.hot).map(key));
       const list = new Map();
-      for (const r of lens.ribbons) list.set(`${r.from_block}>${r.to_block}>${r.kind}`, r);
-      for (const e of treeEdges) {
-        const key = `${e.from_block}>${e.to_block}>${e.kind}`;
-        if (!list.has(key)) list.set(key, { ...e, up: false, hot: false, tree: true });
-        else list.get(key).tree = true;
-      }
-      for (const e of faults) {
-        const key = `${e.from_block}>${e.to_block}>${e.kind}`;
-        if (!list.has(key)) list.set(key, { ...e, up: true, hot: false });
-      }
-      const ribbons = [...list.values()].filter((r) => place.at[r.from_block] && place.at[r.to_block]);
-      // Where each thread meets a card: on its lower edge toward a later layer, its upper edge toward
-      // an earlier one, the lower edge within one layer (the thread sags between them); spread along
-      // the edge in the order of the other ends, so threads leave a card without crossing.
-      const ends = new Map();
-      ribbons.forEach((r, i) => {
-        for (const [id, other, end] of [[r.to_block, r.from_block, 0], [r.from_block, r.to_block, 1]]) {
-          const a = place.at[id];
-          const o = place.at[other];
-          const side = a.depth === o.depth || a.y < o.y ? 'bottom' : 'top';
-          const key = id + ' ' + side;
-          (ends.get(key) || ends.set(key, []).get(key)).push({ i, end, other: o.cx });
-        }
-      });
-      const pts = ribbons.map(() => [null, null]);
-      for (const [key, list] of ends) {
-        list.sort((p, q) => p.other - q.other || p.i - q.i);
-        const [id, side] = key.split(' ');
-        const a = place.at[id];
-        const pad = Math.min(14, a.w / 4);
-        list.forEach((p, n) => {
-          const x = list.length === 1 ? a.cx : a.x + pad + (n * (a.w - 2 * pad)) / (list.length - 1);
-          pts[p.i][p.end] = { x, y: side === 'top' ? a.y : a.y + a.h };
-        });
-      }
-      const order = ribbons.map((r, i) => i).sort((i, j) => Number(ribbons[i].hot) - Number(ribbons[j].hot) || Number(ribbons[i].up) - Number(ribbons[j].up));
-      // A thread that skips layers runs in a free corridor between the cards it passes, never
-      // behind one; threads that share a corridor lie side by side.
+      for (const x of lens.ribbons) list.set(key(x), x);
+      for (const e of treeEdges) list.set(key(e), { ...(list.get(key(e)) || e), tree: true });
+      for (const e of faults) if (!list.has(key(e))) list.set(key(e), { ...e, up: true });
       const boxes = Object.values(place.at);
       const lanes = new Map();
-      for (const i of order) {
-        const r = ribbons[i];
-        const [p1, p2] = pts[i];
-        const d1 = place.at[r.to_block].depth;
-        const d2 = place.at[r.from_block].depth;
-        const sameLayer = d1 === d2;
+      const ordered = [...list.values()].filter((x) => place.at[x.from_block] && place.at[x.to_block])
+        .sort((a, b) => Number(hot.has(key(a))) - Number(hot.has(key(b))) || Number(Boolean(a.up)) - Number(Boolean(b.up)));
+      for (const x of ordered) {
+        const premise = place.at[x.to_block];
+        const dependent = place.at[x.from_block];
+        const station = (q) => ({ x: q.cx, y: q.y });
+        const foot = (q) => ({ x: q.cx, y: q.y + q.h });
         let d;
         let mid;
-        if (sameLayer) {
-          // The sag stays inside the gap below the layer (a cubic sags three quarters of k).
-          const k = Math.min(30, 16 + Math.abs(p2.x - p1.x) * 0.08);
-          d = `M ${p1.x} ${p1.y} C ${p1.x} ${p1.y + k} ${p2.x} ${p2.y + k} ${p2.x} ${p2.y}`;
-          mid = { x: (p1.x + p2.x) / 2, y: Math.max(p1.y, p2.y) + k * 0.75 };
+        if (premise.depth === dependent.depth) {
+          const below = Math.max(premise.y + premise.h, dependent.y + dependent.h) + 15;
+          const pts = [[premise.cx, premise.y + premise.h], [premise.cx, below], [dependent.cx, below], [dependent.cx, dependent.y + dependent.h]];
+          d = ZtLayout.roundedPath(pts, 9);
+          mid = { x: (premise.cx + dependent.cx) / 2, y: below };
         } else {
-          const between = boxes.filter((b) => b.depth > Math.min(d1, d2) && b.depth < Math.max(d1, d2));
-          let route = ZtLayout.threadPath(p1, p2, between, { half: 17 });
+          const down = premise.y < dependent.y;
+          const p1 = down ? foot(premise) : station(premise);
+          const p2 = down ? station(dependent) : foot(dependent);
+          const between = boxes.filter((q) => q.depth > Math.min(premise.depth, dependent.depth) && q.depth < Math.max(premise.depth, dependent.depth));
+          let route = ZtLayout.threadPath(p1, p2, between, { half: 15 });
           if (route.lane != null) {
-            const key = Math.round(route.lane);
-            const n = lanes.get(key) || 0;
-            lanes.set(key, n + 1);
-            if (n) route = ZtLayout.threadPath(p1, p2, between, { half: 17 - Math.min(n, 3) * 3, shift: (n % 2 ? 1 : -1) * Math.ceil(n / 2) * 5 });
+            const k = Math.round(route.lane);
+            const n = lanes.get(k) || 0;
+            lanes.set(k, n + 1);
+            if (n) route = ZtLayout.threadPath(p1, p2, between, { half: 15 - Math.min(n, 3) * 3, shift: (n % 2 ? 1 : -1) * Math.ceil(n / 2) * 6 });
+            d = ZtLayout.roundedPath(route.points, 9);
+          } else {
+            d = route.d;
           }
-          d = route.d;
           mid = route.mid;
         }
-        const kind = KINDS[r.kind] ? r.kind : 'refers';
-        const hot = hotKeys.has(`${r.from_block}>${r.to_block}>${r.kind}`);
-        const state = r.up ? 'up' : hot ? 'hot' : 'base';
-        const group = svg('g', { class: `mbk-ribbon kind-${kind}` + (hot ? ' hot' : '') + (r.up ? ' up' : '') + (r.tree ? ' tree' : '') });
-        const width = Math.min(3.2, 1 + Math.log2(r.count + 1) * 0.6);
+        const kind = KINDS[x.kind] ? x.kind : 'refers';
+        const isHot = hot.has(key(x));
+        const group = svg('g', { class: `mbk-ribbon kind-${kind}` + (isHot ? ' hot' : '') + (x.up ? ' up' : '') + (x.tree ? ' tree' : '') });
         const hit = svg('path', { d, class: 'hit' });
-        const mx = mid.x;
-        const my = mid.y;
-        hit.addEventListener('mouseenter', () => showPairs(r, group, mx, my));
+        const flag = { edges: [x], count: x.count, up: Boolean(x.up) };
+        hit.addEventListener('mouseenter', () => {
+          const box = offsetIn(net, board);
+          showPairs(flag, x.from_block, x.to_block, { x: box.left + place.offset + mid.x * place.scale, y: box.top + mid.y * place.scale });
+        });
         hit.addEventListener('mouseleave', hidePairs);
-        hit.addEventListener('click', () => openBridge(r));
-        group.append(svg('path', { d, class: 'line', 'stroke-width': width, 'marker-end': `url(#mbk-arrow-${state})` }), hit);
-        if (hot || r.up) {
-          const word = svg('text', { x: mx, y: my + 3.5, class: 'word', 'text-anchor': 'middle' });
-          word.textContent = String(r.count);
-          group.append(word);
-        }
-        threads.append(group);
+        hit.addEventListener('click', () => openBridge(flag));
+        group.append(svg('path', { d, class: 'line' }), hit);
+        lines.append(group);
       }
+      // A station on each card's upper edge: the open block's in the pointer's colour, an
+      // unanchored block's in the fault colour.
+      for (const [id, q] of Object.entries(place.at)) {
+        const state = open && id === open.id ? ' here' : unanchored.has(id) ? ' fault' : '';
+        stations.append(svg('circle', { cx: q.cx, cy: q.y, r: q.h < 40 ? 4.5 : 6, class: 'station' + state }));
+      }
+      board.classList.toggle('pointing-line', hover != null);
     };
+
     // Object permanence: a card that moved since the last board slides from where it stood.
     const settle = () => {
       place = layoutTree();
@@ -4389,20 +4337,16 @@
       }
       draw(drawnFor);
     };
-    // Pointing at a block draws its own threads; leaving brings back the open block's (or the tree).
-    for (const [id, node] of nodes) node.addEventListener('mouseenter', () => { if (drawnFor !== id) draw(id); });
-    net.addEventListener('mouseleave', () => { if (drawnFor != null) draw(null); });
 
-    const shown = layout.ribbons.length;
     const summary = [
       `Model · ${blocks.filter((b) => b.kind !== 'aside').length} blocks`,
       `${model.parts.length} parts`,
       `${edges.filter((e) => refersOn || e.kind !== 'refers').reduce((n, e) => n + e.count, 0)} Links between blocks`,
     ].join(' · ');
-    const label = h('div', { class: 'section-label mbk-label' }, h('span', { text: summary, title: `${shown} threads drawn; point at a block for its own` }), refers);
+    const label = h('div', { class: 'section-label mbk-label' }, h('span', { text: summary, title: 'A line runs from a block to each block that rests on it; point at a line for its Card pairs' }), refers);
 
     if (bridgeEdge) {
-      return [label, bridgeView(model, bridgeEdge, { nameOf, headLabel, partOf, here, index, blocks, up: bridgeEdge.kind === 'rests-on' && index.get(bridgeEdge.from_block) < index.get(bridgeEdge.to_block) }), buildFaults(model)];
+      return [label, bridgeView(model, bridgeEdge, { nameOf, headLabel, partOf, here, index, blocks, up: isUp(bridgeEdge) }), buildFaults(model)];
     }
     setTimeout(settle);
     let lastWidth = 0;
@@ -4411,9 +4355,9 @@
   }
 
   /**
-   * The two-block view of one ribbon (#201, P3): the block rested on on the left, the block that
-   * rests on it on the right, only the Cards of the ribbon's pairs, one thread per pair with its
-   * arrow at the Card that rests. Esc or the close button puts the blocks back in the drawer.
+   * The two-block view of one pair of blocks (#201, P3): each Link between them laid out as two
+   * cards side by side in one row, the premise on the left and the Card that rests on it on the
+   * right, no line between them. Esc or the close button puts the blocks back on the board.
    */
   function bridgeView(model, edge, ctx) {
     const { left, right, threads } = ZtLayout.bridgeLayout(edge);
@@ -4428,14 +4372,11 @@
       else if (!document.body.contains(view)) document.removeEventListener('keydown', onKey, true);
     };
     document.addEventListener('keydown', onKey, true);
-    const cardEl = (at, side, i) => {
+    const cardEl = (at) => {
       const p = ctx.partOf.get(at);
-      const el = h('button', { class: 'mbk-bcard' + (at === ctx.here ? ' here' : ''), title: at, onclick: () => go(at) },
+      return h('button', { class: 'mbk-bcard' + (at === ctx.here ? ' here' : ''), title: at, style: `--tilt: ${ZtLayout.tilt(at)}deg`, onclick: () => go(at) },
         h('span', { class: 'mbk-facet', text: p ? ctx.headLabel(p.facet) : at }),
         h('span', { class: 'mbk-title' }, titleNodes(p ? bareTitle(p.title) : at)));
-      el.dataset.side = side;
-      el.dataset.i = i;
-      return el;
     };
     const head = (id) => {
       const b = ctx.blocks[ctx.index.get(id)];
@@ -4443,55 +4384,14 @@
         h('span', { class: 'mbk-tab', text: ctx.headLabel(b.facet) || ctx.nameOf(id) }),
         h('button', { class: 'mbk-bcol-title', onclick: () => go(b.head), title: b.head }, titleNodes(bareTitle(b.title))));
     };
-    const leftCards = left.map((at, i) => cardEl(at, 'left', i));
-    const rightCards = right.map((at, i) => cardEl(at, 'right', i));
-    const threadsSvg = svg('svg', { class: 'mbk-threads', 'aria-hidden': 'true' });
-    const body = h('div', { class: 'mbk-bridge-body' },
-      h('div', { class: 'mbk-bcol left' }, head(edge.to_block), leftCards),
-      h('div', { class: 'mbk-bgap' }),
-      h('div', { class: 'mbk-bcol right' }, head(edge.from_block), rightCards),
-      threadsSvg);
     const view = h('div', { class: 'mbk-bridge' + (ctx.up ? ' up' : '') },
       h('div', { class: 'mbk-bridge-bar' },
-        h('button', { class: 'mbk-bridge-close', onclick: close, title: 'Back to the blocks (Esc)' }, '← Blocks'),
+        h('button', { class: 'mbk-bridge-close', onclick: close, title: 'Back to the board (Esc)' }, '← Board'),
         h('span', {}, h('b', { text: ctx.nameOf(edge.from_block) }), ` ${KINDS[kind].fwd} `, h('b', { text: ctx.nameOf(edge.to_block) }), ` · ${edge.count} Link${edge.count === 1 ? '' : 's'}`)),
       ctx.up ? h('p', { class: 'mbk-pairs-fault', text: 'Forward: the right block rests on a later block. File the premise before it, or move the Card that rests on it after the premise.' }) : null,
-      body);
-    const drawThreads = () => {
-      const box = body.getBoundingClientRect();
-      if (!box.width) return;
-      threadsSvg.setAttribute('width', box.width);
-      threadsSvg.setAttribute('height', box.height);
-      threadsSvg.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
-      const defs = svg('defs', {});
-      const marker = svg('marker', { id: 'mbk-thread-arrow', viewBox: '0 0 8 8', refX: '7', refY: '4', markerWidth: '7', markerHeight: '7', markerUnits: 'userSpaceOnUse', orient: 'auto' });
-      marker.append(svg('path', { d: 'M 0 0.8 L 7 4 L 0 7.2 z', class: 'mbk-arrowhead ' + (ctx.up ? 'up' : 'hot') }));
-      defs.append(marker);
-      threadsSvg.replaceChildren(defs);
-      for (const [li, ri] of threads) {
-        const a = offsetIn(leftCards[li], body);
-        const b = offsetIn(rightCards[ri], body);
-        const x1 = a.left + leftCards[li].offsetWidth;
-        const y1 = a.top + Math.min(20, leftCards[li].offsetHeight / 2);
-        const x2 = b.left - 2;
-        const y2 = b.top + Math.min(20, rightCards[ri].offsetHeight / 2);
-        const c = (x2 - x1) / 2;
-        const path = svg('path', { d: `M ${x1} ${y1} C ${x1 + c} ${y1} ${x2 - c} ${y2} ${x2} ${y2}`, class: `mbk-thread kind-${kind}`, 'marker-end': 'url(#mbk-thread-arrow)' });
-        path.dataset.l = li;
-        path.dataset.r = ri;
-        threadsSvg.append(path);
-      }
-    };
-    // Pointing at a Card raises its threads and fades the rest.
-    for (const el of [...leftCards, ...rightCards]) {
-      el.addEventListener('mouseenter', () => {
-        threadsSvg.classList.add('pointing');
-        for (const p of threadsSvg.querySelectorAll('.mbk-thread')) p.classList.toggle('on', p.dataset[el.dataset.side === 'left' ? 'l' : 'r'] === el.dataset.i);
-      });
-      el.addEventListener('mouseleave', () => threadsSvg.classList.remove('pointing'));
-    }
-    setTimeout(drawThreads);
-    new ResizeObserver(drawThreads).observe(body);
+      h('div', { class: 'mbk-bridge-body' },
+        head(edge.to_block), head(edge.from_block),
+        threads.map(([li, ri]) => [cardEl(left[li]), cardEl(right[ri])])));
     return view;
   }
 

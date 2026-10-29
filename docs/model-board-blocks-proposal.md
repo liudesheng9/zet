@@ -226,6 +226,14 @@ The first build (zt 0.43.0) drew the blocks as a column of trays with ribbons in
 
 Measured on `becker2025division/4|a` (test copy of the archive): 29 SVG paths with the Model Card open and 37–41 with a chapter open (acceptance 2: fewer than 60; before: 1,215); one focus, four supporting cards, seven tabs (acceptance 1); a 500-part synthetic model lays out in about 2 ms (acceptance 6).
 
+### 9.1 The owner's review: a board, a transit map, tucked cards and flags
+
+The owner then asked for "a board with cards stuck on it" whose links have a real-world counterpart. A first answer drew the Links as string between pushpins; the owner judged the strings ugly. Four mockups were shown (tucked cards and page flags; a printed family tree; a transit map; sticky notes and marker). The owner chose **the transit map between cards** and **nesting and flags inside a card's block**, and asked for a lighter board. As built (zt 0.46.0):
+
+- **The board:** light cork with a fine grain in a wooden frame.
+- **Between blocks:** each chapter card hangs below a round station; the Links are uniform lines with smooth bends under the cards (the tree's lines bolder, the open block's inked, the forward fault red), a line that skips layers taking a free corridor. Pointing at a line lists its Card pairs; clicking it opens the two-block view, now one row per Link (the two Cards side by side, no line).
+- **Inside a block:** the chapter card on top, its cards tucked under it in a cascade showing each top strip; the open Card pulled out in full with page flags on its edges (left: the blocks it rests on; right: the blocks that rest on it) and its proof cascading under it as slips.
+
 Deviation kept: the Refers switch sits beside the board it changes (first principle: a control next to what it changes), not in the Map's stage bar.
 
 Found by the network on the live model: two cards filed under 设定 rest on proof steps of chapters 2 and 3 (`4|a|a|b` → `4|a|a|2|a|a|3`; `4|a|a|d|2` → `4|a|a|2|a|a|1` and `4|a|a|3|a|a`), so 设定 draws two red forward threads. That was a content fault of the restructure; it was repaired the same day (model-merge-proposal.md §9.4), and the network is clean.
