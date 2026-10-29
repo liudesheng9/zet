@@ -226,3 +226,14 @@ The owner corrected §9.4: the forward Links came from settings, and a setting b
 - Moved back: the information setting and the wage table to `4|a|a|b`, `4|a|a|c` (the original letters), the fixed cost to `4|a|a|d|2` after the entry condition; the setting sides repacked `a`–`h`. The derivation `推导：管理跨度项` stays in chapter 3 (`4|a|a|3|c`), after (8) it uses; chapter 3 repacked to result `3|a`, inversion `3|b`, interpretation `3|c`. The head's 结构 rebuilt from the tree.
 
 After: the setting part rests on nothing outside it; `check-network` clean (chapter 4 hangs under chapter 2 again); `self_sufficient` true, 142 members, no broken Link. The skill (Step 3, and `check-network.mjs`'s fix text) now says a setting with a forward Link has a reversed relation and stays in the setting part.
+
+### 9.7 Every setting in the setting part (2026-10-29)
+
+The owner restricted the setting part: every setting, every assumption and every symbol of the model goes there, and no other part keeps one. The rule is now its own skill, `zt-model-settings`, with `check-settings.mjs`. Its first run on Becker found six settings filed in chapters and six derivation symbols missing from the notation card. Backup `D:\zt-merge-backup\zt-before-becker-settings-part.sqlite3`.
+
+- Moved into the setting part: the introduction's setting (from chapter 1), the task allocation (2) and the aggregation (5) (two steps of chapter 2's proof chain, moved `alone`), the third-stage setting (chapter 4), the second-stage setting (chapter 5), and the free-entry equilibrium condition (chapter 7).
+- The profit (11), filed under the third-stage setting, is a derivation: it stays in chapter 4 as the first step of the price result's proof chain (`4|a|a|4|b|a`).
+- The setting part now reads `a` 符号表, `b` 引言的设定, `c` 信息与努力, `d` 任务配置 (2) → `d|1` 职业平均效率与产出, `e` 工资表 (7), `f` 三阶段时序 → `f|1` 进入条件 → `f|2` 固定成本, with the stage settings `f|a` (第二阶段), `f|b` (第三阶段) and the equilibrium condition `f|1|a`, then `g` 三元正态, `h` 开放经济, `i` 基准开放经济, `j` 估计的数据. Chapters 1, 4, 5 and 7 repacked.
+- Text: the two stage settings named results the chapters derive (the price (12); the constraints (1), (5), (6)). Those sentences went to the cards that use them (the constraints to the profit card), and the settings point to their chapter. The profit (13) and the first derivation of chapter 7 now rest on the stage setting and on the equilibrium condition. Every `依赖 [[setting]] 的结果` reads `的设定`. The notation card gained a section for the auxiliary symbols (x, A, H, C(ω), Q(ω), U, ψ_T^e, Δψ_T) and the general r̄(u).
+
+After: `check-settings` all in the setting part; `check-network` clean; `check-premises` only pointers and roadmaps; `self_sufficient` true, 142 members, 422 Cards, no broken Link. The head's 结构 rebuilt.

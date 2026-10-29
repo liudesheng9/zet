@@ -47,6 +47,7 @@
     "zettelkasten",
     "zt-digest-protocol",
     "zt-model-fold",
+    "zt-model-settings",
     "zt-model-restructure"
   ],
   "retained_workflows": {

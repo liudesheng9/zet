@@ -1,11 +1,13 @@
 ---
 name: zt-model-restructure
-description: "Rebuild the inner structure of one ZET model so a human can read it, given the address of its Model Card (the root card of the model, for example becker2025division/4|a): an intuition spine (a short main line of plain-language chapter cards, each chapter's results as Side branches, each result's proof chain as a Side branch of the result), settings kept as primitives in the setting part, one notation card, one card format per role, and relations that point the right way, so that the GUI's model board (each chapter under the chapter it builds on most) shows no forward or unanchored fault; checked with scripts/check-model.mjs, check-network.mjs and check-premises.mjs. Use when the user says a model is messy, hard to understand, wants its inner structure, network, relations or cards improved or made human friendly, or wants a model's network checked. A model split across several Model Cards is folded first with zt-model-fold."
+description: "Rebuild the inner structure of one ZET model so a human can read it, given the address of its Model Card (the root card of the model, for example becker2025division/4|a): an intuition spine (a short main line of plain-language chapter cards, each chapter's results as Side branches, each result's proof chain as a Side branch of the result), the setting part kept as zt-model-settings leaves it, one notation card, one card format per role, and relations that point the right way, so that the GUI's model board (each chapter under the chapter it builds on most) shows no forward or unanchored fault; checked with scripts/check-model.mjs, check-network.mjs and check-premises.mjs. Use when the user says a model is messy, hard to understand, wants its inner structure, network, relations or cards improved or made human friendly, or wants a model's network checked. A model split across several Model Cards is folded first with zt-model-fold, and its settings are organized with zt-model-settings."
 ---
 
 # Restructure a ZET model for a human reader
 
 Input: the **address of the Model Card** (the model's root card, for example `becker2025division/4|a`), written `<head>` below. Every script takes it. A model the digest split across several Model Cards is first folded into one with the `zt-model-fold` skill; this skill works on one Model Card.
+
+The settings are organized first, by the `zt-model-settings` skill: every setting, assumption and symbol in the setting part, nothing else there. This skill keeps the setting part as that skill leaves it, and never files a setting in a chapter.
 
 **The one principle: lower the reader's working memory.** A reader can hold only a few things at once. Every decision below serves that: one idea per card, the claim before the detail, the intuition on the main line, the proofs out of the way until the reader asks for them. Grouping cards by *type* (all settings together, all derivations together) does **not** lower the load; it was tried on Becker 2025 and the owner rejected it. Group by *meaning*: chapter, then result, then proof.
 
@@ -22,6 +24,7 @@ Tool mechanics (Workspaces, `get_model`, moves, Locks) are in the `zt` skill; Ca
 ## Step 1: read the model
 
 - `scripts/check-model.mjs <head>`: confirm `<head>` is the Model Card (`get_model` names it as `head`), list its main line, its members and its build faults. If the book holds other Model Cards that rest on this one or share its parts, the model is parted: fold it first (`zt-model-fold`).
+- `../zt-model-settings/scripts/check-settings.mjs <head>` must print `settings: all in the setting part`. If it does not, run the `zt-model-settings` skill first.
 - `scripts/check-network.mjs <head>` and `scripts/check-premises.mjs <head>`: the network and the hidden premises before the work, so the pass can be measured.
 - Read every card (25 at a time, `text` view) and the source sections they cite.
 
@@ -36,11 +39,11 @@ Main line   设定 → 第 1 章：直觉 → 第 2 章 … → 第 k 章：主�
 ```
 
 - The **main line** is the setting, then chapter cards in the book's order. A chapter card states one mechanism in plain words. Put the book's verbal model (often in the introduction) first as 第 1 章：直觉.
-- Under a chapter: its local setting (本章设定) first, then its results, then asides (footnotes, limitations, extensions).
+- Under a chapter: its results, then asides (footnotes, limitations, extensions). A chapter holds no setting: a stage setting or an assumption the book adds in a chapter is in the setting part, and the chapter's derivations rest on it.
 - Under a result: the derivation chain that ends in it, as one Direct chain.
-- The shared settings and the **notation card** hang under the setting card; a chapter's own settings hang under that chapter (see below).
+- Every setting and the **notation card** are in the setting part (the `zt-model-settings` skill).
 - A model of five or more chapters gets **parts** (分部): a `**分部**` section in the Model Card, one line per part, `- 第二部分 求解：[[<first chapter card>]] 起`. The GUI names each part over its run of tabs in the network's strip and labels it on the Map; zt reports a part that starts off the main line as a build fault. New models get it from the architect's `divisions`.
-- **Settings are primitives and stay in the setting part.** The setting card and its Side cards hold the agents, information, timing, costs, draws and the notation card, the paper's assumptions. A setting rests on nothing derived later. When a setting appears to rest on a derivation, the relation points the wrong way: the setting names a variable or defines a cost, and the derivation later works with it (Becker: the information setting names efficiency λ, and (4) derives its formula; the fixed-cost setting defines f, and a derivation shows its bracket is average efficiency). Make the derivation rest on the setting (`依赖 [[setting]]`), and let the setting point to where the formula is derived (`第 2 章由错配推出它的闭式（式 (4)，[[…]]）`). A setting states the assumption only, never a derived fact. A chapter's 本章设定 is an assumption the book adds in that chapter (`设定：第二阶段只选职业数量`), not a parked setting.
+- **Settings are primitives and stay in the setting part** (the rules are in `zt-model-settings`). A setting rests on nothing derived later. When a setting appears to rest on a derivation, the relation points the wrong way: the setting names a variable or defines a cost, and the derivation later works with it (Becker: the information setting names efficiency λ, and (4) derives its formula). Make the derivation rest on the setting (`依赖 [[setting]]`), and let the setting point to where the formula is derived (`第 2 章由错配推出它的闭式（式 (4)，[[…]]）`).
 
 Two build rules make this pass zt's checks:
 
@@ -66,7 +69,7 @@ Write the target as a JSON spec (format in `scripts/tree-mover.mjs`) by card ide
 
 ## Step 3: make each card readable
 
-1. **One notation card** as the first Side successor of the setting: every symbol grouped by block, each defined once, plus a legend of the marks (`(n)` equation numbers; `（论文略去，此处补出）` for a step the paper skipped; `推导链第 k 步，共 n 步`; subscripts). Delete the local symbol tables. Settle conflicting definitions against the source text (Becker: `π` was the circle constant, not a wage parameter).
+1. **One notation card** as the first Side successor of the setting (`zt-model-settings` keeps every symbol there): every symbol grouped by block, each defined once, the symbols derivations introduce in their own section, plus a legend of the marks (`(n)` equation numbers; `（论文略去，此处补出）` for a step the paper skipped; `推导链第 k 步，共 n 步`; subscripts). Settle conflicting definitions against the source text (Becker: `π` was the circle constant, not a wage parameter).
 2. **One format per role** ([references/card-formats.md](references/card-formats.md)): chapter, result, derivation, setting, aside. The claim first, in words; at most one formula on a chapter card; each premise once; no `本模型`.
 3. **Consistent labels.** Facets carry the role: `第 k 章：…`, `结果：…`, `推导：…`, `设定：…`. Titles start the same way. The GUI shows a Link to a Model part by its facet (zt 0.42.1+), so the facet is what the reader sees in every Link.
 
@@ -75,6 +78,7 @@ Draft the text with DeepSeek: one job per chapter or per group, each with the fo
 ## Step 4: verify and record
 
 - `scripts/check-model.mjs <head>`: the main line, and the `closure`, `forward`, `reach_in`, `unanchored` faults; `self_sufficient` must be true.
+- `../zt-model-settings/scripts/check-settings.mjs <head>` still prints `settings: all in the setting part`.
 - `list_broken_links` is empty; the tree has the same number of Cards plus the ones you created; no title vanished except the ones you renamed.
 - Rebuild the head's **结构** section from the tree (two levels: the main line and one level under each main card).
 - `scripts/check-network.mjs <head>`: the network as the GUI draws it, with the GUI's own layout code (the running service's `/layout.js`, or `ZT_LAYOUT`). It prints the tree each chapter hangs in and every fault the network shows a reader: `forward` (with the move that fixes it: the card and the chapter to file it under), `unanchored`, `parts`, `lead` (a missing or short 直觉 opening); `advice` names chapters with no result card (right for an intuition or summary chapter). It must print `network: clean`; `--json` gives the full report. Apply a `forward` move with `scripts/zt.mjs` `move` (or the tree mover), then run the check again.

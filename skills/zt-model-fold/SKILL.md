@@ -37,14 +37,14 @@ Pick the surviving head (usually the first formal model). For every other Model 
 
 **The trap:** zt refuses to retype a Model Card while it has parts filed under it **or links any Model part in its body**. So (a) never add a rests-on line to X before the retype, (b) never retype in the same batch as moves (batched calls run even after one fails, and leave nested Model Cards), and (c) once one head becomes a part, every other head that links it must be masked too. Retype one Card per message and read the result.
 
-Settings of a folded head are the model's assumptions: they go to the model's setting part, never into a chapter (the restructure skill's rule on settings).
+Settings of a folded head are the model's assumptions: they go to the model's setting part, never into a chapter (the `zt-model-settings` skill's rule). Hand the Model Card's address to `zt-model-settings` next, then to `zt-model-restructure`.
 
 ## Step 3: verify the fold
 
 - `scripts/model-survey.mjs <citationKey>` lists one Model Card for the model.
 - `scripts/check-model.mjs <head>`: every former head is a part; `self_sufficient` should be true (a fault here is fixed in the restructure, by moving cards, never by deleting a Link).
 - `list_broken_links` is empty; the tree has the same number of Cards.
-- Record the pass in the project docs, tell the user which tree is still unlocked, and hand the Model Card's address to `zt-model-restructure`.
+- Record the pass in the project docs, tell the user which tree is still unlocked, and hand the Model Card's address to `zt-model-settings`, then to `zt-model-restructure`.
 
 ## Helper facts (zt-digest call)
 
