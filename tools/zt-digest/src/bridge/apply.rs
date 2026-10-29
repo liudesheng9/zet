@@ -572,6 +572,12 @@ fn open_lock(path: &str) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// The body without the `跨书关联：` paragraphs this stage appends to a carrier, so a writer
+/// that owns the rest of the Card can tell the Bridge's lines from a rewrite.
+pub(crate) fn without_bridge_lines(body: &str) -> String {
+    body.split("\n\n").filter(|paragraph| !paragraph.starts_with("跨书关联：")).collect::<Vec<_>>().join("\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,5 +598,15 @@ mod tests {
         assert_eq!(expected_fingerprint(&snapshot, &attempts[1..]), json!("sha256:a"));
         assert_eq!(property(&json!({ "Old/1|A": "rests-on" }), "old/1|a"), &json!("rests-on"));
         assert_eq!(keys_of(&Value::Null), json!([null]));
+    }
+
+    #[test]
+    fn bridge_paragraphs_are_stripped_and_nothing_else() {
+        let authored = "问题：A？\n\n来源：参照 [[k]] §导论。";
+        let bridged = format!("{authored}\n\n跨书关联：对照 [[o/2|b]]：一句。\n\n跨书关联：对应 [[p/1]]：二句。");
+        assert_eq!(without_bridge_lines(&bridged), authored);
+        assert_eq!(without_bridge_lines(authored), authored);
+        let inline = "问题：A？跨书关联：不是独立段落。";
+        assert_eq!(without_bridge_lines(inline), inline);
     }
 }

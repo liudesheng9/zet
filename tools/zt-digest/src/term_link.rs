@@ -52,6 +52,14 @@ use std::sync::LazyLock;
 use card::Counts;
 use matches::Policy;
 
+static TERM_MACRO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]@\[]+)@[^\]\[]+\]\]").unwrap());
+
+/// The body with every Term link `[[label@address]]` turned back into its label: the inverse of
+/// what this pass writes, so a writer that owns the rest of a Card can tell it from a rewrite.
+pub(crate) fn unlinked(body: &str) -> String {
+    TERM_MACRO.replace_all(body, "$1").into_owned()
+}
+
 /// The declared steps, in command order (design 13.1).
 pub const STEPS: [&str; 2] = ["plan", "apply"];
 
@@ -1064,6 +1072,13 @@ fn card_faults_of(plan: &Value) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unlinked_turns_each_term_link_back_into_its_label() {
+        assert_eq!(unlinked("[[净生产函数@K/8]]决定产出，见 [[K/4]]。"), "净生产函数决定产出，见 [[K/4]]。");
+        assert_eq!(unlinked("对照[[均衡@hart1995firms/1|a|x]]与[[剩余控制权@h/1|a|p]]。"), "对照均衡与剩余控制权。");
+        assert_eq!(unlinked("没有链接。"), "没有链接。");
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|value| value.to_string()).collect()

@@ -1733,6 +1733,8 @@ impl Compiler {
             let (sampled, record) = self.sample_cards(&audit, &picked)?;
             review = sampled;
             self.state["sampled"] = record;
+        } else {
+            self.state["sampled"] = not_sampled(&picked, self.p.seed);
         }
         // R247: a Model draft no model chain owns is reviewed and corrected by this cycle;
         // a draft an active chain owns reuses that chain's checked review instead.
@@ -3061,9 +3063,34 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+/// R297: the record of a cycle run with no Idea sample (`-Sample 0`): it states the population
+/// and that nothing was sampled, so `book-cards-finish` reads a sample record, never an empty
+/// one (hart1995firms gaps, 2026-10-29: mode cards with `ideaSample: 0` was refused).
+fn not_sampled(picked: &[Value], seed: i32) -> Value {
+    let population = picked.iter().filter(|c| eq(&field(c, "category"), "idea")).count();
+    json!({
+        "fraction": 0.0, "seed": seed, "sampled": false,
+        "population": population, "eligible": 0, "target": 0, "size": 0,
+        "groups": 0, "covered": 0, "feasible": true, "source_flagged": [],
+        "addresses": [], "spans": {}, "proves": "sample"
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cycle_without_a_sample_records_that_it_took_none() {
+        let picked = vec![json!({"category":"idea"}), json!({"category":"model"}), json!({"category":"idea"})];
+        let record = not_sampled(&picked, 7);
+        assert_eq!(record["proves"], json!("sample"));
+        assert_eq!(record["sampled"], json!(false));
+        assert_eq!(record["fraction"], json!(0.0));
+        assert_eq!(record["population"], json!(2));
+        assert_eq!(record["size"], json!(0));
+        assert_eq!(record["seed"], json!(7));
+    }
 
     #[test]
     fn an_owned_manifest_names_only_the_books_own_cards() {

@@ -3756,7 +3756,9 @@ fn verify_cards_book_coverage(
             .get(&ps::key(at))
             .with_context(|| format!("the checked Card `{at}` no longer exists"))?;
         let then = by_address.get(&ps::key(at)).context("incomplete checked Card view")?;
-        if crate::calls::authored_fingerprint(now) != crate::calls::authored_fingerprint(then) {
+        if crate::calls::authored_fingerprint(now) != crate::calls::authored_fingerprint(then)
+            && authored_without_later_writers(now, true) != authored_without_later_writers(then, true)
+        {
             bail!("the checked Card `{at}` changed after the cycle; run the Card cycle again");
         }
         if now["workspace"] != "agent" {
@@ -3797,6 +3799,8 @@ fn verify_cards_book_coverage(
             .first()
             .map(crate::calls::authored_fingerprint)
             .unwrap_or_default();
+        let later = |unlink: bool| current.cards.first().map(|card| authored_without_later_writers(card, unlink)).unwrap_or_default();
+        let (unbridged, unlinked) = (later(false), later(true));
         if models_enabled {
             let (unit, inputs) = model_unit_for_header(&conn, at)?.with_context(|| {
                 format!("the Model draft `{at}` has no registered model unit; register its chain first")
@@ -3827,6 +3831,9 @@ fn verify_cards_book_coverage(
             // completed, so no later Card cycle changed the reviewed draft behind the review.
             if let Some(completed) = result["card_fingerprints"].get(at.as_str()).and_then(Value::as_str)
                 && completed != fingerprint
+                && completed != unbridged
+                && completed != unlinked
+                && result["card_unlinked_fingerprints"].get(at.as_str()).and_then(Value::as_str) != Some(unlinked.as_str())
             {
                 bail!(
                     "the Model draft `{at}` changed after its model chain completed; the chain keeps the review, so the Card cycle must not rewrite it"
@@ -3904,7 +3911,8 @@ fn verify_cards_book_coverage(
         }));
     } else {
         covered.push(json!({
-            "kind": "sample", "ref": "idea-sample", "outcome": "no_eligible_cards",
+            "kind": "sample", "ref": "idea-sample",
+            "outcome": if sample["fraction"].as_f64() == Some(0.0) { "not_sampled" } else { "no_eligible_cards" },
             "population": population, "eligible": eligible, "size": 0, "proves": "sample"
         }));
     }
@@ -4004,6 +4012,20 @@ fn cards_book_evidence(
     let mut artifacts = serde_json::Map::new();
     artifacts.insert("report".into(), record);
     Ok((plan, artifacts))
+}
+
+/// The authored fingerprint of a Card without what later writers add to a finished Card: the
+/// Bridge's `跨书关联：` paragraphs and, with `unlink`, the Term-link pass's `[[label@address]]`
+/// links. Neither is a rewrite of the content a cycle checked or a model chain reviewed
+/// (hart1995firms gaps, 2026-10-29).
+fn authored_without_later_writers(card: &Value, unlink: bool) -> String {
+    let mut card = card.clone();
+    let mut body = crate::bridge::without_bridge_lines(&s(&card["body"]));
+    if unlink {
+        body = crate::term_link::unlinked(&body);
+    }
+    card["body"] = json!(body);
+    crate::calls::authored_fingerprint(&card)
 }
 
 fn book_cards_finish(
@@ -12773,6 +12795,12 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         .iter()
         .map(|(address, card)| (address.clone(), crate::calls::authored_fingerprint(card)))
         .collect();
+    // The same Cards without the later writers' additions: the Term-link pass moves a term's
+    // link to its first occurrence, which only the unlinked text can tell from a rewrite.
+    let unlinked_fingerprints: BTreeMap<String, String> = cards
+        .iter()
+        .map(|(address, card)| (address.clone(), authored_without_later_writers(card, true)))
+        .collect();
     let part_order: Vec<Value> = order
         .iter()
         .map(|(address, o)| {
@@ -12799,6 +12827,7 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         "head_fingerprint": crate::calls::authored_fingerprint(head_card),
         "start_fingerprint": field(inputs, "fingerprint")?,
         "card_fingerprints": fingerprints,
+        "card_unlinked_fingerprints": unlinked_fingerprints,
         "structure": {"lines":structure,"fingerprint":canon::hash_value(&json!(structure))},
         "steps": steps,
         "split": split,
