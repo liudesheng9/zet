@@ -1069,8 +1069,10 @@ pub(crate) fn structure(
 /// #199 (B1, docs/model-board-blocks-proposal.md P1/P7): the model as blocks for the GUI. A block is
 /// one main-line part with every part filed under it; its direct Side parts are its children, each
 /// with the chain filed under it as its proof. A model whose main-line parts hold no Side parts (a
-/// flat model) starts a block at each main-line part that is not a Derivation part instead. Parts
-/// filed under the Model Card itself, or shared from other models, make one last `aside` block.
+/// flat model) starts a block at each main-line part that is not a Derivation part instead. The parts
+/// shared from other models make one `shared` block before the setting: the build places each before
+/// the step that needs it, so a Link that rests on one is never forward. Parts filed under the Model
+/// Card itself make one last `aside` block.
 /// The parts (range blocks) come from the head's `**分部**` section: `- <name>：[[<main part>]] 起`.
 /// Each block's `lead` is the first sentence of its card's `**直觉**`, the line its tray opens with.
 /// `block_edges` aggregates the relations between Cards of different blocks by block pair and kind.
@@ -1093,6 +1095,7 @@ pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value]
         block_of_main.insert(s(m, "address"), heads.len() - 1);
     }
     let aside = heads.len();
+    let shared = aside + 1;
     let block_of = |address: &str| -> Option<usize> {
         if let Some(&b) = block_of_main.get(address) {
             return Some(b);
@@ -1103,11 +1106,11 @@ pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value]
             .max_by_key(|(m, _)| m.len())
             .map(|(_, &b)| b)
     };
-    let mut members: Vec<Vec<&Value>> = vec![Vec::new(); heads.len() + 1];
+    let mut members: Vec<Vec<&Value>> = vec![Vec::new(); heads.len() + 2];
     let mut card_block: BTreeMap<String, usize> = BTreeMap::new();
     for e in order {
         let at = s(e, "address");
-        let b = block_of(&at).unwrap_or(aside);
+        let b = if e["line"] == "shared" { shared } else { block_of(&at).unwrap_or(aside) };
         members[b].push(e);
         card_block.insert(at, b);
     }
@@ -1135,12 +1138,20 @@ pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value]
     if !members[aside].is_empty() {
         let children: Vec<Value> = members[aside]
             .iter()
-            .filter(|e| is_child(&s(e, "address"), head) || e["line"] == "shared")
+            .filter(|e| is_child(&s(e, "address"), head))
             .map(|e| child_value(e, &members[aside]))
             .collect();
         blocks.push(json!({
-            "id": format!("b{aside}"), "head": head, "title": "旁注与共用", "facet": null, "emphasis": null,
+            "id": format!("b{aside}"), "head": head, "title": "旁注", "facet": null, "emphasis": null,
             "kind": "aside", "part": null, "members": members[aside].len(), "chaptered": chaptered, "children": children,
+        }));
+    }
+    if !members[shared].is_empty() {
+        let tops = |e: &&&Value| !members[shared].iter().any(|m| under(&s(e, "address"), &s(m, "address")));
+        let children: Vec<Value> = members[shared].iter().filter(tops).map(|e| child_value(e, &members[shared])).collect();
+        blocks.insert(0, json!({
+            "id": format!("b{shared}"), "head": head, "title": "共用前提", "facet": null, "emphasis": null,
+            "kind": "shared", "part": null, "members": members[shared].len(), "chaptered": chaptered, "children": children,
         }));
     }
     let mut edges: Vec<Value> = Vec::new();
@@ -1802,6 +1813,32 @@ mod tests {
         assert_eq!(rests["count"], 2);
         assert_eq!(rests["pairs"].as_array().unwrap().len(), 2);
         assert_eq!(edges.iter().find(|e| e["kind"] == "refers").unwrap()["count"], 1);
+    }
+
+    /// A part shared from another model is a premise from outside: the build places it before the
+    /// step that needs it, so its block stands before the setting, and a chapter that rests on it
+    /// rests on an earlier block (no forward edge). Parts filed under the head stay the last aside.
+    #[test]
+    fn a_shared_part_is_a_premise_block_before_the_setting() {
+        let order = vec![
+            entry("K/4|a|a", "设定", "main"),
+            entry("J/6|b|a|1", "结果：最优税", "shared"),
+            entry("K/4|a|a|1", "第 1 章：税制", "main"),
+            entry("K/4|a|a|1|a", "结果：效率", "side"),
+            entry("K/4|a|b", "概述", "off"),
+        ];
+        let relations = vec![
+            json!({"from": "K/4|a|a|1|a", "to": "J/6|b|a|1", "kind": "rests-on", "note": ""}),
+            json!({"from": "K/4|a|a|1", "to": "K/4|a|a", "kind": "rests-on", "note": ""}),
+        ];
+        let (blocks, edges) = blocks_report("K/4|a", &order, &relations, &|_| "");
+        let kinds: Vec<&str> = blocks.iter().map(|b| b["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["shared", "setting", "chapter", "aside"], "{blocks:?}");
+        assert_eq!(blocks[0]["children"][0]["address"], "J/6|b|a|1");
+        assert_eq!(blocks[3]["members"], 1, "the aside keeps only the parts filed under the head");
+        let at = |id: &str| blocks.iter().position(|b| b["id"] == id).unwrap();
+        let shared = edges.iter().find(|e| e["pairs"][0]["to"] == "J/6|b|a|1").expect("an edge into the shared part");
+        assert!(at(shared["to_block"].as_str().unwrap()) < at(shared["from_block"].as_str().unwrap()), "a premise from another model is earlier, never forward: {edges:?}");
     }
 
     /// #204 (B6): a `**分部**` line that names a Card off the main line is a build issue with its fix.

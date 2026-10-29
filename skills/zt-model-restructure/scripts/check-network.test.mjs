@@ -60,3 +60,18 @@ test('a clean spine passes', async () => {
   const r = analyse(m, L)
   assert.equal(r.ok, true, JSON.stringify(r, null, 1))
 })
+
+test('a part shared from another model is a premise block before the setting: resting on it is not forward', async () => {
+  const L = await loadLayout()
+  const m = fixture()
+  m.blocks[1].lead = '错配越少，效率越高，代价是更多的管理跨度成本。'
+  m.blocks[3].lead = '工资随效率走，离散度取决于绩效敏感度和监督的强弱。'
+  m.block_edges = m.block_edges.filter((e) => e.from_block !== 'b0')
+  m.block_edges.push({ from_block: 'b3', to_block: 'b2', kind: 'rests-on', count: 1, pairs: [] })
+  m.blocks.unshift({ id: 'b5', head: H, kind: 'shared', facet: null, title: '共用前提', lead: null, members: 1, part: null, chaptered: true, children: [child('J/6|b|a|1', '结果：最优税')] })
+  m.block_edges.push({ from_block: 'b1', to_block: 'b5', kind: 'rests-on', count: 1, pairs: [{ from: 'K/4|a|a|1|a', to: 'J/6|b|a|1' }] })
+  const r = analyse(m, L)
+  assert.deepEqual(r.forward, [])
+  assert.ok(r.lines.some((l) => /^共用 共用前提/.test(l)), r.lines.join('\n'))
+  assert.equal(r.ok, true, JSON.stringify(r, null, 1))
+})

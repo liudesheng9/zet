@@ -3917,6 +3917,9 @@
   let bridgeOpen = null;
   // Card sizes in the model network, by attention level.
   const NET = { near: { w: 124, h: 74 }, support: { w: 124, h: 74 }, focus: { w: 176, h: 96 }, far: { w: 44, h: 30 } };
+  // Blocks that are no chapter: the parts shared from other models (before the setting) and the
+  // asides filed under the Model Card (last). Drawn as small tabs, named by these short names.
+  const PLAIN = { shared: '共用', aside: '旁注' };
   // The most page flags one edge of a card carries; the rest fold into a `+N` flag.
   const FLAGS = 4;
 
@@ -3942,7 +3945,7 @@
     // server), else the one that lists it as a child or a proof step.
     const holds = (b) => b.children.some((c) => c.address === here || (c.proof && c.proof.addresses.includes(here)));
     const byPrefix = blocks
-      .filter((b) => b.kind !== 'aside' && (b.head === here || here.startsWith(b.head + '|')))
+      .filter((b) => !PLAIN[b.kind] && (b.head === here || here.startsWith(b.head + '|')))
       .sort((a, b) => b.head.length - a.head.length)[0];
     const open = onHead ? null : (byPrefix || blocks.find(holds) || null);
     const edges = model.block_edges || [];
@@ -3955,7 +3958,7 @@
     const partOf = new Map(model.parts.map((p) => [p.address, p]));
     const nameOf = (id) => {
       const b = blocks[index.get(id)];
-      return b ? (b.kind === 'aside' ? '旁注' : facetLabel(b.facet).split('：')[0]) : id;
+      return b ? (PLAIN[b.kind] || facetLabel(b.facet).split('：')[0]) : id;
     };
     // A block's short name: a chapter by its number, the rest by their name.
     const shortName = (id) => {
@@ -4052,15 +4055,15 @@
     // ---- the board: one card (or tab) per block, hanging below its station ----
     const sizeOf = (id) => {
       const b = blocks[index.get(id)];
-      return b.kind === 'aside' ? NET.far : NET[level.get(id)] || NET.near;
+      return PLAIN[b.kind] ? NET.far : NET[level.get(id)] || NET.near;
     };
     for (const b of blocks) {
-      const lv = b.kind === 'aside' ? 'far' : level.get(b.id);
+      const lv = PLAIN[b.kind] ? 'far' : level.get(b.id);
       const isOpen = open && b.id === open.id;
       const fault = unanchored.has(b.id)
         ? h('span', { class: 'mbk-fault', text: '!', title: `Unanchored: nothing in ${nameOf(b.id)} rests on an earlier block. Add a 依赖 line from its chapter card to the chapter it builds on.` })
         : null;
-      const full = b.kind === 'aside' ? '旁注与共用' : `${facetLabel(b.facet)} — ${bareTitle(b.title)}`;
+      const full = PLAIN[b.kind] ? b.title : `${facetLabel(b.facet)} — ${bareTitle(b.title)}`;
       const flags = flagsOf(b.id);
       const node = h('div', {
         class: `mbn-node level-${lv}` + (isOpen ? ' open' : '') + (b.head === here ? ' here' : '') + (unanchored.has(b.id) ? ' unanchored' : '') + (holdsHit(b) ? ' found' : ''),
@@ -4073,7 +4076,7 @@
           ? [h('span', { class: 'mbn-num', text: shortName(b.id) }), fault]
           : [
             h('span', { class: 'mbn-head' },
-              h('span', { class: 'mbn-tab', text: b.kind === 'aside' ? '旁注' : lv === 'focus' ? headLabel(b.facet) : `${shortName(b.id)} · ${(facetLabel(b.facet).split(/[：:]/)[1] || '').trim()}`.replace(/ · $/, '') }),
+              h('span', { class: 'mbn-tab', text: PLAIN[b.kind] || (lv === 'focus' ? headLabel(b.facet) : `${shortName(b.id)} · ${(facetLabel(b.facet).split(/[：:]/)[1] || '').trim()}`.replace(/ · $/, '')) }),
               fault),
             h('span', { class: 'mbn-title' }, titleNodes(bareTitle(b.title))),
           ]);
@@ -4105,7 +4108,7 @@
         h('span', { class: 'mbn-ticks' }, s.blocks.map((b) => {
           const tick = h('button', {
             class: 'mbn-tick' + (open && b.id === open.id ? ' open' : '') + (unanchored.has(b.id) ? ' fault' : '') + (holdsHit(b) ? ' found' : ''),
-            title: b.kind === 'aside' ? '旁注与共用' : `${facetLabel(b.facet)} — ${b.title}`,
+            title: PLAIN[b.kind] ? b.title : `${facetLabel(b.facet)} — ${b.title}`,
             onclick: () => go(b.head),
             text: shortName(b.id),
           });
@@ -4339,7 +4342,7 @@
     };
 
     const summary = [
-      `Model · ${blocks.filter((b) => b.kind !== 'aside').length} blocks`,
+      `Model · ${blocks.filter((b) => !PLAIN[b.kind]).length} blocks`,
       `${model.parts.length} parts`,
       `${edges.filter((e) => refersOn || e.kind !== 'refers').reduce((n, e) => n + e.count, 0)} Links between blocks`,
     ].join(' · ');
