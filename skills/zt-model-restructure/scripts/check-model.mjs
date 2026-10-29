@@ -5,6 +5,8 @@ import { model } from './zt.mjs'
 const head = process.argv[2]
 if (!head) { console.error('usage: node check-model.mjs <modelHead>'); process.exit(2) }
 const m = model(head)
+// The input is the Model Card itself (the model's root card), not one of its parts.
+if (!m.head || m.head.address !== head) { console.error(`${head} is not a Model Card${m.head ? `: it belongs to the model ${m.head.address}; give that address` : ''}`); process.exit(2) }
 const b = m.build
 const lines = {}
 for (const o of b.order) lines[o.line] = (lines[o.line] || 0) + 1

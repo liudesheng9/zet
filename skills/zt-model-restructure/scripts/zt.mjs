@@ -1,4 +1,4 @@
-// Shared helper for the zt-model-restructure scripts: runs `zt-digest call` on a JSON array of
+// Shared helper for the zt-model-fold and zt-model-restructure scripts (each skill carries a copy): runs `zt-digest call` on a JSON array of
 // {tool, arguments} and parses its output. Temp files go to the OS temp folder.
 import fs from 'node:fs'
 import os from 'node:os'
