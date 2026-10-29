@@ -478,3 +478,31 @@ The limitation card `14/a/b` stays a Side card of its head: the locked tree `bec
 - The forward thread of `11/a` (§12.2) was a defect of zt's block builder. A separate session fixed it (zt 0.46.1, commit 592b9b3: a part shared from another model is a premise block before the setting). It is merged into main, and `11/a` is clean with no card changed.
 
 **After.** All eight formal models of the book (`3/a`, `11/a`, `14/a`, `24/a`, `32/b`, `33/a`, `40/a`, `53/a`) report `self_sufficient` true, `network: clean`, `settings: all in the setting part, as a dependency tree`, and no premise used before its card. `list_broken_links` is empty. The tree holds 1440 Cards (1429 + four notation cards + seven chapter cards).
+
+## 13. The Hart 1995 fold (2026-10-29)
+
+The `zt-model-fold` skill folded `hart1995firms` on the live box at the owner's request (`/zt-model-fold hart1995firms`, live box confirmed in the same session). The backup is `D:\zt-merge-backup\zt-before-hart1995firms-fold.sqlite3` (`VACUUM INTO`). The tree was not locked.
+
+**Survey fault.** `model-survey.mjs` read the Model Cards with `search_cards`, which stops at 200 results and ignores `offset`. This book has more than 200 Model Cards, so 7 of its 26 heads (`4/a`, `5/a`, `7/a`, `8/a`, `9/a`, `9/b`, `9/c`) were missing. The survey now reads the heads from `get_tree` (`modelHeads`, with a test).
+
+**Decision.** The book holds 26 Model Cards and 19 models. Three folds follow from the evidence or from the owner's decisions:
+
+| Model Card | Model | Surviving head | Reason |
+|---|---|---|---|
+| `4/a` 产权方法 (concept) | property-rights model | `5/a` | owner: the verbal version of `5/a` (what A buys with B, why ownership changes ex-post bargaining and ex-ante investment); facet `直觉`, `core` |
+| `7/a` 工人技能投资 | property-rights model | `5/a` | owner: the same M1, M2, a1, a2 with a worker W added; asks how W's investment changes with ownership (chapter 3 extension) |
+| `8/a` 实物资本投资 | property-rights model | `5/a` | owner: a variant that puts the investment into the asset and asks whether chapter 2's "joint ownership is never optimal" still holds |
+| `9/c` 随机所有权 (concept) | property-rights model | `5/a` | owner: mixes chapter 2's three ownership structures by probability |
+| `12/d` 多期债务模型 | diversion model | `11/a/12` | the same E, C and diversion, extended from two dates to T dates; rests on `11/a/12` and shares its setting |
+| `12/e` 不确定情形下的两期债务 | diversion model | `11/a/12` | owner: the same E, C, dates and diversion, with y1, y2 and L uncertain (observable, not verifiable) |
+| `21/a` 部分要约模型 | voting-structure model | `20/d` | keeps `20/d`'s share classes, teams and dates and asks whether §8.2 proposition 1 survives partial offers; rests on its parts |
+
+Every other Model Card is a model of its own: `1/b`, `3/a`, `3/b`, `3/c`, `3/d`, `9/a`, `9/b`, `10/a`, `11/a/7`, `12/f`, `13/a`, `14/a`, `15/c`, `16/a`, `18/d`, `18/e`. Chapter 6's Model 1, 2 and 3 (`14/a`, `15/c`, `16/a`) share the three-date setting card, but the book names them as three models and each asks its own question; the owner decided three models, and the shared setting stays a shared part. `9/b` (ADR alternating offers) answers `9/a`'s negative result with a different mechanism for two-sided investment, so it is its own model.
+
+(The table writes `/` for `|` in addresses.)
+
+**Procedure.** The §12 one-head-per-run script with two changes. A Side Idea note of the folded head moves onto the head's Direct successor, which takes the head's place when the head moves `alone` (`12/d/a`). The main line starts at the surviving head's first Model-part Side, not at Side `a`: `11/a/12` keeps Idea notes on Sides `a`–`e` and its setting on `f`. The first fold of `12/d` used the old rule and landed under note `11/a/12/a`; it was moved to `11/a/12/f/8` before the next fold.
+
+**Result.** `model-survey.mjs` lists exactly the 19 decided heads. The folded models are `5/a` (48 members, the four former heads at `5/a/a/21`–`24`), `11/a/12` (39, at `11/a/12/f/8` and `f/9`) and `20/d` (22, at `20/d/a/10`). The tree still holds 829 Cards, and `list_broken_links` is empty. Each former head is unanchored (no rests-on line back to the setting yet), so the three models are not yet self-sufficient. `zt-model-restructure` adds those lines.
+
+**Next.** `zt-model-settings`, then `zt-model-restructure`, on `hart1995firms/5|a`, `hart1995firms/11|a|12` and `hart1995firms/20|d`.
