@@ -237,3 +237,17 @@ The owner restricted the setting part: every setting, every assumption and every
 - Text: the two stage settings named results the chapters derive (the price (12); the constraints (1), (5), (6)). Those sentences went to the cards that use them (the constraints to the profit card), and the settings point to their chapter. The profit (13) and the first derivation of chapter 7 now rest on the stage setting and on the equilibrium condition. Every `依赖 [[setting]] 的结果` reads `的设定`. The notation card gained a section for the auxiliary symbols (x, A, H, C(ω), Q(ω), U, ψ_T^e, Δψ_T) and the general r̄(u).
 
 After: `check-settings` all in the setting part; `check-network` clean; `check-premises` only pointers and roadmaps; `self_sufficient` true, 142 members, 422 Cards, no broken Link. The head's 结构 rebuilt.
+
+## 10. The Acemoglu 2010 fold (2026-10-28)
+
+The `zt-model-fold` skill folded `acemoglu2010labor` on the live box (`D:\zt`, up to revision 11146) at the owner's request. The backup is `D:\zt-merge-backup\zt-before-acemoglu2010labor-fold.sqlite3` (`VACUUM INTO`, integrity `ok`).
+
+**Decision.** All 15 Model Cards are one model. Economies D, E and M (`2|a`, `3|a`, `4|a`) share G, C, θ, L and Z. §3 to §4 (`5|a` to `10|b`) rest on Economy M or on its comparative statics, and §5 and the appendix (`11|a` to `15|b`) extend the same setting. `2|a` (Economy D) is the surviving head.
+
+**Locks.** Two other locked trees pinned cards of the book: `acemoglu2007equilibrium` (27 cards, among them the head `10|a`) and `becker2025division` (4 cards). zt refuses a move of a pinned target and of any card above it (`pinned-move`). The owner unlocked both trees before the fold, and both are still unlocked after it.
+
+**Result.** `acemoglu2010labor/2|a` (title: 劳动力稀缺与技术进步模型：技术强劳动节约时稀缺才引致技术进步) is the only Model Card of the book, with 179 members. The main line holds its own setting chain (`2|a|a` to `2|a|a|8`) and 14 segment leads `2|a|a|9` to `2|a|a|22` (经济 E, 经济 M, 劳动力稀缺, 外生工资上升, 最低工资, 绿色技术, 柯布—道格拉斯, CES 要素增强, 机器替代劳动, 动态扩展, 多部门, 内生劳动供给, 均衡偏向, 经济 O). Each lead keeps its former parts as Side parts. Each lead has one rests-on line to the card it builds on (the setting `2|a|a`, Economy M `2|a|a|10`, the comparative statics `2|a|a|11`, the wage framework `2|a|a|12` or the machine model `2|a|a|17`). The head's question, summary, 结构 and source were rewritten. `self_sufficient` is true, the tree still holds 460 Cards, and `list_broken_links` is empty.
+
+**Procedure.** The §9 procedure ran as a one-head-per-run script. The script found each head by title, removed its 结构 block, parked its parts under the head, masked every Link in its body to any Model Card (head or part, in any tree), retyped it, restored the body, moved it `alone` to the next Direct slot of the head's main line, and brought its parts back. A head's Direct-slot address replaces the last number of the main line's last card (`…|8` → `…|9`), never appends to it.
+
+**Next.** The settings go to `zt-model-settings`, then the structure to `zt-model-restructure`. The staging folder `D:\zt-digest\acemoglu2010labor` names the old addresses.
