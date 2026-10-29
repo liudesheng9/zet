@@ -597,9 +597,11 @@ switch ($Step) {
         $refusal = Refuse $r.json $r.tail
         if ($refusal) { Reply $refusal.line $refusal.raw; break }
         $c = $r.json
+        # A run that recorded no correction cycle: a no-op line, never ok:false (hansen2021demand).
+        if ($c.recorded -eq $false) { Reply @{ ok = $true; step = 'changes'; finalized = ($c.finalized -eq $true) } $c; break }
         $names = Refresh-Names $c.refresh
         Reply @{
-            ok = $true; step = 'changes'; finalized = ($c.finalized -eq $true); graph_revision = [int]$c.graph_revision
+            ok = $true; step = 'changes'; recorded = $true; finalized = ($c.finalized -eq $true); graph_revision = [int]$c.graph_revision
             cards = [int]$c.counts.cards; trees = [int]$c.counts.trees
             changes = "$($c.changes)"; cycle_report = "$($c.cycle.report)"
             term_applicable = ($c.term_link.applicable -eq $true); term_scope = "$($c.term_link.scope)"; term_round = [int]$c.term_link.round

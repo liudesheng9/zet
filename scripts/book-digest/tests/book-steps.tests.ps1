@@ -98,7 +98,8 @@ switch -Regex ($cmd) {
     '^finalize ' {
         if ($flat -match '-Step stage') { Out @{ layer = "$($Matches[0])"; unit = 'organize/book@1'; state = 'done'; disposition = 'published' } }
         if ($flat -match '-Step plan') { Out @{ step = 'plan'; branch = 'fix'; audit = @{ unit = 'audit/book@1'; graph_revision = 7 }; faults = @{ total = 1 }; counts = @{ fix = 1 }; fix_cycle = @{ rules = @('R3'); cards = @('Key/1|a'); card_list = 'D:\x\fix-cards.txt' } } }
-        if ($flat -match '-Step changes') { Out @{ step = 'changes'; finalized = $false; term_link = @{ applicable = $true; round = 1; scope = 'cards'; cards = @('Key/1|a') }; changes = 'D:\x\fix\state.json'; cycle = @{ report = 'D:\x\fix\report.json' }; refresh = @() } }
+        if ($flat -match '-Step changes' -and $env:BS_NO_MANIFEST) { Out @{ step = 'changes'; recorded = $false; finalized = $false } }
+        elseif ($flat -match '-Step changes') { Out @{ step = 'changes'; recorded = $true; finalized = $false; term_link = @{ applicable = $true; round = 1; scope = 'cards'; cards = @('Key/1|a') }; changes = 'D:\x\fix\state.json'; cycle = @{ report = 'D:\x\fix\report.json' }; refresh = @() } }
         if ($flat -match '-Step scope') { Out @{ step = 'scope'; term_link = @{ applicable = $true; round = 1; scope = 'cards'; cards = @('Key/1|a') }; cycle = @{ report = 'D:\x\fix\report.json' }; refresh = @(@{ layer = 'link-check'; applicable = $true }) } }
         if ($flat -match '-Step refresh') { Out @{ layer = 'link-check'; unit = 'link-check/book@2'; state = 'done'; changed_cards = 1 } }
         # The live final report of 2026-10-27 (becker2025division): its line was 429 characters and failed the step.
@@ -361,7 +362,12 @@ Assert ((Has $coverage.calls 'coverage -Out .* -Step')) 'coverage: the step runs
 $fPlan = Step 'finalize-plan'
 Assert ($fPlan.json -and $fPlan.json.ok -eq $true -and $fPlan.json.branch -eq 'fix' -and $fPlan.json.cycle_rules -eq 'R3' -and (Has $fPlan.calls 'finalize -Step plan -Out ')) "finalize plan: the audit plan is the step's answer ($($fPlan.text))"
 $fChanges = Step 'finalize-changes'
-Assert ($fChanges.json -and $fChanges.json.ok -eq $true -and $fChanges.json.step -eq 'changes' -and $fChanges.json.term_round -eq 1) "finalize changes: the retained manifest is the step's answer ($($fChanges.text))"
+Assert ($fChanges.json -and $fChanges.json.ok -eq $true -and $fChanges.json.step -eq 'changes' -and $fChanges.json.recorded -eq $true -and $fChanges.json.term_round -eq 1) "finalize changes: the retained manifest is the step's answer ($($fChanges.text))"
+# hansen2021demand: a run that recorded no correction cycle answers a no-op line, never ok:false.
+$env:BS_NO_MANIFEST = '1'
+$fNone = Step 'finalize-changes'
+Remove-Item Env:BS_NO_MANIFEST
+Assert ($fNone.json -and $fNone.json.ok -eq $true -and -not $fNone.json.recorded -and -not $fNone.json.term_round) "finalize changes: no recorded cycle is a no-op line ($($fNone.text))"
 $fScope = Step 'finalize-scope' @{ FixWork = 'D:\x\fix' }
 Assert ($fScope.json -and $fScope.json.ok -eq $true -and $fScope.json.step -eq 'scope' -and (Has $fScope.calls 'finalize -Step scope -Out .* -FixWork D:\\x\\fix')) "finalize scope: the changed-Card manifest is the step's answer ($($fScope.text))"
 $fRefresh = Step 'finalize-refresh' @{ Layer = 'link-check'; Report = 'D:\x\fix\report.json' }

@@ -1,4 +1,4 @@
-// ==== module zt-audit v6 ====
+// ==== module zt-audit v7 ====
 // The audit: digest-audit, read-only, on one book (args.citationKey) or on every book of the agent Workspace.
 // It changes no Card; it writes audit.json, audit.md, and audit-faults.txt in args.out.
 // 4 (S26, #169): the audit publishes the per-book and Workspace Term quality beside its own completion, so the
@@ -6,8 +6,11 @@
 // 5 (#176): the audit's one command is a book-steps.ps1 step (`audit`) run by a DeepSeek drive job.
 // 6 (#180): the step answers the audit's counts (the per-book rows stay in its detail file), so the stage logs one
 // truthful summary line and returns the same counts.
+// 7 (live run 2026-10-29, hansen2021demand): the resume republished Term cards and redid the link check, then reused
+// the run-1 audit as settled, and Finalize planned from Cards that no longer existed. A resume now runs the audit
+// again unless the finalization already published its final audit.
 defineModule({
-  id: 'zt-audit', version: '6', requires: ['zt-digest-lib'],
+  id: 'zt-audit', version: '7', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the read-only audit of the book\'s Cards (one book-steps.ps1 step), with its Term coverage and quality.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -16,7 +19,15 @@ defineModule({
   },
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
-    if (await Z.settledOnResume('audit', ['audit'])) return { status: 'done', reused: true }
+    // 7: a resume reads the audit again, since its earlier stages may have changed Cards; only the final audit the
+    // finalization already published is kept.
+    if (Z.MODE === 'resume') {
+      const kept = await Z.bookStep('audit: finalize state', 'finalize-changes')
+      if (kept && kept.ok === true && kept.finalized === true) {
+        log('Audit: the finalization already published its final audit; the resume keeps it.')
+        return { status: 'done', reused: true }
+      }
+    }
     const summary = await Z.bookStep('audit cards', 'audit', Z.KEY ? { CitationKey: Z.KEY } : {})
     if (!summary || summary.ok !== true) {
       const error = (summary && summary.error) || 'no output'

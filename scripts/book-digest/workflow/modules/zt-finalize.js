@@ -1,4 +1,7 @@
-// ==== module zt-finalize v6 ====
+// ==== module zt-finalize v7 ====
+// 7 (live run 2026-10-29, hansen2021demand): on resume, `finalize changes` answered ok:false when the run had recorded
+// no correction cycle. The step now answers a no-op line (no `recorded`), and the module continues a cycle only when
+// the line says `recorded`, since a step line drops every false and a false `term_applicable` read as absent.
 // 6 (live run 2026-10-27, becker2025division): the final step's line overflowed at 429 characters and failed the
 // stage. It now carries only what this module reads, and the Term round's applicability arrives as
 // `term_inapplicable`, because a step line drops every false and an absent `term_applicable` read as applicable.
@@ -22,7 +25,7 @@
 // steps, the scope, the refreshes and the final audit are book-steps.ps1 steps run by DeepSeek drive jobs, and the
 // Term-link round is zt-term-link-lib's one drive job. No Claude agent runs a command.
 defineModule({
-  id: 'zt-finalize', version: '6', requires: ['zt-digest-lib', 'zt-term-link-lib'],
+  id: 'zt-finalize', version: '7', requires: ['zt-digest-lib', 'zt-term-link-lib'],
   summary: 'ZT digest: the finite finalization (audit plan, one scoped correction cycle, the changed-Card manifest, the round\'s Term-link pass, dependency-scoped publication refresh, final read-only audit).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -45,7 +48,7 @@ defineModule({
         log('Finalize: the branch already published its final audit; the resume reuses it.')
         return { status: 'done', reused: true }
       }
-      if (retained && retained.ok === true && retained.term_applicable !== undefined) {
+      if (retained && retained.ok === true && retained.recorded === true) {
         scope = retained
         recovered = true
         log(`Finalize: the resume continues the recorded correction cycle from ${scope.changes}; it does not re-enter the cycle.`)

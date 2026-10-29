@@ -1,18 +1,18 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.9.0",
+  "version": "6.9.1",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "584204f294ea9bcc55610128c858f32114346d0837d1691b5d987d98bcab974c",
-  "fingerprint": "64e51a3ad2d486e1",
-  "blueprintSha256": "94bb3bcd7871d9f6541ba478ccfd4ca6b3febc354deb0b935d60a82084ca67b1",
+  "sha256": "06ef2431ff4653c1424b18865108947d1c3938c6256acb56da5ccb4b48b7ddc7",
+  "fingerprint": "66d774b1ca866bfc",
+  "blueprintSha256": "10e154d2e51d69689e94506758dc13c7be59aeec06796d80cb5ef9cead529954",
   "modules": {
     "gate": "1",
-    "zt-workflow-lib": "8",
+    "zt-workflow-lib": "9",
     "zt-digest-lib": "47",
-    "zt-audit": "6",
+    "zt-audit": "7",
     "zt-book-terms": "6",
     "zt-bridge": "10",
     "zt-cards-book": "6",
@@ -26,7 +26,7 @@
     "zt-explain": "10",
     "zt-figures": "6",
     "zt-term-link-lib": "4",
-    "zt-finalize": "6",
+    "zt-finalize": "7",
     "zt-finding-layer": "6",
     "zt-group-cycle": "8",
     "zt-link-check": "3",
@@ -44,7 +44,7 @@
     },
     "zt-workflow-lib": {
       "file": "scripts/workflow-shared/modules/zt-workflow-lib.js",
-      "sha256": "8a5a68b2882c158b4f9285ab778cd49861f280a252df4a03e7ef5b4501c2b3f9"
+      "sha256": "b536a49f901c1f77c91b19c9f9483c602e5c6bbfe0bd3489d24210a8f21aa1b9"
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
@@ -52,7 +52,7 @@
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
-      "sha256": "b9260013fbed5d55867916ba02811ab07242371d97136d47ef086738d3b7c245"
+      "sha256": "41d95c31df853cf6406e14e9ab5008ab40f763ceae7e78eb6934b5e485fba1ba"
     },
     "zt-book-terms": {
       "file": "scripts/book-digest/workflow/modules/zt-book-terms.js",
@@ -108,7 +108,7 @@
     },
     "zt-finalize": {
       "file": "scripts/book-digest/workflow/modules/zt-finalize.js",
-      "sha256": "f70e8a53dfc45ec831a97727a89e5f76fc5c18a839ba559793d7c70d5da238ba"
+      "sha256": "969472aab0c7271ebfd44f866ab0d71a1a40e162a2e89301382cd148ade71ffc"
     },
     "zt-finding-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-finding-layer.js",
@@ -150,15 +150,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "de8edd709e54083254a6273290a6688809fbc751aec717a35e7f6dcb7a42dc6e"
+      "sha256": "afbaacbccb847af7897b1976ebca8df22f0cdf030d489d76742102635b157193"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "105b41b08b4420a9bf3c763d0e1bccaebc176608a6ca787a8e966cd8e15fa0d7"
+      "sha256": "4af438a55e6063f474fe3ff825b4278ad9f5e90780846fd856daf798418a8a1e"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-10-28T02:35:41.923Z",
+  "installedAt": "2026-10-29T18:26:50.360Z",
   "dryRun": {
     "agents": 54,
     "order": [

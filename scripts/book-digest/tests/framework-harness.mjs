@@ -198,7 +198,7 @@ const finalizeScope = (opts = {}) => ({
     { layer: 'audit', applicable: true, artifacts: ['report'], coverage: 'none', reason: '', branch_refreshable: true },
   ],
 })
-const finalizeChanges = (finalized, opts = {}) => ({ ...finalizeScope(opts), step: 'changes', finalized })
+const finalizeChanges = (finalized, opts = {}) => ({ ...finalizeScope(opts), step: 'changes', recorded: true, finalized })
 const finalizeRefresh = (layer) => ({ layer, unit: `${layer}/book@2`, revision: 2, state: 'done', complete: true, disposition: 'published', reused: false, superseded: [], changed_cards: 1, touched_trees: ['Key'] })
 const finalizeFinal = (name, opts = {}) => {
   const b = finalizeBranch(name)
@@ -1273,9 +1273,11 @@ function runtime(kind, opts = {}) {
       }
       case 'finalize-changes':
       case 'finalize-scope': {
+        // hansen2021demand: a run that recorded no correction cycle answers a no-op line, never ok:false.
+        if (step === 'finalize-changes' && raw.recorded === false) return { ok: true, step: 'changes', finalized: raw.finalized === true }
         const names = (raw.refresh || []).filter((e) => e.applicable === true && e.layer !== 'audit')
         const round = raw.term_link || {}
-        return { ok: true, step: raw.step, finalized: raw.finalized === true, graph_revision: n(raw.graph_revision), cards: n(raw.counts && raw.counts.cards), trees: n(raw.counts && raw.counts.trees), changes: raw.changes, cycle_report: raw.cycle && raw.cycle.report, term_applicable: round.applicable === true, term_scope: round.scope, term_round: n(round.round), term_cards: list(round.cards), term_reason: round.reason, refresh: names.map((e) => e.layer).join(','), owned: names.filter((e) => e.stage_owned).map((e) => e.layer).join(',') }
+        return { ok: true, step: raw.step, recorded: raw.recorded !== false, finalized: raw.finalized === true, graph_revision: n(raw.graph_revision), cards: n(raw.counts && raw.counts.cards), trees: n(raw.counts && raw.counts.trees), changes: raw.changes, cycle_report: raw.cycle && raw.cycle.report, term_applicable: round.applicable === true, term_scope: round.scope, term_round: n(round.round), term_cards: list(round.cards), term_reason: round.reason, refresh: names.map((e) => e.layer).join(','), owned: names.filter((e) => e.stage_owned).map((e) => e.layer).join(',') }
       }
       case 'finalize-refresh': return { ok: raw.ok !== false, layer: raw.layer, unit: raw.unit, revision: n(raw.revision), state: raw.state, complete: raw.complete === true, changed_cards: n(raw.changed_cards) }
       case 'finalize-final': {
@@ -1417,7 +1419,7 @@ function runtime(kind, opts = {}) {
       }
       case 'audit': return { ok: true, ...(run(`zt-digest audit${o.CitationKey ? ` -CitationKey ${o.CitationKey}` : ''} -Out "${out}"`) || {}) }
       case 'finalize-plan': { call(`zt-digest finalize -Step plan -Out "${out}"`); return { ok: true, ...finalizePlan(opts.finalize || 'fix') } }
-      case 'finalize-changes': { call(`zt-digest finalize -Step changes -Out "${out}"`); return { ok: true, ...finalizeChanges(opts.finalizeRecovered !== true, opts) } }
+      case 'finalize-changes': { call(`zt-digest finalize -Step changes -Out "${out}"`); if (opts.finalizeNoManifest) return { ok: true, step: 'changes', recorded: false, finalized: false }; return { ok: true, ...finalizeChanges(opts.finalizeRecovered !== true, opts) } }
       case 'finalize-scope': { call(`zt-digest finalize -Step scope -Out "${out}" -FixWork "${o.FixWork}"`); return { ok: true, ...finalizeScope(opts) } }
       case 'finalize-refresh': { call(`zt-digest finalize -Step refresh -Out "${out}" -Layer ${o.Layer} -Report "${o.Report}"`); return { ok: true, ...finalizeRefresh(o.Layer) } }
       case 'finalize-final': { call(`zt-digest finalize -Step final -Out "${out}"`); return { ok: true, ...finalizeFinal(opts.finalize || 'fix', opts) } }
@@ -1810,6 +1812,9 @@ function runtime(kind, opts = {}) {
         driveAnswers.push({ id, label, step: (command.match(/-Step ([\w-]+)/) || [])[1] || '', answer })
         if (opts.driveProse && opts.driveProse.test(label)) return { answer: `Here is the answer: ${answer}`, session_id: session, ...recorded }
         if (opts.driveNoOk && opts.driveNoOk.test(label)) return { answer: JSON.stringify({ ...value, ok: undefined }), session_id: session, ...recorded }
+        // hansen2021demand: a manager wrapped the line in a json code fence, or retyped its quotes as curly ones.
+        if (opts.driveFenced && opts.driveFenced.test(label)) return { answer: '```json\n' + answer + '\n```', session_id: session, ...recorded }
+        if (opts.driveCurly && opts.driveCurly.test(label)) return { answer: answer.replace(/"([^"]*)"/g, "“$1”"), session_id: session, ...recorded }
         if (opts.driveNested && opts.driveNested.test(label)) return { answer: JSON.stringify({ state: 'done', counts: { open: 0 } }), session_id: session, ...recorded }
         return { answer, session_id: session, ...recorded }
       }
@@ -2846,6 +2851,28 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   check(labels.includes('finalize changes') && !labels.includes('finalize final') && !labels.includes('finalize plan') && rt.result.finalize.reused === true, `finalize resume: a completed finalization is reused, never relinked again (${labels.filter((l) => /^finalize/.test(l)).join(',')})`)
 }
 {
+  // hansen2021demand (2026-10-29): the resume republished Term cards and redid the link check, then reused the run-1
+  // audit, and Finalize planned from it. On resume the read-only audit runs again unless the finalization already
+  // published its final audit.
+  const retained = [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['organize', 'organize/book@1'], ['skeleton', 'skeleton/book@1'], ['figures', 'figures/book@1'], ['bridge', 'bridge/book@1'], ['audit', 'audit/book@1'], ['link-check', 'link-check/book@1']]
+  const rt = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained, retainedDone: ['organize', 'skeleton', 'figures', 'bridge', 'audit', 'link-check'], finalizeNoManifest: true })
+  const labels = rt.calls.map((c) => c.label)
+  check(labels.includes('audit cards') && rt.result.audit && rt.result.audit.reused !== true, `hansen2021demand: a resume reads the audit again (${labels.filter((l) => /^audit|^finalize/.test(l)).join(',')})`)
+  // A run that recorded no correction cycle answers a no-op line: the stage plans, and no step reads as a fault.
+  check(labels.includes('finalize plan') && rt.result.finalize && rt.result.finalize.status !== 'failed', `hansen2021demand: finalize changes with no manifest is a no-op, then the plan (${labels.filter((l) => /^finalize/.test(l)).join(',')})`)}
+{
+  // A resume after the finalization published its final audit keeps that audit.
+  const retained = [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['organize', 'organize/book@1'], ['skeleton', 'skeleton/book@1'], ['figures', 'figures/book@1'], ['bridge', 'bridge/book@1'], ['audit', 'audit/book@1'], ['link-check', 'link-check/book@1']]
+  const rt = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained, retainedDone: ['organize', 'skeleton', 'figures', 'bridge', 'audit', 'link-check'] })
+  const labels = rt.calls.map((c) => c.label)
+  check(!labels.includes('audit cards') && rt.result.audit && rt.result.audit.reused === true, `hansen2021demand: a finished finalization's final audit is kept on resume (${labels.filter((l) => /^audit/.test(l)).join(',')})`)
+}
+for (const [name, o] of [['a json code fence', { driveFenced: /^audit cards$/ }], ['curly quotes', { driveCurly: /^audit cards$/ }]]) {
+  // hansen2021demand: a manager retyped the step's line; the line is still the step's answer.
+  const r = await run('econ', base, o)
+  check(r.result.audit && r.result.audit.status === 'done', `hansen2021demand: a drive line in ${name} is read as the step's answer (${JSON.stringify(r.result.audit && { status: r.result.audit.status, error: r.result.audit.error })})`)
+}
+{
   // S26 (#169, R0440/S26-AC06): only the finalization's final write boundary and the Term-link
   // stage itself relink. A writer that also ran a Term-link pass would see stale text and make the
   // audit meaningless; the audit is read-only and never relinks either.
@@ -3056,13 +3083,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '47' && modules['zt-digest-prepare'] === '19' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '8' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '6', `lock: the frozen build carries zt-digest-lib v47, zt-digest-prepare v19, zt-digest-report v22, zt-workflow-lib v8, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v6 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '47' && modules['zt-digest-prepare'] === '19' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-digest-lib v47, zt-digest-prepare v19, zt-digest-report v22, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '8', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v4 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '9', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v9 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -3351,7 +3378,7 @@ for (const which of ['econ', 'math']) {
   check(!/ztRelay|runScript|wfpScript/.test(growSteps), '#179: grow-steps.ps1 names no relay helper')
   check((growSim.answers || []).filter((a) => a.label === '^grow: next$').every((a) => a.answer && typeof a.answer.answer === 'string' && a.answer.session_id), '#179: the dry run answers each grow step as the drive job it is')
   const shared = readText('scripts/workflow-shared/modules/zt-workflow-lib.js')
-  check(/version: '8'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  check(/version: '9'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
 }
 
 // ================================================================================================================

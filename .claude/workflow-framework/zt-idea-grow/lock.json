@@ -1,17 +1,17 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-idea-grow",
-  "version": "4.0.7",
+  "version": "4.0.8",
   "scope": "project",
   "script": ".claude/workflows/zt-idea-grow.js",
   "scriptRel": "workflows/zt-idea-grow.js",
-  "sha256": "bab043399b45723681b9d508efbd487ca52632937eb8eded718510bbdeac8638",
-  "fingerprint": "b79b4cb7d1ce357e",
-  "blueprintSha256": "4278f442cf3c8fa37991246e688ba60ee3cec8806bcb08e07e423d465e82989d",
+  "sha256": "4b1fbedd92d71b93408afaeb702c14c647d9b518cbdbc1427bb9d5e0f31ff619",
+  "fingerprint": "8e72b9bf8e2647f4",
+  "blueprintSha256": "c6a720a0c09ca945c819062b7934fdfff5f0376e41513e24b008aded87bab8b3",
   "modules": {
     "value": "1",
     "deepseek": "1",
-    "zt-workflow-lib": "8",
+    "zt-workflow-lib": "9",
     "zt-grow-cycle": "14"
   },
   "moduleFiles": {
@@ -25,7 +25,7 @@
     },
     "zt-workflow-lib": {
       "file": "scripts/workflow-shared/modules/zt-workflow-lib.js",
-      "sha256": "8a5a68b2882c158b4f9285ab778cd49861f280a252df4a03e7ef5b4501c2b3f9"
+      "sha256": "b536a49f901c1f77c91b19c9f9483c602e5c6bbfe0bd3489d24210a8f21aa1b9"
     },
     "zt-grow-cycle": {
       "file": "scripts/idea-grow/workflow/modules/zt-grow-cycle.js",
@@ -35,10 +35,10 @@
   "sources": [
     {
       "file": "scripts/idea-grow/workflow/zt-idea-grow.blueprint.json",
-      "sha256": "a2ffa2a56c4907395482778c9dda61c1291f16a1389c8d6d0e12ce09260c6b3f"
+      "sha256": "9223e4c0864240a7dbede6b38afa05e274fab7a9370b501a5980e70a6d6436ae"
     }
   ],
-  "installedAt": "2026-10-27T23:49:40.571Z",
+  "installedAt": "2026-10-29T18:26:53.942Z",
   "dryRun": {
     "agents": 18,
     "order": [

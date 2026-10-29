@@ -1507,20 +1507,29 @@ fn refresh_facts(p: &Prepared, refresh: &[Value]) -> Result<Vec<Value>> {
 /// continue a finalization whose correction cycle and scope are already recorded, without
 /// re-entering the one permitted cycle. It also reports whether the branch already published its
 /// final audit (the scheduling audit is published with no refresh scope; the final one carries the
-/// `finalize_refresh` scope) and whether every applicable Term-link round completed.
+/// `finalize_refresh` scope) and whether every applicable Term-link round completed. A run that
+/// recorded no correction cycle answers a no-op line (`recorded: false`), never an error
+/// (hansen2021demand, 2026-10-29: the resume probe read as a fault).
 fn run_changes(p: &Prepared, a: &Params) -> Result<Value> {
     let file = if a.changes.trim().is_empty() {
         changes_path(&p.out)
     } else {
         PathBuf::from(&a.changes)
     };
-    let mut changes = util::read_json(&file).with_context(|| {
-        format!(
-            "no changed-Card manifest at {}: the correction cycle has not been recorded",
-            file.display()
-        )
-    })?;
+    let manifest = if file.exists() {
+        Some(util::read_json(&file)?)
+    } else {
+        None
+    };
     let conn = ledger::connect(&p.out.join("ledger.sqlite3"), false)?;
+    let final_audit = final_audit_published(&conn)?;
+    changes_answer(manifest, final_audit, |round| {
+        Ok(unit_state(&conn, &format!("termlink/final@{round}"))? == "done")
+    })
+}
+
+/// Whether the current audit publication is the finalization's final audit (its `finalize_refresh` scope).
+fn final_audit_published(conn: &Connection) -> Result<bool> {
     let mut finalized = false;
     if let Some((unit, _)) = ledger::required_publication(&conn, "audit")? {
         let inputs: Option<String> = conn
@@ -1534,12 +1543,26 @@ fn run_changes(p: &Prepared, a: &Params) -> Result<Value> {
             .unwrap_or(Value::Null);
         finalized = inputs["scope"]["kind"] == json!("finalize_refresh");
     }
+    Ok(finalized)
+}
+
+/// The `changes` line from the retained manifest (or none), the final-audit state and the state of a
+/// Term-link round. With no manifest, the branch ran no correction cycle: `recorded: false`.
+fn changes_answer(
+    manifest: Option<Value>,
+    final_audit: bool,
+    round_done: impl Fn(i64) -> Result<bool>,
+) -> Result<Value> {
+    let Some(mut changes) = manifest else {
+        return Ok(json!({"step": "changes", "recorded": false, "finalized": final_audit}));
+    };
+    let mut finalized = final_audit;
     let round = &changes["term_link"];
     if finalized && round["applicable"] == json!(true) && round["scope"] != json!("none") {
-        let number = round["round"].as_i64().unwrap_or(0);
-        finalized = unit_state(&conn, &format!("termlink/final@{number}"))? == "done";
+        finalized = round_done(round["round"].as_i64().unwrap_or(0))?;
     }
     changes["step"] = json!("changes");
+    changes["recorded"] = json!(true);
     changes["finalized"] = json!(finalized);
     Ok(changes)
 }
@@ -2041,6 +2064,25 @@ mod tests {
                 .push(ps::field(&fault, "rule"));
         }
         map
+    }
+
+    #[test]
+    fn a_run_with_no_correction_cycle_answers_a_no_op_changes_line() {
+        // hansen2021demand: the resume probe found no manifest and answered an error.
+        let line = changes_answer(None, false, |_| unreachable!()).unwrap();
+        assert_eq!(line, json!({"step": "changes", "recorded": false, "finalized": false}));
+        // A no_fix branch that already published its final audit is finalized without a manifest.
+        let line = changes_answer(None, true, |_| unreachable!()).unwrap();
+        assert_eq!(line["finalized"], json!(true));
+    }
+
+    #[test]
+    fn a_recorded_cycle_is_finalized_only_after_its_term_round() {
+        let manifest = json!({"term_link": {"applicable": true, "scope": "cards", "round": 1}});
+        let open = changes_answer(Some(manifest.clone()), true, |round| Ok(round != 1)).unwrap();
+        assert_eq!((open["recorded"].clone(), open["finalized"].clone()), (json!(true), json!(false)));
+        let done = changes_answer(Some(manifest), true, |_| Ok(true)).unwrap();
+        assert_eq!(done["finalized"], json!(true));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-// ==== module zt-workflow-lib v8 ====
+// ==== module zt-workflow-lib v9 ====
 // The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6; docs/workflow-module-structure-proposal.md):
 // the digests (zt-digest-lib) and zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
 //  - S6, one lock reader: the owner's typed `card_locked` refusal (#140, R326/R337/R338) is read here and only
@@ -34,6 +34,11 @@
 //  - v8 (live run 2026-10-27, becker2025division): a fresh run's staging folder does not exist before the
 //    preparation, which creates it, so deepseek_run refused the preparation's cwd. `workspace` names the folder a
 //    job runs in before the run folder exists; the fresh preparation passes the staging folder's parent.
+//  - v9 (live run 2026-10-29, hansen2021demand): a manager wrapped the line in a json code fence (its last line was
+//    the closing fence), and another retyped its quotes as curly ones (`{“ok”: true}`), so two finished steps read as
+//    failed stages. The last line is read after the fence lines are left out (`ztDriveLast`), and a line with no
+//    straight quote but curly ones is read with straight quotes. It is still only the last line, one object with a
+//    boolean top-level `ok`.
 const ZT_LOCK = 'card_locked'
 const ZT_DRIVE_MODEL = 'deepseek-official/deepseek-flash'
 const ZT_DRIVE_SCHEMA = {
@@ -78,10 +83,16 @@ function ztDriveText(text) {
   const at = said.search(/<\/?(?:answer|parameter|invoke|function_calls|antml:[a-z_]+)\b/)
   return at < 0 ? said : said.slice(0, at)
 }
+// The last line of a drive answer, or '' (v9): fence lines left out, and curly quotes read as straight when the line
+// has no straight quote.
+function ztDriveLast(text) {
+  const lines = ztDriveText(text).split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('```'))
+  const last = lines.length ? lines[lines.length - 1] : ''
+  return !last.includes('"') && /[“”]/.test(last) ? last.replace(/[“”]/g, '"') : last
+}
 function ztDriveAnswer(text) {
-  const lines = ztDriveText(text).split('\n').map((l) => l.trim()).filter(Boolean)
-  if (!lines.length) return null
-  const last = lines[lines.length - 1]
+  const last = ztDriveLast(text)
+  if (!last) return null
   const v = ztDriveParse(last)
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null
   if (typeof v.ok !== 'boolean') return null
@@ -89,10 +100,8 @@ function ztDriveAnswer(text) {
 }
 // Why an answer is not a drive answer, in the words the stage's error line uses.
 function ztDriveWhy(text) {
-  const said = ztDriveText(text).trim()
-  if (!said) return 'the answer is empty'
-  const lines = said.split('\n').map((l) => l.trim()).filter(Boolean)
-  const last = lines[lines.length - 1]
+  const last = ztDriveLast(text)
+  if (!last) return 'the answer is empty'
   const v = ztDriveParse(last)
   if (v === undefined) return 'its last line is not one JSON object'
   if (!v || typeof v !== 'object' || Array.isArray(v)) return 'its last line is not a JSON object'
@@ -175,7 +184,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '8', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '9', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====
