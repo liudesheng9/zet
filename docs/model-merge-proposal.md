@@ -424,3 +424,31 @@ Every other Model Card is a model of its own: `14/a`, `15/a`, `22/a`, `23/a`, `2
 **Result.** `check-settings.mjs` prints `settings: all in the setting part, as a dependency tree` for all four models, and `check-premises.mjs` finds no premise used before its card. The tree holds 1424 Cards (1420 and the four notation cards), and `list_broken_links` is empty. `40/a` is self-sufficient. The leads `3/a/a/5`, `11/a/a/7` and `24/a/a/5` are still unanchored, and `11/a` still rests on `6/b/a/1` (a cross-model premise, §12). `check-network.mjs` also advises that no chapter has a result card. Both belong to `zt-model-restructure`.
 
 **Next.** `zt-model-restructure` on the four heads.
+
+### 12.2 The intuition spines (2026-10-29)
+
+`zt-model-restructure` ran on the four folded models of `ebrill2001modern` on the live box at the owner's request. The backup is `D:\zt-merge-backup\zt-before-ebrill2001modern-spine.sqlite3` (`VACUUM INTO`, integrity `ok`).
+
+**Spines.** Each main line is the setting and two or three chapter cards in the book's order. Five chapter cards are new (`3/a/a/2`, `11/a/a/2`, `11/a/a/3`, `24/a/a/1`, `40/a/a/1`); the others are the leads the fold made.
+
+| Model | Chapters | Results (proof chain) |
+|---|---|---|
+| `3/a` | 1 直觉 (the former `2/a`), 2 两阶段发票抵扣 | `1/a` (mechanism); `2/a` (two derivations), with the example, the merger, the n-stage extension and the contrast with the retail sales tax as asides |
+| `11/a` | 1 理论框架 (the former `10/a`), 2 交互项回归, 3 逐国预测 | `1/a` (mechanism); `2/a`, `2/b`, `2/c` (regression columns, no chain); `3/a` (two derivations), robustness as aside |
+| `24/a` | 1 专栏 7.4 的上限, 2 筹资需要与管理成本 | `1/a` (three derivations); `2/a` (four), `2/b` (one) |
+| `40/a` | 1 最优起征点, 2 起征点以下的流转税 | `1/a` (two), `1/b` (one); `2/a` (two), `2/b` (three) |
+
+(Addresses relative to each setting card `…|a|a`; the table writes `/` for `|`.) Each result's proof chain is its first Side branch, and the head's former Side cards (the contrast, the EU case, the two limits of `40/a`) became asides of their chapter. `tree-mover.mjs` made 130 moves (65 cards); no card rests on a later card.
+
+**Text.** DeepSeek V4.1 Flash (official source, effort high) drafted 43 cards in 9 jobs under two Haiku managers: the 10 chapter cards (**直觉**, **本章结果**, **承上启下** with one `依赖` line), the result cards (`结果：` titles and facets; **结果**, **为什么**, **证明**) and the asides. All 9 conversations were deleted and the workspace removed. `check-drafts` found no lost formula or equation number. Two fixes were made by hand: a `目的：` line on the n-stage derivation, and one sentence of `24/a` chapter 2 that had the sign of the net tax rate s reversed. Derivation cards kept their text.
+
+**Anchors.** Chapter 1 of `3/a` and of `11/a` rested on a verbal setting marked `原始设定`, so they had no path to the setting card. As in Acemoglu 2007 (`2/a/a/b`), the verbal setting `3/a/a/b` and the framework `11/a/a/b` now rest on their formal setting. `11/a` chapter 3 now rests on chapter 2, whose coefficients it uses.
+
+**Heads and notation.** Each Model Card's question and summary now cover the whole model (both boxes of `24/a`, both chapters of `40/a`, the framework and the two regression chapters of `11/a`, the verbal and the formal chapter of `3/a`); formula (11.1) of `40/a` is kept. The 结构 lists the main line and one level under each main card. No model has five chapters, so none has **分部**. Each notation card gained the legend **怎样读卡片上的记号**. The 结构 of `11/a` takes in `6/b/a/1` (Diamond-Mirrlees) with a `共用` line, so zt reports it as a tolerated premise, not a closure fault.
+
+**After.**
+- `check-model`: `self_sufficient` is true for all four.
+- `check-settings`: every setting is in the setting part, as a dependency tree.
+- `check-network`: `network: clean` for `3/a`, `24/a` and `40/a`. `11/a` reports one forward thread: its chapter 1 mechanism rests on the shared part `6/b/a/1`, and `get_model` files shared parts in an aside block after the chapters. No move inside this model can fix it; the Link is a cross-model premise and stays. Whether a rests-on Link to a tolerated shared part should count as forward is a question for zt's block builder.
+- `check-premises`: no premise used before its card.
+- `list_broken_links` is empty. The tree holds 1429 Cards (1424 + the five chapter cards).
