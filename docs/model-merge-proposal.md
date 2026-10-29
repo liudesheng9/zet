@@ -251,3 +251,15 @@ The `zt-model-fold` skill folded `acemoglu2010labor` on the live box (`D:\zt`, u
 **Procedure.** The §9 procedure ran as a one-head-per-run script. The script found each head by title, removed its 结构 block, parked its parts under the head, masked every Link in its body to any Model Card (head or part, in any tree), retyped it, restored the body, moved it `alone` to the next Direct slot of the head's main line, and brought its parts back. A head's Direct-slot address replaces the last number of the main line's last card (`…|8` → `…|9`), never appends to it.
 
 **Next.** The settings go to `zt-model-settings`, then the structure to `zt-model-restructure`. The staging folder `D:\zt-digest\acemoglu2010labor` names the old addresses.
+
+### 10.1 Every setting in the setting part (2026-10-28)
+
+The `zt-model-settings` pass ran on `acemoglu2010labor/2|a` on the live box. The backup is `D:\zt-merge-backup\zt-before-acemoglu2010labor-settings.sqlite3` (`VACUUM INTO`, integrity `ok`).
+
+- **Notation card.** A new card `2|a|a|a` (符号表与读法) holds the base symbol table and the term table, which moved out of the setting `2|a|a`. It also holds a section for the 12 auxiliary symbols that the derivations introduce ($F$, $\theta'$, $A$, $q$, $X$, $D$, $s$, $\Phi(\theta)$, $r$, $\delta$, $\tilde\delta$), each with the chapters that use it. Several letters mean different things in different chapters, and the card says so. The tree now holds 461 Cards (460 plus this card).
+- **Setting part.** The Sides of `2|a|a` are `a` 符号表, `b` 假设（G−C 联合凹）, `c` 经济 E, `d` 经济 M, `e` 柯布—道格拉斯, `f` CES, `g` 机器替代 → `g|1` 技术成本, `h` 动态, `i` 内生劳动供给 → Side `i|a` 例 2, and `j` 均衡偏向. The Economy M settings sit under `d`: `d|a` 劳动供给变动 → `d|a|1` 假设 1, `d|b` 净收益与海塞矩阵 (Sides `d|b|a` 例 1, `d|b|b` 规制者), `d|c` 污染, `d|d` 多部门, `d|e` 寡头. Each setting moved `alone`, so its derivation chain closed up and stays in its chapter. The Side cards of two settings (`放宽` in 多部门 and 经济 O) went to their chapter leads.
+- **Facets.** The example cards became `设定：例 1` and `设定：例 2`. The remark `评述：放松假设 1 时结果退为弱比较静态` is a relaxation, not an assumption, so its facet changed from `假设 1 的限定` to `放宽：假设 1`, and it stays in 绿色技术.
+- **Stated assumptions.** Three chapter sentences moved into their settings, and the chapter cards now rest on those settings (`依赖 [[…]] 的设定`): κ continuous and strictly increasing (机器替代), the nondegenerate Hessian (多部门), and the concavity of G (经济 O). Theorem 5's opening line was reordered (`定理 5 断言：假设 1 成立时，…`).
+- **Premises.** Three settings named results that chapters derive. In `d|a` and `d|b`, "(13)" became a pointer to Economy M's Proposition 3. In `g|1`, the rests-on to (20) and the display of (14) moved to the first cost derivation (`2|a|a|16|a|9`), and the setting now points to both chapters. The other `check-premises` hits are symbol-table rows and chain roadmaps.
+
+After the pass, `check-settings` reports every setting in the setting part, `self_sufficient` is true, and `list_broken_links` is empty. The head's 结构 is rebuilt. `check-network` still asks for **直觉** sections on the chapter leads: that is the spine work of `zt-model-restructure`.
