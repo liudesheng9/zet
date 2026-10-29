@@ -357,3 +357,24 @@ The firm problems, the research-firm problem and the net production function set
 - Seven chapter leads (直觉 through the intro setting, 经济 C, 经济 M, 经济 O, 相对均衡偏向, 绝对均衡偏向, 强绝对均衡偏向) got one `依赖 [[setting]] 的设定` line each in **关联**. The head's 结构 was rebuilt.
 
 **After.** `check-settings` reports every setting in the setting part, as a dependency tree. `self_sufficient` is true. `check-premises` has one hit, a roadmap line of the economy M chain. The tree holds 303 Cards (302 plus the notation card), and `list_broken_links` is empty. `check-network` asks for chapter cards with **直觉** sections and result cards: that is the spine work of `zt-model-restructure`.
+
+### 11.2 The intuition spine (2026-10-29)
+
+`zt-model-restructure` ran on `acemoglu2007equilibrium/2|a` on the live box at the owner's request. The backup is `D:\zt-merge-backup\zt-before-acemoglu2007equilibrium-spine.sqlite3` (`VACUUM INTO`, integrity `ok`).
+
+- **Spine.** The main line is the setting `2|a|a` and 8 chapter cards `2|a|a|1` to `2|a|a|8`, in the paper's order: 直觉 (§1), 经济 D, 经济 C, 经济 M, 经济 O (§2), 相对均衡偏向 (§3), 绝对均衡偏向 (§4), 强绝对均衡偏向 (§5). Chapter 2 is a new card. Before the pass, economy D's proof cards sat on the main line with no chapter card. The results are 13 cards: the two §1 conclusions, Propositions 1–4, the welfare result, the fixed-point result of economy O, and Theorems 1, 2, 4, 5 and 6 with Corollary 1. Each result's proof chain is a Side branch of the result. Examples, extensions, the CES case, the market-size intuition and the Le Chatelier remark are Side branches of their result or chapter. The factor-price derivations of economies D, C and M are Side branches of their chapters, after the result they use.
+- **Mover.** `tree-mover.mjs` made 132 moves (66 cards). No card rests on a later card.
+- **Text.** DeepSeek V4.1 Flash (official source, effort high) drafted 35 cards in 8 jobs under one Haiku manager:
+  - 8 chapter cards (**直觉**, **本章结果**, **承上启下** with one `依赖` line);
+  - the result cards (`结果：` titles and facets; **结果**, **为什么**, **证明**);
+  - the asides.
+
+  All 8 conversations were deleted and the workspace removed. `check-drafts` found no lost formula or equation number. Four small fixes were made by hand: 本模型 → 本章 in two copied cross-book lines, a `目的：` line on two side derivations, and chapter 8's `依赖` line (chapter 7's result (37), not a 设定). Two lines that opened with 「假设 1 成立时」 now open with 「在假设 1 下」, so they use the assumption without stating it. Derivation cards kept their text.
+- **Head and notation.** The Model Card's title, question and summary now cover the whole model (the four economies, the reduced form (5)/(34), Theorems 1, 2 and 4–6). Formula (5) is kept. The 结构 lists the main line and one level under each main card. **分部** has three parts: 直觉与构件 (from the setting), 四种经济 (chapter 2) and 均衡偏向 (chapter 6). The notation card gained the legend **怎样读卡片上的记号**.
+
+**After.**
+- `check-model`: `self_sufficient` is true.
+- `check-settings`: every setting is in the setting part, as a dependency tree.
+- `check-network`: `network: clean` (10 blocks, 3 layers). Chapter 5 hangs under chapter 4; the other chapters hang under the setting, as their rests-on Links say.
+- `check-premises`: one hit, the roadmap line of the economy M chain.
+- `list_broken_links` is empty. The tree holds 304 Cards (302 + the notation card + the chapter 2 card).
