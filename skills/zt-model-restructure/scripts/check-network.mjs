@@ -1,7 +1,7 @@
 // node check-network.mjs <modelHead> [--json]
 // Checks a model the way the GUI's model network (zt 0.44+) draws it, with the GUI's own layout
 // code: each block (a main-line card with everything filed under it) hangs under the earlier
-// block it rests on most. Prints that tree and every fault the network shows a reader:
+// block it rests on most. Parts shared from other models are one premise block before the setting. Prints that tree and every fault the network shows a reader:
 //   forward     a card rests on a later block (a red thread): a derivation moves after its latest
 //               premise; a setting stays and its reversed relation is turned the right way
 //   unanchored  a chapter rests on no earlier block (a root with a red mark)
@@ -44,6 +44,7 @@ export function analyse(m, L) {
     const b = byId.get(id)
     if (!b) return id
     if (b.kind === 'aside') return '旁注'
+    if (b.kind === 'shared') return '共用'
     const label = (b.facet || '').split(/[：:]/)[0].trim()
     const n = label.match(/^第\s*(\d+)\s*章$/)
     return n ? n[1] : label || b.head
@@ -95,7 +96,7 @@ export function analyse(m, L) {
       unanchored.some((u) => u.block === id) ? 'UNANCHORED' : null,
       empty.some((x) => x.block === id) ? 'no result' : null,
     ].filter(Boolean)
-    lines.push(`${'  '.repeat(d)}${name(id)} ${b.kind === 'aside' ? '旁注与共用' : b.title} [${b.members} 张, ${b.children.filter(isResult).length} 结果]${marks.length ? ' <- ' + marks.join(', ') : ''}`)
+    lines.push(`${'  '.repeat(d)}${name(id)} ${b.kind === 'aside' ? '旁注' : b.title} [${b.members} 张, ${b.children.filter(isResult).length} 结果]${marks.length ? ' <- ' + marks.join(', ') : ''}`)
     for (const c of tree.children[id] || []) walk(c, d + 1)
   }
   tree.roots.forEach((r) => walk(r, 0))
