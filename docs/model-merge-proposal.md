@@ -583,3 +583,26 @@ The `zt-model-fold` skill folded `hansen2021demand` on the live box at the owner
 **Result.** `model-survey.mjs` lists exactly the 3 heads. `10/a` has 29 members; the former heads are at `10/a/a/7` (with its parts at `7/a`, `7/b`) and `10/a/a/8` (setting at `8/a`). The tree still holds 313 Cards, and `list_broken_links` is empty. Both former heads are unanchored, so `10/a` is not yet self-sufficient; `zt-model-restructure` adds those lines.
 
 **Next.** `zt-model-settings`, then `zt-model-restructure`, on `hansen2021demand/10|a`.
+
+## 15. The Nobel lecture fold (2026-10-29)
+
+The `zt-model-fold` skill folded `acemoglu2025nobel` on the live box (`/zt-model-fold acemoglu2025nobel`; the owner chose the live box in the same session). The backup is `D:\zt-merge-backup\zt-before-acemoglu2025nobel-fold.sqlite3` (`VACUUM INTO`, integrity ok). The tree was not locked.
+
+**Decision.** The lecture holds 7 Model Cards and 6 models. One fold follows from the owner's decision. The owner accepted the lecture's own wording as the evidence: §II says that, after the framework, it "gives modestly formal content" for its micro-foundations, and §II.C opens with "an environment from which the UTPF of Figure 7 can be derived".
+
+| Model Card | Model | Surviving head | Reason |
+|---|---|---|---|
+| `3/a` UTPF (concept, §II.A) | micro-foundation model | `4/a` | owner: the verbal version of `4/a`. It has the same question (how institutions set the level and the distribution of prosperity) and the same two groups r and p, extraction and technology choice. `4/a` derives its backward-bending frontier, holdup and excess automation. Facet `直觉`, `core` |
+
+Every other Model Card is a model of its own:
+
+- `1/d` (colonial origins) asks why former colonies differ. Its primitives are settler mortality, settlement and early institutions.
+- `1/e` (political institutions and resource distribution) is a dynamic state-variable framework with de jure and de facto power. It generalizes link C of `1/d` and shares its persistence card `1/d/a/2`, which stays a shared part.
+- `5/a` (political losers, §II.D) starts at point C of Figure 7 but asks why the elite does not move to the highest frontier. It adds its own primitives: periods, a probability p of losing power and a discount factor δ. The owner decided that it is its own model. Its Links to `4/a` (economic losers) stay.
+- `6/a` (critical junctures, §III.D) and `7/a` (digital inequality, §III.F) each ask a historical question of their own. Each uses the frontier as a tool with its own four frontiers (Figures 11 and 12).
+
+**Procedure.** The §13 script, with the key changed. `3/a` had no Idea-note Side successor. Its setting chain (`3/a/a` with `/1`, `/2`, `/2/a`) was parked at `4/a/c`. One Model Link in the body was masked during the retype and then restored.
+
+**Result.** `model-survey.mjs` lists exactly the 6 decided heads. `4/a` has 33 members. The former head is at `4/a/a/26`, and its old setting chain is at `4/a/a/26/a`. `6/a` and `7/a` keep `4/a/a/26/a` and `4/a/a/26/a/2` as shared parts. The tree still holds 265 Cards, and `list_broken_links` is empty. `4/a/a/26` is unanchored, so `4/a` is not yet self-sufficient. `zt-model-restructure` adds that line and moves the intuition chapter to the front of the spine.
+
+**Next.** `zt-model-settings`, then `zt-model-restructure`, on `acemoglu2025nobel/4|a`. The old `3/a` setting chain goes into the setting part. `5/a` is formal and has had no settings or spine pass.
