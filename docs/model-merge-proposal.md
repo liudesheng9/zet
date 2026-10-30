@@ -561,3 +561,25 @@ The verbal framework `5/a/a/b` now rests on the formal setting (as in Acemoglu 2
 - `check-network`: `network: clean` for all three.
 - `check-premises`: no premise used before its card.
 - `list_broken_links` is empty. The tree holds 839 Cards (832 + the seven chapter cards).
+
+## 14. The Hansen 2021 fold (2026-10-29)
+
+The `zt-model-fold` skill folded `hansen2021demand` on the live box at the owner's request (`/zt-model-fold hansen2021demand`, live box confirmed in the same session). The backup is `D:\zt-merge-backup\zt-before-hansen2021demand-fold.sqlite3` (`VACUUM INTO`). The tree was not locked.
+
+**Decision.** The paper holds 5 Model Cards and 3 models:
+
+| Model Card | Model | Surviving head | Reason |
+|---|---|---|---|
+| `5/a` CBOW 词嵌入模型 | CBOW embedding | `5/a` | own model: the measurement tool, its own question and primitives (vocabulary, one-hot, embedding) |
+| `6/a` 迁移学习测量框架 (concept) | transfer measurement | `6/a` | own model: asks how to measure relative skill demand; it only uses `5/a`'s estimated embeddings as an input (a `kin` Link) |
+| `10/a` 管理者时间模型 | manager-time model | `10/a` | the stylized model of §5.1 |
+| `11/a` 问题数量模型 | manager-time model | `10/a` | "在基准模型中加入 N 个独立问题类别": the same F, y, T, c and cutoff rule, with N categories; shares five of `10/a`'s parts; facet `扩展：问题数量`, `core` |
+| `12/a` 经验模型 | manager-time model | `10/a` | owner: the model's empirical counterpart; it writes propositions 1 and 2 as regression (7) with size and complexity as proxies and asks no new question; facet `经验检验`, `core` |
+
+(The table writes `/` for `|` in addresses.)
+
+**Procedure.** The §13 script. `12/a` had one Side Idea note (`12/a/a`) and no Direct successor, so the note moved first to its section anchor's next free Side (`12/h`).
+
+**Result.** `model-survey.mjs` lists exactly the 3 heads. `10/a` has 29 members; the former heads are at `10/a/a/7` (with its parts at `7/a`, `7/b`) and `10/a/a/8` (setting at `8/a`). The tree still holds 313 Cards, and `list_broken_links` is empty. Both former heads are unanchored, so `10/a` is not yet self-sufficient; `zt-model-restructure` adds those lines.
+
+**Next.** `zt-model-settings`, then `zt-model-restructure`, on `hansen2021demand/10|a`.
