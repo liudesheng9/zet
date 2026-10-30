@@ -657,3 +657,39 @@ The empirical setting stated the two propositions as premises (`依赖` chapter 
 - 第 3 章：经验检验 (the former head `12|a`) — 结果：预测 β 为正 (chain: dependent variable → proxies → regression (7)); aside 限定.
 
 One DeepSeek job (official source, effort high, conversation deleted) drafted the three chapter cards and five result cards; `check-drafts.mjs` found every display formula kept. Two repairs: chapter 2's cross-book line was restored verbatim (the draft had dropped its Link), and the prediction's two `依赖` premises on propositions 1 and 2 were put back (the draft had made them plain references). Result: 315 Cards (the notation card and chapter 1 added), no broken Link; `check-model.mjs` self_sufficient true; `check-network.mjs` `network: clean` (设定 → 1 → 2 → 3); `check-premises.mjs` one hit, the empirical setting's description of (7), a pointer. The tree is still unlocked.
+
+### 15.2 The intuition spine (2026-10-29)
+
+`zt-model-restructure` ran on `acemoglu2025nobel/4|a` on the live box at the owner's request. The backup is `D:\zt-merge-backup\zt-before-acemoglu2025nobel-spine.sqlite3` (`VACUUM INTO`, integrity `ok`). `acemoglu2007equilibrium` and `acemoglu2010labor` stayed unlocked for the pass (§15.1).
+
+**Spine.** The main line is the setting `4/a/a` and 8 chapter cards `4/a/a/1` to `4/a/a/8`:
+
+| Chapter | Card | Results (proof chain) |
+|---|---|---|
+| 1 直觉 (§II.A) | former `3/a` | the backward-bending frontier, institutions move both the point and the frontier (with the norms aside) |
+| 2 外生技术均衡 | new | the equilibrium (R*, w̄*, R*K+W*L=Y and the effort condition, 4 cards) |
+| 3 攫取压低产出 | new | output (6) (3 cards) |
+| 4 两组收入 | new | the two incomes (3 cards) |
+| 5 两条边界 | new | α* exists and is unique (the τ-line and α* chain, 3 cards); the two frontiers, with the numerical example |
+| 6 富人最优的攫取率 | new | μ* (2 cards) |
+| 7 套牢与经济输家 | new | holdup; economic losers |
+| 8 内生技术 | new | problem (7) |
+
+(The table writes `/` for `|`.) `tree-mover.mjs` made 72 moves. The limitation card `4/a/b` stays a Side of the head. **分部**: 文字框架 (ch. 1), 微观基础 (ch. 2–4), 边界、攫取与技术 (ch. 5–8). Each chapter's `依赖` line names the card it builds on most, so the network is a tree: 3 under 2; 4, 5 and 8 under 3; 6 under 4; 7 under 6.
+
+**Text.** DeepSeek V4.1 Flash (official source, effort high) drafted 21 cards in 8 jobs under one Haiku manager:
+
+- the 8 chapter cards (**直觉**, **本章结果**, **承上启下** with one `依赖` line);
+- 11 result cards (`结果：` titles and facets; **结果**, **为什么**, **证明**);
+- the 2 asides.
+
+All conversations were deleted and the workspace removed. `check-drafts` found no lost formula or equation number. A script also confirmed that every figure line and chart block survived. Derivation cards kept their text. The head's title, question and summary now cover the whole model, and its **结构** lists the main line and one level under each main card. The verbal overview setting `4/a/a/b` now rests on the formal setting card, so chapter 1 has a path to the setting.
+
+**After.**
+- `check-model`: `self_sufficient` is true.
+- `check-settings`: every setting is in the setting part, as a dependency tree.
+- `check-network`: `network: clean` (10 blocks, 6 layers).
+- `check-premises`: no premise used before its card.
+- `list_broken_links` is empty. The tree holds 273 Cards (266 + the seven chapter cards).
+
+**Next.** The owner relocks `acemoglu2007equilibrium` and `acemoglu2010labor`. `5|a` (political losers) is formal and has had no settings or spine pass.
