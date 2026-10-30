@@ -606,3 +606,29 @@ Every other Model Card is a model of its own:
 **Result.** `model-survey.mjs` lists exactly the 6 decided heads. `4/a` has 33 members. The former head is at `4/a/a/26`, and its old setting chain is at `4/a/a/26/a`. `6/a` and `7/a` keep `4/a/a/26/a` and `4/a/a/26/a/2` as shared parts. The tree still holds 265 Cards, and `list_broken_links` is empty. `4/a/a/26` is unanchored, so `4/a` is not yet self-sufficient. `zt-model-restructure` adds that line and moves the intuition chapter to the front of the spine.
 
 **Next.** `zt-model-settings`, then `zt-model-restructure`, on `acemoglu2025nobel/4|a`. The old `3/a` setting chain goes into the setting part. `5/a` is formal and has had no settings or spine pass.
+
+### 15.1 The setting part as a dependency tree (2026-10-29)
+
+`zt-model-settings` ran on `acemoglu2025nobel/4|a` on the live box at the owner's request. The backup is `D:\zt-merge-backup\zt-before-acemoglu2025nobel-settings.sqlite3` (`VACUUM INTO`).
+
+**Lock.** The first try of the assumption card's move was refused (`card_locked`). Taking the card off the main line renumbers the chapters after it, and two of them, `4/a/a/6` and `4/a/a/25` (now `/5` and `/24`), are pinned targets of the locked trees `acemoglu2007equilibrium` and `acemoglu2010labor`. The owner unlocked both trees, and the move then ran.
+
+**Faults before.** The model had no notation card, and no setting had a **起点** section. The base assumption card (`假设：努力成本凸、攫取按 μ 取走劳动收入`) was the first step of the main line. The folded `3/a` had brought its verbal setting into its chapter (`4/a/a/26/a`). The derivation of α* introduced β′, which the notation table did not list.
+
+**Tree after.** The setting card is the primitive (`原始设定`). Its Sides, in order:
+
+- `a`: the notation card.
+- `b`: 设定：概述. This is the §II.A verbal frontier. It is also primitive, and its two groups are the setting card's rich and poor.
+- `c`: 设定：努力成本与制度. It contains the effort cost, μ, τ and competitive factor pay. It rests on the setting card.
+
+Both moved settings went `alone`. The §II.A mechanism and conclusion cards closed up and stay a Side branch of the intuition chapter (`4/a/a/25/a`).
+
+**Text.**
+- The symbol and term tables moved from the setting card to the notation card. Each row now links its first card. β′ has a row of its own under the derivations' auxiliary symbols.
+- The setting card now defines μ (攫取率) and τ (总额税税率) in words at their first use. It points to `c` for the full form.
+- `c` defines w̄* in words where workers take it as given, and points to the chapter that derives it.
+- The head's **结构** was rebuilt in reading order.
+
+**Result.** `check-settings.mjs` prints `settings: all in the setting part, as a dependency tree`. `check-premises.mjs` reports only two chain roadmaps, which are pointers. The tree holds 266 Cards (265 plus the notation card), and `list_broken_links` is empty. The former head `4/a/a/25` is still unanchored, so `4/a` is not yet self-sufficient. `check-network.mjs` reports spine work: no result cards.
+
+**Next.** `zt-model-restructure` on `acemoglu2025nobel/4|a`. The two locked trees stay unlocked until that pass ends.
