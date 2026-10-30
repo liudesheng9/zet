@@ -632,3 +632,28 @@ Both moved settings went `alone`. The §II.A mechanism and conclusion cards clos
 **Result.** `check-settings.mjs` prints `settings: all in the setting part, as a dependency tree`. `check-premises.mjs` reports only two chain roadmaps, which are pointers. The tree holds 266 Cards (265 plus the notation card), and `list_broken_links` is empty. The former head `4/a/a/25` is still unanchored, so `4/a` is not yet self-sufficient. `check-network.mjs` reports spine work: no result cards.
 
 **Next.** `zt-model-restructure` on `acemoglu2025nobel/4|a`. The two locked trees stay unlocked until that pass ends.
+
+### 14.1 The setting part as a dependency tree (2026-10-29)
+
+`zt-model-settings` on `hansen2021demand/10|a`, live box at the owner's request. Backup: `D:\zt-merge-backup\zt-before-hansen2021demand-settings.sqlite3`. Before the pass the two folded settings (`N` categories, the executive search) sat in their chapters, the setting card had no **起点**, and there was no notation card; the time constraint, the communication rule and the efficiency benchmark sat on the main line although they define `c`, `T`, `Θ^C` and `y^E`.
+
+```
+设定：问题按难度排序 …                原始设定 (θ, F, f, y)
+├ a 符号表与读法                      (new; the three embedded symbol tables merged into it)
+├ b 设定：效率基准 (1)                ← 设定 (y^E)
+│   b|1 设定：时间约束 (c, T) → b|2 设定：沟通规则 (2) (Θ^C);  b|1|a 设定：限定
+├ c 设定：多类问题                    变体 ← 设定, 时间约束, 沟通规则 (N, (5))
+└ d 设定：经验检验                    ← 多类问题 (f, t, Social_ft, X_ft; β defined at first use)
+```
+
+The empirical setting stated the two propositions as premises (`依赖` chapter results); that sentence became a pointer to the prediction card, which keeps the premises. The notation card lists the regression's subscripts in their own section and says that `f` (firm) and `θ_i` (industry fixed effect) are the book's notation, distinct from the density `f` and the problem `θ`. `check-settings.mjs` prints `settings: all in the setting part, as a dependency tree`.
+
+### 14.2 The intuition spine (2026-10-29)
+
+`zt-model-restructure`, backup `D:\zt-merge-backup\zt-before-hansen2021demand-spine.sqlite3`. Three chapters, each with its results as Side branches and each result's proof chain under it:
+
+- 第 1 章：临界值规则 (new card) — 结果：临界值规则与次优产出 (proof (3) → (4); figure 6).
+- 第 2 章：问题数量 (the former head `11|a`) — 结果：问题越多，临界值越高 (proof (6); figure 7); 结果：命题 1 (proof: θ* derivatives → ∂y*/∂N → cross partial); 结果：命题 2 (proof ∂y*/∂c; figure 8); aside 经验基础.
+- 第 3 章：经验检验 (the former head `12|a`) — 结果：预测 β 为正 (chain: dependent variable → proxies → regression (7)); aside 限定.
+
+One DeepSeek job (official source, effort high, conversation deleted) drafted the three chapter cards and five result cards; `check-drafts.mjs` found every display formula kept. Two repairs: chapter 2's cross-book line was restored verbatim (the draft had dropped its Link), and the prediction's two `依赖` premises on propositions 1 and 2 were put back (the draft had made them plain references). Result: 315 Cards (the notation card and chapter 1 added), no broken Link; `check-model.mjs` self_sufficient true; `check-network.mjs` `network: clean` (设定 → 1 → 2 → 3); `check-premises.mjs` one hit, the empirical setting's description of (7), a pointer. The tree is still unlocked.
