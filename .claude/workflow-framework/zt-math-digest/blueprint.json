@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.9.1",
+  "version": "5.10.0",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -303,6 +303,27 @@
       "default": "first",
       "description": "which eligible occurrences the Term-link pass links: the first per term and body, or all"
     },
+    "cited": {
+      "type": "boolean",
+      "default": true,
+      "description": "false skips the Cited list (the reference list of the whole source as a Cited list Card beside the Term list) in modes full and resume (#221)"
+    },
+    "citedCards": {
+      "type": "boolean",
+      "default": true,
+      "description": "false skips the Cited Cards (one per reference-list row, written from the whole source) in modes full and resume (#221)"
+    },
+    "citedCardsPerJob": {
+      "type": "number",
+      "min": 1,
+      "max": 8,
+      "default": 4,
+      "description": "works per Cited Card writer job (the compiler's default is 4)"
+    },
+    "citedHeading": {
+      "type": "string",
+      "description": "the heading of the reference list when it is not References, Bibliography, 参考文献 or 参考"
+    },
     "supply": {
       "type": "string",
       "enum": [
@@ -380,7 +401,7 @@
               {
                 "path": "mode",
                 "op": "matches",
-                "value": "^(audit|resume|term-cards|term-link)$"
+                "value": "^(audit|resume|term-cards|term-link|cited-cards)$"
               },
               {
                 "path": "args.citationKey",
@@ -521,6 +542,11 @@
                     "path": "mode",
                     "op": "!=",
                     "value": "term-link"
+                  },
+                  {
+                    "path": "mode",
+                    "op": "!=",
+                    "value": "cited-cards"
                   }
                 ]
               },
@@ -570,7 +596,7 @@
                 ]
               }
             ],
-            "message": "modes resume, term-cards and term-link read the retained book, its source and its staging from the prepared run and accepts only out (with the Term settings): a new identity, source, group count, model list or Bridge selection needs its own preparation"
+            "message": "modes resume, term-cards, term-link and cited-cards read the retained book, its source and its staging from the prepared run and accepts only out (with the Term settings): a new identity, source, group count, model list or Bridge selection needs its own preparation"
           },
           {
             "op": "or",
@@ -603,6 +629,22 @@
               }
             ],
             "message": "mode term-link is the deterministic Term-link pass: args.termLink false contradicts the mode"
+          },
+          {
+            "op": "or",
+            "value": [
+              {
+                "path": "mode",
+                "op": "!=",
+                "value": "cited-cards"
+              },
+              {
+                "path": "args.citedCards",
+                "op": "!=",
+                "value": false
+              }
+            ],
+            "message": "mode cited-cards is the Cited Card branch: args.citedCards false contradicts the mode"
           }
         ]
       }
@@ -724,6 +766,44 @@
       }
     },
     {
+      "id": "cited",
+      "title": "Cited list",
+      "detail": "the Cited list (#221): parse the reference list of the whole source, index the lines that cite each work, normalize the entries the parser could not split in checked DeepSeek jobs, and write the Cited list Card beside the Term list under cited/book@1, completed only from the apply report; it runs before the digest writers, so the list takes <key>/1|b in a fresh run",
+      "after": [
+        "terms"
+      ],
+      "module": "zt-cited-cards",
+      "onFail": "continue",
+      "when": [
+        {
+          "op": "and",
+          "value": [
+            {
+              "path": "mode",
+              "op": "matches",
+              "value": "^(full|resume|cited-cards)$"
+            },
+            {
+              "path": "args.cited",
+              "op": "!=",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "params": {
+        "out": "{{args.out}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        },
+        "part": "list",
+        "heading": {
+          "$ref": "args.citedHeading",
+          "default": null
+        }
+      }
+    },
+    {
       "id": "term-cards",
       "title": "Term cards",
       "detail": "the Term-card branch, once the Literature content is settled (after the whole-book Cards cycle; live run 2026-10-26: beside the digest writers its plan went stale before it published): the compiler's writer jobs in waves of four on the shared DSMP pool, their checks, the independent mathematical reviews and the one finite fix; each job unit and the book unit complete only from the compiler's own checked artifacts, so a failed or partial book stays incomplete",
@@ -770,11 +850,51 @@
       }
     },
     {
+      "id": "cited-cards",
+      "title": "Cited cards",
+      "detail": "the Cited Cards (#221), once the Literature content is settled: one writer job per four works reviews how each work is used in the WHOLE source (the notes often leave citations out) and self-checks; each citedcards/tNNN unit completes from the readiness result and citedcards/book from the publication report, which publishes the ready prefix as the list's Side successors in row order",
+      "after": [
+        "cards-book",
+        "cited"
+      ],
+      "module": "zt-cited-cards",
+      "onFail": "continue",
+      "when": [
+        {
+          "op": "and",
+          "value": [
+            {
+              "path": "mode",
+              "op": "matches",
+              "value": "^(full|resume|cited-cards)$"
+            },
+            {
+              "path": "args.citedCards",
+              "op": "!=",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "params": {
+        "out": "{{args.out}}",
+        "key": {
+          "$ref": "stages.prepare.output.citation_key"
+        },
+        "part": "cards",
+        "perJob": {
+          "$ref": "args.citedCardsPerJob",
+          "default": null
+        }
+      }
+    },
+    {
       "id": "digest",
       "title": "Digest",
       "detail": "the group cycle in blocks: one manager claims up to 8 digest/gNNN@1 units, a snapshot and frozen job per group, their DeepSeek runs side by side, each conversation recorded and deleted by that manager, checked group-finish (R250/R252/R253); at most 8 lanes",
       "after": [
-        "terms"
+        "terms",
+        "cited"
       ],
       "module": "zt-group-cycle",
       "params": {
@@ -1277,7 +1397,8 @@
       "detail": "the deterministic Term-link pass after every Card writer and the Bridge (design 14.1-14.2): claim the run's termlink/book@1 unit, freeze the plan, apply it under the claim and complete the unit only from the compiler's apply report; a failed Term-card book or Card writer leaves it blocked and reported, never linked. The finite finalization runs the same shared pass for its one correction round (termlink/final@R), for the changed Cards or the whole book when the correction changed the Term mapping (S26, #169)",
       "after": [
         "bridge",
-        "term-cards"
+        "term-cards",
+        "cited-cards"
       ],
       "module": "zt-term-link",
       "onFail": "continue",
@@ -1288,7 +1409,7 @@
             {
               "path": "mode",
               "op": "matches",
-              "value": "^(full|resume|cards|link|figures|bridge|models|explain|events|findings|math|term-cards|term-link)$"
+              "value": "^(full|resume|cards|link|figures|bridge|models|explain|events|findings|math|term-cards|term-link|cited-cards)$"
             },
             {
               "path": "args.termLink",
@@ -1541,6 +1662,12 @@
         "key": {
           "$ref": "stages.prepare.output.citation_key"
         },
+        "citedList": {
+          "$ref": "stages.cited.output"
+        },
+        "citedCards": {
+          "$ref": "stages.cited-cards.output"
+        },
         "models": {
           "$ref": "stages.models.output"
         },
@@ -1609,6 +1736,17 @@
       "cleanup",
       "report"
     ],
+    "cited-cards": [
+      "args",
+      "source",
+      "prepare",
+      "cited",
+      "cited-cards",
+      "term-link",
+      "audit",
+      "cleanup",
+      "report"
+    ],
     "models": [
       "args",
       "source",
@@ -1661,7 +1799,9 @@
       "args",
       "prepare",
       "terms",
+      "cited",
       "term-cards",
+      "cited-cards",
       "digest",
       "cards",
       "math-skeleton",
@@ -1693,6 +1833,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.9.1"
+    "version": "5.10.0"
   }
 }

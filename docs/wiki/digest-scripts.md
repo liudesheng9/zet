@@ -12,6 +12,8 @@ paths:
   - "!scripts/book-digest/book-steps.ps1"
   - "!scripts/book-digest/model-steps.ps1"
   - "!scripts/book-digest/math-steps.ps1"
+  - "!scripts/book-digest/cited-steps.ps1"
+  - "!scripts/book-digest/tests/cited-steps.tests.ps1"
   - "!scripts/book-digest/tests/book-steps.tests.ps1"
   - "!scripts/book-digest/tests/model-steps.tests.ps1"
   - "!scripts/book-digest/tests/math-steps.tests.ps1"

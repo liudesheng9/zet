@@ -534,6 +534,37 @@
         "ok": true,
         "output": "{\"ok\":true,\"units\":200,\"covered\":159,\"skipped\":0,\"uncovered\":41,\"pct\":80,\"detail\":\"D:\\\\\\\\x\\\\\\\\Key\\\\\\\\coverage.json\"}"
       }
+    },
+    {
+      "label": "^prepare backfill: cited-cards$",
+      "answer": {
+        "ok": true,
+        "output": "{\"schema_version\":1,\"kind\":\"backfill_preparation\",\"step\":\"validate\",\"book\":\"Key\",\"tree_address\":\"Key\",\"workspace\":\"agent\",\"tree\":{\"cards\":9,\"heads\":0,\"parts\":0,\"occupying\":[]},\"list\":{\"address\":\"Key/1|a\",\"type\":\"term\",\"title\":\"术语表：模拟\",\"legacy\":false,\"rows\":2,\"terms\":[\"均衡\",\"剩余控制权\"],\"sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\"},\"list_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"source\":{\"path\":\"S.md\",\"sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"sections\":2,\"book_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"reused\":true,\"rebuilt\":[],\"bound\":true},\"drafts\":null,\"contract\":\"5.6.0/6.6.0\",\"archive_revision\":7,\"conflicts\":[],\"complete\":true,\"record\":\"D:\\\\x\\\\Key\\\\backfill.json\",\"ok\":true}"
+      }
+    },
+    {
+      "label": "^cited: drive list$",
+      "answer": {
+        "answer": "{\"ok\":true,\"rows\":3}"
+      }
+    },
+    {
+      "label": "^cited: drive list-finish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"rows\":3,\"card\":\"Key/1|b\",\"unit\":\"done\"}"
+      }
+    },
+    {
+      "label": "^cited-cards: drive start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"jobs\":0,\"plan_revision\":1}"
+      }
+    },
+    {
+      "label": "^cited-cards: drive finish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"book\":\"done\",\"complete\":true,\"rows\":3,\"committed\":3}"
+      }
     }
   ]
 }

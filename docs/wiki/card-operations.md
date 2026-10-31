@@ -523,6 +523,7 @@ Pitfalls:
 - `rustfmt --check --edition 2024 src/place.rs` already reports drift (the long `set(&[...])` lines in its tests). Format only what you change.
 
 ## Change history
+- `2026-10-31` — #217: the root refusal and the type error texts name the seventh type (`only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards`; `expected idea, event, finding, model, hub, term, or cited`); `ops.rs` keeps the same rule, and its test constant moved with the text.
 - `2026-10-30` — `Snapshot::model_in(address, prefer)`: the model a Card belongs to, read as a member of `prefer` when it is one (`model::structure_in`); `Snapshot::model` is unchanged. The GUI's `/api/card?via=` uses it so a part shared by several models opens in the model the reader came from. zt 0.47.0. Test: the `via` checks in `tests/self_sufficient_models.rs`.
 - `2026-10-25` — S29 (#171): a map node excerpt projects a Term use to its visible label. `ops::excerpt` runs the body line through `zt_check::text::strip_term_links` before it removes the emphasis marks, so `[[均衡@K/10|a|a]]` previews as `均衡` instead of leaking `均衡@K/10|a|a`; an ordinary `[[0/1]]` keeps the address the excerpt always showed. Proven by `an_excerpt_projects_a_term_use_to_its_label`. No operation, move, insert or storage behaviour changed; zt 0.39.0.
 

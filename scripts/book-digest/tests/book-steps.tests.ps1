@@ -240,6 +240,9 @@ $conflict = Step 'prepare' @{ Mode = 'term-link' }
 $env:BS_BACKFILL_CONFLICT = ''
 Assert ($conflict.json -and $conflict.json.ok -eq $false -and $conflict.json.step -eq 'prepare term-link' -and $conflict.json.error -match 'conflicting Side child') "prepare backfill: a conflict fails the step with its message ($($conflict.text))"
 Assert (Has $conflict.calls 'prepare -Out .* -Validate -Brief') 'prepare backfill: term-link validates only'
+# #221: mode cited-cards is a backfill too: it validates the book and its staging only.
+$cited = Step 'prepare' @{ Mode = 'cited-cards' }
+Assert ($cited.json -and $cited.json.ok -eq $true -and $cited.json.step -eq 'prepare cited-cards' -and (Has $cited.calls 'prepare -Out .* -Validate -Brief')) "prepare backfill: cited-cards validates only ($($cited.text))"
 
 # 4. prepare, the owner's Lock: the step keeps the archive's typed refusal.
 $env:BS_LOCK = '^prepare '

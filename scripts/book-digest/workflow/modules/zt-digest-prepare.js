@@ -1,4 +1,4 @@
-// ==== module zt-digest-prepare v19 ====
+// ==== module zt-digest-prepare v20 ====
 // Prepare (mode full): prepare-book-digest writes the Chinese text, the section groups, the Literature tree with one
 // anchor per group, and the shared prefixes, then binds the immutable run contract with the effective settings
 // (maxAttempts, dshRunCap) and initializes the run ledger. No stage reads the account-wide usage ledger: run usage is
@@ -29,8 +29,10 @@
 // hands each stage the book's key.
 // 19 (live run 2026-10-27, becker2025division): the fresh preparation's drive job runs in the staging folder's
 // parent, because the staging folder does not exist until this step creates it and deepseek_run refuses a missing cwd.
+// 20 (#221): mode cited-cards is the Cited backfill of one already digested book; like term-link it runs the
+// preparation with -Validate only, so it inspects the book and its staging and starts no provider work.
 defineModule({
-  id: 'zt-digest-prepare', version: '19', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '20', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume), validate or re-stage one already digested book for a Term backfill (modes term-cards and term-link) or take args.groups; output {groups, groupList, citation_key, backfill?}.',
   params: {
     key: { type: 'any', description: "a fresh preparation's Citation key (args.citationKey): the prepared run this stage creates is what every later stage reads it from (#181)" },
@@ -70,7 +72,8 @@ defineModule({
       const runOptions = off.length ? Object.fromEntries(off.map((k) => [k, false])) : null
       return { groups, groupList: groupList(groups), resumed: resumed.resumed === true, resume: null, settings, citation_key: view.citation_key, run_options: runOptions }
     }
-    if (p.mode === 'term-cards' || p.mode === 'term-link') {
+    // #221: mode cited-cards is a backfill too; like term-link it only validates the book and its staging.
+    if (p.mode === 'term-cards' || p.mode === 'term-link' || p.mode === 'cited-cards') {
       // S25 (#168): the backfill's own preparation. `-Sections` reuses or reconstructs the staged source slices the
       // Term-card branch reads; `-Validate` only inspects the already digested book, because the deterministic
       // Term-link pass needs no source and starts no provider probe (R0436). Both write no Card, read the Citation

@@ -240,7 +240,7 @@ function backfillLine(mode) {
 }
 
 function runtime(kind, opts = {}) {
-  const driveAnswers = [], calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = [], termCalls = [], termManagers = [], bookCalls = [], bookManagers = []
+  const driveAnswers = [], calls = [], commands = [], logs = [], phases = [], managers = [], cleanups = [], resourceRecords = [], evidenceRecords = [], settleRecords = [], driveFiles = [], heldReads = [], faultRefusals = [], holds = [], sweeps = [], briefLists = [], stagePublications = [], cleanupFinishes = [], workspaceLists = [], chunkShares = [], cleanupReadyCalls = [], cleanupRunCalls = [], settleCalls = [], batchCalls = [], batchFinishes = [], batchFaults = [], depsBatches = [], failClasses = [], termCalls = [], termManagers = [], bookCalls = [], bookManagers = [], citedCalls = [], citedManagers = []
   // S24 (#167): the Term-card branch's fixed two-job plan (both concept jobs, so no review is owed).
   const termJobs = [
     { id: 't001', kind: 'concept', rows: [1], terms: ['均衡'] },
@@ -249,6 +249,9 @@ function runtime(kind, opts = {}) {
   // S30 (#172): a longer plan, so a later wave exists after a failed one.
   for (let n = 3; n <= (opts.termJobCount || 2); n++) termJobs.push({ id: `t${String(n).padStart(3, '0')}`, kind: 'concept', rows: [n], terms: [`术语${n}`] })
   const termNotReady = new Set(opts.termNotReady || [])
+  // #221: the Cited Card writer jobs and the one normalize job the Cited list plan lists.
+  const citedJobs = [{ id: 't001' }, { id: 't002' }]
+  const normalizeJobs = [{ id: 'n01' }]
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
   // #181: the prepared run's Citation key, which a resume must take from its prepare stage.
@@ -1802,7 +1805,7 @@ function runtime(kind, opts = {}) {
     if (text.startsWith('You are a DeepSeek subagent manager for a ZET workflow step (')) {
       const stepLabel = (text.match(/workflow step \(([^)]*)\)/) || [])[1] || label
       const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
-      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps|model-steps|math-steps)\.ps1[^\n]*/) || [])[0] || ''
+      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps|model-steps|math-steps|cited-steps)\.ps1[^\n]*/) || [])[0] || ''
       // #180: a drive answer is ONLY the step's last line, one JSON object with a boolean top-level `ok`. Each
       // answer is checked here, so the stand-in's every drive answer is at most 400 characters.
       const reply = (value, id) => {
@@ -1817,6 +1820,32 @@ function runtime(kind, opts = {}) {
         if (opts.driveCurly && opts.driveCurly.test(label)) return { answer: answer.replace(/"([^"]*)"/g, "“$1”"), session_id: session, ...recorded }
         if (opts.driveNested && opts.driveNested.test(label)) return { answer: JSON.stringify({ state: 'done', counts: { open: 0 } }), session_id: session, ...recorded }
         return { answer, session_id: session, ...recorded }
+      }
+      // #221: the Cited stages' steps (cited-steps.ps1): the list, its normalize jobs, the list Card; the Cards.
+      if (/cited-steps\.ps1/.test(command)) {
+        const step = (command.match(/-Step ([\w-]+)/) || [])[1] || 'list'
+        citedCalls.push({ step, cmd: command, phase: callOpts.phase })
+        citedManagers.push({ label, phase: callOpts.phase, kind: 'drive', step, prompt: text })
+        if (step === 'list') {
+          if (opts.citedListFails) return reply({ ok: false, step: 'plan', error: 'cited: the staging manifest names no source' }, 'drive-cited-list')
+          if (opts.citedNoList) return reply({ ok: true }, 'drive-cited-list')
+          led.add('cited/book@1', 'cited', {})
+          return reply({ ok: true, rows: 3, unparsed: 1, jobs: normalizeJobs.length, file: 'D:\\x\\cited\\normalize\\jobs.json' }, 'drive-cited-list')
+        }
+        if (step === 'list-finish') { led.finish('cited/book@1'); return reply({ ok: true, rows: 3, card: `${led.key}/1|b`, unit: 'done' }, 'drive-cited-list-finish') }
+        if (step === 'start') {
+          for (const job of citedJobs) { const u = led.add('citedcards/' + job.id + '@1', 'citedcards', { job }); u.state = 'claimed' }
+          led.add('citedcards/book@1', 'citedcards', {}).state = 'registered'
+          return reply({ ok: true, jobs: citedJobs.length, plan_revision: 1, file: 'D:\\x\\cited\\drive\\jobs.json' }, 'drive-cited-start')
+        }
+        if (step === 'finish') {
+          const failed = opts.citedNotReady ? 1 : 0
+          citedJobs.forEach((job, i) => { const id = 'citedcards/' + job.id + '@1'; if (i < citedJobs.length - failed) led.finish(id); else led.fail(id, 'failed') })
+          const complete = !failed
+          if (complete) led.finish('citedcards/book@1')
+          return reply({ ok: true, done: citedJobs.length - failed, failed, ready: 3 - failed, not_ready: failed, book: complete ? 'done' : 'failed', complete, rows: 3, committed: complete ? 3 : 2 }, 'drive-cited-finish')
+        }
+        return reply({ ok: true, step }, 'drive-cited-' + step)
       }
       if (/term-steps\.ps1/.test(command)) {
         const step = (command.match(/-Step (\w+)/) || [])[1] || 'start'
@@ -1893,6 +1922,16 @@ function runtime(kind, opts = {}) {
     }
     // S24 (#167): a Term writer, reviewer or fixer manager runs entries [from, to] of the job file the
     // start step wrote.
+    // #221: a Cited content manager runs entries [from, to] of the normalize or the writer job list.
+    if (text.startsWith('You are a DeepSeek subagent manager for ZET Cited Cards (')) {
+      const kind = (text.match(/Cited Cards \(([a-z]+)/) || [])[1] || 'write'
+      const range = text.match(/entries (\d+) through (\d+)/)
+      const all = kind === 'normalize' ? normalizeJobs : citedJobs
+      const listed = range ? all.slice(Number(range[1]), Number(range[2]) + 1) : []
+      citedManagers.push({ label, phase: callOpts.phase, kind, jobs: listed.map((job) => job.id), prompt: text })
+      const failed = kind === 'write' && !!opts.citedWriterFails
+      return { ok: true, jobs: listed.map((job) => ({ id: job.id, session_id: sessionOf(job.id), status: failed ? 'failed' : 'done', answer: failed ? 'the writer failed' : '{}', deleted: true })) }
+    }
     if (text.startsWith('You are a DeepSeek subagent manager for ZET Term Cards (')) {
       const kind = (text.match(/Term Cards \(([^)]+)\)/) || [])[1] || 'write'
       const range = text.match(/entries (\d+) through (\d+)/)
@@ -1960,7 +1999,7 @@ function runtime(kind, opts = {}) {
   }
 
   return {
-    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, modelJobLists, mathCalls, mathManagers, state, deleteManagers,
+    calls, commands, logs, phases, managers, cleanups, pool, led, resourceRecords, evidenceRecords, settleRecords, driveFiles, heldReads, faultRefusals, holds, sweeps, briefLists, stagePublications, cleanupFinishes, workspaceLists, chunkShares, cleanupReadyCalls, cleanupRunCalls, settleCalls, batchCalls, batchFinishes, batchFaults, depsBatches, failClasses, termCalls, termManagers, bookCalls, bookManagers, citedCalls, citedManagers, layerCalls, layerManagers, layerJobs, modelCalls, modelManagers, modelJobLists, mathCalls, mathManagers, state, deleteManagers,
     agent: async (prompt, opts = {}) => {
       // grossman2002integration trial 17: a link block manager claimed its units, then failed its structured
       // answer five times (a 2.6 KB claim line with Windows paths in a JSON string) and the agent call threw.
@@ -2091,7 +2130,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // S23-AC01 (#115): §13.1's dependency flow on the existing stages, not a reordered blueprint.
   // docs/literature-only-digest-design.md: a digest builds only the Literature tree, so no concept review,
   // restatement review or hub stage sits in the graph; the group writers follow the term table directly.
-  check(after('digest') === 'terms', 'schedule: the group writers follow the book term table')
+  // #221: the Cited list is written before any group writer, so it takes <key>/1|b beside the Term list.
+  check(after('digest') === 'terms,cited', 'schedule: the group writers follow the book term table and the Cited list')
   check(['concepts', 'review', 'hubs', 'hubs-first'].every((id) => !stageOf('econ', id)), 'schedule: a digest has no concept review, restatement review or hub stage (they are zt-idea-grow\'s)')
   check(after('cards') === 'digest', 'schedule: the per-group Card checks follow their own group completion (the cadrs stage)')
   check(after('models') === 'cards', 'schedule: the model layer is released when the digest managers settle (after the Cards layer)')
@@ -2185,7 +2225,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // (`plan_stale`: the notation the models write, the rows' evidence and the job grouping changed), so 0 rows were
   // published. The branch now starts once the Literature content is settled (after the whole-book Cards cycle).
   check(tc && tc.module === 'zt-term-cards' && (tc.after || []).join(',') === 'cards-book' && tc.onFail === 'continue', `the Term-card branch starts after the whole-book Cards cycle (after ${(tc.after || []).join(',')})`)
-  check(tl && tl.module === 'zt-term-link' && (tl.after || []).join(',') === 'bridge,term-cards' && tl.onFail === 'continue', `S24: the Term-link pass waits for every Card writer and the term-card branch (after ${(tl.after || []).join(',')})`)
+  check(tl && tl.module === 'zt-term-link' && (tl.after || []).join(',') === 'bridge,term-cards,cited-cards' && tl.onFail === 'continue', `S24: the Term-link pass waits for every Card writer and the term-card branch (after ${(tl.after || []).join(',')})`)
   for (const which of ['econ', 'math']) {
     const bp = builds[which].bp
     check(bp.stages.some((s) => s.id === 'term-cards') && bp.stages.some((s) => s.id === 'term-link'), `S24 (${which}): the variant inherits both Term stages from the base`)
@@ -2251,7 +2291,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
 // runs term-link after all its writers (only the read-only audit mode does not).
 // ================================================================================================================
 {
-  const WRITERS = ['digest', 'cards', 'events', 'findings', 'models', 'explain', 'cards-book', 'link', 'link-check', 'organize', 'figures', 'bridge', 'term-cards', 'math-skeleton', 'math-boundary', 'math-proof', 'math-theory']
+  const WRITERS = ['digest', 'cards', 'events', 'findings', 'models', 'explain', 'cards-book', 'link', 'link-check', 'organize', 'figures', 'bridge', 'term-cards', 'cited', 'cited-cards', 'math-skeleton', 'math-boundary', 'math-proof', 'math-theory']
   for (const which of ['econ', 'math']) {
     const bp = builds[which].bp
     const byId = Object.fromEntries(bp.stages.map((s) => [s.id, s]))
@@ -2268,6 +2308,67 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
       check(!late.length, `Term links (${which}): mode ${mode} links after every writer (${late.join(',') || 'none late'})`)
     }
   }
+}
+
+// ================================================================================================================
+// #221: the Cited list and the Cited Cards (docs/cited-literature-cards-proposal.md)
+// ================================================================================================================
+{
+  for (const which of ['econ', 'math']) {
+    const bp = builds[which].bp
+    const byId = Object.fromEntries(bp.stages.filter((s) => s.id).map((s) => [s.id, s]))
+    const cl = byId.cited, cc = byId['cited-cards']
+    check(cl && cl.module === 'zt-cited-cards' && cl.params.part === 'list' && (cl.after || []).join(',') === 'terms' && cl.onFail === 'continue', `#221 (${which}): the Cited list runs after the Term table and continues on failure (${JSON.stringify(cl && cl.after)})`)
+    check((byId.digest.after || []).includes('cited'), `#221 (${which}): the group writers wait for the Cited list, so it takes <key>/1|b beside the Term list`)
+    check(cc && cc.module === 'zt-cited-cards' && cc.params.part === 'cards' && (cc.after || []).join(',') === 'cards-book,cited' && cc.onFail === 'continue', `#221 (${which}): the Cited Cards run once the Literature content is settled (${JSON.stringify(cc && cc.after)})`)
+    check((bp.modes['cited-cards'] || []).join(',') === 'args,source,prepare,cited,cited-cards,term-link,audit,cleanup,report', `#221 (${which}): mode cited-cards runs the list, the Cards, the Term-link pass, the audit, the settlement and the report (${(bp.modes['cited-cards'] || []).join(',')})`)
+    check((bp.modes.resume || []).includes('cited') && (bp.modes.resume || []).includes('cited-cards'), `#221 (${which}): mode resume drains both Cited stages`)
+  }
+  const args = builds.econ.bp.args
+  check(args.cited && args.cited.default === true && args.citedCards && args.citedCards.default === true && args.citedCardsPerJob && args.citedCardsPerJob.max === 8 && args.citedCardsPerJob.default === 4 && args.citedHeading && args.citedHeading.type === 'string', '#221: the Cited switches, the per-job size and the heading are declared')
+
+  const full = await run('econ', { ...base, figures: false })
+  check(full.report.stages.cited.status === 'done' && full.report.stages['cited-cards'].status === 'done', `#221: a full run completes both Cited stages (${JSON.stringify([full.report.stages.cited, full.report.stages['cited-cards']])})`)
+  const drives = full.citedCalls.map((c) => c.step)
+  check(drives.join(',') === 'list,list-finish,start,finish', `#221: the drive steps run in order list, list-finish, start, finish (${drives.join(',')})`)
+  check(full.citedCalls.every((c) => /cited-steps\.ps1" -Step [\w-]+ -Out "/.test(c.cmd)) && full.citedCalls.some((c) => c.step === 'start' && / -PerJob 4/.test(c.cmd)), `#221: each drive job runs one cited-steps.ps1 step and the per-job size reaches the plan (${JSON.stringify(full.citedCalls.map((c) => c.cmd))})`)
+  const citedAgents = full.calls.filter((c) => /^cited(-cards)?: /.test(c.label || ''))
+  check(citedAgents.length > 0 && citedAgents.filter((c) => !/: workspace$/.test(c.label)).every((c) => c.model === 'haiku' && !c.agentType && /You are a DeepSeek subagent manager/.test(c.prompt || '')), `#221: every Cited stage agent is a Haiku DeepSeek manager (${citedAgents.length})`)
+  check(citedAgents.every((c) => c.agentType !== 'zt-relay'), '#221: no Cited step runs as a Claude relay')
+  const content = full.citedManagers.filter((m) => m.kind !== 'drive')
+  check(content.some((m) => m.kind === 'normalize' && m.jobs.join(',') === 'n01') && content.filter((m) => m.kind === 'write').flatMap((m) => m.jobs).join(',') === 't001,t002' && content.every((m) => m.jobs.length <= 8), `#221: the normalize job and both writer jobs run in content managers of at most eight (${JSON.stringify(content.map((m) => [m.kind, m.jobs]))})`)
+  check(content.filter((m) => m.kind === 'write').every((m) => /WHOLE source|whole source/.test(m.prompt) || /the book's source file/.test(m.prompt)), '#221: a writer manager may let its job read the book\'s whole source file')
+  check(full.led.find('cited/book@1').state === 'done' && full.led.find('citedcards/book@1').state === 'done', '#221: the Cited list unit and the Cited Card book unit complete')
+  check(full.result.cited.status === 'done' && full.result.cited.list === 'Key/1|b' && full.result.cited.unparsed === 1 && full.result.cited_cards.status === 'done' && full.result.cited_cards.publication.complete === true, `#221: the report carries the Cited list and the complete Cited Cards (${JSON.stringify([full.result.cited, full.result.cited_cards])})`)
+  check(full.result.schedule.cited === 'done' && full.result.schedule.cited_cards === 'done', '#221: the schedule names both Cited statuses')
+  const order = full.calls.map((c) => c.label || '')
+  const firstDigest = order.findIndex((l) => /^digest/.test(l))
+  const listDone = order.findIndex((l) => /^cited: drive list-finish/.test(l))
+  check(listDone >= 0 && firstDigest > listDone, `#221: the Cited list is written before the first group writer (${listDone} < ${firstDigest})`)
+  const linkAt = order.findIndex((l) => /^term-link: /.test(l))
+  const citedFinish = order.findIndex((l) => /^cited-cards: drive finish/.test(l))
+  check(citedFinish >= 0 && linkAt > citedFinish, '#221: the Term-link pass runs after the Cited Cards publish')
+
+  const notReady = await run('econ', { ...base, figures: false }, { citedNotReady: true })
+  check(notReady.result.cited_cards.status === 'failed' && notReady.result.cited_cards.blocked === 1 && notReady.report.stages['term-link'].status === 'done', `#221: a row that is not ready fails the Cited Card book alone and the run goes on (${JSON.stringify([notReady.result.cited_cards, notReady.report.stages['term-link']])})`)
+  const listFails = await run('econ', { ...base, figures: false }, { citedListFails: true })
+  check(listFails.result.cited.status === 'failed' && /names no source/.test(listFails.result.cited.reason || '') && listFails.report.stages.digest.status === 'done', `#221: a failed Cited list is reported and the digest goes on (${JSON.stringify(listFails.result.cited)})`)
+  const noList = await run('econ', { ...base, figures: false }, { citedNoList: true })
+  check(noList.result.cited.status === 'skipped' && /no reference list/.test(noList.result.cited.reason || '') && noList.citedCalls.every((c) => c.step !== 'list-finish'), `#221: a source with no reference list writes no list Card (${JSON.stringify(noList.result.cited)})`)
+  const off = await run('econ', { ...base, figures: false, cited: false, citedCards: false })
+  check(off.report.stages.cited.status === 'skipped' && off.report.stages['cited-cards'].status === 'skipped' && off.citedCalls.length === 0, '#221: cited and citedCards false skip both stages')
+
+  const backfill = await run('econ', { out: 'D:\\x\\Key', mode: 'cited-cards' })
+  const ran = Object.entries(backfill.report.stages).filter(([, s]) => s.status === 'done').map(([id]) => id)
+  check(backfill.report.stages.cited.status === 'done' && backfill.report.stages['cited-cards'].status === 'done' && backfill.report.stages['term-link'].status === 'done', `#221: mode cited-cards runs the list, the Cards and the Term-link pass (${ran.join(',')})`)
+  check(!ran.some((id) => ['digest', 'cards', 'cards-book', 'link', 'terms', 'term-cards', 'models', 'events', 'findings', 'bridge', 'finalize'].includes(id)), `#221: mode cited-cards reruns no digest, Card, Term-card, model or Link stage (${ran.join(',')})`)
+  const prep = backfill.bookCalls.find((c) => c.step === 'prepare')
+  check(prep && prep.options.Mode === 'cited-cards', `#221: mode cited-cards prepares as a backfill (${JSON.stringify(prep && prep.options)})`)
+  check(backfill.result.mode === 'cited-cards' && backfill.result.cited.status === 'done' && backfill.result.cited_cards.status === 'done', `#221: the backfill report carries both Cited results (${JSON.stringify(backfill.result).slice(0, 300)})`)
+  const newKey = await run('econ', { out: 'D:\\x\\Key', mode: 'cited-cards', citationKey: 'Other' })
+  check(newKey.result.stage === 'args' && /accepts only out/.test(newKey.result.error), `#221: mode cited-cards refuses a new identity (${newKey.result.error})`)
+  const contradicts = await run('econ', { out: 'D:\\x\\Key', mode: 'cited-cards', citedCards: false })
+  check(contradicts.result.stage === 'args' && /citedCards false contradicts the mode/.test(contradicts.result.error), `#221: mode cited-cards refuses args.citedCards false (${contradicts.result.error})`)
 }
 
 // ================================================================================================================
@@ -3083,7 +3184,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '47' && modules['zt-digest-prepare'] === '19' && modules['zt-digest-report'] === '22' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-digest-lib v47, zt-digest-prepare v19, zt-digest-report v22, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '47' && modules['zt-digest-prepare'] === '20' && modules['zt-digest-report'] === '23' && modules['zt-cited-cards'] === '1' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-digest-lib v47, zt-digest-prepare v20, zt-digest-report v23, zt-cited-cards v1, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

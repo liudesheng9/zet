@@ -244,7 +244,7 @@ switch ($Step) {
             } @{ resume = $resume; settings = $view.settings; run_options = $view.run_options; status = $view }
             break
         }
-        if ($mode -eq 'term-cards' -or $mode -eq 'term-link') {
+        if ($mode -eq 'term-cards' -or $mode -eq 'term-link' -or $mode -eq 'cited-cards') {
             # S25 (#168): the backfill's own preparation. `-Sections` reuses or reconstructs the staged source
             # slices the Term-card branch reads; `-Validate` only inspects the already digested book.
             $flag = if ($mode -eq 'term-cards') { '-Sections' } else { '-Validate' }

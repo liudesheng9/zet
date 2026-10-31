@@ -7,14 +7,14 @@
   "scope": "The candidate compatible release set of the Term Cards, Term Links and shared Card check work (PRD #142, slices S01-S27): one executable set, one frozen digest pair, and the installed agent guidance. It names the versions; it does not migrate the live archive, rerun a digest, backfill a book, unlock a tree or promote the gate.",
   "contracts": {
     "executable": {
-      "zt": "0.48.2",
-      "zt_check": "0.16.0",
-      "zt_digest": "0.36.1"
+      "zt": "0.49.0",
+      "zt_check": "0.17.0",
+      "zt_digest": "0.37.0"
     },
     "rule": {
       "rule_version": "5",
       "diagnostic_schema": "1",
-      "applicability_version": "3"
+      "applicability_version": "4"
     },
     "archive_schema": {
       "generation": "2",
@@ -27,9 +27,9 @@
       "older_binary_refuses": "2"
     },
     "workflow": {
-      "base": "5.9.1",
-      "zt-econ-digest": "6.9.1",
-      "zt-math-digest": "5.9.1",
+      "base": "5.10.0",
+      "zt-econ-digest": "6.10.0",
+      "zt-math-digest": "5.10.0",
       "zt-idea-grow": "4.0.8"
     }
   },

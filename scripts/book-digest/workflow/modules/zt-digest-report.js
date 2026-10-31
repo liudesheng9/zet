@@ -1,4 +1,4 @@
-// ==== module zt-digest-report v22 ====
+// ==== module zt-digest-report v23 ====
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -36,8 +36,11 @@
 // 22 (#188): a variant's own mode (`events`, `findings`, `math`) also carries that coverage, so a measured count is
 // never thrown away; a successful measurement of zero units is `coverage` 0/0/0/0/100, not "not measured" (the
 // step line omits zero fields, so its `ok:true` is the measurement's own answer).
+// 23 (#221): the Cited list and the Cited Cards. Every whole report and mode cited-cards carry `cited` (the list:
+// rows, unparsed, refused, its Card) and `cited_cards` (jobs, publication, reason), and the schedule names both
+// statuses, so a book whose reference list did not publish in full reports that debt.
 defineModule({
-  id: 'zt-digest-report', version: '22', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '23', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -49,6 +52,8 @@ defineModule({
     cards: { type: 'any', description: 'the Cards layer output (the per-group offline checks)' },
     termCards: { type: 'any', description: 'the Term-card branch output: its units, waves, readiness and publication (S24, #167)' },
     termLink: { type: 'any', description: 'the deterministic Term-link pass output: its unit, plan, counts and no_op (S24, #167)' },
+    citedList: { type: 'any', description: 'the Cited list stage output: rows, unparsed, refused and its Card (#221)' },
+    citedCards: { type: 'any', description: 'the Cited Card stage output: its jobs and publication (#221)' },
     models: { type: 'any', description: 'the output of the model layer (the models stage of a book type)' },
     terms: { type: 'any', description: 'the term table stage output' },
     prepare: { type: 'any', description: 'the prepare stage output: the backfill validation of modes term-cards and term-link (S25, #168)' },
@@ -101,6 +106,20 @@ defineModule({
         blocked: Number(value.not_ready || 0),
         reason: value.reason || value.error || null,
       }
+    // #221: the Cited stages' own result, never a guess: skipped when the stage did not run.
+    const citedSummary = (value) => !value
+      ? { status: 'skipped' }
+      : {
+        status: value.status || 'unknown',
+        rows: value.rows ?? (value.publication && value.publication.rows) ?? null,
+        list: value.list || null,
+        unparsed: Number(value.unparsed || 0),
+        refused: Number(value.refused || 0),
+        jobs: value.jobs ? { total: value.jobs.total || 0, done: value.jobs.done || 0, failed: Number(value.jobs.failed || 0) } : null,
+        publication: value.publication || null,
+        blocked: Number(value.not_ready || 0),
+        reason: value.reason || value.error || null,
+      }
     const schedule = {
       settings: { maxAttempts: Z.MAX_ATTEMPTS, dshRunCap: Z.DSH_RUN_CAP },
       digest: digestSummary ? { verified: digestSummary.verified, failed: digestSummary.failed } : null,
@@ -113,6 +132,8 @@ defineModule({
       term_cards: termSummary(p.termCards, 'the Term-card branch').status,
       term_link: termSummary(p.termLink, 'the Term-link pass').status,
       term_link_final: (p.finalize && p.finalize.final && p.finalize.final.term_link && p.finalize.final.term_link.status) || null,
+      cited: citedSummary(p.citedList).status,
+      cited_cards: citedSummary(p.citedCards).status,
     }
     // S26 (#169): the finite finalization's own Term-link round and the final audit's Term quality,
     // both read from the final report's ledger facts, never inferred from the whole-book pass.
@@ -187,6 +208,13 @@ defineModule({
         ...coverageField,
       }
     }
+    // #221: one selected book's Cited backfill: the list, its Cards, the Term-link pass after them and the audit.
+    if (MODE === 'cited-cards') {
+      const cl = citedSummary(p.citedList)
+      const cc = citedSummary(p.citedCards)
+      ctx.log(`Backfill cited-cards: ${cl.status} list (${cl.rows ?? 0} row(s)), ${cc.status} Cited Cards.`)
+      return { mode: MODE, citation_key: KEY, cited: cl, cited_cards: cc, term_link: termLinkSummary(p.termLink, p.finalize), audit: or(p.audit, null), schedule, run_report: runReport, ...coverageField }
+    }
     if (!['full', 'link', 'models', 'resume'].includes(MODE)) return { mode: MODE, dsh_model: dshModel, citation_key: KEY, ...extra, schedule, ...coverageField }
     const modelReports = (p.models && p.models.models) || []
     // #180: the Link pass answers the run's own totals, never per-group rows.
@@ -212,6 +240,8 @@ defineModule({
       terms: (p.terms && p.terms.report) || null, cards: cardsReport,
       term_cards: termSummary(p.termCards, 'the Term-card branch'),
       term_link: termLinkSummary(p.termLink, p.finalize),
+      cited: citedSummary(p.citedList),
+      cited_cards: citedSummary(p.citedCards),
       deepseek_usage: runUsage, cleanup: (p.cleanup && p.cleanup.cleanup) || null, run_report: runReport,
       organize: or(p.organize, null), figures: or(p.figures, null), bridge: or(p.bridge, MODE === 'full' ? (A.bridge === false ? { status: 'skipped' } : { status: 'failed', error: 'Bridge stage produced no summary' }) : null), audit: or(p.audit, null), finalize: or(p.finalize, null),
       schedule,
