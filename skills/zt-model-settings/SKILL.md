@@ -7,7 +7,7 @@ description: "Organize the settings of one ZET model, given the address of its M
 
 Input: the **address of the Model Card** (for example `becker2025division/4|a`), written `<head>` below. Output: a setting part that a reader can read top-down and build the whole setting from scratch: each card adds one piece to what the cards above it set up, and every symbol is defined where the reader first meets it.
 
-The order of the model skills: `zt-model-fold` (one Model Card), then this skill (the setting part), then `zt-model-restructure` (the spine of chapters, results and proofs). The restructure keeps the setting part as this skill leaves it.
+The order of the model skills: `zt-model-fold` (one Model Card), then this skill (the setting part), then `zt-model-restructure` (the spine of chapters, results and proofs). The restructure keeps the setting part as this skill leaves it. A model that uses another model's building blocks imports them with `zt-model-import` (its **引入** section); do that before this skill, so the imported notation counts.
 
 Tool mechanics (Workspaces, `get_model`, moves, Locks) are in the `zt` skill. A worked record (Becker 2025) is §9.7–§9.8 of `E:\zet\docs\model-merge-proposal.md`.
 
