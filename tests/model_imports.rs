@@ -639,3 +639,61 @@ fn a_single_card_import_of_a_model_card_is_a_fault() {
     assert!(build_order(&model).is_empty(), "{model}");
 }
 
+
+/// I4 (#209): the board data. Each import is its own `shared` block, before the setting, in the
+/// order of the `**引入**` lines: titled `引入：<root title>`, naming its home, root and mode, its
+/// children the block's top Cards (a Card under another's Side successors folds into its proof)
+/// then the closure Cards marked `premise`. Legacy shares make one `共用前提` block after them.
+/// `imports[].interface` names the block's result and notation Cards, and the home model lists its
+/// borrowers in `lent`.
+#[test]
+fn each_import_is_its_own_block_and_the_home_model_lists_its_borrowers() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let k = model_a_with_blocks(&mut mcp);
+    let g = model_card(
+        &mut mcp,
+        "K2024/1",
+        "模型 G",
+        &format!(
+            "问题：G？\n\n**结构**\n\n- 共用 [[{}]]（共用）：旧的共用\n\n**引入**\n\n- 整块 [[{}]]：A 的结论\n- 整块 [[{}]]：A 的设定\n",
+            k.steps[2], k.result, k.setting
+        ),
+    );
+    let g_setting = address(mcp.ok(
+        "create_successor",
+        json!({ "at": g, "kind": "side", "facet": "设定", "title": "设定：G", "body": format!("依赖 [[{}]]。依赖 [[{}]]。依赖 [[{}]]。", k.proof[1], k.notation, k.steps[2]) }),
+    ));
+    let model = mcp.ok("get_model", json!({ "at": g }));
+    let blocks = model["blocks"].as_array().unwrap();
+    let kinds = blocks.iter().map(|b| b["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(kinds, ["shared", "shared", "shared", "setting"], "{model}");
+    assert_eq!(blocks[0]["title"], "引入：结果：一个结论");
+    assert_eq!(blocks[0]["import"], json!(k.result));
+    assert_eq!(blocks[0]["home"], json!(k.a));
+    assert_eq!(blocks[0]["mode"], "block");
+    let children = |b: &Value| b["children"].as_array().unwrap().iter().map(|c| (c["address"].as_str().unwrap().to_string(), c["premise"] == json!(true))).collect::<Vec<_>>();
+    // The result import owns its closure (the setting, the first step, the timing setting).
+    let first = children(&blocks[0]);
+    assert_eq!(first[0], (k.result.clone(), false), "the block's top first: {model}");
+    assert_eq!(blocks[0]["children"][0]["proof"]["addresses"], json!([k.proof[0], k.proof[1]]), "{model}");
+    let premises = first.iter().filter(|(_, p)| *p).map(|(a, _)| a.clone()).collect::<Vec<_>>();
+    assert_eq!(premises.len(), 3, "{model}");
+    // The setting import keeps what the first import has not taken: the notation card.
+    assert_eq!(blocks[1]["title"], "引入：设定：A 的设定");
+    assert_eq!(children(&blocks[1]), [(k.notation.clone(), false)], "{model}");
+    assert_eq!(blocks[2]["title"], "共用前提");
+    assert_eq!(children(&blocks[2]), [(k.steps[2].clone(), false)], "{model}");
+    assert_eq!(blocks[3]["head"], json!(g_setting));
+    // Edges come from the right blocks.
+    let edge = model["block_edges"].as_array().unwrap().iter().find(|e| e["pairs"][0]["to"] == json!(k.notation)).cloned().unwrap();
+    assert_eq!(edge["to_block"], blocks[1]["id"], "{model}");
+    let imports = model["imports"].as_array().unwrap();
+    assert_eq!(imports[0]["interface"]["results"], json!([k.result]), "{model}");
+    assert_eq!(imports[1]["interface"]["notation"], json!([k.notation]), "{model}");
+    let lender = mcp.ok("get_model", json!({ "at": k.a }));
+    let lent = lender["lent"].as_array().expect("lent");
+    assert_eq!(lent.len(), 1, "{lender}");
+    assert_eq!(lent[0]["model"], json!(g));
+    assert_eq!(lent[0]["roots"], json!([k.result, k.setting]), "legacy shares are no import: {lender}");
+}

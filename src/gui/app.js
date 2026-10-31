@@ -4075,6 +4075,25 @@
       pairsCard.style.top = `${Math.max(0, point.y - 16)}px`;
       pairsCard.classList.add('shown');
     };
+    // The models that import a block of this one (#210): `model.lent` names each borrower's roots.
+    const lentOf = (b) => {
+      if (PLAIN[b.kind]) return [];
+      const cards = new Set([b.head, ...b.children.flatMap((c) => [c.address, ...((c.proof && c.proof.addresses) || [])])]);
+      return (model.lent || []).filter((l) => l.roots.some((at) => cards.has(at)));
+    };
+    const showBorrowers = (list, point) => {
+      clearTimeout(hideTimer);
+      pairsCard.replaceChildren(
+        h('div', { class: 'mbk-pairs-head' }, h('b', { text: `引入 by ${list.length} model${list.length === 1 ? '' : 's'}` })),
+        h('ul', {}, list.map((l) => h('li', {},
+          h('button', { class: 'mbk-pairs-from', onclick: () => go(l.model), title: l.model }, bareTitle(l.title) || l.model),
+          l.roots.map((at) => h('span', { class: 'mbk-pairs-to', title: at }, h('span', { class: 'arrow', text: '⧉' }), cardName(at)))))));
+      const width = Math.min(320, board.clientWidth - 24);
+      pairsCard.style.width = `${width}px`;
+      pairsCard.style.left = `${Math.min(board.clientWidth - width - 8, Math.max(8, point.x + 14))}px`;
+      pairsCard.style.top = `${Math.max(0, point.y - 16)}px`;
+      pairsCard.classList.add('shown');
+    };
     // ---- the board: one card (or tab) per block, hanging below its station ----
     const sizeOf = (id) => {
       const b = blocks[index.get(id)];
@@ -4086,8 +4105,21 @@
       const fault = () => (unanchored.has(b.id)
         ? h('span', { class: 'mbk-fault', text: '!', title: `Unanchored: nothing in ${nameOf(b.id)} rests on an earlier block. Add a 依赖 line from its chapter card to the chapter it builds on.` })
         : null);
+      // A block other models import carries a flag: how many; pointing at it or clicking it lists them.
+      const lent = lentOf(b);
+      const lentFlag = () => {
+        if (!lent.length) return null;
+        const flag = h('button', {
+          class: 'mbn-lent', text: `⧉ ${lent.length}`,
+          title: `引入 by ${lent.map((l) => l.model).join(', ')}`,
+          onclick: (event) => { event.stopPropagation(); const r = offsetIn(flag, board); showBorrowers(lent, { x: r.left + r.width, y: r.top }); },
+        });
+        flag.addEventListener('mouseenter', () => { const r = offsetIn(flag, board); showBorrowers(lent, { x: r.left + r.width, y: r.top }); });
+        flag.addEventListener('mouseleave', hidePairs);
+        return flag;
+      };
       // A tab: the block's short name. A card shrunk to a tab on a tall board shows the same.
-      const asTab = () => [h('span', { class: 'mbn-num', text: shortName(b.id) }), fault()];
+      const asTab = () => [h('span', { class: 'mbn-num', text: shortName(b.id) }), fault(), lentFlag()];
       const full = PLAIN[b.kind] ? b.title : `${facetLabel(b.facet)} — ${bareTitle(b.title)}`;
       const flags = flagsOf(b.id);
       const node = h('div', {
@@ -4104,6 +4136,7 @@
               h('span', { class: 'mbn-tab', text: PLAIN[b.kind] || (lv === 'focus' ? headLabel(b.facet) : `${shortName(b.id)} · ${(facetLabel(b.facet).split(/[：:]/)[1] || '').trim()}`.replace(/ · $/, '')) }),
               fault()),
             h('span', { class: 'mbn-title' }, titleNodes(bareTitle(b.title))),
+            lentFlag(),
           ]);
       node.dataset.block = b.id;
       node.zt = { level: lv, full: lv === 'far' ? null : [...node.childNodes], tab: lv === 'far' ? null : asTab() };
@@ -4213,15 +4246,36 @@
       };
       // A borrowed card (共用) names the model it lives in; the stamp opens that model.
       const homeOf = new Map(((model.build && model.build.order) || []).filter((e) => e.line === 'shared' && e.home).map((e) => [e.address, e.home]));
+      // The model a borrowed card lives in, by its title where a part names it.
+      const homeTitle = (home) => {
+        for (const p of model.parts) for (const m of p.also || []) if (m.address === home) return m.title;
+        return null;
+      };
+      const homeButton = (home, label) => {
+        const title = homeTitle(home);
+        return h('button', {
+          class: 'mbn-home', title: `Lives in the model ${home}${title ? ' — ' + title : ''}; this model borrows it`,
+          onclick: (event) => { event.stopPropagation(); go(home); },
+        }, `⧉ ${label || (title ? bareTitle(title).split(/[：:]/)[0] : home)}`);
+      };
+      // In the close-up, the Card another model imports (a block root) carries the same flag.
+      const lentAt = (at) => (model.lent || []).filter((l) => l.roots.includes(at));
+      const lentStamp = (at) => {
+        const list = lentAt(at);
+        if (!list.length) return null;
+        const flag = h('button', {
+          class: 'mbn-lent inline', text: `⧉ ${list.length}`, title: `引入 by ${list.map((l) => l.model).join(', ')}`,
+          onclick: (event) => { event.stopPropagation(); const r = offsetIn(flag, board); showBorrowers(list, { x: r.left, y: r.top + r.height }); },
+        });
+        flag.addEventListener('mouseenter', () => { const r = offsetIn(flag, board); showBorrowers(list, { x: r.left, y: r.top + r.height }); });
+        flag.addEventListener('mouseleave', hidePairs);
+        return flag;
+      };
       const homeStamp = (c) => {
         const home = homeOf.get(c.address);
-        if (!home) return null;
-        const ref = (partOf.get(c.address)?.also || []).find((m) => m.address === home);
-        const name = ref ? bareTitle(ref.title).split(/[：:]/)[0] : home;
-        return h('button', {
-          class: 'mbn-home', title: `Lives in the model ${home}${ref ? ' — ' + ref.title : ''}; this model borrows it`,
-          onclick: (event) => { event.stopPropagation(); go(home); },
-        }, `⧉ ${name}`);
+        // One import's shelf names its home once, in its header.
+        if (!home || open.import) return null;
+        return homeButton(home);
       };
       const stackLabel = (c) => c.proof ? `▤ ${isResult(c) ? '证明' : '下面'} ${c.proof.steps} ${isResult(c) ? '步' : '张'}` : null;
       const tuck = (c, i) => {
@@ -4236,6 +4290,8 @@
           h('div', { class: 'mbn-tuck-head' },
             h('span', { class: 'mbk-facet', text: headLabel(c.facet) }),
             pulled ? null : h('span', { class: 'mbn-tuck-line' }, titleNodes(bareTitle(c.title))),
+            lentStamp(c.address),
+            c.premise ? h('span', { class: 'mbn-premise', text: '前提', title: 'A premise in the home model that the imported block rests on: it comes in with the import' }) : null,
             homeStamp(c),
             c.proof ? h('button', {
               class: 'mbk-stack', title: 'Open this proof: its first step',
@@ -4253,16 +4309,24 @@
         shared: '借来的构件：每张仍在它自己的模型里，本模型只引用它；右边的旗标是用到它的章。',
         aside: '旁注：直接挂在模型卡下、不属于任何一章的卡。',
       };
+      // An import's shelf: its root, how it came in, and its home model (#210).
+      const IMPORT_MODE = { block: '整块', card: '单卡', model: '整个模型' };
+      const premises = open.children.filter((c) => c.premise).length;
       const chapterEl = PLAIN[open.kind]
         ? h('div', { class: 'mbn-chapter shelf', style: `z-index: ${open.children.length + 3}` },
           h('div', { class: 'mbk-head' },
             h('span', { class: 'mbk-tab', text: open.title }),
-            h('span', { class: 'mbk-count', text: `${open.children.length} 张` })),
-          h('p', { class: 'mbk-lead', text: SHELF[open.kind] }))
+            h('span', { class: 'mbk-count', text: `${open.members} 张` })),
+          open.import
+            ? h('p', { class: 'mbk-lead' },
+              `${IMPORT_MODE[open.mode] || open.mode}引入${premises ? `，连同它在家模型里依赖的 ${premises} 张前提` : ''}；每张仍在家模型里。家：`,
+              open.import ? homeButton(open.home, null) : null)
+            : h('p', { class: 'mbk-lead', text: SHELF[open.kind] }))
         : h('div', { class: 'mbn-chapter' + (open.head === here ? ' here' : ''), style: `z-index: ${open.children.length + 3}` },
           h('div', { class: 'mbk-head' },
             h('span', { class: 'mbk-tab', text: headLabel(open.facet) }),
-            open.members > 1 ? h('span', { class: 'mbk-count', text: `${open.members} 张` }) : null),
+            open.members > 1 ? h('span', { class: 'mbk-count', text: `${open.members} 张` }) : null,
+            lentStamp(open.head)),
           h('button', { class: 'mbk-chapter', onclick: () => go(open.head), title: open.head }, titleNodes(bareTitle(open.title))),
           open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null,
           cardFlags([open.head]));
@@ -4502,15 +4566,20 @@
       ...(build.unanchored || []).map((f) => ({ at: f.address, kind: 'unanchored', text: f.fix })),
       // A part (分部) that starts off the main line (#204).
       ...(build.parts || []).map((f) => ({ at: model.head.address, kind: 'part', text: f.fix })),
+      // Imports (#205): a line that names no part of another model, a block that rests on this model.
+      ...(build.import_target || []).map((f) => ({ at: model.head.address, kind: 'import', text: f.fix })),
+      ...(build.import_cycle || []).map((f) => ({ at: f.from, kind: 'cycle', text: f.fix })),
     ];
+    // A Link from the Model Card that shares a part by accident: advice, not a fault.
+    const stray = (build.false_share || []).map((f) => ({ at: model.head.address, kind: 'false share', text: f.fix }));
     const tolerated = (build.tolerated || []).length;
-    if (!rows.length) {
+    if (!rows.length && !stray.length) {
       return h('div', { class: 'mb-build ok', title: 'Every premise is a member, and every step rests on earlier steps' },
         `Self-sufficient${tolerated ? ` · ${tolerated} premise${tolerated === 1 ? '' : 's'} kept in a shared part’s home model` : ''}`);
     }
     return h('details', { class: 'mb-build' },
-      h('summary', { text: `Build · ${rows.length} fault${rows.length === 1 ? '' : 's'}${tolerated ? ` · ${tolerated} tolerated` : ''}` }),
-      rows.map((row) => h('button', { class: 'mb-reason fault ' + row.kind, onclick: () => go(row.at), title: row.at },
+      h('summary', { text: `Build · ${rows.length} fault${rows.length === 1 ? '' : 's'}${stray.length ? ` · ${stray.length} false share${stray.length === 1 ? '' : 's'}` : ''}${tolerated ? ` · ${tolerated} tolerated` : ''}` }),
+      [...rows, ...stray].map((row) => h('button', { class: 'mb-reason fault ' + row.kind, onclick: () => go(row.at), title: row.at },
         h('span', { class: 'mb-kind', text: row.kind }),
         h('span', { class: 'note' }, titleNodes(row.text)))));
   }

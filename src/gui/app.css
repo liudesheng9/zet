@@ -1420,6 +1420,14 @@ button.model-tab:hover { height: 21px; color: var(--model); opacity: 1; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mbn-home:hover { background: color-mix(in srgb, var(--model) 10%, transparent); }
+/* A closure Card an import brings (#210): a premise from the home model, quietly marked. */
+.mbn-premise { flex: none; font: 600 9.5px/16px var(--sans); color: var(--ink-soft); padding: 0 5px; border: 1px dashed color-mix(in srgb, var(--ink-soft) 50%, transparent); border-radius: 3px; }
+/* A block other models import: a small flag with the count; it lists them. In the close-up it stands in line. */
+.mbn-lent {
+  position: absolute; right: -6px; top: -8px; z-index: 4; padding: 0 5px; border: 0; border-radius: 8px; cursor: pointer;
+  font: 700 9.5px/15px var(--sans); color: var(--stock); background: var(--model); box-shadow: 0 1px 2px rgba(30, 18, 6, .35);
+}
+.mbn-lent.inline { position: static; flex: none; }
 /* The cascade: each tucked card shows its top strip; a later card lies over the one before. The
    open Card is pulled out in full; pointing at a strip draws its card out a little. */
 .mbn-cascade { display: flex; flex-direction: column; margin: -10px 10px 0; }

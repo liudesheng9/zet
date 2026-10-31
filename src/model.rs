@@ -1308,12 +1308,15 @@ pub(crate) fn structure_in(
     };
     let mut build = build;
     build["parts"] = json!(part_faults(build["order"].as_array().map_or(&[][..], Vec::as_slice), body_of(&head)));
-    let (blocks, block_edges) = blocks_report(
+    let imports = imports_report(&head, &expanded, &build, by_address, inbound, &title);
+    let (blocks, block_edges) = blocks_report_with(
         &head,
         build["order"].as_array().map_or(&[][..], Vec::as_slice),
         &relations,
         &body_of,
+        imports.as_array().map_or(&[][..], Vec::as_slice),
     );
+    let lent = lent_report(&head, &members, by_address, inbound, &title);
     Some(json!({
         "head": reference(&head),
         "level": level.map(Level::id),
@@ -1333,7 +1336,8 @@ pub(crate) fn structure_in(
         "neighbours": neighbours,
         "discussion": discussion.len(),
         "issues": [],
-        "imports": imports_report(&head, &expanded, &build, by_address, inbound),
+        "imports": imports,
+        "lent": lent,
         "build": build,
         "blocks": blocks,
         "block_edges": block_edges,
@@ -1349,9 +1353,17 @@ fn imports_report(
     build: &Value,
     by_address: &BTreeMap<String, Card>,
     inbound: &BTreeMap<String, BTreeSet<String>>,
+    title: &dyn Fn(&str) -> String,
 ) -> Value {
     let order = build["order"].as_array().map_or(&[][..], Vec::as_slice);
     let shared = order.iter().filter(|e| e["line"] == "shared").collect::<Vec<_>>();
+    // What a block gives its borrowers (D4): its result Cards and its notation Cards.
+    let facet_starts = |at: &str, prefixes: &[&str]| {
+        by_address
+            .get(at)
+            .and_then(|card| card.facet.as_ref())
+            .is_some_and(|facet| prefixes.iter().any(|p| facet.id().starts_with(p)))
+    };
     let home = |at: &str| heads(at, by_address, inbound).into_iter().find(|model| model != head);
     let taken = |list: &[String]| {
         list.iter()
@@ -1365,15 +1377,60 @@ fn imports_report(
         if members.is_empty() {
             continue;
         }
+        let results = members.iter().filter(|at| facet_starts(at, &["结果", "命题", "定理", "引理", "推论"])).collect::<Vec<_>>();
+        let notation = members.iter().filter(|at| facet_starts(at, &["符号"])).collect::<Vec<_>>();
         out.push(json!({
-            "root": import.root, "mode": import.mode, "home": import.home,
+            "root": import.root, "title": title(&import.root), "mode": import.mode, "home": import.home,
             "members": members, "closure": taken(&import.closure),
+            "interface": { "results": results, "notation": notation },
         }));
     }
     let stray = build["false_share"].as_array().map_or(&[][..], Vec::as_slice).iter().map(|f| f["target"].clone()).collect::<Vec<_>>();
     for e in shared.iter().filter(|e| e["legacy"] == json!(true) && !stray.contains(&e["address"])) {
         let at = e["address"].as_str().unwrap_or_default();
-        out.push(json!({ "root": at, "mode": "legacy", "home": home(at), "members": [at], "closure": [] }));
+        out.push(json!({ "root": at, "title": title(at), "mode": "legacy", "home": home(at), "members": [at], "closure": [] }));
+    }
+    json!(out)
+}
+
+/// The models that import a building block of the model `head` (#209): each Model Card whose
+/// `**引入**` section names this Model Card or one of its members filed here, with those roots in
+/// the order of its lines.
+fn lent_report(
+    head: &str,
+    members: &BTreeSet<String>,
+    by_address: &BTreeMap<String, Card>,
+    inbound: &BTreeMap<String, BTreeSet<String>>,
+    title: &dyn Fn(&str) -> String,
+) -> Value {
+    let own = |at: &str| at == head || filed_head(at, by_address).as_deref() == Some(head);
+    let mut borrowers = BTreeSet::new();
+    for member in members.iter().filter(|at| own(at)) {
+        for source in inbound.get(member).into_iter().flatten() {
+            if source != head
+                && by_address
+                    .get(source)
+                    .is_some_and(|card| card.card_type == CardType::Model && card.facet.is_none())
+            {
+                borrowers.insert(source.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut borrowers = borrowers.into_iter().collect::<Vec<_>>();
+    borrowers.sort_by(|a, b| address_order(a, b));
+    for model in borrowers {
+        let body = crate::parse_card_text(&by_address[&model].text)
+            .map(|parsed| parsed.body)
+            .unwrap_or_default();
+        let roots = import_lines(&body)
+            .into_iter()
+            .map(|line| line.target)
+            .filter(|at| own(at))
+            .collect::<Vec<_>>();
+        if !roots.is_empty() {
+            out.push(json!({ "model": model, "title": title(&model), "roots": roots }));
+        }
     }
     json!(out)
 }
@@ -1388,7 +1445,23 @@ fn imports_report(
 /// The parts (range blocks) come from the head's `**分部**` section: `- <name>：[[<main part>]] 起`.
 /// Each block's `lead` is the first sentence of its card's `**直觉**`, the line its tray opens with.
 /// `block_edges` aggregates the relations between Cards of different blocks by block pair and kind.
+#[cfg(test)]
 pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value], body_of: &dyn Fn(&str) -> &'b str) -> (Vec<Value>, Vec<Value>) {
+    blocks_report_with(head, order, relations, body_of, &[])
+}
+
+/// `blocks_report` with the model's `imports` (#209): each import's shared Cards make their own
+/// `shared` block (`引入：<root title>`, with its `import`, `home` and `mode`), before the setting
+/// in the order of the `**引入**` lines; the legacy shares make one `共用前提` block after them. An
+/// import block's children are its top Cards (a Card under another's Side successors folds into
+/// that Card's proof), then its closure Cards, each marked `premise`.
+pub(crate) fn blocks_report_with<'b>(
+    head: &str,
+    order: &[Value],
+    relations: &[Value],
+    body_of: &dyn Fn(&str) -> &'b str,
+    imports: &[Value],
+) -> (Vec<Value>, Vec<Value>) {
     let head_body = body_of(head);
     let s = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
     let mains: Vec<&Value> = order.iter().filter(|e| e["line"] == "main").collect();
@@ -1408,6 +1481,12 @@ pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value]
     }
     let aside = heads.len();
     let shared = aside + 1;
+    // One more block per import that owns a shared Card; the legacy shares stay in `shared`.
+    let groups = imports
+        .iter()
+        .filter(|i| i["mode"] != "legacy" && order.iter().any(|e| e["line"] == "shared" && e["import"] == i["root"]))
+        .collect::<Vec<_>>();
+    let group_of = |e: &Value| groups.iter().position(|i| e["import"] == i["root"]).map(|k| shared + 1 + k);
     let block_of = |address: &str| -> Option<usize> {
         if let Some(&b) = block_of_main.get(address) {
             return Some(b);
@@ -1418,11 +1497,11 @@ pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value]
             .max_by_key(|(m, _)| m.len())
             .map(|(_, &b)| b)
     };
-    let mut members: Vec<Vec<&Value>> = vec![Vec::new(); heads.len() + 2];
+    let mut members: Vec<Vec<&Value>> = vec![Vec::new(); heads.len() + 2 + groups.len()];
     let mut card_block: BTreeMap<String, usize> = BTreeMap::new();
     for e in order {
         let at = s(e, "address");
-        let b = if e["line"] == "shared" { shared } else { block_of(&at).unwrap_or(aside) };
+        let b = if e["line"] == "shared" { group_of(e).unwrap_or(shared) } else { block_of(&at).unwrap_or(aside) };
         members[b].push(e);
         card_block.insert(at, b);
     }
@@ -1464,6 +1543,38 @@ pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value]
         blocks.insert(0, json!({
             "id": format!("b{shared}"), "head": head, "title": "共用前提", "facet": null, "emphasis": null,
             "kind": "shared", "part": null, "members": members[shared].len(), "chaptered": chaptered, "children": children,
+        }));
+    }
+    for (k, import) in groups.iter().enumerate().rev() {
+        let b = shared + 1 + k;
+        let cards = &members[b];
+        let own = cards.iter().filter(|e| e["premise"] != json!(true)).copied().collect::<Vec<_>>();
+        let tops = own
+            .iter()
+            .filter(|e| !own.iter().any(|o| o["address"] != e["address"] && in_block(&s(e, "address"), &s(o, "address"))))
+            .collect::<Vec<_>>();
+        let mut children = tops
+            .iter()
+            .map(|e| {
+                let at = s(e, "address");
+                let proof = own.iter().map(|o| s(o, "address")).filter(|o| *o != at && in_block(o, &at)).collect::<Vec<_>>();
+                json!({
+                    "address": at, "title": e["title"], "facet": e["facet"], "emphasis": e["emphasis"],
+                    "derivation": e["derivation"] == json!(true),
+                    "proof": if proof.is_empty() { Value::Null } else { json!({"first": proof[0], "steps": proof.len(), "addresses": proof}) },
+                })
+            })
+            .collect::<Vec<_>>();
+        for e in cards.iter().filter(|e| e["premise"] == json!(true)) {
+            children.push(json!({
+                "address": e["address"], "title": e["title"], "facet": e["facet"], "emphasis": e["emphasis"],
+                "derivation": e["derivation"] == json!(true), "proof": null, "premise": true,
+            }));
+        }
+        blocks.insert(0, json!({
+            "id": format!("b{b}"), "head": head, "title": format!("引入：{}", s(import, "title")), "facet": null, "emphasis": null,
+            "kind": "shared", "import": import["root"], "home": import["home"], "mode": import["mode"],
+            "part": null, "members": cards.len(), "chaptered": chaptered, "children": children,
         }));
     }
     let mut edges: Vec<Value> = Vec::new();
@@ -1905,7 +2016,12 @@ fn build_report(
             if *line == "shared" {
                 value["home"] = json!(homes(at).into_iter().find(|model| model != head));
                 match import_of.get(at.as_str()) {
-                    Some(root) => value["import"] = json!(root),
+                    Some(root) => {
+                        value["import"] = json!(root);
+                        if expanded.iter().any(|import| import.root == *root && import.closure.contains(at)) {
+                            value["premise"] = json!(true);
+                        }
+                    }
                     None => value["legacy"] = json!(true),
                 }
             }

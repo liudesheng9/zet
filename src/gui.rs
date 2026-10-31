@@ -5226,6 +5226,27 @@ mod tests {
         assert!(css_rule(".mbn-chapter.shelf::before").contains("display: none"), "a shelf has no pin of its own");
     }
 
+    /// I5 (#210, #205): one 共用 shelf per import. The shelf of an import names its root, how it is
+    /// taken in and its home model (a stamp that opens it); the closure Cards it brings carry a
+    /// `前提` mark; on the lender's board a block that other models import carries a `⧉ n` flag that
+    /// lists them; the build faults list false shares, import targets and import cycles.
+    #[test]
+    fn the_front_end_shows_one_shelf_per_import_and_flags_what_a_model_lends() {
+        let blocks = app_function("blockBoard");
+        assert!(blocks.contains("const IMPORT_MODE = { block: '整块', card: '单卡', model: '整个模型' };"), "the shelf names how the block was taken in");
+        assert!(blocks.contains("open.import ? homeButton(open.home"), "the shelf header opens the home model");
+        assert!(blocks.contains("c.premise ? h('span', { class: 'mbn-premise', text: '前提'"), "a closure Card is marked as a premise");
+        assert!(blocks.contains("const lentOf = (b) =>"), "the lender's board counts its borrowers per block");
+        assert!(blocks.contains("class: 'mbn-lent'"), "a lent block carries a flag");
+        assert!(blocks.contains("showBorrowers("), "pointing at the flag lists the borrowers");
+        let faults = app_function("buildFaults");
+        for kind in ["false_share", "import_target", "import_cycle"] {
+            assert!(faults.contains(&format!("build.{kind}")), "buildFaults lists {kind}");
+        }
+        assert!(css_rule(".mbn-premise").contains("var(--ink-soft)"), "the premise mark is quiet");
+        assert!(css_rule(".mbn-lent").contains("var(--model)"), "the lent flag has the model colour");
+    }
+
     /// The board (#201, mental mapping): a pinned card leans a little about its pin, -1.2° to 1.2°,
     /// and the same card always leans the same way, so the board looks pinned by hand and stays put.
     #[test]
