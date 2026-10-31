@@ -693,3 +693,27 @@ All conversations were deleted and the workspace removed. `check-drafts` found n
 - `list_broken_links` is empty. The tree holds 273 Cards (266 + the seven chapter cards).
 
 **Next.** The owner relocks `acemoglu2007equilibrium` and `acemoglu2010labor`. `5|a` (political losers) is formal and has had no settings or spine pass.
+
+## 16. The Grossman–Helpman 2002 fold (2026-10-31)
+
+The `zt-model-fold` skill folded `grossman2002integration` on the live box (`/zt-model-fold grossman2002integration`, invoked by the owner after the post-digest status showed this book had no model pass). The backup is `D:\zt\backups\zt-before-grossman2002integration-fold.sqlite3` (`VACUUM INTO`, integrity ok, 5,113 Cards). The tree was not locked, and no Card of it was pinned by a locked tree.
+
+**Decision.** The paper holds 7 Model Cards and 1 model. Every row was settled by the evidence, so the fold ran without a question to the owner:
+
+| Model Card | Model | Surviving head | Reason |
+|---|---|---|---|
+| `2/a` 简单模型 (§二) | the industry-equilibrium model | `2/a` | the paper's model: consumers, three kinds of firm, five stages, random matching, bargaining share ω |
+| `3/a` 混合均衡模型 (§3.1) | the same | `2/a` | solves `2/a` for a mixed equilibrium with its zero-profit conditions (5)(6)(9)(10); 15 of its parts were imports of `2/a`; facet `混合均衡`, `core` |
+| `4/a` 普遍纵向一体化模型 (§3.2) | the same | `2/a` | solves `2/a` at s = m = 0; facet `普遍一体化均衡`, `core` |
+| `5/a` 普遍外包均衡 (§3.3) | the same | `2/a` | solves `2/a` at v = 0 (proposition 3); facet `普遍外包均衡`, `core` |
+| `7/a` 匹配规模报酬递增模型 (§5) | the same | `2/a` | changes one assumption (increasing returns in n(s,m)) and keeps the rest; facet `扩展：匹配规模报酬递增`, `core` |
+| `8/a` 部分专业化模型 (§六) | the same | `2/a` | relaxes only full specificity (component specs on a circle, a secondary market) and keeps entry, matching, ω and r_O; facet `扩展：部分专业化`, `core` |
+| `1/b` 产业组织均衡框架 (concept, §1) | the same | `2/a` | the verbal version of the model in the introduction; facet `直觉`, `core` |
+
+(The table writes `/` for `|` in addresses.)
+
+**Procedure.** The §13 script, with one change: every **引入** line of a folded head named a part of one of the seven heads (none named another book, and no other book imported from this one), so each folded head's **引入** section went with its **结构** block. No head had Side Idea notes.
+
+**Result.** `model-survey.mjs` lists exactly one head, `2/a`, with 81 members. The former heads are its main line `2/a/a/15` (混合均衡) to `2/a/a/20` (直觉), each with its parts at `/a` and `/b`. The tree still holds 318 Cards, and `list_broken_links` is empty. The six former heads are unanchored, so `2/a` is not yet self-sufficient; `zt-model-restructure` adds those lines, and moves the intuition chapter `2/a/a/20` to the front.
+
+**Next.** `zt-model-settings`, then `zt-model-restructure`, then `zt-model-import` (a check only: the model now imports nothing), on `grossman2002integration/2|a`.
