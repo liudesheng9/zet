@@ -77,15 +77,17 @@ it, or when it is the result of an earlier `@@` reference in the same request. A
 `before` are refused under an allow list. The single-call rule and the identified rule in
 `calls.rs` become this one rule.
 
-**D7. The Topic title rule refuses.** For agent Access, `create_topic` refuses a title whose key
+**D7. The Topic title rule refuses** (amended 2026-10-31 while building #225, see below). For agent Access, `create_topic` refuses a title whose key
 (spaces, punctuation and symbols removed, lower case) equals an agent Topic's key, or whose
 character-bigram similarity with one is at least the threshold. The refusal names that Topic. The
-threshold is archive metadata, `gate.topic_similarity`, default 0.8. The check runs under the edit
+threshold is archive metadata, `scope.topic_similarity` (as built: a `gate.*` row would be read as a Card-check policy override and refused), default 0.8. The check runs under the edit
 lock, so it is atomic and the file lock (`-TopicGate`) goes away. The owner's GUI is not affected.
 The concept gate (judge-based) stays in `zt-digest` and runs before the call.
 
 **D8. `append_card` uses the single `edit_card` raw `base`**, the text the helper just read, so a
-write between the read and the edit is refused as "changed since it was opened". The fingerprint
+write between the read and the edit is refused as "changed since it was opened".
+
+**D7 amendment (as built, #225).** The default threshold is **1.0**: only an equal title key is refused. At 0.8 the bigram rule refused legitimate Topics when it ran for every agent write: a sequence (`Topic 0`, `Topic 1`: 0.8), a title contained in another (`Related`, `Unrelated 0`: 0.8), and a plural (`Price Theory`, `Price Theories`: 0.857). Three existing MCP tests failed on it. The owner opts into near-title refusal with `zt config set scope.topic_similarity 0.8`; meaning duplicates stay the concept gate's job. The fingerprint
 mismatch (no MCP read returns the value `base_fingerprint` expects: `card::authored_fingerprint`
 vs `batch::fingerprint`) is a separate fix.
 
@@ -127,7 +129,7 @@ a flag.
 
 - **P1 — server (zt minor release).** `zt mcp --scope/--allow/--beneath`, the session's made
   Cards, the scope check per item in the write transaction, `scope_refused`, the Topic title rule
-  with `gate.topic_similarity`. The default stays open, so no client changes behaviour. Tests in
+  with `scope.topic_similarity`. The default stays open, so no client changes behaviour. Tests in
   `tests/workspaces_mcp.rs` through a real `zt mcp`.
 - **P2 — clients (zt-digest minor release).** `zt_check::mcp::Zt::start` passes the scope and the
   allow files; `scope_refused` stops a stage like `card_locked`; `append_card` sends a `base`;

@@ -391,7 +391,7 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
         scope.check(&crate::open_db(&root)?, name, args, &Default::default())?;
     }
     match name {
-        "apply_batch" => crate::batch::apply(&root, args),
+        "apply_batch" => crate::batch::apply(&root, args, scope),
         "list_workspaces" => crate::read::workspaces(&root),
         "list_trees" => crate::read::trees(&root, optional_workspace(args)?, optional_zone(args)?),
         "get_tree" => {
@@ -734,6 +734,8 @@ pub(crate) fn write_card_tx(
                 bail!(crate::term::NAME_NEEDS_TERM_CARD);
             }
             let workspace = target_workspace(args)?;
+            // D7: an agent Topic never repeats another agent Topic's title, in any scope.
+            crate::scope::check_topic_title(conn, &title_arg(args)?)?;
             let (address, checked) = ops::create_topic_tx(conn, ACCESS, workspace, &text)?;
             accepted = checked;
             json!({"address":address,"workspace":workspace.id()})

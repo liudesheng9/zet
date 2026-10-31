@@ -119,6 +119,9 @@ fn run() -> Result<()> {
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && key.starts_with(gate::PREFIX) => {
             cmd_config_set_gate(key, value)
         }
+        [cmd, sub, key, value] if cmd == "config" && sub == "set" && key == scope::SIMILARITY_KEY => {
+            cmd_config_set_topic_similarity(value)
+        }
         [cmd, sub, key, value] if cmd == "config" && sub == "set" && features::is_key(key) => {
             cmd_config_set_feature(key, value)
         }
@@ -792,6 +795,22 @@ fn cmd_config_set_gate(key: &str, value: &str) -> Result<()> {
     }
     let outcome = gate::change(&mut conn, key, value)?;
     println!("{}", outcome.line());
+    Ok(())
+}
+
+/// The Topic title rule's similarity threshold in the selected archive (D7). The write takes the
+/// archive's edit lock; a refused value writes nothing.
+fn cmd_config_set_topic_similarity(value: &str) -> Result<()> {
+    let root = require_archive_root()?;
+    if !db_path(&root).exists() {
+        bail!(
+            "the archive at {} is not initialized; run `zt up`",
+            root.display()
+        );
+    }
+    let _lock = acquire_edit_lock(&root, "topic similarity")?;
+    let conn = open_db(&root)?;
+    println!("{}", scope::set_topic_similarity(&conn, value)?);
     Ok(())
 }
 

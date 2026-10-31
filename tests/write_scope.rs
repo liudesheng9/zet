@@ -100,6 +100,192 @@ fn an_undeclared_or_open_session_keeps_todays_behaviour() {
 }
 
 #[test]
+fn an_empty_allow_list_makes_a_session_read_only() {
+    let scratch = ScratchBox::up();
+    seeded(&scratch);
+    let none = scratch.list_file("none.allow.txt", &[]);
+    let mut reader = scratch.mcp(&["--allow", &none]);
+    reader.ok("get_tree", json!({"tree":"Smith2024"}));
+    assert_refused(&reader.refused("edit_card", json!({"at":"Smith2024/1","body":"x"})), "edit_card", "not_listed");
+    assert_refused(&reader.refused("create_successor", json!({"at":"Smith2024/1","title":"x"})), "create_successor", "not_listed");
+    for (tool, arguments) in [
+        ("create_topic", json!({"title":"新题"})),
+        ("create_literature", json!({"bibtex":"@book{Jones2020, title={T}}"})),
+        ("edit_literature_metadata", json!({"at":"Smith2024","bibtex":BOOK})),
+        ("move_card", json!({"at":"Smith2024/1","to":"Smith2024/1|a","confirm":"move"})),
+        ("insert_card", json!({"before":"Smith2024/1","title":"x","confirm":"insert"})),
+        ("delete_card", json!({"at":"Smith2024/1","confirm":"delete"})),
+    ] {
+        assert_refused(&reader.refused(tool, arguments), tool, "structural");
+    }
+}
+
+#[test]
+fn a_listed_session_grows_its_listed_cards_and_the_cards_it_made() {
+    let scratch = ScratchBox::up();
+    let mut open = seeded(&scratch);
+    let list = scratch.list_file("mine.allow.txt", &["Smith2024/1"]);
+    let mut writer = scratch.mcp(&["--scope", "literature", "--allow", &list]);
+    writer.ok("edit_card", json!({"at":"Smith2024/1","body":"第一章的要点。"}));
+    let made = writer.ok("create_successor", json!({"at":"Smith2024/1","title":"第二章"}))["address"].as_str().unwrap().to_string();
+    assert_eq!(made, "Smith2024/2");
+    writer.ok("edit_card", json!({"at":made,"body":"第二章的要点。"}));
+    writer.ok("create_successor", json!({"at":made,"kind":"side","title":"第二章旁注"}));
+    // A Card another connection made is not this connection's, even in the same tree.
+    let theirs = open.ok("create_successor", json!({"at":"Smith2024/2","title":"第三章"}))["address"].as_str().unwrap().to_string();
+    assert_refused(&writer.refused("edit_card", json!({"at":theirs,"body":"x"})), "edit_card", "not_listed");
+    // A Side placement before a sibling renumbers Cards the list does not name.
+    let refusal = writer.refused("create_successor", json!({"at":"Smith2024/1","kind":"side","before":"Smith2024/1|a","title":"x"}));
+    assert_refused(&refusal, "create_successor", "renumbers");
+    // A second connection with the same list does not inherit the first one's Cards.
+    let mut again = scratch.mcp(&["--allow", &list]);
+    assert_refused(&again.refused("edit_card", json!({"at":"Smith2024/2","body":"x"})), "edit_card", "not_listed");
+}
+
+#[test]
+fn a_beneath_card_takes_only_a_new_side_successor() {
+    let scratch = ScratchBox::up();
+    seeded(&scratch);
+    let none = scratch.list_file("none.allow.txt", &[]);
+    let beside = scratch.list_file("beside.txt", &["Smith2024/1"]);
+    let mut writer = scratch.mcp(&["--allow", &none, "--beneath", &beside]);
+    let side = writer.ok("create_successor", json!({"at":"Smith2024/1","kind":"side","title":"旁注"}))["address"].as_str().unwrap().to_string();
+    writer.ok("edit_card", json!({"at":side,"body":"旁注的要点。"}));
+    assert_refused(&writer.refused("create_successor", json!({"at":"Smith2024/1","title":"x"})), "create_successor", "beside_only");
+    assert_refused(&writer.refused("edit_card", json!({"at":"Smith2024/1","body":"x"})), "edit_card", "beside_only");
+}
+
+fn item(n: usize, tool: &str, arguments: Value) -> Value {
+    json!({"op_key":format!("run/unit/1/apply/item-{n}"),"client_ref":format!("i{n}"),"tool":tool,"arguments":arguments})
+}
+
+#[test]
+fn every_batch_item_is_checked_and_a_refused_batch_stores_nothing() {
+    let scratch = ScratchBox::up();
+    let mut open = seeded(&scratch);
+    let none = scratch.list_file("none.allow.txt", &[]);
+    let mut reader = scratch.mcp(&["--allow", &none]);
+    let batch = json!({"items":[item(0,"edit_card",json!({"at":"Smith2024/1","body":"x","base_fingerprint":"0"}))]});
+    let refusal = reader.refused("apply_batch", batch);
+    assert_refused(&refusal, "edit_card", "not_listed");
+    assert_eq!(refusal["item"]["index"], 0, "{refusal}");
+    assert!(refusal["message"].as_str().unwrap().starts_with("batch item 0 (edit_card): "), "{refusal}");
+    // A later refused item rolls back the earlier items of the same batch.
+    let mut literature = scratch.mcp(&["--scope", "literature"]);
+    let batch = json!({"items":[
+        item(1,"create_successor",json!({"at":"Smith2024/1","title":"新卡"})),
+        item(2,"create_successor",json!({"at":"0/1","title":"主题卡"})),
+    ]});
+    let refusal = literature.refused("apply_batch", batch);
+    assert_refused(&refusal, "create_successor", "topic_tree");
+    assert_eq!(refusal["item"]["index"], 1, "{refusal}");
+    assert_eq!(open.ok("get_tree", json!({"tree":"Smith2024"}))["cards"].as_array().unwrap().len(), 2);
+    assert_eq!(open.ok("get_tree", json!({"tree":"0"}))["cards"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_batch_grows_the_cards_it_makes_and_they_stay_the_sessions_cards() {
+    let scratch = ScratchBox::up();
+    seeded(&scratch);
+    let list = scratch.list_file("mine.allow.txt", &["Smith2024/1"]);
+    let mut writer = scratch.mcp(&["--scope", "literature", "--allow", &list]);
+    let done = writer.ok("apply_batch", json!({"items":[
+        item(0,"create_successor",json!({"at":"Smith2024/1","title":"第二章"})),
+        item(1,"edit_card",json!({"at":"@@i0","base_receipt":"run/unit/1/apply/item-0","body":"第二章的要点。"})),
+        item(2,"create_successor",json!({"at":"@@i0","kind":"side","title":"旁注"})),
+    ]}));
+    assert_eq!(done["results"][0]["result"]["address"], "Smith2024/2");
+    writer.ok("edit_card", json!({"at":"Smith2024/2|a","body":"旁注的要点。"}));
+}
+
+#[test]
+fn a_replayed_create_counts_as_the_replaying_sessions_card() {
+    let scratch = ScratchBox::up();
+    seeded(&scratch);
+    let list = scratch.list_file("mine.allow.txt", &["Smith2024/1"]);
+    let create = item(0, "create_successor", json!({"at":"Smith2024/1","title":"第二章"}));
+    scratch.mcp(&["--allow", &list]).ok("apply_batch", json!({"items":[create.clone()]}));
+    // A resumed run replays its receipt in a new connection and then continues the Card it made.
+    let mut resumed = scratch.mcp(&["--allow", &list]);
+    let done = resumed.ok("apply_batch", json!({"items":[
+        create,
+        item(1,"edit_card",json!({"at":"@@i0","base_receipt":"run/unit/1/apply/item-0","body":"续写。"})),
+    ]}));
+    assert_eq!(done["results"][0]["replayed"], true);
+    assert_eq!(done["results"][1]["result"]["address"], "Smith2024/2");
+}
+
+#[test]
+fn a_preview_reports_each_scope_refusal_and_keeps_checking_independent_items() {
+    let scratch = ScratchBox::up();
+    let mut open = seeded(&scratch);
+    let mut literature = scratch.mcp(&["--scope", "literature"]);
+    let draft = literature.ok("apply_batch", json!({"preview":true,"items":[
+        item(0,"create_successor",json!({"at":"0/1","title":"主题卡"})),
+        item(1,"create_successor",json!({"at":"@@i0","title":"依赖被拒的卡"})),
+        item(2,"create_successor",json!({"at":"Smith2024/1","title":"独立的卡"})),
+    ]}));
+    assert_eq!(draft["complete"], false, "{draft}");
+    assert_eq!(draft["refusals"].as_array().unwrap().len(), 1, "{draft}");
+    assert_eq!(draft["refusals"][0]["index"], 0);
+    assert_eq!(draft["refusals"][0]["refusal"]["error"], "scope_refused");
+    assert_eq!(draft["refusals"][0]["refusal"]["reason"], "topic_tree");
+    assert_eq!(draft["blocked"][0]["index"], 1, "{draft}");
+    assert_eq!(draft["results"].as_array().unwrap().len(), 1);
+    assert_eq!(draft["results"][0]["result"]["address"], "Smith2024/2");
+    assert_eq!(open.ok("get_tree", json!({"tree":"Smith2024"}))["cards"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn an_agent_topic_with_the_same_title_is_refused_in_every_scope() {
+    let scratch = ScratchBox::up();
+    let mut open = scratch.mcp(&[]);
+    open.ok("create_topic", json!({"title":"Price Theory"}));
+    // The same title once whitespace, punctuation and case are ignored.
+    let refusal = open.refused("create_topic", json!({"title":"price, theory!"}));
+    assert_eq!(refusal["error"], "topic_exists", "{refusal}");
+    assert_eq!(refusal["root"], "0/0");
+    assert_eq!(refusal["existing_title"], "Price Theory");
+    assert_eq!(refusal["similarity"], 1.0);
+    // The same rule holds for a create_topic item of a batch, which then stores nothing.
+    let batch = open.refused("apply_batch", json!({"items":[item(0,"create_topic",json!({"title":"PRICE THEORY"}))]}));
+    assert_eq!(batch["error"], "topic_exists", "{batch}");
+    assert_eq!(open.ok("list_trees", json!({}))["trees"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn by_default_a_similar_but_different_title_is_a_new_topic() {
+    let scratch = ScratchBox::up();
+    let mut open = scratch.mcp(&[]);
+    // Each pair reaches bigram similarity 0.8 or more and still names another subject.
+    for (first, second) in [("Topic 0", "Topic 1"), ("Related", "Unrelated 0"), ("Price Theory", "Price Theories")] {
+        open.ok("create_topic", json!({"title":first}));
+        open.ok("create_topic", json!({"title":second}));
+    }
+    assert_eq!(open.ok("list_trees", json!({}))["trees"].as_array().unwrap().len(), 6);
+}
+
+#[test]
+fn the_owner_may_refuse_near_titles_with_an_archive_threshold() {
+    let scratch = ScratchBox::up();
+    let mut open = scratch.mcp(&[]);
+    open.ok("create_topic", json!({"title":"Price Theory"}));
+    scratch.cmd().args(["config", "set", "scope.topic_similarity", "0.8"]).assert().success()
+        .stdout("scope.topic_similarity=0.8\n");
+    // Bigram similarity 0.857 reaches 0.8.
+    let near = open.refused("create_topic", json!({"title":"Price Theories"}));
+    assert_eq!(near["error"], "topic_exists", "{near}");
+    assert_eq!(near["similarity"], 0.857);
+    scratch.cmd().args(["config", "set", "scope.topic_similarity", "default"]).assert().success()
+        .stdout("scope.topic_similarity=default\n");
+    open.ok("create_topic", json!({"title":"Price Theories"}));
+    for bad in ["0", "1.5", "most"] {
+        scratch.cmd().args(["config", "set", "scope.topic_similarity", bad]).assert().failure()
+            .stderr(predicates::str::contains("must be a number above 0 and at most 1"));
+    }
+}
+
+#[test]
 fn a_bad_scope_declaration_stops_the_server_before_its_first_message() {
     let scratch = ScratchBox::up();
     for (arguments, expected) in [

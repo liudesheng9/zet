@@ -4,6 +4,9 @@ title: MCP server
 paths:
   - "src/mcp.rs"
   - "src/read.rs"
+  - "src/scope.rs"
+  - "tests/write_scope.rs"
+  - "tests/support/mcp_client.rs"
   - "tests/workspaces_mcp.rs"
   - "tests/term_structure.rs"
   - "tests/term_projection.rs"
@@ -151,10 +154,24 @@ The encoded tool result for `get_cards`, `get_tree`, `export_titles` and `get_te
 ### Command and client config
 
 ```text
-zt mcp
+zt mcp [--scope literature|open] [--allow <file>] [--beneath <file>]
 ```
 
-Takes no arguments (`[cmd] if cmd == "mcp" => mcp::run()` in `src/main.rs`). It does not need the service to be up to start or to answer `initialize` and `tools/list`.
+Dispatched as `[cmd, rest @ ..] if cmd == "mcp" => mcp::run(rest)` in `src/main.rs`. The arguments declare the connection's **Write scope** (see below); without them the connection is open with no allow list, exactly as before the Write scope existed. `WriteScope::from_args` (`src/scope.rs`) parses them before the first message: an unknown argument, an unknown scope, a flag without its value or an unreadable list file ends the process with an error on stderr, so a client never runs in a wider scope than it asked for. It does not need the service to be up to start or to answer `initialize` and `tools/list`.
+
+### The Write scope (D1–D9, #225)
+
+One connection's limit on which agent Cards it may change, on top of Access and Locks (`CONTEXT.md`; `docs/agent-write-scope-proposal.md`). `Server` holds one `scope::WriteScope`: its kind, its allow list, its beneath list and the Cards this connection made. `WriteScope::check(conn, tool, args, made_here)` runs for every writer: inside the write transaction for `create_topic`, `create_literature`, `create_successor` and `edit_card`; before the plan for `edit_literature_metadata`, `delete_card`, `move_card` and `insert_card` (which open their own transaction; the check reads only the named addresses and the named Card's type); and in `batch::apply_item` for every `apply_batch` item after the receipt check (a pure replay is not a write), on the resolved arguments.
+
+- **Literature scope** (`--scope literature`): refuses `create_topic`; any write whose `at`, `before`, `to` or `into` is a Topic-tree Card (reason `topic_tree`); `type: hub` and an edit, move or delete of an existing Hub Card (`hub`); and authored `title`/`body`/`text`/`owned_paragraph.text` that links a Topic-tree Card (`topic_link`; Term uses by their target, the generated Reverse links ignored). The address and link facts come from `zt_check::scope` (`is_topic_address`, `topic_links`), the same code the `zt mcp` client uses.
+- **Allow list** (`--allow <file>`, one address per line): a Card may change when it is listed, when this connection made it (`made`: creates of committed requests and replayed create receipts), or when an earlier item of the same request made it (`made_here`). `create_topic`, `create_literature`, `edit_literature_metadata`, `move_card`, `insert_card` and `delete_card` are refused (`structural`), and so is `create_successor` with `before` (`renumbers`). Other cases answer `not_listed`.
+- **Beneath list** (`--beneath <file>`): a listed earlier Card takes only a new Side successor; a Direct successor or an edit answers `beside_only`.
+
+A refusal is the typed `scope_refused`: `{error, message, tool, at, scope, reason}`, carried in `structuredContent` with `isError: true` and mapped by downcasting `scope::Refusal` beside `card_locked`. A real batch stops on it, adds `item {index, tool, op_key}`, prefixes the message with `batch item N (tool): ` and rolls back; a preview collects it as one `refusals` entry, keeps simulating independent items and names dependents in `blocked`. Nothing a refused call names is stored. The made Cards belong to one connection only: a new `zt mcp` with the same list starts with none, except the creates it replays.
+
+### The Topic title rule (D7, #225)
+
+For agent Access, `create_topic` (a single call or a batch item, inside `write_card_tx`) refuses a title whose key (whitespace, punctuation and symbols removed, lower case: `zt_check::scope::title_key`) equals an agent Topic's key. When the owner lowers the threshold below 1, it also refuses a title whose character-bigram Dice similarity with one (`zt_check::scope::similarity`) reaches it. The refusal is the typed `topic_exists` `{error, message, title, root, existing_title, similarity}`. It holds in every scope and runs under the edit lock, so two writers cannot both pass it. The threshold is the archive metadata row `scope.topic_similarity` (default 1.0: equal keys only; at 0.8 the rule already refuses `Topic 1` beside `Topic 0` and `Unrelated 0` beside `Related`), set with `zt config set scope.topic_similarity <0..1|default>`; it is not a `gate.*` row, because every `gate.*` row is read as a Card-check policy override. Human Topics do not count, and the GUI is not affected.
 
 `.mcp.json` registers the server for Claude Code in this repository:
 
@@ -526,6 +543,7 @@ The Lock paragraph itself is checked end to end by `scripts/book-digest/tests/ag
 - **`INSTRUCTIONS` breaks its own Card-language rule** in one place ("use insert_card with `before`; A Hub Card"): a semicolon joins two sentences and the next one starts with a capital.
 
 ## Change history
+- `2026-10-31` — #225 (P1 of PRD #224): the Write scope in the server. `zt mcp --scope literature|open --allow <file> --beneath <file>` (`src/scope.rs`), checked for every writer and every `apply_batch` item, refused with the typed `scope_refused`; the Topic title rule with `topic_exists` and `scope.topic_similarity` (default: equal title keys only). `an_owned_paragraph_cannot_be_hidden_by_the_existing_cards_code_context` now gives its three Topics distinct titles. A connection without arguments keeps today's behaviour. Tests: `tests/write_scope.rs` through a real `zt mcp`, with the shared client `tests/support/mcp_client.rs`.
 - `2026-10-31` — #217: `get_cited {at}` (`read::cited`) reads one Cited list's computed structure in one transaction: `rows` (each with the `card` that states it), `cards` (address, title, the `row` it states by order, the row its source line names), `unfiled`, `faults`, `coverage` (rows, cards, missing), `archive_revision` and `archive_identity`; `at` is a list, a Card under one, or a tree with exactly one list. The `type` enum of `create_successor`, `edit_card` and `search_cards` and the tool descriptions name `cited`. Tests: `tests/cited_cards.rs`, `tests/card_types.rs`.
 - `2026-10-31` — zt 0.48.2: the server instructions say a part belongs to every Model Card that imports it and how a building block is imported (`**引入**`: `单卡`, `整块`, a whole model; a stray Model Card Link is a false share); the `get_model` description names `import_target`, `import_cycle`, `false_share`, `imports`, `lent`, the `import`/`legacy`/`premise` marks of build-order entries and one `shared` block per import (#205).
 - `2026-10-31` — #207, #208 (#205): `read::Scope` follows imports. `Scope::members` reads the head's `**引入**` lines, loads each import's home model (`Scope::range`: every Card filed under it; a whole model is its own home) and expands them with `model::expand_imports`; `Scope::owners` also asks which Model Cards link each Model ancestor of a part (a block root, the filed Model Card), so `get_model` on a part names a borrower that imports its block or its whole model.

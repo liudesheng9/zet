@@ -5,8 +5,9 @@
 //! with the typed `scope_refused` and stores nothing. A connection that declares nothing is open,
 //! with no allow list: exactly the behaviour before the Write scope existed.
 //!
-//! The same module holds the Topic title rule: an agent `create_topic` whose title equals or nearly
-//! equals an agent Topic's title is refused with the typed `topic_exists`, in every scope.
+//! The same module holds the Topic title rule: an agent `create_topic` whose title equals an agent
+//! Topic's title (or nearly equals it, when the owner lowers the threshold) is refused with the typed
+//! `topic_exists`, in every scope.
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension};
@@ -16,8 +17,10 @@ use zt_check::scope::{is_topic_address, similarity, title_key, topic_links};
 
 /// The metadata row that holds the Topic title rule's similarity threshold.
 pub(crate) const SIMILARITY_KEY: &str = "scope.topic_similarity";
-/// The threshold when the archive declares none.
-pub(crate) const DEFAULT_SIMILARITY: f64 = 0.8;
+/// The threshold when the archive declares none: 1.0, the same title key only. A lower threshold also
+/// refuses near titles by bigram similarity, which the owner opts into: at 0.8 it already refuses
+/// sequences (Topic 0, Topic 1) and contained titles (Related, Unrelated 0).
+pub(crate) const DEFAULT_SIMILARITY: f64 = 1.0;
 
 /// The tools a connection under an allow list may not run: each makes a tree, renames Cards, or
 /// deletes one, so its effect reaches Cards the list does not name.
@@ -362,7 +365,14 @@ pub(crate) fn check_topic_title(conn: &Connection, title: &str) -> Result<()> {
     for (root, text) in topics {
         let existing = crate::parse_card_text(&text)?.title;
         let other = title_key(&existing);
-        let score = if other == key { 1.0 } else { similarity(&other, &key) };
+        // At the default threshold only an equal key counts, never two keys with equal bigram sets.
+        let score = if other == key {
+            1.0
+        } else if threshold >= 1.0 {
+            0.0
+        } else {
+            similarity(&other, &key)
+        };
         if score >= threshold {
             return Err(anyhow::Error::new(TopicExists {
                 title: title.to_string(),

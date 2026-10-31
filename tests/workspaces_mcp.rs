@@ -530,7 +530,7 @@ fn an_owned_paragraph_cannot_be_hidden_by_the_existing_cards_code_context() {
     .enumerate()
     {
         mcp.ok("apply_batch",json!({"items":[
-            {"op_key":format!("run-hidden/case-{i}/1/create/topic"),"client_ref":"topic","tool":"create_topic","arguments":{"title":"Code context"}},
+            {"op_key":format!("run-hidden/case-{i}/1/create/topic"),"client_ref":"topic","tool":"create_topic","arguments":{"title":format!("Code context {i}")}},
             {"op_key":format!("run-hidden/case-{i}/1/create/source"),"client_ref":"source","tool":"create_successor","arguments":{"at":"@@topic","title":"Claim","body":body}},
             {"op_key":format!("run-hidden/case-{i}/1/create/target"),"client_ref":"target","tool":"create_successor","arguments":{"at":"@@source","title":"Constraint"}}
         ]}));

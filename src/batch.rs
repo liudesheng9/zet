@@ -506,7 +506,7 @@ fn resolve_before_into(
     })
 }
 
-pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
+pub(crate) fn apply(root: &Path, args: &Value, scope: &mut crate::scope::WriteScope) -> Result<Value> {
     let preview = match args.get("preview") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
@@ -590,7 +590,7 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
     let mut tx = conn.transaction()?;
     let archive_revision = crate::link_index::revision(&tx)?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS applied_ops(op_key TEXT NOT NULL PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at TEXT NOT NULL)")?;
-    let simulated = simulate(&mut tx, root, items, sequence, preview);
+    let simulated = simulate(&mut tx, root, items, sequence, preview, scope);
     match simulated {
         // R198: the outer transaction is rolled back before any response leaves this module, the
         // ordinary failure contract's error included.
@@ -603,9 +603,12 @@ pub(crate) fn apply(root: &Path, args: &Value) -> Result<Value> {
             tx.rollback()?;
             Ok(value)
         }
-        Ok(simulated) => {
+        Ok(mut simulated) => {
+            let made = std::mem::take(&mut simulated.made);
             let value = simulated.value(archive_revision, false);
             tx.commit()?;
+            // The Cards a committed batch made are this connection's from now on (D6).
+            scope.record(made);
             Ok(value)
         }
     }
@@ -630,6 +633,8 @@ struct Simulated {
     blocked: Vec<Value>,
     cards: Vec<Value>,
     paragraphs: Vec<Value>,
+    /// The Cards the request's create items made or replayed: the connection's own once committed.
+    made: BTreeSet<String>,
 }
 
 impl Simulated {
@@ -669,7 +674,9 @@ fn simulate(
     items: &[Value],
     sequence: bool,
     preview: bool,
+    scope: &crate::scope::WriteScope,
 ) -> Result<Simulated> {
+    let mut made = BTreeSet::new();
     let mut refs = BTreeMap::new();
     let mut chunk_refs = BTreeMap::new();
     // The identities whose reference no later item may resolve: a refused item, or one this refusal
@@ -758,7 +765,7 @@ fn simulate(
             // S10-AC02 / R195: one savepoint per item, so a Lock refusal rolls back exactly this item
             // and every independent item after it still runs.
             let savepoint = tx.savepoint()?;
-            match apply_item(&savepoint, root, tool, &arguments, op_key, &request_hash) {
+            match apply_item(&savepoint, root, tool, &arguments, op_key, &request_hash, scope, &made) {
                 // R194: release the item into the outer temporary transaction, then publish it.
                 Ok(outcome) => {
                     savepoint.commit()?;
@@ -772,10 +779,14 @@ fn simulate(
                 }
             }
         } else {
-            apply_item(tx, root, tool, &arguments, op_key, &request_hash)
+            apply_item(tx, root, tool, &arguments, op_key, &request_hash, scope, &made)
         };
         match outcome {
             Ok(ItemOutcome::Replayed { address, result }) => {
+                // A replayed create is the Card this operation made, so a resumed run may continue it.
+                if tool.starts_with("create") {
+                    made.insert(address.clone());
+                }
                 refs.insert(client_ref.to_string(), address.clone());
                 if sequence {
                     chunk_refs.insert(client_ref.to_string(), address);
@@ -789,6 +800,9 @@ fn simulate(
                 result,
                 wrote,
             }) => {
+                if tool.starts_with("create") {
+                    made.insert(address.clone());
+                }
                 refs.insert(client_ref.to_string(), address.clone());
                 if sequence {
                     chunk_refs.insert(client_ref.to_string(), address.clone());
@@ -817,6 +831,18 @@ fn simulate(
                         return Err(anyhow::Error::new(
                             refusal.clone().in_batch(index, tool, op_key),
                         ));
+                    }
+                    None if error.downcast_ref::<crate::scope::Refusal>().is_some() => {
+                        let refusal = error.downcast_ref::<crate::scope::Refusal>().expect("a scope refusal");
+                        // D5: a preview collects a scope refusal like a Lock refusal; a real batch
+                        // stops on it, names the item, and rolls back.
+                        if !preview {
+                            return Err(anyhow::Error::new(refusal.clone().in_batch(index, tool, op_key)));
+                        }
+                        refusals.push(
+                            json!({"index":index,"op_key":op_key,"client_ref":client_ref,"refusal":refusal.value()}),
+                        );
+                        failed.insert(client_ref.to_string(), identity);
                     }
                     None => match error.downcast_ref::<crate::tree_lock::Refusal>() {
                         // R195: record the refusal with its item identity and keep the plan going.
@@ -905,6 +931,7 @@ fn simulate(
         blocked,
         cards,
         paragraphs,
+        made,
     })
 }
 
@@ -916,6 +943,8 @@ fn apply_item(
     arguments: &Value,
     op_key: &str,
     request_hash: &str,
+    scope: &crate::scope::WriteScope,
+    made: &BTreeSet<String>,
 ) -> Result<ItemOutcome> {
     let prior: Option<(String, String)> = conn
         .query_row(
@@ -936,6 +965,8 @@ fn apply_item(
             .to_string();
         return Ok(ItemOutcome::Replayed { address, result });
     }
+    // A pure receipt replay is not a write; every new write meets the connection's Write scope.
+    scope.check(conn, tool, arguments, made)?;
     let before = if tool == "edit_card" {
         let at = arguments["at"].as_str().context("missing edit at")?;
         crate::Access::Agent.ensure_writable(crate::load_card(conn, at)?.workspace)?;
@@ -1060,7 +1091,7 @@ mod tests {
                 "body": "术语：丙\n",
             },
         }]);
-        let first = apply(root, &json!({ "items": items })).expect("first batch");
+        let first = apply(root, &json!({ "items": items }), &mut Default::default()).expect("first batch");
         assert_eq!(first["results"][0]["replayed"], json!(false));
         assert_eq!(first["results"][0]["result"]["address"], json!("0/1|b"));
         assert_eq!(
@@ -1073,7 +1104,7 @@ mod tests {
             assert!(crate::load_card(&conn, "0/1|b").expect("new").text.contains("术语：丙"));
             assert!(crate::load_card(&conn, "0/1|c").expect("shifted").text.contains("# 乙\n"));
         }
-        let again = apply(root, &json!({ "items": items })).expect("replayed batch");
+        let again = apply(root, &json!({ "items": items }), &mut Default::default()).expect("replayed batch");
         assert_eq!(again["results"][0]["replayed"], json!(true));
         assert_eq!(again["results"][0]["result"]["address"], json!("0/1|b"));
         let conn = crate::open_db(root).expect("open");
@@ -1094,7 +1125,7 @@ mod tests {
         // conflicts instead of silently replaying a different placement.
         let mut changed = items.clone();
         changed[0]["arguments"]["before"] = json!("0/1|a");
-        let error = apply(root, &json!({ "items": changed }))
+        let error = apply(root, &json!({ "items": changed }), &mut Default::default())
             .unwrap_err()
             .to_string();
         assert!(error.contains("operation key conflict"), "{error}");
@@ -1144,9 +1175,9 @@ mod tests {
                 },
             }]})
         };
-        let error = apply(root, &item("direct", "0/1|a")).unwrap_err().to_string();
+        let error = apply(root, &item("direct", "0/1|a"), &mut Default::default()).unwrap_err().to_string();
         assert!(error.contains("pass kind `side`"), "{error}");
-        let error = apply(root, &item("side", "0/1")).unwrap_err().to_string();
+        let error = apply(root, &item("side", "0/1"), &mut Default::default()).unwrap_err().to_string();
         assert!(error.contains("immediate Side successor"), "{error}");
         let conn = crate::open_db(root).expect("open");
         assert!(
