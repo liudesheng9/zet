@@ -227,6 +227,7 @@
     model: { label: 'Model', note: 'one whole model: its question and what it shows, or one part of it' },
     hub: { label: 'Hub', note: 'a way into one subject: its Cards in named groups, each with what it adds' },
     term: { label: 'Term', note: 'a Term list (no term name) or the definition of one named term' },
+    cited: { label: 'Cited', note: 'a Cited list (the works a book cites) or one cited work under it' },
   };
   // A Hub Card is drawn as a guide card; its tab stands further left the wider its subject is.
   const HUB_LEVELS = {
@@ -382,7 +383,7 @@
     ['ins', "insert a new card in the current card's place; it and its successors move down", 'regular'],
     ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
     ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
-    ['ty <idea|event|finding|model|hub|term> [<facet|name>]', 'make the current card an Idea, Event, Finding, Model, Hub, or Term Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part; a name makes a Term Card that term\'s definition (none: a Term list)', 'regular'],
+    ['ty <idea|event|finding|model|hub|term|cited> [<facet|name>]', 'make the current card an Idea, Event, Finding, Model, Hub, Term, or Cited Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part; a name makes a Term Card that term\'s definition (none: a Term list)', 'regular'],
     ['lv <level|none>', 'set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)', 'regular'],
     ['mf <form|none>', 'set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary', 'regular'],
     ['stats', 'count cards by kind', 'always'],
@@ -462,7 +463,7 @@
       }
       case 'ty':
         needCard();
-        if (rest.length < 1) throw new Error('usage: ty <idea|event|finding|model|hub|term> [<facet|name>]');
+        if (rest.length < 1) throw new Error('usage: ty <idea|event|finding|model|hub|term|cited> [<facet|name>]');
         // A facet or a term name is the rest of the line, so it may hold spaces.
         return setCardType(rest[0].toLowerCase(), rest.slice(1).join(' '));
       case 'lv': {
@@ -7104,14 +7105,14 @@
   }
 
   /**
-   * `ty <idea|event|finding|model|hub|term> [<facet|name>]`: change only the current Regular Card's
+   * `ty <idea|event|finding|model|hub|term|cited> [<facet|name>]`: change only the current Regular Card's
    * type and facet, or its type and term name. For `term` the rest of the line is the term name;
    * none makes a Term list (and clears a name the Card had).
    */
   async function setCardType(type, rest) {
     const card = state.card;
-    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, finding, model, hub, or term`);
-    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event, Finding, Model, Hub, or Term Cards');
+    if (!CARD_TYPES[type]) throw new Error(`unknown card type \`${type}\`; expected idea, event, finding, model, hub, term, or cited`);
+    if (card.context !== 'regular') throw new Error('only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards');
     const facet = type === 'term' ? '' : rest;
     const name = type === 'term' ? String(rest || '').trim() : '';
     if (facet && type !== 'model') throw new Error('only Model Cards can have a Model facet');

@@ -466,6 +466,7 @@ Gaps: the PTY fixtures need `powershell` for the fake editor, so the suite is ef
 - PTY tests match against all frames ever drawn: wait for "one more" occurrence than before a key, never only for a string that an earlier frame already showed.
 
 ## Change history
+- `2026-10-31` — #217: `ty` and its help list the seventh type, `cited`; the help's usage column is six characters wider.
 - `2026-10-25` — S15 (#157): a Term use in the read view (line Session and TUI) is its authored label in restrained dark cyan with the link underline, and its `LinkSpan` carries the real target; the label's display width decides wrapping, mouse hit ranges, selection offsets and copied text (combining marks take 0 cells and stay with their base), while edit mode keeps the complete `[[label@address]]` macro. `ScreenBuilder` is now the one layout behind drawing, spans and the screen. `ty` and its help list the sixth type, `term`. Accepted-write warnings go through `Interaction::check`: the line Session prints them, the TUI keeps them on its status row instead of printing into the alternate screen; a refused write still keeps the editor buffer.
 
 - `2026-10-24` — S07 (#149): the Session `ins` writer passes no Term name (it creates an Idea Card between Cards), and `ty` retyping a Term Card away clears its name through `ops::edit_tx`; the Session editor itself still shows raw Markdown and has no Term-name field.

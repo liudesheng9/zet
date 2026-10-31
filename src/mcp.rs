@@ -465,6 +465,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             }
             crate::read::terms(&root, &string_arg(args, "at")?)
         }
+        "get_cited" => crate::read::cited(&root, &string_arg(args, "at")?),
         "ask_box" => {
             let ask = crate::entry::AskArgs::from_args(args)?;
             crate::read::ask(&root, &ask)
@@ -1092,7 +1093,7 @@ fn tool_definitions() -> Vec<Value> {
     let card_type = |description: &str| {
         json!({
             "type": "string",
-            "enum": ["idea", "event", "finding", "model", "hub", "term"],
+            "enum": ["idea", "event", "finding", "model", "hub", "term", "cited"],
             "description": description,
         })
     };
@@ -1178,7 +1179,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "get_card",
             "Get card",
-            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, hub, or term), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. The body and stored text keep the authored Term-link macros by default; `term_links: \"label\"` returns the visible prose a Term link shows and marks the reply. `restatement` is the derived navigation role of an accepted restatement entry (a `## 同述入口` section, never a stored field), and `statement_fingerprint` is the exact authored statement hash: line endings, outer whitespace and separately labelled source lines are ignored, while formulas, values, signs, variables, negation, assumptions and scope are kept (a Term macro reads as its visible label). A Model Card or Model part also reports `model`: its model's structure. `lock` is `null` or `{lock_id, tree, since}`, where `tree` is the Locked tree's root address; `pinned_by` lists the sorted, deduplicated roots of the active Locks whose Cards link this one; `writable` is this agent's Workspace permission and no active Lock, so a pinned target stays writable while a Locked member does not.",
+            "Read one Card: its title, Markdown body, stored text, type (idea, event, finding, model, hub, term, or cited), Model facet, BibTeX, Workspace, whether you may change it, neighbors, and Links in and out. The body and stored text keep the authored Term-link macros by default; `term_links: \"label\"` returns the visible prose a Term link shows and marks the reply. `restatement` is the derived navigation role of an accepted restatement entry (a `## 同述入口` section, never a stored field), and `statement_fingerprint` is the exact authored statement hash: line endings, outer whitespace and separately labelled source lines are ignored, while formulas, values, signs, variables, negation, assumptions and scope are kept (a Term macro reads as its visible label). A Model Card or Model part also reports `model`: its model's structure. `lock` is `null` or `{lock_id, tree, since}`, where `tree` is the Locked tree's root address; `pinned_by` lists the sorted, deduplicated roots of the active Locks whose Cards link this one; `writable` is this agent's Workspace permission and no active Lock, so a pinned target stays writable while a Locked member does not.",
             json!({ "at": at, "term_links": term_links() }),
             &["at"],
             true,
@@ -1256,6 +1257,20 @@ fn tool_definitions() -> Vec<Value> {
                 Value::Object(properties)
             },
             &["workspace"],
+            true,
+            false,
+        ),
+        tool(
+            "get_cited",
+            "Get cited works",
+            "Read the computed structure of one Cited list (the works a book cites): `rows` (the list body's five-column table `编号`, `文献`, `年份`, `引用处`, `关系` in source order, each with the `card` that states it), `cards` (the list's immediate Side successors of type `cited` in order, each with its address, title, the `row` it states by order and the row its source line `参考文献第 n 条` names), `unfiled` `cited` Cards of the list's subtree, the `faults` (`cited_unfiled`, `cited_row_without_card`, `cited_card_without_row`, `cited_row_mismatch`), `coverage` (rows, cards, missing), and the `archive_revision`/`archive_identity` it was read at. A Cited list Card is a `cited` Card whose parent is not one; the roles are computed, never stored. `at` names a Cited list, any Card under one, or a tree that holds exactly one Cited list.",
+            json!({
+                "at": {
+                    "type": "string",
+                    "description": "A Cited list address, any Card under one, or a tree that holds exactly one Cited list.",
+                },
+            }),
+            &["at"],
             true,
             false,
         ),
@@ -1382,7 +1397,7 @@ fn tool_definitions() -> Vec<Value> {
                 "before": { "type": "string", "description": "For `kind` side: the immediate Side successor of `at` whose place the new Card takes; it and every later Side successor move one label on. Needs `kind` side; with a Direct successor the new Card takes the next place after `at`." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
-                "type": card_type("The Card type: idea (default), event, finding, model, hub, or term."),
+                "type": card_type("The Card type: idea (default), event, finding, model, hub, term, or cited."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model)."),
                 "emphasis": emphasis("For a Model part: core (the heart of the model, what a reader must see first) or aside (detail a reader may skip); omit for a regular part."),
                 "term": term("For a Term Card (type term): its exact term name, one line of at most 40 characters. Omit or null for a candidate Term list."),
@@ -1396,12 +1411,12 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "edit_card",
             "Edit card",
-            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, Finding, Model, Hub, or Term Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept or formal; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, Finding, Model, Hub, Term, or Cited Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept or formal; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
             json!({
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
                 "body": body,
-                "type": card_type("New Card type: idea, event, finding, model, hub, or term (event, finding, model, hub, and term only for Regular Cards)."),
+                "type": card_type("New Card type: idea, event, finding, model, hub, term, or cited (event, finding, model, hub, term, and cited only for Regular Cards)."),
                 "facet": facet("New Model facet (implies type model); empty for none."),
                 "emphasis": emphasis("New emphasis of a Model part: core, aside, or empty for a regular part."),
                 "term": term("New exact term name of a Term Card; null or an empty string clears it, and a type change away from term clears it. Omit to keep it."),
@@ -1459,7 +1474,7 @@ fn tool_definitions() -> Vec<Value> {
                 "before": { "type": "string", "description": "The existing Regular Card whose place the new Card takes." },
                 "title": { "type": "string", "description": "The Card title (one line)." },
                 "body": body,
-                "type": card_type("The Card type: idea (default), event, finding, model, hub, or term."),
+                "type": card_type("The Card type: idea (default), event, finding, model, hub, term, or cited."),
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model); a Derivation part's facet starts with `推导`."),
                 "emphasis": emphasis("For a Model part: core or aside; omit for a regular part."),
                 "term": term("For a Term Card (type term): its exact term name. Omit or null for a candidate Term list."),

@@ -635,6 +635,11 @@ impl Check {
             // The Term content rules read the same authored text a draft renderer wrote or a
             // hand edit stored, so both go through one evaluator (design 11.3, S09-AC08).
             self.term_rules(card, &address, &mut faults);
+            // A Cited Card or Cited list states the cited literature, not a claim: the C rules
+            // read its template and its list table (#218).
+            if ps_eq(&text(prop(card, "type")), "cited") {
+                crate::cited::rules(card, &address, &mut faults);
+            }
             // T7's label and retained-role advice applies to a Term use on any Card, not only a
             // Term Card; the bounded target facts travel with the entry.
             self.term_link_advice(
@@ -679,6 +684,8 @@ impl Check {
         // A Term Card reports its balanced-formula fault as T10, the Term-facing label of R22
         // (design 11.3): one fault, not two labels for one predicate.
         let is_term = ps_eq(&text(prop(card, "type")), "term");
+        // A Cited Card reads like a Literature note and is navigation for the referent rules (#218).
+        let is_cited = ps_eq(&text(prop(card, "type")), "cited");
         let formula_rule = if is_term { "T10" } else { "R22" };
         corruption(&authored_body, &title, address, faults);
         if open_math(&authored_body) {
@@ -698,12 +705,13 @@ impl Check {
         let navigation = ps_in(
             &text(prop(card, "category")),
             &["anchor", "root", "hub", "register-part", "restatement-entry"],
-        ) || is_term;
+        ) || is_term
+            || is_cited;
         let shared = ps_in(address, &self.shared);
         let derivation = is_derivation_facet(&facet);
         // A Literature note carries the source's argument, not one claim: its row turns the
         // claim-title and sentence rules off and only advises on a long title (issue #184).
-        let literature = is_literature_note(card);
+        let literature = is_literature_note(card) || is_cited;
         // A Model Card or a Model part: every size limit is half again as loose (`loosen`).
         let model = ps_eq(&text(prop(card, "type")), "model") || !facet.is_empty();
         if !title.is_empty() {
@@ -2484,6 +2492,15 @@ pub fn category_with_parts(
             }
             .into();
         }
+        // A Cited Card states one cited work; a Cited list holds the table of them (#218).
+        "cited" => {
+            return if crate::cited::is_list_body(&text(prop(card, "body"))) {
+                "cited-list"
+            } else {
+                "cited"
+            }
+            .into();
+        }
         "finding" => return "finding".into(),
         "event" => return "event".into(),
         "hub" => return "hub".into(),
@@ -2832,6 +2849,8 @@ pub const EXCLUDED: &[&str] = &[
     "structure",
     "terms",
     "term",
+    "cited-list",
+    "cited",
     "notation",
     "hub",
     "register-part",

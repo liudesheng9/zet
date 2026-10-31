@@ -260,6 +260,13 @@ static CATALOG: &[RuleSpec] = &[
     // Computed term structure is audit advice.
     spec("T8", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
     spec("T9", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    // The Cited Card rules (#218): the template, the relation words, the reference line, no
+    // written Link, and the list table. C3 reads the source file and runs in the digest precheck.
+    spec("C1", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("C2", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("C4", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("C5", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("C7", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
     RuleSpec {
         rule: "T10",
         human: Setting::Block,
@@ -876,6 +883,12 @@ impl Applicability {
             "T4" => format!("term-symbols:{}:{}", self.term_type, self.term),
             "T7" => format!("term-links:{}:{}", self.term_type, self.term),
             "T8" => "graph".to_string(),
+            // The Cited rules apply by type and by the list-or-card role the body gives.
+            "C1" | "C2" | "C4" | "C5" | "C7" => format!(
+                "cited:{}:{}",
+                self.in_category(&["cited"]),
+                self.in_category(&["cited-list"])
+            ),
             "T10" => format!("text-term:{}", self.term_type),
             // A rule this policy does not name keeps the conservative treatment:
             // it is compared only when every metadata fact is unchanged, so a new

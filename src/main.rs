@@ -16,6 +16,7 @@ mod autostart;
 mod batch;
 mod card;
 mod card_type;
+mod cited;
 mod dump;
 mod entry;
 mod features;
@@ -1536,6 +1537,7 @@ fn initialize_database(root: &Path) -> Result<()> {
     ensure_math_form_column(&conn, root)?;
     ensure_finding_cards(&conn, root)?;
     ensure_term_cards(&conn, root)?;
+    ensure_cited_cards(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)?;
     // The Tree Lock tables and triggers are installed after every Card-table rebuild, so a
@@ -1609,7 +1611,7 @@ fn cards_table(name: &str) -> String {
             bibtex TEXT,
             text TEXT NOT NULL,
             workspace TEXT NOT NULL DEFAULT 'human' CHECK(workspace IN ('human', 'agent')),
-            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub', 'term')),
+            card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub', 'term', 'cited')),
             model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND {}),
             model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
             model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
@@ -1900,6 +1902,50 @@ fn ensure_finding_cards(conn: &Connection, root: &Path) -> Result<()> {
     })
     .context("failed to add Finding Cards to the archive")?;
     log_event(root, "added finding cards; no card is a finding card yet").ok();
+    Ok(())
+}
+
+/// Allow the Card type `cited` (#217). Only the type CHECK changes, so the cards table is rebuilt
+/// with every column kept, as the Finding Card upgrade did; a non-empty archive is backed up first.
+fn ensure_cited_cards(conn: &Connection, root: &Path) -> Result<()> {
+    let definition: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+        [],
+        |row| row.get(0),
+    )?;
+    if definition.contains("'cited'") {
+        return Ok(());
+    }
+    let cards: i64 = conn.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
+    if cards > 0 {
+        let backup = root.join(format!(
+            "zt.sqlite3.pre-cited-cards-{}.bak",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+            .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+    }
+    let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, term_name";
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         {}
+         INSERT INTO cards_cited ({columns}) SELECT {columns} FROM cards;
+         DROP TABLE cards;
+         ALTER TABLE cards_cited RENAME TO cards;
+         CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+             ON cards(citation_key COLLATE NOCASE)
+             WHERE citation_key IS NOT NULL;
+         COMMIT;",
+        cards_table("cards_cited")
+    ))
+    .inspect_err(|_| {
+        let _ = conn.execute_batch("ROLLBACK;");
+    })
+    .context("failed to add Cited Cards to the archive")?;
+    log_event(root, "added cited cards; no card is a cited card yet").ok();
     Ok(())
 }
 
@@ -3833,7 +3879,7 @@ pub(crate) fn insert_card_tx_with_term(
         bail!("invalid location `{location}`");
     }
     if is_topic && card_type != CardType::Idea {
-        bail!("only Regular Cards can be Event, Finding, Model, Hub, or Term Cards");
+        bail!("only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards");
     }
     crate::term::ensure_on_type(term_name, card_type)?;
     if location_exists(conn, location)? {

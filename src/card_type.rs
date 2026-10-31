@@ -4,7 +4,8 @@
 //! which records one real-world event, a Finding Card, which states one
 //! empirical result from a source, a Model Card, which presents one whole
 //! model, a Hub Card, which opens one subject, or a Term Card, which defines
-//! one term. The type is stored on the Card row, so it stays with the Card when
+//! one term, or a Cited Card, which states one work a book cites. The
+//! type is stored on the Card row, so it stays with the Card when
 //! it moves; Topic and Literature Cards are always Idea Cards.
 
 use anyhow::{Result, bail};
@@ -20,6 +21,7 @@ pub(crate) enum CardType {
     Model,
     Hub,
     Term,
+    Cited,
 }
 
 impl CardType {
@@ -32,6 +34,7 @@ impl CardType {
             CardType::Model => "model",
             CardType::Hub => "hub",
             CardType::Term => "term",
+            CardType::Cited => "cited",
         }
     }
 
@@ -43,8 +46,9 @@ impl CardType {
             "model" => Ok(CardType::Model),
             "hub" => Ok(CardType::Hub),
             "term" => Ok(CardType::Term),
+            "cited" => Ok(CardType::Cited),
             other => bail!(
-                "unknown card type `{other}`; expected idea, event, finding, model, hub, or term"
+                "unknown card type `{other}`; expected idea, event, finding, model, hub, term, or cited"
             ),
         }
     }
@@ -61,10 +65,10 @@ impl std::fmt::Display for CardType {
     }
 }
 
-/// Only Regular Cards may be Event, Finding, Model, Hub, or Term Cards.
+/// Only Regular Cards may be Event, Finding, Model, Hub, Term, or Cited Cards.
 pub(crate) fn ensure_allowed(card: &Card, card_type: CardType) -> Result<()> {
     if card_type != CardType::Idea && crate::is_tree_root(card) {
-        bail!("only Regular Cards can be Event, Finding, Model, Hub, or Term Cards");
+        bail!("only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards");
     }
     Ok(())
 }
@@ -82,6 +86,7 @@ mod tests {
             CardType::Model,
             CardType::Hub,
             CardType::Term,
+            CardType::Cited,
         ] {
             assert_eq!(CardType::parse(card_type.id()).unwrap(), card_type);
         }
@@ -90,7 +95,7 @@ mod tests {
         assert_eq!(CardType::parse("TERM ").unwrap(), CardType::Term);
         assert_eq!(
             CardType::parse("fact").unwrap_err().to_string(),
-            "unknown card type `fact`; expected idea, event, finding, model, hub, or term"
+            "unknown card type `fact`; expected idea, event, finding, model, hub, term, or cited"
         );
         assert_eq!(CardType::from_stored("bogus"), CardType::Idea);
         assert_eq!(CardType::default(), CardType::Idea);

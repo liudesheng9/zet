@@ -89,8 +89,8 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnRegular,
     ),
     (
-        "ty <idea|event|finding|model|hub|term> [<facet>]",
-        "make the current card an Idea, Event, Finding, Model, Hub, or Term Card; a facet (any short label) makes it a Model part",
+        "ty <idea|event|finding|model|hub|term|cited> [<facet>]",
+        "make the current card an Idea, Event, Finding, Model, Hub, Term, or Cited Card; a facet (any short label) makes it a Model part",
         Availability::OnRegular,
     ),
     (
@@ -881,7 +881,7 @@ fn execute_command(
             interaction.check(&accepted);
             Ok(Execution::Continue(CommandResult::Changed))
         }
-        ["ty", ..] => bail!("usage: ty <idea|event|finding|model|hub|term> [<facet>]"),
+        ["ty", ..] => bail!("usage: ty <idea|event|finding|model|hub|term|cited> [<facet>]"),
         ["lv", value] => {
             let at = state.current_card("lv")?;
             let _lock = crate::acquire_edit_lock(root, "session lv")?;
@@ -1447,9 +1447,9 @@ mod tests {
         for (line, expected) in [
             (
                 "ty fact",
-                "unknown card type `fact`; expected idea, event, finding, model, hub, or term",
+                "unknown card type `fact`; expected idea, event, finding, model, hub, term, or cited",
             ),
-            ("ty", "usage: ty <idea|event|finding|model|hub|term> [<facet>]"),
+            ("ty", "usage: ty <idea|event|finding|model|hub|term|cited> [<facet>]"),
             (
                 "ty event model x",
                 "only Model Cards can have a Model facet",
@@ -1469,7 +1469,7 @@ mod tests {
             .expect_err("tree roots stay Idea Cards");
         assert_eq!(
             error.to_string(),
-            "only Regular Cards can be Event, Finding, Model, Hub, or Term Cards"
+            "only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards"
         );
         assert_eq!(card_type("0/0"), crate::CardType::Idea);
     }
@@ -1667,7 +1667,7 @@ mod tests {
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub|term> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub|term|cited> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;

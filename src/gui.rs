@@ -1555,7 +1555,7 @@ impl App {
         let (location, mut accepted) = match kind.as_str() {
             "topic" if card_type != CardType::Idea => {
                 return Err(ApiError::new(
-                    "only Regular Cards can be Event, Finding, Model, Hub, or Term Cards".to_string(),
+                    "only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards".to_string(),
                 ));
             }
             "topic" => ops::create_topic(&self.root, ACCESS, workspace_field(body)?, &text)?,
@@ -4667,7 +4667,7 @@ mod tests {
         assert!(insert.contains("term: ZtDraft.termField(type, term, 'create'),"), "{insert}");
         let retype = js_function("async function setCardType(");
         assert!(retype.contains("term: ZtDraft.termField(type, name, 'edit')") && retype.contains("ZtDraft.termNameIssue(name)"), "{retype}");
-        assert!(APP_JS.contains("'ty <idea|event|finding|model|hub|term> [<facet|name>]'"));
+        assert!(APP_JS.contains("'ty <idea|event|finding|model|hub|term|cited> [<facet|name>]'"));
 
         assert!(APP_JS.contains("tally('term', tree.terms),"), "the stack tallies its Term Cards");
         assert!(

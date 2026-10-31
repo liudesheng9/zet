@@ -344,6 +344,18 @@ _Avoid_: Glossary link, keyword link
 A Card that holds a Term link to a Term Card. The Term Card's generated `## Term uses` section lists them. A Term use reads as the `term` kind in the Link scan, assigned by its syntax and never by a relation word; it is a vocabulary reference, not a reasoning Link, so it gives no Model membership, relation, or neighbour, no Idea/Event/Finding reasoning credit, and no default graph edge. Its Card still appears, with its ordinary Links, and the general Link readers (Broken links, Term uses, Lock pins) see it.
 _Avoid_: Backlink (that is a Reverse link), occurrence
 
+**Cited Card type**:
+The Card type `cited`: a Card of the cited literature of one book. A `cited` Card is a Cited list Card or a Cited Card, computed from its placement and never stored. Only Regular Cards can be `cited` Cards.
+_Avoid_: Reference Card, bibliography entry
+
+**Cited list Card**:
+A Regular Card of type `cited` whose parent is not a `cited` Card: the table of the works in one digested book's reference list (`参考文献：《…》引用的 N 篇文献`), with the columns `编号`, `文献`, `年份`, `引用处`, `关系`. Its immediate Side successors of type `cited` are its Cited Cards, in table row order.
+_Avoid_: Bibliography, reference list Card
+
+**Cited Card**:
+A Regular Card of type `cited` filed as an immediate Side successor of a Cited list Card. It states one work of the book's reference list: its `文献：` line, where the book uses it (`引用处`), the relation words (`关系`), why the book cites it, its role in the book's research and the relationship between the book and the work. Its source line names its list row (`来源：[[book]] 参考文献第 n 条`); the n-th Side successor states row n.
+_Avoid_: Reference Card, citation note
+
 **Term edge**:
 A graph edge drawn from a Card to a Term Card it reaches with a Term use. The Map, the Table and the Constellation leave it out unless the reader turns the Term uses switch on.
 _Avoid_: Term link (the stored macro), keyword edge

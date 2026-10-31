@@ -465,7 +465,7 @@ fn shell_create_edit_and_insert_accept_type_and_term_arguments() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "unknown card type `fact`; expected idea, event, finding, model, hub, or term",
+            "unknown card type `fact`; expected idea, event, finding, model, hub, term, or cited",
         ));
     home.cmd()
         .arg("help")

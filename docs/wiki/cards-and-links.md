@@ -5,6 +5,8 @@ paths:
   - "src/card.rs"
   - "src/card_type.rs"
   - "src/term.rs"
+  - "src/cited.rs"
+  - "tests/cited_cards.rs"
   - "src/literature.rs"
   - "src/workspace.rs"
   - "src/link.rs"
@@ -496,6 +498,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 
 ## Change history
 
+- `2026-10-31` — #217: the seventh Card type `cited` (`CardType::Cited`). A Cited list Card is a `cited` Card whose parent is not one; its immediate Side successors of type `cited` are its Cited Cards, matched to the list's five-column table (`编号`, `文献`, `年份`, `引用处`, `关系`) by order. No field is stored for the role or the row: `src/cited.rs` computes them (`structure`, `resolve_list`, `tree_lists`, `table`, `named_row`) and reports `cited_unfiled`, `cited_row_without_card`, `cited_card_without_row` and `cited_row_mismatch` (a Card whose `参考文献第 n 条` names another row). The only schema change is the type CHECK: `ensure_cited_cards` rebuilds the cards table with every column kept, after a `VACUUM INTO` backup of a non-empty archive, as the Finding Card upgrade did; Lock fingerprints, dump and the edit paths are unchanged. The type lists in the refusals, the Session's `ty` and the GUI's `CARD_TYPES` name `cited`. zt 0.49.0. Tests: `tests/cited_cards.rs` (structure, faults, root refusal, in-place upgrade with its backup, the write gate).
 - `2026-10-25` — S16 (#158): a Term use reads as the `term` kind. `RelationKind::Term` is set by the shared lexical scan in `model::read_links` and is not in `RELATION_KINDS`, so no prose announces it; the index's `links.kind = 'term'` row is the stored counterpart, and the graph consumers leave the kind out while every Link/Lock reader keeps the occurrence. This block's `LinkForm`, Reverse and Term-use sections, Broken links and Lock pins are unchanged; the reasoning exclusion itself is in [Models and math](models-and-math.md), [zt-check](zt-check.md) and [MCP server](mcp-server.md).
 - `2026-10-25` — S15 (#157): the Session's read view uses the same classification this block's `LinkLifecycle::classify_for_rendering` already carries: a Term use shows its label and keeps its target, and `ty`/help list the sixth Card type `term` (the rendering itself is documented in [Terminal Session](session.md)). No classification, storage or Link rule changed.
 - `2026-10-25` — S13 (#156): one Broken rule for the reader and the report. `ClassifiedLink` gains `label`, `form` and `reason` beside `target`, `macro_range` and `status`, so a reader can show a Term use's authored word and explain a broken one without a second scan, and both `classify_for_rendering` and `broken_links` ask the one `LinkLifecycle::broken_reason` (`missing` for a target that holds no Card, `not_head` for a Term use of an existing non-head row). Ordinary Link classification is unchanged. The GUI's rendering and `Snapshot::term_meaning` are documented in [GUI](gui.md).

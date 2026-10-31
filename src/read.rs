@@ -589,6 +589,19 @@ pub(crate) fn terms(root: &Path, at: &str) -> Result<Value> {
     Ok(value)
 }
 
+/// The computed structure of one Cited list (#217): its rows, Cited Cards, unfiled Cards, faults
+/// and coverage, read in one transaction with the revision and archive identity they describe.
+pub(crate) fn cited(root: &Path, at: &str) -> Result<Value> {
+    let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let mut value = crate::cited::structure(&tx, at)?;
+    let identity = archive_identity(&tx, root)?;
+    value["archive_revision"] = json!(crate::link_index::revision(&tx)?);
+    value["archive_identity"] = identity;
+    tx.commit()?;
+    Ok(value)
+}
+
 pub(crate) fn cards(
     root: &Path,
     addresses: &[String],

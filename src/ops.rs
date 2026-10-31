@@ -1654,7 +1654,7 @@ The model"
         );
     }
 
-    const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, Hub, or Term Cards";
+    const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards";
 
     fn archive() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("temp dir");

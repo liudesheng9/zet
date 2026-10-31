@@ -15,7 +15,7 @@ use tempfile::TempDir;
 #[path = "support/host_tools.rs"]
 mod host_tools;
 
-const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, Hub, or Term Cards";
+const ROOT_REFUSAL: &str = "only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards";
 
 struct TestHome {
     _tmp: TempDir,
@@ -325,7 +325,7 @@ fn mcp_creates_edits_reads_and_lists_cards_by_type() {
     for name in ["create_successor", "edit_card", "search_cards"] {
         assert_eq!(
             tool(name)["inputSchema"]["properties"]["type"]["enum"],
-            json!(["idea", "event", "finding", "model", "hub", "term"])
+            json!(["idea", "event", "finding", "model", "hub", "term", "cited"])
         );
     }
     assert_eq!(tool("search_cards")["inputSchema"]["required"], json!([]));
@@ -359,7 +359,7 @@ fn mcp_creates_edits_reads_and_lists_cards_by_type() {
             "create_successor",
             json!({ "at": "1/2", "title": "x", "type": "fact" })
         )
-        .contains("unknown card type `fact`; expected idea, event, finding, model, hub, or term")
+        .contains("unknown card type `fact`; expected idea, event, finding, model, hub, term, or cited")
     );
 
     // Reads report the type.
