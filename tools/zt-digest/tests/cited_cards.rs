@@ -498,3 +498,34 @@ fn a_complete_publication_removes_cited_cards_beyond_the_rows() {
     assert_eq!(cited["coverage"], json!({ "rows": 1, "cards": 1, "missing": 0 }), "{cited}");
     assert_eq!(cited["faults"], json!([]), "{cited}");
 }
+
+/// Live backfill of ebrill2001modern (2026-10-31): the reference itself holds a word the Term list avoids
+/// (\`CVAT, VIVAT, and All That\`, where the list writes 补偿性增值税 and avoids CVAT). The \`文献：\` line quotes the
+/// reference and is never reworded, so R6 does not count there; it still counts in the written sections.
+#[test]
+fn r6_leaves_the_quoted_reference_line_alone() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "vat2026", "VAT");
+    mcp.call(
+        "create_successor",
+        json!({ "at": "vat2026/1", "kind": "side", "type": "term", "title": "术语表：《VAT》的 1 个术语",
+                "body": "本卡是术语表。\n\n术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 补偿性增值税 | CVAT | 对跨州交易补征的增值税 | §1 |\n\n来源：[[vat2026]]" }),
+    );
+    let source = "# 1 Introduction\n# 1 引言\nAs Keen (2000) shows, federal systems need new forms.\n\n# References\n\nKeen, Michael, 2000, “CVAT, VIVAT, and All That: New Forms of VAT for Federal Systems,” Canadian Tax Journal, Vol. 48, pp. 409–24.\\\n\n# Appendix\n";
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "vat2026", "VAT", source, json!([{ "anchor": "vat2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let draft = draft_path(&staging, "t001");
+    std::fs::create_dir_all(draft.parent().unwrap()).unwrap();
+    let item = |relationship: &str| json!([{ "row": 1, "short_title": "联邦制下的新型增值税", "why": "本书引用它说明联邦制需要新型增值税。", "role": "它提供补偿性增值税的方案。", "relationship": relationship, "relations": ["依赖"], "locations": [{ "line": 3, "use": "本书用它说明联邦制。" }] }]);
+    std::fs::write(&draft, item("本书依赖它的补偿性增值税方案。").to_string()).unwrap();
+    let text = precheck(&zt, &staging, &draft);
+    assert!(text.trim_end().ends_with("faults: 0"), "the quoted reference line is no R6 fault:\n{text}");
+    std::fs::write(&draft, item("本书依赖它的 CVAT 方案。").to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).contains("row1 R6"), "a written section still counts");
+}

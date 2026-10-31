@@ -467,6 +467,11 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
         .with_terms(terms)
         .report(&[entry]);
     for d in report {
+        // The `文献：` line quotes the reference verbatim; it is never reworded, so R6 does not count there
+        // (ebrill2001modern: `CVAT, VIVAT, and All That`, where the Term list avoids CVAT).
+        if d.rule == "R6" && d.message.contains(": 文献：") {
+            continue;
+        }
         // R6 counts here: a Cited Card keeps the book's Term spellings.
         let blocking = d.blocking() || d.rule == "R6";
         let message = format!("{tag} {} {}{}", d.rule, if blocking { "" } else { "(advisory) " }, d.message);
