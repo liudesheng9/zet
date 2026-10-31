@@ -16,7 +16,7 @@ A book can hold one model or many. Do not assume either. A paper is not one mode
 Decide each Model Card by what the model **is**:
 
 - **The same model**: it keeps the other's question and its primitives (the agents, their choices, the technology or environment, the timing) and continues them. It solves one stage of the other (`本模型只求第一阶段`); it adds an extension or a variant on the same setting that changes one assumption and keeps the rest (an open economy, a matching function with increasing returns); it estimates or calibrates the model; it is the verbal version of the formal model (often in the introduction), which becomes the model's intuition chapter.
-- **A model of its own**: it asks its own question or sets up its own primitives, and the book presents it as a new model. Borrowing another model's result as an input (a micro-foundation, a lemma), comparing with it, contrasting it, or reusing its notation does not make it the same model: the Link between them stays as a Link between two models. A verbal framework that several formal models fill in differently is its own model too.
+- **A model of its own**: it asks its own question or sets up its own primitives, and the book presents it as a new model. Borrowing another model's result as an input (a micro-foundation, a lemma), comparing with it, contrasting it, or reusing its notation does not make it the same model: the Link between them stays as a Link between two models. An **引入** import is that kind of borrowing on purpose: `model-survey.mjs` lists it to read and never joins a group by it; only a legacy （共用） share counts as evidence of a split. A verbal framework that several formal models fill in differently is its own model too.
 - **When the nature is genuinely open** (the book never says whether a variant is a new model, and the primitives half overlap), ask the user, with the evidence for each side. Ask about nothing the evidence settles.
 
 ## Rules before you touch anything
@@ -47,13 +47,13 @@ Record the decision as a table, one row per Model Card: the model it belongs to,
 
 For every model with two or more Model Cards, pick its surviving head (usually its first formal Model Card). For every other Model Card X of that model, in the book's order:
 
-1. Remove X's **结构** block: its Links to its own and to shared parts count as parts.
+1. Remove X's **结构** block: its Links to its own and to shared parts count as parts. Keep X's **引入** section (#205): append its lines to the surviving head's **引入** section, without a line the head already has and without a line that now names one of the head's own parts.
 2. Move X's Idea-note Side successors to X's section anchor.
 3. Park X's setting and its other parts as Side successors of the surviving head.
 4. **Mask** every Link in X's body that targets a Model part (`scripts/mask-links.mjs mask <X>`), retype X into a part (`edit_card` with `facet`, `emphasis`, `level: ""`), then **restore** the body (`mask-links.mjs restore <X>`).
 5. Move X `alone` into the head's main line, then move the parked parts back under it.
 
-**The trap:** zt refuses to retype a Model Card while it has parts filed under it **or links any Model part in its body**. So (a) never add a rests-on line to X before the retype, (b) never retype in the same batch as moves (batched calls run even after one fails, and leave nested Model Cards), and (c) once one head becomes a part, every other head that links it must be masked too, including heads of other models that link it. Retype one Card per message and read the result.
+**The trap:** zt refuses to retype a Model Card while it has parts filed under it **or links any Model part in its body** outside its **引入** section (an import never blocks a retype). So (a) never add a rests-on line to X before the retype, (b) never retype in the same batch as moves (batched calls run even after one fails, and leave nested Model Cards), and (c) once one head becomes a part, every other head that links it must be masked too, including heads of other models that link it. Retype one Card per message and read the result.
 
 Settings of a folded head are the model's assumptions: they go to that model's setting part, never into a chapter (the `zt-model-settings` skill's rule). A model that stays alone needs no fold. Links between two models stay as they are.
 

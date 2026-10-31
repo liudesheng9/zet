@@ -9,7 +9,10 @@
 //   stated    a chapter card that states an assumption itself (a **设定**/**假设**/**本章设定** section,
 //             a line that opens with 假设/假定, a symbol table): write it in a setting card, point to it
 //   notation  a symbol a card introduces (记 $X$ …, 记号：$X=…$) that the notation card does not define
-//   missing   no notation card in the setting part
+//   missing   no notation card in the setting part, none imported (**引入**), and no line
+//             `沿用 [[block]] 的全部符号` in the setting part (#205)
+// A Card another model lends (build line 'shared') is never audited here: its home model's audit
+// checks it; the notation cards an import brings define symbols for this model.
 // and that the setting part reads as a dependency tree, so a reader builds the settings from scratch:
 //   start     a setting with no **起点** section (its premises, or 原始设定 for a primitive)
 //   misfiled  a setting filed under another setting it does not rest on: file it under its main
@@ -83,8 +86,11 @@ export function audit(m, cards, parents = new Map()) {
   const row = (a) => ({ ...order.find((o) => o.address === a), ...(cards.get(a) || {}) })
   const all = order.map((o) => row(o.address))
 
-  const notes = all.filter((c) => inPart(c.address) && isNotation(c))
-  const missing = notes.length ? [] : [{ fix: `the setting part of ${S} has no notation card (facet 符号表与读法): add one as its first Side successor` }]
+  const borrowed = (c) => c.line === 'shared'
+  const notes = all.filter((c) => (inPart(c.address) || (borrowed(c) && c.import)) && isNotation(c))
+  // One line binds a whole block's symbols (owner decision 3, #205).
+  const binds = all.some((c) => inPart(c.address) && /沿用\s*\[\[[^\]]+\]\]\s*的全部符号/.test(c.body || ''))
+  const missing = notes.length || binds ? [] : [{ fix: `the setting part of ${S} has no notation card (facet 符号表与读法): add one as its first Side successor, import one (**引入**), or write 沿用 [[…]] 的全部符号` }]
   const noteText = notes.map((c) => c.body || '').join('\n').replace(/\s+/g, '')
 
   const outside = []
@@ -108,6 +114,7 @@ export function audit(m, cards, parents = new Map()) {
   const uses = []
   const notation = []
   for (const c of all) {
+    if (borrowed(c)) continue
     const lines = (c.body || '').split('\n')
     if (!inPart(c.address) && !isSetting(c) && !isNotation(c)) {
       for (const l of lines) {
@@ -119,7 +126,7 @@ export function audit(m, cards, parents = new Map()) {
         else if (/假设|假定/.test(t)) uses.push({ card: c.address, line: t })
       }
     }
-    if (isNotation(c) && inPart(c.address)) continue
+    if (isNotation(c) && notes.includes(c)) continue
     const seen = new Set()
     for (const x of (c.body || '').matchAll(DEFINES)) {
       const sym = symbolOf(x[1])

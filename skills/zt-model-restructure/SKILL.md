@@ -23,7 +23,7 @@ Tool mechanics (Workspaces, `get_model`, moves, Locks) are in the `zt` skill; Ca
 
 ## Step 1: read the model
 
-- `scripts/check-model.mjs <head>`: confirm `<head>` is the Model Card (`get_model` names it as `head`), list its main line, its members and its build faults. If the book holds other Model Cards that rest on this one or share its parts, the model is parted: fold it first (`zt-model-fold`).
+- `scripts/check-model.mjs <head>`: confirm `<head>` is the Model Card (`get_model` names it as `head`), list its main line, its members and its build faults. If the book holds other Model Cards that rest on this one or share its parts by a legacy （共用） line, the model may be parted: run `zt-model-fold` first. Another model that imports a block of this one (its **引入** section; `get_model.lent`) is intended sharing, not a split: keep the block's root and its Side subtree where they are, since the importer's Links name them (#205).
 - `../zt-model-settings/scripts/check-settings.mjs <head>` must print `settings: all in the setting part`. If it does not, run the `zt-model-settings` skill first.
 - `scripts/check-network.mjs <head>` and `scripts/check-premises.mjs <head>`: the network and the hidden premises before the work, so the pass can be measured.
 - Read every card (25 at a time, `text` view) and the source sections they cite.

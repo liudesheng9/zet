@@ -39,3 +39,15 @@ test('a premise named with a later card filed first in build order is caught eve
   const hits = scan(order, cards, [{ from: 'K/a', to: 'K/b', kind: 'rests-on' }])
   assert.deepEqual(hits.map((h) => [h.card, h.eq, h.linked]), [['K/a', '4', true]])
 })
+
+test('equation numbers count only in the model and its imports: a legacy share from another model neither defines nor is scanned (#211)', () => {
+  const order = ['K/9|x', 'K/a', 'K/b']
+  const cards = new Map([
+    ['K/9|x', card('推导：他模型的式 (2)', '**结果**\n$$y\quad(2)$$\n\n用 (5)。')],
+    ['K/a', card('推导：使用', '**起点**\n- 由式 (2) 得到。')],
+    ['K/b', card('推导：本模型的式 (2)', '**结果**\n$$z\quad(2)$$')],
+  ])
+  assert.deepEqual(scan(order, cards), [], 'without a scope the other model hides the use')
+  const hits = scan(order, cards, [], new Set(['K/9|x']))
+  assert.deepEqual(hits.map((h) => [h.card, h.eq, h.derived_by]), [['K/a', '2', 'K/b']], JSON.stringify(hits))
+})

@@ -9,7 +9,9 @@
 // formula carries it ($$ … (n) $$, \tag{n}); prose that only uses "(n)" derives nothing. The notation card
 // (facet 符号…) is a lookup table and is skipped. Text after **为什么需要它**, **解读** or **承上启下** is ignored (those
 // sections point to the cards that use this one). A card's own proof chain (filed under it) counts
-// as its own. Exit 0 with no hit, 1 otherwise.
+// as its own. A part another model lends by a legacy （共用） share is that model's: its equations
+// neither define nor count (#205); a part an **引入** line imports counts as the model's own.
+// Exit 0 with no hit, 1 otherwise.
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -19,11 +21,13 @@ const POINTERS = /\*\*(为什么需要它|解读|承上启下)\*\*[\s\S]*$/
 const displays = (body) => [...(body || '').matchAll(/\$\$([\s\S]*?)\$\$/g)].map((x) => x[1])
 const tags = (tex) => [...tex.matchAll(/\\tag\s*\{\s*(\d{1,2}[a-c]?)\s*\}/g)].map((x) => x[1])
 
-/** Hits for a model: `order` is the build order (addresses), `cards` maps address -> {title, body, facet}. */
-export function scan(order, cards, relations = []) {
+/** Hits for a model: `order` is the build order (addresses), `cards` maps address -> {title, body, facet},
+ * `foreign` holds the Cards of other models in the order (legacy shares), left out of the scan. */
+export function scan(order, cards, relations = [], foreign = new Set()) {
   const pos = new Map(order.map((a, i) => [a, i]))
   const defs = new Map()
   for (const at of order) {
+    if (foreign.has(at)) continue
     const c = cards.get(at) || {}
     // Prose may use an equation anywhere (a result computed "with (33)"); only a title or a display
     // formula derives one.
@@ -33,7 +37,7 @@ export function scan(order, cards, relations = []) {
   const rests = new Set(relations.filter((r) => r.kind === 'rests-on').map((r) => `${r.from}>${r.to}`))
   const hits = []
   for (const at of order) {
-    if (/^符号/.test(cards.get(at)?.facet || '')) continue
+    if (foreign.has(at) || /^符号/.test(cards.get(at)?.facet || '')) continue
     const body = (cards.get(at)?.body || '').replace(POINTERS, '')
     for (const n of new Set(eqIn(body))) {
       const d = defs.get(n)
@@ -52,7 +56,8 @@ async function main() {
   const m = model(head)
   const order = m.build.order.map((o) => o.address)
   const byAt = new Map(cards(order).map((c) => [c.address, c]))
-  const hits = scan(order, byAt, m.relations)
+  const foreign = new Set(m.build.order.filter((o) => o.line === 'shared' && !o.import).map((o) => o.address))
+  const hits = scan(order, byAt, m.relations, foreign)
   const sh = (a) => (a.startsWith(head) ? 'H' + a.slice(head.length) : a)
   for (const h of hits) console.log(`${sh(h.card)} names (${h.eq}), derived later by ${sh(h.derived_by)}: ${h.line.slice(0, 140)}`)
   console.log(hits.length ? `${hits.length} hits: read each; a use is fixed by moving cards, a pointer stays` : 'premises: none used before their card')

@@ -93,3 +93,33 @@ test('a setting shared from another model is not filed outside: its home model c
   const r = audit({ build: { setting: S, order: shared } }, cs)
   assert.ok(!r.outside.some((f) => f.card === 'K/9|a|a|b'))
 })
+
+test('imported notation counts as defined; borrowed Cards are not audited; 沿用 … 的全部符号 replaces an own notation card (#211)', () => {
+  const H = 'K/7|a'
+  const own = H + '|a'
+  const rows = [
+    { address: 'K/4|a|a', facet: '设定', title: '设定：A', line: 'shared', import: 'K/4|a|a' },
+    { address: 'K/4|a|a|a', facet: '符号表与读法', title: '符号表：A', line: 'shared', import: 'K/4|a|a' },
+    { address: 'K/4|a|a|1', facet: '推导：A 的一步', title: '推导：A 的一步', line: 'shared', legacy: true },
+    { address: own, facet: '设定', title: '设定：B', line: 'main' },
+    { address: own + '|1', facet: '推导：B 的一步', title: '推导：B 的一步', line: 'main' },
+  ]
+  const bodies = {
+    'K/4|a|a|a': '| 符号 | 含义 |\n|---|---|\n| $x$ | 产量 |',
+    'K/4|a|a|1': '**本章设定**\n- 他模型自己的设定。\n记 $Z$ 为他模型的量。',
+    [own + '|1']: '记 $x$ 为产量。',
+    [own]: '**起点**\n- 原始设定。',
+  }
+  const cards = new Map(rows.map((r) => [r.address, { ...r, body: bodies[r.address] || '' }]))
+  const r = audit({ build: { setting: own, order: rows } }, cards)
+  assert.deepEqual(r.missing, [], 'an imported notation card serves the borrower')
+  assert.deepEqual(r.notation, [], 'x is defined by the imported notation card; a borrowed card is not audited')
+  assert.deepEqual(r.stated, [], 'a borrowed card states its own home model\'s settings')
+  // Without the import, a 沿用 line in the setting replaces the own notation card.
+  const bare = rows.filter((x) => x.line !== 'shared')
+  const bind = new Map([...cards].filter(([a]) => !a.startsWith('K/4')))
+  bind.set(own, { ...bind.get(own), body: '**起点**\n- 原始设定。\n\n沿用 [[K/4|a|a]] 的全部符号。' })
+  assert.deepEqual(audit({ build: { setting: own, order: bare } }, bind).missing, [])
+  bind.set(own, { ...bind.get(own), body: '**起点**\n- 原始设定。' })
+  assert.equal(audit({ build: { setting: own, order: bare } }, bind).missing.length, 1)
+})
