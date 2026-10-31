@@ -22,7 +22,7 @@ function Run($step, [string[]]$more = @()) {
 }
 function Last($lines) { [string]@($lines)[-1] | ConvertFrom-Json -AsHashtable }
 function Write-Calls($calls) {
-    $out = ($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open
+    $out = ($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper open-call -
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
 }
 try {

@@ -2008,7 +2008,6 @@ impl Register {
                 self.zt()?,
                 &calls,
                 &format!("{prefix}/1/parts"),
-                None,
             )? {
                 if receipt["replayed"] == json!(true) {
                     replayed += 1;
@@ -2110,7 +2109,6 @@ impl Register {
                 self.zt()?,
                 &[call],
                 &format!("{prefix}/1/root"),
-                None,
             )? {
                 if receipt["replayed"] == json!(true) {
                     replayed += 1;

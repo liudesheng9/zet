@@ -67,7 +67,7 @@ function Unlock-Tree([int]$lockId) {
     $done
 }
 function Write-Calls($calls) {
-    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper - -Open)
+    $out = @(($calls | ConvertTo-Json -Depth 6 -AsArray) | pwsh -NoProfile -File $script:ZtHelper open-call -)
     if ($LASTEXITCODE -ne 0) { throw "zt: $out" }
     , @($out | Where-Object { $_ -match '^\d+ ok ' } | ForEach-Object { ($_ -split ' ok ', 2)[1].Trim() })
 }
@@ -129,7 +129,7 @@ try {
     Assert ((Get-Content (Join-Path $work 'topics.md') -Raw -Encoding utf8).Contains("[[$topic/0]] 敲竹杠")) 'plan: topics.md lists the Topic'
 
     # The read-only helper refuses a write.
-    $ro = @('[{"tool":"create_successor","arguments":{"at":"' + $door + '","title":"x","body":"y"}}]' | & $Digest call -Open - -Allow (Join-Path $work 'read-only.allow.txt') 2>&1 | ForEach-Object { [string]$_ })
+    $ro = @('[{"tool":"create_successor","arguments":{"at":"' + $door + '","title":"x","body":"y"}}]' | & $Digest open-call - -Allow (Join-Path $work 'read-only.allow.txt') 2>&1 | ForEach-Object { [string]$_ })
     Assert (($ro -join ' ') -match 'not one of your Cards') "the read-only allow file refuses a write ($($ro -join ' | '))"
 
     # --- precheck: a bad answer ---

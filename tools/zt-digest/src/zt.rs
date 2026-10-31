@@ -47,10 +47,16 @@ pub fn service_program() -> Option<String> {
 /// this invocation refreshes the archive's active-run marker, which the daemon's heartbeat
 /// reports while a digest run is active (R318).
 pub fn start() -> Result<Zt> {
+    start_with(&[])
+}
+
+/// Starts an archive client whose `zt mcp` also declares these Write scope lists (`--allow <file>`,
+/// `--beneath <file>`): the server then refuses every write of this connection outside them.
+pub fn start_with(declarations: &[String]) -> Result<Zt> {
     if let Some(program) = service_program() {
         zt_check::mcp::ensure_service(&program, zt_check::mcp::SERVICE_WAIT)?;
     }
-    let client = Zt::start()?;
+    let client = Zt::start_with(declarations)?;
     if let Some(facts) = zt_check::mcp::observed_service() {
         renew_marker(&facts);
     }

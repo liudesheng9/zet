@@ -1523,7 +1523,6 @@ fn publish_hub_item(
         archive.zt.client()?,
         &calls,
         &prefix,
-        None,
     )?;
     let receipt = receipts.last().context("the hub publisher answered no receipt")?;
     let address = ps::s(&receipt["result"]["address"]);

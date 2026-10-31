@@ -481,8 +481,9 @@ impl Bridge {
                         json!({ "tool": "edit_card", "arguments": { "at": carrier_of(&state, i), "body": get(&state["attempts"][i], "intended_body"), "base": base } })
                     })
                     .collect();
-                let mut options = calls::Options::new().allow_file(&allow)?;
-                let (done, failure) = calls::run(self.zt()?, &edits, &mut options)?;
+                // The edits may change only the accepted carriers: the server enforces the list (#226).
+                let mut allowed = crate::zt::start_with(&calls::scope_lists(&allow, "")?)?;
+                let (done, failure) = calls::run(&mut allowed, &edits, &mut calls::Options::new())?;
                 let mut lines: Vec<String> = done.into_iter().map(|d| d.line).collect();
                 if let Some(failure) = &failure {
                     lines.extend(failure.lines());

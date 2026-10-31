@@ -162,7 +162,8 @@ fn main() {
     // The Topic-tree, hub and register tools (idea-grow's) keep the open scope.
     zt_check::mcp::scope::set_literature_only(literature_scope(&tool, &rest));
     let dispatch = || match tool.to_ascii_lowercase().as_str() {
-        "call" => calls::cli(&rest),
+        "call" => calls::cli(&rest, false),
+        "open-call" => calls::cli(&rest, true),
         "service-wait" => service_wait_cli(&rest),
         "audit" => audit::cli(&rest),
         "card" => card::cli(&rest),
@@ -271,16 +272,20 @@ fn main() {
 /// beside them). Every other tool is a digest step and runs in the Literature scope, Organize's
 /// survey and apply included: a digest's Organize merges no Topic and moves no Topic Card.
 const OPEN_TOOLS: &[&str] = &[
-    "grow", "hub", "register", "gate", "join", "topic-home", "publish", "resolve", "pilot",
+    "open-call", "grow", "hub", "register", "gate", "join", "topic-home", "publish", "resolve", "pilot",
     "restate", "snapshot-topics", "service-wait", "list-models", "version", "--version", "-v",
 ];
 
-/// Whether this invocation runs in the Literature scope: every digest step, and `call` and
-/// `organize-apply` unless given `-Open` (a hand-run helper call, or a Topic merge run by hand or by
-/// a later idea-grow round, that may write a Topic tree).
+/// Whether this invocation runs in the Literature scope: every digest step, the helper `call`, and
+/// `organize-apply` unless given `-Open` (a Topic merge run by hand or by a later idea-grow round).
+/// `open-call` is the helper in the open scope, a command of its own that no digest job's approval
+/// allows (docs/agent-write-scope-proposal.md, D10).
 fn literature_scope(tool: &str, rest: &[String]) -> bool {
     let tool = tool.to_ascii_lowercase();
-    if tool == "call" || tool == "organize-apply" {
+    if tool == "call" {
+        return true;
+    }
+    if tool == "organize-apply" {
         return !rest.iter().any(|a| a.eq_ignore_ascii_case("-Open"));
     }
     !OPEN_TOOLS.contains(&tool.as_str())
@@ -303,7 +308,8 @@ mod scope_tests {
         for tool in ["grow", "hub", "register", "restate", "gate", "topic-home", "join", "publish"] {
             assert!(!literature_scope(tool, &[]), "{tool}");
         }
-        assert!(!literature_scope("call", &["-".into(), "-open".into()]));
+        assert!(literature_scope("call", &["-".into(), "-open".into()]));
+        assert!(!literature_scope("open-call", &["-".into()]));
         assert!(literature_scope("organize-apply", &["-Work".into(), "w".into()]));
         assert!(!literature_scope("organize-apply", &["-Work".into(), "w".into(), "-Open".into()]));
     }

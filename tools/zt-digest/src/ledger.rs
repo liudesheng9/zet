@@ -7314,6 +7314,8 @@ pub(crate) fn fault_class(code: &str) -> Result<&'static str> {
         // R326/R337: the owner's Lock stops the write its destination asked for. It is the destination's
         // decision, so it is a content fault and never a retryable one.
         | "card_locked"
+        // #226: a write outside the connection's Write scope is the same kind of destination decision.
+        | "scope_refused"
         // S27 (#166, R0447): the archive's own write gate refused the proposed content. It is content
         // to fix through the current cycle, never a provider or run crash, and the refused input is
         // not retried unchanged.
@@ -7801,7 +7803,7 @@ fn recover_group(
         "{}/digest-g{number:03}/1/apply",
         run.as_str().context("missing run id")?
     );
-    let preview = match crate::calls::preview_identified(zt, calls, &prefix, None) {
+    let preview = match crate::calls::preview_identified(zt, calls, &prefix) {
         Ok(preview) => preview,
         // A plan whose calls no longer replay is not recovered here: the ordinary attempt and
         // `group-finish` report the exact conflict instead of a fabricated completion.
@@ -8403,7 +8405,7 @@ fn verify_archive_receipts(
             bail!("accepted receipt prefix changed");
         }
     }
-    let preview = crate::calls::preview_identified(zt, calls, prefix, None)
+    let preview = crate::calls::preview_identified(zt, calls, prefix)
         .context("archive receipt verification failed")?;
     let results = preview["results"]
         .as_array()
@@ -8904,7 +8906,7 @@ fn prepare_finish(p: &Prepared, zt: &mut Zt, token: i64, path: &Path) -> Result<
     }
     let calls = setup_calls(p)?;
     // A mismatched BibTeX key must fail before creating even the root.
-    let root = crate::calls::preview_identified(zt, &calls[..1], &prefix, None)?;
+    let root = crate::calls::preview_identified(zt, &calls[..1], &prefix)?;
     if root["results"][0]["result"]["address"] != p.contract["citation_key"] {
         bail!("setup BibTeX Citation key differs from prepared Citation key");
     }
@@ -8915,7 +8917,7 @@ fn prepare_finish(p: &Prepared, zt: &mut Zt, token: i64, path: &Path) -> Result<
         reconciled
     } else {
         renew(p, unit, token)?;
-        crate::calls::invoke_identified(zt, &calls, &prefix, None)?
+        crate::calls::invoke_identified(zt, &calls, &prefix)?
     };
     let key = field(&p.contract, "citation_key")?;
     let addresses = std::iter::once(key.to_string())
@@ -9243,8 +9245,9 @@ fn group_finish(
         }
         let tool = call["tool"].as_str().unwrap_or_default();
         // docs/literature-only-digest-design.md: a group writes only the book's Literature tree.
-        if let Some(why) = zt_check::mcp::scope::literature_refusal(tool, &call["arguments"]) {
-            bail!("group call {i}: {why}");
+        // The draft check reads the same rule the server enforces (zt_check::scope).
+        if let Some(violation) = zt_check::scope::literature_violation(tool, &call["arguments"]) {
+            bail!("group call {i}: {}", violation.message);
         }
         let args = call["arguments"]
             .as_object()
@@ -9338,7 +9341,7 @@ fn group_finish(
         let read = zt.cards(&[anchor.to_string()], "text")?;
         json!({"results":[],"cards":read.cards,"archive_revision":read.archive_revision})
     } else {
-        crate::calls::preview_identified(zt, &calls, &prefix, None)?
+        crate::calls::preview_identified(zt, &calls, &prefix)?
     };
     let cards = preview["cards"]
         .as_array()
@@ -9410,7 +9413,7 @@ fn group_finish(
     let receipts = if calls.is_empty() {
         Vec::new()
     } else {
-        crate::calls::invoke_identified(zt, &calls, &prefix, None)?
+        crate::calls::invoke_identified(zt, &calls, &prefix)?
     };
     // Allocation can change between the rolled-back preview and the commit.
     // Receipt results are the authority for the actual owned set and locators.
@@ -10580,7 +10583,7 @@ fn link_finish(
     let preview = if calls.is_empty() {
         None
     } else {
-        Some(crate::calls::preview_identified(zt, &calls, &prefix, None).context("Link draft precheck")?)
+        Some(crate::calls::preview_identified(zt, &calls, &prefix).context("Link draft precheck")?)
     };
     let mut read = zt.cards(&owned, "text")?;
     if let Some(preview) = &preview {
@@ -10649,7 +10652,7 @@ fn link_finish(
     let receipts = if calls.is_empty() {
         Vec::new()
     } else {
-        crate::calls::invoke_identified(zt, &calls, &prefix, None)?
+        crate::calls::invoke_identified(zt, &calls, &prefix)?
     };
     let read = zt.cards(&owned, "text")?;
     let mut cards = BTreeMap::new();
@@ -14415,7 +14418,7 @@ fn terms_apply(
         };
         checked_lines(zt_check::check::run_lines(&check.args(), None)?)?
     } else {
-        let preview = crate::calls::preview_identified(zt, &calls, &prefix, None)?;
+        let preview = crate::calls::preview_identified(zt, &calls, &prefix)?;
         group_quality(
             preview["cards"].as_array().context("missing Terms draft")?,
             p,
@@ -14432,7 +14435,7 @@ fn terms_apply(
     let receipts = if no_terms {
         Vec::new()
     } else {
-        crate::calls::invoke_identified(zt, &calls, &prefix, None)?
+        crate::calls::invoke_identified(zt, &calls, &prefix)?
     };
     let card = receipts
         .first()
@@ -17829,6 +17832,7 @@ mod tests {
         // content -Fault {code: card_locked}`). An unknown code is refused, so the refusal has to be a known
         // content fault: it is a destination decision, never a retryable provider fault.
         assert_eq!(fault_class("card_locked").unwrap(), "content");
+        assert_eq!(fault_class("scope_refused").unwrap(), "content");
         // A fenced attempt's conversation gets the fenced note; the current attempt's does not.
         assert_eq!(attempt_token("zet-76d4-link-g001-1-t1"), Some(1));
         assert_eq!(attempt_token("zet-76d4-cards-notes"), None);

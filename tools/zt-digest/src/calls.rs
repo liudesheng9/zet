@@ -13,19 +13,18 @@
 //!   `@@N`      in any string argument: the address call N returned (0-based).
 //!   -From N -Addresses a0,...   skip the calls before N; their addresses still resolve `@@`.
 //!   -Log f     append the address of every Card a create call makes.
-//!   -Allow f   only those Cards (one per line) and Cards made in this run may change;
-//!              create_topic, move_card, insert_card, delete_card, create_literature,
-//!              edit_literature_metadata and a create_successor `before` a sibling are
-//!              refused, and each apply_batch item is checked as its own call.
+//!   -Allow f   only those Cards (one per line) and Cards made in this run may change.
+//!   -Beneath f these earlier Cards take only a new Side successor.
 //!   -Moves f   append {"i":N,"moved":{...}} per call that renumbered Cards.
 //!   -SrcLog f  append `<address>\t<src>` per Card made from a call with a `src` field
 //!              (the helper removes `src` before the call reaches zt).
-//!   -Open      the open scope: without it the helper runs in the Literature scope and refuses
-//!              every write to a Topic tree, a Hub Card, or a Link to a Topic-tree Card
-//!              (docs/literature-only-digest-design.md); idea-grow and hand Topic work pass it.
-//!   -TopicGate f   (with -Open) lock f around create_topic and refuse a Topic whose title equals or
-//!              resembles (character bigrams, -TopicSimilarity 0.8) an agent Topic.
-//!   append_card {at, text}: add a paragraph to the end of a Card (helper-only call).
+//!   append_card {at, text}: add a paragraph to the end of a Card (helper-only call); the edit
+//!              carries the text it read as its base, so a change in between is refused.
+//!
+//! The Write scope is the server's (docs/agent-write-scope-proposal.md): `call` starts its `zt mcp`
+//! with `--scope literature` and passes `-Allow`/`-Beneath` as `--allow`/`--beneath`; `open-call` is
+//! the same helper in the open scope, for hand work on Topic trees, and no digest job's approval
+//! allows it. A write outside the scope fails with the server's typed `scope_refused` line.
 //!
 //! The digest tools run the same code in-process through `run` and `invoke`.
 
@@ -35,7 +34,7 @@ use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use zt_check::mcp::{reply_error, reply_text};
@@ -45,38 +44,40 @@ pub struct Options {
     pub from: usize,
     pub addresses: Vec<String>,
     pub log: String,
-    pub allow: Option<HashSet<String>>,
-    /// Earlier agent Regular Cards this run may continue with a Side successor (S06, #103). The
-    /// earlier Card never becomes writable: only a new Card beneath it is created.
-    pub beneath: HashSet<String>,
     pub moves: String,
     pub src_log: String,
-    pub topic_gate: String,
-    pub topic_similarity: f64,
 }
 
 impl Options {
     pub fn new() -> Self {
-        Self { topic_similarity: 0.8, ..Self::default() }
+        Self::default()
     }
+}
 
-    /// Loads the allow-list file: one address per line.
-    pub fn allow_file(mut self, path: &str) -> Result<Self> {
+/// The `zt mcp` declarations of an allow list and a beneath list (`--allow f`, `--beneath f`): the
+/// server enforces them for every write of the connection that starts with them. An empty path
+/// declares nothing.
+pub fn scope_lists(allow: &str, beneath: &str) -> Result<Vec<String>> {
+    let mut declared = Vec::new();
+    for (flag, path) in [("--allow", allow), ("--beneath", beneath)] {
         if !path.is_empty() {
-            let text = util::read_text(path)?;
-            self.allow = Some(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect());
+            let full = std::path::absolute(path).with_context(|| format!("cannot resolve {flag} list `{path}`"))?;
+            declared.extend([flag.to_string(), full.to_string_lossy().into_owned()]);
         }
-        Ok(self)
     }
+    Ok(declared)
+}
 
-    /// Loads the place-beside file: one earlier agent Regular Card address per line.
-    pub fn beneath_file(mut self, path: &str) -> Result<Self> {
-        if !path.is_empty() {
-            let text = util::read_text(path)?;
-            self.beneath = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
-        }
-        Ok(self)
+/// A connection that may change only these Cards (and the Cards it makes): the list goes to a file
+/// under `work` and `zt mcp` starts with `--allow` on it.
+pub fn start_allowed(work: &str, name: &str, addresses: &[String]) -> Result<Zt> {
+    let path = std::path::Path::new(work).join(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
+    std::fs::write(&path, addresses.iter().map(|a| format!("{a}\n")).collect::<String>())
+        .with_context(|| format!("cannot write the allow list {}", path.display()))?;
+    crate::zt::start_with(&scope_lists(&path.to_string_lossy(), "")?)
 }
 
 /// One call that succeeded.
@@ -163,7 +164,6 @@ fn typed_message(message: &str, refusal: &Option<Value>) -> String {
 
 static WS_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*\r?\n\s*").unwrap());
 static REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@@(\d+)").unwrap());
-static TITLE_DROP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\s\p{P}\p{S}]").unwrap());
 
 fn one_line(message: &str) -> String {
     WS_NEWLINE.replace_all(message, " ").into_owned()
@@ -201,26 +201,10 @@ fn resolve_refs(value: &Value, resolved: &[String]) -> Result<Value> {
     })
 }
 
-/// A title without spaces and punctuation, in lower case: the Topic gate compares them.
-pub fn title_key(title: &str) -> String {
-    TITLE_DROP.replace_all(title, "").to_lowercase()
-}
+/// The Topic title comparison the server's Topic title rule uses too (one implementation).
+pub use zt_check::scope::{similarity, title_key};
 
-/// The Dice coefficient of the character bigrams of two keys.
-pub fn similarity(a: &str, b: &str) -> f64 {
-    let grams = |t: &str| {
-        let chars: Vec<char> = t.chars().collect();
-        chars.windows(2).map(|w| (w[0], w[1])).collect::<HashSet<_>>()
-    };
-    let (x, y) = (grams(a), grams(b));
-    if x.is_empty() || y.is_empty() {
-        return if a == b { 1.0 } else { 0.0 };
-    }
-    let common = x.iter().filter(|g| y.contains(g)).count();
-    2.0 * common as f64 / (x.len() + y.len()) as f64
-}
-
-/// The Topic gate's lock: the file opened with no sharing, for at most 120 seconds of waiting.
+/// The concept gate's lock: the file opened with no sharing, for at most 120 seconds of waiting.
 pub(crate) struct Gate(#[allow(dead_code)] std::fs::File);
 
 pub(crate) fn lock_gate(path: &str) -> Result<Gate> {
@@ -258,48 +242,6 @@ fn arg_str(arguments: &Value, key: &str) -> String {
     }
 }
 
-/// Why `-Allow` refuses a call, or None. Only the listed Cards and the Cards the run made may
-/// change, so the structural tools are refused, and so is a Side placement `before` a sibling,
-/// which renumbers Cards the list does not name. Each `apply_batch` item is checked as its own
-/// call; an `at` of `@@name` names an earlier item of the same batch. A batch preview writes
-/// nothing and passes, as reads do.
-pub(crate) fn allow_refusal(tool: &str, arguments: &Value, allowed: &HashSet<String>, beneath: &HashSet<String>) -> Option<String> {
-    if ["create_topic", "move_card", "insert_card", "delete_card", "create_literature", "edit_literature_metadata"].contains(&tool) {
-        return Some(format!("{tool} is not allowed in this run"));
-    }
-    if tool == "apply_batch" {
-        if arguments["preview"] == json!(true) {
-            return None;
-        }
-        let mut scope = allowed.clone();
-        for (i, item) in arguments["items"].as_array().into_iter().flatten().enumerate() {
-            let item_tool = item["tool"].as_str().unwrap_or_default();
-            if let Some(why) = allow_refusal(item_tool, &item["arguments"], &scope, beneath) {
-                return Some(format!("batch item {i} ({item_tool}): {why}"));
-            }
-            if let Some(name) = item["client_ref"].as_str() {
-                scope.insert(format!("@@{name}"));
-            }
-        }
-        return None;
-    }
-    if tool == "create_successor" && arguments.get("before").is_some_and(|b| !b.is_null()) {
-        return Some("create_successor with `before` renumbers Side successors; it is not allowed in this run".to_string());
-    }
-    let at = arg_str(arguments, "at");
-    // S06 (#103, D100/D104): a standalone claim may continue an earlier agent Regular Card that this
-    // run read in full, as one new Side successor. Nothing of the earlier Card becomes writable, and
-    // a Direct successor would extend its chain, so only `side` is accepted.
-    let beside = tool == "create_successor" && beneath.contains(&at) && arguments["kind"].as_str() == Some("side");
-    if tool == "create_successor" && beneath.contains(&at) && !beside {
-        return Some(format!("file a new Card beside `{at}` only as a Side successor; its Direct chain belongs to its own line of thought"));
-    }
-    if ["edit_card", "append_card", "create_successor"].contains(&tool) && !allowed.contains(&at) && !beside {
-        return Some(format!("`{at}` is not one of your Cards; you may only change your own Cards"));
-    }
-    None
-}
-
 /// Runs the calls in order and stops at the first failure. Err only when
 /// zt mcp itself fails (it closed, or wrote no reply).
 pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<Done>, Option<Failure>)> {
@@ -319,11 +261,6 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
             Ok(a) => a,
             Err(error) => fail!(i, error),
         };
-        if let Some(allowed) = &options.allow
-            && let Some(why) = allow_refusal(&call_tool, &arguments, allowed, &options.beneath)
-        {
-            fail!(i, why);
-        }
         let mut tool = call_tool.clone();
         if tool == "append_card" {
             let at = arg_str(&arguments, "at");
@@ -331,9 +268,12 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
             if reply_error(&current).is_some() {
                 fail!(i, format!("cannot read `{at}`"));
             }
-            let body = arg_str(&current["result"]["structuredContent"], "body");
+            let read = &current["result"]["structuredContent"];
+            let body = arg_str(read, "body");
             let text = arg_str(&arguments, "text");
-            arguments = json!({ "at": at, "body": format!("{}\n\n{}", body.trim_end(), text.trim()) });
+            // D8: the text read is the edit's base, so a write between the read and this edit is
+            // refused ("changed since it was opened") instead of being overwritten.
+            arguments = json!({ "at": at, "body": format!("{}\n\n{}", body.trim_end(), text.trim()), "base": read["text"] });
             tool = "edit_card".to_string();
         }
         // `src` is for the source log only; zt never sees it.
@@ -347,34 +287,7 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
                 other => other.to_string(),
             };
         }
-        let mut gate = None;
-        if !options.topic_gate.is_empty() && tool == "create_topic" {
-            let lock = match lock_gate(&options.topic_gate) {
-                Ok(lock) => lock,
-                Err(error) => fail!(i, error),
-            };
-            let listed = zt.request("list_trees", json!({ "workspace": "agent" }))?;
-            let key = title_key(&arg_str(&arguments, "title"));
-            let trees = listed["result"]["structuredContent"]["trees"].as_array().cloned().unwrap_or_default();
-            let same = trees.iter().filter(|t| t["kind"] == "topic").find(|t| {
-                let other = title_key(&arg_str(t, "title"));
-                other == key || similarity(&other, &key) >= options.topic_similarity
-            });
-            if let Some(same) = same {
-                drop(lock);
-                fail!(
-                    i,
-                    format!(
-                        "topic exists: `{}` {}. File the Card under that Topic instead of creating one.",
-                        arg_str(same, "root"),
-                        arg_str(same, "title")
-                    )
-                );
-            }
-            gate = Some(lock);
-        }
         let reply = zt.request(&tool, arguments)?;
-        drop(gate);
         let text = reply_text(&reply);
         if let Some(message) = reply_error(&reply) {
             let refusal = refusal_of(&reply);
@@ -384,22 +297,9 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
         let structured = &reply["result"]["structuredContent"];
         let address = structured["address"].as_str().map(str::to_string);
         resolved.push(address.clone().unwrap_or_default());
-        // The Cards a batch wrote join the allow list, as a single create's Card does.
-        if tool == "apply_batch"
-            && let Some(allowed) = options.allow.as_mut()
-        {
-            for result in structured["results"].as_array().into_iter().flatten() {
-                if let Some(address) = result["result"]["address"].as_str() {
-                    allowed.insert(address.to_string());
-                }
-            }
-        }
         if let Some(address) = &address
             && call_tool.starts_with("create")
         {
-            if let Some(allowed) = options.allow.as_mut() {
-                allowed.insert(address.clone());
-            }
             if !options.log.is_empty() {
                 util::append_text(&options.log, &format!("{address}\n"))?;
             }
@@ -452,9 +352,8 @@ pub(crate) fn invoke_identified(
     zt: &mut Zt,
     calls: &[Value],
     prefix: &str,
-    allow: Option<&HashSet<String>>,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, allow, false, None, true)?.0)
+    Ok(execute_identified(zt, calls, prefix, false, None, true)?.0)
 }
 
 /// Apply an identified call list whose outputs are staged for a later publication step: the
@@ -465,9 +364,8 @@ pub(crate) fn invoke_identified_staged(
     zt: &mut Zt,
     calls: &[Value],
     prefix: &str,
-    allow: Option<&HashSet<String>>,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, allow, false, None, false)?.0)
+    Ok(execute_identified(zt, calls, prefix, false, None, false)?.0)
 }
 
 /// Apply an immutable accepted call list whose Topic creation was cleared by a concept decision
@@ -478,10 +376,9 @@ pub(crate) fn invoke_identified_gated(
     zt: &mut Zt,
     calls: &[Value],
     prefix: &str,
-    allow: Option<&HashSet<String>>,
     concept: &Value,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, allow, false, Some(concept), true)?.0)
+    Ok(execute_identified(zt, calls, prefix, false, Some(concept), true)?.0)
 }
 
 /// Validate a complete accepted sequence against real archive validators. The
@@ -490,9 +387,8 @@ pub(crate) fn preview_identified(
     zt: &mut Zt,
     calls: &[Value],
     prefix: &str,
-    allow: Option<&HashSet<String>>,
 ) -> Result<Value> {
-    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true, None, false)?;
+    let (receipts, draft) = execute_identified(zt, calls, prefix, true, None, false)?;
     let draft = draft.context("incomplete identified preview: no draft")?;
     if draft["preview"] != true
         || draft["applied"] != false
@@ -535,7 +431,6 @@ fn execute_identified(
     zt: &mut Zt,
     calls: &[Value],
     prefix: &str,
-    allow: Option<&HashSet<String>>,
     preview: bool,
     concept: Option<&Value>,
     verify: bool,
@@ -616,27 +511,6 @@ fn execute_identified(
         if !call["arguments"].is_object() {
             bail!("identified call {index}: arguments must be an object");
         }
-        if let Some(allowed) = allow {
-            if matches!(
-                call["tool"].as_str(),
-                Some("create_topic" | "create_literature")
-            ) {
-                bail!(
-                    "identified call {index}: {} is not allowed in this run",
-                    call["tool"]
-                );
-            }
-            let at = call["arguments"]["at"].as_str().unwrap_or_default();
-            let earlier = at
-                .strip_prefix("@@")
-                .and_then(|n| n.parse::<usize>().ok())
-                .is_some_and(|n| n < index);
-            if !allowed.contains(at) && !earlier {
-                bail!(
-                    "identified call {index}: `{at}` is not allowed; use an owned address or an exact earlier result reference"
-                );
-            }
-        }
         arguments(&call["arguments"], &[], index, 0)?;
         if call["tool"] == "edit_card" {
             let args = &call["arguments"];
@@ -662,6 +536,11 @@ fn execute_identified(
         if authored_bytes(&call["arguments"]) > 1024 * 1024 {
             bail!("identified call {index}: exceeds 1048576 authored bytes");
         }
+    }
+    // D6 (#226): the server checks an allow list chunk by chunk. A preview of the whole accepted
+    // list first keeps the guarantee that a call outside the list writes nothing at all.
+    if !preview && zt.declares("--allow") {
+        execute_identified(zt, calls, prefix, true, None, false)?;
     }
     let mut resolved = Vec::new();
     let mut done = Vec::new();
@@ -748,7 +627,7 @@ fn execute_identified(
             let refusal = refusal_of(&raw);
             let said = typed_message(&message, &refusal);
             match &refusal {
-                Some(refusal) if refusal["error"] == json!("card_locked") => {
+                Some(refusal) if crate::lockcheck::is_planning_stop(refusal) => {
                     // The typed refusal travels as itself (R338, S16-AC05): a stage stops the
                     // affected write and answers the archive's own JSON, not a sentence.
                     return Err(anyhow::Error::new(crate::lockcheck::Stopped(refusal.clone())));
@@ -759,6 +638,20 @@ fn execute_identified(
         }
         let reply: Value = serde_json::from_str(&reply_text(&raw))
             .context("incomplete identified batch: the answer is not JSON")?;
+        // A preview collects a refused item instead of failing (D5): a planning stop it reports ends
+        // the run here, with the archive's own JSON, before any chunk is written.
+        if let Some(refusal) = reply["refusals"].as_array().and_then(|r| r.first()).map(|r| r["refusal"].clone())
+            && crate::lockcheck::is_planning_stop(&refusal)
+        {
+            return Err(anyhow::Error::new(crate::lockcheck::Stopped(refusal)));
+        }
+        // A preview collects a refused item instead of failing (D5): a planning stop it reports ends
+        // the run here, with the archive's own JSON, before any chunk is written.
+        if let Some(refusal) = reply["refusals"].as_array().and_then(|r| r.first()).map(|r| r["refusal"].clone())
+            && crate::lockcheck::is_planning_stop(&refusal)
+        {
+            return Err(anyhow::Error::new(crate::lockcheck::Stopped(refusal)));
+        }
         let results = reply["results"]
             .as_array()
             .context("incomplete identified batch: missing results")?;
@@ -801,7 +694,6 @@ fn precheck_identified(
     zt: &mut Zt,
     calls: &[Value],
     prefix: &str,
-    allow: Option<&HashSet<String>>,
 ) -> Result<Vec<String>> {
     let bytes: usize = calls
         .iter()
@@ -827,7 +719,7 @@ fn precheck_identified(
             "CheckOnly requires 1 through 64 receipt-owned paragraph edits within one 1048576-byte batch; check each accepted Link draft separately"
         );
     }
-    let (receipts, draft) = execute_identified(zt, calls, prefix, allow, true, None, false)?;
+    let (receipts, draft) = execute_identified(zt, calls, prefix, true, None, false)?;
     let draft = draft.context("incomplete Link draft: no preview")?;
     if draft["preview"] != true || draft["applied"] != false || draft["complete"] != true {
         bail!("incomplete Link draft: explicit complete, unapplied preview required");
@@ -1001,13 +893,22 @@ pub(crate) fn authored_fingerprint(card: &Value) -> String {
     crate::canon::sha256_hex(crate::canon::canonical(&authored).to_string().as_bytes())
 }
 
-/// `zt-digest call`.
-pub fn cli(argv: &[String]) -> Result<i32> {
+/// `zt-digest call` (the Literature scope) and `zt-digest open-call` (the open scope).
+pub fn cli(argv: &[String], open: bool) -> Result<i32> {
     let a = Args::parse(
         argv,
-        &["File", "From", "Addresses", "Log", "Allow", "Beneath", "Moves", "SrcLog", "TopicGate", "TopicSimilarity", "Tool", "Json", "OperationPrefix", "ConceptGate"],
+        &["File", "From", "Addresses", "Log", "Allow", "Beneath", "Moves", "SrcLog", "Tool", "Json", "OperationPrefix", "ConceptGate"],
         &["CheckOnly", "Open"],
     )?;
+    if a.flag("Open") {
+        // D10: the open scope is a command of its own, so a job cannot widen its scope by a switch.
+        bail!(if open {
+            "open-call is already the open scope; drop -Open"
+        } else {
+            "the helper has no -Open switch; hand work on Topic trees runs `zt-digest open-call` with the same arguments"
+        });
+    }
+    let declared = scope_lists(&a.str("Allow"), &a.str("Beneath"))?;
     let calls: Vec<Value> = if a.has("Tool") {
         let arguments: Value = serde_json::from_str(&a.str_or("Json", "{}")).context("-Json is not JSON")?;
         vec![json!({ "tool": a.str("Tool"), "arguments": arguments })]
@@ -1029,13 +930,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         bail!("CheckOnly requires OperationPrefix and a receipt-owned Link draft");
     }
     if a.has("OperationPrefix") {
-        if ["From","Addresses","Log","Moves","SrcLog","TopicGate","TopicSimilarity"].iter().any(|name|a.has(name)) {
-            bail!("OperationPrefix replays accepted writes from the beginning and cannot combine with legacy resume, logs, moves or Topic-gate options");
+        if ["From","Addresses","Log","Moves","SrcLog"].iter().any(|name|a.has(name)) {
+            bail!("OperationPrefix replays accepted writes from the beginning and cannot combine with legacy resume, logs or moves");
         }
-        let options=Options::new().allow_file(&a.str("Allow"))?;
-        let mut zt=crate::zt::start()?;
+        let mut zt=crate::zt::start_with(&declared)?;
         if a.flag("CheckOnly") {
-            let lines=precheck_identified(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref())?;
+            let lines=precheck_identified(&mut zt,&calls,&a.required("OperationPrefix")?)?;
             let code=if lines.last().is_some_and(|line|line=="faults: 0") {0}else{1};
             util::print_lines(&lines)?;
             return Ok(code);
@@ -1046,9 +946,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let results = if a.has("ConceptGate") {
             let concept = crate::canon::read_json(&a.required("ConceptGate")?)?;
             crate::gate::check_decision(&concept)?;
-            invoke_identified_gated(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref(),&concept)?
+            invoke_identified_gated(&mut zt,&calls,&a.required("OperationPrefix")?,&concept)?
         } else {
-            invoke_identified(&mut zt,&calls,&a.required("OperationPrefix")?,options.allow.as_ref())?
+            invoke_identified(&mut zt,&calls,&a.required("OperationPrefix")?)?
         };
         let lines:Vec<_>=results.iter().enumerate().map(|(index,result)|format!("{index} ok {}",result["result"]["address"].as_str().unwrap())).collect();
         util::print_lines(&lines)?;
@@ -1057,15 +957,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if a.has("ConceptGate") {
         bail!("ConceptGate requires OperationPrefix and a receipt-owned Topic creation");
     }
-    let mut options = Options::new().allow_file(&a.str("Allow"))?.beneath_file(&a.str("Beneath"))?;
+    let mut options = Options::new();
     options.from = a.int_or("From", 0)?.max(0) as usize;
     options.addresses = a.str("Addresses").split(',').map(|s| s.trim().to_string()).collect();
     options.log = a.str("Log");
     options.moves = a.str("Moves");
     options.src_log = a.str("SrcLog");
-    options.topic_gate = a.str("TopicGate");
-    options.topic_similarity = a.float_or("TopicSimilarity", 0.8)?;
-    let mut zt = crate::zt::start()?;
+    let mut zt = crate::zt::start_with(&declared)?;
     let (done, failure) = run(&mut zt, &calls, &mut options)?;
     let mut lines: Vec<String> = done.into_iter().map(|d| d.line).collect();
     let code = match &failure {
@@ -1083,73 +981,6 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 mod tests {
     use super::*;
 
-    fn set(addresses: &[&str]) -> HashSet<String> {
-        addresses.iter().map(|a| a.to_string()).collect()
-    }
-
-    /// An empty allow list makes a run read-only, an `apply_batch` included: each item is checked
-    /// as its own call, so a batch cannot write a Card the list does not name.
-    #[test]
-    fn the_allow_list_checks_every_batch_item() {
-        let none = set(&[]);
-        let edit = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"edit_card","arguments":{"at":"K/1","body":"x","base_fingerprint":"f"}}]});
-        let why = allow_refusal("apply_batch", &edit, &none, &none).expect("an unlisted edit in a batch");
-        assert!(why.starts_with("batch item 0 (edit_card): "), "{why}");
-        let create = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"create_successor","arguments":{"at":"K/1","title":"t"}}]});
-        assert!(allow_refusal("apply_batch", &create, &none, &none).is_some());
-        let topic = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"create_topic","arguments":{"title":"t"}}]});
-        assert!(allow_refusal("apply_batch", &topic, &set(&["K/1"]), &none).unwrap().contains("create_topic is not allowed"));
-        let literature = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"create_literature","arguments":{"bibtex":"@book{K,title={T}}"}}]});
-        assert!(allow_refusal("apply_batch", &literature, &set(&["K/1"]), &none).is_some());
-    }
-
-    #[test]
-    fn a_batch_may_grow_its_listed_cards_and_the_cards_it_makes() {
-        let mine = set(&["K/1"]);
-        let none = set(&[]);
-        let batch = json!({"items":[
-            {"op_key":"k/1","client_ref":"a","tool":"create_successor","arguments":{"at":"K/1","title":"t"}},
-            {"op_key":"k/2","client_ref":"b","tool":"edit_card","arguments":{"at":"@@a","body":"x"}},
-            {"op_key":"k/3","client_ref":"c","tool":"create_successor","arguments":{"at":"@@b","kind":"side","title":"u"}}]});
-        assert_eq!(allow_refusal("apply_batch", &batch, &mine, &none), None);
-        // A reference to a later item, or to no item, names no Card of this run.
-        let forward = json!({"items":[
-            {"op_key":"k/1","client_ref":"a","tool":"edit_card","arguments":{"at":"@@b","body":"x"}},
-            {"op_key":"k/2","client_ref":"b","tool":"create_successor","arguments":{"at":"K/1","title":"t"}}]});
-        assert!(allow_refusal("apply_batch", &forward, &mine, &none).is_some());
-        // A preview writes nothing, so it passes like a read.
-        let preview = json!({"preview":true,"preview_items":[{"op_key":"k/1","client_ref":"0","tool":"edit_card","arguments":{"at":"Z/9","body":"x"}}]});
-        assert_eq!(allow_refusal("apply_batch", &preview, &none, &none), None);
-    }
-
-    #[test]
-    fn the_allow_list_keeps_its_single_call_rules() {
-        let mine = set(&["K/1"]);
-        let beside = set(&["E/2"]);
-        for tool in ["create_topic", "move_card", "insert_card", "delete_card", "create_literature", "edit_literature_metadata"] {
-            assert!(allow_refusal(tool, &json!({"at":"K/1"}), &mine, &beside).is_some(), "{tool}");
-        }
-        assert_eq!(allow_refusal("edit_card", &json!({"at":"K/1","body":"x"}), &mine, &beside), None);
-        assert!(allow_refusal("append_card", &json!({"at":"K/2","text":"x"}), &mine, &beside).is_some());
-        assert_eq!(allow_refusal("create_successor", &json!({"at":"E/2","kind":"side","title":"t"}), &mine, &beside), None);
-        assert!(allow_refusal("create_successor", &json!({"at":"E/2","title":"t"}), &mine, &beside).is_some());
-        assert!(allow_refusal("edit_card", &json!({"at":"E/2","body":"x"}), &mine, &beside).is_some());
-        assert_eq!(allow_refusal("get_card", &json!({"at":"Z/9"}), &mine, &beside), None);
-    }
-
-    /// A Side placement `before` a sibling renumbers that sibling and every later one, Cards the
-    /// list does not name, so it is refused like `insert_card`.
-    #[test]
-    fn the_allow_list_refuses_a_side_placement_before_a_sibling() {
-        let mine = set(&["K/1"]);
-        let none = set(&[]);
-        let call = json!({"at":"K/1","kind":"side","before":"K/1|b","title":"t"});
-        assert!(allow_refusal("create_successor", &call, &mine, &none).unwrap().contains("before"));
-        let batch = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"create_successor","arguments":call}]});
-        assert!(allow_refusal("apply_batch", &batch, &mine, &none).is_some());
-        assert_eq!(allow_refusal("create_successor", &json!({"at":"K/1","before":null,"title":"t"}), &mine, &none), None);
-    }
-
     #[test]
     fn refs_resolve_and_fail_without_address() {
         let resolved = vec!["3/1".to_string(), String::new()];
@@ -1157,15 +988,6 @@ mod tests {
         assert_eq!(v, json!({ "at": "3/1", "body": ["see [[3/1]]"] }));
         assert_eq!(resolve_refs(&json!("@@1"), &resolved).unwrap_err().to_string(), "@@1 has no address yet");
         assert!(resolve_refs(&json!("@@7"), &resolved).is_err());
-    }
-
-    #[test]
-    fn titles_compare_without_punctuation() {
-        assert_eq!(title_key("Price, Theory!"), "pricetheory");
-        assert_eq!(title_key("价格 理论：导论"), "价格理论导论");
-        assert!(similarity("价格理论导论", "价格理论导引") >= 0.8);
-        assert!(similarity("价格理论", "货币银行") < 0.8);
-        assert_eq!(similarity("a", "a"), 1.0);
     }
 
     fn card(address: &str, body: &str, workspace: &str) -> Value {

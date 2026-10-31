@@ -102,7 +102,7 @@ pub fn writes_cards(tool: &str, argv: &[String]) -> bool {
     let apply = argv.iter().any(|a| {
         a.eq_ignore_ascii_case("-Apply") || a.eq_ignore_ascii_case("-Apply:$true") || a.eq_ignore_ascii_case("-Apply:true")
     });
-    if matches!(tool, "call" | "organize-apply" | "figures" | "group-finish" | "link-finish") {
+    if matches!(tool, "call" | "open-call" | "organize-apply" | "figures" | "group-finish" | "link-finish") {
         return true;
     }
     if tool == "skeleton" && step == "apply" && !apply {

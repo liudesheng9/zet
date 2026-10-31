@@ -285,14 +285,6 @@ pub(super) struct Bridge {
 }
 
 impl Bridge {
-    /// The one `zt mcp` of the run, started on first use.
-    fn zt(&mut self) -> Result<&mut Zt> {
-        if self.zt.is_none() {
-            self.zt = Some(crate::zt::start()?);
-        }
-        Ok(self.zt.as_mut().expect("started"))
-    }
-
     /// `Read-Zt`: reads only, every answer in call order. Above 40 calls, up to six workers read
     /// 40-call chunks at once, each on its own `zt mcp`; a chunk that fails fails the read.
     fn read_zt(&mut self, calls: &[Value]) -> Result<Vec<Value>> {

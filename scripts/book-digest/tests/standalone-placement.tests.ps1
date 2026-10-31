@@ -72,13 +72,13 @@ try {
     $allow = Join-Path $scratch 'allow.txt'; [IO.File]::WriteAllText($allow, '', $utf8)
     $beside = Join-Path $scratch 'place-beside.txt'; [IO.File]::WriteAllText($beside, "$earlier`n", $utf8)
     $log = Join-Path $scratch 'owned.txt'
-    $placed = @(& $Digest call -Open - -Allow $allow -Beneath $beside -Log $log 2>&1) ; $code = $LASTEXITCODE
+    $placed = @(& $Digest open-call - -Allow $allow -Beneath $beside -Log $log 2>&1) ; $code = $LASTEXITCODE
     Assert ($code -ne 0) 'an empty call file is an error, not a silent no-op'
     $callsFile = Join-Path $scratch 'calls.json'
     $claim = '本文的学习外部性放宽 [[{0}]] 的固定技术假设：把技术水平写成可积累的。' -f $earlier
     $calls = @(@{ tool='create_successor'; arguments=@{ at=$earlier; kind='side'; title='学习外部性让技术可以积累'; body=$claim } })
     [IO.File]::WriteAllText($callsFile, (ConvertTo-Json -InputObject $calls -Depth 10), $utf8)
-    $lines = @(& $Digest call -Open $callsFile -Allow $allow -Beneath $beside -Log $log 2>&1)
+    $lines = @(& $Digest open-call $callsFile -Allow $allow -Beneath $beside -Log $log 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and ($lines -join ' ') -match '0 ok ') 'the helper files a Side successor beneath an earlier agent Topic Card'
     $created = (Get-Content -LiteralPath $log | Select-Object -Last 1)
     $newCard = Card $created
@@ -91,23 +91,23 @@ try {
 
     $directFile = Join-Path $scratch 'direct.json'
     [IO.File]::WriteAllText($directFile, (ConvertTo-Json -InputObject @(@{ tool='create_successor'; arguments=@{ at=$earlier; kind='direct'; title='直接接上'; body='把新卡接成直接后继。' } }) -Depth 10), $utf8)
-    $direct = Try-Digest @('call','-Open',$directFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
+    $direct = Try-Digest @('open-call',$directFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
     Assert ($direct.code -eq 1 -and $direct.text.Contains('only as a Side successor')) 'a Direct successor beneath an earlier Card is refused: its chain belongs to its own line of thought'
 
     $editFile = Join-Path $scratch 'edit.json'
     [IO.File]::WriteAllText($editFile, (ConvertTo-Json -InputObject @(@{ tool='edit_card'; arguments=@{ at=$earlier; title='改写早前卡'; body='改写别人的卡。' } }) -Depth 10), $utf8)
-    $edit = Try-Digest @('call','-Open',$editFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
+    $edit = Try-Digest @('open-call',$editFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
     Assert ($edit.code -eq 1 -and $edit.text.Contains('is not one of your Cards')) 'an earlier Card stays unwritable even when it may be continued'
 
     $unlisted = Join-Path $scratch 'unlisted.json'
     [IO.File]::WriteAllText($unlisted, (ConvertTo-Json -InputObject @(@{ tool='create_successor'; arguments=@{ at=$earlierSide; kind='side'; title='未读过的卡'; body='没有读全的卡不能接续。' } }) -Depth 10), $utf8)
-    $refused = Try-Digest @('call','-Open',$unlisted,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
+    $refused = Try-Digest @('open-call',$unlisted,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
     Assert ($refused.code -eq 1 -and $refused.text.Contains('is not one of your Cards')) 'a Card that is not on the place-beside list is refused'
 
     $humanFile = Join-Path $scratch 'human.json'
     [IO.File]::WriteAllText($humanFile, (ConvertTo-Json -InputObject @(@{ tool='create_successor'; arguments=@{ at=$humanAt; kind='side'; title='放进人类树'; body='把代理卡放进人类树。' } }) -Depth 10), $utf8)
     [IO.File]::WriteAllText($beside, "$earlier`n$humanAt`n", $utf8)
-    $humanTry = Try-Digest @('call','-Open',$humanFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
+    $humanTry = Try-Digest @('open-call',$humanFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
     Assert ($humanTry.code -eq 1 -and $humanTry.text.Contains('human')) 'an agent Card is never filed in a human tree, even when the Card is listed'
 
     # --- the group: the pack publishes the place-beside file, and the draft is receipt-owned -----------

@@ -289,7 +289,7 @@ try {
     # A recorded structural mapping updates the addresses this run published; an
     # unexplained move is a precise conflict, not a silently stale locator.
     $moves = Join-Path $scratch 'moves.json'
-    $null = & $Digest call -Open -Tool move_card -Json '{"at":"HubTree/1|a","to":"HubTree/2","confirm":"move"}' -Moves $moves 2>&1
+    $null = & $Digest open-call -Tool move_card -Json '{"at":"HubTree/1|a","to":"HubTree/2","confirm":"move"}' -Moves $moves 2>&1
     Assert ($LASTEXITCODE -eq 0 -and (Test-Path $moves) -and ((Get-Content -LiteralPath $moves -Raw) -match 'HubTree/1\|a')) 'a real move records its exact structural mapping'
     $emptyMoves = Join-Path $scratch 'no-moves.json'
     [IO.File]::WriteAllText($emptyMoves,'{}',$utf8)

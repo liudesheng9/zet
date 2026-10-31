@@ -270,13 +270,13 @@ if (-not $SkipScratch) {
         Check ($scratchStage -eq 'advisory') 'a fresh archive defaults to the advisory gate stage' $scratchStage
 
         # A quality fault (the Card language's semicolon) is accepted and stored under advisory.
-        $topic = Invoke-Lines $ztDigest @('call', '-Open', '-Tool', 'create_topic', '-Json', '{"title":"发布检查","body":"这次发布检查的主题。"}')
+        $topic = Invoke-Lines $ztDigest @('open-call', '-Tool', 'create_topic', '-Json', '{"title":"发布检查","body":"这次发布检查的主题。"}')
         $topicAddress = ($topic.lines | Where-Object { $_ -match '^\d+ ok \S+$' } | Select-Object -First 1) -replace '^\d+ ok ', ''
         Check ($topic.exit -eq 0 -and $topicAddress) 'the scratch archive accepts a Topic write' $topicAddress
         if ($topicAddress) {
             $body = '这条正文用了分号；advisory 阶段仍应存储它。'
             $draft = @{ at = $topicAddress; title = '发布检查：一条被建议修改的卡片'; body = $body } | ConvertTo-Json -Compress
-            $advised = Invoke-Lines $ztDigest @('call', '-Open', '-Tool', 'create_successor', '-Json', $draft)
+            $advised = Invoke-Lines $ztDigest @('open-call', '-Tool', 'create_successor', '-Json', $draft)
             $advisedAddress = ($advised.lines | Where-Object { $_ -match '^\d+ ok \S+$' } | Select-Object -First 1) -replace '^\d+ ok ', ''
             Check ($advised.exit -eq 0 -and $advisedAddress) 'advisory stores a quality-fault write instead of refusing it' $advisedAddress
             if ($advisedAddress) {
@@ -293,7 +293,7 @@ if (-not $SkipScratch) {
             # new quality rules advise, the existing hard invariants stay active.
             $before = [int64]([regex]::Match((Invoke-Lines $zt @('status')).text, '(?m)^revision: (\d+)$').Groups[1].Value)
             $wrongTarget = @{ at = $advisedAddress; kind = 'side'; title = '发布检查：错误术语链接的卡片'; body = '这一句使用了 [[均衡@0/0]] 这个术语。' } | ConvertTo-Json -Compress
-            $refused = Invoke-Lines $ztDigest @('call', '-Open', '-Tool', 'create_successor', '-Json', $wrongTarget)
+            $refused = Invoke-Lines $ztDigest @('open-call', '-Tool', 'create_successor', '-Json', $wrongTarget)
             Check ($refused.exit -ne 0 -and $refused.text -match 'invalid Term link macro target') 'advisory still refuses a Term use that does not target a Term head' ($refused.text.Trim())
             $after = [int64]([regex]::Match((Invoke-Lines $zt @('status')).text, '(?m)^revision: (\d+)$').Groups[1].Value)
             Check ($after -eq $before) 'the refused Term use leaves the archive revision unchanged' "$before / $after"

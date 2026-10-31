@@ -261,6 +261,16 @@ pub fn blocked_pin(reason: &str, card: &str, pinned_by: &[String], lock: Option<
 #[derive(Debug)]
 pub struct Stopped(pub Value);
 
+/// Whether an archive refusal is a planning stop: the destination decision is wrong, so the stage
+/// stops that write and answers the refusal, and nothing retries it as a provider fault. A Tree
+/// Lock (`card_locked`) and a write outside the connection's Write scope (`scope_refused`,
+/// docs/agent-write-scope-proposal.md D5) are the two.
+pub fn is_planning_stop(refusal: &Value) -> bool {
+    ["card_locked", "scope_refused"]
+        .iter()
+        .any(|code| refusal["error"] == json!(code) || refusal["code"] == json!(code))
+}
+
 impl std::fmt::Display for Stopped {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let said = self.0["message"].as_str().or_else(|| self.0["error"].as_str()).unwrap_or_default();

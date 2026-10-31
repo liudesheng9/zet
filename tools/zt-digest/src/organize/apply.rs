@@ -651,7 +651,7 @@ fn entry_of(decision: &str, address: &str, fields: Value) -> Value {
 }
 
 fn is_lock(refusal: &Value) -> bool {
-    refusal["code"] == json!("card_locked") || refusal["error"] == json!("card_locked")
+    crate::lockcheck::is_planning_stop(refusal)
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {

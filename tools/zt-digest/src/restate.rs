@@ -1299,8 +1299,10 @@ fn apply(p: &Params) -> Result<i32> {
     let receipts = if calls.is_empty() {
         Vec::new()
     } else {
-        let allow: HashSet<String> = new_addresses.iter().cloned().collect();
-        calls::invoke_identified(&mut zt, &calls, &p.prefix, Some(&allow))?
+        // The write may change only the Cards the plan names: the server enforces the list (#226).
+        let allow: Vec<String> = new_addresses.iter().cloned().collect();
+        let mut allowed = calls::start_allowed(&p.work, "restate.allow.txt", &allow)?;
+        calls::invoke_identified(&mut allowed, &calls, &p.prefix)?
     };
     // Read every output back and check it: the receipt is not the evidence (D115).
     let after = if new_addresses.is_empty() {

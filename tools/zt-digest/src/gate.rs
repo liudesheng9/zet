@@ -977,7 +977,7 @@ fn create(zt: &mut Zt, staging: &str, decision_file: &str, prefix: &str) -> Resu
         }
         Err(error) => return Err(error),
     };
-    let receipts = calls::invoke_identified(zt, std::slice::from_ref(&call), prefix, None)?;
+    let receipts = calls::invoke_identified(zt, std::slice::from_ref(&call), prefix)?;
     drop(held);
     let receipt = receipts.first().cloned().unwrap_or(Value::Null);
     let address = s(&receipt["result"]["address"]);

@@ -5,6 +5,7 @@
 //! so none of this needs an archive read.
 
 use crate::text::{LinkForm, link_occurrences};
+use serde_json::Value;
 use std::collections::HashSet;
 
 /// The generated section a Card read ends with; its Links are the archive's, not authored.
@@ -33,6 +34,69 @@ pub fn topic_links(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// A write the Literature scope refuses: the stable reason, the address it names, and the sentence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Violation {
+    /// `topic_tree`, `hub` or `topic_link`.
+    pub reason: &'static str,
+    pub at: String,
+    pub message: String,
+}
+
+/// Why the Literature scope refuses this one call (never a batch: each item is checked as its own
+/// call), or None when it may write. Reads pass. A Literature-scope connection writes only
+/// Literature trees: it creates no Topic tree, names no Topic-tree Card as a destination, makes no
+/// Hub Card, and puts no Link to a Topic-tree Card into authored text. Whether an existing Card is a
+/// Hub Card needs an archive read; the server adds that check.
+pub fn literature_violation(tool: &str, arguments: &Value) -> Option<Violation> {
+    let text = |name: &str| arguments.get(name).and_then(Value::as_str).unwrap_or_default();
+    let scope = "this connection writes only Literature trees";
+    let violation = |reason, at: &str, message: String| Some(Violation { reason, at: at.to_string(), message });
+    match tool {
+        "create_topic" => violation(
+            "topic_tree",
+            "",
+            format!("{scope}: it creates no Topic tree; Topic trees belong to zt-idea-grow"),
+        ),
+        "create_successor" | "edit_card" | "insert_card" | "move_card" | "delete_card" | "edit_literature_metadata" => {
+            for name in ["at", "before", "to", "into"] {
+                let address = text(name);
+                if is_topic_address(address) {
+                    return violation(
+                        "topic_tree",
+                        address,
+                        format!("{scope}: `{address}` is a Topic-tree Card; Topic trees belong to zt-idea-grow"),
+                    );
+                }
+            }
+            if text("type").eq_ignore_ascii_case("hub") {
+                return violation("hub", text("at"), format!("{scope}: it makes or changes no Hub Card; hubs belong to zt-idea-grow"));
+            }
+            authored_topic_links(arguments, text("at"))
+        }
+        "create_literature" => authored_topic_links(arguments, ""),
+        _ => None,
+    }
+}
+
+fn authored_topic_links(arguments: &Value, at: &str) -> Option<Violation> {
+    let text = |name: &str| arguments.get(name).and_then(Value::as_str).unwrap_or_default();
+    let mut links = Vec::new();
+    for name in ["title", "body", "text"] {
+        links.extend(topic_links(text(name)));
+    }
+    if let Some(paragraph) = arguments["owned_paragraph"]["text"].as_str() {
+        links.extend(topic_links(paragraph));
+    }
+    (!links.is_empty()).then(|| Violation {
+        reason: "topic_link",
+        at: at.to_string(),
+        message: format!(
+            "this connection writes only Literature trees: the text links Topic-tree Cards ({}); link Literature Cards only",
+            links.join(", ")
+        ),
+    })
+}
 /// A title without whitespace, punctuation and symbols, in lower case: Topic titles compare by it.
 pub fn title_key(title: &str) -> String {
     title
@@ -68,6 +132,7 @@ pub fn similarity(a: &str, b: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn topic_addresses_are_numbered_trees() {
@@ -85,5 +150,41 @@ mod tests {
         assert!(similarity("价格理论导论", "价格理论导引") >= 0.8);
         assert!(similarity("价格理论", "货币银行") < 0.8);
         assert_eq!(similarity("a", "a"), 1.0);
+    }
+
+    #[test]
+    fn authored_topic_links_are_found_outside_the_reverse_links() {
+        let body = "依赖 [[Smith2024/1]]。对照 [[408/1]]。\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[411/1]] 索引";
+        assert_eq!(topic_links(body), vec!["408/1".to_string()]);
+        assert!(topic_links("only [[Smith2024/1|a]] here").is_empty());
+    }
+
+    /// R0272/S12-AC02 (S12, #154): a Term use of a Topic-tree Card is refused by the address after
+    /// `@`; malformed Term-like markup is no Link and never one concatenated address.
+    #[test]
+    fn a_term_use_of_a_topic_card_is_read_by_its_target() {
+        assert_eq!(topic_links("对照 [[均衡@408/1|a]] 与 [[Smith2024/1]]。"), vec!["408/1|a".to_string()]);
+        let refusal = literature_violation("edit_card", &json!({ "at": "Smith2024/1|a", "body": "对照 [[均衡@408/1|a]]。" }))
+            .expect("a Term use of a Topic Card is refused");
+        assert_eq!(refusal.reason, "topic_link");
+        assert!(refusal.message.contains("408/1|a"), "{refusal:?}");
+        assert!(literature_violation("create_successor", &json!({ "at": "Smith2024/1", "title": "x", "body": "依赖 [[边际成本@Smith2024/2|a]]。" })).is_none());
+        assert!(topic_links("[[a@b@408/1]]").is_empty());
+        assert!(topic_links("[[@408/1]]").is_empty());
+    }
+
+    #[test]
+    fn the_literature_scope_names_its_reason_and_lets_literature_work_pass() {
+        let reason = |tool: &str, arguments: Value| literature_violation(tool, &arguments).map(|v| v.reason);
+        assert_eq!(reason("create_topic", json!({ "title": "企业边界" })), Some("topic_tree"));
+        assert_eq!(reason("move_card", json!({ "at": "Smith2024/1|a", "to": "12/1|b" })), Some("topic_tree"));
+        assert_eq!(reason("delete_card", json!({ "at": "Smith2024/3", "into": "12/1" })), Some("topic_tree"));
+        assert_eq!(reason("create_successor", json!({ "at": "Smith2024/1", "title": "x", "type": "hub" })), Some("hub"));
+        assert_eq!(reason("edit_card", json!({ "at": "Smith2024/1|a", "text": "# t\n\n[[3/1]]" })), Some("topic_link"));
+        assert_eq!(reason("edit_card", json!({ "at": "Smith2024/1|a", "owned_paragraph": { "text": "对照 [[3/1]]。" } })), Some("topic_link"));
+        assert_eq!(reason("create_successor", json!({ "at": "Smith2024/1", "kind": "side", "title": "x", "body": "依赖 [[Smith2024/1]]，对照 [[Jones2020/2|a]]。" })), None);
+        assert_eq!(reason("edit_card", json!({ "at": "Smith2024/1|a", "body": "x\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[408/1]] t" })), None);
+        assert_eq!(reason("create_literature", json!({ "bibtex": "@book{Smith2024, title={T}}" })), None);
+        assert_eq!(reason("get_card", json!({ "at": "408/1" })), None);
     }
 }

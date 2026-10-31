@@ -26,7 +26,7 @@
 //! precheck  read-only: the answer's faults (G1–G13, docs/idea-grow-design.md) and zt-check on the
 //!           drafts, one line each, then `faults: N`.
 //! apply     for every answered job not applied yet, in job order: refuses each idea with a fault,
-//!           makes the new Topics through the topic gate (a near-name refusal files the Cards under
+//!           makes the new Topics through the server's Topic title rule (a same-title refusal files the Cards under
 //!           the existing Topic), drops a run-level duplicate, creates each Card at its parent (a
 //!           Direct successor whose slot is taken becomes a Side successor), appends the source line
 //!           when it is missing; a `same` idea appends its sentence to an agent Card or is recorded
@@ -1066,7 +1066,7 @@ fn write_section_jobs(work: &Work, plan: &mut Value, run_topics: &[Value]) -> Re
     Ok(n)
 }
 
-/// `-Step topics`: the topic answer validated, its new Topics made through the topic gate (a
+/// `-Step topics`: the topic answer validated, its new Topics made through the server's Topic title rule (a
 /// near-name refusal reuses the existing Topic), the run's Topics recorded, and the section jobs
 /// written. A rerun keeps the recorded Topics. A gate that reuses a Topic another Lock froze stops
 /// the step with the typed refusal: it writes no Card inside the Locked tree.
@@ -1102,7 +1102,7 @@ fn topics(a: &Args) -> Result<i32> {
                             zt = Some(crate::zt::start()?);
                         }
                         let zt = zt.as_mut().unwrap();
-                        match write_one(zt, json!({ "tool": "create_topic", "arguments": { "title": s(&t["title"]), "body": s(&t["body"]) } }), &work.path("topic.gate"))? {
+                        match write_one(zt, json!({ "tool": "create_topic", "arguments": { "title": s(&t["title"]), "body": s(&t["body"]) } }))? {
                             Written::Made(root) => {
                                 created += 1;
                                 (root, s(&t["title"]), s(&t["body"]), true)
@@ -1938,10 +1938,10 @@ enum Written {
     Refused { error: String, refusal: Option<Value> },
 }
 
-fn write_one(zt: &mut Zt, call: Value, gate: &str) -> Result<Written> {
-    let mut options = calls::Options::new();
-    options.topic_gate = gate.to_string();
-    let (done, failure) = calls::run(zt, &[call], &mut options)?;
+fn write_one(zt: &mut Zt, call: Value) -> Result<Written> {
+    // The server's Topic title rule refuses a Topic another agent Topic already has (#225); its
+    // `topic exists: `root`` sentence is what TOPIC_EXISTS reads.
+    let (done, failure) = calls::run(zt, &[call], &mut calls::Options::new())?;
     if let Some(f) = failure {
         return Ok(Written::Refused { error: f.lines().first().cloned().unwrap_or_default(), refusal: f.refusal.clone() });
     }
@@ -1975,7 +1975,6 @@ fn apply(a: &Args) -> Result<i32> {
     let work = Work::open(&a.required("Work")?)?;
     let write = a.flag("Apply");
     let mut ctx = Ctx::load(&work)?;
-    let gate = work.path("topic.gate");
     let mut zt: Option<Zt> = None;
     let mut totals = json!({ "applied": 0, "created": 0, "topics": 0, "same": 0, "refused": 0, "duplicates": 0, "edited": 0, "unanswered": 0, "stopped": 0 });
     let bump = |t: &mut Value, k: &str, n: usize| t[k] = json!(t[k].as_u64().unwrap_or(0) + n as u64);
@@ -2022,7 +2021,7 @@ fn apply(a: &Args) -> Result<i32> {
         }
         let zt = zt.as_mut().unwrap();
         let mut record = json!({ "job": id, "applied": true, "created": [], "topics": [], "same": [], "refused": [], "duplicates": [], "kinds": {} });
-        // Topics: made only for the ideas that use them, through the topic gate.
+        // Topics: made only for the ideas that use them, through the server's Topic title rule.
         let mut topic_root: HashMap<String, String> = HashMap::new();
         for t in answer["topics"].as_array().into_iter().flatten() {
             let tid = s(&t["id"]);
@@ -2030,7 +2029,7 @@ fn apply(a: &Args) -> Result<i32> {
             if !used || bad.contains_key(&tid) {
                 continue;
             }
-            match write_one(zt, json!({ "tool": "create_topic", "arguments": { "title": s(&t["title"]), "body": s(&t["body"]) } }), &gate)? {
+            match write_one(zt, json!({ "tool": "create_topic", "arguments": { "title": s(&t["title"]), "body": s(&t["body"]) } }))? {
                 Written::Made(root) => {
                     record["topics"].as_array_mut().unwrap().push(json!(root));
                     topic_root.insert(tid, root);
@@ -2096,7 +2095,7 @@ fn apply(a: &Args) -> Result<i32> {
             let same = s(&idea["same"]);
             if !same.is_empty() {
                 if ctx.workspace(&same) == "agent" {
-                    match write_one(zt, json!({ "tool": "append_card", "arguments": { "at": same, "text": resolve(&s(&idea["body"]), &made, &topic_root) } }), &gate)? {
+                    match write_one(zt, json!({ "tool": "append_card", "arguments": { "at": same, "text": resolve(&s(&idea["body"]), &made, &topic_root) } }))? {
                         Written::Made(_) => record["same"].as_array_mut().unwrap().push(json!({ "id": iid, "card": same, "appended": true })),
                         Written::Refused { error, refusal } => {
                             if let Some(archive) = refusal.as_ref().filter(|r| r["error"] == "card_locked") {
@@ -2160,7 +2159,7 @@ fn apply(a: &Args) -> Result<i32> {
                 (at.clone(), want)
             };
             let kind = if kind == "direct" && !is_root(&parent) && card_exists(zt, &next_direct(&parent)) { "side" } else { kind };
-            match write_one(zt, json!({ "tool": "create_successor", "arguments": { "at": parent, "kind": kind, "type": "idea", "title": title, "body": body } }), &gate)? {
+            match write_one(zt, json!({ "tool": "create_successor", "arguments": { "at": parent, "kind": kind, "type": "idea", "title": title, "body": body } }))? {
                 Written::Made(address) => {
                     parent_of.insert(iid.clone(), (parent.clone(), kind.to_string()));
                     made.insert(iid.clone(), address.clone());
@@ -2220,7 +2219,7 @@ fn apply(a: &Args) -> Result<i32> {
             let current = calls::read(zt, "get_card", json!({ "at": at }))?;
             let key = ctx.book_of_card(&at);
             let call = json!({ "tool": "edit_card", "arguments": { "at": at, "title": s(&e["title"]), "body": with_source(&key, &s(&e["body"]), &[]), "base": current["text"] } });
-            match write_one(zt, call, &gate)? {
+            match write_one(zt, call)? {
                 Written::Made(_) => {
                     edited.push(json!(at));
                     ctx.state["cards"][&at]["title"] = json!(s(&e["title"]));
@@ -2278,7 +2277,7 @@ fn apply(a: &Args) -> Result<i32> {
             }
             // The source line stays the Card's last line (pilot 4: appended Links landed after it).
             let body = before_source(&s(&current["body"]), &s(&l["sentence"]));
-            match write_one(zt, json!({ "tool": "edit_card", "arguments": { "at": from, "body": body, "base": current["text"] } }), &work.path("topic.gate"))? {
+            match write_one(zt, json!({ "tool": "edit_card", "arguments": { "at": from, "body": body, "base": current["text"] } }))? {
                 Written::Made(_) => added.push(json!({ "from": from, "to": to })),
                 Written::Refused { error, refusal } => {
                     if let Some(archive) = refusal.as_ref().filter(|r| r["error"] == "card_locked") {

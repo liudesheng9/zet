@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use zt_check::scope::{is_topic_address, similarity, title_key, topic_links};
+use zt_check::scope::{literature_violation, similarity, title_key};
 
 /// The metadata row that holds the Topic title rule's similarity threshold.
 pub(crate) const SIMILARITY_KEY: &str = "scope.topic_similarity";
@@ -130,67 +130,21 @@ impl WriteScope {
     }
 
     fn check_literature(&self, conn: &Connection, tool: &str, args: &Value) -> Result<()> {
-        let text = |name: &str| args.get(name).and_then(Value::as_str).unwrap_or_default();
-        let scope = "this connection writes only Literature trees";
-        let authored = || {
-            let mut found = Vec::new();
-            for name in ["title", "body", "text"] {
-                found.extend(topic_links(text(name)));
-            }
-            if let Some(paragraph) = args["owned_paragraph"]["text"].as_str() {
-                found.extend(topic_links(paragraph));
-            }
-            found
-        };
-        match tool {
-            "create_topic" => {
-                return Err(self.refuse(
-                    tool,
-                    "",
-                    "topic_tree",
-                    format!("{scope}: it creates no Topic tree; Topic trees belong to zt-idea-grow"),
-                ));
-            }
-            "create_successor" | "edit_card" | "insert_card" | "move_card" | "delete_card"
-            | "edit_literature_metadata" => {
-                for name in ["at", "before", "to", "into"] {
-                    let address = text(name);
-                    if is_topic_address(address) {
-                        return Err(self.refuse(
-                            tool,
-                            address,
-                            "topic_tree",
-                            format!("{scope}: `{address}` is a Topic-tree Card; Topic trees belong to zt-idea-grow"),
-                        ));
-                    }
-                }
-                if text("type").eq_ignore_ascii_case("hub") || self.names_hub(conn, tool, text("at"))? {
-                    return Err(self.refuse(
-                        tool,
-                        text("at"),
-                        "hub",
-                        format!("{scope}: it makes or changes no Hub Card; hubs belong to zt-idea-grow"),
-                    ));
-                }
-            }
-            "create_literature" => {}
-            _ => return Ok(()),
+        if let Some(violation) = literature_violation(tool, args) {
+            return Err(self.refuse(tool, &violation.at, violation.reason, violation.message));
         }
-        let links = authored();
-        if !links.is_empty() {
+        let at = args.get("at").and_then(Value::as_str).unwrap_or_default();
+        if self.names_hub(conn, tool, at)? {
             return Err(self.refuse(
                 tool,
-                text("at"),
-                "topic_link",
-                format!(
-                    "{scope}: the text links Topic-tree Cards ({}); link Literature Cards only",
-                    links.join(", ")
-                ),
+                at,
+                "hub",
+                "this connection writes only Literature trees: it makes or changes no Hub Card; hubs belong to zt-idea-grow"
+                    .to_string(),
             ));
         }
         Ok(())
     }
-
     /// Whether the Card a change names (not a new Card's parent) is a Hub Card.
     fn names_hub(&self, conn: &Connection, tool: &str, at: &str) -> Result<bool> {
         if !matches!(tool, "edit_card" | "move_card" | "delete_card") || at.is_empty() {

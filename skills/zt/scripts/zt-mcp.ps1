@@ -8,9 +8,10 @@
   scripts/install-zt-digest.ps1), which does the work in one process. Call `zt-digest call`
   directly when you can: it takes the same parameters and prints the same lines, and starts no pwsh.
 
-    zt-digest call <file|-> [-From N -Addresses a0,a1,...] [-Log f] [-Allow f] [-Moves f] [-SrcLog f]
-                   [-Open] [-TopicGate f] [-TopicSimilarity 0.8]
+    zt-digest call <file|-> [-From N -Addresses a0,a1,...] [-Log f] [-Allow f] [-Beneath f] [-Moves f]
+                   [-SrcLog f]
     zt-digest call -Tool <tool> [-Json '{...}']
+    zt-digest open-call ...   the same, in the open scope (this script: `zt-mcp.ps1 open-call ...`)
 
   -File takes a UTF-8 JSON file holding one call or an array of calls, or `-` to read the same
   JSON from stdin (so one shell command can carry a whole batch in a here-string):
@@ -32,21 +33,22 @@
   request another Access, call the GUI routes or write the database directly: ask the owner to
   unlock the tree in the GUI, or continue the thought in another unlocked tree.
 
-  Scope (docs/literature-only-digest-design.md): without -Open the helper runs in the Literature
-  scope, as every ZT digest does: it refuses create_topic, any write to a Topic-tree Card, a Hub
-  Card, and authored text that links a Topic-tree Card. Pass -Open for hand work on Topic trees;
-  zt-idea-grow writes its Topic trees in-process and needs no -Open.
+  Scope (docs/agent-write-scope-proposal.md): the Write scope is the server's. `call` runs in the
+  Literature scope, as every ZT digest does: the server refuses create_topic, any write to a
+  Topic-tree Card, a Hub Card, and authored text that links a Topic-tree Card, with the typed line
+  `scope_refused {...}`. Hand work on Topic trees runs `open-call` (here: `zt-mcp.ps1 open-call`);
+  there is no -Open switch. zt-idea-grow writes its Topic trees in-process.
 
   -Log <file> appends the address of every Card a create call makes, one per line. -Allow <file>
-  (one address per line) limits the run to those Cards: edit_card, append_card, and
-  create_successor must target a listed address or a Card made earlier in the same run, and
-  create_topic, move_card, insert_card, delete_card, create_literature, and
-  edit_literature_metadata are refused. -Moves <file> appends {"i":N,"moved":{...}} per call that
-  renumbered Cards. A create call may carry `src` (its source lines): the helper removes it and
-  -SrcLog <file> appends `<address><TAB><src>`. -TopicGate <file> locks the file around
-  create_topic and refuses a Topic whose title equals or resembles (character bigrams,
-  -TopicSimilarity) an agent Topic, naming that Topic. append_card {at, text} adds a paragraph to
-  the end of a Card.
+  (one address per line) goes to the server: edit_card, append_card and create_successor (also as
+  apply_batch items) must target a listed address or a Card this run made, and create_topic,
+  move_card, insert_card, delete_card, create_literature, edit_literature_metadata and a
+  create_successor with `before` are refused. -Beneath <file> lets a listed earlier Card take a new
+  Side successor only. -Moves <file> appends {"i":N,"moved":{...}} per call that renumbered Cards.
+  A create call may carry `src` (its source lines): the helper removes it and -SrcLog <file>
+  appends `<address><TAB><src>`. The server refuses an agent Topic whose title another agent Topic
+  has (`topic_exists`). append_card {at, text} adds a paragraph to the end of a Card; a change
+  between its read and its edit is refused, never overwritten.
 
   zt-calls: direct reads. scripts/book-digest/zt-calls.ps1 sends batches of read-only calls
   straight to one long-lived `zt mcp` and reproduces this helper's read output (`N <compact JSON>`)
@@ -60,5 +62,9 @@ $OutputEncoding = [Text.UTF8Encoding]::new($false)
 # ZT_DIGEST names another build (a test of an unreleased zt-digest).
 $exe = if ($env:ZT_DIGEST) { $env:ZT_DIGEST } else { (Get-Command zt-digest -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
 if (-not $exe) { throw 'zt-digest is not installed: run scripts\install-zt-digest.ps1' }
-if ($args -contains '-') { [Console]::In.ReadToEnd() | & $exe call @args } else { & $exe call @args }
+# `zt-mcp.ps1 open-call ...` forwards to the open scope; anything else is the Literature-scope helper.
+$verb = 'call'
+$rest = @($args)
+if ($rest.Count -gt 0 -and $rest[0] -eq 'open-call') { $verb = 'open-call'; $rest = @($rest | Select-Object -Skip 1) }
+if ($rest -contains '-') { [Console]::In.ReadToEnd() | & $exe $verb @rest } else { & $exe $verb @rest }
 exit $LASTEXITCODE

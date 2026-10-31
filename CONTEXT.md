@@ -372,9 +372,9 @@ _Avoid_: Term lint, glossary check
 The Card that orders one book's argument: a Side successor of its first anchor whose title is the book's thesis and whose body starts with `本卡是《…》的结构卡`. It lists the parts in reading order, the book's models, and its Event Cards.
 _Avoid_: Hub Card (a hub is a way into a subject, not the argument of one text), outline
 
-**Topic gate**:
-The lock the zt helper takes before it creates a Topic (`-TopicGate`): it refuses a title that an agent Topic has or nearly has, so parallel digest runs do not make the same Topic twice.
-_Avoid_: Dedup, Topic lock
+**Topic title rule**:
+The server's refusal of a new agent Topic whose title another agent Topic already has, compared without whitespace, punctuation and case (`topic_exists`, naming that Topic). It holds for every agent connection and runs under the edit lock, so parallel runs never make the same Topic twice. The owner may also refuse near titles with `scope.topic_similarity`. It replaced the zt helper's `-TopicGate`; a judgement of meaning stays with the concept gate of idea-grow.
+_Avoid_: Topic gate, dedup, Topic lock
 
 **Hub Card**:
 A Regular Card of type `hub`: a way into one subject. Its body lists, under `##` group headings, one list item per member: a Link to a Card or a lower Hub Card, then what that Card adds. It states no claim of its own, and a Link from it never takes a Model part into a model. ZT reports each hub's members, upper and lower hubs, and faults (`get_hub`), and the hubs the policy requires but a Workspace lacks (`list_hubs`); it never enforces them.

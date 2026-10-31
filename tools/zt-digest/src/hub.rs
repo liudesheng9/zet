@@ -216,7 +216,7 @@ impl Hub {
             // A Lock that appeared after the precheck stops the stage as itself (S16-AC05): the
             // affected write is not retried, and the trees already written keep their state.
             if let Some(refusal) = failure.refusal.clone().filter(|r| {
-                r["error"] == json!("card_locked") || r["code"] == json!("card_locked")
+                crate::lockcheck::is_planning_stop(r)
             }) {
                 return Err(anyhow::Error::new(crate::lockcheck::Stopped(refusal)));
             }

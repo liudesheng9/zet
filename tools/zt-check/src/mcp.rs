@@ -55,6 +55,8 @@ pub struct Zt {
     /// The whole `initialize` result, including the checker contract this stdio proxy
     /// carries (design 8.3, R0198).
     initialization: Value,
+    /// The Write scope declarations this connection started with (`--scope`, `--allow`, `--beneath`).
+    declared: Vec<String>,
 }
 
 fn limits() -> (Duration, Duration) {
@@ -236,12 +238,26 @@ pub struct CardRead {
 }
 
 impl Zt {
-    /// Starts `zt mcp`: the `zt` on PATH, or the program in ZT_CHECK_ZT.
+    /// Starts `zt mcp`: the `zt` on PATH, or the program in ZT_CHECK_ZT, declaring this process's
+    /// Write scope (`--scope literature` in the Literature scope; open otherwise).
     pub fn start() -> Result<Self> {
+        Self::start_with(&[])
+    }
+
+    /// Starts `zt mcp` with this process's Write scope and these further declarations
+    /// (`--allow <file>`, `--beneath <file>`). The server enforces them for every write of this
+    /// connection; the client checks nothing of its own (docs/agent-write-scope-proposal.md, D4).
+    pub fn start_with(declarations: &[String]) -> Result<Self> {
         let program = std::env::var("ZT_CHECK_ZT").unwrap_or_else(|_| "zt".to_string());
+        let mut declared = Vec::new();
+        if scope::literature_only() {
+            declared.extend(["--scope".to_string(), "literature".to_string()]);
+        }
+        declared.extend(declarations.iter().cloned());
         let mut command = Command::new(&program);
         command
             .arg("mcp")
+            .args(&declared)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -308,8 +324,9 @@ impl Zt {
             next: 1,
             server_info: Value::Null,
             initialization: Value::Null,
+            declared: declared.clone(),
         };
-        let hello = zt.exchange(json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } }),Some(json!(0)),"initialize")?;
+        let hello = zt.exchange(json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } }),Some(json!(0)),"initialize").with_context(|| format!("`{program} mcp {}` did not answer initialize (a zt before 0.50.0 has no Write scope)", declared.join(" ")))?;
         zt.server_info = hello["result"]["serverInfo"].clone();
         zt.initialization = hello["result"].clone();
         zt.exchange(
@@ -398,14 +415,13 @@ impl Zt {
         self.join_worker()
     }
 
+    /// Whether this connection declared a Write scope flag (`--allow`, `--beneath`, `--scope`).
+    pub fn declares(&self, flag: &str) -> bool {
+        self.declared.iter().any(|declared| declared == flag)
+    }
+
     /// One tool call; the whole JSON-RPC reply, an error reply included.
     pub fn request(&mut self, tool: &str, arguments: Value) -> Result<Value> {
-        // The Literature scope (scope.rs): a digest process never writes a Topic tree or a hub.
-        if scope::literature_only()
-            && let Some(why) = scope::literature_refusal(tool, &arguments)
-        {
-            bail!("literature_only: {tool}: {why}");
-        }
         let id = json!(self.next);
         self.next += 1;
         self.exchange(json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": tool, "arguments": arguments } }),Some(id),tool)
