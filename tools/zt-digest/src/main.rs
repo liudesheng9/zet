@@ -29,6 +29,8 @@ mod backfill;
 mod bridge;
 mod calls;
 mod canon;
+mod cited;
+mod cited_cards;
 mod card;
 mod check;
 mod concepts;
@@ -176,6 +178,8 @@ fn main() {
         "finding" => finding::cli(&rest),
         "terms" => terms::cli(&rest),
         "term-cards" => term_cards::cli(&rest),
+        "cited" => cited::cli(&rest),
+        "cited-cards" => cited_cards::cli(&rest),
         "term-pilot" => term_pilot::cli(&rest),
         "term-link" => term_link::cli(&rest),
         "skeleton" => skeleton::cli(&rest),

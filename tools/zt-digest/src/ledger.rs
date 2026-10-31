@@ -1456,6 +1456,218 @@ pub(crate) fn term_cards_register(p: &Prepared, plan: &Value) -> Result<Value> {
     Ok(json!({"schema_version":1,"run_id":run,"units":units["units"]}))
 }
 
+/// The Cited list's one unit (#219): `cited/book@1`, registered by `cited -Step plan` in a prepared
+/// run and claimed by the `cited` stage. Its input names only the book, so a new plan revision of
+/// the same book reuses it; its proof is the apply report (`cited_finish`).
+pub(crate) fn cited_register(p: &Prepared, key: &str) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let inputs = json!({"schema_version":1,"kind":"cited_book","book":key});
+    let unit = "cited/book@1";
+    let existing: Option<String> = tx
+        .query_row("SELECT input_hash FROM units WHERE id=?1", [unit], |row| row.get(0))
+        .optional()?;
+    let reused = match existing {
+        Some(stored) if stored == canon::hash_value(&inputs) => true,
+        Some(_) => bail!("the registered Cited list unit belongs to another book: {unit}"),
+        None => {
+            register(&tx, "cited", "book", 1, &inputs, None, false)?;
+            event(&tx, unit, None, None, "registered", &json!({"book":key}))?;
+            false
+        }
+    };
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"unit":unit,"reused":reused}))
+}
+
+/// The Cited Card units (#220): one `citedcards/tNNN@<rev>` per writer job of the frozen plan and
+/// one `citedcards/book@<rev>` that waits on every job. A job unit reads the Cited list, so it
+/// depends on `cited/book@1` when that unit exists. A plan revision registers new units; a unit is
+/// never rebound to other work.
+pub(crate) fn cited_cards_register(p: &Prepared, plan: &Value) -> Result<Value> {
+    if plan["schema_version"] != 1 || plan["kind"] != "cited_cards_plan" {
+        bail!("invalid cited-cards plan");
+    }
+    let revision = plan["revision"].as_i64().filter(|r| *r > 0).context("the cited-cards plan names no revision")?;
+    let jobs = plan["jobs"].as_array().filter(|jobs| !jobs.is_empty()).context("the cited-cards plan holds no job")?;
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let list_unit = tx.query_row("SELECT EXISTS(SELECT 1 FROM units WHERE id='cited/book@1')", [], |row| row.get::<_, bool>(0))?;
+    let mut units = Vec::new();
+    let put = |tx: &Transaction, key: &str, inputs: &Value, needs: &[String]| -> Result<String> {
+        let unit = format!("citedcards/{key}@{revision}");
+        let existing: Option<String> = tx
+            .query_row("SELECT input_hash FROM units WHERE id=?1", [&unit], |row| row.get(0))
+            .optional()?;
+        match existing {
+            Some(stored) if stored == canon::hash_value(inputs) => {}
+            Some(_) => bail!("a registered Cited Card unit cannot be rebound to different work: {unit}"),
+            None => {
+                register(tx, "citedcards", key, revision, inputs, None, false)?;
+                for need in needs {
+                    dependency(tx, &unit, need, "success")?;
+                }
+                event(tx, &unit, None, None, "registered", &json!({"plan_revision":revision,"plan_hash":plan["plan_hash"]}))?;
+            }
+        }
+        Ok(unit)
+    };
+    let mut job_units = Vec::new();
+    for job in jobs {
+        let id = field(job, "id")?;
+        let inputs = json!({"schema_version":1,"kind":"cited_cards_job","book":plan["book"],"plan_revision":revision,"plan_hash":plan["plan_hash"],"job":job});
+        let needs = if list_unit { vec!["cited/book@1".to_string()] } else { Vec::new() };
+        let unit = put(&tx, id, &inputs, &needs)?;
+        job_units.push(unit.clone());
+        units.push(json!({"unit":unit,"job":id}));
+    }
+    let rows = plan["rows"].as_array().map(Vec::len).unwrap_or(0);
+    let inputs = json!({"schema_version":1,"kind":"cited_cards_book","book":plan["book"],"plan_revision":revision,"plan_hash":plan["plan_hash"],"rows":rows});
+    let book = put(&tx, "book", &inputs, &job_units)?;
+    units.push(json!({"unit":book}));
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"units":units}))
+}
+
+/// Complete one Cited Card unit (#220): a job unit from the readiness artifact (every row of the
+/// job ready under the same plan), the book unit from the publication report written under its
+/// claim (complete: every row committed in order).
+fn citedcards_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
+    let inputs = unit_inputs(p, unit)?;
+    let kind = field(&inputs, "kind")?.to_string();
+    let _guard = unit_guard(p, unit)?;
+    let (_claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    if done {
+        return Ok(json!({"schema_version":1,"unit":unit,"state":"done","reused":true}));
+    }
+    let (expected, artifact_kind) = match kind.as_str() {
+        "cited_cards_job" => (p.out.join("cited-cards").join("check").join("readiness.json"), "cited_cards_readiness"),
+        "cited_cards_book" => (p.out.join("cited-cards").join("report.json"), "cited_cards_report"),
+        _ => bail!("the Cited Card unit `{unit}` carries no plan input"),
+    };
+    if !expected.is_file() || std::fs::canonicalize(path)? != std::fs::canonicalize(&expected)? {
+        bail!("completion evidence locator mismatch");
+    }
+    let artifact = canon::read_json(&path.to_string_lossy()).context("invalid Cited Card evidence")?;
+    if artifact["schema_version"] != 1 || artifact["kind"] != artifact_kind {
+        bail!("not a {artifact_kind} artifact");
+    }
+    if artifact["plan_hash"] != inputs["plan_hash"] || artifact["plan_revision"] != inputs["plan_revision"] {
+        bail!("the Cited Card evidence is bound to another plan; rerun -Step plan");
+    }
+    let rows: Vec<Value>;
+    if kind == "cited_cards_job" {
+        let id = field(&inputs["job"], "id")?;
+        rows = inputs["job"]["rows"].as_array().cloned().unwrap_or_default();
+        for n in &rows {
+            let state = artifact["rows"].as_array().and_then(|all| all.iter().find(|r| r["row"] == *n && r["job"] == id));
+            let status = state.and_then(|s| s["status"].as_str()).unwrap_or("missing");
+            if status != "ready" {
+                bail!("row {n} of the Cited Card job `{id}` is `{status}`, not ready");
+            }
+        }
+    } else {
+        if artifact["claim_token"].as_i64() != Some(token) {
+            bail!("the Cited Card report was not written under this unit's claim");
+        }
+        if artifact["applied"] != true || artifact["complete"] != true {
+            bail!("the Cited Card book is not complete; a committed prefix leaves the book unit incomplete");
+        }
+        rows = artifact["rows"].as_array().cloned().unwrap_or_default();
+        if inputs["rows"].as_u64() != Some(rows.len() as u64) {
+            bail!("the Cited Card report does not cover every row of the plan");
+        }
+    }
+    let result = json!({
+        "schema_version": 1,
+        "kind": "citedcards_completion",
+        "unit": unit,
+        "token": token,
+        "rows": rows,
+        "evidence": {"path": path_to_string(path), "sha256": canon::sha256_hex(&std::fs::read(path)?)},
+    });
+    complete_verified(p, unit, token, path, result)
+}
+
+/// Complete the Cited list unit from `cited -Step apply -Apply`'s report (#219): the report at
+/// `<out>citedapply.json`, written under this claim, applied, naming the list Card when the
+/// book has a reference list.
+fn cited_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
+    let inputs = unit_inputs(p, unit)?;
+    if inputs["kind"] != "cited_book" {
+        bail!("the Cited unit `{unit}` carries no Cited list input");
+    }
+    let _guard = unit_guard(p, unit)?;
+    let (_claimed, _progress, _run, done) = finish_claim(p, unit, token)?;
+    if done {
+        return Ok(json!({"schema_version":1,"unit":unit,"state":"done","reused":true}));
+    }
+    let expected = p.out.join("cited").join("apply.json");
+    if !expected.is_file() || std::fs::canonicalize(path)? != std::fs::canonicalize(&expected)? {
+        bail!("completion evidence locator mismatch");
+    }
+    let report = canon::read_json(&path.to_string_lossy()).context("invalid Cited list evidence")?;
+    if report["schema_version"] != 1 || report["kind"] != "cited_apply" || report["ok"] != true {
+        bail!("not a Cited list apply report");
+    }
+    if report["token"].as_str() != Some(token.to_string().as_str()) {
+        bail!("the Cited list report was not written under this unit's claim");
+    }
+    if report["applied"] != true {
+        bail!("the Cited list report is a preview; rerun -Step apply -Apply");
+    }
+    if report["book"] != inputs["book"] {
+        bail!("the Cited list report belongs to another book");
+    }
+    let rows = report["rows"].as_u64().unwrap_or(0);
+    if rows > 0 && report["list"].as_str().is_none_or(str::is_empty) {
+        bail!("the Cited list report names no list Card");
+    }
+    let result = json!({
+        "schema_version": 1,
+        "kind": "cited_completion",
+        "unit": unit,
+        "token": token,
+        "list": report["list"],
+        "rows": rows,
+        "report": {"path": path_to_string(path), "sha256": canon::sha256_hex(&std::fs::read(path)?)},
+    });
+    complete_verified(p, unit, token, path, result)
+}
+
+/// Record a verified completion: the evidence file as the unit's output, the unit done, one
+/// `completed` event, in one transaction (the tail every checked finish shares).
+fn complete_verified(p: &Prepared, unit: &str, token: i64, path: &Path, result: Value) -> Result<Value> {
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claimed = claim(&tx, unit, token)?;
+    output(
+        &tx,
+        unit,
+        "completion",
+        "file",
+        &path_to_string(path),
+        &canon::sha256_hex(&std::fs::read(path)?),
+        &result,
+    )?;
+    tx.execute("UPDATE units SET state='done',result_json=?2,completed_at=?3,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL WHERE id=?1",params![unit,canon::canonical_json(&result),canon::utc_now_o()])?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "completed",
+        &json!({"disposition":"verified","kind":result["kind"]}),
+    )?;
+    tx.commit()?;
+    let mut line = result;
+    line["state"] = json!("done");
+    Ok(line)
+}
+
 /// Read one claimed Term-card job unit. The claim itself is created by the existing
 /// `ledger next -Layer termcards`; this step renews it and returns the token-bound input hash the
 /// caller compares with the plan's job input. A start step returns at once, so it renews the lease
@@ -17031,6 +17243,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 // The deterministic Term-link pass's own unit (S24, #167), claimed by the
                 // `term-link` stage (S25, #168): `ledger next|gate -Layer termlink`.
                 "termlink",
+                // The Cited list and the Cited Card units (#219, #220), registered by their
+                // compilers' plans and claimed by the `cited` and `cited-cards` stages.
+                "cited",
+                "citedcards",
             ]
             .contains(&a.str("Layer").as_str())
         {
@@ -17217,6 +17433,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 // S24 (#167): the Term-card job/book unit's proof is the compiler's own checked
                 // readiness or publication report, re-read here; no caller-supplied address counts.
                 termcards_finish(&p, &unit, token, Path::new(&path))?
+            } else if unit.starts_with("citedcards/") {
+                // #220: a job's proof is the readiness artifact, the book's the publication report.
+                citedcards_finish(&p, &unit, token, Path::new(&path))?
+            } else if unit.starts_with("cited/") {
+                // #219: the Cited list's proof is its apply report, written under this claim.
+                cited_finish(&p, &unit, token, Path::new(&path))?
             } else if unit.starts_with("termlink/") {
                 // S24 (#167): the Term-link pass's proof is its apply report: applied and verified,
                 // or proven no-op, and never a refused Card or a pending chunk.
@@ -19007,6 +19229,62 @@ mod term_completion_tests {
             "counts": {"cards_scanned": 9, "cards_changed": 1, "cards_refused": 0},
             "chunks": [{"chunk": 1, "state": "committed", "items": 1}],
         })
+    }
+
+    fn cited_report(token: i64) -> Value {
+        json!({
+            "schema_version": 1, "kind": "cited_apply", "ok": true, "unit": "cited/book@1",
+            "token": token.to_string(), "book": "K", "plan_hash": "p", "applied": true,
+            "list": "K/1|b", "rows": 2, "refused": [], "changed": true,
+        })
+    }
+
+    #[test]
+    fn a_cited_card_job_completes_from_ready_rows_and_the_book_only_when_complete() {
+        let job = json!({"schema_version":1,"kind":"cited_cards_job","book":"K","plan_revision":2,"plan_hash":"h","job":{"id":"t001","rows":[1,2]}});
+        let book = json!({"schema_version":1,"kind":"cited_cards_book","book":"K","plan_revision":2,"plan_hash":"h","rows":2});
+        let fixture = fixture(&[("citedcards/t001@2", job), ("citedcards/book@2", book)]);
+        let mut readiness = json!({"schema_version":1,"kind":"cited_cards_readiness","book":"K","plan_revision":2,"plan_hash":"h",
+            "rows":[{"row":1,"job":"t001","status":"ready"},{"row":2,"job":"t001","status":"faults"}]});
+        let path = fixture.write("cited-cards/check/readiness.json", &readiness);
+        let error = citedcards_finish(&fixture.prepared(), "citedcards/t001@2", 3, &path).unwrap_err().to_string();
+        assert!(error.contains("not ready"), "{error}");
+        readiness["rows"][1]["status"] = json!("ready");
+        let path = fixture.write("cited-cards/check/readiness.json", &readiness);
+        citedcards_finish(&fixture.prepared(), "citedcards/t001@2", 3, &path).unwrap();
+        assert_eq!(fixture.state("citedcards/t001@2").0, "done");
+
+        let mut report = json!({"schema_version":1,"kind":"cited_cards_report","claim_token":3,"book":"K","plan_revision":2,"plan_hash":"h",
+            "applied":true,"complete":false,"rows":[{"row":1,"card":"K/1|b|a","status":"committed"}]});
+        let path = fixture.write("cited-cards/report.json", &report);
+        let error = citedcards_finish(&fixture.prepared(), "citedcards/book@2", 3, &path).unwrap_err().to_string();
+        assert!(error.contains("not complete"), "{error}");
+        report["complete"] = json!(true);
+        report["rows"] = json!([{"row":1,"card":"K/1|b|a","status":"committed"},{"row":2,"card":"K/1|b|b","status":"committed"}]);
+        let path = fixture.write("cited-cards/report.json", &report);
+        citedcards_finish(&fixture.prepared(), "citedcards/book@2", 3, &path).unwrap();
+        assert_eq!(fixture.state("citedcards/book@2").0, "done");
+    }
+
+    #[test]
+    fn a_cited_list_completes_only_from_its_applied_report_under_the_claim() {
+        let inputs = json!({"schema_version":1,"kind":"cited_book","book":"K"});
+        let fixture = fixture(&[("cited/book@1", inputs.clone())]);
+        let mut preview = cited_report(3);
+        preview["applied"] = json!(false);
+        let path = fixture.write("cited/apply.json", &preview);
+        let error = cited_finish(&fixture.prepared(), "cited/book@1", 3, &path).unwrap_err().to_string();
+        assert!(error.contains("preview"), "{error}");
+        let path = fixture.write("cited/apply.json", &cited_report(9));
+        let error = cited_finish(&fixture.prepared(), "cited/book@1", 3, &path).unwrap_err().to_string();
+        assert!(error.contains("under this unit's claim"), "{error}");
+        assert_eq!(fixture.state("cited/book@1").0, "claimed");
+
+        let path = fixture.write("cited/apply.json", &cited_report(3));
+        let result = cited_finish(&fixture.prepared(), "cited/book@1", 3, &path).unwrap();
+        assert_eq!(result["kind"], json!("cited_completion"));
+        assert_eq!(result["list"], json!("K/1|b"));
+        assert_eq!(fixture.state("cited/book@1").0, "done");
     }
 
     #[test]
