@@ -1,6 +1,7 @@
 # Write scope in the Write gate
 
-Status: proposal (2026-10-31). Rounds 1 and 2 of the design are decided; round 3 is open (see the end).
+Status: decided (2026-10-31), not yet built. All three design rounds are settled; the stopgap D3 is
+released (zt-digest 0.37.12).
 Origin: the architecture review of the seam between agents and `zt mcp` (candidate 1 of 5).
 It builds on `docs/literature-only-digest-design.md`, which introduced the Literature scope.
 
@@ -107,33 +108,35 @@ zt mcp ── tools/call ──► ops::*_tx
 - The client copies (`zt_check::mcp::scope`, both allow-list checks, `lock_gate`, the process-wide
   flag) are deleted once every caller declares its scope to the server.
 
-## Open questions (round 3)
+## Decisions (round 3, 2026-10-31)
 
-Each has a recommendation; the owner confirms or changes it.
+The design tree is complete: every question below was settled by the owner.
 
-1. **The default scope of a `zt mcp` that declares none.** Recommended: **open**, today's behaviour.
-   Every job route goes through `zt-digest`, which always declares a scope, so a literature
-   default adds no containment. An open default keeps Claude Code and Codex hand work, the 32 Rust
-   test files that write through `zt mcp`, and `scripts/book-digest/copy-tree.mjs` working
-   unchanged.
-2. **The command that replaces the helper's `-Open`.** Today `-Open` is used by hand work in a
-   harness with no MCP tools (`skills/zt/SKILL.md`), by `scripts/verify-release.ps1`, and by the
-   test-only `scripts/book-digest/zt-calls.ps1`. Recommended: a separate subcommand,
-   `zt-digest open-call`, with the same options as `call`, on no workflow's approval list. The
-   approval rule `ZD_NO_OPEN` then refuses `open-call` instead of a flag.
-3. **Rollout order.** Recommended, three releases, each deployed and verified before the next:
-   - **P1 — server (zt minor release).** `zt mcp --scope/--allow/--beneath`, the session's made
-     Cards, the scope check per item in the write transaction, `scope_refused`, the Topic title
-     rule with `gate.topic_similarity`. The default stays open, so no client changes behaviour.
-     Tests in `tests/workspaces_mcp.rs` through a real `zt mcp`.
-   - **P2 — clients (zt-digest minor release).** `zt_check::mcp::Zt::start` passes the scope and
-     the allow files; `scope_refused` stops a stage like `card_locked`; `append_card` sends a
-     `base`; `open-call` replaces `-Open`. Then delete the client copies: `literature_refusal`
-     and the process-wide flag, `allow_refusal` and the identified allow check, `lock_gate` and
-     `-TopicGate`. P2 needs a P1 `zt` on PATH; an older `zt mcp` refuses the new arguments.
-   - **P3 — workflows and skills (blueprint patch releases, reinstall).** `ZD_NO_OPEN` names
-     `open-call`; `skills/zt/SKILL.md`, the model skills' helper facts and `INSTRUCTIONS` name
-     the Write scope and `scope_refused`. Keep `ZD_NO_OPEN` until P3 lands.
-4. **Tracking.** Recommended: one PRD issue for this proposal and one issue per phase in
-   `liudesheng9/zet`, as for #183 and its slices. Creating them publishes to GitHub, so it waits
-   for the owner's word.
+**D9. The default scope of a `zt mcp` that declares none is open**, today's behaviour. Every job
+route goes through `zt-digest`, which always declares a scope, so a literature default adds no
+containment. An open default keeps Claude Code and Codex hand work, the 32 Rust test files that
+write through `zt mcp`, and `scripts/book-digest/copy-tree.mjs` working unchanged.
+
+**D10. `zt-digest open-call` replaces the helper's `-Open`.** Today `-Open` is used by hand work in
+a harness with no MCP tools (`skills/zt/SKILL.md`), by `scripts/verify-release.ps1`, and by the
+test-only `scripts/book-digest/zt-calls.ps1`. `open-call` takes the same options as `call` and is
+on no workflow's approval list. The approval rule `ZD_NO_OPEN` then refuses `open-call` instead of
+a flag.
+
+**D11. Rollout in three releases**, each deployed and verified before the next:
+
+- **P1 — server (zt minor release).** `zt mcp --scope/--allow/--beneath`, the session's made
+  Cards, the scope check per item in the write transaction, `scope_refused`, the Topic title rule
+  with `gate.topic_similarity`. The default stays open, so no client changes behaviour. Tests in
+  `tests/workspaces_mcp.rs` through a real `zt mcp`.
+- **P2 — clients (zt-digest minor release).** `zt_check::mcp::Zt::start` passes the scope and the
+  allow files; `scope_refused` stops a stage like `card_locked`; `append_card` sends a `base`;
+  `open-call` replaces `-Open`. Then delete the client copies: `literature_refusal` and the
+  process-wide flag, `allow_refusal` and the identified allow check, `lock_gate` and `-TopicGate`.
+  P2 needs a P1 `zt` on PATH; an older `zt mcp` refuses the new arguments.
+- **P3 — workflows and skills (blueprint patch releases, reinstall).** `ZD_NO_OPEN` names
+  `open-call`; `skills/zt/SKILL.md`, the model skills' helper facts and `INSTRUCTIONS` name the
+  Write scope and `scope_refused`. Keep `ZD_NO_OPEN` until P3 lands.
+
+**D12. Tracking:** one PRD issue for this proposal and one issue per phase in `liudesheng9/zet`, as
+for #183 and its slices: PRD #224; P1 #225, P2 #226 (blocked by #225), P3 #227 (blocked by #226).
