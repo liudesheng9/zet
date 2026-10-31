@@ -697,3 +697,34 @@ fn each_import_is_its_own_block_and_the_home_model_lists_its_borrowers() {
     assert_eq!(lent[0]["model"], json!(g));
     assert_eq!(lent[0]["roots"], json!([k.result, k.setting]), "legacy shares are no import: {lender}");
 }
+
+/// Box-copy run of #213: a block import that rests on another import listed after it in the
+/// `**引入**` section must not read as a forward fault. The shared blocks follow the build order
+/// (premises first), not the order of the lines.
+#[test]
+fn import_blocks_follow_the_build_order_so_no_import_rests_on_a_later_one() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    let k = model_a_with_blocks(&mut mcp);
+    // The result rests on the timing setting: list the result first, the timing block second.
+    let h = model_card(
+        &mut mcp,
+        "K2024/1",
+        "模型 H",
+        &format!("问题：H？\n\n**引入**\n\n- 单卡 [[{}]]：A 的结论\n- 单卡 [[{}]]：A 的时点\n", k.result, k.timing),
+    );
+    address(mcp.ok(
+        "create_successor",
+        json!({ "at": h, "kind": "side", "facet": "设定", "title": "设定：H", "body": format!("依赖 [[{}]]。", k.result) }),
+    ));
+    let model = mcp.ok("get_model", json!({ "at": h }));
+    let blocks = model["blocks"].as_array().unwrap();
+    let imports = blocks.iter().filter(|b| b["kind"] == "shared").map(|b| b["import"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(imports, [k.timing.clone(), k.result.clone()], "premises first: {model}");
+    let index = |id: &Value| blocks.iter().position(|b| &b["id"] == id).unwrap();
+    for e in model["block_edges"].as_array().unwrap() {
+        if e["kind"] == "rests-on" {
+            assert!(index(&e["from_block"]) > index(&e["to_block"]), "no block rests on a later one: {e}");
+        }
+    }
+}

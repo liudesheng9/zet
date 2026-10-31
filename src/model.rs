@@ -1452,7 +1452,7 @@ pub(crate) fn blocks_report<'b>(head: &str, order: &[Value], relations: &[Value]
 
 /// `blocks_report` with the model's `imports` (#209): each import's shared Cards make their own
 /// `shared` block (`引入：<root title>`, with its `import`, `home` and `mode`), before the setting
-/// in the order of the `**引入**` lines; the legacy shares make one `共用前提` block after them. An
+/// in build order (premises first, so no import rests on a later one); the legacy shares make one `共用前提` block after them. An
 /// import block's children are its top Cards (a Card under another's Side successors folds into
 /// that Card's proof), then its closure Cards, each marked `premise`.
 pub(crate) fn blocks_report_with<'b>(
@@ -1482,10 +1482,13 @@ pub(crate) fn blocks_report_with<'b>(
     let aside = heads.len();
     let shared = aside + 1;
     // One more block per import that owns a shared Card; the legacy shares stay in `shared`.
-    let groups = imports
+    // In build order (each import where its first Card stands), so an import never rests on a later one.
+    let first = |i: &Value| order.iter().position(|e| e["line"] == "shared" && e["import"] == i["root"]);
+    let mut groups = imports
         .iter()
-        .filter(|i| i["mode"] != "legacy" && order.iter().any(|e| e["line"] == "shared" && e["import"] == i["root"]))
+        .filter(|i| i["mode"] != "legacy" && first(i).is_some())
         .collect::<Vec<_>>();
+    groups.sort_by_key(|i| first(i));
     let group_of = |e: &Value| groups.iter().position(|i| e["import"] == i["root"]).map(|k| shared + 1 + k);
     let block_of = |address: &str| -> Option<usize> {
         if let Some(&b) = block_of_main.get(address) {

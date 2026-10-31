@@ -279,11 +279,27 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
     }
     // The building blocks of other books' models (#212, owner decision 4): a plan imports one with a
     // take (its address; `"block": true` for a 整块 block) instead of restating it.
-    let catalogue = read_calls(zt, &[("search_cards", json!({ "type": "model", "limit": 200 }))])
+    // Each other tree that holds a model, read whole (a type listing of search_cards stops at 200 rows).
+    let trees = read_calls(zt, &[("list_trees", json!({}))])
         .ok()
         .and_then(|v| v.into_iter().next())
-        .map(|found| block_catalogue(&pipe(&found["results"]).into_iter().cloned().collect::<Vec<_>>(), &key, 40))
+        .map(|found| pipe(&found["trees"]).into_iter().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
+    let calls = trees
+        .iter()
+        .filter(|t| ps::int(&t["models"]).unwrap_or(0) > 0 && !ps::eq(&s(&t["tree"]), &key))
+        .map(|t| ("get_tree", json!({ "tree": s(&t["tree"]) })))
+        .collect::<Vec<_>>();
+    let rows = if calls.is_empty() {
+        Vec::new()
+    } else {
+        read_calls(zt, &calls)
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|found| pipe(&found["cards"]).into_iter().cloned().collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    };
+    let catalogue = block_catalogue(&rows, &key, 40);
     if !catalogue.is_empty() {
         line("## 其他书的构件（可引入：plan 的 take 写它的地址，整块的加 \"block\": true；不要写复本）");
         line("");
@@ -310,12 +326,14 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
 
 /// The building blocks other books' models offer (#212): for each Model Card outside the book `key`,
 /// its setting (the first Side successor whose facet starts with 设定, a 整块 block) and up to three
-/// result Cards (结果, 命题, 定理, 引理, 推论), one line each; at most `max` lines.
+/// result Cards (结果, 命题, 定理, 引理, 推论), one line each. Books take turns, one model each, so a list
+/// cut at `max` lines still shows every book.
 pub(crate) fn block_catalogue(rows: &[Value], key: &str, max: usize) -> Vec<String> {
     let own = format!("{key}/");
     let is_model = |r: &Value| ps::eq(&s(&r["type"]), "model");
-    let mut out = Vec::new();
+    let mut books: Vec<(String, Vec<Vec<String>>)> = Vec::new();
     for head in rows.iter().filter(|r| is_model(r) && !truthy(&r["facet"]) && !s(&r["address"]).starts_with(&own)) {
+        let mut out = Vec::new();
         let at = s(&head["address"]);
         let under = format!("{at}|");
         let parts = rows.iter().filter(|r| is_model(r) && truthy(&r["facet"]) && s(&r["address"]).starts_with(&under)).collect::<Vec<_>>();
@@ -333,6 +351,20 @@ pub(crate) fn block_catalogue(rows: &[Value], key: &str, max: usize) -> Vec<Stri
             .take(3);
         for r in results {
             out.push(format!("  - 单卡 [[{}]] {}", s(&r["address"]), s(&r["title"])));
+        }
+        let book = at.split('/').next().unwrap_or_default().to_string();
+        match books.iter_mut().find(|(b, _)| *b == book) {
+            Some((_, models)) => models.push(out),
+            None => books.push((book, vec![out])),
+        }
+    }
+    let mut out = Vec::new();
+    let rounds = books.iter().map(|(_, models)| models.len()).max().unwrap_or(0);
+    for k in 0..rounds {
+        for (_, models) in &books {
+            if let Some(lines) = models.get(k) {
+                out.extend(lines.iter().cloned());
+            }
         }
     }
     out.truncate(max);
@@ -374,5 +406,15 @@ mod tests {
         );
         assert_eq!(block_catalogue(&rows, "B2021", 2).len(), 2, "bounded");
         assert!(block_catalogue(&rows, "A2020", 20).iter().all(|l| !l.contains("A2020")), "its own book stays out");
+    }
+
+    // #212 on the live box: the first book's models filled the whole list. Books take turns, one model
+    // each, so a bounded list still shows every book.
+    #[test]
+    fn the_catalogue_takes_one_model_of_each_book_in_turn() {
+        let head = |address: &str| json!({ "address": address, "title": address, "facet": null, "type": "model" });
+        let rows = vec![head("A2020/1|a"), head("A2020/2|a"), head("A2020/3|a"), head("C2022/1|a"), head("C2022/2|a")];
+        let lines = block_catalogue(&rows, "B2021", 3);
+        assert_eq!(lines, ["- [[A2020/1|a]] A2020/1|a", "- [[C2022/1|a]] C2022/1|a", "- [[A2020/2|a]] A2020/2|a"]);
     }
 }

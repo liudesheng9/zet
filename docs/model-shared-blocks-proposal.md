@@ -175,6 +175,8 @@ All steps are deterministic scripts over file paths and zt calls, run once per b
 3. **List the copies.** The script reports each borrower setting that restates symbols of an imported block (first case: `hart1995firms/15|c|a`). By decision 5 nothing is changed: a copy is replaced by an import and a binding only when the owner names that model.
 4. **Rebuild the boards** and re-run `check-model.mjs`, `check-network.mjs`, `check-settings.mjs` on every migrated model.
 
+**As implemented (#213):** `scripts/model-imports/migrate.mjs`. A legacy share becomes `整块` when the borrower shares more Cards of its block (they are absorbed into the one line) or when a tolerated premise of it lies in its home model; otherwise `单卡`, which keeps the membership as it was. The box-copy run on 2026-10-31 migrated 18 models (53 lines) and cut the tolerated premises from 79 to 9, with no new build or checker fault. The live apply waits for the owner.
+
 Locked trees (`becker2025division`, `grossman2002integration`) take no edits. Their models keep the transitional reading (D1) until the owner unlocks them.
 
 ## Slices
