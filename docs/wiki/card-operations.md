@@ -5,8 +5,8 @@ paths:
   - "src/ops.rs"
   - "src/batch.rs"
   - "src/place.rs"
-synced: 38ca1288b2f1
-updated: 2026-10-25
+synced: 43bba5ab1dea
+updated: 2026-10-31
 ---
 
 # Card operations
