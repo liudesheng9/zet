@@ -308,6 +308,10 @@ _Avoid_: Lint settings, per-archive config file, feature switch
 The one Card-check decision every authoring route makes inside its existing write transaction: it resolves the final proposed Card (text and metadata), enforces the mandatory envelope, Link, Access and Lock rules, gathers bounded context (parent and model level, the model or book term table, distinct targets, and a Term Card's role, list rows, head and Term-link targets), runs the checker's rules under the archive's Card-check policy and the legacy ratchet, and either stores the Card with its warnings or refuses with a typed `card_check` without storing anything.
 _Avoid_: Pre-commit hook, second writer, gate service
 
+**Write scope**:
+The limit on which agent Cards one agent connection may change, on top of Access and Locks: the Literature scope (Literature trees only: no Topic-tree Card, no Hub Card, no Link to a Topic-tree Card) or the open scope, optionally narrowed to an allow list of Cards and the Cards the connection made. A workflow stage fixes the Write scope of the jobs it starts, and a job cannot widen it; hand work declares its own. A write outside it is refused, never stored as advice.
+_Avoid_: Permission, sandbox, role
+
 **Gate stage**:
 The archive's rollout decision for the write gate, stored as `gate.stage`: `advisory` reports every quality diagnostic as advice and refuses none, while `enforce` lets a `block` policy setting refuse the write. Mandatory envelope, Link, Access and Lock invariants refuse in both stages. It is promoted deliberately by the owner, never by a timer.
 _Avoid_: Feature flag, global switch

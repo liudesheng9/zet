@@ -15,7 +15,8 @@
 //!   -Log f     append the address of every Card a create call makes.
 //!   -Allow f   only those Cards (one per line) and Cards made in this run may change;
 //!              create_topic, move_card, insert_card, delete_card, create_literature,
-//!              and edit_literature_metadata are refused.
+//!              edit_literature_metadata and a create_successor `before` a sibling are
+//!              refused, and each apply_batch item is checked as its own call.
 //!   -Moves f   append {"i":N,"moved":{...}} per call that renumbered Cards.
 //!   -SrcLog f  append `<address>\t<src>` per Card made from a call with a `src` field
 //!              (the helper removes `src` before the call reaches zt).
@@ -257,6 +258,48 @@ fn arg_str(arguments: &Value, key: &str) -> String {
     }
 }
 
+/// Why `-Allow` refuses a call, or None. Only the listed Cards and the Cards the run made may
+/// change, so the structural tools are refused, and so is a Side placement `before` a sibling,
+/// which renumbers Cards the list does not name. Each `apply_batch` item is checked as its own
+/// call; an `at` of `@@name` names an earlier item of the same batch. A batch preview writes
+/// nothing and passes, as reads do.
+pub(crate) fn allow_refusal(tool: &str, arguments: &Value, allowed: &HashSet<String>, beneath: &HashSet<String>) -> Option<String> {
+    if ["create_topic", "move_card", "insert_card", "delete_card", "create_literature", "edit_literature_metadata"].contains(&tool) {
+        return Some(format!("{tool} is not allowed in this run"));
+    }
+    if tool == "apply_batch" {
+        if arguments["preview"] == json!(true) {
+            return None;
+        }
+        let mut scope = allowed.clone();
+        for (i, item) in arguments["items"].as_array().into_iter().flatten().enumerate() {
+            let item_tool = item["tool"].as_str().unwrap_or_default();
+            if let Some(why) = allow_refusal(item_tool, &item["arguments"], &scope, beneath) {
+                return Some(format!("batch item {i} ({item_tool}): {why}"));
+            }
+            if let Some(name) = item["client_ref"].as_str() {
+                scope.insert(format!("@@{name}"));
+            }
+        }
+        return None;
+    }
+    if tool == "create_successor" && arguments.get("before").is_some_and(|b| !b.is_null()) {
+        return Some("create_successor with `before` renumbers Side successors; it is not allowed in this run".to_string());
+    }
+    let at = arg_str(arguments, "at");
+    // S06 (#103, D100/D104): a standalone claim may continue an earlier agent Regular Card that this
+    // run read in full, as one new Side successor. Nothing of the earlier Card becomes writable, and
+    // a Direct successor would extend its chain, so only `side` is accepted.
+    let beside = tool == "create_successor" && beneath.contains(&at) && arguments["kind"].as_str() == Some("side");
+    if tool == "create_successor" && beneath.contains(&at) && !beside {
+        return Some(format!("file a new Card beside `{at}` only as a Side successor; its Direct chain belongs to its own line of thought"));
+    }
+    if ["edit_card", "append_card", "create_successor"].contains(&tool) && !allowed.contains(&at) && !beside {
+        return Some(format!("`{at}` is not one of your Cards; you may only change your own Cards"));
+    }
+    None
+}
+
 /// Runs the calls in order and stops at the first failure. Err only when
 /// zt mcp itself fails (it closed, or wrote no reply).
 pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<Done>, Option<Failure>)> {
@@ -276,29 +319,10 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
             Ok(a) => a,
             Err(error) => fail!(i, error),
         };
-        if let Some(allowed) = &options.allow {
-            if ["create_topic", "move_card", "insert_card", "delete_card", "create_literature", "edit_literature_metadata"]
-                .contains(&call_tool.as_str())
-            {
-                fail!(i, format!("{call_tool} is not allowed in this run"));
-            }
-            let at = arg_str(&arguments, "at");
-            // S06 (#103, D100/D104): a standalone claim may continue an earlier agent Regular Card
-            // that this run read in full, as one new Side successor. Nothing of the earlier Card
-            // becomes writable, and a Direct successor would extend its chain, so only `side` is
-            // accepted.
-            let beside = call_tool == "create_successor"
-                && options.beneath.contains(&at)
-                && arguments["kind"].as_str() == Some("side");
-            if call_tool == "create_successor" && options.beneath.contains(&at) && !beside {
-                fail!(i, format!("file a new Card beside `{at}` only as a Side successor; its Direct chain belongs to its own line of thought"));
-            }
-            if ["edit_card", "append_card", "create_successor"].contains(&call_tool.as_str())
-                && !allowed.contains(&at)
-                && !beside
-            {
-                fail!(i, format!("`{at}` is not one of your Cards; you may only change your own Cards"));
-            }
+        if let Some(allowed) = &options.allow
+            && let Some(why) = allow_refusal(&call_tool, &arguments, allowed, &options.beneath)
+        {
+            fail!(i, why);
         }
         let mut tool = call_tool.clone();
         if tool == "append_card" {
@@ -360,6 +384,16 @@ pub fn run(zt: &mut Zt, calls: &[Value], options: &mut Options) -> Result<(Vec<D
         let structured = &reply["result"]["structuredContent"];
         let address = structured["address"].as_str().map(str::to_string);
         resolved.push(address.clone().unwrap_or_default());
+        // The Cards a batch wrote join the allow list, as a single create's Card does.
+        if tool == "apply_batch"
+            && let Some(allowed) = options.allow.as_mut()
+        {
+            for result in structured["results"].as_array().into_iter().flatten() {
+                if let Some(address) = result["result"]["address"].as_str() {
+                    allowed.insert(address.to_string());
+                }
+            }
+        }
         if let Some(address) = &address
             && call_tool.starts_with("create")
         {
@@ -1048,6 +1082,73 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn set(addresses: &[&str]) -> HashSet<String> {
+        addresses.iter().map(|a| a.to_string()).collect()
+    }
+
+    /// An empty allow list makes a run read-only, an `apply_batch` included: each item is checked
+    /// as its own call, so a batch cannot write a Card the list does not name.
+    #[test]
+    fn the_allow_list_checks_every_batch_item() {
+        let none = set(&[]);
+        let edit = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"edit_card","arguments":{"at":"K/1","body":"x","base_fingerprint":"f"}}]});
+        let why = allow_refusal("apply_batch", &edit, &none, &none).expect("an unlisted edit in a batch");
+        assert!(why.starts_with("batch item 0 (edit_card): "), "{why}");
+        let create = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"create_successor","arguments":{"at":"K/1","title":"t"}}]});
+        assert!(allow_refusal("apply_batch", &create, &none, &none).is_some());
+        let topic = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"create_topic","arguments":{"title":"t"}}]});
+        assert!(allow_refusal("apply_batch", &topic, &set(&["K/1"]), &none).unwrap().contains("create_topic is not allowed"));
+        let literature = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"create_literature","arguments":{"bibtex":"@book{K,title={T}}"}}]});
+        assert!(allow_refusal("apply_batch", &literature, &set(&["K/1"]), &none).is_some());
+    }
+
+    #[test]
+    fn a_batch_may_grow_its_listed_cards_and_the_cards_it_makes() {
+        let mine = set(&["K/1"]);
+        let none = set(&[]);
+        let batch = json!({"items":[
+            {"op_key":"k/1","client_ref":"a","tool":"create_successor","arguments":{"at":"K/1","title":"t"}},
+            {"op_key":"k/2","client_ref":"b","tool":"edit_card","arguments":{"at":"@@a","body":"x"}},
+            {"op_key":"k/3","client_ref":"c","tool":"create_successor","arguments":{"at":"@@b","kind":"side","title":"u"}}]});
+        assert_eq!(allow_refusal("apply_batch", &batch, &mine, &none), None);
+        // A reference to a later item, or to no item, names no Card of this run.
+        let forward = json!({"items":[
+            {"op_key":"k/1","client_ref":"a","tool":"edit_card","arguments":{"at":"@@b","body":"x"}},
+            {"op_key":"k/2","client_ref":"b","tool":"create_successor","arguments":{"at":"K/1","title":"t"}}]});
+        assert!(allow_refusal("apply_batch", &forward, &mine, &none).is_some());
+        // A preview writes nothing, so it passes like a read.
+        let preview = json!({"preview":true,"preview_items":[{"op_key":"k/1","client_ref":"0","tool":"edit_card","arguments":{"at":"Z/9","body":"x"}}]});
+        assert_eq!(allow_refusal("apply_batch", &preview, &none, &none), None);
+    }
+
+    #[test]
+    fn the_allow_list_keeps_its_single_call_rules() {
+        let mine = set(&["K/1"]);
+        let beside = set(&["E/2"]);
+        for tool in ["create_topic", "move_card", "insert_card", "delete_card", "create_literature", "edit_literature_metadata"] {
+            assert!(allow_refusal(tool, &json!({"at":"K/1"}), &mine, &beside).is_some(), "{tool}");
+        }
+        assert_eq!(allow_refusal("edit_card", &json!({"at":"K/1","body":"x"}), &mine, &beside), None);
+        assert!(allow_refusal("append_card", &json!({"at":"K/2","text":"x"}), &mine, &beside).is_some());
+        assert_eq!(allow_refusal("create_successor", &json!({"at":"E/2","kind":"side","title":"t"}), &mine, &beside), None);
+        assert!(allow_refusal("create_successor", &json!({"at":"E/2","title":"t"}), &mine, &beside).is_some());
+        assert!(allow_refusal("edit_card", &json!({"at":"E/2","body":"x"}), &mine, &beside).is_some());
+        assert_eq!(allow_refusal("get_card", &json!({"at":"Z/9"}), &mine, &beside), None);
+    }
+
+    /// A Side placement `before` a sibling renumbers that sibling and every later one, Cards the
+    /// list does not name, so it is refused like `insert_card`.
+    #[test]
+    fn the_allow_list_refuses_a_side_placement_before_a_sibling() {
+        let mine = set(&["K/1"]);
+        let none = set(&[]);
+        let call = json!({"at":"K/1","kind":"side","before":"K/1|b","title":"t"});
+        assert!(allow_refusal("create_successor", &call, &mine, &none).unwrap().contains("before"));
+        let batch = json!({"items":[{"op_key":"k/1","client_ref":"a","tool":"create_successor","arguments":call}]});
+        assert!(allow_refusal("apply_batch", &batch, &mine, &none).is_some());
+        assert_eq!(allow_refusal("create_successor", &json!({"at":"K/1","before":null,"title":"t"}), &mine, &none), None);
+    }
 
     #[test]
     fn refs_resolve_and_fail_without_address() {

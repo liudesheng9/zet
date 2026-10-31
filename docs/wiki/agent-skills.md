@@ -182,7 +182,7 @@ pwsh -NoProfile -File skills/zt/scripts/zt-mcp.ps1 -Tool <name> [-Json '<argumen
 | `-From` | File | `0` | Skip calls before `N`; used to resume after a failure. |
 | `-Addresses` | File | `''` | Comma-separated addresses of the skipped calls, so `@@N` still resolves after `-From`. |
 | `-Log` | File | `''` | Append the address of every Card a `create*` call makes, one per line. |
-| `-Allow` | File | `''` | Allow-list file. Refuses `create_topic`, `move_card`, `insert_card`, `delete_card`, `create_literature`, `edit_literature_metadata`. `edit_card`, `append_card`, and `create_successor` must target a listed address or a Card created earlier in the run. Read tools pass. |
+| `-Allow` | File | `''` | Allow-list file. Refuses `create_topic`, `move_card`, `insert_card`, `delete_card`, `create_literature`, `edit_literature_metadata`. `edit_card`, `append_card`, and `create_successor` must target a listed address or a Card created earlier in the run; a `create_successor` with `before` is refused. Each `apply_batch` item is checked as its own call (zt-digest 0.37.12). Read tools and batch previews pass. |
 | `-Moves` | File | `''` | Append `{"i":N,"moved":{"old":"new",...}}` for each call whose result has a non-empty `moved` map. |
 | `-SrcLog` | File | `''` | Append `<address><TAB><src>` for each created Card whose call carried `src`. |
 | `-Open` | both | off | The open scope. Without it the run is in the Literature scope and refuses `create_topic`, any write whose `at`, `before`, `to` or `into` is a Topic-tree Card, a Hub Card (`type: hub`), and a `title`, `body` or `text` that links a Topic-tree Card (checked per item in `apply_batch`). Reads pass either way. |
@@ -250,7 +250,7 @@ DeepSeek Harness gets the skills only (through the junctions); it gets no MCP re
 4. Fill the resolved-address list for the skipped calls from `-Addresses`.
 5. For each call from `-From` on:
    1. `Resolve-Refs` replaces every `@@N` in every string, recursively through objects and arrays. A reference to a call with no address fails the call.
-   2. With `-Allow`: refuse the structural tools; refuse `edit_card`, `append_card`, or `create_successor` whose `at` is not allowed.
+   2. With `-Allow`: refuse the structural tools; refuse `edit_card`, `append_card`, or `create_successor` whose `at` is not allowed, and a `create_successor` with `before`; check each item of an `apply_batch` the same way (`allow_refusal` in `tools/zt-digest/src/calls.rs`).
    3. `append_card`: `get_card`, then rewrite the call as `edit_card` with the appended body.
    4. Remove `src` from the arguments and keep it for `-SrcLog`.
    5. With `-TopicGate` and `create_topic`: open the gate file exclusively (`FileShare.None`), retrying every 200 ms for up to 120 s. Call `list_trees` with `workspace: agent`. Compare the new title's key (spaces, punctuation, and symbols removed, lower-cased) with each agent Topic's key. Refuse if a key is equal or the Dice similarity of their character bigrams is at least `-TopicSimilarity`; the refusal reads ``topic exists: `<root>` <title>. File the Card under that Topic instead of creating one.``
@@ -422,7 +422,7 @@ node --test skills/zt-model-import/scripts/imports.test.mjs skills/zt-model-impo
 | `skills/zt-model-restructure/scripts/check-network.test.mjs` | The network check with the repo's `src/gui/layout.js` (`ZT_LAYOUT`): each block's parent, a forward Link with its one move per Card, an unanchored chapter, a missing and a short 直觉 lead, chapters with no result as advice only, the tree lines, a clean spine passing, and a shared premise block (`kind: shared`) before the setting that a chapter rests on without a forward fault. `mask-links.test.mjs` covers masking Links to Model parts. `check-premises.test.mjs`: a card naming an equation a later card derives is a hit even when linked; pointer sections, the card's own proof, the notation card and prose that only uses an equation are not. |
 | `cargo test mcp::tests` (`src/mcp.rs`) | The server side the helper relies on: the handshake and protocol fallback, error codes, unique tool names with object schemas, no new trees in the human Workspace. |
 
-Gaps: no test covers `-Allow`, `-Moves`, `-From`/`-Addresses` resume, or `-Log`; nothing checks that the skill texts name only tools and arguments that `tool_definitions()` has; the installer is checked only by its own handshake step when run.
+Gaps: `-Allow` has unit tests only (`allow_refusal` in `tools/zt-digest/src/calls.rs`); no test covers `-Moves`, `-From`/`-Addresses` resume, or `-Log`; nothing checks that the skill texts name only tools and arguments that `tool_definitions()` has; the installer is checked only by its own handshake step when run.
 
 ## Decisions and pitfalls
 
