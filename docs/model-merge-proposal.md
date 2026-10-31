@@ -717,3 +717,31 @@ The `zt-model-fold` skill folded `grossman2002integration` on the live box (`/zt
 **Result.** `model-survey.mjs` lists exactly one head, `2/a`, with 81 members. The former heads are its main line `2/a/a/15` (混合均衡) to `2/a/a/20` (直觉), each with its parts at `/a` and `/b`. The tree still holds 318 Cards, and `list_broken_links` is empty. The six former heads are unanchored, so `2/a` is not yet self-sufficient; `zt-model-restructure` adds those lines, and moves the intuition chapter `2/a/a/20` to the front.
 
 **Next.** `zt-model-settings`, then `zt-model-restructure`, then `zt-model-import` (a check only: the model now imports nothing), on `grossman2002integration/2|a`.
+
+### 16.1 The setting part as a dependency tree (2026-10-31)
+
+`zt-model-settings` ran on `grossman2002integration/2|a` on the live box, right after the fold and at the owner's request. The backup is `D:\zt\backups\zt-before-grossman2002integration-settings.sqlite3` (`VACUUM INTO`, integrity ok).
+
+**Faults before.** There was no notation card, and the setting card had no **起点**. The base assumptions (`假设：技术…`), the matching card and the bargaining card were steps of the main line. Each folded head had brought its setting into its chapter (`2/a/a/15/a`–`20/a`). The timing and secondary-market cards of the partial-specialization variant, which define δ and η̃, sat in that chapter's derivation chain.
+
+**Tree after.** The setting card `2/a/a` is the primitive (`原始设定`). Its Sides, in order:
+
+- `a` 符号表与读法 (new);
+- `b` 设定：概述 (the introduction's verbal framework, primitive);
+- `c` 设定：技术与契约, with the Direct step `c/1` 设定：议价;
+- `d` 设定：匹配 (constant returns, which variant one changes);
+- `e` 设定：三种行业组织, with `e/a` 设定：普遍一体化 and `e/b` 设定：普遍外包 under it;
+- `f` 设定：变体一 匹配规模报酬递增 (relaxes `d`);
+- `g` 设定：变体二 部分专业化 (relaxes `c`), with the Direct chain `g/1` 设定：变体二的时序 (relaxes `c/1`) and `g/2` 设定：二级市场.
+
+Every setting moved `alone`, so its derivation chain closed up and stays in its chapter.
+
+**Text.**
+- Each setting has a **起点**; each variant's says which variant it is and what it changes. The old leading `依赖 …：` lines became 起点 lines.
+- The symbol and term tables of the eight settings moved into the notation card. It lists every symbol with its first card, in four blocks: the base model, the three organizations, variant one and variant two. The notation card also says that the book omits the industry index $j$.
+- `e/a` and `e/b` define $A$, $A_I$, $r_O$, $A_O$, $s_O$ and $m_O$ at first use. `e/a`'s "价格与销量由式 (7) 与式 (8) 给出" is now a pointer to the base model's equations.
+- The head's **结构** was rebuilt in reading order (82 members).
+
+**Result.** `check-settings.mjs` prints `settings: all in the setting part, as a dependency tree`, and every `reads:` symbol is defined in its card. `check-premises.mjs` lists no setting that uses a later result: only `e`'s roadmap "输入为式 (5)(6)(9)(10)" and the derivation chains' own roadmaps. The tree holds 319 Cards (318 plus the notation card), and `list_broken_links` is empty. The six chapters `2/a/a/12`–`17` (the former heads) stay unanchored, and `check-network.mjs` asks for **直觉** leads: spine work.
+
+**Next.** `zt-model-restructure` on `grossman2002integration/2|a`.
