@@ -34,6 +34,13 @@ static PAREN_YEAR: LazyLock<Regex> =
 /// A year between commas: `, 1998,` (the IMF style of Ebrill et al.).
 static COMMA_YEAR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r",\s*(1[5-9]\d\d|20\d\d)([a-z]?)\s*[,.]").unwrap());
+/// A year between periods: `Daron. 1998. “Title.”` (the Chicago style of the Nobel lecture, the JPE and
+/// Becker et al.; live run of the parser over the seven live books, 2026-10-31).
+static PERIOD_YEAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.\s+(1[5-9]\d\d|20\d\d)([a-z]?)\.(?:\s|$)").unwrap());
+/// The start of an entry: a capitalised name followed by a comma (`Jones, K.`, `Ab Iorwerth, Aled`).
+static AUTHOR_START: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\p{Lu}[\p{L}'’\-]*(?: \p{Lu}[\p{L}'’\-]*)*,\s").unwrap());
 /// The leading run of `——`, `____` or `---` that stands for the previous entry's authors.
 static DASHES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^((?:—{1,3}|_{2,}|-{3,})\s*)+").unwrap());
@@ -170,15 +177,25 @@ fn clean(line: &str) -> String {
     PAGE_MARKERS.replace(&text, "").trim().to_string()
 }
 
-/// The year of an entry and the byte range of its match.
+/// The year of an entry and the byte range of its match: the earliest of a parenthesised, a
+/// period-delimited and a comma-delimited year.
 fn year_of(text: &str) -> Option<(String, usize, usize)> {
-    PAREN_YEAR
-        .captures(text)
-        .or_else(|| COMMA_YEAR.captures(text))
+    [&*PAREN_YEAR, &*PERIOD_YEAR, &*COMMA_YEAR]
+        .iter()
+        .filter_map(|pattern| pattern.captures(text))
+        .min_by_key(|caps| caps.get(0).unwrap().start())
         .map(|caps| {
             let whole = caps.get(0).unwrap();
             (format!("{}{}", &caps[1], &caps[2]), whole.start(), whole.end())
         })
+}
+
+/// Whether a reference line is a translation of the list: more Han characters than Latin letters
+/// (Hart 1995 repeats its whole list in Chinese under the same heading).
+fn translated(line: &str) -> bool {
+    let han = line.chars().filter(|c| HAN.is_match(&c.to_string())).count();
+    let latin = line.chars().filter(char::is_ascii_alphabetic).count();
+    han > latin
 }
 
 /// The first author of an author string: `Aghion, P., and Bolton, P.` → `Aghion, P.`.
@@ -187,7 +204,8 @@ fn first_author(authors: &str) -> String {
     match parts.as_slice() {
         [one] => one.split(" and ").next().unwrap_or(one).trim().trim_end_matches(',').to_string(),
         [surname, given, ..] if !given.starts_with("and ") && !given.starts_with("AND ") => {
-            format!("{surname}, {}", given.trim_end_matches(','))
+            let given = given.split(" and ").next().unwrap_or(given).split(" AND ").next().unwrap_or(given);
+            format!("{surname}, {}", given.trim().trim_end_matches(','))
         }
         [surname, ..] => surname.to_string(),
         [] => String::new(),
@@ -277,11 +295,21 @@ fn split_entry(row: usize, raw: &str, previous: Option<&Entry>) -> Entry {
     let mut previous_authors = String::new();
     if let Some(found) = DASHES.find(&text) {
         if let Some(prev) = previous.filter(|prev| !prev.authors.is_empty()) {
+            // One dash run repeats the previous authors (`—— (1994)`, `——, 1980`, `——. 2002`); a run of
+            // two or more (`—— ——`) repeats them all too. One run before `and X` repeats only the first
+            // author, and one run before another name (`—— Gertner, R.`) starts with the first author.
+            let runs = found.as_str().split_whitespace().count();
             let rest = text[found.end()..].trim_start().to_string();
             let joins = rest.starts_with("and ") || rest.starts_with("AND ") || rest.starts_with("& ");
-            let authors = if joins { first_author(&prev.authors) } else { prev.authors.clone() };
-            let gap = if rest.starts_with([',', '.', ':']) { "" } else { " " };
-            text = format!("{authors}{gap}{}", rest);
+            let names = rest.chars().next().is_some_and(char::is_uppercase);
+            text = if runs == 1 && joins {
+                format!("{} {rest}", first_author(&prev.authors))
+            } else if runs == 1 && names {
+                format!("{}, {rest}", first_author(&prev.authors))
+            } else {
+                let gap = if rest.starts_with([',', '.', ':']) { "" } else { " " };
+                format!("{}{gap}{rest}", prev.authors)
+            };
             previous_authors = prev.authors.clone();
         }
     }
@@ -301,18 +329,19 @@ fn split_entry(row: usize, raw: &str, previous: Option<&Entry>) -> Entry {
     entry
 }
 
-/// Every entry of the source's reference lists, in order. A line without a year that follows an
-/// entry continues it when it starts in lower case; otherwise it is an entry of its own.
+/// Every entry of the source's reference lists, in order. A line in translation is no entry. A line
+/// without a year that does not start like an entry (a dash run, or a name and a comma) continues
+/// the entry before it: Hart wraps a long entry onto a line that starts in capitals, after a line
+/// that ends with the same `\` as every entry.
 pub fn entries(source: &str, custom: &str) -> Vec<Entry> {
     let mut raws: Vec<String> = Vec::new();
     for (_, line, inside) in reference_lines(source, custom) {
-        if !inside || line.trim().is_empty() {
+        if !inside || line.trim().is_empty() || translated(&line) {
             continue;
         }
         let text = clean(&line);
-        let continues = year_of(&text).is_none()
-            && text.chars().next().is_some_and(char::is_lowercase)
-            && !raws.is_empty();
+        let starts = DASHES.is_match(&text) || AUTHOR_START.is_match(&text);
+        let continues = year_of(&text).is_none() && !starts && !raws.is_empty();
         if continues {
             let last = raws.last_mut().unwrap();
             *last = format!("{} {}", last.trim_end().trim_end_matches('\\'), line.trim());

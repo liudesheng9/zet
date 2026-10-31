@@ -343,6 +343,33 @@ fn the_plan_reads_repeated_authors_comma_years_and_capital_surnames() {
     assert_eq!(lines_of(&ecta[0]), vec![3, 4], "the English line and its translation");
 }
 
+/// Live run of the parser over the seven live books (2026-10-31): the Nobel lecture, the JPE paper and Becker et al.
+/// use the Chicago style (`Surname, First. 2000. “Title.”`), Hart wraps a long entry onto a line that starts in
+/// capitals, and Hart repeats its whole list in Chinese translation under the same heading.
+#[test]
+fn the_plan_reads_chicago_years_wrapped_entries_and_skips_a_translated_list() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "chicago2026", "Chicago");
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "chicago2026", "Chicago", &fixture("chicago.md"), json!([{ "anchor": "chicago2026/1", "headings": ["1 引言"] }]));
+    let out = zt.digest(&["cited", "-Step", "plan", "-Staging", staging.to_str().unwrap()]);
+    let line = last_json(&out);
+    assert_eq!(line["rows"], json!(8), "{line}");
+    assert_eq!(line["unparsed"], Value::Null, "every entry splits: {line}");
+    let rows = plan_rows(&staging);
+    let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["abernathy2000", "acemoglu2003a", "acemoglu2003b", "acemoglu2002", "acemoglu2008", "arkolakis2012", "aumann1974", "aumann1994"], "{rows:#?}");
+    assert_eq!(rows[0]["title"], json!("The Dynamics of Global Dominance: European Overseas Empires, 1415–1980"));
+    assert!(rows[3]["entry"].as_str().unwrap().starts_with("Acemoglu, Daron. 2002. “Directed Technical Change.”"), "{}", rows[3]);
+    assert_eq!(rows[3]["title"], json!("Directed Technical Change"));
+    assert_eq!(rows[5]["surname"], json!("Arkolakis"));
+    assert!(rows[7]["entry"].as_str().unwrap().starts_with("Aumann, Robert J., Gertner, R., and Scharfstein, D. (1994)."), "{}", rows[7]);
+    assert_eq!(rows[7]["title"], json!("Anatomy of Financial Distress: An Examination of Junk-Bond Issuers"), "the wrapped line joins its entry");
+    assert!(rows.iter().all(|r| !r["raw"].as_str().unwrap().contains("斯坦福")), "the translated list is no entry");
+}
+
 const SMALL: &str = "# 1 Introduction\n# 1 引言\nAs Smith (1999) argues, bargaining matters.\n\n# References\n\nSmith, J. (1999). Bargaining. Journal of Tests, 1:1–2.\\\nJones, K. Unpublished notes on contracts.\\\n\n# Appendix\n";
 
 #[test]
