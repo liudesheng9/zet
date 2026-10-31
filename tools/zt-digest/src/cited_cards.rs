@@ -98,8 +98,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 fn read_book(staging: &str) -> Result<Book> {
     let manifest = common::manifest(staging)?;
     let key = pstr(&manifest, "citation_key");
-    let cited = util::read_json(ps::join(&ps::join(staging, "cited"), "plan.json"))
+    let mut cited = util::read_json(ps::join(&ps::join(staging, "cited"), "plan.json"))
         .context("no Cited plan; run `zt-digest cited -Step plan` first")?;
+    // The Cited apply's merged rows carry what the normalize jobs split; they replace the plan's rows.
+    if let Ok(merged) = util::read_json(ps::join(&ps::join(staging, "cited"), "merged.json")) {
+        if merged["plan_hash"] == cited["plan_hash"] && merged["rows"].is_array() {
+            cited["rows"] = merged["rows"].clone();
+        }
+    }
     // The file the Cited plan read (its -Source, or the manifest's source): the line numbers are its.
     let source_path = match pstr(&cited, "source") {
         frozen if !frozen.is_empty() => frozen,
@@ -390,12 +396,14 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
     if pstr(item, "short_title").trim().is_empty() {
         faults.push((format!("{tag} C1 the short_title is empty"), true));
     }
-    let surname = pstr(row, "surname").to_lowercase();
+    // Names are compared folded, so `Jaszi` in the text names `Jászi` in the list (live backfill, 2026-10-31).
+    let surname = cited::fold(&pstr(row, "surname"));
     let words: Vec<String> = pstr(row, "title")
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.chars().count() >= 4)
-        .map(str::to_lowercase)
+        .map(cited::fold)
+        .filter(|w| w.len() >= 4)
         .collect();
+    let year: String = pstr(row, "year").chars().take(4).collect();
     let raw = item["locations"].as_array().cloned().unwrap_or_default();
     if raw.len() > MAX_LOCATIONS {
         faults.push((format!("{tag} C3 {} locations; list at most {MAX_LOCATIONS}", raw.len()), true));
@@ -410,11 +418,23 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
             faults.push((format!("{tag} C3 line {line} is the reference list itself, not a use"), true));
             continue;
         }
-        let near: String = (line.saturating_sub(1)..=line + 1)
+        let near: Vec<String> = (line.saturating_sub(1)..=line + 1)
             .filter_map(|i| i.checked_sub(1).and_then(|i| book.lines.get(i)))
-            .map(|(_, text, _)| text.to_lowercase())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .map(|(_, text, _)| cited::fold(text))
+            .collect();
+        let near = near.join(" ");
+        let alias = pstr(l, "as");
+        if !alias.is_empty() {
+            // A work cited by its authors' initials (`AJR (2001, 2012)`): the line itself holds the initials
+            // and the year, and the initials start like the surname.
+            let own = &book.lines[line - 1].1;
+            let shaped = (2..=8).contains(&alias.chars().count()) && alias.chars().all(|c| c.is_ascii_uppercase());
+            let starts = cited::fold(&alias).chars().next() == surname.chars().next();
+            if !(shaped && starts && own.contains(&alias) && (year.is_empty() || own.contains(&year))) {
+                faults.push((format!("{tag} C3 line {line} does not hold the initials `{alias}` and the year {year} of the work"), true));
+            }
+            continue;
+        }
         let names = (!surname.is_empty() && near.contains(&surname))
             || words.iter().filter(|w| near.contains(w.as_str())).count() >= 2;
         if !names {

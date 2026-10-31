@@ -276,7 +276,7 @@ fn title_and_venue(rest: &str) -> (String, String) {
 }
 
 /// ASCII folding for a reference id: `Custódio` → `custodio`.
-fn fold(text: &str) -> String {
+pub(crate) fn fold(text: &str) -> String {
     text.chars()
         .filter_map(|c| {
             let base = match c {
@@ -807,6 +807,9 @@ fn apply_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) 
         "changed": changed,
     });
     util::write_atomic(ps::join(work, "apply.json"), &ps::json_pretty(&report))?;
+    // The rows after the accepted normalize answers: the Cited Cards read these (a normalized entry has
+    // its surname and title only here; live backfill of acemoglu2025nobel, 2026-10-31).
+    util::write_atomic(ps::join(work, "merged.json"), &ps::json_pretty(&json!({ "plan_hash": plan["plan_hash"], "rows": rows })))?;
     let mut line = json!({ "ok": true, "rows": table.len(), "card": card });
     if !refused.is_empty() {
         line["refused"] = json!(refused.len());
