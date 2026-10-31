@@ -53,7 +53,7 @@ try {
         parts = @(
             [ordered]@{ id = 'S'; line = 'main'; facet = '设定'; emphasis = 'core'; title = '设定：企业家、项目与清算价值'; spec = '参与者与时点'; src = @('sections/s01.md:2-3') },
             [ordered]@{ id = 'A'; line = 'main'; facet = '假设'; title = '假设：投资者只认清算价值'; spec = '假设'; rests = @(, @('P', '用到命题')); src = @('sections/s01.md:2-2') },
-            [ordered]@{ id = 'D1'; line = 'main'; derive = $true; facet = '推导：还款上限'; title = '推导：还款不超过清算价值'; from = '(5.5)'; to = '$$P\le L$$'; steps = 4; rests = @(, @('S', '用到 $L$')); src = @('sections/s01.md:4-4') },
+            [ordered]@{ id = 'D1'; line = 'main'; derive = $true; facet = '推导：还款上限'; title = '推导：还款不超过清算价值'; from = '(5.5)'; to = '$$P\le L$$'; steps = 4; rests = @(@('S', '用到 $L$'), @('T', '对照另一种推导')); src = @('sections/s01.md:4-4') },
             [ordered]@{ id = 'D2'; line = 'main'; derive = $true; facet = '推导：融资条件'; title = '推导：得到融资条件'; to = '$$L\ge K-w \quad (5.10)$$'; steps = 5; src = @('sections/s01.md:5-5') },
             [ordered]@{ id = 'P'; line = 'main'; facet = '命题'; emphasis = 'core'; title = '命题：清算价值够大才能融资'; spec = '命题'; rests = @(, @('D2', '用到 (5.10)')); src = @('sections/s01.md:5-5') },
             [ordered]@{ id = 'E'; line = 'side'; of = 'P'; facet = '数值例子'; emphasis = 'aside'; title = '例子：L=6 时能融资'; spec = '代入数字'; chart = '画出 L 与 K-w 的比较'; src = @('sections/s01.md:3-3') },
@@ -239,20 +239,20 @@ try {
     $reportFile = [string]$closedReport.report.file
     Assert ($closedReport.status -ceq 'clean' -and @($closedReport.jobs).Count -eq 0 -and @($closedReport.report.models | Where-Object { $_.model -eq $model }).Count -eq 1 -and (Test-Path -LiteralPath $reportFile)) "close -Report: a clean close round carries the batch report and writes report.json ($($closedReport.report | ConvertTo-Json -Compress -Depth 3))"
     Assert ($null -eq $closed.report) 'close: without -Report the close line carries no report'
-    # close also repairs what a split or a writer left behind (trial 7): a 共用 line with an old address
+    # close also repairs what a split or a writer left behind (trial 7): an 引入 line (#212) with an old address
     # is rebuilt from the plan, a malformed supplied-step marker goes back to its part, and report puts
     # back a 结构 list that a close writer re-sent from an older copy.
     $headNow = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
-    $sharedLine = @($headNow -split "`n" | Where-Object { $_ -match '（共用）' })
-    Assert ($sharedLine.Count -eq 1 -and $sharedLine[0].Contains("[[$shared]]")) "close: the Model Card takes the other model's part in with one 共用 line ($($sharedLine -join ' / '))"
+    $sharedLine = @($headNow -split "`n" | Where-Object { $_ -match '^- 单卡 \[\[' })
+    Assert ($sharedLine.Count -eq 1 -and $sharedLine[0].Contains("[[$shared]]")) "close: the Model Card imports the other model's part with one 引入 line, no 共用 line ($($sharedLine -join ' / '))"
     $pBefore = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['P'] } })).body
     Write-Calls @(
-        @{ tool = 'edit_card'; arguments = @{ at = $model; body = $headNow.Replace("[[$shared]]（共用）", "[[Test2020/1|b]]（共用）") } },
+        @{ tool = 'edit_card'; arguments = @{ at = $model; body = $headNow.Replace("单卡 [[$shared]]", "单卡 [[Test2020/1|b]]") } },
         @{ tool = 'edit_card'; arguments = @{ at = $ids['P']; body = "$pBefore`n两式相除。（补：书中略去：两式相除）" } }
     )
     $close3 = Last (Run 'close')
     $headFixed = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
-    Assert ($close3.refreshed -eq 1 -and $headFixed.Contains("[[$shared]]（共用）")) "close: a 共用 line with an old address is rebuilt from the plan ($($close3 | ConvertTo-Json -Compress -Depth 4))"
+    Assert ($close3.refreshed -eq 1 -and $headFixed.Contains("单卡 [[$shared]]")) "close: an 引入 line with an old address is rebuilt from the plan ($($close3 | ConvertTo-Json -Compress -Depth 4))"
     $toP = @($close3.jobs | Where-Object { (Get-Content -LiteralPath $_.files[-1] -Raw -Encoding utf8) -match "修正：\[\[$([regex]::Escape($ids['P']))\]\]" })[0]
     Assert ($close3.faults -eq 1 -and $toP -and ((Get-Content -LiteralPath $toP.files[-1] -Raw -Encoding utf8) -match '补出标记')) "close: a malformed marker goes back to its part's conversation ($($close3.faults) faults)"
     $eLine = [regex]::Escape("[[$($ids['E'])]]")
@@ -260,7 +260,7 @@ try {
     Assert (-not (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body.Contains("[[$($ids['E'])]]")) 'close: (stand-in) a writer re-sends the Model Card without one 结构 line'
     $null = Run 'report'
     $headAfter = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $model } })).body
-    Assert ($headAfter.Contains("[[$($ids['E'])]]") -and $headAfter.Contains("[[$shared]]（共用）")) 'report: the 结构 list the compiler wrote is put back after a close round'
+    Assert ($headAfter.Contains("[[$($ids['E'])]]") -and $headAfter.Contains("单卡 [[$shared]]") -and -not $headAfter.Contains('（共用）')) 'report: the 结构 list and the 引入 section the compiler wrote are put back after a close round'
     Write-Calls @(@{ tool = 'edit_card'; arguments = @{ at = $ids['P']; body = $pBefore } })
     $null = Invoke-Zt @(@{ tool = 'delete_card'; arguments = @{ at = $outside; confirm = 'delete' } })
     $cardJob = Get-Content -LiteralPath $apply.jobs[0].files[2] -Raw -Encoding utf8

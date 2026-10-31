@@ -356,27 +356,36 @@ fn marker_entries(st: &Value) -> Vec<(String, String)> {
     out
 }
 
-/// A Model Card's 结构 list with every 共用 line rebuilt, in order, from the taken parts' current lines;
-/// `None` when the list does not carry exactly one 共用 line per taken part (it is then left as it is).
-fn shared_lines(section: &str, wanted: &[String]) -> Option<String> {
-    let have = section.lines().filter(|l| l.contains("（共用）")).count();
-    if have != wanted.len() || wanted.is_empty() {
+/// The Model Card's `**引入**` section (#212, docs/model-shared-blocks-proposal.md D1): one line per taken
+/// part, `(block, address, use)`; `整块` takes the Card with its block, `单卡` the Card alone. `None` when the
+/// model takes nothing.
+fn import_section(takes: &[(bool, String, String)]) -> Option<String> {
+    if takes.is_empty() {
         return None;
     }
-    let mut k = 0;
-    let lines: Vec<String> = section
-        .lines()
-        .map(|l| {
-            if l.contains("（共用）") {
-                k += 1;
-                wanted[k - 1].clone()
-            } else {
-                l.to_string()
-            }
+    let lines = takes
+        .iter()
+        .map(|(block, address, used)| {
+            format!("- {} [[{address}]]：{}", if *block { "整块" } else { "单卡" }, structure_text(used))
         })
-        .collect();
-    Some(lines.join("\n"))
+        .collect::<Vec<_>>();
+    Some(format!("**引入**\n\n{}", lines.join("\n")))
 }
+
+/// A Model Card body whose `**引入**` section reads `wanted` (placed before `结构` when the body has none);
+/// `None` when it already does.
+fn imports_rebuilt(body: &str, wanted: &str) -> Option<String> {
+    if text::get_section(body, "引入").as_deref() == Some(wanted) {
+        return None;
+    }
+    if text::get_section(body, "引入").is_none()
+        && let Some(at) = body.find("**结构**")
+    {
+        return Some(format!("{}{wanted}\n\n{}", &body[..at], &body[at..]));
+    }
+    Some(text::set_section(body, "引入", wanted))
+}
+
 
 /// The 修正 notes for the parts the source review records as `supplied` (a step the book does not
 /// give) whose body carries neither established marker: `model-finish` refuses them (grossman2002integration
@@ -974,7 +983,7 @@ impl Compiler {
                     }
                 } else if !members.contains(&reference) && !ps::eq(&reference, model) && !self.unit(&reference) {
                     faults.push(format!(
-                        "closure: {id} rests on {reference}, which is outside the model; take it in, move it in, or restate it as a new part"
+                        "closure: {id} rests on {reference}, which is outside the model; take it in (an import), move it in, or write a variant that specializes it; restate it only when it is no part of a model"
                     ));
                 }
             }
@@ -1421,15 +1430,15 @@ impl Compiler {
         Ok(body.trim().to_string())
     }
 
-    /// `Get-StructureList`: the Model Card's 结构 list, one line per member.
+    /// `Get-StructureList`: the Model Card's 结构 list, one line per part of its own; a taken part is an
+    /// `**引入**` line instead (`imports_of`, #212).
     fn structure_list(&self, plan: &Value, model: &str) -> Result<String> {
         let mut lines = Vec::new();
         for p in list(&plan["parts"]) {
             let address = self.resolve(&p["id"], model)?;
             let m = self.m(model);
             if truthy(&p["take"]) {
-                let facet = if truthy(&p["facet"]) { s(&p["facet"]) } else { "共用".into() };
-                lines.push(format!("- {facet} [[{address}]]（共用）：{}", structure_text(&s(&p["use"]))));
+                continue;
             } else {
                 let id = s(&p["id"]);
                 let core = if ps::eq(&s(&p["emphasis"]), "core") { "（核心）" } else { "" };
@@ -1437,6 +1446,30 @@ impl Compiler {
             }
         }
         Ok(format!("**结构**\n\n{}", lines.join("\n")))
+    }
+
+    /// The Model Card's `**引入**` section from the plan's takes at their current addresses (#212):
+    /// `"block": true` takes the Card with its block (整块); `None` when the plan takes nothing.
+    fn imports_of(&self, plan: &Value, model: &str) -> Result<Option<String>> {
+        let mut takes = Vec::new();
+        for p in list(&plan["parts"]).into_iter().filter(|p| truthy(&p["take"])) {
+            takes.push((truthy(&p["block"]), self.resolve(&p["id"], model)?, s(&p["use"])));
+        }
+        Ok(import_section(&takes))
+    }
+
+    /// A body with the plan's `**引入**` section, and without the legacy （共用） lines of its 结构 list that the
+    /// section replaces; `None` when there is nothing to change.
+    fn with_imports(&self, body: &str, plan: &Value, model: &str) -> Result<Option<String>> {
+        let Some(wanted) = self.imports_of(plan, model)? else { return Ok(None) };
+        let mut out = imports_rebuilt(body, &wanted).unwrap_or_else(|| body.to_string());
+        if let Some(section) = text::get_section(&out, "结构")
+            && section.contains("（共用）")
+        {
+            let kept = section.lines().filter(|l| !l.contains("（共用）")).collect::<Vec<_>>().join("\n");
+            out = text::set_section(&out, "结构", &kept);
+        }
+        Ok((out != body).then_some(out))
     }
 
     /// `Update-ChainLines`: the position lines of every chain of a model's own parts.
@@ -2098,6 +2131,9 @@ impl Compiler {
         let card = self.card(&json!(model))?;
         let structure = self.structure_list(&plan, model)?;
         let mut body = text::set_section(&s(&card["body"]), "结构", &structure);
+        if let Some(with) = self.with_imports(&body, &plan, model)? {
+            body = with;
+        }
         if let Some(divisions) = divisions_section(&plan, |id| self.resolve(&json!(id), model))? {
             body = text::set_section(&body, "分部", &divisions);
         }
@@ -2785,22 +2821,10 @@ impl Compiler {
                 continue;
             }
             let plan = self.plan(&model)?;
-            let mut wanted = Vec::new();
-            for p in list(&plan["parts"]).into_iter().filter(|p| truthy(&p["take"])).cloned().collect::<Vec<_>>() {
-                let address = self.resolve(&p["id"], &model)?;
-                let facet = if truthy(&p["facet"]) { s(&p["facet"]) } else { "共用".into() };
-                wanted.push(format!("- {facet} [[{address}]]（共用）：{}", structure_text(&s(&p["use"]))));
-            }
-            if wanted.is_empty() {
-                continue;
-            }
             let card = self.card(&json!(model))?;
             let body = s(&card["body"]);
-            let Some(section) = text::get_section(&body, "结构") else { continue };
-            if let Some(rebuilt) = shared_lines(&section, &wanted)
-                && rebuilt != section
-            {
-                edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": text::set_section(&body, "结构", &rebuilt) } }));
+            if let Some(rebuilt) = self.with_imports(&body, &plan, &model)? {
+                edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": rebuilt } }));
             }
         }
         let n = edits.len();
@@ -2825,7 +2849,7 @@ impl Compiler {
             }
             let card = self.card(&json!(model))?;
             let body = s(&card["body"]);
-            let section = text::get_section(&body, "结构").unwrap_or_default();
+            let section = text::get_section(&body, "结构").unwrap_or_default() + &text::get_section(&body, "引入").unwrap_or_default();
             if addresses.iter().all(|a| section.contains(&format!("[[{a}]]"))) {
                 continue;
             }
@@ -2846,7 +2870,9 @@ impl Compiler {
             }
             let list = lines.join("\n");
             let list = list.strip_prefix("**结构**\n\n").unwrap_or(&list).to_string();
-            edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": text::set_section(&body, "结构", &format!("**结构**\n\n{list}")) } }));
+            let body = text::set_section(&body, "结构", &format!("**结构**\n\n{list}"));
+            let body = self.with_imports(&body, &plan, &model)?.unwrap_or(body);
+            edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": body } }));
         }
         let n = edits.len();
         self.edits(edits)?;
@@ -2861,6 +2887,9 @@ impl Compiler {
             if let Some(section) = text::get_section(&s(&card["body"]), "结构") {
                 self.m_mut(&model)["structure_close"] = json!(section);
             }
+            if let Some(section) = text::get_section(&s(&card["body"]), "引入") {
+                self.m_mut(&model)["imports_close"] = json!(section);
+            }
         }
         Ok(())
     }
@@ -2874,10 +2903,21 @@ impl Compiler {
             }
             let card = self.card(&json!(model))?;
             let body = s(&card["body"]);
-            if text::get_section(&body, "结构").as_deref() != Some(kept.as_str()) {
-                edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": text::set_section(&body, "结构", &kept) } }));
+            let mut fixed = body.clone();
+            if text::get_section(&fixed, "结构").as_deref() != Some(kept.as_str()) {
+                fixed = text::set_section(&fixed, "结构", &kept);
+            }
+            let imports = s(&self.m(&model)["imports_close"]);
+            if !imports.is_empty()
+                && let Some(rebuilt) = imports_rebuilt(&fixed, &imports)
+            {
+                fixed = rebuilt;
+            }
+            if fixed != body {
+                edits.push(json!({ "tool": "edit_card", "arguments": { "at": model, "body": fixed } }));
             }
             self.m_mut(&model)["structure_close"] = Value::Null;
+            self.m_mut(&model)["imports_close"] = Value::Null;
         }
         let n = edits.len();
         self.edits(edits)?;
@@ -3752,7 +3792,7 @@ fn divisions_section(plan: &Value, resolve: impl Fn(&str) -> Result<String>) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{close_entries, division_faults, divisions_section, lacks_main_line, marker_entries, shared_lines, supplied_entries};
+    use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, lacks_main_line, marker_entries, supplied_entries};
     use serde_json::json;
 
     // #204 (B6): the architect's divisions (the model's parts, 分部) start at main-line parts; the
@@ -3843,18 +3883,56 @@ mod tests {
         assert!(notes[0].1.contains("补出标记"));
     }
 
-    // The 共用 lines of a 结构 list follow the taken parts' current addresses, in order; a list whose
-    // 共用 lines do not match the plan's taken parts one for one is left alone.
+    // #212 (I7 of #205): a taken part is an **引入** line, not a （共用） line of the 结构 list: 单卡 for one
+    // Card, 整块 when the plan takes the Card with its block; a model that takes nothing has no section.
     #[test]
-    fn shared_lines_follow_the_taken_parts() {
-        let section = "**结构**\n\n- 设定 [[B/3|a|a]]（核心）：设定\n- 共用 [[B/2|a|a|12]]（共用）：π_m (6)\n- 推导 [[B/3|a|a|1]]：推导";
-        let wanted = vec!["- 共用 [[B/2|a|a|13]]（共用）：π_m (6)".to_string()];
-        assert_eq!(
-            shared_lines(section, &wanted).unwrap(),
-            "**结构**\n\n- 设定 [[B/3|a|a]]（核心）：设定\n- 共用 [[B/2|a|a|13]]（共用）：π_m (6)\n- 推导 [[B/3|a|a|1]]：推导"
-        );
-        assert!(shared_lines(section, &[]).is_none());
-        assert!(shared_lines(section, &[wanted[0].clone(), wanted[0].clone()]).is_none());
+    fn a_taken_part_is_an_import_line() {
+        let section = import_section(&[
+            (false, "B/2|a|a|12".to_string(), "π_m (6)；用于定价".to_string()),
+            (true, "C/4|a|a".to_string(), "他书的设定".to_string()),
+        ])
+        .unwrap();
+        assert_eq!(section, "**引入**
+
+- 单卡 [[B/2|a|a|12]]：π_m (6)，用于定价
+- 整块 [[C/4|a|a]]：他书的设定");
+        assert!(import_section(&[]).is_none());
+    }
+
+    // #212: after a split renumbers a taken part, the 引入 lines follow the plan's current addresses; a
+    // section that already reads so is left alone.
+    #[test]
+    fn import_lines_follow_the_taken_parts() {
+        let body = "问题：x
+
+**引入**
+
+- 单卡 [[B/2|a|a|12]]：π_m (6)
+
+**结构**
+
+- 设定 [[B/3|a|a]]：设定";
+        let wanted = import_section(&[(false, "B/2|a|a|13".to_string(), "π_m (6)".to_string())]).unwrap();
+        let rebuilt = imports_rebuilt(body, &wanted).unwrap();
+        assert_eq!(rebuilt, "问题：x
+
+**引入**
+
+- 单卡 [[B/2|a|a|13]]：π_m (6)
+
+**结构**
+
+- 设定 [[B/3|a|a]]：设定");
+        assert!(imports_rebuilt(&rebuilt, &wanted).is_none(), "nothing to do");
+        // A Model Card without the section (an older build) gets it before 结构.
+        let old = "问题：x
+
+**结构**
+
+- 设定 [[B/3|a|a]]：设定";
+        assert!(imports_rebuilt(old, &wanted).unwrap().contains("**引入**
+
+- 单卡 [[B/2|a|a|13]]"));
     }
 
     // -Step defer: the released models leave the order (every later step iterates it) and read deferred;

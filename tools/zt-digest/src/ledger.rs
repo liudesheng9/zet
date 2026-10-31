@@ -12416,13 +12416,14 @@ fn require_step(entry: &Value, name: &str) -> Result<Value> {
     Ok(step.clone())
 }
 
-/// The `**结构**` section of the Model Card: the compiler's structure contribution.
+/// The `**结构**` and `**引入**` sections of the Model Card: the compiler's structure contribution (a
+/// taken part is an 引入 line since #212).
 fn structure_lines(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;
     for line in body.replace('\r', "").split('\n') {
         let trimmed = line.trim();
-        if trimmed.starts_with("**结构**") {
+        if trimmed.starts_with("**结构**") || trimmed.starts_with("**引入**") {
             inside = true;
             continue;
         }
@@ -19166,5 +19167,18 @@ mod fail_class_tests {
         };
         // An argument fault exits 2 before the ledger reads anything; a missing run folder fails later.
         assert_ne!(said, "exit 2", "the argument check refused a fault without -Class");
+    }
+}
+
+#[cfg(test)]
+mod import_structure_tests {
+    use super::structure_lines;
+
+    // #212 (I7 of #205): model-finish reads a taken part from the Model Card's **引入** section, which
+    // the compiler writes beside the 结构 list.
+    #[test]
+    fn the_structure_contribution_holds_the_import_lines() {
+        let body = "问题：x\n\n**引入**\n\n- 单卡 [[B/2|a|a|12]]：π_m\n\n**结构**\n\n- 设定 [[B/3|a|a]]（核心）：设定\n\n**关联**\n- 对照 [[C/1]]\n\n来源：书";
+        assert_eq!(structure_lines(body), ["- 单卡 [[B/2|a|a|12]]：π_m", "- 设定 [[B/3|a|a]]（核心）：设定"]);
     }
 }

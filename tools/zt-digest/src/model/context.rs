@@ -277,6 +277,21 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
         }
         line("");
     }
+    // The building blocks of other books' models (#212, owner decision 4): a plan imports one with a
+    // take (its address; `"block": true` for a 整块 block) instead of restating it.
+    let catalogue = read_calls(zt, &[("search_cards", json!({ "type": "model", "limit": 200 }))])
+        .ok()
+        .and_then(|v| v.into_iter().next())
+        .map(|found| block_catalogue(&pipe(&found["results"]).into_iter().cloned().collect::<Vec<_>>(), &key, 40))
+        .unwrap_or_default();
+    if !catalogue.is_empty() {
+        line("## 其他书的构件（可引入：plan 的 take 写它的地址，整块的加 \"block\": true；不要写复本）");
+        line("");
+        for entry in catalogue {
+            line(&entry);
+        }
+        line("");
+    }
 
     util::write_text(out, &md)?;
     let sections = match &entry {
@@ -291,4 +306,73 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
         "parts": pipe(&structure["parts"]).len(),
         "context": out,
     }))
+}
+
+/// The building blocks other books' models offer (#212): for each Model Card outside the book `key`,
+/// its setting (the first Side successor whose facet starts with 设定, a 整块 block) and up to three
+/// result Cards (结果, 命题, 定理, 引理, 推论), one line each; at most `max` lines.
+pub(crate) fn block_catalogue(rows: &[Value], key: &str, max: usize) -> Vec<String> {
+    let own = format!("{key}/");
+    let is_model = |r: &Value| ps::eq(&s(&r["type"]), "model");
+    let mut out = Vec::new();
+    for head in rows.iter().filter(|r| is_model(r) && !truthy(&r["facet"]) && !s(&r["address"]).starts_with(&own)) {
+        let at = s(&head["address"]);
+        let under = format!("{at}|");
+        let parts = rows.iter().filter(|r| is_model(r) && truthy(&r["facet"]) && s(&r["address"]).starts_with(&under)).collect::<Vec<_>>();
+        out.push(format!("- [[{at}]] {}", s(&head["title"])));
+        let setting = parts.iter().find(|r| {
+            let rest = &s(&r["address"])[under.len()..];
+            !rest.contains('|') && rest.chars().all(|c| c.is_ascii_lowercase()) && s(&r["facet"]).starts_with("设定")
+        });
+        if let Some(setting) = setting {
+            out.push(format!("  - 整块 [[{}]] {}", s(&setting["address"]), s(&setting["title"])));
+        }
+        let results = parts
+            .iter()
+            .filter(|r| ["结果", "命题", "定理", "引理", "推论"].iter().any(|p| s(&r["facet"]).starts_with(p)))
+            .take(3);
+        for r in results {
+            out.push(format!("  - 单卡 [[{}]] {}", s(&r["address"]), s(&r["title"])));
+        }
+    }
+    out.truncate(max);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_catalogue;
+    use serde_json::json;
+
+    // #212 (I7 of #205): the architect sees the building blocks of other books' models, so a plan can
+    // import one (owner decision 4) instead of restating it: per model its setting (a 整块 block) and
+    // a few result Cards; this book's models and Cards that are no model's parts stay out; the list
+    // stops at `max` lines.
+    #[test]
+    fn the_catalogue_lists_other_books_settings_and_results() {
+        let row = |address: &str, title: &str, facet: Option<&str>| json!({ "address": address, "title": title, "facet": facet, "type": "model" });
+        let rows = vec![
+            row("A2020/2|a", "模型 A：要素偏向", None),
+            row("A2020/2|a|a", "设定：两种要素", Some("设定")),
+            row("A2020/2|a|a|a", "符号表", Some("符号表与读法")),
+            row("A2020/2|a|a|1", "第 1 章：直觉", Some("第 1 章：直觉")),
+            row("A2020/2|a|a|1|a", "结果：偏向", Some("结果：偏向")),
+            row("A2020/2|a|a|2|a", "命题 2：唯一", Some("命题 2")),
+            row("B2021/4|a", "模型 B：本书", None),
+            row("B2021/4|a|a", "设定：本书", Some("设定")),
+            json!({ "address": "A2020/1", "title": "一张想法卡", "facet": null, "type": "idea" }),
+        ];
+        let lines = block_catalogue(&rows, "B2021", 20);
+        assert_eq!(
+            lines,
+            [
+                "- [[A2020/2|a]] 模型 A：要素偏向",
+                "  - 整块 [[A2020/2|a|a]] 设定：两种要素",
+                "  - 单卡 [[A2020/2|a|a|1|a]] 结果：偏向",
+                "  - 单卡 [[A2020/2|a|a|2|a]] 命题 2：唯一",
+            ]
+        );
+        assert_eq!(block_catalogue(&rows, "B2021", 2).len(), 2, "bounded");
+        assert!(block_catalogue(&rows, "A2020", 20).iter().all(|l| !l.contains("A2020")), "its own book stays out");
+    }
 }

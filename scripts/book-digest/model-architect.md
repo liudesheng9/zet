@@ -31,8 +31,8 @@ The chapter's endnotes in `context.md` are source text: use a definition the bod
 - **Side part** (`line: "side"`, `of`): an example, a case, or a variant beside one step.
 - **Off part** (`line: "off"`): outside the build: a correspondence, a limit, a history.
 - **Derivation part** (`derive: true`, facet starting with `推导`): one step of the derivation, from `from` (or its premises) to `to`. Put one wherever the book skips or compresses algebra that a reader must check. Estimate `steps`, the lines of algebra (one equation and its reason per line). A step longer than `MaxSteps` lines becomes a **chain**: consecutive Derivation parts, each starting from the `to` of the one before (the script links them). Choose the cut results yourself: name each intermediate result in `to`. Do not shorten the derivation to save Cards.
-- **Shared part** (`take`): a part of another model that this model uses. Take it in instead of writing a copy. For a part of a model planned earlier in this batch, write `<that model>#<id>`.
-- Every premise of a part is a member: an earlier main-line part, a shared part, or a side part. A premise outside the model is a fault: take it in (`take`), move the Card in (`move`, only an agent Card of this book that belongs to no model), or restate it as a new part. A tree root is never a premise.
+- **Shared part** (`take`): a building block of another model that this model uses: import it instead of writing a copy. The compiler writes it as a line of the Model Card's **引入** section. A take is one Card (`单卡`); add `"block": true` to take the Card with every part under its Side successors and the parts of its home model they rest on (`整块`: a setting tree, a result with its proof). For a part of a model planned earlier in this batch, write `<that model>#<id>`; for a block of another book, write its address (`context.md` lists them under 其他书的构件).
+- Every premise of a part is a member: an earlier main-line part, a shared part, or a side part. A premise outside the model is a fault: take it in (`take`), or move the Card in (`move`, only an agent Card of this book that belongs to no model). When this model changes one assumption of a borrowed block, take the block and add one part that states only the change and rests on the borrowed Card (a variant: `specializes` or `relaxes`); never restate a part of a model. Restate only a premise that is no part of any model. A tree root is never a premise.
 - A **concept model** has at most four parts, often none (`设定`, `机制` core, `结论`, `例子` aside), and no Derivation parts.
 - Mark one to three parts `core`; detail and Derivation parts are `aside`.
 - A part of a formal model holds at most 12 sentences and 400 characters of prose. Plan two parts where one statement will not fit.
@@ -126,7 +126,7 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | `figure` | the book's own figure the part shows, by its label, e.g. `2.F.1` or `IV` (the brief's `## 图` lists them, and `figures.json` in the staging folder holds every one); the script hands DeepSeek the figure's Markdown to paste. Prefer a book figure to a `chart` that redraws it; add a `chart` only for what the book does not draw |
 | `existing`, `refill` | keep an existing part (and rewrite its body) |
 | `move` | move an outside agent Card into the range at this place |
-| `take`, `use` | take in a shared part, with one line on what this model uses from it |
+| `take`, `use`, `block` | import a shared part (an **引入** line), with one line on what this model uses from it; `block: true` imports it with its block (整块) |
 | `merge` | `[{"from": address, "into": id}]` |
 | `divisions` | optional: the model's parts (分部), `[{"name": "第一部分 构件", "start": id}]`, each starting at a main-line part; the compiler writes them as the Model Card's **分部** section, and the GUI shows each as a range of blocks (see "Divide a long model into parts") |
 | `notes` | Cards outside the model that should link a new part, or that misstate the model |
