@@ -594,6 +594,29 @@ fn get_model_reports_how_a_reader_builds_the_model_and_what_keeps_it_from_being_
             (ratio.as_str(), definition.as_str())
         ]
     );
+
+    // The GUI reader keeps the model it came from: a shared part opened from model B (`via`) reads
+    // as a member of B, B first in `models`; with no `via`, or one the part is no member of, it
+    // reads in its home model as before.
+    let gui = Gui::start(&home);
+    let esc = |at: &str| at.replace('/', "%2F").replace('|', "%7C");
+    let card_via = |via: Option<&str>| {
+        let path = format!(
+            "/api/card?at={}{}",
+            esc(&repay),
+            via.map(|v| format!("&via={}", esc(v))).unwrap_or_default()
+        );
+        gui.api("GET", &path, json!(null))
+    };
+    assert_eq!(card_via(None)["model"]["head"]["address"], json!(a));
+    let in_b = card_via(Some(&b));
+    assert_eq!(in_b["model"]["head"]["address"], json!(b), "{in_b}");
+    assert_eq!(in_b["model"]["models"][0]["address"], json!(b), "{in_b}");
+    assert_eq!(
+        card_via(Some(&setting))["model"]["head"]["address"],
+        json!(a),
+        "a via that is no model of the part changes nothing"
+    );
 }
 
 /// The addresses of each chain in `build.chains`, with the members around it.

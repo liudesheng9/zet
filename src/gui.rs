@@ -1054,7 +1054,7 @@ impl App {
             (Method::Get, "/api/ping") => Ok(json!({ "ok": true })),
             (Method::Get, "/api/overview") => self.overview(),
             (Method::Get, "/api/tree") => self.tree(&param("id")?),
-            (Method::Get, "/api/card") => self.card(&param("at")?),
+            (Method::Get, "/api/card") => self.card(&param("at")?, query.get("via").map(String::as_str)),
             (Method::Get, "/api/graph") => self.graph(),
             (Method::Get, "/api/register") => self.register(query),
             (Method::Post, "/api/ask") => self.ask(body),
@@ -1264,7 +1264,9 @@ impl App {
         Ok(value)
     }
 
-    fn card(&self, target: &str) -> ApiResult {
+    /// One Card for the reader. `via` names the Model Card the reader came from: a part that model
+    /// shares with others is shown as a member of it, not of its home model.
+    fn card(&self, target: &str, via: Option<&str>) -> ApiResult {
         let snapshot = self.snapshot()?;
         let card = snapshot
             .by_address
@@ -1290,7 +1292,7 @@ impl App {
             "emphasis": card.emphasis.map(Emphasis::id),
             "level": card.level_id(),
             "form": card.form.map(crate::math::MathForm::id),
-            "model": snapshot.model(&card.address),
+            "model": snapshot.model_in(&card.address, via),
             "hubs": crate::hub::hubs_of(&snapshot, &card.address),
             "context": context,
             "title": parsed.title,
@@ -5115,6 +5117,115 @@ mod tests {
         assert_eq!(out["straight"], json!("M 0 0 V 50"), "{out}");
     }
 
+    /// A tall board (a flat model of one-card blocks, hart1995firms/15|c) folds its long lines: the
+    /// plain stops along a line shrink to tabs first (`demotionOrder`: the middle of the longest line
+    /// first, then termini, then interchanges; roots and kept blocks never), and a run of tabs, each
+    /// the only tree child of the one before, lies left to right in one row (`foldedTreeLayout`),
+    /// at most `maxRun` to a row. Cards that do not fold lay out as `treeLayout` lays them.
+    #[test]
+    fn a_tall_board_shrinks_plain_stops_and_folds_a_run_of_tabs_into_a_row() {
+        let Some(out) = layout_js(
+            "(() => {
+               // s -> a -> b -> c -> d -> e, and e branches into f and g.
+               const ids = ['s','a','b','c','d','e','f','g'];
+               const blocks = ids.map((id, i) => ({ id, kind: i ? 'chapter' : 'setting' }));
+               const children = { s: ['a'], a: ['b'], b: ['c'], c: ['d'], d: ['e'], e: ['f', 'g'] };
+               const parent = { s: null, a: 's', b: 'a', c: 'b', d: 'c', e: 'd', f: 'e', g: 'e' };
+               const tree = { roots: ['s'], children, parent };
+               const order = L.demotionOrder(blocks, tree, [], new Set(['s']));
+               const near = { w: 124, h: 74 };
+               const far = { w: 44, h: 30 };
+               const small = new Set(['a', 'b', 'c', 'd']);
+               const size = (id) => (small.has(id) ? far : near);
+               const plain = L.treeLayout(['s'], children, () => near, { gapX: 34, gapY: 30 });
+               const fold = L.foldedTreeLayout(['s'], children, size, { gapX: 34, gapY: 30, runGap: 10, small: (id) => small.has(id), maxRun: 8 });
+               const split = L.foldedTreeLayout(['s'], children, size, { gapX: 34, gapY: 30, runGap: 10, small: (id) => small.has(id), maxRun: 3 });
+               const none = L.foldedTreeLayout(['s'], children, () => near, { gapX: 34, gapY: 30 });
+               const boxes = Object.values(fold.pos);
+               let overlap = false;
+               for (const a of boxes) for (const b of boxes) if (a !== b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) overlap = true;
+               return { order, runs: fold.runs, pos: fold.pos, height: fold.height, plainHeight: plain.height, splitRuns: split.runs,
+                 same: JSON.stringify(none.pos) === JSON.stringify(plain.pos), overlap };
+             })()",
+        ) else {
+            return;
+        };
+        let order: Vec<&str> = out["order"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(!order.contains(&"s"), "a kept block or a root never shrinks: {out}");
+        assert_eq!(&order[..4], &["c", "b", "d", "a"], "the plain stops first, the middle of the line first (the later of two): {out}");
+        assert_eq!(&order[4..6], &["g", "f"], "then the termini, the later first: {out}");
+        assert_eq!(order[6], "e", "the interchange last: {out}");
+        assert_eq!(out["runs"], json!({ "run:a": ["a", "b", "c", "d"] }), "one run along the line: {out}");
+        let pos = &out["pos"];
+        let y = |id: &str| pos[id]["y"].as_f64().unwrap();
+        let x = |id: &str| pos[id]["x"].as_f64().unwrap();
+        assert!(y("a") == y("b") && y("b") == y("c") && y("c") == y("d"), "the run lies in one row: {out}");
+        assert!(x("a") < x("b") && x("b") < x("c") && x("c") < x("d"), "left to right in line order: {out}");
+        assert_eq!(pos["c"]["ri"], json!(2), "each tab knows its place in the run: {out}");
+        assert!(y("s") < y("a") && y("d") < y("e") && y("e") < y("f"), "the tree still reads top down: {out}");
+        assert!(out["height"].as_f64().unwrap() < out["plainHeight"].as_f64().unwrap() / 2.0, "the board is less than half as tall: {out}");
+        assert_eq!(out["splitRuns"], json!({ "run:a": ["a", "b", "c"] }), "a run longer than a row breaks; a single tab is no run: {out}");
+        assert_eq!(out["same"], json!(true), "nothing small: the tree as treeLayout lays it: {out}");
+        assert_eq!(out["overlap"], json!(false), "no two cards overlap: {out}");
+    }
+
+    /// The lines that leave one premise downward past other cards (the setting, which every chapter
+    /// rests on) share one corridor: a trunk that branches off at each dependent's layer, not one
+    /// corridor per line side by side. A premise with one such line, or lines to the next layer only,
+    /// gets no trunk.
+    #[test]
+    fn the_lines_from_one_premise_share_one_trunk() {
+        let Some(out) = layout_js(
+            "(() => {
+               const box = (x, depth, w = 100) => ({ x, y: depth * 100, w, h: 60, cx: x + w / 2, depth });
+               const s = box(150, 0);
+               const a = box(0, 1), b = box(300, 1);
+               const c = box(20, 2), d = box(260, 2);
+               const e = box(140, 3);
+               const t = box(400, 0);
+               const boxes = [s, a, b, c, d, e, t];
+               const lines = [
+                 { key: 's>c', premise: s, dependent: c }, { key: 's>d', premise: s, dependent: d }, { key: 's>e', premise: s, dependent: e },
+                 { key: 's>a', premise: s, dependent: a },
+                 { key: 't>e', premise: t, dependent: e },
+               ];
+               const lane = L.trunks(lines, boxes);
+               const forced = L.threadPath({ x: 200, y: 60 }, { x: 310, y: 200 }, [a, b], { lane: lane.get('s>d') });
+               return { lane: Object.fromEntries(lane), forced: forced.lane };
+             })()",
+        ) else {
+            return;
+        };
+        let lane = out["lane"].as_object().unwrap();
+        assert_eq!(lane.len(), 3, "the three lines that skip layers share the trunk; the rest get none: {out}");
+        assert_eq!(lane["s>c"], lane["s>d"], "{out}");
+        assert_eq!(lane["s>d"], lane["s>e"], "{out}");
+        let x = lane["s>e"].as_f64().unwrap();
+        assert!(x > 100.0 && x < 300.0, "the trunk runs in the free corridor between the cards of the layers it passes: {out}");
+        assert_eq!(out["forced"], lane["s>d"], "threadPath takes the trunk's corridor: {out}");
+    }
+
+    /// The model board keeps a borrowed building block in view: the 共用 and 旁注 tabs open their
+    /// shelf in place on the Model Card (each borrowed card stamped with the model it lives in, the
+    /// stamp opening that model), a borrowed card opens as a member of the model the reader came
+    /// from (`via`), a tall board shrinks its plain stops and folds their runs into rows, the lines of
+    /// one premise share a trunk, and a name several blocks share is counted (推导1, 推导2).
+    #[test]
+    fn the_front_end_opens_a_shelf_keeps_the_borrowing_model_and_folds_a_tall_board() {
+        let blocks = app_function("blockBoard");
+        assert!(APP_JS.contains("state.card = await api('card?at=' + enc(state.pointer) + (via ? '&via=' + enc(via) : ''));"), "the reader asks for the model it came from");
+        assert!(blocks.contains("const open = onHead ? shelf : (byPrefix || blocks.find(holds) || null);"), "a shelf opens on the Model Card");
+        assert!(blocks.contains("if (!PLAIN[b.kind]) return go(b.head);"), "a chapter tab still opens its chapter");
+        assert!(blocks.contains("class: 'mbn-home', title: `Lives in the model ${home}"), "a borrowed card names its home model");
+        assert!(blocks.contains("const demotable = ZtLayout.demotionOrder(blocks, tree,"), "a tall board shrinks its plain stops");
+        assert!(blocks.contains("Math.max(420, avail * TALL)"), "the height budget follows the board's width");
+        assert!(blocks.contains("const trunk = ZtLayout.trunks("), "the lines of one premise share a trunk");
+        assert!(blocks.contains("d = `M ${premise.cx} ${premise.y} H ${dependent.cx}`;"), "two stops of a folded run are joined by one straight leg");
+        assert!(blocks.contains("seen.get(name) > 1 ? `${name}${ordinal.get(id)}` : name"), "repeated block names are counted");
+        assert!(css_rule(".mbn-tick").contains("white-space: nowrap"), "a strip tab never breaks between its characters");
+        assert!(css_rule(".mbn-chapter.shelf::before").contains("display: none"), "a shelf has no pin of its own");
+    }
+
     /// The board (#201, mental mapping): a pinned card leans a little about its pin, -1.2° to 1.2°,
     /// and the same card always leans the same way, so the board looks pinned by hand and stays put.
     #[test]
@@ -5160,10 +5271,11 @@ mod tests {
         assert!(board.contains("if (model.blocks && model.blocks.length > 1 && (model.blocks[0].chaptered || model.parts.length > 20)) return blockBoard(card, model);"));
         let blocks = app_function("blockBoard");
         assert!(blocks.contains("const tree = ZtLayout.blockTree(blocks, edges);"), "each block hangs under its main premise");
-        assert!(blocks.contains("ZtLayout.treeLayout(tree.roots, tree.children, sizeOf, { gapX: 34, gapY: 30 })"));
+        assert!(blocks.contains("ZtLayout.foldedTreeLayout(tree.roots, tree.children, (id) => (small.has(id) ? NET.far : sizeOf(id)), {"));
+        assert!(blocks.contains("gapX: 34, gapY: 30, runGap: 10,"));
         // The transit map between blocks.
         assert!(blocks.contains("const layer = h('div', { class: 'mbn-layer' }, lines, [...nodes.values()], stations);"), "lines under the cards, stations over them");
-        assert!(blocks.contains("let route = ZtLayout.threadPath(p1, p2, between, { half: 15 });"), "a line that skips layers takes a free corridor");
+        assert!(blocks.contains("let route = ZtLayout.threadPath(p1, p2, between, { half: 15, lane });"), "a line that skips layers takes a free corridor, a bundle its trunk");
         assert!(blocks.contains("d = ZtLayout.roundedPath(route.points, 9);"), "smooth bends");
         assert!(blocks.contains("for (const e of faults) if (!list.has(key(e))) list.set(key(e), { ...e, up: true });"), "the forward faults are always drawn");
         assert!(blocks.contains("stations.append(svg('circle', { cx: q.cx, cy: q.y, r: q.h < 40 ? 4.5 : 6, class: 'station' + state }));"), "a station on each card's upper edge");

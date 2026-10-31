@@ -1093,6 +1093,12 @@ impl Snapshot {
         crate::model::structure(address, &self.by_address, &self.parsed, &self.reverse_inbound)
     }
 
+    /// The model a Card belongs to, read as a member of `prefer` when it is one: the GUI keeps the
+    /// model the reader came from when it opens a part that model shares with others.
+    pub(crate) fn model_in(&self, address: &str, prefer: Option<&str>) -> Option<Value> {
+        crate::model::structure_in(address, prefer, &self.by_address, &self.parsed, &self.reverse_inbound)
+    }
+
     /// The direct child Side successors of a Regular Card.
     pub(crate) fn sides(&self, card: &Card) -> Vec<Value> {
         if crate::is_tree_root(card) {

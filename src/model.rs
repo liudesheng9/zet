@@ -834,6 +834,19 @@ pub(crate) fn structure(
     parsed: &BTreeMap<String, crate::ParsedCard>,
     inbound: &BTreeMap<String, BTreeSet<String>>,
 ) -> Option<Value> {
+    structure_in(address, None, by_address, parsed, inbound)
+}
+
+/// The structure of one model the Card belongs to: `prefer` (a Model Card) when the Card is a
+/// member of that model, else its first model. A part shared by several models is read as a member
+/// of the model the reader came from, and `models` names that model first.
+pub(crate) fn structure_in(
+    address: &str,
+    prefer: Option<&str>,
+    by_address: &BTreeMap<String, Card>,
+    parsed: &BTreeMap<String, crate::ParsedCard>,
+    inbound: &BTreeMap<String, BTreeSet<String>>,
+) -> Option<Value> {
     let card = by_address.get(address)?;
     if card.card_type != CardType::Model {
         return None;
@@ -851,7 +864,11 @@ pub(crate) fn structure(
             .unwrap_or_default()
     };
     let reference = |at: &str| json!({ "address": at, "title": title(at) });
-    let models = heads(address, by_address, inbound);
+    let mut models = heads(address, by_address, inbound);
+    if let Some(at) = prefer.and_then(|p| models.iter().position(|m| m == p)) {
+        let chosen = models.remove(at);
+        models.insert(0, chosen);
+    }
     let Some(head) = models.first().cloned() else {
         return Some(json!({
             "head": null,

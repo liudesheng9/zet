@@ -74,6 +74,7 @@ The terms are those of `CONTEXT.md`.
 | Link reader | `src/model.rs` (`RELATION_KINDS`, `RelationKind::announced_in`, `read_links`, `sentence_start`, `sentence_around`) | Each Link's target, kind, and sentence |
 | Structure | `src/model.rs` (`structure`) | Parts, relations, loose parts, neighbours, discussion, issues; calls the build report and the math report |
 | Build report | `src/model.rs` (`build_report`, `take_in_shared`, `closure_fix`) | Build order, chains, faults |
+| Model in context | `src/model.rs` (`structure_in`), `src/ops.rs` (`Snapshot::model_in`) | The structure of a shared part read in the model the reader came from |
 | Math view | `src/math.rs` (`View`) | Unit lookups over the snapshot: `unit_of`, `theories_of`, `citers`, `premises_of` |
 | Unit report | `src/math.rs` (`unit_report`, `unit_study`, `tools`, `building_block`, `group_by_theory`, `role`, `labels`) | Tiers, budget, faults, load, used_by, study stations |
 | Theory report | `src/math.rs` (`theory_report`, `section_links`) | Dependency order, weights, cycle, forward, tools, users, faults, study passes |
@@ -527,6 +528,7 @@ Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `
 - **A new Math form needs a migration** for archives whose `math_form` column was added by `ALTER TABLE`, because the column CHECK lists the forms of the time.
 
 ## Change history
+- `2026-10-30` — `structure_in(address, prefer, …)` and `Snapshot::model_in`: a part shared by several models reads as a member of `prefer` when it is one, that model first in `models`; `structure` is `structure_in` with no preference (the MCP `get_model` is unchanged). The GUI passes the open model as `via` (see [GUI](gui.md)). zt 0.47.0. Test: the `via` checks in `tests/self_sufficient_models.rs`.
 - `2026-10-29` — The parts shared from other models make their own `shared` block (`共用前提`) before the setting, apart from the `aside` block (now `旁注`, only the parts filed under the head). The build already places a shared part before the step that needs it, so a rests-on Link into it no longer shows as a forward thread on the model board or in `check-network.mjs` (found on `ebrill2001modern/11|a`). zt 0.46.1. Test: `a_shared_part_is_a_premise_block_before_the_setting`.
 - `2026-10-28` — #201: each block carries `lead`, the opening of its card's 直觉 (`blocks_report` now takes a body lookup). Test: `a_spine_model_reads_as_blocks_with_parts_results_proofs_and_edges`.
 - `2026-10-28` — #204 (B6): `build.parts` lists each `**分部**` line that names a Card off the main line, with its fix (`part_faults`, sharing `parse_divisions` with `blocks_report`); the GUI lists them with the build faults. Test: `a_part_that_starts_off_the_main_line_is_a_build_issue`.

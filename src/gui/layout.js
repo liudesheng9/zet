@@ -864,7 +864,8 @@
    * edge). With no card in the layers between them it is one curve. Otherwise it leaves into the
    * gap beside its premise (`half` the layer gap away), runs along the free corridor between the
    * cards `between` (the one nearest its own line, `shift` apart from its neighbours), and enters
-   * its dependent from the gap beside it, corners rounded. Returns `{ d, mid, lane }`.
+   * its dependent from the gap beside it, corners rounded. `options.lane` forces the corridor: the
+   * lines of one bundle share it as a trunk (`trunks`). Returns `{ d, mid, lane }`.
    */
   function threadPath(p1, p2, between, options = {}) {
     const half = options.half ?? 17;
@@ -883,7 +884,7 @@
     const free = [merged[0][0] - 8, merged[merged.length - 1][1] + 8];
     for (let i = 1; i < merged.length; i += 1) if (merged[i][0] - merged[i - 1][1] >= 8) free.push((merged[i][0] + merged[i - 1][1]) / 2);
     const line = (p1.x + p2.x) / 2;
-    const lane = free.sort((a, b) => Math.abs(a - line) - Math.abs(b - line) || b - a)[0] + (options.shift || 0);
+    const lane = (options.lane ?? free.sort((a, b) => Math.abs(a - line) - Math.abs(b - line) || b - a)[0]) + (options.shift || 0);
     const g1 = p1.y + (down ? half : -half);
     const g2 = p2.y + (down ? -half : half);
     const pts = [[p1.x, p1.y], [p1.x, g1], [lane, g1], [lane, g2], [p2.x, g2], [p2.x, p2.y]]
@@ -901,6 +902,117 @@
     }
     d += ` ${seg(pts[pts.length - 2], pts[pts.length - 1])}`;
     return { d, mid: { x: lane, y: (g1 + g2) / 2 }, lane, points };
+  }
+
+  /**
+   * The trunks of the transit map: the lines that leave one premise downward past other cards run
+   * along one corridor and branch off at each dependent's layer, as a metro line with branches,
+   * instead of one corridor per line side by side. `lines` are `{ key, premise, dependent }` with
+   * the two cards' boxes `{ x, y, w, h, cx, depth }`; `boxes` are every card on the board. A
+   * premise with two or more such lines gets one trunk: the free corridor (as `threadPath` finds
+   * it) across every layer between the premise and its deepest dependent. Returns a Map from each
+   * bundled line's key to its corridor x.
+   */
+  function trunks(lines, boxes) {
+    const byPremise = new Map();
+    for (const l of lines) {
+      if (l.dependent.depth - l.premise.depth < 2) continue;
+      (byPremise.get(l.premise) || byPremise.set(l.premise, []).get(l.premise)).push(l);
+    }
+    const lane = new Map();
+    for (const [premise, group] of byPremise) {
+      if (group.length < 2) continue;
+      const deepest = group.reduce((a, b) => (b.dependent.depth > a.dependent.depth ? b : a));
+      const between = boxes.filter((q) => q.depth > premise.depth && q.depth < deepest.dependent.depth);
+      const route = threadPath({ x: premise.cx, y: premise.y + premise.h }, { x: deepest.dependent.cx, y: deepest.dependent.y }, between);
+      if (route.lane == null) continue;
+      for (const l of group) lane.set(l.key, route.lane);
+    }
+    return lane;
+  }
+
+  /**
+   * Which blocks may shrink to a tab when the board is too tall for the reader (a level of detail,
+   * as a metro map draws plain stations as ticks and interchanges and termini in full). `keep` are
+   * never shrunk (the open block and its supporting cards, the setting). Roots stay. The others in
+   * order: plain stations first (one tree child: a stop along a line), the middle of the longest line
+   * first, then termini (no child), then interchanges (several children); inside a class, the block
+   * with fewer Links first, then the later block. Linear in blocks plus edges, plus a sort.
+   */
+  function demotionOrder(blocks, tree, edges, keep = new Set()) {
+    const at = new Map(blocks.map((b, i) => [b.id, i]));
+    const weight = new Map();
+    for (const e of edges) for (const id of [e.from_block, e.to_block]) weight.set(id, (weight.get(id) || 0) + (e.count || 1));
+    const kids = (id) => tree.children[id] || [];
+    const plain = (id) => tree.parent[id] != null && kids(id).length === 1;
+    // Each plain station's line: the run of plain stations it lies on, and how far it is from the ends.
+    const line = new Map();
+    for (const b of blocks) {
+      if (!plain(b.id) || (tree.parent[b.id] != null && plain(tree.parent[b.id]) && kids(tree.parent[b.id])[0] === b.id)) continue;
+      const run = [b.id];
+      while (plain(kids(run[run.length - 1])[0])) run.push(kids(run[run.length - 1])[0]);
+      run.forEach((id, i) => line.set(id, { length: run.length, middle: Math.min(i, run.length - 1 - i) }));
+    }
+    const cls = (id) => (plain(id) ? 0 : kids(id).length === 0 ? 1 : 2);
+    return blocks
+      .map((b) => b.id)
+      .filter((id) => !keep.has(id) && tree.parent[id] != null)
+      .sort((x, y) => cls(x) - cls(y)
+        || ((line.get(y) || {}).length || 0) - ((line.get(x) || {}).length || 0)
+        || ((line.get(y) || {}).middle || 0) - ((line.get(x) || {}).middle || 0)
+        || (weight.get(x) || 0) - (weight.get(y) || 0)
+        || at.get(y) - at.get(x));
+  }
+
+  /**
+   * A tidy tree whose long lines of small cards fold into rows (a metro line drawn along the page,
+   * not down it): a run of two or more `small` blocks, each the only tree child of the one before,
+   * lies left to right in one layer, `gap` apart, at most `maxRun` to a row (a longer run makes
+   * several rows, one under the other). Otherwise as `treeLayout`. Each folded card's box carries
+   * `run` (its run's id) and `ri` (its place in the run). Returns `{ pos, width, height, runs }`.
+   */
+  function foldedTreeLayout(roots, children, size, options = {}) {
+    const small = options.small || (() => false);
+    const maxRun = Math.max(2, options.maxRun ?? 8);
+    const gap = options.runGap ?? 10;
+    const kids = (id) => children[id] || [];
+    const runs = {};
+    const head = {};
+    const walk = (id) => {
+      let run = [id];
+      if (small(id)) {
+        while (run.length < maxRun && kids(run[run.length - 1]).length === 1 && small(kids(run[run.length - 1])[0])) run.push(kids(run[run.length - 1])[0]);
+      }
+      if (run.length < 2) run = [id];
+      const key = run.length > 1 ? `run:${run[0]}` : id;
+      if (run.length > 1) { runs[key] = run; head[run[0]] = key; }
+      for (const k of kids(run[run.length - 1])) walk(k);
+    };
+    roots.forEach(walk);
+    const folded = {};
+    const name = (id) => head[id] || id;
+    for (const [key, run] of Object.entries(runs)) folded[key] = kids(run[run.length - 1]).map(name);
+    const inRun = new Set(Object.values(runs).flat());
+    for (const id of Object.keys(children)) if (!inRun.has(id)) folded[id] = kids(id).map(name);
+    const sizeOf = (id) => {
+      const run = runs[id];
+      if (!run) return size(id);
+      const boxes = run.map(size);
+      return { w: boxes.reduce((n, b) => n + b.w, 0) + gap * (run.length - 1), h: Math.max(...boxes.map((b) => b.h)) };
+    };
+    const lay = treeLayout(roots.map(name), folded, sizeOf, options);
+    const pos = {};
+    for (const [id, box] of Object.entries(lay.pos)) {
+      const run = runs[id];
+      if (!run) { pos[id] = box; continue; }
+      let x = box.x;
+      run.forEach((m, ri) => {
+        const s = size(m);
+        pos[m] = { x, y: box.y + (box.h - s.h) / 2, w: s.w, h: s.h, cx: x + s.w / 2, depth: box.depth, run: id, ri };
+        x += s.w + gap;
+      });
+    }
+    return { pos, width: lay.width, height: lay.height, runs };
   }
 
   /**
@@ -945,7 +1057,7 @@
   }
 
   return {
-    blockLayout, bridgeLayout, blockTree, treeLayout, threadPath, roundedPath, tilt,
+    blockLayout, bridgeLayout, blockTree, treeLayout, foldedTreeLayout, demotionOrder, trunks, threadPath, roundedPath, tilt,
     sideRank, outline, pathTo, focusLens, edgePath, elbow, edgeSplit, isTermEdge, focusEdges, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,
     theoryRows, labelsIn, studyStations, theoryRun,

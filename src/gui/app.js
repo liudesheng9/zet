@@ -518,7 +518,9 @@
       return;
     }
     try {
-      state.card = await api('card?at=' + enc(state.pointer));
+      // A part shared by several models opens as a member of the model the reader came from.
+      const via = state.card && state.card.model && state.card.model.head ? state.card.model.head.address : null;
+      state.card = await api('card?at=' + enc(state.pointer) + (via ? '&via=' + enc(via) : ''));
     } catch (error) {
       // Another client removed this Card: fall back to its nearest ancestor.
       const known = new Set(state.nodes.map((node) => node.address));
@@ -3915,6 +3917,10 @@
   let refersOn = readRefers();
   // The two-block view of one pair of blocks, while it is open: { head, from_block, to_block, kind, cards }.
   let bridgeOpen = null;
+  // The shelf of a block that is no chapter (共用 or 旁注) opened on the Model Card: { head, id }.
+  let shelfOpen = null;
+  // The tallest board, as a share of its width, before plain stations shrink to tabs.
+  const TALL = 1.15;
   // Card sizes in the model network, by attention level.
   const NET = { near: { w: 124, h: 74 }, support: { w: 124, h: 74 }, focus: { w: 176, h: 96 }, far: { w: 44, h: 30 } };
   // Blocks that are no chapter: the parts shared from other models (before the setting) and the
@@ -3947,7 +3953,16 @@
     const byPrefix = blocks
       .filter((b) => !PLAIN[b.kind] && (b.head === here || here.startsWith(b.head + '|')))
       .sort((a, b) => b.head.length - a.head.length)[0];
-    const open = onHead ? null : (byPrefix || blocks.find(holds) || null);
+    if (shelfOpen && (shelfOpen.head !== model.head.address || !onHead)) shelfOpen = null;
+    const shelf = shelfOpen ? blocks.find((b) => b.id === shelfOpen.id && PLAIN[b.kind]) || null : null;
+    const open = onHead ? shelf : (byPrefix || blocks.find(holds) || null);
+    // A tab of a block that is no chapter opens its shelf in place: its head is the Model Card.
+    const openBlock = (b) => {
+      if (!PLAIN[b.kind]) return go(b.head);
+      shelfOpen = open && open.id === b.id ? null : { head: model.head.address, id: b.id };
+      if (onHead) renderReader();
+      else go(model.head.address);
+    };
     const edges = model.block_edges || [];
     const layoutFor = (hover) => ZtLayout.blockLayout(blocks, edges, open && open.id, { refers: refersOn, focusOnly: true, backbone: true, hover });
     const layout = layoutFor(null);
@@ -3960,11 +3975,19 @@
       const b = blocks[index.get(id)];
       return b ? (PLAIN[b.kind] || facetLabel(b.facet).split('：')[0]) : id;
     };
-    // A block's short name: a chapter by its number, the rest by their name.
+    // A block's short name: a chapter by its number, the rest by their name; a name several blocks
+    // share (a flat model's 推导, 推导, ...) counts them in reading order: 推导1, 推导2.
+    const seen = new Map();
+    const ordinal = new Map();
+    for (const b of blocks) {
+      const name = nameOf(b.id);
+      seen.set(name, (seen.get(name) || 0) + 1);
+      ordinal.set(b.id, seen.get(name));
+    }
     const shortName = (id) => {
       const name = nameOf(id);
       const m = name.match(/^第\s*(\d+)\s*章$/);
-      return m ? m[1] : name;
+      return m ? m[1] : seen.get(name) > 1 ? `${name}${ordinal.get(id)}` : name;
     };
     // A facet as a card's header: `结果：最优性` reads `结果 · 最优性`.
     const headLabel = (facet) => facetLabel(facet).replace(/\s*[：:]\s*/, ' · ');
@@ -4060,27 +4083,30 @@
     for (const b of blocks) {
       const lv = PLAIN[b.kind] ? 'far' : level.get(b.id);
       const isOpen = open && b.id === open.id;
-      const fault = unanchored.has(b.id)
+      const fault = () => (unanchored.has(b.id)
         ? h('span', { class: 'mbk-fault', text: '!', title: `Unanchored: nothing in ${nameOf(b.id)} rests on an earlier block. Add a 依赖 line from its chapter card to the chapter it builds on.` })
-        : null;
+        : null);
+      // A tab: the block's short name. A card shrunk to a tab on a tall board shows the same.
+      const asTab = () => [h('span', { class: 'mbn-num', text: shortName(b.id) }), fault()];
       const full = PLAIN[b.kind] ? b.title : `${facetLabel(b.facet)} — ${bareTitle(b.title)}`;
       const flags = flagsOf(b.id);
       const node = h('div', {
         class: `mbn-node level-${lv}` + (isOpen ? ' open' : '') + (b.head === here ? ' here' : '') + (unanchored.has(b.id) ? ' unanchored' : '') + (holdsHit(b) ? ' found' : ''),
         role: 'button', tabindex: '0',
         title: `${b.part ? b.part + ' · ' : ''}${full}${b.members > 1 ? ` · ${b.members} 张` : ''}${holdsHit(b) ? ' · holds a search hit' : ''}`,
-        onclick: () => go(b.head),
-        onkeydown: (event) => { if (event.key === 'Enter') go(b.head); },
+        onclick: () => openBlock(b),
+        onkeydown: (event) => { if (event.key === 'Enter') openBlock(b); },
       },
         lv === 'far'
-          ? [h('span', { class: 'mbn-num', text: shortName(b.id) }), fault]
+          ? asTab()
           : [
             h('span', { class: 'mbn-head' },
               h('span', { class: 'mbn-tab', text: PLAIN[b.kind] || (lv === 'focus' ? headLabel(b.facet) : `${shortName(b.id)} · ${(facetLabel(b.facet).split(/[：:]/)[1] || '').trim()}`.replace(/ · $/, '')) }),
-              fault),
+              fault()),
             h('span', { class: 'mbn-title' }, titleNodes(bareTitle(b.title))),
           ]);
       node.dataset.block = b.id;
+      node.zt = { level: lv, full: lv === 'far' ? null : [...node.childNodes], tab: lv === 'far' ? null : asTab() };
       node.style.setProperty('--tilt', `${ZtLayout.tilt(b.head)}deg`);
       // Pointing at a card draws its own lines and lifts every card it is linked with.
       const linked = new Set([b.id, ...(flags ? [...flags.left, ...flags.right].map((f) => f.block) : [])]);
@@ -4109,7 +4135,7 @@
           const tick = h('button', {
             class: 'mbn-tick' + (open && b.id === open.id ? ' open' : '') + (unanchored.has(b.id) ? ' fault' : '') + (holdsHit(b) ? ' found' : ''),
             title: PLAIN[b.kind] ? b.title : `${facetLabel(b.facet)} — ${b.title}`,
-            onclick: () => go(b.head),
+            onclick: () => openBlock(b),
             text: shortName(b.id),
           });
           tick.dataset.block = b.id;
@@ -4123,13 +4149,13 @@
       if (step) {
         event.preventDefault();
         const next = blocks[Math.min(blocks.length - 1, Math.max(0, at + step))];
-        if (next) go(next.head);
+        if (next) openBlock(next);
       } else if (event.key === 'Enter' && document.activeElement && document.activeElement.dataset.block) {
         event.preventDefault();
-        go(blocks[index.get(document.activeElement.dataset.block)].head);
+        openBlock(blocks[index.get(document.activeElement.dataset.block)]);
       } else if ((event.key === 'Escape' || event.key === 'Home') && open) {
         event.preventDefault();
-        go(model.head.address);
+        if (shelf) { shelfOpen = null; renderReader(); } else go(model.head.address);
       }
     });
 
@@ -4185,6 +4211,18 @@
               h('span', { class: 'mbk-step-title' }, titleNodes(part ? bareTitle(part.title) : at))));
         }));
       };
+      // A borrowed card (共用) names the model it lives in; the stamp opens that model.
+      const homeOf = new Map(((model.build && model.build.order) || []).filter((e) => e.line === 'shared' && e.home).map((e) => [e.address, e.home]));
+      const homeStamp = (c) => {
+        const home = homeOf.get(c.address);
+        if (!home) return null;
+        const ref = (partOf.get(c.address)?.also || []).find((m) => m.address === home);
+        const name = ref ? bareTitle(ref.title).split(/[：:]/)[0] : home;
+        return h('button', {
+          class: 'mbn-home', title: `Lives in the model ${home}${ref ? ' — ' + ref.title : ''}; this model borrows it`,
+          onclick: (event) => { event.stopPropagation(); go(home); },
+        }, `⧉ ${name}`);
+      };
       const stackLabel = (c) => c.proof ? `▤ ${isResult(c) ? '证明' : '下面'} ${c.proof.steps} ${isResult(c) ? '步' : '张'}` : null;
       const tuck = (c, i) => {
         const pulled = c.address === here || (c.proof && c.proof.addresses.includes(here));
@@ -4198,6 +4236,7 @@
           h('div', { class: 'mbn-tuck-head' },
             h('span', { class: 'mbk-facet', text: headLabel(c.facet) }),
             pulled ? null : h('span', { class: 'mbn-tuck-line' }, titleNodes(bareTitle(c.title))),
+            homeStamp(c),
             c.proof ? h('button', {
               class: 'mbk-stack', title: 'Open this proof: its first step',
               onclick: (event) => { event.stopPropagation(); go(c.proof.first); },
@@ -4209,26 +4248,56 @@
           ] : null);
         return el;
       };
-      const chapterEl = h('div', { class: 'mbn-chapter' + (open.head === here ? ' here' : ''), style: `z-index: ${open.children.length + 3}` },
-        h('div', { class: 'mbk-head' },
-          h('span', { class: 'mbk-tab', text: headLabel(open.facet) }),
-          open.members > 1 ? h('span', { class: 'mbk-count', text: `${open.members} 张` }) : null),
-        h('button', { class: 'mbk-chapter', onclick: () => go(open.head), title: open.head }, titleNodes(bareTitle(open.title))),
-        open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null,
-        cardFlags([open.head]));
+      // A shelf (共用, 旁注) has no chapter card of its own: its header names what lies on it.
+      const SHELF = {
+        shared: '借来的构件：每张仍在它自己的模型里，本模型只引用它；右边的旗标是用到它的章。',
+        aside: '旁注：直接挂在模型卡下、不属于任何一章的卡。',
+      };
+      const chapterEl = PLAIN[open.kind]
+        ? h('div', { class: 'mbn-chapter shelf', style: `z-index: ${open.children.length + 3}` },
+          h('div', { class: 'mbk-head' },
+            h('span', { class: 'mbk-tab', text: open.title }),
+            h('span', { class: 'mbk-count', text: `${open.children.length} 张` })),
+          h('p', { class: 'mbk-lead', text: SHELF[open.kind] }))
+        : h('div', { class: 'mbn-chapter' + (open.head === here ? ' here' : ''), style: `z-index: ${open.children.length + 3}` },
+          h('div', { class: 'mbk-head' },
+            h('span', { class: 'mbk-tab', text: headLabel(open.facet) }),
+            open.members > 1 ? h('span', { class: 'mbk-count', text: `${open.members} 张` }) : null),
+          h('button', { class: 'mbk-chapter', onclick: () => go(open.head), title: open.head }, titleNodes(bareTitle(open.title))),
+          open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null,
+          cardFlags([open.head]));
       close = h('div', { class: 'mbn-close' }, chapterEl, h('div', { class: 'mbn-cascade' }, open.children.map(tuck)));
     }
 
     board = h('div', { class: 'model-board blocks network' + (onHead ? ' on-head' : '') + (open ? ' has-focus' : ''), tabindex: '-1' }, strip, net, close, pairsCard);
 
-    // Place the cards: the tree laid out top to bottom, scaled to the board's width.
+    // Place the cards: the tree laid out top to bottom, scaled to the board's width. A board taller
+    // than TALL times its width shrinks its plain stations to tabs (ZtLayout.demotionOrder: stops
+    // along a line first, interchanges and termini last; never the open block, its supporting cards
+    // or the setting), and a run of tabs along one line lies in a row (ZtLayout.foldedTreeLayout).
     let place = null;
+    const keep = new Set(blocks.filter((b) => b.kind === 'setting' || (level.get(b.id) && level.get(b.id) !== 'near' && level.get(b.id) !== 'far')).map((b) => b.id));
+    const demotable = ZtLayout.demotionOrder(blocks, tree, edges.filter((e) => refersOn || e.kind !== 'refers'), keep);
     const layoutTree = () => {
-      const lay = ZtLayout.treeLayout(tree.roots, tree.children, sizeOf, { gapX: 34, gapY: 30 });
       const avail = Math.max(200, net.clientWidth);
-      const scale = Math.min(1, avail / Math.max(1, lay.width));
-      return { at: lay.pos, width: lay.width, height: lay.height, scale, offset: (avail - lay.width * scale) / 2 };
+      const lay = (small) => ZtLayout.foldedTreeLayout(tree.roots, tree.children, (id) => (small.has(id) ? NET.far : sizeOf(id)), {
+        gapX: 34, gapY: 30, runGap: 10, maxRun: Math.max(2, Math.floor((avail - 20) / (NET.far.w + 10))),
+        small: (id) => small.has(id) || sizeOf(id) === NET.far,
+      });
+      const small = new Set();
+      let out = lay(small);
+      const tall = (l) => l.height * Math.min(1, avail / Math.max(1, l.width)) > Math.max(420, avail * TALL);
+      for (const id of demotable) {
+        if (!tall(out)) break;
+        if (sizeOf(id) === NET.far) continue;
+        small.add(id);
+        out = lay(small);
+      }
+      shrunk = small;
+      const scale = Math.min(1, avail / Math.max(1, out.width));
+      return { at: out.pos, width: out.width, height: out.height, scale, offset: (avail - out.width * scale) / 2 };
     };
+    let shrunk = new Set();
     // The transit map: the tree's lines and the forward faults always, the open (or pointed) block's
     // own lines inked. A line leaves its premise's card from the lower edge and ends at the station
     // of the card that rests on it; within one layer it runs through the gap below the cards; one
@@ -4262,6 +4331,10 @@
       const lanes = new Map();
       const ordered = [...list.values()].filter((x) => place.at[x.from_block] && place.at[x.to_block])
         .sort((a, b) => Number(hot.has(key(a))) - Number(hot.has(key(b))) || Number(Boolean(a.up)) - Number(Boolean(b.up)));
+      // The lines that leave one premise downward past other cards share one corridor (a trunk with
+      // branches); the shift that keeps it off another line's corridor is the same for the whole trunk.
+      const trunk = ZtLayout.trunks(ordered.map((x) => ({ key: key(x), premise: place.at[x.to_block], dependent: place.at[x.from_block] })), boxes);
+      const trunkShift = new Map();
       for (const x of ordered) {
         const premise = place.at[x.to_block];
         const dependent = place.at[x.from_block];
@@ -4269,7 +4342,11 @@
         const foot = (q) => ({ x: q.cx, y: q.y + q.h });
         let d;
         let mid;
-        if (premise.depth === dependent.depth) {
+        if (premise.run && premise.run === dependent.run && Math.abs(premise.ri - dependent.ri) === 1) {
+          // Two stops next to each other on a line folded into a row: one straight leg between their stations.
+          d = `M ${premise.cx} ${premise.y} H ${dependent.cx}`;
+          mid = { x: (premise.cx + dependent.cx) / 2, y: premise.y };
+        } else if (premise.depth === dependent.depth) {
           const below = Math.max(premise.y + premise.h, dependent.y + dependent.h) + 15;
           const pts = [[premise.cx, premise.y + premise.h], [premise.cx, below], [dependent.cx, below], [dependent.cx, dependent.y + dependent.h]];
           d = ZtLayout.roundedPath(pts, 9);
@@ -4279,12 +4356,17 @@
           const p1 = down ? foot(premise) : station(premise);
           const p2 = down ? station(dependent) : foot(dependent);
           const between = boxes.filter((q) => q.depth > Math.min(premise.depth, dependent.depth) && q.depth < Math.max(premise.depth, dependent.depth));
-          let route = ZtLayout.threadPath(p1, p2, between, { half: 15 });
+          const lane = trunk.get(key(x));
+          let route = ZtLayout.threadPath(p1, p2, between, { half: 15, lane });
           if (route.lane != null) {
             const k = Math.round(route.lane);
-            const n = lanes.get(k) || 0;
-            lanes.set(k, n + 1);
-            if (n) route = ZtLayout.threadPath(p1, p2, between, { half: 15 - Math.min(n, 3) * 3, shift: (n % 2 ? 1 : -1) * Math.ceil(n / 2) * 6 });
+            let n = lane != null ? trunkShift.get(x.to_block) : undefined;
+            if (n === undefined) {
+              n = lanes.get(k) || 0;
+              lanes.set(k, n + 1);
+              if (lane != null) trunkShift.set(x.to_block, n);
+            }
+            if (n) route = ZtLayout.threadPath(p1, p2, between, { half: 15 - Math.min(n, 3) * 3, shift: (n % 2 ? 1 : -1) * Math.ceil(n / 2) * 6, lane });
             d = ZtLayout.roundedPath(route.points, 9);
           } else {
             d = route.d;
@@ -4324,6 +4406,13 @@
       for (const [id, node] of nodes) {
         const p = place.at[id];
         if (!p) { node.hidden = true; continue; }
+        if (node.zt.full) {
+          const small = shrunk.has(id);
+          node.classList.toggle(`level-${node.zt.level}`, !small);
+          node.classList.toggle('level-far', small);
+          node.classList.toggle('shrunk', small);
+          node.replaceChildren(...(small ? node.zt.tab : node.zt.full).filter(Boolean));
+        }
         node.style.left = `${p.x}px`;
         node.style.top = `${p.y}px`;
         node.style.width = `${p.w}px`;
