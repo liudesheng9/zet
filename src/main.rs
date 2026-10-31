@@ -34,6 +34,7 @@ mod place;
 mod read;
 mod reply;
 mod scholar;
+mod scope;
 mod session;
 mod shutdown;
 mod spread;
@@ -104,7 +105,7 @@ fn run() -> Result<()> {
         [cmd] if cmd == "dp" => cmd_dump(),
         [cmd] if cmd == "clear" => cmd_clear(),
         [cmd] if cmd == "ws" => cmd_workspaces(),
-        [cmd] if cmd == "mcp" => mcp::run(),
+        [cmd, rest @ ..] if cmd == "mcp" => mcp::run(rest),
         [cmd, rest @ ..] if cmd == "scholar" => scholar::run_cli(rest),
         [cmd, rest @ ..] if cmd == "gui" => gui::run(rest),
         [cmd, rest @ ..] if cmd == "autostart" => autostart::run(rest),

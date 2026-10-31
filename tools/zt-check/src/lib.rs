@@ -14,6 +14,7 @@ pub mod cited;
 pub mod contract;
 pub mod core;
 pub mod policy;
+pub mod scope;
 pub mod term;
 pub mod text;
 

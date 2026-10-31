@@ -147,7 +147,10 @@ repeat the call with the `confirm` text the plan names to apply it. The scholar_
 (scholars, Works, abstracts, journals, workspaces, PDF/Markdown documents) through its read-only \
 bridge; file a paper you use as a Literature Card and cite its DOI. To show a paper's figure in a Card, list the Work's figures with scholar_archive_read `list_work_artifacts`, take one with scholar_archive_artifact, and paste the `![caption](artifact:<sha256>)` Markdown it returns. To point a reader at the source document itself (a PDF or Markdown the archive manages), write a Document link `[label](scholar:<file_id>)` (add `#page=12` for a PDF page); scholar_archive_file returns one as `link`.";
 
-pub(crate) fn run() -> Result<()> {
+pub(crate) fn run(args: &[String]) -> Result<()> {
+    // The connection's Write scope is fixed before the first message, so a bad declaration fails
+    // the start instead of leaving a client in a wider scope than it asked for.
+    let scope = crate::scope::WriteScope::from_args(args)?;
     // R315: a declared value outside the documented range is reported once, here, instead of
     // quietly turning a batch client's long patience back into the ordinary short bound.
     if let Some(note) = patience_note()
@@ -157,7 +160,7 @@ pub(crate) fn run() -> Result<()> {
     }
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
-    let mut server = Server::default();
+    let mut server = Server { initialized: false, scope };
     for line in stdin.lock().lines() {
         let line = line.context("failed to read an MCP message")?;
         if line.trim().is_empty() {
@@ -174,6 +177,8 @@ pub(crate) fn run() -> Result<()> {
 #[derive(Default)]
 struct Server {
     initialized: bool,
+    /// This connection's Write scope and the Cards it has made.
+    scope: crate::scope::WriteScope,
 }
 
 impl Server {
@@ -274,7 +279,7 @@ impl Server {
                 {
                     return Err(RpcError::invalid_params(&format!("unknown tool `{name}`")));
                 }
-                Ok(match call_tool(name, arguments) {
+                Ok(match call_tool(name, arguments, &mut self.scope) {
                     Ok(value) => {
                         let result = tool_result(value, false);
                         if matches!(name, "get_cards" | "get_tree" | "export_titles" | "get_terms") || (name == "apply_batch" && arguments["preview"] == true) {
@@ -312,6 +317,8 @@ impl Server {
                             .or_else(|| error.downcast_ref::<crate::gate::Refusal>().map(crate::gate::Refusal::value))
                             .or_else(|| error.downcast_ref::<crate::gate::Incomplete>().map(crate::gate::Incomplete::value))
                             .or_else(|| error.downcast_ref::<crate::term::Placement>().map(crate::term::Placement::value))
+                            .or_else(|| error.downcast_ref::<crate::scope::Refusal>().map(crate::scope::Refusal::value))
+                            .or_else(|| error.downcast_ref::<crate::scope::TopicExists>().map(crate::scope::TopicExists::value))
                             .unwrap_or_else(|| json!({ "error": format!("{error:#}") })),
                         true,
                     ),
@@ -362,7 +369,7 @@ fn archive_root() -> Result<PathBuf> {
     crate::require_service_up().context("the ZT service is not available; run `zt up`")
 }
 
-fn call_tool(name: &str, args: &Value) -> Result<Value> {
+fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> Result<Value> {
     if name == "scholar_archive_artifact" {
         let root = archive_root()?;
         let file_id = args
@@ -378,6 +385,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
         return call_scholar_tool(name, args);
     }
     let root = archive_root()?;
+    if matches!(name, "edit_literature_metadata" | "delete_card" | "move_card" | "insert_card") {
+        // These writers open their own transaction; the scope check reads only the addresses the
+        // call names and, for a change, the named Card's type, before any plan is made.
+        scope.check(&crate::open_db(&root)?, name, args, &Default::default())?;
+    }
     match name {
         "apply_batch" => crate::batch::apply(&root, args),
         "list_workspaces" => crate::read::workspaces(&root),
@@ -521,9 +533,13 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             let _lock=crate::acquire_edit_lock_within(&root,edit_patience(),operation)?;
             let mut conn=crate::open_db(&root)?;
             let tx=conn.transaction()?;
+            scope.check(&tx,name,args,&Default::default())?;
             let (result,changed)=write_card_tx(&root,&tx,name,args)?;
             if changed {crate::link_index::source_changed(&tx,result["address"].as_str().context("write result missing address")?)?;}
             tx.commit()?;
+            if name != "edit_card" && let Some(address) = result["address"].as_str() {
+                scope.record([address.to_string()]);
+            }
             Ok(result)
         }
         "edit_literature_metadata" => {

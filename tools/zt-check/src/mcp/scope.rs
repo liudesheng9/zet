@@ -6,14 +6,11 @@
 //! scope. A Topic tree is a tree whose id is a Topic number (all ASCII digits), so the check needs
 //! no archive read.
 
-use crate::text::{LinkForm, link_occurrences};
+pub use crate::scope::{is_topic_address, topic_links};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static LITERATURE_ONLY: AtomicBool = AtomicBool::new(false);
-
-/// The generated section a Card read ends with; its Links are the archive's, not authored.
-const REVERSE_LINKS: &str = "<!-- zt:reverse-links -->";
 
 /// Puts this process in the Literature scope (true) or back in the open scope (false).
 pub fn set_literature_only(on: bool) {
@@ -23,29 +20,6 @@ pub fn set_literature_only(on: bool) {
 /// Whether this process is in the Literature scope.
 pub fn literature_only() -> bool {
     LITERATURE_ONLY.load(Ordering::SeqCst)
-}
-
-/// Whether an address (a Location, a Citation key, or a Link target) is in a Topic tree.
-pub fn is_topic_address(address: &str) -> bool {
-    let tree = address.trim().split('/').next().unwrap_or_default();
-    !tree.is_empty() && tree.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// The Topic-tree Link targets of authored text, ignoring the generated Reverse links section.
-/// R0272 (S12, #154): each macro's actual target comes from the shared Link scan, so a Term use
-/// names the address after `@`, never the `label@target` text the old bracket regex reported. A
-/// malformed Term-like macro is no Link; the strict write path refuses it on its own.
-pub fn topic_links(text: &str) -> Vec<String> {
-    let authored = text.split(REVERSE_LINKS).next().unwrap_or_default();
-    link_occurrences(authored)
-        .into_iter()
-        .filter(|occurrence| match occurrence.form {
-            LinkForm::Ordinary => true,
-            LinkForm::Term => occurrence.is_valid_term_macro(),
-        })
-        .map(|occurrence| occurrence.target.trim().to_string())
-        .filter(|target| is_topic_address(target))
-        .collect()
 }
 
 /// Why the Literature scope refuses this call, or None when it may go to the archive. Reads pass.
