@@ -745,3 +745,34 @@ Every setting moved `alone`, so its derivation chain closed up and stays in its 
 **Result.** `check-settings.mjs` prints `settings: all in the setting part, as a dependency tree`, and every `reads:` symbol is defined in its card. `check-premises.mjs` lists no setting that uses a later result: only `e`'s roadmap "输入为式 (5)(6)(9)(10)" and the derivation chains' own roadmaps. The tree holds 319 Cards (318 plus the notation card), and `list_broken_links` is empty. The six chapters `2/a/a/12`–`17` (the former heads) stay unanchored, and `check-network.mjs` asks for **直觉** leads: spine work.
 
 **Next.** `zt-model-restructure` on `grossman2002integration/2|a`.
+
+### 16.2 The intuition spine (2026-10-31)
+
+`zt-model-restructure` ran on `grossman2002integration/2|a` on the live box at the owner's request. The backup is `D:\zt\backups\zt-before-grossman2002integration-spine.sqlite3` (`VACUUM INTO`, integrity ok). The tree was not locked.
+
+**Spine.** The main line is the setting `2/a/a` and 8 chapter cards `2/a/a/1` to `2/a/a/8`:
+
+| Chapter | Card | Results (proof chain) |
+|---|---|---|
+| 1 直觉 (§1) | former `1/b` | the mechanism and its conclusion (verbal), the limitation aside |
+| 2 外包的扭曲 | new | the chain η elasticity → demand (2) → integrated pricing (7)(8); 结果：外包价格是单一行动者价格的 1/ω 倍 (optimal output → (3)(4)) |
+| 3 自由进入与行业均衡 | new | 结果：自由进入使有进入的类型利润为零 ((5) → (6), with the interaction aside → (9)); the demand level (10) |
+| 4 混合均衡 (§3.1) | former `3/a` | 结果：命题 1 (r_O → A_O → the outsourcing condition → A_I → (14) → (15); figure aside) |
+| 5 普遍一体化 (§3.2) | former `4/a` | 结果：命题 2 (v_I → existence → dynamics → two stability cards) |
+| 6 普遍外包 (§3.3) | former `5/a` | 结果：比较静态 (s_O → m_O; the asymmetry aside); 结果：命题 3 (the integrating entrant → stability) |
+| 7 匹配规模报酬递增 (§5) | former `7/a` | 结果：混合均衡不稳定 (nine-card chain (5′) … curve shapes); 结果：多重均衡; the scale derivation; the Chinitz aside |
+| 8 部分专业化 (§六) | former `8/a` | 结果：ρ^O (adjustment cost → trade-off → supplier revenue → first-order condition); comparative statics; β; outsourcing feasibility; the variant aside |
+
+(The table writes `/` for `|`.) `tree-mover.mjs` made 138 moves. The head's two asides `2/b` (double marginalization) and `2/c` (one-shot game) stay Sides of the head. **分部**: 设定与直觉 (setting, ch. 1), 简单模型 (ch. 2–3), 三种均衡 (ch. 4–6), 两个扩展 (ch. 7–8).
+
+**Text.** DeepSeek V4.1 Flash (official source, effort high) drafted 20 cards in 4 jobs under one Haiku manager: the 8 chapter cards (**直觉**, **本章结果**, **承上启下** with one `依赖` line) and 12 result cards (`结果：` titles and facets; **结果**, **为什么**, **证明**). All conversations were deleted and the workspaces removed. `check-drafts` found no lost formula, equation number or Link, and a script confirmed every figure line survived. Derivation cards kept their text. The head's title (产业均衡模型：…), question and summary now cover the whole model, and its **结构** lists the main line with one level under each main card.
+
+**After.**
+- `check-model`: `self_sufficient` is true.
+- `check-settings`: every setting is in the setting part, as a dependency tree.
+- `check-network`: `network: clean`. 3 under 2; 4 under 3; 5 and 6 under 4; 7 under 5 (most of its Links rest on chapter 5's cards); 8 under the setting (its premises are mostly variant two's settings). The only advice is chapter 1's missing result card, right for an intuition chapter.
+- `check-premises`: 11 hits, all pointers or roadmaps (the equilibrium settings' `见式 (n)` lines and one chain's own summary).
+- `imports.mjs check`: clean (the model imports nothing).
+- `list_broken_links` is empty. The tree holds 321 Cards (319 + the two new chapter cards).
+
+**Next.** Nothing is pending for this model.
