@@ -610,7 +610,8 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     // got shorter after a parser fix; live backfill of grossman2002integration) and is removed.
     let mut removed = 0usize;
     if p.apply && stop.is_none() && published.len() == plan_rows.len() {
-        for card in existing.iter().skip(plan_rows.len()) {
+        // From the last one back: deleting a Side successor renumbers the later ones.
+        for card in existing.iter().skip(plan_rows.len()).rev() {
             // delete_card plans first and applies with the plan's own confirmation token.
             let address = pstr(card, "address");
             let plan = zt.call("delete_card", json!({ "at": address }))?;

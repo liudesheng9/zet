@@ -481,16 +481,20 @@ fn a_complete_publication_removes_cited_cards_beyond_the_rows() {
     assert_eq!(last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]))["complete"], json!(true));
     assert_eq!(mcp.call("get_cited", json!({ "at": "tiny2026" }))["cards"].as_array().unwrap().len(), 3);
 
-    // The source loses its third entry: the list has two rows, and the third Card goes.
-    let source = std::fs::read_to_string(staging.join("book.md")).unwrap().replace("Brown, L. (2005). A Listed Work. Press.\\\n", "");
+    // The source loses its last two entries: the list has one row, and two Cards go. Deleting a Side successor
+    // renumbers the later ones (grossman2002integration: \`1|h|ae\` did not exist after \`1|h|ac\` went), so the
+    // stale Cards go from the last one back.
+    let source = std::fs::read_to_string(staging.join("book.md")).unwrap()
+        .replace("Brown, L. (2005). A Listed Work. Press.\\\n", "")
+        .replace("Jones, K. (2001). Contracts and Control. Review of Tests, 2:3–4.\\\n", "");
     std::fs::write(staging.join("book.md"), source).unwrap();
-    assert_eq!(last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]))["rows"], json!(2));
+    assert_eq!(last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]))["rows"], json!(1));
     last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
     last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s, "-PerJob", "2"]));
     let applied = last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]));
     assert_eq!(applied["complete"], json!(true), "{applied}");
-    assert_eq!(applied["removed"], json!(1), "{applied}");
+    assert_eq!(applied["removed"], json!(2), "{applied}");
     let cited = mcp.call("get_cited", json!({ "at": "tiny2026" }));
-    assert_eq!(cited["coverage"], json!({ "rows": 2, "cards": 2, "missing": 0 }), "{cited}");
+    assert_eq!(cited["coverage"], json!({ "rows": 1, "cards": 1, "missing": 0 }), "{cited}");
     assert_eq!(cited["faults"], json!([]), "{cited}");
 }
