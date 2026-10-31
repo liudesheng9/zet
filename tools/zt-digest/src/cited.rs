@@ -321,9 +321,18 @@ fn split_entry(row: usize, raw: &str, previous: Option<&Entry>) -> Entry {
     }
     let mut entry = Entry { row, raw: raw.trim().to_string(), entry: text.clone(), previous_authors, ..Entry::default() };
     if let Some((year, start, end)) = year_of(&text) {
-        let authors = text[..start].trim().trim_end_matches([',', '(', ' ']).trim().to_string();
+        // The QJE style quotes the title before the year (`Coles, Melvin G., and Eric Smith, “Title,” Economica,
+        // LXIII (1996), 589–597.`): the authors end at the quote, and the title is the quoted text.
+        let quote = text[..start].find(['“', '"']);
+        let authors = match quote {
+            Some(at) => text[..at].trim().trim_end_matches([',', ' ']).trim().to_string(),
+            None => text[..start].trim().trim_end_matches([',', '(', ' ']).trim().to_string(),
+        };
         if !authors.is_empty() {
-            let (title, venue) = title_and_venue(&text[end..]);
+            let (title, venue) = match quote {
+                Some(at) => title_and_venue(&text[at..start]),
+                None => title_and_venue(&text[end..]),
+            };
             entry.surname = surname_of(&authors);
             entry.authors = authors;
             entry.year = year;
@@ -340,9 +349,16 @@ fn split_entry(row: usize, raw: &str, previous: Option<&Entry>) -> Entry {
 /// the entry before it: Hart wraps a long entry onto a line that starts in capitals, after a line
 /// that ends with the same `\` as every entry.
 pub fn entries(source: &str, custom: &str) -> Vec<Entry> {
+    let lines = reference_lines(source, custom);
+    // A list that holds both Latin entries and entries with Chinese in them is the original followed by
+    // its translation (Grossman 2002 repeats its QJE list with Latin author names and Chinese titles): the
+    // lines with Chinese in them are no entries. A list that is all Chinese is the book's own.
+    let han = |line: &str| HAN.find_iter(line).count() >= 2;
+    let listed: Vec<&String> = lines.iter().filter(|(_, l, inside)| *inside && !l.trim().is_empty()).map(|(_, l, _)| l).collect();
+    let mixed = listed.iter().any(|l| han(l)) && listed.iter().any(|l| !han(l));
     let mut raws: Vec<String> = Vec::new();
-    for (_, line, inside) in reference_lines(source, custom) {
-        if !inside || line.trim().is_empty() || translated(&line) {
+    for (_, line, inside) in lines {
+        if !inside || line.trim().is_empty() || translated(&line) || (mixed && han(&line)) {
             continue;
         }
         let text = clean(&line);

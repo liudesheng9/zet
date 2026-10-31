@@ -464,3 +464,33 @@ fn the_precheck_reads_unaccented_names_initials_and_normalized_entries() {
     std::fs::write(&draft, json!([item(1, 3, Some("AJR"))]).to_string()).unwrap();
     assert!(precheck(&zt, &staging, &draft).contains("row1 C3"));
 }
+
+/// Live backfill of grossman2002integration (2026-10-31): a parser fix shortened the list from 43 to 28 rows
+/// after 32 Cited Cards were published. A complete publication removes the Cited Cards beyond the list's rows.
+#[test]
+fn a_complete_publication_removes_cited_cards_beyond_the_rows() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    let dir = tempfile::tempdir().unwrap();
+    let staging = prepared(&zt, &mut mcp, dir.path());
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s, "-PerJob", "2"]));
+    std::fs::write(draft_path(&staging, "t001"), json!([smith(), jones()]).to_string()).unwrap();
+    std::fs::write(draft_path(&staging, "t002"), json!([brown()]).to_string()).unwrap();
+    assert_eq!(last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]))["complete"], json!(true));
+    assert_eq!(mcp.call("get_cited", json!({ "at": "tiny2026" }))["cards"].as_array().unwrap().len(), 3);
+
+    // The source loses its third entry: the list has two rows, and the third Card goes.
+    let source = std::fs::read_to_string(staging.join("book.md")).unwrap().replace("Brown, L. (2005). A Listed Work. Press.\\\n", "");
+    std::fs::write(staging.join("book.md"), source).unwrap();
+    assert_eq!(last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]))["rows"], json!(2));
+    last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s, "-PerJob", "2"]));
+    let applied = last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]));
+    assert_eq!(applied["complete"], json!(true), "{applied}");
+    assert_eq!(applied["removed"], json!(1), "{applied}");
+    let cited = mcp.call("get_cited", json!({ "at": "tiny2026" }));
+    assert_eq!(cited["coverage"], json!({ "rows": 2, "cards": 2, "missing": 0 }), "{cited}");
+    assert_eq!(cited["faults"], json!([]), "{cited}");
+}

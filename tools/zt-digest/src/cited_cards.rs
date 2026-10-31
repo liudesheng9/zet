@@ -606,6 +606,21 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
         cells.insert(n, (cited_at(&found), relations(item).join("、")));
         published.push(json!({ "row": n, "card": address, "status": "committed" }));
     }
+    // A complete publication owns every Cited Card of the list: one filed beyond the rows is stale (the list
+    // got shorter after a parser fix; live backfill of grossman2002integration) and is removed.
+    let mut removed = 0usize;
+    if p.apply && stop.is_none() && published.len() == plan_rows.len() {
+        for card in existing.iter().skip(plan_rows.len()) {
+            // delete_card plans first and applies with the plan's own confirmation token.
+            let address = pstr(card, "address");
+            let plan = zt.call("delete_card", json!({ "at": address }))?;
+            let done = zt.call("delete_card", json!({ "at": address, "confirm": pstr(&plan, "confirm") }))?;
+            if done["applied"] != true {
+                bail!("delete_card {address} did not apply: {done}");
+            }
+            removed += 1;
+        }
+    }
     // The list's 引用处 and 关系 cells follow the published Cards.
     if p.apply && !cells.is_empty() {
         let table: Vec<(String, String, String, String)> = list["rows"]
@@ -639,12 +654,16 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
         "complete": complete,
         "stop": stop,
         "rows": published,
+        "removed": removed,
         "readiness": states,
     });
     util::write_atomic(ps::join(&book.work, "report.json"), &ps::json_pretty(&report))?;
     let mut line = json!({ "ok": true, "rows": plan_rows.len(), "committed": published.len() });
     if complete {
         line["complete"] = json!(true);
+    }
+    if removed > 0 {
+        line["removed"] = json!(removed);
     }
     util::print_line(&util::compact(&line))?;
     Ok(0)

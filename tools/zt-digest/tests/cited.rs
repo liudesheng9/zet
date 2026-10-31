@@ -400,6 +400,29 @@ fn an_explicit_source_replaces_a_manifest_source_without_a_reference_list() {
     assert!(job.contains(&whole.to_string_lossy().to_string()), "the writer reads the frozen whole source:\n{job}");
 }
 
+/// Live backfill of grossman2002integration (2026-10-31): the QJE list puts the year after the volume
+/// (`Coles, Melvin G., and Eric Smith, “Title,” Economica, LXIII (1996), 589–597.`), and the source repeats the
+/// list in Chinese under the same heading with Latin author names (`Coles、Melvin G. 和 Eric Smith，“…”`).
+#[test]
+fn the_plan_reads_qje_entries_and_leaves_out_their_translation() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "grossman2026", "Grossman");
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "grossman2026", "Grossman", &fixture("grossman.md"), json!([{ "anchor": "grossman2026/1", "headings": ["I. 引言"] }]));
+    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", staging.to_str().unwrap()]));
+    assert_eq!(line["rows"], json!(6), "the six English entries, not their seven translations: {line}");
+    let rows = plan_rows(&staging);
+    assert!(rows.iter().all(|r| !r["raw"].as_str().unwrap().contains('，')), "{rows:#?}");
+    assert_eq!(rows[0]["surname"], json!("Abraham"));
+    assert_eq!(rows[0]["authors"], json!("Abraham, Katharine G., and Susan K. Taylor"));
+    assert_eq!(rows[0]["title"], json!("Firm's Use of Outside Contractors: Theory and Evidence"));
+    assert_eq!(rows[0]["year"], json!("1996"));
+    assert_eq!(rows[2]["id"], json!("coles1996"));
+    assert_eq!(rows[2]["title"], json!("Cross-Section Estimation of the Matching Function: Evidence from England and Wales"));
+}
+
 const SMALL: &str = "# 1 Introduction\n# 1 引言\nAs Smith (1999) argues, bargaining matters.\n\n# References\n\nSmith, J. (1999). Bargaining. Journal of Tests, 1:1–2.\\\nJones, K. Unpublished notes on contracts.\\\n\n# Appendix\n";
 
 #[test]
