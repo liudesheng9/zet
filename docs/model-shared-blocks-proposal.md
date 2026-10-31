@@ -1,6 +1,6 @@
 # Shared Building Blocks Between Models: Proposal
 
-Status: **accepted** (2026-10-30). The owner accepted the recommended answer to each of the five decisions (see "Decisions"). Nothing in this document is implemented yet. The GUI part that could be done without a model change (the 共用 shelf and keeping the borrowing model in view) shipped in zt 0.47.0 (commit `55a3de0`); see "GUI" below.
+Status: **implemented** (2026-10-31; PRD #205, slices #206–#213; zt 0.48.1, zt-digest 0.36.1). The owner accepted the recommended answer to each of the five decisions (see "Decisions"), and the live box is migrated. The GUI part that could be done without a model change (the 共用 shelf and keeping the borrowing model in view) shipped in zt 0.47.0 (commit `55a3de0`); see "GUI" below.
 
 ## Summary
 
@@ -175,7 +175,7 @@ All steps are deterministic scripts over file paths and zt calls, run once per b
 3. **List the copies.** The script reports each borrower setting that restates symbols of an imported block (first case: `hart1995firms/15|c|a`). By decision 5 nothing is changed: a copy is replaced by an import and a binding only when the owner names that model.
 4. **Rebuild the boards** and re-run `check-model.mjs`, `check-network.mjs`, `check-settings.mjs` on every migrated model.
 
-**As implemented (#213):** `scripts/model-imports/migrate.mjs`. A legacy share becomes `整块` when the borrower shares more Cards of its block (they are absorbed into the one line) or when a tolerated premise of it lies in its home model; otherwise `单卡`, which keeps the membership as it was. The box-copy run on 2026-10-31 migrated 18 models (53 lines) and cut the tolerated premises from 79 to 9, with no new build or checker fault. The live apply waits for the owner.
+**As implemented (#213):** `scripts/model-imports/migrate.mjs`. A legacy share becomes `整块` when the borrower shares more Cards of its block (they are absorbed into the one line) or when a tolerated premise of it lies in its home model; otherwise `单卡`, which keeps the membership as it was. The box-copy run on 2026-10-31 migrated 18 models (53 lines) and cut the tolerated premises from 79 to 9, with no new build or checker fault. The live apply ran the same day on the owner's go-ahead, after a backup (`D:/zt/backups/zt-before-model-imports-20261031.sqlite3`): the same 18 models and 53 lines, tolerated 79 → 9, no （共用） line left in them, no Broken link, no new build or checker fault; a second dry run finds nothing to migrate.
 
 Locked trees (`becker2025division`, `grossman2002integration`) take no edits. Their models keep the transitional reading (D1) until the owner unlocks them.
 
