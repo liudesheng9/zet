@@ -20,6 +20,8 @@ pattern!(SENTENCE_END, r"(?i)[。！？\n]");
 pattern!(DISPLAY_WHOLE, r"(?i)^\$\$([\s\S]*)\$\$$");
 pattern!(SECTION_HEAD, r"(?i)^\s*\*\*(思路|起点|步骤|结果|解读)\*\*\s*$");
 pattern!(POSITION, r"(?i)^第 \d+ 张，共 \d+ 张");
+// zt-model-restructure's per-chapter wording; the per-chain line above replaces it.
+pattern!(CHAIN_STEP, r"(?i)^推导链第 \d+ 步，共 \d+ 步");
 pattern!(SOURCE, r"(?i)^来源\s*[：:]");
 pattern!(NOTE, r"(?i)^说明\s*[：:]");
 pattern!(NOTE_LABEL, r"(?i)^说明\s*[：:]\s*");
@@ -246,6 +248,12 @@ pub fn section_text(sections: &[Section], head: &str) -> String {
 pub fn explained(body: &str) -> bool {
     let sections = split_sections(body);
     !section_text(&sections, "思路").is_empty() && !section_text(&sections, "解读").is_empty()
+}
+
+/// Whether a 思路 line is a chain position line, in either wording (the explain step's
+/// `第 k 张，共 n 张` or zt-model-restructure's `推导链第 k 步，共 n 步`).
+pub fn is_position_line(line: &str) -> bool {
+    POSITION.is_match(line.trim()) || CHAIN_STEP.is_match(line.trim())
 }
 
 /// The first authored line of 思路, position line included: `section_text` drops that line, so

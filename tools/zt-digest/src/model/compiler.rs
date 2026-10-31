@@ -1337,7 +1337,7 @@ impl Compiler {
                 Some((a.clone(), titles.get(&a).cloned().unwrap_or_default(), b))
             };
             let mut positions = Map::new();
-            for c in list(&st["build"]["chains"]) {
+            for c in proof_chains(&st["build"]) {
                 let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, &own)).collect();
                 let want: Vec<String> = parts.iter().filter(|a| ps::is_in(a, &todo)).cloned().collect();
                 if want.is_empty() {
@@ -3417,18 +3417,7 @@ impl Compiler {
     /// The own Derivation parts whose 思路 does not start with the chain position line the
     /// current chain and results give them. A chain of one part needs no position line.
     fn misplaced(st: &Value, own: &[String], body: &dyn Fn(&str) -> String) -> Vec<String> {
-        let mut out = Vec::new();
-        for c in list(&st["build"]["chains"]) {
-            let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, own)).collect();
-            let tos: Vec<String> = parts.iter().map(|a| text::result_of(&body(a))).collect();
-            for (index, a) in parts.iter().enumerate() {
-                let expected = text::chain_line(index + 1, parts.len(), &tos);
-                if !expected.is_empty() && text::position_of(&body(a)) != expected {
-                    out.push(a.clone());
-                }
-            }
-        }
-        out
+        stale_positions(&st["build"], own, body)
     }
 
     fn bodies_of(st: &Value) -> CiMap<String> {
@@ -3745,6 +3734,76 @@ impl Compiler {
         }
         self.out_last(&json!({ "models": reports }))
     }
+}
+
+/// The Derivation chains of a model: the runs of zt's `build.chains` (main and shared lines), and
+/// every Side-line proof chain as zt-model-restructure files it: a Derivation part X, then its
+/// continuations X|1, X|2, … while they are Side-line Derivation parts. A chain may start at X|1
+/// when X is no Derivation part (a proof hung under a setting or a result). Each chain is
+/// `{parts, after, before}` like a zt chain: `after` is the card it hangs under, `before` the card
+/// that ends it, when the model has one.
+pub(crate) fn proof_chains(build: &Value) -> Vec<Value> {
+    let mut chains: Vec<Value> = list(&build["chains"]).into_iter().cloned().collect();
+    let side: Vec<String> = list(&build["order"])
+        .into_iter()
+        .filter(|o| truthy(&o["derivation"]) && ps::eq(&s(&o["line"]), "side"))
+        .map(|o| s(&o["address"]))
+        .collect();
+    let known: Vec<String> = list(&build["order"]).into_iter().map(|o| s(&o["address"])).collect();
+    let numbered = |a: &str| -> Option<(String, u64)> {
+        let (prefix, last) = a.rsplit_once('|')?;
+        last.parse::<u64>().ok().map(|n| (prefix.to_string(), n))
+    };
+    let previous = |a: &str| -> Option<String> { numbered(a).map(|(prefix, n)| if n > 1 { format!("{prefix}|{}", n - 1) } else { prefix }) };
+    let next = |a: &str| -> String {
+        match numbered(a) {
+            Some((prefix, n)) => format!("{prefix}|{}", n + 1),
+            None => format!("{a}|1"),
+        }
+    };
+    for head in &side {
+        if previous(head).is_some_and(|p| ps::is_in(&p, &side)) {
+            continue;
+        }
+        let mut parts = vec![head.clone()];
+        let mut at = next(head);
+        while ps::is_in(&at, &side) && !ps::is_in(&at, &parts) {
+            parts.push(at.clone());
+            at = next(&at);
+        }
+        let after = previous(head).or_else(|| head.rsplit_once('|').map(|(p, _)| p.to_string()));
+        let before = ps::is_in(&at, &known).then_some(at);
+        chains.push(json!({ "parts": parts, "length": parts.len(), "after": after, "before": before }));
+    }
+    chains
+}
+
+/// The own Derivation parts whose 思路 does not start with the position line their chain
+/// (`proof_chains`) and its current results give them: a stale or missing line in a chain of two
+/// or more, and any position line, in either wording, on a part that stands alone. Adoption counts
+/// them as an explanation need exactly as the explain step does.
+pub(crate) fn stale_positions(build: &Value, own: &[String], body: &dyn Fn(&str) -> String) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut chained: Vec<String> = Vec::new();
+    for c in proof_chains(build) {
+        let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, own)).collect();
+        let tos: Vec<String> = parts.iter().map(|a| text::result_of(&body(a))).collect();
+        for (index, a) in parts.iter().enumerate() {
+            let expected = text::chain_line(index + 1, parts.len(), &tos);
+            let found = text::position_of(&body(a));
+            let stale = if expected.is_empty() { text::is_position_line(&found) } else { found != expected };
+            if stale && !ps::is_in(a, &out) {
+                out.push(a.clone());
+            }
+            chained.push(a.clone());
+        }
+    }
+    for a in own.iter().filter(|a| !ps::is_in(a, &chained)) {
+        if text::is_position_line(&text::position_of(&body(a))) && !ps::is_in(a, &out) {
+            out.push(a.clone());
+        }
+    }
+    out
 }
 
 /// The no-main-line fault of `test_plan`: the model's own parts have no main line, yet the plan

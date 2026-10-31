@@ -768,6 +768,14 @@ fn model_fact(
             }
         }
     }
+    // A 思路 whose chain position line no longer names the current chain is unfinished too, as
+    // the compiler's explain step counts it (R301).
+    let body = |a: &str| body_of.get(a).cloned().unwrap_or_default();
+    for address in crate::model::compiler::stale_positions(&model["build"], &derivations, &body) {
+        if !needs.iter().any(|need| s(&need["address"]) == address) {
+            needs.push(json!({"address":address,"missing":["位置行"]}));
+        }
+    }
     // Placeholders come from the actual part bodies, never from the part count (I15).
     for address in members.iter().skip(1) {
         let body = body_of.get(address).map(String::as_str).unwrap_or_default();
@@ -2230,6 +2238,96 @@ mod tests {
         assert_eq!(inputs["fingerprint"], "fh", "model-finish records the head's start fingerprint");
         assert_eq!(inputs["producer"]["producer"], "digest/g002@1");
         assert_eq!(inputs["producer"]["producer_input_hash"], "h2");
+    }
+
+    #[test]
+    fn a_stale_chain_position_line_is_an_explanation_need() {
+        // ebrill2001modern explain pass (2026-10-31): after the model passes edited results,
+        // seven parts kept a 思路 position line that no longer names the chain's results. The
+        // compiler's explain step counts them as unfinished (R301), yet adoption registered no
+        // explain unit, so mode explain claimed nothing.
+        let part = |position: &str, result: &str| {
+            format!("**思路**\n{position}\n本卡的路线。\n\n**起点**\n- 依赖 [[Book/2|a|a]]：出发。\n\n**步骤**\n1. 代入。\n\n**结果**\n$${result}$$\n\n**解读**\n结果的含义。\n")
+        };
+        let tos = vec!["$$a=1$$".to_string(), "$$b=2$$".to_string()];
+        let mut bodies = HashMap::new();
+        bodies.insert("Book/2|a".to_string(), "问题：一个模型。".to_string());
+        bodies.insert("Book/2|a|a|1".to_string(), part(&crate::model::text::chain_line(1, 2, &tos), "a=1"));
+        // The result became b=2 but the position line still names the old b=3.
+        bodies.insert("Book/2|a|a|2".to_string(), part("第 2 张，共 2 张：从 $a=1$ 推到 $b=3$。", "b=2"));
+        bodies.insert("Book/2|a|a|3".to_string(), part("", "c=0"));
+        let model = json!({
+            "level": "formal",
+            "head": {"address": "Book/2|a", "body": "问题：一个模型。"},
+            "build": {
+                "order": [
+                    {"address": "Book/2|a|a|1", "derivation": true, "line": "main"},
+                    {"address": "Book/2|a|a|2", "derivation": true, "line": "main"},
+                    {"address": "Book/2|a|a|3", "derivation": true, "line": "main"},
+                ],
+                "chains": [{"parts": ["Book/2|a|a|1", "Book/2|a|a|2"], "length": 2}],
+            },
+        });
+        let fact = model_fact("Book/2|a", &model, &bodies, &HashMap::new(), None).unwrap();
+        let needs: Vec<String> = fact.needs.iter().map(|need| s(&need["address"])).collect();
+        assert_eq!(needs, vec!["Book/2|a|a|2".to_string()], "{:?}", fact.needs);
+        assert_eq!(fact.needs[0]["missing"], json!(["位置行"]));
+    }
+
+    #[test]
+    fn side_line_proof_chains_are_checked_for_their_position_lines() {
+        // Explain pass, 2026-10-31: zt-model-restructure files every proof chain as a Side branch, and
+        // zt's build.chains holds main and shared runs only, so no position line of a restructured
+        // model was checked (hart1995firms 16|a, acemoglu2007equilibrium, becker2025division).
+        use crate::model::text::chain_line;
+        let part = |position: &str, result: &str| {
+            let idea = if position.is_empty() { String::new() } else { format!("{position}\n") };
+            format!("**思路**\n{idea}本卡的路线。\n\n**起点**\n- 依赖上一步。\n\n**步骤**\n1. 代入。\n\n**结果**\n$${result}$$\n\n**解读**\n结果的含义。\n")
+        };
+        let tos = |r: &[&str]| r.iter().map(|x| format!("$${x}$$")).collect::<Vec<_>>();
+        let mut bodies = HashMap::new();
+        let mut order = Vec::new();
+        let mut add = |bodies: &mut HashMap<String, String>, at: &str, derivation: bool, body: String| {
+            bodies.insert(format!("B/2|a|{at}"), body);
+            order.push(json!({"address": format!("B/2|a|{at}"), "derivation": derivation, "line": "side"}));
+        };
+        // 1. A stale chain under result 1|a: a pass added 1|a|a|2, which has no position line, and the
+        //    older parts still count two.
+        let t1 = tos(&["a=1", "b=2", "c=3"]);
+        add(&mut bodies, "1|a", false, "结果：一个结论。".into());
+        add(&mut bodies, "1|a|a", true, part(&chain_line(1, 2, &t1[..2]), "a=1"));
+        add(&mut bodies, "1|a|a|1", true, part(&chain_line(2, 2, &t1[..2]), "b=2"));
+        add(&mut bodies, "1|a|a|2", true, part("", "c=3"));
+        // 2. A chain whose first card hangs under a non-derivation card (hart 11|a|12|f|1|a|a|1-4): correct.
+        let t2 = tos(&["d=1", "e=2"]);
+        add(&mut bodies, "2|a|a", false, "债务契约：一个设定。".into());
+        add(&mut bodies, "2|a|a|1", true, part(&chain_line(1, 2, &t2), "d=1"));
+        add(&mut bodies, "2|a|a|2", true, part(&chain_line(2, 2, &t2), "e=2"));
+        // 3. A chain that ends at a non-derivation card, and a lone derivation after it with no
+        //    position line (hart 10|a|a|2|b|a|3-4): correct.
+        let t3 = tos(&["f=1", "g=2"]);
+        add(&mut bodies, "3|a|a", true, part(&chain_line(1, 2, &t3), "f=1"));
+        add(&mut bodies, "3|a|a|1", true, part(&chain_line(2, 2, &t3), "g=2"));
+        add(&mut bodies, "3|a|a|2", false, "汇总：四种情形。".into());
+        add(&mut bodies, "3|a|a|3", true, part("", "h=0"));
+        // 4. becker2025division's per-chapter wording in a chain of two: stale.
+        let t4 = tos(&["i=1", "j=2"]);
+        add(&mut bodies, "4|a|a", true, part("推导链第 5 步，共 9 步：由需求推出价格。", "i=1"));
+        add(&mut bodies, "4|a|a|1", true, part(&chain_line(2, 2, &t4), "j=2"));
+        // 5. A lone part that keeps a position line from an old chain: stale.
+        add(&mut bodies, "5|a|a", true, part("第 2 张，共 4 张：从 $x$ 推到 $y$。", "k=1"));
+        add(&mut bodies, "6|a|a", true, part("推导链第 1 步，共 1 步：由预算推出需求。", "l=1"));
+        bodies.insert("B/2|a".into(), "问题：一个模型。".into());
+        let model = json!({
+            "level": "formal",
+            "head": {"address": "B/2|a", "body": "问题：一个模型。"},
+            "build": {"order": order, "chains": []},
+        });
+        let fact = model_fact("B/2|a", &model, &bodies, &HashMap::new(), None).unwrap();
+        let mut needs: Vec<String> = fact.needs.iter().map(|need| s(&need["address"])).collect();
+        needs.sort();
+        let want: Vec<String> = ["1|a|a", "1|a|a|1", "1|a|a|2", "4|a|a", "5|a|a", "6|a|a"].iter().map(|a| format!("B/2|a|{a}")).collect();
+        assert_eq!(needs, want, "{:?}", fact.needs);
     }
 
     #[test]

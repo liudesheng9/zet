@@ -16,26 +16,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 
-fn zt_program() -> Option<PathBuf> {
-    if let Ok(program) = std::env::var("ZT_TEST_ZT") {
-        return Some(PathBuf::from(program));
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for candidate in [
-        root.join("target/debug/zt.exe"),
-        root.join("target/release/zt.exe"),
-    ] {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    Command::new("zt")
-        .arg("version")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|_| PathBuf::from("zt"))
-}
+#[path = "support/zt_program.rs"]
+mod zt_program;
+use zt_program::zt_program;
 
 struct Zt {
     _dir: tempfile::TempDir,

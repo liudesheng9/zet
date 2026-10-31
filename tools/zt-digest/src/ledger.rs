@@ -13613,11 +13613,10 @@ fn explain_chains(model: &Value) -> Result<Vec<Value>> {
         .filter(|o| o["derivation"] == json!(true) && o["line"] != json!("shared"))
         .map(|o| s(&o["address"]))
         .collect();
+    model["build"]["chains"].as_array().context("incomplete derivation chains")?;
     let mut chains = Vec::new();
-    for chain in model["build"]["chains"]
-        .as_array()
-        .context("incomplete derivation chains")?
-    {
+    // zt's main-line runs and the Side-line proof chains, by the compiler's one rule.
+    for chain in &crate::model::compiler::proof_chains(&model["build"]) {
         let parts: Vec<String> = pipe(&chain["parts"])
             .into_iter()
             .map(s)
@@ -13750,17 +13749,21 @@ fn explain_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &
         for (index, address) in members.iter().enumerate() {
             let expected = crate::model::text::chain_line(index + 1, count, &tos);
             chain_facts.push(json!({"address":address,"position":index + 1,"chain":count,"line":expected}));
-            if expected.is_empty() {
-                continue;
-            }
-            // The first authored line of 思路, position line included: `section_text` drops it.
-            let first = crate::model::text::position_of(&s(&cards[address]["body"]));
-            if first != expected {
-                chain_faults.push(format!(
-                    "{address} 思路 starts `{first}`, the chain of {count} parts wants `{expected}`"
-                ));
-            }
         }
+    }
+    // The one stale rule of the compiler and of adoption: a stale or missing line in a chain, or a
+    // position line on a part that stands alone.
+    let own_list: Vec<String> = own.iter().cloned().collect();
+    let body_of = |address: &str| cards.get(address).map(|card| s(&card["body"])).unwrap_or_default();
+    for address in crate::model::compiler::stale_positions(&model["build"], &own_list, &body_of) {
+        // The first authored line of 思路, position line included: `section_text` drops it.
+        let first = crate::model::text::position_of(&body_of(&address));
+        let wanted = chain_facts
+            .iter()
+            .find(|fact| s(&fact["address"]) == address)
+            .map(|fact| s(&fact["line"]))
+            .unwrap_or_default();
+        chain_faults.push(format!("{address} 思路 starts `{first}`, its chain wants `{wanted}`"));
     }
     if !chain_faults.is_empty() {
         bail!("explanation_chain: {}", chain_faults.join("; "));

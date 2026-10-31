@@ -2168,10 +2168,15 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
     check(!shut.length, `resume (${which}): every stage the resume names lets mode resume through its own condition (${shut.join(', ')})`)
     if (which === 'econ') {
       check(resume.includes('events') && resume.includes('findings') && resume.includes('models') && resume.includes('explain') && resume.includes('cards-book'), 'resume (econ): the economics layers and the whole-book cycle are drained')
-      check(['models', 'explain', 'events', 'findings'].every((mode) => ['link-prepare', 'link', 'link-check', 'organize', 'audit', 'cleanup', 'report'].every((id) => (modes[mode] || []).includes(id))), 'repair modes (econ): models, explain, events and findings drain the changed-Card Link work, Organize, the audit and the settlement')
+      check(['models', 'events', 'findings'].every((mode) => ['link-prepare', 'link', 'link-check', 'organize', 'audit', 'cleanup', 'report'].every((id) => (modes[mode] || []).includes(id))), 'repair modes (econ): models, events and findings drain the changed-Card Link work, Organize, the audit and the settlement')
+      // Explain pass on ebrill2001modern (2026-10-31): mode explain only adds sections inside finished Derivation
+      // parts (D9). It opens no Link gap and gives Organize nothing to decide, so it runs no Link stage and no
+      // Organize, which would rewrite the Literature index and the structure Card of a hand-curated book.
+      check((modes.explain || []).join(',') === 'args,source,prepare,explain,term-link,audit,cleanup,report', `mode explain (econ): only the explanations, the Term-link pass, the audit and the settlement (${(modes.explain || []).join(',')})`)
     } else {
       check(resume.includes('math-skeleton') && resume.includes('math-boundary') && resume.includes('math-proof') && resume.includes('math-theory') && resume.includes('math-check'), 'resume (math): every mathematics obligation and the final math check are drained')
-      check(['models', 'explain'].every((mode) => ['link-prepare', 'link', 'link-check', 'math-theory', 'organize', 'audit', 'math-check', 'cleanup', 'report'].every((id) => (modes[mode] || []).includes(id))), 'repair modes (math): a repaired model reaches its Theory refresh and the math check')
+      check(['models'].every((mode) => ['link-prepare', 'link', 'link-check', 'math-theory', 'organize', 'audit', 'math-check', 'cleanup', 'report'].every((id) => (modes[mode] || []).includes(id))), 'repair modes (math): a repaired model reaches its Theory refresh and the math check')
+      check((modes.explain || []).join(',') === 'args,source,prepare,explain,math-theory,term-link,audit,math-check,cleanup,report', `mode explain (math): no Link stage and no Organize (${(modes.explain || []).join(',')})`)
       for (const [stage, pattern] of [['math-skeleton', /resume/], ['math-boundary', /resume/], ['math-proof', /resume/], ['math-theory', /resume/], ['math-check', /resume/]]) {
         const found = builds.math.bp.stages.find((s) => s.id === stage)
         check(found && (found.when || []).some((c) => pattern.test(JSON.stringify(c))), `resume (math): ${stage} participates in the resume`)
