@@ -6398,7 +6398,7 @@
       const facetInput = cardType ? h('input', {
         class: 'facet-input', 'aria-label': 'Model facet', list: 'zt-facets', maxlength: 32, spellcheck: 'false',
         placeholder: 'whole model', value: chosenFacet,
-        title: 'Empty: the Model Card of a whole model. A label (设定, 均衡, a worked example…): a Model part, which belongs to the Model Card it is filed under and to every Model Card that links it',
+        title: 'Empty: the Model Card of a whole model. A label (设定, 均衡, a worked example…): a Model part, which belongs to the Model Card it is filed under and to every Model Card that imports it (its **引入** section)',
         oninput: (event) => { chosenFacet = event.target.value.trim(); dirty = true; emphasisPick.hidden = !chosenFacet; levelPick.hidden = !!chosenFacet; update(); },
       }) : null;
       const emphasisPick = cardType ? h('select', {
