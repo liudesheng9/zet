@@ -429,7 +429,7 @@ fn apply_publishes_the_ready_prefix_in_row_order_and_fills_the_list_columns() {
 
 /// Live backfill of acemoglu2025nobel (2026-10-31): the text writes \`Jaszi 1929\` for \`Jászi\`, cites a work by
 /// its authors' initials (\`AJR (2001, 2012)\`), and a \`Forthcoming\` entry got its authors from the normalize job.
-const NOBEL: &str = "# 1 Introduction\n# 1 引言\nThe elites resisted, as Jaszi 1929 (p. 80) records.\nThis line names no work.\nThe 2SLS results are robust, as discussed at length in AJR (2001, 2012).\nThis line names no work either.\nSee Acemoglu and Robinson (forthcoming) for a framework.\n\n# References\n\nAcemoglu, Daron, Simon Johnson, and James A. Robinson. 2012. “The Colonial Origins of Comparative Development: An Empirical Investigation: Reply.” American Economic Review 102 (6): 3077–3110.\\\nAcemoglu, Daron, and James A. Robinson. Forthcoming. “Culture, Institutions and Social Equilibria: A Framework.” Journal of Economic Literature.\\\nJászi, Oscar. 1929. The Dissolution of the Habsburg Monarchy. University of Chicago Press.\\\n\n# Appendix\n";
+const NOBEL: &str = "# 1 Introduction\n# 1 引言\nThe elites resisted, as Jaszi 1929 (p. 80) records.\nThis line names no work.\nThe 2SLS results are robust, as discussed at length in AJR (2001, 2012).\nThis line names no work either.\nSee Acemoglu and Robinson (forthcoming) for a framework.\nAs Salter (1966) showed, factor prices matter.\n\n# References\n\nAcemoglu, Daron, Simon Johnson, and James A. Robinson. 2012. “The Colonial Origins of Comparative Development: An Empirical Investigation: Reply.” American Economic Review 102 (6): 3077–3110.\\\nAcemoglu, Daron, and James A. Robinson. Forthcoming. “Culture, Institutions and Social Equilibria: A Framework.” Journal of Economic Literature.\\\nJászi, Oscar. 1929. The Dissolution of the Habsburg Monarchy. University of Chicago Press.\\\nSalter W. E. G. 1966. Productivity and Technical Change. 2nd ed. Cambridge: Cambridge Univ. Press.\\\n\n# Appendix\n";
 
 #[test]
 fn the_precheck_reads_unaccented_names_initials_and_normalized_entries() {
@@ -453,7 +453,8 @@ fn the_precheck_reads_unaccented_names_initials_and_normalized_entries() {
         if let Some(alias) = alias { location["as"] = json!(alias); }
         json!({ "row": row, "short_title": "文献", "why": "本书引用它说明一个事实。", "role": "它提供了一个事实。", "relationship": "本书依赖它。", "relations": ["依赖"], "locations": [location] })
     };
-    std::fs::write(&draft, json!([item(1, 5, Some("AJR")), item(2, 7, None), item(3, 3, None)]).to_string()).unwrap();
+    // Live backfill of acemoglu2010labor: `Salter W. E. G. 1966.` has no comma after the surname.
+    std::fs::write(&draft, json!([item(1, 5, Some("AJR")), item(2, 7, None), item(3, 3, None), item(4, 8, None)]).to_string()).unwrap();
     let text = precheck(&zt, &staging, &draft);
     assert!(text.trim_end().ends_with("faults: 0"), "{text}");
 

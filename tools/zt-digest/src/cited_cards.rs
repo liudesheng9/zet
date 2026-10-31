@@ -404,6 +404,13 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
         .filter(|w| w.len() >= 4)
         .collect();
     let year: String = pstr(row, "year").chars().take(4).collect();
+    // A surname written without a comma before the initials (`Salter W. E. G. 1966.`, the JPE list of
+    // acemoglu2010labor) parses whole; its first word of four letters or more names the work too.
+    let first_name = pstr(row, "surname")
+        .split_whitespace()
+        .next()
+        .map(cited::fold)
+        .filter(|name| name.len() >= 4 && *name != surname);
     let raw = item["locations"].as_array().cloned().unwrap_or_default();
     if raw.len() > MAX_LOCATIONS {
         faults.push((format!("{tag} C3 {} locations; list at most {MAX_LOCATIONS}", raw.len()), true));
@@ -436,6 +443,7 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
             continue;
         }
         let names = (!surname.is_empty() && near.contains(&surname))
+            || first_name.as_ref().is_some_and(|name| near.contains(name.as_str()))
             || words.iter().filter(|w| near.contains(w.as_str())).count() >= 2;
         if !names {
             faults.push((format!("{tag} C3 line {line} does not name the work (its surname or two title words)"), true));
