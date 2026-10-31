@@ -4,8 +4,12 @@
 //! list). An entry the parser cannot split goes to one DeepSeek normalize job, whose rows are
 //! accepted only when the first author's surname and the year stand in the raw entry.
 //!
-//!   zt-digest cited -Step plan|precheck|apply -Staging <folder> [-Heading <h>] [-Draft <file>]
-//!                   [-Token <n>] [-Apply]
+//!   zt-digest cited -Step plan|precheck|apply -Staging <folder> [-Heading <h>] [-Source <file>]
+//!                   [-Draft <file>] [-Token <n>] [-Apply]
+//!
+//! -Source names the whole bilingual source when manifest.json's `source` is not it: an adopted staging
+//! names the staged Chinese-only `book.zh.md`, which holds no English reference list (pilot 2026-10-31).
+//! The plan freezes the file it read as `source`; `cited-cards` reads that file.
 //!
 //!   plan      reads manifest.json's `source` (the whole bilingual file) and `groups` (the section
 //!             headings and their anchors), writes cited\plan.json (one row per entry: its id,
@@ -76,18 +80,20 @@ struct Params {
     step: String,
     staging: String,
     heading: String,
+    source: String,
     draft: String,
     token: String,
     apply: bool,
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let names = ["Step", "Staging", "Heading", "Draft", "Token"];
+    let names = ["Step", "Staging", "Heading", "Source", "Draft", "Token"];
     let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &["Apply"])?;
     let p = Params {
         step: a.choice("Step", &["plan", "precheck", "apply"])?,
         staging: common::mandatory(&a, "Staging")?,
         heading: a.str("Heading"),
+        source: a.str("Source"),
         draft: a.str("Draft"),
         token: a.str("Token"),
         apply: a.flag("Apply"),
@@ -488,9 +494,9 @@ pub(crate) fn title_key(title: &str) -> String {
 // --- plan ----------------------------------------------------------------------------------------
 
 fn plan_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) -> Result<i32> {
-    let source_path = pstr(manifest, "source");
+    let source_path = if p.source.is_empty() { pstr(manifest, "source") } else { p.source.clone() };
     if source_path.is_empty() {
-        bail!("the staging manifest names no source");
+        bail!("the staging manifest names no source; pass -Source");
     }
     let bytes = std::fs::read(&source_path).with_context(|| format!("failed to read {source_path}"))?;
     let source = String::from_utf8_lossy(&bytes).trim_start_matches('\u{FEFF}').to_string();

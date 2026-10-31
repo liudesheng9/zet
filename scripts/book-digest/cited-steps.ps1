@@ -4,6 +4,7 @@
   step and replies with its last line, so no Claude relay runs a single command.
 
   pwsh -NoProfile -File cited-steps.ps1 -Step list|list-finish|start|finish -Out <staging> [-PerJob 4] [-Heading <h>]
+                                        [-Source <the whole bilingual source, when the manifest's source is not it>]
 
   list         plan the Cited list (parse the whole source's reference list, index the citing lines; it
                registers cited/book@1 in a prepared run) -> cited\normalize\jobs.json for the entries the
@@ -25,6 +26,7 @@ param(
     [Parameter(Mandatory)][string]$Out,
     [int]$PerJob = 0,
     [string]$Heading = '',
+    [string]$Source = '',
     [string]$Tool = 'zt-digest'
 )
 $ErrorActionPreference = 'Stop'
@@ -66,6 +68,7 @@ switch ($Step) {
     'list' {
         $planArgs = @('cited', '-Step', 'plan', '-Staging', $Out)
         if ($Heading) { $planArgs += @('-Heading', $Heading) }
+        if ($Source) { $planArgs += @('-Source', $Source) }
         $plan = Run $planArgs
         if (-not $plan.json -or $plan.json.ok -ne $true) { Fail 'plan' $plan.tail; break }
         Reply @{ ok = $true; rows = [int]$plan.json.rows; unparsed = [int]$plan.json.unparsed; jobs = [int]$plan.json.jobs; file = "$($plan.json.file)" } @{ plan = $plan.json }

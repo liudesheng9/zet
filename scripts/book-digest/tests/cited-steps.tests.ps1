@@ -111,6 +111,8 @@ $list = Step (@('-Step', 'list', '-Heading', 'Bibliography') + $common)
 Assert-Line $list 'list'
 Assert ($list.json.ok -eq $true -and $list.json.rows -eq 35 -and $list.json.unparsed -eq 2 -and $list.json.jobs -eq 1 -and $list.json.file) "list: rows, unparsed entries and the normalize job file ($($list.text))"
 Assert ((Get-Content -LiteralPath $calls -Raw) -match 'cited -Step plan -Staging .* -Heading Bibliography') 'list: the heading reaches the plan'
+$withSource = Step (@('-Step', 'list', '-Source', 'C:\books\whole.md') + $common)
+Assert ($withSource.json.ok -eq $true -and ((Get-Content -LiteralPath $calls -Raw) -match 'cited -Step plan -Staging .* -Source C:\\books\\whole\.md')) 'list: -Source reaches the plan'
 $lf = Step (@('-Step', 'list-finish') + $common)
 Assert-Line $lf 'list-finish'
 Assert ($lf.json.card -eq 'K/1|b' -and $lf.json.unit -eq 'unclaimed') "list-finish: no ledger, the list is written without a unit ($($lf.text))"

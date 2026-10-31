@@ -1,4 +1,4 @@
-// ==== module zt-cited-cards v1 ====
+// ==== module zt-cited-cards v2 ====
 // The Cited literature branch (#221, docs/cited-literature-cards-proposal.md): Haiku managers and DeepSeek agents
 // only, the shape of zt-term-cards v8 without a review round. Every deterministic step is one `cited-steps.ps1`
 // call that a DeepSeek agent runs (a "drive" job, the shared zt-workflow-lib helper `ztDrive`), so no Claude agent
@@ -11,8 +11,10 @@
 //          managers in parallel) -> drive finish (complete each job from the readiness result, fail the rest;
 //          publish the ready prefix in row order; the book unit completes only when every row is published)
 // Every conversation is deleted after its answer is collected; the workspace registration is removed at the end.
+// v2 (pilot 2026-10-31): `source` names the whole bilingual source for a backfill, whose adopted staging names the
+// Chinese-only book.zh.md; the list step passes it as -Source and the plan freezes it for the Cards.
 defineModule({
-  id: 'zt-cited-cards', version: '1', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-cited-cards', version: '2', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Cited list and Cited Cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers for the content; each unit completes only from the compiler\'s own artifacts.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -20,6 +22,7 @@ defineModule({
     part: { type: 'string', required: true, description: '`list` (the Cited list) or `cards` (the Cited Cards)' },
     perJob: { type: 'number', min: 1, max: 8, description: 'works per writer job (the compiler\'s default is 4)' },
     heading: { type: 'string', description: 'the reference-list heading when it is not References, Bibliography or 参考文献' },
+    source: { type: 'string', description: 'the whole bilingual source when the staging manifest names another file (an adopted backfill)' },
     script: { type: 'string', default: 'E:\\zet\\scripts\\book-digest\\cited-steps.ps1', description: 'the Cited step script the drive jobs run' },
   },
   run: async (ctx, p) => {
@@ -63,7 +66,7 @@ Each job has id, files, prompt, skills, model, effort.
     // A deterministic step: one DeepSeek drive job runs one script call and answers with its last line (the shared
     // zt-workflow-lib helper ztDrive). A step that answers no JSON line or `ok:false` stops the stage with its reason.
     const drive = async (step) => {
-      const extra = `${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.heading ? ` -Heading "${p.heading}"` : ''}`
+      const extra = `${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.heading ? ` -Heading "${p.heading}"` : ''}${p.source && step === 'list' ? ` -Source "${p.source}"` : ''}`
       const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${extra}`
       const json = await ztDrive(ctx, { label: `${ctx.stage}: drive ${step}`, step, command, out: OUT, cwd: WORK, phase, ledger: 'zt-digest ledger', deepseek: report.deepseek })
       if (json.ok !== true) throw new Error(`cited ${step}: ${tail(json.error || 'the step failed')}`)

@@ -2359,6 +2359,9 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(off.report.stages.cited.status === 'skipped' && off.report.stages['cited-cards'].status === 'skipped' && off.citedCalls.length === 0, '#221: cited and citedCards false skip both stages')
 
   const backfill = await run('econ', { out: 'D:\\x\\Key', mode: 'cited-cards' })
+  // Pilot 2026-10-31: an adopted staging names the Chinese-only book.zh.md; citedSource names the whole source.
+  const withSource = await run('econ', { out: 'D:\\x\\Key', mode: 'cited-cards', citedSource: 'C:\\books\\whole.md' })
+  check(withSource.citedCalls.some((c) => c.step === 'list' && c.cmd.includes('-Source "C:\\books\\whole.md"')) && withSource.citedCalls.every((c) => c.step === 'list' || !c.cmd.includes(' -Source ')), '#221 (pilot): citedSource reaches only the list step (' + JSON.stringify(withSource.citedCalls.map((c) => c.cmd)) + ')')
   const ran = Object.entries(backfill.report.stages).filter(([, s]) => s.status === 'done').map(([id]) => id)
   check(backfill.report.stages.cited.status === 'done' && backfill.report.stages['cited-cards'].status === 'done' && backfill.report.stages['term-link'].status === 'done', `#221: mode cited-cards runs the list, the Cards and the Term-link pass (${ran.join(',')})`)
   check(!ran.some((id) => ['digest', 'cards', 'cards-book', 'link', 'terms', 'term-cards', 'models', 'events', 'findings', 'bridge', 'finalize'].includes(id)), `#221: mode cited-cards reruns no digest, Card, Term-card, model or Link stage (${ran.join(',')})`)
@@ -3184,7 +3187,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '47' && modules['zt-digest-prepare'] === '20' && modules['zt-digest-report'] === '23' && modules['zt-cited-cards'] === '1' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-digest-lib v47, zt-digest-prepare v20, zt-digest-report v23, zt-cited-cards v1, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '47' && modules['zt-digest-prepare'] === '20' && modules['zt-digest-report'] === '23' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-digest-lib v47, zt-digest-prepare v20, zt-digest-report v23, zt-cited-cards v2, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

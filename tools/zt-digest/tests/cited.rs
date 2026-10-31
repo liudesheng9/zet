@@ -370,6 +370,36 @@ fn the_plan_reads_chicago_years_wrapped_entries_and_skips_a_translated_list() {
     assert!(rows.iter().all(|r| !r["raw"].as_str().unwrap().contains("斯坦福")), "the translated list is no entry");
 }
 
+/// Pilot 2026-10-31: an adopted staging names the staged Chinese-only `book.zh.md` as its source, which holds
+/// no English reference list. `-Source` names the whole bilingual file; the plan freezes it, and the Cited
+/// Card jobs read that file, never the manifest's.
+#[test]
+fn an_explicit_source_replaces_a_manifest_source_without_a_reference_list() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "small2026", "Small Book");
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "small2026", "Small Book", "# 1 引言\n正如 Smith（1999）所说，谈判很重要。\n", json!([{ "anchor": "small2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    assert_eq!(line["rows"], json!(0), "the Chinese-only source has no list: {line}");
+
+    let whole = dir.path().join("whole.md");
+    std::fs::write(&whole, SMALL).unwrap();
+    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s, "-Source", whole.to_str().unwrap()]));
+    assert_eq!(line["rows"], json!(2), "{line}");
+    let plan: Value = serde_json::from_str(&std::fs::read_to_string(staging.join("cited").join("plan.json")).unwrap()).unwrap();
+    assert_eq!(plan["source"], json!(whole.to_string_lossy()));
+    assert_eq!(plan["rows"][0]["candidates"][0]["line"], json!(3), "the lines are the whole file's");
+
+    std::fs::write(staging.join("cited").join("normalize").join("out").join("n01.json"), json!([{ "row": 2, "authors": "Jones, K.", "year": "", "title": "Unpublished notes on contracts", "venue": "" }]).to_string()).unwrap();
+    assert_eq!(last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]))["rows"], json!(2));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let job = std::fs::read_to_string(staging.join("cited-cards").join("jobs").join("t001.md")).unwrap();
+    assert!(job.contains(&whole.to_string_lossy().to_string()), "the writer reads the frozen whole source:\n{job}");
+}
+
 const SMALL: &str = "# 1 Introduction\n# 1 引言\nAs Smith (1999) argues, bargaining matters.\n\n# References\n\nSmith, J. (1999). Bargaining. Journal of Tests, 1:1–2.\\\nJones, K. Unpublished notes on contracts.\\\n\n# Appendix\n";
 
 #[test]

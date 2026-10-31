@@ -98,13 +98,17 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 fn read_book(staging: &str) -> Result<Book> {
     let manifest = common::manifest(staging)?;
     let key = pstr(&manifest, "citation_key");
-    let source_path = pstr(&manifest, "source");
+    let cited = util::read_json(ps::join(&ps::join(staging, "cited"), "plan.json"))
+        .context("no Cited plan; run `zt-digest cited -Step plan` first")?;
+    // The file the Cited plan read (its -Source, or the manifest's source): the line numbers are its.
+    let source_path = match pstr(&cited, "source") {
+        frozen if !frozen.is_empty() => frozen,
+        _ => pstr(&manifest, "source"),
+    };
     let bytes = std::fs::read(&source_path).with_context(|| format!("failed to read the source {source_path}"))?;
     let source = String::from_utf8_lossy(&bytes).trim_start_matches('\u{FEFF}').to_string();
     let lines = cited::reference_lines(&source, "");
     let headings = cited::line_headings(&lines, &manifest["groups"]);
-    let cited = util::read_json(ps::join(&ps::join(staging, "cited"), "plan.json"))
-        .context("no Cited plan; run `zt-digest cited -Step plan` first")?;
     let work = ps::join(staging, "cited-cards");
     std::fs::create_dir_all(ps::join(&work, "drafts"))?;
     Ok(Book { key, title: pstr(&manifest, "book_title"), source_path, lines, headings, cited, work })

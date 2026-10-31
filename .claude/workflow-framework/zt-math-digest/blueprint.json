@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.10.0",
+  "version": "5.10.1",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -323,6 +323,10 @@
     "citedHeading": {
       "type": "string",
       "description": "the heading of the reference list when it is not References, Bibliography, 参考文献 or 参考"
+    },
+    "citedSource": {
+      "type": "string",
+      "description": "the whole bilingual source of the book when the staging manifest names another file (an adopted backfill names the staged Chinese-only book.zh.md, which holds no English reference list)"
     },
     "supply": {
       "type": "string",
@@ -799,6 +803,10 @@
         "part": "list",
         "heading": {
           "$ref": "args.citedHeading",
+          "default": null
+        },
+        "source": {
+          "$ref": "args.citedSource",
           "default": null
         }
       }
@@ -1833,6 +1841,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.10.0"
+    "version": "5.10.1"
   }
 }
