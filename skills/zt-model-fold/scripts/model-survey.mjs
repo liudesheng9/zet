@@ -4,6 +4,8 @@
 // A candidate group is a hypothesis about the book's models, never the decision: the skill decides
 // each group by the nature of the models (the question, the primitives), not by the size of the book.
 //   structural  rests-on Links and legacy shares (a （共用） line): one card builds on the other's cards (joins a group)
+//   false share a Link from the Model Card to another model's part (build.false_share): a comparison
+//               that the Link makes a member; listed to read, never a join
 //   imports     a **引入** line: intended sharing between two models (#205); listed to read, never a join
 //   kin         relaxes, corresponds: the same framework seen from another side (does not join; read it)
 //   compare     contrasts, illustrates, refers: a comparison or a pointer (does not join)
@@ -25,29 +27,40 @@ export function propose(heads, links) {
     groups.get(r).push(h)
   }
   const imports = (l) => l.imports || 0
+  const falseShares = (l) => l.falseShares || 0
   const describe = (l, kinds) => `${l.from} -> ${l.to}: ${kinds.filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(', ')}`
   return [...groups.values()].map((hs) => {
     const inside = (l) => hs.includes(l.from)
     return {
       heads: hs,
-      evidence: links.filter((l) => inside(l) && l.rests + l.shared > 0).map((l) => describe(l, [['rests-on', l.rests], ['legacy share', l.shared]])),
-      ask: links.filter((l) => inside(l) && l.rests + l.shared === 0 && imports(l) + l.kin + l.compare > 0).map((l) => describe(l, [['imports', imports(l)], ['kin', l.kin], ['compare', l.compare]])),
+      evidence: links.filter((l) => inside(l) && l.rests + l.shared > 0).map((l) => describe(l, [['rests-on', l.rests], ['legacy share', l.shared], ['false share', falseShares(l)]])),
+      ask: links.filter((l) => inside(l) && l.rests + l.shared === 0 && imports(l) + falseShares(l) + l.kin + l.compare > 0).map((l) => describe(l, [['imports', imports(l)], ['false share', falseShares(l)], ['kin', l.kin], ['compare', l.compare]])),
     }
   })
+}
+
+/** The kind of one shared entry of build.order: an import, a false share (its address is a build.false_share target), or a legacy （共用） share. */
+export function sharedKind(o, falseTargets) {
+  if (o.import) return 'import'
+  return falseTargets.has(o.address) ? 'false share' : 'legacy share'
+}
+
+/** Every Model Card head of one tree, read from get_tree rows (search_cards stops at 200 results). */
+export function modelHeads(rows, key) {
+  return rows.filter((r) => r.type === 'model' && !r.facet && r.address.startsWith(key + '/')).map((r) => r.address)
 }
 
 async function main() {
   const key = process.argv[2]
   if (!key) { console.error('usage: node model-survey.mjs <citationKey>'); process.exit(2) }
-  const { reads, model } = await import('./zt.mjs')
-  const rows = reads([{ tool: 'search_cards', arguments: { type: 'model', query: key, limit: 200 } }])[0].results
-  const heads = rows.filter((r) => !r.facet && r.address.startsWith(key + '/')).map((r) => r.address)
+  const { model, tree } = await import('./zt.mjs')
+  const heads = modelHeads(tree(key), key)
   const owner = (a) => heads.filter((h) => a === h || a.startsWith(h + '|')).sort((x, y) => y.length - x.length)[0]
   const sh = (a) => a.slice(key.length + 1)
   const pairs = new Map()
   const pair = (from, to) => {
     const k = from + '>' + to
-    if (!pairs.has(k)) pairs.set(k, { from, to, rests: 0, shared: 0, imports: 0, kin: 0, compare: 0 })
+    if (!pairs.has(k)) pairs.set(k, { from, to, rests: 0, shared: 0, imports: 0, falseShares: 0, kin: 0, compare: 0 })
     return pairs.get(k)
   }
   console.log(`${heads.length} Model Card(s) in ${key}`)
@@ -55,7 +68,16 @@ async function main() {
     const m = model(h)
     const order = m.build.order || []
     // A shared part an **引入** line imports is intended sharing; only a legacy （共用） share is evidence of a split.
-    for (const o of order) if (o.line === 'shared') { const w = owner(o.address); if (w && w !== h) { if (o.import) pair(h, w).imports++; else pair(h, w).shared++ } }
+    // A false share (a Model Card Link to another model's part) is a comparison, not a split either.
+    const falseTargets = new Set((m.build.false_share || []).map((f) => f.target))
+    for (const o of order) if (o.line === 'shared') {
+      const w = owner(o.address)
+      if (!w || w === h) continue
+      const kind = sharedKind(o, falseTargets)
+      if (kind === 'import') pair(h, w).imports++
+      else if (kind === 'false share') pair(h, w).falseShares++
+      else pair(h, w).shared++
+    }
     for (const n of m.neighbours || []) {
       if (n.way !== 'out') continue
       const w = owner(n.to)
@@ -71,7 +93,7 @@ async function main() {
     if (setting && setting.address !== h) console.log(`         setting:  ${setting.title}`)
   }
   const groups = propose(heads, [...pairs.values()])
-  console.log(`\nCandidate groups (joined by rests-on Links or legacy shares; imports never join): ${groups.length}`)
+  console.log(`\nCandidate groups (joined by rests-on Links or legacy shares; imports and false shares never join): ${groups.length}`)
   groups.forEach((g, i) => {
     console.log(`G${i + 1}: ${g.heads.map(sh).join(' ')}`)
     for (const e of g.evidence) console.log(`    builds on  ${e.replaceAll(key + '/', '')}`)

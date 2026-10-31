@@ -30,3 +30,33 @@ test('an import (引入) never joins a group; a legacy （共用） share still 
   // An import is intended sharing between two models: listed to read, never a join.
   assert.deepEqual(g[1].ask, ['K/3|a -> K/2|a: imports 4'])
 })
+
+test('modelHeads reads every Model Card head from get_tree rows, past search_cards\' 200-result cap', async () => {
+  const { modelHeads } = await import('./model-survey.mjs')
+  const rows = [
+    { address: 'K', type: 'literature' },
+    { address: 'K/1|a', type: 'idea', facet: null },
+    ...Array.from({ length: 250 }, (_, i) => ({ address: `K/${i + 2}|a`, type: 'model', facet: null })),
+    { address: 'K/2|a|a', type: 'model', facet: '设定' },
+  ]
+  const heads = modelHeads(rows, 'K')
+  assert.equal(heads.length, 250)
+  assert.ok(!heads.includes('K/2|a|a'))
+})
+
+test('a false share (a Model Card Link to another model\'s part) is named as one and never joins; a legacy share still joins', async () => {
+  const { sharedKind } = await import('./model-survey.mjs')
+  const falseTargets = new Set(['K/2|a|a|1'])
+  assert.equal(sharedKind({ address: 'K/2|a|a|1', line: 'shared', legacy: true }, falseTargets), 'false share')
+  assert.equal(sharedKind({ address: 'K/2|a|a|2', line: 'shared', legacy: true }, falseTargets), 'legacy share')
+  assert.equal(sharedKind({ address: 'K/2|a|a|3', line: 'shared', import: true }, falseTargets), 'import')
+  const g = propose(['K/2|a', 'K/3|a', 'K/5|a'], [
+    { from: 'K/3|a', to: 'K/2|a', rests: 0, shared: 0, imports: 0, falseShares: 1, kin: 0, compare: 0 },
+    { from: 'K/5|a', to: 'K/2|a', rests: 0, shared: 1, imports: 0, kin: 0, compare: 0 },
+  ])
+  assert.deepEqual(g.map((x) => x.heads), [['K/2|a', 'K/5|a'], ['K/3|a']])
+  assert.deepEqual(g[1].ask, ['K/3|a -> K/2|a: false share 1'])
+  // Beside a rests-on Link, the false share is named in the evidence line but adds no join of its own.
+  const h = propose(['K/2|a', 'K/3|a'], [{ from: 'K/3|a', to: 'K/2|a', rests: 1, shared: 0, imports: 0, falseShares: 1, kin: 0, compare: 0 }])
+  assert.deepEqual(h[0].evidence, ['K/3|a -> K/2|a: rests-on 1, false share 1'])
+})

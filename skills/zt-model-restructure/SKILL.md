@@ -65,7 +65,7 @@ The GUI (zt 0.44+) draws a model in chapters as a **network of blocks**. A block
 - **Parts (`**分部**`)** name runs of chapters in reading order; they read best when each part is one branch of the tree.
 - Plain references (`参照`, no cue) are not drawn by default. Use them only where a card points without using; a red thread in the network is fixed by moving cards (above), never by turning a premise into a reference.
 
-Write the target as a JSON spec (format in `scripts/tree-mover.mjs`) by card identity, then rebuild with `scripts/tree-mover.mjs plan` and `run`. The mover detaches every card leaf-first onto a parking chain, then places each card top-down into its slot, and follows every card through each move's rename map. It saves its state after every move and resumes after a failure. Freeze the tree first (it does this on the first run), and never change the spec mid-run.
+Write the target as a JSON spec (format in `scripts/tree-mover.mjs`) by card identity, then rebuild with `scripts/tree-mover.mjs plan` and `run`. The mover parks each branch (a Side branch, or a chain under a kept card, with its Direct chain) in one move, deepest first, onto a parking chain, then places each card top-down into its slot, and follows every card through each move's rename map. It retries a failed move once, saves its state after every move, and a second `run` resumes at the move that failed. Its tests (`node --test scripts/tree-mover.test.mjs`) run it against a simulator of zt's moves. Freeze the tree first (it does this on the first run), and never change the spec mid-run.
 
 ## Step 3: make each card readable
 
