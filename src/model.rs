@@ -322,15 +322,21 @@ pub(crate) fn ensure_allowed(
     Ok(())
 }
 
-/// The parts of the Model Card `head`: those filed under it and those it links.
+/// The parts of the Model Card `head`: those filed under it and those it links, apart from the
+/// Cards its `**引入**` section imports (#205): an import never keeps a Model Card from changing type.
 fn parts_in_db(conn: &Connection, head: &Card) -> Result<Vec<String>> {
     let linked = crate::parse_card_text(&head.text)
         .ok()
         .and_then(|parsed| {
+            let imported = import_lines(&parsed.body)
+                .into_iter()
+                .map(|line| line.target)
+                .collect::<BTreeSet<_>>();
             LinkBody::parse(&parsed.body).ok().map(|body| {
                 body.occurrences()
                     .iter()
                     .map(|occurrence| occurrence.target.to_string())
+                    .filter(|target| !imported.contains(target))
                     .collect::<BTreeSet<_>>()
             })
         })
@@ -770,8 +776,238 @@ pub(crate) fn heads(
         })
         .cloned()
         .collect::<Vec<_>>();
+    // A Model Card that imports a block holding this part (#205): the block's root is the part
+    // itself or an ancestor it lies under through a Side successor.
+    // A Model Card that imports the whole model the part is filed in takes it in too (#208).
+    let roots = std::iter::once(address)
+        .chain(
+            address
+                .match_indices('|')
+                .map(|(i, _)| &address[..i])
+                .filter(|root| in_block(address, root)),
+        )
+        .chain(filed.as_deref())
+        .collect::<BTreeSet<_>>();
+    for root in roots {
+        for source in inbound.get(root).into_iter().flatten() {
+            if filed.as_ref() == Some(source) || linking.contains(source) {
+                continue;
+            }
+            let Some(card) = by_address.get(source) else {
+                continue;
+            };
+            if card.card_type != CardType::Model || card.facet.is_some() {
+                continue;
+            }
+            let body = crate::parse_card_text(&card.text).map(|parsed| parsed.body).unwrap_or_default();
+            if import_lines(&body).iter().any(|line| line.target == root && line.mode == ImportMode::Block) {
+                linking.push(source.clone());
+            }
+        }
+    }
     linking.sort_by(|a, b| address_order(a, b));
     filed.into_iter().chain(linking).collect()
+}
+
+/// How an `**引入**` line takes a building block in (#205, docs/model-shared-blocks-proposal.md D1):
+/// `单卡` the named Card alone, `整块` (or no word) the Card and its block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImportMode {
+    Card,
+    Block,
+}
+
+/// One line of a Model Card's `**引入**` section: the Card it names and how it takes it in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImportLine {
+    pub(crate) target: String,
+    pub(crate) mode: ImportMode,
+}
+
+/// The lines inside the sections called `names`: from a bold label (`**引入**`) or a heading
+/// (`## 引入`) up to the next one. A bold label may carry its list on the same line.
+fn section_lines<'a>(body: &'a str, names: &[&str]) -> Vec<&'a str> {
+    let mut inside = false;
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let label = trimmed
+            .strip_prefix("**")
+            .map(|rest| rest.split("**").next().unwrap_or(""))
+            .or_else(|| trimmed.starts_with('#').then(|| trimmed.trim_start_matches('#').trim()));
+        if let Some(label) = label {
+            let label = label.trim().trim_end_matches(['：', ':']).trim();
+            inside = names.iter().any(|name| label == *name);
+            if !inside {
+                continue;
+            }
+        }
+        if inside {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+/// The ordinary Link targets of some lines (a Term use names a word, never a part), in order.
+fn line_targets(lines: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    for line in lines {
+        for occurrence in LinkBody::for_rendering(line).occurrences() {
+            if occurrence.form != LinkForm::Term && !found.iter().any(|t| t == occurrence.target) {
+                found.push(occurrence.target.to_string());
+            }
+        }
+    }
+    found
+}
+
+/// The import lines of a Model Card's body, in order: each line of its `**引入**` section that
+/// names a Card. The first Link of a line is its target; `单卡` at the line's start imports that
+/// Card alone, any other line its block.
+pub(crate) fn import_lines(body: &str) -> Vec<ImportLine> {
+    let mut lines: Vec<ImportLine> = Vec::new();
+    for line in section_lines(body, &["引入"]) {
+        let Some(target) = line_targets(&[line]).into_iter().next() else {
+            continue;
+        };
+        let text = line.trim_start().trim_start_matches(['-', '*', '+']).trim_start();
+        let text = text.strip_prefix("**引入**").unwrap_or(text).trim_start_matches(['：', ':', ' ']);
+        let mode = if text.starts_with("单卡") { ImportMode::Card } else { ImportMode::Block };
+        if !lines.iter().any(|l| l.target == target) {
+            lines.push(ImportLine { target, mode });
+        }
+    }
+    lines
+}
+
+/// The Cards a Model Card names in its structure: the Links of its `结构` section and of any line
+/// that opens with `结构：`. A part of another model named here is a legacy share (`（共用）`).
+fn structure_targets(body: &str) -> BTreeSet<String> {
+    let mut lines = section_lines(body, &["结构"]);
+    lines.extend(body.lines().filter(|line| {
+        let t = line.trim_start();
+        t.starts_with("结构：") || t.starts_with("结构:")
+    }));
+    line_targets(&lines).into_iter().collect()
+}
+
+/// Whether `address` lies in the block of `root` (#205, D2a): the root itself, or a Card under one of
+/// its Side successors. A Direct successor (`root|1` under a root that ends in a letter, `root+1`
+/// under a numbered one) is the next step of a line, so a block stops at a chapter boundary.
+pub(crate) fn in_block(address: &str, root: &str) -> bool {
+    address == root
+        || address
+            .strip_prefix(root)
+            .and_then(|rest| rest.strip_prefix('|'))
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|c| c.is_ascii_lowercase())
+}
+
+/// One import of a model, expanded (#205): the root its line names, how it takes it in, the home
+/// model, the block's parts in Folgezettel order, and the closure, the parts of the home model the
+/// block rests on, in the order they were reached.
+#[derive(Clone, Debug)]
+pub(crate) struct Expanded {
+    pub(crate) root: String,
+    pub(crate) mode: &'static str,
+    pub(crate) home: Option<String>,
+    pub(crate) block: Vec<String>,
+    pub(crate) closure: Vec<String>,
+}
+
+fn is_model_part(card: &Card) -> bool {
+    card.card_type == CardType::Model && card.facet.is_some()
+}
+
+/// The Model Card a Card is filed under, if any.
+fn filed_head(at: &str, by_address: &BTreeMap<String, Card>) -> Option<String> {
+    find_head(crate::parent_location(at), |at: &str| {
+        by_address
+            .get(at)
+            .map(|card| (card.card_type, card.facet.is_some()))
+    })
+}
+
+/// The rests-on targets of a Card's body, in order.
+fn rests_on_targets(at: &str, body: &str) -> Vec<String> {
+    read_links(body, |at| at.to_string())
+        .into_iter()
+        .filter(|read| read.kind == RelationKind::RestsOn && read.target != at)
+        .map(|read| read.target)
+        .collect()
+}
+
+/// The imports of the Model Card `head`, expanded: a `单卡` line takes its part alone; a `整块` line
+/// takes the block of its part (`in_block`) and the closure: every part filed in the same home model
+/// that a Card of the block rests on, recursively. A line that names no part of another model
+/// expands to nothing (the build report names it as an `import_target` fault).
+pub(crate) fn expand_imports(
+    head: &str,
+    lines: &[ImportLine],
+    by_address: &BTreeMap<String, Card>,
+    body_of: &dyn Fn(&str) -> String,
+) -> Vec<Expanded> {
+    let mut out = Vec::new();
+    for line in lines {
+        let root = &line.target;
+        let Some(card) = by_address.get(root) else {
+            continue;
+        };
+        if card.card_type != CardType::Model || root == head {
+            continue;
+        }
+        // A whole model (#208): every part filed under its Model Card.
+        if card.facet.is_none() {
+            if line.mode == ImportMode::Card {
+                continue;
+            }
+            let mut block = by_address
+                .values()
+                .filter(|card| is_model_part(card) && filed_head(&card.address, by_address).as_deref() == Some(root.as_str()))
+                .map(|card| card.address.clone())
+                .collect::<Vec<_>>();
+            block.sort_by(|a, b| address_order(a, b));
+            out.push(Expanded { root: root.clone(), mode: "model", home: Some(root.clone()), block, closure: Vec::new() });
+            continue;
+        }
+        let home = filed_head(root, by_address);
+        if home.as_deref() == Some(head) {
+            continue;
+        }
+        let (mode, block) = match line.mode {
+            ImportMode::Card => ("card", vec![root.clone()]),
+            ImportMode::Block => {
+                let mut block = by_address
+                    .values()
+                    .filter(|card| is_model_part(card) && in_block(&card.address, root))
+                    .map(|card| card.address.clone())
+                    .collect::<Vec<_>>();
+                block.sort_by(|a, b| address_order(a, b));
+                ("block", block)
+            }
+        };
+        let mut closure = Vec::new();
+        if mode == "block" && home.is_some() {
+            let mut seen = block.iter().cloned().collect::<BTreeSet<_>>();
+            let mut queue = block.clone();
+            let mut next = 0;
+            while next < queue.len() {
+                let at = queue[next].clone();
+                next += 1;
+                for target in rests_on_targets(&at, &body_of(&at)) {
+                    let in_home = by_address.get(&target).is_some_and(is_model_part)
+                        && filed_head(&target, by_address) == home;
+                    if in_home && seen.insert(target.clone()) {
+                        closure.push(target.clone());
+                        queue.push(target);
+                    }
+                }
+            }
+        }
+        out.push(Expanded { root: root.clone(), mode, home, block, closure });
+    }
+    out
 }
 
 /// The parts of the model whose Model Card is `head`: first the parts it
@@ -816,6 +1052,17 @@ pub(crate) fn parts_of<'a>(
         .collect::<Vec<_>>();
     filed.sort_by(|a, b| address_order(&a.address, &b.address));
     parts.extend(filed);
+    // The blocks and closures the `**引入**` section takes in (#205).
+    let body_of = |at: &str| parsed.get(at).map(|parsed| parsed.body.clone()).unwrap_or_default();
+    for import in expand_imports(head, &import_lines(body), by_address, &body_of) {
+        for at in import.block.iter().chain(&import.closure) {
+            if let Some(card) = by_address.get(at)
+                && !parts.iter().any(|part| part.address == *at)
+            {
+                parts.push(card);
+            }
+        }
+    }
     parts
 }
 
@@ -868,6 +1115,13 @@ pub(crate) fn structure_in(
     if let Some(at) = prefer.and_then(|p| models.iter().position(|m| m == p)) {
         let chosen = models.remove(at);
         models.insert(0, chosen);
+    } else if let Some(p) = prefer
+        && card.facet.is_some()
+        && by_address.get(p).is_some_and(|head| head.card_type == CardType::Model && head.facet.is_none())
+        && parts_of(p, by_address, parsed).iter().any(|part| part.address == address)
+    {
+        // A part that only an import's closure brings in (#205) is still a member of `prefer`.
+        models.insert(0, p.to_string());
     }
     let Some(head) = models.first().cloned() else {
         return Some(json!({
@@ -1033,7 +1287,9 @@ pub(crate) fn structure_in(
         .collect::<BTreeSet<_>>();
     let level = by_address[&head].level;
     let form = by_address[&head].form;
-    let build = build_report(&head, level, &parts, by_address, parsed, inbound, &name);
+    let lines = import_lines(body_of(&head));
+    let expanded = expand_imports(&head, &lines, by_address, &|at: &str| body_of(at).to_string());
+    let build = build_report(&head, level, &parts, by_address, parsed, inbound, &name, &lines, &expanded);
     let view = crate::math::View {
         by_address,
         parsed,
@@ -1077,10 +1333,49 @@ pub(crate) fn structure_in(
         "neighbours": neighbours,
         "discussion": discussion.len(),
         "issues": [],
+        "imports": imports_report(&head, &expanded, &build, by_address, inbound),
         "build": build,
         "blocks": blocks,
         "block_edges": block_edges,
     }))
+}
+
+/// The imports of a model (#205): one entry per valid `**引入**` line, then one per legacy share
+/// (a shared part its `结构` names; a `false_share` is no import), each with its root, mode, home
+/// model and members.
+fn imports_report(
+    head: &str,
+    expanded: &[Expanded],
+    build: &Value,
+    by_address: &BTreeMap<String, Card>,
+    inbound: &BTreeMap<String, BTreeSet<String>>,
+) -> Value {
+    let order = build["order"].as_array().map_or(&[][..], Vec::as_slice);
+    let shared = order.iter().filter(|e| e["line"] == "shared").collect::<Vec<_>>();
+    let home = |at: &str| heads(at, by_address, inbound).into_iter().find(|model| model != head);
+    let taken = |list: &[String]| {
+        list.iter()
+            .filter(|at| shared.iter().any(|e| e["address"] == json!(at)))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let mut out = Vec::new();
+    for import in expanded {
+        let members = taken(&import.block);
+        if members.is_empty() {
+            continue;
+        }
+        out.push(json!({
+            "root": import.root, "mode": import.mode, "home": import.home,
+            "members": members, "closure": taken(&import.closure),
+        }));
+    }
+    let stray = build["false_share"].as_array().map_or(&[][..], Vec::as_slice).iter().map(|f| f["target"].clone()).collect::<Vec<_>>();
+    for e in shared.iter().filter(|e| e["legacy"] == json!(true) && !stray.contains(&e["address"])) {
+        let at = e["address"].as_str().unwrap_or_default();
+        out.push(json!({ "root": at, "mode": "legacy", "home": home(at), "members": [at], "closure": [] }));
+    }
+    json!(out)
 }
 
 /// #199 (B1, docs/model-board-blocks-proposal.md P1/P7): the model as blocks for the GUI. A block is
@@ -1303,34 +1598,81 @@ pub(crate) fn is_derivation(facet: &Facet) -> bool {
 
 /// Put the shared parts that `at` rests on into `out`, each after the shared
 /// parts it rests on itself (a depth-first walk over rests-on Links among
-/// shared parts, in address order). `placed` holds what is already in the
-/// build order, so each part comes once and a cycle ends the walk.
+/// shared parts, in address order). A part an import takes in brings its whole
+/// run (`runs`: the import's closure and block, premises first), so a building
+/// block reads as one piece (#205). `placed` holds what is already in the build
+/// order, so each part comes once and a cycle ends the walk.
 fn take_in_shared(
     at: &str,
     premises: &BTreeMap<String, BTreeSet<String>>,
     shared: &BTreeSet<String>,
+    runs: &BTreeMap<String, Vec<String>>,
     placed: &mut BTreeSet<String>,
     out: &mut Vec<String>,
 ) {
     for premise in premises.get(at).into_iter().flatten() {
-        if shared.contains(premise) && placed.insert(premise.clone()) {
-            take_in_shared(premise, premises, shared, placed, out);
-            out.push(premise.clone());
+        if shared.contains(premise) && !placed.contains(premise) {
+            take_run(premise, premises, shared, runs, placed, out);
         }
     }
 }
 
+/// Put a shared part into `out` with its import's run, each Card after the shared parts outside
+/// the run that it rests on.
+fn take_run(
+    part: &str,
+    premises: &BTreeMap<String, BTreeSet<String>>,
+    shared: &BTreeSet<String>,
+    runs: &BTreeMap<String, Vec<String>>,
+    placed: &mut BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    let run = runs.get(part).cloned().unwrap_or_else(|| vec![part.to_string()]);
+    let run = run.into_iter().filter(|at| placed.insert(at.clone())).collect::<Vec<_>>();
+    for at in run {
+        take_in_shared(&at, premises, shared, runs, placed, out);
+        out.push(at);
+    }
+}
+
+/// The Cards of one import in reading order: each after the Cards of the same import it rests
+/// on (a depth-first walk in the given order: the closure, then the block).
+fn run_order(cards: &[String], premises: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
+    fn visit(at: &str, inside: &BTreeSet<&str>, premises: &BTreeMap<String, BTreeSet<String>>, seen: &mut BTreeSet<String>, out: &mut Vec<String>) {
+        if !seen.insert(at.to_string()) {
+            return;
+        }
+        for premise in premises.get(at).into_iter().flatten() {
+            if inside.contains(premise.as_str()) {
+                visit(premise, inside, premises, seen, out);
+            }
+        }
+        out.push(at.to_string());
+    }
+    let inside = cards.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for at in cards {
+        visit(at, &inside, premises, &mut seen, &mut out);
+    }
+    out
+}
+
 /// How a Card outside a model that the model rests on can come in (rule 5 of
 /// the self-sufficient model): the fix a closure fault names.
-fn closure_fix(target: &Card, head: &str, target_models: &[String]) -> String {
+fn closure_fix(target: &Card, head: &str, target_models: &[String], imported_whole: bool) -> String {
     let at = &target.address;
-    if target.card_type == CardType::Model && target.facet.is_none() {
+    if target.card_type == CardType::Model && target.facet.is_none() && imported_whole {
         format!(
-            "rests on the Model Card `{at}`, which is not in this model: a model rests on parts, not on a whole model; name the parts the step uses, take them in, and rest on them"
+            "rests on the Model Card `{at}`, which this model imports whole (#208): its parts are members, so rest on the part the step uses"
+        )
+    } else if target.card_type == CardType::Model && target.facet.is_none() {
+        format!(
+            "rests on the Model Card `{at}`, which is not in this model: a model rests on parts, not on a whole model; name the parts the step uses, import them (**引入**: `整块 [[{at}]]` takes the whole model), and rest on them"
         )
     } else if let Some(home) = target_models.first() {
         format!(
-            "rests on `{at}`, which is not in this model: it is a part of `{home}`; take it in with a Link from this Model Card's 结构 list"
+            "rests on `{at}`, which is not in this model: it is a part of `{home}`; import it in this Model Card's **引入** section (`单卡 [[{at}]]`, or `整块` for it with its block)"
         )
     } else if target.workspace == crate::Workspace::Agent
         && crate::tree_id(at) == crate::tree_id(head)
@@ -1377,6 +1719,8 @@ fn build_report(
     parsed: &BTreeMap<String, crate::ParsedCard>,
     inbound: &BTreeMap<String, BTreeSet<String>>,
     name: &impl Fn(&str) -> String,
+    imports: &[ImportLine],
+    expanded: &[Expanded],
 ) -> Value {
     let lookup = |at: &str| {
         by_address
@@ -1474,12 +1818,30 @@ fn build_report(
             )
         })
         .collect::<BTreeMap<_, _>>();
+    // Each import's Cards come in as one run, premises first (#205); the first import that takes a
+    // Card in owns it.
+    let mut runs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut import_of: BTreeMap<String, String> = BTreeMap::new();
+    for import in expanded {
+        let cards = import
+            .closure
+            .iter()
+            .chain(&import.block)
+            .filter(|at| shared_set.contains(*at) && !import_of.contains_key(*at))
+            .cloned()
+            .collect::<Vec<_>>();
+        let run = run_order(&cards, &premises);
+        for at in &run {
+            import_of.insert(at.clone(), import.root.clone());
+            runs.insert(at.clone(), run.clone());
+        }
+    }
     let mut placed = BTreeSet::new();
     let mut before: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for step in &main {
         let mut list = Vec::new();
         for at in std::iter::once(step).chain(sides.get(step).into_iter().flatten()) {
-            take_in_shared(at, &premises, &shared_set, &mut placed, &mut list);
+            take_in_shared(at, &premises, &shared_set, &runs, &mut placed, &mut list);
         }
         if !list.is_empty() {
             before.insert(step.clone(), list);
@@ -1488,9 +1850,8 @@ fn build_report(
     // Shared parts that no step needs come after the main line, premises first.
     let mut unplaced = Vec::new();
     for part in &shared {
-        if placed.insert(part.clone()) {
-            take_in_shared(part, &premises, &shared_set, &mut placed, &mut unplaced);
-            unplaced.push(part.clone());
+        if !placed.contains(part) {
+            take_run(part, &premises, &shared_set, &runs, &mut placed, &mut unplaced);
         }
     }
 
@@ -1543,6 +1904,10 @@ fn build_report(
             }
             if *line == "shared" {
                 value["home"] = json!(homes(at).into_iter().find(|model| model != head));
+                match import_of.get(at.as_str()) {
+                    Some(root) => value["import"] = json!(root),
+                    None => value["legacy"] = json!(true),
+                }
             }
             if card.facet.as_ref().is_some_and(is_derivation) {
                 value["derivation"] = json!(true);
@@ -1608,7 +1973,12 @@ fn build_report(
                     "to": read.target,
                     "note": read.note,
                     "card": card_ref(&read.target),
-                    "fix": closure_fix(target, head, &models),
+                    "fix": closure_fix(
+                        target,
+                        head,
+                        &models,
+                        expanded.iter().any(|import| import.mode == "model" && import.root == read.target),
+                    ),
                 }));
             }
         }
@@ -1693,6 +2063,69 @@ fn build_report(
             })
         })
         .collect::<Vec<_>>();
+    // The transition (#205, owner decision 2): a Link from the Model Card to another model's part
+    // outside `结构` and `**引入**` still makes a member, but it shares by accident.
+    let head_body = parsed.get(head).map_or("", |parsed| parsed.body.as_str());
+    let named = structure_targets(head_body);
+    let mut false_share = Vec::new();
+    let mut flagged = BTreeSet::new();
+    for read in read_links(head_body, name) {
+        if shared_set.contains(&read.target)
+            && !named.contains(&read.target)
+            && !imports.iter().any(|line| line.target == read.target)
+            && flagged.insert(read.target.clone())
+        {
+            false_share.push(json!({
+                "target": read.target,
+                "note": read.note,
+                "fix": format!(
+                    "`{}` is a part of another model that this Model Card only mentions, yet the Link makes it a member: to share it, name it in the **引入** section; to compare, link it from a part, not from the Model Card",
+                    read.target
+                ),
+            }));
+        }
+    }
+    let mut import_target = Vec::new();
+    for line in imports {
+        let at = &line.target;
+        let problem = match by_address.get(at) {
+            None => Some(format!("`{at}` names no Card: fix the Link or drop the line")),
+            Some(card) if card.card_type != CardType::Model => Some(format!(
+                "`{at}` is not a Model Card or a Model part: a model imports parts of models (link other Cards as neighbours)"
+            )),
+            Some(_) if at == head || in_range.contains(at) => Some(format!(
+                "`{at}` is filed in this model: name it in 结构, not in **引入**"
+            )),
+            Some(card) if card.facet.is_none() && line.mode == ImportMode::Card => Some(format!(
+                "`{at}` is a Model Card: a whole model comes in with `整块 [[{at}]]`; `单卡` takes one part"
+            )),
+            Some(_) => None,
+        };
+        if let Some(fix) = problem {
+            import_target.push(json!({ "target": at, "fix": fix }));
+        }
+    }
+    // A building block that rests on the model that imports it: the two models lean on each other.
+    let mut import_cycle = Vec::new();
+    for import in expanded {
+        for from in import.block.iter().chain(&import.closure) {
+            for to in rests_on_targets(from, parsed.get(from.as_str()).map_or("", |parsed| parsed.body.as_str())) {
+                if to == head || in_range.contains(&to) {
+                    import_cycle.push(json!({
+                        "import": import.root,
+                        "home": import.home,
+                        "from": from,
+                        "to": to,
+                        "fix": format!(
+                            "`{from}`, which `{}` brings in from `{}`, rests on `{to}` of this model: the models lean on each other; move the shared premise into one home and import it from there",
+                            import.root,
+                            import.home.as_deref().unwrap_or("another model")
+                        ),
+                    }));
+                }
+            }
+        }
+    }
     let beyond_level = if level == Some(Level::Concept) {
         in_range
             .iter()
@@ -1753,10 +2186,15 @@ fn build_report(
         "forward": forward,
         "tolerated": tolerated,
         "unanchored": unanchored,
+        "false_share": false_share,
+        "import_target": import_target,
+        "import_cycle": import_cycle,
         "self_sufficient": closure.is_empty()
             && reach_in.is_empty()
             && forward.is_empty()
-            && unanchored.is_empty(),
+            && unanchored.is_empty()
+            && import_target.is_empty()
+            && import_cycle.is_empty(),
         "beyond_level": beyond_level,
     })
 }

@@ -106,6 +106,8 @@ A whole-block import of a setting must not bring the setting's model with it. Tw
 1. `整块` stops at a **chapter boundary**. The subtree of a setting Card contains its Side successors (the setting's dependency tree, as `zt-model-settings` builds it) and their subtrees, but no Direct successor that is a chapter card of the spine (`**分部**` or `第 n 章`). This matches how `blocks_report` already separates the setting block from the chapter blocks.
 2. A borrower may also import a **block** of the board by its block head. `blocks_report` already computes blocks; an import of a block head is an import of that block's members, its children and their proofs.
 
+**As implemented (#207):** both rules follow from addressing alone. `整块 [[R]]` takes `R` and every Model part whose address continues `R|<letter>` (`model::in_block`): the Cards under its Side successors. A Direct successor is `R|1` under a root that ends in a letter and `R+1` under a numbered one, so the next chapter is never in the block, and a chapter card imported as a root brings its results and their proofs.
+
 ### D3. A whole model as a building block
 
 A borrower may import a whole model: `整块 [[hart1995firms/11|a|12]]`. The closure is every member of that model. On the borrower's board this model appears as one 共用 block named by the home model's title, and `closure_fix` no longer says "a model rests on parts, not on a whole model" for an imported Model Card (B8). The Cards a borrower rests on must still be named precisely: a rests-on Link goes to a part, not to the Model Card.
@@ -145,6 +147,8 @@ With this proposal:
 - A binding line in the notation card shows the borrowed symbol beside the local one.
 
 ### D8. MCP and write checks
+
+**As implemented (#206):** the import line checks are build-report faults (`import_target`, `import_cycle`), like every other model fault, not write refusals; zt already refuses a Link to a missing Card on write, so a missing target only appears after a delete.
 
 - `get_model` adds `imports` and `lent` (D6).
 - `edit_card` on a Model Card with a `**引入**` section checks each line: the target exists, is a Model part or a Model Card, and is not filed under this Model Card. An `整块` line whose root has no subtree gets a warning ("use 单卡").

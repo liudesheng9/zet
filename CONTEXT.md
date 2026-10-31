@@ -201,7 +201,7 @@ The Model Card and the Model parts filed under it.
 _Avoid_: Model scope, model folder
 
 **Model member**:
-A Card of a model: a Card in its Model range, or a shared part that the Model Card takes in by a Link.
+A Card of a model: a Card in its Model range, or a shared part that the Model Card takes in: by an Import, or (until every book is migrated) by a `（共用）` line of its `结构` list or any other Link from the Model Card to a Model part (a False share).
 _Avoid_: Model element
 
 **Build order**:
@@ -217,8 +217,16 @@ Two or more Derivation parts next to each other in the build order that together
 _Avoid_: Derivation sequence, proof chain
 
 **Building block**:
-A shared part, or a shared Derivation chain, that two or more models use. It is filed once, in the first model that needs it; every other Model Card takes in each of its Cards, and the build order keeps them in their own order. Among mathematical units, a building block is a whole unit that units of two or more theories cite; its home is the theory that proves it, and a step that two proofs need becomes a lemma, not a shared part.
+A part of one model that other models import, with the parts under its Side successors (its block: a setting tree, a result with its proof, a chapter with its results), or a whole model. It is filed once, in its home model; another Model Card imports it with one `整块` line of its `**引入**` section, which also brings the parts of the home model the block rests on (its closure), and the build order keeps the import together, premises first (#205). Among mathematical units, a building block is a whole unit that units of two or more theories cite; its home is the theory that proves it, and a step that two proofs need becomes a lemma, not a shared part.
 _Avoid_: Library part, common part, lemma card (for a shared part of a model)
+
+**Import**:
+One line of a Model Card's `**引入**` section that takes a building block of another model in: `- 单卡 [[X]]：…` takes the Card X alone, `- 整块 [[X]]：…` (or a line with no word) takes X with its block. The only intended way to share a part between models (#205, docs/model-shared-blocks-proposal.md). A line that names no part of another model is an `import_target` fault in the build report; the Links of the section never keep the Model Card from changing type.
+_Avoid_: Reference, borrow line, 共用 line (the legacy form)
+
+**False share**:
+A Link from a Model Card, outside its `结构` list and its `**引入**` section, to a part of another model (a `对照` or `参照` line, a mention in the question). Until every book is migrated it still makes the part a member, and the build report lists it (`build.false_share`) with its fix: import it, or link it from a part.
+_Avoid_: Accidental member
 
 **Self-sufficient model**:
 A model a reader can build from nothing by reading only its own Cards in build order. Every rests-on relation from a Card in its range targets a Model member, a Cited premise, or the Book notation table, and no main-line part rests on a later part. ZT reports the faults (`closure`, `reach_in`, `forward`, `unanchored`) in the build report; it does not enforce them.

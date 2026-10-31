@@ -268,25 +268,45 @@ impl<'a> Scope<'a> {
             return Ok(());
         }
         let mut parent = crate::parent_location(at);
+        let mut chain = Vec::new();
         while let Some(above) = parent {
             if !self.add(&above)? || self.cards[&above].card_type != crate::CardType::Model {
                 break;
             }
+            chain.push(above.clone());
             if self.cards[&above].facet.is_none() {
                 break;
             }
             parent = crate::parent_location(&above);
         }
-        let mut statement=self.conn.prepare_cached("SELECT DISTINCT l.source FROM links l JOIN cards c ON c.location=l.source OR c.citation_key=l.source WHERE l.target=?1 AND (l.kind IS NULL OR l.kind<>'term') AND c.card_type='model' AND c.model_facet IS NULL")?;
-        let heads = statement
-            .query_map([at], |r| r.get::<_, String>(0))?
+        // The Model Cards that link the Card, and those that link a block it lies in or the
+        // Model Card it is filed under: a `整块` import of either takes the Card in too (#205).
+        let roots = std::iter::once(at.to_string()).chain(chain).collect::<Vec<_>>();
+        for root in roots {
+            let mut statement=self.conn.prepare_cached("SELECT DISTINCT l.source FROM links l JOIN cards c ON c.location=l.source OR c.citation_key=l.source WHERE l.target=?1 AND (l.kind IS NULL OR l.kind<>'term') AND c.card_type='model' AND c.model_facet IS NULL")?;
+            let heads = statement
+                .query_map([&root], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            self.inbound
+                .entry(root.clone())
+                .or_default()
+                .extend(heads.iter().cloned());
+            for head in heads {
+                self.add(&head)?;
+            }
+        }
+        Ok(())
+    }
+    /// Every Card filed under `at` (its whole Folgezettel range).
+    fn range(&mut self, at: &str) -> Result<()> {
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT location FROM cards WHERE location>=?1 AND location<?2")?;
+        let found = statement
+            .query_map([format!("{at}|"), format!("{at}}}")], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        self.inbound
-            .entry(at.to_string())
-            .or_default()
-            .extend(heads.iter().cloned());
-        for head in heads {
-            self.add(&head)?;
+        for at in found {
+            self.add(&at)?;
         }
         Ok(())
     }
@@ -320,6 +340,41 @@ impl<'a> Scope<'a> {
             {
                 members.insert(target);
             }
+        }
+        // The blocks and closures of the head's imports (#205): load each block's home model, so the
+        // closure can follow its rests-on Links, and expand them as the model report does.
+        let body = crate::parse_card_text(&self.cards[head].text)
+            .map(|parsed| parsed.body)
+            .unwrap_or_default();
+        let lines = crate::model::import_lines(&body);
+        for line in &lines {
+            if !self.add(&line.target)? {
+                continue;
+            }
+            self.owners(&line.target)?;
+            let cards = &self.cards;
+            // A whole model is its own home (#208).
+            let home = if cards[&line.target].facet.is_none() {
+                Some(line.target.clone())
+            } else {
+                crate::model::find_head(crate::parent_location(&line.target), |at: &str| {
+                    cards.get(at).map(|card| (card.card_type, card.facet.is_some()))
+                })
+            };
+            if let Some(home) = home {
+                self.range(&home)?;
+            }
+        }
+        let cards = &self.cards;
+        let body_of = |at: &str| {
+            cards
+                .get(at)
+                .and_then(|card| crate::parse_card_text(&card.text).ok())
+                .map(|parsed| parsed.body)
+                .unwrap_or_default()
+        };
+        for import in crate::model::expand_imports(head, &lines, cards, &body_of) {
+            members.extend(import.block.into_iter().chain(import.closure));
         }
         self.parts.insert(head.to_string(), members.clone());
         Ok(members)
