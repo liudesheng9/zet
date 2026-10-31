@@ -442,7 +442,18 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
             }
             continue;
         }
+        // The book may spell a name one letter apart from its list (`Boycko` in the text, `Boyco` in the list
+        // of hart1995firms): that counts when the line itself gives the work's year.
+        let own_line = &book.lines[line - 1].1;
+        let near_spelling = surname.len() >= 5
+            && !year.is_empty()
+            && own_line.contains(&year)
+            && own_line
+                .split(|c: char| !c.is_alphanumeric())
+                .map(cited::fold)
+                .any(|word| one_edit(&word, &surname));
         let names = (!surname.is_empty() && near.contains(&surname))
+            || near_spelling
             || first_name.as_ref().is_some_and(|name| near.contains(name.as_str()))
             || words.iter().filter(|w| near.contains(w.as_str())).count() >= 2;
         if !names {
@@ -478,6 +489,23 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
         faults.push((message, blocking));
     }
     faults
+}
+
+/// Whether two words differ by at most one inserted, removed or changed letter.
+fn one_edit(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if a == b {
+        return true;
+    }
+    let (short, long) = if a.len() <= b.len() { (&a, &b) } else { (&b, &a) };
+    match long.len() - short.len() {
+        0 => short.iter().zip(long.iter()).filter(|(x, y)| x != y).count() == 1,
+        1 => {
+            let at = short.iter().zip(long.iter()).position(|(x, y)| x != y).unwrap_or(short.len());
+            short[at..] == long[at + 1..]
+        }
+        _ => false,
+    }
 }
 
 fn read_items(path: &str) -> Vec<Value> {
