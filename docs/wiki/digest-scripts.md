@@ -1025,5 +1025,6 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `2026-10-12`–`2026-10-13` `7a878da`, `7d636e4`, `1bec685`, `eaf854c`, `b61f2c4`, `96def45` — self-sufficient models, Elaboration levels, Derivation chains, the UTF-8 fix in `zt-calls.ps1`, and `zt-calls.tests.ps1`.
 - `2026-10-10`–`2026-10-12` `fcc5226`, `eec0940`, `2b05ba6`, `d92f367`, `c9b01a2`, `6ad10ed` — the first digest scripts (`prepare-book-digest.ps1`, `snapshot-topics.ps1`, `prepare-link-pass.ps1`, `list-models.ps1`, `model-context.ps1`, `zt-calls.ps1`) and Model parts.
 - `2026-10-16` — Wiki doc created.
+- `2026-11-01` — atkinson2015lectures: `model-steps.ps1 -Lane <name>` keeps a lane's block files apart (`units.<lane>.json`, `models.<lane>.json`, `batches.<lane>.json`, `models-all.<lane>.json`) and `-KeepClaims` makes a lane's `start` release no claim; `layer-steps.ps1 -Lane <name>` runs a block in its own `layer-steps<layer><lane>` folder. Tests in `model-steps.tests.ps1` (lanes) and `ledger-resume.tests.ps1` (a failed anchor read is read again).
 
 

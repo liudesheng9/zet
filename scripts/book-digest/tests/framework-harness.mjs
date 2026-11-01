@@ -1019,7 +1019,8 @@ function runtime(kind, opts = {}) {
   const layerCalls = [], layerManagers = [], layerState = new Map(), layerJobs = new Map()
   // #191: the manager that deletes one card cycle's kept conversations after its last round.
   const deleteManagers = []
-  const layerKey = (out, layer) => `${out}|${layer}`
+  // layer lanes: each lane keeps its own block (layer-steps.ps1 -Lane).
+  const layerKey = (out, layer, lane = '') => `${out}|${layer}|${lane}`
   const layerArg = (cmd, name) => (cmd.match(new RegExp(`-${name} "([^"]*)"`)) || cmd.match(new RegExp(`-${name} (\\w+)`)) || [])[1]
   const layerGate = (out, layer) => lastJson(commandAnswer(`zt-digest ledger gate -Out "${out}" -Layer ${layer} -Brief`).output) || { complete: false, counts: {} }
   const layerFault = (cmd) => (cmd.match(/ -Fault '(.*)'$/) || [])[1] || ''
@@ -1052,9 +1053,9 @@ function runtime(kind, opts = {}) {
     }
     if (!units) units = ((lastJson(commandAnswer(`zt-digest ledger status -Out "${out}" -Held "${owner}"`).output) || {}).units || []).filter((u) => u && u.id)
     if (!units.length && !claim.ok) return { ok: false, step: 'claim', error: claim.output }
-    layerState.set(layerKey(out, layer), { units, starts: {}, jobs: [] })
+    layerState.set(layerKey(out, layer, layerArg(cmd, 'Lane') || ''), { units, starts: {}, jobs: [] })
     if (!units.length) return { ok: true, layer, units: 0, claimed: 0, jobs: 0, gate: layerGate(out, layer) }
-    const state = layerState.get(layerKey(out, layer))
+    const state = layerState.get(layerKey(out, layer, layerArg(cmd, 'Lane') || ''))
     const jobs = []
     if (layer === 'digest' || layer === 'link') {
       for (const u of units) {
@@ -1120,7 +1121,7 @@ function runtime(kind, opts = {}) {
   }
   const layerFinish = async (cmd) => {
     const layer = layerArg(cmd, 'Layer'), out = layerArg(cmd, 'Out')
-    const state = layerState.get(layerKey(out, layer)) || { units: [], starts: {}, jobs: [] }
+    const state = layerState.get(layerKey(out, layer, layerArg(cmd, 'Lane') || '')) || { units: [], starts: {}, jobs: [] }
     if (layer === 'cards' || !state.units.length) return { ok: true, layer, results: [], gate: layerGate(out, layer) }
     const faultOf = (unit, token, cause, code) => {
       const fault = { schema_version: 1, unit, input_hash: `ih-${unit}`, cause: String(cause).slice(0, 300), ...(code ? { code } : {}) }
@@ -1485,6 +1486,8 @@ function runtime(kind, opts = {}) {
     const step = modelArg(cmd, 'Step'), out = modelArg(cmd, 'Out') || 'D:\\x\\Key'
     const work = modelArg(cmd, 'Work') || `${out}\\models\\m-Key_2_c`
     const models = (modelArg(cmd, 'Models') || '').split(',').filter(Boolean)
+    // model lanes: each lane keeps its own block (model-steps.ps1 -Lane).
+    const laneKey = `${out}|${String(modelArg(cmd, 'Lane') || '').replace(/["',]+$/, '')}`
     const call = (line) => lastJson(commandAnswer(line).output) || {}
     const saved = (name, jobs) => {
       const file = `${out}\\models\\drive\\${name}`
@@ -1493,10 +1496,13 @@ function runtime(kind, opts = {}) {
     }
     const job = (id, more = {}) => ({ id, files: [`D:\\x\\Key\\models\\ctx.md`], prompt: 'p', ...more })
     if (step === 'start') {
-      for (const u of led.layer('models')) if (u.state === 'claimed') u.state = 'ready'
+      // model lanes: a lane's start keeps the other lanes' claims (-KeepClaims).
+      if (!/-KeepClaims/.test(cmd)) for (const u of led.layer('models')) if (u.state === 'claimed') u.state = 'ready'
       const listed = call(`zt-digest list-models -Staging "${out}" -All -CitationKey Key`)
       const take = Number(modelArg(cmd, 'Take') || 8)
       const owner = modelArg(cmd, 'Owner') || 'models'
+      // atkinson2015lectures: one lane's claim refused (a transient anchor read while the lanes wrote).
+      if (opts.laneClaimFail && opts.laneClaimFail.test(owner)) return { ok: false, step: 'claim', error: 'zt-digest ledger: anchor_moved: simulated' }
       const claim = call(`zt-digest ledger next -Out "${out}" -Layer models -Take ${take} -Owner "${owner}" -Lease 7200 -Brief`)
       let held = Array.isArray(claim.units) ? claim.units : null
       // A claim line that lost its units, or their Model address, is answered from the ledger by owner.
@@ -1506,10 +1512,10 @@ function runtime(kind, opts = {}) {
       }
       const units = held.map((u) => ({ id: u.id, token: u.token, model: (u.inputs && (u.inputs.header || u.inputs.model)) || '' }))
       const rows = (listed.models || []).filter((m) => units.some((u) => u.model === m.address)).map((m) => ({ ...m, issues: 0, faults: 0 }))
-      modelUnits.set(out, units)
+      modelUnits.set(laneKey, units)
       return { ok: true, units, claimed: units.length, models: rows, missing: [], file: `${out}\\models\\drive\\units.json`, gate: modelGate(out) }
     }
-    const held = modelUnits.get(out) || []
+    const held = modelUnits.get(laneKey) || []
     // #194: one DeepSeek conversation per model. The stand-in names the jobs as the compiler does: the brief
     // starts `<slug>:brief`, every later content job continues it with a fallback, and the math reviewer's
     // first round starts its own `<slug>:review` conversation (only `-IndependentReview` asks for that).
@@ -1564,6 +1570,8 @@ function runtime(kind, opts = {}) {
       modelJobLists.push({ step, jobs })
       // #195: a scenario that needs the explain stage to have ready work keeps the batch from writing the
       // explanations itself (`batchExplain: false`); every other run explains in the batch.
+      // atkinson2015lectures resume: the real step saves the list under the batch's own name (Batch-File).
+      if (opts.driveNoFile) layerJobs.set(`${out}\\models\\drive\\jobs.${work.split('\\').pop()}.json`, jobs)
       return { ok: true, step, plans, deferred, jobs: jobs.length, derive: opts.batchExplain === false ? false : true, file: saved('fill-jobs.json', jobs) }
     }
     if (step === 'derive' || step === 'review' || step === 'split' || step === 'close') {
@@ -1840,6 +1848,8 @@ function runtime(kind, opts = {}) {
         if (opts.driveFenced && opts.driveFenced.test(label)) return { answer: '```json\n' + answer + '\n```', session_id: session, ...recorded }
         if (opts.driveCurly && opts.driveCurly.test(label)) return { answer: answer.replace(/"([^"]*)"/g, "“$1”"), session_id: session, ...recorded }
         // atkinson2015lectures: a manager copied the line, then added its own remark on the lines after it.
+        // atkinson2015lectures resume: a drive job copied the fill line without its `file`.
+        if (opts.driveNoFile && opts.driveNoFile.test(label)) return { answer: JSON.stringify({ ...value, file: undefined }), session_id: session, ...recorded }
         if (opts.driveNote && opts.driveNote.test(label)) return { answer: `${answer}\n\nNote for the parent: I ran a stray no-op command once. Its output was discarded.`, session_id: session, ...recorded }
         if (opts.driveNested && opts.driveNested.test(label)) return { answer: JSON.stringify({ state: 'done', counts: { open: 0 } }), session_id: session, ...recorded }
         return { answer, session_id: session, ...recorded }
@@ -2554,6 +2564,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: the block records each checked completion with the draft bound to its start')
   check(cmds.some((c) => /zt-digest group-start -Out/.test(c)) && !cmds.some((c) => /-Groups \d/.test(c)), 'group cycle: no per-block legacy digest command remains')
   check(layerCalls.filter((c) => c.layer === 'digest' && c.step === 'start').length === 2 && !labels.some((l) => /^group \d attempt/.test(l)), 'group cycle: one start step claims the whole block of groups, not one manager per group')
+  // atkinson2015lectures: the Link pass runs eight lanes, each step naming its lane; the digest keeps one block at a time.
+  const linkLanes = new Set(layerCalls.filter((c) => c.layer === 'link' && c.step === 'start').map((c) => (c.cmd.match(/-Lane (l\d+)/) || [])[1]))
+  check(linkLanes.size === 8 && !linkLanes.has(undefined) && layerCalls.filter((c) => c.layer === 'link').every((c) => /-Lane l\d+/.test(c.cmd)), `link lanes: the Link pass runs eight lanes and every step names its lane (${[...linkLanes].join(',')})`)
+  check(layerCalls.filter((c) => c.layer === 'digest').every((c) => !/-Lane /.test(c.cmd)), 'link lanes: the digest layer runs without lanes')
   check(layerManagers.filter((m) => m.kind === 'content').every((m) => m.jobs.length <= 8) && layerManagers.some((m) => m.kind === 'content' && m.jobs.length === 2), 'group cycle: one content manager runs both groups DeepSeek jobs side by side, never more than eight')
   const digestUnits = [...led.units.values()].filter((u) => u.layer === 'digest')
   check(digestUnits.length === 2 && digestUnits.every((u) => u.state === 'done'), 'group cycle: both claimed group units are complete in the ledger')
@@ -2719,7 +2733,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // with the ids only). A missing field is no empty claim: the driver reads the held units from the ledger and
   // builds every model, instead of ending the layer with four models claimed and never built.
   const { led, heldReads } = await run('econ', { ...base, figures: false }, { renamedUnits: 'models' })
-  check(heldReads.some((o) => /^models block [0-9]+$/.test(o)), `renamed units: the model start step reads its held units from the ledger (${heldReads.join(', ')})`)
+  check(heldReads.some((o) => /^models (l[0-9]+ )?block [0-9]+$/.test(o)), `renamed units: the model start step reads its held units from the ledger (${heldReads.join(', ')})`)
   check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done'), `renamed units: every model unit is finished (${led.layer('models').filter((u) => u.state === 'done').length}/${led.layer('models').length})`)
 }
 {
@@ -2728,7 +2742,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const { commands, led, heldReads } = await run('econ', { ...base, figures: false }, { droppedInputs: 'models' })
   const cmds = commands
   check(cmds.filter((c) => /ledger next .* -Layer (cards|events|findings|models|explain) /.test(c)).every((c) => / -Brief\b/.test(c)), 'layer claims: every layer driver claims with -Brief')
-  check(heldReads.some((o) => /^models block [0-9]+$/.test(o)), `dropped inputs: the model start step reads its held units' addresses from the ledger (${heldReads.join(', ')})`)
+  check(heldReads.some((o) => /^models (l[0-9]+ )?block [0-9]+$/.test(o)), `dropped inputs: the model start step reads its held units' addresses from the ledger (${heldReads.join(', ')})`)
   check(!cmds.some((c) => /-Model 'undefined'|-Model ''/.test(c)), 'dropped inputs: no model-finish names an undefined Model')
   check(led.layer('models').length > 0 && led.layer('models').every((u) => u.state === 'done'), `dropped inputs: every model unit is finished (${led.layer('models').filter((u) => u.state === 'done').length}/${led.layer('models').length})`)
 }
@@ -3016,6 +3030,12 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   const labels = rt.calls.map((c) => c.label)
   check(!labels.includes('audit cards') && rt.result.audit && rt.result.audit.reused === true, `hansen2021demand: a finished finalization's final audit is kept on resume (${labels.filter((l) => /^audit/.test(l)).join(',')})`)
 }
+{
+  // atkinson2015lectures resume: a fill line without its `file` still gives the managers the batch's job file.
+  const r = await run('econ', base, { driveNoFile: /^fill: / })
+  const fills = r.layerManagers.filter((m) => /^fill: /.test(m.label) && m.kind === 'content')
+  check(fills.length > 0 && fills.every((m) => /\\models\\drive\\jobs\.m-[^\\]+\.json$/.test(m.file) && m.jobs.length > 0), `atkinson2015lectures: a fill line without its file runs the batch's own job file (${JSON.stringify(fills.map((m) => [m.file, m.jobs.length]))})`)
+}
 for (const [name, o] of [['a json code fence', { driveFenced: /^audit cards$/ }], ['curly quotes', { driveCurly: /^audit cards$/ }], ['a manager remark after it', { driveNote: /^audit cards$/ }]]) {
   // hansen2021demand: a manager retyped the step's line; the line is still the step's answer.
   const r = await run('econ', base, o)
@@ -3232,7 +3252,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '48' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v48, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '49' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v49, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3415,9 +3435,21 @@ for (const which of ['econ', 'math']) {
   const { calls, commands, led, modelCalls, modelManagers } = await run('econ', { ...base, figures: false })
   const order = modelCalls.map((c) => c.step)
   check(modelCalls.length > 0 && modelCalls.every((c) => /model-steps\.ps1/.test(c.cmd)), `#177: every model layer step is one model-steps.ps1 call (${modelCalls.length} drive jobs)`)
-  const second = order.indexOf('start', 1)
-  const first = second < 0 ? order : order.slice(0, second)
+  // model lanes: the blocks run side by side, so one block is the steps of its lane (-Lane l1) up to its finish.
+  const laneOne = modelCalls.filter((c) => /-Lane l1\b/.test(c.cmd)).map((c) => c.step)
+  const first = laneOne.slice(0, laneOne.indexOf('finish') + 1)
   check(first.join(',') === 'start,brief,fill,derive,review,close,explain,explain-apply,finish', `#177/#195: one block's drive steps run start, brief, fill, derive, review, close, explain, explain-apply, finish in that order (${order.join(',')})`)
+  // atkinson2015lectures: up to eight lanes; only the stage's first start releases a stopped run's claims, and every
+  // other start keeps the claims the other lanes hold.
+  const starts = modelCalls.filter((c) => c.step === 'start')
+  const lanes = new Set(starts.map((c) => (c.cmd.match(/-Lane (l\d+)/) || [])[1]))
+  check(lanes.size === 8 && !lanes.has(undefined), `model lanes: the stage starts eight lanes (${[...lanes].join(',')})`)
+  check(!/-KeepClaims/.test(starts[0].cmd) && starts.slice(1).every((c) => /-KeepClaims/.test(c.cmd)), 'model lanes: only the first start releases claims; every later start keeps them')
+  check(modelCalls.filter((c) => c.step !== 'start').every((c) => /-Lane l\d+/.test(c.cmd)), 'model lanes: every batch step and finish names its lane')
+  // atkinson2015lectures: lane l2's claim was refused once; that lane ends alone and the stage still builds every model.
+  const refusedLane = await run('econ', { ...base, figures: false }, { laneClaimFail: /^models l2 / })
+  const laneLogs = refusedLane.logs.filter((l) => /^\[models\] Models/.test(l) || /Models l2/.test(l))
+  check(refusedLane.led.layer('models').every((u) => u.state === 'done') && refusedLane.logs.some((l) => /Models l2: the claim failed .* the lane ends/.test(l)) && refusedLane.logs.some((l) => /Models: complete/.test(l)), `model lanes: one lane's refused claim ends that lane only (${laneLogs.slice(-3).join(' | ')})`)
   const modelAgents = calls.filter((c) => /^(find models: block|models: finish)/.test(c.label) || /^(brief|fill|derive|review \d+|split|close|report|explain): /.test(c.label) || /^plan: /.test(c.label) || /ZET model compiler/.test(c.prompt || ''))
   const architects = modelAgents.filter((c) => /^plan: /.test(c.label))
   check(modelAgents.length > 0 && modelAgents.every((c) => !c.agentType) && architects.length >= 1 && architects.every((c) => c.model === 'sonnet'), `#177: every model layer agent is a Haiku DeepSeek manager, the one designer a Sonnet architect (${modelAgents.length} agents, ${architects.length} architects)`)

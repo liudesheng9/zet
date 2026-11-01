@@ -321,6 +321,11 @@ pub(crate) fn split_pieces(ids: &Value, id: &str) -> Vec<String> {
     keys.into_iter().map(|k| s(&map[k])).filter(|a| !a.is_empty() && !a.contains('#')).collect()
 }
 
+/// A take target that is a whole model: a Model Card with no facet (a model's head, never one of its parts).
+fn whole_model_take(card: &Value) -> bool {
+    truthy(card) && ps::eq(&s(&card["type"]), "model") && !truthy(&card["facet"])
+}
+
 /// The pieces of a planned reference: an own id reads this model's map, `<model>#<id>` reads that model's map in
 /// the compiler state (`models`); empty when neither maps it (a reference to an earlier batch keeps its one address).
 pub(crate) fn reference_pieces(own: &Value, models: &Value, reference: &str) -> Vec<String> {
@@ -360,6 +365,9 @@ fn marker_entries(st: &Value) -> Vec<(String, String)> {
 /// part, `(block, address, use)`; `整块` takes the Card with its block, `单卡` the Card alone. `None` when the
 /// model takes nothing.
 fn import_section(takes: &[(bool, String, String)]) -> Option<String> {
+    // atkinson2015lectures (2026-11-01): a take that resolved to no address is its bare plan id (a model whose
+    // apply failed has an empty part map); written as `[[TN]]` it made the archive refuse the whole batch's edit.
+    let takes: Vec<&(bool, String, String)> = takes.iter().filter(|(_, address, _)| address.contains('/')).collect();
     if takes.is_empty() {
         return None;
     }
@@ -886,6 +894,17 @@ impl Compiler {
             }
             if ["existing", "take", "move"].iter().filter(|k| truthy(&p[**k])).count() > 1 {
                 faults.push(format!("{id}: give only one of existing, take, move"));
+            }
+            // atkinson2015lectures (2026-11-01): a take of another model's Model Card itself maps the id to no
+            // part, and model-finish refused the model ("mapped but belongs to no model") after the whole build.
+            if truthy(&p["take"]) && !s(&p["take"]).contains('#') {
+                let card = self.card(&p["take"]).unwrap_or(Value::Null);
+                if whole_model_take(&card) && !self.unit(&s(&p["take"])) {
+                    faults.push(format!(
+                        "take {id} ({}): that is a Model Card, not a part; take the one part this model uses (its address, or <model>#<id>), or drop the take and refer to the model with a Link in prose",
+                        s(&p["take"])
+                    ));
+                }
             }
             let line = line_of(p);
             if !ps::is_in(&line, &["main", "side", "off", "shared"]) {
@@ -2827,6 +2846,10 @@ impl Compiler {
             if !ps::exists(&ps::join(&self.dir(&model), "plan.json")) {
                 continue;
             }
+            // A model whose build failed has no part map to rebuild its imports from; its card stays as it is.
+            if ps::eq(&s(&self.m(&model)["status"]), "failed") {
+                continue;
+            }
             let plan = self.plan(&model)?;
             let card = self.card(&json!(model))?;
             let body = s(&card["body"]);
@@ -3990,6 +4013,12 @@ mod tests {
 
 - 设定 [[B/3|a|a]]：设定");
         assert!(imports_rebuilt(&rebuilt, &wanted).is_none(), "nothing to do");
+        // atkinson2015lectures: a take that resolved to its bare plan id is no import line.
+        assert_eq!(
+            import_section(&[(false, "TN".to_string(), "记号".to_string()), (false, "B/2|a|a|13".to_string(), "π_m (6)".to_string())]).unwrap(),
+            "**引入**\n\n- 单卡 [[B/2|a|a|13]]：π_m (6)"
+        );
+        assert!(import_section(&[(false, "TN".to_string(), "记号".to_string())]).is_none());
         // A Model Card without the section (an older build) gets it before 结构.
         let old = "问题：x
 
@@ -4032,6 +4061,17 @@ mod tests {
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].0, "K/7|a|a|5");
         assert!(entries[0].1.contains("[[K/3|a|a|2]]") && entries[0].1.contains("用到均衡条件"));
+    }
+
+    // atkinson2015lectures: the architect took `K/48|a` (another model's Model Card) as a shared part; the take
+    // mapped to no part and model-finish refused the model after the whole build. A model head is a Model Card
+    // without a facet; its parts carry one.
+    #[test]
+    fn a_take_of_a_whole_model_is_told_apart_from_a_take_of_a_part() {
+        assert!(super::whole_model_take(&json!({"type":"model","facet":null,"title":"资产组合弹性模型"})));
+        assert!(!super::whole_model_take(&json!({"type":"model","facet":"命题"})));
+        assert!(!super::whole_model_take(&json!({"type":"idea"})));
+        assert!(!super::whole_model_take(&serde_json::Value::Null));
     }
 
     // #197 pilot: a refilled part kept its old `参照 [[K/5|a|a|4]]` where the plan says it rests on the taken

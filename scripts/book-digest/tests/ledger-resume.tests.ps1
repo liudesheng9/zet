@@ -116,6 +116,14 @@ try {
     $env:ZT_LEDGER_VIEW_RACE = '5'
     Refused $probe 'archive changed while checking preparation' 'a preparation check whose every read races is refused'
     Remove-Item Env:ZT_LEDGER_VIEW_RACE
+    # atkinson2015lectures (model lanes): one failed read of the anchors is read again, never anchor_moved;
+    # only a read that fails every time reports the moved anchors.
+    $env:ZT_LEDGER_READ_FAIL = '4'
+    $reread = @(& $Digest @probe 2>&1) -join ' '
+    Assert ($LASTEXITCODE -ne 0 -and -not $reread.Contains('anchor_moved')) "a failed anchor read is read again and passes [$reread]"
+    $env:ZT_LEDGER_READ_FAIL = '5'
+    Refused $probe 'anchor_moved' 'an anchor read that fails every time reports the moved anchors'
+    Remove-Item Env:ZT_LEDGER_READ_FAIL
 
     # Group 2 accepts its plan and commits its Cards, then the ledger completion is lost.
     $lostClaim = (Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'digest', '-Take', '1', '-Owner', 'lost-manager')).units[0]

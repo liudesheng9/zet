@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v15 ====
+// ==== module zt-model-lib v17 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list and the
 // model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill, derive, review, split →
 // report and clean-up. A book type installs the model layer with its profile (economics: the economic
@@ -32,6 +32,12 @@
 // a refused part, which the same conversation works (the compiler allows three rounds in all). `finish-batch`
 // then records the Explain unit of a model whose explanations the batch wrote; a model whose explanation stays
 // open leaves its unit ready for the explain stage.
+// 16 (live run 2026-11-01, atkinson2015lectures resume): a DeepSeek drive job copied the fill line without its `file`;
+// the module gave the managers the path "undefined" and seven models were never written. A batch step that answers
+// jobs and no file reads the job file by its one fixed name (model-steps.ps1 Batch-File).
+// 17 (atkinson2015lectures, 2026-11-01: 188 Model Cards, one block of eight at a time took ~45 min a block): model
+// lanes. `start`, every batch step and `finish` pass the lane (`-Lane`), so model-steps.ps1 keeps each lane's block
+// files apart, and a lane's start keeps the other lanes' claims (`-KeepClaims`).
 function zmlMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const {
@@ -74,6 +80,9 @@ function zmlMake(ctx, p) {
     if (o.independentReview) parts.push('-IndependentReview')
     // #195: the batch's explain round, in the models' own conversations, from the architect's design.
     if (o.batch) parts.push('-Batch')
+    // 17: a lane's block files and its claim release (model lanes).
+    if (o.lane) parts.push(`-Lane ${o.lane}`)
+    if (o.keepClaims) parts.push('-KeepClaims')
     if (o.limits) parts.push(o.limits)
     // The math variant's own instruction files: every compiler command of that variant takes them.
     for (const [flag, file] of Object.entries(profile.compilerDocs || {})) parts.push(`-${flag} "${OUT}\\${file}"`)
@@ -85,6 +94,13 @@ function zmlMake(ctx, p) {
       ? { complete: json.gate_complete === true, counts: { open: n(json.gate_open) } }
       : (json && json.gate ? json.gate : null)
     if (!json || json.ok !== true) return { ok: false, error: tail((json && json.error) || `the ${step} step failed`), gate, raw: json }
+    // 16: a drive job that retyped the line can drop its `file`; a batch step's job file has one fixed name
+    // (model-steps.ps1 Batch-File: <out>\models\drive\jobs.<batch folder>.json, apply-jobs.… for explain-apply).
+    if (n(json.jobs) > 0 && !json.file && o.work) {
+      const leaf = String(o.work).replace(/[\\/]+$/, '').split(/[\\/]/).pop()
+      json.file = `${OUT}\\models\\drive\\${step === 'explain-apply' ? 'apply-jobs' : 'jobs'}.${leaf}.json`
+      log(`${label}: the step's line named ${n(json.jobs)} job(s) but no file; the batch reads ${json.file}.`)
+    }
     return { ...json, gate }
   }
   const PLANS = {
@@ -104,8 +120,8 @@ function zmlMake(ctx, p) {
   // The block's start step: release the claims a stopped run left, list the Model Cards, claim up to `take`
   // ready units, and answer the block's architect batches as `concept:<addresses>|formal:<addresses>` (#180: the
   // batching is the step's, because a module reads no listing row).
-  const start = async (o = {}) => modelStep(`find models: block ${o.block || 1}`, 'start', {
-    citationKey: KEY, take: o.take || 8, owner: o.owner || 'models', cwd: o.cwd, deepseek: o.deepseek,
+  const start = async (o = {}) => modelStep(`find models: ${o.lane ? `${o.lane} ` : ''}block ${o.block || 1}`, 'start', {
+    citationKey: KEY, take: o.take || 8, owner: o.owner || 'models', cwd: o.cwd, deepseek: o.deepseek, lane: o.lane, keepClaims: o.keepClaims,
     only: A.only, skipForms: SKIP_FORMS, perConcept: PER_CONCEPT, perSonnet: PER_SONNET, level: LEVEL, rebuild: REBUILD,
   })
   // One batch of up to eight models: brief -> the Sonnet architect's plan -> fill -> derive -> review and
@@ -119,7 +135,7 @@ function zmlMake(ctx, p) {
     const tag = `${addresses[0]}${addresses.length > 1 ? ` +${addresses.length - 1}` : ''}`
     const sessions = new Map()
     const table = () => [...sessions].map(([id, session]) => `${id} ${session}`).join('\n')
-    const step = (what, s, more = {}) => modelStep(`${what}: ${tag}`, s, { work: dsh, cwd: dsh, ...more, deepseek: o.deepseek })
+    const step = (what, s, more = {}) => modelStep(`${what}: ${tag}`, s, { work: dsh, cwd: dsh, lane: o.lane, ...more, deepseek: o.deepseek })
     // The step's content jobs: one or more Haiku managers, at most eight jobs each. A job that names
     // "continue" reuses the conversation its earlier job started (the table of this batch's own jobs).
     const content = async (what, file, count, effort) => {
@@ -268,7 +284,7 @@ Return plans: one entry per model, in this order.`,
   // One block's checked completions: the finish step runs each held unit's own verifier in ONE command and
   // records a unit it cannot finish against that unit alone. The ledger stays the judge.
   const finish = async (o = {}) => {
-    const r = await modelStep('models: finish', 'finish', { ...o, deepseek: o.deepseek })
+    const r = await modelStep(`models: ${o.lane ? `${o.lane} ` : ''}finish`, 'finish', { ...o, deepseek: o.deepseek })
     if (!r.ok) return { ok: false, error: r.error, done: 0, failed: 0, partial: 0, gate: r.gate }
     return { ok: true, done: n(r.done), failed: n(r.failed), partial: n(r.partial), gate: r.gate }
   }
@@ -291,7 +307,7 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '15', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '17', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model layer\'s model-steps.ps1 steps (list, claim and batch; brief, fill, derive, review, split, close, report, explain, explain-apply, finish), the Sonnet architect, and the model compiler\'s report and clean-up.',
 })
 // ==== end module zt-model-lib ====

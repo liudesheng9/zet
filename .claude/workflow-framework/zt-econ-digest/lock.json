@@ -1,17 +1,17 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.11.2",
+  "version": "6.11.4",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "b3c06be34f2ff2d3fc0cd5c0f9f8db6997788ef428f740e911983b54eb391878",
-  "fingerprint": "5bccf8a29d9e4961",
-  "blueprintSha256": "fca092f6ab8b3e4ce693a82efe16ffb39b1374515c0f6e1ff1da416333f817c0",
+  "sha256": "0e372ff687ca4eafe5cef7c84e53d6f7f0d103ff621e2092bfc3535177c24d48",
+  "fingerprint": "a8afa5e6719773d7",
+  "blueprintSha256": "8ec33224c1bdf71cdd8576c688a63534280b17f1e84bf26b261bf14f67857519",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "10",
-    "zt-digest-lib": "48",
+    "zt-digest-lib": "49",
     "zt-audit": "7",
     "zt-book-terms": "8",
     "zt-bridge": "10",
@@ -23,7 +23,7 @@
     "zt-dsh-cleanup": "13",
     "zt-dsh-source": "2",
     "zt-event-layer": "6",
-    "zt-model-lib": "15",
+    "zt-model-lib": "17",
     "zt-explain": "10",
     "zt-figures": "6",
     "zt-term-link-lib": "4",
@@ -31,9 +31,9 @@
     "zt-finding-layer": "6",
     "zt-group-cycle": "8",
     "zt-link-check": "3",
-    "zt-link-pass": "9",
+    "zt-link-pass": "10",
     "zt-link-prepare": "8",
-    "zt-model-layer": "9",
+    "zt-model-layer": "11",
     "zt-organize": "9",
     "zt-term-cards": "8",
     "zt-term-link": "5"
@@ -49,7 +49,7 @@
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "1300005543693a4927704ae6fd33513317e888773d58c6cb1cfb3d66355cfea0"
+      "sha256": "b1b0719a7922e8593e8e37f143009db381d84f05123e0382e82e624c0437b526"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -97,7 +97,7 @@
     },
     "zt-model-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-model-lib.js",
-      "sha256": "e1851e97f7efa8768c5847a3b3f11ccf350c26a5ad28848ae33a827d2687b117"
+      "sha256": "00e5a268f03c99f016bcc2c860b15c23147a270f42308b81c27bf41c90a5a674"
     },
     "zt-explain": {
       "file": "scripts/book-digest/workflow/modules/zt-explain.js",
@@ -129,7 +129,7 @@
     },
     "zt-link-pass": {
       "file": "scripts/book-digest/workflow/modules/zt-link-pass.js",
-      "sha256": "6a2c5603c6fa45b693a49615732f6b9bfd6ea4b35b0f8dcd776b877733371f26"
+      "sha256": "598672e620c1eddb613389a8293a11853d42d2be79c90effd14f2cc54aaedead"
     },
     "zt-link-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-link-prepare.js",
@@ -137,7 +137,7 @@
     },
     "zt-model-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-model-layer.js",
-      "sha256": "6a17aab8f828199ab486e4ef68e5a936841f294447db86cf2316883f23cb892c"
+      "sha256": "5562cc24a495924ea265339c3508f54b6db50dc2bf2deb78bd7d493bebc2a308"
     },
     "zt-organize": {
       "file": "scripts/book-digest/workflow/modules/zt-organize.js",
@@ -155,17 +155,17 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "f3c734fb5af63baa9b1c4ed34f1eec41e6f046ec416c44afa76e573210953aab"
+      "sha256": "b73a8538934868ecd398f847c771957eabc92341278bd87c4578ee2b1e62567b"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "91305bad8710b01daaafe6932d2ea702c36b275048fe07d009d3a4398e1a5295"
+      "sha256": "5c187c240ef5cbbe6197d6fa3c8070df9e139f8cd0bd139e3cacc5eb8c4f18ec"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-01T12:48:19.106Z",
+  "installedAt": "2026-11-01T19:12:42.000Z",
   "dryRun": {
-    "agents": 60,
+    "agents": 76,
     "order": [
       "args",
       "source",
@@ -180,9 +180,9 @@
       "explain",
       "cards-book",
       "link-prepare",
-      "link",
       "term-cards",
       "cited-cards",
+      "link",
       "link-check",
       "organize",
       "figures",

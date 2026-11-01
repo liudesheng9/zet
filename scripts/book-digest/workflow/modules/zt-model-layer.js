@@ -1,4 +1,4 @@
-// ==== module zt-model-layer v9 ====
+// ==== module zt-model-layer v11 ====
 // The model layer: the ledger's ready `models/gNNN-mIIII@1` work, released as the digest groups settle. Each
 // claimed block of Model units is built by the existing model compiler chain (one Sonnet architect per batch,
 // DeepSeek writers, the late clean-up sweep) and every unit is then recorded through `model-finish`, which
@@ -19,7 +19,7 @@
 // and `finish-batch` records each explained model's Explain completion right after its Model completion; the
 // finish step's counts name those Explain units beside the Model ones, so the layer logs them too.
 defineModule({
-  id: 'zt-model-layer', version: '9', requires: ['zt-model-lib'],
+  id: 'zt-model-layer', version: '11', requires: ['zt-model-lib'],
   summary: 'ZT digest model layer: the ledger\'s ready Model units built by the model compiler chain and recorded by model-finish, as model-steps.ps1 steps run by DeepSeek drive jobs.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -40,53 +40,70 @@ defineModule({
     const deepseek = { deleted: 0, not_deleted: [] }
     const totals = { verified: 0, failed: 0, deferred: 0, skipped: 0, explained: 0 }
     let claimed = 0
-    let idle = 0
     let gate = null
-    let started = await M.start({ block: 1, take: TAKE, owner: 'models block 1' })
-    if (!started.ok) {
+    // 10 (atkinson2015lectures, 2026-11-01): up to LANES blocks run side by side, each a lane with its own block
+    // files (model-steps.ps1 -Lane). The first start releases a stopped run's claims; every later start keeps the
+    // claims the other lanes hold (-KeepClaims). A lane ends when it finds no ready unit; a last single lane then
+    // takes what the others released late (a model that waited for a producer in another lane).
+    const LANES = 8
+    let failure = null
+    const first = await M.start({ block: 1, take: TAKE, owner: 'models l1 block 1', lane: 'l1' })
+    if (!first.ok) {
       // On an existing digest the listing is the stage's whole input; after a digest the run goes on.
-      if (p.mode === 'models') throw new Error(`model listing failed: ${started.error}`)
-      log(`Models: listing failed (${started.error}); no model is built.`)
-      return { status: 'failed', ...totals, model_cleanup: null, error: `listing failed: ${started.error}` }
+      if (p.mode === 'models') throw new Error(`model listing failed: ${first.error}`)
+      log(`Models: listing failed (${first.error}); no model is built.`)
+      return { status: 'failed', ...totals, model_cleanup: null, error: `listing failed: ${first.error}` }
     }
-    log(`${n(started.models)} Model Cards in the digest of ${Z.KEY}.`)
-    for (let block = 1; block <= 200 && idle < ROUNDS; block++) {
-      if (block > 1) {
-        started = await M.start({ block, take: TAKE, owner: `models block ${block}` })
-        if (!started.ok) {
-          const cleanup = await M.modelCleanup()
-          return { status: 'failed', ...totals, gate: started.gate || gate, error: started.error, model_cleanup: cleanup }
+    log(`${n(first.models)} Model Cards in the digest of ${Z.KEY}; up to ${LANES} lanes of ${TAKE}.`)
+    // v11 (atkinson2015lectures): a lane whose claim fails ends alone; the others go on, and the last single lane
+    // claims again, so only a claim that still fails there stops the stage (one transient anchor read ended all eight).
+    const lane = async (name, opening, rounds, last = false) => {
+      let idle = 0
+      let started = opening
+      for (let block = 1; block <= 200 && idle < rounds && !failure; block++) {
+        if (!started) {
+          started = await M.start({ block, take: TAKE, owner: `models ${name} block ${block}`, lane: name, keepClaims: true })
+          if (!started.ok) {
+            if (last) failure = failure || { error: started.error, gate: started.gate }
+            else log(`Models ${name}: the claim failed (${started.error}); the lane ends and the last lane claims again.`)
+            return
+          }
         }
+        gate = started.gate || gate
+        const units = n(started.units)
+        if (!units) {
+          started = null
+          idle += 1
+          if (!gate || gate.complete === true) break
+          if (!(gate.counts && n(gate.counts.open))) break
+          continue
+        }
+        idle = 0
+        claimed += units
+        log(`Models ${name} block ${block}: ${units} unit(s) claimed; ${n(started.batches)} architect batch(es) planned of ${n(started.models)} model(s) in the listing.`)
+        const built = await M.elaborate(started, 'models', { deepseek, lane: name })
+        started = null
+        M.logModels(built)
+        // A model the compiler released to wait (or refused by model-deps) is not finished here: the ledger
+        // holds it registered or failed, and it is claimed again once its producer is done.
+        for (const b of built) {
+          if (!b) continue
+          if (b.status === 'waiting' || b.status === 'refused') { totals.deferred += 1; continue }
+          if (b.status !== 'done') totals.failed += 1
+        }
+        const finished = await M.finish({ deepseek, gate, lane: name })
+        if (!finished.ok) { failure = failure || { error: finished.error, gate: finished.gate }; return }
+        totals.verified += n(finished.done)
+        totals.explained += n(finished.explain_done)
+        log(`Models ${name} block ${block}: ${n(finished.done)} finished, ${n(finished.failed)} not recorded${n(finished.explain_done) ? `, ${n(finished.explain_done)} explanation(s) recorded` : ''}.`)
+        gate = finished.gate || gate
       }
-      gate = started.gate || gate
-      const units = n(started.units)
-      if (!units) {
-        idle += 1
-        if (!gate || gate.complete === true) break
-        if (!(gate.counts && n(gate.counts.open))) break
-        continue
-      }
-      idle = 0
-      claimed += units
-      log(`Models block ${block}: ${units} unit(s) claimed; ${n(started.batches)} architect batch(es) planned of ${n(started.models)} model(s) in the listing.`)
-      const built = await M.elaborate(started, 'models', { deepseek })
-      M.logModels(built)
-      // A model the compiler released to wait (or refused by model-deps) is not finished here: the ledger
-      // holds it registered or failed, and it is claimed again once its producer is done.
-      for (const b of built) {
-        if (!b) continue
-        if (b.status === 'waiting' || b.status === 'refused') { totals.deferred += 1; continue }
-        if (b.status !== 'done') totals.failed += 1
-      }
-      const finished = await M.finish({ deepseek, gate })
-      if (!finished.ok) {
-        const cleanup = await M.modelCleanup()
-        return { status: 'failed', ...totals, gate: finished.gate || gate, error: finished.error, model_cleanup: cleanup }
-      }
-      totals.verified += n(finished.done)
-      totals.explained += n(finished.explain_done)
-      log(`Models block ${block}: ${n(finished.done)} finished, ${n(finished.failed)} not recorded${n(finished.explain_done) ? `, ${n(finished.explain_done)} explanation(s) recorded` : ''}.`)
-      gate = finished.gate || gate
+    }
+    await Promise.all(Array.from({ length: LANES }, (_, i) => lane(`l${i + 1}`, i === 0 ? first : null, 1)))
+    if (!failure) await lane('l1', null, ROUNDS, true)
+    if (failure) {
+      const cleanup = await M.modelCleanup()
+      return { status: 'failed', ...totals, gate: failure.gate || gate, error: failure.error, model_cleanup: cleanup }
     }
     const final = gate || { complete: false, counts: {} }
     const unresolved = n(final.counts && final.counts.open)

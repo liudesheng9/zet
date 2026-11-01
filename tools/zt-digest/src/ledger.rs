@@ -608,12 +608,26 @@ impl Prepared {
             // conflict, never a silently re-selected Card. A structural move of a published Card has
             // its own recorded mapping (`ledger relocate`); the prepared anchors themselves cannot move
             // without a new preparation.
-            let cards = zt.cards(&addresses, "text").with_context(|| {
-                format!(
-                    "anchor_moved: the prepared Literature root or a group anchor is no longer at its frozen address ({}); a published Card move needs `zt-digest ledger relocate`, a prepared anchor move needs a new preparation",
-                    addresses.join(", ")
-                )
-            })?;
+            // atkinson2015lectures (2026-11-01): with eight model lanes writing, one read of the anchors failed and
+            // the claim reported anchor_moved, which ended every lane. A failed read is read again, as a moved
+            // revision is; only a read that still fails after the last attempt reports the moved anchors.
+            let failed_read = std::env::var("ZT_LEDGER_READ_FAIL").ok().and_then(|n| n.parse::<u32>().ok()).is_some_and(|n| attempt <= n);
+            let read = if failed_read { Err(anyhow::anyhow!("simulated anchor read failure")) } else { zt.cards(&addresses, "text") };
+            let cards = match read {
+                Ok(cards) => cards,
+                Err(_) if attempt < PREPARED_VIEW_READS => {
+                    std::thread::sleep(std::time::Duration::from_millis(500 * u64::from(attempt)));
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "anchor_moved: the prepared Literature root or a group anchor is no longer at its frozen address ({}); a published Card move needs `zt-digest ledger relocate`, a prepared anchor move needs a new preparation",
+                            addresses.join(", ")
+                        )
+                    });
+                }
+            };
             if cards.archive_revision != observed["archive_revision"].as_u64().unwrap() || raced(attempt) {
                 if attempt < PREPARED_VIEW_READS {
                     continue;
@@ -6758,6 +6772,60 @@ fn last_activity_ms(tx: &Transaction, unit: &str, token: i64) -> Result<Option<i
 /// `release` (`-Release`) also takes a claim whose lease has not ended, but only a quiet one: no
 /// event for that claim within the quiet window, its guard free and no registered run live. It is
 /// how a stopped run's claims are freed at once instead of after their provider-run lease.
+/// `ledger reopen -Units <id,...> -Reason <text>` (atkinson2015lectures, 2026-11-01): once the cause of their failure
+/// is fixed and the run's one resume is spent, the operator gives failed units a fresh attempt budget. It is the
+/// resume's own reset, for the named units only: `failed` becomes `retry` with attempts 0, the prior state and
+/// attempts are recorded as an `attempt_reset` event with the reason, and readiness is reconciled. A unit that is not
+/// failed is refused, so a done or claimed unit is never reopened.
+fn reopen(p: &Prepared, units: &[String], reason: &str) -> Result<Value> {
+    if units.is_empty() {
+        bail!("-Units names no unit");
+    }
+    if reason.trim().is_empty() {
+        bail!("-Reason must say why the units are reopened");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let reopened = reopen_units(&tx, units, reason, now_seconds())?;
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"kind":"reopen","reopened":reopened}))
+}
+
+/// The reset of `ledger reopen` inside one transaction: refuses any unit that is not failed, before it changes one.
+fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64) -> Result<Vec<Value>> {
+    let invocation = meta(tx, "invocation")?.as_i64().unwrap_or(1);
+    let mut reopened = Vec::new();
+    for unit in units {
+        let row: Option<(String, i64)> = tx
+            .query_row("SELECT state,attempts FROM units WHERE id=?1", [unit], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        let Some((state, attempts)) = row else { bail!("unknown unit {unit}") };
+        if state != "failed" {
+            bail!("unit {unit} is {state}, not failed: only a failed unit is reopened");
+        }
+        reopened.push((unit.clone(), state, attempts));
+    }
+    let mut out = Vec::new();
+    for (unit, state, attempts) in reopened {
+        tx.execute(
+            "UPDATE units SET state='retry',attempts=0,owner=NULL,lease_until=NULL,retry_after=NULL WHERE id=?1",
+            [&unit],
+        )?;
+        event(
+            tx,
+            &unit,
+            None,
+            None,
+            "attempt_reset",
+            &json!({"prior_state":state,"prior_attempts":attempts,"invocation":invocation,"reason":"operator_reopen","note":reason}),
+        )?;
+        out.push(json!({"unit":unit,"prior_attempts":attempts}));
+    }
+    reconcile(tx, now)?;
+    Ok(out)
+}
+
 fn reclaim(p: &Prepared, only: Option<&str>, take: i64, release: bool) -> Result<Value> {
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
@@ -17205,13 +17273,14 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "relocate"
                 | "math"
                 | "reclaim"
+                | "reopen"
                 | "job"
                 | "resource"
                 | "report"
                 | "resume"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, hold, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, job, resource, report or adopt"
+                "ledger requires init, status, gate, next, renew, hold, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, reopen, job, resource, report or adopt"
             );
         }        let params = if command == "report" || command == "resume" {
             vec!["Out"]
@@ -17235,6 +17304,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             vec!["Out"]
         } else if command == "reclaim" {
             vec!["Out", "Unit", "Take"]
+        } else if command == "reopen" {
+            vec!["Out", "Units", "Reason"]
         } else if command == "job" {
             vec!["Out", "Unit", "Token", "Register", "Observe", "Cancel"]
         } else if command == "resource" {
@@ -17462,6 +17533,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         publication(&p, &a.str("Layer"), &a.str_or("Key", "book"), &a.str("Scope"))?
+    } else if command == "reopen" {
+        let mut zt = crate::zt::start()?;
+        let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+        let units: Vec<String> = a.required("Units")?.split(',').map(|u| u.trim().to_string()).filter(|u| !u.is_empty()).collect();
+        reopen(&p, &units, &a.required("Reason")?)?
     } else if command == "reclaim" {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
@@ -18812,6 +18888,38 @@ mod term_card_ledger_tests {
             4
         );
         tx.commit().unwrap();
+    }
+
+    // atkinson2015lectures (2026-11-01): with the run's one resume spent, the operator reopens failed Model units
+    // whose cause a release fixed. Only failed units are reopened, each with an attempt_reset event and its reason,
+    // and a list that names any other unit changes nothing.
+    #[test]
+    fn reopen_gives_only_failed_units_a_fresh_attempt() {
+        let (_dir, conn) = ledger();
+        let tx = conn.unchecked_transaction().unwrap();
+        register_term_cards(&tx, &plan(1, &["剩余控制权", "敲竹杠"])).unwrap();
+        tx.commit().unwrap();
+        conn.execute(
+            "UPDATE units SET state='failed',attempts=3,fault_class='content',fault_json='{\"code\":\"check_failed\"}' WHERE id='termcards/t001@1'",
+            [],
+        )
+        .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let refused = super::reopen_units(&tx, &["termcards/t001@1".to_string(), "termcards/t002@1".to_string()], "fixed", 1).unwrap_err().to_string();
+        assert!(refused.contains("not failed"), "{refused}");
+        drop(tx);
+        assert_eq!(count(&conn, "SELECT count(*) FROM units WHERE id='termcards/t001@1' AND state='failed'"), 1);
+        let tx = conn.unchecked_transaction().unwrap();
+        let events = count(&tx, "SELECT count(*) FROM events");
+        let done = super::reopen_units(&tx, &["termcards/t001@1".to_string()], "fill line fixed in 0.41.3", 1).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(done, vec![json!({"unit":"termcards/t001@1","prior_attempts":3})]);
+        assert_eq!(count(&conn, "SELECT count(*) FROM units WHERE id='termcards/t001@1' AND state!='failed' AND attempts=0"), 1);
+        assert!(count(&conn, "SELECT count(*) FROM events") > events, "the reset is recorded");
+        assert_eq!(
+            count(&conn, "SELECT count(*) FROM events WHERE unit_id='termcards/t001@1' AND event='attempt_reset' AND json_extract(facts_json,'$.reason')='operator_reopen'"),
+            1
+        );
     }
 
     #[test]

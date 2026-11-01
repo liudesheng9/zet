@@ -36,12 +36,15 @@ param(
     [ValidateRange(0, 7200)][int]$Lease = 0,
     [ValidateRange(0, 1000)][int]$MaxParts = 0,
     [string]$Limits = '',
-    [string]$Tool = 'zt-digest'
+    [string]$Tool = 'zt-digest',
+    [string]$Lane = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'step-line.ps1')
 $Out = $Out.TrimEnd('\', '/')
 $Work = Join-Path (Join-Path $Out 'layer-steps') $Layer
+# A lane's block keeps its own files (atkinson2015lectures, 2026-11-01): blocks of one layer run side by side.
+if ($Lane) { $Work = Join-Path $Work $Lane }
 New-Item -ItemType Directory -Force $Work | Out-Null
 if (-not $Owner) { $Owner = "$Layer steps" }
 $LineName = $Step

@@ -307,7 +307,7 @@
       }
     },
     {
-      "label": "^link block \\d+: start$",
+      "label": "^link (l\\d+ )?block \\d+: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"link\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }

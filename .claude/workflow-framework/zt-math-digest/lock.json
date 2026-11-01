@@ -1,17 +1,17 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.11.2",
+  "version": "5.11.4",
   "scope": "project",
   "script": ".claude/workflows/zt-math-digest.js",
   "scriptRel": "workflows/zt-math-digest.js",
-  "sha256": "0bf9d414e521a97653c7bca1c03a0f511aca7d8c0b7626f6bff80630985c02b9",
-  "fingerprint": "a716c4944a86c1c3",
-  "blueprintSha256": "0b09b3e922e45ccc1b16f6880643ec3bc9f68efb852f5b91d50768ac39753158",
+  "sha256": "24ee592a1563b446d744630564d3d85d8cd0a8246e3fe5021dcd9e74550fa6b0",
+  "fingerprint": "89c1f636f853b419",
+  "blueprintSha256": "6c05193f4cd017735c3d30145ed0bf118ef09befd12f03e017538d9189dce706",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "10",
-    "zt-digest-lib": "48",
+    "zt-digest-lib": "49",
     "zt-audit": "7",
     "zt-book-terms": "8",
     "zt-bridge": "10",
@@ -22,14 +22,14 @@
     "zt-digest-report": "24",
     "zt-dsh-cleanup": "13",
     "zt-dsh-source": "2",
-    "zt-model-lib": "15",
+    "zt-model-lib": "17",
     "zt-explain": "10",
     "zt-figures": "6",
     "zt-term-link-lib": "4",
     "zt-finalize": "7",
     "zt-group-cycle": "8",
     "zt-link-check": "3",
-    "zt-link-pass": "9",
+    "zt-link-pass": "10",
     "zt-link-prepare": "8",
     "zt-math-lib": "5",
     "zt-math-boundary": "3",
@@ -37,7 +37,7 @@
     "zt-math-proof": "3",
     "zt-math-skeleton": "3",
     "zt-math-theory": "3",
-    "zt-model-layer": "9",
+    "zt-model-layer": "11",
     "zt-organize": "9",
     "zt-term-cards": "8",
     "zt-term-link": "5"
@@ -53,7 +53,7 @@
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "1300005543693a4927704ae6fd33513317e888773d58c6cb1cfb3d66355cfea0"
+      "sha256": "b1b0719a7922e8593e8e37f143009db381d84f05123e0382e82e624c0437b526"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -97,7 +97,7 @@
     },
     "zt-model-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-model-lib.js",
-      "sha256": "e1851e97f7efa8768c5847a3b3f11ccf350c26a5ad28848ae33a827d2687b117"
+      "sha256": "00e5a268f03c99f016bcc2c860b15c23147a270f42308b81c27bf41c90a5a674"
     },
     "zt-explain": {
       "file": "scripts/book-digest/workflow/modules/zt-explain.js",
@@ -125,7 +125,7 @@
     },
     "zt-link-pass": {
       "file": "scripts/book-digest/workflow/modules/zt-link-pass.js",
-      "sha256": "6a2c5603c6fa45b693a49615732f6b9bfd6ea4b35b0f8dcd776b877733371f26"
+      "sha256": "598672e620c1eddb613389a8293a11853d42d2be79c90effd14f2cc54aaedead"
     },
     "zt-link-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-link-prepare.js",
@@ -157,7 +157,7 @@
     },
     "zt-model-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-model-layer.js",
-      "sha256": "6a17aab8f828199ab486e4ef68e5a936841f294447db86cf2316883f23cb892c"
+      "sha256": "5562cc24a495924ea265339c3508f54b6db50dc2bf2deb78bd7d493bebc2a308"
     },
     "zt-organize": {
       "file": "scripts/book-digest/workflow/modules/zt-organize.js",
@@ -175,17 +175,17 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-math-digest.blueprint.json",
-      "sha256": "619912b1a61ebcd4c11b8f8efa7c991a42477da599142263d42a5481ab035a4d"
+      "sha256": "d7dc4178f403b02a1bdf823539675a37220de985d90476488ad1e7bbed6549b8"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "91305bad8710b01daaafe6932d2ea702c36b275048fe07d009d3a4398e1a5295"
+      "sha256": "5c187c240ef5cbbe6197d6fa3c8070df9e139f8cd0bd139e3cacc5eb8c4f18ec"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-01T12:48:23.908Z",
+  "installedAt": "2026-11-01T19:12:47.285Z",
   "dryRun": {
-    "agents": 74,
+    "agents": 90,
     "order": [
       "args",
       "source",
@@ -201,9 +201,9 @@
       "explain",
       "cards-book",
       "link-prepare",
-      "link",
       "term-cards",
       "cited-cards",
+      "link",
       "link-check",
       "math-theory",
       "organize",

@@ -420,3 +420,4 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 
 
 - `2026-10-26` — #187 (L4): `dsh-card-instructions.zh.md` is rewritten from the Idea-card fixer to the one review, fix and fill job of the card layer: fidelity against the linked source lines, missing content, clarity, fluency, terms and symbols; `ok`/`fix`/`unfaithful`/`merge` per Card, `adds`/`skips` per uncovered unit, and a corrected `span` for a C2 Card. The STE fault list (R2, R3, R4, R5, R7, I1, I2, D1, I4, L1, L2) is removed; the five style rules and the shared writer guidance stay. Its two `SELF-CHECK` lines are the Card precheck and `zt-digest coverage -Group N -Draft <file>`.
+- `2026-11-01` — atkinson2015lectures: `model-architect.md` says a `take` names one part (a Card with a facet), never a Model Card itself, and that `validate` refuses a take of a Model Card (zt-digest 0.41.3).

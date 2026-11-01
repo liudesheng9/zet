@@ -58,6 +58,8 @@ param(
     [switch]$IndependentReview,
     [switch]$Batch,
     [switch]$SkipRenew,
+    [string]$Lane = '',
+    [switch]$KeepClaims,
     [string]$Tool = 'zt-digest'
 )
 $ErrorActionPreference = 'Stop'
@@ -99,8 +101,14 @@ function Run([string[]]$CommandArgs) {
     if ($line) { try { $json = $line | ConvertFrom-Json -Depth 64 } catch { $json = $null } }
     [pscustomobject]@{ code = $code; json = $json; tail = ((@($text) | Select-Object -Last 3) -join ' | ') }
 }
-function Save($Name, $Value) { ConvertTo-Json -InputObject $Value -Depth 64 | Set-Content -LiteralPath (Join-Path $Drive $Name) -Encoding utf8 }
-function Load($Name) { $p = Join-Path $Drive $Name; if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64 } }
+# A lane's block files (atkinson2015lectures, 2026-11-01): blocks run side by side, so the files a block keeps
+# between its steps carry the lane's name; a batch's own files already carry its batch folder (Batch-File).
+function Lane-File([string]$Name) {
+    if (-not $Lane -or @('units.json', 'models.json', 'batches.json', 'models-all.json') -notcontains $Name) { return $Name }
+    return "$([IO.Path]::GetFileNameWithoutExtension($Name)).$Lane$([IO.Path]::GetExtension($Name))"
+}
+function Save($Name, $Value) { ConvertTo-Json -InputObject $Value -Depth 64 | Set-Content -LiteralPath (Join-Path $Drive (Lane-File $Name)) -Encoding utf8 }
+function Load($Name) { $p = Join-Path $Drive (Lane-File $Name); if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64 } }
 # The step's answer: its compact line and the detail file beside it (#180).
 function Reply($Value, $Detail = $null) { Send-StepLine -Line $Value -Detail $Detail -Name $LineName -Out $ModelWork }
 function Fail([string]$Where, $Result) { Send-StepFail -Step $Where -Reason "$(@($Result.tail) | Select-Object -Last 1)" -Name $LineName -Out $ModelWork }
@@ -173,7 +181,8 @@ switch ($Step) {
     'start' {
         # A start begins the branch: a Model claim still held belongs to a stopped run. Release it, or the
         # new block waits for a lease that no writer is using.
-        $status = Run @('ledger', 'status', '-Out', $Out, '-Layer', 'models')
+        # A lane beside other lanes keeps their claims (-KeepClaims): only the stage's first start releases.
+        $status = if ($KeepClaims) { $null } else { Run @('ledger', 'status', '-Out', $Out, '-Layer', 'models') }
         foreach ($u in @($status.json.units | Where-Object { $_.state -eq 'claimed' })) {
             Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', "$($u.id)", '-Release') | Out-Null
         }

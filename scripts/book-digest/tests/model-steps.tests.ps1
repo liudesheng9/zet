@@ -145,6 +145,18 @@ Assert (@($models).Count -eq 3 -and @($models | Where-Object { $_.address -eq 'K
 $units = Get-Content -Raw (Join-Path $out 'models\drive\units.json') | ConvertFrom-Json
 Assert (@($units).Count -eq 3 -and @($units)[0].id -eq 'models/g001-m0000@1') 'start: the claimed units are saved for the block''s steps'
 
+# 1b. model lanes (atkinson2015lectures): a lane's start keeps the other lanes' claims and saves its block files
+# under its own name, so blocks running side by side never read each other's units.
+$before = (Get-Content -LiteralPath $calls -Raw).Length
+$env:MS_STALE = '1'
+$lane = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models l2 block 1', '-Lane', 'l2', '-KeepClaims') + $common)
+$env:MS_STALE = ''
+$laneCalls = (Get-Content -LiteralPath $calls -Raw).Substring($before)
+Assert ($lane.json -and $lane.json.ok -eq $true -and $laneCalls -notmatch 'ledger reclaim' -and $laneCalls -notmatch 'ledger status -Out .* -Layer models') "lanes: a lane's start (-KeepClaims) releases no claim ($($lane.text))"
+Assert ((Test-Path (Join-Path $out 'models\drive\units.l2.json')) -and (Test-Path (Join-Path $out 'models\drive\batches.l2.json'))) 'lanes: the lane saves its block files under its own name'
+$kept = Get-Content -Raw (Join-Path $out 'models\drive\units.json') | ConvertFrom-Json
+Assert (@($kept).Count -eq 3) 'lanes: another lane''s block files stay as they were'
+
 # 2. brief: one compiler command, its jobs saved for the writers.
 $brief = Step (@('-Step', 'brief', '-Work', $work, '-Models', 'Key/2|c,Key/5|c', '-MaxSentences', '10') + $common)
 Assert ($brief.json -and $brief.json.ok -eq $true -and $brief.json.jobs -eq 1 -and $brief.json.file -like '*drive*jobs.m-Key_2_c.json') "brief: the brief job is listed and saved ($($brief.text))"
