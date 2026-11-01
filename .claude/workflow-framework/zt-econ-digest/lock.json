@@ -5,7 +5,7 @@
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "fe4b6053e849360c09aecca249b554a832eae2b8e33e2796c015db32d237384d",
+  "sha256": "8d23e1e4b7c67d4d1f0b757a221e583fe00211dd749009dea0196029625ec15b",
   "fingerprint": "098eeede6979505b",
   "blueprintSha256": "7f4dfaab814808f97ad96aed483350d88d3e40bb27bbe6a2ea859e7e6f3cd27d",
   "modules": {
@@ -45,11 +45,11 @@
     },
     "zt-workflow-lib": {
       "file": "scripts/workflow-shared/modules/zt-workflow-lib.js",
-      "sha256": "2e755c8fb504c8ae1affe8f3af25f37fc222bfba063283fbe32fae5ab0f3652d"
+      "sha256": "b536a49f901c1f77c91b19c9f9483c602e5c6bbfe0bd3489d24210a8f21aa1b9"
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "1c955665909f9b546aa74a7b0b7905ff8205c1044faa5adf0e75140ae42cfd3f"
+      "sha256": "1300005543693a4927704ae6fd33513317e888773d58c6cb1cfb3d66355cfea0"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -65,7 +65,7 @@
     },
     "zt-cards-book": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-book.js",
-      "sha256": "3f3ebf3b548f92a66fb5eb7d206043dbb17a910d5a9481e883c8a72ad8cf474c"
+      "sha256": "93966690b765704ad8eeb837eec13583d180ebbd97648cad0e1ee1cee7b639c2"
     },
     "zt-cards-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
@@ -85,7 +85,7 @@
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
-      "sha256": "d88f83d402b7e48f4d6a50c08af9c82157788c10b96e58bccc9cbca89d9cfbbf"
+      "sha256": "fc5bbbfdf831a718ce5a1e1d43982467a88fb8c4d1537a141693e33ee781a9c8"
     },
     "zt-dsh-source": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-source.js",
@@ -109,7 +109,7 @@
     },
     "zt-term-link-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-term-link-lib.js",
-      "sha256": "2ed51e3ad56fa73aee63bad8494abd139b947494779688e7e94461e808ea5fa9"
+      "sha256": "d34b2bf007b20983bdd462af1920f6876e70ee0cc8421d558c42d7b439fdc179"
     },
     "zt-finalize": {
       "file": "scripts/book-digest/workflow/modules/zt-finalize.js",
