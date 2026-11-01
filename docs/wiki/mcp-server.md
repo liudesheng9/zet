@@ -6,7 +6,6 @@ paths:
   - "src/read.rs"
   - "src/scope.rs"
   - "tests/write_scope.rs"
-  - "tests/support/mcp_client.rs"
   - "tests/workspaces_mcp.rs"
   - "tests/term_structure.rs"
   - "tests/term_projection.rs"
