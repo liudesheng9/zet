@@ -1360,6 +1360,7 @@ mod tests {
             [],
         )
         .expect("link into the Literature tree");
+        crate::link_index::rebuild(&conn).expect("index the seeded Cards");
         drop(conn);
         let mut state = SessionState::at("LitA");
         let mut interaction = ScriptedInteraction {
@@ -1964,6 +1965,7 @@ mod tests {
             [],
         )
         .expect("insert Cards");
+        crate::link_index::rebuild(&conn).expect("index the seeded Cards");
         drop(conn);
         let mut state = SessionState::at("0/1|a");
         let mut interaction = ScriptedInteraction {
@@ -2012,6 +2014,7 @@ mod tests {
             [],
         )
         .expect("insert Cards");
+        crate::link_index::rebuild(&conn).expect("index the seeded Cards");
         drop(conn);
         let title = |at: &str| {
             let conn = crate::open_db(temp.path()).expect("open database");
@@ -2083,6 +2086,7 @@ mod tests {
             [],
         )
         .expect("insert Cards");
+        crate::link_index::rebuild(&conn).expect("index the seeded Cards");
         drop(conn);
         let mut state = SessionState::at("LitA");
         let mut interaction = ScriptedInteraction {

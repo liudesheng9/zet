@@ -2787,7 +2787,16 @@ fn load_card(conn: &Connection, target: &str) -> Result<Card> {
     .with_context(|| format!("card `{target}` does not exist"))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many whole-archive Card reads this test thread made, so a test can prove a plan or a
+    /// gate reads none (S2, #230).
+    static CARD_TEXT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
+    #[cfg(test)]
+    CARD_TEXT_READS.with(|count| count.set(count.get() + 1));
     let mut stmt = conn.prepare(
         "SELECT row_id, COALESCE(location, citation_key), citation_key,
                 is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, term_name
@@ -2795,6 +2804,15 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
     )?;
     let rows = stmt.query_map([], card_from_row)?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+/// Every Card's address (a Location, or a Citation key for a Literature Card), without reading any
+/// text: what the Location planners need (S2, #230).
+fn addresses(conn: &Connection) -> Result<BTreeSet<String>> {
+    let mut stmt = conn.prepare_cached("SELECT COALESCE(location, citation_key) FROM cards")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect::<std::result::Result<BTreeSet<_>, _>>()
         .map_err(Into::into)
 }
 
@@ -2889,11 +2907,11 @@ fn next_side_successor(
     excluding: &BTreeSet<String>,
 ) -> Result<String> {
     let mut max_label = 0;
-    for card in load_cards(conn)? {
-        if excluding.contains(&card.address) {
+    for address in addresses(conn)? {
+        if excluding.contains(&address) {
             continue;
         }
-        if let Some(label) = immediate_side_label(&card.address, parent) {
+        if let Some(label) = immediate_side_label(&address, parent) {
             max_label = max_label.max(side_label_to_number(&label));
         }
     }
@@ -2901,8 +2919,7 @@ fn next_side_successor(
 }
 
 fn descendant_locations(conn: &Connection, root: &str) -> Result<BTreeSet<String>> {
-    let cards = load_cards(conn)?;
-    let locations: BTreeSet<String> = cards.iter().map(|card| card.address.clone()).collect();
+    let locations = addresses(conn)?;
     let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for location in &locations {
         if let Some(parent) = parent_location(location)
@@ -3740,15 +3757,12 @@ fn citation_rename_mapping(
     let old_prefix = format!("{old_key}/");
     let new_prefix = format!("{new_key}/");
     let mut mapping = BTreeMap::from([(old_key.to_string(), new_key.to_string())]);
-    for card in load_cards(conn)? {
-        if card.address.starts_with(&new_prefix) {
-            bail!(
-                "Location `{}` already uses Citation key `{new_key}`",
-                card.address
-            );
+    for address in addresses(conn)? {
+        if address.starts_with(&new_prefix) {
+            bail!("Location `{address}` already uses Citation key `{new_key}`");
         }
-        if let Some(suffix) = card.address.strip_prefix(&old_prefix) {
-            mapping.insert(card.address.clone(), format!("{new_prefix}{suffix}"));
+        if let Some(suffix) = address.strip_prefix(&old_prefix) {
+            mapping.insert(address.clone(), format!("{new_prefix}{suffix}"));
         }
     }
     Ok(mapping)
@@ -3812,11 +3826,14 @@ fn update_literature_metadata(
         "UPDATE cards SET citation_key = ?1, bibtex = ?2, text = ?3 WHERE row_id = ?4",
         params![citation_key, bibtex, text, card.row_id],
     )?;
-    apply_location_mapping_tx(&tx, &mapping)?;
     if mapping.is_empty() {
         link_index::source_changed(&tx, citation_key)?;
     } else {
-        regenerate_reverse_links_tx(&tx)?;
+        // The Literature Card's new title and body, at its new key, after its tree is renamed.
+        let mut changes = link_index::Changes::default();
+        apply_location_mapping_tx(&tx, &mapping, &mut changes)?;
+        changes.resync(&tx, citation_key)?;
+        changes.finish(&tx)?;
     }
     tx.commit()?;
     Ok(accepted)
@@ -4183,6 +4200,16 @@ impl DeletePlan {
 /// Links from Cards outside `delete_set` to Cards in it, once per (source, target).
 fn links_into(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<(String, String)>> {
     let mut found = BTreeSet::new();
+    if link_index::ready(conn) {
+        for target in delete_set {
+            for source in link_index::sources_linking(conn, [target])? {
+                if !delete_set.contains(&source) {
+                    found.insert((source, target.clone()));
+                }
+            }
+        }
+        return Ok(found.into_iter().collect());
+    }
     for card in load_cards(conn)? {
         if delete_set.contains(&card.address) {
             continue;
@@ -4217,10 +4244,9 @@ fn plan_delete(conn: &Connection, at: &str, keep_root: bool) -> Result<DeletePla
     }
     let tree = tree_id(&card.address);
     let members = |conn: &Connection| -> Result<Vec<String>> {
-        Ok(load_cards(conn)?
+        Ok(addresses(conn)?
             .into_iter()
-            .filter(|member| is_tree_member(&member.address, tree))
-            .map(|member| member.address)
+            .filter(|member| is_tree_member(member, tree))
             .collect())
     };
     let (scope, delete_set) = if keep_root {
@@ -4390,9 +4416,18 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
     }
     let tx = conn.transaction()?;
     tree_lock::ensure_unlocked(&tx, plan.gate())?;
+    let mut changes = link_index::Changes::default();
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
     if !repoint.is_empty() {
-        for card in load_cards(&tx)? {
+        let cards = if link_index::ready(&tx) {
+            link_index::sources_linking(&tx, repoint.keys())?
+                .iter()
+                .map(|source| load_card(&tx, source))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            load_cards(&tx)?
+        };
+        for card in cards {
             if plan.delete_set.contains(&card.address) {
                 continue;
             }
@@ -4402,9 +4437,11 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
                     "UPDATE cards SET text = ?1 WHERE row_id = ?2",
                     params![text, card.row_id],
                 )?;
+                changes.resync(&tx, &card.address)?;
             }
         }
     }
+    changes.drop_sources(&tx, &plan.delete_set)?;
     for address in &plan.delete_set {
         tx.execute(
             "DELETE FROM cards WHERE location = ?1 OR citation_key = ?1",
@@ -4412,8 +4449,8 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
         )?;
     }
     spread::follow(&tx, &BTreeMap::new(), &plan.delete_set)?;
-    apply_location_mapping_tx(&tx, &compaction)?;
-    regenerate_reverse_links_tx(&tx)?;
+    apply_location_mapping_tx(&tx, &compaction, &mut changes)?;
+    changes.finish(&tx)?;
     tx.commit()?;
     Ok(DeleteResult {
         deleted_count: plan.delete_set.len(),
@@ -4488,13 +4525,13 @@ fn side_compaction_mapping(
         return Ok(BTreeMap::new());
     };
     let deleted_rank = side_label_to_number(last);
-    let cards = load_cards(conn)?;
+    let cards = addresses(conn)?;
     let mut labels = BTreeSet::new();
-    for card in &cards {
-        if delete_set.contains(&card.address) {
+    for address in &cards {
+        if delete_set.contains(address) {
             continue;
         }
-        if let Some(label) = immediate_side_label(&card.address, &parent)
+        if let Some(label) = immediate_side_label(address, &parent)
             && side_label_to_number(&label) > deleted_rank
         {
             labels.insert(label);
@@ -4509,14 +4546,14 @@ fn side_compaction_mapping(
         );
     }
     let mut mapping = BTreeMap::new();
-    for card in cards {
-        if delete_set.contains(&card.address) {
+    for address in cards {
+        if delete_set.contains(&address) {
             continue;
         }
         for (old_prefix, new_prefix) in &prefix_map {
-            if card.address == *old_prefix || card.address.starts_with(&format!("{old_prefix}|")) {
-                let suffix = &card.address[old_prefix.len()..];
-                mapping.insert(card.address.clone(), format!("{new_prefix}{suffix}"));
+            if address == *old_prefix || address.starts_with(&format!("{old_prefix}|")) {
+                let suffix = &address[old_prefix.len()..];
+                mapping.insert(address.clone(), format!("{new_prefix}{suffix}"));
                 break;
             }
         }
@@ -4524,11 +4561,24 @@ fn side_compaction_mapping(
     Ok(mapping)
 }
 
-fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, String>) -> Result<()> {
+/// Rename Locations through `mapping` and rewrite the Links to them. With the Link index only the
+/// sources that link a renamed Card are read and rewritten, and `changes` gathers what the caller
+/// refreshes once before its commit (S1, #229).
+fn apply_location_mapping_tx(
+    conn: &Connection,
+    mapping: &BTreeMap<String, String>,
+    changes: &mut link_index::Changes,
+) -> Result<()> {
     if mapping.is_empty() {
         return Ok(());
     }
     tree_lock::ensure_unlocked(conn, tree_lock::Change::Mapping(mapping))?;
+    let indexed = link_index::ready(conn);
+    let sources = if indexed {
+        link_index::sources_linking(conn, mapping.keys())?
+    } else {
+        BTreeSet::new()
+    };
     for old in mapping.keys() {
         conn.execute(
             "UPDATE cards SET location = ?1 WHERE location = ?2",
@@ -4541,7 +4591,16 @@ fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, Strin
             params![new, format!("__moving__{old}")],
         )?;
     }
-    let cards = load_cards(conn)?;
+    let cards = if indexed {
+        sources
+            .iter()
+            .map(|source| load_card(conn, mapping.get(source).unwrap_or(source)))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        load_cards(conn)?
+    };
+    // The rewritten bodies name exactly the re-keyed targets, so their rows need no re-read.
+    changes.renamed(conn, mapping)?;
     for card in cards {
         let text = replace_link_locations(&card.text, mapping)?;
         if text != card.text {
@@ -4549,6 +4608,9 @@ fn apply_location_mapping_tx(conn: &Connection, mapping: &BTreeMap<String, Strin
                 "UPDATE cards SET text = ?1 WHERE row_id = ?2",
                 params![text, card.row_id],
             )?;
+            // Recomposing a body re-emits the generated tail as parsed; the refresh writes it
+            // back exactly, as the full regeneration did.
+            changes.rewrote(&card.address);
         }
     }
     spread::follow(conn, mapping, &BTreeSet::new())
@@ -4666,8 +4728,9 @@ fn print_move_verification(plan: &MovePlan) {
 
 fn apply_move_plan(conn: &mut Connection, plan: &MovePlan) -> Result<()> {
     let tx = conn.transaction()?;
-    apply_location_mapping_tx(&tx, &plan.mapping)?;
-    regenerate_reverse_links_tx(&tx)?;
+    let mut changes = link_index::Changes::default();
+    apply_location_mapping_tx(&tx, &plan.mapping, &mut changes)?;
+    changes.finish(&tx)?;
     tx.commit()?;
     Ok(())
 }
@@ -4716,8 +4779,7 @@ fn move_mapping(
     new_root: &str,
     moved: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, String>> {
-    let cards = load_cards(conn)?;
-    let locations: BTreeSet<String> = cards.iter().map(|card| card.address.clone()).collect();
+    let locations = addresses(conn)?;
     let mut mapping = BTreeMap::new();
     for location in moved {
         let edges = path_edges(old_root, location, &locations)?;
@@ -4762,6 +4824,10 @@ fn path_edges(root: &str, location: &str, existing: &BTreeSet<String>) -> Result
 }
 
 fn count_rewritten_links(conn: &Connection, mapping: &BTreeMap<String, String>) -> Result<usize> {
+    if link_index::ready(conn) {
+        // One index row per authored macro, Term uses included (S2, #230).
+        return link_index::occurrences_of(conn, mapping.keys());
+    }
     let mut count = 0;
     for card in load_cards(conn)? {
         let parsed = parse_card_text(&card.text)?;

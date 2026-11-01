@@ -93,6 +93,24 @@ impl Access {
         if mapping.is_empty() || self == Access::Owner {
             return Ok(());
         }
+        if crate::link_index::ready(conn) {
+            // The sources that link a renamed Card, from the index, in address order (S2, #230).
+            let sources = crate::link_index::sources_linking(conn, mapping.keys())?;
+            for source in sources {
+                if mapping.contains_key(&source) {
+                    continue;
+                }
+                let card = crate::load_card(conn, &source)?;
+                if !self.can_write(card.workspace) {
+                    bail!(
+                        "this change would rewrite Links in {} workspace Card `{}`, which is read-only for AI agents",
+                        card.workspace.id(),
+                        card.address
+                    );
+                }
+            }
+            return Ok(());
+        }
         for card in crate::load_cards(conn)? {
             if self.can_write(card.workspace) || mapping.contains_key(&card.address) {
                 continue;

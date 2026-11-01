@@ -427,6 +427,8 @@ assert!(session.wait_for_exit().success());
 
 On this machine builds usually go to another drive: prefix with `CARGO_TARGET_DIR=D:/zt-target` (Bash) or set `$env:CARGO_TARGET_DIR = 'D:/zt-target'` (PowerShell).
 
+A command test that seeds Cards with raw SQL and then runs `mv`, `ins`, `del` or a Citation-key rename indexes its seed first (`crate::link_index::rebuild(&conn)`): since S1 (#229) a structural write refreshes only the Cards it touches, and in test builds it asserts the Link index against a fresh parse, so an unindexed seed fails instead of being repaired silently.
+
 How the PTY tests work (helper `tests/support/pty.rs`, owned by [Service, CLI and storage](service-and-cli.md)):
 
 - `TestHome::new()` makes a temp dir with `config/` and `archive/`; `configure_and_up()` runs `zt config set archive_root` and `zt up` with `ZT_CONFIG_DIR` pointing into it and `ZT_GUI_PORT=0` (a test service never takes the user's GUI port). Fixtures are made with shell commands and a fake `EDITOR` (a PowerShell script that writes `$env:ZT_EDITOR_TEXT`, or for `l` the `.bib` and Card stages). `Drop` removes `zt.pid`, which stops the test service.

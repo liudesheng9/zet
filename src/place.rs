@@ -21,7 +21,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{Card, CardType, MovePlan, model};
+use crate::{CardType, MovePlan, model};
 
 /// Where a moving Card goes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,7 +212,8 @@ pub(crate) fn apply_insert_plan_tx(
         )
         .with_term(term_name),
     )?;
-    crate::apply_location_mapping_tx(conn, &plan.mapping)?;
+    let mut changes = crate::link_index::Changes::default();
+    crate::apply_location_mapping_tx(conn, &plan.mapping, &mut changes)?;
     conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, term_name)
          VALUES(?1, NULL, 0, 0, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -226,15 +227,13 @@ pub(crate) fn apply_insert_plan_tx(
             term_name
         ],
     )?;
-    crate::regenerate_reverse_links_tx(conn)?;
+    changes.resync(conn, &plan.location)?;
+    changes.finish(conn)?;
     Ok(accepted)
 }
 
 fn all_locations(conn: &Connection) -> Result<BTreeSet<String>> {
-    Ok(crate::load_cards(conn)?
-        .into_iter()
-        .map(|card: Card| card.address)
-        .collect())
+    crate::addresses(conn)
 }
 
 /// `root` and every Location below it by parent Location, inside `locations`.

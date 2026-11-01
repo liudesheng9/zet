@@ -2119,26 +2119,23 @@ fn check_change(conn: &Connection, state: &State, change: Change<'_>) -> Result<
                     )],
                 )));
             }
-            let cards = crate::load_cards(conn)?;
-            let by_address = cards
-                .iter()
-                .map(|card| (card.address.as_str(), card))
-                .collect::<BTreeMap<_, _>>();
             // Every affected Card of one category is named once: a refused delete never hides the
-            // other locked members of the same delete set (R184).
+            // other locked members of the same delete set (R184). Rows are looked up by address,
+            // and only while some Lock promises or pins a Card (S2, #230).
             let mut members = Vec::new();
             let mut pinned = Vec::new();
-            for address in &plan.delete_set {
-                let Some(card) = by_address.get(address.as_str()) else {
+            let any_promise = !state.member_by_row.is_empty() || !state.pins_by_target.is_empty();
+            for address in plan.delete_set.iter().filter(|_| any_promise) {
+                let Some(row_id) = row_at(conn, address)? else {
                     continue;
                 };
-                if let Some(blocker) = member_blocker(state, card.row_id) {
-                    members.push((card.address.clone(), blocker));
+                if let Some(blocker) = member_blocker(state, row_id) {
+                    members.push((address.clone(), blocker));
                     continue;
                 }
-                let pins = pins_of(state, card.row_id);
+                let pins = pins_of(state, row_id);
                 if !pins.is_empty() {
-                    pinned.push((card.address.clone(), pins));
+                    pinned.push((address.clone(), pins));
                 }
             }
             if !members.is_empty() {
@@ -2210,9 +2207,11 @@ fn check_mapping(
             ));
             continue;
         }
-        let cards = crate::load_cards(conn)?;
-        if let Some(card) = cards.iter().find(|card| &card.address == old) {
-            let pins = pins_of(state, card.row_id);
+        // One row lookup by address, and only while some Lock pins a Card at all (S2, #230).
+        if !state.pins_by_target.is_empty()
+            && let Some(row_id) = row_at(conn, old)?
+        {
+            let pins = pins_of(state, row_id);
             if !pins.is_empty() {
                 pinned.push((old.clone(), pins));
             }
@@ -2248,6 +2247,17 @@ fn check_mapping(
     check_change(conn, state, Change::LinkRewrites(mapping))
 }
 
+/// The row of the Card at an address (a Location or a Citation key), if any.
+fn row_at(conn: &Connection, address: &str) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT row_id FROM cards WHERE location=?1 OR citation_key=?1",
+            [address],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 /// A rewritten macro in a locked source would change that source's authored body, so it is refused
 /// even when the source itself does not move. Every locked source the rewrite would touch is named.
 fn check_link_rewrites(
@@ -2255,7 +2265,22 @@ fn check_link_rewrites(
     state: &State,
     mapping: &BTreeMap<String, String>,
 ) -> Result<()> {
-    if mapping.is_empty() {
+    if mapping.is_empty() || state.member_by_row.is_empty() {
+        return Ok(());
+    }
+    if crate::link_index::ready(conn) {
+        // The sources that link a renamed Card, from the index, in address order (S2, #230).
+        let mut touched = Vec::new();
+        for source in crate::link_index::sources_linking(conn, mapping.keys())? {
+            if let Some(row_id) = row_at(conn, &source)?
+                && let Some(blocker) = member_blocker(state, row_id)
+            {
+                touched.push((source, blocker));
+            }
+        }
+        if !touched.is_empty() {
+            return Err(anyhow::Error::new(Refusal::by_blockers(Reason::Edit, touched)));
+        }
         return Ok(());
     }
     let cards = crate::load_cards(conn)?;
@@ -4755,7 +4780,8 @@ mod tests {
         lock_tx(&tx, &plan).expect("lock");
         tx.commit().expect("commit");
         let mapping = BTreeMap::from([("2/1".to_string(), format!("{}/2", crate::tree_id(&root)))]);
-        let error = crate::apply_location_mapping_tx(&conn, &mapping).expect_err("move in");
+        let error = crate::apply_location_mapping_tx(&conn, &mapping, &mut Default::default())
+            .expect_err("move in");
         assert_eq!(
             error.downcast_ref::<Refusal>().expect("typed").reason,
             Reason::MoveInside

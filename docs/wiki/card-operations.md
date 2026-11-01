@@ -5,6 +5,7 @@ paths:
   - "src/ops.rs"
   - "src/batch.rs"
   - "src/place.rs"
+  - "scripts/tree-ops-bench.mjs"
 synced: 35ea967d82d1
 updated: 2026-11-01
 ---
@@ -164,6 +165,10 @@ Free functions: `kind(card)` (`"literature"`, `"topic"`, or `"regular"`), `zone(
 
 The plan lines of the other operations come from `src/main.rs`. `move_verification_lines` gives `move verification:`, the `old -> new` lines, `moved cards: N`, and `link macros rewritten: N`. `delete_verification_lines` gives `delete verification:`, `delete <loc>` for each Card, `successors: N`, then either `links that will break: N` with `source -> target` lines (and, when the compaction is dropped, `later side successors keep their locations, so no card takes over a broken link`), or `links re-pointed to <into>: N` with `source: [[target]] -> [[into]]` lines. A keep-root plan instead gives `root kept: <root> (<kind>, <workspace> workspace)`, `delete regular cards: N`, and up to 20 `source -> target` pairs followed by `... and N more` when more Links break; its success line is `deleted: N; root kept: <root>`. `citation_rename_lines` gives `citation key rename:`, the `old -> new` lines, `renamed cards: N`, and `link macros rewritten: N`.
 
+### Planning cost (S2, #230)
+
+The planners read addresses, never Card text: `crate::addresses` (`SELECT COALESCE(location, citation_key) FROM cards`) feeds `place::all_locations`, `descendant_locations`, `move_mapping`, `next_side_successor`, `side_compaction_mapping`, the tree members of `plan_delete` and `citation_rename_mapping`. With the Link index, `count_rewritten_links` sums `link_index::occurrences_of` (one index row per authored macro, Term uses included), `links_into` reads `sources_linking`, and `Access::ensure_link_rewrites_allowed` loads only the sources that link a renamed Card. In test builds a thread-local `CARD_TEXT_READS` counts `load_cards`; `link_index::tests::planning_a_structural_write_reads_no_card_text` and `a_structural_write_reads_no_card_text_end_to_end` hold every plan, gate and structural write to zero whole-archive reads. Timings on a copy of the live archive are in `docs/tree-operations-timings.md`.
+
 ### Move and insert errors
 
 | Message | Cause |
@@ -209,6 +214,8 @@ A Lock is the owner's promise about one whole tree ([Service, CLI and storage](s
 | `Mapping(final old→new)` | `move_card`, `insert_card`, every `apply_location_mapping_tx` caller (moves, side compaction, Citation-key rename) | a source row is a member or a pinned target, a destination is inside a Locked tree, or the mapping would rewrite a `[[target]]` in a Locked source |
 | `Delete(plan)` | `delete` | the delete set names a member or a pinned target; its `into` re-pointing or Side compaction hits the same rules. A keep-root plan also refuses while its retained root is a promised member, so a Locked tree refuses emptying even when its delete set is empty; a pin on the retained root alone permits it (S11, #134) |
 | `LinkRewrites(map)` | inside `Mapping` and `Delete` | a Locked source's authored body contains a `[[target]]` that the rewrite would change |
+
+The gate reads no Card text (S2, #230): `Mapping` and `Delete` look up only the mapped or deleted rows by address (`tree_lock::row_at`), and only while some active Lock promises or pins a Card; `LinkRewrites` reads the sources that link a renamed Card from the Link index (`link_index::sources_linking`), and an archive without the index keeps the old full scan. Before this, `check_mapping` read the whole archive once per mapped Card, which made a large move take seconds in its plan and again in its apply.
 
 The order is fixed: take the edit lock, load the Card, run the Workspace `Access` checks, then the Lock gate, then plan, then the two-step confirmation, then apply the transaction-level writers, which repeat the same gate. A no-op edit request is still refused, because the request itself is the change the owner promised to forbid. Owner Access has no exemption; an opponent Agent Access check still refuses first.
 
@@ -324,7 +331,7 @@ Worked mappings (from the tests in `src/place.rs` and `tests/self_sufficient_mod
 
 ### How Links are rewritten
 
-`apply_location_mapping_tx` (`src/main.rs`) first renames every mapped Location to `__moving__<old>`, then to its new value, so swaps and chains never collide on the `UNIQUE` column. It then rewrites every Card's body with `LinkBody::rewrite_targets(mapping)`. Only `[[target]]` macros in prose whose target is a key of the mapping change (Links in code spans and fences are not Links). Last it calls `spread::follow`. `count_rewritten_links` uses the same rewrite to report `link macros rewritten`. Reverse link sections are rebuilt afterwards by `regenerate_reverse_links_tx`, never rewritten.
+`apply_location_mapping_tx` (`src/main.rs`) first renames every mapped Location to `__moving__<old>`, then to its new value, so swaps and chains never collide on the `UNIQUE` column. With the Link index (S1, #229) it reads only the sources that link a mapped Location (`link_index::sources_linking`) and rewrites their bodies with `LinkBody::rewrite_targets(mapping)`; an archive without the index rewrites every body, as before. Only `[[target]]` macros in prose whose target is a key of the mapping change (Links in code spans and fences are not Links). `link_index::Changes::renamed` re-keys the moved Cards' index rows as sources and as targets (through a marked value, so chains never map a row twice), and every rewritten source joins the refresh set. Last it calls `spread::follow`. `count_rewritten_links` uses the same rewrite to report `link macros rewritten`. Reverse link sections are refreshed once by the caller's `Changes::finish`, never rewritten by hand.
 
 ### Ranked search (`Snapshot::find`)
 
@@ -433,7 +440,7 @@ mv 0/2|a
 To add a new operation:
 1. Write it in `src/ops.rs` with the same shape: `acquire_edit_lock_within(root, EDIT_PATIENCE, <operation>)`, `load_card`, `access.ensure_writable`, then `access.ensure_link_rewrites_allowed` for every mapping it applies. Return `Outcome::Confirm` before any write if the operation renames or removes Cards.
 2. Put any Location arithmetic in `src/place.rs` as a pure function over `BTreeSet<String>` and unit-test it there with `set(...)`/`pairs(...)`/`after(...)`.
-3. Apply through `crate::apply_location_mapping_tx` and `crate::regenerate_reverse_links_tx` inside one transaction, so Links, Spreads, and Reverse links follow.
+3. Apply through `crate::apply_location_mapping_tx` with one `link_index::Changes`, then `Changes::finish`, inside one transaction, so Links, Spreads, and Reverse links follow. A new or edited Card in the same write joins with `Changes::resync`, a deleted one with `Changes::drop_sources`.
 4. Add the HTTP route in `src/gui.rs` (`into_value()`) and the MCP tool schema and handler in `src/mcp.rs` (`plan_or_done`), and the Session or shell command if the human needs it.
 
 To add a field to `TypeChange`: add the `Option<Option<T>>` field, include it in `is_empty`, add a `resolve_*` method that keeps the value only on the Cards that may hold it, write it in `edit` after the type change, add it to `Snapshot::fingerprint`, `summary`, `find`, and `search_in`, and make `model::set` clear its column when the Card stops qualifying.

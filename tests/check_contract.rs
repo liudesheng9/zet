@@ -304,8 +304,10 @@ fn the_live_contract_publishes_the_literature_note_rows() {
     let view = mcp.call("get_cards", json!({"addresses": [], "view": "text"}));
     let served =
         Contract::read(&view["check_contract"]).expect("the read reply publishes a contract");
-    assert_eq!(served.applicability_version, "3");
-    assert_eq!(view["check_contract"]["applicability_version"], json!("3"));
+    // Applicability 3 added the Literature-note rows; 4 (zt-check 0.17.0, #217) added the Cited Card
+    // rules on top, so the served contract is at least the one that carries the rows.
+    assert_eq!(served.applicability_version, zt_check::contract::APPLICABILITY_VERSION);
+    assert_eq!(view["check_contract"]["applicability_version"], json!("4"));
     assert!(served.version_gaps().is_empty());
     // The rows are covered by the hash, not by a stored override: a fresh archive has none and
     // its hash is still not the 0.41.1 default.
