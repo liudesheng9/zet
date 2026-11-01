@@ -512,6 +512,16 @@ pub(crate) fn apply(root: &Path, args: &Value, scope: &mut crate::scope::WriteSc
         Some(Value::Bool(value)) => *value,
         _ => bail!("preview must be a boolean"),
     };
+    // A lean preview checks every item as a preview does and answers only the identities, addresses,
+    // refusals and blocked items, so a large plan's scan stays inside the reply bound (#226).
+    let lean = match args.get("lean") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => bail!("lean must be a boolean"),
+    };
+    if lean && !preview {
+        bail!("lean is a preview option; pass preview:true with lean:true");
+    }
     let sequence = args.get("preview_items").is_some();
     if sequence && !preview {
         bail!("preview_items requires preview:true");
@@ -599,7 +609,7 @@ pub(crate) fn apply(root: &Path, args: &Value, scope: &mut crate::scope::WriteSc
             Err(error)
         }
         Ok(simulated) if preview => {
-            let value = simulated.value(archive_revision, true);
+            let value = if lean { simulated.lean(archive_revision) } else { simulated.value(archive_revision, true) };
             tx.rollback()?;
             Ok(value)
         }
@@ -640,6 +650,21 @@ struct Simulated {
 impl Simulated {
     /// The reply shape: a real batch answers only its results, and a preview states whether it
     /// checked the whole plan, every ordered Lock refusal and every blocked item identity.
+    /// The lean preview reply: the preview's fields with each result cut to its identity and address,
+    /// and no Card or paragraph projections.
+    fn lean(mut self, archive_revision: u64) -> Value {
+        self.results = self
+            .results
+            .into_iter()
+            .map(|r| json!({"op_key":r["op_key"],"client_ref":r["client_ref"],"replayed":r["replayed"],"result":{"address":r["result"]["address"]}}))
+            .collect();
+        self.cards.clear();
+        self.paragraphs.clear();
+        let mut value = self.value(archive_revision, true);
+        value["lean"] = json!(true);
+        value
+    }
+
     fn value(self, archive_revision: u64, preview: bool) -> Value {
         if !preview {
             return json!({"results":self.results});
@@ -831,6 +856,15 @@ fn simulate(
                         return Err(anyhow::Error::new(
                             refusal.clone().in_batch(index, tool, op_key),
                         ));
+                    }
+                    // #226: a preview collects a Topic another agent Topic already names like the other
+                    // destination refusals, so a client can probe a creation; a real batch fails fast on it.
+                    None if preview && error.downcast_ref::<crate::scope::TopicExists>().is_some() => {
+                        let refusal = error.downcast_ref::<crate::scope::TopicExists>().expect("a Topic title refusal");
+                        refusals.push(
+                            json!({"index":index,"op_key":op_key,"client_ref":client_ref,"refusal":refusal.value()}),
+                        );
+                        failed.insert(client_ref.to_string(), identity);
                     }
                     None if error.downcast_ref::<crate::scope::Refusal>().is_some() => {
                         let refusal = error.downcast_ref::<crate::scope::Refusal>().expect("a scope refusal");

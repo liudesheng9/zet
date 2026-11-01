@@ -63,14 +63,14 @@ try {
     Assert ((Invoke-Zt @(@{tool='get_card';arguments=@{at='0/2'}})).text -eq $after.text.Replace($replacement,$draftText)) 'apply changes exactly the checked owned paragraph'
     Save-Calls $input @(@{tool='edit_card';arguments=@{at='0/1';base_receipt='qualification/link/1/create/target';owned_paragraph=@{text='依赖 [[0/2]]，后者给出共同的约束。'}}})
     $outside = @(& $Digest open-call $input -OperationPrefix 'qualification/link/3/apply' -Allow $allow 2>&1)
-    Assert ($LASTEXITCODE -ne 0 -and ($outside -join ' ').Contains('not allowed')) 'the identified helper refuses a source outside the owned manifest'
+    Assert ($LASTEXITCODE -ne 0 -and ($outside -join ' ') -match '"error":"scope_refused".*"reason":"not_listed"|"reason":"not_listed".*"error":"scope_refused"') "the identified helper refuses a source outside the owned manifest with the server's scope_refused ($($outside -join ' '))"
     Assert ((Invoke-Zt @(@{tool='get_card';arguments=@{at='0/1'}})).body -eq '') 'a denied source remains unchanged'
     Save-Calls $input @(
         @{tool='create_successor';arguments=@{at='0/2';title='Must not be created'}},
-        @{tool='edit_card';arguments=@{at='@@0/1';body='Guessed child address.'}}
+        @{tool='edit_card';arguments=@{at='@@0/1';base_receipt='qualification/link/1/create/source';body='Guessed child address.'}}
     )
     $deniedPlan = @(& $Digest open-call $input -OperationPrefix 'qualification/link/4/apply' -Allow $allow 2>&1)
-    Assert ($LASTEXITCODE -ne 0 -and ($deniedPlan -join ' ').Contains('not allowed')) 'the complete allow-list plan is checked before any writes; guessed descendant references are refused'
+    Assert ($LASTEXITCODE -ne 0 -and ($deniedPlan -join ' ') -match '"error":"scope_refused"') "the complete allow-list plan is checked before any writes; guessed descendant references are refused ($($deniedPlan -join ' '))"
     Assert ((Invoke-Zt @(@{tool='get_tree';arguments=@{tree='0'}})).cards.Count -eq 3) 'a rejected later source prevents the earlier creation'
     Save-Calls $input @(
         @{tool='create_successor';arguments=@{at='0/2';title='Allowed child'}},
@@ -88,7 +88,8 @@ try {
     $env:ZT_TRACE_TOOLS = Join-Path $scratch 'byte-chunks.jsonl'
     $large = @(& $Digest open-call $input -OperationPrefix 'qualification/link/6/apply' -Allow $allow 2>&1)
     Assert ($LASTEXITCODE -eq 0 -and $large[-1] -eq '2 ok 0/2') "nested paragraph bytes are chunked without losing receipt dependencies: $($large[-1])"
-    $writes = @(Get-Content $env:ZT_TRACE_TOOLS | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object tool -eq 'apply_batch')
+    # Count the writes: a lean preview scan (preview_items, no items) is not one.
+    $writes = @(Get-Content $env:ZT_TRACE_TOOLS | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.tool -eq 'apply_batch' -and $null -ne $_.item_count })
     Assert (($writes.item_count -join ',') -eq '2,1') 'the 1 MiB input bound includes nested owned paragraph text'
 } finally {
     zt down 2>&1 | Out-Null

@@ -353,7 +353,7 @@ pub(crate) fn invoke_identified(
     calls: &[Value],
     prefix: &str,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, false, None, true)?.0)
+    Ok(execute_identified(zt, calls, prefix, false, false, None, true)?.0)
 }
 
 /// Apply an identified call list whose outputs are staged for a later publication step: the
@@ -365,7 +365,7 @@ pub(crate) fn invoke_identified_staged(
     calls: &[Value],
     prefix: &str,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, false, None, false)?.0)
+    Ok(execute_identified(zt, calls, prefix, false, false, None, false)?.0)
 }
 
 /// Apply an immutable accepted call list whose Topic creation was cleared by a concept decision
@@ -378,7 +378,7 @@ pub(crate) fn invoke_identified_gated(
     prefix: &str,
     concept: &Value,
 ) -> Result<Vec<Value>> {
-    Ok(execute_identified(zt, calls, prefix, false, Some(concept), true)?.0)
+    Ok(execute_identified(zt, calls, prefix, false, false, Some(concept), true)?.0)
 }
 
 /// Validate a complete accepted sequence against real archive validators. The
@@ -388,7 +388,7 @@ pub(crate) fn preview_identified(
     calls: &[Value],
     prefix: &str,
 ) -> Result<Value> {
-    let (receipts, draft) = execute_identified(zt, calls, prefix, true, None, false)?;
+    let (receipts, draft) = execute_identified(zt, calls, prefix, true, false, None, false)?;
     let draft = draft.context("incomplete identified preview: no draft")?;
     if draft["preview"] != true
         || draft["applied"] != false
@@ -432,6 +432,7 @@ fn execute_identified(
     calls: &[Value],
     prefix: &str,
     preview: bool,
+    lean: bool,
     concept: Option<&Value>,
     verify: bool,
 ) -> Result<(Vec<Value>, Option<Value>)> {
@@ -537,10 +538,12 @@ fn execute_identified(
             bail!("identified call {index}: exceeds 1048576 authored bytes");
         }
     }
-    // D6 (#226): the server checks an allow list chunk by chunk. A preview of the whole accepted
-    // list first keeps the guarantee that a call outside the list writes nothing at all.
-    if !preview && zt.declares("--allow") {
-        execute_identified(zt, calls, prefix, true, None, false)?;
+    // D6 (#226): the server checks an allow list chunk by chunk, and one chunk is atomic. A list
+    // that needs more than one chunk is scanned first with a lean preview (no bodies come back), so
+    // a call outside the list still writes nothing at all.
+    let total: usize = calls.iter().map(|call| authored_bytes(&call["arguments"])).sum();
+    if !preview && zt.declares("--allow") && (calls.len() > 64 || total > 1024 * 1024) {
+        execute_identified(zt, calls, prefix, true, true, None, false)?;
     }
     let mut resolved = Vec::new();
     let mut done = Vec::new();
@@ -613,7 +616,9 @@ fn execute_identified(
                 }
             }
         }
-        let request = if preview {
+        let request = if preview && lean {
+            json!({"preview":true,"lean":true,"preview_items":items})
+        } else if preview {
             json!({"preview":true,"preview_items":items})
         } else {
             json!({"items":items})
@@ -719,7 +724,7 @@ fn precheck_identified(
             "CheckOnly requires 1 through 64 receipt-owned paragraph edits within one 1048576-byte batch; check each accepted Link draft separately"
         );
     }
-    let (receipts, draft) = execute_identified(zt, calls, prefix, true, None, false)?;
+    let (receipts, draft) = execute_identified(zt, calls, prefix, true, false, None, false)?;
     let draft = draft.context("incomplete Link draft: no preview")?;
     if draft["preview"] != true || draft["applied"] != false || draft["complete"] != true {
         bail!("incomplete Link draft: explicit complete, unapplied preview required");

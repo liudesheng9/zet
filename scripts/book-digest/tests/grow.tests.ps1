@@ -130,7 +130,7 @@ try {
 
     # The read-only helper refuses a write.
     $ro = @('[{"tool":"create_successor","arguments":{"at":"' + $door + '","title":"x","body":"y"}}]' | & $Digest open-call - -Allow (Join-Path $work 'read-only.allow.txt') 2>&1 | ForEach-Object { [string]$_ })
-    Assert (($ro -join ' ') -match 'not one of your Cards') "the read-only allow file refuses a write ($($ro -join ' | '))"
+    Assert (($ro -join ' ') -match 'scope_refused \{.*"reason":"not_listed"') "the read-only allow file refuses a write with the server's scope_refused ($($ro -join ' | '))"
 
     # --- precheck: a bad answer ---
     Answer 'gw-001' @{ section = "$key/1"; topics = @(@{ id = 'T1'; title = '敲竹杠'; body = '本主题追问。' }); ideas = @(

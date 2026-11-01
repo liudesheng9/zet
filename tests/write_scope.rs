@@ -253,6 +253,47 @@ fn an_agent_topic_with_the_same_title_is_refused_in_every_scope() {
     assert_eq!(open.ok("list_trees", json!({}))["trees"].as_array().unwrap().len(), 1);
 }
 
+/// A preview reports a Topic another agent Topic already names as one `refusals` entry, as it does a
+/// Lock or a scope refusal, so a client can probe a creation without the whole preview failing.
+#[test]
+fn a_preview_collects_a_topic_title_refusal() {
+    let scratch = ScratchBox::up();
+    let mut open = scratch.mcp(&[]);
+    open.ok("create_topic", json!({"title":"Price Theory"}));
+    let draft = open.ok("apply_batch", json!({"preview":true,"preview_items":[
+        json!({"op_key":"run/unit/1/gate/item-000000","client_ref":"0","tool":"create_topic","arguments":{"title":"price theory"}})
+    ]}));
+    assert_eq!(draft["complete"], false, "{draft}");
+    assert_eq!(draft["refusals"][0]["refusal"]["error"], "topic_exists", "{draft}");
+    assert_eq!(draft["refusals"][0]["refusal"]["root"], "0/0");
+    assert_eq!(draft["results"], json!([]));
+}
+
+/// A lean preview checks every item as a preview does and answers only what a client needs to
+/// decide whether to write: each result's identity and address, the refusals and the blocked items,
+/// with no Card bodies or projections, so a large plan's scan stays inside the reply bound.
+#[test]
+fn a_lean_preview_reports_refusals_and_addresses_without_bodies() {
+    let scratch = ScratchBox::up();
+    seeded(&scratch);
+    let mut literature = scratch.mcp(&["--scope", "literature"]);
+    let long = "长".repeat(200_000);
+    let draft = literature.ok("apply_batch", json!({"preview":true,"lean":true,"preview_items":[
+        json!({"op_key":"run/unit/1/s/item-000000","client_ref":"0","tool":"create_successor","arguments":{"at":"Smith2024/1","title":"长卡","body":long}}),
+        json!({"op_key":"run/unit/1/s/item-000001","client_ref":"1","tool":"create_successor","arguments":{"at":"0/1","title":"主题卡"}}),
+    ]}));
+    assert_eq!(draft["lean"], true, "{draft}");
+    assert_eq!(draft["complete"], false);
+    assert_eq!(draft["refusals"][0]["refusal"]["error"], "scope_refused");
+    assert_eq!(draft["results"][0]["result"], json!({"address":"Smith2024/2"}));
+    assert_eq!(draft["cards"], json!([]));
+    assert_eq!(draft["paragraphs"], json!([]));
+    assert!(draft.to_string().len() < 10_000, "a lean preview carries no bodies");
+    // Lean is a preview option only.
+    let refused = literature.refused("apply_batch", json!({"lean":true,"items":[item(0,"edit_card",json!({"at":"Smith2024/1","body":"x","base_fingerprint":"0"}))]}));
+    assert!(refused["error"].as_str().unwrap().contains("lean"), "{refused}");
+}
+
 #[test]
 fn by_default_a_similar_but_different_title_is_a_new_topic() {
     let scratch = ScratchBox::up();

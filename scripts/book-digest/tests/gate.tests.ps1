@@ -2,7 +2,8 @@
 # S07 (#100): the concept-meaning Topic gate, at its public seams.
 # A scratch archive with two spellings of equilibrium multiplicity, two senses of learning, a book
 # term table and an accepted register term proves the shortlist, the judge rules, the locked
-# revalidation and the receipt-owned creation. Raw Owner creation stays available and is reported.
+# revalidation and the receipt-owned creation. A raw agent creation of the same title is refused by the
+# server's Topic title rule (#225).
 param([string]$Zt = '', [string]$Digest = $env:ZT_DIGEST)
 $ErrorActionPreference = 'Stop'; $utf8 = [Text.UTF8Encoding]::new($false)
 $scratch = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "gate-test-$PID"))
@@ -176,9 +177,10 @@ try {
     $countAfterReplay = @(Invoke-Zt @(@{ tool='export_titles'; arguments=@{} })).titles.Count
     Assert ($countAfterReplay -eq $before + 1) 'a lost response replays to one Topic, never two'
 
-    # A competing raw Owner creation with the same title is reported, and raw creation stays possible.
-    $null = Invoke-Zt @(@{ tool='create_topic'; arguments=@{ title='均衡 多重性'; body='另一位写作者用原始工具建的同一主题。' } })
-    Assert ((Invoke-Zt @(@{ tool='export_titles'; arguments=@{} })).titles | Where-Object { $_.title -eq '均衡 多重性' }) 'a raw Owner Topic creation still works outside the managed gate'
+    # A raw agent creation with the same title is refused by the server's Topic title rule (#225), for
+    # every client, so the managed gate is no longer the only guard against a second Topic.
+    $raw = Try-Digest @('open-call','-Tool','create_topic','-Json','{"title":"均衡 多重性","body":"另一位写作者用原始工具建的同一主题。"}')
+    Assert ($raw.code -ne 0 -and $raw.text -match 'topic_exists \{') "a raw agent Topic with the same title is refused by the server ($($raw.text))"
     # The fast check survives under the lock: a Topic whose normalised title equals the proposal is the
     # same Topic, even when a judge called the shortlist different.
     $contested = Run-Digest @('gate','-Step','prepare','-Staging',$out,'-Title','均衡 多重性','-Question','为什么同一市场会同时存在多个均衡？')
@@ -249,9 +251,9 @@ try {
     $uncleared = Try-Digest @('open-call',$otherCalls,'-OperationPrefix','gate-run/topic/11/create','-ConceptGate',(Join-Path $out 'gate/decision.json'))
     Assert ($uncleared.code -eq 1 -and $uncleared.text.Contains('did not clear')) 'a managed creation refuses a Topic title the concept decision did not clear'
     $legacy = Try-Digest @('open-call',$callsFile,'-OperationPrefix','gate-run/topic/7/create','-TopicGate',$lock)
-    Assert ($legacy.code -eq 1 -and $legacy.text.Contains('cannot combine with legacy resume, logs, moves or Topic-gate options')) 'the legacy Topic-gate options stay refused beside OperationPrefix'
+    Assert ($legacy.code -eq 1 -and $legacy.text.Contains('unknown parameter -TopicGate')) 'the helper has no Topic-gate option any more: the server holds the Topic title rule (#226)'
     $legacyLog = Try-Digest @('open-call',$callsFile,'-OperationPrefix','gate-run/topic/7/create','-Log',(Join-Path $scratch 'owned.txt'))
-    Assert ($legacyLog.code -eq 1 -and $legacyLog.text.Contains('cannot combine with legacy resume, logs, moves or Topic-gate options')) 'the legacy log option stays refused beside OperationPrefix'
+    Assert ($legacyLog.code -eq 1 -and $legacyLog.text.Contains('cannot combine with legacy resume, logs or moves')) 'the legacy log option stays refused beside OperationPrefix'
     $orphan = Try-Digest @('open-call',$callsFile,'-ConceptGate',(Join-Path $out 'gate/decision.json'))
     Assert ($orphan.code -eq 1 -and $orphan.text.Contains('ConceptGate requires OperationPrefix')) 'the concept gate alone is refused: it owns receipts'
 

@@ -97,12 +97,12 @@ try {
     $editFile = Join-Path $scratch 'edit.json'
     [IO.File]::WriteAllText($editFile, (ConvertTo-Json -InputObject @(@{ tool='edit_card'; arguments=@{ at=$earlier; title='改写早前卡'; body='改写别人的卡。' } }) -Depth 10), $utf8)
     $edit = Try-Digest @('open-call',$editFile,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
-    Assert ($edit.code -eq 1 -and $edit.text.Contains('is not one of your Cards')) 'an earlier Card stays unwritable even when it may be continued'
+    Assert ($edit.code -eq 1 -and $edit.text -match '"reason":"beside_only"') "an earlier Card stays unwritable even when it may be continued ($($edit.text))"
 
     $unlisted = Join-Path $scratch 'unlisted.json'
     [IO.File]::WriteAllText($unlisted, (ConvertTo-Json -InputObject @(@{ tool='create_successor'; arguments=@{ at=$earlierSide; kind='side'; title='未读过的卡'; body='没有读全的卡不能接续。' } }) -Depth 10), $utf8)
     $refused = Try-Digest @('open-call',$unlisted,'-Allow',$allow,'-Beneath',$beside,'-Log',$log)
-    Assert ($refused.code -eq 1 -and $refused.text.Contains('is not one of your Cards')) 'a Card that is not on the place-beside list is refused'
+    Assert ($refused.code -eq 1 -and $refused.text -match '"reason":"not_listed"') "a Card that is not on the place-beside list is refused ($($refused.text))"
 
     $humanFile = Join-Path $scratch 'human.json'
     [IO.File]::WriteAllText($humanFile, (ConvertTo-Json -InputObject @(@{ tool='create_successor'; arguments=@{ at=$humanAt; kind='side'; title='放进人类树'; body='把代理卡放进人类树。' } }) -Depth 10), $utf8)
