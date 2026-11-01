@@ -1,4 +1,5 @@
-// ==== module zt-digest-report v23 ====
+// ==== module zt-digest-report v24 ====
+// 24 (2026-11-01): mode terms (the Term list rebuilt by explorers and a merge) returns its prepare and terms reports.
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
 // variant's own mode (math) returns {mode, dsh_model, citation_key} with the variant's extra reports; in the
@@ -40,7 +41,7 @@
 // rows, unparsed, refused, its Card) and `cited_cards` (jobs, publication, reason), and the schedule names both
 // statuses, so a book whose reference list did not publish in full reports that debt.
 defineModule({
-  id: 'zt-digest-report', version: '23', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '24', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -190,6 +191,13 @@ defineModule({
     // S25 (#168): one selected book's Term backfill. The result carries the pre-dispatch validation it ran
     // (Workspace, list, occupancy, source/sections fingerprints, Lock and conflicts), each Term stage's own
     // truthful result and the read-only audit; it is never a fresh digest's report.
+    // Mode terms (2026-11-01): the rebuilt Term list of one digested book, its explorers' and merge's outcome.
+    if (MODE === 'terms') {
+      const backfill = (p.prepare && p.prepare.backfill) || null
+      const terms = p.terms || {}
+      ctx.log(`Terms rebuild: ${terms.status || 'not run'}${terms.report ? `, ${Number(terms.report.terms || 0)} terms in ${terms.report.card}` : ''}${terms.error ? ` (${String(terms.error).slice(0, 300)})` : ''}.`)
+      return { mode: MODE, citation_key: KEY, backfill, terms: { status: terms.status || null, report: terms.report || null, error: terms.error || null }, run_report: runReport, ...coverageField }
+    }
     if (MODE === 'term-cards' || MODE === 'term-link') {
       const backfill = (p.prepare && p.prepare.backfill) || null
       const tc = termSummary(p.termCards, 'the Term-card branch')

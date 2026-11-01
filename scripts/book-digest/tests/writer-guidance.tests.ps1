@@ -42,6 +42,7 @@ $writers = @(
     'dsh-event-instructions.zh.md',
     'dsh-finding-instructions.zh.md',
     'dsh-terms-instructions.zh.md',
+    'dsh-terms-merge-instructions.zh.md',
     'dsh-skeleton-instructions.zh.md',
     'dsh-term-card-instructions.zh.md',
     'dsh-bridge-instructions.zh.md',

@@ -235,6 +235,11 @@ Assert ($lost.json -and $lost.json.ok -eq $false -and $lost.json.step -eq 'resum
 $backfill = Step 'prepare' @{ Mode = 'term-cards' }
 Assert ($backfill.json -and $backfill.json.ok -eq $true -and $backfill.json.book -eq 'Key' -and $backfill.json.rows -eq 2) "prepare backfill: the validation it bound is the step's answer ($($backfill.text))"
 Assert (Has $backfill.calls 'prepare -Out .* -Sections -Brief') 'prepare backfill: term-cards re-stages the source sections'
+# Test box run 2026-11-01: the tool prints the section count, and the line said 1 (a number counted as a list).
+Assert ($backfill.json.sections -eq 2) "prepare backfill: the line carries the tool's section count ($($backfill.text))"
+$rebuild = Step 'prepare' @{ Mode = 'terms' }
+Assert ($rebuild.json -and $rebuild.json.ok -eq $true -and $rebuild.json.book -eq 'Key' -and $rebuild.json.sections -eq 2) "prepare terms: the rebuild's preparation answers like the backfill ($($rebuild.text))"
+Assert (Has $rebuild.calls 'prepare -Out .* -Sections -NewList -Brief') 'prepare terms: mode terms reuses the sections and wants the old list gone (-NewList)'
 $env:BS_BACKFILL_CONFLICT = '1'
 $conflict = Step 'prepare' @{ Mode = 'term-link' }
 $env:BS_BACKFILL_CONFLICT = ''

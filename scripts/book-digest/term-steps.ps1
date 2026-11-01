@@ -44,7 +44,7 @@ function Run([string[]]$CommandArgs) {
     if ($line) { try { $json = $line | ConvertFrom-Json -Depth 64 } catch { $json = $null } }
     [pscustomobject]@{ code = $code; json = $json; tail = (@($text) | Select-Object -Last 3) -join ' | ' }
 }
-function Save($Name, $Value) { $Value | ConvertTo-Json -Depth 64 | Set-Content -LiteralPath (Join-Path $Drive $Name) -Encoding utf8 }
+function Save($Name, $Value) { ConvertTo-Json -InputObject $Value -Depth 64 | Set-Content -LiteralPath (Join-Path $Drive $Name) -Encoding utf8 }
 function Load($Name) { $p = Join-Path $Drive $Name; if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64 } }
 # The step's answer: its compact line and the detail file beside it (#180).
 function Reply($Value, $Detail = $null) { Send-StepLine -Line $Value -Detail $Detail -Name $LineName -Out $Work }

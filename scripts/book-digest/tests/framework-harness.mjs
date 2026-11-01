@@ -111,7 +111,9 @@ const CANNED = {
   'model explain': () => ({ parts: 3, jobs: [{ id: 'm:x01', files: ['a', 'b', 'c'], prompt: 'p' }] }),
   'model explain-apply': () => ({ applied: 2, refused: [], blocked: [], jobs: [] }),
   'model explain-report': () => ({ models: [{ model: 'Key/3|a', derivations: 3, explained: 3, missing: [], refused: [], blocked: [] }] }),
-  'terms plan': () => ({ bold: 2, definitions: 1, jobs: [{ id: 'terms', files: ['a', 'b'], prompt: 'p' }] }),
+  // zt-book-terms v7 (2026-11-01): the plan lists one explorer job per part of the book, the merge one merge job.
+  'terms plan': () => ({ parts: 3, expected_jobs: 3, jobs: [1, 2, 3].map((n) => ({ id: `terms-explore-0${n}`, files: ['a', `explore-0${n}.md`], prompt: 'p' })) }),
+  'terms merge': () => ({ parts: 3, rows: 40, distinct: 31, expected_jobs: 1, jobs: [{ id: 'terms-merge', files: ['m', 'merge.md'], prompt: 'm' }] }),
   'terms apply': () => ({ ok: true, terms: 2, with_avoid: 1, card: 'Key/1|a' }),
   'hub survey': () => ({ ok: true, survey: '{}', limits: { topic_min: 8, line_min: 10, max_lines: 20, max_groups: 7, min_reason: 8, neighbour_links: 3, field_min: 3, field_max: 8, per_job: 4 }, reasons: '' }),
   'hub plan': () => ({ tree_count: 1, jobs: [{ id: 'h', files: ['a'], prompt: 'p' }] }),
@@ -1093,6 +1095,19 @@ function runtime(kind, opts = {}) {
   }
   const layerApply = async (cmd) => {
     const out = layerArg(cmd, 'Out')
+    if (layerArg(cmd, 'Layer') === 'terms') {
+      // zt-book-terms v7: the aggregation round lists the one merge job of the explorers' answers.
+      const held = layerState.get(layerKey(out, 'terms')) || { units: [] }
+      if (!held.units.length) return { ok: true, layer: 'terms', jobs: 0, gate: layerGate(out, 'terms') }
+      const u = held.units[0]
+      const r = commandAnswer(`zt-digest terms -Step merge -Staging "${out}" -Token ${u.token}`)
+      const j = lastJson(r.output)
+      if (!r.ok || !j) return { ok: false, step: 'terms merge', error: r.output }
+      const jobs = (j.jobs || []).map((e) => ({ ...e, unit: u.id, token: u.token }))
+      const file = `${out}\\layer-steps\\terms\\apply-jobs.json`
+      layerJobs.set(file, jobs)
+      return { ok: true, layer: 'terms', jobs: jobs.length, parts: Number(j.parts || 0), rows: Number(j.rows || 0), distinct: Number(j.distinct || 0), file, gate: layerGate(out, 'terms') }
+    }
     const state = layerState.get(layerKey(out, 'explain')) || { units: [] }
     if (!state.units.length) return { ok: true, layer: 'explain', jobs: 0, applied: 0, file: null, gate: layerGate(out, 'explain') }
     const r = commandAnswer(`zt-digest model -Step explain-apply -Work "${out}\\explain" -Staging "${out}"`)
@@ -1159,7 +1174,7 @@ function runtime(kind, opts = {}) {
       const u = state.units[0]
       const a = commandAnswer(`zt-digest terms -Step apply -Staging "${out}" -Token ${u.token} -Apply`)
       const aj = lastJson(a.output)
-      if (a.ok && aj && (aj.ok === true || aj.state === 'done')) return { ok: true, layer, results: [{ unit: u.id, status: 'done', terms: Number(aj.terms || 0), card: aj.card || '' }], mid, report: aj, gate: layerGate(out, layer) }
+      if (a.ok && aj && (aj.ok === true || aj.state === 'done')) return { ok: true, layer, done: 1, terms: Number(aj.terms || 0), card: aj.card || '', results: [{ unit: u.id, status: 'done', terms: Number(aj.terms || 0), card: aj.card || '' }], mid, report: aj, gate: layerGate(out, layer) }
       faultOf(u.id, u.token, (aj && aj.error) || a.output, 'check_failed')
       return { ok: true, layer, results: [{ unit: u.id, status: 'failed', cause: (aj && aj.error) || a.output }], mid, report: aj, gate: layerGate(out, layer) }
     }
@@ -1328,6 +1343,12 @@ function runtime(kind, opts = {}) {
           return groups
             ? { ok: true, groups, resumed: facts.status === 'resumed', settings: view.settings || led.settings, variant: view.variant, citation_key: view.citation_key || 'Key', off: Object.entries(view.run_options || {}).filter(([, v]) => v === false).map(([k]) => k).join(',') }
             : { ok: false, step: 'resume', error: 'mode resume found no retained digest groups; prepare the book again' }
+        }
+        if (o.Mode === 'terms') {
+          // Mode terms (2026-11-01): the prepared run's Term list is rebuilt; its terms unit is open again.
+          call(`zt-digest prepare -Out "${out}" -Sections -NewList -Brief`)
+          led.add('terms/book@1', 'terms')
+          return { ok: true, ...backfillLine('term-cards'), list: null }
         }
         if (o.Mode === 'term-cards' || o.Mode === 'term-link') {
           if (opts.backfillLock) return { ok: false, step: 'prepare', code: 'card_locked', error: 'the Literature tree Key is locked by the owner', message: 'the Literature tree Key is locked by the owner', tree: 'Key', lock_id: 3, hint: 'unlock the tree in the GUI first; its Cards stay readable as sources' }
@@ -2363,6 +2384,23 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const off = await run('econ', { ...base, figures: false, cited: false, citedCards: false })
   check(off.report.stages.cited.status === 'skipped' && off.report.stages['cited-cards'].status === 'skipped' && off.citedCalls.length === 0, '#221: cited and citedCards false skip both stages')
 
+  // Mode terms (the owner, 2026-11-01): one digested book rebuilds its Term list from its staged sections, and no
+  // other stage that writes the book runs.
+  for (const which of ['econ', 'math']) {
+    const rebuilt = await run(which, { out: 'D:\\x\\Key', mode: 'terms' })
+    const done = Object.entries(rebuilt.report.stages).filter(([, s]) => s.status === 'done').map(([id]) => id)
+    check(rebuilt.report.stages.terms.status === 'done' && rebuilt.result && rebuilt.result.mode === 'terms' && rebuilt.result.terms.status === 'done', `mode terms (${which}): the Term table is rebuilt and reported (${done.join(',')}, ${JSON.stringify(rebuilt.result && rebuilt.result.terms)})`)
+    // Test box run 2026-11-01: the report said 0 terms and no Card while the finish step had written 259 to 1|e
+    // (the module read \`result.finish\`; the layer driver returns its finish lines as \`finishes\`).
+    const tr = (rebuilt.result && rebuilt.result.terms && rebuilt.result.terms.report) || {}
+    check(tr.terms === 2 && tr.card === 'Key/1|a', `mode terms (${which}): the report carries the finish step's term count and Card (${JSON.stringify(tr)})`)
+    check(done.every((id) => ['args', 'source', 'prepare', 'terms', 'cleanup', 'report'].includes(id)), `mode terms (${which}): only args, source, prepare, terms, cleanup and report run (${done.join(',')})`)
+    const prep = (rebuilt.bookCalls || []).find((c) => c.step === 'prepare')
+    check(rebuilt.calls.some((c) => /prepare -Out "[^"]+" -Sections -NewList -Brief/.test(JSON.stringify(c))) || (prep && /terms/.test(JSON.stringify(prep))), `mode terms (${which}): the preparation reuses the staged sections and wants the old list gone (-Sections -NewList)`)
+  }
+  const termsWithKey = await run('econ', { out: 'D:\\x\\Key', mode: 'terms', citationKey: 'Other' })
+  check(termsWithKey.thrown || (termsWithKey.report && termsWithKey.report.halted), 'mode terms reads its book from the prepared run and accepts no new identity')
+
   const backfill = await run('econ', { out: 'D:\\x\\Key', mode: 'cited-cards' })
   // Pilot 2026-10-31: an adopted staging names the Chinese-only book.zh.md; citedSource names the whole source.
   const withSource = await run('econ', { out: 'D:\\x\\Key', mode: 'cited-cards', citedSource: 'C:\\books\\whole.md' })
@@ -3192,7 +3230,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '48' && modules['zt-digest-prepare'] === '20' && modules['zt-digest-report'] === '23' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-digest-lib v48, zt-digest-prepare v20, zt-digest-report v23, zt-cited-cards v2, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '48' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v48, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3282,6 +3320,16 @@ for (const which of ['econ', 'math']) {
   for (const l of ['digest', 'link', 'events', 'findings', 'terms']) {
     const steps = layerCalls.filter((c) => c.layer === l).map((c) => c.step)
     check(steps[0] === 'start' && steps.includes('finish'), `#175: the ${l} layer drives start, finish in that order (${steps.join(',')})`)
+  }
+  // zt-book-terms v7 (the owner, 2026-11-01): the Term table is explorers and a merge. The start step lists one
+  // explorer job per part, the apply step (terms -Step merge) the one merge job, and Haiku managers run both
+  // rounds; the finish step applies the merge's answer.
+  {
+    const steps = layerCalls.filter((c) => c.layer === 'terms').map((c) => c.step)
+    check(steps.slice(0, 3).join(',') === 'start,apply,finish' && steps.filter((s) => s === 'apply').length === 1, `v7: the terms layer drives start, apply (the merge round), finish, then claims once more (${steps.join(',')})`)
+    const termJobs = layerManagers.filter((m) => m.kind === 'content' && m.jobs.some((j) => /^terms-/.test(j.id || j)))
+    const ids = termJobs.flatMap((m) => m.jobs.map((j) => j.id || j))
+    check(ids.filter((id) => /^terms-explore-/.test(id)).length === 3 && ids.includes('terms-merge'), `v7: Haiku managers run the three explorers and the one merge job (${ids.join(',')})`)
   }
   // #195 (§3.7): in mode full the batch wrote its model's explanations and finish-batch recorded the
   // Explain unit, so the explain layer's claim finds nothing: it runs its start step and ends there.

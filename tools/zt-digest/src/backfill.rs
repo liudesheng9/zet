@@ -2,6 +2,11 @@
 //!
 //!   zt-digest prepare -Out <prepared staging> -Validate [-Brief]
 //!   zt-digest prepare -Out <prepared staging> -Sections [-Brief]
+//!   zt-digest prepare -Out <prepared staging> -Sections -NewList [-Brief]
+//!
+//! `-NewList` (mode terms, 2026-11-01) prepares the rebuild of the book's Term list: the Terms stage
+//! writes a new list, so a book that still holds one is the conflict (`list_exists`), and a book
+//! without one is the expected state. The source slices are checked and reused as with `-Sections`.
 //!
 //! A backfill adds Term Cards and Term links to one book that was digested before the Term work
 //! existed. It must not digest that book again, so its preparation is a narrow branch of the one
@@ -70,6 +75,10 @@ pub(crate) fn run(a: &Args) -> Result<i32> {
         bail!("-Sections already validates the book; give -Validate or -Sections, not both");
     }
     let step = if sections { "sections" } else { "validate" };
+    let new_list = a.flag("NewList");
+    if new_list && !sections {
+        bail!("-NewList rebuilds the Term list from the staged sections; give it with -Sections");
+    }
     if a.has("Source") {
         bail!("-Source is not a backfill option: the source comes from the prepared run's manifest (restore that file, or prepare the book again)");
     }
@@ -134,7 +143,27 @@ pub(crate) fn run(a: &Args) -> Result<i32> {
     };
 
     // --- the book's Term list, by role -----------------------------------------------------------
-    let list = read_list(&mut zt, &cards, &key, &mut conflicts);
+    // A rebuild (-NewList) needs the old list gone: the Terms stage files exactly one new list.
+    let list = if new_list {
+        let (lists, legacy) = term_cards::list_candidates(&cards);
+        let names: Vec<String> = lists
+            .iter()
+            .chain(legacy.iter())
+            .map(|card| format!("{} ({})", card["address"].as_str().unwrap_or_default(), card["title"].as_str().unwrap_or_default()))
+            .collect();
+        if !names.is_empty() {
+            conflicts.push(conflict(
+                "list_exists",
+                format!(
+                    "the Literature tree {key} still holds a Term list ({}); delete its Term branch before the Terms stage builds a new one",
+                    names.join("; ")
+                ),
+            ));
+        }
+        None
+    } else {
+        read_list(&mut zt, &cards, &key, &mut conflicts)
+    };
     if let Some(list) = &list {
         facts.list = Some(list_facts(list));
         let (head_count, part_count, occupying) = occupancy(&cards, list, &mut conflicts);

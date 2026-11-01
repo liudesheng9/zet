@@ -4,7 +4,16 @@
 //! Rule R6 (one term, one meaning) then checks every Card of the book against it (the audit reads
 //! a Card of the Literature tree whose title starts with 术语表).
 //!
-//!   zt-digest terms -Step plan|apply -Staging <folder> [-MaxTerms 60] [-MaxCandidates 160] [-Apply]
+//!   zt-digest terms -Step plan|apply -Staging <folder> [-MaxTerms 0] [-MaxCandidates 160] [-Apply]
+//!   zt-digest terms -Step plan|merge|apply -Staging <folder> -Token <n> [-MaxTerms 0] [-ExploreChars 30000] [-Apply]
+//!
+//! -MaxTerms 0 (the default) sets no upper bound: a book has as many terms as its length and content
+//! need. A positive value caps the table.
+//!
+//! A claimed run (-Token, the prepared ledger) splits the book: `plan` cuts the sections into explorer
+//! parts of about -ExploreChars characters and lists one DeepSeek explorer job per part; `merge` checks
+//! every explorer answer and lists the one merge job that writes terms\out\terms.json; `apply` writes
+//! the table Card from that answer (ledger.rs: terms_plan, terms_merge, terms_apply).
 //!
 //! -Staging is the digest's staging folder (manifest.json, sections\). The job and its output live
 //! in <Staging>\terms\. Every step prints compact JSON as its last line.
@@ -13,7 +22,7 @@
 //!          the frequent word groups, the bold words, and the sentences that define a term, each
 //!          with its section file and line) and terms\dsh-terms-instructions.zh.md. Prints
 //!          {"bold","definitions","jobs":[{"id","files","prompt"}]}.
-//!   apply  reads terms\out\terms.json, keeps at most -MaxTerms valid entries, writes
+//!   apply  reads terms\out\terms.json, keeps the valid entries (at most a positive -MaxTerms), writes
 //!          <Staging>\terms.md, and with -Apply creates or rewrites the Card 术语表 (a Side
 //!          successor of <key>/1). Prints {"ok","terms","with_avoid","card","file"}.
 
@@ -62,6 +71,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "Staging",
         "MaxTerms",
         "MaxCandidates",
+        "ExploreChars",
         "OperationPrefix",
         "Token",
     ];
@@ -73,7 +83,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let p = Params {
         step,
         staging: common::mandatory(&a, "Staging")?,
-        max_terms: a.int_or("MaxTerms", 60)?,
+        max_terms: a.int_or("MaxTerms", 0)?,
         max_candidates: a.int_or("MaxCandidates", 160)?,
         apply: a.flag("Apply"),
         operation_prefix: a.str("OperationPrefix"),
@@ -138,13 +148,13 @@ fn section_files(dir: &str) -> Result<Vec<String>> {
 }
 
 /// The frequent word groups: runs of 2 to 7 Chinese characters counted over `texts`, those seen
-/// at least 6 times by count (most first), without a group that a longer group covers (a longer
-/// group with 80% of its count), one that starts or ends with 的, or one that starts with a
-/// function word; at most 60.
+/// at least `min_count` times by count (most first), without a group that a longer group covers (a
+/// longer group with 80% of its count), one that starts or ends with 的, or one that starts with a
+/// function word; at most `max` (the whole book: 6 and 60; an explorer's part: 4 and 80).
 ///
 /// The script counted in a hashtable, whose order is random, before sorting by count; the tool
 /// counts in order of first appearance, so groups with the same count keep one fixed order.
-fn frequent_groups(texts: &[String]) -> Vec<(String, i64)> {
+fn frequent_groups(texts: &[String], min_count: i64, max: usize) -> Vec<(String, i64)> {
     let mut grams: Vec<(String, i64)> = Vec::new();
     let mut at: HashMap<String, usize> = HashMap::new();
     for text in texts {
@@ -167,7 +177,7 @@ fn frequent_groups(texts: &[String]) -> Vec<(String, i64)> {
             }
         }
     }
-    let mut frequent: Vec<(String, i64)> = grams.into_iter().filter(|g| g.1 >= 6).collect();
+    let mut frequent: Vec<(String, i64)> = grams.into_iter().filter(|g| g.1 >= min_count).collect();
     ps::ps_sort(&mut frequent, |a, b| (-a.1).cmp(&-b.1));
     // `$covered`: some longer frequent group holds this one and has at least 80% of its count. The
     // largest count among the longer groups that hold a group decides it.
@@ -188,7 +198,7 @@ fn frequent_groups(texts: &[String]) -> Vec<(String, i64)> {
         if !covered && !DE.is_match(k) && !FUNCTION_WORDS.is_match(k) {
             kept.push((k.clone(), *v));
         }
-        if kept.len() >= 60 {
+        if kept.len() >= max {
             break;
         }
     }
@@ -196,11 +206,52 @@ fn frequent_groups(texts: &[String]) -> Vec<(String, i64)> {
 }
 
 fn plan_data(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Result<Value> {
+    let sections = ps::join(&p.staging, "sections");
+    let files = section_files(&sections)?;
+    let head = format!("# 术语任务：《{}》", pstr(manifest, "book_title"));
+    let scan = scan_candidates(&p.staging, manifest, &files, p.max_candidates, &head, &ps::join(out, "terms.json"), None, 6, 60)?;
+    let job = ps::join(work, "job.md");
+    let doc_copy = ps::join(work, "dsh-terms-instructions.zh.md");
+    let doc = ps::join(&common::scripts_dir(), "dsh-terms-instructions.zh.md");
+    let text = raw(&doc)?.unwrap_or_default();
+    let last = json!({
+        "bold": scan.counts["bold"], "definitions": scan.counts["definitions"],
+        "jobs": [{ "id": "terms", "files": [doc_copy, job], "prompt": PROMPT }]
+    });
+    Ok(
+        json!({"summary":last,"job_text":scan.text,"instructions_text":text.replace("{{KEY}}", key).replace("{{STAGING}}", &p.staging),"candidate_count":scan.candidate_count,"counts":scan.counts}),
+    )
+}
+
+/// The candidate list of one explorer's sections (or of the whole book): the job text and its counts.
+struct Scan {
+    text: String,
+    counts: Value,
+    candidate_count: usize,
+}
+
+/// The candidates of `files` (section file names under `<staging>\sections`): the section headings of
+/// the whole book (context), the bracketed originals, the frequent word groups (seen at least
+/// `min_count` times in these files, at most `max_groups`), the bold words and the defining
+/// sentences. `scope` names the explorer's own range when the book is split.
+#[allow(clippy::too_many_arguments)]
+fn scan_candidates(
+    staging: &str,
+    manifest: &Value,
+    files: &[String],
+    max_candidates: i64,
+    head: &str,
+    answer: &str,
+    scope: Option<&str>,
+    min_count: i64,
+    max_groups: usize,
+) -> Result<Scan> {
     let mut sb = Sb::new();
-    sb.line(format!("# 术语任务：《{}》", pstr(manifest, "book_title")))
-        .blank();
-    sb.line(format!("把结果写入 `{}`。", ps::join(out, "terms.json")))
-        .blank();
+    sb.line(head).blank();
+    sb.line(format!("把结果写入 `{answer}`。")).blank();
+    if let Some(scope) = scope {
+        sb.line(scope).blank();
+    }
     sb.line("## 小节标题").blank();
     for g in ps::pipe(prop(manifest, "groups")) {
         let headings: Vec<String> = ps::pipe(prop(g, "headings"))
@@ -215,11 +266,10 @@ fn plan_data(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> 
         ));
     }
     sb.blank();
-    let sections = ps::join(&p.staging, "sections");
-    let files = section_files(&sections)?;
+    let sections = ps::join(staging, "sections");
     let mut bold: CiMap<String> = CiMap::new();
     let mut defs: Vec<String> = Vec::new();
-    for name in &files {
+    for name in files {
         let mut n = 0;
         for line in ps::read_lines(&ps::join(&sections, name))? {
             n += 1;
@@ -229,7 +279,7 @@ fn plan_data(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> 
                     bold.insert(&t, format!("sections/{name}:{n}"));
                 }
             }
-            if (defs.len() as i64) < p.max_candidates
+            if (defs.len() as i64) < max_candidates
                 && HAN.is_match(&line)
                 && DEFINES.is_match(&line)
             {
@@ -244,7 +294,7 @@ fn plan_data(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> 
     // A translation often keeps the original term in brackets: 剩余控制权（residual control rights）.
     let mut glossed: CiMap<String> = CiMap::new();
     let mut texts: Vec<String> = Vec::new();
-    for name in &files {
+    for name in files {
         let Some(text) = raw(&ps::join(&sections, name))? else {
             bail!(
                 "Exception calling \"Matches\" with \"2\" argument(s): \"Value cannot be null. (Parameter 'input')\""
@@ -258,10 +308,10 @@ fn plan_data(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> 
         }
         texts.push(text);
     }
-    let kept = frequent_groups(&texts);
+    let kept = frequent_groups(&texts, min_count, max_groups);
     sb.line("## 带原文的词（中文术语与括号中的英文）").blank();
     if !glossed.is_empty() {
-        for (t, g) in glossed.iter().take(first(p.max_candidates)?) {
+        for (t, g) in glossed.iter().take(first(max_candidates)?) {
             sb.line(format!("- {t}（{g}）"));
         }
     } else {
@@ -280,7 +330,7 @@ fn plan_data(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> 
     }
     sb.blank();
     sb.line("## 书中加粗的词").blank();
-    for (t, at) in bold.iter().take(first(p.max_candidates)?) {
+    for (t, at) in bold.iter().take(first(max_candidates)?) {
         sb.line(format!("- {t}（`{at}`）"));
     }
     if bold.is_empty() {
@@ -294,18 +344,110 @@ fn plan_data(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> 
     } else {
         sb.line("（没有）");
     }
-    let job = ps::join(work, "job.md");
-    let doc_copy = ps::join(work, "dsh-terms-instructions.zh.md");
-    let doc = ps::join(&common::scripts_dir(), "dsh-terms-instructions.zh.md");
-    let text = raw(&doc)?.unwrap_or_default();
-    let last = json!({
-        "bold": bold.len(), "definitions": defs.len(),
-        "jobs": [{ "id": "terms", "files": [doc_copy, job], "prompt": PROMPT }]
-    });
     let candidate_count = bold.len() + defs.len() + glossed.len() + kept.len();
-    Ok(
-        json!({"summary":last,"job_text":sb.0,"instructions_text":text.replace("{{KEY}}", key).replace("{{STAGING}}", &p.staging),"candidate_count":candidate_count,"counts":{"bold":bold.len(),"definitions":defs.len(),"glossed":glossed.len(),"frequent":kept.len()}}),
-    )
+    Ok(Scan {
+        text: sb.0,
+        counts: json!({"bold":bold.len(),"definitions":defs.len(),"glossed":glossed.len(),"frequent":kept.len()}),
+        candidate_count,
+    })
+}
+
+/// The section files cut into explorer parts in reading order: a part takes files until it holds about
+/// `explore_chars` UTF-16 characters, so a long book gets more explorers and a short paper one or two.
+fn split_parts(sections: &str, files: &[String], explore_chars: i64) -> Result<Vec<Vec<String>>> {
+    let mut parts: Vec<Vec<String>> = Vec::new();
+    let mut size = 0i64;
+    for name in files {
+        let len = raw(&ps::join(sections, name))?.map(|t| ps::len16(&t) as i64).unwrap_or(0);
+        if parts.is_empty() || (size > 0 && size + len > explore_chars) {
+            parts.push(Vec::new());
+            size = 0;
+        }
+        parts.last_mut().unwrap().push(name.clone());
+        size += len;
+    }
+    Ok(parts)
+}
+
+/// The claimed Terms plan of a split book: one explorer part per about `explore_chars` characters of
+/// sections, each with its own candidates, and the explorer and merge instructions. A part keeps the
+/// frequent word groups seen at least 4 times in its own sections (at most 80).
+pub(crate) fn claimed_parts(staging: &str, max_candidates: i64, explore_chars: i64) -> Result<Value> {
+    let manifest = common::manifest(staging)?;
+    let key = pstr(&manifest, "citation_key");
+    let title = pstr(&manifest, "book_title");
+    let out = ps::join(&ps::join(staging, "terms"), "out");
+    let sections = ps::join(staging, "sections");
+    let files = section_files(&sections)?;
+    let split = split_parts(&sections, &files, explore_chars.max(1))?;
+    let total = split.len();
+    let mut parts = Vec::new();
+    let mut candidates = 0usize;
+    for (i, names) in split.iter().enumerate() {
+        let part = i + 1;
+        let head = format!("# 术语探索任务 {part}/{total}：《{title}》");
+        let scope = format!(
+            "你的范围：`sections/{}` 到 `sections/{}`（{} 个小节）。只从这些小节选词；其他探索代理读其余小节，合并代理最后汇总。",
+            names.first().unwrap(),
+            names.last().unwrap(),
+            names.len()
+        );
+        let answer = ps::join(&out, &explore_name(part));
+        let scan = scan_candidates(staging, &manifest, names, max_candidates, &head, &answer, Some(&scope), 4, 80)?;
+        candidates += scan.candidate_count;
+        parts.push(json!({"part":part,"files":names,"job_text":scan.text,"candidate_count":scan.candidate_count,"counts":scan.counts}));
+    }
+    let doc = |name: &str| -> Result<String> {
+        let text = raw(&ps::join(&common::scripts_dir(), name))?.unwrap_or_default();
+        Ok(text.replace("{{KEY}}", &key).replace("{{STAGING}}", staging))
+    };
+    Ok(json!({
+        "parts": parts, "candidate_count": candidates,
+        "instructions_text": doc("dsh-terms-instructions.zh.md")?,
+        "merge_instructions_text": doc("dsh-terms-merge-instructions.zh.md")?,
+    }))
+}
+
+/// The answer file of explorer `part`: `explore-01.json`, `explore-02.json`, …
+pub(crate) fn explore_name(part: usize) -> String {
+    format!("explore-{part:02}.json")
+}
+
+/// The merge job's candidate table: every explorer row, grouped by term (case ignored), with the parts
+/// that proposed it. `rows` holds (part, row) pairs in part order.
+pub(crate) fn merge_text(book_title: &str, rows: &[(usize, Value)], parts: usize) -> String {
+    let mut order: Vec<String> = Vec::new();
+    let mut by: HashMap<String, Vec<(usize, &Value)>> = HashMap::new();
+    for (part, row) in rows {
+        let term = ps::field(row, "term").trim().to_string();
+        if term.is_empty() {
+            continue;
+        }
+        let k = ps::key(&term);
+        if !by.contains_key(&k) {
+            order.push(k.clone());
+        }
+        by.entry(k).or_default().push((*part, row));
+    }
+    let mut sb = Sb::new();
+    sb.line(format!("# 术语合并任务：《{book_title}》")).blank();
+    sb.line(format!("{parts} 个探索代理各读了本书的一段，共提出 {} 行候选，合为 {} 个不同的词。每行写明是哪个探索代理提出的。", rows.len(), order.len())).blank();
+    sb.line("## 候选术语").blank();
+    sb.line("| 术语 | 不用 | 意思 | 首次定义 | 提出者 |").line("| --- | --- | --- | --- | --- |");
+    for k in &order {
+        for (part, row) in &by[k] {
+            let avoid = ps::pipe(row.get("avoid").unwrap_or(&Value::Null)).into_iter().map(ps::s).collect::<Vec<_>>().join("、");
+            let cell = |s: String| s.replace(['|', '\n', '\r'], " ");
+            sb.line(format!(
+                "| {} | {} | {} | {} | 探索 {part} |",
+                cell(ps::field(row, "term").trim().to_string()),
+                cell(if avoid.is_empty() { "—".into() } else { avoid }),
+                cell(ps::field(row, "meaning")),
+                cell(ps::field(row, "section"))
+            ));
+        }
+    }
+    sb.0
 }
 
 fn plan(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Result<i32> {
@@ -326,22 +468,6 @@ fn plan(p: &Params, manifest: &Value, key: &str, work: &str, out: &str) -> Resul
     Ok(0)
 }
 
-pub(crate) fn claimed_plan(staging: &str, max_terms: i64, max_candidates: i64) -> Result<Value> {
-    let manifest = common::manifest(staging)?;
-    let key = pstr(&manifest, "citation_key");
-    let work = ps::join(staging, "terms");
-    let out = ps::join(&work, "out");
-    let p = Params {
-        step: "plan".into(),
-        staging: staging.into(),
-        max_terms,
-        max_candidates,
-        apply: false,
-        operation_prefix: String::new(),
-    };
-    plan_data(&p, &manifest, &key, &work, &out)
-}
-
 /// One entry of the table.
 struct Term {
     term: String,
@@ -352,7 +478,8 @@ struct Term {
 
 /// The valid entries of terms.json: a term once (case ignored), without `|`, a backtick, or a
 /// line break; its words not to use trimmed, without the term itself, a word inside the term, or
-/// `|`, a backtick, `、`, or a line break, each once. At most `max` entries (at least one).
+/// `|`, a backtick, `、`, or a line break, each once. At most `max` entries when `max` is positive
+/// (at least one); `max` 0 or less keeps every valid entry.
 fn valid_terms(raw: &Value, max: i64) -> Vec<Term> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut terms = Vec::new();
@@ -369,7 +496,7 @@ fn valid_terms(raw: &Value, max: i64) -> Vec<Term> {
         );
         seen.insert(ps::key(&term));
         terms.push(Term { term, avoid, section: ps::field(t, "section").trim().to_string(), meaning: ps::field(t, "meaning").trim().to_string() });
-        if terms.len() as i64 >= max {
+        if max > 0 && terms.len() as i64 >= max {
             break;
         }
     }
@@ -421,7 +548,7 @@ pub(crate) fn claimed_table(raw: &Value, max: i64, book_title: &str, key: &str) 
     let rows = raw["terms"]
         .as_array()
         .context("Terms answer requires an array of terms")?;
-    if rows.len() > max as usize {
+    if max > 0 && rows.len() > max as usize {
         bail!("Terms answer exceeds the frozen MaxTerms");
     }
     let mut seen = HashSet::new();
@@ -605,7 +732,9 @@ mod tests {
         assert_eq!(terms[0].avoid, ["残余控制权"]);
         assert_eq!(terms[1].avoid, ["要挟"]);
         assert!(terms[2].avoid.is_empty());
-        assert_eq!(valid_terms(&raw, 0).len(), 1);
+        assert_eq!(valid_terms(&raw, 1).len(), 1);
+        // No cap: 0 keeps every valid entry, however long the book's table is.
+        assert_eq!(valid_terms(&raw, 0).len(), 3);
         let body = table("书", "K", &terms);
         let nl = ps::NL;
         assert!(body.starts_with(&format!("本卡是《书》的术语表。")));
@@ -638,11 +767,71 @@ mod tests {
         // 控制权 appears 8 times, always inside 剩余控制权 (8): the longer group covers it and its
         // parts. 我们的 starts with a function word; 的 groups are dropped.
         let text = "剩余控制权，".repeat(8) + &"敲竹杠和机会".repeat(6) + "（不算的词语不算的词语）$公式公式$";
-        let kept = frequent_groups(&[text]);
+        let kept = frequent_groups(&[text], 6, 60);
         let names: Vec<&str> = kept.iter().map(|k| k.0.as_str()).collect();
         assert!(names.contains(&"剩余控制权"));
         assert!(!names.contains(&"控制权") && !names.contains(&"剩余"));
         assert!(names.iter().all(|n| !n.contains("公式") && !n.contains("不算")));
         assert_eq!(kept[0].1, 8);
+    }
+
+    /// A staging folder with `sizes.len()` sections of the given lengths (in Chinese characters).
+    fn staging(sizes: &[usize]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let sections = dir.path().join("sections");
+        std::fs::create_dir_all(&sections).unwrap();
+        for (i, n) in sizes.iter().enumerate() {
+            let body = format!("**剩余控制权**是指契约没有写明的权利。{}", "企".repeat(*n));
+            std::fs::write(sections.join(format!("s{:03}.md", i + 1)), body).unwrap();
+        }
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            r#"{"citation_key":"K","book_title":"书","groups":[{"n":1,"chapter":"第一章","headings":["一"]}]}"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    // The owner, 2026-11-01: a long book is split among several explorers by its length, in reading
+    // order; a short paper gets one. Every part lists only its own sections' candidates.
+    #[test]
+    fn a_book_is_split_among_explorers_by_its_length() {
+        let long = staging(&[20000, 20000, 20000, 5000]);
+        let s = long.path().to_string_lossy().to_string();
+        let data = claimed_parts(&s, 160, 30000).unwrap();
+        let parts = data["parts"].as_array().unwrap();
+        let files: Vec<Vec<String>> = parts
+            .iter()
+            .map(|p| p["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect())
+            .collect();
+        assert_eq!(files, [vec!["s001.md"], vec!["s002.md"], vec!["s003.md", "s004.md"]]);
+        let third = parts[2]["job_text"].as_str().unwrap();
+        assert!(third.starts_with("# 术语探索任务 3/3：《书》"), "{third}");
+        assert!(third.contains("`sections/s003.md` 到 `sections/s004.md`（2 个小节）"), "{third}");
+        assert!(third.contains("sections/s003.md:1") && !third.contains("sections/s001.md:1"), "a part lists only its own candidates: {third}");
+        assert!(third.contains(&explore_name(3)), "{third}");
+        assert!(data["merge_instructions_text"].as_str().unwrap().contains("术语合并任务说明"));
+        assert!(!data["instructions_text"].as_str().unwrap().contains("20–60"), "the explorer has no term range");
+        let short = staging(&[3000, 4000]);
+        let one = claimed_parts(&short.path().to_string_lossy(), 160, 30000).unwrap();
+        assert_eq!(one["parts"].as_array().unwrap().len(), 1);
+    }
+
+    // The merge job sees every explorer row, grouped by term (case ignored), with the part that
+    // proposed it, so it can keep one row per concept.
+    #[test]
+    fn the_merge_job_lists_every_explorer_row_grouped_by_term() {
+        let rows = vec![
+            (1, json!({"term":"GDP","avoid":["国内生产总值"],"meaning":"总产出","section":"§1"})),
+            (2, json!({"term":"敲竹杠","avoid":[],"meaning":"机会主义","section":"§3"})),
+            (3, json!({"term":"gdp","avoid":[],"meaning":"产出|总量","section":"§2"})),
+            (3, json!({"term":"  ","avoid":[]})),
+        ];
+        let text = merge_text("书", &rows, 3);
+        assert!(text.contains("3 个探索代理各读了本书的一段，共提出 4 行候选，合为 2 个不同的词。"), "{text}");
+        let gdp = text.find("| GDP | 国内生产总值 | 总产出 | §1 | 探索 1 |").unwrap();
+        let low = text.find("| gdp | — | 产出 总量 | §2 | 探索 3 |").unwrap();
+        let other = text.find("| 敲竹杠 |").unwrap();
+        assert!(gdp < low && low < other, "rows of one term stay together: {text}");
     }
 }

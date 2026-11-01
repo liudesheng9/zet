@@ -244,11 +244,12 @@ switch ($Step) {
             } @{ resume = $resume; settings = $view.settings; run_options = $view.run_options; status = $view }
             break
         }
-        if ($mode -eq 'term-cards' -or $mode -eq 'term-link' -or $mode -eq 'cited-cards') {
+        if ($mode -eq 'term-cards' -or $mode -eq 'term-link' -or $mode -eq 'cited-cards' -or $mode -eq 'terms') {
             # S25 (#168): the backfill's own preparation. `-Sections` reuses or reconstructs the staged source
-            # slices the Term-card branch reads; `-Validate` only inspects the already digested book.
-            $flag = if ($mode -eq 'term-cards') { '-Sections' } else { '-Validate' }
-            $r = Run @('prepare', '-Out', $Out, $flag, '-Brief')
+            # slices the Term-card branch reads; `-Validate` only inspects the already digested book. Mode terms
+            # (2026-11-01) rebuilds the Term list from the sections: `-NewList` wants the old list gone.
+            $flags = switch ($mode) { 'term-cards' { @('-Sections') } 'terms' { @('-Sections', '-NewList') } default { @('-Validate') } }
+            $r = Run (@('prepare', '-Out', $Out) + $flags + @('-Brief'))
             if (-not $r.json) { Fail "prepare $mode" "the backfill preparation printed no line: $($r.tail)"; break }
             if ($r.json.ok -ne $true) {
                 $said = @($r.json.conflicts | ForEach-Object { "$($_.message)" }) -join '; '
@@ -259,7 +260,7 @@ switch ($Step) {
             $b = $r.json
             Reply @{
                 ok = $true; step = "prepare $mode"; book = "$($b.book)"
-                sections = (Count-Of $b.source.sections); reused = ($b.source.reused -eq $true); rebuilt = (Count-Of $b.source.rebuilt)
+                sections = [int]$b.source.sections; reused = ($b.source.reused -eq $true); rebuilt = (Count-Of $b.source.rebuilt)
                 rows = [int]$b.list.rows; legacy = ($b.list.legacy -eq $true)
                 heads = [int]$b.tree.heads; parts = [int]$b.tree.parts; occupying = (Count-Of $b.tree.occupying)
                 conflicts = (Count-Of $b.conflicts)

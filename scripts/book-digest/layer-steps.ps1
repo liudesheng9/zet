@@ -8,7 +8,8 @@
   start   claim a bounded block of the layer's ready units, run the layer's own start or plan command for
           the block, and list the DeepSeek jobs it printed
                                                           -> layer-steps\<layer>\units.json, start.json, jobs.json
-  apply   the second content round of the explain layer: apply the drafts and list the fix jobs it prints
+  apply   the second content round of the explain layer: apply the drafts and list the fix jobs it prints;
+          of the terms layer: check every explorer answer and list the one merge job (`terms -Step merge`)
                                                           -> layer-steps\<layer>\apply-jobs.json
   finish  record every held unit's checked completion, fault the units that cannot finish, then run the
           layer's own apply and report commands and its ledger gate
@@ -56,7 +57,9 @@ function Run([string[]]$CommandArgs) {
 }
 function Save($Name, $Value) {
     $list = @($Value)
-    $text = if ($list.Count) { $list | ConvertTo-Json -Depth 64 } else { '[]' }
+    # -InputObject keeps a one-entry list an array: piped, ConvertTo-Json writes a bare object, and a manager
+    # told to read a JSON array then runs nothing (test box run 2026-11-01).
+    $text = if ($list.Count) { ConvertTo-Json -InputObject $list -Depth 64 } else { '[]' }
     Set-Content -LiteralPath (Join-Path $Work $Name) -Value $text -Encoding utf8
 }
 function Load($Name) { $p = Join-Path $Work $Name; if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64 } }
@@ -293,8 +296,24 @@ switch ($Step) {
         Reply ($line + (Gate-Fields $gate)) @{ units = $units; starts = $starts; jobs = $allJobs; plan = $plan; gate = $gate }
     }
     'apply' {
-        if ($Layer -ne 'explain') { Fail 'apply' "the $Layer layer has no apply step"; break }
+        if ($Layer -ne 'explain' -and $Layer -ne 'terms') { Fail 'apply' "the $Layer layer has no apply step"; break }
         $units = @(Load 'units.json')
+        if ($Layer -eq 'terms' -and $units.Count) {
+            # The aggregation round: the explorers' answers are checked and one merge job is listed. A missing
+            # or unbound explorer answer stops the stage; the finish step then faults the unit.
+            $u = $units[0]
+            $r = Run @('terms', '-Step', 'merge', '-Staging', $Out, '-Token', "$($u.token)")
+            if (-not $r.json) { Fail 'terms merge' (Tail $r.tail) @{ units = $units }; break }
+            $jobs = @()
+            foreach ($j in @(Jobs-Of $r.json)) {
+                $j | Add-Member -NotePropertyName unit -NotePropertyValue $u.id -Force
+                $j | Add-Member -NotePropertyName token -NotePropertyValue $u.token -Force
+                $jobs += $j
+            }
+            Save 'apply-jobs.json' $jobs
+            $gate = Gate
+            Reply (@{ ok = $true; layer = $Layer; jobs = @($jobs).Count; parts = [int]$r.json.parts; rows = [int]$r.json.rows; distinct = [int]$r.json.distinct; file = (Join-Path $Work 'apply-jobs.json') } + (Gate-Fields $gate)) @{ jobs = $jobs; gate = $gate; merge = $r.json }
+        }
         if (-not $units.Count) {
             $gate = Gate
             Reply (@{ ok = $true; layer = $Layer; jobs = 0; applied = 0; refused = 0; blocked = 0 } + (Gate-Fields $gate)) @{ jobs = @(); gate = $gate }
@@ -424,7 +443,7 @@ switch ($Step) {
                 $status = Fail-Unit $u $cause 'check_failed'
                 $results += @{ unit = $u.id; status = $status; cause = (Tail $cause) }
             }
-            Reply (@{ ok = $true; layer = 'terms' } + (Results-Line $results) + @{ terms = [int]$a.json.terms; card = "$($a.json.card)" } + (Gate-Fields $gate)) @{ results = $results; mid = $mid; report = $a.json; gate = $gate }
+            Reply (@{ ok = $true; layer = 'terms' } + (Results-Line $results) + @{ terms = [int]$a.json.terms; with_avoid = [int]$a.json.with_avoid; card = "$($a.json.card)" } + (Gate-Fields $gate)) @{ results = $results; mid = $mid; report = $a.json; gate = $gate }
         }
         $list = (@($units | ForEach-Object { "$($_.id):$($_.token)" }) -join ',')
         $batch = Run @('finish-batch', '-Out', $Out, '-Units', $list)

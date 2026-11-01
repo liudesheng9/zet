@@ -14015,13 +14015,35 @@ pub fn explain_finish_cli(argv: &[String]) -> Result<i32> {
 }
 
 fn terms_view(job: &Value, path: &Path, reused: bool) -> Value {
-    json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"answer":job["answer"],"expected_jobs":job["expected_jobs"],"jobs":job["jobs"],"candidate_count":job["inputs"]["candidate_count"],"counts":job["inputs"]["counts"],"no_op":job["no_op"],"reused":reused})
+    json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"answer":job["answer"],"expected_jobs":job["expected_jobs"],"jobs":job["jobs"],"parts":job["explore"].as_array().map_or(0, Vec::len),"candidate_count":job["inputs"]["candidate_count"],"no_op":job["no_op"],"reused":reused})
 }
 
+// The frozen enumeration of a split Terms plan: every part's sections and job text, and both
+// instruction texts.
 fn terms_data_hash(data: &Value) -> String {
     canon::hash_value(
-        &json!({"job":data["job_text"],"instructions":data["instructions_text"],"candidate_count":data["candidate_count"],"counts":data["counts"]}),
+        &json!({"parts":data["parts"],"instructions":data["instructions_text"],"merge_instructions":data["merge_instructions_text"],"candidate_count":data["candidate_count"]}),
     )
+}
+
+// The explorer parts that get a job: the parts with at least one candidate (none when the whole book
+// has none).
+fn terms_job_parts(data: &Value) -> Vec<Value> {
+    data["parts"]
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|part| part["candidate_count"].as_u64().unwrap_or(0) > 0)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// The Terms planning options of one prepared unit: frozen at its first plan.
+fn terms_parameters(max_terms: i64, max_candidates: i64, explore_chars: i64) -> Value {
+    json!({"max_terms":max_terms,"max_candidates":max_candidates,"explore_chars":explore_chars})
 }
 
 fn read_terms_job(
@@ -14041,12 +14063,9 @@ fn read_terms_job(
         bail!("Terms plan escaped prepared output directory");
     }
     let job = bound_json(record, "Terms plan artifact")?;
-    let expected = if data["candidate_count"].as_u64() == Some(0) {
-        0
-    } else {
-        1
-    };
+    let expected = terms_job_parts(data).len() as i64;
     if job["schema_version"] != 1
+        || job["inputs"]["prompt_contract"] != 2
         || job["unit"] != "terms/book@1"
         || job["token"] != token
         || job["run_id"] != *run
@@ -14078,7 +14097,10 @@ fn read_terms_job(
     {
         check_file(record, "Terms plan artifact")?;
     }
-    if expected == 1 && job["jobs"][0]["permissions"]["archive_write"] != false {
+    if job["jobs"]
+        .as_array()
+        .is_some_and(|jobs| jobs.iter().any(|j| j["permissions"]["archive_write"] != false))
+    {
         bail!("Terms job cannot have archive write permission");
     }
     Ok((path, job))
@@ -14089,6 +14111,7 @@ fn terms_plan(
     token: i64,
     max_terms: i64,
     max_candidates: i64,
+    explore_chars: i64,
     zt: &mut Zt,
 ) -> Result<Value> {
     let unit = "terms/book@1";
@@ -14101,11 +14124,11 @@ fn terms_plan(
     if claimed.input_hash != canon::hash_value(&json!({"preparation_hash":p.hash})) {
         bail!("Terms unit input hash mismatch");
     }
-    let parameters = json!({"max_terms":max_terms,"max_candidates":max_candidates});
+    let parameters = terms_parameters(max_terms, max_candidates, explore_chars);
     if !progress["terms_config"].is_null() && progress["terms_config"] != parameters {
         bail!("Terms options are frozen for this prepared unit");
     }
-    let data = crate::terms::claimed_plan(&p.out.to_string_lossy(), max_terms, max_candidates)?;
+    let data = crate::terms::claimed_parts(&p.out.to_string_lossy(), max_candidates, explore_chars)?;
     if progress["terms_start"]["token"] == token {
         let (path, job) = read_terms_job(p, &claimed, &progress, &run, token, &data)?;
         if !done {
@@ -14125,38 +14148,45 @@ fn terms_plan(
     if !directory.starts_with(&p.out) {
         bail!("Terms job escaped prepared output directory");
     }
-    // Keep the legacy plan locations and freeze the actual files consumed by this claim.
-    publish(&work.join("job.md"), field(&data, "job_text")?)?;
+    // The instruction copy keeps its legacy location; the claim folder freezes what each job reads.
     publish(
         &work.join("dsh-terms-instructions.zh.md"),
         field(&data, "instructions_text")?,
     )?;
-    let inputs = json!({"schema_version":1,"prompt_contract":1,"run_id":run,"unit":unit,"token":token,"preparation_hash":p.hash,"unit_input_hash":claimed.input_hash,"parameters":parameters,"plan_data_hash":terms_data_hash(&data),"candidate_count":data["candidate_count"],"counts":data["counts"]});
+    let explorers = terms_job_parts(&data);
+    let inputs = json!({"schema_version":1,"prompt_contract":2,"run_id":run,"unit":unit,"token":token,"preparation_hash":p.hash,"unit_input_hash":claimed.input_hash,"parameters":parameters,"plan_data_hash":terms_data_hash(&data),"candidate_count":data["candidate_count"],"parts":data["parts"].as_array().map_or(0, Vec::len)});
     let input_hash = canon::hash_value(&inputs);
-    let expected = if data["candidate_count"].as_u64() == Some(0) {
-        0
-    } else {
-        1
-    };
+    let expected = explorers.len() as i64;
     let answer_path = work.join("out/terms.json");
-    let envelope = json!({"schema_version":1,"unit":unit,"token":token,"input_hash":input_hash,"disposition":if expected==0{"no_terms"}else{"terms"},"terms":[]});
-    let text = format!(
-        "{}\n\n## 当前任务绑定\n\n只写 JSON，不写入归档。结果文件：`{}`。保留以下绑定字段，并填写 terms。最多选择 {max_terms} 个术语。每行包含 term、avoid 字符串数组、非空 meaning 和 section。一个术语只有一个定义。不得用空对象或空 terms 代替缺失的作业。\n\n```json\n{}\n```",
-        field(&data, "job_text")?,
-        answer_path.display(),
-        serde_json::to_string_pretty(&envelope)?
-    );
-    let prompt = publish(&directory.join("job.md"), &text)?;
     let instructions = publish(
         &directory.join("instructions.md"),
         field(&data, "instructions_text")?,
     )?;
-    let jobs = if expected == 0 {
-        json!([])
-    } else {
-        json!([{"id":"terms","files":[instructions["path"],prompt["path"]],"prompt":"按术语任务生成保留绑定字段的 JSON 文件。","output":answer_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}])
-    };
-    let job = json!({"schema_version":1,"run_id":run,"unit":unit,"token":token,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"expected_jobs":expected,"jobs":jobs,"no_op":if expected==0{json!({"reason":"no_terms_candidates","enumeration_hash":terms_data_hash(&data),"candidate_count":0,"counts":data["counts"]})}else{Value::Null},"answer":answer_path.to_string_lossy(),"artifacts":{"prompt":prompt,"instructions":instructions}});
+    let merge_instructions = publish(
+        &directory.join("merge-instructions.md"),
+        field(&data, "merge_instructions_text")?,
+    )?;
+    let mut artifacts = serde_json::Map::new();
+    artifacts.insert("instructions".into(), instructions.clone());
+    artifacts.insert("merge_instructions".into(), merge_instructions);
+    let mut jobs = Vec::new();
+    let mut explore = Vec::new();
+    for part in &explorers {
+        let n = part["part"].as_u64().context("missing Terms part number")? as usize;
+        let answer = work.join("out").join(crate::terms::explore_name(n));
+        let envelope = json!({"schema_version":1,"unit":unit,"token":token,"input_hash":input_hash,"part":n,"terms":[]});
+        let text = format!(
+            "{}\n\n## 当前任务绑定\n\n只写 JSON，不写入归档。结果文件：`{}`。保留以下绑定字段，并填写 terms。每行包含 term、avoid 字符串数组、非空 meaning 和 section。你的范围里没有术语时，terms 写空数组。\n\n```json\n{}\n```",
+            field(part, "job_text")?,
+            answer.display(),
+            serde_json::to_string_pretty(&envelope)?
+        );
+        let prompt = publish(&directory.join(format!("explore-{n:02}.md")), &text)?;
+        jobs.push(json!({"id":format!("terms-explore-{n:02}"),"files":[instructions["path"],prompt["path"]],"prompt":"按术语探索任务生成保留绑定字段的 JSON 文件。","output":answer.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}));
+        explore.push(json!({"part":n,"answer":answer.to_string_lossy(),"files":part["files"]}));
+        artifacts.insert(format!("explore-{n:02}"), prompt);
+    }
+    let job = json!({"schema_version":1,"run_id":run,"unit":unit,"token":token,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"expected_jobs":expected,"jobs":jobs,"explore":explore,"no_op":if expected==0{json!({"reason":"no_terms_candidates","enumeration_hash":terms_data_hash(&data),"candidate_count":0})}else{Value::Null},"answer":answer_path.to_string_lossy(),"artifacts":artifacts});
     let path = directory.join("job.json");
     let record = publish(&path, &serde_json::to_string_pretty(&job)?)?;
     progress["terms_config"] = parameters;
@@ -14184,6 +14214,140 @@ fn terms_plan(
     )?;
     tx.commit()?;
     Ok(terms_view(&job, &path, false))
+}
+
+// The merge view: the one merge job, or none for a book without candidates.
+fn terms_merge_view(merge: &Value, path: Option<&Path>, reused: bool) -> Value {
+    json!({"schema_version":1,"unit":merge["unit"],"token":merge["token"],"job":path.map(|p| p.to_string_lossy().into_owned()),"jobs":merge["jobs"],"expected_jobs":merge["jobs"].as_array().map_or(0, Vec::len),"parts":merge["parts"],"rows":merge["rows"],"distinct":merge["distinct"],"reused":reused})
+}
+
+// The aggregation round of a split Terms plan: every explorer answer is checked against its binding
+// (the plan's input hash and its part) and frozen, and one merge job is listed whose answer is the
+// table's only input (terms/out/terms.json, bound as before). A missing or unbound explorer answer
+// stops the round: the merge never runs on part of the book.
+fn terms_merge(
+    p: &Prepared,
+    token: i64,
+    max_terms: i64,
+    max_candidates: i64,
+    explore_chars: i64,
+) -> Result<Value> {
+    let unit = "terms/book@1";
+    finish_claim(p, unit, token)?;
+    let _guard = unit_guard(p, unit)?;
+    let (claimed, mut progress, run, done) = finish_claim(p, unit, token)?;
+    if claimed.input_hash != canon::hash_value(&json!({"preparation_hash":p.hash})) {
+        bail!("Terms unit input hash mismatch");
+    }
+    if progress["terms_config"] != terms_parameters(max_terms, max_candidates, explore_chars) {
+        bail!("Terms options differ from the frozen planning evidence");
+    }
+    let data = crate::terms::claimed_parts(&p.out.to_string_lossy(), max_candidates, explore_chars)?;
+    let (_, job) = read_terms_job(p, &claimed, &progress, &run, token, &data)?;
+    if progress["terms_merge"]["token"] == token {
+        let record = &progress["terms_merge"]["job"];
+        let merge = bound_json(record, "Terms merge artifact")?;
+        if !done {
+            renew(p, unit, token)?;
+        }
+        return Ok(terms_merge_view(&merge, Some(Path::new(field(record, "path")?)), true));
+    }
+    if done {
+        bail!("completed Terms unit has no accepted merge evidence");
+    }
+    if job["expected_jobs"] == 0 {
+        return Ok(json!({"schema_version":1,"unit":unit,"token":token,"jobs":[],"expected_jobs":0,"no_op":job["no_op"]}));
+    }
+    renew(p, unit, token)?;
+    let mut rows: Vec<(usize, Value)> = Vec::new();
+    let mut answers = Vec::new();
+    for entry in job["explore"].as_array().context("missing Terms explorer parts")? {
+        let n = entry["part"].as_u64().context("missing Terms part number")? as usize;
+        let path = PathBuf::from(field(entry, "answer")?);
+        if !path.is_file() {
+            bail!("missing Terms explorer answer for part {n}: {}", path.display());
+        }
+        if std::fs::metadata(&path)?.len() > 16 * 1024 * 1024 {
+            bail!("Terms explorer answer {n} exceeds 16 MiB encoded input");
+        }
+        let (answer, record) = json_artifact(&path)?;
+        if !Path::new(field(&record, "path")?).starts_with(&p.out) {
+            bail!("Terms explorer answer {n} escaped the prepared output directory");
+        }
+        if answer["schema_version"] != 1
+            || answer["unit"] != unit
+            || answer["token"] != token
+            || answer["input_hash"] != job["input_hash"]
+            || answer["part"] != n
+        {
+            bail!("Terms explorer answer {n} binding mismatch");
+        }
+        let terms = answer["terms"]
+            .as_array()
+            .with_context(|| format!("Terms explorer answer {n} requires a terms array"))?;
+        for row in terms {
+            if row.is_object() && row["term"].as_str().is_some_and(|t| !t.trim().is_empty()) {
+                rows.push((n, row.clone()));
+            }
+        }
+        answers.push(json!({"part":n,"answer":record}));
+    }
+    if rows.is_empty() {
+        bail!("the Terms explorers proposed no term");
+    }
+    let manifest = util::read_json(p.out.join("manifest.json"))?;
+    let title = manifest["book_title"].as_str().unwrap_or_default();
+    let parts = answers.len();
+    let distinct = rows
+        .iter()
+        .map(|(_, row)| ps::key(row["term"].as_str().unwrap().trim()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let work = p.out.join("terms");
+    let directory = std::fs::canonicalize(work.join(format!("claim-{token}")))?;
+    if !directory.starts_with(&p.out) {
+        bail!("Terms merge escaped prepared output directory");
+    }
+    let answer_path = work.join("out/terms.json");
+    let envelope = json!({"schema_version":1,"unit":unit,"token":token,"input_hash":job["input_hash"],"disposition":"terms","terms":[]});
+    let cap = if max_terms > 0 {
+        format!("最多选择 {max_terms} 个术语。")
+    } else {
+        String::new()
+    };
+    let text = format!(
+        "{}\n\n## 当前任务绑定\n\n只写 JSON，不写入归档。结果文件：`{}`。保留以下绑定字段，并填写 terms。{cap}每行包含 term、avoid 字符串数组、非空 meaning 和 section。一个术语只有一个定义。不得用空对象或空 terms 代替缺失的作业。\n\n```json\n{}\n```",
+        crate::terms::merge_text(title, &rows, parts),
+        answer_path.display(),
+        serde_json::to_string_pretty(&envelope)?
+    );
+    let prompt = publish(&directory.join("merge.md"), &text)?;
+    let instructions = &job["artifacts"]["merge_instructions"];
+    check_file(instructions, "Terms merge instructions")?;
+    let merge = json!({"schema_version":1,"run_id":run,"unit":unit,"token":token,"input_hash":job["input_hash"],"parts":parts,"rows":rows.len(),"distinct":distinct,"answers":answers,"answer":answer_path.to_string_lossy(),"prompt":prompt,
+        "jobs":[{"id":"terms-merge","files":[instructions["path"],prompt["path"]],"prompt":"按术语合并任务生成保留绑定字段的 JSON 文件。","output":answer_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}]});
+    let path = directory.join("merge.json");
+    let record = publish(&path, &serde_json::to_string_pretty(&merge)?)?;
+    progress["terms_merge"] = json!({"token":token,"job":record});
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    claim(&tx, unit, token)?;
+    let lease_until = held_lease(&tx, unit)?;
+    tx.execute(
+        "UPDATE units SET progress_json=?2,lease_until=?3 WHERE id=?1",
+        params![unit, canon::canonical_json(&progress), lease_until],
+    )?;
+    event(
+        &tx,
+        unit,
+        Some(&claimed.owner),
+        Some(token),
+        "terms_merge_planned",
+        &json!({"merge":record,"parts":parts,"rows":rows.len(),"distinct":distinct}),
+    )?;
+    tx.commit()?;
+    Ok(terms_merge_view(&merge, Some(&path), false))
 }
 
 fn terms_done(p: &Prepared, zt: &mut Zt, token: i64) -> Result<Value> {
@@ -14291,6 +14455,7 @@ fn terms_apply(
     token: i64,
     max_terms: i64,
     max_candidates: i64,
+    explore_chars: i64,
 ) -> Result<Value> {
     let unit = "terms/book@1";
     finish_claim(p, unit, token)?;
@@ -14299,13 +14464,24 @@ fn terms_apply(
     if claimed.input_hash != canon::hash_value(&json!({"preparation_hash":p.hash})) {
         bail!("Terms unit input hash mismatch");
     }
-    if progress["terms_config"] != json!({"max_terms":max_terms,"max_candidates":max_candidates}) {
+    if progress["terms_config"] != terms_parameters(max_terms, max_candidates, explore_chars) {
         bail!("Terms options differ from the frozen planning evidence");
     }
-    let data = crate::terms::claimed_plan(&p.out.to_string_lossy(), max_terms, max_candidates)?;
+    let data = crate::terms::claimed_parts(&p.out.to_string_lossy(), max_candidates, explore_chars)?;
     let (_, job) = read_terms_job(p, &claimed, &progress, &run, token, &data)?;
     if done {
         return terms_done(p, zt, token);
+    }
+    // A split plan's table comes from its merge round only: the merge evidence and every explorer
+    // answer it froze must still be the files it read.
+    if job["expected_jobs"] != 0 {
+        if progress["terms_merge"]["token"] != token {
+            bail!("missing Terms merge round for the expected explorer jobs");
+        }
+        let merge = bound_json(&progress["terms_merge"]["job"], "Terms merge artifact")?;
+        for answer in merge["answers"].as_array().context("missing Terms explorer answers")? {
+            check_file(&answer["answer"], "Terms explorer answer")?;
+        }
     }
     let work = p.out.join("terms");
     let answer_path = work.join("out/terms.json");
@@ -14581,7 +14757,7 @@ pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
         if out.trim().is_empty() || !a.positional.is_empty() {
             bail!("explicit -Staging is required");
         }
-        let step = a.choice("Step", &["plan", "apply"])?;
+        let step = a.choice("Step", &["plan", "merge", "apply"])?;
         let token = a
             .required("Token")?
             .parse::<i64>()
@@ -14592,7 +14768,7 @@ pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
             bail!("claimed Terms operations derive their receipt prefix from the ledger");
         }
         if (step == "apply") != a.flag("Apply") {
-            bail!("claimed Terms apply requires -Apply; plan does not accept it");
+            bail!("claimed Terms apply requires -Apply; plan and merge do not accept it");
         }
         Ok((out, step, token))
     })();
@@ -14613,23 +14789,29 @@ pub(crate) fn terms_cli(a: &Args) -> Result<i32> {
     }
     let (_, progress, _, _) = finish_claim(&p, "terms/book@1", token)?;
     let config = &progress["terms_config"];
+    // No upper bound by default (0): a book's table holds as many terms as its length needs.
     let max_terms = if a.has("MaxTerms") {
-        a.int_or("MaxTerms", 60)?
+        a.int_or("MaxTerms", 0)?
     } else {
-        config["max_terms"].as_i64().unwrap_or(60)
+        config["max_terms"].as_i64().unwrap_or(0)
+    };
+    let explore_chars = if a.has("ExploreChars") {
+        a.int_or("ExploreChars", 30000)?
+    } else {
+        config["explore_chars"].as_i64().unwrap_or(30000)
     };
     let max_candidates = if a.has("MaxCandidates") {
         a.int_or("MaxCandidates", 160)?
     } else {
         config["max_candidates"].as_i64().unwrap_or(160)
     };
-    if max_terms < 1 || max_candidates < 1 {
-        bail!("claimed Terms require positive MaxTerms and MaxCandidates");
+    if max_terms < 0 || max_candidates < 1 || explore_chars < 1000 {
+        bail!("claimed Terms require MaxTerms 0 or more, a positive MaxCandidates and ExploreChars of at least 1000");
     }
-    let result = if step == "plan" {
-        terms_plan(&p, token, max_terms, max_candidates, &mut zt)?
-    } else {
-        terms_apply(&p, &mut zt, token, max_terms, max_candidates)?
+    let result = match step.as_str() {
+        "plan" => terms_plan(&p, token, max_terms, max_candidates, explore_chars, &mut zt)?,
+        "merge" => terms_merge(&p, token, max_terms, max_candidates, explore_chars)?,
+        _ => terms_apply(&p, &mut zt, token, max_terms, max_candidates, explore_chars)?,
     };
     util::print_line(&serde_json::to_string(&result)?)?;
     Ok(0)
@@ -17434,7 +17616,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 let candidates = progress["terms_config"]["max_candidates"]
                     .as_i64()
                     .context("missing Terms planning options")?;
-                terms_apply(&p, &mut zt, token, terms, candidates)?
+                let explore = progress["terms_config"]["explore_chars"]
+                    .as_i64()
+                    .context("missing Terms planning options")?;
+                terms_apply(&p, &mut zt, token, terms, candidates, explore)?
             } else if unit.starts_with("termcards/") {
                 // S24 (#167): the Term-card job/book unit's proof is the compiler's own checked
                 // readiness or publication report, re-read here; no caller-supplied address counts.

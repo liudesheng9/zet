@@ -124,6 +124,7 @@ switch -Regex ($cmd) {
     }
     '^terms ' {
         if (($args2 -join ' ') -match '-Step apply') { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; state = 'done'; terms = 2; with_avoid = 1; card = 'Key/1|a' }) }
+        elseif (($args2 -join ' ') -match '-Step merge') { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; parts = 3; rows = 40; distinct = 31; jobs = @(@{ id = 'terms-merge'; files = @(); prompt = 'm' }) }) }
         else { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @(@{ id = 'terms'; files = @(); prompt = 'p' }) }) }
         exit 0
     }
@@ -220,14 +221,25 @@ Assert ($apply.json -and $apply.json.ok -eq $true -and $apply.json.jobs -eq 1 -a
 $fix = Get-Content -Raw (Join-Path $out 'layer-steps\explain\apply-jobs.json') | ConvertFrom-Json
 Assert (@($fix).Count -eq 1 -and (Get-Content -Raw (Join-Path $out 'layer-steps\explain\apply-jobs.json')) -match 'continue.*x1' -and @($fix)[0].unit -eq 'explain/g001-m0000@1') 'explain apply: the fix job keeps its continue and the block''s unit'
 
-# 7. terms: start plans the table, finish applies it and completes the unit.
+# 7. terms: start plans the explorers, apply lists the one merge job, finish applies the table and completes the unit.
 $terms = Step (@('-Step', 'start', '-Layer', 'terms', '-Take', '1', '-Owner', 'terms block 1') + $common)
+$merge = Step (@('-Step', 'apply', '-Layer', 'terms', '-Owner', 'terms block 1') + $common)
+Assert-Line $merge 'terms merge'
+Assert ($merge.json -and $merge.json.ok -eq $true -and $merge.json.jobs -eq 1 -and $merge.json.parts -eq 3 -and $merge.json.rows -eq 40 -and $merge.json.distinct -eq 31) "terms apply: the merge round lists the one merge job and the explorer counts ($($merge.text))"
+$mergeJobs = Get-Content -Raw (Join-Path $out 'layer-steps\terms\apply-jobs.json') | ConvertFrom-Json
+Assert (@($mergeJobs).Count -eq 1 -and @($mergeJobs)[0].id -eq 'terms-merge' -and @($mergeJobs)[0].unit -eq 'terms/book@1' -and @($mergeJobs)[0].token -eq 1) 'terms apply: the merge job carries the claimed unit and token'
+# Test box run 2026-11-01 (hart1995firms, mode terms): a list of one job was saved as a bare object, and the Haiku
+# manager, told to read a JSON array, started nothing. A job list is a JSON array whatever its length.
+foreach ($name in @('layer-steps\terms\apply-jobs.json', 'layer-steps\terms\jobs.json', 'layer-steps\terms\units.json', 'layer-steps\explain\apply-jobs.json')) {
+    $text = (Get-Content -Raw (Join-Path $out $name)).TrimStart()
+    Assert ($text.StartsWith('[')) "a saved list is a JSON array, even with one entry ($name starts with '$($text.Substring(0, 1))')"
+}
 $termsFinish = Step (@('-Step', 'finish', '-Layer', 'terms', '-Owner', 'terms block 1') + $common)
 Assert-Line $terms 'terms start'
 Assert-Line $termsFinish 'terms finish'
-Assert ($terms.json -and $terms.json.ok -eq $true -and $termsFinish.json -and $termsFinish.json.ok -eq $true -and $termsFinish.json.done -eq 1 -and $termsFinish.json.terms -eq 2 -and $termsFinish.json.card -eq 'Key/1|a') "terms: the plan and the apply complete the one unit ($($termsFinish.text))"
+Assert ($terms.json -and $terms.json.ok -eq $true -and $termsFinish.json -and $termsFinish.json.ok -eq $true -and $termsFinish.json.done -eq 1 -and $termsFinish.json.terms -eq 2 -and $termsFinish.json.card -eq 'Key/1|a' -and $termsFinish.json.with_avoid -eq 1) "terms: the plan and the apply complete the one unit, and the line carries the words-to-avoid count ($($termsFinish.text))"
 $tCalls = Get-Content -LiteralPath $calls -Raw
-Assert ($tCalls -match 'terms -Step plan -Staging .*-Token 1' -and $tCalls -match 'terms -Step apply -Staging .*-Token 1 -Apply') 'terms: the apply carries the claimed unit''s token'
+Assert ($tCalls -match 'terms -Step plan -Staging .*-Token 1' -and $tCalls -match 'terms -Step merge -Staging .*-Token 1' -and $tCalls -match 'terms -Step apply -Staging .*-Token 1 -Apply') 'terms: the apply carries the claimed unit''s token'
 
 # 8. a claim that fails is tried three times, and a claim line without its units asks the ledger.
 $env:LS_CLAIM_FAIL = '2'

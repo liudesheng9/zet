@@ -74,6 +74,7 @@ Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 
 | A legal option the finish refuses | hart1995firms gaps: mode cards with `ideaSample: 0` left an empty sample record and `book-cards-finish` refused it | The cycle records `not_sampled` (0.35.4). An argument value the workflow accepts must give a record its finish accepts. |
 | A binary rebuilt during a Term-card branch | hart1995firms gaps: a 0.35.4 build made every Term-card check stale (`versions`), and `apply` refused the plan as `plan_stale` | Finish the Term-card branch with the binary its plan froze (keep the old exe beside the new one); a new plan revision rewrites every job. |
 | Resume right after a stop | The first resume after a TaskStop refused: two Link claims had recorded activity in the last 120 s | After a stop, check that no DeepSeek job runs, wait out the 120-second quiet period (`ledger reclaim -Release`), then resume; a refused resume does not spend the run's one resume. |
+| A one-entry list saved as an object | Test-box run 2026-11-01 (hart1995firms, mode terms): `layer-steps.ps1` piped the one merge job to `ConvertTo-Json`, which wrote a bare object; the Haiku manager, told to read a JSON array, started nothing and the Terms unit failed | Write a list with `ConvertTo-Json -InputObject` (layer-, term- and model-steps). A test checks a saved list of length one, not only "the job is there". |
 
 ## Release discipline
 

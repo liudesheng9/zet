@@ -498,7 +498,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "MaxAttempts",
         "DshRunCap",
     ];
-    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply", "Brief", "Validate", "Sections"])?;
+    let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply", "Brief", "Validate", "Sections", "NewList"])?;
     // S1 (docs/workflow-simplicity-proposal.md): -Brief ends with one short line a relay carries whole (the group
     // count and the key) instead of the whole manifest, which a Haiku agent had to count.
     let brief = a.flag("Brief");
