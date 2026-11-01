@@ -11,8 +11,8 @@ paths:
   - "tests/term_projection.rs"
   - "tests/term_editing.rs"
   - ".mcp.json"
-synced: 296debb8ff7f
-updated: 2026-10-25
+synced: 35ea967d82d1
+updated: 2026-11-01
 ---
 
 # MCP server

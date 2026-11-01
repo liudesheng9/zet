@@ -18,8 +18,8 @@ paths:
   - "!scripts/book-digest/tests/model-steps.tests.ps1"
   - "!scripts/book-digest/tests/math-steps.tests.ps1"
   - "!scripts/book-digest/tests/grow-steps.tests.ps1"
-synced: 173a5d9ef229
-updated: 2026-10-28
+synced: 35ea967d82d1
+updated: 2026-11-01
 ---
 
 # Digest scripts
