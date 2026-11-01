@@ -6,7 +6,7 @@ paths:
   - "src/batch.rs"
   - "src/place.rs"
   - "scripts/tree-ops-bench.mjs"
-synced: 35ea967d82d1
+synced: 93ad016161ed
 updated: 2026-11-01
 ---
 

@@ -13,8 +13,8 @@ paths:
   - "tests/card_types.rs"
   - "tests/term_links.rs"
   - "tests/term_lifecycle.rs"
-synced: f0ddf286449c
-updated: 2026-10-25
+synced: 93ad016161ed
+updated: 2026-11-01
 ---
 
 # Cards, Workspaces and Links
