@@ -1,4 +1,4 @@
-// ==== module zt-workflow-lib v9 ====
+// ==== module zt-workflow-lib v10 ====
 // The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6; docs/workflow-module-structure-proposal.md):
 // the digests (zt-digest-lib) and zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
 //  - S6, one lock reader: the owner's typed `card_locked` refusal (#140, R326/R337/R338) is read here and only
@@ -39,6 +39,11 @@
 //    failed stages. The last line is read after the fence lines are left out (`ztDriveLast`), and a line with no
 //    straight quote but curly ones is read with straight quotes. It is still only the last line, one object with a
 //    boolean top-level `ok`.
+//  - v10 (live run 2026-11-01, atkinson2015lectures cited list): a manager copied the step's line verbatim and then
+//    added a remark of its own on the lines after it ("Note for the parent: …"), so the finished list step read as a
+//    failed stage. Prose lines after the step's line are left out: the line read is the last one that opens with
+//    `{`, when every line after it is prose (none opens with `{` or `[`). The line itself is still read strictly:
+//    one object with a boolean top-level `ok`, with no prose before it on the same line.
 const ZT_LOCK = 'card_locked'
 const ZT_DRIVE_MODEL = 'deepseek-official/deepseek-flash'
 const ZT_DRIVE_SCHEMA = {
@@ -87,7 +92,10 @@ function ztDriveText(text) {
 // has no straight quote.
 function ztDriveLast(text) {
   const lines = ztDriveText(text).split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('```'))
-  const last = lines.length ? lines[lines.length - 1] : ''
+  // v10: a manager's remark after the line (prose lines, none opening with { or [) is not the step's answer.
+  let end = lines.length
+  while (end > 1 && !/^[{[“]/.test(lines[end - 1]) && lines.slice(0, end - 1).some((l) => /^[{“]/.test(l))) end--
+  const last = end ? lines[end - 1] : ''
   return !last.includes('"') && /[“”]/.test(last) ? last.replace(/[“”]/g, '"') : last
 }
 function ztDriveAnswer(text) {
@@ -184,7 +192,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '9', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '10', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====

@@ -1839,6 +1839,8 @@ function runtime(kind, opts = {}) {
         // hansen2021demand: a manager wrapped the line in a json code fence, or retyped its quotes as curly ones.
         if (opts.driveFenced && opts.driveFenced.test(label)) return { answer: '```json\n' + answer + '\n```', session_id: session, ...recorded }
         if (opts.driveCurly && opts.driveCurly.test(label)) return { answer: answer.replace(/"([^"]*)"/g, "“$1”"), session_id: session, ...recorded }
+        // atkinson2015lectures: a manager copied the line, then added its own remark on the lines after it.
+        if (opts.driveNote && opts.driveNote.test(label)) return { answer: `${answer}\n\nNote for the parent: I ran a stray no-op command once. Its output was discarded.`, session_id: session, ...recorded }
         if (opts.driveNested && opts.driveNested.test(label)) return { answer: JSON.stringify({ state: 'done', counts: { open: 0 } }), session_id: session, ...recorded }
         return { answer, session_id: session, ...recorded }
       }
@@ -3014,7 +3016,7 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   const labels = rt.calls.map((c) => c.label)
   check(!labels.includes('audit cards') && rt.result.audit && rt.result.audit.reused === true, `hansen2021demand: a finished finalization's final audit is kept on resume (${labels.filter((l) => /^audit/.test(l)).join(',')})`)
 }
-for (const [name, o] of [['a json code fence', { driveFenced: /^audit cards$/ }], ['curly quotes', { driveCurly: /^audit cards$/ }]]) {
+for (const [name, o] of [['a json code fence', { driveFenced: /^audit cards$/ }], ['curly quotes', { driveCurly: /^audit cards$/ }], ['a manager remark after it', { driveNote: /^audit cards$/ }]]) {
   // hansen2021demand: a manager retyped the step's line; the line is still the step's answer.
   const r = await run('econ', base, o)
   check(r.result.audit && r.result.audit.status === 'done', `hansen2021demand: a drive line in ${name} is read as the step's answer (${JSON.stringify(r.result.audit && { status: r.result.audit.status, error: r.result.audit.error })})`)
@@ -3230,13 +3232,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '48' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v48, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '48' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v48, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '9', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v9 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '10', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -3535,7 +3537,7 @@ for (const which of ['econ', 'math']) {
   check(!/ztRelay|runScript|wfpScript/.test(growSteps), '#179: grow-steps.ps1 names no relay helper')
   check((growSim.answers || []).filter((a) => a.label === '^grow: next$').every((a) => a.answer && typeof a.answer.answer === 'string' && a.answer.session_id), '#179: the dry run answers each grow step as the drive job it is')
   const shared = readText('scripts/workflow-shared/modules/zt-workflow-lib.js')
-  check(/version: '9'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  check(/version: '10'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
 }
 
 // ================================================================================================================

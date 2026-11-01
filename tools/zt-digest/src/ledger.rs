@@ -7275,6 +7275,9 @@ fn hold(p: &Prepared, targets: &[(String, i64)], seconds: u64, every: u64) -> Re
 const TRANSIENT_CAUSES: &[&str] = &[
     "stale_claim", "read_view_changed", "lock_busy", "sharing_violation", "sqlite_busy", "transport_closed",
     "command_timeout", "service_unavailable", "provider_", "missing_result", "pending_jobs", "cleanup_transient",
+    // atkinson2015lectures (2026-11-01): zt-check refuses a read set whose archive revision moved under it
+    // ("incomplete checker inputs: changing read view") while the digest writers commit beside the check.
+    "changing read view", "changing view",
 ];
 
 pub(crate) fn cause_code(cause: &str) -> &'static str {
@@ -18046,6 +18049,11 @@ mod tests {
         // Every other cause keeps its old reading.
         assert_eq!(cause_code("card `K/1` changed since the plan"), "check_failed");
         assert_eq!(cause_code("transport_closed"), "provider_transient");
+        // atkinson2015lectures: a check whose read view moved is retried, never a content failure.
+        assert_eq!(
+            cause_code("zt-check did not run: incomplete checker inputs: changing read view"),
+            "provider_transient"
+        );
     }
 
     #[test]
