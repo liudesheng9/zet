@@ -181,7 +181,7 @@ pub(crate) fn apply_insert_plan(
 }
 
 /// [`apply_insert_plan`] inside the caller's transaction, for an identified batch item: the mapping,
-/// the new Card and the rebuilt Link index commit together or not at all.
+/// the new Card and the refreshed Link index commit together or not at all.
 pub(crate) fn apply_insert_plan_tx(
     conn: &Connection,
     plan: &InsertPlan,
@@ -189,6 +189,23 @@ pub(crate) fn apply_insert_plan_tx(
     part: Option<&model::Part>,
     term_name: Option<&str>,
     text: &str,
+) -> Result<crate::gate::Accepted> {
+    let mut changes = crate::link_index::Changes::default();
+    let accepted = apply_insert_plan_into(conn, plan, card_type, part, term_name, text, &mut changes)?;
+    changes.finish(conn)?;
+    Ok(accepted)
+}
+
+/// The insert itself, gathering what it touches into `changes`, which the caller refreshes once: a
+/// structural batch refreshes all its items together (S3, #231).
+pub(crate) fn apply_insert_plan_into(
+    conn: &Connection,
+    plan: &InsertPlan,
+    card_type: CardType,
+    part: Option<&model::Part>,
+    term_name: Option<&str>,
+    text: &str,
+    changes: &mut crate::link_index::Changes,
 ) -> Result<crate::gate::Accepted> {
     let workspace = crate::workspace::tree_workspace(conn, &plan.location)?;
     let facet = part.map(|part| &part.facet);
@@ -212,8 +229,7 @@ pub(crate) fn apply_insert_plan_tx(
         )
         .with_term(term_name),
     )?;
-    let mut changes = crate::link_index::Changes::default();
-    crate::apply_location_mapping_tx(conn, &plan.mapping, &mut changes)?;
+    crate::apply_location_mapping_tx(conn, &plan.mapping, changes)?;
     conn.execute(
         "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, term_name)
          VALUES(?1, NULL, 0, 0, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -228,7 +244,6 @@ pub(crate) fn apply_insert_plan_tx(
         ],
     )?;
     changes.resync(conn, &plan.location)?;
-    changes.finish(conn)?;
     Ok(accepted)
 }
 
@@ -290,31 +305,258 @@ fn through<'a>(mapping: &'a BTreeMap<String, String>, location: &'a str) -> &'a 
 
 /// The whole mapping of a move between Cards, over the set of Locations. Only
 /// Locations that change are listed.
+/// Which Cards leave with the moving Card.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Detach<'a> {
+    /// The Card and its whole subtree (every later Direct successor included).
+    Subtree,
+    /// The Card alone; it may have no Side successors, and its Direct successor chain closes the gap.
+    Alone,
+    /// The span from the Card through this later Card of its Direct chain, each with its Side
+    /// successors; the Cards after the span close the gap (S4, #232).
+    Span(&'a str),
+}
+
 fn layout(
     locations: &BTreeSet<String>,
     at: &str,
     target: &Target,
     alone: bool,
 ) -> Result<BTreeMap<String, String>> {
-    // 1. Detach.
-    let moving = if alone {
-        let sides = locations
-            .iter()
-            .filter(|location| crate::immediate_side_label(location, at).is_some())
-            .count();
-        if sides > 0 {
-            bail!("`{at}` has Side successors: move them first, or move it with its subtree");
+    layout_with(locations, at, target, if alone { Detach::Alone } else { Detach::Subtree })
+}
+
+/// The Cards of the span `from` through `through` (each with its Side successors), and the Card
+/// after the span on its Direct chain, if one exists.
+pub(crate) fn span_cards(
+    locations: &BTreeSet<String>,
+    from: &str,
+    through: &str,
+) -> Result<(BTreeSet<String>, Option<String>)> {
+    if !crate::is_valid_regular_location(from) || !locations.contains(from) {
+        bail!("a span starts at an existing Regular Card, not `{from}`");
+    }
+    let mut end = from.to_string();
+    while end != through {
+        end = crate::direct_successor(&end)?;
+        if !locations.contains(&end) {
+            bail!("span is not one Direct chain: `{through}` does not follow `{from}` on its Direct successor line");
         }
-        BTreeSet::from([at.to_string()])
+    }
+    let next = crate::direct_successor(through)
+        .ok()
+        .filter(|next| locations.contains(next));
+    let mut cards = subtree(locations, from);
+    if let Some(next) = &next {
+        for later in subtree(locations, next) {
+            cards.remove(&later);
+        }
+    }
+    Ok((cards, next))
+}
+
+/// Where `indent` puts a span starting at `at`: the next Side successor of the Card before it on
+/// its Direct chain (S4, #232).
+pub(crate) fn indent_target(locations: &BTreeSet<String>, at: &str) -> Result<Target> {
+    let before = crate::parent_location(at)
+        .filter(|_| crate::valid_positive_number(crate::last_segment(at)))
+        .filter(|parent| crate::is_valid_regular_location(parent))
+        .with_context(|| format!("nothing before `{at}` to indent under: it opens its chain"))?;
+    Ok(Target::To(format!("{before}|{}", next_side_label(locations, &before))))
+}
+
+/// Where `outdent` puts a span that starts the Side branch `at`: right after the branch's parent,
+/// whose old Direct successor moves down (S4, #232).
+pub(crate) fn outdent_target(locations: &BTreeSet<String>, at: &str) -> Result<Target> {
+    if !crate::valid_side_label(crate::last_segment(at)) {
+        bail!("`{at}` does not start a Side branch, so it has no parent to outdent beside");
+    }
+    let parent = crate::parent_location(at).context("a Side branch has a parent")?;
+    let next = crate::direct_successor(&parent)?;
+    Ok(if locations.contains(&next) {
+        Target::Before(next)
     } else {
-        subtree(locations, at)
+        Target::To(next)
+    })
+}
+
+/// The Cards a span delete removes, and the mapping that moves the rest of its chain up into the
+/// span's place (S4, #232).
+pub(crate) fn span_delete(
+    locations: &BTreeSet<String>,
+    from: &str,
+    through: &str,
+) -> Result<(BTreeSet<String>, BTreeMap<String, String>)> {
+    let (cards, next) = span_cards(locations, from, through)?;
+    let rest = locations.difference(&cards).cloned().collect::<BTreeSet<_>>();
+    let close = match next {
+        Some(next) => shift(&rest, &next, from)?,
+        None => BTreeMap::new(),
     };
+    Ok((cards, close))
+}
+
+/// Plan a span move: the Cards `from` through `through` with their Side successors go to
+/// `target`, and the rest of their chain closes the gap (S4, #232).
+pub(crate) fn span_plan(
+    conn: &Connection,
+    from: &str,
+    through: &str,
+    target: &Target,
+) -> Result<MovePlan> {
+    let card = crate::load_card(conn, from)?;
+    if card.is_lit || card.is_topic {
+        bail!("a span starts at a Regular Card, not the tree root `{from}`");
+    }
+    let destination = match target {
+        Target::To(to) => to,
+        Target::Before(before) => before,
+    };
+    if !crate::is_valid_regular_location(destination) {
+        bail!("invalid move location `{destination}`");
+    }
+    crate::ensure_same_tree_kind_boundary(&card.address, destination)?;
+    crate::workspace::ensure_same_workspace(conn, &card.address, destination)?;
+    let locations = all_locations(conn)?;
+    let mapping = layout_with(&locations, &card.address, target, Detach::Span(through))?;
+    if mapping.is_empty() {
+        bail!("`{from}` is already there; nothing moves");
+    }
+    let rewritten_links = crate::count_rewritten_links(conn, &mapping)?;
+    Ok(MovePlan {
+        mapping,
+        rewritten_links,
+    })
+}
+
+/// The refusal of a reorder whose list is not exactly the current children (S5, #233).
+fn mismatch(listed: &BTreeSet<String>, current: &BTreeSet<String>) -> anyhow::Error {
+    let missing = current.difference(listed).cloned().collect::<Vec<_>>();
+    let extra = listed.difference(current).cloned().collect::<Vec<_>>();
+    anyhow::anyhow!(
+        "reorder_set_mismatch: list every current child exactly once; missing: [{}]; extra: [{}]",
+        missing.join(", "),
+        extra.join(", ")
+    )
+}
+
+/// The mapping that gives one Location set's Cards their new places, checked for collisions.
+fn finished(locations: &BTreeSet<String>, moves: BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
+    let mut taken = BTreeSet::new();
+    for location in locations {
+        let new = moves.get(location).unwrap_or(location);
+        if !taken.insert(new.clone()) {
+            bail!("the reorder would put two Cards at `{new}`");
+        }
+    }
+    Ok(moves.into_iter().filter(|(old, new)| old != new).collect())
+}
+
+/// Put the immediate Side successors of `parent` in the listed order, each with its whole branch
+/// (S5, #233). The list names every current Side child exactly once.
+pub(crate) fn reorder_side(
+    locations: &BTreeSet<String>,
+    parent: &str,
+    order: &[String],
+) -> Result<BTreeMap<String, String>> {
+    let current = locations
+        .iter()
+        .filter(|location| crate::parent_location(location).as_deref() == Some(parent))
+        .filter(|location| crate::immediate_side_label(location, parent).is_some())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let listed = order.iter().cloned().collect::<BTreeSet<_>>();
+    if listed.len() != order.len() || listed != current {
+        return Err(mismatch(&listed, &current));
+    }
+    let mut moves = BTreeMap::new();
+    for (index, child) in order.iter().enumerate() {
+        let to = format!("{parent}|{}", crate::number_to_side_label(index as u64 + 1));
+        moves.extend(shift(locations, child, &to)?);
+    }
+    finished(locations, moves)
+}
+
+/// Put the spans of the Direct chain after `parent` in the listed order, each Card with its Side
+/// successors (S5, #233). The spans cover the whole chain, each Card once.
+pub(crate) fn reorder_direct(
+    locations: &BTreeSet<String>,
+    parent: &str,
+    spans: &[(String, String)],
+) -> Result<BTreeMap<String, String>> {
+    let mut chain = Vec::new();
+    let mut next = crate::direct_successor(parent)?;
+    while locations.contains(&next) {
+        chain.push(next.clone());
+        next = crate::direct_successor(&next)?;
+    }
+    let current = chain.iter().cloned().collect::<BTreeSet<_>>();
+    let mut listed = Vec::new();
+    for (from, through) in spans {
+        if !current.contains(from) || !current.contains(through) {
+            listed.push(from.clone());
+            listed.push(through.clone());
+            continue;
+        }
+        let mut at = from.clone();
+        listed.push(at.clone());
+        while at != *through {
+            at = crate::direct_successor(&at)?;
+            if !current.contains(&at) {
+                bail!("span is not one Direct chain: `{through}` does not follow `{from}`");
+            }
+            listed.push(at.clone());
+        }
+    }
+    let listed_set = listed.iter().cloned().collect::<BTreeSet<_>>();
+    if listed_set.len() != listed.len() || listed_set != current {
+        return Err(mismatch(&listed_set, &current));
+    }
+    let mut moves = BTreeMap::new();
+    let mut place = crate::direct_successor(parent)?;
+    for card in &listed {
+        // The Card with its Side successors, without the Cards after it on the chain.
+        let mut branch = subtree(locations, card);
+        if let Ok(after) = crate::direct_successor(card) {
+            for later in subtree(locations, &after) {
+                branch.remove(&later);
+            }
+        }
+        moves.extend(shift(&branch, card, &place)?);
+        place = crate::direct_successor(&place)?;
+    }
+    finished(locations, moves)
+}
+
+fn layout_with(
+    locations: &BTreeSet<String>,
+    at: &str,
+    target: &Target,
+    detach: Detach<'_>,
+) -> Result<BTreeMap<String, String>> {
+    // 1. Detach.
+    let (moving, next) = match detach {
+        Detach::Alone => {
+            let sides = locations
+                .iter()
+                .filter(|location| crate::immediate_side_label(location, at).is_some())
+                .count();
+            if sides > 0 {
+                bail!("`{at}` has Side successors: move them first, or move it with its subtree");
+            }
+            let next = crate::direct_successor(at).ok();
+            (BTreeSet::from([at.to_string()]), next)
+        }
+        Detach::Subtree => (subtree(locations, at), None),
+        Detach::Span(through) => span_cards(locations, at, through)?,
+    };
+    let alone = matches!(detach, Detach::Alone);
     let rest = locations
         .difference(&moving)
         .cloned()
         .collect::<BTreeSet<_>>();
-    let close = match crate::direct_successor(at) {
-        Ok(next) if alone && rest.contains(&next) => shift(&rest, &next, at)?,
+    let close = match next {
+        Some(next) if rest.contains(&next) => shift(&rest, &next, at)?,
         _ => BTreeMap::new(),
     };
     let detached = rest
@@ -634,5 +876,136 @@ mod tests {
                 .to_string()
                 .starts_with("destination locations already exist: 3/3")
         );
+    }
+    /// S4 (#232): a span from the middle of a chain moves with its Cards' Side successors, and the
+    /// Cards after it close the gap; the destination is named on today's Locations.
+    #[test]
+    fn a_span_moves_with_its_side_branches_and_the_chain_closes_up() {
+        let locations = set(&["3/0", "3/1", "3/2", "3/2|a", "3/3", "3/4", "3/4|a", "3/5"]);
+        let mapping = layout_with(&locations, "3/2", &Target::To("3/5|a".into()), Detach::Span("3/3")).unwrap();
+        assert_eq!(
+            pairs(&mapping),
+            [
+                ("3/2", "3/3|a"),
+                ("3/2|a", "3/3|a|a"),
+                ("3/3", "3/3|a|1"),
+                ("3/4", "3/2"),
+                ("3/4|a", "3/2|a"),
+                ("3/5", "3/3"),
+            ]
+        );
+    }
+
+    /// S4 (#232): the span of one Card is the Card with its Side successors; `before` takes the place
+    /// of a later Card in the same chain.
+    #[test]
+    fn the_span_of_one_card_keeps_its_branch_and_takes_a_later_place() {
+        let locations = set(&["3/0", "3/1", "3/1|a", "3/2", "3/3"]);
+        let mapping = layout_with(&locations, "3/1", &Target::Before("3/3".into()), Detach::Span("3/1")).unwrap();
+        assert_eq!(pairs(&mapping), [("3/1", "3/2"), ("3/1|a", "3/2|a"), ("3/2", "3/1")]);
+    }
+
+    /// S4 (#232): `through` must be reached from `from` along one Direct chain.
+    #[test]
+    fn a_span_is_one_direct_chain() {
+        let locations = set(&["3/0", "3/1", "3/1|a", "3/2", "3/3"]);
+        let error = layout_with(&locations, "3/1", &Target::To("3/3|a".into()), Detach::Span("3/1|a"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("span is not one Direct chain"), "{error}");
+        let error = layout_with(&locations, "3/2", &Target::To("3/3|a".into()), Detach::Span("3/1"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("span is not one Direct chain"), "{error}");
+    }
+
+    /// S4 (#232): indent makes a span the last Side branch of the Card before it; outdent moves a
+    /// span that starts a Side branch after the branch's parent. Indent then outdent restores every
+    /// Location.
+    #[test]
+    fn indent_then_outdent_restores_the_tree() {
+        let locations = set(&["3/0", "3/1", "3/2", "3/2|a", "3/3"]);
+        let indent = layout_with(&locations, "3/2", &indent_target(&locations, "3/2").unwrap(), Detach::Span("3/2")).unwrap();
+        assert_eq!(pairs(&indent), [("3/2", "3/1|a"), ("3/2|a", "3/1|a|a"), ("3/3", "3/2")]);
+        let indented = after(&locations, &indent).into_iter().collect::<BTreeSet<_>>();
+        let outdent = layout_with(&indented, "3/1|a", &outdent_target(&indented, "3/1|a").unwrap(), Detach::Span("3/1|a")).unwrap();
+        assert_eq!(pairs(&outdent), [("3/1|a", "3/2"), ("3/1|a|a", "3/2|a"), ("3/2", "3/3")]);
+        assert_eq!(after(&indented, &outdent), after(&locations, &BTreeMap::new()));
+        // A Card that opens its chain has nothing before it to indent under.
+        let error = indent_target(&locations, "3/1").unwrap_err().to_string();
+        assert!(error.contains("nothing before `3/1` to indent under"), "{error}");
+        let error = outdent_target(&locations, "3/2").unwrap_err().to_string();
+        assert!(error.contains("does not start a Side branch"), "{error}");
+    }
+
+    /// S4 (#232): outdent keeps the rest of the branch on the parent: the Card after the span takes
+    /// the branch's place.
+    #[test]
+    fn outdent_leaves_the_rest_of_the_branch_in_place() {
+        let locations = set(&["3/0", "3/1", "3/1|a", "3/1|a|1", "3/1|b", "3/2"]);
+        let mapping = layout_with(&locations, "3/1|a", &outdent_target(&locations, "3/1|a").unwrap(), Detach::Span("3/1|a")).unwrap();
+        assert_eq!(pairs(&mapping), [("3/1|a", "3/2"), ("3/1|a|1", "3/1|a"), ("3/2", "3/3")]);
+    }
+
+    /// S4 (#232): deleting a span removes its Cards with their Side successors and moves the rest of
+    /// the chain up into its place.
+    #[test]
+    fn deleting_a_span_closes_the_chain() {
+        let locations = set(&["3/0", "3/1", "3/2", "3/2|a", "3/3", "3/4", "3/4|a"]);
+        let (gone, close) = span_delete(&locations, "3/2", "3/3").unwrap();
+        assert_eq!(gone.into_iter().collect::<Vec<_>>(), ["3/2", "3/2|a", "3/3"]);
+        assert_eq!(pairs(&close), [("3/4", "3/2"), ("3/4|a", "3/2|a")]);
+    }
+    /// S5 (#233): reordering the Side successors of a Card moves each with its whole branch.
+    #[test]
+    fn reordering_side_successors_moves_each_with_its_branch() {
+        let locations = set(&["3/0", "3/1", "3/1|a", "3/1|a|1", "3/1|b", "3/1|c", "3/1|c|a", "3/1|d", "3/2"]);
+        let order = ["3/1|d", "3/1|c", "3/1|b", "3/1|a"].map(String::from);
+        let mapping = reorder_side(&locations, "3/1", &order).unwrap();
+        assert_eq!(
+            pairs(&mapping),
+            [
+                ("3/1|a", "3/1|d"),
+                ("3/1|a|1", "3/1|d|1"),
+                ("3/1|b", "3/1|c"),
+                ("3/1|c", "3/1|b"),
+                ("3/1|c|a", "3/1|b|a"),
+                ("3/1|d", "3/1|a"),
+            ]
+        );
+    }
+
+    /// S5 (#233): a reorder list names every current child exactly once.
+    #[test]
+    fn a_reorder_list_must_name_every_child_once() {
+        let locations = set(&["3/0", "3/1", "3/1|a", "3/1|b", "3/1|c"]);
+        let missing = reorder_side(&locations, "3/1", &["3/1|b", "3/1|a"].map(String::from)).unwrap_err().to_string();
+        assert!(missing.contains("reorder_set_mismatch") && missing.contains("missing: [3/1|c]"), "{missing}");
+        let extra = reorder_side(&locations, "3/1", &["3/1|c", "3/1|b", "3/1|a", "3/2"].map(String::from)).unwrap_err().to_string();
+        assert!(extra.contains("extra: [3/2]"), "{extra}");
+        let twice = reorder_side(&locations, "3/1", &["3/1|c", "3/1|c", "3/1|b", "3/1|a"].map(String::from)).unwrap_err().to_string();
+        assert!(twice.contains("reorder_set_mismatch"), "{twice}");
+    }
+
+    /// S5 (#233): reordering the spans of a Direct chain keeps each Card's Side successors with it.
+    #[test]
+    fn reordering_the_spans_of_a_chain_keeps_each_cards_branch() {
+        let locations = set(&["3/0", "3/1", "3/2", "3/2|a", "3/3", "3/4", "3/4|a"]);
+        let spans = [("3/3", "3/4"), ("3/1", "3/2")].map(|(a, b)| (a.to_string(), b.to_string()));
+        let mapping = reorder_direct(&locations, "3/0", &spans).unwrap();
+        assert_eq!(
+            pairs(&mapping),
+            [
+                ("3/1", "3/3"),
+                ("3/2", "3/4"),
+                ("3/2|a", "3/4|a"),
+                ("3/3", "3/1"),
+                ("3/4", "3/2"),
+                ("3/4|a", "3/2|a"),
+            ]
+        );
+        let short = [("3/3", "3/4"), ("3/1", "3/1")].map(|(a, b)| (a.to_string(), b.to_string()));
+        let error = reorder_direct(&locations, "3/0", &short).unwrap_err().to_string();
+        assert!(error.contains("missing: [3/2]"), "{error}");
     }
 }

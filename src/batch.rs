@@ -44,6 +44,183 @@ impl Resolved {
     }
 }
 
+/// The most Cards one batch may rename or delete (D3, #231): a larger reorganization is several
+/// batches.
+const MAX_TREE_CHANGES: usize = 2000;
+
+/// Where every Card of a tree-operation batch's start state is now (D1, #231). A literal address in
+/// such a batch names the Card that held it when the batch started; earlier items' renames carry it
+/// along, and a Card an earlier item deleted cannot be named again.
+struct Follow {
+    start: BTreeSet<String>,
+    /// Start address to current address, for the start Cards that moved.
+    current_of: BTreeMap<String, String>,
+    /// Current address to start address, for the same Cards.
+    start_of: BTreeMap<String, String>,
+    /// Current addresses of the Cards the batch made.
+    created: BTreeSet<String>,
+    /// Start addresses of the deleted start Cards.
+    deleted: BTreeSet<String>,
+    rewritten: usize,
+    breaks: BTreeSet<(String, String)>,
+}
+
+impl Follow {
+    fn start(conn: &rusqlite::Connection) -> Result<Self> {
+        Ok(Self {
+            start: crate::addresses(conn)?,
+            current_of: BTreeMap::new(),
+            start_of: BTreeMap::new(),
+            created: BTreeSet::new(),
+            deleted: BTreeSet::new(),
+            rewritten: 0,
+            breaks: BTreeSet::new(),
+        })
+    }
+
+    /// The current address of the start Card `literal` names.
+    fn address(&self, literal: &str) -> Result<String> {
+        if self.deleted.contains(literal) {
+            bail!("card_deleted_in_batch: `{literal}` was deleted by an earlier item of this batch");
+        }
+        if !self.start.contains(literal) {
+            bail!(
+                "`{literal}` names no Card at the start of this batch; name a Card the batch made by its @@client_ref"
+            );
+        }
+        Ok(self
+            .current_of
+            .get(literal)
+            .cloned()
+            .unwrap_or_else(|| literal.to_string()))
+    }
+
+    /// The start address of the Card now at `current`.
+    fn start_address(&self, current: &str) -> String {
+        self.start_of
+            .get(current)
+            .cloned()
+            .unwrap_or_else(|| current.to_string())
+    }
+
+    /// An item's arguments with every literal address read on the start state: the address fields,
+    /// and the Links an authored title, body or text names. A `@@client_ref` is left for the
+    /// reference resolver, which binds it to the Card's current address.
+    fn translate(&self, tool: &str, arguments: &Value) -> Result<Value> {
+        let mut translated = arguments.clone();
+        let Some(fields) = translated.as_object_mut() else {
+            return Ok(translated);
+        };
+        // `to` names a Card only for relink; for move_card it is an empty slot, refused in a batch.
+        let names: &[&str] = if tool == "relink" {
+            &["from", "to"]
+        } else {
+            &["at", "before", "after", "side_of", "into", "from", "through", "parent"]
+        };
+        let follow = |value: &Value| -> Result<Value> {
+            match value {
+                Value::String(literal) if !literal.starts_with("@@") && !literal.is_empty() => {
+                    Ok(json!(self.address(literal)?))
+                }
+                Value::Array(items) => Ok(Value::Array(
+                    items
+                        .iter()
+                        .map(|item| match item {
+                            Value::String(literal) if !literal.starts_with("@@") && !literal.is_empty() => {
+                                Ok(json!(self.address(literal)?))
+                            }
+                            Value::Array(pair) => Ok(Value::Array(
+                                pair.iter()
+                                    .map(|end| match end {
+                                        Value::String(literal) if !literal.starts_with("@@") => {
+                                            Ok(json!(self.address(literal)?))
+                                        }
+                                        other => Ok(other.clone()),
+                                    })
+                                    .collect::<Result<_>>()?,
+                            )),
+                            other => Ok(other.clone()),
+                        })
+                        .collect::<Result<_>>()?,
+                )),
+                other => Ok(other.clone()),
+            }
+        };
+        for name in names.iter().chain(["sources", "side", "direct"].iter()) {
+            if let Some(value) = fields.get(*name) {
+                let current = follow(value)?;
+                fields.insert(name.to_string(), current);
+            }
+        }
+        if !self.current_of.is_empty() {
+            for name in ["title", "body", "text"] {
+                if let Some(Value::String(authored)) = fields.get(name) {
+                    let body = crate::link::LinkBody::parse(authored)?
+                        .rewrite_targets(&self.current_of)
+                        .body;
+                    fields.insert(name.to_string(), json!(body));
+                }
+            }
+        }
+        Ok(translated)
+    }
+
+    /// One item renamed these Cards (current addresses, old to new).
+    fn renamed(&mut self, mapping: &BTreeMap<String, String>) {
+        let mut moves = Vec::new();
+        for (old, new) in mapping {
+            if self.created.remove(old) {
+                moves.push((None, new.clone()));
+            } else {
+                let start = self.start_of.remove(old).unwrap_or_else(|| old.clone());
+                moves.push((Some(start), new.clone()));
+            }
+        }
+        for (start, new) in moves {
+            match start {
+                None => {
+                    self.created.insert(new);
+                }
+                Some(start) => {
+                    self.start_of.insert(new.clone(), start.clone());
+                    self.current_of.insert(start, new);
+                }
+            }
+        }
+    }
+
+    /// One item deleted these Cards (current addresses).
+    fn removed(&mut self, deleted: &BTreeSet<String>) {
+        for current in deleted {
+            if self.created.remove(current) {
+                continue;
+            }
+            let start = self.start_of.remove(current).unwrap_or_else(|| current.clone());
+            self.current_of.remove(&start);
+            self.deleted.insert(start);
+        }
+    }
+
+    fn moved(&self) -> BTreeMap<&String, &String> {
+        self.current_of.iter().filter(|(start, now)| start != now).collect()
+    }
+
+    /// How many start Cards the batch renamed or deleted, for the cap.
+    fn size(&self) -> usize {
+        self.moved().len() + self.deleted.len()
+    }
+
+    /// The composed plan, in start-state addresses.
+    fn plan(&self) -> Value {
+        json!({
+            "moved": self.moved(),
+            "deleted": self.deleted,
+            "links_that_will_break": self.breaks.iter().map(|(source, target)| json!({"source": source, "target": target})).collect::<Vec<_>>(),
+            "link_macros_rewritten": self.rewritten,
+        })
+    }
+}
+
 fn resolve(value: &Value, refs: &BTreeMap<String, String>) -> Resolved {
     let mut missing = BTreeSet::new();
     let value = resolve_into(value, refs, &mut missing);
@@ -507,6 +684,17 @@ fn resolve_before_into(
 }
 
 pub(crate) fn apply(root: &Path, args: &Value, scope: &mut crate::scope::WriteScope) -> Result<Value> {
+    apply_as(root, crate::Access::Agent, args, scope)
+}
+
+/// [`apply`] under the given Access: MCP applies as the agent, the owner's `zt apply` and the GUI as
+/// the owner (S6 #234, S7 #235).
+pub(crate) fn apply_as(
+    root: &Path,
+    access: crate::Access,
+    args: &Value,
+    scope: &mut crate::scope::WriteScope,
+) -> Result<Value> {
     let preview = match args.get("preview") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
@@ -522,6 +710,11 @@ pub(crate) fn apply(root: &Path, args: &Value, scope: &mut crate::scope::WriteSc
     if lean && !preview {
         bail!("lean is a preview option; pass preview:true with lean:true");
     }
+    let confirm = match args.get("confirm") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        _ => bail!("confirm must be a string"),
+    };
     let sequence = args.get("preview_items").is_some();
     if sequence && !preview {
         bail!("preview_items requires preview:true");
@@ -541,6 +734,16 @@ pub(crate) fn apply(root: &Path, args: &Value, scope: &mut crate::scope::WriteSc
             } else {
                 "batch"
             }
+        );
+    }
+    // A batch with a tree operation reads every address on its start state and is confirmed by its
+    // plan hash (S3, #231).
+    let structural = items
+        .iter()
+        .any(|item| item["tool"].as_str().is_some_and(crate::tree_ops::is_structural));
+    if structural && sequence {
+        bail!(
+            "tree operations (move_card, insert_card, delete_card) go in `items`, at most 64 per batch, not in `preview_items`"
         );
     }
     let bytes: usize = items.iter().map(|i| authored_bytes(&i["arguments"])).sum();
@@ -600,7 +803,12 @@ pub(crate) fn apply(root: &Path, args: &Value, scope: &mut crate::scope::WriteSc
     let mut tx = conn.transaction()?;
     let archive_revision = crate::link_index::revision(&tx)?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS applied_ops(op_key TEXT NOT NULL PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at TEXT NOT NULL)")?;
-    let simulated = simulate(&mut tx, root, items, sequence, preview, scope);
+    let plan_hash = if structural {
+        Some(plan_hash(archive_revision, items)?)
+    } else {
+        None
+    };
+    let simulated = simulate(&mut tx, root, access, items, sequence, preview, structural, scope);
     match simulated {
         // R198: the outer transaction is rolled back before any response leaves this module, the
         // ordinary failure contract's error included.
@@ -609,19 +817,73 @@ pub(crate) fn apply(root: &Path, args: &Value, scope: &mut crate::scope::WriteSc
             Err(error)
         }
         Ok(simulated) if preview => {
-            let value = if lean { simulated.lean(archive_revision) } else { simulated.value(archive_revision, true) };
+            let plan = simulated.plan.clone();
+            let mut value = if lean { simulated.lean(archive_revision) } else { simulated.value(archive_revision, true) };
+            if let (Some(hash), Some(plan)) = (&plan_hash, plan) {
+                value["plan_hash"] = json!(hash);
+                value["plan"] = plan;
+            }
             tx.rollback()?;
             Ok(value)
         }
         Ok(mut simulated) => {
+            let plan = simulated.plan.take();
+            // D2: a tree-operation batch commits only under the hash of the plan its client saw. A
+            // pure replay of a committed batch writes nothing, so its old hash still answers.
+            if let Some(hash) = &plan_hash
+                && !simulated.replayed_all
+                && confirm.as_deref() != Some(hash.as_str())
+            {
+                tx.rollback()?;
+                if confirm.is_none() {
+                    return Ok(json!({
+                        "applied": false,
+                        "confirm": hash,
+                        "plan": plan,
+                        "next": "nothing changed yet; call again with the same items and confirm = this plan hash",
+                    }));
+                }
+                bail!(
+                    "plan_changed: the archive or the items changed since this plan was made; preview the batch again"
+                );
+            }
             let made = std::mem::take(&mut simulated.made);
-            let value = simulated.value(archive_revision, false);
+            let mut value = simulated.value(archive_revision, false);
             tx.commit()?;
             // The Cards a committed batch made are this connection's from now on (D6).
             scope.record(made);
+            if let Some(plan) = plan {
+                value["applied"] = json!(true);
+                value["plan"] = plan;
+            }
             Ok(value)
         }
     }
+}
+
+fn has_receipt(conn: &rusqlite::Connection, op_key: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM applied_ops WHERE op_key=?1)",
+        [op_key],
+        |r| r.get(0),
+    )?)
+}
+
+/// The hash a tree-operation batch is confirmed with: the archive revision it was planned on and its
+/// canonical items (D2, #231).
+fn plan_hash(archive_revision: u64, items: &[Value]) -> Result<String> {
+    let canonical = items
+        .iter()
+        .map(|item| {
+            let tool = item["tool"].as_str().context("missing item tool")?;
+            Ok(json!({
+                "op_key": item["op_key"],
+                "client_ref": item["client_ref"],
+                "request": request(tool, &item["arguments"])?,
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(hash(&json!({"archive_revision": archive_revision, "items": canonical})))
 }
 
 /// What one simulated item produced. Only a successful item publishes its facts (R194).
@@ -634,6 +896,12 @@ enum ItemOutcome {
         result: Value,
         wrote: bool,
     },
+    /// A tree operation ran: what it renamed, deleted and made.
+    Tree {
+        address: String,
+        result: Value,
+        applied: crate::tree_ops::Applied,
+    },
 }
 
 /// The facts one batch or preview gathered inside its transaction.
@@ -645,6 +913,10 @@ struct Simulated {
     paragraphs: Vec<Value>,
     /// The Cards the request's create items made or replayed: the connection's own once committed.
     made: BTreeSet<String>,
+    /// A tree-operation batch's composed plan, in start-state addresses.
+    plan: Option<Value>,
+    /// Every item replayed its receipt, so the request writes nothing.
+    replayed_all: bool,
 }
 
 impl Simulated {
@@ -696,11 +968,18 @@ impl Simulated {
 fn simulate(
     tx: &mut rusqlite::Transaction<'_>,
     root: &Path,
+    access: crate::Access,
     items: &[Value],
     sequence: bool,
     preview: bool,
+    structural: bool,
     scope: &crate::scope::WriteScope,
 ) -> Result<Simulated> {
+    let mut follow = if structural { Some(Follow::start(tx)?) } else { None };
+    let mut changes = crate::link_index::Changes::default();
+    // The reference names whose Card an earlier item deleted.
+    let mut gone: BTreeSet<String> = BTreeSet::new();
+    let (mut replayed, mut written) = (0usize, 0usize);
     let mut made = BTreeSet::new();
     let mut refs = BTreeMap::new();
     let mut chunk_refs = BTreeMap::new();
@@ -746,13 +1025,22 @@ fn simulate(
             let Resolved { value, missing } = normalized;
             (value, &chunk_refs, missing)
         } else {
-            (item["arguments"].clone(), &refs, BTreeSet::new())
+            // An item that already holds its receipt replays it as sent: its literals named the start
+            // state of the batch that committed it, not today's archive.
+            let arguments = match &follow {
+                Some(follow) if !has_receipt(tx, op_key)? => follow.translate(tool, &item["arguments"])?,
+                _ => item["arguments"].clone(),
+            };
+            (arguments, &refs, BTreeSet::new())
         };
         let Resolved {
             value: arguments,
             missing: unresolved,
         } = resolve(&raw, bindings);
         missing.extend(unresolved);
+        if let Some(name) = missing.iter().find(|name| gone.contains(*name)) {
+            bail!("card_deleted_in_batch: `@@{name}` names a Card an earlier item of this batch deleted");
+        }
         let identity = json!({"index":index,"op_key":op_key,"client_ref":client_ref});
         if !missing.is_empty() {
             if preview {
@@ -783,14 +1071,21 @@ fn simulate(
                 missing.into_iter().next().expect("a missing reference")
             );
         }
-        let canonical = request(tool, &raw)?;
-        let resolved = resolve(&canonical, bindings).checked()?;
-        let request_hash = hash(&json!({"request":canonical,"resolved":resolved}));
+        let request_hash = if structural {
+            // The request as sent: a replay reads the start state again, so it must not hash the
+            // addresses earlier items carried along (D1, #231).
+            hash(&json!({"request": request(tool, &item["arguments"])?}))
+        } else {
+            let canonical = request(tool, &raw)?;
+            let resolved = resolve(&canonical, bindings).checked()?;
+            hash(&json!({"request":canonical,"resolved":resolved}))
+        };
+        let tree = structural.then_some(&mut changes);
         let outcome = if preview {
             // S10-AC02 / R195: one savepoint per item, so a Lock refusal rolls back exactly this item
             // and every independent item after it still runs.
             let savepoint = tx.savepoint()?;
-            match apply_item(&savepoint, root, tool, &arguments, op_key, &request_hash, scope, &made) {
+            match apply_item(&savepoint, root, access, tool, &arguments, op_key, &request_hash, scope, &made, tree) {
                 // R194: release the item into the outer temporary transaction, then publish it.
                 Ok(outcome) => {
                     savepoint.commit()?;
@@ -804,10 +1099,49 @@ fn simulate(
                 }
             }
         } else {
-            apply_item(tx, root, tool, &arguments, op_key, &request_hash, scope, &made)
+            apply_item(tx, root, access, tool, &arguments, op_key, &request_hash, scope, &made, tree)
         };
         match outcome {
+            Ok(ItemOutcome::Tree {
+                address,
+                result,
+                applied,
+            }) => {
+                written += 1;
+                let follow = follow.as_mut().expect("a tree operation runs only in a structural batch");
+                for (source, target) in &applied.breaks {
+                    follow
+                        .breaks
+                        .insert((follow.start_address(source), follow.start_address(target)));
+                }
+                follow.rewritten += applied.rewritten;
+                // A delete names its set before its Side compaction renames the later siblings.
+                follow.removed(&applied.deleted);
+                follow.renamed(&applied.mapping);
+                if let Some(created) = &applied.created {
+                    follow.created.insert(created.clone());
+                }
+                // References and the Cards this request made follow the same renames and deletes.
+                for (name, bound) in refs.iter_mut() {
+                    if applied.deleted.contains(bound.as_str()) {
+                        gone.insert(name.clone());
+                    } else if let Some(new) = applied.mapping.get(bound.as_str()) {
+                        *bound = new.clone();
+                    }
+                }
+                refs.retain(|name, _| !gone.contains(name));
+                made = made
+                    .into_iter()
+                    .filter(|at| !applied.deleted.contains(at))
+                    .map(|at| applied.mapping.get(&at).cloned().unwrap_or(at))
+                    .collect();
+                refs.insert(client_ref.to_string(), address);
+                results.push(
+                    json!({"op_key":op_key,"client_ref":client_ref,"result":result,"replayed":false}),
+                );
+            }
             Ok(ItemOutcome::Replayed { address, result }) => {
+                replayed += 1;
                 // A replayed create is the Card this operation made, so a resumed run may continue it.
                 if tool.starts_with("create") {
                     made.insert(address.clone());
@@ -825,6 +1159,29 @@ fn simulate(
                 result,
                 wrote,
             }) => {
+                written += 1;
+                if let Some(follow) = follow.as_mut() {
+                    // In a tree-operation batch a later item may move this Card, so its index rows are
+                    // read now; a Side placement's shift is a rename like any other.
+                    if let Some(moved) = result.get("moved").and_then(Value::as_object) {
+                        let mapping: BTreeMap<String, String> = moved
+                            .iter()
+                            .filter_map(|(old, new)| Some((old.clone(), new.as_str()?.to_string())))
+                            .collect();
+                        follow.renamed(&mapping);
+                        for bound in refs.values_mut() {
+                            if let Some(new) = mapping.get(bound.as_str()) {
+                                *bound = new.clone();
+                            }
+                        }
+                    }
+                    if tool.starts_with("create") {
+                        follow.created.insert(address.clone());
+                    }
+                    if wrote {
+                        changes.resync(tx, &address)?;
+                    }
+                }
                 if tool.starts_with("create") {
                     made.insert(address.clone());
                 }
@@ -832,7 +1189,7 @@ fn simulate(
                 if sequence {
                     chunk_refs.insert(client_ref.to_string(), address.clone());
                 }
-                if wrote {
+                if wrote && follow.is_none() {
                     changed.insert(address);
                 }
                 results.push(
@@ -900,9 +1257,55 @@ fn simulate(
             crate::link_index::bump_revision(tx)?;
         }
     }
+    let replayed_all = written == 0;
+    let plan = match &follow {
+        Some(follow) => {
+            if replayed > 0 && written > 0 {
+                bail!(
+                    "a tree-operation batch replays completely or not at all: {replayed} item(s) replayed and {written} item(s) are new; send the original batch, or new operation keys"
+                );
+            }
+            if follow.size() > MAX_TREE_CHANGES {
+                bail!(
+                    "a batch may rename or delete at most {MAX_TREE_CHANGES} Cards; this one changes {}; split it into several batches",
+                    follow.size()
+                );
+            }
+            if written > 0 {
+                // D1: one refresh of Reverse links, Term uses and the revision for the whole batch.
+                changes.finish(tx)?;
+            }
+            Some(follow.plan())
+        }
+        None => None,
+    };
     let mut cards = Vec::new();
     let mut paragraphs = Vec::new();
-    if preview {
+    if preview && follow.is_some() {
+        // A tree-operation batch projects the Cards its creates and edits left, at their final
+        // addresses; a later move may rewrite an edited body's Links, so no receipt fingerprint is
+        // compared here.
+        let mut finals = BTreeSet::new();
+        for (receipt, item) in results.iter().zip(items) {
+            let tool = item["tool"].as_str().unwrap_or_default();
+            if crate::tree_ops::is_structural(tool) {
+                continue;
+            }
+            if let Some(address) = refs.get(receipt["client_ref"].as_str().unwrap_or_default()) {
+                finals.insert(address.clone());
+            }
+        }
+        let previewed = finals
+            .iter()
+            .filter(|at| crate::target_exists(tx, at).unwrap_or(false))
+            .map(|at| crate::load_card(tx, at))
+            .collect::<Result<Vec<_>>>()?;
+        let rows = previewed.iter().map(|card| card.row_id).collect::<Vec<_>>();
+        let lock = crate::tree_lock::LockView::read(tx, Some(&rows))?;
+        for card in &previewed {
+            cards.push(crate::read::text_facts(tx, card, &lock, crate::read::TermLinks::Raw)?);
+        }
+    } else if preview {
         // A preview projects its own simulation: it must still match the final receipt per address,
         // so replaying a historical receipt after an independent edit is refused.
         let mut expected = BTreeMap::new();
@@ -966,6 +1369,8 @@ fn simulate(
         cards,
         paragraphs,
         made,
+        plan,
+        replayed_all,
     })
 }
 
@@ -973,12 +1378,14 @@ fn simulate(
 fn apply_item(
     conn: &rusqlite::Connection,
     root: &Path,
+    access: crate::Access,
     tool: &str,
     arguments: &Value,
     op_key: &str,
     request_hash: &str,
     scope: &crate::scope::WriteScope,
     made: &BTreeSet<String>,
+    tree: Option<&mut crate::link_index::Changes>,
 ) -> Result<ItemOutcome> {
     let prior: Option<(String, String)> = conn
         .query_row(
@@ -1001,9 +1408,27 @@ fn apply_item(
     }
     // A pure receipt replay is not a write; every new write meets the connection's Write scope.
     scope.check(conn, tool, arguments, made)?;
+    if crate::tree_ops::is_structural(tool) {
+        let changes = tree.context("a tree operation runs only inside a structural batch")?;
+        let applied = crate::tree_ops::apply_tx(root, conn, access, tool, arguments, changes)?;
+        let mut result = json!({
+            "address": applied.address,
+            "moved": applied.mapping,
+            "deleted": applied.deleted,
+            "link_macros_rewritten": applied.rewritten,
+            "plan": applied.lines,
+        });
+        applied.accepted.attach(&mut result);
+        conn.execute("INSERT INTO applied_ops(op_key,request_hash,result_json,committed_at) VALUES(?1,?2,?3,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",rusqlite::params![op_key,request_hash,result.to_string()])?;
+        return Ok(ItemOutcome::Tree {
+            address: applied.address.clone(),
+            result,
+            applied,
+        });
+    }
     let before = if tool == "edit_card" {
         let at = arguments["at"].as_str().context("missing edit at")?;
-        crate::Access::Agent.ensure_writable(crate::load_card(conn, at)?.workspace)?;
+        access.ensure_writable(crate::load_card(conn, at)?.workspace)?;
         Some(fingerprint(conn, at)?)
     } else {
         None
@@ -1025,7 +1450,7 @@ fn apply_item(
     let (mut result, wrote) = if tool == "edit_card" && arguments.get("owned_paragraph").is_some() {
         owned_paragraph(root, conn, arguments, before.as_deref().expect("edit base"))?
     } else {
-        crate::mcp::write_card_tx(root, conn, tool, &write_arguments)?
+        crate::mcp::write_card_as(root, conn, access, tool, &write_arguments)?
     };
     let address = result["address"]
         .as_str()
@@ -1226,5 +1651,265 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM cards WHERE location = '0/1|b'", [], |row| row.get(0))
             .expect("count");
         assert_eq!(written, 0, "a refused placement writes no Card");
+    }
+    /// An agent archive: Topic `0/0` with `0/1` and its Side successors `0/1|a`, `0/1|b`, then
+    /// `0/2`; Topic `1/0` with `1/1`.
+    fn tree_archive() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::initialize_database(temp.path()).expect("initialize");
+        let root = temp.path();
+        let owner = crate::Access::Owner;
+        let agent = crate::Workspace::Agent;
+        crate::ops::create_topic(root, owner, agent, "# 甲书\n").expect("topic");
+        crate::ops::create_topic(root, owner, agent, "# 乙书\n").expect("topic");
+        let make = |kind, at: &str, text: &str| {
+            crate::ops::create_successor(root, owner, kind, at, crate::CardType::Idea, None, text).expect("card");
+        };
+        make(crate::ops::Successor::Direct, "0/0", "# 一\n\n一。\n");
+        make(crate::ops::Successor::Side, "0/1", "# 甲\n\n甲。\n");
+        make(crate::ops::Successor::Side, "0/1", "# 乙\n\n乙。见 [[0/1|a]]。\n");
+        make(crate::ops::Successor::Direct, "0/1", "# 二\n\n二。\n");
+        make(crate::ops::Successor::Direct, "1/0", "# 壹\n\n壹。\n");
+        temp
+    }
+
+    fn tree_item(n: usize, tool: &str, arguments: Value) -> Value {
+        json!({"op_key": format!("tree/unit/1/step/i{n}"), "client_ref": format!("t{n}"), "tool": tool, "arguments": arguments})
+    }
+
+    fn title_at(root: &Path, at: &str) -> Option<String> {
+        let conn = crate::open_db(root).expect("open");
+        crate::load_card(&conn, at)
+            .ok()
+            .map(|card| crate::parse_card_text(&card.text).expect("parse").title)
+    }
+
+    /// S3 (#231): a tree operation into a Locked tree is refused like any Lock refusal. A real batch
+    /// commits nothing; its preview names the refused item, keeps checking the independent ones and
+    /// reports the item that depends on the refused one as blocked.
+    #[test]
+    fn a_tree_operation_into_a_locked_tree_refuses_the_whole_batch_and_previews_the_refusal() {
+        let temp = tree_archive();
+        let root = temp.path();
+        {
+            let mut conn = crate::open_db(root).expect("open");
+            let plan = crate::tree_lock::plan(&conn, "1/0", None).expect("lock plan");
+            let tx = conn.transaction().expect("tx");
+            crate::tree_lock::lock_tx(&tx, &plan).expect("lock");
+            tx.commit().expect("commit");
+        }
+        let items = json!([
+            tree_item(0, "move_card", json!({"at": "0/1|b", "before": "0/1|a"})),
+            tree_item(1, "move_card", json!({"at": "0/2", "side_of": "1/1"})),
+            tree_item(2, "create_successor", json!({"at": "@@t1", "kind": "side", "title": "跟随"})),
+            tree_item(3, "create_successor", json!({"at": "0/1", "kind": "side", "title": "独立"})),
+        ]);
+        let preview = apply(root, &json!({"items": items, "preview": true}), &mut Default::default()).expect("preview");
+        assert_eq!(preview["complete"], false, "{preview}");
+        assert_eq!(preview["refusals"].as_array().unwrap().len(), 1, "{preview}");
+        assert_eq!(preview["refusals"][0]["index"], 1);
+        assert_eq!(preview["refusals"][0]["refusal"]["error"], "card_locked");
+        assert_eq!(preview["blocked"][0]["index"], 2, "{preview}");
+        assert_eq!(preview["scan"]["checked"], 2);
+        let error = apply(root, &json!({"items": items, "confirm": preview["plan_hash"]}), &mut Default::default())
+            .expect_err("a real batch stops on the Lock");
+        assert!(format!("{error:#}").contains("lock"), "{error:#}");
+        assert_eq!(title_at(root, "0/1|a").as_deref(), Some("甲"), "the first move rolled back");
+        assert_eq!(title_at(root, "0/2").as_deref(), Some("二"));
+    }
+
+    /// S3 (#231, D3): one batch renames or deletes at most 2,000 Cards; a larger one is refused before
+    /// anything is written.
+    #[test]
+    fn a_batch_that_renames_more_than_two_thousand_cards_is_refused() {
+        let temp = tree_archive();
+        let root = temp.path();
+        {
+            let conn = crate::open_db(root).expect("open");
+            let tx = conn.unchecked_transaction().expect("tx");
+            let mut at = "0/1|a".to_string();
+            for n in 0..2001 {
+                at = crate::direct_successor(&at).expect("next");
+                tx.execute(
+                    "INSERT INTO cards(location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type) VALUES(?1, NULL, 0, 0, NULL, ?2, 'agent', 'idea')",
+                    rusqlite::params![at, format!("# 行{n}\n\n<!-- zt:reverse-links -->\n")],
+                )
+                .expect("chain card");
+            }
+            crate::link_index::rebuild(&tx).expect("index the seed");
+            tx.commit().expect("commit");
+        }
+        let items = json!([tree_item(0, "move_card", json!({"at": "0/1|a", "side_of": "1/1"}))]);
+        let error = apply(root, &json!({"items": items, "preview": true}), &mut Default::default())
+            .expect_err("over the cap");
+        assert!(format!("{error:#}").contains("at most 2000"), "{error:#}");
+        assert_eq!(title_at(root, "0/1|a").as_deref(), Some("甲"));
+    }
+
+    /// S3 (#231): a committed tree-operation batch replays completely; a request that mixes its old
+    /// receipts with a new tree operation is refused, because the old literals named another start.
+    #[test]
+    fn a_tree_operation_batch_replays_completely_or_not_at_all() {
+        let temp = tree_archive();
+        let root = temp.path();
+        let first = json!([tree_item(0, "move_card", json!({"at": "0/1|b", "before": "0/1|a"}))]);
+        let plan = apply(root, &json!({"items": first, "preview": true}), &mut Default::default()).expect("preview");
+        let done = apply(root, &json!({"items": first, "confirm": plan["plan_hash"]}), &mut Default::default())
+            .expect("commit");
+        assert_eq!(done["applied"], true, "{done}");
+        assert_eq!(title_at(root, "0/1|a").as_deref(), Some("乙"));
+        let replay = apply(root, &json!({"items": first, "confirm": plan["plan_hash"]}), &mut Default::default())
+            .expect("replay");
+        assert_eq!(replay["results"][0]["replayed"], true);
+        let mixed = json!([
+            tree_item(0, "move_card", json!({"at": "0/1|b", "before": "0/1|a"})),
+            tree_item(1, "move_card", json!({"at": "0/2", "side_of": "1/1"})),
+        ]);
+        let error = apply(root, &json!({"items": mixed, "preview": true}), &mut Default::default())
+            .expect_err("mixed replay");
+        assert!(format!("{error:#}").contains("replays completely or not at all"), "{error:#}");
+    }
+    /// Every Regular Card by its unique title: its address and the titles its Links reach (`?` for a
+    /// target that names no Card).
+    fn identities(root: &Path) -> BTreeMap<String, (String, Vec<String>)> {
+        let conn = crate::open_db(root).expect("open");
+        let cards = crate::load_cards(&conn).expect("cards");
+        let titles: BTreeMap<String, String> = cards
+            .iter()
+            .map(|card| (card.address.clone(), crate::parse_card_text(&card.text).expect("parse").title))
+            .collect();
+        cards
+            .iter()
+            .filter(|card| !crate::is_tree_root(card))
+            .map(|card| {
+                let body = crate::parse_card_text(&card.text).expect("parse").body;
+                let links = crate::link::LinkBody::parse(&body)
+                    .expect("links")
+                    .occurrences()
+                    .iter()
+                    .map(|o| titles.get(o.target).cloned().unwrap_or_else(|| "?".to_string()))
+                    .collect();
+                (titles[&card.address].clone(), (card.address.clone(), links))
+            })
+            .collect()
+    }
+
+    /// S3 (#231): random batches of up to eight tree operations, every address read on the start
+    /// state. After each commit every surviving Card stands where the composed plan says, no deleted
+    /// Card remains, and every Link reaches the same Card it reached before; in test builds the
+    /// batch's one refresh also proves the Link index against a fresh parse.
+    #[test]
+    fn random_tree_batches_keep_every_card_where_the_plan_says_and_every_link_on_its_card() {
+        let mut seen = BTreeSet::new();
+        for seed in [3_u64, 11, 29, 57, 101, 211, 307, 401] {
+            let temp = tree_archive();
+            let root = temp.path();
+            let owner = crate::Access::Owner;
+            let mut n = 0;
+            for (at, kind) in [("0/1|a", "side"), ("0/1|a", "direct"), ("0/2", "side"), ("0/2", "direct"), ("1/1", "side"), ("1/1", "direct"), ("0/2|a", "side")] {
+                let kind = if kind == "side" { crate::ops::Successor::Side } else { crate::ops::Successor::Direct };
+                let links = ["0/1", "0/1|a", "0/2", "1/1"][n % 4];
+                let text = format!("# 卡{n}\n\n卡{n}的正文。见 [[{links}]]。\n");
+                let _ = crate::ops::create_successor(root, owner, kind, at, crate::CardType::Idea, None, &text);
+                n += 1;
+            }
+            let before = identities(root);
+            let start: Vec<String> = before.values().map(|(at, _)| at.clone()).collect();
+            let mut state = seed;
+            let mut next = || {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (state >> 33) as usize
+            };
+            let mut items: Vec<Value> = Vec::new();
+            for attempt in 0..40 {
+                if items.len() == 8 {
+                    break;
+                }
+                let a = start[next() % start.len()].clone();
+                let b = start[next() % start.len()].clone();
+                // A span runs from `a` to the next Card on its chain when the start state has one.
+                let longer = next() % 2 == 0;
+                let through = crate::direct_successor(&a)
+                    .ok()
+                    .filter(|after| longer && start.contains(after))
+                    .unwrap_or_else(|| a.clone());
+                // A reorder reverses the Side successors of a Card that has at least two.
+                let side_children = |parent: &String| -> Vec<String> {
+                    let mut children: Vec<String> = start
+                        .iter()
+                        .filter(|at| crate::parent_location(at).as_deref() == Some(parent.as_str()))
+                        .filter(|at| crate::immediate_side_label(at, parent).is_some())
+                        .cloned()
+                        .collect();
+                    children.sort_by_key(|at| crate::side_label_to_number(crate::last_segment(at)));
+                    children.reverse();
+                    children
+                };
+                let parents: Vec<&String> = start.iter().filter(|at| side_children(at).len() >= 2).collect();
+                let parent = parents[next() % parents.len()].clone();
+                let children = side_children(&parent);
+                // Each batch opens with a reorder, so the later items must follow its renames.
+                let kind = if attempt == 0 { 9 } else { next() % 10 };
+                let (tool, arguments) = match kind {
+                    0 => ("move_card", json!({"at": a, "before": b})),
+                    1 => ("move_card", json!({"at": a, "side_of": b})),
+                    2 => ("move_card", json!({"at": a, "after": b})),
+                    3 => ("move_card", json!({"at": a, "before": b, "alone": true})),
+                    4 => ("delete_card", json!({"at": a, "into": b})),
+                    5 => ("move_span", json!({"from": a, "through": through, "side_of": b})),
+                    6 => ("indent", json!({"at": a, "through": through})),
+                    7 => ("outdent", json!({"at": a})),
+                    8 => ("delete_span", json!({"from": a, "through": through, "into": b})),
+                    _ => ("reorder", json!({"parent": parent, "side": children})),
+                };
+                let mut candidate = items.clone();
+                candidate.push(json!({"op_key": format!("rand/s{seed}/1/step/i{attempt}"), "client_ref": format!("r{attempt}"), "tool": tool, "arguments": arguments}));
+                if let Ok(preview) = apply(root, &json!({"items": candidate, "preview": true}), &mut Default::default())
+                    && preview["complete"] == true
+                {
+                    items = candidate;
+                }
+            }
+            assert!(items.len() >= 3, "seed {seed}: only {} items formed a valid batch", items.len());
+            let preview = apply(root, &json!({"items": items, "preview": true}), &mut Default::default()).expect("preview");
+            let done = apply(root, &json!({"items": items, "confirm": preview["plan_hash"]}), &mut Default::default())
+                .expect("commit");
+            assert_eq!(done["plan"], preview["plan"], "seed {seed}: the commit ran the previewed plan");
+            seen.extend(items.iter().map(|item| item["tool"].as_str().unwrap_or_default().to_string()));
+            let plan = &done["plan"];
+            let deleted: BTreeSet<String> = plan["deleted"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+            let gone_titles: BTreeSet<&String> = before.iter().filter(|(_, (at, _))| deleted.contains(at)).map(|(title, _)| title).collect();
+            let after = identities(root);
+            for (title, (at, links)) in &before {
+                if deleted.contains(at) {
+                    assert!(!after.contains_key(title), "seed {seed}: deleted {title} remains");
+                    continue;
+                }
+                let expected = plan["moved"].get(at).and_then(Value::as_str).unwrap_or(at);
+                let (now, links_now) = after.get(title).unwrap_or_else(|| panic!("seed {seed}: {title} vanished"));
+                assert_eq!(now, expected, "seed {seed}: {title} is not where the plan says: {plan}");
+                for (old, new) in links.iter().zip(links_now) {
+                    if !gone_titles.contains(old) {
+                        assert_eq!(old, new, "seed {seed}: a Link of {title} changed its Card");
+                    }
+                }
+            }
+        }
+        for tool in ["move_card", "delete_card", "move_span", "indent", "outdent", "delete_span", "reorder"] {
+            assert!(seen.contains(tool), "no committed batch exercised {tool}: {seen:?}");
+        }
+    }
+    /// S5 (#233): a reorder item swaps two Side branches inside a batch; its addresses are read on
+    /// the start state like every other item.
+    #[test]
+    fn a_reorder_item_swaps_two_side_branches() {
+        let temp = tree_archive();
+        let root = temp.path();
+        let items = json!([tree_item(0, "reorder", json!({"parent": "0/1", "side": ["0/1|b", "0/1|a"]}))]);
+        let preview = apply(root, &json!({"items": items, "preview": true}), &mut Default::default()).expect("preview");
+        assert_eq!(preview["plan"]["moved"], json!({"0/1|a": "0/1|b", "0/1|b": "0/1|a"}), "{preview}");
+        apply(root, &json!({"items": items, "confirm": preview["plan_hash"]}), &mut Default::default()).expect("commit");
+        assert_eq!(title_at(root, "0/1|a").as_deref(), Some("乙"));
+        assert_eq!(title_at(root, "0/1|b").as_deref(), Some("甲"));
     }
 }

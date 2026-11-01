@@ -269,14 +269,18 @@ impl Changes {
                 params![old, new],
             )?;
         }
-        conn.execute(
-            "UPDATE links SET source=substr(source,2) WHERE substr(source,1,1)=char(1)",
-            [],
-        )?;
-        conn.execute(
-            "UPDATE links SET target=substr(target,2) WHERE substr(target,1,1)=char(1)",
-            [],
-        )?;
+        // Clear the marks row by row through the indexes; a scan of the whole table would cost the
+        // archive's size on every rename.
+        for new in mapping.values() {
+            conn.execute(
+                "UPDATE links SET source=?1 WHERE source=char(1)||?1",
+                params![new],
+            )?;
+            conn.execute(
+                "UPDATE links SET target=?1 WHERE target=char(1)||?1",
+                params![new],
+            )?;
+        }
         Ok(())
     }
 

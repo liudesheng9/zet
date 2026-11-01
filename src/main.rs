@@ -40,6 +40,7 @@ mod shutdown;
 mod spread;
 mod term;
 mod tree_lock;
+mod tree_ops;
 mod workspace;
 
 pub(crate) use card::{
@@ -102,6 +103,10 @@ fn run() -> Result<()> {
         [cmd] if cmd == "reindex" => link_index::command(true),
         [cmd] if cmd == "stats" => cmd_stats(),
         [cmd] if cmd == "lsbk" => cmd_lsbk(),
+        [cmd, path] if cmd == "apply" => shell_apply(path, false),
+        [cmd, path, flag] | [cmd, flag, path] if cmd == "apply" && flag == "--preview" => {
+            shell_apply(path, true)
+        }
         [cmd] if cmd == "dp" => cmd_dump(),
         [cmd] if cmd == "clear" => cmd_clear(),
         [cmd] if cmd == "ws" => cmd_workspaces(),
@@ -2501,6 +2506,7 @@ fn cmd_help() -> Result<()> {
         println!("  zt mv --at <location> [--alone] <new-location>");
         println!("  zt mv --at <location> [--alone] --before <location>");
         println!("  zt ins --at <location> [--type <type>] [--term <name>]");
+        println!("  zt apply <plan.json> [--preview]");
         println!("  zt stats");
         println!("  zt ws");
         println!("  zt mcp");
@@ -2810,7 +2816,11 @@ fn load_cards(conn: &Connection) -> Result<Vec<Card>> {
 /// Every Card's address (a Location, or a Citation key for a Literature Card), without reading any
 /// text: what the Location planners need (S2, #230).
 fn addresses(conn: &Connection) -> Result<BTreeSet<String>> {
-    let mut stmt = conn.prepare_cached("SELECT COALESCE(location, citation_key) FROM cards")?;
+    // Both columns are UNIQUE, so each half reads its own index and no Card text is touched.
+    let mut stmt = conn.prepare_cached(
+        "SELECT location FROM cards WHERE location IS NOT NULL
+         UNION ALL SELECT citation_key FROM cards WHERE citation_key IS NOT NULL",
+    )?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     rows.collect::<std::result::Result<BTreeSet<_>, _>>()
         .map_err(Into::into)
@@ -4197,6 +4207,36 @@ impl DeletePlan {
     }
 }
 
+/// The delete plan of a span (S4, #232): its Cards with their Side successors go, and the rest of
+/// its chain moves up into the span's place. The second value says whether the plan closes a Direct
+/// chain: such a gap must close, so a span whose broken Links would land on the Cards that move up is
+/// refused unless `into` re-points them.
+fn span_delete_plan(conn: &Connection, from: &str, through: &str) -> Result<(DeletePlan, bool)> {
+    let card = load_card(conn, from)?;
+    if is_tree_root(&card) {
+        bail!("a span starts at a Regular Card, not the tree root `{from}`");
+    }
+    let (delete_set, close) = place::span_delete(&addresses(conn)?, &card.address, through)?;
+    let closes_chain = !close.is_empty();
+    let side_compaction = if closes_chain {
+        close
+    } else {
+        side_compaction_mapping(conn, &card.address, &delete_set)?
+    };
+    let inbound = links_into(conn, &delete_set)?;
+    Ok((
+        DeletePlan {
+            scope: DeleteScope::Subtree,
+            delete_set,
+            confirmation: "delete".to_string(),
+            inbound,
+            into: None,
+            side_compaction,
+        },
+        closes_chain,
+    ))
+}
+
 /// Links from Cards outside `delete_set` to Cards in it, once per (source, target).
 fn links_into(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<(String, String)>> {
     let mut found = BTreeSet::new();
@@ -4417,15 +4457,36 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
     let tx = conn.transaction()?;
     tree_lock::ensure_unlocked(&tx, plan.gate())?;
     let mut changes = link_index::Changes::default();
+    apply_delete_plan_into(&tx, &plan, &mut changes)?;
+    changes.finish(&tx)?;
+    tx.commit()?;
+    Ok(DeleteResult {
+        deleted_count: plan.delete_set.len(),
+        moved: compaction,
+        root_kept,
+        next_topic_reset: false,
+    })
+}
+
+/// The delete itself inside the caller's transaction, after its Lock gate: re-point, drop the index
+/// rows, delete, compact Side labels. `changes` gathers what it touched; the caller refreshes once,
+/// so a structural batch refreshes all its items together (S3, #231).
+fn apply_delete_plan_into(
+    tx: &Connection,
+    plan: &DeletePlan,
+    changes: &mut link_index::Changes,
+) -> Result<()> {
+    let compaction = plan.compaction();
+    let repoint = plan.repoint_mapping();
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
     if !repoint.is_empty() {
-        let cards = if link_index::ready(&tx) {
-            link_index::sources_linking(&tx, repoint.keys())?
+        let cards = if link_index::ready(tx) {
+            link_index::sources_linking(tx, repoint.keys())?
                 .iter()
-                .map(|source| load_card(&tx, source))
+                .map(|source| load_card(tx, source))
                 .collect::<Result<Vec<_>>>()?
         } else {
-            load_cards(&tx)?
+            load_cards(tx)?
         };
         for card in cards {
             if plan.delete_set.contains(&card.address) {
@@ -4437,27 +4498,19 @@ fn apply_delete_plan(conn: &mut Connection, plan: DeletePlan) -> Result<DeleteRe
                     "UPDATE cards SET text = ?1 WHERE row_id = ?2",
                     params![text, card.row_id],
                 )?;
-                changes.resync(&tx, &card.address)?;
+                changes.resync(tx, &card.address)?;
             }
         }
     }
-    changes.drop_sources(&tx, &plan.delete_set)?;
+    changes.drop_sources(tx, &plan.delete_set)?;
     for address in &plan.delete_set {
         tx.execute(
             "DELETE FROM cards WHERE location = ?1 OR citation_key = ?1",
             [address],
         )?;
     }
-    spread::follow(&tx, &BTreeMap::new(), &plan.delete_set)?;
-    apply_location_mapping_tx(&tx, &compaction, &mut changes)?;
-    changes.finish(&tx)?;
-    tx.commit()?;
-    Ok(DeleteResult {
-        deleted_count: plan.delete_set.len(),
-        moved: compaction,
-        root_kept,
-        next_topic_reset: false,
-    })
+    spread::follow(tx, &BTreeMap::new(), &plan.delete_set)?;
+    apply_location_mapping_tx(tx, &compaction, changes)
 }
 
 /// The whole-archive delete keeps today's `clear` effects on Cards, derived Links and the Topic
@@ -4836,6 +4889,108 @@ fn count_rewritten_links(conn: &Connection, mapping: &BTreeMap<String, String>) 
             .count;
     }
     Ok(count)
+}
+
+/// `zt apply <plan.json> [--preview]` (S6, #234): the owner applies one batch plan, the same `items`
+/// that `apply_batch` takes, with Owner Access. An item may leave out `op_key` and `client_ref`; the
+/// command names them. The plan is previewed first; a plan with a tree operation then asks for
+/// `apply` and commits with its plan hash, and a plan of only creates and edits applies at once.
+fn shell_apply(path: &str, preview: bool) -> Result<()> {
+    let root = require_service_up()?;
+    let text = fs::read_to_string(path).with_context(|| format!("cannot read plan file `{path}`"))?;
+    let mut plan: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| anyhow::anyhow!("plan file `{path}` is not JSON: {error}"))?;
+    // Named operation keys come from the plan and the archive revision it starts on: the preview and
+    // the commit share them, and another plan or a later archive state never collides with them.
+    let revision = link_index::revision(&open_db(&root)?)?;
+    let digest = {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(format!("{revision}\n{text}").as_bytes());
+        digest.iter().take(8).map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let items = plan
+        .get_mut("items")
+        .and_then(serde_json::Value::as_array_mut)
+        .context("a plan file holds an object with an `items` array")?;
+    for (index, item) in items.iter_mut().enumerate() {
+        let fields = item
+            .as_object_mut()
+            .with_context(|| format!("item {index} is not an object"))?;
+        if !fields.get("tool").is_some_and(serde_json::Value::is_string) {
+            bail!("item {index} has no `tool`");
+        }
+        if !fields.get("arguments").is_some_and(serde_json::Value::is_object) {
+            bail!("item {index} has no `arguments` object");
+        }
+        fields
+            .entry("op_key")
+            .or_insert(serde_json::json!(format!("shell/{digest}/1/item/i{index}")));
+        fields
+            .entry("client_ref")
+            .or_insert(serde_json::json!(format!("i{index}")));
+    }
+    let mut scope = scope::WriteScope::default();
+    let mut request = plan.clone();
+    request["preview"] = serde_json::json!(true);
+    let previewed = batch::apply_as(&root, workspace::Access::Owner, &request, &mut scope)?;
+    for line in apply_lines(&previewed) {
+        println!("{line}");
+    }
+    if previewed["complete"] != true {
+        bail!("the plan has refused or blocked items; nothing was applied");
+    }
+    if preview {
+        return Ok(());
+    }
+    if let Some(hash) = previewed.get("plan_hash") {
+        let stdin = io::stdin();
+        read_confirmation(&mut stdin.lock(), "apply")?;
+        plan["confirm"] = hash.clone();
+    }
+    let done = batch::apply_as(&root, workspace::Access::Owner, &plan, &mut scope)?;
+    println!(
+        "applied: {} item(s)",
+        done["results"].as_array().map_or(0, Vec::len)
+    );
+    Ok(())
+}
+
+/// The lines `zt apply` prints for a previewed plan: the composed renames and deletes in the
+/// addresses of the plan's start, the Links that break, and every refused or blocked item.
+fn apply_lines(previewed: &serde_json::Value) -> Vec<String> {
+    let mut lines = vec!["apply verification:".to_string()];
+    let plan = &previewed["plan"];
+    for (old, new) in plan["moved"].as_object().into_iter().flatten() {
+        lines.push(format!("{old} -> {}", new.as_str().unwrap_or_default()));
+    }
+    for deleted in plan["deleted"].as_array().into_iter().flatten() {
+        lines.push(format!("delete {}", deleted.as_str().unwrap_or_default()));
+    }
+    for link in plan["links_that_will_break"].as_array().into_iter().flatten() {
+        lines.push(format!(
+            "link that will break: {} -> {}",
+            link["source"].as_str().unwrap_or_default(),
+            link["target"].as_str().unwrap_or_default()
+        ));
+    }
+    if let Some(count) = plan["link_macros_rewritten"].as_u64() {
+        lines.push(format!("link macros rewritten: {count}"));
+    }
+    for refusal in previewed["refusals"].as_array().into_iter().flatten() {
+        lines.push(format!(
+            "refused item {}: {}",
+            refusal["index"],
+            refusal["refusal"]["message"].as_str().unwrap_or("refused")
+        ));
+    }
+    for blocked in previewed["blocked"].as_array().into_iter().flatten() {
+        lines.push(format!("blocked item {}: it depends on a refused item", blocked["index"]));
+    }
+    lines.push(format!(
+        "items: {}",
+        previewed["scan"]["items"].as_u64().unwrap_or_default()
+    ));
+    lines
 }
 
 fn cmd_lsbk() -> Result<()> {

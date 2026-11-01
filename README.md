@@ -719,3 +719,10 @@ zt lsbk
 zt dp
 zt down
 ```
+
+`zt apply <plan.json> [--preview]` applies one batch plan as the owner: a JSON object whose `items` are
+the `apply_batch` items (`tool`, `arguments`; `op_key` and `client_ref` may be left out). It
+prints the composed plan in the addresses of the plan's start (renames, deletes, Links that break,
+refused items). A plan with a tree operation (`move_card`, `insert_card`, `delete_card`,
+`move_span`, `delete_span`, `indent`, `outdent`, `reorder`, `relink`) asks you to type `apply`,
+then commits all of it in one step; `--preview` only prints the plan.

@@ -128,7 +128,11 @@ trees in a `邻近` group. get_hub reports a hub's lines, upper and lower hubs, 
 register its flattened entries too; get_register reads those entries for one Workspace (an absent \
 register answers `register_missing`, not an error); list_hubs \
 shows the hub graph and the hubs the policy requires but the Workspace lacks; move_card also takes `before` \
-(another Card's place) and `alone` (only the Card; its chain closes the gap). A Term Card (`type` `term`) \
+(another Card's place) and `alone` (only the Card; its chain closes the gap). move_span and delete_span move \
+or delete a span (`from` through `through` on one Direct chain, each Card with its Side successors; the \
+chain closes up), indent and outdent are the outline moves, reorder puts a Card's Side successors or chain \
+spans in a listed order, and relink re-points Links without deleting; apply_batch takes all of them as \
+items, every address read on the batch's start state, confirmed by its plan_hash. A Term Card (`type` `term`) \
 defines one term: a name makes it a head (an immediate Side successor of the list) or a continuation part \
 (a same-named Direct successor of a head or part), and no name makes it a Term list whose body holds the \
 book's four-column term table. get_terms reads one list's rows, heads, parts, unfiled Cards, uses, coverage \
@@ -142,7 +146,8 @@ that address must name a Term head; a new Term use on any other Card is refused,
 from the head's name is reported as advice, never rewritten. Write Card text \
 plainly: one statement per sentence, no semicolons, active voice, one term per meaning. Card \
 bodies may hold TeX math in `$...$` or `$$...$$` and HTML charts in ```chart fences, which the GUI \
-renders. delete_card, move_card, insert_card, and Citation key renames return a plan first; \
+renders. delete_card, move_card, insert_card, move_span, delete_span, indent, outdent, reorder, and \
+Citation key renames return a plan first; \
 repeat the call with the `confirm` text the plan names to apply it. The scholar_archive_* tools read the local Scholar Archive \
 (scholars, Works, abstracts, journals, workspaces, PDF/Markdown documents) through its read-only \
 bridge; file a paper you use as a Literature Card and cite its DOI. To show a paper's figure in a Card, list the Work's figures with scholar_archive_read `list_work_artifacts`, take one with scholar_archive_artifact, and paste the `![caption](artifact:<sha256>)` Markdown it returns. To point a reader at the source document itself (a PDF or Markdown the archive manages), write a Document link `[label](scholar:<file_id>)` (add `#page=12` for a PDF page); scholar_archive_file returns one as `link`.";
@@ -385,7 +390,9 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
         return call_scholar_tool(name, args);
     }
     let root = archive_root()?;
-    if matches!(name, "edit_literature_metadata" | "delete_card" | "move_card" | "insert_card") {
+    if matches!(name, "edit_literature_metadata" | "delete_card" | "move_card" | "insert_card")
+        || crate::tree_ops::is_structural(name)
+    {
         // These writers open their own transaction; the scope check reads only the addresses the
         // call names and, for a change, the named Card's type, before any plan is made.
         scope.check(&crate::open_db(&root)?, name, args, &Default::default())?;
@@ -591,23 +598,19 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
             )?;
             Ok(plan_or_done(outcome))
         }
+        "move_span" | "delete_span" | "indent" | "outdent" | "reorder" | "relink" => {
+            let outcome = ops::tree_tool(
+                &root,
+                ACCESS,
+                name,
+                args,
+                args.get("confirm").and_then(Value::as_str),
+            )?;
+            Ok(plan_or_done(outcome))
+        }
         "insert_card" => {
             let before = string_arg(args, "before")?;
-            let part = crate::model::Part::from_args(
-                optional_facet(args)?.flatten(),
-                optional_emphasis(args)?.flatten(),
-            )?;
-            let card_type = match (optional_card_type(args)?, &part) {
-                (Some(card_type), Some(_)) if card_type != CardType::Model => {
-                    bail!("only Model Cards can have a Model facet")
-                }
-                (_, Some(_)) => CardType::Model,
-                (card_type, None) => card_type.unwrap_or_default(),
-            };
-            let term = term_for_type(args, card_type)?;
-            let title = title_arg(args)?;
-            let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
-            crate::artifact::require_present(&root, &text)?;
+            let (card_type, part, term, text) = insert_request(&root, args)?;
             let outcome = ops::insert_card_with_term(
                 &root,
                 ACCESS,
@@ -646,6 +649,18 @@ pub(crate) fn write_card_tx(
     name: &str,
     args: &Value,
 ) -> Result<(Value, bool)> {
+    write_card_as(root, conn, ACCESS, name, args)
+}
+
+/// One create or edit under the given Access: MCP writes as the agent; the owner's `zt apply` and the
+/// GUI's batch write as the owner (S6 #234, S7 #235).
+pub(crate) fn write_card_as(
+    root: &std::path::Path,
+    conn: &rusqlite::Connection,
+    access: crate::Access,
+    name: &str,
+    args: &Value,
+) -> Result<(Value, bool)> {
     if name == "edit_card" {
         if args.get("base_fingerprint").is_some()
             || args.get("base_receipt").is_some()
@@ -657,7 +672,7 @@ pub(crate) fn write_card_tx(
         }
         let at = string_arg(args, "at")?;
         let card = crate::load_card(conn, &at)?;
-        ACCESS.ensure_writable(card.workspace)?;
+        access.ensure_writable(card.workspace)?;
         let (level, hub_level) = ops::parse_level_arg(args.get("level"))?;
         let change = ops::TypeChange {
             card_type: optional_card_type(args)?,
@@ -699,7 +714,7 @@ pub(crate) fn write_card_tx(
         }
         let (address, changed, accepted) = ops::edit_tx(
             conn,
-            ACCESS,
+            access,
             &at,
             text.as_deref(),
             change,
@@ -713,10 +728,10 @@ pub(crate) fn write_card_tx(
         }
         let body = optional_string(args, "body")?;
         crate::artifact::require_present(root, &body)?;
-        let workspace = target_workspace(args)?;
+        let workspace = requested_workspace(args)?;
         let (address, accepted) = ops::create_literature_tx(
             conn,
-            ACCESS,
+            access,
             workspace,
             &string_arg(args, "bibtex")?,
             &body,
@@ -733,10 +748,12 @@ pub(crate) fn write_card_tx(
             if optional_term(args)?.flatten().is_some() {
                 bail!(crate::term::NAME_NEEDS_TERM_CARD);
             }
-            let workspace = target_workspace(args)?;
+            let workspace = requested_workspace(args)?;
             // D7: an agent Topic never repeats another agent Topic's title, in any scope.
-            crate::scope::check_topic_title(conn, &title_arg(args)?)?;
-            let (address, checked) = ops::create_topic_tx(conn, ACCESS, workspace, &text)?;
+            if access == crate::Access::Agent {
+                crate::scope::check_topic_title(conn, &title_arg(args)?)?;
+            }
+            let (address, checked) = ops::create_topic_tx(conn, access, workspace, &text)?;
             accepted = checked;
             json!({"address":address,"workspace":workspace.id()})
         }
@@ -765,7 +782,7 @@ pub(crate) fn write_card_tx(
             let (address, checked, moved) = if before.is_empty() {
                 let (address, checked) = ops::create_successor_tx_with_term(
                     conn,
-                    ACCESS,
+                    access,
                     kind,
                     &string_arg(args, "at")?,
                     card_type,
@@ -777,7 +794,7 @@ pub(crate) fn write_card_tx(
             } else {
                 let (plan, checked) = ops::create_side_before_tx_with_term(
                     conn,
-                    ACCESS,
+                    access,
                     &string_arg(args, "at")?,
                     &before,
                     card_type,
@@ -811,6 +828,20 @@ pub(crate) fn write_card_tx(
     };
     accepted.attach(&mut result);
     Ok((result, true))
+}
+
+/// The new Card an `insert_card` request describes: its type, Model part, Term name and text. The
+/// single tool and a batch item read it the same way (S3, #231).
+pub(crate) fn insert_request(
+    root: &std::path::Path,
+    args: &Value,
+) -> Result<(CardType, Option<crate::model::Part>, Option<String>, String)> {
+    let (part, card_type) = successor_part_type(args)?;
+    let term = term_for_type(args, card_type)?;
+    let title = title_arg(args)?;
+    let text = crate::compose_card_text(&title, &optional_string(args, "body")?, "");
+    crate::artifact::require_present(root, &text)?;
+    Ok((card_type, part, term, text))
 }
 
 fn successor_kind(args: &Value) -> Result<Successor> {
@@ -848,7 +879,7 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
             if optional_term(args)?.flatten().is_some() {
                 bail!(crate::term::NAME_NEEDS_TERM_CARD);
             }
-            canonical["workspace"] = json!(target_workspace(args)?.id());
+            canonical["workspace"] = json!(requested_workspace(args)?.id());
             canonical["body"] = json!(optional_string(args, "body")?);
             if name == "create_topic" {
                 canonical["title"] = json!(title_arg(args)?);
@@ -906,9 +937,93 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
                 }
             }
         }
+        // Tree operations (S3, #231): the request identity names every field the operation reads.
+        "move_card" => {
+            canonical["at"] = json!(string_arg(args, "at")?);
+            if args.get("to").is_some_and(|to| !to.is_null()) {
+                bail!(
+                    "a batch names a destination by a Card: pass `after`, `side_of` or `before` instead of `to`"
+                );
+            }
+            let named: Vec<_> = ["after", "side_of", "before"]
+                .into_iter()
+                .filter(|name| args.get(*name).is_some_and(|v| !v.is_null()))
+                .collect();
+            if named.len() != 1 {
+                bail!("move_card in a batch takes exactly one of `after`, `side_of` or `before`");
+            }
+            canonical[named[0]] = json!(string_arg(args, named[0])?);
+            canonical["alone"] = json!(optional_bool(args, "alone")?);
+        }
+        "insert_card" => {
+            canonical["before"] = json!(string_arg(args, "before")?);
+            let (part, card_type) = successor_part_type(args)?;
+            canonical["type"] = json!(card_type.id());
+            canonical["facet"] = json!(part.as_ref().map(|p| p.facet.id()));
+            canonical["emphasis"] = json!(part.and_then(|p| p.emphasis).map(Emphasis::id));
+            canonical["term"] = json!(term_for_type(args, card_type)?);
+            canonical["title"] = json!(title_arg(args)?);
+            canonical["body"] = json!(optional_string(args, "body")?);
+        }
+        "delete_card" => {
+            canonical["at"] = json!(string_arg(args, "at")?);
+            let into = optional_string(args, "into")?;
+            canonical["into"] = json!((!into.is_empty()).then_some(into));
+        }
+        // Span, outline, reorder and relink items (S4 #232, S5 #233): an omitted `through` is the
+        // span of one Card, so it is written out; lists keep their order.
+        "move_span" | "delete_span" => {
+            let from = string_arg(args, "from")?;
+            let through = optional_string(args, "through")?;
+            canonical["through"] = json!(if through.is_empty() { from.clone() } else { through });
+            canonical["from"] = json!(from);
+            if name == "move_span" {
+                let named: Vec<_> = ["after", "side_of", "before"]
+                    .into_iter()
+                    .filter(|key| args.get(*key).is_some_and(|v| !v.is_null()))
+                    .collect();
+                if named.len() != 1 {
+                    bail!("move_span takes exactly one of `after`, `side_of` or `before`");
+                }
+                canonical[named[0]] = json!(string_arg(args, named[0])?);
+            } else {
+                let into = optional_string(args, "into")?;
+                canonical["into"] = json!((!into.is_empty()).then_some(into));
+            }
+        }
+        "indent" | "outdent" => {
+            let at = string_arg(args, "at")?;
+            let through = optional_string(args, "through")?;
+            canonical["through"] = json!(if through.is_empty() { at.clone() } else { through });
+            canonical["at"] = json!(at);
+        }
+        "reorder" => {
+            canonical["parent"] = json!(string_arg(args, "parent")?);
+            if args.get("side").is_some() == args.get("direct").is_some() {
+                bail!("reorder takes exactly one of `side` or `direct`");
+            }
+        }
+        "relink" => {
+            canonical["from"] = json!(string_arg(args, "from")?);
+            canonical["to"] = json!(string_arg(args, "to")?);
+            if args.get("sources").is_none() {
+                canonical["sources"] = Value::Null;
+            }
+        }
         other => bail!("unsupported batch tool `{other}`"),
     }
+    if crate::tree_ops::is_structural(name) {
+        canonical.as_object_mut().expect("an object").remove("confirm");
+    }
     Ok(canonical)
+}
+
+fn optional_bool(args: &Value, name: &str) -> Result<bool> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => bail!("argument `{name}` must be a boolean"),
+    }
 }
 
 fn string_arg(args: &Value, name: &str) -> Result<String> {
@@ -960,10 +1075,10 @@ fn optional_workspace(args: &Value) -> Result<Option<Workspace>> {
 }
 
 /// New trees go to the agent Workspace; naming another one is refused.
-fn target_workspace(args: &Value) -> Result<Workspace> {
-    let workspace = optional_workspace(args)?.unwrap_or(Workspace::Agent);
-    ACCESS.ensure_writable(workspace)?;
-    Ok(workspace)
+/// The Workspace a create names, without deciding Access: the batch path serves the owner too, and
+/// its writers check Access themselves (S6 #234).
+fn requested_workspace(args: &Value) -> Result<Workspace> {
+    Ok(optional_workspace(args)?.unwrap_or(Workspace::Agent))
 }
 
 fn optional_card_type(args: &Value) -> Result<Option<CardType>> {
@@ -1076,7 +1191,7 @@ fn tool_definitions() -> Vec<Value> {
         "type": "string",
         "description": "Markdown body. Write `[[address]]` to link any Card in either Workspace.",
     });
-    let batch_item = json!({"type":"object","properties":{"op_key":{"type":"string","pattern":"^[^/]+/[^/]+/[1-9][0-9]*/[^/]+/[^/]+$"},"client_ref":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"tool":{"type":"string","enum":["create_topic","create_literature","create_successor","edit_card"]},"arguments":{"type":"object"}},"required":["op_key","client_ref","tool","arguments"],"additionalProperties":false});
+    let batch_item = json!({"type":"object","properties":{"op_key":{"type":"string","pattern":"^[^/]+/[^/]+/[1-9][0-9]*/[^/]+/[^/]+$"},"client_ref":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"tool":{"type":"string","enum":["create_topic","create_literature","create_successor","edit_card","move_card","insert_card","delete_card","move_span","delete_span","indent","outdent","reorder","relink"]},"arguments":{"type":"object"}},"required":["op_key","client_ref","tool","arguments"],"additionalProperties":false});
     let facet = |description: &str| {
         json!({
             "type": "string",
@@ -1370,8 +1485,8 @@ fn tool_definitions() -> Vec<Value> {
             let mut batch = tool(
                 "apply_batch",
                 "Apply identified Card writes",
-                "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input including nested paragraph text. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. A `create_successor` item may pass `before` with `kind` `side` to take the place of that Side child, shifting it and every later Side successor one label on in the same transaction. Edits require exactly one authored base_fingerprint or same-Card base_receipt, excluding generated Reverse links. An edit may instead of body/metadata supply owned_paragraph {text, replaces_receipt?, adopt_legacy?}: append or replace exactly the named receipt's single paragraph; explicit legacy adoption requires one exact existing span. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. preview:true validates the same transaction and returns complete draft Cards/paragraph facts, then rolls back all changes; a preview is never a commit receipt. A preview simulates each item in its own savepoint, so a Tree Lock or blocking Card-check refusal answers complete:false with every independently refused item in refusals and its dependents in blocked, while the other items still simulate; a real batch names its first blocking item instead. Ordinary validation failures still fail the whole request. Agent Access and ordinary Card/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path.",
-                json!({"preview":{"type":"boolean","description":"Validate and return the transaction draft, then roll back all Cards, receipts, allocation and index changes. No write is applied; Tree Lock, Card-check, Write scope (scope_refused) and Topic title (topic_exists) refusals are aggregated with complete:false, refusals and blocked items."},"lean":{"type":"boolean","description":"With preview:true only: answer each result as its identity and address alone, with no Card or paragraph projections, so a large plan's scan stays inside the reply bound."},"items":{"type":"array","minItems":1,"maxItems":64,"items":batch_item},"preview_items":{"type":"array","minItems":1,"maxItems":1024,"items":batch_item,"description":"Read-only complete sequence, exclusive with items and requiring preview:true. At most 8 MiB authored input. Numeric client_ref equals the zero-based sequence index; references to earlier chunks bind exactly as the thin client's 64-item/1-MiB writes. Tree Lock and Card-check refusals aggregate across chunk boundaries. All simulated changes roll back."}}),
+                "Atomically apply 1–64 ordered Topic/Literature/successor creates or content/type edits, with at most 1 MiB of authored input including nested paragraph text. Stable op_key: run/unit/positive-plan-revision/step/stable-item; no attempt component. A later item can use @@client_ref from an earlier new or replayed result. A `create_successor` item may pass `before` with `kind` `side` to take the place of that Side child, shifting it and every later Side successor one label on in the same transaction. Edits require exactly one authored base_fingerprint or same-Card base_receipt, excluding generated Reverse links. An edit may instead of body/metadata supply owned_paragraph {text, replaces_receipt?, adopt_legacy?}: append or replace exactly the named receipt's single paragraph; explicit legacy adoption requires one exact existing span. Matching keys replay original allocated results; changed content or reference bindings conflict. One failed unseen item rolls back every unseen write and receipt. preview:true validates the same transaction and returns complete draft Cards/paragraph facts, then rolls back all changes; a preview is never a commit receipt. A preview simulates each item in its own savepoint, so a Tree Lock or blocking Card-check refusal answers complete:false with every independently refused item in refusals and its dependents in blocked, while the other items still simulate; a real batch names its first blocking item instead. Ordinary validation failures still fail the whole request. Agent Access and ordinary Card/model/Link/artifact validators apply. Destructive operations retain their separate confirmation path. Tree operations (move_card, insert_card, delete_card) are items too: in a batch that holds one, every literal address names the Card that held it when the batch started and follows it through earlier items' moves (a Card an earlier item deleted answers card_deleted_in_batch); move_card names its destination by a Card with exactly one of after (becomes its Direct successor), side_of (its next Side successor) or before (takes its place), never to; delete_card takes into. Such a batch is confirmed by the plan, not by a word: preview returns plan (moved, deleted, links_that_will_break, link_macros_rewritten, in start addresses) and plan_hash; a real call without confirm answers {applied:false, confirm:plan_hash, plan} and writes nothing; with confirm equal to that hash it commits and answers applied:true with the plan; a changed archive or item list answers plan_changed. It renames or deletes at most 2000 Cards, Reverse links refresh once for the whole batch, it replays completely or not at all, and tree operations are not accepted in preview_items.",
+                json!({"confirm":{"type":"string","description":"For a batch with a tree operation: the plan_hash its preview (or an unconfirmed call) returned. Without it such a batch only returns its plan."},"preview":{"type":"boolean","description":"Validate and return the transaction draft, then roll back all Cards, receipts, allocation and index changes. No write is applied; Tree Lock, Card-check, Write scope (scope_refused) and Topic title (topic_exists) refusals are aggregated with complete:false, refusals and blocked items."},"lean":{"type":"boolean","description":"With preview:true only: answer each result as its identity and address alone, with no Card or paragraph projections, so a large plan's scan stays inside the reply bound."},"items":{"type":"array","minItems":1,"maxItems":64,"items":batch_item},"preview_items":{"type":"array","minItems":1,"maxItems":1024,"items":batch_item,"description":"Read-only complete sequence, exclusive with items and requiring preview:true. At most 8 MiB authored input. Numeric client_ref equals the zero-based sequence index; references to earlier chunks bind exactly as the thin client's 64-item/1-MiB writes. Tree Lock and Card-check refusals aggregate across chunk boundaries. All simulated changes roll back."}}),
                 &[],
                 false,
                 false,
@@ -1499,6 +1614,89 @@ fn tool_definitions() -> Vec<Value> {
                 "confirm": confirm,
             }),
             &["before", "title"],
+            false,
+            true,
+        ),
+        tool(
+            "move_span",
+            "Move span",
+            "Move a span of an agent tree: the Cards `from` through `through` (consecutive Direct successors on one chain; `through` defaults to `from`), each with its Side successors. The Cards after the span on its chain move up to close the gap. Name the destination by a Card with exactly one of `after` (the span becomes its Direct successor line, and its old Direct successor follows the span), `side_of` (the span becomes its next Side branch) or `before` (the span takes its place and it moves down). Links, Reverse links and Spreads follow. Returns a plan first; confirm with `move`. Inside apply_batch it is an item like move_card.",
+            json!({
+                "from": { "type": "string", "description": "The first Card of the span." },
+                "through": { "type": "string", "description": "The last Card of the span, on the Direct chain after `from`; omit for the span of one Card." },
+                "after": { "type": "string", "description": "The span becomes this Card's Direct successor line." },
+                "side_of": { "type": "string", "description": "The span becomes this Card's next Side branch." },
+                "before": { "type": "string", "description": "The span takes this Card's place; it moves down after the span." },
+                "confirm": confirm,
+            }),
+            &["from"],
+            false,
+            true,
+        ),
+        tool(
+            "delete_span",
+            "Delete span",
+            "Delete a span of an agent tree: the Cards `from` through `through` (consecutive Direct successors on one chain; `through` defaults to `from`), each with its Side successors. The Cards after the span on its chain move up into its place, so the chain keeps no gap; when a Link to the span would then land on a Card that moved up, pass `into` with a Card that stays and takes those Links. Returns a plan first; confirm with `delete`.",
+            json!({
+                "from": { "type": "string", "description": "The first Card of the span." },
+                "through": { "type": "string", "description": "The last Card of the span; omit for the span of one Card." },
+                "into": { "type": "string", "description": "A Card that stays and takes over every Link to a deleted Card." },
+                "confirm": confirm,
+            }),
+            &["from"],
+            false,
+            true,
+        ),
+        tool(
+            "indent",
+            "Indent",
+            "Outline move: make the span starting at `at` (with `through`, or the span of one Card: the Card with its Side successors) the last Side branch of the Card before `at` on its Direct chain. The Cards after the span close the gap. A Card that opens its chain has nothing to indent under. Returns a plan first; confirm with `move`.",
+            json!({
+                "at": { "type": "string", "description": "The first Card of the span." },
+                "through": { "type": "string", "description": "The last Card of the span; omit for one Card." },
+                "confirm": confirm,
+            }),
+            &["at"],
+            false,
+            true,
+        ),
+        tool(
+            "outdent",
+            "Outdent",
+            "Outline move: take the span that starts the Side branch `at` (with `through`, or the span of one Card) out of the branch and put it right after the branch's parent on the parent's chain; the parent's old Direct successor follows it. The rest of the branch stays on the parent. Indent then outdent of the same Card restores its place. Returns a plan first; confirm with `move`.",
+            json!({
+                "at": { "type": "string", "description": "A Side successor: the first Card of the span." },
+                "through": { "type": "string", "description": "The last Card of the span; omit for one Card." },
+                "confirm": confirm,
+            }),
+            &["at"],
+            false,
+            true,
+        ),
+        tool(
+            "reorder",
+            "Reorder",
+            "Put the children of an agent Card in a new order. `side`: every current Side successor of `parent`, listed once each in the new order; each keeps its whole branch. `direct`: the Direct chain after `parent` as spans [from, through] (or [card]) in the new order, covering the whole chain once; each Card keeps its Side successors. A list that misses or adds a child answers reorder_set_mismatch. Returns a plan first; confirm with `move`.",
+            json!({
+                "parent": { "type": "string", "description": "The Card whose children move." },
+                "side": { "type": "array", "items": { "type": "string" }, "description": "Every Side successor of `parent`, in the new order." },
+                "direct": { "type": "array", "items": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 2 }, "description": "The spans of the Direct chain after `parent`, in the new order." },
+                "confirm": confirm,
+            }),
+            &["parent"],
+            false,
+            true,
+        ),
+        tool(
+            "relink",
+            "Relink",
+            "Re-point authored Links from the Card `from` to the Card `to` without deleting anything: in every agent Card that links `from`, or only in the listed `sources`. A Term use keeps its label and must still name a Term head. A human Card is never rewritten; a locked source is refused. Applies at once and answers the rewritten sources.",
+            json!({
+                "from": { "type": "string", "description": "The Card the Links name now." },
+                "to": { "type": "string", "description": "The Card they should name." },
+                "sources": { "type": "array", "items": { "type": "string" }, "description": "Only these Cards (each must link `from`); omit for every Card that links it." },
+            }),
+            &["from", "to"],
             false,
             true,
         ),
@@ -1827,7 +2025,10 @@ mod tests {
 
     #[test]
     fn new_trees_cannot_target_the_human_workspace() {
-        assert_eq!(target_workspace(&json!({})).unwrap(), Workspace::Agent);
-        assert!(target_workspace(&json!({ "workspace": "human" })).is_err());
+        // A create names the agent Workspace by default; MCP writes as the agent, whose Access refuses
+        // the human Workspace in every writer (S6 #234 moved the check into the writers).
+        assert_eq!(requested_workspace(&json!({})).unwrap(), Workspace::Agent);
+        let human = requested_workspace(&json!({ "workspace": "human" })).unwrap();
+        assert!(ACCESS.ensure_writable(human).is_err());
     }
 }

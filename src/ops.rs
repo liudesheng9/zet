@@ -636,6 +636,52 @@ pub(crate) fn move_card(
     ))
 }
 
+/// One span, outline, reorder or relink operation as a single tool (S4 #232, S5 #233). The plan is
+/// the operation itself, run in a transaction that rolls back, so the plan a caller confirms is
+/// exactly what applies; the confirmed call runs it again and commits. `relink` renames and deletes
+/// nothing, so it applies at once.
+pub(crate) fn tree_tool(
+    root: &Path,
+    access: Access,
+    tool: &str,
+    args: &Value,
+    confirm: Option<&str>,
+) -> Result<Outcome> {
+    // The service log names the operation; its label must outlive the call.
+    let label = crate::tree_ops::TOOLS
+        .iter()
+        .find(|name| **name == tool)
+        .copied()
+        .unwrap_or("tree_tool");
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, label)?;
+    let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let mut changes = crate::link_index::Changes::default();
+    let applied = crate::tree_ops::apply_tx(root, &tx, access, tool, args, &mut changes)?;
+    if let Some(word) = crate::tree_ops::confirmation(tool)
+        && confirm != Some(word)
+    {
+        tx.rollback()?;
+        return Ok(Outcome::Confirm {
+            confirm: word.to_string(),
+            lines: applied.lines,
+        });
+    }
+    changes.finish(&tx)?;
+    tx.commit()?;
+    let mut value = json!({
+        "address": applied.address,
+        "moved": applied.mapping,
+        "deleted": applied.deleted,
+        "link_macros_rewritten": applied.rewritten,
+    });
+    if crate::tree_ops::confirmation(tool).is_none() {
+        value["plan"] = json!(applied.lines);
+    }
+    applied.accepted.attach(&mut value);
+    Ok(Outcome::Done(value))
+}
+
 /// Insert a new Card at the place of the Regular Card `before`, which moves
 /// down with its subtree and becomes the new Card's Direct successor. Links in
 /// `text` name today's addresses.

@@ -4422,7 +4422,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     let stdout = String::from_utf8(output).expect("session output is UTF-8");
 
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | stats | status | lsbk | help | q\n"
     ));
     assert!(
         stdout.contains(
@@ -4430,7 +4430,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
         )
     );
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub|term|cited> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | mv [<from>]..<through> after|side|before <location> | del [<from>]..<through> [into <location>] | in [..<through>] | out [..<through>] | ord side <card> <card> ... | ord direct <from>..<through> ... | ty <idea|event|finding|model|hub|term|cited> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q\n"
     ));
     assert!(
         stdout.contains("  mv [alone] <new-location>                               move the current card and its successors (alone: only the card; its chain closes up)")
@@ -5287,3 +5287,87 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     home.cmd().arg("down").assert().success();
 }
 
+
+/// S6 (#234): `zt apply <plan.json>` previews a batch plan as the owner, asks for `apply` before a
+/// plan with a tree operation, and applies it with the plan hash; a wrong word or EOF writes nothing.
+#[test]
+fn zt_apply_previews_then_applies_a_plan_after_the_confirmation_word() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let plan_path = home.config_dir.join("seed.json");
+    fs::write(
+        &plan_path,
+        serde_json::json!({"items": [
+            {"tool": "create_topic", "arguments": {"title": "书", "workspace": "human"}, "client_ref": "t"},
+            {"tool": "create_successor", "arguments": {"at": "@@t", "title": "一"}},
+            {"tool": "create_successor", "arguments": {"at": "0/1", "kind": "side", "title": "甲"}},
+            {"tool": "create_successor", "arguments": {"at": "0/1", "kind": "side", "title": "乙"}},
+            {"tool": "create_successor", "arguments": {"at": "0/1", "title": "二", "body": "见 [[0/1|b]]。"}},
+        ]})
+        .to_string(),
+    )
+    .expect("seed plan");
+    // A plan of only creates applies at once, as the owner (into the human Workspace).
+    home.cmd()
+        .args(["apply", plan_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("applied: 5 item(s)"));
+    assert!(home.card_text("0/1|b").starts_with("# 乙"));
+
+    let tidy = home.config_dir.join("tidy.json");
+    fs::write(
+        &tidy,
+        serde_json::json!({"items": [
+            {"tool": "reorder", "arguments": {"parent": "0/1", "side": ["0/1|b", "0/1|a"]}},
+            {"tool": "move_card", "arguments": {"at": "0/1|a", "after": "0/2"}},
+            {"tool": "delete_card", "arguments": {"at": "0/1|b", "into": "0/1"}},
+        ]})
+        .to_string(),
+    )
+    .expect("tidy plan");
+    home.cmd()
+        .args(["apply", tidy.to_str().unwrap(), "--preview"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0/1|a -> 0/3"))
+        .stdout(predicate::str::contains("delete 0/1|b"));
+    for input in ["nope\n", ""] {
+        home.cmd()
+            .args(["apply", tidy.to_str().unwrap()])
+            .write_stdin(input)
+            .assert()
+            .failure();
+        assert!(home.card_text("0/1|a").starts_with("# 甲"), "a refused confirmation writes nothing");
+    }
+    home.cmd()
+        .args(["apply", tidy.to_str().unwrap()])
+        .write_stdin("apply\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("applied: 3 item(s)"));
+    assert!(home.card_text("0/3").starts_with("# 甲"), "甲 moved after 二");
+    assert!(home.card_text("0/2").contains("见 [[0/1]]"), "the deleted 乙's Link went into 0/1");
+}
+
+/// S6 (#234): a malformed plan file names the JSON error, or the item it cannot read.
+#[test]
+fn zt_apply_names_a_malformed_plan_and_its_item() {
+    let home = TestHome::new();
+    home.configure_and_up();
+    let broken = home.config_dir.join("broken.json");
+    fs::write(&broken, "{\"items\": [").expect("broken plan");
+    home.cmd()
+        .args(["apply", broken.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not JSON"));
+    let itemless = home.config_dir.join("itemless.json");
+    fs::write(&itemless, "{\"items\": [{\"tool\": \"create_topic\", \"arguments\": {\"title\": \"书\"}}, {\"tool\": \"move_card\"}]}")
+        .expect("plan");
+    home.cmd()
+        .args(["apply", itemless.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("item 1"));
+}

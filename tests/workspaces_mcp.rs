@@ -944,11 +944,12 @@ fn batch_identity_and_access_failures_leave_no_partial_writes() {
         mcp.err("apply_batch", json!({"items":[human]}))
             .contains("read-only")
     );
+    // Since #231 a delete is a batch item, but a batch with a tree operation writes nothing until it is
+    // confirmed with its plan hash: it answers the plan, and the create beside it is not written either.
     let destructive = json!({"op_key":"run-identity/group-1/1/apply/delete","client_ref":"delete","tool":"delete_card","arguments":{"at":"@@topic","confirm":"delete"}});
-    assert!(
-        mcp.err("apply_batch", json!({"items":[valid,destructive]}))
-            .contains("unsupported batch tool")
-    );
+    let unconfirmed = mcp.ok("apply_batch", json!({"items":[valid,destructive]}));
+    assert_eq!(unconfirmed["applied"], json!(false), "{unconfirmed}");
+    assert!(unconfirmed["confirm"].is_string(), "{unconfirmed}");
     assert_eq!(mcp.ok("list_trees", json!({}))["trees"], json!([]));
 }
 

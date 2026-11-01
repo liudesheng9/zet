@@ -341,3 +341,27 @@ fn a_bad_scope_declaration_stops_the_server_before_its_first_message() {
         assert!(stderr.contains(expected), "{arguments:?}: {stderr}");
     }
 }
+
+/// #232, #233: the span, outline, reorder and relink tools name Cards in fields of their own; a
+/// Literature session refuses each one that reaches a Topic tree, a relink whose sources include a
+/// Topic Card too, and still runs them inside a Literature tree.
+#[test]
+fn a_literature_session_keeps_the_tree_tools_inside_literature_trees() {
+    let scratch = ScratchBox::up();
+    let mut open = seeded(&scratch);
+    open.ok("create_successor", json!({"at":"Smith2024/1","title":"第二章"}));
+    open.ok("edit_card", json!({"at":"0/1","body":"见 [[Smith2024/1]]。"}));
+    let mut literature = scratch.mcp(&["--scope", "literature"]);
+    for (tool, arguments) in [
+        ("move_span", json!({"from":"0/1","side_of":"0/0","confirm":"move"})),
+        ("indent", json!({"at":"0/1","confirm":"move"})),
+        ("reorder", json!({"parent":"0/0","direct":[["0/1"]],"confirm":"move"})),
+        ("relink", json!({"from":"Smith2024/1","to":"Smith2024/2"})),
+    ] {
+        let refusal = literature.refused(tool, arguments.clone());
+        assert_refused(&refusal, tool, "topic_tree");
+    }
+    // Inside a Literature tree the same tools run.
+    let done = literature.ok("move_span", json!({"from":"Smith2024/2","side_of":"Smith2024/1","confirm":"move"}));
+    assert_eq!(done["applied"], true, "{done}");
+}

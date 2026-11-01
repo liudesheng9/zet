@@ -408,6 +408,10 @@ _Avoid_: Semantic search, relevance score, concept result, alias lookup, merge
 Putting a new Card in the place of an existing Regular Card: that Card and its subtree move down one place and it becomes the new Card's Direct successor (`X/2` becomes `X/3`; before `P|a`, the old `P|a` becomes `P|a|1`). A move may also take another Card's place (`before`), and may move a Card **alone**, without its successors, while its Direct successors move up to close the gap. Each renumbers Cards, shows every renamed address first, and rewrites every Link, so no reference breaks.
 _Avoid_: Splice, shift
 
+**Span**:
+A run of consecutive Direct successors on one chain, from a first Card through a last Card, each with its Side successors. A span moves or is deleted as one: the Cards after it on its chain move up to close the gap, and its Side branches stay with the Cards they branch from. Indent makes a span the last Side branch of the Card before it; outdent takes a span that starts a Side branch out to right after the branch's parent. The span of one Card is that Card with its Side successors, without its later Direct successors.
+_Avoid_: Range, slice, block (a model board block is something else)
+
 **Bridge**:
 A semantic Link between substantive Cards attributed to different books, or between a book's Card and a human or unattributed Card. It uses an existing Relation kind and explains the relationship. Book attribution is inferred from source Links; it is not stored ownership. Filing and source-reference Links alone do not count as semantic Bridges.
 _Avoid_: External edge, cross-link

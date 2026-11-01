@@ -263,8 +263,9 @@ A fixed word (`move`, `delete`) would confirm whatever the batch does on the arc
 The single tools keep their words, so no existing client breaks.
 
 **D3. Limits.** A real batch keeps 64 items and 1 MiB of authored text, and adds a cap of 2,000
-renamed or deleted Cards. A larger reorganization is several batches. The preview sequence
-(`preview_items`, 1,024 items) also counts the cap per 64-item chunk.
+renamed or deleted Cards. A larger reorganization is several batches. Tree operations go in `items` only:
+`preview_items`, the 1,024-item planning mode for creates and edits, refuses them (settled while
+building S3: following renames across its chunk boundaries buys nothing a client needs).
 
 **D4. `indent` and `outdent` act on a span, by default the span of one Card.** The span of one Card
 is the Card with its Side successors, which is what an outliner moves on Tab and Shift+Tab. Its

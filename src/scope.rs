@@ -24,13 +24,19 @@ pub(crate) const DEFAULT_SIMILARITY: f64 = 1.0;
 
 /// The tools a connection under an allow list may not run: each makes a tree, renames Cards, or
 /// deletes one, so its effect reaches Cards the list does not name.
-const STRUCTURAL: [&str; 6] = [
+const STRUCTURAL: [&str; 12] = [
     "create_topic",
     "create_literature",
     "edit_literature_metadata",
     "move_card",
     "insert_card",
     "delete_card",
+    "move_span",
+    "delete_span",
+    "indent",
+    "outdent",
+    "reorder",
+    "relink",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +138,46 @@ impl WriteScope {
     fn check_literature(&self, conn: &Connection, tool: &str, args: &Value) -> Result<()> {
         if let Some(violation) = literature_violation(tool, args) {
             return Err(self.refuse(tool, &violation.at, violation.reason, violation.message));
+        }
+        // The span, outline, reorder and relink tools name Cards in fields the shared rule does not
+        // read (S4 #232, S5 #233): each of them, and each source a relink would rewrite, stays in a
+        // Literature tree.
+        if matches!(tool, "move_span" | "delete_span" | "indent" | "outdent" | "reorder" | "relink") {
+            let mut named = Vec::new();
+            for field in ["from", "through", "after", "side_of", "before", "into", "parent", "to", "at"] {
+                if let Some(at) = args.get(field).and_then(Value::as_str) {
+                    named.push(at.to_string());
+                }
+            }
+            for field in ["side", "sources", "direct"] {
+                if let Some(items) = args.get(field).and_then(Value::as_array) {
+                    for item in items {
+                        match item {
+                            Value::String(at) => named.push(at.clone()),
+                            Value::Array(pair) => named.extend(pair.iter().filter_map(Value::as_str).map(str::to_string)),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if tool == "relink"
+                && args.get("sources").is_none()
+                && let Some(from) = args.get("from").and_then(Value::as_str)
+                && crate::link_index::ready(conn)
+            {
+                named.extend(crate::link_index::sources_linking(conn, [&from.to_string()])?);
+            }
+            if let Some(topic) = named
+                .iter()
+                .find(|at| !crate::is_literature_tree_id(crate::tree_id(at)))
+            {
+                return Err(self.refuse(
+                    tool,
+                    topic,
+                    "topic_tree",
+                    format!("this connection writes only Literature trees: `{topic}` is in a Topic tree"),
+                ));
+            }
         }
         let at = args.get("at").and_then(Value::as_str).unwrap_or_default();
         if self.names_hub(conn, tool, at)? {

@@ -89,6 +89,36 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnRegular,
     ),
     (
+        "mv [<from>]..<through> after|side|before <location>",
+        "move a span (from the current card when <from> is left out), each card with its side successors; the chain closes up",
+        Availability::OnRegular,
+    ),
+    (
+        "del [<from>]..<through> [into <location>]",
+        "delete a span with its side successors; the rest of its chain moves up",
+        Availability::OnRegular,
+    ),
+    (
+        "in [..<through>]",
+        "indent: the current card (or span) becomes the last side branch of the card before it",
+        Availability::OnRegular,
+    ),
+    (
+        "out [..<through>]",
+        "outdent: the current side branch (or span) moves right after its parent",
+        Availability::OnRegular,
+    ),
+    (
+        "ord side <card> <card> ...",
+        "reorder the current card's side successors, each with its branch",
+        Availability::OnCard,
+    ),
+    (
+        "ord direct <from>..<through> ...",
+        "reorder the spans of the direct chain after the current card",
+        Availability::OnCard,
+    ),
+    (
         "ty <idea|event|finding|model|hub|term|cited> [<facet>]",
         "make the current card an Idea, Event, Finding, Model, Hub, Term, or Cited Card; a facet (any short label) makes it a Model part",
         Availability::OnRegular,
@@ -415,6 +445,81 @@ pub(super) fn recover_missing_pointer(
     }
     state.pointer = ancestor.map(Pointer::Card).unwrap_or(Pointer::Root);
     Ok(Some(format!("card `{missing}` no longer exists")))
+}
+
+/// The two ends of a span written `<from>..<through>`; a left-out `<from>` is the current Card, and a
+/// left-out `<through>` makes the span of one Card (S8, #236).
+fn span_bounds(state: &SessionState, command: &str, span: &str) -> Result<(String, String)> {
+    let (from, through) = span.split_once("..").context("a span is written <from>..<through>")?;
+    let from = if from.is_empty() {
+        state.current_card(command)?
+    } else {
+        from.to_string()
+    };
+    let through = if through.is_empty() {
+        from.clone()
+    } else {
+        through.to_string()
+    };
+    Ok((from, through))
+}
+
+/// `in` and `out` on the current Card, or on the span up to `..<through>`.
+fn outline_command(
+    root: &Path,
+    state: &mut SessionState,
+    interaction: &mut dyn Interaction,
+    tool: &str,
+    rest: &[&str],
+) -> Result<Execution> {
+    let command = if tool == "indent" { "in" } else { "out" };
+    let (at, through) = match rest {
+        [] => {
+            let at = state.current_card(command)?;
+            (at.clone(), at)
+        }
+        [span] if span.starts_with("..") => span_bounds(state, command, span)?,
+        _ => bail!("usage: {command} [..<through>]"),
+    };
+    let args = serde_json::json!({"at": at, "through": through});
+    tree_command(root, state, interaction, tool, args)
+}
+
+/// One tree operation from the Session (S8, #236): the plan is the operation run in a transaction
+/// that rolls back; after the confirmation word it runs again and commits. The Pointer follows the
+/// moved Card, or stays where a delete left the chain.
+fn tree_command(
+    root: &Path,
+    state: &mut SessionState,
+    interaction: &mut dyn Interaction,
+    tool: &str,
+    args: serde_json::Value,
+) -> Result<Execution> {
+    let _lock = crate::acquire_edit_lock(root, "session tree")?;
+    let mut conn = crate::open_db(root)?;
+    let plan = {
+        let tx = conn.transaction()?;
+        let mut changes = crate::link_index::Changes::default();
+        let applied =
+            crate::tree_ops::apply_tx(root, &tx, crate::Access::Owner, tool, &args, &mut changes)?;
+        tx.rollback()?;
+        applied
+    };
+    if let Some(word) = crate::tree_ops::confirmation(tool) {
+        interaction.confirm(word, &plan.lines)?;
+    }
+    let tx = conn.transaction()?;
+    let mut changes = crate::link_index::Changes::default();
+    let applied = crate::tree_ops::apply_tx(root, &tx, crate::Access::Owner, tool, &args, &mut changes)?;
+    changes.finish(&tx)?;
+    tx.commit()?;
+    let pointer = match tool {
+        "delete_span" if crate::target_exists(&conn, &applied.address)? => applied.address,
+        "delete_span" => crate::parent_location(&applied.address).unwrap_or(applied.address),
+        _ => applied.address,
+    };
+    state.pointer = Pointer::Card(pointer);
+    Ok(Execution::Continue(CommandResult::Changed))
 }
 
 pub(super) fn execute(
@@ -760,6 +865,49 @@ fn execute_command(
             }
             Ok(Execution::Continue(CommandResult::Changed))
         }
+        // S8 (#236): span and outline commands run the shared tree-operation executor.
+        ["mv", span, place, at] if span.contains("..") => {
+            let (from, through) = span_bounds(state, "mv", span)?;
+            let key = match *place {
+                "after" => "after",
+                "side" => "side_of",
+                "before" => "before",
+                _ => bail!("usage: mv [<from>]..<through> after|side|before <location>"),
+            };
+            let mut args = serde_json::json!({"from": from, "through": through});
+            args[key] = serde_json::json!(at);
+            tree_command(root, state, interaction, "move_span", args)
+        }
+        ["del", span, rest @ ..] if span.contains("..") => {
+            let (from, through) = span_bounds(state, "del", span)?;
+            let mut args = serde_json::json!({"from": from, "through": through});
+            match rest {
+                [] => {}
+                ["into", into] => args["into"] = serde_json::json!(into),
+                _ => bail!("usage: del [<from>]..<through> [into <location>]"),
+            }
+            tree_command(root, state, interaction, "delete_span", args)
+        }
+        ["in", rest @ ..] => outline_command(root, state, interaction, "indent", rest),
+        ["out", rest @ ..] => outline_command(root, state, interaction, "outdent", rest),
+        ["ord", "side", order @ ..] if !order.is_empty() => {
+            let parent = state.current_card("ord")?;
+            let args = serde_json::json!({"parent": parent, "side": order});
+            tree_command(root, state, interaction, "reorder", args)
+        }
+        ["ord", "direct", spans @ ..] if !spans.is_empty() => {
+            let parent = state.current_card("ord")?;
+            let spans = spans
+                .iter()
+                .map(|span| match span.split_once("..") {
+                    Some((from, through)) => serde_json::json!([from, through]),
+                    None => serde_json::json!([span]),
+                })
+                .collect::<Vec<_>>();
+            let args = serde_json::json!({"parent": parent, "direct": spans});
+            tree_command(root, state, interaction, "reorder", args)
+        }
+        ["ord", ..] => bail!("usage: ord side <card> <card> ... | ord direct <from>..<through> ..."),
         ["del", rest @ ..] => {
             let keep_root = match rest {
                 [] => false,
@@ -1660,15 +1808,15 @@ mod tests {
             ),
             (
                 SessionState::at("0/0"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA/1"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | ty <idea|event|finding|model|hub|term|cited> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | b | e | del [keep-root] | ins | mv [alone] <new-location> | mv [alone] before <location> | mv [<from>]..<through> after|side|before <location> | del [<from>]..<through> [into <location>] | in [..<through>] | out [..<through>] | ord side <card> <card> ... | ord direct <from>..<through> ... | ty <idea|event|finding|model|hub|term|cited> [<facet>] | lv <level|none> | mf <form|none> | stats | status | lsbk | help | q",
             ),
         ] {
             let mut state = pointer;
@@ -2109,5 +2257,127 @@ mod tests {
                 .text
                 .contains("[[LitB]]")
         );
+    }
+    /// Answers each confirmation from a script and keeps the plan lines it was shown (S8, #236).
+    struct Recorder {
+        answers: VecDeque<String>,
+        shown: Vec<Vec<String>>,
+    }
+
+    impl Interaction for Recorder {
+        fn edit(&mut self, _: &str, _: &str, _: &mut dyn FnMut(&str) -> Result<()>) -> Result<bool> {
+            panic!("a tree command opens no editor")
+        }
+        fn choose_literature_edit_part(&mut self) -> Result<crate::EditPart> {
+            panic!("a tree command chooses no part")
+        }
+        fn confirm(&mut self, expected: &str, lines: &[String]) -> Result<()> {
+            self.shown.push(lines.to_vec());
+            if self.answers.pop_front().as_deref() == Some(expected) {
+                Ok(())
+            } else {
+                bail!("confirmation did not match")
+            }
+        }
+    }
+
+    fn recorder(answers: &[&str]) -> Recorder {
+        Recorder {
+            answers: answers.iter().map(|a| a.to_string()).collect(),
+            shown: Vec::new(),
+        }
+    }
+
+    /// Topic `0/0` with 一 `0/1` .. 四 `0/4`; 一 has the Side successors 甲, 乙, 丙; 二 has 二甲.
+    fn outline_archive() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("temp dir");
+        crate::initialize_database(temp.path()).expect("initialize database");
+        let root = temp.path();
+        let owner = crate::Access::Owner;
+        crate::ops::create_topic(root, owner, crate::Workspace::Human, "# 书\n").unwrap();
+        let make = |kind, at: &str, title: &str| {
+            crate::ops::create_successor(root, owner, kind, at, crate::CardType::Idea, None, &format!("# {title}\n\n{title}。\n"))
+                .unwrap();
+        };
+        use crate::ops::Successor::{Direct, Side};
+        make(Direct, "0/0", "一");
+        make(Direct, "0/1", "二");
+        make(Direct, "0/2", "三");
+        make(Direct, "0/3", "四");
+        make(Side, "0/1", "甲");
+        make(Side, "0/1", "乙");
+        make(Side, "0/1", "丙");
+        make(Side, "0/2", "二甲");
+        temp
+    }
+
+    fn title_of(root: &Path, at: &str) -> String {
+        let conn = crate::open_db(root).expect("open");
+        crate::parse_card_text(&crate::load_card(&conn, at).expect("card").text).expect("parse").title
+    }
+
+    /// S8 (#236): `mv ..<through> after <location>` moves a span from the current Card; the plan is
+    /// shown first, a wrong word changes nothing, and the Pointer follows the moved Card.
+    #[test]
+    fn mv_moves_a_span_after_its_confirmation_and_the_pointer_follows() {
+        let temp = outline_archive();
+        let root = temp.path();
+        let mut state = SessionState::at("0/2");
+        let mut interaction = recorder(&["nope", "move"]);
+        execute(root, &mut state, "mv ..0/3 after 0/4", &mut interaction).expect_err("a wrong word cancels");
+        assert_eq!(title_of(root, "0/2"), "二", "nothing moved");
+        execute(root, &mut state, "mv ..0/3 after 0/4", &mut interaction).expect("span move");
+        assert_eq!(interaction.shown[1][0], "move verification:");
+        assert!(interaction.shown[1].contains(&"0/2 -> 0/3".to_string()), "{:?}", interaction.shown[1]);
+        assert_eq!(title_of(root, "0/2"), "四");
+        assert_eq!(title_of(root, "0/3"), "二");
+        assert_eq!(title_of(root, "0/3|a"), "二甲");
+        assert_eq!(title_of(root, "0/4"), "三");
+        assert_eq!(state.pointer(), &Pointer::Card("0/3".to_string()));
+    }
+
+    /// S8 (#236): `del <from>..<through> into <location>` deletes a span and the chain moves up.
+    #[test]
+    fn del_deletes_a_span_and_the_chain_moves_up() {
+        let temp = outline_archive();
+        let root = temp.path();
+        let mut state = SessionState::at("0/1");
+        let mut interaction = recorder(&["delete"]);
+        execute(root, &mut state, "del 0/2..0/3 into 0/1", &mut interaction).expect("span delete");
+        assert!(interaction.shown[0].contains(&"delete 0/2|a".to_string()), "{:?}", interaction.shown[0]);
+        assert_eq!(title_of(root, "0/2"), "四");
+        assert_eq!(state.pointer(), &Pointer::Card("0/2".to_string()));
+    }
+
+    /// S8 (#236): `in` then `out` on the same Card restores its place.
+    #[test]
+    fn in_then_out_restores_the_card() {
+        let temp = outline_archive();
+        let root = temp.path();
+        let mut state = SessionState::at("0/3");
+        let mut interaction = recorder(&["move", "move"]);
+        execute(root, &mut state, "in", &mut interaction).expect("indent");
+        assert_eq!(state.pointer(), &Pointer::Card("0/2|b".to_string()));
+        assert_eq!(title_of(root, "0/2|b"), "三");
+        execute(root, &mut state, "out", &mut interaction).expect("outdent");
+        assert_eq!(state.pointer(), &Pointer::Card("0/3".to_string()));
+        assert_eq!(title_of(root, "0/3"), "三");
+        assert_eq!(title_of(root, "0/4"), "四");
+    }
+
+    /// S8 (#236): `ord side` reorders the current Card's Side successors; `ord direct` its chain.
+    #[test]
+    fn ord_reorders_side_successors_and_chain_spans() {
+        let temp = outline_archive();
+        let root = temp.path();
+        let mut state = SessionState::at("0/1");
+        let mut interaction = recorder(&["move", "move"]);
+        execute(root, &mut state, "ord side 0/1|c 0/1|a 0/1|b", &mut interaction).expect("reorder side");
+        assert_eq!(["0/1|a", "0/1|b", "0/1|c"].map(|at| title_of(root, at)), ["丙", "甲", "乙"]);
+        assert_eq!(state.pointer(), &Pointer::Card("0/1".to_string()));
+        state = SessionState::at("0/0");
+        execute(root, &mut state, "ord direct 0/3..0/4 0/1..0/2", &mut interaction).expect("reorder chain");
+        assert_eq!(["0/1", "0/2", "0/3", "0/4"].map(|at| title_of(root, at)), ["三", "四", "一", "二"]);
+        assert_eq!(title_of(root, "0/3|a"), "丙", "一 kept its Side successors");
     }
 }

@@ -44,6 +44,13 @@ const tree = (x) => x.split("/")[0];
 const elsewhere = (x) => tree(x) !== tree(sides);
 const pair = agent.find((x) => elsewhere(x) && numbered(x) && has(nextDirect(x)) && sideCount(x) === 0 && sideCount(nextDirect(x)) === 0);
 const leaf = agent.find((x) => elsewhere(x) && tree(x) !== tree(pair) && numbered(x) && sideCount(x) === 0 && !has(nextDirect(x)) && x !== pair && x !== nextDirect(pair));
+// Leaves (no successors of any kind) of one more tree, for the batch moves; each goes to `side_of`
+// one parent in its own tree, so no Literature Card leaves its tree.
+const trees = [...new Set(agent.map(tree))].filter((t) => ![tree(sides), tree(pair), tree(leaf)].includes(t));
+const leavesOf = (t) => agent.filter((x) => tree(x) === t && numbered(x) && sideCount(x) === 0 && !has(nextDirect(x)));
+const movesTree = trees.sort((a, b) => leavesOf(b).length - leavesOf(a).length)[0];
+const movesParent = movesTree + '/1';
+const movable = leavesOf(movesTree).filter((x) => x !== movesParent && !x.startsWith(movesParent + '|'));
 db.close();
 
 const child = spawn(zt, ['mcp'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -80,6 +87,17 @@ if (ops.includes('leaf')) {
   const made = await time('create_successor', 'create_successor', { at: leaf, kind: 'side', title: '计时叶', body });
   const plan = await call('delete_card', { at: made.address ?? made.at ?? leaf + '|a' });
   await time('delete_card', 'delete_card', { at: made.address ?? leaf + '|a', confirm: plan.value.confirm });
+}
+// Tree-operation batches (S3, #231): one move, then twenty, each previewed then confirmed by its hash.
+const moveBatch = async (key, leaves) => {
+  const items = leaves.map((at, n) => ({ tool: 'move_card', op_key: `bench/${label}/1/${key}/i${n}`, client_ref: `m${n}`, arguments: { at, side_of: movesParent } }));
+  const preview = await time(key + '_preview', 'apply_batch', { items, preview: true });
+  await time(key, 'apply_batch', { items, confirm: preview.plan_hash });
+};
+if (ops.includes('batchmoves') && movable.length >= 21) {
+  results.movesTree = movesTree;
+  await moveBatch('apply_batch_1_move', movable.slice(0, 1));
+  await moveBatch('apply_batch_20_moves', movable.slice(1, 21));
 }
 if (ops.includes('batch')) {
   const items = Array.from({ length: 20 }, (_, n) => ({ tool: 'create_successor', op_key: `bench/${label}/1/place/i${n}`, client_ref: `p${n}`, arguments: { at: sides, kind: 'side', before: sides + '|a', title: `计时行${n}`, body } }));
