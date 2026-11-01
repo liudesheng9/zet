@@ -1979,39 +1979,39 @@ mod tests {
     fn a_role_change_grandfathers_only_the_rules_that_still_apply() {
         let long = |sentences: usize| {
             (1..=sentences)
-                .map(|n| format!("第 {n} 句说明这一步的推理。"))
+                .map(|n| format!("第 {n} 句说明推理。"))
                 .collect::<String>()
         };
         let promoted = json!({ "cards": [{
-            "address": "K/17|a", "category": "part", "facet": "设定", "title": "设定", "body": long(19),
-            "before": { "address": "K/17|a", "category": "idea", "title": "设定", "body": long(19) }
+            "address": "K/17|a", "category": "part", "facet": "设定", "title": "设定", "body": long(25),
+            "before": { "address": "K/17|a", "category": "idea", "title": "设定", "body": long(25) }
         }]});
         assert_eq!(
             run_json(&promoted, "", Limits::default(), false, ""),
             [
-                "K/17|a R13 (19 sentences > 18) split the part into two or more parts",
+                "K/17|a R13 (25 sentences > 24) split the part into two or more parts",
                 "faults: 1",
             ]
         );
         let demoted = json!({ "cards": [{
-            "address": "K/17|b", "category": "idea", "title": "均衡稳定提高社会福利", "body": long(19),
-            "before": { "address": "K/17|b", "category": "part", "facet": "设定", "title": "设定", "body": long(19) }
+            "address": "K/17|b", "category": "idea", "title": "均衡稳定提高社会福利", "body": long(25),
+            "before": { "address": "K/17|b", "category": "part", "facet": "设定", "title": "设定", "body": long(25) }
         }]});
         assert_eq!(
             run_json(&demoted, "", Limits::default(), false, ""),
             ["faults: 0"]
         );
         let refaceted = json!({ "cards": [{
-            "address": "K/17|c", "category": "part", "facet": "设定", "title": "设定", "body": long(19),
+            "address": "K/17|c", "category": "part", "facet": "设定", "title": "设定", "body": long(25),
             "before": {
                 "address": "K/17|c", "category": "part", "facet": "推导：参与约束",
-                "title": "推导：参与约束", "body": long(19)
+                "title": "推导：参与约束", "body": long(25)
             }
         }]});
         assert_eq!(
             run_json(&refaceted, "", Limits::default(), false, "formal"),
             [
-                "K/17|c R13 (advisory) (19 sentences > 18) split the part into two or more parts",
+                "K/17|c R13 (advisory) (25 sentences > 24) split the part into two or more parts",
                 "faults: 0",
             ]
         );
@@ -2172,16 +2172,16 @@ mod tests {
             }]})
         };
         assert_eq!(
-            run_json(&bundle(19, 20), "", Limits::default(), false, ""),
+            run_json(&bundle(25, 26), "", Limits::default(), false, ""),
             [
-                "K/6|a R13 (20 sentences > 18) split the part into two or more parts",
+                "K/6|a R13 (26 sentences > 24) split the part into two or more parts",
                 "faults: 1",
             ]
         );
         assert_eq!(
-            run_json(&bundle(19, 19), "", Limits::default(), false, ""),
+            run_json(&bundle(25, 25), "", Limits::default(), false, ""),
             [
-                "K/6|a R13 (advisory) (19 sentences > 18) split the part into two or more parts",
+                "K/6|a R13 (advisory) (25 sentences > 24) split the part into two or more parts",
                 "faults: 0",
             ]
         );
@@ -2444,7 +2444,7 @@ mod tests {
     /// reclassify a draft that names its own Workspace.
     #[test]
     fn the_workspace_flag_decides_a_draft_under_that_workspaces_policy() {
-        let long = (1..=19)
+        let long = (1..=25)
             .map(|n| format!("第 {n} 句说明这一步的推理。"))
             .collect::<String>();
         let raw = json!({ "cards": [{ "address": "K/1", "facet": "设定", "text": format!("# 设定\n\n{long}") }] });

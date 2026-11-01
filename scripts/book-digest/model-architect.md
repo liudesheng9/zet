@@ -12,7 +12,7 @@ Keep your work small. Read only what the plan needs. Do not load skills.
   - `context.md`: the context pack: the Model Card as the digest wrote it, its existing parts, its neighbours, the book's other models, and the chapter's endnotes (`## 本章注释`) as read-only reference text.
 - `LEVEL`: when present, the level of every model.
 - `REBUILD`: when present, rebuild models that already have parts.
-- `LIMITS`: `MaxSteps` is the most numbered steps one Derivation part holds.
+- `LIMITS`: the base limits the checker takes. A Model part is held to twice each base, so one Derivation part holds at most twice `MaxSteps` numbered steps (12 for the default `-MaxSteps 6`). Pass `LIMITS` on as written: the checker and validate double it themselves.
 
 Read `brief.md` and `context.md`. Read a source line range only when the brief leaves a structural question open (which step uses which equation, where a result comes from). Never read a whole section file.
 
@@ -30,12 +30,12 @@ The chapter's endnotes in `context.md` are source text: use a definition the bod
 - **Main line**: the derivation in build order. The first main-line part is the setting (facet `设定`): the agents, the timing, the information, and (for a formal model) the symbol table and the term table.
 - **Side part** (`line: "side"`, `of`): an example, a case, or a variant beside one step.
 - **Off part** (`line: "off"`): outside the build: a correspondence, a limit, a history.
-- **Derivation part** (`derive: true`, facet starting with `推导`): one step of the derivation, from `from` (or its premises) to `to`. Put one wherever the book skips or compresses algebra that a reader must check. Estimate `steps`, the lines of algebra (one equation and its reason per line). A step longer than `MaxSteps` lines becomes a **chain**: consecutive Derivation parts, each starting from the `to` of the one before (the script links them). Choose the cut results yourself: name each intermediate result in `to`. Do not shorten the derivation to save Cards.
+- **Derivation part** (`derive: true`, facet starting with `推导`): one step of the derivation, from `from` (or its premises) to `to`. Put one wherever the book skips or compresses algebra that a reader must check. Estimate `steps`, the lines of algebra (one equation and its reason per line). A step longer than twice `MaxSteps` lines becomes a **chain**: consecutive Derivation parts, each starting from the `to` of the one before (the script links them). Choose the cut results yourself: name each intermediate result in `to`. Do not shorten the derivation to save Cards.
 - **Shared part** (`take`): a building block of another model that this model uses: import it instead of writing a copy. The compiler writes it as a line of the Model Card's **引入** section. A take is one Card (`单卡`); add `"block": true` to take the Card with every part under its Side successors and the parts of its home model they rest on (`整块`: a setting tree, a result with its proof). For a part of a model planned earlier in this batch, write `<that model>#<id>`; for a block of another book, write its address (`context.md` lists them under 其他书的构件).
 - Every premise of a part is a member: an earlier main-line part, a shared part, or a side part. A premise outside the model is a fault: take it in (`take`), or move the Card in (`move`, only an agent Card of this book that belongs to no model). When this model changes one assumption of a borrowed block, take the block and add one part that states only the change and rests on the borrowed Card (a variant: `specializes` or `relaxes`); never restate a part of a model. Restate only a premise that is no part of any model. A tree root is never a premise.
 - A **concept model** has at most four parts, often none (`设定`, `机制` core, `结论`, `例子` aside), and no Derivation parts.
 - Mark one to three parts `core`; detail and Derivation parts are `aside`.
-- A part of a formal model holds at most 12 sentences and 400 characters of prose. Plan two parts where one statement will not fit.
+- A part of a formal model holds at most 24 sentences and 800 characters of prose. Plan two parts where one statement will not fit.
 
 ## Design the explanations of each chain
 
@@ -116,7 +116,7 @@ Write `<DIR>\plan.json` (UTF-8). Example:
 | `terms` | formal: each term, then the words the Cards must not use for it |
 | `id` | your id for the part, unique in the plan |
 | `line` | `main`, `side`, or `off` (default `main`) |
-| `facet`, `emphasis`, `title` | the part's facet (at most 32 characters), `core` or `aside`, and a title that states one claim (at most 40 characters) |
+| `facet`, `emphasis`, `title` | the part's facet (at most 32 characters), `core` or `aside`, and a title that states one claim (at most 80 characters) |
 | `spec` | what the part must state, in a few words: DeepSeek writes it from the source |
 | `rests` | premises: `[ref, why]` or `[ref, why, kind]`; `ref` is an id, `<model>#<id>`, or an address; `kind` is `rests` (default), `substitutes`, `illustrates`, `contrasts`, `relaxes`, `corresponds`, or `objects` |
 | `of`, `kind`, `why` | a side part: the part it stands beside, and the relation to it |

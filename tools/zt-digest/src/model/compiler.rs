@@ -560,6 +560,13 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 impl Compiler {
+    /// The most numbered steps one Derivation part holds: zt-check holds a Model part to twice the
+    /// base `MaxSteps` (`zt_check::core::loosen`, rule version 6). The base still goes to zt-check,
+    /// which doubles it itself; the plan check and the reviewer see the doubled number.
+    fn part_steps(&self) -> i64 {
+        zt_check::core::loosen(self.p.max_steps, true)
+    }
+
     // --- the archive ----------------------------------------------------------------------------
 
     fn zt(&mut self) -> Result<&mut Zt> {
@@ -913,11 +920,11 @@ impl Compiler {
                 if !truthy(&p["to"]) {
                     faults.push(format!("{id}: a Derivation part needs to (its result equation)"));
                 }
-                if truthy(&p["steps"]) && ps::gt(&p["steps"], self.p.max_steps) {
+                if truthy(&p["steps"]) && ps::gt(&p["steps"], self.part_steps()) {
                     faults.push(format!(
                         "{id}: {} steps is over MaxSteps {}; make it a chain of Derivation parts",
                         s(&p["steps"]),
-                        self.p.max_steps
+                        self.part_steps()
                     ));
                 }
             }
@@ -2287,7 +2294,7 @@ impl Compiler {
                 };
                 let mut text = format!(
                     "# 复核任务 {id}\n\n结果文件: {out}\nMaxSteps: {}\n模型卡: [[{model}]]\n\r\n",
-                    self.p.max_steps
+                    self.part_steps()
                 );
                 if continuing {
                     text += CR;

@@ -241,7 +241,7 @@ A model of Elaboration level 1. The source states it in words or a diagram: a me
 _Avoid_: Informal model, sketch, light model
 
 **Formal model**:
-A model of Elaboration level 2. The source states it in mathematics: symbols, equations, a derivation, or a proposition with a proof. The book digest builds it as a Self-sufficient model: the main line in build order, a setting with its symbol and term tables, and a Derivation part, or a Derivation chain, for each step the source skips. Each of its parts fits one Card (Card size: at most 12 sentences and 400 characters of prose, and at most 6 steps in a Derivation part, by default).
+A model of Elaboration level 2. The source states it in mathematics: symbols, equations, a derivation, or a proposition with a proof. The book digest builds it as a Self-sufficient model: the main line in build order, a setting with its symbol and term tables, and a Derivation part, or a Derivation chain, for each step the source skips. Each of its parts fits one Card (Card size: at most 24 sentences and 800 characters of prose, and at most 12 steps in a Derivation part, by default: twice the base limits, because a Model Card is held to every size limit twice as loose).
 _Avoid_: Math model, full model, rigorous model
 
 **Tolerated premise**:

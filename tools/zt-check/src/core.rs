@@ -350,10 +350,11 @@ fn corruption(body: &str, title: &str, address: &str, faults: &mut Faults) {
 }
 
 /// A size limit as it holds for one Card: a Model Card (a Model Card or a Model part) is held to
-/// every size limit 50% looser, rounded up (the owner, 2026-10-28; rule version 5), because a model
-/// states mechanisms and derivations that need room. Other Cards keep the limit.
+/// every size limit 100% looser, that is twice the limit (the owner, 2026-11-01; rule version 6;
+/// half again as loose under rule version 5), because a model states mechanisms and derivations
+/// that need room. Other Cards keep the limit.
 pub fn loosen(limit: i64, model: bool) -> i64 {
-    if model { (limit * 3 + 1) / 2 } else { limit }
+    if model { limit * 2 } else { limit }
 }
 
 /// The limits of card-style-check.ps1 and self-check.ps1.
@@ -712,7 +713,7 @@ impl Check {
         // A Literature note carries the source's argument, not one claim: its row turns the
         // claim-title and sentence rules off and only advises on a long title (issue #184).
         let literature = is_literature_note(card) || is_cited;
-        // A Model Card or a Model part: every size limit is half again as loose (`loosen`).
+        // A Model Card or a Model part: every size limit is twice as loose (`loosen`).
         let model = ps_eq(&text(prop(card, "type")), "model") || !facet.is_empty();
         if !title.is_empty() {
             let measure = measure(&title);
@@ -881,7 +882,7 @@ impl Check {
                         &format!("sections {found}; want {}", SECTIONS.join(", ")),
                     );
                 }
-                // Derivation parts are Model parts: each count is half again as loose (`loosen`).
+                // Derivation parts are Model parts: each count is twice as loose (`loosen`).
                 let (max_thought, max_reading, max_note) = (loosen(5, true), loosen(6, true), loosen(2, true));
                 if order.iter().any(|name| name == "思路") && thought > max_thought {
                     faults.add(
@@ -938,7 +939,7 @@ impl Check {
         if ps_eq(&level, "concept") {
             return chars;
         }
-        // Model parts only, so each limit is half again as loose (`loosen`).
+        // Model parts only, so each limit is twice as loose (`loosen`).
         let max_sentences = loosen(self.limits.max_sentences, true);
         let max_chars = loosen(self.limits.max_chars, true);
         let max_steps = loosen(self.limits.max_steps, true);
@@ -1700,7 +1701,7 @@ impl Check {
 
     /// R2 to R9 for one sentence. A Literature note's row turns the sentence rules R2, R3, R4,
     /// R5 and R7 off and lets R9 advise (issue #184); a rule the row does not name keeps its own
-    /// severity. In a Model Card (`model`) R2's limit is half again as loose.
+    /// severity. In a Model Card (`model`) R2's limit is twice as loose.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sentence(
         &self,
@@ -2922,10 +2923,10 @@ mod tests {
                 .map(|d| d.key.clone())
                 .expect("R13")
         };
-        // A Model part is held to 18 sentences (12, half again as loose).
-        assert_eq!(key(19), "sentences:19/18");
-        assert_eq!(key(20), "sentences:20/18");
-        assert_ne!(key(19), key(20), "a larger part is a new fault");
+        // A Model part is held to 24 sentences (12, twice as loose).
+        assert_eq!(key(25), "sentences:25/24");
+        assert_eq!(key(26), "sentences:26/24");
+        assert_ne!(key(25), key(26), "a larger part is a new fault");
 
         let event = |labels: &str| {
             json!({ "address": "K/6|b", "category": "event", "title": "1999 年的一笔交易",
@@ -3189,42 +3190,42 @@ mod tests {
     #[test]
     fn the_structure_list_of_a_model_card_is_not_prose() {
         let cards = json!([{ "address": "K/7|a", "type": "model", "title": "匹配规模报酬递增模型", "level": "formal",
-            "body": "问题：经济规模怎样改变均衡组织模式？\n\n**结构**\n\n- 推导：μL 增大时两个交点的移动（2/2） [[K/7|a|a|15]]：推导：μL 增大，两个交点沿 VV 线移动，外包均衡出现\n- 设定 [[K/7|a|a]]：设定\n\n**来源**\n\n企业在进入阶段比较两种组织模式的预期利润，然后选择利润更高的那一种组织模式进入行业，并且在之后每一期都重新比较两种组织模式在不同规模下的利润差距。\n\n来源：[[K]] §7" }]);
+            "body": "问题：经济规模怎样改变均衡组织模式？\n\n**结构**\n\n- 推导：μL 增大时两个交点的移动（2/2） [[K/7|a|a|15]]：推导：μL 增大，两个交点沿 VV 线移动，外包均衡出现\n- 设定 [[K/7|a|a]]：设定\n\n**来源**\n\n企业在进入阶段比较两种组织模式的预期利润，然后选择利润更高的那一种组织模式进入行业，并且在之后每一期都重新比较两种组织模式在不同规模下的利润差距，再根据新的利润差距决定是否转换组织模式以及转换的时点。\n\n来源：[[K]] §7" }]);
         let lines = run_json(&cards, "", Limits::default(), false, "");
         let r2: Vec<&String> = lines.iter().filter(|l| l.contains(" R2 ")).collect();
         assert_eq!(r2.len(), 1, "{lines:#?}");
         assert!(r2[0].contains("企业在进入阶段"), "{lines:#?}");
     }
 
-    /// A Model Card (a Model Card or a Model part) is held to every size limit 50% looser, rounded
-    /// up (the owner, 2026-10-28): R2 60 characters, R12 60, R13 18 sentences or 600 characters,
-    /// R14 9 steps. An Idea Card keeps the strict limits.
+    /// A Model Card (a Model Card or a Model part) is held to every size limit twice as loose
+    /// (the owner, 2026-11-01): R2 80 characters, R12 80, R13 24 sentences or 800 characters,
+    /// R14 12 steps. An Idea Card keeps the strict limits.
     #[test]
-    fn a_model_card_has_size_limits_half_again_as_loose() {
-        assert_eq!([loosen(40, true), loosen(25, true), loosen(12, true), loosen(400, true), loosen(6, true), loosen(5, true), loosen(2, true)], [60, 38, 18, 600, 9, 8, 3]);
+    fn a_model_card_has_size_limits_twice_as_loose() {
+        assert_eq!([loosen(40, true), loosen(25, true), loosen(12, true), loosen(400, true), loosen(6, true), loosen(5, true), loosen(2, true)], [80, 50, 24, 800, 12, 10, 4]);
         assert_eq!(loosen(40, false), 40);
-        let s50 = format!("{}。", "甲".repeat(50));
-        let s61 = format!("{}。", "乙".repeat(61));
-        let title50 = "丙".repeat(50);
+        let s70 = format!("{}。", "甲".repeat(70));
+        let s81 = format!("{}。", "乙".repeat(81));
+        let title70 = "丙".repeat(70);
         let card = |kind: &str, facet: &str, title: &str, body: &str| {
             json!({ "address": "K/7|a|a|1", "type": kind, "facet": facet, "level": "formal", "title": title, "body": body })
         };
         let lines = |c: Value| run_json(&json!([c]), "", Limits::default(), false, "");
-        let model = lines(card("model", "设定", &title50, &s50));
-        assert!(of_rule(&model, "R2").is_empty() && of_rule(&model, "R12").is_empty(), "50 characters fit a Model Card: {model:#?}");
-        let long = lines(card("model", "设定", "设定", &s61));
-        assert_eq!(of_rule(&long, "R2").len(), 1, "61 characters do not: {long:#?}");
-        assert!(of_rule(&long, "R2")[0].contains("> 60"), "{long:#?}");
-        let idea = lines(card("idea", "", &title50, &s50));
+        let model = lines(card("model", "设定", &title70, &s70));
+        assert!(of_rule(&model, "R2").is_empty() && of_rule(&model, "R12").is_empty(), "70 characters fit a Model Card: {model:#?}");
+        let long = lines(card("model", "设定", "设定", &s81));
+        assert_eq!(of_rule(&long, "R2").len(), 1, "81 characters do not: {long:#?}");
+        assert!(of_rule(&long, "R2")[0].contains("> 80"), "{long:#?}");
+        let idea = lines(card("idea", "", &title70, &s70));
         assert_eq!((of_rule(&idea, "R2").len(), of_rule(&idea, "R12").len()), (1, 1), "an Idea Card keeps 40: {idea:#?}");
-        // R13: 15 short sentences fit a Model part (18), 19 do not.
+        // R13: 22 short sentences fit a Model part (24), 25 do not.
         let sentences = |n: usize| (0..n).map(|i| format!("价格在第{i}期上升。")).collect::<Vec<_>>().join("");
-        assert!(of_rule(&lines(card("model", "设定", "设定", &sentences(15))), "R13").is_empty());
-        assert_eq!(of_rule(&lines(card("model", "设定", "设定", &sentences(19))), "R13").len(), 1);
-        // R14: 8 steps fit a Derivation part (9), 10 do not.
+        assert!(of_rule(&lines(card("model", "设定", "设定", &sentences(22))), "R13").is_empty());
+        assert_eq!(of_rule(&lines(card("model", "设定", "设定", &sentences(25))), "R13").len(), 1);
+        // R14: 12 steps fit a Derivation part (12), 13 do not.
         let steps = |n: usize| (1..=n).map(|i| format!("{i}. 第{i}步代入上式。")).collect::<Vec<_>>().join("\n");
-        assert!(of_rule(&lines(card("model", "推导", "推导", &steps(8))), "R14").is_empty());
-        assert_eq!(of_rule(&lines(card("model", "推导", "推导", &steps(10))), "R14").len(), 1);
+        assert!(of_rule(&lines(card("model", "推导", "推导", &steps(12))), "R14").is_empty());
+        assert_eq!(of_rule(&lines(card("model", "推导", "推导", &steps(13))), "R14").len(), 1);
     }
 
     fn small() -> Value {
@@ -3237,9 +3238,9 @@ mod tests {
     /// R13 counts prose characters too; a Derivation part's steps count under R14 only.
     #[test]
     fn card_size_counts_characters_and_steps() {
-        // Model parts take each limit half again as loose (`loosen`): 20 and 1 hold them to 30 and 2.
+        // Model parts take each limit twice as loose (`loosen`): 15 and 1 hold them to 30 and 2.
         let limits = Limits {
-            max_chars: 20,
+            max_chars: 15,
             max_steps: 1,
             ..Limits::default()
         };
@@ -3263,7 +3264,7 @@ mod tests {
         let good = format!(
             "**思路**\nE 只在还款后所得超过 $w$ 时参与。先求 E 还款后剩下的现金 $R$。\n\n**起点**\n- 依赖设定 [[X/1|a|a]]：E 参与，须所得高于 $w$。\n\n{steps}\n\n**结果**\n$$y_1+fy_2>K$$\n\n**解读**\n$w$ 在两边相消，所以 E 的财富不影响参与。检验：$f=1$ 时它是普通的净现值条件。"
         );
-        let long = (1..=25)
+        let long = (1..=33)
             .map(|n| format!("第 {n} 句解释推导的一步。"))
             .collect::<String>();
         let without_reading = good[..good.find("**解读**").unwrap()].trim().to_string();
@@ -3286,8 +3287,8 @@ mod tests {
             &[
                 "X/1|a|a|2 R15 sections 思路, 起点, 步骤, 结果; want 思路, 起点, 步骤, 结果, 解读",
                 "X/1|a|a|3 R17 a second 说明 line under step 2",
-                "X/1|a|a|4 R16 (解读 has 27 sentences > 9)",
-                "X/1|a|a|4 R17 (30 explanation sentences > 24)",
+                "X/1|a|a|4 R16 (解读 has 35 sentences > 12)",
+                "X/1|a|a|4 R17 (38 explanation sentences > 32)",
                 "faults: 4",
             ],
         );
@@ -3851,7 +3852,7 @@ mod tests {
     /// the rule itself grants.
     #[test]
     fn a_policy_does_not_bypass_the_concept_model_exemption() {
-        let body = (1..=19)
+        let body = (1..=25)
             .map(|n| format!("第{n}句说明一个条件。"))
             .collect::<Vec<_>>()
             .join("");

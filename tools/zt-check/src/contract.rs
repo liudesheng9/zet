@@ -26,7 +26,10 @@ use serde_json::{Map, Value, json};
 /// 5 (the owner, 2026-10-28): a Model Card (a Model Card or a Model part) is held to every
 /// size limit half again as loose (`core::loosen`: R2, R12, R13, R14, R16, R17), so the same
 /// authored text is decided differently than under 4.
-pub const RULE_VERSION: &str = "5";
+/// 6 (the owner, 2026-11-01): a Model Card is held to every size limit twice as loose (100%
+/// looser than the base limit; `core::loosen`), so the same authored text is decided
+/// differently than under 5.
+pub const RULE_VERSION: &str = "6";
 
 /// The version of the published diagnostic shape: the eight fields of
 /// `core::Diagnostic::to_json` and the `block`/`advise` and `local`/`graph`
