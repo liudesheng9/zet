@@ -177,6 +177,16 @@ fn add_follow(follow: &mut CiMap<Follow>, r: Follow) {
 /// that says 依赖 in the wrong direction or about a Card outside the model (grossman2002integration
 /// trial 6: a Model Card that "依赖" four Idea Cards of its group, and a 解读 line
 /// "依赖这两个方向的 [[later part]] …" meaning the later part uses this one).
+/// atkinson2015lectures (2026-11-01): a batch folder is named after its first model, so a rebuild whose first model
+/// was also the first model of a finished batch reuses that folder and its state. The brief begins the batch's own
+/// work order with the models it was given: the finished models leave the order (no later step writes or reports
+/// them; the fill line of 13 models had overflowed its 400 characters), and their entries and step evidence stay
+/// in `models`, which their completions read.
+fn begin_batch_order(state: &mut Value, models: &[String]) {
+    let kept: Vec<String> = list(&state["order"]).into_iter().map(s).filter(|m| models.iter().any(|x| ps::eq(x, m))).collect();
+    state["order"] = json!(kept);
+}
+
 /// `-Step defer`: the models of a batch that `model-deps` released to wait leave the batch's order, so no
 /// later step (apply, derive, review, split, close, report) writes or reports them, and their status is
 /// `deferred`. Their plans are the caller's to set aside. Returns the models it deferred, in order.
@@ -1741,7 +1751,9 @@ impl Compiler {
     fn step_brief(&mut self) -> Result<()> {
         let mut jobs = Vec::new();
         let mut skipped = Vec::new();
-        for model in self.model_list() {
+        let models = self.model_list();
+        begin_batch_order(&mut self.state, &models);
+        for model in models {
             let st = self.model_of(&json!(model))?;
             // An unwritten placeholder keeps a model unbuilt even when it has many parts (R235).
             let todo = TODO_LINE.is_match(&s(&st["head"]["body"]))
@@ -4038,6 +4050,12 @@ mod tests {
         let deferred = super::defer_models(&mut state, &["k/3|A".to_string(), "K/4|a".to_string(), "K/9|a".to_string()]);
         assert_eq!(deferred, vec!["K/3|a".to_string(), "K/4|a".to_string()]);
         assert_eq!(state["order"], json!(["K/2|a"]));
+        // atkinson2015lectures: a rebuild that reuses a finished batch's folder begins its own order; the finished
+        // model keeps its state entry.
+        let mut reused = json!({"order":["K/51|a","K/52|a","K/53|a"],"models":{"K/52|a":{"status":"reviewed","steps":{"report":{}}}}});
+        super::begin_batch_order(&mut reused, &["K/51|a".to_string(), "K/60|a".to_string()]);
+        assert_eq!(reused["order"], json!(["K/51|a"]));
+        assert_eq!(reused["models"]["K/52|a"]["status"], json!("reviewed"));
         assert_eq!(state["models"]["K/3|a"]["status"], json!("deferred"));
         assert_eq!(state["models"]["K/2|a"]["status"], json!("planned"));
     }

@@ -12661,15 +12661,16 @@ fn model_plan_dir(p: &Prepared, header: &str) -> Result<PathBuf> {
             }
         }
     }
+    newest_plan_dir(dirs).with_context(|| format!("no accepted plan for `{header}` under {}; plan and build the model first", root.display()))
+}
+
+/// atkinson2015lectures (2026-11-01): a rebuilt model plans in the batch folder of its new build, and the plan of its
+/// first build stays in the old one; model-finish refused 24 rebuilt models ("more than one accepted plan"). The
+/// newest accepted plan is the model's plan; the order of the folder names decides a tie.
+fn newest_plan_dir(mut dirs: Vec<PathBuf>) -> Option<PathBuf> {
     dirs.sort();
-    match dirs.len() {
-        1 => Ok(dirs.remove(0)),
-        0 => bail!("no accepted plan for `{header}` under {}; plan and build the model first", root.display()),
-        _ => bail!(
-            "more than one accepted plan for `{header}` under {}; keep one work folder",
-            root.display()
-        ),
-    }
+    let modified = |dir: &PathBuf| std::fs::metadata(dir.join("plan.json")).and_then(|m| m.modified()).ok();
+    dirs.into_iter().max_by(|a, b| modified(a).cmp(&modified(b)))
 }
 
 /// The accepted plan (its exact bytes and hash) and the batch's compiler state.
@@ -12704,6 +12705,13 @@ fn require_step(entry: &Value, name: &str) -> Result<Value> {
 
 /// The `**结构**` and `**引入**` sections of the Model Card: the compiler's structure contribution (a
 /// taken part is an 引入 line since #212).
+/// atkinson2015lectures (2026-11-01): a part of the model's own subtree. The build order also holds what an imported
+/// block (`整块`) brings with it: the borrowed part's premises in its home model (`26|a|a` under a take of `26|a|a|3`),
+/// which that model's plan maps, never this one's; four built models were refused for them.
+fn own_part(header: &str, address: &str) -> bool {
+    address.starts_with(&format!("{header}|"))
+}
+
 fn structure_lines(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;
@@ -12713,14 +12721,17 @@ fn structure_lines(body: &str) -> Vec<String> {
             inside = true;
             continue;
         }
-        if !inside {
-            continue;
-        }
-        if trimmed.is_empty() {
-            continue;
-        }
+        // atkinson2015lectures (2026-11-01): the 分部 section (the model's parts) stands between 引入 and 结构, and the
+        // read stopped there, so every 结构 line went unread and model-finish refused five built models. Another
+        // section ends the one being read; the read goes on to the next 引入 or 结构 section.
+        // A 来源 line or a heading may also stand before 引入 or between 结构 and 引入 (51|a, 83|a): it ends the
+        // section, and the read goes on.
         if trimmed.starts_with("**") || trimmed.starts_with('#') || trimmed.starts_with("来源") {
-            break;
+            inside = false;
+            continue;
+        }
+        if !inside || trimmed.is_empty() {
+            continue;
         }
         out.push(trimmed.to_string());
     }
@@ -12885,7 +12896,7 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         part_ids.insert(address.clone(), id.clone());
     }
     for address in order.keys() {
-        if !part_ids.contains_key(address) {
+        if !part_ids.contains_key(address) && own_part(header, address) {
             bail!("the model holds a part `{address}` that its accepted plan does not map; rebuild the model as a new revision");
         }
     }
@@ -18893,6 +18904,45 @@ mod term_card_ledger_tests {
     // atkinson2015lectures (2026-11-01): with the run's one resume spent, the operator reopens failed Model units
     // whose cause a release fixed. Only failed units are reopened, each with an attempt_reset event and its reason,
     // and a list that names any other unit changes nothing.
+    #[test]
+    fn an_imported_blocks_premise_is_no_unmapped_part() {
+        assert!(super::own_part("K/31|a", "K/31|a|a|4"));
+        assert!(!super::own_part("K/31|a", "K/26|a|a"), "a premise of the imported block belongs to 26|a");
+        assert!(!super::own_part("K/3|a", "K/31|a|a"), "3|a is no prefix of 31|a");
+    }
+
+    #[test]
+    fn the_structure_list_is_read_past_the_parts_section() {
+        let body = "问题：x\n\n**引入**\n\n- 单卡 [[K/159|a|a|6]]：记号\n\n**分部**\n\n- 第一部分：[[K/161|a|a]] 起\n\n**结构**\n\n- 设定 [[K/161|a|a]]（核心）：设定\n- 命题 [[K/161|a|a|4]]：命题\n\n**关联**\n\n- 参照 [[K/160|a]]：x\n\n来源：[[K]] §13";
+        let lines = super::structure_lines(body);
+        assert!(lines.iter().any(|l| l.contains("[[K/161|a|a]]（核心）")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("[[K/161|a|a|4]]")) && lines.iter().any(|l| l.contains("[[K/159|a|a|6]]")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("第一部分") || l.contains("[[K/160|a]]")), "only 引入 and 结构 lines: {lines:?}");
+        // atkinson2015lectures 51|a and 83|a: the 来源 line before 引入, or between 结构 and 引入.
+        let early = "问题：x\n\n来源：[[K]] §4-4\n\n**引入**\n\n- 单卡 [[K/45|a|a|7]]：(4-9)\n\n**结构**\n\n- 设定 [[K/51|a|a]]：设定";
+        let lines = super::structure_lines(early);
+        assert!(lines.iter().any(|l| l.contains("[[K/45|a|a|7]]")) && lines.iter().any(|l| l.contains("[[K/51|a|a]]")), "{lines:?}");
+        let between = "问题：x\n\n**结构**\n\n- 设定 [[K/83|a|a]]：设定\n\n来源：[[K]] §6\n\n**引入**\n\n- 单卡 [[K/75|a|a|12]]：a_X";
+        let lines = super::structure_lines(between);
+        assert!(lines.iter().any(|l| l.contains("[[K/75|a|a|12]]")) && !lines.iter().any(|l| l.starts_with("来源")), "{lines:?}");
+    }
+
+    #[test]
+    fn a_rebuilt_models_newest_plan_is_its_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("m-K_95_c").join("K_98_a");
+        let new = dir.path().join("m-K_51_a").join("K_98_a");
+        for d in [&old, &new] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(old.join("plan.json"), "{}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(new.join("plan.json"), "{}").unwrap();
+        assert_eq!(super::newest_plan_dir(vec![old.clone(), new.clone()]), Some(new.clone()));
+        assert_eq!(super::newest_plan_dir(vec![new.clone(), old]), Some(new));
+        assert_eq!(super::newest_plan_dir(Vec::new()), None);
+    }
+
     #[test]
     fn reopen_gives_only_failed_units_a_fresh_attempt() {
         let (_dir, conn) = ledger();

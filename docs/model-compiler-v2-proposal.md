@@ -110,6 +110,14 @@ A compiler step that one model breaks records that model as failed in the batch 
 
 Every step script already writes its line to `drive-lines/<name>.json` (`line`) before it prints it. The drive reader should take the step's line from that file, with the DeepSeek answer only as the pointer (`detail`), instead of trusting a retyped copy. Two changes are needed. The detail file name must be unique per call; today lanes and batches overwrite `fill.json`, so a run-unique suffix is required. And the Haiku manager returns the file's `line` verbatim (it can read files), or the module reads it through one small read step. This ends the patch series of §1.3 (fences, curly quotes, remarks, dropped fields).
 
+### D7. Where a rebuild spends its time, and three quick cuts
+
+Measured on the rebuild run of 2026-11-01 (wf_7ba0b0ff-ecb, 2 h 51 min, 46 models): Models 43 min, Link 34 min, **link check 68 min**, Organize 16 min, Cleanup 8 min. In the model stage, the Sonnet plan is the slowest step (9.3 min on average per batch of 7–8 models, up to 17 min); each content round takes 1.4–3.2 min, and each of about 12 drive steps per batch about 0.5 min.
+
+1. **Scope the link check to what changed.** It re-checked the whole book (2,129 Cards, 229 jobs in about 4 waves of 8 managers) although only the rebuilt models and their groups had changed. The check should plan only the Cards changed since its last publication; a run that changes nothing skips it.
+2. **Delete conversations in parallel.** One manager deleted the 229 link-check conversations one after another (7 min); the deletion splits into up to eight managers, as the content rounds do.
+3. **Smaller architect batches when models wait.** `perSonnet: 4` halves a plan call and lets more batches run side by side; the default stays 8 for small books, where the architect needs the models of one batch together.
+
 ## 4. What changes where
 
 | Area | D2 | D3 | D4 | D5 | D6 |
