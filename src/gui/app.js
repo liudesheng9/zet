@@ -7285,7 +7285,7 @@
     const plan = preview.plan || {};
     const moved = Object.entries(plan.moved || {});
     const lines = [
-      ...moved.map(([old, now]) => `${old} -> ${now}`),
+      ...planMoves(moved, items),
       ...(plan.deleted || []).map((at) => `delete ${at}`),
       ...(plan.links_that_will_break || []).map((link) => `link that will break: ${link.source} -> ${link.target}`),
       `link macros rewritten: ${plan.link_macros_rewritten || 0}`,
@@ -7296,6 +7296,35 @@
     const open = state.card ? (plan.moved || {})[state.card.address] || state.card.address : null;
     await afterChange(open, `${title}: ${moved.length} moved${plan.deleted?.length ? `, ${plan.deleted.length} deleted` : ''}`);
     return done;
+  }
+
+  /**
+   * The plan's renames for the dialog: first the Cards the gesture names (each with its branches),
+   * in chain order, then the Cards that only shift to close the gap or make room. Both lists use the
+   * addresses before the change, as the plan does.
+   */
+  function planMoves(moved, items) {
+    const named = [];
+    for (const { arguments: a = {} } of items) {
+      if (a.from && a.through) {
+        let at = a.from;
+        named.push(at);
+        for (let step = 0; step < 500 && at !== a.through; step++) { at = nextDirect(at); named.push(at); }
+      }
+      for (const key of ['at', 'from', 'through']) if (a[key]) named.push(a[key]);
+      for (const child of a.side || []) named.push(child);
+      for (const span of a.direct || []) named.push(...span);
+    }
+    const owner = (old) => named.findIndex((at) => old === at || old.startsWith(`${at}|`));
+    const line = ([old, now]) => `${old} -> ${now}`;
+    const yours = moved.filter(([old]) => owner(old) >= 0)
+      .sort(([a], [b]) => owner(a) - owner(b) || (a < b ? -1 : 1));
+    const shifted = moved.filter(([old]) => owner(old) < 0);
+    if (!yours.length) return moved.map(line);
+    return [
+      `Your cards (${yours.length}):`, ...yours.map(line),
+      ...(shifted.length ? ['', `Shifted to close the gap or make room (${shifted.length}):`, ...shifted.map(line)] : []),
+    ];
   }
 
   // The span marked on the Map: from the open card through an Alt-clicked card on its Direct chain.
