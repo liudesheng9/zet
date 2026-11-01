@@ -451,10 +451,44 @@
       case 'e': needCard(); return editCard();
       case 'reply': return replyTo();
       case 'ask': return askBox(rest.join(' '));
-      case 'del': needCard(); return deleteCard();
+      case 'del': {
+        needCard();
+        if (rest[0]?.includes('..')) {
+          const [from, through] = rest[0].split('..');
+          const span = { from: from || state.card.address, through: through || from || state.card.address };
+          if (rest[1] === 'into' && rest[2]) span.into = rest[2];
+          else if (rest.length !== 1) throw new Error('usage: del [<from>]..<through> [into <location>]');
+          return applyTree(`Delete ${span.from}..${span.through}`, [{ tool: 'delete_span', arguments: span }]);
+        }
+        return deleteCard();
+      }
       case 'ins': needCard(); return insertCard();
+      // Span and outline commands (S7, #235): the same words as the terminal Session; each sends one
+      // batch and confirms its composed plan with `apply`.
+      case 'in': case 'out': {
+        needCard();
+        const through = rest[0]?.startsWith('..') ? rest[0].slice(2) : state.card.address;
+        return outline(name === 'in' ? 'indent' : 'outdent', through);
+      }
+      case 'ord': {
+        needCard();
+        const parent = state.card.address;
+        if (rest[0] === 'side' && rest.length > 1) return applyTree(`Reorder ${parent}`, [{ tool: 'reorder', arguments: { parent, side: rest.slice(1) } }]);
+        if (rest[0] === 'direct' && rest.length > 1) {
+          const direct = rest.slice(1).map((span) => (span.includes('..') ? span.split('..') : [span]));
+          return applyTree(`Reorder ${parent}`, [{ tool: 'reorder', arguments: { parent, direct } }]);
+        }
+        throw new Error('usage: ord side <card> <card> ... | ord direct <from>..<through> ...');
+      }
       case 'mv': {
         needCard();
+        if (rest[0]?.includes('..')) {
+          const [from, through] = rest[0].split('..');
+          const key = { after: 'after', side: 'side_of', before: 'before' }[rest[1]];
+          if (!key || rest.length !== 3) throw new Error('usage: mv [<from>]..<through> after|side|before <location>');
+          const span = { from: from || state.card.address, through: through || from || state.card.address };
+          return applyTree(`Move ${span.from}..${span.through}`, [{ tool: 'move_span', arguments: { ...span, [key]: rest[2] } }]);
+        }
         const alone = rest[0] === 'alone';
         const args = alone ? rest.slice(1) : rest;
         if (args.length === 2 && args[0] === 'before') return moveCard({ before: args[1] }, alone);
@@ -1628,6 +1662,8 @@
             dataset: { address },
             onclick: (event) => {
               event.stopPropagation();
+              // Alt-click marks a span from the open card through this one (S7, #235).
+              if (event.altKey) { markSpan(address); return; }
               // Shift-click lays the card on the Table, or takes it back, without leaving the Map.
               if (event.shiftKey) { toggleTable(address); render(); return; }
               go(address);
@@ -1635,6 +1671,7 @@
             onpointerenter: () => { hovered = address; paint(drawn); },
             onpointerleave: () => { if (hovered === address) { hovered = null; paint(drawn); } },
           });
+          wireDrag(el, address);
           el.classList.add('entering');
           els.set(address, el);
           nodes.append(el);
@@ -1646,6 +1683,7 @@
           setTimeout(() => el.classList.remove('entering'), 400);
         }
         content(el, outline.card.get(n.address), n, outline);
+        el.classList.toggle('in-span', spanSet().has(n.address));
         if (partStarts.has(n.address)) el.dataset.part = partStarts.get(n.address);
         else delete el.dataset.part;
       }
@@ -7232,6 +7270,132 @@
   }
 
   /**
+   * One tree change as one batch (S7, #235): preview the items, show the composed plan in one dialog
+   * (type `apply`), then commit under the preview's plan hash. Every address names the Card that
+   * held it when the batch starts, and the open Card is followed to its new address.
+   */
+  async function applyTree(title, items) {
+    const run = `gui/${Date.now().toString(36)}`;
+    const keyed = items.map((item, n) => ({ op_key: `${run}/1/step/i${n}`, client_ref: `g${n}`, ...item }));
+    const preview = await api('batch', { items: keyed, preview: true, lean: true });
+    if (preview.complete !== true) {
+      const refusal = (preview.refusals || [])[0];
+      throw new Error(refusal ? refusal.refusal.message || refusal.refusal.error : 'the change was refused');
+    }
+    const plan = preview.plan || {};
+    const moved = Object.entries(plan.moved || {});
+    const lines = [
+      ...moved.map(([old, now]) => `${old} -> ${now}`),
+      ...(plan.deleted || []).map((at) => `delete ${at}`),
+      ...(plan.links_that_will_break || []).map((link) => `link that will break: ${link.source} -> ${link.target}`),
+      `link macros rewritten: ${plan.link_macros_rewritten || 0}`,
+    ];
+    if (!(await confirmPlan(title, lines, 'apply'))) return null;
+    const done = await api('batch', { items: keyed, confirm: preview.plan_hash });
+    clearSpan();
+    const open = state.card ? (plan.moved || {})[state.card.address] || state.card.address : null;
+    await afterChange(open, `${title}: ${moved.length} moved${plan.deleted?.length ? `, ${plan.deleted.length} deleted` : ''}`);
+    return done;
+  }
+
+  // The span marked on the Map: from the open card through an Alt-clicked card on its Direct chain.
+  const spanMark = { from: null, through: null };
+  const nextDirect = (at) => (/[/|]\d+$/.test(at) ? at.replace(/(\d+)$/, (n) => String(Number(n) + 1)) : at.includes('/') ? `${at}|1` : `${at}/1`);
+  function spanCards() {
+    if (!spanMark.from) return [];
+    const cards = [spanMark.from];
+    let at = spanMark.from;
+    for (let step = 0; step < 500 && at !== spanMark.through; step++) { at = nextDirect(at); cards.push(at); }
+    return at === spanMark.through ? cards : [spanMark.from];
+  }
+  const spanSet = () => new Set(spanCards());
+  function paintSpan() {
+    const marked = spanSet();
+    for (const el of document.querySelectorAll('#nodes .node')) el.classList.toggle('in-span', marked.has(el.dataset.address));
+  }
+  function markSpan(address) {
+    if (!state.card) return;
+    Object.assign(spanMark, { from: state.card.address, through: address });
+    if (spanCards().length === 1 && address !== state.card.address) {
+      Object.assign(spanMark, { from: null, through: null });
+      toast(`${address} is not on the Direct chain after ${state.card.address}`);
+    }
+    paintSpan();
+  }
+  function clearSpan() { Object.assign(spanMark, { from: null, through: null }); paintSpan(); }
+
+  /** Indent or outdent the open card, or the marked span that starts at it. */
+  function outline(tool, through) {
+    const at = state.card.address;
+    const cards = spanCards();
+    const last = through && through !== at ? through : cards[0] === at ? cards.at(-1) : at;
+    return applyTree(`${tool === 'indent' ? 'Indent' : 'Outdent'} ${at}${last !== at ? '..' + last : ''}`, [{ tool, arguments: { at, through: last } }]);
+  }
+
+  /** Alt+↑ / Alt+↓: the open card one place up or down among its siblings. */
+  async function stepCard(direction) {
+    const card = state.card;
+    const at = card.address;
+    if (/\|[a-z]+$/.test(at)) {
+      const parent = card.parent.address;
+      const label = (a) => a.slice(a.lastIndexOf('|') + 1);
+      const rank = (l) => [...l].reduce((n, c) => n * 26 + c.charCodeAt(0) - 96, 0);
+      const order = (await cardAt(parent)).sides.map((s) => s.address).sort((a, b) => rank(label(a)) - rank(label(b)));
+      const index = order.indexOf(at);
+      const other = index + direction;
+      if (index < 0 || other < 0 || other >= order.length) return;
+      [order[index], order[other]] = [order[other], order[index]];
+      return applyTree(`Reorder ${parent}`, [{ tool: 'reorder', arguments: { parent, side: order } }]);
+    }
+    if (direction < 0) {
+      if (!card.parent || card.parent.address.endsWith('/0') || !card.parent.address.includes('/')) return;
+      return applyTree(`Move ${at} up`, [{ tool: 'move_span', arguments: { from: at, through: at, before: card.parent.address } }]);
+    }
+    if (!card.direct) return;
+    return applyTree(`Move ${at} down`, [{ tool: 'move_span', arguments: { from: at, through: at, after: card.direct.address } }]);
+  }
+
+  // Drag a card (or the marked span it belongs to) onto another card: the upper third drops it in
+  // that card's place, the middle third as its next Side branch, the lower third right after it.
+  let dragFrom = null;
+  const dropZone = (el, event) => {
+    const box = el.getBoundingClientRect();
+    const y = (event.clientY - box.top) / Math.max(1, box.height);
+    return y < 1 / 3 ? 'before' : y > 2 / 3 ? 'after' : 'side_of';
+  };
+  const showDrop = (el, zone) => {
+    el.classList.remove('drop-before', 'drop-side', 'drop-after');
+    if (zone) el.classList.add(zone === 'side_of' ? 'drop-side' : `drop-${zone}`);
+  };
+  function wireDrag(el, address) {
+    el.draggable = true;
+    el.addEventListener('dragstart', (event) => {
+      dragFrom = address;
+      event.dataTransfer.setData('text/plain', address);
+      event.dataTransfer.effectAllowed = 'move';
+    });
+    el.addEventListener('dragend', () => { dragFrom = null; });
+    el.addEventListener('dragover', (event) => {
+      if (!dragFrom || dragFrom === address) return;
+      event.preventDefault();
+      showDrop(el, dropZone(el, event));
+    });
+    el.addEventListener('dragleave', () => showDrop(el, null));
+    el.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const zone = dropZone(el, event);
+      showDrop(el, null);
+      const from = dragFrom;
+      dragFrom = null;
+      if (!from || from === address) return;
+      const cards = spanCards();
+      const span = cards.includes(from) ? { from: cards[0], through: cards.at(-1) } : { from, through: from };
+      const name = span.through === span.from ? span.from : `${span.from}..${span.through}`;
+      applyTree(`Move ${name}`, [{ tool: 'move_span', arguments: { ...span, [zone]: address } }]).catch(fail);
+    });
+  }
+
+  /**
    * Insert a new Card in the open Card's place: confirm the renumbering first (the open Card and
    * its successors move down one place, and it becomes the new Card's Direct successor), then write
    * the new Card. Its Links name today's addresses and follow the move.
@@ -7409,6 +7573,13 @@
         if (event.key === 'ArrowLeft') nav.back(); else nav.forward();
         return;
       }
+      // Alt+↑ / Alt+↓ move the open card one place among its siblings (S7, #235).
+      if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+        if (isTyping(event.target) || !state.card || state.card.context !== 'regular') return;
+        event.preventDefault();
+        stepCard(event.key === 'ArrowUp' ? -1 : 1).catch(fail);
+        return;
+      }
       if (isTyping(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
       const card = state.card;
       const run = (fn) => { event.preventDefault(); Promise.resolve().then(fn).catch(fail); };
@@ -7424,6 +7595,8 @@
         case 't': return run(() => newCard('topic', ''));
         case 'l': return run(() => newLiterature());
         case 'm': return card ? run(() => moveCard()) : undefined;
+        // Tab indents the open card (or its marked span) under the card before it; Shift+Tab outdents.
+        case 'Tab': return card && card.context === 'regular' ? run(() => outline(event.shiftKey ? 'outdent' : 'indent')) : undefined;
         case 'i': return card && card.context === 'regular' ? run(insertCard) : undefined;
         case 'Delete': return card ? run(deleteCard) : undefined;
         case 'u': case 'ArrowUp': case 'ArrowLeft':

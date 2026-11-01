@@ -1,6 +1,7 @@
 # Fast tree operations, span operations and structural batches
 
-Status: decided (2026-10-31), not built. PRD #228, slices #229–#237. The six open questions are settled in
+Status: built and released (2026-10-31): zt 0.50.1 (S1, S2), 0.51.0 (S3–S6, S8), 0.52.0 (S7), zt-digest
+0.39.0 (S9). PRD #228, slices #229–#237. Timings: `docs/tree-operations-timings.md`. The six open questions are settled in
 [Decisions](#decisions-2026-10-31).
 Scope: the structural writers of [Card operations](wiki/card-operations.md) (`move_card`,
 `insert_card`, `delete_card`, a Side placement with `before`, a Citation key rename), the Link index

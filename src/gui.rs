@@ -1080,6 +1080,7 @@ impl App {
             (Method::Post, "/api/metadata") => self.edit_metadata(body),
             (Method::Post, "/api/delete") => self.delete(body),
             (Method::Post, "/api/move") => self.move_card(body),
+            (Method::Post, "/api/batch") => self.batch(body),
             (Method::Post, "/api/insert") => self.insert_card(body),
             (Method::Post, "/api/reply") => self.reply(body),
             (Method::Get, "/api/locks") => self.locks(),
@@ -1902,6 +1903,18 @@ impl App {
             confirm_field(body),
         )?
         .into_value())
+    }
+
+    /// One batch plan as the owner (S7, #235): the `apply_batch` arguments. A plan with a tree
+    /// operation previews with `preview: true`, and commits only with `confirm` equal to the preview's
+    /// `plan_hash`; the GUI's span drag, outline keys and reorder all send their items here.
+    fn batch(&self, body: &Value) -> ApiResult {
+        Ok(crate::batch::apply_as(
+            &self.root,
+            ACCESS,
+            body,
+            &mut crate::scope::WriteScope::default(),
+        )?)
     }
 
     /// Insert a new Card at the place of `before`, which moves down.
@@ -6818,5 +6831,50 @@ mod render_tests {
         }
         assert!(charts.get(&first).is_none());
         assert!(charts.get(&charts.add("page 1".to_string())).is_some());
+    }
+}
+
+#[cfg(test)]
+mod batch_route_tests {
+    use super::*;
+
+    /// S7 (#235): `/api/batch` applies a tree plan as the owner: the preview names the plan hash, a
+    /// call without it only plans, and the confirmed call commits; the human Workspace is writable.
+    #[test]
+    fn the_batch_route_previews_and_commits_a_tree_plan_as_the_owner() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::initialize_database(temp.path()).expect("initialize");
+        let root = temp.path();
+        let owner = crate::Access::Owner;
+        crate::ops::create_topic(root, owner, crate::Workspace::Human, "# 书\n").unwrap();
+        for (kind, at, text) in [
+            (crate::ops::Successor::Direct, "0/0", "# 一\n\n一。\n"),
+            (crate::ops::Successor::Side, "0/1", "# 甲\n\n甲。\n"),
+            (crate::ops::Successor::Side, "0/1", "# 乙\n\n乙。\n"),
+        ] {
+            crate::ops::create_successor(root, owner, kind, at, crate::CardType::Idea, None, text).unwrap();
+        }
+        let app = App {
+            root: root.to_path_buf(),
+            token: "t".to_string(),
+            port: 0,
+            charts: Charts::default(),
+            snapshots: Snapshots::new(root),
+            projections: Projections::installed(),
+        };
+        let items = serde_json::json!([{"op_key": "gui/tidy/1/step/i0", "client_ref": "r0", "tool": "reorder",
+            "arguments": {"parent": "0/1", "side": ["0/1|b", "0/1|a"]}}]);
+        let post = |body: Value| {
+            app.route(&Method::Post, "/api/batch", &BTreeMap::new(), &body)
+                .map_err(|error| error.message)
+        };
+        let preview = post(serde_json::json!({"items": items, "preview": true})).expect("preview");
+        assert_eq!(preview["plan"]["moved"]["0/1|a"], "0/1|b", "{preview}");
+        let unconfirmed = post(serde_json::json!({"items": items})).expect("plan");
+        assert_eq!(unconfirmed["applied"], false);
+        let done = post(serde_json::json!({"items": items, "confirm": preview["plan_hash"]})).expect("commit");
+        assert_eq!(done["applied"], true, "{done}");
+        let conn = crate::open_db(root).unwrap();
+        assert!(crate::load_card(&conn, "0/1|a").unwrap().text.starts_with("# 乙"));
     }
 }

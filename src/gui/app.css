@@ -2849,3 +2849,11 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
   .desk-check { animation: none; }
   .desk-check-line { transition: none; }
 }
+
+/* Tree editing on the Map (S7, #235): an Alt-clicked span stays marked; while a card is dragged over
+   another, a bar shows where it lands: on top (its place), on the left edge (its next Side branch),
+   or at the bottom (right after it). */
+.node.in-span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.node.drop-before { box-shadow: inset 0 4px 0 var(--accent), var(--card-shadow-lift); }
+.node.drop-side { box-shadow: inset 5px 0 0 var(--accent), var(--card-shadow-lift); }
+.node.drop-after { box-shadow: inset 0 -4px 0 var(--accent), var(--card-shadow-lift); }
