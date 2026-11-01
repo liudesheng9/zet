@@ -1,4 +1,7 @@
-// ==== module zt-digest-lib v47 ====
+// ==== module zt-digest-lib v48 ====
+// 48 (#227): the Write scope is the server's (#225, #226): the helper `call` declares the Literature scope and the open
+// scope is its own command, `open-call`. Every approval rule that lets a DeepSeek job run the helper refuses a
+// command that runs `open-call` (ZD_NO_OPEN), in place of a command that carries -Open.
 // 47 (live run 2026-10-27): `bookStep` passes its `workspace` option to the drive job (zt-workflow-lib v8), so the
 // fresh preparation can run before the staging folder exists.
 // 44 (#187): the card layer's review-and-fill job runs two read-only SELF-CHECK commands, the Card
@@ -79,11 +82,12 @@ const ZD_TOOLS = {
   'attach-figures': 'figures', 'prepare-book-digest': 'prepare', 'prepare-link-pass': 'prepare-link', 'snapshot-topics': 'snapshot-topics',
 }
 const ZD_CALL = `${ZD_DIGEST} call`
-// 32 (docs/literature-only-digest-design.md): the helper runs in the Literature scope only without -Open, so
-// every approval rule that lets a DeepSeek job run it refuses a helper command that carries -Open.
+// 32 (docs/literature-only-digest-design.md), 48 (#227): the helper `call` runs in the Literature scope, which the
+// server enforces; the open scope is the command `open-call`, which every approval rule that lets a DeepSeek job run
+// the helper refuses.
 // 33: the hub settings (hubWork, the hub compiler, hubEffort, hubFixRounds) and the hub compiler's self-check in the
 // approval rules leave the library with the unreachable zt-concepts, zt-review and zt-hubs modules: hubs are zt-idea-grow's.
-const ZD_NO_OPEN = 'refuse a zt helper command that carries -Open, in any letter case: it leaves the digest\x27s Literature scope'
+const ZD_NO_OPEN = 'refuse a command that runs open-call (zt-digest open-call, or zt-mcp.ps1 open-call), in any letter case: it leaves the digest\x27s Literature scope'
 const ZD_LEDGER = `${ZD_DIGEST} ledger`
 // R265: every manager's compiler command carries this explicit timeout (milliseconds).
 const ZD_COMMAND_TIMEOUT_MS = 600000
@@ -1123,7 +1127,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '47', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '48', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

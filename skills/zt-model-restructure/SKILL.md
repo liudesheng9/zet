@@ -89,7 +89,7 @@ Draft the text with DeepSeek: one job per chapter or per group, each with the fo
 ## Helper facts (zt-digest call)
 
 - Input is a JSON **array** of `{tool, arguments}`; one call per line of output: `N ok <address>`, `N error …`, or `N {json}` for reads.
-- With `-Allow <file>` (one address per line) only those Cards may change, and `move_card`, `insert_card`, `delete_card` are refused. Run moves **without** `-Allow`.
+- With `-Allow <file>` (one address per line) only those Cards and the Cards the run makes may change; the server refuses `move_card`, `insert_card`, `delete_card`, `create_topic`, `create_literature`, `edit_literature_metadata` and a `create_successor` with `before`, for single calls and `apply_batch` items alike (`scope_refused`). Run moves **without** `-Allow`.
 - A write prints no rename map: pass `-Moves <log>` and read `{"i":N,"moved":{…}}` from the log.
 - `get_cards` in the `full` view can exceed the 8 MiB read limit; read 25 Cards at a time in the `text` view.
 - In the Bash tool, heredocs lose backslashes; write scripts with the Write tool, and build `\` with `String.fromCharCode(92)`.

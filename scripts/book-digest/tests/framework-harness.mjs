@@ -3103,7 +3103,7 @@ for (const kind of ['econ', 'math']) {
   const labels = calls.map((c) => c.label)
   check(!commands.some((c) => /zt-digest (hub|register|concepts|restate|grow|gate|join|topic-home|publish) /.test(c)), 'literature only: a full run starts no hub, register, concept, restatement, grow or Topic tool')
   check(!labels.some((l) => /^(hub manager|hubs |concept|restatement review|register )/.test(l)), `literature only: no hub, concept, review or register step is relayed (${labels.filter((l) => /hub|concept|review|register/.test(l)).join(', ')})`)
-  check(!commands.some((c) => /zt-digest call\b[^\n]*\s-Open\b/.test(c)), 'literature only: no helper call leaves the Literature scope (-Open)')
+  check(!commands.some((c) => /zt-digest open-call\b|zt-mcp\.ps1 open-call\b|zt-digest call\b[^\n]*\s-Open\b/i.test(c)), 'literature only: no helper call leaves the Literature scope (open-call)')
   check(result && !('concepts' in result) && !('review' in result) && !('register' in result) && !('hubs' in result), 'literature only: the report has no concept, review, register or hub entry')
   check(report && report.stages && !report.stages.hubs && !report.stages.concepts && !report.stages.review, 'literature only: the run has no hub, concept or review stage')
   const decide = calls.find((c) => c.label === 'organize: decisions')
@@ -3192,7 +3192,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-digest-lib'] === '47' && modules['zt-digest-prepare'] === '20' && modules['zt-digest-report'] === '23' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-digest-lib v47, zt-digest-prepare v20, zt-digest-report v23, zt-cited-cards v2, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-digest-lib'] === '48' && modules['zt-digest-prepare'] === '20' && modules['zt-digest-report'] === '23' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '9' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-digest-lib v48, zt-digest-prepare v20, zt-digest-report v23, zt-cited-cards v2, zt-workflow-lib v9, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3205,16 +3205,16 @@ for (const which of ['econ', 'math']) {
 }
 
 {
-  // The Literature scope (docs/literature-only-digest-design.md) holds only while the helper runs without
-  // -Open, so every approval rule that lets a DeepSeek job run the zt helper refuses a helper command with
-  // -Open: a job could otherwise add the flag and write Topic trees or hubs.
+  // The Literature scope (docs/literature-only-digest-design.md) is the server's (#226): `call` declares it
+  // and the open scope is the separate command `open-call`, so every approval rule that lets a DeepSeek job
+  // run the zt helper refuses `open-call` (#227): a job could otherwise run it and write Topic trees or hubs.
   for (const which of ['econ', 'math']) {
     const { calls, pool } = await run(which, { ...base, figures: false })
     const rules = [...calls.map((c) => c.prompt), ...pool.prompts]
       .flatMap((p) => String(p).split('\n'))
       .filter((l) => /"needs_response": approve/.test(l) && /runs the zt helper/.test(l))
-    const open = rules.filter((l) => !/refuse a zt helper command that carries -Open/.test(l))
-    check(rules.length > 0 && !open.length, `scope: every ${which} approval rule that allows the zt helper refuses -Open (${rules.length} rules, ${open.length} without: ${open.slice(0, 1).map((l) => l.slice(0, 160)).join('')})`)
+    const open = rules.filter((l) => !/refuse a command that runs open-call/.test(l))
+    check(rules.length > 0 && !open.length, `scope: every ${which} approval rule that allows the zt helper refuses open-call (${rules.length} rules, ${open.length} without: ${open.slice(0, 1).map((l) => l.slice(0, 160)).join('')})`)
     // base 5.1.0: hubs are zt-idea-grow's, so no approval rule offers the hub compiler's self-check.
     const all = [...calls.map((c) => c.prompt), ...pool.prompts].flatMap((p) => String(p).split('\n')).filter((l) => /"needs_response": approve/.test(l))
     check(all.length > 0 && !all.some((l) => /hub-compiler|zt-digest hub\b|card, hub, event/.test(l)), `literature only: no ${which} approval rule offers the hub compiler`)

@@ -96,7 +96,7 @@ Then the text, in one batch (`zt-digest call <edits> -Allow <addresses>`): the *
 ## Helper facts (zt-digest call)
 
 - Input is a JSON **array** of `{tool, arguments}`; one call per line of output: `N ok <address>`, `N error …`, or `N {json}` for reads.
-- With `-Allow <file>` only those Cards may change, and moves are refused. Run moves **without** `-Allow`.
+- With `-Allow <file>` only those Cards and the Cards the run makes may change; the server refuses moves, inserts, deletes and a `create_successor` with `before` (`scope_refused`). Run moves **without** `-Allow`.
 - `edit_card` takes `facet` and `title` with the `body`.
 - `move_card` with `before` puts the moved card in that place and makes the displaced card its Direct successor: right for a new first step of a chain, wrong for reordering Side branches.
 - The build order is depth-first: a card, its Direct chain (each step with its own Sides), then its Side branches.

@@ -67,7 +67,7 @@ Settings of a folded head are the model's assumptions: they go to that model's s
 ## Helper facts (zt-digest call)
 
 - Input is a JSON **array** of `{tool, arguments}`; one call per line of output: `N ok <address>`, `N error …`, or `N {json}` for reads. `scripts/zt.mjs` returns that output even when the batch exits 1 because one call failed.
-- With `-Allow <file>` (one address per line) only those Cards may change, and `move_card`, `insert_card`, `delete_card` are refused. Run moves **without** `-Allow`.
+- With `-Allow <file>` (one address per line) only those Cards and the Cards the run makes may change; the server refuses `move_card`, `insert_card`, `delete_card`, `create_topic`, `create_literature`, `edit_literature_metadata` and a `create_successor` with `before`, for single calls and `apply_batch` items alike (`scope_refused`). Run moves **without** `-Allow`.
 - A write prints no rename map: pass `-Moves <log>` and read `{"i":N,"moved":{…}}` from the log (`scripts/zt.mjs` `move` does this).
 - Side slots take only the next free letter: to reorder Side cards, park them under another card and bring them back in order.
 - In the Bash tool, heredocs lose backslashes; write scripts with the Write tool.
