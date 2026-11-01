@@ -60,4 +60,21 @@ export function move(args) {
   return Object.assign({ [args.at]: ok[1] }, ...logged.map(r => r.moved || {}))
 }
 
+/**
+ * One reorganization as one batch (zt 0.51, PRD #228): `items` are {tool, arguments} tree operations,
+ * creates and edits (move_card, move_span, indent, outdent, reorder, relink, delete_card, insert_card,
+ * edit_card ...). Every address names the Card that held it when the batch starts, and destinations
+ * name Cards (`after`, `side_of`, `before`; never `to`). Previews, then commits under the plan hash,
+ * so the items commit together or not at all. Returns the plan: {moved: {start: final}, deleted, ...}.
+ */
+export function tidy(items, label = 'tidy') {
+  const run = `skill/${label}-${process.pid}-${Date.now()}`
+  const batch = items.map((item, n) => ({ op_key: `${run}/1/step/i${n}`, client_ref: `t${n}`, ...item }))
+  const [preview] = reads([{ tool: 'apply_batch', arguments: { items: batch, preview: true } }])
+  if (!preview || preview.complete !== true) throw new Error(`tidy preview refused: ${JSON.stringify(preview ?? call([{ tool: 'apply_batch', arguments: { items: batch, preview: true } }])).slice(0, 800)}`)
+  const [done] = reads([{ tool: 'apply_batch', arguments: { items: batch, confirm: preview.plan_hash } }])
+  if (!done || done.applied !== true) throw new Error(`tidy commit failed: ${JSON.stringify(done).slice(0, 800)}`)
+  return done.plan
+}
+
 export const short = (a, head) => (head && a.startsWith(head) ? 'H' + a.slice(head.length) : a)

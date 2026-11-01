@@ -39,6 +39,10 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use zt_check::mcp::{reply_error, reply_text};
 
+/// The tree operations a zt 0.51 batch item may be (PRD #228): a chunk holding one is confirmed by
+/// its plan hash.
+const TREE_TOOLS: [&str; 9] = ["move_card", "insert_card", "delete_card", "move_span", "delete_span", "indent", "outdent", "reorder", "relink"];
+
 #[derive(Default)]
 pub struct Options {
     pub from: usize,
@@ -503,10 +507,10 @@ fn execute_identified(
     // Reject unsupported operations, forward dependencies and oversized single
     // items before committing any chunk. No placeholder makes a target exist.
     for (index, call) in calls.iter().enumerate() {
-        if !matches!(
-            call["tool"].as_str(),
-            Some("create_topic" | "create_literature" | "create_successor" | "edit_card")
-        ) {
+        let tool = call["tool"].as_str().unwrap_or_default();
+        if !matches!(tool, "create_topic" | "create_literature" | "create_successor" | "edit_card")
+            && !TREE_TOOLS.contains(&tool)
+        {
             bail!("identified call {index}: unsupported write tool");
         }
         if !call["arguments"].is_object() {
@@ -616,7 +620,24 @@ fn execute_identified(
                 }
             }
         }
-        let request = if preview && lean {
+        // A chunk with a tree operation (zt 0.51, PRD #228) is one start-state batch: it previews in
+        // `items` and commits only under the plan hash its own preview returns.
+        let tree = items
+            .iter()
+            .any(|item| item["tool"].as_str().is_some_and(|tool| TREE_TOOLS.contains(&tool)));
+        let request = if tree && preview {
+            json!({"preview":true,"lean":lean,"items":items})
+        } else if tree {
+            let planned = zt.request("apply_batch", json!({"preview":true,"items":items}))?;
+            if let Some(message) = reply_error(&planned) {
+                bail!("zt: identified chunk starting at call {start}: {message}");
+            }
+            let plan: Value = serde_json::from_str(&reply_text(&planned)).context("apply_batch preview is not JSON")?;
+            if plan["complete"] != true {
+                bail!("zt: identified chunk starting at call {start} has refused or blocked items: {}", util::compact(&plan["refusals"]));
+            }
+            json!({"items":items,"confirm":plan["plan_hash"]})
+        } else if preview && lean {
             json!({"preview":true,"lean":true,"preview_items":items})
         } else if preview {
             json!({"preview":true,"preview_items":items})
@@ -833,6 +854,12 @@ fn verify_identified(zt: &mut Zt, receipts: &[Value]) -> Result<()> {
     let mut expected = BTreeMap::new();
     for receipt in receipts {
         let result = &receipt["result"];
+        // A tree operation (zt 0.51, PRD #228) carries no fingerprint: it may rename, delete, or
+        // rewrite the Links of the outputs before it, so only the outputs after it are compared.
+        if result.get("after_fingerprint").is_none() && result.get("moved").is_some() {
+            expected.clear();
+            continue;
+        }
         expected.insert(
             result["address"]
                 .as_str()

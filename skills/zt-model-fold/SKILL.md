@@ -53,7 +53,9 @@ For every model with two or more Model Cards, pick its surviving head (usually i
 4. **Mask** every Link in X's body that targets a Model part (`scripts/mask-links.mjs mask <X>`), retype X into a part (`edit_card` with `facet`, `emphasis`, `level: ""`), then **restore** the body (`mask-links.mjs restore <X>`).
 5. Move X `alone` into the head's main line, then move the parked parts back under it.
 
-**The trap:** zt refuses to retype a Model Card while it has parts filed under it **or links any Model part in its body** outside its **引入** section (an import never blocks a retype). So (a) never add a rests-on line to X before the retype, (b) never retype in the same batch as moves (batched calls run even after one fails, and leave nested Model Cards), and (c) once one head becomes a part, every other head that links it must be masked too, including heads of other models that link it. Retype one Card per message and read the result.
+Since zt 0.51, send steps 2, 3 and 5 for one head as **one batch**: `tidy([...])` in `scripts/zt.mjs` previews and commits it under its plan hash, all or nothing. Name every Card by its address **before** the batch (each address follows its Card through the earlier items), name destinations by Cards (`after`, `side_of`, `before`), and use `reorder` instead of parking. The returned plan's `moved` maps every start address to its final one.
+
+**The trap:** zt refuses to retype a Model Card while it has parts filed under it **or links any Model part in its body** outside its **引入** section (an import never blocks a retype). So (a) never add a rests-on line to X before the retype, (b) never retype in a plain `zt-digest call` list together with moves (such a list runs every call even after one fails, and leaves nested Model Cards); a `tidy` batch is atomic, so a refused retype there moves nothing, and (c) once one head becomes a part, every other head that links it must be masked too, including heads of other models that link it. Retype one Card per message and read the result.
 
 Settings of a folded head are the model's assumptions: they go to that model's setting part, never into a chapter (the `zt-model-settings` skill's rule). A model that stays alone needs no fold. Links between two models stay as they are.
 
@@ -68,6 +70,6 @@ Settings of a folded head are the model's assumptions: they go to that model's s
 
 - Input is a JSON **array** of `{tool, arguments}`; one call per line of output: `N ok <address>`, `N error …`, or `N {json}` for reads. `scripts/zt.mjs` returns that output even when the batch exits 1 because one call failed.
 - With `-Allow <file>` (one address per line) only those Cards and the Cards the run makes may change; the server refuses `move_card`, `insert_card`, `delete_card`, `create_topic`, `create_literature`, `edit_literature_metadata` and a `create_successor` with `before`, for single calls and `apply_batch` items alike (`scope_refused`). Run moves **without** `-Allow`.
-- A write prints no rename map: pass `-Moves <log>` and read `{"i":N,"moved":{…}}` from the log (`scripts/zt.mjs` `move` does this).
-- Side slots take only the next free letter: to reorder Side cards, park them under another card and bring them back in order.
+- A write prints no rename map: pass `-Moves <log>` and read `{"i":N,"moved":{…}}` from the log (`scripts/zt.mjs` `move` does this); a `tidy` batch returns its plan with `moved` instead.
+- Side slots take only the next free letter: reorder Side cards with `reorder {parent, side: [...]}` (zt 0.51), in a `tidy` batch or alone; no parking.
 - In the Bash tool, heredocs lose backslashes; write scripts with the Write tool.

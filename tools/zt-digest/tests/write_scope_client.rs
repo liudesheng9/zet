@@ -237,3 +237,45 @@ fn an_append_never_loses_a_concurrent_append() {
         assert!(body.lines().any(|line| line == text), "an accepted append `{text}` was lost:\n{body}");
     }
 }
+
+/// PRD #228 (S9, #237): an identified chunk with a tree operation is one start-state batch that the
+/// helper commits under its own plan hash. A reorder and a move named by start addresses go through
+/// `-OperationPrefix`; the second item names 甲 by the address it had before the reorder.
+#[test]
+fn an_identified_chunk_with_tree_operations_commits_under_its_plan_hash() {
+    let scratch = Scratch::seeded();
+    let seeded = scratch.helper(
+        "call",
+        &[],
+        &json!([
+            {"tool":"create_successor","arguments":{"at":"Smith2024/1","kind":"side","title":"甲"}},
+            {"tool":"create_successor","arguments":{"at":"Smith2024/1","kind":"side","title":"乙"}},
+            {"tool":"create_successor","arguments":{"at":"Smith2024/1","title":"第二章","body":"见 [[Smith2024/1|a]]。"}}
+        ]),
+    );
+    assert_eq!(lines(&seeded), ["0 ok Smith2024/1|a", "1 ok Smith2024/1|b", "2 ok Smith2024/2"], "{}", stderr(&seeded));
+    let tidy = scratch.helper(
+        "call",
+        &["-OperationPrefix", "run/tidy/1/move"],
+        &json!([
+            {"tool":"reorder","arguments":{"parent":"Smith2024/1","side":["Smith2024/1|b","Smith2024/1|a"]}},
+            {"tool":"move_card","arguments":{"at":"Smith2024/1|a","after":"Smith2024/2"}}
+        ]),
+    );
+    assert!(tidy.status.success(), "{} {}", String::from_utf8_lossy(&tidy.stdout), stderr(&tidy));
+    assert_eq!(scratch.read("get_card", json!({"at":"Smith2024/3"}))["title"], "甲", "甲 moved after 第二章");
+    assert_eq!(scratch.read("get_card", json!({"at":"Smith2024/1|a"}))["title"], "乙");
+    assert!(scratch.body("Smith2024/2").contains("[[Smith2024/3]]"), "{}", scratch.body("Smith2024/2"));
+    // A lost reply: the same identified input replays its receipts and moves nothing again.
+    let again = scratch.helper(
+        "call",
+        &["-OperationPrefix", "run/tidy/1/move"],
+        &json!([
+            {"tool":"reorder","arguments":{"parent":"Smith2024/1","side":["Smith2024/1|b","Smith2024/1|a"]}},
+            {"tool":"move_card","arguments":{"at":"Smith2024/1|a","after":"Smith2024/2"}}
+        ]),
+    );
+    assert!(again.status.success(), "{} {}", String::from_utf8_lossy(&again.stdout), stderr(&again));
+    assert_eq!(scratch.read("get_card", json!({"at":"Smith2024/3"}))["title"], "甲");
+    assert_eq!(scratch.read("get_card", json!({"at":"Smith2024/1|a"}))["title"], "乙");
+}
