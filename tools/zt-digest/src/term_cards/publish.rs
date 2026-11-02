@@ -21,12 +21,12 @@
 //! list is a conflict: the step writes nothing instead of inserting, moving or editing an accepted
 //! head (R0339, R0342).
 //!
-//! A row published later goes to **its table position**. When a ready row stands before rows that
-//! are already published, its head is filed in the place of the next published row with one
-//! identified `create_successor -Kind side -Before` item: that row and every later Side child of the
-//! list move one label on inside the same archive transaction, so the list keeps its order (S33,
-//! #182). Rows after the last published row are appended in table order. Each placement is its own
-//! call, highest table position first, so the next placement names the head the previous one filed.
+//! A row published later goes to **its table position** (S33, #182). Every unpublished ready row is
+//! appended to the list in table order, and after the readback one identified `reorder` item files
+//! all the list's Side children in table order; the archive renames each moved Card and rewrites each
+//! Link to it once. Until zt-digest 0.41.18 each such row was its own `create_successor -Before`
+//! call, which shifted every later head again: on atkinson2015lectures (748 rows) each call took about
+//! 50 s and grew with every row.
 //!
 //! Chains are packed into the archive's existing identified calls: at most 64 items and 1 MiB of
 //! authored bytes per call, several complete chains in one call, a whole chain never split. A chain
@@ -98,12 +98,28 @@ pub fn apply(p: &Params) -> Result<i32> {
     }
     let mut run = prepare(&compiled, &fresh, &mut zt)?;
     let packing = pack(&compiled, &run);
-    let mut ran = execute(&compiled, &packing, &run, |items| {
+    let mut ran = execute(&packing, &run, |items| {
         send_batch(&mut zt, items)
     })?;
     // The archive's own publication decides what is committed and where it stands: a placement
     // moved the rows after it, and a receipt names the address its own call returned.
-    let verdict = read_back(&compiled, &run, &mut zt, &ran)?;
+    let mut verdict = read_back(&compiled, &run, &mut zt, &ran)?;
+    // The appended heads, and any a stopped run left appended, are filed in table order by one
+    // reorder; the list is read once more for the addresses it gave.
+    if ran.stop.is_none()
+        && verdict.stop.is_none()
+        && verdict.conflicts.is_empty()
+        && let Some(item) = order_item(&compiled, &verdict.rows, &verdict.side)
+    {
+        let batch = Batch {
+            items: vec![item],
+            rows: Vec::new(),
+            bytes: 0,
+            placement: "order",
+        };
+        ran.stop = send_call(&batch, &mut |items: &[Value]| send_batch(&mut zt, items), &mut ran)?;
+        verdict = read_back(&compiled, &run, &mut zt, &ran)?;
+    }
     if ran.stop.is_none() {
         ran.stop = verdict.stop.clone();
     }
@@ -136,6 +152,7 @@ pub fn report(p: &Params) -> Result<i32> {
     let ran = Ran::default();
     let verdict = Verdict {
         rows: run.rows.clone(),
+        side: run.scan.side.clone(),
         conflicts: run.conflicts.clone(),
         revision: run.revision_before,
         retyped: None,
@@ -1165,34 +1182,9 @@ struct Batch {
     placement: &'static str,
 }
 
-/// One ready row whose table position is before rows that are already published: it is filed in the
-/// place of the next published row, and that call's answer names the address the row took.
-struct Hole {
-    /// The row's index in the frozen table, for the placement order.
-    index: usize,
-    row: u64,
-    term: String,
-    chain: Vec<Paper>,
-    /// Which address the head is filed before: a published head read at the start of the run, or the
-    /// head the previous placement of this run created.
-    before: Before,
-}
-
-/// The address a hole's head is filed before.
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Before {
-    /// The head of the next published row, as the run's first read found it.
-    Published(String),
-    /// The head the placement sent immediately before this one created.
-    Placed,
-}
-
-/// The packed publication: the repaired rows' placements, one call each, and the chains appended
-/// after the last published row, packed into bounded calls.
+/// The packed publication: every unpublished ready row's chain appended to the list in table order,
+/// packed into bounded calls. One `reorder` then files the list in table order (see [`order_item`]).
 struct Packing {
-    /// The placements in sending order: the highest table position first, so the next placement
-    /// names the head the previous one filed.
-    holes: Vec<Hole>,
     batches: Vec<Batch>,
     stop: Option<Stop>,
 }
@@ -1216,14 +1208,13 @@ impl Blocked {
     }
 }
 
-/// Pack every ready row that is not published yet. A row whose table position is before published
-/// rows becomes one placement of its own, highest table position first; the rows after the last
-/// published row are packed into identified calls, several complete chains in one call, at most 64
-/// items and 1 MiB each, a whole chain never split (R0337, R0338; S33 / #182). A conflict stops
-/// everything before the first call.
+/// Pack every ready row that is not published yet, in table order, appended to the list: several
+/// complete chains in one identified call, at most 64 items and 1 MiB each, a whole chain never split
+/// (R0337, R0338). A row whose table position is before published rows is appended too; one
+/// `reorder` afterwards files every head in table order ([`order_item`], zt-digest 0.41.18). A
+/// conflict stops everything before the first call.
 fn pack(compiled: &Compiled, run: &Run) -> Packing {
     let mut packing = Packing {
-        holes: Vec::new(),
         batches: Vec::new(),
         stop: None,
     };
@@ -1235,71 +1226,18 @@ fn pack(compiled: &Compiled, run: &Run) -> Packing {
     {
         return packing;
     }
-    let published: Vec<bool> = run.rows.iter().map(|row| row.is_committed()).collect();
-    let last_published = published.iter().rposition(|committed| *committed);
-    // The nearest published row after each table position, so a repaired row knows the head it
-    // must stand before.
-    let next_published: Vec<Option<usize>> = (0..run.rows.len())
-        .map(|index| {
-            (index + 1..run.rows.len())
-                .find(|later| published[*later])
-        })
-        .collect();
-    let mut ready: Vec<usize> = Vec::new();
-    for (index, row) in run.rows.iter().enumerate() {
+    // `at` names the list itself, so each head becomes its last Side child and nothing moves.
+    let mut items: Vec<Value> = Vec::new();
+    let mut rows: Vec<u64> = Vec::new();
+    let mut bytes = 0usize;
+    for row in &run.rows {
         if row.is_committed() || row.status != Status::ReadyUnpublished {
             continue;
         }
         let Some(chain) = row.chain.as_ref() else {
             continue;
         };
-        let before = match next_published[index] {
-            Some(next) => match run.rows[next].head() {
-                Some(head) => Before::Published(head.clone()),
-                None => continue,
-            },
-            // After every published row: the chain is appended in table order below.
-            None => {
-                ready.push(index);
-                continue;
-            }
-        };
-        packing.holes.push(Hole {
-            index,
-            row: row.number,
-            term: row.term.clone(),
-            chain: chain.clone(),
-            before,
-        });
-    }
-    // A placement names a head, so the highest table position is filed first; each later placement
-    // before the head the previous one filed, unless its own next published row stands in between.
-    let mut previous: Option<usize> = None;
-    for hole in packing.holes.iter_mut().rev() {
-        let next = next_published[hole.index].expect("a placement has a published row after it");
-        hole.before = match previous {
-            Some(sent) if sent < next => Before::Placed,
-            _ => Before::Published(
-                run.rows[next]
-                    .head()
-                    .cloned()
-                    .expect("a committed row has a head"),
-            ),
-        };
-        previous = Some(hole.index);
-    }
-    packing.holes.reverse();
-    // The rows after the last published row append in table order; `at` names the list itself.
-    let mut items: Vec<Value> = Vec::new();
-    let mut rows: Vec<u64> = Vec::new();
-    let mut bytes = 0usize;
-    let after = last_published.map_or(0, |index| index + 1);
-    for index in ready.into_iter().filter(|index| *index >= after) {
-        let row = &run.rows[index];
-        let Some(chain) = row.chain.as_ref() else {
-            continue;
-        };
-        let chain_items = match chain_items(compiled, row.number, &row.term, chain, None) {
+        let chain_items = match chain_items(compiled, row.number, &row.term, chain) {
             Ok(chain_items) => chain_items,
             Err(blocked) => {
                 packing.stop = Some(blocked.stop());
@@ -1364,14 +1302,12 @@ fn too_large(row: u64, term: &str, cards: usize, bytes: usize) -> Stop {
 
 /// One row's items: its head as a Side child of the list, then each part as the next Direct
 /// successor of the previous Card, so a part references an earlier item instead of an address
-/// (R0338). `before` files the head in the place of that published Side child. The keys are stable
-/// per run, book, plan revision, step and row (R0341).
+/// (R0338). The keys are stable per run, book, plan revision, step and row (R0341).
 fn chain_items(
     compiled: &Compiled,
     number: u64,
     term: &str,
     chain: &[Paper],
-    before: Option<&str>,
 ) -> std::result::Result<Vec<Value>, Blocked> {
     let blocked = |message: String| Blocked {
         code: "unpublishable",
@@ -1404,7 +1340,7 @@ fn chain_items(
             )
         };
         let body = paper.body.replace(HEAD_REFERENCE, &format!("@@{head_ref}"));
-        let mut arguments = json!({
+        let arguments = json!({
             "at": at,
             "kind": kind,
             "type": "term",
@@ -1412,11 +1348,6 @@ fn chain_items(
             "title": paper.title,
             "body": body,
         });
-        if index == 0
-            && let Some(before) = before
-        {
-            arguments["before"] = json!(before);
-        }
         items.push(json!({
             "op_key": format!("{run}/{unit}/{revision}/apply/{key}"),
             "client_ref": client_ref,
@@ -1425,6 +1356,38 @@ fn chain_items(
         }));
     }
     Ok(items)
+}
+
+/// The one `reorder` item that files the list's Side children in table order, or `None` when they
+/// already stand so (zt-digest 0.41.18). The archive renames each moved head and its parts once and
+/// rewrites each Link to them once, where one `-Before` placement per row shifted every later head
+/// again for each row (atkinson2015lectures: about 50 s per row and rising). A Side child that belongs
+/// to no row is a conflict, which writes nothing, so it is never reordered. The key carries the
+/// order's hash, so a later run of the same plan revision that appends more rows sends a new item.
+fn order_item(compiled: &Compiled, rows: &[RowState], side: &[String]) -> Option<Value> {
+    let list = compiled.plan["list"]["address"].as_str()?;
+    let heads: Vec<&String> = rows.iter().filter_map(RowState::head).collect();
+    if heads.len() != side.len() || !side.iter().all(|child| heads.contains(&child)) {
+        return None;
+    }
+    if heads.iter().zip(side).all(|(head, child)| *head == child) {
+        return None;
+    }
+    let hash = &compiled.plan_hash;
+    let order = json!(heads);
+    let digest = canon::sha256_hex(order.to_string().as_bytes());
+    Some(json!({
+        "op_key": format!(
+            "term-cards-{}/{}/{}/apply/order-{}",
+            &hash[..16.min(hash.len())],
+            compiled.book(),
+            compiled.revision,
+            &digest[..12]
+        ),
+        "client_ref": "order",
+        "tool": "reorder",
+        "arguments": {"parent": list, "side": order},
+    }))
 }
 
 /// The authored bytes one item carries, as the archive's own batch bound counts them.
@@ -1562,13 +1525,11 @@ fn pending_state(batch: &Batch) -> BatchState {
     }
 }
 
-/// Send the publication in its order: the legacy list's retype first, then each placement of a
-/// repaired row — the highest table position first, so the next one names the head the previous
-/// one filed — then the chains after the last published row. A committed call's receipts stay; a
+/// Send the publication in its order: the legacy list's retype first, then the appended chains in
+/// table order (the reorder that files them follows the readback). A committed call's receipts stay; a
 /// refused call stops the run with the archive's typed answer; a lost answer stops it with that
 /// call unknown, because its commit cannot be claimed (R0341).
 fn execute<F>(
-    compiled: &Compiled,
     packing: &Packing,
     run: &Run,
     mut send: F,
@@ -1580,7 +1541,7 @@ where
     let mut stop: Option<Stop> = None;
     // A legacy list is retyped only when a head is filed under it: the retype exists to make the
     // heads legal, so a run with nothing to publish writes no Card at all.
-    let publishing = !packing.holes.is_empty() || !packing.batches.is_empty();
+    let publishing = !packing.batches.is_empty();
     if let Some(retype) = run.retype.as_ref().filter(|_| publishing) {
         let batch = Batch {
             items: vec![retype.clone()],
@@ -1589,67 +1550,6 @@ where
             placement: "list",
         };
         stop = send_call(&batch, &mut send, &mut ran)?;
-    }
-    let mut placed: Option<String> = None;
-    for hole in &packing.holes {
-        if stop.is_some() {
-            break;
-        }
-        let before = match &hole.before {
-            Before::Published(head) => head.clone(),
-            Before::Placed => placed.clone().unwrap_or_default(),
-        };
-        if before.is_empty() {
-            stop = Some(Stop {
-                code: "conflicted",
-                message: format!(
-                    "row {} `{}` must stand before the head the previous placement filed, and this run has no such answer; run -Step apply again",
-                    hole.row, hole.term
-                ),
-                detail: json!({"row": hole.row, "term": hole.term}),
-                exit: STOP_EXIT,
-            });
-            break;
-        }
-        let items = match chain_items(compiled, hole.row, &hole.term, &hole.chain, Some(&before)) {
-            Ok(items) => items,
-            Err(blocked) => {
-                stop = Some(blocked.stop());
-                break;
-            }
-        };
-        let bytes: usize = items
-            .iter()
-            .map(|item| authored_bytes(&item["arguments"]))
-            .sum();
-        if items.len() > CHUNK_ITEMS || bytes > CHUNK_BYTES {
-            stop = Some(too_large(hole.row, &hole.term, items.len(), bytes));
-            break;
-        }
-        let batch = Batch {
-            items,
-            rows: vec![hole.row],
-            bytes,
-            placement: "before",
-        };
-        stop = send_call(&batch, &mut send, &mut ran)?;
-        if stop.is_none() {
-            placed = ran.batches.iter().rev().find_map(|state| {
-                state
-                    .batch
-                    .items
-                    .iter()
-                    .zip(&state.results)
-                    .find_map(|(item, result)| {
-                        match ref_role(&pstr(item, "client_ref")) {
-                            Some((number, "card", _)) if number == hole.row => {
-                                Some(pstr(&result["result"], "address"))
-                            }
-                            _ => None,
-                        }
-                    })
-            });
-        }
     }
     for batch in &packing.batches {
         if stop.is_some() {
@@ -1778,18 +1678,30 @@ fn stop_of(code: &str) -> (&'static str, i32) {
 
 /// Send one real identified batch through the archive.
 fn send_batch(zt: &mut Zt, items: &[Value]) -> Result<Reply> {
-    let reply = match zt.request("apply_batch", json!({ "items": items })) {
-        Ok(reply) => reply,
-        Err(error) => return Ok(Reply::Lost(format!("{error:#}"))),
-    };
-    if let Some(message) = zt_check::mcp::reply_error(&reply) {
-        return Ok(Reply::Refused(calls::refusal_of(&reply).unwrap_or_else(
-            || json!({"error": "refused", "message": message}),
-        )));
+    let mut arguments = json!({ "items": items });
+    let mut value = Value::Null;
+    // A tree operation (the reorder) commits only under the hash of the plan the archive answers
+    // first; the same items are sent again with that hash.
+    for _ in 0..2 {
+        let reply = match zt.request("apply_batch", arguments.clone()) {
+            Ok(reply) => reply,
+            Err(error) => return Ok(Reply::Lost(format!("{error:#}"))),
+        };
+        if let Some(message) = zt_check::mcp::reply_error(&reply) {
+            return Ok(Reply::Refused(calls::refusal_of(&reply).unwrap_or_else(
+                || json!({"error": "refused", "message": message}),
+            )));
+        }
+        let text = zt_check::mcp::reply_text(&reply);
+        value = serde_json::from_str(&text)
+            .context("incomplete identified batch: the answer is not JSON")?;
+        match (&value["applied"], value["confirm"].as_str()) {
+            (Value::Bool(false), Some(hash)) if arguments.get("confirm").is_none() => {
+                arguments["confirm"] = json!(hash);
+            }
+            _ => break,
+        }
     }
-    let text = zt_check::mcp::reply_text(&reply);
-    let value: Value =
-        serde_json::from_str(&text).context("incomplete identified batch: the answer is not JSON")?;
     let results = value["results"]
         .as_array()
         .context("incomplete identified batch: missing results")?
@@ -1805,6 +1717,8 @@ fn send_batch(zt: &mut Zt, items: &[Value]) -> Result<Reply> {
 #[derive(Default)]
 struct Verdict {
     rows: Vec<RowState>,
+    /// The list's immediate Side children in address order, for the reorder.
+    side: Vec<String>,
     conflicts: Vec<Value>,
     revision: u64,
     retyped: Option<Value>,
@@ -1867,6 +1781,7 @@ fn read_back(compiled: &Compiled, run: &Run, zt: &mut Zt, ran: &Ran) -> Result<V
     let stop = divergence_stop(&detail);
     Ok(Verdict {
         rows,
+        side: scan.side.clone(),
         conflicts,
         revision,
         retyped,
@@ -2513,7 +2428,7 @@ mod tests {
             paper("推导（续 2/3）：第一步", "续：[[@@term_head]] 本卡沿用该卡的符号表。", "part"),
             paper("推导（续 3/3）：第二步", "续：[[@@term_head]] 本卡沿用该卡的符号表。", "part"),
         ];
-        let items = chain_items(&compiled, 1, "词1", &chain, None).unwrap();
+        let items = chain_items(&compiled, 1, "词1", &chain).unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0]["client_ref"], "r001");
         assert_eq!(items[0]["arguments"]["at"], "K/1|a");
@@ -2536,11 +2451,6 @@ mod tests {
             items[2]["op_key"],
             format!("term-cards-{}/K/2/apply/r001-p02", "a".repeat(16))
         );
-        // A placement files the head in a published sibling's place; only the head carries `before`.
-        let placed = chain_items(&compiled, 1, "词1", &chain, Some("K/1|a|b")).unwrap();
-        assert_eq!(placed[0]["arguments"]["at"], "K/1|a");
-        assert_eq!(placed[0]["arguments"]["before"], "K/1|a|b");
-        assert!(placed[1]["arguments"].get("before").is_none());
     }
 
     /// S33 (#182) acceptance (a): rows 1, 2, 4 and 5 are ready and row 3 is refused, so every ready
@@ -2555,7 +2465,6 @@ mod tests {
 
         let packing = pack(&compiled, &run);
         assert!(packing.stop.is_none());
-        assert!(packing.holes.is_empty());
         assert_eq!(packing.batches.len(), 1, "one appended call carries every ready row");
         assert_eq!(packing.batches[0].rows, vec![1, 2, 4, 5]);
         assert_eq!(packing.batches[0].placement, "append");
@@ -2584,7 +2493,7 @@ mod tests {
             revision_before: 7,
         };
         let packing = pack(&compiled, &after);
-        assert!(packing.batches.is_empty() && packing.holes.is_empty());
+        assert!(packing.batches.is_empty());
         assert_eq!(
             after.rows.iter().filter(|row| row.status == Status::Committed).count(),
             4
@@ -2599,10 +2508,13 @@ mod tests {
         assert!(!stop.message.contains("row 3"), "the line names the row, not a sentence");
     }
 
-    /// S33 (#182) acceptance (b): a repaired row is filed between its neighbours — before the next
-    /// published head, never at the end — and the rows already published are never sent again.
+    /// S33 (#182) acceptance (b): a repaired row ends between its neighbours, and the rows already
+    /// published are never sent again. Since zt-digest 0.41.18 (atkinson2015lectures, 2026-11-02) the
+    /// row is appended and one `reorder` puts the list in table order: one `-Before` placement per row
+    /// shifted every later head and rewrote every Link to it, and 185 repaired rows took about 50 s
+    /// each and kept getting slower.
     #[test]
-    fn a_repaired_row_is_filed_between_its_neighbours_and_the_published_rows_replay() {
+    fn a_repaired_row_is_appended_then_one_reorder_files_it_between_its_neighbours() {
         let compiled = compiled(5);
         let mut published = empty_scan();
         for (address, number) in [("K/1|a|a", 1), ("K/1|a|b", 2), ("K/1|a|c", 4), ("K/1|a|d", 5)] {
@@ -2615,32 +2527,67 @@ mod tests {
         assert_eq!(run.rows[3].head(), Some(&"K/1|a|c".to_string()));
 
         let packing = pack(&compiled, &run);
-        assert!(packing.batches.is_empty(), "the published rows are never sent again");
-        assert_eq!(packing.holes.len(), 1);
-        assert_eq!(packing.holes[0].row, 3);
-        assert_eq!(
-            packing.holes[0].before,
-            Before::Published("K/1|a|c".to_string()),
-            "row 3 stands before row 4's head, never after the last row"
-        );
+        assert_eq!(packing.batches.len(), 1, "the published rows are never sent again");
+        assert_eq!(packing.batches[0].rows, vec![3]);
+        assert_eq!(packing.batches[0].placement, "append");
+        assert!(packing.batches[0].items[0]["arguments"].get("before").is_none());
 
-        // The archive files row 3 in that place: it takes |c, and rows 4 and 5 move one label on.
-        let first = RefCell::new(Vec::<Value>::new());
-        let ran = execute(&compiled, &packing, &run, |items| {
-            first.borrow_mut().push(items[0].clone());
-            Ok(Reply::Done(answers(
-                items,
-                "K/1|a|c",
-                json!({"K/1|a|c": "K/1|a|d", "K/1|a|d": "K/1|a|e"}),
-            )))
+        // The archive appends row 3 after the last head; nothing moves.
+        let mut ran = execute(&packing, &run, |items| {
+            Ok(Reply::Done(answers(items, "K/1|a|e", Value::Null)))
         })
         .unwrap();
         assert!(ran.stop.is_none(), "{:?}", ran.stop);
-        assert_eq!(first.borrow().len(), 1, "one call files the one repaired row");
-        assert_eq!(first.borrow()[0]["arguments"]["before"], "K/1|a|c");
-        let receipts = ran.receipts_of(3);
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0]["address"], "K/1|a|c");
+        assert_eq!(ran.receipts_of(3)[0]["address"], "K/1|a|e");
+
+        // One reorder names every head of the list in table order.
+        let mut appended = empty_scan();
+        for (address, number) in [("K/1|a|a", 1), ("K/1|a|b", 2), ("K/1|a|c", 4), ("K/1|a|d", 5), ("K/1|a|e", 3)] {
+            add_head(&mut appended, address, number);
+        }
+        let (rows, conflicts) = judge(&run.plans, &appended, &Value::Null, 2);
+        assert!(conflicts.is_empty());
+        assert!(rows.iter().all(|row| row.status == Status::Committed));
+        let order = order_item(&compiled, &rows, &appended.side).expect("the list is out of table order");
+        assert_eq!(order["tool"], "reorder");
+        assert_eq!(order["arguments"]["parent"], "K/1|a");
+        assert_eq!(
+            order["arguments"]["side"],
+            json!(["K/1|a|a", "K/1|a|b", "K/1|a|e", "K/1|a|c", "K/1|a|d"])
+        );
+        let key = pstr(&order, "op_key");
+        assert!(
+            key.starts_with(&format!("term-cards-{}/K/2/apply/order-", "a".repeat(16))),
+            "{key}"
+        );
+        let batch = Batch {
+            items: vec![order],
+            rows: Vec::new(),
+            bytes: 0,
+            placement: "order",
+        };
+        let stop = send_call(
+            &batch,
+            &mut |items: &[Value]| {
+                Ok(Reply::Done(vec![json!({
+                    "op_key": items[0]["op_key"],
+                    "client_ref": items[0]["client_ref"],
+                    "replayed": false,
+                    "result": {
+                        "address": "K/1|a",
+                        "moved": {"K/1|a|e": "K/1|a|c", "K/1|a|c": "K/1|a|d", "K/1|a|d": "K/1|a|e"},
+                    },
+                })]))
+            },
+            &mut ran,
+        )
+        .unwrap();
+        assert!(stop.is_none(), "{stop:?}");
+        assert_eq!(
+            ran.receipts_of(3)[0]["address"],
+            "K/1|a|c",
+            "a receipt names the address the reorder gave the row"
+        );
 
         // Reading the placement back finds every row where it now stands; nothing is written again.
         let mut placed = empty_scan();
@@ -2669,15 +2616,19 @@ mod tests {
         assert_eq!(after.rows[4].head(), Some(&"K/1|a|e".to_string()));
         let packing = pack(&compiled, &after);
         assert!(
-            packing.batches.is_empty() && packing.holes.is_empty(),
+            packing.batches.is_empty(),
             "the repaired row and every shifted row replay with no new write"
+        );
+        assert!(
+            order_item(&compiled, &after.rows, &after.scan.side).is_none(),
+            "a list in table order is not reordered again"
         );
     }
 
-    /// S33 (#182): two repaired rows are filed highest table position first, and the next placement
-    /// names the head the previous one filed.
+    /// Several repaired rows share one appended call in table order, whatever their gaps, and one
+    /// reorder files them all (zt-digest 0.41.18).
     #[test]
-    fn two_repaired_rows_are_filed_highest_first_and_the_next_names_the_head_just_filed() {
+    fn two_repaired_rows_share_one_appended_call_and_one_reorder() {
         let compiled = compiled(5);
         let mut published = empty_scan();
         for (address, number) in [("K/1|a|a", 1), ("K/1|a|b", 2), ("K/1|a|c", 5)] {
@@ -2685,27 +2636,31 @@ mod tests {
         }
         let run = run_of(plans(5, |number| number == 3 || number == 4), published);
         let packing = pack(&compiled, &run);
-        let rows: Vec<u64> = packing.holes.iter().map(|hole| hole.row).collect();
-        assert_eq!(rows, vec![4, 3], "the highest table position is sent first");
-        assert_eq!(
-            packing.holes[0].before,
-            Before::Published("K/1|a|c".to_string())
-        );
-        assert_eq!(packing.holes[1].before, Before::Placed);
+        assert_eq!(packing.batches.len(), 1);
+        assert_eq!(packing.batches[0].rows, vec![3, 4], "appended in table order");
 
-        let sent = RefCell::new(Vec::<Value>::new());
-        let ran = execute(&compiled, &packing, &run, |items| {
-            sent.borrow_mut().push(items[0].clone());
-            Ok(Reply::Done(answers(items, "K/1|a|c", Value::Null)))
-        })
-        .unwrap();
-        assert!(ran.stop.is_none(), "{:?}", ran.stop);
-        assert_eq!(sent.borrow().len(), 2);
-        assert_eq!(sent.borrow()[0]["arguments"]["before"], "K/1|a|c");
+        let mut appended = empty_scan();
+        for (address, number) in [("K/1|a|a", 1), ("K/1|a|b", 2), ("K/1|a|c", 5), ("K/1|a|d", 3), ("K/1|a|e", 4)] {
+            add_head(&mut appended, address, number);
+        }
+        let (rows, _) = judge(&run.plans, &appended, &Value::Null, 2);
+        let order = order_item(&compiled, &rows, &appended.side).expect("out of table order");
         assert_eq!(
-            sent.borrow()[1]["arguments"]["before"], "K/1|a|c",
-            "row 3 is filed before the head row 4 just took"
+            order["arguments"]["side"],
+            json!(["K/1|a|a", "K/1|a|b", "K/1|a|d", "K/1|a|e", "K/1|a|c"])
         );
+    }
+
+    /// A Side child that belongs to no row is a conflict, which writes nothing: no reorder either.
+    #[test]
+    fn no_reorder_names_a_side_child_that_belongs_to_no_row() {
+        let compiled = compiled(2);
+        let mut scan = empty_scan();
+        add_head(&mut scan, "K/1|a|a", 2);
+        add_head(&mut scan, "K/1|a|b", 1);
+        scan.side.push("K/1|a|c".to_string());
+        let (rows, _) = judge(&plans(2, |_| true), &scan, &Value::Null, 2);
+        assert!(order_item(&compiled, &rows, &scan.side).is_none());
     }
 
     /// S33 (#182) acceptance (c): a Side child that matches no planned row is a conflict, and the
@@ -2726,7 +2681,7 @@ mod tests {
         assert_eq!(run.rows[0].status, Status::ReadyUnpublished);
         let packing = pack(&compiled, &run);
         assert!(
-            packing.batches.is_empty() && packing.holes.is_empty(),
+            packing.batches.is_empty(),
             "a conflict writes nothing"
         );
         let stop = run.structural_stop().expect("a conflict stops publication");
@@ -2742,7 +2697,7 @@ mod tests {
         let run = run_of(plans(1, |_| true), empty_scan());
         let packing = pack(&compiled, &run);
         assert_eq!(packing.batches.len(), 1);
-        let ran = execute(&compiled, &packing, &run, |_| {
+        let ran = execute(&packing, &run, |_| {
             Ok(Reply::Lost("the service closed the pipe".to_string()))
         })
         .unwrap();
@@ -2771,7 +2726,7 @@ mod tests {
         assert_eq!(next.rows[0].head(), Some(&"K/1|a|a".to_string()));
         let again = pack(&compiled, &next);
         assert!(
-            again.batches.is_empty() && again.holes.is_empty(),
+            again.batches.is_empty(),
             "no second head"
         );
     }
@@ -2980,7 +2935,7 @@ mod tests {
             "the retype is no longer prepended to a head call"
         );
         let calls = RefCell::new(Vec::<Vec<Value>>::new());
-        let ran = execute(&compiled, &packing, &run, |items| {
+        let ran = execute(&packing, &run, |items| {
             calls.borrow_mut().push(items.to_vec());
             Ok(Reply::Done(answers(items, "K/1|a|a", Value::Null)))
         })
@@ -3000,7 +2955,7 @@ mod tests {
         assert_eq!(packing.batches.len(), 1);
         // A Lock keeps exit 2; a blocking Card check and a stale base are content stops.
         let locked = json!({"error": "card_locked", "message": "card `K/1|a` is inside locked tree `K`"});
-        let ran = execute(&compiled, &packing, &run, |_| {
+        let ran = execute(&packing, &run, |_| {
             Ok(Reply::Refused(locked.clone()))
         })
         .unwrap();
@@ -3009,7 +2964,7 @@ mod tests {
         assert_eq!(stop.exit, lockcheck::LOCKED_EXIT);
         assert_eq!(ran.batches[0].state, "refused");
         let check = json!({"error": "card_check", "blocking": 1, "faults": ["K/1 R3 甲"]});
-        let ran = execute(&compiled, &packing, &run, |_| {
+        let ran = execute(&packing, &run, |_| {
             Ok(Reply::Refused(check.clone()))
         })
         .unwrap();
@@ -3023,11 +2978,11 @@ mod tests {
         let compiled = compiled(2);
         let run = run_of(plans(2, |_| true), empty_scan());
         let packing = pack(&compiled, &run);
-        let error = execute(&compiled, &packing, &run, |_| Ok(Reply::Done(vec![])))
+        let error = execute(&packing, &run, |_| Ok(Reply::Done(vec![])))
             .unwrap_err()
             .to_string();
         assert!(error.contains("0 of 2"), "{error}");
-        let error = execute(&compiled, &packing, &run, |items| {
+        let error = execute(&packing, &run, |items| {
             let answers: Vec<Value> = items
                 .iter()
                 .rev()
@@ -3045,7 +3000,7 @@ mod tests {
         let compiled = compiled(1);
         let run = run_of(plans(1, |_| true), empty_scan());
         let packing = pack(&compiled, &run);
-        let ran = execute(&compiled, &packing, &run, |items| {
+        let ran = execute(&packing, &run, |items| {
             Ok(Reply::Done(answers(items, "K/1|a|a", Value::Null)))
         })
         .unwrap();
@@ -3061,6 +3016,7 @@ mod tests {
                 let (rows, _) = judge(&run.plans, &scan, &Value::Null, 2);
                 rows
             },
+            side: scan.side.clone(),
             conflicts: Vec::new(),
             revision: 8,
             retyped: None,
