@@ -38,7 +38,8 @@ $flat = $Rest -join ' '
 switch -Regex ($flat) {
     '^cited -Step plan' {
         if ($env:CS_PLAN_FAIL) { Write-Output 'zt-digest cited: the staging manifest names no source'; exit 1 }
-        Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 35; unparsed = 2; jobs = 1; file = 'D:\x\cited\normalize\jobs.json'; plan = 'D:\x\cited\plan.json' })
+        $nf = if ($env:CS_NORM) { $env:CS_NORM } else { 'D:\x\cited\normalize\jobs.json' }
+        Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 35; unparsed = 2; jobs = 1; file = $nf; plan = 'D:\x\cited\plan.json' })
         exit 0
     }
     '^cited -Step apply' {
@@ -50,6 +51,12 @@ switch -Regex ($flat) {
         exit 0
     }
     '^ledger next' {
+        if ($flat -match '-Lease (\d+)' -and [int]$Matches[1] -gt 7200) { Write-Output 'zt-digest ledger: -Lease must be a whole number of seconds from 1 through 7200'; exit 1 }
+        if ($flat -match '-Owner cited cards finish') {
+            $n = 0; if (Test-Path -LiteralPath $env:CS_STALE_NEXT) { $n = [int](Get-Content -Raw $env:CS_STALE_NEXT) }; Set-Content -LiteralPath $env:CS_STALE_NEXT -Value "$($n + 1)"
+            if ($n -eq 0) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'citedcards/t001@1'; token = 8; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } }) }) } else { Write-Output (ConvertTo-Json -Compress @{ units = @() }) }
+            exit 0
+        }
         if ($flat -match '-Layer cited ') {
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'cited/book@1'; token = 4; input_hash = 'ih-c' }) })
             exit 0
@@ -58,10 +65,17 @@ switch -Regex ($flat) {
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'citedcards/book@1'; token = 9; input_hash = 'ih-b' }) })
             exit 0
         }
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(
-                    @{ id = 'citedcards/t001@1'; token = 1; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } },
-                    @{ id = 'citedcards/t002@1'; token = 2; input_hash = 'ih-2'; inputs = @{ job = @{ id = 't002' } } },
-                    @{ id = 'citedcards/book@1'; token = 8; input_hash = 'ih-b' }) })
+        # v3: the start claims page after page until a page holds no job unit.
+        $page = 1
+        if ($flat -match '-Take 64') { if (Test-Path -LiteralPath $env:CS_NEXT_COUNT) { $page = [int](Get-Content -Raw $env:CS_NEXT_COUNT) + 1 }; Set-Content -LiteralPath $env:CS_NEXT_COUNT -Value "$page" }
+        if ($page -eq 1) {
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(
+                        @{ id = 'citedcards/t001@1'; token = 1; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } },
+                        @{ id = 'citedcards/t002@1'; token = 2; input_hash = 'ih-2'; inputs = @{ job = @{ id = 't002' } } },
+                        @{ id = 'citedcards/book@1'; token = 8; input_hash = 'ih-b' }) })
+        } elseif ($page -eq 2 -and $env:CS_TWO_PAGES) {
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'citedcards/t003@1'; token = 3; input_hash = 'ih-3'; inputs = @{ job = @{ id = 't003' } } }) })
+        } else { Write-Output (ConvertTo-Json -Compress @{ units = @() }) }
         exit 0
     }
     '^cited-cards -Step plan' {
@@ -69,12 +83,16 @@ switch -Regex ($flat) {
         exit 0
     }
     '^cited-cards -Step jobs' {
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @(@{ id = 't001'; files = @('a.md', 'b.md'); prompt = 'p' }, @{ id = 't002'; files = @('a.md', 'c.md'); prompt = 'p' }) })
+        $all = @(@{ id = 't001'; files = @('a.md', 'b.md'); prompt = 'p' }, @{ id = 't002'; files = @('a.md', 'c.md'); prompt = 'p' }, @{ id = 't003'; files = @('a.md', 'd.md'); prompt = 'p' })
+        $wanted = @(([regex]::Matches($flat, 't\d{3}(?=:)')) | ForEach-Object { $_.Value })
+        if (-not $wanted.Count) { $wanted = @('t001', 't002') }
+        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @($all | Where-Object { $wanted -contains $_.id }) })
         exit 0
     }
     '^cited-cards -Step check' { Write-Output (ConvertTo-Json -Compress @{ ok = $true; ready = 7; not_ready = 1 }); exit 0 }
     '^ledger done' {
         if ($env:CS_NOT_READY -and $flat -match 'citedcards/t002@1') { Write-Output 'zt-digest ledger: row 8 is faults, not ready'; exit 1 }
+        if ($env:CS_STALE -and $flat -match 'citedcards/t001@1 -Token 1 ') { Write-Output 'zt-digest ledger: stale_claim: citedcards/t001@1 has no current unexpired claim for token 1'; exit 1 }
         Write-Output (ConvertTo-Json -Compress @{ schema_version = 1; state = 'done' })
         exit 0
     }
@@ -89,6 +107,8 @@ exit 0
 '@
 Set-Content -LiteralPath $tool -Value $toolBody -Encoding utf8
 $env:CS_CALLS = $calls
+$env:CS_NEXT_COUNT = Join-Path $scratch 'next-page.txt'
+$env:CS_STALE_NEXT = Join-Path $scratch 'stale-next.txt'
 
 function Step([string[]]$argv) {
     $text = & pwsh -NoProfile -File $script @argv 2>&1
@@ -110,6 +130,15 @@ $common = @('-Out', $out, '-Tool', $tool)
 $list = Step (@('-Step', 'list', '-Heading', 'Bibliography') + $common)
 Assert-Line $list 'list'
 Assert ($list.json.ok -eq $true -and $list.json.rows -eq 35 -and $list.json.unparsed -eq 2 -and $list.json.jobs -eq 1 -and $list.json.file) "list: rows, unparsed entries and the normalize job file ($($list.text))"
+# v3: the normalize jobs are cut into one chunk file per manager too.
+$norm = Join-Path $scratch 'normalize-jobs.json'
+ConvertTo-Json -Depth 4 @(@{ id = 'n1' }, @{ id = 'n2' }, @{ id = 'n3' }) | Set-Content -LiteralPath $norm -Encoding utf8
+$env:CS_NORM = $norm
+$nl = Step (@('-Step', 'list', '-Chunk', '2') + $common)
+$env:CS_NORM = ''
+$n1 = @(Get-Content -Raw (Join-Path $out 'cited\drive\normalize-001.json') | ConvertFrom-Json)
+$n2 = @(Get-Content -Raw (Join-Path $out 'cited\drive\normalize-002.json') | ConvertFrom-Json)
+Assert ($nl.json.chunks -eq 2 -and ($n1.id -join ',') -eq 'n1,n2' -and ($n2.id -join ',') -eq 'n3') "list v3: the normalize jobs are cut into chunk files ($($nl.text))"
 Assert ((Get-Content -LiteralPath $calls -Raw) -match 'cited -Step plan -Staging .* -Heading Bibliography') 'list: the heading reaches the plan'
 $withSource = Step (@('-Step', 'list', '-Source', 'C:\books\whole.md') + $common)
 Assert ($withSource.json.ok -eq $true -and ((Get-Content -LiteralPath $calls -Raw) -match 'cited -Step plan -Staging .* -Source C:\\books\\whole\.md')) 'list: -Source reaches the plan'
@@ -139,6 +168,28 @@ $c = Get-Content -LiteralPath $calls -Raw
 Assert ($c -match 'ledger reclaim .*-Unit citedcards/t001@1 -Release') 'start: a stopped run''s claim is released before the plan'
 Assert ($c -match 'ledger reclaim .*-Unit citedcards/book@1 -Release') 'start: the book unit start hands out is released'
 Assert ($c -match 'cited-cards -Step jobs -Staging .* -Tokens t001:1,t002:2') 'start: the jobs step names the claimed tokens'
+Assert (@(Get-Content -LiteralPath $calls | Where-Object { $_ -match '^ledger next .*-Layer citedcards .*-Take 64' }).Count -eq 2 -and $c -notmatch '-Lease (2[0-9]{4}|[89][0-9]{3})') 'start v3: it claims until a page holds no job unit, under the ledger''s lease limit'
+$chunk1 = @(Get-Content -Raw (Join-Path $out 'cited\drive\jobs-001.json') | ConvertFrom-Json)
+Assert ($start.json.chunks -eq 1 -and ($chunk1.id -join ',') -eq 't001,t002') "start v3: one chunk file per manager holds its jobs in order ($($start.text))"
+# v3 (atkinson2015lectures, 2026-11-02): one start claimed at most 64 jobs; the start now claims every page.
+Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
+$env:CS_TWO_PAGES = '1'
+$three = Step (@('-Step', 'start', '-Chunk', '2') + $common)
+$env:CS_TWO_PAGES = ''
+$chunk1 = @(Get-Content -Raw (Join-Path $out 'cited\drive\jobs-001.json') | ConvertFrom-Json)
+$chunk2 = @(Get-Content -Raw (Join-Path $out 'cited\drive\jobs-002.json') | ConvertFrom-Json)
+Assert ($three.json.jobs -eq 3 -and $three.json.chunks -eq 2 -and ($chunk1.id -join ',') -eq 't001,t002' -and ($chunk2.id -join ',') -eq 't003') "start v3: two pages list three jobs in chunks of two and one ($($three.text))"
+Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $calls
+$null = Step (@('-Step', 'start') + $common)
+Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
+# v3: a job that outlasts its claim's lease is taken back and completed under a new token.
+$env:CS_STALE = '1'
+Remove-Item -LiteralPath $calls
+$late = Step (@('-Step', 'finish') + $common)
+$env:CS_STALE = ''
+$lc = @(Get-Content -LiteralPath $calls)
+Assert ($late.json.done -eq 2 -and -not $late.json.failed -and @($lc | Where-Object { $_ -match '^ledger reclaim .*-Unit citedcards/t001@1$' }).Count -eq 1 -and @($lc | Where-Object { $_ -match '^ledger done .*-Unit citedcards/t001@1 -Token 8 ' }).Count -eq 1) "finish v3: an expired claim is taken back and the job completes ($($late.text))"
 $env:CS_NOT_READY = '1'; $env:CS_PARTIAL = '1'
 Remove-Item -LiteralPath $calls
 $finish = Step (@('-Step', 'finish') + $common)

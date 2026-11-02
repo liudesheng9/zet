@@ -28,6 +28,7 @@ param(
     [ValidateSet('first', 'all')][string]$Occurrences = 'first',
     [int]$PerJob = 0,
     [int]$MathPerJob = 0,
+    [ValidateRange(1, 8)][int]$Chunk = 8,
     [string]$Tool = 'zt-digest'
 )
 $ErrorActionPreference = 'Stop'
@@ -55,6 +56,18 @@ function Fail($Step, $Reason, $Detail = $null) { Send-StepFail -Step $Step -Reas
 function Fail-Unit($Unit, [string]$Cause) {
     $fault = @{ schema_version = 1; unit = $Unit.id; input_hash = $Unit.input_hash; cause = $Cause.Substring(0, [Math]::Min(400, $Cause.Length)) } | ConvertTo-Json -Compress
     Run @('ledger', 'fail', '-Out', $Out, '-Unit', $Unit.id, '-Token', "$($Unit.token)", '-Fault', $fault) | Out-Null
+}
+
+# 2026-10-26: one DeepSeek job reviews AND fixes a draft. Besides its request it reads the writer's instructions and the
+# writer's job file (the draft path and its SELF-CHECK), and it may write under the Term-card folder: the draft it fixes
+# and its answer. There is no separate fix step.
+function Review-Job($j) {
+    $writer = "$($j.id)" -replace '-r\d+-review$', ''
+    $files = @($j.files)
+    $j | Add-Member -Force files (@($files[0], (Join-Path $Work 'dsh-term-card-instructions.zh.md'), (Join-Path $Work "jobs\$writer.md")) + @($files | Select-Object -Skip 1))
+    $j | Add-Member -Force prompt '按审查与修正说明审查这张数学术语卡草稿：先审查，再把错误直接改在草稿文件里并运行自查，然后只写任务文件指定的答案文件，最后只回复一行 JSON。'
+    $j | Add-Member -Force writes $Work
+    $j
 }
 
 switch ($Step) {
@@ -87,7 +100,9 @@ switch ($Step) {
         # A new plan revision (a rebuilt zt-digest records its version in the plan; atkinson2015lectures revision 3)
         # opens every job again, also the jobs whose drafts are written and whose rows are published. The check of the
         # drafts on disk decides: a claimed job whose rows are all ready completes at once and is never written again.
-        $settled = @()
+        # A job whose drafts pass and lack only reviews (2026-11-02: 104 jobs whose writer promoted a term to math) is
+        # one review-and-fix job per such row, never a second writer job.
+        $settled = @(); $reviewOnly = @(); $reviewUnits = @()
         if ($units.Count) {
             Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
             $readyPath = Join-Path $Work 'check\readiness.json'
@@ -101,49 +116,69 @@ switch ($Step) {
                         $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', $readyPath)
                         if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $settled += $id; continue }
                     }
+                    if ($rows.Count -and -not @($rows | Where-Object { $_.status -ne 'ready' -and $_.status -ne 'needs_review' }).Count) {
+                        $reviewOnly += $id; $reviewUnits += $u; continue
+                    }
                     $open += $u
                 }
                 $units = $open
             }
         }
-        Save 'units.json' $units
-        if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; settled = $settled.Count; plan_revision = [int]$plan.json.revision } @{ units = @(); settled = $settled; plan = $plan.json }; break }
-        $tokens = ($units | ForEach-Object { "$($_.inputs.job.id):$($_.token)" }) -join ','
-        $jobs = Run @('term-cards', '-Step', 'jobs', '-Staging', $Out, '-Tokens', $tokens)
-        if (-not $jobs.json -or $jobs.json.ok -ne $true) { Fail 'jobs' $jobs.tail; break }
+        Save 'units.json' (@($units) + @($reviewUnits))
+        if (-not $units.Count -and -not $reviewUnits.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; settled = $settled.Count; plan_revision = [int]$plan.json.revision } @{ units = @(); settled = $settled; plan = $plan.json }; break }
+        $writerJobs = @()
+        if ($units.Count) {
+            $tokens = ($units | ForEach-Object { "$($_.inputs.job.id):$($_.token)" }) -join ','
+            $jobs = Run @('term-cards', '-Step', 'jobs', '-Staging', $Out, '-Tokens', $tokens)
+            if (-not $jobs.json -or $jobs.json.ok -ne $true) { Fail 'jobs' $jobs.tail; break }
+            $writerJobs = @($jobs.json.jobs)
+        }
         # v10 (the user's design, 2026-11-01): one DeepSeek job writes a math term, self-checks it, reviews and fixes
         # its own draft against the review instructions, and writes its verdict beside the review answers; the finish
-        # binds a verdict written after this job list to the draft the job left. A concept job stays a writer job.
+        # binds a verdict written after this job list to the draft the job left. A concept job may promote a term to
+        # math (2026-11-02: 155 promoted rows had no review), so it carries the same review for such a term.
         $answersDir = Join-Path $Work 'review\answers'
         New-Item -ItemType Directory -Force $answersDir | Out-Null
         # The run keeps the exact review text its jobs were asked against (the compiler's review-plan copies the same file).
         $reviewText = Join-Path $PSScriptRoot 'dsh-term-review-instructions.zh.md'
         if (Test-Path -LiteralPath $reviewText) { Copy-Item -LiteralPath $reviewText -Destination (Join-Path $Work 'dsh-term-review-instructions.zh.md') -Force }
-        foreach ($j in @($jobs.json.jobs | Where-Object { $_.kind -eq 'math' })) {
+        foreach ($j in @($writerJobs | Where-Object { $_.kind -ne 'math' })) {
+            $verdicts = @(@($j.rows) | ForEach-Object { Join-Path $answersDir ('{0}-r{1:D3}-self.json' -f $j.id, [int]$_) })
+            $files = @($j.files)
+            $j | Add-Member -Force files (@($files[0], (Join-Path $Work 'dsh-term-review-instructions.zh.md')) + @($files | Select-Object -Skip 1))
+            $j | Add-Member -Force prompt ("$($j.prompt)" + ' 如果你把其中某个术语提升为数学概念：写完并自查通过后，再按审查与修正说明像独立审查者那样核对并修正这个术语，再运行自查直到通过，然后把审查结论写入它对应的文件（按术语表行号：' + ($verdicts -join '、') + '；通过：{"ok":true}；不通过：{"ok":false,"faults":[{"where":"…","what":"…","fix":"…"}]}）。没有提升的术语不写结论文件。')
+            $j | Add-Member -Force verdicts $verdicts
+        }
+        foreach ($j in @($writerJobs | Where-Object { $_.kind -eq 'math' })) {
             $verdicts = @(@($j.rows) | ForEach-Object { Join-Path $answersDir ('{0}-r{1:D3}-self.json' -f $j.id, [int]$_) })
             $files = @($j.files)
             $j | Add-Member -Force files (@($files[0], (Join-Path $Work 'dsh-term-review-instructions.zh.md')) + @($files | Select-Object -Skip 1))
             $j | Add-Member -Force prompt ('按共享说明和任务文件写好本组术语的 JSON 草稿，运行任务文件里的自查直到通过。然后按审查与修正说明，像一位独立审查者那样逐项核对你自己的草稿（对照原文小节），把错误直接改在草稿文件里，再运行自查直到通过。最后把审查结论写入 ' + ($verdicts -join '、') + '（每个数学术语一个文件；通过：{"ok":true}；不通过：{"ok":false,"faults":[{"where":"…","what":"…","fix":"…"}]}）。只写任务文件指定的输出文件和这些结论文件，最后只回复一行 JSON。')
             $j | Add-Member -Force verdicts $verdicts
         }
-        Save 'jobs.json' @($jobs.json.jobs)
-        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; settled = $settled.Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; settled = $settled; plan = $plan.json; jobs = @($jobs.json.jobs) }
+        $reviewJobs = @()
+        if ($reviewOnly.Count) {
+            $r = Run @('term-cards', '-Step', 'review-plan', '-Staging', $Out)
+            if (-not $r.json -or $r.json.ok -ne $true) { Fail 'review-plan' $r.tail; break }
+            $reviewJobs = @($r.json.jobs | Where-Object { $_.delete_after_collect -eq $true -and $reviewOnly -contains ("$($_.id)" -replace '-r\d+-review$', '') } | ForEach-Object { Review-Job $_ })
+        }
+        $all = @($writerJobs) + @($reviewJobs)
+        Save 'jobs.json' $all
+        # v11 (atkinson2015lectures, 2026-11-02): two managers told to run "entries 232 through 239 (0-based)" ran the
+        # job ids t232..t239 instead, and 16 jobs never ran. Each manager now gets its own chunk file of at most
+        # -Chunk jobs (the DSMP manager size) and runs every entry in it.
+        Get-ChildItem -LiteralPath $Drive -Filter 'jobs-*.json' -ErrorAction SilentlyContinue | Remove-Item -Force
+        $chunks = [int][Math]::Ceiling($all.Count / $Chunk)
+        for ($k = 0; $k -lt $chunks; $k++) {
+            Save ('jobs-{0:D3}.json' -f ($k + 1)) @($all | Select-Object -Skip ($k * $Chunk) -First $Chunk)
+        }
+        Reply @{ ok = $true; jobs = $all.Count; chunks = $chunks; reviews = $reviewJobs.Count; settled = $settled.Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = (@($units) + @($reviewUnits)); settled = $settled; review_only = $reviewOnly; plan = $plan.json; jobs = $all }
     }
     'review' {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
         $r = Run @('term-cards', '-Step', 'review-plan', '-Staging', $Out)
         if (-not $r.json -or $r.json.ok -ne $true) { Fail 'review-plan' $r.tail; break }
-        # 2026-10-26: one DeepSeek job reviews AND fixes a draft. Besides its request it reads the writer's
-        # instructions and the writer's job file (the draft path and its SELF-CHECK), and it may write under the
-        # Term-card folder: the draft it fixes and its answer. There is no separate fix step.
-        $jobs = @($r.json.jobs | Where-Object { $_.delete_after_collect -eq $true } | ForEach-Object {
-                $writer = "$($_.id)" -replace '-r\d+-review$', ''
-                $files = @($_.files)
-                $_ | Add-Member -Force files (@($files[0], (Join-Path $Work 'dsh-term-card-instructions.zh.md'), (Join-Path $Work "jobs\$writer.md")) + @($files | Select-Object -Skip 1))
-                $_ | Add-Member -Force prompt '按审查与修正说明审查这张数学术语卡草稿：先审查，再把错误直接改在草稿文件里并运行自查，然后只写任务文件指定的答案文件，最后只回复一行 JSON。'
-                $_ | Add-Member -Force writes $Work
-                $_
-            })
+        $jobs = @($r.json.jobs | Where-Object { $_.delete_after_collect -eq $true } | ForEach-Object { Review-Job $_ })
         Save 'reviews.json' $jobs
         Reply @{ ok = $true; reviews = $jobs.Count; file = (Join-Path $Drive 'reviews.json') } @{ reviews = $jobs; counts = $r.json.counts }
     }

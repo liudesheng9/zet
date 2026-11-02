@@ -1971,7 +1971,9 @@ function runtime(kind, opts = {}) {
       const kind = (text.match(/Cited Cards \(([a-z]+)/) || [])[1] || 'write'
       const range = text.match(/entries (\d+) through (\d+)/)
       const all = kind === 'normalize' ? normalizeJobs : citedJobs
-      const listed = range ? all.slice(Number(range[1]), Number(range[2]) + 1) : []
+      // v3: a manager runs every entry of its own chunk file (drive\jobs-NNN.json or normalize-NNN.json, eight each).
+      const chunk = text.match(/(?:jobs|normalize)-(\d{3})\.json/)
+      const listed = chunk ? all.slice((Number(chunk[1]) - 1) * 8, Number(chunk[1]) * 8) : range ? all.slice(Number(range[1]), Number(range[2]) + 1) : []
       citedManagers.push({ label, phase: callOpts.phase, kind, jobs: listed.map((job) => job.id), prompt: text })
       const failed = kind === 'write' && !!opts.citedWriterFails
       return { ok: true, jobs: listed.map((job) => ({ id: job.id, session_id: sessionOf(job.id), status: failed ? 'failed' : 'done', answer: failed ? 'the writer failed' : '{}', deleted: true })) }
@@ -1979,8 +1981,10 @@ function runtime(kind, opts = {}) {
     if (text.startsWith('You are a DeepSeek subagent manager for ZET Term Cards (')) {
       const kind = (text.match(/Term Cards \(([^)]+)\)/) || [])[1] || 'write'
       const range = text.match(/entries (\d+) through (\d+)/)
-      const listed = range ? termJobs.slice(Number(range[1]), Number(range[2]) + 1) : []
-      termManagers.push({ label, phase: callOpts.phase, kind: kind.split(' ')[0], jobs: listed.map((job) => job.id) })
+      // v11: a manager runs every entry of its own chunk file (drive\jobs-NNN.json, eight jobs each).
+      const chunk = text.match(/jobs-(\d{3})\.json/)
+      const listed = chunk ? termJobs.slice((Number(chunk[1]) - 1) * 8, Number(chunk[1]) * 8) : range ? termJobs.slice(Number(range[1]), Number(range[2]) + 1) : []
+      termManagers.push({ label, phase: callOpts.phase, kind: kind.split(' ')[0], jobs: listed.map((job) => job.id), prompt: text })
       const failed = kind.startsWith('write') && !!opts.termWriterFails
       return { ok: true, jobs: listed.map((job) => ({ id: job.id, session_id: sessionOf(job.id), status: failed ? 'failed' : 'done', answer: failed ? 'the writer failed' : '{}', deleted: true })) }
     }
@@ -2312,6 +2316,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(queueSteps.join(',') === 'start,finish', `v10: one start and one finish, no review step (${queueSteps.join(',')})`)
   const writers = queue.termManagers.filter((m) => m.kind === 'write')
   check(writers.length === 3 && writers.map((m) => m.jobs.length).join(',') === '8,8,4', `v10: twenty jobs run in managers of eight (${writers.map((m) => m.jobs.length).join(',')})`)
+  check(writers.every((m) => /jobs-\d{3}\.json/.test(m.prompt) && !/entries \d+ through/.test(m.prompt)), 'v11: each writer manager runs its own chunk file, never an index range of the job list')
+  check(queue.termCalls.some((c) => c.step === 'start' && / -Chunk 8\b/.test(c.cmd)), 'v11: the start writes chunks of the DSMP manager size')
   check(queue.led.find('termcards/book@1').state === 'done' && queue.result.term_cards.status === 'done' && queue.result.term_cards.jobs.done === 20, `v10: every job is done and the Term-card book completes (${JSON.stringify(queue.result.term_cards && queue.result.term_cards.jobs)})`)
   check(full.result.term_link.status === 'done' && full.result.term_link.counts && full.result.term_link.counts.cards_changed === 1, `v4: the report carries the applied Term-link pass (${JSON.stringify(full.result.term_link)})`)
   // The frozen layer switches: a disabled Term layer freezes into the prepared target and runs no stage.
@@ -3279,7 +3285,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '49' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '10' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v49, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v10 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '49' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '3' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '11' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v49, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v3, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

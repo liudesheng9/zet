@@ -1,4 +1,6 @@
-// ==== module zt-cited-cards v2 ====
+// ==== module zt-cited-cards v3 ====
+// v3 (atkinson2015lectures, 2026-11-02): the start claims every page of jobs (one claim takes at most 64), each manager
+// runs its own chunk file (cited\drive\<prefix>-NNN.json), and the finish takes back a claim whose lease ran out.
 // The Cited literature branch (#221, docs/cited-literature-cards-proposal.md): Haiku managers and DeepSeek agents
 // only, the shape of zt-term-cards v8 without a review round. Every deterministic step is one `cited-steps.ps1`
 // call that a DeepSeek agent runs (a "drive" job, the shared zt-workflow-lib helper `ztDrive`), so no Claude agent
@@ -14,7 +16,7 @@
 // v2 (pilot 2026-10-31): `source` names the whole bilingual source for a backfill, whose adopted staging names the
 // Chinese-only book.zh.md; the list step passes it as -Source and the plan freezes it for the Cards.
 defineModule({
-  id: 'zt-cited-cards', version: '2', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-cited-cards', version: '3', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Cited list and Cited Cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers for the content; each unit completes only from the compiler\'s own artifacts.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -67,12 +69,24 @@ Each job has id, files, prompt, skills, model, effort.
     // zt-workflow-lib helper ztDrive). A step that answers no JSON line or `ok:false` stops the stage with its reason.
     const drive = async (step) => {
       const extra = `${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.heading ? ` -Heading "${p.heading}"` : ''}${p.source && step === 'list' ? ` -Source "${p.source}"` : ''}`
-      const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${extra}`
+      const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${extra}${step === 'list' || step === 'start' ? ` -Chunk ${DSMP.perManager}` : ''}`
       const json = await ztDrive(ctx, { label: `${ctx.stage}: drive ${step}`, step, command, out: OUT, cwd: WORK, phase, ledger: 'zt-digest ledger', deepseek: report.deepseek })
       if (json.ok !== true) throw new Error(`cited ${step}: ${tail(json.error || 'the step failed')}`)
       return json
     }
     // Content jobs from a job file the script wrote: at most eight per manager, managers in parallel.
+    // v3 (atkinson2015lectures, 2026-11-02): a manager told to run "entries 232 through 239 (0-based)" ran the job ids
+    // t232..t239 instead. When the step wrote chunk files (drive\<prefix>-NNN.json, DSMP.perManager entries each), each
+    // manager runs every entry of its own file.
+    const runChunks = async (label, prefix, count) => {
+      const managers = []
+      for (let k = 0, from = 0; from < count; k++, from += DSMP.perManager) {
+        const to = Math.min(count, from + DSMP.perManager)
+        const file = `${OUT}\\cited\\drive\\${prefix}-${String(k + 1).padStart(3, '0')}.json`
+        managers.push(manager(`${label} ${from + 1}-${to}`, `read the JSON array in "${file}" (Read tool) and run EVERY entry in it, each exactly as given (its own id, files and prompt); run nothing else.`).then(collect))
+      }
+      return (await Promise.all(managers)).flat()
+    }
     const runFile = async (label, file, count) => {
       const managers = []
       for (let from = 0; from < count; from += DSMP.perManager) {
@@ -89,7 +103,7 @@ Each job has id, files, prompt, skills, model, effort.
         report.unparsed = Number(listed.unparsed || 0)
         if (listed.jobs > 0) {
           report.jobs.total = listed.jobs
-          const ran = await runFile('normalize', listed.file, listed.jobs)
+          const ran = listed.chunks > 0 ? await runChunks('normalize', 'normalize', listed.jobs) : await runFile('normalize', listed.file, listed.jobs)
           report.jobs.failed = ran.filter((j) => j.status !== 'done').length
           report.jobs.done = ran.length - report.jobs.failed
         }
@@ -107,7 +121,7 @@ Each job has id, files, prompt, skills, model, effort.
         report.jobs.total = started.jobs
         report.plan_revision = started.plan_revision
         if (started.jobs > 0) {
-          const written = await runFile('write', started.file, started.jobs)
+          const written = started.chunks > 0 ? await runChunks('write', 'jobs', started.jobs) : await runFile('write', started.file, started.jobs)
           report.writer_failures = written.filter((j) => j.status !== 'done').length
         }
         const finished = await drive('finish')

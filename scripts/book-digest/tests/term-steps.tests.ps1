@@ -83,7 +83,8 @@ switch -Regex ($flat) {
         # v10: with TS_SETTLE the check finds job t001's row already ready (its draft is on disk) and t002's missing.
         if ($env:TS_SETTLE) {
             $dir = Join-Path $env:TS_OUT 'term-cards\check'; New-Item -ItemType Directory -Force $dir | Out-Null
-            ConvertTo-Json -Depth 8 @{ plan_revision = 3; terms = @(@{ row = 1; job = 't001'; status = 'ready' }, @{ row = 2; job = 't002'; status = 'missing' }, @{ row = 3; job = 't003'; status = 'missing' }) } | Set-Content -LiteralPath (Join-Path $dir 'readiness.json') -Encoding utf8
+            $first = if ($env:TS_SETTLE -eq 'review') { 'needs_review' } else { 'ready' }
+            ConvertTo-Json -Depth 8 @{ plan_revision = 3; terms = @(@{ row = 1; job = 't001'; status = $first }, @{ row = 2; job = 't002'; status = 'missing' }, @{ row = 3; job = 't003'; status = 'missing' }) } | Set-Content -LiteralPath (Join-Path $dir 'readiness.json') -Encoding utf8
         }
         Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 2 }); exit 0
     }
@@ -177,7 +178,8 @@ $concept = $jobs | Where-Object { $_.id -eq 't001' }
 $verdict = Join-Path $out 'term-cards\review\answers\t002-r002-self.json'
 Assert (@($math.files -match 'dsh-term-review-instructions\.zh\.md$').Count -eq 1 -and $math.files[-1] -match 'jobs\\t002\.md$') "start v10: a math job reads the review instructions too ($($math.files -join ', '))"
 Assert ($math.prompt -match '审查' -and $math.prompt -match '修正|改' -and $math.prompt.Contains($verdict)) "start v10: a math job's prompt asks it to review and fix its draft and write its verdict to $verdict ($($math.prompt))"
-Assert ($concept.prompt -eq 'p' -and @($concept.files).Count -eq 2) 'start v10: a concept job keeps the writer prompt and files'
+$conceptVerdict = Join-Path $out 'term-cards\review\answers\t001-r001-self.json'
+Assert ($concept.prompt.StartsWith('p') -and $concept.prompt.Contains($conceptVerdict) -and @($concept.files -match 'dsh-term-review-instructions\.zh\.md$').Count -eq 1) "start v10: a concept job keeps its writer prompt and, for a term it promotes to math, reviews it and writes its verdict ($($concept.prompt))"
 Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
 
 # 1c. v10 (atkinson2015lectures, 2026-11-01): a rebuilt zt-digest registered plan revision 3 and every job was open
@@ -192,6 +194,34 @@ $settleCalls = @(Get-Content -LiteralPath $calls)
 Assert ($settle.json.ok -eq $true -and $settle.json.jobs -eq 2 -and $settle.json.settled -eq 1) "start v10: a claimed job whose rows are ready is settled, the other two are listed ($($settle.text))"
 Assert (@($settleCalls | Where-Object { $_ -match '^ledger done .*-Unit termcards/t001@1 -Token 1 ' }).Count -eq 1) 'start v10: the settled job completes through ledger done with its claim token'
 Assert (@($settleCalls | Where-Object { $_ -match '^term-cards -Step jobs ' -and $_ -match 't002:2,t003:3' -and $_ -notmatch 't001:' }).Count -eq 1) 'start v10: the job list names only the open jobs'
+
+# 1d. v10 (atkinson2015lectures, 2026-11-02): 104 reopened jobs had passing drafts that lacked only the review of a
+# promoted term. The start lists such a job as one review-and-fix job (the review plan's request), never as a writer.
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+Set-Content -LiteralPath $calls -Value '' -Encoding utf8
+$env:TS_TWO_PAGES = '1'; $env:TS_SETTLE = 'review'
+$rev = Step (@('-Step', 'start') + $common)
+$env:TS_TWO_PAGES = ''; $env:TS_SETTLE = ''
+$revCalls = @(Get-Content -LiteralPath $calls)
+$revJobs = @(Get-Content -Raw (Join-Path $out 'term-cards\drive\jobs.json') | ConvertFrom-Json)
+Assert ($rev.json.ok -eq $true -and $rev.json.jobs -eq 3 -and $rev.json.reviews -eq 1 -and -not $rev.json.settled) "start v10: a job lacking only its review is listed as one review job beside two writers ($($rev.text))"
+Assert (@($revCalls | Where-Object { $_ -match '^term-cards -Step jobs ' -and $_ -match 't002:2,t003:3' -and $_ -notmatch 't001:' }).Count -eq 1) 'start v10: the review-only job gets no writer job'
+# v11: one chunk file per manager holds at most -Chunk entries of the job list, in order.
+Remove-Item -LiteralPath (Join-Path $out 'term-cards\check\readiness.json') -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+$chunked = Step (@('-Step', 'start', '-Chunk', '2') + $common)
+$c1 = @(Get-Content -Raw (Join-Path $out 'term-cards\drive\jobs-001.json') | ConvertFrom-Json)
+Assert ($chunked.json.chunks -eq 1 -and $c1.Count -eq 2 -and -not (Test-Path -LiteralPath (Join-Path $out 'term-cards\drive\jobs-002.json'))) "start v11: two jobs make one chunk of two, and an old chunk file is removed ($($chunked.text))"
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+$env:TS_TWO_PAGES = '1'
+$chunked3 = Step (@('-Step', 'start', '-Chunk', '2') + $common)
+$env:TS_TWO_PAGES = ''
+$c1 = @(Get-Content -Raw (Join-Path $out 'term-cards\drive\jobs-001.json') | ConvertFrom-Json)
+$c2 = @(Get-Content -Raw (Join-Path $out 'term-cards\drive\jobs-002.json') | ConvertFrom-Json)
+Assert ($chunked3.json.chunks -eq 2 -and ($c1.id -join ',') -eq 't001,t002' -and ($c2.id -join ',') -eq 't003') "start v11: three jobs make chunks of two and one, in job-list order ($($chunked3.text))"
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+$rj1 = $revJobs | Where-Object { $_.id -eq 't001-r001-review' }
+Assert ($rj1 -and $rj1.prompt -match '修正' -and @($rj1.files -match 'dsh-term-card-instructions\.zh\.md$').Count -eq 1 -and $rj1.writes -eq (Join-Path $out 'term-cards')) "start v10: the review job reviews and fixes the draft with the writer's instructions ($($rj1 | ConvertTo-Json -Compress))"
 Remove-Item -LiteralPath (Join-Path $out 'term-cards\check\readiness.json') -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
 $null = Step (@('-Step', 'start') + $common)

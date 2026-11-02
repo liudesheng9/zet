@@ -1,4 +1,7 @@
-// ==== module zt-term-cards v10 ====
+// ==== module zt-term-cards v11 ====
+// v11 (atkinson2015lectures, 2026-11-02): two managers told to run "entries 232 through 239 (0-based)" ran the job ids
+// t232..t239 instead, and 16 jobs never ran. The start writes one chunk file per manager (drive\jobs-NNN.json, at most
+// DSMP.perManager jobs) and each writer manager runs every entry of its own file.
 // v10 (atkinson2015lectures, 2026-11-01, the user's design): no waves. The start claims every ready job; one
 // DeepSeek job writes a term, self-checks it and, for a math term, reviews and fixes its own draft and writes its
 // verdict; the managers run as one queue under the DSMP limits (eight managers of eight jobs, the next manager
@@ -24,7 +27,7 @@
 // v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
 // only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '10', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '11', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers and review-and-fix jobs for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -78,7 +81,7 @@ Each job has id, files, prompt, skills, model, effort.
     // (the shared zt-workflow-lib helper ztDrive). A step that answers no JSON line stops the branch; a step
     // that answers `ok:false` is the branch's failed reason.
     const drive = async (step) => {
-      const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.mathPerJob ? ` -MathPerJob ${p.mathPerJob}` : ''}`
+      const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.mathPerJob ? ` -MathPerJob ${p.mathPerJob}` : ''}${step === 'start' ? ` -Chunk ${DSMP.perManager}` : ''}`
       const json = await ztDrive(ctx, { label: `${ctx.stage}: drive ${step}`, step, command, out: OUT, cwd: WORK, phase, ledger: 'zt-digest ledger', deepseek: report.deepseek })
       if (json.ok !== true) throw new Error(`term-cards ${step}: ${tail(json.error || 'the step failed')}`)
       return json
@@ -93,6 +96,17 @@ Each job has id, files, prompt, skills, model, effort.
       return (await Promise.all(managers)).flat()
     }
 
+    // v11: one manager per chunk file the start wrote, every entry of it; managers queue behind dsmpSlot.
+    const runChunks = async (label, count) => {
+      const managers = []
+      for (let k = 0, from = 0; from < count; k++, from += DSMP.perManager) {
+        const to = Math.min(count, from + DSMP.perManager)
+        const file = `${DRIVE}\\jobs-${String(k + 1).padStart(3, '0')}.json`
+        managers.push(manager(`${label} ${from + 1}-${to}`, `read the JSON array in "${file}" (Read tool) and run EVERY entry in it, each exactly as given (its own id, files and prompt); run nothing else.`).then(collect))
+      }
+      return (await Promise.all(managers)).flat()
+    }
+
     try {
       let finished = null
       report.jobs.done = 0
@@ -103,7 +117,7 @@ Each job has id, files, prompt, skills, model, effort.
       report.jobs.total = Number(started.jobs || 0)
       report.plan_revision = started.plan_revision
       if (started.jobs > 0) {
-        const written = await runFile('write', `${DRIVE}\\jobs.json`, started.jobs)
+        const written = await runChunks('write', started.jobs)
         report.writer_failures = written.filter((j) => j.status !== 'done').length
       }
       finished = await drive('finish')

@@ -25,6 +25,7 @@ param(
     [Parameter(Mandatory)][ValidateSet('list', 'list-finish', 'start', 'finish')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
     [int]$PerJob = 0,
+    [ValidateRange(1, 8)][int]$Chunk = 8,
     [string]$Heading = '',
     [string]$Source = '',
     [string]$Tool = 'zt-digest'
@@ -64,6 +65,15 @@ function Claim-One([string]$Layer, [string]$Pattern, [string]$Owner) {
     @($claim.json.units | Where-Object { $_.id -like $Pattern }) | Select-Object -First 1
 }
 
+# v3 (atkinson2015lectures, 2026-11-02): a manager told to run "entries 232 through 239 (0-based)" of a job list ran the
+# job ids t232..t239 instead. Each manager gets its own chunk file of at most -Chunk entries (the DSMP manager size).
+function Save-Chunks([string]$Prefix, [object[]]$Items) {
+    Get-ChildItem -LiteralPath $Drive -Filter "$Prefix-*.json" -ErrorAction SilentlyContinue | Remove-Item -Force
+    $n = [int][Math]::Ceiling(@($Items).Count / $Chunk)
+    for ($k = 0; $k -lt $n; $k++) { Save ('{0}-{1:D3}.json' -f $Prefix, ($k + 1)) @($Items | Select-Object -Skip ($k * $Chunk) -First $Chunk) }
+    $n
+}
+
 switch ($Step) {
     'list' {
         $planArgs = @('cited', '-Step', 'plan', '-Staging', $Out)
@@ -71,7 +81,11 @@ switch ($Step) {
         if ($Source) { $planArgs += @('-Source', $Source) }
         $plan = Run $planArgs
         if (-not $plan.json -or $plan.json.ok -ne $true) { Fail 'plan' $plan.tail; break }
-        Reply @{ ok = $true; rows = [int]$plan.json.rows; unparsed = [int]$plan.json.unparsed; jobs = [int]$plan.json.jobs; file = "$($plan.json.file)" } @{ plan = $plan.json }
+        $chunks = 0
+        if ("$($plan.json.file)" -and (Test-Path -LiteralPath "$($plan.json.file)")) {
+            $chunks = Save-Chunks 'normalize' @(Get-Content -LiteralPath "$($plan.json.file)" -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64)
+        }
+        Reply @{ ok = $true; rows = [int]$plan.json.rows; unparsed = [int]$plan.json.unparsed; jobs = [int]$plan.json.jobs; chunks = $chunks; file = "$($plan.json.file)" } @{ plan = $plan.json }
     }
     'list-finish' {
         $unit = if ($HasLedger) { Claim-One 'cited' 'cited/book@*' 'cited list' } else { $null }
@@ -103,12 +117,18 @@ switch ($Step) {
         $units = @()
         $jobArgs = @('cited-cards', '-Step', 'jobs', '-Staging', $Out)
         if ($HasLedger) {
-            $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'citedcards', '-Take', '64', '-Owner', 'cited cards', '-Lease', '7200')
-            # The book unit is claimed by finish, once every job is done.
-            foreach ($x in @($claim.json.units | Where-Object { $_.id -like 'citedcards/book@*' })) {
-                Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null
+            # v3 (atkinson2015lectures, 2026-11-02): one claim takes at most 64 units, and a book with about 400 jobs
+            # would run one claim's worth. The start claims page after page until a page holds no job unit; the book
+            # unit is claimed by finish, once every job is done, so a page that hands it out releases it at once.
+            for ($page = 1; $page -le 40; $page++) {
+                $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'citedcards', '-Take', '64', '-Owner', 'cited cards', '-Lease', '7200')
+                foreach ($x in @($claim.json.units | Where-Object { $_ -and $_.id -notlike 'citedcards/t*' })) {
+                    Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null
+                }
+                $got = @($claim.json.units | Where-Object { $_ -and $_.id -like 'citedcards/t*' })
+                if (-not $got.Count) { break }
+                $units += $got
             }
-            $units = @($claim.json.units | Where-Object { $_.id -like 'citedcards/t*' })
             Save 'units.json' $units
             if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; plan_revision = [int]$plan.json.revision } @{ units = @(); plan = $plan.json }; break }
             $jobArgs += @('-Tokens', (($units | ForEach-Object { "$($_.inputs.job.id):$($_.token)" }) -join ','))
@@ -118,17 +138,42 @@ switch ($Step) {
         $jobs = Run $jobArgs
         if (-not $jobs.json -or $jobs.json.ok -ne $true) { Fail 'jobs' $jobs.tail; break }
         Save 'jobs.json' @($jobs.json.jobs)
-        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; plan = $plan.json }
+        $chunks = Save-Chunks 'jobs' @($jobs.json.jobs)
+        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; chunks = $chunks; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; plan = $plan.json }
     }
     'finish' {
         $check = Run @('cited-cards', '-Step', 'check', '-Staging', $Out)
         if (-not $check.json -or $check.json.ok -ne $true) { Fail 'check' $check.tail; break }
-        $done = @(); $failed = @()
+        $done = @(); $failed = @(); $late = @()
+        $readiness = Join-Path $Out 'cited-cards\check\readiness.json'
         foreach ($u in @(Load 'units.json')) {
             if (-not $u) { continue }
-            $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', (Join-Path $Out 'cited-cards\check\readiness.json'))
+            $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', $readiness)
             if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $done += $u.inputs.job.id }
+            elseif ("$($d.tail)" -match 'stale_claim') { $late += $u }
             else { $failed += $u.inputs.job.id; Fail-Unit $u "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
+        }
+        # v3: every job is claimed at once, so a job may outlast its claim's lease. Its claim is taken back (reclaim
+        # makes the unit ready under a new token), claimed again and completed the same way.
+        if ($late.Count) {
+            foreach ($u in $late) { Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id) | Out-Null }
+            $again = @{}
+            for ($page = 1; $page -le 40; $page++) {
+                $c = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'citedcards', '-Take', '64', '-Owner', 'cited cards finish', '-Lease', '3600')
+                $wanted = 0
+                foreach ($x in @($c.json.units | Where-Object { $_ })) {
+                    if (@($late | Where-Object { $_.id -eq $x.id }).Count) { $again[$x.id] = $x; $wanted++ }
+                    else { Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null }
+                }
+                if (-not $wanted) { break }
+            }
+            foreach ($u in $late) {
+                $x = $again[$u.id]
+                if (-not $x) { $failed += $u.inputs.job.id; continue }
+                $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $x.id, '-Token', "$($x.token)", '-Outputs', $readiness)
+                if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $done += $u.inputs.job.id }
+                else { $failed += $u.inputs.job.id; Fail-Unit $x "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
+            }
         }
         $bu = if ($HasLedger) { Claim-One 'citedcards' 'citedcards/book@*' 'cited cards book' } else { $null }
         if ($bu) {
