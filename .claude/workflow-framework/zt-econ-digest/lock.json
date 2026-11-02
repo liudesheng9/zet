@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.11.9",
+  "version": "6.11.10",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "757c97b44ceed27fca40676d398cd33c9588ee31b94e6599281c273ea22e857f",
-  "fingerprint": "dcc95305239be5ac",
-  "blueprintSha256": "2bdcc485104afb8b3eda1cdef75a8ba8dd6786f3858fd6724984f9dcf66e295b",
+  "sha256": "2a43893726572460bef19f161783daa664dcc4154d12cae09a6792b1c3850a48",
+  "fingerprint": "3588ba5a12fe56dd",
+  "blueprintSha256": "b95f9173448f675fc2573afa8ba8ab2faadcc54bbb07bc9af48e2446556ce6b0",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "10",
@@ -155,15 +155,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "fe28a19a8277a5258234444d736a7f6ae9759d90f81d5b64414af16399cbe382"
+      "sha256": "b59a97a87bd7132e219232a87bb7f828ff281fd59e0e0519bd0a4c3bfdb43a2c"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "c7ed2508f524140196e4fc0cae84ae707482867ad5bfe2fc0935fcdd4fbe0afa"
+      "sha256": "cdb0e05a2d226b9f2a049381aa568d4e663005a26a8dbf19d2b74a15a9268cbd"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-02T07:49:54.206Z",
+  "installedAt": "2026-11-02T19:49:41.700Z",
   "dryRun": {
     "agents": 76,
     "order": [
