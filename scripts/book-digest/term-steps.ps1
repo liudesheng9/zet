@@ -5,12 +5,13 @@
 
   pwsh -NoProfile -File term-steps.ps1 -Step start|review|finish|link -Out <staging> [-Occurrences first|all]
 
-  start   plan the Term cards, claim every ready job unit (page after page of at most 64, under a six-hour
-          lease), list the claimed jobs; a math job also reviews and fixes its own draft and writes its
-          verdict (v10)                                                   -> drive\jobs.json
+  start   plan the Term cards, claim every ready job unit (page after page of at most 64, under the ledger's
+          longest lease), complete at once a claimed job whose rows are already ready, list the others; a
+          math job also reviews and fixes its own draft and writes its verdict (v10) -> drive\jobs.json
   review  check the drafts and plan the review-and-fix jobs (one DeepSeek job reviews a draft, fixes it
           and runs its self-check); the v10 module no longer calls it     -> drive\reviews.json
-  finish  complete each claimed job from the readiness result (fail the rest), then publish:
+  finish  complete each claimed job from the readiness result (fail the rest; a claim whose lease ran out
+          is taken back first), then publish:
           with the book unit claimed it completes from the report, else every ready row is published (#182)
   link    plan the Term links, apply under the claim (or, when the unit is blocked, the published
           prefix without a claim; when the unit is already done, the whole book again without a
@@ -71,11 +72,11 @@ switch ($Step) {
         if (-not $plan.json -or $plan.json.ok -ne $true) { Fail 'plan' $plan.tail; break }
         # v10 (atkinson2015lectures, 2026-11-01): one claim takes at most 64 units, and the branch ran wave after wave,
         # each waiting for its slowest job. The start now claims page after page until a page holds no job unit, so
-        # the writers run as one queue; the lease covers the whole queue. A non-job unit a page hands out (the book)
-        # is released at once: the finish claims it.
+        # the writers run as one queue, under the ledger's longest lease (7200 s; the finish takes back a claim that
+        # ran out). A non-job unit a page hands out (the book) is released at once: the finish claims it.
         $units = @()
         for ($page = 1; $page -le 40; $page++) {
-            $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '64', '-Owner', 'term cards', '-Lease', '21600')
+            $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '64', '-Owner', 'term cards', '-Lease', '7200')
             foreach ($x in @($claim.json.units | Where-Object { $_ -and $_.id -notlike 'termcards/t*' })) {
                 Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null
             }
@@ -83,8 +84,30 @@ switch ($Step) {
             if (-not $got.Count) { break }
             $units += $got
         }
+        # A new plan revision (a rebuilt zt-digest records its version in the plan; atkinson2015lectures revision 3)
+        # opens every job again, also the jobs whose drafts are written and whose rows are published. The check of the
+        # drafts on disk decides: a claimed job whose rows are all ready completes at once and is never written again.
+        $settled = @()
+        if ($units.Count) {
+            Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
+            $readyPath = Join-Path $Work 'check\readiness.json'
+            if (Test-Path -LiteralPath $readyPath) {
+                $terms = @((Get-Content -LiteralPath $readyPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64).terms)
+                $open = @()
+                foreach ($u in $units) {
+                    $id = "$($u.inputs.job.id)"
+                    $rows = @($terms | Where-Object { "$($_.job)" -eq $id })
+                    if ($rows.Count -and -not @($rows | Where-Object { $_.status -ne 'ready' }).Count) {
+                        $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', $readyPath)
+                        if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $settled += $id; continue }
+                    }
+                    $open += $u
+                }
+                $units = $open
+            }
+        }
         Save 'units.json' $units
-        if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; plan_revision = [int]$plan.json.revision } @{ units = @(); plan = $plan.json }; break }
+        if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; settled = $settled.Count; plan_revision = [int]$plan.json.revision } @{ units = @(); settled = $settled; plan = $plan.json }; break }
         $tokens = ($units | ForEach-Object { "$($_.inputs.job.id):$($_.token)" }) -join ','
         $jobs = Run @('term-cards', '-Step', 'jobs', '-Staging', $Out, '-Tokens', $tokens)
         if (-not $jobs.json -or $jobs.json.ok -ne $true) { Fail 'jobs' $jobs.tail; break }
@@ -104,7 +127,7 @@ switch ($Step) {
             $j | Add-Member -Force verdicts $verdicts
         }
         Save 'jobs.json' @($jobs.json.jobs)
-        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; plan = $plan.json; jobs = @($jobs.json.jobs) }
+        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; settled = $settled.Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; settled = $settled; plan = $plan.json; jobs = @($jobs.json.jobs) }
     }
     'review' {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
@@ -146,12 +169,35 @@ switch ($Step) {
             if ($verdict -and $verdict.ok -eq $true) { Copy-Item -LiteralPath $old.FullName -Destination $j.answer; $bound++ }
         }
         if ($bound) { Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null }
-        $done = @(); $failed = @()
+        $done = @(); $failed = @(); $late = @()
         foreach ($u in @(Load 'units.json')) {
             if (-not $u) { continue }
             $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', (Join-Path $Work 'check\readiness.json'))
             if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $done += $u.inputs.job.id }
+            elseif ("$($d.tail)" -match 'stale_claim') { $late += $u }
             else { $failed += $u.inputs.job.id; Fail-Unit $u "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
+        }
+        # v10: the queue claims every job at once, so a job may outlast its claim's lease. Its claim is taken back
+        # (reclaim makes the unit ready under a new token), claimed again and completed the same way.
+        if ($late.Count) {
+            foreach ($u in $late) { Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id) | Out-Null }
+            $again = @{}
+            for ($page = 1; $page -le 40; $page++) {
+                $c = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '64', '-Owner', 'term cards finish', '-Lease', '3600')
+                $wanted = 0
+                foreach ($x in @($c.json.units | Where-Object { $_ })) {
+                    if (@($late | Where-Object { $_.id -eq $x.id }).Count) { $again[$x.id] = $x; $wanted++ }
+                    else { Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null }
+                }
+                if (-not $wanted) { break }
+            }
+            foreach ($u in $late) {
+                $x = $again[$u.id]
+                if (-not $x) { $failed += $u.inputs.job.id; continue }
+                $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $x.id, '-Token', "$($x.token)", '-Outputs', (Join-Path $Work 'check\readiness.json'))
+                if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $done += $u.inputs.job.id }
+                else { $failed += $u.inputs.job.id; Fail-Unit $x "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
+            }
         }
         $book = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '1', '-Owner', 'term cards book', '-Wait', '60', '-Lease', '3600')
         # `next` hands out any ready unit of the layer: a job unit it gives here is released at once.

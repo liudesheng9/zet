@@ -48,6 +48,13 @@ switch -Regex ($flat) {
         exit 0
     }
     '^ledger next' {
+        if ($flat -match '-Lease (\d+)' -and [int]$Matches[1] -gt 7200) { Write-Output 'zt-digest ledger: -Lease must be a whole number of seconds from 1 through 7200'; exit 1 }
+        # v10: a claim the finish takes back after its lease ran out comes back with a new token.
+        if ($flat -match "-Owner term cards finish") {
+            $n = 0; if (Test-Path -LiteralPath $env:TS_STALE_NEXT) { $n = [int](Get-Content -Raw $env:TS_STALE_NEXT) }; Set-Content -LiteralPath $env:TS_STALE_NEXT -Value "$($n + 1)"
+            if ($n -eq 0) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'termcards/t001@1'; token = 8; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } }) }) } else { Write-Output (ConvertTo-Json -Compress @{ units = @() }) }
+            exit 0
+        }
         if ($flat -match '-Layer termlink') {
             if ($env:TS_NO_LINK_UNIT) { Write-Output (ConvertTo-Json -Compress @{ units = @() }); exit 0 }
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'termlink/book@1'; token = 5; input_hash = 'ih-l' }) })
@@ -72,7 +79,14 @@ switch -Regex ($flat) {
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @($all | Where-Object { $wanted -contains $_.id }) })
         exit 0
     }
-    '^term-cards -Step check' { Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 2 }); exit 0 }
+    '^term-cards -Step check' {
+        # v10: with TS_SETTLE the check finds job t001's row already ready (its draft is on disk) and t002's missing.
+        if ($env:TS_SETTLE) {
+            $dir = Join-Path $env:TS_OUT 'term-cards\check'; New-Item -ItemType Directory -Force $dir | Out-Null
+            ConvertTo-Json -Depth 8 @{ plan_revision = 3; terms = @(@{ row = 1; job = 't001'; status = 'ready' }, @{ row = 2; job = 't002'; status = 'missing' }, @{ row = 3; job = 't003'; status = 'missing' }) } | Set-Content -LiteralPath (Join-Path $dir 'readiness.json') -Encoding utf8
+        }
+        Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 2 }); exit 0
+    }
     '^term-cards -Step review-plan' {
         $answers = Join-Path $env:TS_OUT 'term-cards\review\answers'
         $stem = if ($env:TS_REBIND) { 't001-r001-cccc0000-dddd0000' } else { 't001-r001-aaaa0000-bbbb0000' }
@@ -83,6 +97,7 @@ switch -Regex ($flat) {
     }
     '^ledger done' {
         if ($env:TS_DONE_REFUSE -and $flat -match 'termcards/book@1') { Write-Output 'zt-digest ledger: the book is not ready'; exit 1 }
+        if ($env:TS_STALE -and $flat -match 'termcards/t001@1 -Token 1 ') { Write-Output 'zt-digest ledger: stale_claim: termcards/t001@1 has no current unexpired claim for token 1'; exit 1 }
         Write-Output (ConvertTo-Json -Compress @{ schema_version = 1; state = 'done' })
         exit 0
     }
@@ -111,6 +126,7 @@ Set-Content -LiteralPath $tool -Value $toolBody -Encoding utf8
 $env:TS_CALLS = $calls
 $env:TS_OUT = $out
 $env:TS_NEXT_COUNT = Join-Path $scratch 'next-page.txt'
+$env:TS_STALE_NEXT = Join-Path $scratch 'stale-next.txt'
 
 # One step: its exit code, the last non-empty line and that line parsed.
 function Step([string[]]$argv) {
@@ -150,7 +166,7 @@ $env:TS_TWO_PAGES = ''
 Assert ($all.json.ok -eq $true -and $all.json.jobs -eq 3) "start v10: two pages of claims list all three jobs ($($all.text))"
 $allCalls = @(Get-Content -LiteralPath $calls)
 $nexts = @($allCalls | Where-Object { $_ -match '^ledger next .*-Layer termcards' })
-Assert ($nexts.Count -eq 3 -and @($nexts | Where-Object { $_ -match '-Take 64' -and $_ -match '-Lease 21600' }).Count -eq 3) "start v10: it claims until a page is empty, 64 at a time, under a six-hour lease ($($nexts -join ' / '))"
+Assert ($nexts.Count -eq 3 -and @($nexts | Where-Object { $_ -match '-Take 64' -and $_ -match '-Lease 7200' }).Count -eq 3) "start v10: it claims until a page is empty, 64 at a time, under the ledger's longest lease ($($nexts -join ' / '))"
 Assert (@($allCalls | Where-Object { $_ -match '^ledger reclaim .*-Unit termcards/book@1 -Release' }).Count -eq 1) 'start v10: the book unit a page hands out is released at once'
 Assert (@($allCalls | Where-Object { $_ -match '^term-cards -Step jobs .*t001:1,t002:2,t003:3' }).Count -eq 1) 'start v10: one job list names every claimed job with its token'
 # A math job writes, self-checks, reviews and fixes its own draft, and writes its verdict: one DeepSeek job, no
@@ -162,6 +178,21 @@ $verdict = Join-Path $out 'term-cards\review\answers\t002-r002-self.json'
 Assert (@($math.files -match 'dsh-term-review-instructions\.zh\.md$').Count -eq 1 -and $math.files[-1] -match 'jobs\\t002\.md$') "start v10: a math job reads the review instructions too ($($math.files -join ', '))"
 Assert ($math.prompt -match '审查' -and $math.prompt -match '修正|改' -and $math.prompt.Contains($verdict)) "start v10: a math job's prompt asks it to review and fix its draft and write its verdict to $verdict ($($math.prompt))"
 Assert ($concept.prompt -eq 'p' -and @($concept.files).Count -eq 2) 'start v10: a concept job keeps the writer prompt and files'
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+
+# 1c. v10 (atkinson2015lectures, 2026-11-01): a rebuilt zt-digest registered plan revision 3 and every job was open
+# again, although 62 jobs had written drafts whose rows were published. The start checks the drafts on disk and
+# completes a claimed job whose rows are all ready at once, so it is never written again.
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+Set-Content -LiteralPath $calls -Value '' -Encoding utf8
+$env:TS_TWO_PAGES = '1'; $env:TS_SETTLE = '1'
+$settle = Step (@('-Step', 'start') + $common)
+$env:TS_TWO_PAGES = ''; $env:TS_SETTLE = ''
+$settleCalls = @(Get-Content -LiteralPath $calls)
+Assert ($settle.json.ok -eq $true -and $settle.json.jobs -eq 2 -and $settle.json.settled -eq 1) "start v10: a claimed job whose rows are ready is settled, the other two are listed ($($settle.text))"
+Assert (@($settleCalls | Where-Object { $_ -match '^ledger done .*-Unit termcards/t001@1 -Token 1 ' }).Count -eq 1) 'start v10: the settled job completes through ledger done with its claim token'
+Assert (@($settleCalls | Where-Object { $_ -match '^term-cards -Step jobs ' -and $_ -match 't002:2,t003:3' -and $_ -notmatch 't001:' }).Count -eq 1) 'start v10: the job list names only the open jobs'
+Remove-Item -LiteralPath (Join-Path $out 'term-cards\check\readiness.json') -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
 $null = Step (@('-Step', 'start') + $common)
 Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
@@ -210,6 +241,17 @@ Assert ($finish.json.ok -eq $true -and $finish.json.done -eq 2 -and -not $finish
 Assert ($finish.json.complete -eq $true -and $finish.json.rows -eq 2 -and $finish.json.committed -eq 2) 'finish: the publication answers flat counts, never a nested object'
 $finishDetail = Get-Content -LiteralPath $finish.json.detail -Raw | ConvertFrom-Json
 Assert (@($finishDetail.detail.done).Count -eq 2 -and $finishDetail.detail.publication.complete -eq $true) 'finish: the detail file keeps the done job ids and the publication'
+
+# 3b. v10: the queue claims every job at once, so a job may outlast its claim's lease (at most 7200 s). The finish
+# takes such a claim back (reclaim, then claim it again) and completes the job under the new token.
+Set-Content -LiteralPath $calls -Value '' -Encoding utf8
+Remove-Item -LiteralPath $env:TS_STALE_NEXT -ErrorAction SilentlyContinue
+$env:TS_STALE = '1'
+$late = Step (@('-Step', 'finish') + $common)
+$env:TS_STALE = ''
+$lateCalls = @(Get-Content -LiteralPath $calls)
+Assert ($late.json.ok -eq $true -and $late.json.done -eq 2 -and -not $late.json.failed) "finish v10: a job whose lease ran out is still completed ($($late.text))"
+Assert (@($lateCalls | Where-Object { $_ -match '^ledger reclaim .*-Unit termcards/t001@1$' }).Count -eq 1 -and @($lateCalls | Where-Object { $_ -match '^ledger done .*-Unit termcards/t001@1 -Token 8 ' }).Count -eq 1) "finish v10: the expired claim is taken back and the job completes under its new token ($($lateCalls -join ' / '))"
 
 # 4. a job that is not ready fails only its own unit; the ready prefix still publishes.
 $env:TS_PARTIAL = '1'
