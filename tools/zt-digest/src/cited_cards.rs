@@ -385,6 +385,26 @@ fn render(book: &Book, row: &Value, item: &Value) -> (String, String) {
     (title, body)
 }
 
+/// Whether an R6 hit (`uses `X` for `Y`: <line>`) stands only in a section title the tool rendered: the
+/// `引用处：` line is all titles and counts, and a location line is `<title>（第 N 行）：<the writer's use>`.
+/// The book's own titles are never reworded (atkinson2015lectures: `公司税的影响`, `资本课税的归宿`, where the
+/// Term list avoids 公司税 and 资本课税), so only the writer's text counts.
+fn only_in_section_title(message: &str) -> bool {
+    let Some(word) = message.split('`').nth(1) else {
+        return false;
+    };
+    let Some((_, line)) = message.split_once("`: ") else {
+        return false;
+    };
+    if line.starts_with("引用处：") {
+        return true;
+    }
+    match line.split_once("行）：") {
+        Some((_, written)) => !written.contains(word),
+        None => false,
+    }
+}
+
 /// The faults of one draft item: C3 against the source, then the zt-check rules on the render.
 fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> Vec<(String, bool)> {
     let n = item["row"].as_u64().unwrap_or(0);
@@ -480,7 +500,7 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
     for d in report {
         // The `文献：` line quotes the reference verbatim; it is never reworded, so R6 does not count there
         // (ebrill2001modern: `CVAT, VIVAT, and All That`, where the Term list avoids CVAT).
-        if d.rule == "R6" && d.message.contains(": 文献：") {
+        if d.rule == "R6" && (d.message.contains(": 文献：") || only_in_section_title(&d.message)) {
             continue;
         }
         // R6 counts here: a Cited Card keeps the book's Term spellings.
