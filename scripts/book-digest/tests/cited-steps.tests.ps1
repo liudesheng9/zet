@@ -89,7 +89,13 @@ switch -Regex ($flat) {
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @($all | Where-Object { $wanted -contains $_.id }) })
         exit 0
     }
-    '^cited-cards -Step check' { Write-Output (ConvertTo-Json -Compress @{ ok = $true; ready = 7; not_ready = 1 }); exit 0 }
+    '^cited-cards -Step check' {
+        if ($env:CS_SETTLE) {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:CS_SETTLE) | Out-Null
+            ConvertTo-Json -Depth 6 @{ kind = 'cited_cards_readiness'; rows = @(@{ row = 1; job = 't001'; status = 'ready' }, @{ row = 2; job = 't001'; status = 'ready' }, @{ row = 3; job = 't002'; status = 'ready' }, @{ row = 4; job = 't002'; status = 'not_ready' }) } | Set-Content -LiteralPath $env:CS_SETTLE -Encoding utf8
+        }
+        Write-Output (ConvertTo-Json -Compress @{ ok = $true; ready = 7; not_ready = 1 }); exit 0
+    }
     '^ledger done' {
         if ($env:CS_NOT_READY -and $flat -match 'citedcards/t002@1') { Write-Output 'zt-digest ledger: row 8 is faults, not ready'; exit 1 }
         if ($env:CS_STALE -and $flat -match 'citedcards/t001@1 -Token 1 ') { Write-Output 'zt-digest ledger: stale_claim: citedcards/t001@1 has no current unexpired claim for token 1'; exit 1 }
@@ -180,6 +186,19 @@ $chunk1 = @(Get-Content -Raw (Join-Path $out 'cited\drive\jobs-001.json') | Conv
 $chunk2 = @(Get-Content -Raw (Join-Path $out 'cited\drive\jobs-002.json') | ConvertFrom-Json)
 Assert ($three.json.jobs -eq 3 -and $three.json.chunks -eq 2 -and ($chunk1.id -join ',') -eq 't001,t002' -and ($chunk2.id -join ',') -eq 't003') "start v3: two pages list three jobs in chunks of two and one ($($three.text))"
 Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $calls
+$null = Step (@('-Step', 'start') + $common)
+Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
+# A restarted branch (atkinson2015lectures, 2026-11-02: the DeepSeek Desktop stalled after 267 of 398 drafts) keeps its
+# drafts: a claimed job whose rows are all ready completes at start and is never written again.
+Remove-Item -LiteralPath $calls
+$env:CS_SETTLE = Join-Path $out 'cited-cards\check\readiness.json'
+$settle = Step (@('-Step', 'start') + $common)
+Remove-Item -LiteralPath $env:CS_SETTLE -ErrorAction SilentlyContinue
+$env:CS_SETTLE = ''
+Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue
+$c = Get-Content -LiteralPath $calls -Raw
+Assert ($settle.json.settled -eq 1 -and $settle.json.jobs -eq 1 -and $c -match 'ledger done .*-Unit citedcards/t001@1 -Token 1 -Outputs .*readiness\.json' -and $c -match 'cited-cards -Step jobs -Staging .* -Tokens t002:2' -and $c -notmatch 'Tokens t001') "start: a job whose drafts are all ready settles and only the rest are written ($($settle.text))"
 Remove-Item -LiteralPath $calls
 $null = Step (@('-Step', 'start') + $common)
 Remove-Item -LiteralPath $env:CS_NEXT_COUNT -ErrorAction SilentlyContinue

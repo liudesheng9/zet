@@ -114,7 +114,7 @@ switch ($Step) {
         if ($PerJob -gt 0) { $planArgs += @('-PerJob', "$PerJob") }
         $plan = Run $planArgs
         if (-not $plan.json -or $plan.json.ok -ne $true) { Fail 'plan' $plan.tail; break }
-        $units = @()
+        $units = @(); $settled = @()
         $jobArgs = @('cited-cards', '-Step', 'jobs', '-Staging', $Out)
         if ($HasLedger) {
             # v3 (atkinson2015lectures, 2026-11-02): one claim takes at most 64 units, and a book with about 400 jobs
@@ -129,8 +129,29 @@ switch ($Step) {
                 if (-not $got.Count) { break }
                 $units += $got
             }
+            # A restarted branch keeps its drafts (atkinson2015lectures, 2026-11-02: the DeepSeek Desktop stalled after
+            # 267 of 398 drafts). The check of the drafts on disk decides: a claimed job whose rows are all ready
+            # completes at once and is never written again.
+            if ($units.Count) {
+                Run @('cited-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
+                $readyPath = Join-Path $Out 'cited-cards\check\readiness.json'
+                if (Test-Path -LiteralPath $readyPath) {
+                    $rows = @((Get-Content -LiteralPath $readyPath -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64).rows)
+                    $open = @()
+                    foreach ($u in $units) {
+                        $id = "$($u.inputs.job.id)"
+                        $own = @($rows | Where-Object { "$($_.job)" -eq $id })
+                        if ($own.Count -and -not @($own | Where-Object { $_.status -ne 'ready' }).Count) {
+                            $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', $readyPath)
+                            if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $settled += $id; continue }
+                        }
+                        $open += $u
+                    }
+                    $units = $open
+                }
+            }
             Save 'units.json' $units
-            if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; plan_revision = [int]$plan.json.revision } @{ units = @(); plan = $plan.json }; break }
+            if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; settled = $settled.Count; plan_revision = [int]$plan.json.revision } @{ units = @(); settled = $settled; plan = $plan.json }; break }
             $jobArgs += @('-Tokens', (($units | ForEach-Object { "$($_.inputs.job.id):$($_.token)" }) -join ','))
         } else {
             Save 'units.json' @()
@@ -139,7 +160,7 @@ switch ($Step) {
         if (-not $jobs.json -or $jobs.json.ok -ne $true) { Fail 'jobs' $jobs.tail; break }
         Save 'jobs.json' @($jobs.json.jobs)
         $chunks = Save-Chunks 'jobs' @($jobs.json.jobs)
-        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; chunks = $chunks; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; plan = $plan.json }
+        Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; chunks = $chunks; settled = $settled.Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; settled = $settled; plan = $plan.json }
     }
     'finish' {
         $check = Run @('cited-cards', '-Step', 'check', '-Staging', $Out)
