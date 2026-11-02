@@ -1564,8 +1564,34 @@ pub(crate) fn cited_cards_register(p: &Prepared, plan: &Value) -> Result<Value> 
     let inputs = json!({"schema_version":1,"kind":"cited_cards_book","book":plan["book"],"plan_revision":revision,"plan_hash":plan["plan_hash"],"rows":rows});
     let book = put(&tx, "book", &inputs, &job_units)?;
     units.push(json!({"unit":book}));
+    // A changed Cited list starts a new plan revision: the older open units are terminal history that
+    // names its replacement and can never be claimed as current work (atkinson2015lectures, 2026-11-02:
+    // the start claimed 398 revision-1 jobs beside revision 2 and sent all of them to the writers). A
+    // claim that is still running is not superseded under its owner.
+    let older: Vec<(String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT id,state FROM units WHERE layer='citedcards' AND revision<?1 AND state NOT IN ('done','failed') ORDER BY revision,id",
+        )?;
+        statement
+            .query_map([revision], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if let Some((unit, _)) = older.iter().find(|(_, state)| state == "claimed") {
+        bail!("the Cited Card unit `{unit}` of an older plan revision is still claimed; let it settle before a new plan revision");
+    }
+    for (unit, _) in &older {
+        tx.execute(
+            "UPDATE units SET state='failed',owner=NULL,lease_until=NULL,retry_after=NULL,fault_class='operator',fault_json=?2 WHERE id=?1",
+            params![unit, canon::canonical_json(&json!({
+                "code": "superseded",
+                "by": book,
+                "cause": "a changed Cited list registered a new cited-cards plan revision",
+            }))],
+        )?;
+        event(&tx, unit, None, None, "superseded", &json!({"by":book,"plan_revision":revision}))?;
+    }
     tx.commit()?;
-    Ok(json!({"schema_version":1,"units":units}))
+    Ok(json!({"schema_version":1,"units":units,"superseded":older.iter().map(|(unit, _)| unit.clone()).collect::<Vec<_>>()}))
 }
 
 /// Complete one Cited Card unit (#220): a job unit from the readiness artifact (every row of the
@@ -19732,6 +19758,27 @@ mod term_completion_tests {
             "token": token.to_string(), "book": "K", "plan_hash": "p", "applied": true,
             "list": "K/1|b", "rows": 2, "refused": [], "changed": true,
         })
+    }
+
+    /// atkinson2015lectures (2026-11-02): a changed Cited list registered plan revision 2 beside revision
+    /// 1, the start claimed both, and the 398 revision-1 jobs went to the writers again although 253 of
+    /// them were settled under revision 2. A new revision supersedes the older open units, as the
+    /// Term-card plan does.
+    #[test]
+    fn a_new_cited_card_plan_revision_supersedes_the_older_open_units() {
+        let old = |id: &str| json!({"schema_version":1,"kind":"cited_cards_job","book":"K","plan_revision":1,"plan_hash":"h1","job":{"id":id,"rows":[1]}});
+        let fixture = fixture(&[("citedcards/t001@1", old("t001")), ("citedcards/t002@1", old("t002"))]);
+        let plan = json!({"schema_version":1,"kind":"cited_cards_plan","book":"K","revision":2,"plan_hash":"h2",
+            "jobs":[{"id":"t001","rows":[1]},{"id":"t002","rows":[2]}],"rows":[{"row":1},{"row":2}]});
+        let error = cited_cards_register(&fixture.prepared(), &plan).unwrap_err().to_string();
+        assert!(error.contains("still claimed"), "{error}");
+        let conn = connect(&fixture.out.join("ledger.sqlite3"), true).unwrap();
+        conn.execute("UPDATE units SET state='ready',owner=NULL,lease_until=NULL WHERE layer='citedcards'", []).unwrap();
+        drop(conn);
+        let registered = cited_cards_register(&fixture.prepared(), &plan).unwrap();
+        assert_eq!(registered["superseded"], json!(["citedcards/t001@1", "citedcards/t002@1"]), "{registered}");
+        assert_eq!(fixture.state("citedcards/t001@1").0, "failed");
+        assert_eq!(fixture.state("citedcards/t001@2").0, "registered");
     }
 
     #[test]
