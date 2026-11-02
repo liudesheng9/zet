@@ -295,11 +295,12 @@ impl Server {
                                     ))
                                 })?
                                 .len();
-                            if size > 8 * 1024 * 1024 {
+                            let limit = reply_limit();
+                            if size > limit {
                                 tool_result(
                                     crate::read::Limit {
                                         kind: "reply_bytes",
-                                        limit: 8 * 1024 * 1024,
+                                        limit,
                                         actual: size,
                                     }
                                     .value(),
@@ -2030,5 +2031,31 @@ mod tests {
         assert_eq!(requested_workspace(&json!({})).unwrap(), Workspace::Agent);
         let human = requested_workspace(&json!({ "workspace": "human" })).unwrap();
         assert!(ACCESS.ensure_writable(human).is_err());
+    }
+}
+
+/// The largest encoded read reply this connection returns. An LLM client keeps the 8 MiB default, so a tool result
+/// stays small; a program client (zt-digest through zt-check's MCP client) may raise it for its own `zt mcp` process
+/// with `ZT_READ_LIMIT_BYTES`, up to 256 MiB (atkinson2015lectures, 2026-11-01: the 4,400-Card tree of one book was
+/// an 8.8 MB `get_tree` reply even without bodies). A value that does not parse, or one below the default, keeps it.
+fn reply_limit() -> usize {
+    reply_limit_from(std::env::var("ZT_READ_LIMIT_BYTES").ok().as_deref())
+}
+
+fn reply_limit_from(value: Option<&str>) -> usize {
+    const DEFAULT: usize = 8 * 1024 * 1024;
+    const MAX: usize = 256 * 1024 * 1024;
+    value.and_then(|v| v.trim().parse::<usize>().ok()).map(|v| v.clamp(DEFAULT, MAX)).unwrap_or(DEFAULT)
+}
+
+#[cfg(test)]
+mod reply_limit_tests {
+    #[test]
+    fn a_program_client_may_raise_the_reply_limit_for_its_connection() {
+        assert_eq!(super::reply_limit_from(None), 8 * 1024 * 1024);
+        assert_eq!(super::reply_limit_from(Some("67108864")), 64 * 1024 * 1024);
+        assert_eq!(super::reply_limit_from(Some("1024")), 8 * 1024 * 1024, "never below the default");
+        assert_eq!(super::reply_limit_from(Some("999999999999")), 256 * 1024 * 1024, "capped");
+        assert_eq!(super::reply_limit_from(Some("many")), 8 * 1024 * 1024);
     }
 }

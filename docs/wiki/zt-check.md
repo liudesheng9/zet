@@ -842,3 +842,4 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - `2026-10-16` `753bd7b` — Finding Cards: the F1 to F4 rules (`finding_rules`), category `finding` in `--cards` (from the Card type), F1–F3 added to `DEFAULT_RULES`, I5 also on Finding Cards.
 - `2026-10-15` `02499c0` — zt-check created: the Rust crate replaces `card-style-check.ps1` and `self-check.ps1` with the same rules R2–R17, I, E, L; modes `--json`, `--model`, `--addresses`, `--cards`; the `zt mcp` client; `scripts/install-zt-check.ps1`; DeepSeek writers run it on their own Cards.
 - `2026-10-16` — Wiki doc created.
+- `2026-11-01` — the MCP client (`mcp::Client::start_with`) sets `ZT_READ_LIMIT_BYTES` to 64 MiB on the `zt mcp` process it spawns unless the caller set it, so a program client can read a whole large book (zt 0.53.1 honours it per connection).

@@ -265,6 +265,11 @@ impl Zt {
         if patience > 0 && patience <= 300 {
             command.env("ZT_EDIT_PATIENCE", patience.to_string());
         }
+        // A program client reads whole books (a 4,400-Card tree is an 8.8 MB `get_tree` reply); it raises the read
+        // limit of its own connection, while LLM clients keep the archive's 8 MiB default (zt 0.53.1).
+        if std::env::var_os("ZT_READ_LIMIT_BYTES").is_none() {
+            command.env("ZT_READ_LIMIT_BYTES", (64usize * 1024 * 1024).to_string());
+        }
         let mut process = owned::Owned::spawn(&mut command)
             .with_context(|| format!("failed to start `{program} mcp`"))?;
         let mut stdin = process.child.stdin.take().context("zt mcp has no stdin")?;

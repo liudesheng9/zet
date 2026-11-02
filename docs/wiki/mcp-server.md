@@ -609,4 +609,5 @@ The Lock paragraph itself is checked end to end by `scripts/book-digest/tests/ag
 - `2026-10-10` `09f7e46`, `4e990a0` — Event and Model Cards with `type` (zt 0.5.0); the five read-only `scholar_archive_*` tools through the Scholar Archive bridge.
 - `2026-10-10` `1f0db11`, `db67049`, `d52b4ae` — The first server: Workspaces, agent Access, the Card tools, `.mcp.json`, and `tests/workspaces_mcp.rs`; dump tests for Workspaces.
 - `2026-10-16` — Wiki doc created.
+- `2026-11-01` — zt **0.53.1**: the read-reply limit (`reply_bytes`, 8 MiB) is per connection: a program client may raise it for its own `zt mcp` process with `ZT_READ_LIMIT_BYTES` (8–256 MiB; a value below the default keeps the default). LLM clients keep 8 MiB, so a tool result stays small. zt-check's MCP client (used by zt-digest) asks for 64 MiB, because the 4,400-Card tree of atkinson2015lectures was an 8.8 MB `get_tree` reply without bodies. Test `a_program_client_may_raise_the_reply_limit_for_its_connection`.
 
