@@ -99,6 +99,15 @@ pub fn child_edit_patience(seconds: u64) {
     CHILD_EDIT_PATIENCE.store(seconds, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The read limit a program client asks its own `zt mcp` for (`ZT_READ_LIMIT_BYTES`, zt 0.53.1).
+const READ_LIMIT: usize = 64 * 1024 * 1024;
+
+/// The longest reply line the client reads: the archive's own maximum read limit (256 MiB), so it is always above
+/// the read limit the client asks for, and still a bound on a runaway line. atkinson2015lectures (2026-11-02): with
+/// 32,000 Term uses in one book the whole-archive `list_links` reply (a tool the read limit does not bound) passed the
+/// former 32 MiB cap, below the 64 MiB the client asks for, and Link preparation stopped with `transport_closed`.
+const MAX_REPLY_LINE: usize = 256 * 1024 * 1024;
+
 /// How long a command waits for the configured service restart path before it reports an
 /// infrastructure fault (R320). Every stage's archive work begins with this resolution.
 pub const SERVICE_WAIT: Duration = Duration::from_secs(120);
@@ -268,7 +277,7 @@ impl Zt {
         // A program client reads whole books (a 4,400-Card tree is an 8.8 MB `get_tree` reply); it raises the read
         // limit of its own connection, while LLM clients keep the archive's 8 MiB default (zt 0.53.1).
         if std::env::var_os("ZT_READ_LIMIT_BYTES").is_none() {
-            command.env("ZT_READ_LIMIT_BYTES", (64usize * 1024 * 1024).to_string());
+            command.env("ZT_READ_LIMIT_BYTES", READ_LIMIT.to_string());
         }
         let mut process = owned::Owned::spawn(&mut command)
             .with_context(|| format!("failed to start `{program} mcp`"))?;
@@ -294,13 +303,13 @@ impl Zt {
                         let mut bytes = Vec::new();
                         // Root MCP bounds encoded replies; this larger transport
                         // ceiling also prevents an endless line from growing RAM.
-                        std::io::Read::take(&mut stdout, 32 * 1024 * 1024 + 1)
+                        std::io::Read::take(&mut stdout, MAX_REPLY_LINE as u64 + 1)
                             .read_until(b'\n', &mut bytes)?;
                         if bytes.is_empty() {
                             bail!("zt mcp closed");
                         }
-                        if bytes.len() > 32 * 1024 * 1024 {
-                            bail!("MCP reply line exceeds 32 MiB");
+                        if bytes.len() > MAX_REPLY_LINE {
+                            bail!("MCP reply line exceeds {} MiB", MAX_REPLY_LINE / (1024 * 1024));
                         }
                         let text =
                             std::str::from_utf8(&bytes).context("MCP reply is not strict UTF-8")?;
@@ -573,5 +582,16 @@ impl Drop for Zt {
                 eprintln!("MCP cleanup: {e:#}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod reply_line_tests {
+    /// The client reads every reply the read limit it asks for allows, and a whole-archive `list_links`, which that
+    /// limit does not bound (atkinson2015lectures: over 32 MiB).
+    #[test]
+    fn the_reply_line_cap_stays_above_the_read_limit_the_client_asks_for() {
+        assert!(super::MAX_REPLY_LINE > super::READ_LIMIT);
+        assert!(super::MAX_REPLY_LINE >= 64 * 1024 * 1024 * 2, "room for a whole-archive Link list");
     }
 }
