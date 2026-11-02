@@ -3015,6 +3015,15 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   check(r.logs.some((l) => /Finalize: (done|partial) at graph revision/.test(l)), 'mode finalize: the finalization reports its outcome')
 }
 {
+  // atkinson2015lectures (2026-11-02, the user's request): mode complete runs every stage left after the Cards in
+  // one workflow (figures, bridge, Term link, audit, finalize) on a book whose one resume is spent.
+  const r = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'complete' })
+  const ran = [...new Set(r.calls.map((c) => c.phase).filter(Boolean))]
+  check(!r.thrown && ['Figures', 'Bridge', 'Term link', 'Audit', 'Finalize'].every((s) => ran.includes(s)) && !ran.some((s) => /^(Digest|Models|Link|Organize|Events|Findings|Explain|Terms|Term cards|Cited cards|Cited list)$/.test(s)), `mode complete: figures, bridge, Term link, audit and finalize run, and no digest, model, Link, Term or Cited stage (${ran.join(',')})`)
+  const order = (r.report && r.report.order) || []
+  check(order.join(',') === 'args,source,prepare,figures,bridge,term-link,audit,finalize,cleanup,report', `mode complete: the stages run in the book's order (${order.join(',')})`)
+}
+{
   // S26 (#169): a resume after the correction cycle was recorded but before the final audit must not
   // silently reuse a branch that never relinked: it continues from the retained manifest (no second
   // cycle, no skipped round) and publishes the final audit.
