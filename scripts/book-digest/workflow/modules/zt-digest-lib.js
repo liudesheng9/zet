@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v49 ====
+// ==== module zt-digest-lib v50 ====
 // 49 (atkinson2015lectures, 2026-11-01): layer lanes. `layerRun(name, {lanes})` runs up to eight blocks side by side,
 // each with its own layer-steps block folder (-Lane); the Link pass uses eight.
 // 48 (#227): the Write scope is the server's (#225, #226): the helper `call` declares the Literature scope and the open
@@ -806,9 +806,10 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
   }
   // In mode resume a stage whose ledger layers are already complete reuses the retained work instead of redoing it
   // (grossman2002integration trial 20: the resume reran Organize's survey and decisions, which can merge or move Cards
-  // the retained run had finished). Outside mode resume it never skips.
+  // the retained run had finished). v50 (atkinson2015lectures, 2026-11-02): mode complete, launched again after a
+  // stage failed, reuses the layers its first launch finished the same way. Outside these two modes it never skips.
   const settledOnResume = async (label, layers) => {
-    if (MODE !== 'resume') return false
+    if (MODE !== 'resume' && MODE !== 'complete') return false
     for (const name of layers) {
       const g = await bookStep(`${label}: ${name} gate`, 'gate', { Layer: name })
       if (!(g && g.complete === true)) return false
@@ -1151,7 +1152,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '49', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '50', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

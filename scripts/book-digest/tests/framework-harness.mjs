@@ -3024,6 +3024,15 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   check(order.join(',') === 'args,source,prepare,figures,bridge,term-link,audit,finalize,cleanup,report', `mode complete: the stages run in the book's order (${order.join(',')})`)
 }
 {
+  // atkinson2015lectures (2026-11-02): mode complete is launched again after a stage failed; the layers the first launch
+  // finished (here the bridge) are reused, as mode resume reuses them, and the stages left run.
+  const retained = [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['figures', 'figures/book@1'], ['bridge', 'bridge/book@1'], ['audit', 'audit/book@1'], ['link-check', 'link-check/book@1']]
+  const rc = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'complete' }, { retained, retainedDone: ['bridge'] })
+  const labels = rc.calls.map((c) => c.label)
+  check(!labels.some((l) => /^bridge: plan/.test(l)) && labels.some((l) => /figures/.test(l)), `mode complete again: the finished bridge is reused and the figures still run (${labels.filter((l) => /^bridge|figures/.test(l)).join(', ')})`)
+}
+
+{
   // S26 (#169): a resume after the correction cycle was recorded but before the final audit must not
   // silently reuse a branch that never relinked: it continues from the retained manifest (no second
   // cycle, no skipped round) and publishes the final audit.
@@ -3294,7 +3303,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '49' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '3' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '11' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v49, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v3, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '50' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '3' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '11' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v50, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v3, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
