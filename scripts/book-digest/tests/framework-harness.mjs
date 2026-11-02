@@ -2298,19 +2298,21 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const termAgents = full.calls.filter((c) => /^term-(cards|link): /.test(c.label || ''))
   check(termAgents.length > 0 && termAgents.filter((c) => !/: workspace$/.test(c.label)).every((c) => c.model === 'haiku' && !c.agentType && /You are a DeepSeek subagent manager/.test(c.prompt || '')), `v4: every Term stage agent is a Haiku DeepSeek manager (${termAgents.length})`)
   const drives = full.termCalls.filter((c) => c.tool === 'term-steps').map((c) => c.step)
-  check(drives.join(',') === 'start,review,finish,link', `v8: the drive steps run in order start, review (review and fix in one job), finish, link (${drives.join(',')})`)
+  check(drives.join(',') === 'start,finish,link', `v10: the drive steps run in order start, finish, link (one DeepSeek job writes, reviews and fixes) (${drives.join(',')})`)
   check(full.termCalls.filter((c) => c.tool === 'term-steps').every((c) => /term-steps\.ps1" -Step \w+ -Out "/.test(c.cmd)), `v4: each drive job runs the one term-steps.ps1 step (${JSON.stringify(full.termCalls.map((c) => c.cmd))})`)
   check(full.termCalls.some((c) => c.step === 'start' && / -PerJob 4/.test(c.cmd) && / -MathPerJob 1/.test(c.cmd)) && full.termCalls.some((c) => c.step === 'link' && /-Occurrences first/.test(c.cmd)), 'v4: the per-job sizes and the occurrence policy reach the script')
   const writes = full.termManagers.filter((m) => m.kind === 'write')
   check(writes.length > 0 && writes.every((m) => m.jobs.length <= 8) && writes.flatMap((m) => m.jobs).length === 2, `v4: every writer manager holds at most eight jobs and all jobs are written (${writes.map((m) => m.jobs.length).join(',')})`)
   check(full.led.find('termcards/book@1').state === 'done' && full.led.find('termlink/book@1').state === 'done', 'v4: the Term-card book unit and the Term-link pass complete')
   check(full.result.term_cards.status === 'done' && full.result.term_cards.publication && full.result.term_cards.publication.complete === true, `v4: the report carries the complete Term-card branch (${JSON.stringify(full.result.term_cards)})`)
-  // atkinson2015lectures (v9): a start claims at most 64 job units; the branch runs wave after wave until every job
-  // is done and the book completes (here 5 jobs, at most 2 per claim).
-  const waves = await run('econ', base, { termJobCount: 5, termWave: 2 })
-  const waveSteps = waves.termCalls.filter((c) => c.tool === 'term-steps' && c.step !== 'link').map((c) => c.step)
-  check(waveSteps.filter((s) => s === 'start').length === 3 && waveSteps.filter((s) => s === 'finish').length === 3, `v9: three waves of start, review and finish write five jobs two at a time (${waveSteps.join(',')})`)
-  check(waves.led.find('termcards/book@1').state === 'done' && waves.result.term_cards.status === 'done' && waves.result.term_cards.jobs.done === 5, `v9: every job is done and the Term-card book completes (${JSON.stringify(waves.result.term_cards && waves.result.term_cards.jobs)})`)
+  // atkinson2015lectures (v10): the start claims every job, the writers run as one queue of managers (eight at a
+  // time), and one finish completes the book: no waves, no separate review step.
+  const queue = await run('econ', base, { termJobCount: 20 })
+  const queueSteps = queue.termCalls.filter((c) => c.tool === 'term-steps' && c.step !== 'link').map((c) => c.step)
+  check(queueSteps.join(',') === 'start,finish', `v10: one start and one finish, no review step (${queueSteps.join(',')})`)
+  const writers = queue.termManagers.filter((m) => m.kind === 'write')
+  check(writers.length === 3 && writers.map((m) => m.jobs.length).join(',') === '8,8,4', `v10: twenty jobs run in managers of eight (${writers.map((m) => m.jobs.length).join(',')})`)
+  check(queue.led.find('termcards/book@1').state === 'done' && queue.result.term_cards.status === 'done' && queue.result.term_cards.jobs.done === 20, `v10: every job is done and the Term-card book completes (${JSON.stringify(queue.result.term_cards && queue.result.term_cards.jobs)})`)
   check(full.result.term_link.status === 'done' && full.result.term_link.counts && full.result.term_link.counts.cards_changed === 1, `v4: the report carries the applied Term-link pass (${JSON.stringify(full.result.term_link)})`)
   // The frozen layer switches: a disabled Term layer freezes into the prepared target and runs no stage.
   const noCards = await run('econ', { ...base, figures: false, termCards: false })
@@ -3277,7 +3279,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '49' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '9' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v49, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v9 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '49' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '10' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v49, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v10 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

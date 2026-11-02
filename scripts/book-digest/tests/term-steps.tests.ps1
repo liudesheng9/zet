@@ -53,14 +53,23 @@ switch -Regex ($flat) {
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'termlink/book@1'; token = 5; input_hash = 'ih-l' }) })
             exit 0
         }
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(
-                    @{ id = 'termcards/t001@1'; token = 1; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } },
-                    @{ id = 'termcards/t002@1'; token = 2; input_hash = 'ih-2'; inputs = @{ job = @{ id = 't002' } } },
-                    @{ id = 'termcards/book@1'; token = 9; input_hash = 'ih-b' }) })
+        # v10: the start claims page after page (at most 64 units each) until a page has no job unit.
+        $page = 1
+        if ($env:TS_NEXT_COUNT -and $flat -match '-Take 64') { if (Test-Path -LiteralPath $env:TS_NEXT_COUNT) { $page = [int](Get-Content -Raw $env:TS_NEXT_COUNT) + 1 }; Set-Content -LiteralPath $env:TS_NEXT_COUNT -Value "$page" }
+        if ($page -eq 1) {
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(
+                        @{ id = 'termcards/t001@1'; token = 1; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } },
+                        @{ id = 'termcards/t002@1'; token = 2; input_hash = 'ih-2'; inputs = @{ job = @{ id = 't002' } } },
+                        @{ id = 'termcards/book@1'; token = 9; input_hash = 'ih-b' }) })
+        } elseif ($page -eq 2 -and $env:TS_TWO_PAGES) {
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'termcards/t003@1'; token = 3; input_hash = 'ih-3'; inputs = @{ job = @{ id = 't003' } } }) })
+        } else { Write-Output (ConvertTo-Json -Compress @{ units = @() }) }
         exit 0
     }
     '^term-cards -Step jobs' {
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @(@{ id = 't001'; files = @(); prompt = 'p' }, @{ id = 't002'; files = @(); prompt = 'p' }) })
+        $all = @(@{ id = 't001'; kind = 'concept'; rows = @(1); files = @('instr.md', 'jobs\t001.md'); prompt = 'p' }, @{ id = 't002'; kind = 'math'; rows = @(2); files = @('instr.md', 'jobs\t002.md'); prompt = 'p' }, @{ id = 't003'; kind = 'concept'; rows = @(3); files = @('instr.md', 'jobs\t003.md'); prompt = 'p' })
+        $wanted = @(([regex]::Matches($flat, 't\d{3}(?=:)')) | ForEach-Object { $_.Value })
+        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @($all | Where-Object { $wanted -contains $_.id }) })
         exit 0
     }
     '^term-cards -Step check' { Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 2 }); exit 0 }
@@ -101,6 +110,7 @@ exit 0
 Set-Content -LiteralPath $tool -Value $toolBody -Encoding utf8
 $env:TS_CALLS = $calls
 $env:TS_OUT = $out
+$env:TS_NEXT_COUNT = Join-Path $scratch 'next-page.txt'
 
 # One step: its exit code, the last non-empty line and that line parsed.
 function Step([string[]]$argv) {
@@ -130,6 +140,32 @@ Assert (@($startDetail.detail.units).Count -eq 2 -and @($startDetail.detail.jobs
 $startCalls = Get-Content -LiteralPath $calls -Raw
 Assert ($startCalls -match 'ledger reclaim .*-Unit termcards/t001@1 -Release') 'start: a stopped run''s claim is released before the plan'
 
+# 1b. v10 (atkinson2015lectures, 2026-11-01): the start claims EVERY ready job, page after page of at most 64 units,
+# under a lease long enough for the whole queue; a non-job unit a page hands out is released at once.
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+Set-Content -LiteralPath $calls -Value '' -Encoding utf8
+$env:TS_TWO_PAGES = '1'
+$all = Step (@('-Step', 'start') + $common)
+$env:TS_TWO_PAGES = ''
+Assert ($all.json.ok -eq $true -and $all.json.jobs -eq 3) "start v10: two pages of claims list all three jobs ($($all.text))"
+$allCalls = @(Get-Content -LiteralPath $calls)
+$nexts = @($allCalls | Where-Object { $_ -match '^ledger next .*-Layer termcards' })
+Assert ($nexts.Count -eq 3 -and @($nexts | Where-Object { $_ -match '-Take 64' -and $_ -match '-Lease 21600' }).Count -eq 3) "start v10: it claims until a page is empty, 64 at a time, under a six-hour lease ($($nexts -join ' / '))"
+Assert (@($allCalls | Where-Object { $_ -match '^ledger reclaim .*-Unit termcards/book@1 -Release' }).Count -eq 1) 'start v10: the book unit a page hands out is released at once'
+Assert (@($allCalls | Where-Object { $_ -match '^term-cards -Step jobs .*t001:1,t002:2,t003:3' }).Count -eq 1) 'start v10: one job list names every claimed job with its token'
+# A math job writes, self-checks, reviews and fixes its own draft, and writes its verdict: one DeepSeek job, no
+# separate review round.
+$jobs = @(Get-Content -Raw (Join-Path $out 'term-cards\drive\jobs.json') | ConvertFrom-Json)
+$math = $jobs | Where-Object { $_.id -eq 't002' }
+$concept = $jobs | Where-Object { $_.id -eq 't001' }
+$verdict = Join-Path $out 'term-cards\review\answers\t002-r002-self.json'
+Assert (@($math.files -match 'dsh-term-review-instructions\.zh\.md$').Count -eq 1 -and $math.files[-1] -match 'jobs\\t002\.md$') "start v10: a math job reads the review instructions too ($($math.files -join ', '))"
+Assert ($math.prompt -match '审查' -and $math.prompt -match '修正|改' -and $math.prompt.Contains($verdict)) "start v10: a math job's prompt asks it to review and fix its draft and write its verdict to $verdict ($($math.prompt))"
+Assert ($concept.prompt -eq 'p' -and @($concept.files).Count -eq 2) 'start v10: a concept job keeps the writer prompt and files'
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+$null = Step (@('-Step', 'start') + $common)
+Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
+
 # 2. review lists its jobs, and its counts stay out of the line. Since 2026-10-26 one DeepSeek job reviews AND fixes a
 # draft: it reads the writer's instructions and job file (the draft path and its SELF-CHECK), may write under the
 # Term-card folder, and there is no separate fix step.
@@ -143,12 +179,13 @@ Assert ($rj.writes -eq (Join-Path $out 'term-cards') -and $rj.prompt -match '修
 $noFix = Step (@('-Step', 'fix') + $common)
 Assert (-not ($noFix.json -and $noFix.json.ok -eq $true)) 'review: no separate fix step remains'
 
-# 2b. finish binds the combined job's verdict to the draft it left: an ok answer written in this review round (after
-# reviews.json was planned) is copied to the current draft's answer path, also when the job touched the draft again after
-# writing it (live 2026-10-26, acemoglu2025nobel row 15); an answer from before this round is never carried over.
+# 2b. finish binds the combined job's verdict to the draft it left: an ok answer written in this round (v10: after the
+# start listed the jobs, drive\jobs.json) is copied to the current draft's answer path, also when the job touched the
+# draft again after writing it (live 2026-10-26, acemoglu2025nobel row 15); an answer from before this round is never
+# carried over.
 $answersDir = Join-Path $out 'term-cards\review\answers'
 $outDir = Join-Path $out 'term-cards\out'
-$reviewsFile = Join-Path $out 'term-cards\drive\reviews.json'
+$reviewsFile = Join-Path $out 'term-cards\drive\jobs.json'
 New-Item -ItemType Directory -Force $answersDir, $outDir | Out-Null
 Set-Content -LiteralPath (Join-Path $outDir 't001.json') -Value '{}' -Encoding utf8
 $oldAnswer = Join-Path $answersDir 't001-r001-aaaa0000-bbbb0000.json'

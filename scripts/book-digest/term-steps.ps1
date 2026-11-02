@@ -5,9 +5,11 @@
 
   pwsh -NoProfile -File term-steps.ps1 -Step start|review|finish|link -Out <staging> [-Occurrences first|all]
 
-  start   plan the Term cards, claim every ready job unit, list the claimed jobs -> drive\jobs.json
+  start   plan the Term cards, claim every ready job unit (page after page of at most 64, under a six-hour
+          lease), list the claimed jobs; a math job also reviews and fixes its own draft and writes its
+          verdict (v10)                                                   -> drive\jobs.json
   review  check the drafts and plan the review-and-fix jobs (one DeepSeek job reviews a draft, fixes it
-          and runs its self-check)                                       -> drive\reviews.json
+          and runs its self-check); the v10 module no longer calls it     -> drive\reviews.json
   finish  complete each claimed job from the readiness result (fail the rest), then publish:
           with the book unit claimed it completes from the report, else every ready row is published (#182)
   link    plan the Term links, apply under the claim (or, when the unit is blocked, the published
@@ -67,13 +69,40 @@ switch ($Step) {
         if ($MathPerJob -gt 0) { $planArgs += @('-MathPerJob', "$MathPerJob") }
         $plan = Run $planArgs
         if (-not $plan.json -or $plan.json.ok -ne $true) { Fail 'plan' $plan.tail; break }
-        $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '64', '-Owner', 'term cards', '-Lease', '7200')
-        $units = @($claim.json.units | Where-Object { $_.id -like 'termcards/t*' })
+        # v10 (atkinson2015lectures, 2026-11-01): one claim takes at most 64 units, and the branch ran wave after wave,
+        # each waiting for its slowest job. The start now claims page after page until a page holds no job unit, so
+        # the writers run as one queue; the lease covers the whole queue. A non-job unit a page hands out (the book)
+        # is released at once: the finish claims it.
+        $units = @()
+        for ($page = 1; $page -le 40; $page++) {
+            $claim = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '64', '-Owner', 'term cards', '-Lease', '21600')
+            foreach ($x in @($claim.json.units | Where-Object { $_ -and $_.id -notlike 'termcards/t*' })) {
+                Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $x.id, '-Release') | Out-Null
+            }
+            $got = @($claim.json.units | Where-Object { $_ -and $_.id -like 'termcards/t*' })
+            if (-not $got.Count) { break }
+            $units += $got
+        }
         Save 'units.json' $units
         if (-not $units.Count) { Save 'jobs.json' @(); Reply @{ ok = $true; jobs = 0; plan_revision = [int]$plan.json.revision } @{ units = @(); plan = $plan.json }; break }
         $tokens = ($units | ForEach-Object { "$($_.inputs.job.id):$($_.token)" }) -join ','
         $jobs = Run @('term-cards', '-Step', 'jobs', '-Staging', $Out, '-Tokens', $tokens)
         if (-not $jobs.json -or $jobs.json.ok -ne $true) { Fail 'jobs' $jobs.tail; break }
+        # v10 (the user's design, 2026-11-01): one DeepSeek job writes a math term, self-checks it, reviews and fixes
+        # its own draft against the review instructions, and writes its verdict beside the review answers; the finish
+        # binds a verdict written after this job list to the draft the job left. A concept job stays a writer job.
+        $answersDir = Join-Path $Work 'review\answers'
+        New-Item -ItemType Directory -Force $answersDir | Out-Null
+        # The run keeps the exact review text its jobs were asked against (the compiler's review-plan copies the same file).
+        $reviewText = Join-Path $PSScriptRoot 'dsh-term-review-instructions.zh.md'
+        if (Test-Path -LiteralPath $reviewText) { Copy-Item -LiteralPath $reviewText -Destination (Join-Path $Work 'dsh-term-review-instructions.zh.md') -Force }
+        foreach ($j in @($jobs.json.jobs | Where-Object { $_.kind -eq 'math' })) {
+            $verdicts = @(@($j.rows) | ForEach-Object { Join-Path $answersDir ('{0}-r{1:D3}-self.json' -f $j.id, [int]$_) })
+            $files = @($j.files)
+            $j | Add-Member -Force files (@($files[0], (Join-Path $Work 'dsh-term-review-instructions.zh.md')) + @($files | Select-Object -Skip 1))
+            $j | Add-Member -Force prompt ('按共享说明和任务文件写好本组术语的 JSON 草稿，运行任务文件里的自查直到通过。然后按审查与修正说明，像一位独立审查者那样逐项核对你自己的草稿（对照原文小节），把错误直接改在草稿文件里，再运行自查直到通过。最后把审查结论写入 ' + ($verdicts -join '、') + '（每个数学术语一个文件；通过：{"ok":true}；不通过：{"ok":false,"faults":[{"where":"…","what":"…","fix":"…"}]}）。只写任务文件指定的输出文件和这些结论文件，最后只回复一行 JSON。')
+            $j | Add-Member -Force verdicts $verdicts
+        }
         Save 'jobs.json' @($jobs.json.jobs)
         Reply @{ ok = $true; jobs = @($jobs.json.jobs).Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = $units; plan = $plan.json; jobs = @($jobs.json.jobs) }
     }
@@ -99,10 +128,10 @@ switch ($Step) {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
         # The combined job's verdict is bound to the draft it left: when its fix changed the draft, the review the
         # current draft needs has no answer yet, and the job's own `ok` answer of this round is that answer. After
-        # the writers no one but that job changes the draft, so an answer written after this round's review plan
-        # (drive\reviews.json) binds, even when the job touched the draft again afterwards (live 2026-10-26,
+        # the start no one but that job changes the draft, so an answer written after this round's job list
+        # (drive\jobs.json, v10) binds, even when the job touched the draft again afterwards (live 2026-10-26,
         # acemoglu2025nobel row 15); an answer from before this round is never carried over.
-        $round = Get-Item -LiteralPath (Join-Path $Drive 'reviews.json') -ErrorAction SilentlyContinue
+        $round = Get-Item -LiteralPath (Join-Path $Drive 'jobs.json') -ErrorAction SilentlyContinue
         $rp = Run @('term-cards', '-Step', 'review-plan', '-Staging', $Out)
         $answersDir = Join-Path $Work 'review\answers'
         $bound = 0
