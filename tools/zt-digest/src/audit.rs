@@ -250,6 +250,48 @@ mod reasoning_tests {
     }
 }
 
+/// The entries one model is checked as: its head, then each part with its facet and its line in the build
+/// order. Every entry is a Model Card (`type: model`), so zt-check holds it to the Model Card limits (twice the
+/// base, rule version 6). atkinson2015lectures (2026-11-02): the head entry carried no type and a null facet, so
+/// zt-check measured 188 Model Card heads against the base R2 limit of 40 characters and the audit reported 259
+/// sentence-length faults that the archive's own write gate passes.
+fn model_check_entries(m: &Value) -> Vec<Value> {
+    let mut line: HashMap<String, Value> = HashMap::new();
+    for o in ps_items(&m["build"]["order"]) {
+        line.insert(ci(&field(&o, "address")), json!(field(&o, "line")));
+    }
+    let head = &m["head"];
+    let mut entries = vec![json!({ "address": field(head, "address"), "type": "model", "title": field(head, "title"), "body": field(head, "body"), "facet": null, "line": "head" })];
+    for part in ps_items(&m["parts"]) {
+        let a = field(&part, "address");
+        entries.push(json!({
+            "address": a, "type": "model", "title": field(&part, "title"), "body": field(&part, "body"), "facet": field(&part, "facet"),
+            "line": line.get(&ci(&a)).cloned().unwrap_or(Value::Null)
+        }));
+    }
+    entries
+}
+
+#[cfg(test)]
+mod model_entry_tests {
+    use super::*;
+
+    #[test]
+    fn every_model_entry_is_checked_as_a_model_card() {
+        let m = json!({
+            "head": {"address": "K/9|a", "title": "模型", "body": "问题：一句话。"},
+            "parts": [{"address": "K/9|a|a", "title": "设定", "body": "设定。", "facet": "设定"}],
+            "build": {"order": [{"address": "K/9|a|a", "line": 3}]},
+        });
+        let entries = model_check_entries(&m);
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e["type"] == "model"), "{entries:?}");
+        assert_eq!(entries[0]["line"], "head");
+        assert_eq!(entries[1]["facet"], "设定");
+        assert_eq!(entries[1]["line"], "3");
+    }
+}
+
 /// What `run` returns: the progress lines and the summary.
 pub struct Outcome {
     pub summary: Value,
@@ -427,17 +469,10 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
         for o in ps_items(&m["build"]["order"]) {
             line.insert(ci(&field(&o, "address")), json!(field(&o, "line")));
         }
-        let head = &m["head"];
-        let mut entries = vec![json!({ "address": field(head, "address"), "title": field(head, "title"), "body": field(head, "body"), "facet": null, "line": "head" })];
-        for part in ps_items(&m["parts"]) {
-            let a = field(&part, "address");
-            entries.push(json!({
-                "address": a, "title": field(&part, "title"), "body": field(&part, "body"), "facet": field(&part, "facet"),
-                "line": line.get(&ci(&a)).cloned().unwrap_or(Value::Null)
-            }));
-            in_model.insert(ci(&a));
+        let entries = model_check_entries(m);
+        for entry in &entries {
+            in_model.insert(ci(&field(entry, "address")));
         }
-        in_model.insert(ci(&field(head, "address")));
         invoke_check(zt, &entries, &field(&m["build"], "setting"), &field(m, "level"))?;
     }
     // The link graph of the Workspace: who links each Card, and how many Idea Cards link it with a kind word.
