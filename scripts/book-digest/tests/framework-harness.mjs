@@ -2982,6 +2982,14 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   check(logs.some((l) => /Finalize: (done|partial) at graph revision/.test(l)), `finalize ${branch}: the branch reports its own outcome and revision`)
 }
 {
+  // atkinson2015lectures: mode finalize runs the finite finalization on a digested book whose one resume is spent,
+  // after the Term-link pass and a fresh audit, and writes nothing else.
+  const r = await run('econ', { out: 'D:\\x\\Key', citationKey: 'Key', mode: 'finalize' })
+  const ran = [...new Set(r.calls.map((c) => c.phase).filter(Boolean))]
+  check(['Term link', 'Audit', 'Finalize'].every((s) => ran.includes(s)) && !ran.some((s) => /^(Digest|Models|Link|Organize)$/.test(s)), `mode finalize: term-link, audit and finalize run (its one correction cycle files under Cards), and no other Card writer (${ran.join(',')})`)
+  check(r.logs.some((l) => /Finalize: (done|partial) at graph revision/.test(l)), 'mode finalize: the finalization reports its outcome')
+}
+{
   // S26 (#169): a resume after the correction cycle was recorded but before the final audit must not
   // silently reuse a branch that never relinked: it continues from the retained manifest (no second
   // cycle, no skipped round) and publishes the final audit.
