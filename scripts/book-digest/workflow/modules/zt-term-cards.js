@@ -1,4 +1,8 @@
-// ==== module zt-term-cards v8 ====
+// ==== module zt-term-cards v9 ====
+// v9 (atkinson2015lectures, 2026-11-01: 748 Term rows, 429 writer jobs): one start claims at most 64 job units, and
+// the branch ran one wave of 64 and ended with the book incomplete. It now repeats start -> write -> review -> finish
+// while start claims jobs (at most 20 waves); each finish publishes the ready rows so far, and the book completes
+// when every row is published.
 // The Term-card branch (S20 #164, S24 #167; v4 #172; v5 #175; v6 #180): Haiku managers and DeepSeek agents only.
 // v7 (live run 2026-10-26, staging5): a publication that printed no line is named in the error (`publish_error`).
 // v8 (2026-10-26, the user's request): one DeepSeek job reviews AND fixes each math draft (it runs the writer's
@@ -15,7 +19,7 @@
 // v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
 // only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '8', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '9', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers and review-and-fix jobs for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -85,19 +89,28 @@ Each job has id, files, prompt, skills, model, effort.
     }
 
     try {
-      const started = await drive('start')
-      report.jobs.total = started.jobs
-      report.plan_revision = started.plan_revision
-      if (started.jobs > 0) {
-        const written = await runFile('write', `${DRIVE}\\jobs.json`, started.jobs)
-        report.writer_failures = written.filter((j) => j.status !== 'done').length
-        const r = await drive('review')
-        report.reviews = r.reviews
-        if (r.reviews > 0) await runFile('review', `${DRIVE}\\reviews.json`, r.reviews)
+      let finished = null
+      report.jobs.done = 0
+      report.not_ready = 0
+      report.reviews = 0
+      report.writer_failures = 0
+      for (let wave = 1; wave <= 20; wave++) {
+        const started = await drive('start')
+        report.jobs.total += Number(started.jobs || 0)
+        report.plan_revision = started.plan_revision
+        if (wave > 1 && !(started.jobs > 0)) break
+        if (started.jobs > 0) {
+          const written = await runFile(wave > 1 ? `write ${wave}` : 'write', `${DRIVE}\\jobs.json`, started.jobs)
+          report.writer_failures += written.filter((j) => j.status !== 'done').length
+          const r = await drive('review')
+          report.reviews += Number(r.reviews || 0)
+          if (r.reviews > 0) await runFile(wave > 1 ? `review ${wave}` : 'review', `${DRIVE}\\reviews.json`, r.reviews)
+        }
+        finished = await drive('finish')
+        report.jobs.done += Number(finished.done || 0) || 0
+        report.not_ready += Number(finished.failed || 0) || 0
+        if (finished.book === 'done' || !(started.jobs > 0)) break
       }
-      const finished = await drive('finish')
-      report.jobs.done = Number(finished.done || 0) || 0
-      report.not_ready = Number(finished.failed || 0) || 0
       report.publication = { complete: finished.complete === true, rows: Number(finished.rows || 0), committed: Number(finished.committed || 0), ready_unpublished: Number(finished.ready_unpublished || 0) }
       report.book_state = finished.book
       if (finished.book !== 'done') {

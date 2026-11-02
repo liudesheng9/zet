@@ -1886,10 +1886,18 @@ function runtime(kind, opts = {}) {
         termCalls.push({ tool: 'term-steps', step, cmd: command })
         if (step === 'start') {
           if (opts.termPlanFails) return reply({ ok: false, step: 'plan', error: 'term-cards: the book has no Term list' }, 'drive-start')
-          for (const job of termJobs) { const u = led.add(`termcards/${job.id}@1`, 'termcards', { job }); if (!opts.termAlreadyDone) u.state = 'claimed' }
-          const book = led.add('termcards/book@1', 'termcards', {})
-          if (opts.termAlreadyDone) { for (const job of termJobs) led.finish(`termcards/${job.id}@1`); led.finish('termcards/book@1') } else book.state = 'registered'
-          return reply({ ok: true, jobs: opts.termAlreadyDone ? 0 : termJobs.length, plan_revision: 1 }, 'drive-start')
+          // atkinson2015lectures: a start claims only open jobs, at most `termWave` of them (the ledger's 64).
+          let claimedNow = 0
+          for (const job of termJobs) {
+            const u = led.find(`termcards/${job.id}@1`) || led.add(`termcards/${job.id}@1`, 'termcards', { job })
+            if (opts.termAlreadyDone || u.state === 'done' || u.state === 'failed' || u.state === 'claimed') continue
+            if (opts.termWave && claimedNow >= opts.termWave) continue
+            u.state = 'claimed'
+            claimedNow++
+          }
+          const book = led.find('termcards/book@1') || led.add('termcards/book@1', 'termcards', {})
+          if (opts.termAlreadyDone) { for (const job of termJobs) led.finish(`termcards/${job.id}@1`); led.finish('termcards/book@1') } else if (book.state !== 'done') book.state = 'registered'
+          return reply({ ok: true, jobs: opts.termAlreadyDone ? 0 : claimedNow, plan_revision: 1 }, 'drive-start')
         }
         if (step === 'review') return reply({ ok: true, reviews: 0 }, 'drive-review')
         // 2026-10-26: no fix step: one DeepSeek job reviews and fixes a draft.
@@ -1897,12 +1905,15 @@ function runtime(kind, opts = {}) {
           const done = [], failed = []
           for (const job of termJobs) {
             const u = led.find(`termcards/${job.id}@1`)
-            if (u.state === 'done') { done.push(job.id); continue }
+            if (u.state === 'done' || u.state === 'failed') continue
+            if (u.state !== 'claimed') continue
             if (opts.termWriterFails || termNotReady.has(job.id)) { led.fail(u.id, 'failed'); failed.push(job.id) } else { led.finish(u.id); done.push(job.id) }
           }
-          const complete = !failed.length && !opts.termPublicationPartial
+          const all = termJobs.map((job) => led.find(`termcards/${job.id}@1`))
+          const committed = all.filter((u) => u.state === 'done').length
+          const complete = all.every((u) => u.state === 'done') && !opts.termPublicationPartial
           if (complete) led.finish('termcards/book@1')
-          return reply({ ok: true, done: done.length, failed: failed.length, book: complete ? 'done' : 'incomplete', complete, rows: termJobs.length, committed: done.length, ready_unpublished: 0 }, 'drive-finish')
+          return reply({ ok: true, done: done.length, failed: failed.length, book: complete ? 'done' : 'incomplete', complete, rows: termJobs.length, committed, ready_unpublished: 0 }, 'drive-finish')
         }
         if (step === 'link') {
           if (opts.termLinkPlanFails) return reply({ ok: false, step: 'plan', error: 'term-link: the Term-structure read names no list: the book has no Term list to link' }, 'drive-link')
@@ -2294,6 +2305,12 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(writes.length > 0 && writes.every((m) => m.jobs.length <= 8) && writes.flatMap((m) => m.jobs).length === 2, `v4: every writer manager holds at most eight jobs and all jobs are written (${writes.map((m) => m.jobs.length).join(',')})`)
   check(full.led.find('termcards/book@1').state === 'done' && full.led.find('termlink/book@1').state === 'done', 'v4: the Term-card book unit and the Term-link pass complete')
   check(full.result.term_cards.status === 'done' && full.result.term_cards.publication && full.result.term_cards.publication.complete === true, `v4: the report carries the complete Term-card branch (${JSON.stringify(full.result.term_cards)})`)
+  // atkinson2015lectures (v9): a start claims at most 64 job units; the branch runs wave after wave until every job
+  // is done and the book completes (here 5 jobs, at most 2 per claim).
+  const waves = await run('econ', base, { termJobCount: 5, termWave: 2 })
+  const waveSteps = waves.termCalls.filter((c) => c.tool === 'term-steps' && c.step !== 'link').map((c) => c.step)
+  check(waveSteps.filter((s) => s === 'start').length === 3 && waveSteps.filter((s) => s === 'finish').length === 3, `v9: three waves of start, review and finish write five jobs two at a time (${waveSteps.join(',')})`)
+  check(waves.led.find('termcards/book@1').state === 'done' && waves.result.term_cards.status === 'done' && waves.result.term_cards.jobs.done === 5, `v9: every job is done and the Term-card book completes (${JSON.stringify(waves.result.term_cards && waves.result.term_cards.jobs)})`)
   check(full.result.term_link.status === 'done' && full.result.term_link.counts && full.result.term_link.counts.cards_changed === 1, `v4: the report carries the applied Term-link pass (${JSON.stringify(full.result.term_link)})`)
   // The frozen layer switches: a disabled Term layer freezes into the prepared target and runs no stage.
   const noCards = await run('econ', { ...base, figures: false, termCards: false })
@@ -3260,7 +3277,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '49' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '8' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v49, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v8 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '49' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '2' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '9' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v49, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v2, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v9 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
