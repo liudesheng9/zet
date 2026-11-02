@@ -375,10 +375,14 @@ fn apply_publishes_the_ready_prefix_in_row_order_and_fills_the_list_columns() {
     let check = last_json(&zt.digest(&["cited-cards", "-Step", "check", "-Staging", s]));
     assert_eq!(check["ready"], json!(2), "{check}");
     assert_eq!(check["not_ready"], json!(1), "{check}");
+    let before = mcp.revision();
     let applied = last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]));
     assert_eq!(applied["ok"], json!(true), "{applied}");
     assert_eq!(applied["committed"], json!(2), "{applied}");
     assert_eq!(applied["complete"], Value::Null, "{applied}");
+    // atkinson2015lectures (2026-11-02): 1,589 rows, one write call per Card at about 5 s each. The new
+    // Cards go in identified batches: one transaction for both, one for the list's cells.
+    assert!(mcp.revision() - before <= 2, "the new Cards are one batch: {} transactions", mcp.revision() - before);
 
     let cited = mcp.call("get_cited", json!({ "at": "tiny2026" }));
     assert_eq!(cited["cards"][0]["address"], json!("tiny2026/1|b|a"), "{cited}");

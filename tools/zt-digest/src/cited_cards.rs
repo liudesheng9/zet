@@ -590,8 +590,60 @@ fn check_step(book: &Book, zt: &mut Zt) -> Result<i32> {
 
 // --- apply ---------------------------------------------------------------------------------------
 
+/// The most items and authored bytes one identified call carries (the archive's own real-batch bound).
+const BATCH_ITEMS: usize = 64;
+const BATCH_BYTES: usize = 1024 * 1024;
+
+/// Create the new Cards in identified `apply_batch` calls of at most [`BATCH_ITEMS`] items and
+/// [`BATCH_BYTES`] authored bytes, in row order, so each is appended after the last and nothing moves.
+/// atkinson2015lectures (2026-11-02): 1,589 rows, and one `create_successor` call per Card cost about
+/// 5 s of fixed archive time each. Answers each call's slots with the addresses it created; the
+/// operation keys make a retry replay the archive's own receipts.
+fn create_in_batches(zt: &mut Zt, cards: &[(usize, Value)]) -> Result<Vec<(Vec<usize>, Vec<String>)>> {
+    let bytes = |item: &Value| pstr(&item["arguments"], "title").len() + pstr(&item["arguments"], "body").len();
+    let mut calls: Vec<Vec<&(usize, Value)>> = Vec::new();
+    let mut size = 0usize;
+    for card in cards {
+        let fits = calls
+            .last()
+            .is_some_and(|call| call.len() < BATCH_ITEMS && size + bytes(&card.1) <= BATCH_BYTES);
+        if !fits {
+            calls.push(Vec::new());
+            size = 0;
+        }
+        size += bytes(&card.1);
+        calls.last_mut().expect("a call").push(card);
+    }
+    let mut answered = Vec::new();
+    for call in calls {
+        let items: Vec<&Value> = call.iter().map(|(_, item)| item).collect();
+        let reply = zt.request("apply_batch", json!({ "items": items }))?;
+        if let Some(message) = zt_check::mcp::reply_error(&reply) {
+            bail!("apply_batch refused the Cited Cards {}: {message}", pstr(items[0], "client_ref"));
+        }
+        let value: Value = serde_json::from_str(&zt_check::mcp::reply_text(&reply))
+            .context("the apply_batch answer is not JSON")?;
+        let results = value["results"].as_array().cloned().unwrap_or_default();
+        if results.len() != items.len() {
+            bail!("apply_batch answered {} of {} Cited Cards", results.len(), items.len());
+        }
+        let mut addresses = Vec::new();
+        for (item, result) in items.iter().zip(&results) {
+            let address = pstr(&result["result"], "address");
+            if result["client_ref"] != item["client_ref"] || address.is_empty() {
+                bail!("apply_batch answered another item than {}", pstr(item, "client_ref"));
+            }
+            addresses.push(address);
+        }
+        answered.push((call.iter().map(|(slot, _)| *slot).collect(), addresses));
+    }
+    Ok(answered)
+}
+
 fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     let plan = read_plan(book)?;
+    let hash = pstr(&plan, "plan_hash");
+    let run = format!("cited-cards-{}", &hash[..16.min(hash.len())]);
     let terms = term_body(zt, &book.key);
     let (states, items) = readiness(book, &plan, terms.as_deref());
     let list = cited::existing_list(zt, &book.key)?.context("the book has no Cited list")?;
@@ -602,6 +654,8 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     let existing = list["cards"].as_array().cloned().unwrap_or_default();
     let plan_rows = plan["rows"].as_array().cloned().unwrap_or_default();
     let mut published = Vec::new();
+    // The new Cards, gathered in row order and created in identified batches after the loop.
+    let mut new_cards: Vec<(usize, Value)> = Vec::new();
     let mut cells: HashMap<u64, (String, String)> = HashMap::new();
     let mut stop: Option<String> = None;
     for (index, row) in plan_rows.iter().enumerate() {
@@ -627,17 +681,27 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
                 address
             }
             None if p.apply => {
-                let created = zt.call(
-                    "create_successor",
-                    json!({ "at": list_address, "kind": "side", "type": "cited", "title": title, "body": body }),
-                )?;
-                pstr(&created, "address")
+                new_cards.push((
+                    published.len(),
+                    json!({
+                        "op_key": format!("{run}/{}/{}/apply/c{n:04}", book.key, plan["revision"]),
+                        "client_ref": format!("c{n:04}"),
+                        "tool": "create_successor",
+                        "arguments": { "at": list_address, "kind": "side", "type": "cited", "title": title, "body": body },
+                    }),
+                ));
+                String::new()
             }
             None => String::new(),
         };
         let found = locations(book, item);
         cells.insert(n, (cited_at(&found), relations(item).join("、")));
         published.push(json!({ "row": n, "card": address, "status": "committed" }));
+    }
+    for (slots, created) in create_in_batches(zt, &new_cards)? {
+        for (slot, address) in slots.into_iter().zip(created) {
+            published[slot]["card"] = json!(address);
+        }
     }
     // A complete publication owns every Cited Card of the list: one filed beyond the rows is stale (the list
     // got shorter after a parser fix; live backfill of grossman2002integration) and is removed.
