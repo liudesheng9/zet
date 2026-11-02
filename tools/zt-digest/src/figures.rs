@@ -635,8 +635,16 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     // attach), and which lie outside the digested range: the stage publication counts neither as a gap.
     // ebrill2001modern: 图 12.1 sat in 45|d and the two maps of 图 1.1 in 2|b, and the back cover's barcode
     // lies after the end heading, yet all four were reported unmatched.
-    let tree = read_calls(&mut zt, &[("get_tree", json!({ "tree": key, "bodies": true }))])?.into_iter().next().unwrap_or(Value::Null);
-    let mut bodies: Vec<String> = ps::each(&tree["cards"]).into_iter().map(|card| s(&card["body"])).collect();
+    // atkinson2015lectures (2026-11-02): with 7,279 Cards one `get_tree` with bodies answered 98.8 MB, over the
+    // 64 MiB read limit, and the figure pass printed no line. The tree is read without bodies and its Cards'
+    // texts in bounded `get_cards` reads.
+    let tree = read_calls(&mut zt, &[("get_tree", json!({ "tree": key }))])?.into_iter().next().unwrap_or(Value::Null);
+    let addresses: Vec<String> = ps::each(&tree["cards"]).into_iter().map(|card| s(&card["address"])).collect();
+    let mut bodies: Vec<String> = Vec::new();
+    for chunk in addresses.chunks(200) {
+        let read = zt.call("get_cards", json!({ "addresses": chunk, "view": "text" }))?;
+        bodies.extend(ps::each(&read["cards"]).into_iter().map(|card| s(&card["body"])));
+    }
     bodies.extend(plan.iter().map(|p| s(&p["body"])));
     let digested = if staging.is_empty() { None } else { util::read_text(ps::join_path(&staging, "book.zh.md")).ok() };
     let (already, outside) = figure_presence(&figures, &bodies, digested.as_deref());
