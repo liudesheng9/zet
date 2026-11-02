@@ -896,6 +896,29 @@ fn register(
     Ok(id)
 }
 
+/// atkinson2015lectures (2026-11-01): a Model unit reopened with `-Recheck` (or rebuilt after one) completes again and
+/// meets the Explain unit its first completion registered. The same inputs keep that unit as it is; changed inputs (the
+/// rebuilt model's chains and parts) re-register it in place: new inputs, state `registered`, its old outputs gone, so
+/// the explanations of the new parts are written again. Returns the prior state and input hash when the unit existed.
+fn explain_reregistered(tx: &Transaction, id: &str, producer: &str, inputs: &Value) -> Result<Option<Value>> {
+    let row: Option<(String, String, Option<String>)> = tx
+        .query_row("SELECT state,input_hash,created_by FROM units WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()?;
+    let Some((state, hash, creator)) = row else { return Ok(None) };
+    if creator.as_deref() != Some(producer) {
+        bail!("the explanation unit {id} belongs to another producer");
+    }
+    let wanted = canon::hash_value(inputs);
+    if hash != wanted {
+        tx.execute("DELETE FROM outputs WHERE unit_id=?1", [id])?;
+        tx.execute(
+            "UPDATE units SET state='registered',inputs_json=?2,input_hash=?3,attempts=0,owner=NULL,lease_until=NULL,retry_after=NULL,fault_class=NULL,fault_json=NULL,result_json=NULL,completed_at=NULL WHERE id=?1",
+            params![id, canon::canonical_json(inputs), wanted],
+        )?;
+    }
+    Ok(Some(json!({"state":state,"input_hash":hash,"changed":hash != wanted})))
+}
+
 fn dependency(tx: &Transaction, id: &str, needs: &str, condition: &str) -> Result<()> {
     tx.execute(
         "INSERT INTO deps(unit_id,needs_id,condition) VALUES(?1,?2,?3)",
@@ -3971,6 +3994,7 @@ fn verify_cards_book_coverage(
         );
     }
     // The checked Cards must still be the Cards this report describes.
+    let own_book = field(&p.contract, "citation_key")?.to_string();
     let read = zt.cards(&checked, "text")?;
     let fresh: BTreeMap<String, Value> = read
         .cards
@@ -3984,6 +4008,7 @@ fn verify_cards_book_coverage(
         let then = by_address.get(&ps::key(at)).context("incomplete checked Card view")?;
         if crate::calls::authored_fingerprint(now) != crate::calls::authored_fingerprint(then)
             && authored_without_later_writers(now, true) != authored_without_later_writers(then, true)
+            && foreign_targets_masked(now, &own_book)? != foreign_targets_masked(then, &own_book)?
         {
             bail!("the checked Card `{at}` changed after the cycle; run the Card cycle again");
         }
@@ -4073,7 +4098,7 @@ fn verify_cards_book_coverage(
             if verdict.is_empty() || verdict == "unreviewed" {
                 bail!("the Card cycle left the Model draft `{at}` unreviewed");
             }
-            if s(&review["fingerprint"]) != fingerprint {
+            if s(&review["fingerprint"]) != fingerprint && !current.cards.first().map(|card| same_but_foreign_targets(by_address.get(&ps::key(at)), card, &s(&review["fingerprint"]), key)).transpose()?.unwrap_or(false) {
                 bail!("the cycle's review of `{at}` describes another Card");
             }
             covered.push(json!({"kind":"model","ref":at,"owner":"cycle","outcome":"reviewed","verdict":verdict,"spans":review["spans"]}));
@@ -4123,7 +4148,9 @@ fn verify_cards_book_coverage(
             let now = fresh
                 .get(&ps::key(at))
                 .with_context(|| format!("the sampled Card `{at}` no longer exists"))?;
-            if s(&review["fingerprint"]) != crate::calls::authored_fingerprint(now) {
+            if s(&review["fingerprint"]) != crate::calls::authored_fingerprint(now)
+                && !same_but_foreign_targets(by_address.get(&ps::key(at)), now, &s(&review["fingerprint"]), key)?
+            {
                 bail!("the review of the sampled Card `{at}` describes another Card");
             }
         }
@@ -4252,6 +4279,40 @@ fn authored_without_later_writers(card: &Value, unlink: bool) -> String {
     }
     card["body"] = json!(body);
     crate::calls::authored_fingerprint(&card)
+}
+
+/// A reviewed Card that changed after the review only where its Links point: the cycle's own view of it (`then`) is
+/// the Card the review describes, and `now` differs from it in nothing but its Link targets.
+fn same_but_foreign_targets(then: Option<&Value>, now: &Value, reviewed: &str, own_book: &str) -> Result<bool> {
+    let Some(then) = then else { return Ok(false) };
+    Ok(crate::calls::authored_fingerprint(then) == reviewed && foreign_targets_masked(then, own_book)? == foreign_targets_masked(now, own_book)?)
+}
+
+/// atkinson2015lectures (2026-11-01): a move re-points every Link into the moved Cards, including the Links on this
+/// book's checked Cards: another book's restructuring (`[[acemoglu2025nobel/1|a|n]]` became `[[acemoglu2025nobel/6|n]]`)
+/// and a rebuilt model's renumbered parts (`[[…/88|a|a|6]]` became `[[…/88|a|a|7]]`). Where a Link points is not the
+/// text a cycle checked, so a target is compared by nothing but its presence: every Link keeps its place and its label,
+/// a Link into another book is marked as such, and any change of the text, or a Link added or removed, still counts.
+/// The Bridge and Term-link normalizations apply too.
+fn foreign_targets_masked(card: &Value, own_book: &str) -> Result<String> {
+    let target = regex::Regex::new(r"\[\[([^\[\]]+)\]\]")?;
+    let body = s(&card["body"]);
+    let masked = target.replace_all(&body, |c: &regex::Captures| {
+        let inner = &c[1];
+        let (label, address) = match inner.rsplit_once('@') {
+            Some((label, address)) => (Some(label), address),
+            None => (None, inner),
+        };
+        let book = address.split('/').next().unwrap_or_default();
+        let place = if book == own_book { "*" } else { "other/*" };
+        match label {
+            Some(label) => format!("[[{label}@{place}]]"),
+            None => format!("[[{place}]]"),
+        }
+    });
+    let mut card = card.clone();
+    card["body"] = json!(masked);
+    Ok(authored_without_later_writers(&card, true))
 }
 
 fn book_cards_finish(
@@ -6777,7 +6838,7 @@ fn last_activity_ms(tx: &Transaction, unit: &str, token: i64) -> Result<Option<i
 /// resume's own reset, for the named units only: `failed` becomes `retry` with attempts 0, the prior state and
 /// attempts are recorded as an `attempt_reset` event with the reason, and readiness is reconciled. A unit that is not
 /// failed is refused, so a done or claimed unit is never reopened.
-fn reopen(p: &Prepared, units: &[String], reason: &str) -> Result<Value> {
+fn reopen(p: &Prepared, units: &[String], reason: &str, recheck: bool) -> Result<Value> {
     if units.is_empty() {
         bail!("-Units names no unit");
     }
@@ -6787,13 +6848,16 @@ fn reopen(p: &Prepared, units: &[String], reason: &str) -> Result<Value> {
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
-    let reopened = reopen_units(&tx, units, reason, now_seconds())?;
+    let reopened = reopen_units(&tx, units, reason, now_seconds(), recheck)?;
     tx.commit()?;
     Ok(json!({"schema_version":1,"kind":"reopen","reopened":reopened}))
 }
 
 /// The reset of `ledger reopen` inside one transaction: refuses any unit that is not failed, before it changes one.
-fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64) -> Result<Vec<Value>> {
+/// With `recheck` (atkinson2015lectures: `32|a` drifted after its completion and the Card cycle's finish refused the
+/// book), a done Model unit is reopened too, so its checked `model-finish` runs again on the current Cards: it records
+/// them when the model still verifies, and fails the unit when it does not. No other layer's done unit is reopened.
+fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64, recheck: bool) -> Result<Vec<Value>> {
     let invocation = meta(tx, "invocation")?.as_i64().unwrap_or(1);
     let mut reopened = Vec::new();
     for unit in units {
@@ -6801,13 +6865,24 @@ fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64) -> R
             .query_row("SELECT state,attempts FROM units WHERE id=?1", [unit], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         let Some((state, attempts)) = row else { bail!("unknown unit {unit}") };
-        if state != "failed" {
-            bail!("unit {unit} is {state}, not failed: only a failed unit is reopened");
+        let rechecked = recheck && state == "done" && unit.starts_with("models/");
+        if state != "failed" && !rechecked {
+            bail!("unit {unit} is {state}, not failed: only a failed unit is reopened (a done Model unit with -Recheck)");
         }
         reopened.push((unit.clone(), state, attempts));
     }
     let mut out = Vec::new();
     for (unit, state, attempts) in reopened {
+        // atkinson2015lectures: the completion of a rechecked unit inserts its outputs again; the earlier ones
+        // (one row per output key) made it fail on the outputs primary key. They leave with the done state, and
+        // the event names them.
+        let mut removed: Vec<String> = Vec::new();
+        {
+            let mut statement = tx.prepare("SELECT output_key FROM outputs WHERE unit_id=?1 ORDER BY output_key")?;
+            removed = statement.query_map([&unit], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            tx.execute("DELETE FROM outputs WHERE unit_id=?1", [&unit])?;
+        }
         tx.execute(
             "UPDATE units SET state='retry',attempts=0,owner=NULL,lease_until=NULL,retry_after=NULL WHERE id=?1",
             [&unit],
@@ -6818,7 +6893,7 @@ fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64) -> R
             None,
             None,
             "attempt_reset",
-            &json!({"prior_state":state,"prior_attempts":attempts,"invocation":invocation,"reason":"operator_reopen","note":reason}),
+            &json!({"prior_state":state,"prior_attempts":attempts,"invocation":invocation,"reason":if state == "done" { "operator_recheck" } else { "operator_reopen" },"note":reason,"removed_outputs":removed}),
         )?;
         out.push(json!({"unit":unit,"prior_attempts":attempts}));
     }
@@ -13310,12 +13385,18 @@ fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: b
     }
     completion_fault(p, "after_outputs")?;
     if let Some((explain_unit, inputs)) = &explain {
-        let id = register(&tx, "explain", key, 1, inputs, Some(unit), false)?;
-        if id != *explain_unit {
-            bail!("the registered explanation unit id changed");
-        }
-        dependency(&tx, &id, unit, "success")?;
-        event(&tx, &id, Some(&claimed.owner), Some(token), "registered", &json!({"producer":unit,"input_hash":canon::hash_value(inputs)}))?;
+        let id = if let Some(prior) = explain_reregistered(&tx, explain_unit, unit, inputs)? {
+            event(&tx, explain_unit, Some(&claimed.owner), Some(token), "reregistered", &json!({"producer":unit,"input_hash":canon::hash_value(inputs),"prior":prior}))?;
+            explain_unit.clone()
+        } else {
+            let id = register(&tx, "explain", key, 1, inputs, Some(unit), false)?;
+            if id != *explain_unit {
+                bail!("the registered explanation unit id changed");
+            }
+            dependency(&tx, &id, unit, "success")?;
+            event(&tx, &id, Some(&claimed.owner), Some(token), "registered", &json!({"producer":unit,"input_hash":canon::hash_value(inputs)}))?;
+            id
+        };
         result["explain_unit"] = json!(id);
     }
     // The last Model unit to finish closes the Explain layer its completions feed (R301).
@@ -17337,6 +17418,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 &["Verify", "Summary"]
             } else if command == "reclaim" {
                 &["Release"]
+            } else if command == "reopen" {
+                &["Recheck"]
             } else if command == "next" || command == "gate" {
                 &["Brief"]
             } else {
@@ -17548,7 +17631,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
         let units: Vec<String> = a.required("Units")?.split(',').map(|u| u.trim().to_string()).filter(|u| !u.is_empty()).collect();
-        reopen(&p, &units, &a.required("Reason")?)?
+        reopen(&p, &units, &a.required("Reason")?, a.flag("Recheck"))?
     } else if command == "reclaim" {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
@@ -18928,6 +19011,26 @@ mod term_card_ledger_tests {
     }
 
     #[test]
+    fn a_move_in_another_book_is_no_rewrite_of_a_checked_card() {
+        let card = |body: &str| json!({"address":"K/102|b|2","title":"t","body":body,"type":"idea","workspace":"agent"});
+        let then = card("一句。\n\n另见 [[K/102|a]] 与 [[acemoglu2025nobel/1|a|n]]。");
+        let moved = card("一句。\n\n另见 [[K/102|a]] 与 [[acemoglu2025nobel/6|n]]。");
+        let own = card("一句。\n\n另见 [[K/103|a]] 与 [[acemoglu2025nobel/1|a|n]]。");
+        let text = card("两句。\n\n另见 [[K/102|a]] 与 [[acemoglu2025nobel/1|a|n]]。");
+        assert_eq!(super::foreign_targets_masked(&then, "K").unwrap(), super::foreign_targets_masked(&moved, "K").unwrap());
+        assert_eq!(super::foreign_targets_masked(&then, "K").unwrap(), super::foreign_targets_masked(&own, "K").unwrap(), "a re-pointed Link into this book (a rebuilt model's renumbered part) is the same Link");
+        let fewer = card("一句。\n\n另见 [[K/102|a]]。");
+        assert_ne!(super::foreign_targets_masked(&then, "K").unwrap(), super::foreign_targets_masked(&fewer, "K").unwrap(), "a Link removed still counts");
+        assert_ne!(super::foreign_targets_masked(&then, "K").unwrap(), super::foreign_targets_masked(&text, "K").unwrap(), "the text still counts");
+        // A review of the Card as the cycle saw it still describes it after the move; never after a change of its own text.
+        let reviewed = crate::calls::authored_fingerprint(&then);
+        assert!(super::same_but_foreign_targets(Some(&then), &moved, &reviewed, "K").unwrap());
+        assert!(!super::same_but_foreign_targets(Some(&then), &text, &reviewed, "K").unwrap());
+        assert!(!super::same_but_foreign_targets(None, &moved, &reviewed, "K").unwrap());
+        assert!(!super::same_but_foreign_targets(Some(&then), &moved, "other", "K").unwrap());
+    }
+
+    #[test]
     fn a_rebuilt_models_newest_plan_is_its_plan() {
         let dir = tempfile::tempdir().unwrap();
         let old = dir.path().join("m-K_95_c").join("K_98_a");
@@ -18955,13 +19058,13 @@ mod term_card_ledger_tests {
         )
         .unwrap();
         let tx = conn.unchecked_transaction().unwrap();
-        let refused = super::reopen_units(&tx, &["termcards/t001@1".to_string(), "termcards/t002@1".to_string()], "fixed", 1).unwrap_err().to_string();
+        let refused = super::reopen_units(&tx, &["termcards/t001@1".to_string(), "termcards/t002@1".to_string()], "fixed", 1, false).unwrap_err().to_string();
         assert!(refused.contains("not failed"), "{refused}");
         drop(tx);
         assert_eq!(count(&conn, "SELECT count(*) FROM units WHERE id='termcards/t001@1' AND state='failed'"), 1);
         let tx = conn.unchecked_transaction().unwrap();
         let events = count(&tx, "SELECT count(*) FROM events");
-        let done = super::reopen_units(&tx, &["termcards/t001@1".to_string()], "fill line fixed in 0.41.3", 1).unwrap();
+        let done = super::reopen_units(&tx, &["termcards/t001@1".to_string()], "fill line fixed in 0.41.3", 1, false).unwrap();
         tx.commit().unwrap();
         assert_eq!(done, vec![json!({"unit":"termcards/t001@1","prior_attempts":3})]);
         assert_eq!(count(&conn, "SELECT count(*) FROM units WHERE id='termcards/t001@1' AND state!='failed' AND attempts=0"), 1);
@@ -18970,6 +19073,40 @@ mod term_card_ledger_tests {
             count(&conn, "SELECT count(*) FROM events WHERE unit_id='termcards/t001@1' AND event='attempt_reset' AND json_extract(facts_json,'$.reason')='operator_reopen'"),
             1
         );
+        // -Recheck reopens a done Model unit and clears its recorded outputs, so its next completion records new ones.
+        conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,attempts,inputs_json,input_hash,progress_json,created_by,created_at) SELECT 'models/g009-m0000@1','models','g009-m0000',1,'done',1,inputs_json,input_hash,progress_json,created_by,created_at FROM units WHERE id='termcards/t001@1'", []).unwrap();
+        conn.execute("INSERT INTO outputs(unit_id,output_key,kind,locator,fingerprint,data_json) VALUES('models/g009-m0000@1','model','card','K/9|a','f','{}')", []).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        super::reopen_units(&tx, &["models/g009-m0000@1".to_string()], "recheck", 1, true).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(count(&conn, "SELECT count(*) FROM outputs WHERE unit_id='models/g009-m0000@1'"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM units WHERE id='models/g009-m0000@1' AND state!='done'"), 1);
+        // -Recheck reopens a done unit only in the models layer.
+        conn.execute("UPDATE units SET state='done' WHERE id='termcards/t002@1'", []).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let refused = super::reopen_units(&tx, &["termcards/t002@1".to_string()], "recheck", 1, true).unwrap_err().to_string();
+        assert!(refused.contains("not failed"), "{refused}");
+    }
+
+    #[test]
+    fn a_recompleted_model_keeps_or_reregisters_its_explain_unit() {
+        let (_dir, conn) = ledger();
+        let tx = conn.unchecked_transaction().unwrap();
+        register_term_cards(&tx, &plan(1, &["剩余控制权"])).unwrap();
+        tx.commit().unwrap();
+        conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,attempts,inputs_json,input_hash,progress_json,created_by,created_at) SELECT 'models/g032-m0000@1','models','g032-m0000',1,'claimed',1,inputs_json,input_hash,progress_json,created_by,created_at FROM units WHERE id='termcards/t001@1'", []).unwrap();
+        conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_by,created_at,completed_at,result_json) VALUES('explain/g032-m0000@1','explain','g032-m0000',1,'done','{\"parts\":[]}',?1,'models/g032-m0000@1','now','now','{}')", [canon::hash_value(&json!({"parts":[]}))]).unwrap();
+        conn.execute("INSERT INTO outputs(unit_id,output_key,kind,locator,fingerprint,data_json) VALUES('explain/g032-m0000@1','x','card','K/32|a','f','{}')", []).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let same = super::explain_reregistered(&tx, "explain/g032-m0000@1", "models/g032-m0000@1", &json!({"parts":[]})).unwrap().unwrap();
+        assert_eq!(same["changed"], json!(false));
+        assert_eq!(count(&tx, "SELECT count(*) FROM units WHERE id='explain/g032-m0000@1' AND state='done'"), 1, "the same inputs keep the unit");
+        let changed = super::explain_reregistered(&tx, "explain/g032-m0000@1", "models/g032-m0000@1", &json!({"parts":["D1"]})).unwrap().unwrap();
+        assert_eq!(changed["changed"], json!(true));
+        assert_eq!(count(&tx, "SELECT count(*) FROM units WHERE id='explain/g032-m0000@1' AND state='registered'"), 1, "changed inputs re-register it");
+        assert_eq!(count(&tx, "SELECT count(*) FROM outputs WHERE unit_id='explain/g032-m0000@1'"), 0);
+        assert!(super::explain_reregistered(&tx, "explain/g032-m0000@1", "models/other@1", &json!({})).is_err(), "never another producer's unit");
+        assert!(super::explain_reregistered(&tx, "explain/none@1", "models/g032-m0000@1", &json!({})).unwrap().is_none());
     }
 
     #[test]
