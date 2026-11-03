@@ -1063,3 +1063,41 @@ Settings moved from main lines into the setting part renumbered the chapters of 
 The sessions' full notes are `settings-lone-savings.md`, `settings-lone-firms.md`, `settings-lone-opttax.md` and `settings-lone-public.md` in `C:\Users\chenx\AppData\Roaming\Claude\side-session-notes\local_de933034-458b-4650-9970-0d312797d14b\`.
 
 **Next.** `zt-model-restructure`, then `zt-model-import`, on the 64 lone models.
+
+### 17.5 The intuition spines of the 64 lone models (2026-11-03)
+
+The owner asked for the restructure pass on all 64 lone models. The same four Opus sessions (medium effort) ran `zt-model-restructure` on the live box, on the same shares as §17.4. The backup is `D:\zt\backups\zt-before-atkinson2015lectures-lone-restructure.sqlite3` (`VACUUM INTO`, integrity ok). The tree was not locked.
+
+**Drafts.** The DeepSeek official source worked again. DeepSeek V4.1 Flash, at effort high, wrote every draft under Haiku managers. It ran 50 jobs: 9 for the savings share, 4 for firms, 20 for optimal tax and 17 for public goods. Every conversation was deleted and every workspace removed. A draft wrote only the new text: each chapter's **直觉** lead, its facet, title and `依赖` reason, and each result's lead and **为什么** section. Scripts then put each card together with its original text, kept word for word. A concept chapter keeps its old body under **内容**. A chapter made from an old 机制 or 问题 card keeps that card's text in a section named after its old facet. Every draft passed `check-drafts.mjs`. A session script also checked display formulas byte for byte, equation numbers, Links, Term links, figures and the chapter format.
+
+**Spines.**
+- **Concept models.** Each main-line card is now a chapter card (`第 k 章：…`), with a **直觉** lead. Most have two chapters, a mechanism and then a conclusion. A few have three: `130|a`, `131|a`, `133|a`, `133|b` and `133|c`. In `195|a`, `208|a`, `220|a`, `221|a` and `228|a`, the old 结论 card became the result of their one mechanism chapter.
+- **Formal models.** The chapter cards come first on the main line, each result is a Side branch of its chapter, and each proof chain hangs under its result. New chapter cards were made where the main line held only derivations, because a chapter card cannot rest on its own Side branches. Old 机制, 问题 and benchmark cards became chapter cards where they rest only on the setting part.
+- **Parts.** No model has five or more chapters, so none got a new **分部**. Two old 分部 sections named cards off the main line, and they were rewritten to name main-line cards: `193|a` and `218|a`.
+
+**Result.** The main session reran the checks on all 64 models:
+- `self_sufficient` is true;
+- `check-network.mjs` prints `network: clean`;
+- `check-premises.mjs` prints `premises: none used before their card`;
+- `check-settings.mjs` still prints `settings: all in the setting part, as a dependency tree`;
+- `list_broken_links` is empty.
+
+Display formulas and equation numbers are unchanged in every model (session scripts against pre-pass dumps). No forward fault was found before or after the pass, so no card moved for one. The tree grew from 7,399 to 7,439 Cards: 40 new chapter cards (savings 15, firms 8, optimal tax 8, public goods 9), and no card was deleted. Each head's **结构** was rebuilt in two levels. A Term link that was only in an old 结构 line, or in a title the rewrite changed, was kept in a `术语：` line or a renamed chapter title, and the head Links were compared before and after.
+
+**Judgement calls.**
+- **Lent blocks moved under their chapters.** `85|a|a|6` (imported whole by `74|a`) is now `85|a|a|2|a`, and `88|a|a|5` (imported by `95|b`) is now `88|a|a|1|b`. Both are results, and a result cannot stay on a spine's main line. The importers' Links followed the moves, and both import checks pass. The roots that `26|a` lends to `29|a` and `74|a` also moved, and those Links followed too.
+- **Notation first-card rows.** A result now comes before its proof in the reading order, so a symbol a reader first meets in the result's statement now names the result card as its first card. That changed about 40 rows in `26|a`, `53|a`, `55|a`, `88|a`, `95|b`, `112|a`, `114|a`, `115|a`, `178|a`, `193|a`, `205|b`, `205|c`, `206|a`, `207|a`, `217|a` and `219|b`. These row pointers are the only edits in the setting parts.
+- **A result line made a refers relation.** In eight results with a one-card proof, `证明见…从 [[P]] 读起` came before `依赖 [[P]]`, so the pair read as refers. Moving the `依赖` line up made it rests-on again. It is the same rule as the variant-setting fix in §17.4: put the `依赖` line before any other line that links the same card.
+- **Relation words.** In `26|a` chapter 4, the label `扩展：` before a Link made a relaxes relation, so it became `先读：`.
+- **Text corrections by hand:**
+  - `95|b` chapters 1 and 2: the stability wording, and the share difference, which equals θ_LY;
+  - `131|a` chapter 3: a summary sentence;
+  - `本模型` became `这个模型` or `本章` in three kept bodies.
+- **Left for the import pass:**
+  - `141|b` rests on `140|a|a`, and `178|a` rests on `162|a|a|7|b`;
+  - `5|a`, `10|a`, `147|a`, `156|a` and `158|a` show premises in other models;
+  - `95|b` has a tolerated premise (its imported result rests on a proof that stays in `88|a`) and a false share to `92|a|a|5`.
+
+The sessions' notes are `restructure-lone-savings.md`, `restructure-lone-firms.md`, `restructure-lone-opttax.md` and `restructure-lone-public.md` in the side-session notes folder named in §17.4.
+
+**Next.** `zt-model-import` on the 64 lone models.
