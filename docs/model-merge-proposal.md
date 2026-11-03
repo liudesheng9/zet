@@ -939,3 +939,81 @@ The backup is `D:\zt\backups\zt-before-atkinson2015lectures-settings.sqlite3` (`
 The sessions' full notes are in `C:\Users\chenx\AppData\Roaming\Claude\side-session-notes\local_de933034-458b-4650-9970-0d312797d14b\` (`settings-74-57-59-92.md`, `settings-149-162-159-140-137-139-128.md`, `settings-29-100-107-116-179.md`, `settings-19-42-188-196-201-210.md`).
 
 **Next.** `zt-model-restructure`, then `zt-model-import`, on the 22 heads. `57|a` still has 2 forward faults: its chapter-12 card rests on its own Side derivations.
+
+### 17.2 The intuition spines (2026-11-03)
+
+The `zt-model-restructure` skill ran on the live box on the 22 folded models, through the same four Opus sessions (medium effort) as §17.1. The backup is `D:\zt\backups\zt-before-atkinson2015lectures-restructure.sqlite3` (`VACUUM INTO`, integrity ok). The tree was not locked.
+
+**Before.** All 22 models had `self_sufficient` false, because every former head was unanchored. Every main-line card lacked its **直觉** lead. In 42|a, 188|a, 196|a, 201|a and 210|a, the base model's derivations sat on the main line. 57|a had 2 forward faults.
+
+**Result.** The main session reran the checks on all 22 models:
+- check-model reports `self_sufficient true`;
+- check-network prints `network: clean`;
+- check-settings still prints its success line;
+- `list_broken_links` is empty.
+
+The sessions also report check-premises clean, and display formulas identical to the dumps taken before the settings pass. 74|a has one false premise hit: the check reads `r(1)` as equation (1).
+
+**Shape.** The main line is the setting, then the chapter cards. Each former head became a chapter. A new first chapter collects the base model's main-line derivation. Each result is a Side of its chapter, with its proof chain as its own first Side.
+
+The new chapter cards, 26 in all (7,303 → 7,329 Cards):
+- 74|a: 1. 57|a: 1. 59|a: 2. 92|a: 2.
+- 149|a, 162|a, 159|a, 137|a: 1 each. 140|a: 2. 128|a: 2.
+- 29|a: 1. 100|a: 2. 107|a: 2. 116|a: 1. 179|a: 1.
+- 42|a, 188|a, 196|a, 201|a, 210|a: 1 each.
+
+The two verbal pairs became the first chapters: Hotelling and Boiteux (ch. 1–2 of 188|a), and the islands (ch. 1 of 210|a). The concept model 139|a keeps its main line, as in §12.3. The sessions' notes list each spine.
+
+**Text.** DeepSeek V4.1 Flash (official, high, under Haiku managers) drafted most of the chapter and result cards until the provider failed. On the owner's instruction, Opus wrote the rest:
+- 57|a ch. 5–8;
+- the cards of 188|a, 196|a and 210|a (56 cards).
+
+Every draft was checked by script: display formulas and equation numbers, original Links, figures and charts, one 依赖 line per chapter, no new relation words, no 本模型. The repairs:
+- Formulas dropped from a former 概要 were put back verbatim: 149 ch. 5, 162 ch. 5, 159 ch. 2, and (3-23) in 29 ch. 8.
+- One Bridge line (162 ch. 3) was restored.
+- A chart copied into 19 ch. 3 was dropped, and a duplicated image in 42 ch. 4 was removed.
+
+All DeepSeek conversations were deleted and their workspaces removed.
+
+**Relations.** No new `relaxes` or `objects` relation was made. Some `corresponds`/`contrasts` pairs between former heads became `rests-on`, because of the chapters' 依赖 lines (a pair carries one kind), or became `refers` where a 关联 line was reworded.
+
+**Judgement calls for the owner:**
+- **Chapter dependencies:**
+  - 29 ch. 9 rests on ch. 4, not ch. 8;
+  - 100 ch. 4 rests on ch. 1, and ch. 5 on ch. 2;
+  - 107 ch. 3 rests on ch. 2; 116 ch. 5 rests on ch. 3;
+  - the chapter trees of 19|a, 42|a, 188|a, 196|a, 201|a and 210|a are in the sessions' notes.
+- **Results without their own proof chain** rest on their neighbours' chains: 149 10|b, 11|b; 162 3|b, 3|c, 7|b; 159 3|b, 3|d, 3|g; 128 1|b.
+- **Recap and **分部** cards:** 149 ch. 11 keeps its two recap cards at the head of its proof chain. 140|a lost its **分部** section: three chapters are below the five-chapter threshold.
+- **Lent cards:** 74 ch. 12 kept its shape, because 74|a|a|12|a is lent to 92|a. The lent cards 100|a|a|7|a and 196|a|a|d|a stayed where the borrowers' Links follow them.
+- **Kept text:** Bridge lines that say 本模型 and the 一句话： lead of result cards were kept, as in the earlier books.
+
+### 17.3 Imports and explanations (2026-11-03)
+
+The `zt-model-import` skill ran on the live box on the 22 folded models, through the same four sessions, after all 22 restructures had passed. The backup is `D:\zt\backups\zt-before-atkinson2015lectures-import.sqlite3`. The main session reran `imports.mjs check` on all 22 models (exit 0), and the checks of §17.2 again: all pass, still 7,329 Cards.
+
+**Imports.** Six 单卡 lines became 整块, so each borrowed result brings its premises from its home model:
+- 74|a: three lines, to 85|a|a|6, 26|a|a|1 and 26|a|a|6;
+- 92|a: one line, to 74|a|a|12|a;
+- 107|a: one line, to 100|a|a|7|a;
+- 201|a: one line, to 196|a|a|d|a (β^h).
+
+162|a's three lines, to 159|a and 149|a, also became 整块.
+
+Tolerated premises fell to 0 in every model. The false shares (§17) moved from the heads' **关联** sections into chapter cards, as comparisons, with their Links kept: 92|a, 100|a, 107|a, 116|a, 159|a, 162|a, 179|a and 201|a. 149|a, 57|a, 59|a and the other models had nothing to import. The copy advice the plan gives was left: each such pair is a comparison, not a restatement. Examples: 188 ch. 6 against 149 ch. 6; the OLG chapters of 107|a against 29|a|a|3.
+
+**Symbols.** Every model keeps its own notation card. 107|a's notation card now points to 100|a's for the imported block. 201|a's 读法 line says β^h 沿用 [[196|a|a|d|a]] 的定义.
+
+**Explanations (step 8).** DeepSeek was down, so Opus did each `explain.mjs` job to the job's own result file, under the job's `explain-check` self-check (faults 0), then ran `apply` and `finish` (exit 0 on all 22). It refreshed 60 Derivation parts:
+- 74|a 7, 92|a 3;
+- 149|a 4, 162|a 10, 159|a 8, 140|a 5, 137|a 3;
+- 29|a 4, 107|a 4, 116|a 7;
+- 19|a 3, 42|a 2.
+
+Most parts already had their explanations and only needed stale position lines updated. For three parts with no derivation format (159 `3|e|a`, 162 `2|a|a`, 162 `2|c|a`), the session first reformatted the text into 起点/步骤/结果. Their formulas and Links are unchanged, and 162 `2|a|a`'s title prefix changed from 前提 to 推导. Their new explanations are marked `（补：书中未写）`.
+
+Two corrections:
+- One old 解读 was wrong. 116 `5|b|a` said "T_e=0 gives zero covariance"; it now reads "T_e=1 returns to the untaxed covariance".
+- The restructure draft of 159 `2|b` had dropped the three Figure 13-1 lines, which were restored.
+
+**Next.** The 22 folded models have now had all four passes. The 64 models that stay alone have had none of the later passes. Their formal ones still need settings, restructure and import.
