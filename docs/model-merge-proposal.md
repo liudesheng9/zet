@@ -1101,3 +1101,36 @@ Display formulas and equation numbers are unchanged in every model (session scri
 The sessions' notes are `restructure-lone-savings.md`, `restructure-lone-firms.md`, `restructure-lone-opttax.md` and `restructure-lone-public.md` in the side-session notes folder named in §17.4.
 
 **Next.** `zt-model-import` on the 64 lone models.
+
+### 17.6 Imports and explanations of the 64 lone models (2026-11-03)
+
+The `zt-model-import` skill ran on the live box on the 64 lone models. The main session wrote the import lines and moved the false shares; the same four sessions refreshed the explanations and read the possible copies. The backup is `D:\zt\backups\zt-before-atkinson2015lectures-lone-imports.sqlite3`.
+
+The main session reran the checks on all 64 models afterwards:
+- `imports.mjs check` exits 0 on all 64, and `plan` proposes no import line.
+- check-settings, check-network (`network: clean`) and check-premises pass on all 64, and `self_sufficient` is true.
+- `list_broken_links` is empty.
+- Against the backup, the tree still holds 7,439 Cards. No Card moved or was deleted, and 125 bodies changed. Every display formula and `\tag` is unchanged, and no card has fewer `（补：书中未写）` marks.
+
+**Imports.** 13 models changed. Five legacy （共用） models lost their （共用） lines: 5|a, 16|a, 68|a, 85|a and 114|a. 68|a keeps 57|a|a|4 and 57|a|a|7 as 单卡; the other lines of the five are 整块. Eight models had 单卡 lines upgraded to 整块: 53|a (two lines), 88|a (two lines, to `hart1995firms/2|c|a|1|a` and `2|c|a|2|a`), 95|b, 128|c, 131|a, 141|c, 178|a and 187|a. 16|a also gets `整块 [[26|a|a|2|a|a]]`, the block its imported chapter rests on, which its home model 29|a imports too. That line stands before 29|a|a|3, because the shelves follow the order of the lines; in the other order the board drew a forward thread.
+
+Tolerated premises fell from 41 lines of advice (and 3 in `hart1995firms`) to one. 178|a keeps it: its imported 162|a|a|7|b rests on 149|a|a|9|a. An import line for that block was tried and taken back. The board then drew the 162 shelf first and showed a forward thread, although the build order was sound and `self_sufficient` stayed true. A forward thread is a fault and a tolerated premise is advice, so the premise stays tolerated. The earlier open items 141|b and 5|a are closed.
+
+**False shares.** All 24 moved from the Model Cards into chapter cards, each with its Link and cue, in 17 models: 10|a, 26|a, 28|a, 37|a, 67|c, 95|b, 112|a, 147|a, 156|a, 158|a, 178|a, 187|a, 193|a, 213|a, 217|a, 219|b and 228|a. In the moved text 本模型 and 本卡 became 这里. A 关联 section that lost its last line left the Model Card.
+
+**Copies.** The plan names 18 possible copies. 17 appear because a moved line keeps its 对应 or 参照 cue next to a part of another model, and all were read as comparisons. The closest call is 88|a|a against `hart1995firms/2|c|a|1|a`: both state cost minimisation, and 88|a|a's own line calls it the same problem. It stays because 88|a|a is the model's primitive setting, its agent, timing, information and $C(\mathbf{w},X)$ are its own, and Hart's card holds prices fixed under other symbols. The owner may overrule this one. No part became a variant, so `plan` keeps printing all 18 as advice.
+
+**Symbols.** Every model keeps its own notation card. Two notation rows of 95|b|a|a now point to 95|b|a|1|a|a, because the refreshed overview line of that card shows θ_XX, θ_YX and θ_LX first. Their meanings are unchanged.
+
+**Explanations (step 8).** DeepSeek V4.1 Flash (official source, effort high) refreshed 25 Derivation parts in 6 models: 52|a 5, 95|b 4, 193|a 4, 217|a 3, 218|a 7 and 219|a 2. The job refused no part, and `finish` exits 0 on all six. The other 58 models have nothing to explain. Every conversation is deleted.
+
+The text needed repairs by hand, because `explain-check` and `explain-apply` accepted these faults. The sessions kept 起点, 步骤 and 结果 unchanged, apart from the `说明：` lines under the steps:
+- `（补：书中未写）` marks were lost or merged (52|a, 217|a) and were restored. They were added to new explanations the book does not give (193|a, 95|b, 218|a, 219|a). The 219|a marks follow the session's judgement; it did not read the book's section.
+- Dropped content was restored: the chart in a 219|a 解读, step notes in 95|b and 218|a, remarks about the book in 52|a and 218|a, and six next-card Links in 218|a.
+- Wrong statements were corrected: `下一张` where the restructure put the result before its proof (193|a, 219|a), `最后一张` (217|a), `用同一包络论证` (193|a), ζ used before its card (52|a), and two wordings in 218|a that conflicted with their chains.
+
+The Term link 人头税 no longer appears in three explanations of 218|a, because the new text says it differently. The second Term-link plan changes nothing, and no plain Link is lost.
+
+The sessions' notes are `import-lone-savings.md`, `import-lone-firms.md`, `import-lone-opttax.md` and `import-lone-public.md` in the side-session notes folder named in §17.4.
+
+**Next.** All 86 models of the book have now had every pass that applies to them.
