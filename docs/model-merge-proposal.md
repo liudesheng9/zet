@@ -776,3 +776,88 @@ Every setting moved `alone`, so its derivation chain closed up and stays in its 
 - `list_broken_links` is empty. The tree holds 321 Cards (319 + the two new chapter cards).
 
 **Next.** Nothing is pending for this model.
+
+## 17. The Atkinson–Stiglitz lectures fold (2026-11-03)
+
+The `zt-model-fold` skill folded `atkinson2015lectures` (*Lectures on Public Economics*, updated edition) on the live box. The owner invoked `/zt-model-fold atkinson2015lectures`, read the decision table, and answered "Yes, fold live". The backup is `D:\zt\backups\zt-before-atkinson2015lectures-fold.sqlite3` (`VACUUM INTO`, integrity ok, 12,442 Cards). The tree was not locked.
+
+**Decision.** The digest left 188 Model Cards, and `model-survey.mjs` proposed 98 candidate groups. The book is a textbook of eighteen lectures, and most lectures set up one model and then extend it. Each candidate was decided by its question and its primitives: 22 models hold two or more Model Cards (102 Model Cards fold into those 22 heads), and 64 Model Cards stay alone. The book holds **86 models**. Rows marked **J** needed judgement. The owner approved the table as a whole before the fold.
+
+### Models with two or more Model Cards
+
+| Surviving head | Folded Model Cards | Reason | J |
+|---|---|---|---|
+| 19\|a labour supply | 20\|a, 21\|a, 21\|b, 22\|a, 22\|b | Lecture 2: one individual choosing net income and leisure under a tax schedule. 20\|a solves it for a proportional tax, 21\|a/21\|b change the schedule (linear progressive, equal-revenue comparison), 22\|a (household participation) and 22\|b (home production) are the book's "wider models of labour supply" on the same question. | J (22\|a, 22\|b) |
+| 29\|a intertemporal choice | 30\|a, 31\|a, 32\|a, 33\|a, 34\|a, 35\|a, 36\|a, 36\|b, 39\|a | Lecture 3: one individual allocating lifetime resources. 30\|a is the same T-period budget constraint; 31\|a/32\|a its two-period form with taxes; 33\|a pension, 34\|a imperfect capital market, 35\|a income risk, 36\|a/36\|b bequests each change one assumption; 39\|a (Ando–Modigliani) is the aggregate estimating form of the life-cycle model. | J (39\|a, 36\|a/b) |
+| 42\|a portfolio choice | 43\|a, 45\|a, 48\|a, 49\|a, 50\|a, 51\|a, 54\|a | Lecture 4: one-period risk-averse investor, safe and risky asset, taxes on returns. 49\|a/50\|a change the tax provisions, 51\|a adds the lump-sum return of revenue, 54\|a many risky assets. | |
+| 57\|a firm investment and cost of capital | 58\|a, 63\|a, 64\|a, 65\|a, 65\|b, 68\|b, 69\|a | Lecture 5: competitive firm choosing capital, the tax enters through the cost of capital. 63\|a–65\|b vary depreciation rules, financing source and inflation; 68\|b anticipated tax changes; 69\|a (Jorgenson) is the estimating form. | J (69\|a) |
+| 59\|a financial policy | 60\|a, 61\|a, 62\|b | Lecture 5: own question (dividends, borrowing, new issues under the tax system); one chain of the financial identity, market value and tax arbitrage. | |
+| 74\|a two-sector incidence (Harberger) | 73\|a, 75\|a, 76\|a, 79\|a, 82\|b, 83\|a, 84\|a, 86\|a, 87\|a, 90\|a, 91\|a, 97\|a, 98\|a | Lectures 6–7: two sectors, two factors, corporation tax incidence. 73\|a is its verbal version; 75\|a–84\|a solve and extend it; 86\|a two classes; 87\|a calibration; 90\|a wage differentials, 91\|a fixed mark-up, 97\|a/98\|a rigid wages and rationing each relax one assumption ("7–1: three departures"). | J (90, 91, 97, 98) |
+| 92\|a monopolistic competition incidence | 93\|a, 94\|a, 95\|c | Lecture 7: own primitives (differentiated products, fixed costs, number of firms); 95\|c adds a second (retail) stage. | J |
+| 100\|a aggregate growth | 101\|a, 102\|a, 103\|a, 104\|a, 105\|a, 106\|a, 110\|b | Lecture 8: one-sector growth with a saving function. 101\|a classical saving and 102\|a technical progress change one assumption; 103\|a–106\|a and 110\|b add taxes, transfers and debt. | J (105, 106, 110\|b) |
+| 107\|a life-cycle OLG | 108\|a, 109\|a, 111\|a | Lecture 8: own primitives (two-period overlapping generations); capital tax, debt, tied transfers. Splits the survey's group with 105\|a/106\|a (only borrowed). | J |
+| 116\|a wealth transmission | 117\|a, 118\|a, 119\|a, 121\|a | Lecture 9: one distribution model (bequests plus inherited earning ability) solved at fixed and at endogenous factor prices, then taxed. | |
+| 128\|a median voter | 134\|a | 134\|a estimates the median-voter model. | |
+| 137\|a utility plane | 138\|a | 138\|a keeps the same plane and adds the egalitarian point and 45° line. | J |
+| 139\|a fundamental theorems | 9\|a | 9\|a is the Lecture 1 statement of the same theorem. | J |
+| 140\|a two households | 146\|a | 146\|a keeps the economy and restricts the government to a linear income tax. | |
+| 149\|a Ramsey commodity taxes | 151\|a, 152\|a, 153\|a, 154\|a, 155\|a, 173\|a, 174\|a, 175\|a, 176\|a, 183\|a | Lectures 12/14: one consumer problem with revenue-raising commodity taxes. Examples (151, 153, 175), primal method (152), reform (154), many persons (155), poll subsidy and linear income tax added (173, 174), special case (176), consumption externality (183, "premise: the 14–2 framework"). | J (183) |
+| 159\|a education choice and linear tax | 160\|a, 161\|a | Lecture 13–2: individuals differing in ability choose years of education; the government chooses t and G. Split from 162\|a (labour supply, own primitive choice). | J |
+| 162\|a optimal income tax (labour supply) | 164\|a, 165\|a, 166\|a, 167\|a, 169\|a, 177\|a | Lecture 13–3/4: individuals differ in wage and choose labour. Linear (162–165) and general (166 geometric, 167 Mirrlees) schedules on the same economy; 169\|a its first-best benchmark; 177\|a adds commodity taxes. | J (linear and general joined) |
+| 179\|a optimal savings tax (OLG) | 180\|a, 182\|a | Lecture 14: one OLG economy, the government's dynamic programme and its constrained optimum. | |
+| 188\|a public enterprise pricing | 186\|a, 186\|b, 189\|a, 190\|a, 191\|a, 192\|a | Lecture 15: public enterprise under a budget constraint. 186\|a/186\|b are its verbal versions (Hotelling, Boiteux); 189–192 add pure profits, monopoly, distribution, input choice. | J (186\|a/b) |
+| 196\|a public goods (Samuelson rule) | 197\|a, 198\|a, 199\|a, 200\|a | Lecture 16: the optimal supply rule and its modification by distortionary taxes and distribution. | |
+| 201\|a public provision of private goods | 202\|a, 204\|b | Own question (uniform provision of a private good); 202\|a health needs and 204\|b preference differences vary the households. Split from 199\|a (borrowed). | |
+| 210\|a local public goods, identical people | 209\|a, 211\|a, 212\|a, 214\|a, 216\|a | Lecture 17: identical people on identical islands/communities. 209\|a is the verbal version, 211\|a optimal population, 212/214/216 two communities (allocation, equilibrium, core). | J (209, 212–216 joined) |
+
+### Model Cards that stay alone (64)
+
+Own question or own primitives; Links to other models are borrowed results or comparisons and stay as Links.
+
+1\|b, 3\|a, 5\|a (verbal framework filled by several formal models), 10\|a, 16\|a, 18\|a (framework), 26\|a (expenditure function; 34\|a/36\|a only borrow it), 28\|a, 37\|a, 52\|a, 53\|a (**J**: infinite horizon with saving, own timing), 55\|a (risk-premium lemma), 67\|a, 67\|b, 67\|c, 68\|a, 72\|a, 85\|a (**J**: pure exchange, borrowed by 86\|a), 88\|a (cost-function duality, borrowed), 95\|b, 110\|a, 112\|a, 114\|a, 115\|a, 124\|b, 128\|b, 128\|c, 129\|a, 130\|a, 131\|a (Niskanen, borrows the 130\|a analogy), 132\|a, 133\|a, 133\|b, 133\|c, 135\|a, 135\|b, 141\|b, 141\|c (borrows 139\|a), 143\|a, 147\|a, 148\|a, 156\|a, 158\|a, 178\|a, 187\|a (**J**: control of public enterprises), 193\|a (social discount rate), 195\|a, 203\|a, 205\|b, 205\|c, 206\|a, 207\|a, 208\|a, 213\|a, 217\|a, 218\|a, 219\|a, 219\|b, 220\|a, 221\|a, 225\|a, 226\|a, 227\|a, 228\|a.
+
+**Procedure.** A one-head-at-a-time script (`fold.mjs` in the session scratchpad, plan in `plan.mjs`). It kept a state file that maps each planned address to its current one, because a move renames sibling Model Cards (`21|b` became `21|a` after `21|a` left section 21). For each folded Model Card X, in the book's order:
+
+1. Drop X's **结构**, **分部** and **引入** sections. **分部** lists the part divisions with Links to the parts, so it goes with **结构**. An **引入** line that names a card of another model goes to the head's **引入** section (7 lines in 6 heads). A line that names a card of the same model is dropped.
+2. Write X's body with every non-Term Link masked.
+3. Batch A (`apply_batch`): move X's Idea-note Sides (three: `86|a|a`, `98|a|a`, `212|a|a`) to Sides of X's section anchor, and park X's part Sides as Sides of the head.
+4. Retype X (`facet`, `emphasis: core`, `level: ""`).
+5. Restore the stripped body, with every Link under a moved Side re-pointed to its new address.
+6. Batch B: move X `alone` after the last card of the head's main line (the head's first part Side and its Direct chain), and move the parked parts back as Sides of X.
+
+Twenty-three Model Cards had an Idea note as their Direct successor (`31|a|1`, `75|a|1`, …). The `alone` move leaves that chain in the section.
+
+**Fault met.** The first run masked the body before batch A. A Link from X's text to its own part therefore kept the old address, and the restore of `69|a` was refused (`link target 69|a|a does not exist`). Every earlier restore had passed, so none of those bodies named a moved card: a stale address would have been refused the same way, because X's old Sides were empty at restore time. Step 5 now maps the Links through batch A's renames. `69|a` resumed from its saved state and finished cleanly. The skill's own order (park, then mask, retype and restore) does not meet this fault.
+
+**Result.** `model-survey.mjs` lists exactly the 86 decided Model Cards. Every folded Model Card is a part of its model, on the head's main line:
+
+| Head | Members | Former heads |
+|---|---|---|
+| `19|a` | 46 | `19|a|a|3`–`7` |
+| `29|a` | 113 | `29|a|a|8`–`16` |
+| `42|a` | 77 | `42|a|a|3`–`9` |
+| `57|a` | 78 | `57|a|a|6`–`12` |
+| `59|a` | 45 | `59|a|a|12`–`14` |
+| `74|a` | 191 | `74|a|a|9`–`21` |
+| `92|a` | 61 | `92|a|a|16`–`18` |
+| `100|a` | 97 | `100|a|a|17`–`23` |
+| `107|a` | 59 | `107|a|a|14`–`16` |
+| `116|a` | 78 | `116|a|a|7`–`10` |
+| `128|a` | 25 | `128|a|a|11` |
+| `137|a` | 20 | `137|a|a|13` |
+| `139|a` | 9 | `139|a|a|3` |
+| `140|a` | 31 | `140|a|a|15` |
+| `149|a` | 137 | `149|a|a|9`–`18` |
+| `159|a` | 54 | `159|a|a|8`–`9` |
+| `162|a` | 84 | `162|a|a|10`–`15` |
+| `179|a` | 46 | `179|a|a|7`–`8` |
+| `188|a` | 69 | `188|a|a|9`–`14` |
+| `196|a` | 45 | `196|a|a|8`–`11` |
+| `201|a` | 28 | `201|a|a|7`–`8` |
+| `210|a` | 65 | `210|a|a|5`–`9` |
+
+The tree still holds 7,281 Cards, and `list_broken_links` is empty. No folded model is self-sufficient yet. Each former head is unanchored (no rests-on line back to the setting), as in §13 and §16. Further faults for the restructure:
+- `57|a` has 4 forward faults: a card rests on a later card. They are fixed by moving cards.
+- Eight heads report one to three `false_share` Links: `92|a`, `100|a`, `107|a`, `116|a`, `159|a`, `162|a`, `179|a`, `201|a`. These are older Links from those heads to Model Cards of other models that are now parts. They stay as Links between models, or `zt-model-import` turns them into imports.
+
+**Next.** For each of the 22 folded heads: `zt-model-settings`, then `zt-model-restructure`, then `zt-model-import`. The 64 Model Cards that stay alone need no fold. The formal ones among them still go through the same three passes.
