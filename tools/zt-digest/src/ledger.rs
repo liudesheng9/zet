@@ -1,6 +1,7 @@
 //! One prepared book's work and evidence. No Card prose or second write authority.
 mod adopt;
 mod cleanup_run;
+mod watch;
 pub(crate) mod finish_batch;
 use crate::event::layer::prop;
 use crate::link_gap;
@@ -720,9 +721,26 @@ pub(crate) fn connect(path: &Path, writable: bool) -> Result<Connection> {
     conn.pragma_update(None, "foreign_keys", true)?;
     if writable {
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // #245: a checkpoint that resets the WAL also shrinks its file to this size, and a WAL
+        // that has grown past it (readers kept it from resetting) is folded back now if no reader
+        // is in it. That attempt never waits: a busy reader leaves it to the next writer. Every
+        // read-only open replays the whole WAL, so its size is every watcher's cost.
+        conn.pragma_update(None, "journal_size_limit", WAL_LIMIT)?;
+        let wal = path.with_file_name(format!(
+            "{}-wal",
+            path.file_name().and_then(|name| name.to_str()).unwrap_or("ledger.sqlite3")
+        ));
+        if std::fs::metadata(&wal).is_ok_and(|meta| meta.len() > WAL_LIMIT as u64) {
+            conn.busy_timeout(Duration::ZERO)?;
+            let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+            conn.busy_timeout(Duration::from_secs(10))?;
+        }
     }
     Ok(conn)
 }
+
+/// The size a ledger's WAL is cut back to after a checkpoint (#245): 64 MiB.
+pub(crate) const WAL_LIMIT: i64 = 64 * 1024 * 1024;
 
 pub(crate) fn meta(conn: &Connection, key: &str) -> Result<Value> {
     let value: String = conn
@@ -5877,13 +5895,60 @@ fn status_summary(full: &Value) -> Value {
 }
 
 fn status(out: &Path, layer: &str, placeholders: Option<Value>) -> Result<Value> {
+    status_read(out, layer, placeholders, true)
+}
+
+/// The status without the units' frozen inputs (#245): no count, gap or completion reads them, so
+/// a summary or a watcher reads the run for a fraction of the cost and counts exactly the same.
+fn status_lean(out: &Path, layer: &str, placeholders: Option<Value>) -> Result<Value> {
+    status_read(out, layer, placeholders, false)
+}
+
+/// The run's unit counts alone (#245): the same `counts_of` the status reports, read from each
+/// unit's layer, key, state, fault and result, with none of the coverage, emission, cleanup and
+/// timing checks. `ledger watch` polls this; on atkinson2015lectures (4,935 units) the full status
+/// spends seconds on those checks.
+fn status_counts(out: &Path) -> Result<Value> {
+    let conn = connect(&out.join("ledger.sqlite3"), false)?;
+    let tx = conn.unchecked_transaction()?;
+    verify_schema(&tx)?;
+    let mut statement =
+        tx.prepare("SELECT layer,logical_key,state,fault_json,result_json FROM units ORDER BY id")?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let parse = |raw: Option<String>| -> Result<Value> {
+        Ok(match raw {
+            Some(raw) => serde_json::from_str(&raw)?,
+            None => Value::Null,
+        })
+    };
+    let mut units = Vec::with_capacity(rows.len());
+    for (layer, logical_key, state, fault, result) in rows {
+        units.push(json!({ "layer": layer, "logical_key": logical_key, "state": state, "fault": parse(fault)?, "result": parse(result)? }));
+    }
+    let (mut counts, per_layer) = counts_of(&units);
+    counts["per_layer"] = per_layer;
+    Ok(json!({ "counts": counts }))
+}
+
+fn status_read(out: &Path, layer: &str, placeholders: Option<Value>, with_inputs: bool) -> Result<Value> {
     let conn = connect(&out.join("ledger.sqlite3"), false)?;
     let tx = conn.unchecked_transaction()?;
     verify_schema(&tx)?;
     if meta(&tx, "preparation_hash")? != canon::hash_value(&meta(&tx, "preparation")?) {
         bail!("ledger preparation hash mismatch");
     }
-    let mut statement=tx.prepare("SELECT id,layer,logical_key,revision,state,attempts,owner,claim_token,input_hash,inputs_json,fault_json,progress_json,result_json,lease_until,retry_after,created_at,completed_at,fault_class FROM units WHERE (?1='' OR layer=?1) ORDER BY id")?;
+    let inputs = if with_inputs { "inputs_json" } else { "NULL" };
+    let mut statement=tx.prepare(&format!("SELECT id,layer,logical_key,revision,state,attempts,owner,claim_token,input_hash,{inputs},fault_json,progress_json,result_json,lease_until,retry_after,created_at,completed_at,fault_class FROM units WHERE (?1='' OR layer=?1) ORDER BY id"))?;
     let units = statement
         .query_map([layer], |r| {
             Ok(json!({
@@ -5896,7 +5961,7 @@ fn status(out: &Path, layer: &str, placeholders: Option<Value>) -> Result<Value>
                 "owner":r.get::<_,Option<String>>(6)?,
                 "token":r.get::<_,i64>(7)?,
                 "input_hash":r.get::<_,String>(8)?,
-                "inputs_json":r.get::<_,String>(9)?,
+                "inputs_json":r.get::<_,Option<String>>(9)?,
                 "fault_json":r.get::<_,Option<String>>(10)?,
                 "progress_json":r.get::<_,String>(11)?,
                 "result_json":r.get::<_,Option<String>>(12)?,
@@ -17378,6 +17443,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if command == "adopt" {
         return adopt::cli(argv);
     }
+    // #245: the one run watcher, and the WAL checkpoint, have their own parameters.
+    if command == "watch" {
+        return watch::cli(argv);
+    }
+    if command == "checkpoint" {
+        return watch::checkpoint_cli(argv);
+    }
     let parsed = (|| -> Result<Args> {
         if !matches!(
             command.as_str(),
@@ -17402,7 +17474,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "resume"
         ) {
             bail!(
-                "ledger requires init, status, gate, next, renew, hold, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, reopen, job, resource, report or adopt"
+                "ledger requires init, status, gate, next, renew, hold, done, fail, rerun-list, resume, publish, notes, relocate, math, reclaim, reopen, job, resource, report, watch, checkpoint or adopt"
             );
         }        let params = if command == "report" || command == "resume" {
             vec!["Out"]
@@ -18052,7 +18124,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             close_enumerations(&tx)?;
             tx.commit()?;
         }
-        let full = status(Path::new(&a.str("Out")), &a.str("Layer"), verified)?;
+        // A bare summary reads the run without the units' frozen inputs (#245).
+        let lean = command == "status" && a.flag("Summary") && !a.has("Units") && !a.has("Held");
+        let full = if lean {
+            status_lean(Path::new(&a.str("Out")), &a.str("Layer"), verified)?
+        } else {
+            status(Path::new(&a.str("Out")), &a.str("Layer"), verified)?
+        };
         if command == "gate" && a.flag("Brief") {
             gate_brief(&full, &a.str("Layer"))
         } else if command == "status" && a.has("Units") {
@@ -20023,5 +20101,92 @@ mod import_structure_tests {
     fn the_structure_contribution_holds_the_import_lines() {
         let body = "问题：x\n\n**引入**\n\n- 单卡 [[B/2|a|a|12]]：π_m\n\n**结构**\n\n- 设定 [[B/3|a|a]]（核心）：设定\n\n**关联**\n- 对照 [[C/1]]\n\n来源：书";
         assert_eq!(structure_lines(body), ["- 单卡 [[B/2|a|a|12]]：π_m", "- 设定 [[B/3|a|a]]（核心）：设定"]);
+    }
+}
+
+/// #245: the run watcher's reads. A summary read leaves the frozen unit inputs out, and its counts
+/// equal the full read's; a writable connection keeps the WAL bounded.
+#[cfg(test)]
+mod lean_status_tests {
+    use super::*;
+
+    /// A prepared-looking ledger with one group and units in several layers and states.
+    pub(super) fn ledger() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(&dir.path().join("ledger.sqlite3"), true).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        let preparation = json!({"variant":"econ","groups":[{"n":1,"title":"one"}]});
+        let hash = canon::hash_value(&preparation);
+        for (key, value) in [
+            ("schema_version", json!(1)),
+            ("run_id", json!("r1")),
+            ("invocation", json!(2)),
+            ("resume_count", json!(1)),
+            ("target", target(&preparation).unwrap()),
+            ("preparation", preparation.clone()),
+            ("preparation_hash", json!(hash)),
+        ] {
+            conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![key, canon::canonical_json(&value)]).unwrap();
+        }
+        for layer in target(&preparation).unwrap()["enabled"].as_array().unwrap() {
+            let key = format!("barrier/{}", layer.as_str().unwrap());
+            conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![key, canon::canonical_json(&json!({"sealed":layer != "terms"}))]).unwrap();
+        }
+        let group = canon::hash_value(&json!({"n":1,"title":"one"}));
+        let units: [(&str, &str, &str, &str, Value, Option<Value>, Option<Value>); 5] = [
+            ("prepare/book@1", "prepare", "book", "done", json!({"preparation_hash":hash}), Some(json!({"status":"ok"})), None),
+            ("digest/g001@1", "digest", "g001", "done", json!({"big":"x".repeat(5000)}), Some(json!({"noop":true})), None),
+            ("terms/book@1", "terms", "book", "ready", json!({"terms":[1,2,3]}), None, None),
+            ("links/g001@1", "links", "g001", "failed", json!({}), None, Some(json!({"code":"bad","cause":"broke"}))),
+            ("links/g001@2", "links", "g001", "failed", json!({}), None, Some(json!({"code":"superseded"}))),
+        ];
+        for (id, layer, key, state, inputs, result, fault) in units {
+            let input_hash = if id == "digest/g001@1" { group.clone() } else { canon::hash_value(&inputs) };
+            conn.execute(
+                "INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,result_json,fault_json,created_at) VALUES(?1,?2,?3,?9,?4,?5,?6,?7,?8,'now')",
+                params![id, layer, key, state, canon::canonical_json(&inputs), input_hash, result.map(|r| canon::canonical_json(&r)), fault.map(|f| canon::canonical_json(&f)), id.rsplit('@').next().unwrap().parse::<i64>().unwrap()],
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_summary_read_counts_what_the_full_read_counts() {
+        let dir = ledger();
+        let full = status(dir.path(), "", None).unwrap();
+        let lean = status_lean(dir.path(), "", None).unwrap();
+        assert_eq!(status_summary(&lean), status_summary(&full));
+        // The lean read carries no frozen inputs; everything else is the same.
+        let digest = full["units"].as_array().unwrap().iter().find(|unit| unit["id"] == "digest/g001@1").unwrap();
+        assert!(digest["inputs"]["big"].is_string());
+        assert!(lean["units"].as_array().unwrap().iter().all(|unit| unit["inputs"].is_null()));
+        let mut stripped = full.clone();
+        for unit in stripped["units"].as_array_mut().unwrap() {
+            unit["inputs"] = Value::Null;
+        }
+        assert_eq!(lean, stripped);
+        assert_eq!(status_summary(&full)["counts"]["noop"], json!(1));
+    }
+
+    #[test]
+    fn a_counts_read_counts_what_the_full_read_counts() {
+        let dir = ledger();
+        let full = status(dir.path(), "", None).unwrap();
+        let mut expected = full["counts"].clone();
+        expected.as_object_mut().unwrap().remove("invocations");
+        assert_eq!(status_counts(dir.path()).unwrap()["counts"], expected);
+    }
+
+    #[test]
+    fn a_writable_connection_bounds_the_wal() {
+        let dir = ledger();
+        let conn = connect(&dir.path().join("ledger.sqlite3"), true).unwrap();
+        let limit: i64 = conn.pragma_query_value(None, "journal_size_limit", |r| r.get(0)).unwrap();
+        assert_eq!(limit, WAL_LIMIT);
+        let read = connect(&dir.path().join("ledger.sqlite3"), false).unwrap();
+        let limit: i64 = read.pragma_query_value(None, "journal_size_limit", |r| r.get(0)).unwrap();
+        assert_ne!(limit, WAL_LIMIT, "a reader changes nothing");
     }
 }
