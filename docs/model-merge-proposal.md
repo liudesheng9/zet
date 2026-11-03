@@ -892,3 +892,50 @@ The tree still holds 7,281 Cards, and `list_broken_links` is empty. No folded mo
 - Eight heads report one to three `false_share` Links: `92|a`, `100|a`, `107|a`, `116|a`, `159|a`, `162|a`, `179|a`, `201|a`. These are older Links from those heads to Model Cards of other models that are now parts. They stay as Links between models, or `zt-model-import` turns them into imports.
 
 **Next.** For each of the 22 folded heads: `zt-model-settings`, then `zt-model-restructure`, then `zt-model-import`. The 64 Model Cards that stay alone need no fold. The formal ones among them still go through the same three passes.
+
+### 17.1 The setting parts as dependency trees (2026-11-03)
+
+The `zt-model-settings` skill, in its stricter form of 2026-11-03 (`place`, `uncovered`, `unused`, `first`, `format`, `repeat`, `cite`, `balance`), ran on the live box on the 22 folded models. The owner invoked `/zt-model-settings` and asked for side sessions. Four Opus sessions at medium effort each took one block of lectures, one model at a time:
+- lectures 5–7: `74|a`, `57|a`, `59|a`, `92|a`;
+- lectures 10–14: `149|a`, `162|a`, `159|a`, `140|a`, `137|a`, `139|a`, `128|a`;
+- lectures 3, 8, 9 and 14: `29|a`, `100|a`, `107|a`, `116|a`, `179|a`;
+- lectures 2, 4 and 15–17: `19|a`, `42|a`, `188|a`, `196|a`, `201|a`, `210|a`.
+
+The backup is `D:\zt\backups\zt-before-atkinson2015lectures-settings.sqlite3` (`VACUUM INTO`, integrity ok). The tree was not locked.
+
+**Before.** Every model had no notation card (`missing`), and its setting card had no **起点** and kept local symbol and term tables (`start`, `format`). Every former head's setting was in a chapter (`outside`): 1 to 13 per model. Some chapters also stated assumptions themselves (`stated`). The stricter faults appeared only once a notation card existed. In `74|a`, for example, the first moves produced 22 `start`, 46 `format`, 21 `uncovered`, 7 `misfiled` and 2 `order` faults.
+
+**Result.** `check-settings.mjs <head> --symbols` prints `settings: all in the setting part, as a dependency tree` for all 22 models, and the main session reran it on each. Each model's display formulas are unchanged byte for byte (a script compared them, old against live). `list_broken_links` is empty. Each head's **结构** was rebuilt. The tree grew from 7,281 to 7,303 Cards: one new notation card per model, at `<head>|a|a`. No card was deleted. `self_sufficient` stays false: every former head is unanchored until `zt-model-restructure`.
+
+**Judgement calls.** These are for the owner to look at:
+- **Cards moved in that the check did not flag.** They state the model's setting:
+  - `59|a`'s tax-system card (five tax rules);
+  - `137|a`'s four SWF definition cards;
+  - `42|a`'s budget and definition cards ((4-6), (4-19), (4-21), $R_A$/$R_R$);
+  - `29|a`'s credit constraint, and `179|a`'s government instruments and Cobb–Douglas card.
+  - Moving main-line cards renumbered the chapters of `59|a`, `92|a`, `162|a`, `159|a`, `137|a` and `128|a`. The Links followed the moves.
+- **Kept in chapters.** They belong with their derivations:
+  - in `149|a`, the derived quantities $b^h$ and $\varphi_k$, and the recap cards of chapter 18;
+  - in `116|a`, the behavioural equation (9-15);
+  - in `179|a`, the government objective Γ;
+  - in `100|a`, the steady-state definition;
+  - in `19|a`, the exercise utilities;
+  - in `128|a`, exercise 10–1's starting point;
+  - in `210|a`, the repeated $V(N)$ and the equilibrium conditions;
+  - the chapter 记号 cards of `74|a` (chapter 18) and `92|a` (chapter 14), which duplicate notation rows; the restructure may fold them.
+- **Settings that use a chapter result.** The setting defines the quantity in words and points to the chapter with 见. Cases: $w_0$ in `162|a` (13-28) and in `159|a` (cases A/B); (3-1) in `29|a`; (9-16)/(9-15) in `116|a`; the $dk$ equation in `107|a`.
+- **Text corrections:**
+  - `74|a`: the old geometric setting defined $\sigma_D$ with $\eta_X$ and $\eta_Y$ swapped. That restatement was dropped, and the definition is now the chapter's (6-9).
+  - `42|a|a|6|a|4`: the section header **符号** (sign) became **正负号**, because the check read it as a symbol table.
+- **Relations removed** because they described the wrong relation:
+  - `149|a`: one `放宽` that described a narrowing;
+  - `42|a`: two `relaxes` from special cases (quadratic utility, two states);
+  - `116|a`: one `放宽`;
+  - `29|a`: two Links in the two-period tax card (one of them a `corresponds`).
+  - No pass made a new `relaxes` or `objects` relation.
+- **Facets.** Four derivation steps that carried assumption facets were re-faceted, not moved: `162|a` 10|a|1 and 10|a|7, and `159|a` 8|a|8 and 9|a|12. `196|a`'s $\beta^h$ definition, now at `196|a|a|d|a`, is lent to `201|a`.
+- **Checker behaviour.** The check reads a letter inside a subscript as a use. So the rows `D` (`74|a`) and `c` (`57|a`) write their symbol outside math. Relation words (参照, 例子, 取自, 扩展, 代入, 用到) make relations even in notation rows and pointer sentences, so several sentences were reworded or split.
+
+The sessions' full notes are in `C:\Users\chenx\AppData\Roaming\Claude\side-session-notes\local_de933034-458b-4650-9970-0d312797d14b\` (`settings-74-57-59-92.md`, `settings-149-162-159-140-137-139-128.md`, `settings-29-100-107-116-179.md`, `settings-19-42-188-196-201-210.md`).
+
+**Next.** `zt-model-restructure`, then `zt-model-import`, on the 22 heads. `57|a` still has 2 forward faults: its chapter-12 card rests on its own Side derivations.
