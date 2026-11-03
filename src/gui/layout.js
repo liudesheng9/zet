@@ -88,8 +88,25 @@
     near: { w: 236, h: 76 },
     slip: { w: 236, h: 30 },
   };
-  const GAP_Y = { focus: 16, near: 12, slip: 6 };
+  const GAP_Y = { focus: 16, near: 12, slip: 6, bundle: 6 };
   const GUTTER = 56;
+  // A bundle of slips the window leaves out: one slip's width, a little thicker than a slip.
+  LOD.bundle = { w: 236, h: 38 };
+
+  // The sibling window (#238, D1): a list of more than WINDOW_CAP outline children shows its anchor,
+  // WINDOW_RADIUS siblings on each side of it, and its first and last child; every other run of
+  // the list lies folded in a bundle. A short list shows whole, as it always did.
+  const WINDOW_CAP = 30;
+  const WINDOW_RADIUS = 8;
+
+  /** The indices of a list of `n` that the window around `anchor` shows. */
+  function windowOf(n, anchor) {
+    const span = 2 * WINDOW_RADIUS + 1;
+    const start = Math.max(0, Math.min(Math.max(0, anchor) - WINDOW_RADIUS, n - span));
+    const keep = new Set([0, n - 1]);
+    for (let i = start; i < Math.min(n, start + span); i += 1) keep.add(i);
+    return keep;
+  }
 
   /**
    * The Map's focus lens. Given the outline, the Pointer, and the Pointer's in-tree Links,
@@ -103,20 +120,37 @@
    * Returns { nodes: [{address, lod, x, y, w, h, folded, role}], edges: [...], bounds }.
    */
   function focusLens(tree, focus, options = {}) {
-    const { links = [], expandAll = false } = options;
+    const { links = [], expandAll = false, windows = {} } = options;
     if (!tree.card.has(focus)) focus = tree.root;
     const shown = new Set();
     const path = pathTo(tree, focus);
     const onPath = new Set(path);
     const show = (address) => { for (const at of pathTo(tree, address)) shown.add(at); };
-    if (expandAll) for (const address of tree.order) shown.add(address);
-    for (const at of path) {
+    // The lists the lens lays out: parent -> { keep, anchor }, where `keep` is the window's index
+    // set, or null for a list short enough to show whole. A list is anchored on its child on the
+    // path, else on its first child, unless `windows` names an anchor (a riffled bundle).
+    const listed = new Map();
+    const showKids = (parent, onward) => {
+      if (listed.has(parent)) return;
+      const kids = tree.kids.get(parent);
+      let keep = null;
+      let anchor = 0;
+      if (kids.length > WINDOW_CAP) {
+        const asked = windows[parent];
+        anchor = Number.isInteger(asked) ? asked : Math.max(0, kids.indexOf(onward));
+        keep = windowOf(kids.length, anchor);
+      }
+      listed.set(parent, { keep, anchor });
+      kids.forEach((kid, i) => { if (!keep || keep.has(i)) shown.add(kid); });
+    };
+    path.forEach((at, i) => {
       shown.add(at);
-      for (const kid of tree.kids.get(at)) shown.add(kid);
-    }
+      showKids(at, path[i + 1]);
+    });
+    if (expandAll) for (const address of tree.order) if (shown.has(address)) showKids(address, null);
     // Grandchildren too, unless the children alone already fill the lens.
     if (tree.kids.get(focus).length <= 14) {
-      for (const kid of tree.kids.get(focus)) for (const grand of tree.kids.get(kid)) shown.add(grand);
+      for (const kid of tree.kids.get(focus)) showKids(kid, null);
     }
     const linked = new Set(links.filter((address) => tree.card.has(address) && address !== focus));
     for (const address of linked) show(address);
@@ -151,16 +185,27 @@
     // Second pass: a tidy outline. A Card's shown children start level with it in the next
     // column and stack downward; its next sibling goes below the lower of the two.
     let maxX = 0;
+    const bundleOf = new Map(); // a slip folded in a bundle -> that bundle
     const place = (address, y) => {
       const lod = lodOf(address);
       const { w, h } = LOD[lod];
       const d = tree.depth.get(address);
       const kids = tree.kids.get(address);
-      const shownKids = kids.filter((kid) => shown.has(kid));
+      const list = listed.get(address);
+      // A shown child is a row; in a windowed list each run of hidden children is one bundle
+      // row; any other hidden child is folded into this Card's "+N".
+      const rows = [];
       let folded = 0;
-      for (const kid of kids) if (!shown.has(kid)) folded += 1 + tree.size.get(kid);
+      let run = null;
+      kids.forEach((kid, i) => {
+        if (shown.has(kid)) { run = null; rows.push(kid); return; }
+        if (!list || !list.keep) { folded += 1 + tree.size.get(kid); return; }
+        if (!run) { run = { from: i, through: i, cards: 0 }; rows.push(run); }
+        run.through = i;
+        run.cards += 1 + tree.size.get(kid);
+      });
       const node = {
-        address, lod, x: colX[columnOf(address)], y, w, h, depth: d, folded,
+        address, lod, x: colX[columnOf(address)], y, w, h, depth: d, folded, up: tree.up.get(address),
         role: address === focus ? 'focus' : onPath.has(address) ? 'path' : linked.has(address) ? 'linked' : 'context',
       };
       index.set(address, node);
@@ -168,10 +213,30 @@
       maxX = Math.max(maxX, node.x + w);
       let bottom = y + h;
       let childY = d === 0 ? y + h + GAP_Y[lod] : y;
-      for (const kid of shownKids) {
-        childY = place(kid, childY);
+      for (const row of rows) {
+        if (typeof row === 'string') {
+          childY = place(row, childY);
+          bottom = Math.max(bottom, childY);
+          childY += GAP_Y[lodOf(row)];
+          continue;
+        }
+        // A riffle shows the slips just behind the bundle: the window starts at a bundle below
+        // the anchor and ends at a bundle above it.
+        const bundle = {
+          kind: 'bundle', address: `bundle:${address}:${row.from}`, parent: address, up: address,
+          from: kids[row.from], through: kids[row.through], fromIndex: row.from, throughIndex: row.through,
+          count: row.through - row.from + 1, cards: row.cards,
+          anchor: row.from > list.anchor ? row.from + WINDOW_RADIUS : row.through - WINDOW_RADIUS,
+          lod: 'bundle', role: 'context', folded: 0, depth: d + 1,
+          x: colX[Math.max(0, d)], y: childY, w: LOD.bundle.w, h: LOD.bundle.h,
+        };
+        for (let i = row.from; i <= row.through; i += 1) bundleOf.set(kids[i], bundle);
+        index.set(bundle.address, bundle);
+        nodes.push(bundle);
+        maxX = Math.max(maxX, bundle.x + bundle.w);
+        childY = bundle.y + bundle.h;
         bottom = Math.max(bottom, childY);
-        childY += GAP_Y[lodOf(kid)];
+        childY += GAP_Y.bundle;
       }
       return bottom;
     };
@@ -186,11 +251,15 @@
       chain.add(at);
       if (!tree.card.has(tree.card.get(at).parent)) break;
     }
+    // A bundle hangs where its first slip would; a Card whose predecessor lies in a bundle
+    // hangs from the bundle.
     const edges = [];
     for (const node of nodes) {
-      const card = tree.card.get(node.address);
+      const card = tree.card.get(node.kind === 'bundle' ? node.from : node.address);
       if (card.edge === 'root') continue;
-      const from = index.has(card.parent) ? card.parent : tree.up.get(node.address);
+      const from = index.has(card.parent) ? card.parent
+        : bundleOf.has(card.parent) && bundleOf.get(card.parent) !== node ? bundleOf.get(card.parent).address
+          : node.up;
       if (from == null || !index.has(from)) continue;
       const kind = card.edge === 'side' ? 'side' : 'direct';
       edges.push({
@@ -1056,7 +1125,57 @@
     return { left, right, threads: pairs.map((p) => [li.get(p.to), ri.get(p.from)]) };
   }
 
+  /** The world rectangle a camera `{x, y, k}` sees on a `vw` x `vh` viewport (the plane scales
+   *  from its top-left corner: screen = cam + world * k). */
+  function worldRect(cam, vw, vh) {
+    return { x: -cam.x / cam.k, y: -cam.y / cam.k, w: vw / cam.k, h: vh / cam.k };
+  }
+
+  const meets = (g, r, m) => g.x + g.w >= r.x - m && g.x <= r.x + r.w + m && g.y + g.h >= r.y - m && g.y <= r.y + r.h + m;
+
+  /** The addresses of the placed nodes that meet `rect` grown by `margin` on every side (#241):
+   *  the Map draws only these. An empty rectangle meets nothing. */
+  function visible(nodes, rect, margin = 0) {
+    const out = new Set();
+    if (!(rect.w > 0 && rect.h > 0)) return out;
+    for (const n of nodes) if (meets(n, rect, margin)) out.add(n.address);
+    return out;
+  }
+
+  /** Which Cards a move glides (#240): those whose place changes and that meet `rect` at the start
+   *  or the end, so the eye can follow them. A Card with no start does not glide. More than
+   *  `limit` moving Cards snap the move, as reduced motion does. */
+  function glidePlan(from, to, rect, limit = 150) {
+    const moving = new Set();
+    for (const [address, b] of to) {
+      const a = from.get(address);
+      if (!a || (a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h)) continue;
+      if (meets(a, rect, 0) || meets(b, rect, 0)) moving.add(address);
+    }
+    return { moving, snap: moving.size > limit };
+  }
+
+  /** How a reader list of `count` rows or chips folds (#242): more than sixty show fifty, and a
+   *  control offers the rest; sixty or fewer show whole. */
+  function foldRows(count) {
+    return count > 60 ? { shown: 50, hidden: count - 50 } : { shown: count, hidden: 0 };
+  }
+
+  /** What a refresh must read (#243), from the old and the new tree fingerprints (tree -> print):
+   *  the trees whose print moved or that are new, and the trees that are gone. No old prints, or a
+   *  new tree without a print (an older service), ask for the whole graph instead. */
+  function changedTrees(old, next) {
+    const prints = Object.entries(next || {});
+    if (!old || prints.some(([, print]) => !print)) return { graph: true, fetch: [], drop: [] };
+    return {
+      graph: false,
+      fetch: prints.filter(([tree, print]) => old[tree] !== print).map(([tree]) => tree),
+      drop: Object.keys(old).filter((tree) => !(tree in next)),
+    };
+  }
+
   return {
+    worldRect, visible, glidePlan, foldRows, changedTrees,
     blockLayout, bridgeLayout, blockTree, treeLayout, foldedTreeLayout, demotionOrder, trunks, threadPath, roundedPath, tilt,
     sideRank, outline, pathTo, focusLens, edgePath, elbow, edgeSplit, isTermEdge, focusEdges, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,

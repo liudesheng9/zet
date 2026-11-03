@@ -24,6 +24,8 @@ use crate::ops::{self, Snapshot, TypeChange};
 use crate::{Access, CardType, Workspace};
 
 mod document;
+#[cfg(test)]
+mod large_tree_tests;
 
 /// The GUI is the human's own tool and may change both Workspaces.
 const ACCESS: Access = Access::Owner;
@@ -147,9 +149,72 @@ pub(crate) fn clear_record(root: &Path) {
 
 /// The GUI server a service daemon runs for its whole life.
 pub(crate) struct Running {
-    server: Arc<Server>,
-    worker: JoinHandle<()>,
+    pool: Pool,
     root: PathBuf,
+}
+
+/// How many requests the GUI answers at once (#244): a Card read never waits behind a large tree,
+/// the graph, or a slow client. Writes still go one at a time ([`WRITES`]).
+const REQUEST_THREADS: usize = 4;
+
+/// The one lock every GUI write takes after its body has arrived (#244), so two writes from the
+/// page never interleave; Card operations take the archive's edit lock as well, as they always did.
+static WRITES: Mutex<()> = Mutex::new(());
+
+/// The request threads of one GUI server.
+struct Pool {
+    server: Arc<Server>,
+    workers: Vec<JoinHandle<()>>,
+    stopping: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Answer `server`'s requests on [`REQUEST_THREADS`] threads until the pool stops.
+fn serve(server: &Arc<Server>, app: Arc<App>) -> Result<Pool> {
+    let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut workers = Vec::with_capacity(REQUEST_THREADS);
+    for _ in 0..REQUEST_THREADS {
+        let server = Arc::clone(server);
+        let app = Arc::clone(&app);
+        let stopping = Arc::clone(&stopping);
+        workers.push(
+            thread::Builder::new()
+                .name("zt-gui".to_string())
+                .spawn(move || {
+                    loop {
+                        match server.recv() {
+                            // A fault in one request must not take the GUI down with it.
+                            Ok(request) => {
+                                let _ = panic::catch_unwind(AssertUnwindSafe(|| app.handle(request)));
+                            }
+                            // An unblock ends the thread when the pool stops; a failed accept does not.
+                            Err(_) if stopping.load(std::sync::atomic::Ordering::SeqCst) => break,
+                            Err(_) => {}
+                        }
+                    }
+                })
+                .context("failed to start a GUI thread")?,
+        );
+    }
+    Ok(Pool {
+        server: Arc::clone(server),
+        workers,
+        stopping,
+    })
+}
+
+impl Pool {
+    /// Stop taking requests, let the ones in hand finish, and join every thread.
+    fn stop(self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Each unblock frees one waiting thread.
+        for _ in &self.workers {
+            self.server.unblock();
+        }
+        for worker in self.workers {
+            let _ = worker.join();
+        }
+    }
 }
 
 /// Start the GUI server inside the service daemon and record its URL in the archive.
@@ -171,32 +236,19 @@ pub(crate) fn start(root: &Path) -> Result<Running> {
     };
     fs::write(record_path(root), format!("{url}\n"))
         .with_context(|| format!("failed to write {}", record_path(root).display()))?;
-    let worker = thread::Builder::new()
-        .name("zt-gui".to_string())
-        .spawn({
-            let server = Arc::clone(&server);
-            move || {
-                for request in server.incoming_requests() {
-                    // A fault in one request must not take the GUI down with it.
-                    let _ = panic::catch_unwind(AssertUnwindSafe(|| app.handle(request)));
-                }
-            }
-        })
-        .context("failed to start the GUI thread")?;
+    let pool = serve(&server, Arc::new(app))?;
     crate::log_event(root, &format!("gui started on {url}")).ok();
     Ok(Running {
-        server,
-        worker,
+        pool,
         root: root.to_path_buf(),
     })
 }
 
 impl Running {
-    /// Stop taking requests, let the one in hand finish, and forget the URL.
+    /// Stop taking requests, let the ones in hand finish, and forget the URL.
     pub(crate) fn stop(self) {
         clear_record(&self.root);
-        self.server.unblock();
-        let _ = self.worker.join();
+        self.pool.stop();
         crate::log_event(&self.root, "gui stopped").ok();
     }
 }
@@ -649,13 +701,24 @@ impl Snapshots {
 
     /// The overview `build` makes of the current Snapshot, built once per Snapshot.
     fn overview(&self, build: impl FnOnce(&Snapshot) -> Result<Value>) -> Result<Value> {
+        let snapshot = {
+            let mut cached = self.lock();
+            let current = self.current(&mut cached)?;
+            if let Some(overview) = &current.overview {
+                return Ok(overview.clone());
+            }
+            Arc::clone(&current.snapshot)
+        };
+        // Built outside the lock (#244): the tree fingerprints read every summary, and a Card read
+        // on another request thread must not wait for them. Two builders of one Snapshot share its
+        // summaries, which are made once.
+        let overview = build(&snapshot)?;
         let mut cached = self.lock();
-        let current = self.current(&mut cached)?;
-        if let Some(overview) = &current.overview {
-            return Ok(overview.clone());
+        if let Some(current) = cached.as_mut()
+            && Arc::ptr_eq(&current.snapshot, &snapshot)
+        {
+            current.overview = Some(overview.clone());
         }
-        let overview = build(&current.snapshot)?;
-        current.overview = Some(overview.clone());
         Ok(overview)
     }
 
@@ -997,6 +1060,16 @@ impl App {
         } else {
             Value::Null
         };
+        if method == Method::Get
+            && let Some(raw) = self.raw_get(&path, &query)
+        {
+            match raw {
+                Ok(text) => respond_text(request, 200, "application/json; charset=utf-8", text),
+                Err(error) => respond_json(request, 400, &json!({ "error": error.message })),
+            }
+            return;
+        }
+        let _write = (method == Method::Post).then(|| WRITES.lock().unwrap_or_else(|poison| poison.into_inner()));
         let result = self.route(&method, &path, &query, &body);
         match result {
             Ok(value) => respond_json(request, 200, &value),
@@ -1054,7 +1127,11 @@ impl App {
             (Method::Get, "/api/ping") => Ok(json!({ "ok": true })),
             (Method::Get, "/api/overview") => self.overview(),
             (Method::Get, "/api/tree") => self.tree(&param("id")?),
-            (Method::Get, "/api/card") => self.card(&param("at")?, query.get("via").map(String::as_str)),
+            (Method::Get, "/api/card") => self.card(
+                &param("at")?,
+                query.get("via").map(String::as_str),
+                query.get("sides").is_some_and(|value| value == "all"),
+            ),
             (Method::Get, "/api/graph") => self.graph(),
             (Method::Get, "/api/register") => self.register(query),
             (Method::Post, "/api/ask") => self.ask(body),
@@ -1133,7 +1210,7 @@ impl App {
                 },
                 "broken": broken,
                 "workspaces": workspaces,
-                "trees": snapshot.trees(),
+                "trees": tree_prints(snapshot),
             }))
         })?;
         // The switches are read per answer, not cached with the Snapshot, so turning one off or on
@@ -1143,35 +1220,59 @@ impl App {
     }
 
     fn tree(&self, tree: &str) -> ApiResult {
+        let raw = self.tree_raw(tree)?;
+        serde_json::from_str(&raw).map_err(|error| ApiError::new(error.to_string()))
+    }
+
+    /// One tree's answer as JSON text, assembled from the Snapshot's cached summaries (#243).
+    fn tree_raw(&self, tree: &str) -> std::result::Result<String, ApiError> {
         let snapshot = self.snapshot()?;
         let root = crate::tree_root_address(tree);
         let Some(root_card) = snapshot.by_address.get(&root) else {
             return Err(ApiError::new(format!("tree `{tree}` does not exist")));
         };
         let cards = snapshot
-            .cards
-            .iter()
-            .filter(|card| crate::is_tree_member(&card.address, tree))
-            .map(|card| snapshot.summary(card))
-            .collect::<Vec<_>>();
-        Ok(json!({
+            .summaries()
+            .tree_cards(crate::tree_id(&root))
+            .unwrap_or_else(|| "[]".to_string());
+        let head = json!({
             "tree": tree,
             "root": root,
             "workspace": root_card.workspace.id(),
             "kind": if root_card.is_lit { "literature" } else { "topic" },
             "title": snapshot.title(&root),
-            "cards": cards,
-        }))
+        })
+        .to_string();
+        // The head object without its closing brace, then the cards.
+        Ok(format!("{},\"cards\":{cards}}}", &head[..head.len() - 1]))
     }
 
     fn graph(&self) -> ApiResult {
         let snapshot = self.snapshot()?;
-        let nodes = snapshot
-            .cards
-            .iter()
-            .map(|card| snapshot.summary(card))
-            .collect::<Vec<_>>();
-        Ok(json!({ "nodes": nodes }))
+        serde_json::from_str(snapshot.summaries().graph())
+            .map_err(|error| ApiError::new(error.to_string()))
+    }
+
+    /// The routes whose answers the server sends as cached JSON text (#243), so the archive's graph
+    /// and a large tree are neither rebuilt nor serialized again for each request; `None` for every
+    /// other route.
+    fn raw_get(
+        &self,
+        path: &str,
+        query: &BTreeMap<String, String>,
+    ) -> Option<std::result::Result<String, ApiError>> {
+        match path {
+            "/api/graph" => Some(
+                self.snapshot()
+                    .map(|snapshot| snapshot.summaries().graph().to_string())
+                    .map_err(ApiError::from),
+            ),
+            "/api/tree" => Some(match query.get("id") {
+                Some(tree) => self.tree_raw(tree),
+                None => Err(ApiError::new("missing `id` parameter")),
+            }),
+            _ => None,
+        }
     }
 
     /// The concept register's flattened entry view (`src/entry.rs`): the same reading the MCP
@@ -1267,7 +1368,9 @@ impl App {
 
     /// One Card for the reader. `via` names the Model Card the reader came from: a part that model
     /// shares with others is shown as a member of it, not of its home model.
-    fn card(&self, target: &str, via: Option<&str>) -> ApiResult {
+    /// `all_sides` asks for every Side successor (the reorder step); the reader gets the count and
+    /// the first one only (#242), so a Cited list of 1,589 works does not travel with each read.
+    fn card(&self, target: &str, via: Option<&str>, all_sides: bool) -> ApiResult {
         let snapshot = self.snapshot()?;
         let card = snapshot
             .by_address
@@ -1279,6 +1382,8 @@ impl App {
         } else {
             "regular"
         };
+        let sides = snapshot.sides(card);
+        let sides_count = sides.len();
         let mut value = json!({
             "address": card.address,
             "tree": crate::tree_id(&card.address),
@@ -1310,7 +1415,8 @@ impl App {
             "citation_key": card.citation_key,
             "parent": snapshot.nav(crate::parent_location(&card.address)),
             "direct": snapshot.nav(crate::direct_successor(&card.address).ok()),
-            "sides": snapshot.sides(card),
+            "sides": if all_sides { sides } else { sides.into_iter().take(1).collect() },
+            "sides_count": sides_count,
             "inbound": snapshot.inbound_refs(&card.address),
             // Ordinary Reverse links and Term uses are separate lists, as their generated sections
             // are (S11, #153; design 10.3). `inbound` keeps both for existing navigation.
@@ -2735,6 +2841,23 @@ fn respond_chart(request: Request, port: u16, page: String) {
             ),
         ));
     request.respond(response).ok();
+}
+
+/// The overview's trees, each with the fingerprint of its summaries (#243): the page refetches only
+/// the trees whose fingerprint moved.
+fn tree_prints(snapshot: &Snapshot) -> Vec<Value> {
+    let summaries = snapshot.summaries();
+    snapshot
+        .trees()
+        .into_iter()
+        .map(|mut tree| {
+            let print = tree["tree"]
+                .as_str()
+                .and_then(|id| summaries.tree_fingerprint(id));
+            tree["fingerprint"] = json!(print);
+            tree
+        })
+        .collect()
 }
 
 fn respond_json(request: Request, status: u16, value: &Value) {
@@ -4204,13 +4327,15 @@ mod tests {
         let reader = &reader[..reader.find("card.outbound.length ?").expect("the links-out row")];
         assert!(
             reader.contains("referredBy(card).length ? [h('div', { class: 'section-label', text: `Referred by · ${referredBy(card).length}` })")
-                && reader.contains("referredBy(card).map((link) => chip(link))"),
+                && reader.contains("chipRow(referredBy(card), (link) => chip(link))"),
             "Referred by is built from the ordinary Reverse links: {reader}"
         );
+        // #242: the Term-use chips are laid out when the disclosure first opens.
         assert!(
-            reader.contains("termUses(card).length ? h('details', { class: 'term-uses' },")
+            reader.contains("termUses(card).length ? h('details', {\n        class: 'term-uses',")
                 && reader.contains("h('summary', { class: 'section-label', text: `Term uses · ${termUses(card).length}` })")
-                && reader.contains("termUses(card).map((link) => termUseChip(link))")
+                && reader.contains("chipRow(termUses(card), (link) => termUseChip(link))")
+                && reader.contains("if (fold.open && !fold.querySelector('.chips'))")
                 && reader.contains(": null,"),
             "Term uses is its own folded row, absent when the list is empty: {reader}"
         );

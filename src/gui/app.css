@@ -554,6 +554,27 @@ body.holding, body.holding * { -webkit-user-select: none !important; user-select
 .node.root.literature .addr { color: var(--lit); }
 .node.entering { animation: appear .34s var(--ease); }
 .node.leaving { opacity: 0; pointer-events: none; }
+/* #240: a card's layout and style stay inside it, so a change to one card restyles and lays out
+   that card alone. Not `paint`: the pointer label, part labels and the Table tab draw outside. */
+.node { contain: layout style; }
+
+/* #239: a bundle is the run of slips a long list's window leaves out, lying in the list's column
+   as one stack of slip edges. More slips make a thicker stack; a click riffles through them. */
+.node.bundle {
+  display: flex; align-items: center; gap: 10px; padding: 0 10px 0 11px;
+  background-color: color-mix(in srgb, var(--stock) 70%, var(--desk));
+  color: var(--ink-soft);
+  transition: opacity .24s, translate .22s var(--ease), box-shadow .22s var(--ease);
+}
+.node.bundle.thick-1 { box-shadow: 0 2px 0 -1px var(--stock), 0 2px 0 0 var(--stock-edge), 0 3px 4px -3px rgba(60, 45, 20, .25); }
+.node.bundle.thick-2 { box-shadow: 0 2px 0 -1px var(--stock), 0 2px 0 0 var(--stock-edge), 0 4px 0 -1px var(--stock), 0 4px 0 0 var(--stock-edge), 0 5px 5px -3px rgba(60, 45, 20, .28); }
+.node.bundle.thick-3 { box-shadow: 0 2px 0 -1px var(--stock), 0 2px 0 0 var(--stock-edge), 0 4px 0 -1px var(--stock), 0 4px 0 0 var(--stock-edge), 0 6px 0 -1px var(--stock), 0 6px 0 0 var(--stock-edge), 0 7px 6px -3px rgba(60, 45, 20, .3); }
+.node.bundle:hover { translate: 0 -1px; background-color: var(--stock); color: var(--ink); }
+.node.bundle .count { flex: none; font: 600 12px var(--mono); padding: 0 7px; border-radius: 99px; line-height: 18px; background: var(--line-soft); color: var(--ink-soft); }
+/* #242: the reader's long lists: the rest of a long table, and the rest of a chip row. */
+.btn.table-more { display: block; margin: 6px 0 14px; font-size: 12px; }
+.chip.more { color: var(--ink-soft); background: var(--line-soft); font-weight: 600; }
+.node.bundle .range { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px var(--mono); color: var(--ink-faint); }
 @keyframes appear { from { opacity: 0; } }
 
 /* ROOT desk */

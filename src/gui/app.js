@@ -169,6 +169,8 @@
     inboundOf: new Map(), // address -> addresses of the Cards that link it with an ordinary Link
     termInboundOf: new Map(), // address -> addresses of the Cards that reach it with a Term use
     childrenOf: new Map(), // address -> summaries of its Direct and Side successors
+    byTree: new Map(),    // tree -> its Card summaries, in the overview's tree order (#243)
+    prints: null,         // tree -> fingerprint of the summaries the page holds (#243)
     fingerprint: '',
     pointer: null,        // Card address, or null for ROOT
     card: null,
@@ -195,8 +197,34 @@
   const wsLabel = (id) => (WORKSPACES[id] || WORKSPACES.human).label;
   const nodeWorkspace = (address) => state.byAddress.get(address)?.workspace;
 
-  /** Take a fresh list of Card summaries and index it. */
-  function setNodes(nodes) {
+  /** Take a fresh list of Card summaries and index it. The nodes are kept grouped by tree in the
+   *  overview's tree order, so a refresh that reads one tree again (#243) leaves the others in place. */
+  function setNodes(nodes, trees) {
+    const groups = new Map((trees || []).map((tree) => [tree.tree, []]));
+    for (const node of nodes) {
+      if (!groups.has(node.tree)) groups.set(node.tree, []);
+      groups.get(node.tree).push(node);
+    }
+    state.byTree = groups;
+    indexNodes([...groups.values()].flat());
+  }
+
+  /** Put the trees a refresh read again in place of the old ones, and forget the trees that are
+   *  gone (#243), in the overview's tree order. */
+  function spliceTrees(drop, fetched, trees) {
+    const groups = state.byTree || new Map();
+    for (const tree of drop) groups.delete(tree);
+    for (const tree of fetched) groups.set(tree.tree, tree.cards);
+    const ordered = new Map((trees || []).map((tree) => [tree.tree, groups.get(tree.tree) || []]));
+    for (const [tree, cards] of groups) if (!ordered.has(tree)) ordered.set(tree, cards);
+    state.byTree = ordered;
+    indexNodes([...ordered.values()].flat());
+  }
+
+  /** The overview's tree fingerprints, tree -> print (null from a service that sends none). */
+  const treePrints = (overview) => Object.fromEntries((overview.trees || []).map((tree) => [tree.tree, tree.fingerprint || null]));
+
+  function indexNodes(nodes) {
     state.nodes = nodes;
     state.byAddress = new Map(nodes.map((node) => [node.address, node]));
     state.inboundOf = new Map();
@@ -312,24 +340,25 @@
     }
   }
   const titleCache = new Map();
-  /** A title as nodes, with its `$…$` runs typeset. */
+  /** A title as nodes, with its `$…$` runs typeset. Each distinct title is typeset and parsed once;
+   *  later uses clone the parsed nodes (#240). */
   function titleNodes(text) {
     if (!text || !text.includes('$') || !katexReady()) return [text];
-    let html = titleCache.get(text);
-    if (html === undefined) {
+    let parsed = titleCache.get(text);
+    if (parsed === undefined) {
       const escape = (value) => value.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-      html = text.split(/(\$[^$]+\$)/).map((part) => {
+      const html = text.split(/(\$[^$]+\$)/).map((part) => {
         if (part.length > 2 && part.startsWith('$') && part.endsWith('$')) {
           try { return window.katex.renderToString(part.slice(1, -1), { throwOnError: false }); } catch { return escape(part); }
         }
         return escape(part);
       }).join('');
+      parsed = document.createElement('template');
+      parsed.innerHTML = html;
       if (titleCache.size > 4000) titleCache.clear();
-      titleCache.set(text, html);
+      titleCache.set(text, parsed);
     }
-    const holder = document.createElement('span');
-    holder.innerHTML = html;
-    return [...holder.childNodes];
+    return [...parsed.content.cloneNode(true).childNodes];
   }
 
   // ---------------------------------------------------------------- charts
@@ -582,16 +611,29 @@
     // the archive revision and so the fingerprint the 4 s watch compares, even when no Card text
     // changed; reading them here repaints the cabinet, the root's lock line and the fault pill. A
     // failed lock read never stops the refresh, as at boot.
-    const [overview, graph, kept, locks] = await Promise.all([api('overview'), api('graph'), api('spreads'), api('locks').catch(() => null)]);
+    const [overview, kept, locks] = await Promise.all([api('overview'), api('spreads'), api('locks').catch(() => null)]);
     spreads.take(kept);
     state.overview = overview;
     state.fingerprint = overview.fingerprint;
     state.locks = locks;
     paintLocks();
     applyFeatures(overview);
-    setNodes(graph.nodes);
-    state.tree = null;
-    sky.invalidate();
+    // Only the trees whose fingerprint moved are read again (#243): a write in another book costs
+    // the page that book alone, and the open tree stays as it is unless it changed.
+    const prints = treePrints(overview);
+    const change = ZtLayout.changedTrees(state.prints, prints);
+    if (change.graph) setNodes((await api('graph')).nodes, overview.trees);
+    else if (change.fetch.length || change.drop.length) {
+      const fetched = await Promise.all(change.fetch.map((id) => api('tree?id=' + enc(id))));
+      spliceTrees(change.drop, fetched, overview.trees);
+      const open = state.tree && state.tree.tree;
+      const mine = fetched.find((tree) => tree.tree === open);
+      if (mine) { state.tree = mine; state.outline = ZtLayout.outline(mine.cards, mine.root); }
+      else if (open && change.drop.includes(open)) { state.tree = null; state.outline = null; }
+    }
+    if (change.graph) { state.tree = null; state.outline = null; }
+    if (change.graph || change.fetch.length || change.drop.length) sky.invalidate();
+    state.prints = prints;
     renderRail();
     renderTopbar();
     await loadPointer();
@@ -1292,6 +1334,26 @@
   /** The camera of the view that lays Cards on a plane: the Map's or the Table's. */
   const planeCamera = () => (state.mode === 'table' ? camera.table : camera.map);
   const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // The viewport's size, read once and then kept current by a ResizeObserver (#240), so a render
+  // never forces a layout just to learn it. A size of zero (the stage not laid out yet) is read again.
+  const viewportSize = (() => {
+    const box = { w: 0, h: 0 };
+    let watched = false;
+    return () => {
+      if (!box.w || !box.h) {
+        const viewport = $('#viewport');
+        box.w = viewport.clientWidth; box.h = viewport.clientHeight;
+        if (!watched && typeof ResizeObserver === 'function') {
+          watched = true;
+          new ResizeObserver(() => {
+            box.w = viewport.clientWidth; box.h = viewport.clientHeight;
+            if (state.mode === 'map' && state.card) map.cameraMoved();
+          }).observe(viewport);
+        }
+      }
+      return box;
+    };
+  })();
 
   function setMode(mode) {
     state.mode = mode;
@@ -1445,21 +1507,42 @@
   // counts. Only the Pointer's Links are drawn. Each move of the Pointer re-runs the
   // layout and glides the cards to their new places.
   const map = (() => {
-    const els = new Map();   // address -> node element
+    const els = new Map();   // address -> node element, only for nodes the camera sees (#241)
     const paths = new Map(); // edge key -> SVG path
-    let drawn = new Map();   // address -> geometry on screen now
+    let drawn = new Map();   // address -> geometry of every node of the lens, as on screen now
     let view = null;
     let hovered = null;
     let frame = 0;
+    let gliding = false;
+    let culling = 0;         // a pending cull pass: at most one per animation frame
+    let marks = 0;           // the one timer that settles a render's entering and leaving marks
+    let leaving = [];
+    // The riffled bundles (#239): list parent -> anchor index. A move of the Pointer anchors
+    // every list on its path again, so the riffles are forgotten.
+    let windows = {};
+    let windowsFor = null;
+    let partStarts = new Map();
+    let span = new Set();
     const cam = camera.map;
 
     const STAGE_TOP = 62;
+    const GLIDE_LIMIT = 150; // more moving cards than this snap (#240)
     const lerp = (a, b, t) => a + (b - a) * t;
+    // Half a screen of margin around the view is drawn too, so a pan never shows a hole.
+    const margin = (rect) => Math.max(rect.w, rect.h) / 2;
+
+    /** Write a node's class only when it changed (#240), keeping its transient marks. */
+    function setClass(el, base) {
+      if (el.ztBase === base) return;
+      const keep = ['entering', 'leaving', 'in-span'].filter((mark) => el.classList.contains(mark));
+      el.className = keep.length ? base + ' ' + keep.join(' ') : base;
+      el.ztBase = base;
+    }
 
     function content(el, card, n, outline) {
       const external = card.links.filter((target) => !outline.card.has(target)).length;
       const signature = [n.lod, n.role, n.folded, card.title, card.type, card.facet, card.emphasis, card.level, card.inbound, external, card.excerpt].join('\u0001');
-      el.className = ['node', n.lod, 'role-' + n.role,
+      setClass(el, ['node', n.lod, 'role-' + n.role,
         card.edge === 'root' ? 'root ' + card.kind : '',
         card.type && card.type !== 'idea' ? 'type-' + card.type + hubClass(card) : '',
         card.facet ? 'model-part' : '',
@@ -1467,7 +1550,7 @@
         state.linkedIn && state.linkedIn.has(card.address) ? 'in' : '',
         state.linkedOut && state.linkedOut.has(card.address) ? 'out' : '',
         spreads.has(card.address) ? 'on-table' : '',
-      ].filter(Boolean).join(' ');
+      ].filter(Boolean).join(' '));
       if (el.dataset.sig === signature) return;
       el.dataset.sig = signature;
       el.title = card.title + (card.excerpt ? '\n\n' + card.excerpt : '');
@@ -1498,11 +1581,105 @@
       ].filter(Boolean));
     }
 
+    /** A bundle (#239): the slips a long list's window leaves out, as one thick stack of slip
+     *  edges. It is thicker the more slips it holds, names how many and which, and a click
+     *  riffles through them. */
+    function bundleContent(el, n) {
+      setClass(el, 'node bundle ' + (n.count >= 1000 ? 'thick-3' : n.count >= 100 ? 'thick-2' : 'thick-1'));
+      const signature = [n.count, n.cards, n.from, n.through].join('\u0001');
+      if (el.dataset.sig === signature) return;
+      el.dataset.sig = signature;
+      const short = (address) => { const slash = address.indexOf('/'); return slash > 4 ? '…' + address.slice(slash) : address; };
+      const behind = n.cards > n.count ? `, ${n.cards} cards with their successors` : '';
+      el.title = `${n.count} slip${n.count === 1 ? '' : 's'} filed here, ${n.from} … ${n.through}${behind} · click to riffle through them`;
+      el.setAttribute('aria-label', el.title);
+      el.replaceChildren(
+        h('span', { class: 'count', text: '+' + n.count }),
+        h('span', { class: 'range', text: `${short(n.from)} … ${short(n.through)}` }),
+      );
+    }
+
+    function make(n) {
+      const address = n.address;
+      const bundle = n.kind === 'bundle';
+      const el = h('button', {
+        class: 'node',
+        dataset: { address },
+        onclick: (event) => {
+          event.stopPropagation();
+          if (bundle) { riffle(address); return; }
+          // Alt-click marks a span from the open card through this one (S7, #235).
+          if (event.altKey) { markSpan(address); return; }
+          // Shift-click lays the card on the Table, or takes it back, without leaving the Map.
+          if (event.shiftKey) { toggleTable(address); render(); return; }
+          go(address);
+        },
+        onpointerenter: bundle ? null : () => { hovered = address; paintEdges(drawn); },
+        onpointerleave: bundle ? null : () => { if (hovered === address) { hovered = null; paintEdges(drawn); } },
+      });
+      if (!bundle) wireDrag(el, address);
+      els.set(address, el);
+      $('#nodes').append(el);
+      return el;
+    }
+
+    /** Riffle a bundle: the list's window moves to the slips it held; the Pointer stays. */
+    function riffle(address) {
+      const bundle = view && view.index.get(address);
+      if (!bundle || bundle.kind !== 'bundle') return;
+      windows = { ...windows, [bundle.parent]: bundle.anchor };
+      render();
+    }
+
+    /** Make the drawn elements exactly the nodes in `want` (#241): create those that came into
+     *  view, refresh them, and drop the rest; a Card that left the lens fades out first. */
+    function sync(want, born, start) {
+      const outline = state.outline;
+      for (const n of view.nodes) {
+        if (!want.has(n.address)) continue;
+        let el = els.get(n.address);
+        if (!el) {
+          el = make(n);
+          if (born.has(n.address)) el.classList.add('entering');
+          // A new element starts where the move starts, never at the plane's corner.
+          const g = start.get(n.address) || n;
+          el.ztAt = `translate(${g.x}px, ${g.y}px)`;
+          el.style.transform = el.ztAt;
+        }
+        if (n.kind === 'bundle') bundleContent(el, n);
+        else {
+          content(el, outline.card.get(n.address), n, outline);
+          el.classList.toggle('in-span', span.has(n.address));
+          if (partStarts.has(n.address)) el.dataset.part = partStarts.get(n.address);
+          else delete el.dataset.part;
+        }
+        const w = n.w + 'px';
+        const hgt = n.h + 'px';
+        if (el.style.width !== w) el.style.width = w;
+        if (el.style.height !== hgt) el.style.height = hgt;
+      }
+      for (const [address, el] of els) {
+        if (want.has(address)) continue;
+        els.delete(address);
+        if (view.index.has(address)) el.remove(); // still in the lens, only out of view
+        else { el.classList.add('leaving'); leaving.push(el); }
+      }
+    }
+
+    /** One timer per render settles every mark it set (#240). */
+    function settleMarks() {
+      clearTimeout(marks);
+      marks = setTimeout(() => {
+        for (const el of els.values()) el.classList.remove('entering');
+        for (const el of leaving) el.remove();
+        leaving = [];
+      }, 400);
+    }
+
     /** Where the camera should be: a view that fits is centred and stays still; a larger
      *  one follows the Pointer, held a little left of centre and in the upper third. */
     function cameraTarget(k) {
-      const viewport = $('#viewport');
-      const vw = viewport.clientWidth; const vh = viewport.clientHeight;
+      const { w: vw, h: vh } = viewportSize();
       const b = view.bounds;
       const f = view.index.get(view.focus);
       const room = { w: vw - 64, h: vh - STAGE_TOP - 56 };
@@ -1524,24 +1701,30 @@
       return { x, y, k };
     }
 
-    function paint(geometry) {
-      for (const [address, g] of geometry) {
-        const el = els.get(address);
-        if (!el) continue;
-        el.style.transform = `translate(${g.x}px, ${g.y}px)`;
-        el.style.width = g.w + 'px';
-        el.style.height = g.h + 'px';
+    /** Move the drawn cards to `geometry`; only `transform` is written, and only when it changed. */
+    function place(geometry) {
+      for (const [address, el] of els) {
+        const g = geometry.get(address);
+        if (!g) continue;
+        const transform = `translate(${g.x}px, ${g.y}px)`;
+        if (el.ztAt !== transform) { el.style.transform = transform; el.ztAt = transform; }
       }
+    }
+
+    /** The structure edges and the Pointer's Link arcs that touch a drawn card. */
+    function paintEdges(geometry) {
       const edges = $('#edges');
       const keep = new Set();
       const put = (key, d, cls) => {
         keep.add(key);
         let path = paths.get(key);
         if (!path) { path = svg('path', {}); paths.set(key, path); edges.append(path); }
-        path.setAttribute('d', d);
-        path.setAttribute('class', cls);
+        if (path.ztD !== d) { path.setAttribute('d', d); path.ztD = d; }
+        if (path.ztCls !== cls) { path.setAttribute('class', cls); path.ztCls = cls; }
       };
+      const seen = (a, b) => els.has(a) || els.has(b);
       for (const edge of view.edges) {
+        if (!seen(edge.from, edge.to)) continue;
         const a = geometry.get(edge.from); const b = geometry.get(edge.to);
         if (a && b) put('e' + edge.from + '>' + edge.to, ZtLayout.edgePath(edge, a, b), 'e-' + edge.kind + (edge.hot ? ' hot' : ''));
       }
@@ -1550,21 +1733,21 @@
         const near = structural(view.focus);
         for (const address of state.linkedOut || []) {
           const b = geometry.get(address);
-          if (b && !near.has(address)) put('o' + address, ZtLayout.linkArc(focus, b), 'e-link out');
+          if (b && seen(view.focus, address) && !near.has(address)) put('o' + address, ZtLayout.linkArc(focus, b), 'e-link out');
         }
         for (const address of state.linkedIn || []) {
           const b = geometry.get(address);
-          if (b && !near.has(address) && !state.linkedOut.has(address)) put('i' + address, ZtLayout.linkArc(b, focus), 'e-link in');
+          if (b && seen(view.focus, address) && !near.has(address) && !state.linkedOut.has(address)) put('i' + address, ZtLayout.linkArc(b, focus), 'e-link in');
         }
         // Term edges only while they are shown (S16, #158): dotted pencil, bowed a little wider than
         // an ordinary arc so the two never lie on one line.
         for (const address of state.termOut || []) {
           const b = geometry.get(address);
-          if (b && !near.has(address)) put('t' + address, ZtLayout.linkArc(focus, b, 18), 'e-term out');
+          if (b && seen(view.focus, address) && !near.has(address)) put('t' + address, ZtLayout.linkArc(focus, b, 18), 'e-term out');
         }
         for (const address of state.termIn || []) {
           const b = geometry.get(address);
-          if (b && !near.has(address) && !state.termOut.has(address)) put('u' + address, ZtLayout.linkArc(b, focus, 18), 'e-term in');
+          if (b && seen(view.focus, address) && !near.has(address) && !state.termOut.has(address)) put('u' + address, ZtLayout.linkArc(b, focus, 18), 'e-term in');
         }
       }
       const over = hovered && hovered !== view.focus ? geometry.get(hovered) : null;
@@ -1594,23 +1777,43 @@
       return tied;
     }
 
-    function glide(from, to, camFrom, camTo, ms) {
+    /** The lens nodes the camera sees, each at its geometry in `geometry` (#241). */
+    function inView(geometry, cameraAt) {
+      const { w, h: hgt } = viewportSize();
+      const rect = ZtLayout.worldRect(cameraAt, w, hgt);
+      const placed = view.nodes.map((n) => ({ address: n.address, ...(geometry.get(n.address) || n) }));
+      return ZtLayout.visible(placed, rect, margin(rect));
+    }
+
+    /** After the camera moved (a pan, a zoom, a fit, the end of a glide): draw what came into
+     *  view and drop what left it. */
+    function cull() {
+      if (!view || !state.card || state.mode !== 'map') return;
+      sync(inView(drawn, cam), new Set(), drawn);
+      place(drawn);
+      paintEdges(drawn);
+    }
+
+    function glide(from, to, moving, camFrom, camTo, ms) {
       const id = ++frame;
+      gliding = true;
       const t0 = performance.now();
       const step = (now) => {
         if (id !== frame) return;
         const t = ms <= 0 || reduceMotion() ? 1 : Math.min(1, (now - t0) / ms);
         const e = 1 - Math.pow(1 - t, 3);
-        const geometry = new Map();
-        for (const [address, b] of to) {
-          const a = from.get(address) || b;
-          geometry.set(address, { x: lerp(a.x, b.x, e), y: lerp(a.y, b.y, e), w: lerp(a.w, b.w, e), h: lerp(a.h, b.h, e) });
+        const geometry = new Map(to);
+        for (const address of moving) {
+          const a = from.get(address); const b = to.get(address);
+          geometry.set(address, { x: lerp(a.x, b.x, e), y: lerp(a.y, b.y, e), w: b.w, h: b.h });
         }
         drawn = geometry;
-        paint(geometry);
+        place(geometry);
+        paintEdges(geometry);
         cam.x = lerp(camFrom.x, camTo.x, e); cam.y = lerp(camFrom.y, camTo.y, e); cam.k = lerp(camFrom.k, camTo.k, e);
         applyCamera();
         if (t < 1) requestAnimationFrame(step);
+        else { gliding = false; cull(); }
       };
       requestAnimationFrame(step);
     }
@@ -1626,7 +1829,7 @@
       const outbound = card.outbound.map((link) => link.address).filter(inTree).filter((at) => !(ownParts && ownParts.has(at)));
       // Where a part (range block) of the open Card's model starts on the main line, its node
       // carries the part's name (#203); the label is drawn above the node and moves no Card.
-      const partStarts = new Map();
+      partStarts = new Map();
       if (card.model && card.model.blocks) {
         let last = null;
         for (const b of card.model.blocks) if (b.part && b.part !== last) { partStarts.set(b.head, b.part); last = b.part; }
@@ -1640,58 +1843,29 @@
       state.termOut = new Set(arcs.termOut);
       state.termIn = new Set(arcs.termIn);
       const fresh = !view || view.tree !== state.tree.tree;
+      if (fresh || windowsFor !== card.address) { windows = {}; windowsFor = card.address; }
       view = ZtLayout.focusLens(outline, card.address, {
-        links: arcs.lens, expandAll: state.expandAll,
+        links: arcs.lens, expandAll: state.expandAll, windows,
       });
       view.tree = state.tree.tree;
+      span = spanSet();
 
-      const nodes = $('#nodes');
-      const from = new Map(drawn);
+      const from = fresh ? new Map() : new Map(drawn);
       const to = new Map(view.nodes.map((n) => [n.address, { x: n.x, y: n.y, w: n.w, h: n.h }]));
       if (fresh) {
         for (const el of els.values()) el.remove();
         for (const path of paths.values()) path.remove();
-        els.clear(); paths.clear(); from.clear();
+        els.clear(); paths.clear();
       }
+      // A newly shown card slides out from behind its nearest card already on screen.
+      const born = new Set();
       for (const n of view.nodes) {
-        let el = els.get(n.address);
-        if (!el) {
-          const address = n.address;
-          el = h('button', {
-            class: 'node',
-            dataset: { address },
-            onclick: (event) => {
-              event.stopPropagation();
-              // Alt-click marks a span from the open card through this one (S7, #235).
-              if (event.altKey) { markSpan(address); return; }
-              // Shift-click lays the card on the Table, or takes it back, without leaving the Map.
-              if (event.shiftKey) { toggleTable(address); render(); return; }
-              go(address);
-            },
-            onpointerenter: () => { hovered = address; paint(drawn); },
-            onpointerleave: () => { if (hovered === address) { hovered = null; paint(drawn); } },
-          });
-          wireDrag(el, address);
-          el.classList.add('entering');
-          els.set(address, el);
-          nodes.append(el);
-          // A newly shown card slides out from behind its nearest card already on screen.
-          let at = outline.up.get(address);
-          while (at != null && !from.has(at)) at = outline.up.get(at);
-          const origin = at != null ? from.get(at) : null;
-          if (origin) from.set(address, { x: origin.x, y: origin.y, w: n.w, h: n.h });
-          setTimeout(() => el.classList.remove('entering'), 400);
-        }
-        content(el, outline.card.get(n.address), n, outline);
-        el.classList.toggle('in-span', spanSet().has(n.address));
-        if (partStarts.has(n.address)) el.dataset.part = partStarts.get(n.address);
-        else delete el.dataset.part;
-      }
-      for (const [address, el] of els) {
-        if (to.has(address)) continue;
-        els.delete(address);
-        el.classList.add('leaving');
-        setTimeout(() => el.remove(), 240);
+        if (from.has(n.address)) continue;
+        if (!fresh) born.add(n.address);
+        let at = n.kind === 'bundle' ? n.parent : outline.up.get(n.address);
+        while (at != null && !from.has(at)) at = outline.up.get(at);
+        const origin = at != null ? from.get(at) : null;
+        if (origin) from.set(n.address, { x: origin.x, y: origin.y, w: n.w, h: n.h });
       }
       if (hovered && !to.has(hovered)) hovered = null;
       const edges = $('#edges');
@@ -1700,19 +1874,38 @@
       // Reading needs legible type: navigating out of a zoomed-out overview zooms back in.
       const k = fresh || cam.k < 0.8 ? 1 : cam.k;
       const target = cameraTarget(k);
-      if (fresh) glide(to, to, target, target, 0);
-      else glide(from, to, { ...cam }, target, 360);
+      // Draw what the camera sees now and where it goes, so the glide shows its whole path.
+      const want = new Set([...inView(from, cam), ...inView(to, target)]);
+      sync(want, born, from);
+      settleMarks();
+      const { w: vw, h: vh } = viewportSize();
+      const a = ZtLayout.worldRect(cam, vw, vh);
+      const b = ZtLayout.worldRect(target, vw, vh);
+      const x = Math.min(a.x, b.x); const y = Math.min(a.y, b.y);
+      const plan = ZtLayout.glidePlan(from, to, { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y }, GLIDE_LIMIT);
+      if (fresh || plan.snap || reduceMotion()) glide(to, to, new Set(), target, target, 0);
+      else glide(from, to, plan.moving, { ...cam }, target, 360);
     }
 
     return {
       render,
-      shownCount: () => (view ? view.nodes.length : 0),
+      // The stage counts the lens's Cards, not its bundles and not the drawn elements.
+      shownCount: () => (view ? view.nodes.filter((n) => n.kind !== 'bundle').length : 0),
       fit() {
         if (!view) return;
-        const viewport = $('#viewport');
-        const room = { w: viewport.clientWidth - 64, h: viewport.clientHeight - STAGE_TOP - 56 };
+        const { w: vw, h: vh } = viewportSize();
+        const room = { w: vw - 64, h: vh - STAGE_TOP - 56 };
         const k = Math.max(0.22, Math.min(1.1, room.w / (view.bounds.w + 110), room.h / view.bounds.h));
-        glide(drawn, drawn, { ...cam }, cameraTarget(k), 300);
+        const target = cameraTarget(k);
+        // Draw what the fitted view will show before the camera starts to move.
+        sync(new Set([...inView(drawn, cam), ...inView(drawn, target)]), new Set(), drawn);
+        paintEdges(drawn);
+        glide(drawn, drawn, new Set(), { ...cam }, target, 300);
+      },
+      /** The camera moved outside a glide: one cull pass on the next frame. */
+      cameraMoved() {
+        if (gliding || culling) return;
+        culling = requestAnimationFrame(() => { culling = 0; cull(); });
       },
       reset() { view = null; drawn = new Map(); },
     };
@@ -1723,6 +1916,8 @@
     $('#plane').style.transform = `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})`;
     const t = camera.table;
     $('#table-plane').style.transform = `translate(${t.x}px, ${t.y}px) scale(${t.k})`;
+    // The Map draws only what the camera sees (#241): a pan or zoom draws what came into view.
+    if (state.mode === 'map' && state.card) map.cameraMoved();
   }
 
   function fitView() {
@@ -3463,6 +3658,48 @@
     }, h('span', { class: 'addr', text: link.address }), h('span', { class: 't' }, link.broken ? 'missing' : titleNodes(link.title || '(untitled)')));
   }
 
+  /** A row of chips that folds when it is long (#242): more than sixty show fifty and a "+N more"
+   *  chip that lays out the rest. */
+  function chipRow(links, make) {
+    const fold = ZtLayout.foldRows(links.length);
+    const row = h('div', { class: 'chips' }, links.slice(0, fold.shown).map((link) => make(link)));
+    if (fold.hidden) {
+      const more = h('button', {
+        class: 'chip more', title: `Show the other ${fold.hidden}`, text: `+${fold.hidden} more`,
+        onclick: () => more.replaceWith(...links.slice(fold.shown).map((link) => make(link))),
+      });
+      row.append(more);
+    }
+    return row;
+  }
+
+  /** A Card body as nodes, with each long table cut to its first rows before it reaches the page
+   *  (#242): a generated Term or Cited list of hundreds of rows costs only what is shown. The rest
+   *  lies behind "Show all N rows" and is wired like the body when it is laid out. */
+  function bodyNodes(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    for (const table of template.content.querySelectorAll('table')) {
+      const body = table.tBodies[0];
+      if (!body) continue;
+      const fold = ZtLayout.foldRows(body.rows.length);
+      if (!fold.hidden) continue;
+      const rest = [...body.rows].slice(fold.shown);
+      for (const row of rest) row.remove();
+      const all = fold.shown + fold.hidden;
+      const button = h('button', {
+        class: 'btn table-more', title: `Lay out the other ${fold.hidden} rows`, text: `Show all ${all} rows`,
+        onclick: () => {
+          body.append(...rest);
+          for (const row of rest) wireMarkdown(row);
+          button.remove();
+        },
+      });
+      table.after(button);
+    }
+    return template.content;
+  }
+
   /** The ordinary Reverse links of a Card; an older answer without the split keeps `inbound`. */
   function referredBy(card) { return Array.isArray(card.reverse_links) ? card.reverse_links : card.inbound; }
 
@@ -3520,7 +3757,8 @@
     }
     const kindLabel = { topic: 'Topic', literature: 'Literature', regular: 'Card' }[card.kind];
     const md = h('div', { class: 'md' });
-    if (card.body.trim()) md.innerHTML = card.html;
+    // A long generated list (a Term or Cited table) is cut before it reaches the page (#242).
+    if (card.body.trim()) md.append(bodyNodes(card.html));
     else md.append(h('p', { class: 'empty', text: 'No body yet — press e to write in Markdown.' }));
     wireMarkdown(md);
     wireUnitReader(md, card);
@@ -3570,13 +3808,20 @@
       // Reasoning Reverse links and Term uses are two rows, as the generated `## Reverse links`
       // and `## Term uses` sections are (S11, #153, US040). A source that writes both forms sits
       // in both rows; a Card with no Term use shows the one row it always had.
-      referredBy(card).length ? [h('div', { class: 'section-label', text: `Referred by · ${referredBy(card).length}` }), h('div', { class: 'chips' }, referredBy(card).map((link) => chip(link)))] : null,
+      referredBy(card).length ? [h('div', { class: 'section-label', text: `Referred by · ${referredBy(card).length}` }), chipRow(referredBy(card), (link) => chip(link))] : null,
       // The generated Term uses fold to their count under a normal disclosure (S13, #156): the
       // explanation is the focus, and the uses lie folded beneath it until the reader opens them.
-      termUses(card).length ? h('details', { class: 'term-uses' },
-        h('summary', { class: 'section-label', text: `Term uses · ${termUses(card).length}` }),
-        h('div', { class: 'chips' }, termUses(card).map((link) => termUseChip(link)))) : null,
-      card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), h('div', { class: 'chips' }, card.outbound.map((link) => chip(link)))] : null,
+      // Their chips are laid out when the disclosure first opens (#242): a Term used by hundreds of
+      // Cards costs nothing until the reader asks for them.
+      termUses(card).length ? h('details', {
+        class: 'term-uses',
+        ontoggle: (event) => {
+          const fold = event.currentTarget;
+          if (fold.open && !fold.querySelector('.chips')) fold.append(chipRow(termUses(card), (link) => termUseChip(link)));
+        },
+      },
+        h('summary', { class: 'section-label', text: `Term uses · ${termUses(card).length}` })) : null,
+      card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), chipRow(card.outbound, (link) => chip(link))] : null,
       // One distant Card beside the neighbours, faint until focus or hover (S19, #108), and the
       // selected Bridge report's one-line status (S20, #112).
       card.context === 'regular' ? distantSlot('reader') : null,
@@ -7369,7 +7614,8 @@
       const parent = card.parent.address;
       const label = (a) => a.slice(a.lastIndexOf('|') + 1);
       const rank = (l) => [...l].reduce((n, c) => n * 26 + c.charCodeAt(0) - 96, 0);
-      const order = (await cardAt(parent)).sides.map((s) => s.address).sort((a, b) => rank(label(a)) - rank(label(b)));
+      // A Card read carries only its first Side successor (#242); the reorder needs them all.
+      const order = (await api('card?at=' + enc(parent) + '&sides=all')).sides.map((s) => s.address).sort((a, b) => rank(label(a)) - rank(label(b)));
       const index = order.indexOf(at);
       const other = index + direction;
       if (index < 0 || other < 0 || other >= order.length) return;
@@ -7782,7 +8028,8 @@
       state.overview = overview;
       state.fingerprint = overview.fingerprint;
       applyFeatures(overview);
-      setNodes(graph.nodes);
+      setNodes(graph.nodes, overview.trees);
+      state.prints = treePrints(overview);
       spreads.take(kept);
       state.locks = locks;
       paintLocks();

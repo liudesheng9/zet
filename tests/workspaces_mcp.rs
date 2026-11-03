@@ -2904,7 +2904,9 @@ impl TestHome {
         http_request(
             port,
             "GET",
-            &format!("/api/card?at={}", at.replace('|', "%7C")),
+            // The full answer, every Side successor included: the reader's own read carries only
+            // the first one and their count (#242).
+            &format!("/api/card?at={}&sides=all", at.replace('|', "%7C")),
             token,
             None,
         )

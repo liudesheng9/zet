@@ -772,6 +772,41 @@ pub(crate) struct Snapshot {
     /// address, made on the first ask (S13, #156; design 15.2). A quiet Term link in the reader
     /// offers this row's meaning, so the answer comes from the same read as the Cards.
     term_meanings: OnceLock<BTreeMap<String, String>>,
+    /// Every Card's serialized summary with each tree's members and fingerprint, made on the first
+    /// ask (#243): the GUI's graph and tree answers and its per-tree fingerprints all read it, so a
+    /// Snapshot kept across requests builds each summary once.
+    summaries: OnceLock<Summaries>,
+}
+
+/// The serialized Card summaries of one Snapshot (#243).
+pub(crate) struct Summaries {
+    /// One serialized [`Snapshot::summary`] per Card, in `cards` order.
+    json: Vec<String>,
+    /// Each tree's members (positions in `cards`) and fingerprint: the hash of its serialized
+    /// summaries, so it moves exactly when one of them changes (an edit, a Lock fact, or a Link
+    /// from another tree that changes an inbound count).
+    trees: BTreeMap<String, (Vec<usize>, String)>,
+    /// The whole graph answer, made on the first ask.
+    graph: OnceLock<String>,
+}
+
+impl Summaries {
+    /// The `/api/graph` answer: `{"nodes": [every summary]}`.
+    pub(crate) fn graph(&self) -> &str {
+        self.graph.get_or_init(|| format!("{{\"nodes\":[{}]}}", self.json.join(",")))
+    }
+
+    /// The summaries of one tree as a JSON array, or `None` for a tree with no Cards.
+    pub(crate) fn tree_cards(&self, tree: &str) -> Option<String> {
+        let (members, _) = self.trees.get(tree)?;
+        let parts: Vec<&str> = members.iter().map(|&at| self.json[at].as_str()).collect();
+        Some(format!("[{}]", parts.join(",")))
+    }
+
+    /// The fingerprint of one tree, 24 hex characters.
+    pub(crate) fn tree_fingerprint(&self, tree: &str) -> Option<&str> {
+        self.trees.get(tree).map(|(_, print)| print.as_str())
+    }
 }
 
 struct Folded {
@@ -878,6 +913,7 @@ impl Snapshot {
             folded: OnceLock::new(),
             fingerprint: OnceLock::new(),
             term_meanings: OnceLock::new(),
+            summaries: OnceLock::new(),
         })
     }
 
@@ -998,6 +1034,47 @@ impl Snapshot {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Every Card's serialized summary and each tree's fingerprint, built once (#243).
+    pub(crate) fn summaries(&self) -> &Summaries {
+        self.summaries.get_or_init(|| {
+            use sha2::{Digest, Sha256};
+            let json: Vec<String> = self
+                .cards
+                .iter()
+                .map(|card| self.summary(card).to_string())
+                .collect();
+            let mut members: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+            for (at, card) in self.cards.iter().enumerate() {
+                members
+                    .entry(crate::tree_id(&card.address).to_string())
+                    .or_default()
+                    .push(at);
+            }
+            let trees = members
+                .into_iter()
+                .map(|(tree, positions)| {
+                    let mut hasher = Sha256::new();
+                    for &at in &positions {
+                        hasher.update(json[at].as_bytes());
+                        hasher.update([0]);
+                    }
+                    let print = hasher
+                        .finalize()
+                        .iter()
+                        .take(12)
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                    (tree, (positions, print))
+                })
+                .collect();
+            Summaries {
+                json,
+                trees,
+                graph: OnceLock::new(),
+            }
+        })
     }
 
     pub(crate) fn summary(&self, card: &Card) -> Value {
