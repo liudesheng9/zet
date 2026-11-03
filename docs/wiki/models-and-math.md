@@ -9,8 +9,8 @@ paths:
   - "tests/math_units.rs"
   - "tests/term_reasoning.rs"
   - "scripts/model-imports/**"
-synced: 49255babb82c
-updated: 2026-10-29
+synced: 19a227d2b486
+updated: 2026-11-03
 ---
 
 # Model structure and math units

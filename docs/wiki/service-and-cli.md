@@ -26,8 +26,8 @@ paths:
   - "tests/fixtures/**"
   - "scripts/verify-release.ps1"
   - "scripts/release-live.ps1"
-synced: 1cc9b0f1b1f3
-updated: 2026-11-01
+synced: 19a227d2b486
+updated: 2026-11-03
 ---
 
 # Service, CLI and storage

@@ -12,7 +12,7 @@ paths:
   - "tests/reader_release.rs"
   - "tests/term_reading.rs"
   - "scripts/gui-bench/**"
-synced: b853ec545209
+synced: 19a227d2b486
 updated: 2026-11-03
 ---
 

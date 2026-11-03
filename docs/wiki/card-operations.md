@@ -7,7 +7,7 @@ paths:
   - "src/place.rs"
   - "src/tree_ops.rs"
   - "scripts/tree-ops-bench.mjs"
-synced: b853ec545209
+synced: 19a227d2b486
 updated: 2026-11-03
 ---
 
