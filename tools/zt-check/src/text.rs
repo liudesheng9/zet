@@ -11,7 +11,8 @@ use regex::{Captures, Regex};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::LazyLock;
 
@@ -611,6 +612,8 @@ pub fn term_row_duplicates(body: &str) -> Vec<TermRowDuplicate> {
 
 fn term_rows(body: &str, compatibility: bool) -> Vec<TermRow> {
     let mut rows: Vec<TermRow> = Vec::new();
+    // Each kept row's folded name, so a repeat finds the row it replaces in one step (#249).
+    let mut kept: HashMap<String, usize> = HashMap::new();
     let mut in_table = false;
     for line in body.split('\n') {
         if line.contains("术语表") {
@@ -630,9 +633,12 @@ fn term_rows(body: &str, compatibility: bool) -> Vec<TermRow> {
         let Some((term, avoid, meaning, defined)) = term_cells(t) else { continue };
         let row = TermRow { term, avoid, meaning, defined };
         if compatibility {
-            match rows.iter_mut().find(|known| key(&known.term) == key(&row.term)) {
-                Some(entry) => *entry = row,
-                None => rows.push(row),
+            match kept.entry(key(&row.term)) {
+                Entry::Occupied(at) => rows[*at.get()] = row,
+                Entry::Vacant(slot) => {
+                    slot.insert(rows.len());
+                    rows.push(row);
+                }
             }
         } else {
             rows.push(row);
@@ -644,6 +650,7 @@ fn term_rows(body: &str, compatibility: bool) -> Vec<TermRow> {
 /// The term table under a line that holds `术语表`: the term, and the words not to use.
 pub(crate) fn read_terms(body: &str) -> Terms {
     let mut terms: Terms = Vec::new();
+    let mut kept: HashMap<String, usize> = HashMap::new();
     let mut in_table = false;
     for line in body.split('\n') {
         if line.contains("术语表") {
@@ -665,9 +672,12 @@ pub(crate) fn read_terms(body: &str) -> Terms {
             continue;
         }
         // An ordered hashtable: a term that differs only in case replaces the earlier one.
-        match terms.iter_mut().find(|(known, _)| key(known) == key(&term)) {
-            Some(entry) => *entry = (term, avoid),
-            None => terms.push((term, avoid)),
+        match kept.entry(key(&term)) {
+            Entry::Occupied(at) => terms[*at.get()] = (term, avoid),
+            Entry::Vacant(slot) => {
+                slot.insert(terms.len());
+                terms.push((term, avoid));
+            }
         }
     }
     terms
@@ -1491,6 +1501,32 @@ mod tests {
         assert!(read_terms(plain).is_empty());
         assert_eq!(term_table(plain).len(), 1);
         assert!(term_table("没有术语表的卡").is_empty());
+    }
+
+    /// #249: a large table parses in time linear in its rows. A case-variant repeat near the end
+    /// still replaces its earlier row in place, in both readers, and every other row keeps its
+    /// place. Before #249 each row was compared with every earlier row through a fresh
+    /// lower-casing, and the GUI parsed atkinson's 748-row table once per head (40 s).
+    #[test]
+    fn a_large_term_table_parses_quickly_and_keeps_the_replacement_rule() {
+        let mut body = String::from("术语表\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n");
+        for n in 0..2000 {
+            body.push_str(&format!("| Term{n} | word{n} | meaning {n} | §{n} |\n"));
+        }
+        body.push_str("| term7 | late | late meaning | §9999 |\n| TERM1999 | last | last meaning | §1 |\n");
+        let start = std::time::Instant::now();
+        let rows = term_table(&body);
+        let terms = read_terms(&body);
+        let took = start.elapsed();
+        assert_eq!(rows.len(), 2000);
+        assert_eq!((rows[7].term.as_str(), rows[7].meaning.as_str()), ("term7", "late meaning"));
+        assert_eq!((rows[1999].term.as_str(), rows[1999].meaning.as_str()), ("TERM1999", "last meaning"));
+        assert_eq!((rows[8].term.as_str(), rows[8].meaning.as_str()), ("Term8", "meaning 8"));
+        assert_eq!(terms.len(), 2000);
+        assert_eq!(terms[7], ("term7".to_string(), vec!["late".to_string()]));
+        assert_eq!(terms[1999].0, "TERM1999");
+        assert_eq!(term_rows_raw(&body).len(), 2002, "the raw reader keeps every row");
+        assert!(took < std::time::Duration::from_millis(250), "2,000 rows took {took:?}");
     }
 
     /// S08 (#150) AC05: the publication reader sees every raw row before the compatibility

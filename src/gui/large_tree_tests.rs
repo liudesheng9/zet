@@ -6,7 +6,7 @@ use super::*;
 
 /// Run `expression` under Node with `src/gui/layout.js` bound to `L`, and answer the JSON it
 /// prints; `None` when Node is not installed (the test then says so and passes).
-fn layout_js(expression: &str) -> Option<Value> {
+pub(super) fn layout_js(expression: &str) -> Option<Value> {
     let dir = tempfile::tempdir().expect("temp dir");
     let file = dir.path().join("layout.js");
     fs::write(&file, LAYOUT_JS).expect("layout module");
@@ -439,9 +439,9 @@ fn the_reader_lays_out_long_lists_only_on_request() {
     ] {
         assert!(body.contains(part), "{part}: {body}");
     }
-    let row = &APP_JS[APP_JS.find("  function chipRow(links, make) {").unwrap()..];
+    let row = &APP_JS[APP_JS.find("  function chipRow(links, make, total = links.length, loadAll = null) {").unwrap()..];
     let row = &row[..row.find("\n  }\n").unwrap()];
-    assert!(row.contains("links.slice(0, fold.shown)") && row.contains("text: `+${fold.hidden} more`"), "{row}");
+    assert!(row.contains("links.slice(0, shown)") && row.contains("text: `+${hidden} more`"), "{row}");
     assert!(APP_JS.contains("(await api('card?at=' + enc(parent) + '&sides=all')).sides"));
     assert!(APP_CSS.contains(".btn.table-more"), "the table control has its place");
 }
@@ -595,16 +595,17 @@ fn a_held_request_does_not_hold_up_another_read() {
     pool.stop();
 }
 
-/// S6 (#244): writes go one at a time: every POST takes the one write lock after its body is read,
-/// so a slow client never holds it.
+/// S6 (#244), #252: writes go one at a time on the writer lane: every POST is handed to it after
+/// its body is read, so a slow client never holds the lane, and no POST is routed on a request
+/// thread.
 #[test]
-fn writes_take_the_one_write_lock_after_their_body() {
-    let handle = &GUI_SOURCE[GUI_SOURCE.find("    fn handle(&self, mut request: Request) {").unwrap()..];
+fn writes_go_to_the_writer_lane_after_their_body() {
+    let handle = &GUI_SOURCE[GUI_SOURCE.find("    fn handle(&self, mut request: Request, writes: &Writes) {").unwrap()..];
     let handle = &handle[..handle.find("\n    }\n").unwrap()];
     let body = handle.find("request.as_reader().read_to_string(&mut raw)").expect("the body read");
-    let lock = handle.find("let _write = (method == Method::Post).then(|| WRITES.lock()").expect("the write lock");
+    let lane = handle.find("writes.send(write)").expect("the writer lane");
     let route = handle.find("let result = self.route(&method, &path, &query, &body);").expect("the route");
-    assert!(body < lock && lock < route, "{handle}");
+    assert!(body < lane && lane < route, "{handle}");
 }
 
 /// S8 (#246): the lens benchmark runs the shipped layout over a saved answer, reports the largest

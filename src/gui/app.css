@@ -2878,3 +2878,21 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .node.drop-before { box-shadow: inset 0 4px 0 var(--accent), var(--card-shadow-lift); }
 .node.drop-side { box-shadow: inset 5px 0 0 var(--accent), var(--card-shadow-lift); }
 .node.drop-after { box-shadow: inset 0 -4px 0 var(--accent), var(--card-shadow-lift); }
+
+/* A Card on its way (#254). After 300 ms the open card fades like a sheet being put away and a
+   pencil line runs along the top edge of the reader, the one moving thing on screen; the Map
+   lifts the Card asked for. From 5 s a quiet line names the address being fetched. */
+.reader.pending { position: relative; }
+.reader.pending > .card { opacity: .55; transition: opacity 240ms ease-in-out; }
+.reader.pending::before {
+  content: ""; position: sticky; top: 0; display: block; height: 2px; margin: -28px -26px 26px;
+  background: linear-gradient(90deg, transparent, var(--ink-soft) 40%, var(--ink-soft) 60%, transparent) 0 0 / 40% 100% no-repeat;
+  animation: reader-pending 1.1s ease-in-out infinite;
+}
+@keyframes reader-pending { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+.reader-wait { margin: 0 0 12px; color: var(--ink-soft); font-size: 12px; }
+.node.pending-target { box-shadow: var(--card-shadow-lift); transform-origin: center; }
+@media (prefers-reduced-motion: reduce) {
+  .reader.pending::before { animation: none; background-size: 100% 100%; }
+  .reader.pending > .card { transition: none; }
+}

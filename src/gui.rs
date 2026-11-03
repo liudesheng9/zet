@@ -25,6 +25,8 @@ use crate::{Access, CardType, Workspace};
 
 mod document;
 #[cfg(test)]
+mod browse_lag_tests;
+#[cfg(test)]
 mod large_tree_tests;
 
 /// The GUI is the human's own tool and may change both Workspaces.
@@ -147,35 +149,75 @@ pub(crate) fn clear_record(root: &Path) {
     let _ = fs::remove_file(record_path(root));
 }
 
+/// What one `/api/card` answer carries beyond its default (#242, #255).
+#[derive(Clone, Copy, Default)]
+struct CardParts {
+    /// Every Side successor, not only the first.
+    all_sides: bool,
+    /// Every inbound, Reverse-link and Term-use entry, not only the first [`INBOUND_HEAD`].
+    all_inbound: bool,
+    /// The stored text.
+    text: bool,
+}
+
+/// How many entries of each inbound list a Card answer carries by default (#255).
+const INBOUND_HEAD: usize = 50;
+
 /// The GUI server a service daemon runs for its whole life.
 pub(crate) struct Running {
     pool: Pool,
     root: PathBuf,
 }
 
-/// How many requests the GUI answers at once (#244): a Card read never waits behind a large tree,
-/// the graph, or a slow client. Writes still go one at a time ([`WRITES`]).
+/// How many requests the GUI reads at once (#244): a Card read never waits behind a large tree,
+/// the graph, or a slow client. Writes go one at a time on their own lane ([`Writes`]).
 const REQUEST_THREADS: usize = 4;
 
-/// The one lock every GUI write takes after its body has arrived (#244), so two writes from the
-/// page never interleave; Card operations take the archive's edit lock as well, as they always did.
-static WRITES: Mutex<()> = Mutex::new(());
+/// One POST whose body has arrived, waiting for the writer lane.
+struct PendingWrite {
+    request: Request,
+    path: String,
+    query: BTreeMap<String, String>,
+    body: Value,
+}
 
-/// The request threads of one GUI server.
+/// The writer lane (#252): every GUI POST is answered here, one at a time and in arrival order,
+/// so two writes from the page never interleave. A request thread only reads a POST's body and
+/// hands it over, so writes that wait for the archive's edit lock while another client writes
+/// never hold the threads that answer reads.
+type Writes = std::sync::mpsc::Sender<PendingWrite>;
+
+/// The request threads and the writer thread of one GUI server.
 struct Pool {
     server: Arc<Server>,
     workers: Vec<JoinHandle<()>>,
+    writer: JoinHandle<()>,
     stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Answer `server`'s requests on [`REQUEST_THREADS`] threads until the pool stops.
+/// Answer `server`'s requests on [`REQUEST_THREADS`] threads and its writes on one writer thread,
+/// until the pool stops.
 fn serve(server: &Arc<Server>, app: Arc<App>) -> Result<Pool> {
     let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (writes, pending) = std::sync::mpsc::channel::<PendingWrite>();
+    let writer = {
+        let app = Arc::clone(&app);
+        thread::Builder::new()
+            .name("zt-gui-writes".to_string())
+            .spawn(move || {
+                // Ends when every request thread has ended and dropped its sender.
+                for write in pending {
+                    let _ = panic::catch_unwind(AssertUnwindSafe(|| app.answer_pending(write)));
+                }
+            })
+            .context("failed to start the GUI writer thread")?
+    };
     let mut workers = Vec::with_capacity(REQUEST_THREADS);
     for _ in 0..REQUEST_THREADS {
         let server = Arc::clone(server);
         let app = Arc::clone(&app);
         let stopping = Arc::clone(&stopping);
+        let writes = writes.clone();
         workers.push(
             thread::Builder::new()
                 .name("zt-gui".to_string())
@@ -184,7 +226,7 @@ fn serve(server: &Arc<Server>, app: Arc<App>) -> Result<Pool> {
                         match server.recv() {
                             // A fault in one request must not take the GUI down with it.
                             Ok(request) => {
-                                let _ = panic::catch_unwind(AssertUnwindSafe(|| app.handle(request)));
+                                let _ = panic::catch_unwind(AssertUnwindSafe(|| app.handle(request, &writes)));
                             }
                             // An unblock ends the thread when the pool stops; a failed accept does not.
                             Err(_) if stopping.load(std::sync::atomic::Ordering::SeqCst) => break,
@@ -198,6 +240,7 @@ fn serve(server: &Arc<Server>, app: Arc<App>) -> Result<Pool> {
     Ok(Pool {
         server: Arc::clone(server),
         workers,
+        writer,
         stopping,
     })
 }
@@ -214,6 +257,8 @@ impl Pool {
         for worker in self.workers {
             let _ = worker.join();
         }
+        // The request threads held the writer lane's senders; it ends after the writes in hand.
+        let _ = self.writer.join();
     }
 }
 
@@ -668,17 +713,40 @@ fn run_helper(program: &Path, args: &[String], lifetime: Duration) -> HelperRun 
 }
 
 /// The last Snapshot read, kept until the Cards change. Reading and parsing every Card takes
-/// a few hundred milliseconds, too slow to repeat for each Card the page shows. A connection
+/// about a second on a large box, too slow to repeat for each Card the page shows. A connection
 /// held open for the purpose asks SQLite's `data_version`, which moves whenever any other
 /// connection commits, so writes from the CLI, a Session, or the MCP server show up on the
 /// next request just as the GUI's own do.
+///
+/// The lock is a read lock (#251): it is held only to compare the version and to take or install
+/// a Snapshot, never while one is read. The first reader that finds the Cards changed builds the
+/// new Snapshot outside the lock; readers that arrive meanwhile are answered from the previous
+/// Snapshot, which is still one consistent state of the box, instead of queueing behind the
+/// build. A read with no Snapshot yet, or one that needs the change ([`Snapshots::fresh`]),
+/// waits for the build.
 struct Snapshots {
     root: PathBuf,
-    cached: Mutex<Option<Cached>>,
+    state: Mutex<CacheState>,
+    /// Signalled when a build ends, for the readers that wait for it.
+    built: std::sync::Condvar,
+    /// Taken by every build before it reads, so a test can hold a build open.
+    #[cfg(test)]
+    build_gate: Mutex<()>,
+}
+
+#[derive(Default)]
+struct CacheState {
+    /// The connection whose `data_version` tells whether another connection committed.
+    probe: Option<rusqlite::Connection>,
+    current: Option<Cached>,
+    /// A reader is building a new Snapshot outside the lock.
+    building: bool,
+    /// The probe's version after the GUI's last write: no read is answered from an older
+    /// Snapshot, so the page always reads its own change (#251/#252).
+    wanted: i64,
 }
 
 struct Cached {
-    conn: rusqlite::Connection,
     version: i64,
     snapshot: Arc<Snapshot>,
     /// The overview of this Snapshot, which the page asks for every few seconds to notice
@@ -686,35 +754,123 @@ struct Cached {
     overview: Option<Value>,
 }
 
+/// Ends a build however it ends, so a failed or panicking build never leaves the readers waiting.
+struct Building<'a>(&'a Snapshots);
+
+impl Drop for Building<'_> {
+    fn drop(&mut self) {
+        self.0.lock().building = false;
+        self.0.built.notify_all();
+    }
+}
+
 impl Snapshots {
     fn new(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
-            cached: Mutex::new(None),
+            state: Mutex::new(CacheState::default()),
+            built: std::sync::Condvar::new(),
+            #[cfg(test)]
+            build_gate: Mutex::new(()),
         }
     }
 
+    /// The current Snapshot, or the previous one while another reader builds the current one.
     fn get(&self) -> Result<Arc<Snapshot>> {
-        let mut cached = self.lock();
-        Ok(Arc::clone(&self.current(&mut cached)?.snapshot))
+        Ok(self.read(false)?.0)
     }
 
-    /// The overview `build` makes of the current Snapshot, built once per Snapshot.
-    fn overview(&self, build: impl FnOnce(&Snapshot) -> Result<Value>) -> Result<Value> {
-        let snapshot = {
-            let mut cached = self.lock();
-            let current = self.current(&mut cached)?;
-            if let Some(overview) = &current.overview {
-                return Ok(overview.clone());
+    /// The Snapshot of the box as it is now, waiting for a build that is running.
+    fn fresh(&self) -> Result<Arc<Snapshot>> {
+        Ok(self.read(true)?.0)
+    }
+
+    #[cfg(test)]
+    fn building(&self) -> bool {
+        self.lock().building
+    }
+
+    /// A Snapshot and whether it is the current one (`false`: the previous one, answered while
+    /// another reader builds the current one).
+    fn read(&self, fresh: bool) -> Result<(Arc<Snapshot>, bool)> {
+        let mut state = self.lock();
+        loop {
+            let version = self.version(&mut state)?;
+            if let Some(cached) = &state.current
+                && cached.version == version
+            {
+                return Ok((Arc::clone(&cached.snapshot), true));
             }
-            Arc::clone(&current.snapshot)
-        };
+            if state.building {
+                if !fresh
+                    && let Some(cached) = &state.current
+                    && cached.version >= state.wanted
+                {
+                    return Ok((Arc::clone(&cached.snapshot), false));
+                }
+                state = self
+                    .built
+                    .wait(state)
+                    .unwrap_or_else(|poison| poison.into_inner());
+                continue;
+            }
+            state.building = true;
+            drop(state);
+            let building = Building(self);
+            #[cfg(test)]
+            drop(self.build_gate.lock().unwrap_or_else(|poison| poison.into_inner()));
+            // The version was asked before the read: a commit in between makes the next request
+            // read again rather than keep a stale Snapshot.
+            let snapshot = Arc::new(Snapshot::read(&self.root)?);
+            let mut state = self.lock();
+            state.current = Some(Cached {
+                version,
+                snapshot: Arc::clone(&snapshot),
+                overview: None,
+            });
+            drop(state);
+            drop(building);
+            return Ok((snapshot, true));
+        }
+    }
+
+    /// The probe's `data_version`; a probe that cannot answer is replaced, not trusted. A new
+    /// probe counts versions of its own, so what was kept under the old one is dropped.
+    fn version(&self, state: &mut CacheState) -> Result<i64> {
+        if let Some(probe) = &state.probe
+            && let Ok(version) = data_version(probe)
+        {
+            return Ok(version);
+        }
+        let probe = crate::open_db(&self.root)?;
+        let version = data_version(&probe)?;
+        state.probe = Some(probe);
+        state.current = None;
+        state.wanted = 0;
+        Ok(version)
+    }
+
+    /// Mark a write the GUI made: every later read is answered from a Snapshot that holds it.
+    fn wrote(&self) -> Result<()> {
+        let mut state = self.lock();
+        let version = self.version(&mut state)?;
+        state.wanted = state.wanted.max(version);
+        Ok(())
+    }
+
+    /// The overview `build` makes of the Snapshot [`Snapshots::get`] answers, built once per
+    /// Snapshot.
+    fn overview(&self, build: impl FnOnce(&Snapshot) -> Result<Value>) -> Result<Value> {
+        let snapshot = self.get()?;
+        if let Some(overview) = self.kept_overview(&snapshot) {
+            return Ok(overview);
+        }
         // Built outside the lock (#244): the tree fingerprints read every summary, and a Card read
         // on another request thread must not wait for them. Two builders of one Snapshot share its
         // summaries, which are made once.
         let overview = build(&snapshot)?;
-        let mut cached = self.lock();
-        if let Some(current) = cached.as_mut()
+        let mut state = self.lock();
+        if let Some(current) = state.current.as_mut()
             && Arc::ptr_eq(&current.snapshot, &snapshot)
         {
             current.overview = Some(overview.clone());
@@ -722,32 +878,18 @@ impl Snapshots {
         Ok(overview)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Cached>> {
-        self.cached
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+    fn kept_overview(&self, snapshot: &Arc<Snapshot>) -> Option<Value> {
+        let state = self.lock();
+        let cached = state.current.as_ref()?;
+        Arc::ptr_eq(&cached.snapshot, snapshot)
+            .then(|| cached.overview.clone())
+            .flatten()
     }
 
-    fn current<'a>(&self, cached: &'a mut Option<Cached>) -> Result<&'a mut Cached> {
-        let conn = match cached.take() {
-            Some(held) => match data_version(&held.conn) {
-                Ok(version) if version == held.version => return Ok(cached.insert(held)),
-                Ok(_) => held.conn,
-                // A connection that cannot answer is replaced, not trusted.
-                Err(_) => crate::open_db(&self.root)?,
-            },
-            None => crate::open_db(&self.root)?,
-        };
-        // Ask before reading: a commit in between makes the next request read again rather
-        // than keep a stale Snapshot.
-        let version = data_version(&conn)?;
-        let snapshot = Arc::new(Snapshot::read(&self.root)?);
-        Ok(cached.insert(Cached {
-            conn,
-            version,
-            snapshot,
-            overview: None,
-        }))
+    fn lock(&self) -> std::sync::MutexGuard<'_, CacheState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 }
 
@@ -857,7 +999,7 @@ fn header(name: &str, value: &str) -> Header {
 }
 
 impl App {
-    fn handle(&self, mut request: Request) {
+    fn handle(&self, mut request: Request, writes: &Writes) {
         let url = request.url().to_string();
         let (path, query) = url.split_once('?').unwrap_or((&url, ""));
         let path = path.to_string();
@@ -1069,27 +1211,38 @@ impl App {
             }
             return;
         }
-        let _write = (method == Method::Post).then(|| WRITES.lock().unwrap_or_else(|poison| poison.into_inner()));
-        let result = self.route(&method, &path, &query, &body);
-        match result {
-            Ok(value) => respond_json(request, 200, &value),
-            Err(error) => {
-                let mut value = json!({ "error": error.message });
-                let status = match error.refusal {
-                    Some(refusal) => {
-                        value["refusal"] = refusal;
-                        409
-                    }
-                    None => {
-                        if let Some(check) = error.check {
-                            value["check"] = check;
-                        }
-                        400
-                    }
-                };
-                respond_json(request, status, &value);
+        if method == Method::Post {
+            // The body has arrived: the write waits on the writer lane, not on this thread (#252).
+            let write = PendingWrite { request, path, query, body };
+            if let Err(std::sync::mpsc::SendError(write)) = writes.send(write) {
+                self.answer_pending(write);
             }
+            return;
         }
+        let result = self.route(&method, &path, &query, &body);
+        respond_result(request, result);
+    }
+
+    /// Answer one POST on the writer lane.
+    fn answer_pending(&self, write: PendingWrite) {
+        let result = self.answer_write(&Method::Post, &write.path, &write.query, &write.body);
+        respond_result(write.request, result);
+    }
+
+    /// Route one write and mark it, so no later read is answered from a Snapshot older than the
+    /// write (#251): the page reads its own change next.
+    fn answer_write(
+        &self,
+        method: &Method,
+        path: &str,
+        query: &BTreeMap<String, String>,
+        body: &Value,
+    ) -> ApiResult {
+        let result = self.route(method, path, query, body);
+        if let Err(error) = self.snapshots.wrote() {
+            crate::log_event(&self.root, &format!("gui snapshot mark after {path}: {error:#}")).ok();
+        }
+        result
     }
 
     /// Reject DNS-rebinding requests whose Host is not this loopback server.
@@ -1130,7 +1283,11 @@ impl App {
             (Method::Get, "/api/card") => self.card(
                 &param("at")?,
                 query.get("via").map(String::as_str),
-                query.get("sides").is_some_and(|value| value == "all"),
+                CardParts {
+                    all_sides: query.get("sides").is_some_and(|value| value == "all"),
+                    all_inbound: query.get("inbound").is_some_and(|value| value == "all"),
+                    text: query.get("text").is_some_and(|value| value == "1"),
+                },
             ),
             (Method::Get, "/api/graph") => self.graph(),
             (Method::Get, "/api/register") => self.register(query),
@@ -1211,6 +1368,7 @@ impl App {
                 "broken": broken,
                 "workspaces": workspaces,
                 "trees": tree_prints(snapshot),
+                "locks": self.locks_fingerprint()?,
             }))
         })?;
         // The switches are read per answer, not cached with the Snapshot, so turning one off or on
@@ -1370,8 +1528,12 @@ impl App {
     /// shares with others is shown as a member of it, not of its home model.
     /// `all_sides` asks for every Side successor (the reorder step); the reader gets the count and
     /// the first one only (#242), so a Cited list of 1,589 works does not travel with each read.
-    fn card(&self, target: &str, via: Option<&str>, all_sides: bool) -> ApiResult {
-        let snapshot = self.snapshot()?;
+    fn card(&self, target: &str, via: Option<&str>, parts: CardParts) -> ApiResult {
+        let (mut snapshot, current) = self.snapshots.read(false)?;
+        // A Card the previous Snapshot lacks may be the change being read: wait for it (#251).
+        if !current && !snapshot.by_address.contains_key(target) {
+            snapshot = self.snapshots.fresh()?;
+        }
         let card = snapshot
             .by_address
             .get(target)
@@ -1384,6 +1546,22 @@ impl App {
         };
         let sides = snapshot.sides(card);
         let sides_count = sides.len();
+        // The inbound lists come as their first fifty entries and a count unless all are asked for
+        // (#255): the reader shows fifty chips, and a root that every Card links answered 1.4 MB.
+        let inbound = snapshot.inbound_refs(&card.address);
+        let reverse_links = snapshot.reverse_links(&card.address);
+        let term_uses = snapshot.term_uses(&card.address);
+        let (inbound_count, reverse_count, term_use_count) = (inbound.len(), reverse_links.len(), term_uses.len());
+        let tree = crate::tree_id(&card.address);
+        let near: Vec<String> = inbound
+            .iter()
+            .filter_map(|link| link["address"].as_str())
+            .filter(|at| crate::tree_id(at) == tree)
+            .map(str::to_string)
+            .collect();
+        let head = |list: Vec<Value>| -> Vec<Value> {
+            if parts.all_inbound { list } else { list.into_iter().take(INBOUND_HEAD).collect() }
+        };
         let mut value = json!({
             "address": card.address,
             "tree": crate::tree_id(&card.address),
@@ -1402,7 +1580,6 @@ impl App {
             "hubs": crate::hub::hubs_of(&snapshot, &card.address),
             "context": context,
             "title": parsed.title,
-            "text": card.text,
             "body": parsed.body,
             // The authored identity a Reply captures and re-checks before it saves (S18, #99).
             "authored_fingerprint": crate::card::authored_fingerprint(card)?,
@@ -1415,15 +1592,25 @@ impl App {
             "citation_key": card.citation_key,
             "parent": snapshot.nav(crate::parent_location(&card.address)),
             "direct": snapshot.nav(crate::direct_successor(&card.address).ok()),
-            "sides": if all_sides { sides } else { sides.into_iter().take(1).collect() },
+            "sides": if parts.all_sides { sides } else { sides.into_iter().take(1).collect() },
             "sides_count": sides_count,
-            "inbound": snapshot.inbound_refs(&card.address),
+            "inbound": head(inbound),
+            "inbound_count": inbound_count,
+            // The in-tree sources the Map draws arcs from, which it does for at most sixteen (#255).
+            "inbound_near": (near.len() <= 16).then_some(near),
             // Ordinary Reverse links and Term uses are separate lists, as their generated sections
             // are (S11, #153; design 10.3). `inbound` keeps both for existing navigation.
-            "reverse_links": snapshot.reverse_links(&card.address),
-            "term_uses": snapshot.term_uses(&card.address),
+            "reverse_links": head(reverse_links),
+            "reverse_count": reverse_count,
+            "term_uses": head(term_uses),
+            "term_use_count": term_use_count,
             "outbound": snapshot.outbound(&card.address),
         });
+        // The stored text is the writing desk's and the Stored Markdown fold's, asked for when
+        // they open (#255): a root's generated Reverse links section alone can be 366 KB.
+        if parts.text {
+            value["text"] = json!(card.text);
+        }
         // The Card's own Lock facts (R201-R204, S03-AC01): the reader learns here whether an active
         // Lock governs this Card and which Locked trees pin it. `writable` is the GUI's own Owner
         // access and no active Lock.
@@ -1803,6 +1990,21 @@ impl App {
             },
         )?;
         Ok(outcome.into_value())
+    }
+
+    /// A fingerprint of what `GET /api/locks` answers now (#255): the hash of the same export,
+    /// read without recording anything. The overview carries it, once per Snapshot, so the page
+    /// reads the 3 MB of Locks only when they changed, not after every Card write.
+    fn locks_fingerprint(&self) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let conn = crate::open_db(&self.root)?;
+        let integrity = crate::tree_lock::check(&conn)?;
+        let export = crate::tree_lock::export_with(&conn, &integrity)?;
+        Ok(Sha256::digest(export.to_string().as_bytes())
+            .iter()
+            .take(12)
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
     }
 
     /// The Lock panel: every Lock, its retained history and the current integrity result. Opening
@@ -2858,6 +3060,29 @@ fn tree_prints(snapshot: &Snapshot) -> Vec<Value> {
             tree
         })
         .collect()
+}
+
+/// An API answer: 200 with the value, 409 with a refusal, else 400 with the error and any check.
+fn respond_result(request: Request, result: ApiResult) {
+    match result {
+        Ok(value) => respond_json(request, 200, &value),
+        Err(error) => {
+            let mut value = json!({ "error": error.message });
+            let status = match error.refusal {
+                Some(refusal) => {
+                    value["refusal"] = refusal;
+                    409
+                }
+                None => {
+                    if let Some(check) = error.check {
+                        value["check"] = check;
+                    }
+                    400
+                }
+            };
+            respond_json(request, status, &value);
+        }
+    }
 }
 
 fn respond_json(request: Request, status: u16, value: &Value) {
@@ -4326,16 +4551,16 @@ mod tests {
         let reader = &APP_JS[APP_JS.find("function renderReader()").expect("the reader")..];
         let reader = &reader[..reader.find("card.outbound.length ?").expect("the links-out row")];
         assert!(
-            reader.contains("referredBy(card).length ? [h('div', { class: 'section-label', text: `Referred by · ${referredBy(card).length}` })")
-                && reader.contains("chipRow(referredBy(card), (link) => chip(link))"),
+            reader.contains("h('div', { class: 'section-label', text: `Referred by · ${referredCount(card)}` })")
+                && reader.contains("chipRow(referredBy(card), (link) => chip(link), referredCount(card), async () => referredBy(await cardWith(card, 'inbound')))"),
             "Referred by is built from the ordinary Reverse links: {reader}"
         );
         // #242: the Term-use chips are laid out when the disclosure first opens.
         assert!(
-            reader.contains("termUses(card).length ? h('details', {\n        class: 'term-uses',")
-                && reader.contains("h('summary', { class: 'section-label', text: `Term uses · ${termUses(card).length}` })")
-                && reader.contains("chipRow(termUses(card), (link) => termUseChip(link))")
-                && reader.contains("if (fold.open && !fold.querySelector('.chips'))")
+            reader.contains("termUseCount(card) ? h('details', {\n        class: 'term-uses',")
+                && reader.contains("h('summary', { class: 'section-label', text: `Term uses · ${termUseCount(card)}` })")
+                && reader.contains("fold.append(chipRow(uses, (link) => termUseChip(link)));")
+                && reader.contains("if (!fold.open || fold.dataset.laid) return;")
                 && reader.contains(": null,"),
             "Term uses is its own folded row, absent when the list is empty: {reader}"
         );
@@ -5351,7 +5576,7 @@ mod tests {
     #[test]
     fn the_front_end_opens_a_shelf_keeps_the_borrowing_model_and_folds_a_tall_board() {
         let blocks = app_function("blockBoard");
-        assert!(APP_JS.contains("state.card = await api('card?at=' + enc(state.pointer) + (via ? '&via=' + enc(via) : ''));"), "the reader asks for the model it came from");
+        assert!(APP_JS.contains("card = await api('card?at=' + enc(pointer) + (via ? '&via=' + enc(via) : ''), undefined, signal);"), "the reader asks for the model it came from");
         assert!(blocks.contains("const open = onHead ? shelf : (byPrefix || blocks.find(holds) || null);"), "a shelf opens on the Model Card");
         assert!(blocks.contains("if (!PLAIN[b.kind]) return go(b.head);"), "a chapter tab still opens its chapter");
         assert!(blocks.contains("class: 'mbn-home', title: `Lives in the model ${home}"), "a borrowed card names its home model");

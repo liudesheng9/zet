@@ -2395,11 +2395,17 @@ fn cmd_workspaces() -> Result<()> {
 
 fn cmd_dump() -> Result<()> {
     let root = require_service_up()?;
-    let _lock = acquire_edit_lock(&root, "dump")?;
-    let conn = open_db(&root)?;
-    // One captured view under the edit lock: the Cards, the next Topic id, the archive identity and
-    // revision, and the Lock history with its integrity evidence all describe the same archive state
-    // (R314, S13-AC01). The dump module only serializes what this view read.
+    let (cards, next_topic_id, locks) = dump_view(&root)?;
+    dump::run(&root, &cards, next_topic_id, &locks)
+}
+
+/// What a dump holds, read in one read transaction: the Cards, the next Topic id, the archive
+/// identity and revision, and the Lock history with its integrity evidence all describe the same
+/// archive state (R314, S13-AC01). In WAL mode a read transaction sees one committed state while
+/// other clients write, so a dump takes no edit lock and never refuses because a write is under
+/// way (#253). The dump module only serializes what this view read.
+fn dump_view(root: &Path) -> Result<(Vec<dump::DumpCard>, u64, serde_json::Value)> {
+    let conn = open_db(root)?;
     let view = conn.unchecked_transaction()?;
     let cards = load_cards(&view)?
         .into_iter()
@@ -2427,7 +2433,7 @@ fn cmd_dump() -> Result<()> {
     let next_topic_id = next_topic_id(&view)?;
     let locks = tree_lock::dump_export(&view)?;
     let _ = view.rollback();
-    dump::run(&root, &cards, next_topic_id, &locks)
+    Ok((cards, next_topic_id, locks))
 }
 
 /// `zt clear` is now `zt del --all` (R245). The notice needs no service, asks nothing and deletes
@@ -5011,6 +5017,21 @@ fn cmd_lsbk() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #253: a dump only reads, so it does not take the edit lock: it is taken while another
+    /// client writes, and its one read transaction still describes one archive state (WAL).
+    #[test]
+    fn a_dump_reads_while_another_client_holds_the_edit_lock() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        initialize_database(temp.path()).expect("initialize database");
+        ops::create_topic(temp.path(), Access::Owner, Workspace::Human, "# 主题\n").expect("topic");
+        let held = acquire_edit_lock(temp.path(), "another client").expect("edit lock");
+        let (cards, next_topic_id, locks) = dump_view(temp.path()).expect("a dump while another client writes");
+        drop(held);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(next_topic_id, 1);
+        assert!(locks.is_object(), "{locks}");
+    }
 
     /// S02-AC08 / R0148: the repeated-leading-title allowance stays tied to
     /// `authored_changed`, so an unchanged old body does not become newly illegal

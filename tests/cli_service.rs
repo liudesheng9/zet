@@ -3583,8 +3583,10 @@ fn selecting_7zz_creates_the_same_timestamped_payload() {
     assert_eq!(locks["integrity"]["ok"], serde_json::json!(true));
 }
 
+/// #253: a dump only reads, in one read transaction, so it runs while another client holds the
+/// edit lock (it used to refuse with `edit in progress`), and with an open Session.
 #[test]
-fn dump_refuses_edit_lock_but_runs_with_an_open_session() {
+fn dump_runs_while_the_edit_lock_is_held_and_with_an_open_session() {
     if !host_zip_backend_available() {
         return;
     }
@@ -3596,10 +3598,16 @@ fn dump_refuses_edit_lock_but_runs_with_an_open_session() {
         .arg("dp")
         .write_stdin("1\n")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("edit in progress"));
-    assert!(!home.archive_root.join("dump").exists());
+        .success()
+        .stdout(predicate::str::contains("dumped 0 cards to "));
+    assert!(single_dump_archive(&home, ".zip").is_file());
+    assert_eq!(
+        fs::read_to_string(home.archive_root.join("zt.edit.lock")).expect("the writer's lock"),
+        "held",
+        "the dump leaves the writer's lock alone"
+    );
     fs::remove_file(home.archive_root.join("zt.edit.lock")).expect("unlock");
+    fs::remove_dir_all(home.archive_root.join("dump")).expect("clear the first dump");
 
     let mut session = StdCommand::new(assert_cmd::cargo::cargo_bin("zt"))
         .env("ZT_CONFIG_DIR", &home.config_dir)
@@ -4918,13 +4926,13 @@ fn gui_serves_a_token_guarded_api_backed_by_the_same_card_rules() {
         home.card_text("0/0"),
         "# Topic\n\nA **bold** start.\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[0/1]] Idea\n"
     );
-    let (_, card) = api("GET", "/api/card?at=0%2F1", None);
+    let (_, card) = api("GET", "/api/card?at=0%2F1&text=1", None);
     let html = card["html"].as_str().expect("rendered html");
     assert!(html.contains("class=\"zt-link\" href=\"#/card/0/0\" data-target=\"0/0\""));
     assert!(html.contains("<code>[[not a link]]</code>"));
     assert!(!html.contains("<script>"));
     assert_eq!(card["parent"]["address"], "0/0");
-    let (_, topic) = api("GET", "/api/card?at=0%2F0", None);
+    let (_, topic) = api("GET", "/api/card?at=0%2F0&text=1", None);
     assert!(
         topic["html"]
             .as_str()
@@ -5087,7 +5095,7 @@ fn gui_reply_writes_one_human_card_and_refuses_what_is_not_a_reply() {
     };
     let post = |path: &str, body: serde_json::Value| api("POST", path, Some(&body.to_string()));
     let get = |path: &str| api("GET", path, None);
-    let card_of = |at: &str| get(&format!("/api/card?at={}", at.replace('/', "%2F"))).1;
+    let card_of = |at: &str| get(&format!("/api/card?at={}&text=1", at.replace('/', "%2F"))).1;
 
     let (_, topic) = post("/api/create", serde_json::json!({
         "kind": "topic", "text": "# 剩余控制权\n\n代理工作区的一个主题。\n", "workspace": "agent",

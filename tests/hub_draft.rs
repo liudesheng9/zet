@@ -361,7 +361,7 @@ fn a_cross_tree_ask_spread_files_as_one_agent_field_hub() {
     let register = plan["destination"]["at"].as_str().expect("destination");
     assert_eq!(plan["destination"]["how"], json!("side"), "{plan}");
     assert_eq!(plan["destination"]["reuse"], json!(false));
-    let destination = gui.get(&format!("/api/card?at={}", enc(register)));
+    let destination = gui.get(&format!("/api/card?at={}&text=1", enc(register)));
     assert_eq!(destination["workspace"], json!("agent"), "{destination}");
     assert_eq!(destination["level"], json!("register"), "{destination}");
     assert_eq!(
@@ -396,7 +396,7 @@ fn a_cross_tree_ask_spread_files_as_one_agent_field_hub() {
     );
     let hub = saved["address"].as_str().expect("address").to_string();
     assert!(hub.starts_with(&format!("{register}|")), "filed under the register: {hub}");
-    let card = gui.get(&format!("/api/card?at={}", enc(&hub)));
+    let card = gui.get(&format!("/api/card?at={}&text=1", enc(&hub)));
     assert_eq!(card["type"], json!("hub"), "{card}");
     assert_eq!(card["level"], json!("field"), "{card}");
     assert_eq!(card["workspace"], json!("agent"), "{card}");
@@ -406,7 +406,7 @@ fn a_cross_tree_ask_spread_files_as_one_agent_field_hub() {
     assert!(body.contains("## Book A") && body.contains("## Book B"), "{body}");
     // The members are untouched: their authored text is exactly what it was.
     for member in &members {
-        let after = gui.get(&format!("/api/card?at={}", enc(member)));
+        let after = gui.get(&format!("/api/card?at={}&text=1", enc(member)));
         let proposal_card = proposal["cards"]
             .as_array()
             .expect("cards")
@@ -523,7 +523,7 @@ fn a_single_topic_ask_spread_rewrites_the_trees_topic_hub() {
     // The rewrite is one edit of the hub, guarded by the text the desk opened.
     let saved = gui.post("/api/edit", &json!({ "at": hub, "text": merged, "base": base }));
     assert_eq!(saved["address"], json!(hub));
-    let card = gui.get(&format!("/api/card?at={}", enc(&hub)));
+    let card = gui.get(&format!("/api/card?at={}&text=1", enc(&hub)));
     assert_eq!(card["type"], json!("hub"));
     assert_eq!(card["level"], json!("topic"));
     assert_eq!(card["workspace"], json!("agent"));
@@ -534,7 +534,7 @@ fn a_single_topic_ask_spread_rewrites_the_trees_topic_hub() {
         assert!(body.contains(&format!("[[{member}]]")), "{member}: {body}");
     }
     // A member Card is untouched by the rewrite.
-    let member = gui.get(&format!("/api/card?at={}", enc(&members[0])));
+    let member = gui.get(&format!("/api/card?at={}&text=1", enc(&members[0])));
     let proposed = proposal["cards"]
         .as_array()
         .expect("cards")
@@ -550,7 +550,7 @@ fn a_single_topic_ask_spread_rewrites_the_trees_topic_hub() {
             "body": format!("## 个体学习\n- [[{first}|a]]：学习会改变个体的信念。\n\n## 另一条\n- [[{first}|b]]：这里是另一条线索。"),
         }),
     );
-    let after = gui.get(&format!("/api/card?at={}", enc(&hub)));
+    let after = gui.get(&format!("/api/card?at={}&text=1", enc(&hub)));
     let (status, refused) = gui.post_with(
         "/api/edit",
         &gui.token,
@@ -564,7 +564,7 @@ fn a_single_topic_ask_spread_rewrites_the_trees_topic_hub() {
         "the conflict names the changed Card: {refused}"
     );
     assert_eq!(
-        gui.get(&format!("/api/card?at={}", enc(&hub)))["text"],
+        gui.get(&format!("/api/card?at={}&text=1", enc(&hub)))["text"],
         after["text"],
         "a refused rewrite writes nothing"
     );

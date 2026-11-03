@@ -215,7 +215,7 @@ impl Gui {
 
     /// The Card the page sees: its authored fingerprint, title, type and Workspace.
     fn card(&self, at: &str) -> Value {
-        self.get(&format!("/api/card?at={}", enc(at)))
+        self.get(&format!("/api/card?at={}&text=1", enc(at)))
     }
 }
 

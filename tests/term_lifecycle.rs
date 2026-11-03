@@ -561,7 +561,7 @@ fn term_uses_get_their_own_generated_section_beside_ordinary_reverse_links() {
         mcp.text(&eq).contains("## Term uses"),
         "the generated section exists"
     );
-    let card = home.gui().get(&format!("/api/card?at={}", enc(&eq)));
+    let card = home.gui().get(&format!("/api/card?at={}&text=1", enc(&eq)));
     assert_eq!(
         card["reverse_links"]
             .as_array()

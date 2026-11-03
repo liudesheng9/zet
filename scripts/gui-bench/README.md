@@ -14,6 +14,14 @@ The input is a saved `/api/graph` answer (or one `/api/tree` answer). For every 
 
 Load the file into the GUI page of a test box, then run `await ztProbe(['B/1|a|5', 'B/1|a|6'])`. For each move it reports the main-thread time blocked (long tasks), the cards drawn, the bundles, and the page's element count. It refuses port 4717 (the live box), takes at most 12 moves, and never unfolds the whole tree. Keep the browser pane visible: a hidden pane throttles its frames, so only the long tasks are valid there.
 
+## `cold-card.mjs`: the first Card read after another client writes (#256)
+
+```bash
+node scripts/gui-bench/cold-card.mjs --zt <zt.exe under test> --box <new empty folder> --port 48778
+```
+
+It builds its own test box: `zt up` with its own config and port, then one Literature tree written straight into the box's SQLite file, with a Term list of `--heads` rows (748 by default, atkinson's size), as many Term heads, and a Card `bk/2` that uses a Term. Each of `--rounds` rounds edits another Card through the box's own `zt mcp`, as another client would, then reads `bk/2` and pings at once. It prints the times as one JSON line and exits 1 when the worst Card read is above `--bound-card` (500 ms) or the worst ping above `--bound-ping` (100 ms). It runs `zt down` at the end; remove the box folder afterwards. It refuses port 4717.
+
 ## A test box
 
 1. Copy the trees you need with `scripts/book-digest/copy-tree.mjs --tree <key> --to-config <dir>` (read tools only on the live box). Do not copy `D:\zt\zt.sqlite3`.

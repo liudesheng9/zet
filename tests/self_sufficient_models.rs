@@ -971,10 +971,10 @@ fn the_gui_inserts_a_card_and_moves_one_between_two_cards() {
     );
     assert_eq!(done["address"], "0/1");
     assert_eq!(done["moved"], json!({ "0/1": "0/2", "0/2": "0/3" }));
-    let card = gui.api("GET", "/api/card?at=0%2F1", json!(null));
+    let card = gui.api("GET", "/api/card?at=0%2F1&text=1", json!(null));
     assert_eq!(card["facet"], "推导");
     assert!(card["text"].as_str().unwrap().contains("from [[0/2]]"));
-    let card = gui.api("GET", "/api/card?at=0%2F3", json!(null));
+    let card = gui.api("GET", "/api/card?at=0%2F3&text=1", json!(null));
     assert!(card["text"].as_str().unwrap().contains("see [[0/2]]"));
     let done = gui.api(
         "POST",
@@ -982,7 +982,7 @@ fn the_gui_inserts_a_card_and_moves_one_between_two_cards() {
         json!({ "at": "0/3", "before": "0/1", "alone": true, "confirm": "move" }),
     );
     assert_eq!(done["address"], "0/1");
-    let card = gui.api("GET", "/api/card?at=0%2F1", json!(null));
+    let card = gui.api("GET", "/api/card?at=0%2F1&text=1", json!(null));
     assert_eq!(card["title"], "second");
 }
 

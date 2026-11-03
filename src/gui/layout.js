@@ -1174,8 +1174,21 @@
     };
   }
 
+  /** Which request is the latest (#254): `begin()` numbers a new one, and `isLatest(n)` says
+   *  whether request `n` still is, so an answer that arrives after a later move is dropped. */
+  function latestOnly() {
+    let last = 0;
+    return { begin: () => ++last, isLatest: (n) => n === last };
+  }
+
+  /** How a Card that has been on its way for `ms` milliseconds shows (#254): nothing for a quick
+   *  answer, then a pending reader after 300 ms, and from 5 s a quiet line naming what it waits for. */
+  function pendingStage(ms) {
+    return ms < 300 ? 'none' : ms < 5000 ? 'pending' : 'slow';
+  }
+
   return {
-    worldRect, visible, glidePlan, foldRows, changedTrees,
+    worldRect, visible, glidePlan, foldRows, changedTrees, latestOnly, pendingStage,
     blockLayout, bridgeLayout, blockTree, treeLayout, foldedTreeLayout, demotionOrder, trunks, threadPath, roundedPath, tilt,
     sideRank, outline, pathTo, focusLens, edgePath, elbow, edgeSplit, isTermEdge, focusEdges, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,

@@ -2906,7 +2906,7 @@ impl TestHome {
             "GET",
             // The full answer, every Side successor included: the reader's own read carries only
             // the first one and their count (#242).
-            &format!("/api/card?at={}&sides=all", at.replace('|', "%7C")),
+            &format!("/api/card?at={}&sides=all&inbound=all&text=1", at.replace('|', "%7C")),
             token,
             None,
         )
@@ -3872,11 +3872,11 @@ fn gui_creates_trees_in_either_workspace_and_reports_workspaces() {
             ("GuiBook", "agent", "literature")
         ]
     );
-    let card = api("GET", "/api/card?at=0%2F0", None);
+    let card = api("GET", "/api/card?at=0%2F0&text=1", None);
     assert_eq!(card["workspace"], "human");
     assert_eq!(card["inbound"][0]["address"], "1/0");
     assert_eq!(card["inbound"][0]["workspace"], "agent");
-    let card = api("GET", "/api/card?at=1%2F0", None);
+    let card = api("GET", "/api/card?at=1%2F0&text=1", None);
     assert_eq!(card["outbound"][0]["workspace"], "human");
     assert!(
         api(

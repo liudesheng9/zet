@@ -494,7 +494,7 @@ fn gui_create_edit_and_insert_commit_term_names_and_refuse_incompatible_fields()
             "text": "# 均衡\n\n## 释义\n\n两个参与者都不愿单方面改变策略。\n",
         }),
     ));
-    let card = gui.get(&format!("/api/card?at={}", enc(&head)));
+    let card = gui.get(&format!("/api/card?at={}&text=1", enc(&head)));
     assert_eq!(card["type"], json!("term"));
     assert_eq!(card["term"], json!("均衡"));
     assert_eq!(card["term_facts"]["role"], json!("card"));
@@ -506,19 +506,19 @@ fn gui_create_edit_and_insert_commit_term_names_and_refuse_incompatible_fields()
     );
     assert_eq!(saved["address"], json!(head));
     assert_eq!(
-        gui.get(&format!("/api/card?at={}", enc(&head)))["term"],
+        gui.get(&format!("/api/card?at={}&text=1", enc(&head)))["term"],
         json!("替代"),
         "the route trims the name as every other route does"
     );
     gui.post("/api/edit", &json!({ "at": head, "term": Value::Null }));
     assert_eq!(
-        gui.get(&format!("/api/card?at={}", enc(&head)))["term"],
+        gui.get(&format!("/api/card?at={}&text=1", enc(&head)))["term"],
         Value::Null
     );
     gui.post("/api/edit", &json!({ "at": head, "type": "term", "term": "均衡" }));
     gui.post("/api/edit", &json!({ "at": head, "type": "idea" }));
     assert_eq!(
-        gui.get(&format!("/api/card?at={}", enc(&head)))["term"],
+        gui.get(&format!("/api/card?at={}&text=1", enc(&head)))["term"],
         Value::Null,
         "retyping away clears the name"
     );
@@ -559,7 +559,7 @@ fn gui_create_edit_and_insert_commit_term_names_and_refuse_incompatible_fields()
         }),
     );
     assert_eq!(inserted["address"], json!(head), "the new Card takes the place");
-    let inserted = gui.get(&format!("/api/card?at={}", enc(&head)));
+    let inserted = gui.get(&format!("/api/card?at={}&text=1", enc(&head)));
     assert_eq!(inserted["type"], json!("term"));
     assert_eq!(inserted["term"], json!("插入"));
 }

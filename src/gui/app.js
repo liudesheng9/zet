@@ -32,8 +32,8 @@
     return node;
   }
 
-  async function api(path, body) {
-    const options = { headers: { 'X-ZT-Token': TOKEN } };
+  async function api(path, body, signal) {
+    const options = { headers: { 'X-ZT-Token': TOKEN }, signal };
     // A change to the Cards may move or delete Cards on a Spread; the server rewrites the
     // Spreads it holds, so it must hold the latest ones first.
     if (body !== undefined && path !== 'spreads' && path !== 'render') await spreads.flush();
@@ -45,7 +45,9 @@
     let response;
     try {
       response = await fetch('/api/' + path, options);
-    } catch {
+    } catch (error) {
+      // An aborted request (a later move superseded it, #254) is no service failure.
+      if (signal && signal.aborted) throw error;
       throw new Error('the zt service is not responding');
     }
     let data = {};
@@ -575,47 +577,104 @@
     loadPointer().catch(fail);
   }
 
+  // Only the latest Card request is applied (#254): a move aborts the request it supersedes, and
+  // an answer that still arrives after a later move is dropped, so the reader never jumps back.
+  const pointerLoads = ZtLayout.latestOnly();
+  let pointerAbort = null;
+
   async function loadPointer() {
+    const seq = pointerLoads.begin();
+    if (pointerAbort) pointerAbort.abort();
+    pointerAbort = new AbortController();
+    const signal = pointerAbort.signal;
     if (!state.pointer) {
+      showPending(null);
       state.card = null;
       renderAll();
       return;
     }
+    const pointer = state.pointer;
+    showPending(pointer, seq);
+    let card;
     try {
       // A part shared by several models opens as a member of the model the reader came from.
       const via = state.card && state.card.model && state.card.model.head ? state.card.model.head.address : null;
-      state.card = await api('card?at=' + enc(state.pointer) + (via ? '&via=' + enc(via) : ''));
+      card = await api('card?at=' + enc(pointer) + (via ? '&via=' + enc(via) : ''), undefined, signal);
     } catch (error) {
+      if (!pointerLoads.isLatest(seq)) return;
+      showPending(null);
       // Another client removed this Card: fall back to its nearest ancestor.
       const known = new Set(state.nodes.map((node) => node.address));
-      let ancestor = parentOf(state.pointer);
+      let ancestor = parentOf(pointer);
       while (ancestor && !known.has(ancestor)) ancestor = parentOf(ancestor);
-      toast(`card \`${state.pointer}\` no longer exists`, 'err');
+      toast(`card \`${pointer}\` no longer exists`, 'err');
       if (!nav.skipMissing()) go(ancestor);
       return;
     }
-    if (state.card.workspace && state.card.workspace !== state.workspace) setWorkspace(state.card.workspace);
-    const treeId = state.card.tree;
-    if (!state.tree || state.tree.tree !== treeId) {
-      state.tree = await api('tree?id=' + enc(treeId));
-      state.outline = ZtLayout.outline(state.tree.cards, state.tree.root);
+    if (!pointerLoads.isLatest(seq)) return;
+    if (card.workspace && card.workspace !== state.workspace) setWorkspace(card.workspace);
+    if (!state.tree || state.tree.tree !== card.tree) {
+      let tree;
+      try {
+        tree = await api('tree?id=' + enc(card.tree), undefined, signal);
+      } catch (error) {
+        if (!pointerLoads.isLatest(seq)) return;
+        throw error;
+      }
+      if (!pointerLoads.isLatest(seq)) return;
+      state.tree = tree;
+      state.outline = ZtLayout.outline(tree.cards, tree.root);
     }
+    state.card = card;
+    showPending(null);
     renderAll();
+  }
+
+  // The wait for a Card, shown where the reader already looks (#254): after 300 ms the reader
+  // fades like a sheet being put away, a pencil line runs along its top edge, and the Map lifts
+  // the Card asked for; from 5 s a quiet line names the address. `showPending(null)` clears it.
+  let pendingTimers = [];
+  function showPending(address, seq) {
+    for (const timer of pendingTimers) clearTimeout(timer);
+    pendingTimers = [];
+    const reader = $('#reader');
+    reader.classList.remove('pending', 'slow');
+    reader.querySelector('.reader-wait')?.remove();
+    for (const node of document.querySelectorAll('.node.pending-target')) node.classList.remove('pending-target');
+    if (!address) return;
+    const started = performance.now();
+    const mark = () => {
+      if (!pointerLoads.isLatest(seq)) return;
+      const stage = ZtLayout.pendingStage(performance.now() - started);
+      if (stage === 'none') return;
+      reader.classList.add('pending');
+      const target = document.querySelector(`.node[data-address="${CSS.escape(address)}"]`);
+      if (target) target.classList.add('pending-target');
+      if (stage === 'slow' && !reader.classList.contains('slow')) {
+        reader.classList.add('slow');
+        reader.prepend(h('p', { class: 'reader-wait', role: 'status', text: `The box is busy · fetching ${address}` }));
+      }
+    };
+    // Two one-shot marks, at the two stages: no polling loop of its own.
+    pendingTimers = [setTimeout(mark, 300), setTimeout(mark, 5000)];
   }
 
   /** Reload everything, e.g. after a change here or from the CLI. */
   async function refresh() {
     // The server may have moved Cards on a Spread: read the Spreads back, after saving ours.
     await spreads.flush();
-    // The Locks come with every refresh (S03, #126): a Lock, unlock, note or recorded fault changes
-    // the archive revision and so the fingerprint the 4 s watch compares, even when no Card text
-    // changed; reading them here repaints the cabinet, the root's lock line and the fault pill. A
-    // failed lock read never stops the refresh, as at boot.
-    const [overview, kept, locks] = await Promise.all([api('overview'), api('spreads'), api('locks').catch(() => null)]);
+    // A Lock, unlock, note or recorded fault changes the archive revision and so the fingerprint
+    // the 4 s watch compares, even when no Card text changed (S03, #126). The Locks themselves are
+    // read again only when the overview's Lock fingerprint moved (#255): a Card write elsewhere no
+    // longer re-reads 3 MB of them. Reading them repaints the cabinet, the root's lock line and
+    // the fault pill. A failed lock read never stops the refresh, as at boot, and is tried again.
+    const [overview, kept] = await Promise.all([api('overview'), api('spreads')]);
+    const locks = !overview.locks || overview.locks !== state.locksPrint ? await api('locks').catch(() => null) : state.locks;
     spreads.take(kept);
     state.overview = overview;
     state.fingerprint = overview.fingerprint;
     state.locks = locks;
+    state.locksPrint = locks ? overview.locks : null;
     paintLocks();
     applyFeatures(overview);
     // Only the trees whose fingerprint moved are read again (#243): a write in another book costs
@@ -1834,7 +1893,11 @@
         let last = null;
         for (const b of card.model.blocks) if (b.part && b.part !== last) { partStarts.set(b.head, b.part); last = b.part; }
       }
-      const inbound = card.inbound.map((link) => link.address).filter(inTree);
+      // The in-tree sources come apart from the lean inbound list (#255); `null` means more than
+      // sixteen, which draw no arcs. An older answer without the field keeps the whole list.
+      const inbound = card.inbound_near === undefined
+        ? card.inbound.map((link) => link.address).filter(inTree)
+        : (card.inbound_near || []).filter(inTree);
       // The lens shows the same Cards whether Term edges are drawn or not (S16, #158): the switch
       // only adds or removes the dotted Term arcs, so no Card moves when it is pressed.
       const arcs = ZtLayout.focusEdges((at) => outline.card.get(at), card.address, outbound, inbound, state.termEdges);
@@ -3660,13 +3723,19 @@
 
   /** A row of chips that folds when it is long (#242): more than sixty show fifty and a "+N more"
    *  chip that lays out the rest. */
-  function chipRow(links, make) {
-    const fold = ZtLayout.foldRows(links.length);
-    const row = h('div', { class: 'chips' }, links.slice(0, fold.shown).map((link) => make(link)));
-    if (fold.hidden) {
+  function chipRow(links, make, total = links.length, loadAll = null) {
+    // A lean Card answer carries the first fifty of `total` (#255): what it lacks is read when the
+    // reader asks for the rest.
+    const shown = Math.min(ZtLayout.foldRows(total).shown, links.length);
+    const hidden = total - shown;
+    const row = h('div', { class: 'chips' }, links.slice(0, shown).map((link) => make(link)));
+    if (hidden > 0) {
       const more = h('button', {
-        class: 'chip more', title: `Show the other ${fold.hidden}`, text: `+${fold.hidden} more`,
-        onclick: () => more.replaceWith(...links.slice(fold.shown).map((link) => make(link))),
+        class: 'chip more', title: `Show the other ${hidden}`, text: `+${hidden} more`,
+        onclick: async () => {
+          const all = links.length >= total || !loadAll ? links : await loadAll();
+          more.replaceWith(...all.slice(shown).map((link) => make(link)));
+        },
       });
       row.append(more);
     }
@@ -3703,8 +3772,23 @@
   /** The ordinary Reverse links of a Card; an older answer without the split keeps `inbound`. */
   function referredBy(card) { return Array.isArray(card.reverse_links) ? card.reverse_links : card.inbound; }
 
+  /** How many Cards refer to this one: the lean answer carries the first fifty and the count (#255). */
+  function referredCount(card) {
+    return Array.isArray(card.reverse_links) ? card.reverse_count ?? card.reverse_links.length : card.inbound_count ?? card.inbound.length;
+  }
+
+  /** The open Card with a part the lean answer leaves out (#255): `text` (the stored text) or
+   *  `inbound` (every inbound, Reverse-link and Term-use entry). Read when the reader asks. */
+  async function cardWith(card, part) {
+    const via = card.model && card.model.head ? '&via=' + enc(card.model.head.address) : '';
+    return api('card?at=' + enc(card.address) + (part === 'text' ? '&text=1' : '&inbound=all') + via);
+  }
+
   /** The Cards that write a Term use `[[label@address]]` to this Card, in address order (S11, #153). */
   function termUses(card) { return Array.isArray(card.term_uses) ? card.term_uses : []; }
+
+  /** How many Cards use this Term: the lean answer carries the first fifty and the count (#255). */
+  function termUseCount(card) { return card.term_use_count ?? termUses(card).length; }
 
   /** A Term-use chip: the ordinary chip with the authored word the source wrote for this Term. */
   function termUseChip(link) {
@@ -3808,19 +3892,25 @@
       // Reasoning Reverse links and Term uses are two rows, as the generated `## Reverse links`
       // and `## Term uses` sections are (S11, #153, US040). A source that writes both forms sits
       // in both rows; a Card with no Term use shows the one row it always had.
-      referredBy(card).length ? [h('div', { class: 'section-label', text: `Referred by · ${referredBy(card).length}` }), chipRow(referredBy(card), (link) => chip(link))] : null,
+      referredCount(card) ? [
+        h('div', { class: 'section-label', text: `Referred by · ${referredCount(card)}` }),
+        chipRow(referredBy(card), (link) => chip(link), referredCount(card), async () => referredBy(await cardWith(card, 'inbound'))),
+      ] : null,
       // The generated Term uses fold to their count under a normal disclosure (S13, #156): the
       // explanation is the focus, and the uses lie folded beneath it until the reader opens them.
       // Their chips are laid out when the disclosure first opens (#242): a Term used by hundreds of
       // Cards costs nothing until the reader asks for them.
-      termUses(card).length ? h('details', {
+      termUseCount(card) ? h('details', {
         class: 'term-uses',
-        ontoggle: (event) => {
+        ontoggle: async (event) => {
           const fold = event.currentTarget;
-          if (fold.open && !fold.querySelector('.chips')) fold.append(chipRow(termUses(card), (link) => termUseChip(link)));
+          if (!fold.open || fold.dataset.laid) return;
+          fold.dataset.laid = '1';
+          const uses = termUses(card).length < termUseCount(card) ? (await cardWith(card, 'inbound')).term_uses : termUses(card);
+          fold.append(chipRow(uses, (link) => termUseChip(link)));
         },
       },
-        h('summary', { class: 'section-label', text: `Term uses · ${termUses(card).length}` })) : null,
+        h('summary', { class: 'section-label', text: `Term uses · ${termUseCount(card)}` })) : null,
       card.outbound.length ? [h('div', { class: 'section-label', text: `Links out · ${card.outbound.length}` }), chipRow(card.outbound, (link) => chip(link))] : null,
       // One distant Card beside the neighbours, faint until focus or hover (S19, #108), and the
       // selected Bridge report's one-line status (S20, #112).
@@ -3852,7 +3942,16 @@
       ),
       card.context === 'tree-root' ? lockLine(card) : null,
       cardLockLine(card),
-      h('details', { class: 'raw-toggle' }, h('summary', { text: 'Stored Markdown' }), h('pre', { text: card.text })),
+      h('details', {
+        class: 'raw-toggle',
+        // The stored text is read when the fold first opens (#255).
+        ontoggle: async (event) => {
+          const fold = event.currentTarget;
+          if (!fold.open || fold.dataset.laid) return;
+          fold.dataset.laid = '1';
+          fold.append(h('pre', { text: card.text ?? (await cardWith(card, 'text')).text }));
+        },
+      }, h('summary', { text: 'Stored Markdown' })),
     ));
     reader.scrollTop = 0;
     // Paint the distant slot from the answer already read for this Card, and ask for one when the
@@ -7358,9 +7457,11 @@
   }
 
   async function editCard() {
-    const card = state.card;
+    let card = state.card;
     if (!card) throw new Error('e needs a Card; use go <target> first');
     gateWrite(card, 'edit');
+    // The desk starts from the stored text, which the lean Card answer leaves out (#255).
+    card = await cardWith(card, 'text');
     if (card.kind === 'literature') {
       const part = await choosePart();
       if (part === 'metadata') return editMetadata(card);
@@ -8032,6 +8133,7 @@
       state.prints = treePrints(overview);
       spreads.take(kept);
       state.locks = locks;
+      state.locksPrint = locks ? overview.locks : null;
       paintLocks();
       route();
     } catch (error) {

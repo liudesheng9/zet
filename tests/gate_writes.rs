@@ -530,7 +530,7 @@ fn the_gui_write_returns_warnings_and_a_structured_refusal() {
         "{refused}"
     );
     assert_eq!(home.text(&address), stored, "the refused edit changed no text");
-    let (status, card) = gui.get(&format!("/api/card?at={address}"));
+    let (status, card) = gui.get(&format!("/api/card?at={address}&text=1"));
     assert_eq!(status, 200, "{card}");
     assert_eq!(card["text"], json!(stored), "the draft was not stored");
 }

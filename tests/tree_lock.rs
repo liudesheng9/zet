@@ -1342,7 +1342,7 @@ fn an_ended_lock_keeps_its_snapshot_after_its_tree_is_deleted() {
     // fingerprints the owner accepted, never a row number joined to today's Cards.
     delete(&mut mcp, &root);
     for gone in [&root, &first] {
-        let (status, missing) = gui.get_with(&format!("/api/card?at={gone}"), &gui.token);
+        let (status, missing) = gui.get_with(&format!("/api/card?at={gone}&text=1"), &gui.token);
         assert_eq!(status, 400, "the Card is gone: {missing}");
     }
     let after = panel_lock(&gui.panel(), lock_id);
@@ -2484,7 +2484,7 @@ fn an_incoming_link_and_a_reply_keep_a_locked_tree_untouched() {
     let lock = gui.lock(&root, None);
     let seal = lock["seal"].clone();
     let before = member_facts(&gui.panel());
-    let member = gui.get(&format!("/api/card?at={first}"));
+    let member = gui.get(&format!("/api/card?at={first}&text=1"));
     let member_fingerprint = member["authored_fingerprint"]
         .as_str()
         .expect("member fingerprint")
@@ -2497,7 +2497,7 @@ fn an_incoming_link_and_a_reply_keep_a_locked_tree_untouched() {
         "edit_card",
         json!({ "at": source, "body": format!("now cites [[{first}]]") }),
     );
-    let cited = gui.get(&format!("/api/card?at={first}"));
+    let cited = gui.get(&format!("/api/card?at={first}&text=1"));
     assert_eq!(
         cited["authored_fingerprint"].as_str(),
         Some(member_fingerprint.as_str()),
@@ -2523,7 +2523,7 @@ fn an_incoming_link_and_a_reply_keep_a_locked_tree_untouched() {
 
     // The same unlocked source removes the Link; the generated section shrinks again.
     mcp.ok("edit_card", json!({ "at": source, "body": "no link now" }));
-    let uncited = gui.get(&format!("/api/card?at={first}"));
+    let uncited = gui.get(&format!("/api/card?at={first}&text=1"));
     assert_eq!(
         uncited["authored_fingerprint"].as_str(),
         Some(member_fingerprint.as_str())
@@ -2556,7 +2556,7 @@ fn an_incoming_link_and_a_reply_keep_a_locked_tree_untouched() {
     assert_eq!(reply["saved"], true, "{reply}");
     assert_eq!(reply["target"]["workspace"], "agent");
     let reply_at = reply["address"].as_str().expect("reply address").to_string();
-    let answered = gui.get(&format!("/api/card?at={first}"));
+    let answered = gui.get(&format!("/api/card?at={first}&text=1"));
     assert_eq!(
         answered["authored_fingerprint"].as_str(),
         Some(member_fingerprint.as_str()),
@@ -2798,7 +2798,7 @@ fn a_draft_into_a_locked_destination_leaves_no_partial_card() {
     assert_ne!(human_lock["lock_id"], agent_lock["lock_id"]);
     let seal = agent_lock["seal"].clone();
 
-    let base = gui.get(&format!("/api/card?at={agent_card}"))["authored_fingerprint"]
+    let base = gui.get(&format!("/api/card?at={agent_card}&text=1"))["authored_fingerprint"]
         .as_str()
         .expect("fingerprint")
         .to_string();
@@ -3085,7 +3085,7 @@ fn every_read_path_still_serves_locked_cards() {
         "ask": read_addresses(&gui.post("/api/ask", &json!({ "question": "quokka" }))),
         "register": read_addresses(&gui.get("/api/register?ws=agent")),
         "overview": gui.get("/api/overview")["stats"].clone(),
-        "card": gui.get(&format!("/api/card?at={first}"))["body"].clone(),
+        "card": gui.get(&format!("/api/card?at={first}&text=1"))["body"].clone(),
         "mcp_search": read_addresses(&mcp.ok("search_cards", json!({ "query": "quokka", "workspace": "agent" }))),
         "mcp_search_entry": read_addresses(&mcp.ok("search_cards", json!({ "query": "quokka", "workspace": "agent", "mode": "entry" }))),
         "mcp_tree": read_addresses(&mcp.ok("get_tree", json!({ "tree": tree, "bodies": true }))),
@@ -3120,7 +3120,7 @@ fn every_read_path_still_serves_locked_cards() {
         "ask": read_addresses(&gui.post("/api/ask", &json!({ "question": "quokka" }))),
         "register": read_addresses(&gui.get("/api/register?ws=agent")),
         "overview": gui.get("/api/overview")["stats"].clone(),
-        "card": gui.get(&format!("/api/card?at={first}"))["body"].clone(),
+        "card": gui.get(&format!("/api/card?at={first}&text=1"))["body"].clone(),
         "mcp_search": read_addresses(&mcp.ok("search_cards", json!({ "query": "quokka", "workspace": "agent" }))),
         "mcp_search_entry": read_addresses(&mcp.ok("search_cards", json!({ "query": "quokka", "workspace": "agent", "mode": "entry" }))),
         "mcp_tree": read_addresses(&mcp.ok("get_tree", json!({ "tree": tree, "bodies": true }))),
@@ -3413,7 +3413,7 @@ fn every_read_projection_names_the_same_lock_facts_at_one_revision() {
     assert_eq!(row_at(&gui_tree["cards"], &side)["lock"]["lock_id"], json!(lock_id));
     let graph = gui.get("/api/graph");
     assert_eq!(row_at(&graph["nodes"], &target)["pinned_by"], json!([root]));
-    let detail = gui.get(&format!("/api/card?at={side}"));
+    let detail = gui.get(&format!("/api/card?at={side}&text=1"));
     assert_eq!(detail["lock"]["lock_id"], json!(lock_id));
     assert_eq!(detail["pinned_by"], json!([]));
     assert_eq!(detail["writable"], json!(false));
@@ -5920,7 +5920,7 @@ fn a_lock_seals_the_shared_authored_fingerprint_not_the_receipt_fingerprint() {
         .to_string();
 
     // The read answers the Card-format authored fingerprint; the plan seals exactly that value.
-    let read = gui.get(&format!("/api/card?at={first}"));
+    let read = gui.get(&format!("/api/card?at={first}&text=1"));
     let authored = read["authored_fingerprint"]
         .as_str()
         .expect("authored fingerprint")

@@ -1325,6 +1325,9 @@ impl Snapshot {
                     .map(|card| (card.address.as_str(), card.card_type, card.term_name.as_deref())),
             )
             .unwrap_or_default();
+            // Each list's table is parsed once, then every head of it looks its row up (#250):
+            // a parse per head cost 40 s for a list of 748 heads.
+            let mut tables: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
             let mut meanings = BTreeMap::new();
             for head in heads {
                 let Some(name) = self
@@ -1340,13 +1343,19 @@ impl Snapshot {
                 let Some(parsed) = self.parsed.get(&list) else {
                     continue;
                 };
-                let meaning = zt_check::text::term_table(&parsed.body)
-                    .into_iter()
-                    .find(|row| row.term == name)
-                    .map(|row| row.meaning)
-                    .unwrap_or_default();
-                if !meaning.is_empty() {
-                    meanings.insert(head, meaning);
+                let table = tables.entry(list).or_insert_with(|| {
+                    let mut rows = BTreeMap::new();
+                    // The first row of a name answers, as the search over the rows did.
+                    for row in zt_check::text::term_table(&parsed.body) {
+                        rows.entry(row.term).or_insert(row.meaning);
+                    }
+                    rows
+                });
+                match table.get(name) {
+                    Some(meaning) if !meaning.is_empty() => {
+                        meanings.insert(head, meaning.clone());
+                    }
+                    _ => {}
                 }
             }
             meanings
