@@ -2272,7 +2272,7 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_MATH;
-    let source = fence_html_charts(&normalize_math_delimiters(body));
+    let source = fence_html_charts(&protect_table_links(&normalize_math_delimiters(body)));
     let mut events: Vec<Event> = Vec::new();
     let mut pending = String::new();
     let mut in_code_block = false;
@@ -2445,6 +2445,58 @@ fn is_plain_inline_tag(raw: &str) -> bool {
     let inner = inner.strip_prefix('/').unwrap_or(inner);
     let inner = inner.strip_suffix('/').unwrap_or(inner).trim();
     TAGS.iter().any(|tag| inner.eq_ignore_ascii_case(tag))
+}
+
+/// A table row keeps a Link whose address holds `|` (a Side address such as `[[b/19|a|3]]`) in
+/// one cell: inside `[[…]]` each `|` is escaped, so the table parser does not take it for a
+/// column divider. The table parser drops the escape before the cell is read, as GFM does for any
+/// `\|` in a row (inline code included), so the cell's text reaches `link_events` with the plain
+/// `|` again. Only rows (lines that start with `|`) outside fenced code change.
+fn protect_table_links(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut fence: Option<&str> = None;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(open) = fence {
+            if trimmed.starts_with(open) {
+                fence = None;
+            }
+            out.push_str(line);
+        } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence = Some(&trimmed[..3]);
+            out.push_str(line);
+        } else if trimmed.starts_with('|') {
+            out.push_str(&escape_link_pipes(line));
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// One table row with every `|` inside a closed `[[…]]` written `\|`.
+fn escape_link_pipes(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len() + 8);
+    let mut in_link = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if !in_link && c == '[' && next == Some('[') {
+            // Only a macro that closes on this line is a Link; an open `[[` leaves the row alone.
+            in_link = chars[i + 2..].windows(2).any(|pair| pair == [']', ']']);
+        } else if in_link && c == ']' && next == Some(']') {
+            in_link = false;
+        } else if in_link && c == '|' && (i == 0 || chars[i - 1] != '\\') {
+            out.push_str("\\|");
+            i += 1;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 /// Rewrite `\(...\)` as `$...$` and `\[...\]` as `$$...$$` in Markdown prose,
@@ -6926,6 +6978,39 @@ mod render_tests {
         assert_eq!(after.title("0/1"), "Ownership decides");
         assert!(Arc::ptr_eq(&after, &snapshots.get().unwrap()));
         assert_ne!(fingerprint(&snapshots), before);
+    }
+
+    /// A Link whose address holds `|` stays one Link inside a table cell (a notation card's
+    /// `首次出现` column, a Term list's rows): the `|` of a Side address is not a column divider.
+    /// Before the fix the row split at it and the cell showed `[[atkinson2015lectures/19` as text.
+    #[test]
+    fn a_link_with_a_side_address_stays_one_link_in_a_table_cell() {
+        let (temp, _) = snapshot();
+        ops::create_successor(
+            temp.path(),
+            Access::Owner,
+            Successor::Side,
+            "0/1",
+            CardType::Idea,
+            None,
+            "# A side\n\nbody\n",
+        )
+        .unwrap();
+        let snapshot = Snapshot::read(temp.path()).expect("snapshot");
+        let body = "| 符号 | 含义 | 首次出现 |\n| --- | --- | --- |\n| $L$ | 工作小时数 | [[0/1|a]] |\n| $Y$ | 净收入，见 `[[0/1|a]]` | [[0/1]] |\n\n正文里的 [[0/1|a]] 照常。\n";
+        let html = render_markdown(body, &snapshot, &Charts::default());
+        let rows: Vec<&str> = html.split("<tr>").skip(2).collect();
+        assert_eq!(rows.len(), 2, "{html}");
+        for row in &rows {
+            assert_eq!(row.matches("<td").count(), 3, "three cells in every row: {row}");
+        }
+        assert!(rows[0].contains("data-target=\"0/1|a\""), "the cell holds the Link: {}", rows[0]);
+        assert!(!rows[0].contains("[["), "no raw macro is left: {}", rows[0]);
+        // Inline code keeps its text exactly, and the Link in prose is unchanged.
+        assert!(rows[1].contains("<code>[[0/1|a]]</code>"), "{}", rows[1]);
+        assert!(rows[1].contains("data-target=\"0/1\""), "{}", rows[1]);
+        let prose = &html[html.find("正文里的").unwrap()..];
+        assert!(prose.contains("data-target=\"0/1|a\""), "{prose}");
     }
 
     #[test]
