@@ -7,8 +7,8 @@ paths:
   - "src/place.rs"
   - "src/tree_ops.rs"
   - "scripts/tree-ops-bench.mjs"
-synced: 1cc9b0f1b1f3
-updated: 2026-11-01
+synced: b853ec545209
+updated: 2026-11-03
 ---
 
 # Card operations

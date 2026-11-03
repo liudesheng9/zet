@@ -12,8 +12,8 @@ paths:
   - "tests/reader_release.rs"
   - "tests/term_reading.rs"
   - "scripts/gui-bench/**"
-synced: dd6e996a9781
-updated: 2026-11-01
+synced: b853ec545209
+updated: 2026-11-03
 ---
 
 # GUI
