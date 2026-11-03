@@ -1017,3 +1017,49 @@ Two corrections:
 - The restructure draft of 159 `2|b` had dropped the three Figure 13-1 lines, which were restored.
 
 **Next.** The 22 folded models have now had all four passes. The 64 models that stay alone have had none of the later passes. Their formal ones still need settings, restructure and import.
+
+### 17.4 The settings of the 64 lone models (2026-11-03)
+
+The owner asked for the settings pass on all 64 Model Cards that stayed alone in the fold: the 25 formal models and the 39 concept models. The same four Opus sessions (medium effort) ran the strict `zt-model-settings` pass on the live box, 15 to 17 models each:
+- household, savings and risk: `16|a`, `18|a`, `26|a`, `28|a`, `37|a`, `52|a`, `53|a`, `55|a`, `68|a`, `110|a`, `112|a`, `114|a`, `115|a`, `141|c`, `225|a`;
+- firms, incidence and bureaucracy: `3|a`, `67|a`, `67|b`, `67|c`, `72|a`, `85|a`, `88|a`, `95|b`, `130|a`, `131|a`, `132|a`, `135|a`, `135|b`, `148|a`, `187|a`, `227|a`;
+- welfare, the state, voting and equity: `1|b`, `5|a`, `10|a`, `124|b`, `128|b`, `128|c`, `129|a`, `133|a`, `133|b`, `133|c`, `141|b`, `143|a`, `147|a`, `156|a`, `158|a`, `178|a`;
+- public goods and local finance: `193|a`, `195|a`, `203|a`, `205|b`, `205|c`, `206|a`, `207|a`, `208|a`, `213|a`, `217|a`, `218|a`, `219|a`, `219|b`, `220|a`, `221|a`, `226|a`, `228|a`.
+
+The backup is `D:\zt\backups\zt-before-atkinson2015lectures-lone-settings.sqlite3` (`VACUUM INTO`, integrity ok). The tree was not locked. No DeepSeek was used.
+
+**Before.** Every model reported `missing` (no notation card), `start` and `format`. Some models also had faults of other kinds:
+- `outside`: `52|a`, `85|a`, `88|a`, `95|b`, `115|a`, `132|a`, `143|a`, `156|a`, `193|a`, `205|b`, `206|a`;
+- `inside`: `1|b`, `55|a`, `143|a`, `187|a`;
+- `stated`: `115|a`, `225|a`;
+- `notation`: `52|a`, `53|a`, `88|a`, `95|b`, `115|a`, `135|b`, `205|b`, `207|a`, `218|a`, `219|a`, `219|b`;
+- `place`: `218|a` (a footnote card held the setting slot).
+
+**Result.** The main session reran `check-settings.mjs` on all 64 models, and each prints `settings: all in the setting part, as a dependency tree`. `list_broken_links` is empty. In every model, a script compared the display formulas, chart blocks and figures with the dumps taken before the pass, and they are unchanged. The tree grew from 7,329 to 7,399 Cards and no card was deleted. The new cards are:
+- 64 notation cards at `<head>|a|a`. A concept model's notation card has an intro line and a term table only.
+- 6 assumption cards. Four come from the conclusion card of `225|a` (假设 1–4, now `225|a|a|b`–`e`). Two come from the chapters of `115|a` (`115|a|a|c`, `d`).
+
+Settings moved from main lines into the setting part renumbered the chapters of `52|a`, `85|a`, `88|a`, `95|b`, `115|a`, `132|a`, `143|a` and `156|a`. The Links followed the moves. `95|b` borrows `88|a|a|6`, which is now `88|a|a|5`.
+
+`check-network.mjs` still reports `lead` faults on every model, because the chapters have no **直觉** sections, and it advises result cards. That is restructure work. One forward fault came from the pass: in `88|a`'s notation card, the word 沿用 before a 首次出现 Link made a rests-on relation to a chapter. The main session reworded the row (`投入保持为 $\mathbf{L}^{\star}$ 时的支出`), and the fault is gone.
+
+**Judgement calls.**
+- **Setting → result 依赖 turned into pointers.** A setting must not rest on a result. In each case below, the 依赖 became a 见 pointer in **说明**, and the Link is kept:
+  - the 假设 cards of `52|a` and `85|a`;
+  - `193|a`'s steady-state assumption;
+  - `219|a`'s decision rule;
+  - `219|b`'s merged community.
+- **Links to another model's card.** `178|a`'s setting rested on `162|a|a|7|b`, a result of another model. That 依赖 is now a pointer, and derivation 3 still rests on the result. `88|a`'s `依赖 [[hart1995firms/2|c|a|1|a]]` was a comparison, and it is now `对应`. `141|b` chapter 2 still rests on `140|a|a`. `zt-model-import` will settle these three.
+- **Cards the check did not flag but moved in.** `95|b`'s (7-40) card (facet 方程) became `设定：税后价格`. The main-line settings of `213|a`, `217|a`, `219|a` and `219|b` also moved in.
+- **Cards moved out of the setting part.** These were examples or contrasts, not settings: `1|b`'s example, `55|a`'s risk-neutral contrast, `143|a`'s example and `187|a`'s example.
+- **Kept in chapters.** These belong with their derivations:
+  - problem statements: `206|a` 机制, `213|a` 分离配置, `217|a` 规划问题, `193|a` Γ(u), `203|a` 问题;
+  - `26|a`'s variable-labour extension, which `74|a` imports;
+  - `52|a`'s tax card.
+- **Relation words in notation rows.** 例子, 对应, 例示 and 代入 before a 首次出现 Link make a relation. Rows in `55|a`, `112|a` and `219|b` were reworded.
+
+**Found outside this pass.** In the §17.1 settings of `19|a`, `42|a`, `188|a`, `196|a`, `201|a` and `210|a`, several variant settings put `变体…与基准 [[S]] 相比` before their `依赖 [[S]]` line. As a result, they read as `refers` to the setting card, not as rests-on. The cards are `19|a|a|c`–`g`, `42|a|a|b`, `188|a|a|c`, `d`, `f`, `g`, `196|a|a|c`, `d`, `201|a|a|b`, `c` and `210|a|a|b`, `c`, `d`, `f`. `check-settings.mjs` does not flag this, because each card sits directly under the setting card. The main session swapped the two **起点** lines in all 18 cards by script. The script moves every `依赖` line before the `变体` line and changes no other text; it checked that each card keeps the same set of lines. After the swap, `get_model` reads each of the 18 Links as rests-on. In each model, only refers became rests-on, and no other relation changed. On all six models, `check-settings`, `check-network` (`network: clean`), `check-premises` and `imports.mjs check` pass, and `list_broken_links` is empty.
+
+The sessions' full notes are `settings-lone-savings.md`, `settings-lone-firms.md`, `settings-lone-opttax.md` and `settings-lone-public.md` in `C:\Users\chenx\AppData\Roaming\Claude\side-session-notes\local_de933034-458b-4650-9970-0d312797d14b\`.
+
+**Next.** `zt-model-restructure`, then `zt-model-import`, on the 64 lone models.
