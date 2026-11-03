@@ -4299,7 +4299,11 @@ fn cards_book_evidence(
 /// (hart1995firms gaps, 2026-10-29).
 fn authored_without_later_writers(card: &Value, unlink: bool) -> String {
     let mut card = card.clone();
-    let mut body = crate::bridge::without_bridge_lines(&s(&card["body"]));
+    // The figures stage inserts each image as its own paragraph (`\n\n![图 N](artifact:<sha>)`), a later writer like
+    // the Bridge apply (atkinson2015lectures, 2026-11-02: six images on the Model Card `19|a` refused the Card summary).
+    static FIGURE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\n\n!\[[^\]\n]*\]\(artifact:[0-9a-f]+\)").expect("figure pattern"));
+    let mut body = crate::bridge::without_bridge_lines(&FIGURE.replace_all(&s(&card["body"]), ""));
     if unlink {
         body = crate::term_link::unlinked(&body);
     }
@@ -19758,6 +19762,25 @@ mod term_completion_tests {
             "token": token.to_string(), "book": "K", "plan_hash": "p", "applied": true,
             "list": "K/1|b", "rows": 2, "refused": [], "changed": true,
         })
+    }
+
+    /// atkinson2015lectures (2026-11-02): the figures stage attached six images to the Model Card `19|a` after its
+    /// chain completed, and the whole-book Card cycle refused to publish because the Model draft "changed". A figure
+    /// the figures stage inserts is a later writer's line, like a Bridge line; a change of the text still counts.
+    #[test]
+    fn a_figure_the_figures_stage_inserted_is_no_rewrite_of_a_model_card() {
+        let body = "问题：劳动供给朝哪个方向变动。\n\n概要：图 2–3 给出税前均衡。\n\n**结构**\n\n- 设定 [[K/19|a|a]]";
+        let with = "问题：劳动供给朝哪个方向变动。\n\n概要：图 2–3 给出税前均衡。\n\n![图 2](artifact:067698ce85bc2666ad463e3d976d729c2b14bfbd6a137b251147e037565c1d3c)\n\n![图 2](artifact:2e27d4e9b2bb85af5608fc99302173d071c34520caa583ce62b7873abf3b7352)\n\n**结构**\n\n- 设定 [[K/19|a|a]]";
+        let card = |b: &str| json!({"address": "K/19|a", "title": "标准劳动供给模型", "body": b, "type": "model"});
+        assert_eq!(
+            authored_without_later_writers(&card(with), false),
+            authored_without_later_writers(&card(body), false)
+        );
+        assert_ne!(
+            authored_without_later_writers(&card(&with.replace("税前均衡", "税后均衡")), false),
+            authored_without_later_writers(&card(body), false),
+            "a change of the text still counts"
+        );
     }
 
     /// atkinson2015lectures (2026-11-02): a changed Cited list registered plan revision 2 beside revision
