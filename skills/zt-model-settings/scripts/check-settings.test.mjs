@@ -45,7 +45,7 @@ test('an assumption stated in a chapter card is a fault; a use of one is advice;
   assert.deepEqual(r.notation.map((f) => [f.card, f.symbol]), [[S + '|2|a|a|1', 'Q(\\omega)']])
 })
 
-const start = (deps) => '**起点**\n' + (deps.length ? deps.map((d) => `- 依赖 [[${d}]] 的设定。`).join('\n') : '- 原始设定：不依赖其他设定。') + '\n\n**内容**\n1. x'
+const start = (deps) => '**起点**\n' + (deps.length ? deps.map((d) => `- 依赖 [[${d}]] 的设定。`).join('\n') : '- 原始设定：不依赖其他设定。') + '\n\n**设定**\n1. x'
 const tree = (rows) => {
   const order = rows.map(([address, facet, parent, deps, body = '']) => ({ address, facet, title: facet, line: parent ? 'side' : 'main' }))
   const cards = new Map(rows.map(([address, facet, , deps, body = '']) => [address, { facet, title: facet, body: deps === null ? body : start(deps) + body }]))
@@ -80,7 +80,8 @@ test('notation symbols: split outside brackets, TeX spaces dropped, cut at = and
 
 test('a clean model passes', () => {
   const keep = order.filter((o) => [S, S + '|a', S + '|b', S + '|1', S + '|2', S + '|2|a'].includes(o.address))
-  const clean = new Map([...cards].map(([a, c]) => [a, isSettingRow(c) ? { ...c, body: start(a === S ? [] : [S]) } : c]))
+  // The notation card lists only symbols the model uses.
+  const clean = new Map([...cards].map(([a, c]) => [a, isSettingRow(c) ? { ...c, body: start(a === S ? [] : [S]) } : a === S + '|a' ? { ...c, body: '' } : c]))
   const r = audit({ build: { setting: S, order: keep }, relations: [{ from: S + '|b', to: S, kind: 'rests-on' }] }, clean, new Map(keep.map((o) => [o.address, o.address === S ? null : S])))
   assert.equal(r.ok, true, JSON.stringify(r))
 })
@@ -122,4 +123,80 @@ test('imported notation counts as defined; borrowed Cards are not audited; 沿�
   assert.deepEqual(audit({ build: { setting: own, order: bare } }, bind).missing, [])
   bind.set(own, { ...bind.get(own), body: '**起点**\n- 原始设定。' })
   assert.equal(audit({ build: { setting: own, order: bare } }, bind).missing.length, 1)
+})
+
+// The stricter pass (2026-11-03): placement, symbol coverage, notation rows, card format, assumptions.
+const H = 'K/2|a'
+const P = H + '|a'
+const strict = (rows, extra = {}) => {
+  const order = rows.map(([address, facet, title, , line = 'side']) => ({ address, facet, title, line }))
+  const cards = new Map(rows.map(([address, facet, title, body]) => [address, { facet, title, body }]))
+  const parents = new Map(rows.map(([address]) => [address, address === P ? H : address.slice(0, address.lastIndexOf('|'))]))
+  const relations = rows.flatMap(([from, , , body]) => [...(body || '').matchAll(/依赖 \[\[([^\]]+)\]\]/g)].map((x) => ({ from, to: x[1], kind: 'rests-on' })))
+  return audit({ head: { address: extra.head || H }, build: { setting: extra.setting || P, order }, relations }, cards, parents)
+}
+const NOTE = '| 符号 | 含义 | 首次出现 |\n| --- | --- | --- |\n| $L$ | 工人数 | [[' + P + ']] |\n| $\\bar Z$ | 资本总量 | [[' + P + '|b]] |\n| $\\theta,\\Theta$ | 技术 | [[' + P + '|b]] |'
+const good = [
+  [P, '设定', '设定：工人与资本', '**起点**\n- 原始设定：x。\n\n**设定**\n1. 有 $L$ 个工人。', 'main'],
+  [P + '|a', '符号表与读法', '符号表与读法', NOTE],
+  [P + '|b', '设定：技术', '设定：技术与资本', '**起点**\n- 依赖 [[' + P + ']] 的设定：工人。\n\n**设定**\n1. 资本总量为 $\\bar Z$。\n2. 技术 $\\theta\\in\\Theta$。\n\n**说明**\n技术由企业选。'],
+  [P + '|c', '假设 1', '假设 1：凹性', '**起点**\n- 依赖 [[' + P + '|b]] 的设定：技术。\n\n**假设**\n1. $L$ 与 $\\theta$ 上严格凹。'],
+  [P + '|1', '第 1 章：直觉', '第 1 章：直觉', '在[[假设 1@' + P + '|c]]下，解唯一。', 'main'],
+]
+
+test('a clean strict model passes', () => {
+  const r = strict(good)
+  assert.equal(r.ok, true, JSON.stringify(r, null, 1))
+})
+
+test('place: the setting card is the first Side of the Model Card, the notation card the first Side of the setting card', () => {
+  const r = strict(good.map(([a, ...x]) => [a.replace(P, H + '|b'), ...x.map((v) => typeof v === 'string' ? v.replaceAll(P, H + '|b') : v)]), { setting: H + '|b' })
+  assert.deepEqual(r.place.map((f) => f.card), [H + '|b'])
+  const moved = good.map(([a, f, t, b, l]) => [a === P + '|a' ? P + '|d' : a, f, t, b, l])
+  assert.deepEqual(strict(moved).place.map((f) => f.card), [P + '|d'])
+})
+
+test('uncovered: every symbol a setting uses is in the notation card; indices in sub- and superscripts and \\text are not symbols', () => {
+  const rows = good.map((r) => r[0] === P + '|b' ? [r[0], r[1], r[2], r[3] + '\n3. 产出 $Y^i=A_Z\\,\\bar Z^{\\alpha}$，$\\text{cost}$，$\\frac{dY}{dZ}$，$\\theta\'\\in\\mathbb R^K$。'] : r)
+  const r = strict(rows)
+  assert.deepEqual(r.uncovered.map((f) => [f.card, f.symbols]), [[P + '|b', ['Y', 'A', 'Z']]])
+})
+
+test('unused and first: a notation row names symbols some model card uses, and its first card is where the reader meets it', () => {
+  const note = NOTE + '\n| $\\omega$ | 不再使用 | [[' + P + '|b]] |\n| $\\bar Z$ | 重复 | [[' + P + ']] |'
+  const r = strict(good.map((r) => r[0] === P + '|a' ? [r[0], r[1], r[2], note] : r))
+  assert.deepEqual(r.unused.map((f) => f.symbol), ['\\omega'])
+  assert.deepEqual(r.first.map((f) => [f.symbol, f.listed, f.reads]), [['\\bar Z', P, P + '|b']])
+})
+
+test('format: 起点 first, then 设定 (假设 for an assumption), then 说明; no local symbol or term table; no 依赖 outside 起点; title names the kind', () => {
+  const rows = good.map((r) => {
+    if (r[0] === P + '|b') return [r[0], r[1], '技术与资本', '**起点**\n- 依赖 [[' + P + ']] 的设定。\n\n资本总量为 $\\bar Z$。\n\n依赖 [[' + P + ']]：工人。\n\n| 符号 | 含义 |\n| --- | --- |\n| $\\bar Z$ | 资本 |']
+    if (r[0] === P + '|c') return [r[0], r[1], r[2], '**起点**\n- 依赖 [[' + P + '|b]] 的设定。\n\n**设定**\n1. 凹。']
+    return r
+  })
+  const r = strict(rows)
+  const what = (a) => r.format.filter((f) => f.card === a).map((f) => f.what)
+  assert.deepEqual(what(P + '|b'), ['title', 'section', 'depends', 'table'])
+  assert.deepEqual(what(P + '|c'), ['section'])
+})
+
+test('repeat: one assumption is stated in one card; cite: a card that names an assumption links its card', () => {
+  const rows = [...good.slice(0, 4),
+    [P + '|c|1', '假设 1：变体', '假设 1：在变体中', '**起点**\n- 依赖 [[' + P + '|c]] 的设定。\n\n**假设**\n1. $L$ 与 $\\theta$ 上严格凹。'],
+    [P + '|1', '第 1 章：直觉', '第 1 章：直觉', '在假设 1 下，解唯一。\n由[[假设 1@' + P + '|c]]，解唯一。', 'main']]
+  const r = strict(rows)
+  assert.deepEqual(r.repeat.map((f) => [f.card, f.other]), [[P + '|c|1', P + '|c']])
+  assert.deepEqual(r.cite.map((f) => [f.card, f.name]), [[P + '|1', '假设 1']])
+  // A weaker assumption with its own number runs parallel to the one it weakens: not a repeat.
+  const weaker = rows.map((x) => x[0] === P + '|c|1' ? [x[0], '假设 2', '假设 2：只对要素', x[3]] : x)
+  assert.deepEqual(strict(weaker).repeat, [])
+})
+
+test('balance advice: an overloaded setting and a one-line setting; a one-line assumption stays its own card', () => {
+  const many = '**起点**\n- 依赖 [[' + P + ']] 的设定。\n\n**设定**\n' + Array.from({ length: 11 }, (_, i) => `${i + 1}. 第 ${i} 条，$L$。`).join('\n')
+  const one = '**起点**\n- 依赖 [[' + P + ']] 的设定。\n\n**设定**\n1. 时点是长期，$L$ 不变。'
+  const r = strict([...good.map((r) => r[0] === P + '|b' ? [r[0], r[1], r[2], many] : r), [P + '|d', '设定：时点', '设定：长期', one]])
+  assert.deepEqual(r.balance.map((f) => [f.card, f.what]), [[P + '|b', 'heavy'], [P + '|d', 'light']])
+  assert.equal(r.format.length, 0)
 })

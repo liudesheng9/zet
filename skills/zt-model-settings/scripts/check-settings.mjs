@@ -18,6 +18,19 @@
 //   misfiled  a setting filed under another setting it does not rest on: file it under its main
 //             premise, or as a top-level Side of the setting card (a new block, a model variant)
 //   order     a setting that rests on a card later in the reading order (a later setting, a chapter)
+// The stricter pass (2026-11-03) adds:
+//   place     the setting card is not the Model Card's first Side (<head>|a), or the notation card
+//             not the setting card's first Side
+//   uncovered a letter a setting uses in a formula (outside sub- and superscripts) with no notation row
+//   unused    a notation row whose symbol no card of the model uses
+//   first     a notation row whose 首次出现 Link is not the card where a reader meets the symbol first
+//             (the setting part, then the chapters)
+//   format    a setting card not in the format: title (设定：… / 假设 N：…), sections (**起点**, **设定**
+//             or **假设**, optional **说明**), a 依赖 line outside **起点**, a symbol or term table
+//   repeat    a setting that restates a statement of an earlier one (assumptions with different names
+//             are different statements)
+//   cite      a card that names 假设 N without a Link to its card
+// Advice (`balance`): a setting with more than ten items, a one-item setting, more than seven branches.
 // Advice (`uses`): lines that use an assumption mid-sentence (由于假设 …); read them, they normally stay.
 // Advice (`introduces`): the notation symbols each setting uses first, in reading order; each must
 // be defined in that card (or the card moves after the one that defines it).
@@ -36,20 +49,30 @@ const isNotation = (c) => NOTATION.test(c.facet || '') || NOTATION.test(c.title 
 const symbolOf = (tex) => tex.split(/=|\\equiv|\\coloneqq/)[0].replace(/\s+/g, '')
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-/** The symbols of the notation card's tables: the first cell of each row, split at 、 , ； and cut at = > < \in. */
-export function notationSymbols(body) {
-  const out = []
+/** The rows of the notation card's tables: each row's symbols (its first cell, split at 、 , ； and cut at
+ * = > < \in) and the card its 首次出现 cell links, if any. */
+export function notationRows(body) {
+  const rows = []
   for (const line of (body || '').split('\n')) {
     const cell = line.match(/^\|\s*([^|]+?)\s*\|/)
-    if (!cell || /符号|---/.test(cell[1])) continue
+    if (!cell || /符号|术语|---/.test(cell[1])) continue
+    const symbols = []
     for (const tex of [...cell[1].matchAll(/\$([^$]+)\$/g)].map((x) => x[1])) {
       for (const part of splitTop(tex)) {
-        const sym = part.replace(/\\[ ,;:!]/g, '').split(/=|>|<|\\in\b|\\le\b|\\ge\b|\\equiv/)[0].replace(/\s+/g, '')
-        if (sym && !out.includes(sym)) out.push(sym)
+        // Spaces go, except the one that ends a command before a letter (\bar Z, \theta Z).
+        const sym = part.replace(/\\[ ,;:!]/g, '').split(/=|>|<|\\in\b|\\le\b|\\ge\b|\\equiv/)[0].trim()
+          .replace(/(\\[A-Za-z]+)\s+(?=[A-Za-z])/g, '$1\u0000').replace(/\s+/g, '').replace(/\u0000/g, ' ')
+        if (sym && !symbols.includes(sym)) symbols.push(sym)
       }
     }
+    const link = line.slice(cell[0].length).match(/\[\[(?:[^\]@]*@)?([^\]]+)\]\]/)
+    if (symbols.length) rows.push({ symbols, link: link ? link[1] : null })
   }
-  return out
+  return rows
+}
+/** The symbols of the notation card's tables, each once. */
+export function notationSymbols(body) {
+  return [...new Set(notationRows(body).flatMap((r) => r.symbols))]
 }
 /** A list of symbols split at the commas and semicolons outside any bracket. */
 function splitTop(tex) {
@@ -63,14 +86,87 @@ function splitTop(tex) {
   }
   return out
 }
-/** Whether a body uses a symbol in its formulas: the symbol, not part of a longer command, name or subscript. */
+// TeX is read as tokens: a command, an escaped character or one character. A decoration (\bar Z,
+// \mathcal F) makes one symbol with the letter after it; braces around one token are dropped.
+const DECOR = ['bar', 'hat', 'tilde', 'mathcal', 'mathbb', 'mathbf', 'mathscr', 'mathfrak', 'boldsymbol', 'overline', 'widetilde', 'widehat', 'check', 'dot', 'ddot', 'vec']
+const isDecor = (t) => DECOR.includes(t.slice(1))
+const GREEK = 'alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda mu nu xi pi varpi rho varrho sigma varsigma tau upsilon phi varphi chi psi omega Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega ell'.split(' ')
+const isLetter = (t) => /^[A-Za-z]$/.test(t) || GREEK.includes(t.slice(1)) && t[0] === '\\'
+/** The formulas of a body ($…$ and $$…$$). */
+const formulas = (body) => [...(body || '').matchAll(/\$\$?([^$]+)\$\$?/g)].map((x) => x[1])
+/** The tokens of a TeX string; text, tags and labels are dropped. */
+export function tokens(tex) {
+  const s = tex.replace(/\\(?:text|textrm|textit|mathrm|operatorname|mbox|tag|label)\s*\{[^{}]*\}/g, ' ')
+  let out = [...s.matchAll(/\\[A-Za-z]+|\\.|\S/g)].map((x) => x[0]).filter((t) => !/^\\[ ,;:!]$|^\\(?:left|right|big|Big|bigg|Bigg|quad|qquad|displaystyle|limits)$/.test(t))
+  for (let changed = true; changed;) {
+    changed = false
+    for (let i = 0; i + 2 < out.length; i++) {
+      if (out[i] === '{' && out[i + 2] === '}' && out[i + 1] !== '{' && out[i + 1] !== '}') { out.splice(i, 3, out[i + 1]); changed = true }
+    }
+  }
+  return out
+}
+/** The base symbols a TeX string uses: its letters and decorated letters, outside sub- and superscripts;
+ * the differential d, ℝ and a prime are not symbols. */
+export function baseSymbols(tex) {
+  const t = tokens(tex)
+  const out = []
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === '_' || t[i] === '^') { i = skipGroup(t, i + 1); continue }
+    let sym = null
+    if (isDecor(t[i]) && t[i + 1]) { sym = t[i] + ' ' + (t[i + 1] === '{' ? t[i + 2] : t[i + 1]); i = t[i + 1] === '{' ? skipGroup(t, i + 1) : i + 1 }
+    else if (isLetter(t[i])) sym = t[i]
+    if (!sym || sym === '\\mathbb R') continue
+    if (sym === 'd' && t[i + 1] && (isLetter(t[i + 1]) || isDecor(t[i + 1]))) continue
+    if (sym === 'R' && (t[i + 1] === '^' || t[i + 1] === '_')) continue
+    if (!out.includes(sym)) out.push(sym)
+  }
+  return out
+}
+/** The index of the last token of the group that starts at i (one token, or a braced group). */
+function skipGroup(t, i) {
+  if (t[i] !== '{') return i
+  for (let depth = 0; i < t.length; i++) {
+    if (t[i] === '{') depth++
+    if (t[i] === '}' && --depth === 0) return i
+  }
+  return i
+}
+/** The tokens a notation symbol is matched by: a function symbol C(\theta) by its name C. */
+const symbolTokens = (sym) => {
+  const t = tokens(sym)
+  const open = t.indexOf('(')
+  return open > 0 ? t.slice(0, open) : t
+}
+/** The text of a card after its **起点** list (the whole body when it has none). */
+function afterStart(body) {
+  const lines = (body || '').split('\n')
+  let k = lines.findIndex((l) => /^\*\*起点\*\*\s*$/.test(l)) + 1
+  if (k > 0) while (k < lines.length && (LIST.test(lines[k]) || (!lines[k].trim() && k + 1 < lines.length && LIST.test(lines[k + 1])) || /^\s{2,}\S/.test(lines[k]))) k++
+  return lines.slice(k).join('\n')
+}
+/** For each token, whether it sits under a decoration (the Z of \bar Z is not Z). A symbol in a sub- or
+ * superscript is used there (R^{K_s}, \nabla_{\theta}). */
+function scripted(t) {
+  const mark = t.map(() => false)
+  for (let i = 0; i < t.length; i++) {
+    if (isDecor(t[i])) {
+      const end = skipGroup(t, i + 1)
+      for (let k = i + 1; k <= end; k++) mark[k] = true
+    }
+  }
+  return mark
+}
+/** Whether a body uses a symbol in its formulas: the symbol's tokens, starting outside a decoration. */
 const usesSymbol = (body, sym) => {
-  const flat = [...(body || '').matchAll(/\$\$?([^$]+)\$\$?/g)].map((x) => x[1].replace(/\s+/g, '')).join('|')
-  let i = flat.indexOf(sym)
-  while (i >= 0) {
-    const before = flat[i - 1] || '', next = flat[i + sym.length] || ''
-    if (!/[A-Za-z\\_^]/.test(before) && !/[A-Za-z]/.test(next)) return true
-    i = flat.indexOf(sym, i + 1)
+  const want = symbolTokens(sym)
+  if (!want.length || (want.length === 1 && isDecor(want[0]))) return false
+  for (const f of formulas(body)) {
+    const t = tokens(f)
+    const mark = scripted(t)
+    for (let i = 0; i + want.length <= t.length; i++) {
+      if (!mark[i] && want.every((w, k) => t[i + k] === w)) return true
+    }
   }
   return false
 }
@@ -165,8 +261,114 @@ export function audit(m, cards, parents = new Map()) {
     if (fresh.length) introduces.push({ card: c.address, symbols: fresh })
   }
 
-  const ok = !missing.length && !outside.length && !inside.length && !stated.length && !notation.length && !start.length && !misfiled.length && !order2.length
-  return { setting: S, notation_card: notes[0]?.address || null, outside, inside, stated, notation, missing, start, misfiled, order: order2, uses, introduces, ok }
+  // Placement: the setting card is the Model Card's first Side, the notation card the setting card's.
+  const place = []
+  const head = m.head?.address
+  if (head && S !== head + '|a') place.push({ card: S, fix: `the setting card ${S} is not the first Side successor of the Model Card: move it to ${head}|a, the chapters stay its Direct successors` })
+  const own = notes.find((c) => inPart(c.address))
+  if (own && own.address !== S + '|a') place.push({ card: own.address, fix: `the notation card ${own.address} is not the first Side successor of the setting card: move it to ${S}|a` })
+
+  // Symbols: every symbol a setting uses is in the notation card; every notation row names symbols the
+  // model uses, and links the card where a reader meets them first (settings first, then the chapters).
+  const own_ = (c) => !borrowed(c) && !(isNotation(c) && notes.includes(c))
+  const covered = new Set(syms.flatMap((x) => baseSymbols(x)))
+  const uncovered = []
+  if (notes.length) {
+    for (const c of settings) {
+      const lack = [...new Set(formulas(c.body).flatMap(baseSymbols))].filter((x) => !covered.has(x))
+      if (lack.length) uncovered.push({ card: c.address, symbols: lack, fix: `${c.address} uses ${lack.map((x) => '$' + x + '$').join(' ')}, which the notation card does not list: add a row for each (its meaning and the card that defines it), or write the symbol as the notation card does` })
+    }
+  }
+  const reading = [...all.filter((c) => inPart(c.address)), ...all.filter((c) => !inPart(c.address))].filter(own_)
+  const unused = []
+  const first = []
+  for (const r of notes.filter((c) => inPart(c.address)).flatMap((c) => notationRows(c.body))) {
+    for (const sym of r.symbols) {
+      const meet = reading.find((c) => usesSymbol(c.body, sym))
+      if (!meet) { unused.push({ symbol: sym, fix: `the notation card lists $${sym}$, which no card of the model uses: drop the row, or write the symbol as the cards do` }); continue }
+      if (r.link && r.link !== meet.address) first.push({ symbol: sym, listed: r.link, reads: meet.address, fix: `the notation card says $${sym}$ is first met in ${r.link}, but a reader meets it first in ${meet.address}: define it there and point the row to it` })
+    }
+  }
+
+  // Card format: **起点**, then **设定** (an assumption: **假设**), then an optional **说明**; the content
+  // only; premises only in **起点**; tables of symbols and terms only in the notation card.
+  const isAssumption = (c) => /^(假设|假定)/.test(c.facet || '') || /^(假设|假定)/.test(c.title || '')
+  const sectionsOf = (body) => (body || '').split('\n').map((l) => l.match(/^\*\*([^*]+)\*\*\s*$/)).filter(Boolean).map((x) => x[1])
+  const sectionText = (body, name) => {
+    const m2 = (body || '').split(/^\*\*([^*]+)\*\*\s*$/m)
+    const i = m2.indexOf(name)
+    return i > 0 ? m2[i + 1] : ''
+  }
+  const format = []
+  for (const c of settings) {
+    const kind = isAssumption(c) ? '假设' : '设定'
+    const bad = (what, fix) => format.push({ card: c.address, what, fix: `${c.address} (${c.facet}): ${fix}` })
+    if (kind === '设定' ? !/^设定：/.test(c.title || '') : !/^(假设|假定)\s*[A-Za-z]?\d*[A-Za-z]?\d*：/.test(c.title || '')) bad('title', kind === '设定' ? 'the title opens with 设定：' : 'the title opens with 假设 <name>：')
+    const sec = sectionsOf(c.body)
+    if (sec[0] !== '起点' || sec[1] !== kind || sec.length > 3 || (sec[2] && sec[2] !== '说明')) bad('section', `the sections are **起点**, **${kind}**, then an optional **说明** (now ${sec.map((x) => '**' + x + '**').join(', ') || 'none'})`)
+    if (/依赖\s*\[\[/.test(afterStart(c.body))) bad('depends', 'a 依赖 line outside **起点**: move the premise into **起点**')
+    if (/^\|\s*(符号|术语)\s*\|/m.test(c.body || '')) bad('table', 'a symbol or term table: its rows belong in the notation card')
+  }
+
+  // An assumption is stated once: a statement repeated in a later setting is replaced by a pointer.
+  const plain = (s) => s.replace(/\[\[([^\]@]*)@[^\]]+\]\]/g, '$1').replace(/\[\[[^\]]+\]\]/g, '').replace(/[\s，。；：、,.;:()（）]/g, '')
+  const statementsOf = (c) => {
+    const text = sectionText(c.body, isAssumption(c) ? '假设' : '设定') || ''
+    return text.split('\n').filter((l) => !/^\s*\$\$/.test(l)).map((l) => l.replace(LIST, '')).flatMap((l) => l.split('。')).map(plain).filter((s) => s.length >= 12)
+  }
+  const bigrams = (s) => new Set([...s].slice(1).map((ch, i) => s[i] + ch))
+  const dice = (a, b) => { const A = bigrams(a), B = bigrams(b); let n = 0; for (const x of A) if (B.has(x)) n++; return (2 * n) / (A.size + B.size || 1) }
+  // Two assumptions with different names are different statements, however parallel (a weakening).
+  const nameOf = (c) => (isAssumption(c) && (c.title || '').match(/^(?:假设|假定)\s*([A-Za-z]?\d+[A-Za-z]?)/)?.[1]) || null
+  const apart = (a, b) => nameOf(a) && nameOf(b) && nameOf(a) !== nameOf(b)
+  const repeat = []
+  const said = []
+  for (const c of settings) {
+    const mine = statementsOf(c)
+    const hit = said.find(([a, s]) => !apart(row(a), c) && mine.some((x) => dice(x, s) >= 0.8))
+    if (hit) repeat.push({ card: c.address, other: hit[0], fix: `${c.address} restates what ${hit[0]} states: keep the statement in ${hit[0]}; ${c.address} names it in **起点** and states only what it changes` })
+    for (const s of mine) said.push([c.address, s])
+  }
+
+  // Assumptions are named the same way everywhere: a card that names 假设 N links its card.
+  const named = new Map()
+  for (const c of settings.filter(isAssumption)) {
+    const n = (c.title || '').match(/^(?:假设|假定)\s*([A-Za-z]?\d+[A-Za-z]?)/)
+    if (n) named.set(n[1], [...(named.get(n[1]) || []), c.address])
+  }
+  const cite = []
+  for (const c of all.filter(own_)) {
+    const seen = new Set()
+    for (const line of (c.body || '').split('\n')) {
+      const bare = line.replace(/\[\[[^\]]+\]\]/g, '')
+      for (const x of bare.matchAll(/(?:假设|假定)\s*([A-Za-z]?\d+[A-Za-z]?)/g)) {
+        const at = named.get(x[1])
+        if (!at || at.includes(c.address) || seen.has(x[1])) continue
+        if (at.some((a) => line.includes(`@${a}]]`) || line.includes(`[[${a}]]`))) continue
+        seen.add(x[1])
+        cite.push({ card: c.address, name: '假设 ' + x[1], line: line.trim(), fix: `${c.address} names 假设 ${x[1]} without a Link: write [[${at[0]}]] in its place (the GUI shows a Link to a model part by its facet, 假设 ${x[1]})` })
+      }
+    }
+  }
+
+  // Balance (advice): a setting with more than ten statements is split; a one-statement setting
+  // without a display formula joins the setting it builds on (an assumption stays its own card);
+  // a setting with more than seven branches groups them in blocks.
+  const balance = []
+  for (const c of settings) {
+    // A card not yet in the format counts its whole text after **起点**, without tables.
+    const text = sectionText(c.body, isAssumption(c) ? '假设' : '设定') || afterStart(c.body).split('\n').filter((l) => !/^\|/.test(l)).join('\n')
+    const items = text.split('\n').filter((l) => LIST.test(l) && l.replace(LIST, '').trim())
+    const count = items.length || text.split('\n').filter((l) => !/^\s*\$\$/.test(l)).join('').split('。').filter((s) => s.trim()).length
+    if (count > 10) balance.push({ card: c.address, what: 'heavy', fix: `${c.address} states ${count} things: split it into settings that each set up one piece` })
+    else if (c.address !== S && !isAssumption(c) && count <= 1 && !/\$\$/.test(c.body || '')) balance.push({ card: c.address, what: 'light', fix: `${c.address} states one thing: consider joining it to the setting it builds on` })
+    const kids = settings.filter((d) => parents.get(d.address) === c.address)
+    if (kids.length > 7) balance.push({ card: c.address, what: 'wide', fix: `${c.address} has ${kids.length} settings filed under it: group them in blocks` })
+  }
+
+  const ok = !missing.length && !outside.length && !inside.length && !stated.length && !notation.length && !start.length && !misfiled.length && !order2.length &&
+    !place.length && !uncovered.length && !unused.length && !first.length && !format.length && !repeat.length && !cite.length
+  return { setting: S, notation_card: notes[0]?.address || null, outside, inside, stated, notation, missing, start, misfiled, order: order2, place, uncovered, unused, first, format, repeat, cite, balance, uses, introduces, ok }
 }
 
 async function main() {
@@ -174,7 +376,7 @@ async function main() {
   if (!head) { console.error('usage: node check-settings.mjs <modelHead> [--json]'); process.exit(2) }
   const { model, cards, tree } = await import('./zt.mjs')
   const m = model(head)
-  if (!m.head || m.head.address !== head) { console.error(`${head} is not a Model Card${m.head ? `: it belongs to the model ${m.head.address}; give that address` : ''}`); process.exit(2) }
+  if (!m?.head || m.head.address !== head) { console.error(`${head} is not a Model Card${m?.head ? `: it belongs to the model ${m.head.address}; give that address` : ''}`); process.exit(2) }
   const order = m.build.order.map((o) => o.address)
   const parents = new Map(tree(head.split('/')[0]).map((c) => [c.address, c.parent]))
   const r = audit(m, new Map(cards(order).map((c) => [c.address, c])), parents)
@@ -182,7 +384,9 @@ async function main() {
   const sh = (a) => (a && a.startsWith(head) ? 'H' + a.slice(head.length) : a)
   const say = (kind, list) => list.forEach((f) => console.log(`${kind}: ${f.fix.replaceAll(head, 'H')}`))
   console.log(`setting part: ${sh(r.setting)}, notation card: ${sh(r.notation_card) || 'none'}`)
-  say('missing', r.missing); say('outside', r.outside); say('inside', r.inside); say('stated', r.stated); say('notation', r.notation); say('start', r.start); say('misfiled', r.misfiled); say('order', r.order)
+  say('missing', r.missing); say('place', r.place); say('outside', r.outside); say('inside', r.inside); say('stated', r.stated); say('notation', r.notation); say('start', r.start); say('misfiled', r.misfiled); say('order', r.order)
+  say('uncovered', r.uncovered); say('unused', r.unused); say('first', r.first); say('format', r.format); say('repeat', r.repeat); say('cite', r.cite)
+  say('balance', r.balance)
   if (process.argv.includes('--symbols')) r.introduces.forEach((x) => console.log(`reads: ${sh(x.card)} first uses ${x.symbols.map((y) => '$' + y + '$').join(' ')}`))
   r.uses.forEach((u) => console.log(`advice: ${sh(u.card)} uses an assumption: ${u.line.slice(0, 120)}`))
   console.log(r.ok ? 'settings: all in the setting part, as a dependency tree' : 'settings: faults above; move cards, never delete a Link')

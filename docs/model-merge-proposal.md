@@ -379,6 +379,37 @@ The firm problems, the research-firm problem and the net production function set
 - `check-premises`: one hit, the roadmap line of the economy M chain.
 - `list_broken_links` is empty. The tree holds 304 Cards (302 + the notation card + the chapter 2 card).
 
+### 11.3 The strict settings pass (2026-11-03)
+
+The owner asked for a stricter `zt-model-settings`: the structure applied strictly, every setting card checked, the notation card covering every setting with only symbols the model uses, one format for every setting card, assumptions shown the same way, and statements reallocated so the setting part is balanced and easy to read. `acemoglu2007equilibrium/2|a` is the sample model. The pass ran on the live box (the model lives only there, and its earlier passes ran there at the owner's request). The backup is `D:\zt\backups\zt-before-acemoglu2007equilibrium-settings2.sqlite3` (`VACUUM INTO`, integrity `ok`).
+
+**The new checks** (`check-settings.mjs`, 14 tests): `place` (the setting card is `<head>|a`, the notation card its `|a`), `uncovered` (a letter a setting uses with no notation row), `unused` (a notation row no card uses), `first` (a row whose first card is not where the reader meets the symbol first), `format` (title, sections **起点**/**设定** or **假设**/**说明**, a `依赖` line outside **起点**, a local symbol or term table), `repeat` (a setting that restates an earlier one), `cite` (a card that names 假设 N without its Link), and the `balance` advice. Symbols are read as TeX tokens, so `\bar Z` is not `Z` and `\dots` is no symbol. Before the pass the sample had 8 `uncovered`, 6 `first`, 32 `format` and 10 `cite` faults. Grossman 2002 and Acemoglu 2010 also fail the new checks; they were not changed.
+
+**The tree.** One batch (`move_span` ×4, `reorder`): the net production function left economy D's chain and became a shared block with the two assumptions on it, economy D became the base economy, and economy O moved under economy M, which it extends.
+
+```
+2|a|a 设定（共同环境）                    原始设定
+├ a 符号表与读法
+├ b 设定：概述 (引言)                     ← 2|a|a
+├ c 设定：净生产函数 (4)                  ← 2|a|a
+│   c|a 假设 1 → c|a|1 假设 2 (weakens 1)
+├ d 设定：经济 D (2)–(3)                  基准 ← 2|a|a
+├ e 设定：经济 C                          变体一 ← 2|a|a, 净生产函数
+│   e|1 企业问题 (6) → e|2 研究企业问题 (7)
+├ f 设定：经济 M                          变体二 ← 2|a|a, 假设 2, (3)
+│   f|1 企业问题 (10);  f|a 设定：经济 O ← 经济 M;  f|a|1 假设 2：经济 O
+├ g 设定：相对均衡偏向
+└ h 设定：绝对均衡偏向;  h|1 假设 A1 → h|2 强绝对均衡偏向
+```
+
+**Text.** All 17 settings were rewritten into the one format, each statement a numbered item. Restatements of the common environment were dropped from economies C, M and O; 「技术由每家企业分别决定」 moved to economy D; Definition 1's 均衡技术 sentence moved from the net production function to economy D; the choice sets $\mathcal Z,\mathcal L$ are now defined in the setting card (they were defined only in the economy O assumption). Assumptions 1 and 2 have the same branch layout. The economy O version of Assumption 2 states only what changes. Six local symbol tables and six term tables went into the notation card, which now has the rows for the indices $i$, $j$, $s$ and $\epsilon$, one row for $\Pi(\theta),\Pi$ with both meanings, and the correct first card for every row. Eight chapter cards and the Model Card now link 假设 1, 假设 2 and 假设 A1 to their cards. Economy D is marked core like the other economies. All 14 display formulas were compared before writing: none lost or changed.
+
+**After.**
+- `check-settings`: every setting is in the setting part, as a dependency tree; no other fault and no balance advice (the ten `uses` advice lines name chapter lines that use an assumption, and stay).
+- `check-model`: `self_sufficient` is true. The relations are unchanged except `refers` (77 → 90, the assumption Links). A first wording 「放松假设 1，只用 [[假设 2]]」 made a reversed `relaxes` relation and was reworded.
+- `check-network`: `network: clean`. `check-premises`: the economy M roadmap line, and the overview's pointer to (4).
+- `list_broken_links` is empty. The tree holds 353 Cards, unchanged by the pass.
+
 ## 12. The Modern VAT fold (2026-10-29)
 
 The `zt-model-fold` skill folded `ebrill2001modern` on the live box at the owner's request (`/zt-model-fold ebrill2001modern`, live box confirmed in the same session). The backup is `D:\zt-merge-backup\zt-before-ebrill2001modern-fold.sqlite3` (`VACUUM INTO`, integrity `ok`). The tree was not locked. Two of its cards are pinned by other locked trees (`14/a/b` by `becker2025division`, `22/d/2/a` by `acemoglu2010labor`); the fold moved neither.

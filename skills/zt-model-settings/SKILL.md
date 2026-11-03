@@ -1,6 +1,6 @@
 ---
 name: zt-model-settings
-description: "Organize the settings of one ZET model, given the address of its Model Card (for example becker2025division/4|a), so a reader builds the whole setting from scratch: every setting, assumption and symbol in the setting part, arranged as a dependency tree (each setting filed under the setting it builds on, primitives first, the base model's blocks before the model variants, each variant on its own branch), each setting naming its premises in a **起点** section and resting on nothing later, every symbol defined where the reader first meets it; no setting in a chapter. Checked with scripts/check-settings.mjs. Use when the user wants a model's settings, assumptions, notation or symbols organized, gathered, ordered or made readable, or a model's settings checked. Runs after zt-model-fold and before zt-model-restructure."
+description: "Organize the settings of one ZET model, given the address of its Model Card (for example becker2025division/4|a), so a reader builds the whole setting from scratch: every setting, assumption and symbol in the setting part, arranged as a dependency tree (each setting filed under the setting it builds on, primitives first, the base model's blocks before the model variants, each variant on its own branch), each setting naming its premises in a **起点** section and resting on nothing later, every symbol defined where the reader first meets it; no setting in a chapter. Strict placement (the setting card is the Model Card's first Side successor, the notation card the setting card's, every setting in the setting card's Side branches); one card format (**起点**, **设定** or **假设**, **说明**); the notation card covers every symbol of every setting and lists only symbols the model uses, each with the card where a reader meets it first; an assumption is stated once and cited by its Link everywhere; statements reallocated so each card sets up one balanced piece. Checked with scripts/check-settings.mjs. Use when the user wants a model's settings, assumptions, notation or symbols organized, gathered, ordered or made readable, or a model's settings checked. Runs after zt-model-fold and before zt-model-restructure."
 ---
 
 # Organize a model's settings
@@ -9,7 +9,15 @@ Input: the **address of the Model Card** (for example `becker2025division/4|a`),
 
 The order of the model skills: `zt-model-fold` (one Model Card), then this skill (the setting part), then `zt-model-restructure` (the spine of chapters, results and proofs). The restructure keeps the setting part as this skill leaves it. A model that uses another model's building blocks imports them with `zt-model-import` (its **引入** section); that skill runs after `zt-model-restructure`, as the last model pass: it writes the import lines, settles imported symbols in the notation card (its step 6, then `check-settings.mjs` again), and refreshes the explanations.
 
-Tool mechanics (Workspaces, `get_model`, moves, Locks) are in the `zt` skill. A worked record (Becker 2025) is §9.7–§9.8 of `E:\zet\docs\model-merge-proposal.md`.
+Tool mechanics (Workspaces, `get_model`, moves, Locks) are in the `zt` skill. Worked records: Becker 2025 (§9.7–§9.8) and the strict pass on Acemoglu 2007 (§11.3) of `E:\zet\docs\model-merge-proposal.md`.
+
+## The place
+
+The structure is fixed, and the check refuses any other (`place`, `outside`, `inside`):
+
+- The **setting card** is the Model Card's first Side successor, `<head>|a`. It gathers the settings of every source of the model. The chapters are its Direct successors.
+- The **notation card** (facet `符号表与读法`) is the setting card's first Side successor, `<head>|a|a`.
+- **Every setting, assumption and definition of the model is in the setting card's Side branches**, and nothing else is.
 
 ## The principle: build the setting, do not list it
 
@@ -32,20 +40,65 @@ And the restriction from before: **the setting part is the only place for settin
 
 Facets carry the role and the variant, because the GUI shows every Link to a Model part by its facet: `设定：任务配置 (2)`, `设定：第二阶段`, `设定：封闭经济`, `设定：概述`.
 
+## One card format
+
+Every setting card has the same three sections, in this order (`format`):
+
+```
+**起点**
+- 依赖 [[setting]] 的设定：what it uses.      (or: 原始设定：…; a variant: 变体二：…，与 […] 并列；与基准相比…)
+
+**设定**                                        (an assumption card: **假设**)
+1. One statement per item: an agent, a timing, a choice, a definition.
+2. A display formula follows the item that introduces it, with its original number:
+
+$$… \tag{2}$$
+
+**说明**                                        (optional)
+Remarks, the role of the setting, pointers to later cards.
+```
+
+- The title says the kind: `设定：…` for a setting, `假设 <name>：…` for an assumption (`假设 1：…`, `假设 A1：…`). The facet starts with `设定` or `假设`.
+- Premises appear only in **起点**: a `依赖 [[…]]` line anywhere else moves there.
+- No symbol table and no term table in a setting card: their rows go to the notation card.
+- **Assumptions look alike.** An assumption with branches says `<function> 满足下面两个分支之一。` and lists `1. 分支一（凹）：…`, `2. 分支二（不变规模报酬）：…`; its role (what it guarantees, which variants use it) goes to **说明**.
+
+## The notation card
+
+The notation card is the one place for symbols and terms, and the check reads it row by row:
+
+- **It covers every setting** (`uncovered`): every letter a setting uses in a formula, outside sub- and superscripts, has a row, including the indices (`$i$` 企业, `$j$` 分量, `$s$` 生产者) and a bound variable such as $\epsilon$. A name that is not a symbol (经济 D) is written outside math.
+- **It lists only symbols the model uses** (`unused`): a row whose symbol no card uses is dropped or rewritten as the cards write it.
+- **Each row names the card where a reader meets the symbol first** (`first`), in the reading order: the setting part, then the chapters. That card defines it. One letter with two meanings in the source gets one row that names both (`$\Pi(\theta),\Pi$ | 经济 C 的目标 (7)；经济 M 的利润 (12)`).
+- Rows are grouped by block, in the order of the setting tree; the derivations' auxiliary symbols come last, then the term table (`术语 | 不用`).
+
+## Assumptions: stated once, cited by Link
+
+- **One statement, one card** (`repeat`). A variant that keeps an assumption and changes only its object states the change (`假设 2 的两个分支不变，作用对象换为 (14) 的子成分 G`), never the branches again. Two assumptions with different names (a weakening) may run parallel.
+- **Every card that names an assumption links its card** (`cite`): `设[[…|c|a]]成立`, not `设假设 1 成立`. The GUI shows a Link to a model part by its facet, so the facet `假设 1` reads as 假设 1. A `[[label@address]]` Link is for Term Cards only.
+- Watch the relation words: `放宽`/`推广` before a Link make a `relaxes` relation from this card to the linked one. Write `只要求较弱的 [[假设 2]]`, not `放宽假设 1，只用 [[假设 2]]`.
+
+## Balance
+
+The check gives advice (`balance`), not faults: a setting with more than ten items is split; a setting (not an assumption) with one item and no display formula joins the setting it builds on; a card with more than seven settings filed under it groups them in blocks. Reallocate statements so each card sets up one piece: a statement belongs to the first card whose subject it is (the price vector of the common environment in the setting card, `技术由每家企业分别决定` in the base economy, the choice sets $\mathcal Z,\mathcal L$ where the reader first meets them), and a later card that repeats it drops it or points back.
+
 ## Rules before you touch anything
 
 - **Live box only on request.** Work on the live archive (`D:\zt`, GUI port 4717) only when the user asks for it. Otherwise work on a copied box.
 - **Back up first.** `VACUUM INTO` the archive (read-only source; the archive is in WAL mode). Name the backup after the pass, for example `zt-before-<key>-settings.sqlite3`.
 - **Locks are the owner's.** A `card_locked` error means: stop, ask the user to unlock the tree in the GUI, and wait.
-- **Do not change the mathematics.** Every display formula and equation number survives. Text changes are limited to the `**起点**` section, a definition of a symbol at its first use, a moved sentence, a pointer, a `依赖` line, a facet, and the notation rows.
+- **Do not change the mathematics.** Every display formula and equation number survives byte for byte: compare the display formulas of the old and the new bodies before you write (a script, not by eye). Text changes are limited to the `**起点**` section, the format (sections, numbered items, titles), a definition of a symbol at its first use, a moved sentence, a restated sentence dropped, a pointer, a Link for a named assumption, a `依赖` line, a facet, and the notation rows.
 - **Move cards, never delete a Link.** Scripts move and check; never run an LLM agent per card.
 
 ## Step 1: read
 
 - `scripts/check-model.mjs <head>`: confirm `<head>` is the Model Card. A model parted across several Model Cards is folded first (`zt-model-fold`).
 - `scripts/check-settings.mjs <head> --symbols`: every fault, each with its fix, and the reading aid.
-  - Placement: `outside` (a setting in a chapter, with the derivations under it that stay, `leave`), `inside` (a non-setting in the setting part), `stated` (a chapter that states an assumption), `notation` (a symbol missing from the notation card), `missing` (no notation card of its own, none imported, and no `沿用 … 的全部符号` line).
+  - Placement: `place` (the setting card is not `<head>|a`, or the notation card not its `|a`), `outside` (a setting in a chapter, with the derivations under it that stay, `leave`), `inside` (a non-setting in the setting part), `stated` (a chapter that states an assumption), `notation` (a symbol a card introduces with 记 that the notation card lacks), `missing` (no notation card of its own, none imported, and no `沿用 … 的全部符号` line).
   - Tree: `start` (a setting with no **起点**), `misfiled` (a setting filed under one it does not build on), `order` (a setting resting on a card a reader meets later).
+  - Symbols: `uncovered` (a setting uses a letter the notation card lacks), `unused` (a notation row no card uses), `first` (a row names the wrong first card).
+  - Cards: `format` (`title`, `section`, `depends`, `table`), `repeat` (a setting restates an earlier one), `cite` (a card names an assumption without its Link).
+  - Advice: `balance` (heavy, light, wide), and `uses` (a line that uses an assumption mid-sentence; it normally stays).
   - `reads:` lines (with `--symbols`): for each setting in reading order, the notation symbols it uses first. Each must be defined in that card.
 - Read every setting card, the cards that rest on it, and the source sections they cite. Write down, for each setting, what it uses and which variant uses it.
 
@@ -58,6 +111,7 @@ Draw the target before moving anything:
 3. **The variants.** One top-level branch per variant, after the base blocks; a sub-variant (a special case, the estimation) under its variant.
 4. **The premises of each card**, written as its **起点** lines. Check the tree against them: every card rests on the card it is filed under, and on nothing below it.
 5. **The symbols.** Walk the tree in reading order; at each symbol's first use, the card defines it. A symbol a card uses before its definition card: move the card after that card, or define the symbol where it is first used.
+6. **The content of each card.** List each card's statements and give each to the card whose subject it is (see Balance). Shared building blocks used by every variant (the net production function and the assumptions on it) are a block of their own before the variants, not a step inside one variant's chain. A sub-variant that extends a variant (oligopoly after monopoly) hangs under it.
 
 Becker 2025 after the pass:
 
@@ -77,19 +131,21 @@ Becker 2025 after the pass:
 
 ## Step 3: move and write
 
-Write the moves as one script (`scripts/zt.mjs` `move`), finding each card by its title before each move:
+Write the moves as one batch (`scripts/zt.mjs` `tidy`): `move_span` with `side_of` or `after` for each card, then one `reorder` of the setting card's Sides; every address names the card at batch start, and the preview shows the `moved` map before you commit. The older way, one move at a time (`move`), finds each card by its title before each move:
 
 1. File each `leave` derivation in its chapter first (`before` the head of the proof chain that uses it).
 2. **Park every setting leaf-first** under the last chapter card (a Direct chain's last step first, then the step before it, then the head), so no move renames another card.
 3. **Place top-down** into the designed slots: a block head as the next Side of the setting card, a chain step as the next Direct slot, a branch as the next Side of its parent. Side slots take only the next free letter, which is why everything is parked first.
 4. Repack each chapter a setting left: park its later Side branches and bring them back from `a`.
 
-Then the text, in one batch (`zt-digest call <edits> -Allow <addresses>`): the **起点** of every setting (the setting card included); each symbol's definition at its first use; the facets; every `依赖 [[setting]] 的结果` as `的设定`; moved sentences and pointers; the notation rows. A batch runs every call even after one fails, so read the cards back, or rerun the check, before you go on.
+Then the text, in one batch (`zt-digest call <edits> -Allow <addresses>`): every setting in the card format (the setting card included), with its **起点**, titles and facets; each symbol's definition at its first use; every `依赖 [[setting]] 的结果` as `的设定`; moved sentences, dropped restatements and pointers; the whole notation card (rows by block, indices, first cards, terms). Write the edits as a script whose bodies are `String.raw` templates, and compare the display formulas before writing. A batch runs every call even after one fails, so read the cards back, or rerun the check, before you go on.
+
+Last, the citations: replace each bare `假设 N` the `cite` faults name with `[[<its card>]]` (a script over `check-settings.mjs --json`; `假设 1 或 2` names two cards), and point the `first` rows to the cards the check names.
 
 ## Step 4: verify and record
 
 - `scripts/check-settings.mjs <head> --symbols` prints `settings: all in the setting part, as a dependency tree`; read the `reads:` lines once more against the cards.
-- `zt-model-restructure`'s `check-model.mjs` (`self_sufficient` true), `check-network.mjs` (`network: clean`) and `check-premises.mjs` (only pointers and roadmaps; no setting names a later result).
+- `zt-model-restructure`'s `check-model.mjs` (`self_sufficient` true, and no new `relaxes`, `objects` or other relation your wording made), `check-network.mjs` (`network: clean`) and `check-premises.mjs` (only pointers and roadmaps; no setting names a later result).
 - `list_broken_links` is empty; the tree has the same number of Cards.
 - Rebuild the head's **结构** section, record the pass in the project docs, and tell the user which tree is still unlocked.
 
