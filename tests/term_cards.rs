@@ -628,8 +628,11 @@ fn a_term_use_on_an_ordinary_card_is_t7_advice() {
     );
 }
 
+/// A Term Card has no prose bound by default (2026-10-26, the owner's request: some books have
+/// very long terms), so T9 stays silent however long the Card is. The sentence rule still holds:
+/// a long Card is many sentences, not one.
 #[test]
-fn a_manual_over_prose_card_is_refused_by_t9() {
+fn a_long_term_card_is_accepted_and_one_over_long_sentence_is_not() {
     let home = TestHome::new("enforce");
     let mut mcp = home.mcp();
     let (_anchor, list) = book(&home, &mut mcp, "Test2026", TABLE);
@@ -642,11 +645,19 @@ fn a_manual_over_prose_card_is_refused_by_t9() {
         &rendered.head.body,
         "side",
     ));
-    let long = "甲".repeat(1700);
-    let body = rendered
+    let sentence = format!("{}。", "甲".repeat(20));
+    let long_card = rendered
         .head
         .body
-        .replace("均衡不等于最优。", &format!("{long}。"));
-    let refusal = mcp.err("edit_card", json!({ "at": &at, "body": &body }));
-    assert!(has_fault(&refusal, "T9", "prose_size"), "{refusal:#?}");
+        .replace("均衡不等于最优。", &sentence.repeat(90));
+    let accepted = mcp.ok("edit_card", json!({ "at": &at, "body": &long_card }));
+    assert!(!has_fault(&accepted, "T9", "prose_size"), "{accepted:#?}");
+
+    let one_sentence = rendered
+        .head
+        .body
+        .replace("均衡不等于最优。", &format!("{}。", "甲".repeat(1700)));
+    let refusal = mcp.err("edit_card", json!({ "at": &at, "body": &one_sentence }));
+    assert!(has_fault(&refusal, "R2", "sentence_length"), "{refusal:#?}");
+    assert!(!has_fault(&refusal, "T9", "prose_size"), "{refusal:#?}");
 }

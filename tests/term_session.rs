@@ -338,6 +338,17 @@ fn accepted_write_warnings_stay_on_the_session_status_row() {
     let home = TestHome::new();
     let mut mcp = home.mcp();
     let fixture = term_fixture(&mut mcp, |head| format!("需求是 [[均衡@{head}]] 的。"));
+    // A Topic Card, because R3 advises there: a Literature note follows its source's own
+    // sentences, and its row turns R3 off (#184), so a note would give the session no warning.
+    let topic = address(mcp.ok("create_topic", json!({ "title": "需求" })));
+    let note = address(mcp.ok(
+        "create_successor",
+        json!({
+            "at": topic,
+            "title": "笔记",
+            "body": format!("需求是 [[均衡@{}]] 的。", fixture.head),
+        }),
+    ));
 
     let mut session = PtySession::spawn_with_test_clipboard_at_size(
         &cargo_bin("zt"),
@@ -347,7 +358,7 @@ fn accepted_write_warnings_stay_on_the_session_status_row() {
         300,
     );
     session.wait_for_text("ROOT");
-    session.send_text(&format!("go {}", fixture.note));
+    session.send_text(&format!("go {note}"));
     session.send_enter();
     session.wait_for_text("需求是 均衡 的。");
     session.send_text("e");
@@ -360,7 +371,7 @@ fn accepted_write_warnings_stay_on_the_session_status_row() {
     session.send_key(Key::End);
     session.send_text("；乙。");
     session.send_key(Key::CtrlS);
-    session.wait_for_text(&format!("check: {}", fixture.note));
+    session.wait_for_text(&format!("check: {note}"));
     assert!(
         session.plain_output().contains("R3"),
         "the refused semicolon warning is shown:\n{}",
