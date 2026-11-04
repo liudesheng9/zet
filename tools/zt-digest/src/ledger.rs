@@ -15271,7 +15271,10 @@ fn resume_grant(p: &Prepared, reason: &str) -> Result<Value> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
     let grants = resume_grants(&tx)? + 1;
-    put_meta(&tx, "resume_grants", &json!(grants))?;
+    tx.execute(
+        "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params!["resume_grants", canon::canonical_json(&json!(grants))],
+    )?;
     tx.execute(
         "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(NULL,?1,?2,?3,?4)",
         params![meta(&tx, "invocation")?.as_i64().unwrap_or(1), canon::utc_now_o(), "resume_granted", canon::canonical_json(&json!({"reason":reason,"grants":grants}))],

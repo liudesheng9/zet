@@ -52,6 +52,11 @@ try {
     Assert ('digest' -in $layers) 'the ledger holds digest units'
     Assert (-not ($layers | Where-Object { $_ -in @('models', 'explain', 'events', 'findings') })) "the ledger holds no Model, Event or Finding unit ($($layers -join ','))"
 
+    # A run can take more than one owner's stop: each recorded grant adds one resume.
+    $first = Run-Digest @('ledger', 'resume-grant', '-Out', $out, '-Reason', 'first stop')
+    $second = Run-Digest @('ledger', 'resume-grant', '-Out', $out, '-Reason', 'second stop')
+    Assert ($first.grants -eq 1 -and $second.grants -eq 2) 'each resume grant is recorded'
+
     $next = Run-Digest @('ledger', 'next', '-Out', $out, '-Layer', 'digest', '-Take', '1', '-Owner', 'history-test')
     $claim = $next.units[0]
     $started = Run-Digest @('group-start', '-Out', $out, '-Group', '1', '-Token', "$($claim.token)")
