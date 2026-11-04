@@ -1,4 +1,6 @@
-// ==== module zt-cited-cards v3 ====
+// ==== module zt-cited-cards v4 ====
+// v4 (scheiner2022baghdad, 2026-11-04): a resume leaves a finished Cited list alone (`list -SkipDone`). It reran 27
+// normalize jobs, and its list-finish would have written the list again without a claim. Mode cited-cards still rewrites.
 // v3 (atkinson2015lectures, 2026-11-02): the start claims every page of jobs (one claim takes at most 64), each manager
 // runs its own chunk file (cited\drive\<prefix>-NNN.json), and the finish takes back a claim whose lease ran out.
 // The Cited literature branch (#221, docs/cited-literature-cards-proposal.md): Haiku managers and DeepSeek agents
@@ -16,11 +18,12 @@
 // v2 (pilot 2026-10-31): `source` names the whole bilingual source for a backfill, whose adopted staging names the
 // Chinese-only book.zh.md; the list step passes it as -Source and the plan freezes it for the Cards.
 defineModule({
-  id: 'zt-cited-cards', version: '3', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-cited-cards', version: '4', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Cited list and Cited Cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers for the content; each unit completes only from the compiler\'s own artifacts.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
     key: { type: 'string', required: true, description: 'the book\'s Citation key' },
+    mode: { type: 'string', description: "the run's mode ({{mode}}): a resume leaves a finished list alone" },
     part: { type: 'string', required: true, description: '`list` (the Cited list) or `cards` (the Cited Cards)' },
     perJob: { type: 'number', min: 1, max: 8, description: 'works per writer job (the compiler\'s default is 4)' },
     heading: { type: 'string', description: 'the reference-list heading when it is not References, Bibliography or 参考文献' },
@@ -69,7 +72,7 @@ Each job has id, files, prompt, skills, model, effort.
     // zt-workflow-lib helper ztDrive). A step that answers no JSON line or `ok:false` stops the stage with its reason.
     const drive = async (step) => {
       const extra = `${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.heading ? ` -Heading "${p.heading}"` : ''}${p.source && step === 'list' ? ` -Source "${p.source}"` : ''}`
-      const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${extra}${step === 'list' || step === 'start' ? ` -Chunk ${DSMP.perManager}` : ''}`
+      const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${extra}${step === 'list' || step === 'start' ? ` -Chunk ${DSMP.perManager}` : ''}${step === 'list' && p.mode === 'resume' ? ' -SkipDone' : ''}`
       const json = await ztDrive(ctx, { label: `${ctx.stage}: drive ${step}`, step, command, out: OUT, cwd: WORK, phase, ledger: 'zt-digest ledger', deepseek: report.deepseek })
       if (json.ok !== true) throw new Error(`cited ${step}: ${tail(json.error || 'the step failed')}`)
       return json
@@ -99,6 +102,11 @@ Each job has id, files, prompt, skills, model, effort.
     try {
       if (p.part === 'list') {
         const listed = await drive('list')
+        if (listed.settled === true) {
+          log('Cited list: the retained run completed it; the resume reuses it.')
+          report.reused = true
+          return report
+        }
         report.rows = Number(listed.rows || 0)
         report.unparsed = Number(listed.unparsed || 0)
         if (listed.jobs > 0) {

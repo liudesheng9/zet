@@ -1,8 +1,5 @@
-// ==== module zt-group-cycle v9 ====
-// 9 (scheiner2022baghdad, 2026-11-04, the owner's order): no block waits for another. Eight lanes pull blocks of eight
-// from the ledger's ready queue, so 64 writers run at once and each block applies as soon as it ends; a lane takes the
-// next block at once. A group's start and finish take turns inside layer-steps.ps1 (In-Turn), because each reads the
-// whole archive view. A block of 182 groups took 6 minutes at a time before.
+// ==== module zt-group-cycle v10 ====
+// 10 (2026-11-04, the owner's design): one queue: one start claims every ready unit, the managers run it, one finish applies.
 // The Digest stage of a managed run, in blocks. One layer driver runs the stage as script steps: `start`
 // claims a block of up to eight `digest/gNNN@1` units and runs each group's `group-start` (the snapshot is
 // generated before any usable job manifest exists, R262), the block's DeepSeek writer jobs run in Haiku
@@ -17,7 +14,7 @@
 // 8 (#180): a step answers counts, so the stage reports how many group units were verified and how many were
 // not; the per-unit outcomes are the ledger's run report, never a module's array.
 defineModule({
-  id: 'zt-group-cycle', version: '9', requires: ['zt-digest-lib'],
+  id: 'zt-group-cycle', version: '10', requires: ['zt-digest-lib'],
   summary: 'ZT digest: verified groups in blocks of up to eight per manager, at most eight managers, claimed from the ledger ready work, recovering a group whose accepted plan already committed.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -32,7 +29,7 @@ defineModule({
     const groups = Math.max(1, Number(p.groups) || 1)
     const deepseek = { deleted: 0, not_deleted: [] }
     const result = await Z.layerRun('digest', {
-      layer: 'digest', take: Z.PER_MANAGER, lanes: 8, rounds: Z.MAX_ATTEMPTS, phase: 'Digest',
+      layer: 'digest', take: 64, all: true, rounds: Z.MAX_ATTEMPTS, phase: 'Digest',
       dsh: work, writes: work, skills: Z.DSH_SKILLS, effort: Z.DSH_EFFORT, what: 'digest group writers', deepseek,
     })
     const verified = Number(result.verified || 0)

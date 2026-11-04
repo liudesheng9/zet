@@ -6,7 +6,7 @@
   pwsh -NoProfile -File cited-steps.ps1 -Step list|list-finish|start|finish -Out <staging> [-PerJob 4] [-Heading <h>]
                                         [-Source <the whole bilingual source, when the manifest's source is not it>]
 
-  list         plan the Cited list (parse the whole source's reference list, index the citing lines; it
+  list         (-SkipDone: a finished list answers settled and plans nothing) plan the Cited list (parse the whole source's reference list, index the citing lines; it
                registers cited/book@1 in a prepared run) -> cited\normalize\jobs.json for the entries the
                parser could not split
   list-finish  claim cited/book@1, write the Cited list Card under the claim (-Apply -Token) and complete the
@@ -28,6 +28,7 @@ param(
     [ValidateRange(1, 8)][int]$Chunk = 8,
     [string]$Heading = '',
     [string]$Source = '',
+    [switch]$SkipDone,
     [string]$Tool = 'zt-digest'
 )
 $ErrorActionPreference = 'Stop'
@@ -76,6 +77,12 @@ function Save-Chunks([string]$Prefix, [object[]]$Items) {
 
 switch ($Step) {
     'list' {
+        # scheiner2022baghdad (2026-11-04): a resume goes on from where the run broke, so a finished list is left alone:
+        # no plan, no normalize job and no list-finish, which would write the list again without a claim.
+        if ($SkipDone -and $HasLedger) {
+            $listed = @((Run @('ledger', 'status', '-Out', $Out, '-Layer', 'cited')).json.units)
+            if ($listed.Count -and -not @($listed | Where-Object { $_.state -ne 'done' }).Count) { Reply @{ ok = $true; settled = $true }; break }
+        }
         $planArgs = @('cited', '-Step', 'plan', '-Staging', $Out)
         if ($Heading) { $planArgs += @('-Heading', $Heading) }
         if ($Source) { $planArgs += @('-Source', $Source) }

@@ -1,4 +1,5 @@
-// ==== module zt-link-pass v10 ====
+// ==== module zt-link-pass v11 ====
+// 11 (2026-11-04, the owner's design): one queue: one start claims every ready unit, the managers run it, one finish applies.
 // The Link pass over the receipt-owned gap set, in blocks. The layer driver runs the stage as script steps:
 // `start` claims a block of up to eight `link/gNNN@1` units and runs each group's `link-start` (the frozen gap
 // scope and the one job that writes the draft), the block's jobs run in Haiku managers, and `finish` records each
@@ -14,7 +15,7 @@
 // faults), never per-group rows; the per-group outcomes are the ledger's run report. The report carries the
 // run's own totals and how many groups were scheduled, gap-free, verified and blocked.
 defineModule({
-  id: 'zt-link-pass', version: '10', requires: ['zt-digest-lib'],
+  id: 'zt-link-pass', version: '11', requires: ['zt-digest-lib'],
   summary: 'ZT digest: verified Link units in blocks of up to eight per manager, for every scheduled or gap-free group, with the gap totals and L1/L2 quality recorded.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -33,8 +34,7 @@ defineModule({
     const work = `${Z.OUT}\\link-jobs`
     const deepseek = { deleted: 0, not_deleted: [] }
     const result = await Z.layerRun('link', {
-      // v10 (atkinson2015lectures): eight lanes of Link blocks side by side (zt-digest-lib v49).
-      layer: 'link', take: Z.PER_MANAGER, rounds: Z.MAX_ATTEMPTS, phase: 'Link', lanes: 8,
+      layer: 'link', take: 64, all: true, rounds: Z.MAX_ATTEMPTS, phase: 'Link',
       dsh: work, writes: work, skills: Z.DSH_SKILLS, effort: Z.DSH_EFFORT, what: 'Link writers', deepseek,
     })
     const t = result.totals || {}

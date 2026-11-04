@@ -37,14 +37,12 @@ param(
     [ValidateRange(0, 1000)][int]$MaxParts = 0,
     [string]$Limits = '',
     [string]$Tool = 'zt-digest',
-    [string]$Lane = ''
+    [switch]$Queue
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'step-line.ps1')
 $Out = $Out.TrimEnd('\', '/')
 $Work = Join-Path (Join-Path $Out 'layer-steps') $Layer
-# A lane's block keeps its own files (atkinson2015lectures, 2026-11-01): blocks of one layer run side by side.
-if ($Lane) { $Work = Join-Path $Work $Lane }
 New-Item -ItemType Directory -Force $Work | Out-Null
 if (-not $Owner) { $Owner = "$Layer steps" }
 $LineName = $Step
@@ -143,22 +141,6 @@ function Jobs-Of($Json) {
     }
     return @()
 }
-# scheiner2022baghdad (2026-11-04): eight digest lanes run side by side, and a group's start and finish each read the
-# whole archive view and refuse when another lane commits. They take about two seconds, so they take turns through
-# one named mutex of the run; the writers between them run free. The mutex dies with its process.
-function In-Turn([scriptblock]$Work) {
-    if ($Layer -ne 'digest') { return & $Work }
-    $sha = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Out.ToLowerInvariant()))
-    $mutex = [Threading.Mutex]::new($false, "zt-digest-turn-$([Convert]::ToHexString($sha).Substring(0, 16))")
-    $held = $false
-    try {
-        try { $held = $mutex.WaitOne(900000) } catch [Threading.AbandonedMutexException] { $held = $true }
-        & $Work
-    } finally {
-        if ($held) { $mutex.ReleaseMutex() }
-        $mutex.Dispose()
-    }
-}
 # The layer's own per-block start or plan command, and the jobs it lists.
 function Start-Block($Units) {
     $firstUnit = $Units[0]
@@ -166,8 +148,7 @@ function Start-Block($Units) {
         $startName = if ($Layer -eq 'digest') { 'group-start' } else { 'link-start' }
         return @($Units | ForEach-Object {
                 $n = Group-Of $_.id
-                $token = "$($_.token)"
-                $s = In-Turn { Run @($startName, '-Out', $Out, '-Group', "$n", '-Token', $token) }
+                $s = Run @($startName, '-Out', $Out, '-Group', "$n", '-Token', "$($_.token)")
                 [pscustomobject]@{ unit = $_; group = $n; line = $s; jobs = (Jobs-Of $s.json); error = $(if ($s.json) { $null } else { (Tail $s.tail) }) }
             })
     }
@@ -187,7 +168,7 @@ function Start-Block($Units) {
 # The checked completion command of one held unit (the digest and link layers).
 function Finish-Unit($Unit, [string]$Draft) {
     $finishName = if ($Layer -eq 'digest') { 'group-finish' } else { 'link-finish' }
-    In-Turn { Run @($finishName, '-Out', $Out, '-Group', "$(Group-Of $Unit.id)", '-Token', "$($Unit.token)", '-Draft', $Draft) }
+    Run @($finishName, '-Out', $Out, '-Group', "$(Group-Of $Unit.id)", '-Token', "$($Unit.token)", '-Draft', $Draft)
 }
 # The Link pass's own totals (#180): the run report carries the gap counts and the L1/L2 quality of the whole
 # block, summed from the units' completions, never the per-unit rows.
@@ -280,6 +261,17 @@ switch ($Step) {
             $units = @(Held-Units)
             if (-not $units.Count -and -not $claim.json) { Fail 'claim' (Tail $claim.tail); break }
         }
+        # -Queue (scheiner2022baghdad, 2026-11-04, the owner's design): one start claims every ready unit, page by page, so the
+        # managers run one queue and one finish applies the layer, as the Term cards do.
+        if ($Queue -and $units.Count) {
+            $pageArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Take", '-Brief', '-Owner', $Owner)
+            if ($Lease -gt 0) { $pageArgs += @('-Lease', "$Lease") }
+            while ($true) {
+                $page = @((Run $pageArgs).json.units | Where-Object { $_ -and $_.id })
+                if (-not $page.Count) { break }
+                $units += $page
+            }
+        }
         Save 'units.json' $units
         if (-not $units.Count) {
             $gate = Gate
@@ -306,11 +298,18 @@ switch ($Step) {
         }
         Save 'start.json' $starts
         Save 'jobs.json' $allJobs
+        # One job file per manager: a manager runs every entry of its own file (zt-term-cards v11).
+        Get-ChildItem -LiteralPath $Work -Filter 'jobs-*.json' -ErrorAction SilentlyContinue | Remove-Item -Force
+        $chunks = 0
+        if ($Queue) {
+            $chunks = [int][Math]::Ceiling(@($allJobs).Count / 8)
+            for ($k = 0; $k -lt $chunks; $k++) { Save ('jobs-{0:D3}.json' -f ($k + 1)) @($allJobs | Select-Object -Skip ($k * 8) -First 8) }
+        }
         $plan = $null
         if ($Layer -eq 'events' -or $Layer -eq 'findings') { $plan = @{ candidates = [int]$blocks[0].line.json.candidates; groups = [int]$blocks[0].line.json.groups; jobs = @($blocks[0].jobs).Count } }
         if ($Layer -eq 'explain') { $plan = @{ parts = [int]$blocks[0].line.json.parts; jobs = @($blocks[0].jobs).Count } }
         $gate = Gate
-        $line = @{ ok = $true; layer = $Layer; units = $units.Count; jobs = @($allJobs).Count; file = (Join-Path $Work 'jobs.json') }
+        $line = @{ ok = $true; layer = $Layer; units = $units.Count; jobs = @($allJobs).Count; chunks = $chunks; file = (Join-Path $Work 'jobs.json') }
         if ($plan -and $plan.ContainsKey('candidates')) { $line.plan_candidates = [int]$plan.candidates; $line.plan_groups = [int]$plan.groups }
         if ($plan -and $plan.ContainsKey('parts')) { $line.plan_parts = [int]$plan.parts }
         Reply ($line + (Gate-Fields $gate)) @{ units = $units; starts = $starts; jobs = $allJobs; plan = $plan; gate = $gate }

@@ -1527,6 +1527,8 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
+- `2026-11-04` — 0.43.5: `group-finish -CheckOnly` no longer reads again; no writer runs beside a commit.
+- `2026-11-04` — 0.43.4 embeds base 5.11.15 and its variants; no tool change.
 - `2026-11-04` — 0.43.3: `ledger resume-grant` updates its count, so a second grant is not refused on the primary key. Test: `history-run.tests.ps1`.
 - `2026-11-04` — 0.43.1: `group-start` sends no snapshot and a filtered `terms.md`; the frozen snapshot holds this book only. `group-finish -CheckOnly` reads again after `read_view_changed`. `ledger resume-grant`.
 - `2026-11-03` — 0.43.0: prepared-run variant `history` (`prepare -Variant`, `run_options`, `target`, the contract check, `version -Workflows`). Its `models`, `events`, `findings` and mathematics options default to false and a true one is refused. `ledger adopt` stays econ and math only, because no legacy history run exists. `coverage` fault C5 (a run whose `run_contract.variant` is `history`): a drafted Model, Event or Finding Card; `notes_only_fault` in `verify_group_consumers` refuses one at the group finish. Tests: unit tests in `ledger.rs` and `coverage.rs`.

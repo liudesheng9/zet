@@ -1,6 +1,6 @@
-// ==== module zt-digest-lib v50 ====
-// 49 (atkinson2015lectures, 2026-11-01): layer lanes. `layerRun(name, {lanes})` runs up to eight blocks side by side,
-// each with its own layer-steps block folder (-Lane); the Link pass uses eight.
+// ==== module zt-digest-lib v51 ====
+// 51 (scheiner2022baghdad, 2026-11-04, the owner's design): no lanes. A layer with `all` claims every ready unit in one start, its
+// managers run one queue, and one finish applies the layer. A later block is only the retry of what failed.
 // 48 (#227): the Write scope is the server's (#225, #226): the helper `call` declares the Literature scope and the open
 // scope is its own command, `open-call`. Every approval rule that lets a DeepSeek job run the helper refuses a
 // command that runs `open-call` (ZD_NO_OPEN), in place of a command that carries -Open.
@@ -482,8 +482,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     if (o.lease) parts.push(`-Lease ${o.lease}`)
     if (o.maxParts) parts.push(`-MaxParts ${o.maxParts}`)
     if (o.limits) parts.push(`-Limits ${psQuote(o.limits)}`)
-    // v49: a lane's block keeps its own files (layer-steps.ps1 -Lane).
-    if (o.lane) parts.push(`-Lane ${o.lane}`)
+    if (o.all) parts.push('-Queue')
     const json = await ztDrive(ctx, { label, command: parts.join(' '), out: OUT, cwd: o.cwd || OUT, phase: o.phase, ledger: ZD_LEDGER, deepseek: o.deepseek })
     const lock = ztLockRefusal(JSON.stringify(json)) || ((json.code === ZD_LOCK || json.error === ZD_LOCK) ? json : null)
     if (lock) throw ztLockStop(label, lock.refusal || lock)
@@ -529,7 +528,7 @@ Return steps: one entry per step with name, ok (true when it exited without an e
   const contentPrompt = (label, o) => `You are a DeepSeek subagent manager for ZET ${o.what} (${label}). You start DeepSeek agents, wait for them, collect their answers and record each conversation${o.keep ? ' (keep it open: a later round of this cycle continues it, and the cycle deletes it after its last round)' : ', then delete it'}. You never write content and you never run a content command yourself. Keep your messages short.
 ${RUNNER}
 Load the DSH tools with one ToolSearch call: query "${DRIVE_TOOLS}".
-JOBS: read the JSON array in "${o.file}" (Read tool) and run its entries ${o.from} through ${o.to - 1} (0-based), and only those. Each entry has id, files, prompt, unit and token.
+JOBS: read the JSON array in "${o.file}" (Read tool) and ${o.from === undefined ? 'run EVERY entry in it' : `run its entries ${o.from} through ${o.to - 1} (0-based), and only those`}. Each entry has id, files, prompt, unit and token.
 - Start each job: deepseek_run with cwd "${o.dsh}", prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills || [])}, model "${DSH_MODEL}", reasoning_effort "${o.effort || DSH_EFFORT}", wait_seconds 0.${o.table === undefined ? '' : `
 - A job with "continue": find the session of the job id it names in this table (job id, then session_id):
 ${o.table || '(empty)'}
@@ -547,6 +546,15 @@ Return ok, deleted, not_deleted and results: one entry per job with id, session_
   // finish step faults the units they belonged to.
   const runJobs = async (label, file, count, o) => {
     const managers = []
+    // The queue (scheiner2022baghdad, 2026-11-04): one job file per manager; dsmpSlot starts the next manager when one ends.
+    for (let k = 1; k <= Number(o.chunks || 0); k++) {
+      const at = `${label} ${k} of ${o.chunks}`
+      const chunk = String(file).replace(/\.json$/, `-${String(k).padStart(3, '0')}.json`)
+      managers.push(dsmpSlot(() => zAgent(contentPrompt(at, { ...o, file: chunk }), { label: at, phase: o.phase || 'Digest', model: 'haiku', schema: CONTENT }))
+        .then((r) => (r && r.results) || [])
+        .catch((error) => { log(`${label}: a content manager answered no report (${String((error && error.message) || error).slice(0, 160)}); its jobs stay unfinished.`); return [] }))
+    }
+    if (o.chunks) return (await Promise.all(managers)).flat()
     for (let from = 0; from < Number(count || 0); from += DSH_PER_BATCH) {
       const to = Math.min(Number(count), from + DSH_PER_BATCH)
       const at = `${label} ${from + 1}-${to}`
@@ -597,64 +605,45 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
     const totals = Object.fromEntries(LAYER_TOTALS.map((k) => [k, 0]))
     const finishes = []
     let claimed = 0
-    let idle = 0
     let gate = null
     const add = (line) => { for (const k of LAYER_TOTALS) if (line && line[k] !== undefined) totals[k] += Number(line[k]) || 0 }
-    // v49 (atkinson2015lectures, 2026-11-01: 229 Link groups, one block of eight at a time): `o.lanes` runs that many
-    // blocks side by side, each lane with its own block folder (layer-steps.ps1 -Lane). A lane whose start fails
-    // ends alone; a last single lane then claims what is left, and only a step that fails there stops the layer.
-    // Without `o.lanes` the layer runs one block at a time, as before.
-    const LANES = Math.max(1, Math.min(8, o.lanes || 1))
     let failure = null
-    const laneLoop = async (lane, laneRounds, last) => {
-      let laneIdle = 0
-      for (let block = 1; block <= MAX_BLOCKS && laneIdle < laneRounds && !failure; block++) {
-        const label = lane ? `${name} ${lane} block ${block}` : `${name} block ${block}`
-        const started = await driveStep(`${label}: start`, 'start', {
-          layer, take, owner: label, wait: o.wait, lease: LAYER_LEASE, phase: o.phase, cwd: o.dsh, maxParts: o.maxParts, limits: o.limits, deepseek: o.deepseek, lane,
-        })
-        if (!started.ok) {
-          if (last) failure = failure || { error: started.error, gate: started.gate }
-          else log(`${name} ${lane}: the start failed (${String(started.error).slice(0, 200)}); the lane ends and the last lane claims again.`)
-          return
-        }
-        add(started)
-        gate = started.gate || gate
-        if (o.onStart) o.onStart(started, label)
-        const units = Number(started.units || 0)
-        if (!units) {
-          laneIdle += 1
-          if (!gate || gate.complete === true) break
-          if (o.wait === undefined) break
-          continue
-        }
-        laneIdle = 0
-        claimed += units
-        // The Cards layer's work is the checked finish the start step already ran.
-        if (o.jobs === false) continue
-        let sessions = null
-        if (Number(started.jobs || 0)) sessions = await runJobs(`${label}: write`, started.file, started.jobs, o)
-        if (o.apply) {
-          const applied = await driveStep(`${label}: apply`, 'apply', { layer, phase: o.phase, cwd: o.dsh, limits: o.limits, lane })
-          if (!applied.ok) { failure = failure || { error: applied.error, gate }; return }
-          add(applied)
-          if (o.onApply) o.onApply(applied, label, started)
-          if (Number(applied.jobs || 0)) await runJobs(`${label}: apply`, applied.file, applied.jobs, { ...o, table: sessionTable(sessions) })
-        }
-        const finished = await driveStep(`${label}: finish`, 'finish', { layer, phase: o.phase, cwd: o.dsh, deepseek: o.deepseek, lane })
-        if (!finished.ok) { failure = failure || { error: finished.error, gate: finished.gate || gate }; return }
-        finishes.push(finished)
-        add(finished)
-        gate = finished.gate || gate
-        if (o.onFinish) o.onFinish(finished, label, started)
+    for (let block = 1, quiet = 0; block <= MAX_BLOCKS && quiet < rounds && !failure; block++) {
+      const label = `${name} block ${block}`
+      const started = await driveStep(`${label}: start`, 'start', {
+        layer, take, all: o.all, owner: label, wait: o.wait, lease: LAYER_LEASE, phase: o.phase, cwd: o.dsh, maxParts: o.maxParts, limits: o.limits, deepseek: o.deepseek,
+      })
+      if (!started.ok) { failure = { error: started.error, gate: started.gate }; break }
+      add(started)
+      gate = started.gate || gate
+      if (o.onStart) o.onStart(started, label)
+      const units = Number(started.units || 0)
+      if (!units) {
+        quiet += 1
+        if (!gate || gate.complete === true) break
+        if (o.wait === undefined) break
+        continue
       }
+      quiet = 0
+      claimed += units
+      // The Cards layer's work is the checked finish the start step already ran.
+      if (o.jobs === false) continue
+      let sessions = null
+      if (Number(started.jobs || 0)) sessions = await runJobs(`${label}: write`, started.file, started.jobs, { ...o, chunks: Number(started.chunks || 0) })
+      if (o.apply) {
+        const applied = await driveStep(`${label}: apply`, 'apply', { layer, phase: o.phase, cwd: o.dsh, limits: o.limits })
+        if (!applied.ok) { failure = { error: applied.error, gate }; break }
+        add(applied)
+        if (o.onApply) o.onApply(applied, label, started)
+        if (Number(applied.jobs || 0)) await runJobs(`${label}: apply`, applied.file, applied.jobs, { ...o, table: sessionTable(sessions) })
+      }
+      const finished = await driveStep(`${label}: finish`, 'finish', { layer, phase: o.phase, cwd: o.dsh, deepseek: o.deepseek })
+      if (!finished.ok) { failure = { error: finished.error, gate: finished.gate || gate }; break }
+      finishes.push(finished)
+      add(finished)
+      gate = finished.gate || gate
+      if (o.onFinish) o.onFinish(finished, label, started)
     }
-    if (LANES === 1) await laneLoop('', rounds, true)
-    else {
-      await Promise.all(Array.from({ length: LANES }, (_, i) => laneLoop(`l${i + 1}`, 1, false)))
-      if (!failure) await laneLoop('l1', rounds, true)
-    }
-    void idle
     if (failure) return { status: 'failed', layer, error: failure.error, totals, claimed, gate: failure.gate, finishes }
     const final = gate || { complete: false, counts: {} }
     const open = Number((final.counts && final.counts.open) || 0)
@@ -1152,7 +1141,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '50', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '51', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

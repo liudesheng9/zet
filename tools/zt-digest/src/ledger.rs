@@ -10027,20 +10027,8 @@ pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     // `-CheckOnly` prints the checker's own answer (`faults: N` last) and returns no JSON line.
-    // scheiner2022baghdad (2026-11-04): a writer's SELF-CHECK runs beside the other lanes' finishes, and a commit
-    // between its reads is no fault of its draft. A finish holds its turn and never retries here.
-    for attempt in 0.. {
-        match group_finish(&p, &mut zt, group, token, &draft, check_only) {
-            Err(error) if check_only && attempt < 8 && format!("{error:#}").contains("read_view_changed") => {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-            }
-            Err(error) => return Err(error),
-            Ok(Some(result)) => {
-                util::print_line(&serde_json::to_string(&result)?)?;
-                break;
-            }
-            Ok(None) => break,
-        }
+    if let Some(result) = group_finish(&p, &mut zt, group, token, &draft, check_only)? {
+        util::print_line(&serde_json::to_string(&result)?)?;
     }
     Ok(0)
 }

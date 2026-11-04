@@ -47,6 +47,7 @@ switch -Regex ($flat) {
         exit 0
     }
     '^ledger status' {
+        if ($flat -match '-Layer cited( |$)' -and $env:CS_CITED_STATE) { Write-Output (ConvertTo-Json -Compress -Depth 6 @{ schema_version = 1; units = @(@{ id = 'cited/book@1'; state = $env:CS_CITED_STATE }) }); exit 0 }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = @(@{ id = 'citedcards/t001@1'; state = 'claimed' }) })
         exit 0
     }
@@ -162,6 +163,17 @@ Assert ($finish.json.complete -eq $true -and $finish.json.committed -eq 8 -and $
 
 # 2. With a ledger: list-finish claims and completes cited/book@1; start releases, claims and lists; finish completes.
 Set-Content -LiteralPath (Join-Path $out 'ledger.sqlite3') -Value '' -Encoding utf8
+Remove-Item -LiteralPath $calls
+# A resume over a finished list plans nothing (scheiner2022baghdad, 2026-11-04).
+$env:CS_CITED_STATE = 'done'
+$skip = Step (@('-Step', 'list', '-SkipDone') + $common)
+Assert ($skip.json.ok -eq $true -and $skip.json.settled -eq $true) "list -SkipDone: a done unit answers settled ($($skip.text))"
+Assert ((Get-Content -LiteralPath $calls -Raw) -notmatch 'cited -Step plan') 'list -SkipDone: a done unit plans nothing'
+$env:CS_CITED_STATE = 'retry'
+Remove-Item -LiteralPath $calls
+$open = Step (@('-Step', 'list', '-SkipDone') + $common)
+Assert (-not $open.json.settled -and (Get-Content -LiteralPath $calls -Raw) -match 'cited -Step plan') 'list -SkipDone: an open unit plans as usual'
+$env:CS_CITED_STATE = ''
 Remove-Item -LiteralPath $calls
 $lf = Step (@('-Step', 'list-finish') + $common)
 Assert ($lf.json.unit -eq 'done') "list-finish: the claimed unit completes ($($lf.text))"

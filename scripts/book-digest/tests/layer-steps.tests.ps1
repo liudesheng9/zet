@@ -38,12 +38,6 @@ $ErrorActionPreference = 'Stop'
 $args2 = $Rest
 $flat = $args2 -join ' '
 Add-Content -LiteralPath $env:LS_CALLS -Value $flat -Encoding utf8
-# Two lanes of one layer: a start or a finish that overlaps another leaves a mark.
-if ($env:LS_TURN -and $args2[0] -match '^(group|link)-(start|finish)$') {
-    try { $held = [IO.File]::Open($env:LS_TURN, 'OpenOrCreate', 'ReadWrite', 'None') } catch { Add-Content -LiteralPath "$($env:LS_TURN).overlap" -Value $flat; $held = $null }
-    Start-Sleep -Milliseconds 300
-    if ($held) { $held.Dispose() }
-}
 $cmd = "$($args2[0]) $($args2[1])"
 $layer = ''
 if (($args2 -join ' ') -match '-Layer (\w+)') { $layer = $Matches[1]; Set-Content -LiteralPath $env:LS_LAYER -Value $layer }
@@ -67,7 +61,7 @@ switch -Regex ($cmd) {
         Set-Content -LiteralPath $env:LS_COUNT -Value $n
         if ($env:LS_CLAIM_FAIL -and $n -le [int]$env:LS_CLAIM_FAIL) { Write-Output 'zt-digest ledger: archive changed while checking preparation'; exit 1 }
         if ($env:LS_CLAIM_STRING) { Write-Output (ConvertTo-Json -Compress @{ schema_version = 1; layer = $layer; units = "(2 units claimed)" }); exit 0 }
-        if ($env:LS_NO_UNITS) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @() }); exit 0 }
+        if ($env:LS_NO_UNITS -or ($env:LS_PAGES -and $n -gt [int]$env:LS_PAGES)) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @() }); exit 0 }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @(Units $layer) })
         exit 0
     }
@@ -285,21 +279,14 @@ $env:LS_GATE_OPEN = ''
 Assert-Line $wide 'wide gate'
 Assert ($wide.json.gate_open -eq 8 -and -not $wide.json.gate_complete -and -not $wide.json.PSObject.Properties['unresolved']) 'wide gate: eight open units answer one count, never the gate''s unit list'
 
-# scheiner2022baghdad (2026-11-04): eight digest lanes run side by side. A group start or finish reads the whole
-# archive view and refuses when another lane commits, so these steps take turns; the writers run free.
-$turn = Join-Path $scratch 'turn.lock'
-$env:LS_TURN = $turn
-Remove-Item -LiteralPath "$turn.overlap" -ErrorAction SilentlyContinue
-foreach ($step in @('start', 'finish')) {
-    $lines = 'l1', 'l2', 'l3' | ForEach-Object -Parallel {
-        $argv = @('-Step', $using:step, '-Layer', 'digest', '-Lane', $_) + $(if ($using:step -eq 'start') { @('-Take', '8', '-Owner', "digest $_") } else { @() }) + $using:common
-        & pwsh -NoProfile -File $using:script @argv | Select-Object -Last 1
-    } -ThrottleLimit 3
-    Assert (@($lines | Where-Object { $_ -match '"ok":true' }).Count -eq 3) "digest lanes: three lanes answer ok on $step"
-}
-Assert (-not (Test-Path -LiteralPath "$turn.overlap")) 'digest lanes: no group start or finish overlaps another lane'
-Assert ((Test-Path -LiteralPath $turn)) 'digest lanes: the stand-in saw the steps'
-$env:LS_TURN = ''
+# scheiner2022baghdad (2026-11-04): -Queue claims every page and saves one job file per manager.
+$env:LS_PAGES = '2'
+$queue = Step (@('-Step', 'start', '-Layer', 'digest', '-Take', '64', '-Queue', '-Owner', 'digest block 1', '-Lease', '7200') + $common)
+$env:LS_PAGES = ''
+Assert-Line $queue 'queue'
+Assert ($queue.json.units -eq 4 -and $queue.json.jobs -eq 4 -and $queue.json.chunks -eq 1) "queue: one start claims every page ($($queue.text))"
+$chunk = Join-Path $out 'layer-steps\digest\jobs-001.json'
+Assert ((Test-Path -LiteralPath $chunk) -and @(Get-Content -LiteralPath $chunk -Raw | ConvertFrom-Json).Count -eq 4) 'queue: the manager job file lists every job'
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''
