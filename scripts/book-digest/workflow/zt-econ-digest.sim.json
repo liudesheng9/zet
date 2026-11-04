@@ -313,7 +313,7 @@
       }
     },
     {
-      "label": "^cards block \\d+: start$",
+      "label": "^cards (l\\d+ )?block \\d+: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"cards\",\"units\":0,\"claimed\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }

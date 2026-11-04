@@ -1,4 +1,6 @@
-// ==== module zt-explain v10 ====
+// ==== module zt-explain v11 ====
+// 11 (2026-11-04, the owner's order): one claim takes up to 32 models, and their jobs run in parallel; the model compiler's
+// explain step shares one work folder, so lanes would overwrite each other's files.
 // Explanations of finished Derivation parts (R219/R301/R302): the ledger's ready `explain/<model-key>@1` work,
 // which a checked Model completion registers. The layer driver runs the stage as script steps: `start` claims a
 // block of ready explanation units and runs the explanation plan (ONE job per model), the block's jobs run in
@@ -17,7 +19,7 @@
 // 10 (#195, docs/model-one-conversation-proposal.md §3.7): the explanation plan lists ONE job per model instead of
 // one per chain, and a batch that already wrote its models' explanations leaves no ready unit here.
 defineModule({
-  id: 'zt-explain', version: '10', requires: ['zt-model-lib'],
+  id: 'zt-explain', version: '11', requires: ['zt-model-lib'],
   summary: 'ZT digest: the ledger\'s ready explanations of finished Derivation parts, written one job per model in two DeepSeek content rounds and recorded by explain-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -33,7 +35,7 @@ defineModule({
     const tally = { parts: 0, refused: 0 }
     const result = await Z.layerRun('explain', {
       // The block's conversations stay open for the second content round; the run cleanup deletes them.
-      layer: 'explain', take: 4, rounds: Z.MAX_ATTEMPTS, phase: 'Models', jobs: true, keep: true,
+      layer: 'explain', take: 32, rounds: Z.MAX_ATTEMPTS, phase: 'Models', jobs: true, keep: true,
       dsh: work, writes: `${work}\\out`, skills: Z.FILL_SKILLS, effort: Z.DSH_EFFORT, what: 'explanation writers',
       limits: Z.LIMITS, maxParts: A.explainMax || 0, apply: true,
       onStart: (started) => { tally.parts += Number(started.plan_parts || 0) },

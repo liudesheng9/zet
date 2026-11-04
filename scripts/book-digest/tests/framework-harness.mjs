@@ -2592,6 +2592,9 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // atkinson2015lectures: the Link pass runs eight lanes, each step naming its lane; the digest runs eight too.
   const linkLanes = new Set(layerCalls.filter((c) => c.layer === 'link' && c.step === 'start').map((c) => (c.cmd.match(/-Lane (l\d+)/) || [])[1]))
   check(linkLanes.size === 8 && !linkLanes.has(undefined) && layerCalls.filter((c) => c.layer === 'link').every((c) => /-Lane l\d+/.test(c.cmd)), `link lanes: the Link pass runs eight lanes and every step names its lane (${[...linkLanes].join(',')})`)
+  const cardLanes = new Set(layerCalls.filter((c) => c.layer === 'cards').map((c) => (c.cmd.match(/-Lane (l\d+)/) || [])[1]))
+  check(cardLanes.size === 8 && !cardLanes.has(undefined), `card lanes: the Cards layer runs eight lanes (${[...cardLanes]})`)
+  check(cmds.some((c) => /ledger next .* -Layer events -Take 64 /.test(c)) && cmds.some((c) => /ledger next .* -Layer findings -Take 64 /.test(c)), 'one claim: the Event and Finding layers take the whole ready queue in one block, whose writers run in parallel')
   const digestLanes = new Set(layerCalls.filter((c) => c.layer === 'digest').map((c) => (c.cmd.match(/-Lane (l\d+)/) || [])[1]))
   check(digestLanes.size === 8 && !digestLanes.has(undefined), `digest lanes: the digest runs eight lanes, every step naming its lane (${[...digestLanes]})`)
   check(layerManagers.filter((m) => m.kind === 'content').every((m) => m.jobs.length <= 8) && layerManagers.some((m) => m.kind === 'content' && m.jobs.length === 2), 'group cycle: one content manager runs both groups DeepSeek jobs side by side, never more than eight')
@@ -2601,7 +2604,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cards.length === 2 && cards.every((u) => u.state === 'done') && batchFinishes.filter((c) => /(?<!book-)cards-finish/.test(c)).length === 2, 'cards: the per-group offline checks are claimed and recorded by cards-finish')
   // docs/digest-claude-token-proposal.md P1/P2: the Cards layer claims and finishes a block in ONE command, and no
   // layer spends a relay per unit finish.
-  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 4 -Owner "cards block 1" -Lease 7200$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
+  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 8 -Owner "cards l1 block 1" -Lease 7200$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
   check(!cmds.some((c) => /^zt-digest (cards|events|findings|model|explain)-finish /.test(c)), 'layers: no layer relays one command per unit finish')
   check(batchCalls.every((b) => b.units.length <= 8), 'layers: a batch finish holds at most eight units')
   const models = [...led.units.values()].filter((u) => u.layer === 'models')
@@ -2794,7 +2797,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // unit ends done with no fault.
   const { commands, led, logs } = await run('econ', { ...base, figures: false }, { cutFinish: /finish-batch .*-Layer cards / })
   check(led.layer('cards').length === 2 && led.layer('cards').every((u) => u.state === 'done') && !commands.some((c) => /ledger fail .*cards\//.test(c)), 'cut claim-and-finish: every card check ends done and none is faulted')
-  check(commands.filter((c) => /finish-batch .*-Layer cards /.test(c)).length >= 1 && commands.some((c) => /ledger status .* -Held "cards block 1"/.test(c)) && led.layer('cards').every((u) => u.state === 'done'), 'cut claim-and-finish: the layer asks the ledger what its owner holds and every card check ends done')
+  check(commands.filter((c) => /finish-batch .*-Layer cards /.test(c)).length >= 1 && commands.some((c) => /ledger status .* -Held "cards l\d block 1"/.test(c)) && led.layer('cards').every((u) => u.state === 'done'), 'cut claim-and-finish: the layer asks the ledger what its owner holds and every card check ends done')
 }
 {
   // trial 10: the relay rewrote the end of a done cards completion as prose, the line still held a nested file

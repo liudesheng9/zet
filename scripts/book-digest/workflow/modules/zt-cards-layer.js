@@ -1,4 +1,6 @@
-// ==== module zt-cards-layer v4 ====
+// ==== module zt-cards-layer v5 ====
+// 5 (scheiner2022baghdad, 2026-11-04, the owner's order): eight lanes of eight, as the digest and the Link pass run. The
+// check is read-only, so the lanes need no turns. One block of four at a time held a 182-group book for about an hour.
 // The Cards layer of a managed run: one deterministic offline check per verified group (`cards/gNNN@1`).
 // `group-finish` registers the check; `layer-steps.ps1 -Step start` claims a block of the ready checks and
 // records each one through `zt-digest finish-batch -Layer cards`, which re-reads the group's owned Cards, runs
@@ -11,7 +13,7 @@
 // 3 (#175): that command is the `start` step of `layer-steps.ps1`, run by a DeepSeek drive job under a Haiku manager.
 // 4 (#180): a step answers counts (`done`, `failed`), never the block's per-unit results.
 defineModule({
-  id: 'zt-cards-layer', version: '4', requires: ['zt-digest-lib'],
+  id: 'zt-cards-layer', version: '5', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the per-group offline Card checks, claimed from the ledger ready work and recorded by cards-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -21,7 +23,7 @@ defineModule({
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
     const result = await Z.layerRun('cards', {
-      layer: 'cards', take: 4, rounds: Z.MAX_ATTEMPTS, phase: 'Cards', jobs: false,
+      layer: 'cards', take: 8, lanes: 8, rounds: Z.MAX_ATTEMPTS, phase: 'Cards', jobs: false,
     })
     const verified = Number(result.verified || 0)
     const failed = Number(result.failed || 0)

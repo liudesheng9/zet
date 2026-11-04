@@ -1,4 +1,6 @@
-// ==== module zt-finding-layer v6 ====
+// ==== module zt-finding-layer v7 ====
+// 7 (2026-11-04, the owner's order): one claim takes up to 64 ready groups, and their writers run in parallel under the
+// managers. The compiler plans the whole book into one shared work folder, so lanes would overwrite each other's files.
 // The empirical-results layer of the economics set (docs/finding-cards-design.md): the ledger's ready finding
 // work, worked while the digest groups are still running. `finding-compiler` plans one job per few groups from
 // the sentences that report data with a number and each group's own Idea Cards; DeepSeek writes one Finding
@@ -15,7 +17,7 @@
 // 6 (#180): a step answers counts, so the stage reports the block's created/linked totals and how many group
 // units were verified; the per-unit outcomes are the ledger's run report.
 defineModule({
-  id: 'zt-finding-layer', version: '6', requires: ['zt-digest-lib'],
+  id: 'zt-finding-layer', version: '7', requires: ['zt-digest-lib'],
   summary: 'ZT digest empirical-results layer: the ledger\'s ready Finding work, plan → DeepSeek JSON → apply → per-group checked completion, in two script steps run by DeepSeek drive jobs.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -27,7 +29,7 @@ defineModule({
     const Z = zdMake(ctx, p)
     const work = `${Z.OUT}\\findings`
     const result = await Z.layerRun('findings', {
-      layer: 'findings', take: 4, rounds: Math.max(3, Z.MAX_ATTEMPTS), wait: 600, phase: 'Findings',
+      layer: 'findings', take: 64, rounds: Math.max(3, Z.MAX_ATTEMPTS), wait: 600, phase: 'Findings',
       dsh: work, writes: `${work}\\out`, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, what: 'finding writers',
       onStart: (started) => {
         log(`Findings: ${started.plan_candidates || 0} result sentences in ${started.plan_groups || 0} groups, ${started.jobs || 0} DeepSeek jobs.`)
