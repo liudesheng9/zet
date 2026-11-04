@@ -645,6 +645,41 @@ the Card-check gate to `advisory` changes only which quality faults refuse a wri
 syntax/schema boundary; a full binary downgrade after Term data exists needs a reviewed
 conversion or the pre-Term backup restore.
 
+## Portable export
+
+`zt export <tree> [--out <folder>]` writes one tree into a folder that holds exactly two files, so
+a book can leave this machine and read by itself:
+
+```text
+<archive_root>/export/grossman2002integration-1793700000/
+  cards.json    the tree's Card data with each Card's rendered HTML, models, figures and charts
+  index.html    the zt GUI itself, with KaTeX inside and no Card data
+```
+
+`<tree>` is a Topic number, a Citation key, or any address in the tree. A bare `zt export` is a usage
+error: no form of the command exports the box. `--out` names another folder, which must be new or
+empty. Read the folder with no `zt`, service, Scholar Archive or network:
+
+- A browser opens a page from disk without letting it read the file beside it, so double-clicking
+  `index.html` shows one slip: choose `cards.json`, or drop it there. Served over HTTP, the page
+  opens the tree at once. One `index.html` opens any export.
+- It is the GUI you know: the Map, the Table, the Constellation, the reader, Model boards, the study
+  desk, search, history and both themes all run in the browser from the export. A Spread is kept in
+  that browser.
+- A function that needs the service stays where it is and says so when reached: "Editing a Card is
+  not available in the portable version." That covers every write, Ask the box, Tree Locks, Bridge
+  reports and the Scholar Archive.
+- A Link that leaves the tree shows its address and title, and clicking it says the Card is not in
+  this export; `outside` in `cards.json` lists every such target. A Document link is its label: the
+  document does not travel.
+- The generated Reverse links and Term uses stay behind, because they name other trees' Cards. The
+  page derives both from the Links inside the tree. The archive root, row ids, Lock facts and
+  artifact sources never enter the file.
+
+An export is for reading. It restores nothing and `zt` never loads it back; `zt dp` stays the full
+backup. A typical book is a few megabytes (321 Cards: 3.4 MB) and `index.html` 1.4 MB. Tested in Edge
+and Chrome; Firefox and Safari are untested.
+
 ## Deleting
 
 One command covers every delete. It asks for the exact confirmation word of the selection, and it
@@ -717,6 +752,7 @@ zt ws
 zt mcp
 zt lsbk
 zt dp
+zt export <tree> [--out <folder>]
 zt down
 ```
 

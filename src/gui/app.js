@@ -32,6 +32,15 @@
     return node;
   }
 
+  // A portable export runs this same page with no service behind it (#257): `portable.js` answers
+  // `/api/*` from the export, and a function that needs the service says so when it is reached.
+  const PORTABLE = window.ZtPortable || null;
+  function notInPortable(what) {
+    if (!PORTABLE) return false;
+    toast(PORTABLE.notice(what), 'warn');
+    return true;
+  }
+
   async function api(path, body, signal) {
     const options = { headers: { 'X-ZT-Token': TOKEN }, signal };
     // A change to the Cards may move or delete Cards on a Spread; the server rewrites the
@@ -370,8 +379,15 @@
     || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light');
   function wireCharts(root) {
     for (const frame of root.querySelectorAll('iframe.zt-chart-frame[data-chart]')) {
-      frame.src = `/chart/${frame.dataset.chart}?theme=${theme()}`;
+      if (PORTABLE) PORTABLE.fillChart(frame, theme());
+      else frame.src = `/chart/${frame.dataset.chart}?theme=${theme()}`;
     }
+  }
+  if (PORTABLE) {
+    document.addEventListener('click', (event) => {
+      const chip = event.target.closest?.('.zt-link.outside');
+      if (chip) toast(chip.title || 'This Card is not in this portable export.', 'warn');
+    });
   }
   window.addEventListener('message', (event) => {
     const data = event.data;
@@ -2254,6 +2270,7 @@
 
   /** Ask one question and show its proposal on the temporary Table. A failed question writes nothing. */
   async function askBox(asked) {
+    if (notInPortable('Ask the box')) return;
     if (!ZtFeatures.allows(state.features, 'ask')) throw new Error(ZtFeatures.offNote('ask'));
     let question = asked == null ? '' : String(asked).trim();
     if (!question) {
@@ -3640,6 +3657,7 @@
 
   /** The reader chooses one existing report; an empty answer stops using one. */
   async function useBridgeReport() {
+    if (notInPortable('A Bridge report')) return;
     const path = await promptValue('Use a Bridge report',
       'The exact path of an existing proposals.json. The service reads only that file and never scans a folder for a newer report. Leave it empty to stop using a report.',
       bridgeReport());
@@ -5809,7 +5827,7 @@
       const image = figure.querySelector('img');
       const lost = () => {
         figure.classList.add('missing');
-        if (image) image.replaceWith(h('span', { class: 'zt-figure-gap', text: 'figure not in this archive' }));
+        if (image) image.replaceWith(h('span', { class: 'zt-figure-gap', text: PORTABLE ? 'figure not in this export' : 'figure not in this archive' }));
       };
       if (!figure.dataset.artifact || !image) { lost(); continue; }
       image.addEventListener('error', lost, { once: true });
@@ -6358,6 +6376,7 @@
    * A fault is shown beside its Lock; it hides nothing and never updates the shown seal.
    */
   async function lockPanel(focusRoot) {
+    if (notInPortable('Tree Locks')) return;
     const body = h('div', { class: 'confirm-body lock-panel-body' }, h('p', { class: 'hint', text: 'Reading the locks…' }));
     const status = h('span', { class: 'lock-status' });
     let close = null;
@@ -6645,7 +6664,7 @@
   function showFigure(sha, caption) {
     const source = h('p', { class: 'figure-source' });
     const close = openOverlay(h('div', { class: 'figure-view', role: 'dialog', 'aria-label': 'Figure', onclick: (event) => { if (event.target === event.currentTarget) close(); } },
-      h('img', { src: '/artifact/' + sha, alt: caption || '' }),
+      h('img', { src: PORTABLE ? PORTABLE.figure(sha) : '/artifact/' + sha, alt: caption || '' }),
       caption ? h('p', { class: 'figure-caption' }, titleNodes(caption)) : null,
       source,
       h('button', { class: 'btn', text: 'Close', onclick: () => close() }),
@@ -6768,6 +6787,7 @@
    * the placement the reader chose, for the caller's own Save.
    */
   function openEditor({ heading, initial, literature, bibtex, save, bibtexCheck, cardType, facet, emphasis, level, term, reply, hub }) {
+    if (notInPortable('The writing desk')) return Promise.resolve(null);
     return new Promise((resolve) => {
       // Regular Cards choose a Card type; Topic and Literature Cards are always ideas.
       // A Model Card is the entry point of its model, or one of its parts when it has a facet: any
@@ -7324,6 +7344,7 @@
 
   /** A new Card; `preset` may give its title and body, and lay it on the Table once saved. */
   async function newCard(kind, title, preset = {}) {
+    if (notInPortable('Writing a Card')) return;
     if (kind !== 'topic' && !state.card) throw new Error(`${kind === 'side' ? 'b' : 'n'} needs a Card; use go <target> first`);
     const parent = state.card;
     if (kind === 'direct' && parent.direct) throw new Error(`direct successor already exists: ${parent.direct.address}`);
@@ -7383,6 +7404,7 @@
    * The human Card is written in the writing desk and filed in a human Topic.
    */
   async function replyTo(card = state.card) {
+    if (notInPortable('Reply')) return;
     if (!ZtFeatures.allows(state.features, 'reply')) throw new Error(ZtFeatures.offNote('reply'));
     if (!card) throw new Error('r needs a Card; use go <target> first');
     if (card.workspace !== 'agent') {
@@ -7457,6 +7479,7 @@
   }
 
   async function editCard() {
+    if (notInPortable('Editing a Card')) return;
     let card = state.card;
     if (!card) throw new Error('e needs a Card; use go <target> first');
     gateWrite(card, 'edit');
@@ -7571,6 +7594,7 @@
   }
 
   async function deleteCard() {
+    if (notInPortable('Deleting a Card')) return;
     const card = state.card;
     if (!card) throw new Error('del needs a Card; use go <target> first');
     gateWrite(card, 'delete');
@@ -7589,6 +7613,7 @@
    * successors close the gap). Without a target, ask: `0/3|a`, `before 0/2`, `alone before 0/2`.
    */
   async function moveCard(target, alone = false) {
+    if (notInPortable('Moving a Card')) return;
     const card = state.card;
     if (!card) throw new Error('mv needs a Card; use go <target> first');
     if (card.context !== 'regular') throw new Error(card.kind === 'literature'
@@ -7777,6 +7802,7 @@
    * the new Card. Its Links name today's addresses and follow the move.
    */
   async function insertCard() {
+    if (notInPortable('Inserting a Card')) return;
     const card = state.card;
     if (!card) throw new Error('ins needs a Card; use go <target> first');
     if (card.context !== 'regular') throw new Error('cannot insert before a tree root; insert before its Direct successor instead');
@@ -7805,7 +7831,7 @@
     await spreads.flush();
     window.close();
     // A browser tab the page did not open may refuse to close.
-    toast('Close this tab to leave; the GUI keeps running until `zt down`.');
+    toast(PORTABLE ? 'Close this tab to leave.' : 'Close this tab to leave; the GUI keeps running until `zt down`.');
   }
 
   // ----------------------------------------------------------- command bar
@@ -8141,5 +8167,5 @@
     }
   }
 
-  boot();
+  (PORTABLE ? PORTABLE.ready : Promise.resolve()).then(boot);
 })();

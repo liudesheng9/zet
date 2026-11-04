@@ -10,6 +10,8 @@ paths:
   - "src/autostart.rs"
   - "src/bin/**"
   - "src/dump.rs"
+  - "src/export.rs"
+  - "tests/portable_export.rs"
   - "tests/cli_service.rs"
   - "tests/gate_policy.rs"
   - "tests/gate_writes.rs"
@@ -34,7 +36,7 @@ updated: 2026-11-03
 
 ## Purpose
 
-This block is the `zt` binary's front door and its storage base. It parses every `zt` command line and dispatches it, reads and writes the config file, owns the archive root (the SQLite database, the log, and the service, session, lock, and GUI record files), starts and stops the service daemon, finds a daemon that ended without `zt down` and starts the service again, creates the SQLite schema and runs every one-time migration, and holds the shared Location and Card-storage helpers that the other blocks call (`load_card`, `insert_card`, `direct_successor`, `parent_location`, the edit lock, Reverse link regeneration). It also starts the service at sign-in (`zt autostart`, `zt-boot`), stops it when Windows ends the user's session, writes full dumps (`zt dp`), and deletes Cards through the one `zt del` command, up to the whole archive (`zt del --all`). It exists so that every client (the shell commands, the Session, the GUI, the MCP server) works on one archive, through one set of rules, while exactly one daemon is up.
+This block is the `zt` binary's front door and its storage base. It parses every `zt` command line and dispatches it, reads and writes the config file, owns the archive root (the SQLite database, the log, and the service, session, lock, and GUI record files), starts and stops the service daemon, finds a daemon that ended without `zt down` and starts the service again, creates the SQLite schema and runs every one-time migration, and holds the shared Location and Card-storage helpers that the other blocks call (`load_card`, `insert_card`, `direct_successor`, `parent_location`, the edit lock, Reverse link regeneration). It also starts the service at sign-in (`zt autostart`, `zt-boot`), stops it when Windows ends the user's session, writes full dumps (`zt dp`) and one tree's portable export (`zt export`), and deletes Cards through the one `zt del` command, up to the whole archive (`zt del --all`). It exists so that every client (the shell commands, the Session, the GUI, the MCP server) works on one archive, through one set of rules, while exactly one daemon is up.
 
 **Owns:** command dispatch in `src/main.rs`, the config file, the archive-root file layout, the daemon lifecycle and stale-service recovery, the `cards` and `metadata` tables and their migrations, the Location grammar helpers, the edit lock, the shell write commands (`t`, `l`, `n`, `b`, `e`, `del` with `--keep-root` and `--all`, `mv`, `ins`), `stats`, `ws`, `lsbk`, `dp`, the one-release `clear` notice, autostart, shutdown handling, and the shared integration-test harness.
 
@@ -51,6 +53,7 @@ This block is the `zt` binary's front door and its storage base. It parses every
 | | `src/autostart.rs` — `zt autostart [on\|off]`, the HKCU Run key value, `autostart.log` |
 | | `src/bin/zt-boot.rs` — window-less login program that runs `zt __boot` |
 | | `src/dump.rs` — `zt dp` payload, `archive.json` manifest, compressor detection, archive cleanup |
+| | `src/export.rs` — `zt export`: one tree as `cards.json` and the GUI's `index.html`, reading order, models, staging |
 | | `tests/cli_service.rs` — end-to-end CLI, schema, dump, the one delete command, Session-over-pipe, GUI lifecycle, and the GUI Reply route tests |
 | | `tests/tree_lock.rs` — the real GUI Lock routes, MCP and shell refusals, pin protection, restart survival, history and the recorded-fault path |
 | | `tests/autostart.rs` — Windows-only sign-in, shutdown, sign-out, and dead-daemon tests |
@@ -138,6 +141,7 @@ flowchart TD
 | Location helpers | `src/main.rs` | Location grammar, tree membership, successor arithmetic. |
 | Editor bridge | `src/main.rs` (`run_editor`, `run_editor_with_suffix`) | Opens `EDITOR` on a temp file. |
 | Dump | `src/dump.rs` | Builds and compresses the dump. |
+| Export | `src/export.rs` | Writes one tree as a portable folder. |
 | Autostart | `src/autostart.rs`, `src/bin/zt-boot.rs` | Sign-in start. |
 | Reply write | `src/reply.rs` (registered by `mod reply` in `src/main.rs`) | The GUI-only Owner write that answers an agent Card with one human Card; see [GUI](gui.md#reply-srcreplyrs). It owns no new table and no new command. |
 
@@ -179,6 +183,7 @@ Commands marked "up" call `require_service_up` and fail with `service is not up`
 | `zt apply <plan.json> [--preview]` | up | `shell_apply` | Applies one batch plan as the owner (S6, #234): the file holds `{"items": [...]}` in the `apply_batch` shape; a missing `op_key` becomes `shell/<hash of the archive revision and the file>/1/item/i<n>` and a missing `client_ref` `i<n>`, so the preview and the commit share them and a later plan never collides. It previews through `batch::apply_as(Owner)` and prints `apply_lines` (renames and deletes in start addresses, Links that break, macros rewritten, refused and blocked items); a plan with refusals stops. A plan with a tree operation reads the word `apply` (`read_confirmation`) and commits with the preview's `plan_hash`; a plan of only creates and edits commits at once. `--preview` stops after the lines. A malformed file names the JSON error or the item index. Tests: `cli_service::zt_apply_*`. |
 | `zt lsbk` | up | `cmd_lsbk` | One line per Broken link: `<source> <source title> -> <target>: <source line>`. A Term use adds its authored label and reason before the colon: `(term 均衡, missing)` or `(term 均衡, not a Term head)` (S11, #153). |
 | `zt dp` | up, lock | `cmd_dump` → `dump::run` | Interactive compression prompt, then `dumped N cards to <path>`. |
+| `zt export <tree> [--out <folder>]` | up | `export::run` | `exported N cards of <tree> to <folder> (<size> MB)`, then one line each when Link targets lie outside the tree or figures are missing. |
 | `zt clear` | — | `cmd_clear` | The one-release migration notice: prints ``zt clear is now `zt del --all` `` to stderr and exits 1 without the service, a prompt or a deletion. It is no longer in `zt help`; the next release removes the handler, leaving an unknown command (R245, S12-AC08). |
 | `zt mcp` | up (checked in `mcp.rs`) | `mcp::run` | [MCP server](mcp-server.md). |
 | `zt scholar …` | — | `scholar::run_cli(rest)` | [Scholar bridge](scholar-bridge.md). |
@@ -618,6 +623,19 @@ Additional metadata keys are `links_index_version`, `archive_id`, `archive_revis
 
 The gate policy adds one `gate.<workspace>.<rule>` row per declared override (`gate.agent.R2`, `gate.human.R6`; `src/gate.rs`). A missing row means the checker's default; `zt config set … default` deletes it. These rows are the selected archive's own policy — never a process-global config entry and never a second database — and each real write or removal advances `archive_revision` by one, which is what a check-contract reader observes (S03, #145).
 
+### Portable export (`src/export.rs`)
+
+`zt export <tree>` is the reading half of what a dump is the backup half of ([Portable export](../portable-export-proposal.md), #257).
+
+1. `parse_args` takes one tree and an optional `--out <folder>`, either way round; anything else, a bare `zt export` included, fails with the usage line, so no form exports the box.
+2. `require_service_up`, then one `Snapshot::read`: every Card belongs to one archive revision. It takes no edit lock, as `zt dp` does since #253. `tree_id` reads a tree id out of any address; a tree whose root does not exist is `tree \`x\` does not exist`.
+3. The folder is `--out`, or `<root>/export/<tree>-<seconds>` (`folder_name` keeps a Citation key file-safe). A folder that exists and holds anything is refused before any work.
+4. `collect` keeps the tree's Cards, puts them in `reading_order` (the order of `outline` in `layout.js`: a root's Direct run, under each Card the runs of its Side successors, with `side_label_to_number` ranking the letters, so `0/10` follows `0/9`), and renders each through `gui::Portable` ([GUI](gui.md)). `card_value` takes the fields the GUI reads from `Snapshot::summary` and adds `bibtex`, `text`, `html`, the Card's in-tree `hubs`, its `broken` Link targets, and `models`, the heads of the models of this tree it belongs to. Each model is stored once under its head, through `inside_model`, which keeps what the model points at and drops what other trees write about it (in-coming `neighbours`, `also`, `lent`), for the reason the generated sections stay behind. `authored_text` cuts the text at the Reverse marker line, because the generated sections name other trees' Cards.
+5. `artifacts` reads each figure the render gathered once, as base64; one the archive does not hold is counted, and the viewer says so on the Card.
+6. `publish` writes both files into `.<name>.partial` beside the destination and renames it into place. `Staging`'s `Drop` removes it on every failure, so no half export remains.
+
+`cards.json` is format `zt-portable-export`, version 2: `tree {id, root, kind, workspace, title}`, `exported {at, zt, archive_revision}`, `cards` in reading order (`address, parent, edge, kind, title, type, facet, emphasis, level, form, head, excerpt, restatement, links, kinds, term_use_targets, term, term_role, term_list, bibtex, text, html`, and `models`, `model`, `hubs`, `broken` when a Card has them), `models {head: structure}`, `broken` (the `/api/broken` rows of this tree), `artifacts {sha256: {type, base64}}`, `charts {id: page}`, and `outside [{address, title, from}]`. It holds no archive root, row id, Lock fact or artifact source. Two exports at one revision differ only in `exported.at`.
+
 ### Dump layout (`src/dump.rs`)
 
 ```text
@@ -837,6 +855,7 @@ Gaps:
 - **Case:** a Citation key is unique case-insensitively but found case-sensitively; `[[deletelit]]` does not reach `DeleteLit`.
 
 ## Change history
+- `2026-11-03` — #257, #258 (zt 0.56.0): `zt export` writes one tree as a portable folder (`src/export.rs`, see Portable export above). Tests: `tests/portable_export.rs`.
 - `2026-11-03` — #253: `zt dp` (`cmd_dump`) takes no edit lock. `dump_view(root)` reads the Cards, the next Topic id and the Lock export in one SQLite read transaction, which in WAL mode sees one committed state while other clients write, so the dump still describes one archive state (R314, S13-AC01) and no longer refuses while a digest or another client writes. The edit lock stays with every writer; `zt status --check-locks` and the GUI's Lock panel take it only to record a new fault. Test: `tests::a_dump_reads_while_another_client_holds_the_edit_lock`.
 - `2026-11-01` — zt 0.53.0 links zt-check 0.19.0 (rule version 6): the write gate holds a Model Card or Model part to every size limit twice as loose. `gate::write_gate_tests::a_part_reads_its_heads_level_for_the_size_rule` and `tests/gate_writes.rs::promoting_a_concept_model_to_formal_runs_the_new_formal_checks` use 25 to 27 sentences (over 24) for their size faults.
 - `2026-10-31` — #234 (S6 of PRD #228): `zt apply <plan.json> [--preview]` (`shell_apply`, `apply_lines`), the owner's batch plan in the shell; `batch::apply_as` and `mcp::write_card_as` take the Access, so the owner writes both Workspaces through the batch path (MCP keeps Agent Access, and the agent-only Topic title rule).

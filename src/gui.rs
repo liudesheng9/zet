@@ -8,7 +8,8 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -46,6 +47,9 @@ const LAYOUT_JS: &str = include_str!("gui/layout.js");
 const CHART_JS: &str = include_str!("gui/chart-frame.js");
 const KATEX_JS: &str = include_str!("gui/vendor/katex/katex.min.js");
 const KATEX_CSS: &str = include_str!("gui/vendor/katex/katex.min.css");
+const PORTABLE_CSS: &str = include_str!("gui/portable.css");
+const PORTABLE_RULES_JS: &str = include_str!("gui/portable-rules.js");
+const PORTABLE_JS: &str = include_str!("gui/portable.js");
 
 /// KaTeX's fonts, served next to its stylesheet so math renders offline.
 macro_rules! katex_fonts {
@@ -907,12 +911,7 @@ struct Charts(Mutex<(BTreeMap<String, String>, VecDeque<String>)>);
 
 impl Charts {
     fn add(&self, page: String) -> String {
-        use sha2::{Digest, Sha256};
-        let id = Sha256::digest(page.as_bytes())
-            .iter()
-            .take(16)
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let id = chart_id(&page);
         let mut charts = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         let (pages, order) = &mut *charts;
         if pages.insert(id.clone(), page).is_none() {
@@ -930,6 +929,16 @@ impl Charts {
         let charts = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         charts.0.get(id).cloned()
     }
+}
+
+/// A chart page's content id.
+fn chart_id(page: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(page.as_bytes())
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// One failed GUI request. A Tree Lock refusal keeps its structured facts, so the page can name the
@@ -2266,6 +2275,113 @@ impl App {
 /// - Other raw HTML is shown as text, except a few plain inline tags
 ///   (`<sub>`, `<sup>`, `<br>`, `<kbd>`, `<mark>`, …).
 fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
+    render_card(body, snapshot, Target::Gui(charts))
+}
+
+/// Who reads a rendered Card. The GUI answers routes on the service; a portable export has no
+/// server behind it, so the two readers differ in the Links, the Term links, the figures, the
+/// Document links and the charts, and nowhere else.
+#[derive(Clone, Copy)]
+enum Target<'a> {
+    Gui(&'a Charts),
+    Portable(&'a Portable),
+}
+
+impl<'a> Target<'a> {
+    /// The one tree a portable export holds; the GUI reads the whole box.
+    fn tree(self) -> Option<&'a str> {
+        match self {
+            Target::Gui(_) => None,
+            Target::Portable(portable) => Some(&portable.tree),
+        }
+    }
+
+    fn keep_chart(self, page: String) -> String {
+        match self {
+            Target::Gui(charts) => charts.add(page),
+            Target::Portable(portable) => {
+                let id = chart_id(&page);
+                portable.charts.borrow_mut().insert(id.clone(), page);
+                id
+            }
+        }
+    }
+}
+
+/// The render of one tree for a portable export (#258). It gathers what the tree's Cards show, so
+/// the export carries each chart page and each figure once, however many Cards show it.
+pub(crate) struct Portable {
+    tree: String,
+    charts: RefCell<BTreeMap<String, String>>,
+    figures: RefCell<BTreeSet<String>>,
+}
+
+impl Portable {
+    pub(crate) fn new(tree: &str) -> Self {
+        Self {
+            tree: tree.to_string(),
+            charts: RefCell::default(),
+            figures: RefCell::default(),
+        }
+    }
+
+    pub(crate) fn render(&self, body: &str, snapshot: &Snapshot) -> String {
+        render_card(body, snapshot, Target::Portable(self))
+    }
+
+    /// The chart pages by id, and the digests of the figures the Cards show.
+    pub(crate) fn gathered(self) -> (BTreeMap<String, String>, BTreeSet<String>) {
+        (self.charts.into_inner(), self.figures.into_inner())
+    }
+}
+
+/// The first thing a reader sees when the page cannot read `cards.json` by itself.
+const PORTABLE_SLIP: &str = "<div id=\"zt-slip\" class=\"zt-slip\" hidden><div class=\"zt-slip-card\">\
+<p class=\"zt-slip-title\">ZET portable export</p>\
+<p id=\"zt-slip-note\" class=\"zt-slip-note\">Open the <code>cards.json</code> beside this page.</p>\
+<label class=\"zt-slip-button\">Open cards.json<input id=\"zt-slip-file\" type=\"file\" accept=\".json,application/json\"></label>\
+<p class=\"zt-slip-hint\">or drop it here</p></div></div>";
+
+/// A portable export has no network: everything is inline, and images and fonts are `data:`.
+/// Scripts stay `'unsafe-inline'` because a `srcdoc` chart inherits this policy, so a hash would
+/// stop every chart; `portable.js` filters Card HTML instead.
+const PORTABLE_POLICY: &str = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'self'; frame-src 'self' about:; base-uri 'none'; form-action 'none'\">";
+
+/// The page of every portable export: the GUI's own `index.html` with each asset it loads from the
+/// service inlined, because an export has no other file to hold them, and with `portable.js`
+/// before `app.js`, so the same views read `cards.json`. It holds no Card data, so it is the same
+/// bytes for every tree. The chart frame's script and KaTeX stay readable from the page, which
+/// fills them into a chart when it opens, as `/chart/<id>` does.
+pub(crate) fn portable_viewer() -> String {
+    let mut page = INDEX_HTML.replace("__ZT_TOKEN__", "portable");
+    for tag in [
+        "<link rel=\"stylesheet\" href=\"/vendor/katex/katex.min.css\">",
+        "<link rel=\"stylesheet\" href=\"/app.css\">",
+        "<script src=\"/vendor/katex/katex.min.js\" defer></script>",
+        "<script src=\"/layout.js\" defer></script>",
+        "<script src=\"/draft.js\" defer></script>",
+        "<script src=\"/ask.js\" defer></script>",
+        "<script src=\"/features.js\" defer></script>",
+        "<script src=\"/lock.js\" defer></script>",
+        "<script src=\"/app.js\" defer></script>",
+    ] {
+        assert!(page.contains(tag), "the GUI page no longer loads {tag}");
+        page = page.replacen(tag, "", 1);
+    }
+    let head = format!(
+        "{PORTABLE_POLICY}\n<style id=\"zt-katex-css\">{}</style>\n<style>{APP_CSS}</style>\n<style>{PORTABLE_CSS}</style>\n</head>",
+        katex_inline_css()
+    );
+    let scripts = format!(
+        "{PORTABLE_SLIP}\n<script type=\"text/plain\" id=\"zt-chart-frame\">{CHART_JS}</script>\n\
+         <script id=\"zt-katex\">{KATEX_JS}</script>\n<script>{LAYOUT_JS}</script>\n<script>{DRAFT_JS}</script>\n\
+         <script>{ASK_JS}</script>\n<script>{FEATURES_JS}</script>\n<script>{LOCK_JS}</script>\n\
+         <script>{PORTABLE_RULES_JS}</script>\n<script>{PORTABLE_JS}</script>\n<script>{APP_JS}</script>\n</body>"
+    );
+    page.replacen("</head>", &head, 1).replacen("</body>", &scripts, 1)
+}
+
+fn render_card(body: &str, snapshot: &Snapshot, target: Target<'_>) -> String {
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
@@ -2287,7 +2403,7 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
         if in_code_block {
             events.push(Event::Text(text.into()));
         } else {
-            events.extend(link_events(&text, snapshot));
+            events.extend(link_events(&text, snapshot, target));
         }
     };
     for event in Parser::new_ext(&source, options) {
@@ -2299,7 +2415,7 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
                 | Event::InlineHtml(text) => caption.push_str(&text),
                 Event::End(TagEnd::Image) => {
                     let (digest, caption) = figure.take().unwrap_or_default();
-                    events.push(Event::InlineHtml(figure_html(&digest, &caption).into()));
+                    events.push(Event::InlineHtml(figure_html(&digest, &caption, target).into()));
                 }
                 _ => {}
             }
@@ -2309,8 +2425,8 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
             match event {
                 Event::Text(text) => chart_source.push_str(&text),
                 Event::End(TagEnd::CodeBlock) => {
-                    let page = chart_page(chart_source, snapshot);
-                    let id = charts.add(page);
+                    let page = chart_page(chart_source, snapshot, target.tree());
+                    let id = target.keep_chart(page);
                     events.push(Event::Html(
                         format!(
                             "<figure class=\"zt-chart\"><iframe class=\"zt-chart-frame\" data-chart=\"{id}\" loading=\"lazy\" title=\"Chart\"></iframe></figure>\n"
@@ -2342,12 +2458,12 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
             {
                 flush(&mut pending, &mut events, in_code_block);
                 in_document = true;
-                events.push(Event::InlineHtml(document_link_open(&dest_url).into()));
+                events.push(Event::InlineHtml(document_open(&dest_url, target).into()));
             }
             Event::End(TagEnd::Link) if in_document => {
                 flush(&mut pending, &mut events, in_code_block);
                 in_document = false;
-                events.push(Event::InlineHtml("</a>".into()));
+                events.push(Event::InlineHtml(document_close(target).into()));
             }
             Event::Text(text) => pending.push_str(&text),
             Event::InlineHtml(raw) if is_plain_inline_tag(&raw) => {
@@ -2376,16 +2492,26 @@ fn render_markdown(body: &str, snapshot: &Snapshot, charts: &Charts) -> String {
 
 /// An artifact shown in a Card: the image, framed like a print clipped to the
 /// card, with its caption. Inline spans keep it valid inside a paragraph; the
-/// page marks a figure whose image this archive does not hold.
-fn figure_html(digest: &str, caption: &str) -> String {
+/// page marks a figure whose image this archive does not hold. A portable figure names its digest
+/// only: its reader fills the image from the export.
+fn figure_html(digest: &str, caption: &str, target: Target<'_>) -> String {
     let caption = caption.trim();
     let digest = if crate::artifact::is_digest(digest) {
         digest
     } else {
         ""
     };
+    let source = match target {
+        Target::Gui(_) => format!(" src=\"/artifact/{digest}\""),
+        Target::Portable(portable) => {
+            if !digest.is_empty() {
+                portable.figures.borrow_mut().insert(digest.to_string());
+            }
+            String::new()
+        }
+    };
     format!(
-        "<span class=\"zt-figure\" data-artifact=\"{digest}\"><img src=\"/artifact/{digest}\" alt=\"{alt}\" loading=\"lazy\">{caption}</span>",
+        "<span class=\"zt-figure\" data-artifact=\"{digest}\"><img{source} alt=\"{alt}\" loading=\"lazy\">{caption}</span>",
         alt = escape_html(caption),
         caption = if caption.is_empty() {
             String::new()
@@ -2410,6 +2536,22 @@ fn document_link_open(dest: &str) -> String {
         ),
         None => "<a class=\"zt-doc broken\" title=\"Not a Scholar Archive document address\">"
             .to_string(),
+    }
+}
+
+/// A Document link opens its document in the GUI; the document does not travel with a portable
+/// export, so there it is its label alone.
+fn document_open(dest: &str, target: Target<'_>) -> String {
+    match target {
+        Target::Gui(_) => document_link_open(dest),
+        Target::Portable(_) => "<span class=\"zt-doc-label\">".to_string(),
+    }
+}
+
+fn document_close(target: Target<'_>) -> &'static str {
+    match target {
+        Target::Gui(_) => "</a>",
+        Target::Portable(_) => "</span>",
     }
 }
 
@@ -2685,15 +2827,17 @@ fn longest_backtick_run(text: &str) -> usize {
 /// The page a chart frame loads: the chart's HTML in the card's typography
 /// and colors, KaTeX when the chart holds TeX, and the titles of the Cards it
 /// names with `[[address]]` or a Term `[[label@address]]`. The store keeps this
-/// small template; [`serve_chart_page`] fills in the theme and inlines the scripts.
-fn chart_page(source: &str, snapshot: &Snapshot) -> String {
+/// small template; [`serve_chart_page`] fills in the theme and inlines the scripts. Given a `tree`,
+/// a Card outside it does not count as existing: a portable chart has no way to open it.
+fn chart_page(source: &str, snapshot: &Snapshot, tree: Option<&str>) -> String {
     let mut links = serde_json::Map::new();
     // The one lexical scan: a name inside a code span is no Link there either, and a Term use
     // names the head's address.
     for occurrence in crate::link::LinkBody::for_rendering(source).occurrences() {
         let target = occurrence.target;
         if !target.is_empty() && target.len() < 200 && !target.contains(['\n', '[', ']']) {
-            let exists = snapshot.by_address.contains_key(target);
+            let exists = snapshot.by_address.contains_key(target)
+                && tree.is_none_or(|tree| crate::tree_id(target) == tree);
             links.insert(
                 target.to_string(),
                 json!({ "title": snapshot.title(target), "exists": exists }),
@@ -2754,7 +2898,7 @@ fn katex_inline_css() -> &'static str {
     })
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -2773,7 +2917,11 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-fn link_events<'a>(text: &str, snapshot: &Snapshot) -> Vec<pulldown_cmark::Event<'a>> {
+fn link_events<'a>(
+    text: &str,
+    snapshot: &Snapshot,
+    target: Target<'_>,
+) -> Vec<pulldown_cmark::Event<'a>> {
     use pulldown_cmark::Event;
     let mut events = Vec::new();
     let mut offset = 0;
@@ -2783,7 +2931,7 @@ fn link_events<'a>(text: &str, snapshot: &Snapshot) -> Vec<pulldown_cmark::Event
                 text[offset..link.macro_range.start].to_string().into(),
             ));
         }
-        events.push(Event::InlineHtml(link_html(&link, snapshot).into()));
+        events.push(Event::InlineHtml(link_html(&link, snapshot, target).into()));
         offset = link.macro_range.end;
     }
     if offset < text.len() {
@@ -2798,7 +2946,15 @@ fn link_events<'a>(text: &str, snapshot: &Snapshot) -> Vec<pulldown_cmark::Event
 /// ordinary Link keeps its address/title chip. Every authored value is escaped here, while the
 /// route is URL-encoded separately, so a label, meaning or target stays data and never becomes
 /// markup or a second attribute.
-fn link_html(link: &ClassifiedLink, snapshot: &Snapshot) -> String {
+fn link_html(link: &ClassifiedLink, snapshot: &Snapshot, reader: Target<'_>) -> String {
+    let broken = if link.form == LinkForm::Term {
+        link.reason.is_some()
+    } else {
+        link.status == LinkStatus::Broken
+    };
+    if let (Some(tree), false) = (reader.tree(), broken) {
+        return portable_link_html(link, snapshot, tree);
+    }
     let target = escape_html(link.target);
     let route = percent_encode(link.target);
     if link.form == LinkForm::Term {
@@ -2838,6 +2994,50 @@ fn link_html(link: &ClassifiedLink, snapshot: &Snapshot) -> String {
         },
         LinkStatus::Broken => format!(
             "<span class=\"zt-link broken\" title=\"Broken link\"><span class=\"zt-link-addr\">{target}</span><span class=\"zt-link-title\">missing</span></span>"
+        ),
+    }
+}
+
+/// A live Link in a portable export (#258). Inside the tree it is the route alone: Links are the
+/// largest part of an export, so it repeats nothing the reader does not use. Outside the tree it
+/// keeps what the sentence needs and goes nowhere, because that Card is not in the export.
+fn portable_link_html(link: &ClassifiedLink, snapshot: &Snapshot, tree: &str) -> String {
+    const OUTSIDE: &str = "not in this portable export";
+    let inside = crate::tree_id(link.target) == tree;
+    let route = percent_encode(link.target);
+    let address = escape_html(link.target);
+    if link.form == LinkForm::Term {
+        let label = escape_html(term_label(link));
+        let meaning = snapshot.term_meaning(link.target).unwrap_or_default();
+        let hint = if meaning.is_empty() {
+            link.target.to_string()
+        } else {
+            format!("{meaning} · {}", link.target)
+        };
+        let hint = escape_html(&hint);
+        return if inside {
+            format!("<a class=\"zt-link zt-term\" href=\"#/card/{route}\" title=\"{hint}\">{label}</a>")
+        } else {
+            format!("<span class=\"zt-link zt-term outside\" title=\"{hint} · {OUTSIDE}\">{label}</span>")
+        };
+    }
+    let title = escape_html(&snapshot.title(link.target));
+    let facet = snapshot.by_address.get(link.target).and_then(|card| card.facet.as_ref());
+    let head = match facet {
+        Some(facet) => format!(
+            "<span class=\"zt-link-addr zt-link-facet\">{}</span>",
+            escape_html(facet.id())
+        ),
+        None => format!("<span class=\"zt-link-addr\">{address}</span>"),
+    };
+    let body = format!("{head}<span class=\"zt-link-title\">{title}</span>");
+    match (inside, facet.is_some()) {
+        (true, true) => {
+            format!("<a class=\"zt-link\" href=\"#/card/{route}\" title=\"{address}\">{body}</a>")
+        }
+        (true, false) => format!("<a class=\"zt-link\" href=\"#/card/{route}\">{body}</a>"),
+        (false, _) => format!(
+            "<span class=\"zt-link outside\" title=\"{address} · {OUTSIDE}\">{body}</span>"
         ),
     }
 }
@@ -3214,6 +3414,36 @@ mod tests {
         Some(
             serde_json::from_str(&text)
                 .unwrap_or_else(|error| panic!("driver printed {text:?}: {error}")),
+        )
+    }
+
+    /// The portable export's service (#257): the page's own DOM-free code, run here on a small
+    /// export. `ask` answers one route as the page would ask it.
+    fn portable_js(expression: &str) -> Option<Value> {
+        let data = "{format:'zt-portable-export',version:2,\
+            tree:{id:'K',root:'K',kind:'literature',workspace:'agent',title:'Book'},\
+            exported:{archive_revision:7},\
+            cards:[\
+              {address:'K',edge:'root',kind:'literature',type:'idea',title:'Book',text:'',html:'',bibtex:'@book{K}',excerpt:'ex',links:[],term_use_targets:[]},\
+              {address:'K/1',edge:'direct',parent:'K',kind:'regular',type:'idea',title:'One',text:'# One\\n\\n见 [[K/2]]',html:'<p>one</p>',links:['K/2'],term_use_targets:[],broken:['Gone']},\
+              {address:'K/1|a',edge:'side',parent:'K/1',kind:'regular',type:'idea',title:'Aside',text:'# Aside\\n\\n均衡 [[均衡@K/2|a]] 决定 Price',html:'',links:['K/2|a','Far/1'],term_use_targets:['K/2|a']},\
+              {address:'K/1|a|1',edge:'direct',parent:'K/1|a',kind:'regular',type:'idea',title:'Aside next',text:'',html:'',links:['K/1'],term_use_targets:[]},\
+              {address:'K/1|b',edge:'side',parent:'K/1',kind:'regular',type:'idea',title:'Bside price',text:'',html:'',links:[],term_use_targets:[]},\
+              {address:'K/2',edge:'direct',parent:'K/1',kind:'regular',type:'model',title:'Two',text:'',html:'',links:[],term_use_targets:[],models:['K/2','K/3'],facet:'设定'},\
+              {address:'K/2|a',edge:'side',parent:'K/2',kind:'regular',type:'term',term:'均衡',term_role:'card',term_list:'K/2',title:'Term',text:'',html:'',links:[],term_use_targets:[]},\
+              {address:'K/3',edge:'direct',parent:'K/2',kind:'regular',type:'model',title:'Three',text:'',html:'',links:[],term_use_targets:[],models:['K/3']}\
+            ],\
+            models:{'K/2':{head:{address:'K/2',title:'Two'},parts:[],blocks:[]},'K/3':{head:{address:'K/3',title:'Three'},parts:[],blocks:[]}},\
+            broken:[{source:'K/1',target:'Gone'}],\
+            artifacts:{},charts:{},\
+            outside:[{address:'Far/1',title:'Far card',from:['K/1|a']}]}";
+        page_module_js(
+            "portable-rules.js",
+            PORTABLE_RULES_JS,
+            "rules",
+            &format!(
+                "(() => {{ const data = {data}; const ix = rules.open(data); const ask = (url, method = 'GET', body) => rules.respond(ix, method, '/api/' + url, body); return {expression}; }})()"
+            ),
         )
     }
 
@@ -4279,6 +4509,231 @@ mod tests {
         assert_eq!(APP_JS.matches("api('reply'").count(), 1, "no other reply call");
     }
 
+    #[test]
+    fn the_portable_service_answers_the_overview_and_the_tree_as_the_gui_reads_them() {
+        let Some(answers) = portable_js("({ overview: ask('overview').body, tree: ask('tree?id=K').body, graph: ask('graph').body, other: ask('tree?id=Far') })") else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        let overview = &answers["overview"];
+        assert_eq!(overview["trees"][0]["root"], "K");
+        assert_eq!(overview["trees"][0]["count"], 8);
+        assert_eq!(overview["trees"][0]["models"], 1, "a Model part is not a model");
+        assert_eq!(overview["trees"][0]["terms"], 1);
+        assert_eq!(overview["stats"]["total"], 8);
+        assert_eq!(overview["broken"], 1);
+        assert!(overview["archive_root"].as_str().unwrap().contains("portable export"));
+        assert_eq!(overview["features"], json!({ "search": true, "ask": true, "reply": true }));
+        assert_eq!(answers["tree"]["kind"], "literature");
+        assert_eq!(answers["tree"]["cards"].as_array().map(Vec::len), Some(8));
+        let row = &answers["graph"]["nodes"][1];
+        assert_eq!(row["address"], "K/1");
+        assert_eq!(row["tree"], "K");
+        assert_eq!(row["workspace"], "agent");
+        assert_eq!(row["lock"], Value::Null);
+        assert_eq!(row["pinned_by"], json!([]));
+        assert_eq!(row["inbound"], 1, "only K/1|a|1 points at it");
+        assert!(row.get("text").is_none() && row.get("html").is_none(), "a summary is no Card");
+        assert_eq!(answers["other"]["status"], 400);
+    }
+
+    #[test]
+    fn the_portable_service_answers_a_card_with_its_neighbours_inside_the_tree() {
+        let Some(answers) = portable_js("({ one: ask('card?at=' + encodeURIComponent('K/1')).body, all: ask('card?at=K/1&sides=all&text=1').body, side: ask('card?at=' + encodeURIComponent('K/1|a')).body, head: ask('card?at=' + encodeURIComponent('K/2|a')).body, root: ask('card?at=K').body, gone: ask('card?at=' + encodeURIComponent('Far/1')) })") else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        let one = &answers["one"];
+        assert_eq!(one["parent"]["address"], "K");
+        assert_eq!(one["direct"]["address"], "K/2");
+        assert_eq!(one["sides"].as_array().map(Vec::len), Some(1), "lean, as the service is");
+        assert_eq!(one["sides_count"], 2);
+        assert_eq!(one["body"], "见 [[K/2]]");
+        assert_eq!(one["writable"], true);
+        assert_eq!(one["context"], "regular");
+        assert!(one.get("text").is_none());
+        assert_eq!(one["reverse_links"][0]["address"], "K/1|a|1");
+        assert_eq!(one["outbound"], json!([
+            { "address": "K/2", "title": "Two", "workspace": "agent", "broken": false },
+            { "address": "Gone", "title": "", "workspace": null, "broken": true },
+        ]));
+        assert_eq!(answers["all"]["sides"].as_array().map(Vec::len), Some(2));
+        assert_eq!(answers["all"]["text"], "# One\n\n见 [[K/2]]");
+        // A Link out of the tree keeps its title; a Term use is told apart.
+        let links = answers["side"]["outbound"].as_array().unwrap();
+        assert_eq!(links[0]["kind"], "term");
+        assert_eq!(links[0]["label"], "均衡");
+        assert_eq!(links[1]["title"], "Far card");
+        assert_eq!(links[1]["workspace"], Value::Null);
+        assert_eq!(answers["head"]["term_uses"][0]["address"], "K/1|a");
+        assert_eq!(answers["head"]["term_use_count"], 1);
+        assert_eq!(answers["head"]["term_facts"], json!({ "role": "card", "list": { "address": "K/2", "title": "Two" } }));
+        assert_eq!(answers["root"]["context"], "tree-root");
+        assert_eq!(answers["root"]["citation_key"], "K");
+        assert_eq!(answers["root"]["parent"], Value::Null);
+        assert_eq!(answers["gone"]["status"], 400);
+        assert_eq!(answers["gone"]["body"]["error"], "Card `Far/1` is not in this portable export.");
+    }
+
+    #[test]
+    fn a_portable_model_is_stored_once_and_read_in_the_order_the_card_came_by() {
+        let Some(answers) = portable_js("[ask('card?at=K/2').body.model, ask('card?at=K/2&via=' + encodeURIComponent('K/3')).body.model, ask('card?at=K/1').body.model]") else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        assert_eq!(answers[0]["head"]["address"], "K/2");
+        assert_eq!(answers[0]["facet"], "设定");
+        assert_eq!(answers[0]["models"][1]["address"], "K/3");
+        assert_eq!(answers[1]["head"]["address"], "K/3");
+        assert_eq!(answers[1]["models"][0]["address"], "K/3");
+        assert_eq!(answers[2], Value::Null);
+    }
+
+    #[test]
+    fn every_route_that_needs_the_service_says_it_is_not_available() {
+        let writes = ["edit", "create", "delete", "move", "insert", "batch", "reply", "ask", "metadata", "hub/draft", "hub/check", "literature", "literature/check", "render", "scholar/artifact", "scholar/preview", "lock/plan", "anything-new"];
+        let list = serde_json::to_string(&writes).unwrap();
+        let Some(answers) = portable_js(&format!("({list}).map((route) => ask(route, 'POST', {{}})).concat([ask('scholar/works?q=x'), ask('register?ws=agent')])")) else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        for answer in answers.as_array().unwrap() {
+            assert_eq!(answer["status"], 409, "{answer}");
+            assert_eq!(answer["body"]["portable"], true);
+            assert!(
+                answer["body"]["error"].as_str().unwrap().ends_with(" is not available in the portable version."),
+                "{answer}"
+            );
+        }
+        assert_eq!(answers[0]["body"]["error"], "Editing a Card is not available in the portable version.");
+        assert_eq!(answers[7]["body"]["error"], "Ask the box is not available in the portable version.");
+    }
+
+    #[test]
+    fn a_portable_table_is_kept_as_the_reader_lays_it() {
+        let Some(answers) = portable_js("[ask('spreads').body, ask('spreads', 'POST', { current: 'a', spreads: [{ name: 'a', cards: [] }] }).status, ask('spreads').body]") else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        assert_eq!(answers[0], json!({ "current": null, "spreads": [] }));
+        assert_eq!(answers[1], 200);
+        assert_eq!(answers[2]["current"], "a");
+    }
+
+    #[test]
+    fn the_portable_search_reads_what_a_reader_sees_titles_first() {
+        let Some(found) = portable_js(
+            "(() => { const big = rules.open({ ...data, cards: [...Array(90).keys()].map((n) => ({ address: 'K/' + n, title: 'same', text: '', type: 'idea' })) }); return { price: ask('search?q=PRICE&ws=all&type=all&mode=entry').body, macro: ask('search?q=' + encodeURIComponent('K/2|a')).body, both: ask('search?q=' + encodeURIComponent('均衡 price')).body, none: ask('search?q=%20').body, typed: ask('search?q=price&type=model').body, capped: rules.respond(big, 'GET', '/api/search?q=same').body }; })()",
+        ) else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        let addresses = |value: &Value| {
+            value["results"].as_array().unwrap().iter().map(|row| row["address"].clone()).collect::<Vec<_>>()
+        };
+        // The title hit comes before the body hit, though the body hit reads first in the tree.
+        assert_eq!(addresses(&found["price"]), [json!("K/1|b"), json!("K/1|a")]);
+        assert_eq!(found["price"]["results"][1]["field"], "body");
+        assert!(found["price"]["results"][1]["snippet"].as_str().unwrap().contains("Price"));
+        assert_eq!(found["price"]["workspaces"], json!({ "agent": 2 }));
+        assert_eq!(found["price"]["types"], json!({ "idea": 2 }));
+        // A Term link reads as its label: its address and its macro are not what a reader sees.
+        assert_eq!(found["macro"]["total"], 0);
+        assert_eq!(addresses(&found["both"]), [json!("K/1|a")]);
+        assert_eq!(found["none"]["total"], 0);
+        // A type filter narrows the rows and leaves the counts that show what it would find.
+        assert_eq!(found["typed"]["total"], 0);
+        assert_eq!(found["typed"]["types"], json!({ "idea": 2 }));
+        assert_eq!(found["capped"]["total"], 90);
+        assert_eq!(found["capped"]["results"].as_array().map(Vec::len), Some(80));
+    }
+
+    #[test]
+    fn a_portable_link_gives_the_gui_its_target_and_its_meaning() {
+        let Some(answers) = portable_js("[rules.linkFacts('#/card/K%2F1%7Ca', '双方都不改变 · K/1|a'), rules.linkFacts('#/card/K/1', null), rules.linkFacts('#x', 'y'), rules.linkFacts('#/card/%E0%A4%A', 'y')]") else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        assert_eq!(answers, json!([
+            { "target": "K/1|a", "meaning": "双方都不改变" },
+            { "target": "K/1", "meaning": "" },
+            null,
+            null,
+        ]));
+    }
+
+    #[test]
+    fn the_portable_reader_opens_only_its_own_format() {
+        let Some(answers) = portable_js(
+            "[rules.refusal({format:'zt-portable-export',version:2,cards:[{}]}), rules.refusal({format:'x'}), rules.refusal(null), rules.refusal({format:'zt-portable-export',version:9,cards:[{}]}), rules.refusal({format:'zt-portable-export',version:2,cards:[]})]",
+        ) else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        assert_eq!(answers[0], Value::Null);
+        assert_eq!(answers[1], "This file is not a ZET export.");
+        assert_eq!(answers[2], "This file is not a ZET export.");
+        assert_eq!(answers[3], "This export has version 9; this page reads version 2.");
+        assert_eq!(answers[4], "This export holds no Cards.");
+    }
+
+    #[test]
+    fn the_portable_html_filter_keeps_what_the_renderer_writes_and_nothing_else() {
+        let Some(answers) = portable_js(
+            "({ tags: ['p', 'SPAN', 'iframe', 'table', 'script', 'style', 'object', 'embed', 'svg', 'form', 'link', 'meta', 'base'].map((tag) => rules.keepTag(tag)), attributes: [['a', 'href', '#/card/K%2F1'], ['a', 'href', 'javascript:alert(1)'], ['a', 'href', 'https://example.com'], ['a', 'href', '#1'], ['img', 'src', 'x'], ['img', 'onerror', 'x'], ['span', 'class', 'zt-link'], ['span', 'title', 'x'], ['span', 'style', 'color:red'], ['td', 'style', 'text-align: center'], ['iframe', 'data-chart', 'ab'], ['iframe', 'srcdoc', 'x'], ['iframe', 'src', 'x'], ['span', 'data-artifact', 'ab'], ['input', 'type', 'checkbox'], ['input', 'type', 'text'], ['input', 'disabled', '']].map((row) => rules.keepAttr(...row)) })",
+        ) else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        assert_eq!(
+            answers["tags"],
+            json!([true, true, true, true, false, false, false, false, false, false, false, false, false])
+        );
+        assert_eq!(
+            answers["attributes"],
+            json!([true, false, false, false, false, false, true, true, false, true, true, false, false, true, true, false, true])
+        );
+    }
+
+    #[test]
+    fn the_portable_reader_shows_only_a_raster_or_svg_figure() {
+        let Some(answers) = portable_js(
+            "[rules.figureSource({ type: 'image/png', base64: 'aGk=' }), rules.figureSource({ type: 'text/html', base64: 'aGk=' }), rules.figureSource({ type: 'image/png', base64: 'not base64!' }), rules.figureSource(undefined)]",
+        ) else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        assert_eq!(answers, json!(["data:image/png;base64,aGk=", null, null, null]));
+    }
+
+    #[test]
+    fn the_portable_chart_page_is_filled_as_the_chart_route_fills_it() {
+        let Some(answers) = portable_js(
+            "[rules.chartDocument('<html data-theme=\"__ZT_THEME__\"><!--zt:katex--><!--zt:frame-->', 'dark', { frame: 'F$&', katexCss: 'C', katexJs: 'J' }), rules.chartDocument('<!--zt:frame-->__ZT_THEME__', 'light', { frame: 'F', katexCss: 'C', katexJs: 'J' })]",
+        ) else {
+            eprintln!("node is not installed; the portable rules were not run");
+            return;
+        };
+        assert_eq!(
+            answers[0],
+            "<html data-theme=\"dark\"><style>C</style>\n<script>J</script><script>F$&</script><style>html { background: var(--zt-paper) !important; }</style>"
+        );
+        assert_eq!(
+            answers[1],
+            "<script>F</script><style>html { background: var(--zt-paper) !important; }</style>light"
+        );
+    }
+
+    /// The reader's scripts are inlined into `index.html`, where a closing script tag or a comment
+    /// opener in their text ends or bends the script element, though the file parses as JavaScript.
+    #[test]
+    fn the_portable_scripts_read_safely_inside_a_script_element() {
+        for (name, source) in [("portable-rules.js", PORTABLE_RULES_JS), ("portable.js", PORTABLE_JS)] {
+            assert!(!source.contains("</script"), "{name} holds a closing script tag");
+            assert!(!source.contains("<!--"), "{name} holds a comment opener");
+        }
+    }
+
     /// The shipped page scripts parse: a broken statement in `app.js` or `layout.js` ships as a
     /// page that never boots, and no other test reads the whole file as a program. Node is the
     /// project's own checker (the wiki and the draft tests use it); without Node the check says so.
@@ -4292,6 +4747,8 @@ mod tests {
             ("ask.js", ASK_JS),
             ("features.js", FEATURES_JS),
             ("lock.js", LOCK_JS),
+            ("portable-rules.js", PORTABLE_RULES_JS),
+            ("portable.js", PORTABLE_JS),
         ] {
             let file = dir.path().join(name);
             fs::write(&file, source).expect("write the script");
@@ -7227,7 +7684,7 @@ mod render_tests {
     #[test]
     fn a_chart_names_ordinary_and_term_links_by_their_targets() {
         let (_temp, snapshot) = snapshot();
-        let page = chart_page("<p>[[0/1]] [[均衡@0/1]] `[[0/9]]` [[0/8]]</p>", &snapshot);
+        let page = chart_page("<p>[[0/1]] [[均衡@0/1]] `[[0/9]]` [[0/8]]</p>", &snapshot, None);
         let links = page
             .split("window.ZT_LINKS = ")
             .nth(1)
@@ -7247,7 +7704,7 @@ mod render_tests {
     #[test]
     fn served_chart_pages_inline_katex_with_its_fonts_when_the_chart_holds_tex() {
         let (_temp, snapshot) = snapshot();
-        let served = serve_chart_page(&chart_page("<p>$x^2$</p>", &snapshot), "light");
+        let served = serve_chart_page(&chart_page("<p>$x^2$</p>", &snapshot, None), "light");
         assert!(served.contains("katex"));
         assert!(served.contains("url(data:font/woff2;base64,"));
         assert!(!served.contains("url(fonts/"));

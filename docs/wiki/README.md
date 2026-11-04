@@ -155,6 +155,11 @@ The digest tooling is a client of the binary. A [Digest workflow](digest-workflo
 4. Each Card is checked with `zt-check`, and faults go back to a fix cycle ([zt-check](zt-check.md)).
 5. Later stages build models, events, findings, links, figures, hubs, and the audit on the same path ([Digest workflows](digest-workflows.md)).
 
+### One tree leaves the box
+
+1. `zt export <tree>` reads one Snapshot, puts the tree's Cards in reading order, renders each for a portable reader, and writes `cards.json` and `index.html` into a staged folder ([Service, CLI and storage](service-and-cli.md)).
+2. A person opens `index.html`, chooses `cards.json`, and uses the same GUI with no service: the page answers its own `/api/*` reads from the export, and a function that needs the service says so ([GUI](gui.md)).
+
 ### Dump and delete
 
 1. `zt dp` takes the edit lock, reads one captured SQLite view — every Card, `next_topic_id`, the archive identity/revision and the Lock export (`tree_lock::dump_export`) — and hands them to `src/dump.rs`, which writes one Markdown file per Card, the `archive.json` manifest, `locks.json` with the Lock history and integrity evidence, and the artifacts, and compresses the folder ([Service, CLI and storage](service-and-cli.md)).

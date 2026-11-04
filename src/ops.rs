@@ -1222,6 +1222,11 @@ impl Snapshot {
         crate::model::structure_in(address, prefer, &self.by_address, &self.parsed, &self.reverse_inbound)
     }
 
+    /// The models a Card belongs to, its home model first.
+    pub(crate) fn model_heads(&self, address: &str) -> Vec<String> {
+        crate::model::heads(address, &self.by_address, &self.reverse_inbound)
+    }
+
     /// The direct child Side successors of a Regular Card.
     pub(crate) fn sides(&self, card: &Card) -> Vec<Value> {
         if crate::is_tree_root(card) {

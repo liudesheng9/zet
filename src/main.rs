@@ -19,6 +19,7 @@ mod card_type;
 mod cited;
 mod dump;
 mod entry;
+mod export;
 mod features;
 mod gate;
 mod gui;
@@ -108,6 +109,7 @@ fn run() -> Result<()> {
             shell_apply(path, true)
         }
         [cmd] if cmd == "dp" => cmd_dump(),
+        [cmd, rest @ ..] if cmd == "export" => export::run(rest),
         [cmd] if cmd == "clear" => cmd_clear(),
         [cmd] if cmd == "ws" => cmd_workspaces(),
         [cmd, rest @ ..] if cmd == "mcp" => mcp::run(rest),
@@ -2518,6 +2520,7 @@ fn cmd_help() -> Result<()> {
         println!("  zt mcp");
         println!("  zt lsbk");
         println!("  zt dp");
+        println!("  zt export <tree> [--out <folder>]");
     }
     Ok(())
 }

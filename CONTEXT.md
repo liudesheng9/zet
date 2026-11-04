@@ -71,6 +71,10 @@ _Avoid_: Widget, embed, diagram card
 An image a Card shows: a figure, table, or cover taken from a Scholar Archive Work's Markdown. A Card shows it with `![caption](artifact:<sha256>)`, where the address is the SHA-256 of the image's bytes. ZET keeps the bytes once, in the archive's `artifacts/` folder, beside a record of where they came from; an artifact belongs to no Card, never changes, and stays when the Scholar Archive moves or drops its copy. A Card may show only artifacts ZET holds.
 _Avoid_: Attachment, asset, embed, image card
 
+**Portable export**:
+One tree written by `zt export` as a folder of exactly two files: `cards.json`, the tree's Card data with each Card's rendered HTML, its models, figures and chart pages, and `index.html`, the GUI itself with no Card data. It reads with no `zt`, service, Scholar Archive or network; a function that needs the service says it is not available in the portable version. It is for reading: it restores nothing, and a dump stays the backup of the whole box.
+_Avoid_: Backup, static site, snapshot
+
 **Document link**:
 A Card-text reference to a whole document the Scholar Archive manages (a PDF or Markdown), written `[label](scholar:<file_id>)`, optionally with a fragment such as `#page=12`. Unlike an artifact, ZET keeps no copy in the archive: the GUI fetches the document through the Scholar Archive bridge when a reader opens it, and caches it while the archive's copy keeps its size. A PDF opens in the browser's viewer; a Markdown document opens as a reading page with its own figures. A Document link is not a Link: it names no Card and has no Reverse link.
 _Avoid_: Attachment, file link, source link

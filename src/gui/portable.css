@@ -1,0 +1,29 @@
+/* zt portable export — what the GUI's stylesheet has no word for: the first slip and the chips of
+   Cards that did not travel. Everything else is `app.css`. */
+.zt-slip {
+  position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; padding: 16px;
+  background: var(--desk);
+}
+.zt-slip[hidden] { display: none; }
+.zt-slip-card {
+  width: min(420px, 100%); padding: 28px 28px 22px; background: var(--paper); text-align: center;
+  border-top: 2px solid var(--paper-margin); box-shadow: var(--card-shadow-lift); font-family: var(--sans);
+}
+.zt-slip-title { margin: 0 0 6px; color: var(--ink); font: 600 19px/1.3 var(--serif); }
+.zt-slip-note { margin: 0 0 18px; color: var(--ink-soft); }
+.zt-slip.refused .zt-slip-note { color: var(--broken); }
+.zt-slip-button {
+  display: inline-block; padding: 7px 16px; border: 1px solid var(--accent); border-radius: 3px;
+  color: var(--accent); font-weight: 600; cursor: pointer;
+}
+.zt-slip-button:hover { background: var(--accent-soft); }
+.zt-slip-button:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.zt-slip-button input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.zt-slip-hint { margin: 10px 0 0; color: var(--ink-faint); font-size: 13px; }
+
+.zt-link.outside { background: none; color: var(--ink-soft); box-shadow: inset 0 0 0 1px var(--line); cursor: help; }
+.zt-link.outside:hover { box-shadow: inset 0 0 0 1px var(--ink-faint); }
+.zt-link.zt-term.outside {
+  box-shadow: none; color: inherit; text-decoration: underline dotted var(--ink-faint); text-underline-offset: 3px;
+}
+.zt-doc-label { color: var(--ink-soft); text-decoration: underline dotted var(--ink-faint); text-underline-offset: 3px; }
