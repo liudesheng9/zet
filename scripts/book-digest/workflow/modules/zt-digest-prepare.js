@@ -1,4 +1,5 @@
-// ==== module zt-digest-prepare v21 ====
+// ==== module zt-digest-prepare v22 ====
+// 22: the profile names its prepared-run variant (zt-history-digest); a profile without one keeps the old reading.
 // 21 (2026-11-01): mode terms prepares like the Term backfill (-Sections -NewList through book-steps): it reuses the staged sections and wants the old Term list gone.
 // Prepare (mode full): prepare-book-digest writes the Chinese text, the section groups, the Literature tree with one
 // anchor per group, and the shared prefixes, then binds the immutable run contract with the effective settings
@@ -33,7 +34,7 @@
 // 20 (#221): mode cited-cards is the Cited backfill of one already digested book; like term-link it runs the
 // preparation with -Validate only, so it inspects the book and its staging and starts no provider work.
 defineModule({
-  id: 'zt-digest-prepare', version: '21', requires: ['zt-digest-lib'],
+  id: 'zt-digest-prepare', version: '22', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the book (mode full, from args.book or the explicit source), resume the retained run (mode resume, one ledger resume), validate or re-stage one already digested book for a Term backfill (modes term-cards and term-link) or take args.groups; output {groups, groupList, citation_key, backfill?}.',
   params: {
     key: { type: 'any', description: "a fresh preparation's Citation key (args.citationKey): the prepared run this stage creates is what every later stage reads it from (#181)" },
@@ -99,7 +100,7 @@ defineModule({
         CitationKey: Z.KEY,
         MaxChars: A.maxChars || 20000,
         MaxUnits: A.maxUnits || 3,
-        Variant: p.profile && p.profile.book === 'mathematics' ? 'math' : 'econ',
+        Variant: (p.profile && p.profile.variant) || (p.profile && p.profile.book === 'mathematics' ? 'math' : 'econ'),
         MaxAttempts: Z.MAX_ATTEMPTS,
         DshRunCap: Z.DSH_RUN_CAP,
       }

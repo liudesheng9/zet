@@ -26,11 +26,11 @@ const lib = await import(pathToFileURL(path.join(wfpRoot, 'tools', 'lib.mjs')).h
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
 const builds = {}
-for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-digest']]) {
+for (const [which, name] of [['econ', 'zt-econ-digest'], ['math', 'zt-math-digest'], ['history', 'zt-history-digest']]) {
   const l = lib.loadBlueprint(path.join(workflowDir, `${name}.blueprint.json`))
   builds[which] = { name, ...lib.build(l.bp, lib.loadModules(l.dirs)), bp: l.bp }
 }
-const sources = { econ: builds.econ.script.replace(/^export /m, ''), math: builds.math.script.replace(/^export /m, '') }
+const sources = Object.fromEntries(Object.entries(builds).map(([which, b]) => [which, b.script.replace(/^export /m, '')]))
 // #176: the book-level stages' one step script, shared by both variants.
 // #177: the model layer's one step script.
 // #178: the mathematics stages' one step script.
@@ -3224,6 +3224,48 @@ for (const kind of ['econ', 'math']) {
   const prep = calls.find((c) => c.label === 'prepare book')
   check(prep && !/"hubs"/.test(prep.cmd), 'literature only: the prepared run freezes no hubs switch (the ledger excludes the hubs layer)')
 }
+// ================================================================================================================
+// zt-history-digest: reading notes, Links, Terms and citations, with no Model, Event or Finding layer
+// ================================================================================================================
+{
+  const b = lib.loadBlueprint(path.join(workflowDir, 'zt-digest-base.blueprint.json'))
+  const h = builds.history.embedded
+  const baseIds = b.bp.stages.map((s) => s.id).filter(Boolean)
+  const ids = h.stages.map((s) => s.id).filter(Boolean)
+  check(baseIds.every((id) => ids.includes(id)), 'history: the variant holds every base stage')
+  check(ids.every((id) => baseIds.includes(id)), 'history: the variant adds no stage of its own')
+  const profile = h.consts.profile
+  check(profile.variant === 'history' && profile.instructions === 'dsh-digest-base.zh.md,dsh-history-cards.zh.md', 'history: the profile loads the history supplement and no model supplement')
+  check(profile.noEventCandidates === true, 'history: the group files carry no event candidates')
+  check(!['models', 'explain', 'events', 'findings', 'math'].some((m) => h.modes[m]), 'history: no mode of a layer the variant leaves out')
+  check(h.modes.resume && !h.modes.resume.some((s) => /^(models|explain|events|findings|math-)/.test(s)), 'history: mode resume names only base stages')
+  check(['terms', 'cited', 'digest', 'cards', 'cards-book', 'link', 'link-check', 'term-cards', 'cited-cards', 'organize', 'bridge', 'term-link', 'audit', 'finalize', 'report'].every((s) => h.modes.resume.includes(s)), 'history: mode resume keeps the notes, the Links, the Terms and the citations')
+}
+{
+  const { calls, bookCalls, report } = await run('history', { ...base, figures: true })
+  const labels = calls.map((c) => c.label)
+  const prep = bookCalls.find((c) => c.step === 'prepare' && c.options.Mode === 'full')
+  check(report && !report.halted, 'history full: the run ends without a halt')
+  check(prep && prep.options.Variant === 'history', 'history full: the run is prepared as variant history')
+  check(prep && prep.options.Instructions === 'dsh-digest-base.zh.md,dsh-history-cards.zh.md' && prep.options.NoEventCandidates === true, 'history full: the preparation takes the history instructions')
+  check(!labels.some((l) => /^(events|findings|models?|explain|architect)\b/i.test(l)), 'history full: no Event, Finding, Model or architect agent starts')
+  check(!calls.some((c) => /model-steps\.ps1/.test(c.cmd || c.prompt || '')), 'history full: no model step runs')
+  check(bookCalls.some((c) => c.step === 'cards-start') && bookCalls.some((c) => c.step === 'audit') && bookCalls.some((c) => c.step === 'figures'), 'history full: the whole-book cycle, Figures and the audit run')
+}
+{
+  const { report } = await run('history', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']] })
+  check(report && !report.halted, 'history resume: the resume ends without a halt')
+}
+{
+  const econ = builds.econ.embedded.consts.profile, math = builds.math.embedded.consts.profile
+  check(econ.instructions.includes('dsh-model-cards.zh.md') && math.instructions.includes('dsh-model-cards.zh.md'), 'economics and mathematics keep the model supplement')
+  const { bookCalls } = await run('econ', { ...base })
+  const prep = bookCalls.find((c) => c.step === 'prepare' && c.options.Mode === 'full')
+  check(prep && prep.options.Variant === 'econ', 'econ full: the run stays variant econ')
+  const m = await run('math', { ...base })
+  const mp = m.bookCalls.find((c) => c.step === 'prepare' && c.options.Mode === 'full')
+  check(mp && mp.options.Variant === 'math', 'math full: the run stays variant math')
+}
 for (const which of ['econ', 'math']) {
   const bp = builds[which].bp
   check(!bp.stages.some((s) => ['concepts', 'review', 'hubs', 'hubs-first'].includes(s.id)) && !bp.modes.hubs, `literature only (${which}): no concept, review or hub stage and no mode hubs`)
@@ -3303,7 +3345,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '50' && modules['zt-digest-prepare'] === '21' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '3' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '11' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v50, zt-digest-prepare v21, zt-digest-report v24, zt-cited-cards v3, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '50' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '3' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '11' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v50, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v3, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

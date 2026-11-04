@@ -24,7 +24,7 @@
    $i=0; Get-Content -LiteralPath "{{STAGING}}\sections\s05.md" | ForEach-Object { $i++; "$i`t$_" }
    ```
 
-3. **写草稿（一条命令）**：把本组全部笔记、模型卡和锚点改写写成 JSON，写入任务文件给出的草稿路径。用一个 here-string 一次写完。
+3. **写草稿（一条命令）**：把本组全部卡片和锚点改写写成 JSON，写入任务文件给出的草稿路径。用一个 here-string 一次写完。
 4. **自查（两条命令）**：按顺序原样运行任务文件里的两条 `SELF-CHECK`。第一条检查卡片（规则逐行给出，最后一行 `faults: N`），第二条是覆盖检查 `zt-digest coverage`（`sNN.md:行-行 C1 uncovered "…"` 表示这段没有卡片覆盖，`C2` 表示 `src` 只写了文件名没有行号，最后一行 `faults: N`；`(advisory)` 行不算错，但也要读）。
 5. **修正（最多两条命令）**：按两组问题改草稿，再各运行一次自查。两条都打印 `faults: 0` 才算通过；最多运行三次。
 6. **回复**一行 JSON。
@@ -39,7 +39,7 @@
 {"tool":"create_successor","arguments":{"at":"{{KEY}}/7","kind":"side","title":"……","body":"……","src":"sections/s05.md:120-160"}}
 ```
 
-- 每项是一次写入提案，只有 `tool` 和 `arguments` 两个字段。可用 `create_successor`（at, title, body, kind, type, level, src）和 `edit_card`（at, title, body, base_fingerprint）。
+- 每项是一次写入提案，只有 `tool` 和 `arguments` 两个字段。可用 `create_successor`（at, title, body, kind, src）和 `edit_card`（at, title, body, base_fingerprint）。
 - 字符串参数里的 `@@N` 换成第 N 个调用（从 0 起）返回的地址，只能指向**更早**的调用。
 - **每张新卡的 `src` 写小节文件和行号范围**：`"src":"sections/s05.md:120-160,171-175"`。覆盖检查按它把原文段落算到卡片上；只写文件名会被记为 C2，没有卡片的段落会被记为 C1。
 - 改写锚点用 `edit_card`，`at` 是锚点地址，`base_fingerprint` 照抄任务文件给的值。
@@ -60,8 +60,6 @@
 
 - 本组的阅读线索是锚点下的一条**直接后继链**：第一张卡是锚点的侧后继，后面每一步是前一张卡的直接后继（`"at":"@@k","kind":"direct"`）。
 - **例子、离题、脚注、作者对别人工作的批评、对反驳的回应**，建成它们所属那张笔记的侧后继（`"kind":"side"`），不要插进阅读线索。
-- 由模型推出的内容写成一张散文笔记，用一句说明这段在做什么，并链接模型卡（`该推导见 [[模型卡]]`）；不要把推导步骤再抄一遍。事件和实证结果同样处理：笔记写上下文，链接那张卡。
-- 本书的模型卡按 `dsh-model-cards.zh.md` 的补充说明写，放在锚点下作侧后继，并排在讨论它的卡片之前。
 - 同一主张已有一张卡（本书或其他书文献树里的卡）时，链接那张卡；只为不同的解释或推论另写一张卡，不写同义的重复卡。
 
 ## 锚点
@@ -105,7 +103,7 @@
 ## 回复
 
 写入草稿、运行完两条自查后，只回复一行 JSON，不加其他文字：
-`{"group":N,"cards":写入卡片数,"models":模型卡数,"events":事件卡数,"anchor":"锚点地址","errors":"无或一句话"}`
+`{"group":N,"cards":写入卡片数,"anchor":"锚点地址","errors":"无或一句话"}`
 
 ## 通用写入规则（每个写卡的任务都适用）
 

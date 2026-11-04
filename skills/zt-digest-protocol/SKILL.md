@@ -8,7 +8,7 @@ description: The protocol of the ZT digest base (scripts/book-digest/workflow/zt
 A digest turns one book (a Chinese or bilingual Markdown file from the Scholar Archive) into the book's **Literature tree** in the **agent Workspace** of the ZET slip-box, and nothing else (base 5.0.0, `docs/literature-only-digest-design.md`): it creates no Topic tree, writes no Topic-tree Card, no Hub Card and no register, and links no Topic-tree Card. Every zt-digest step of a digest runs in the **Literature scope**: its `zt mcp` declares it, and the server refuses such a write with `scope_refused` (`docs/agent-write-scope-proposal.md`). Topic trees, Topic Cards, hubs and the register are the work of the `zt-idea-grow` workflow, which runs after a digest. Every digest workflow is built by the Workflow Framework Protocol from one **base** and one **variant**:
 
 - The base (`E:\zet\scripts\book-digest\workflow\zt-digest-base.blueprint.json`, `"kind": "base"`) holds every stage that all book types share, the args, the roles, the modes, and four empty **slots**.
-- A variant blueprint names the base, sets the **profile** (section 4), and fills the slots with its own layers. The installed variants are frozen builds in `E:\zet\.claude\workflows\`. This skill covers the base only.
+- A variant blueprint names the base, sets the **profile** (section 4), and fills the slots with its own layers. The installed variants are frozen builds in `E:\zet\.claude\workflows\`: `zt-econ-digest`, `zt-math-digest` and `zt-history-digest` (the base stages alone, with `dsh-history-cards.zh.md`: reading notes and Links, no Model, Event or Finding Card). This skill covers the base only.
 
 Docs in the repo (`E:\zet\docs`): `zt-digest-workflow.md` (stages and args), `zt-digest-framework.md` (base, variants, install), `hub-cards-design.md`, `digest-card-layers-proposal.md`. The developer wiki block is `docs/wiki/digest-workflows.md`. The tools, prompt files, and tests of the base are listed in [references/scripts.md](references/scripts.md).
 
@@ -48,15 +48,15 @@ The workflow drives one step with `drive()` (`zt-digest-lib.js`): one Haiku agen
 ## 3. The base stages (mode `full`)
 
 ```
-args ─▶ source ─▶ prepare ─▶ [after-prepare] ─▶ terms ─▶ term-cards ─▶ digest ─▶ cards
-     ─▶ [after-digest] ─▶ cards-book ─▶ link-prepare ─▶ link ─▶ link-check ─▶ [after-link]
+args ─▶ source ─▶ prepare ─▶ [after-prepare] ─▶ terms ─▶ cited ─▶ digest ─▶ cards
+     ─▶ [after-digest] ─▶ [after-models] ─▶ cards-book ─▶ link-prepare ─▶ link ─▶ link-check ─▶ [after-link]
      ─▶ organize ─▶ figures ─▶ bridge ─▶ term-link ─▶ audit ─▶ finalize
      ─▶ [after-audit] ─▶ cleanup ─▶ report
 ```
 
-`[slot]` marks where a variant puts its layers; the base leaves the slots empty. Each stage is one module in `scripts/book-digest/workflow/modules/`; every module builds its commands with `Z.tool('<script>')` (`zdTool`), which gives `zt-digest <tool>`.
+`[slot]` marks where a variant puts its layers; the base leaves the slots empty. `term-cards` and `cited-cards` run beside the Link stages after `cards-book`, and `term-link` waits for both; the slot `after-terms` runs beside `digest`. Each stage is one module in `scripts/book-digest/workflow/modules/`; every module builds its commands with `Z.tool('<script>')` (`zdTool`), which gives `zt-digest <tool>`.
 
-The book term table precedes the first group writer and the **Term-card branch**, which run beside each other; the per-group Card checks follow the digest blocks and the whole-book card cycle follows the variant's after-digest layers; the gap-only Link pass follows the whole-book card cycle; then Organize, Figures and the **report-first Bridge** (Literature trees only); the deterministic **Term-link pass** follows the Bridge and the Term-card branch, and the finite finalization and its read-only audit stay last. The concept review, the restatement review of new Topic Cards, the hubs and the register plan left the base in 5.0.0: `zt-idea-grow` owns that work, and the run report names that follow-up.
+The book term table and the Cited list precede the first group writer; the per-group Card checks follow the digest blocks and the whole-book card cycle follows the variant's after-digest layers; the gap-only Link pass follows the whole-book card cycle; then Organize, Figures and the **report-first Bridge** (Literature trees only); the deterministic **Term-link pass** follows the Bridge and the Term-card branch, and the finite finalization and its read-only audit stay last. The concept review, the restatement review of new Topic Cards, the hubs and the register plan left the base in 5.0.0: `zt-idea-grow` owns that work, and the run report names that follow-up.
 
 | Stage (module) | Steps | Writes Cards? | On failure |
 | --- | --- | --- | --- |

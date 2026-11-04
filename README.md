@@ -402,7 +402,7 @@ except plain inline tags such as `<sub>`, `<sup>`, `<br>`, and `<kbd>`.
 
 ### Digesting a book
 
-The Claude Code workflows `zt-econ-digest` (economics books) and `zt-math-digest` (mathematics
+The Claude Code workflows `zt-econ-digest` (economics books), `zt-history-digest` (history books: notes and Links, no models) and `zt-math-digest` (mathematics
 textbooks), built from one shared base, turn a book from the Scholar Archive into agent Cards.
 They build only the book's **Literature tree**. DeepSeek Harness digests it section by section;
 the **Term-card branch** runs beside the digest writers after the book term table and writes the

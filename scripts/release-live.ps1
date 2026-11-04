@@ -191,7 +191,7 @@ function Install-SetCheck {
 }
 function FrozenSetCheck {
     $expected = $manifest.contracts.workflow
-    foreach ($name in @('zt-econ-digest', 'zt-math-digest')) {
+    foreach ($name in @('zt-econ-digest', 'zt-math-digest', 'zt-history-digest')) {
         $path = Join-Path $Project ".claude\workflow-framework\$name\lock.json"
         $lock = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -DateKind String
         Check ($lock.version -eq $expected.$name) "the project $name is the manifest build" "$($lock.version) / $($expected.$name)"

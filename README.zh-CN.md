@@ -321,7 +321,7 @@ GUI 用内置的 KaTeX 排版 TeX（无需联网）：`$...$` 行内、`$$...$$`
 
 ### 消化一本书
 
-Claude Code 工作流 `zt-econ-digest`（经济学书）和 `zt-math-digest`（数学教材）由同一个基础蓝图构建，把 Scholar Archive 中的一本书转成 agent Card。它们只建这本书的 **Literature 树**。DeepSeek Harness 逐节消化；**Term-card 分支**在书的术语表之后与消化写手并行，写出 Term Card（每批一个写手、一次独立的数学复核和一次有限的修正，共用 DeepSeek 池）；全书消化之后，模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个复核把跳步或过密的推导拆开）；随后连接全书各部分，由 Opus 整理结构；书中的图随书进入卡片；报告优先的 Bridge 找出跨书连接；最后，确定性的 **Term-link 流程**在所有写手之后连接最终正文。Topic 树、Topic Card、枢纽卡与索引块属于 `zt-idea-grow`：它在消化完成后从这棵 Literature 树生长出来，运行报告会给出这一步的后续命令。
+Claude Code 工作流 `zt-econ-digest`（经济学书）、`zt-history-digest`（历史著作：只做笔记和链接，没有模型）和 `zt-math-digest`（数学教材）由同一个基础蓝图构建，把 Scholar Archive 中的一本书转成 agent Card。它们只建这本书的 **Literature 树**。DeepSeek Harness 逐节消化；**Term-card 分支**在书的术语表之后与消化写手并行，写出 Term Card（每批一个写手、一次独立的数学复核和一次有限的修正，共用 DeepSeek 池）；全书消化之后，模型编译器把其中写出的每个模型建到它的细化层级（Sonnet 架构师只规划每个模型的结构；脚本写骨架；DeepSeek 写卡片和图表，再写推导分卡；另一个复核把跳步或过密的推导拆开）；随后连接全书各部分，由 Opus 整理结构；书中的图随书进入卡片；报告优先的 Bridge 找出跨书连接；最后，确定性的 **Term-link 流程**在所有写手之后连接最终正文。Topic 树、Topic Card、枢纽卡与索引块属于 `zt-idea-grow`：它在消化完成后从这棵 Literature 树生长出来，运行报告会给出这一步的后续命令。
 
 `mode` 用单个阶段代替完整运行：`full`、`resume`（每次运行一次）、`link`、`cards`、`models`、`explain`、`events`、`findings`、`figures`、`audit`、`bridge`、`term-cards`、`term-link`，数学变体再加 `math`。两个 Term 模式为**一本已经消化完的书**补建术语：`term-cards` 只准备或复用这本书已暂存的源切片，并按表格顺序发布 Term Card（只发布已就绪的前缀；失败的行留在暂存区），`term-link` 对这本书当前的 Term Card 执行确定性链接。两者都不会重跑消化、模型、整理或 Bridge 阶段；除 Term 设置外只接受 `out`：`termCards`（默认 true，Term-card 分支）、`termLink`（默认 true，最终链接流程）、`termCardsPerJob`（1–8，默认 4 个概念术语/写手）、`termCardsMathPerJob`（1–8，默认 1 个数学术语）与 `termLinkOccurrences`（`first` 默认，或 `all`）。这些设置在准备阶段就冻结进运行契约。
 

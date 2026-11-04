@@ -202,6 +202,8 @@ pub struct Input {
     pub cards: Vec<CardRecord>,
     /// The scope: `Some(n)` limits the report to group `n`'s sections and Cards.
     pub group: Option<i64>,
+    /// A history run: a drafted Model, Event or Finding Card is fault C5.
+    pub notes_only: bool,
 }
 
 /// One fault line: a location, a code and a message.
@@ -281,7 +283,7 @@ pub struct Coverage {
 }
 
 impl Coverage {
-    /// The counted faults: C1, C2 and C4. C3 is advisory.
+    /// The counted faults: C1, C2, C4 and C5. C3 is advisory.
     pub fn counted(&self) -> usize {
         self.faults.iter().filter(|f| !f.advisory).count()
     }
@@ -421,6 +423,20 @@ pub fn report(input: &Input) -> Coverage {
             .then(a.section.cmp(&b.section))
             .then(a.message.cmp(&b.message))
     });
+    // C5: a history run writes reading notes only, so a drafted Card of another kind goes back to
+    // its writer here, before the group finish refuses it.
+    if input.notes_only {
+        for card in input.cards.iter().filter(|c| c.address.starts_with("draft#") && ["model", "event", "finding"].contains(&c.category.as_str())) {
+            faults.push(Fault {
+                section: card.address.clone(),
+                start: 0,
+                end: 0,
+                code: "C5",
+                message: format!("本书只写文献笔记：去掉 type 字段，把这张 {} 卡写成普通笔记", card.category),
+                advisory: false,
+            });
+        }
+    }
     out.faults_c1 = faults.iter().filter(|f| f.code == "C1").count();
     out.faults_c2 = faults.iter().filter(|f| f.code == "C2").count();
     out.faults_c3 = faults.iter().filter(|f| f.code == "C3").count();
@@ -728,6 +744,7 @@ pub fn read_run(staging: &Path, group: Option<i64>) -> Result<Run> {
     if groups.is_empty() {
         bail!("manifest.json names no group");
     }
+    let notes_only = manifest["run_contract"]["variant"] == "history";
     let sections = read_sections(staging, &groups, group)?;
     let sources = read_sources(staging, &groups, group, &book)?;
     let skips = read_skips(staging, &groups, group)?;
@@ -735,7 +752,7 @@ pub fn read_run(staging: &Path, group: Option<i64>) -> Result<Run> {
     let snapshot_cards = snapshot.cards.len();
     Ok(Run {
         book,
-        input: Input { groups, sections, sources, skips, cards: snapshot.cards, group },
+        input: Input { groups, sections, sources, skips, cards: snapshot.cards, group, notes_only },
         snapshot_path: snapshot.path,
         snapshot_cards,
     })
@@ -1217,6 +1234,24 @@ mod tests {
     fn setup() -> Input {
         let (name, text) = ten_paragraphs();
         Input { groups: vec![group(1, &["s01.md"])], sections: vec![(name, text)], ..Default::default() }
+    }
+
+    #[test]
+    fn a_notes_only_run_counts_a_drafted_model_event_or_finding_as_c5() {
+        let mut input = setup();
+        input.cards = ["idea", "model", "event", "finding"]
+            .iter()
+            .enumerate()
+            .map(|(i, kind)| CardRecord { address: format!("draft#{}", i + 1), category: kind.to_string(), body: "正文".into() })
+            .collect();
+        input.cards.push(CardRecord { address: "K/1|a".into(), category: "model".into(), body: "旧卡".into() });
+        assert!(report(&input).faults.iter().all(|f| f.code != "C5"), "an ordinary run writes these kinds");
+        input.notes_only = true;
+        let coverage = report(&input);
+        let c5: Vec<String> = coverage.faults.iter().filter(|f| f.code == "C5").map(Fault::line).collect();
+        assert_eq!(c5.len(), 3, "{c5:?}");
+        assert!(c5[0].starts_with("draft#2 C5 ") && c5[0].contains("model"), "{}", c5[0]);
+        assert!(coverage.faults.iter().filter(|f| f.code == "C5").all(|f| !f.advisory));
     }
 
     #[test]

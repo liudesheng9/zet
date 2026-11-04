@@ -233,6 +233,7 @@ fn main() {
                         "base": version(include_str!("../../../scripts/book-digest/workflow/zt-digest-base.blueprint.json")),
                         "econ": version(include_str!("../../../scripts/book-digest/workflow/zt-econ-digest.blueprint.json")),
                         "math": version(include_str!("../../../scripts/book-digest/workflow/zt-math-digest.blueprint.json")),
+                        "history": version(include_str!("../../../scripts/book-digest/workflow/zt-history-digest.blueprint.json")),
                     })
                 );
             } else {

@@ -1,0 +1,60 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "base": "./zt-digest-base.blueprint.json",
+  "name": "zt-history-digest",
+  "version": "1.0.0",
+  "description": "Digest a Chinese-translated history book into ZET Cards: the ZT digest base alone, with the history prompt supplement: reading notes, Links, the Term layer, the Cited layer, Organize, Figures and the Bridge, and no Model, Event or Finding layer; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
+  "whenToUse": "Turn a Scholar Archive history book or history-related academic work (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree of reading notes joined by Links, with Term Cards and Cited Cards. It writes no Model, Event or Finding Card: use zt-econ-digest for a book with models or empirical results. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those from the Literature trees afterwards. Modes link, cards, figures, audit, bridge, term-cards, term-link, cited-cards, terms, finalize, complete and resume re-run stages on an existing digest.",
+  "preflight": {
+    "P1": "Goal and result: the base digest of a history book, notes and Links only, with the base result and no variant report.",
+    "P2": "Inputs: the base args. A true models, events or findings switch is refused at preparation, never ignored.",
+    "P3": "Units of work: the base units (section groups, the Term table and Term Cards, the Cited list and Cited Cards, the Link gaps).",
+    "P4": "Roles: as the base (manager Haiku low, organizer Opus). The architect role is declared by the base and no stage of this variant uses it.",
+    "P5": "Stage graph: the base graph with every slot empty: args → source → prepare → terms → cited → digest → cards → cards-book → (link-prepare → link → link-check | term-cards | cited-cards) → organize → figures → bridge → term-link → audit → finalize → cleanup → report.",
+    "P6": "Modules: only the base stage modules. The profile sends dsh-digest-base.zh.md plus dsh-history-cards.zh.md and bridgeProfile book; it names variant history, which the run ledger binds.",
+    "P7": "Checks: as the base. The group coverage SELF-CHECK reports a drafted Model, Event or Finding Card as C5, and the group finish refuses one (notes_only_fault).",
+    "P8": "Failure policy: as the base. Mode resume accepts only out and spends the one supported resume.",
+    "P9": "Dry run: zt-history-digest.sim.json. Fixture: tests/framework-harness.mjs builds the variant and runs a full run and a resume on the stand-in runtime. Pilot: one short book on a copied box before the first live run."
+  },
+  "consts": {
+    "profile": {
+      "book": "history",
+      "variant": "history",
+      "instructions": "dsh-digest-base.zh.md,dsh-history-cards.zh.md",
+      "noEventCandidates": true,
+      "digestPrefix": "shared-prefix.md",
+      "linkPrefix": "link-prefix.md",
+      "compilerDocs": {},
+      "architectSupplement": null,
+      "skipForms": [],
+      "bridgeProfile": "book"
+    }
+  },
+  "args": {},
+  "fill": {},
+  "params": {},
+  "modes": {
+    "resume": [
+      "args",
+      "prepare",
+      "terms",
+      "cited",
+      "term-cards",
+      "cited-cards",
+      "digest",
+      "cards",
+      "cards-book",
+      "link-prepare",
+      "link",
+      "link-check",
+      "organize",
+      "figures",
+      "bridge",
+      "term-link",
+      "audit",
+      "finalize",
+      "cleanup",
+      "report"
+    ]
+  }
+}

@@ -213,7 +213,7 @@ fn the_installed_frozen_workflows_are_the_manifest_builds() {
     let retained = manifest["retained_workflows"]
         .as_object()
         .expect("retained_workflows is an object");
-    for name in ["zt-econ-digest", "zt-math-digest"] {
+    for name in ["zt-econ-digest", "zt-math-digest", "zt-history-digest"] {
         let expected = workflow[name].as_str().expect("a variant version");
         let source_path = root().join(SOURCES).join(format!("{name}.blueprint.json"));
         let source = read_json(&source_path);
@@ -258,15 +258,17 @@ fn the_installed_frozen_workflows_are_the_manifest_builds() {
         }
 
         // The previous frozen build stays; the new one is a strictly higher, separate build.
-        let old_version = retained[name].as_str().expect("a retained version");
-        assert!(
-            semver(expected) > semver(old_version),
-            "{name} rose from {old_version} to {expected}"
-        );
-        for version in [old_version, expected] {
-            let script = registry.join("history").join(version).join(format!("{name}.js"));
-            assert!(script.is_file(), "{name} keeps its {version} build: {}", script.display());
+        // A variant new in this release has no earlier build to keep.
+        if let Some(old_version) = retained.get(name).and_then(Value::as_str) {
+            assert!(
+                semver(expected) > semver(old_version),
+                "{name} rose from {old_version} to {expected}"
+            );
+            let script = registry.join("history").join(old_version).join(format!("{name}.js"));
+            assert!(script.is_file(), "{name} keeps its {old_version} build: {}", script.display());
         }
+        let script = registry.join("history").join(expected).join(format!("{name}.js"));
+        assert!(script.is_file(), "{name} keeps its {expected} build: {}", script.display());
         assert_eq!(
             sha256(&registry.join("history").join(expected).join(format!("{name}.js"))),
             lock["sha256"].as_str().expect("a script hash"),

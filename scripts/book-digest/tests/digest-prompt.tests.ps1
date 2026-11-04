@@ -75,5 +75,34 @@ Assert ($link.Contains('Link 写在使用它意思的那句话里')) 'the link p
 Assert (-not $link.Contains('关系词紧贴在 Link 前')) 'the link prompt drops the required relation word before the Link'
 Assert ($link.Contains('句子说出') -or $link.Contains('这句话说出')) 'the link prompt requires the sentence to state the connection'
 
+# The base prompt is neutral: a book type's Card kinds come from its supplement (zt-history-digest).
+foreach ($word in @('模型', '事件', '实证', 'dsh-model-cards')) {
+    Assert (-not $digest.Contains($word)) "the base digest prompt does not name $word"
+}
+$models = Prompt 'dsh-model-cards.zh.md'
+foreach ($case in @(
+        @{ rule = 'the Model Card place under the anchor'; text = '排在讨论它的卡片之前' },
+        @{ rule = 'the note that points to a derivation'; text = '该推导见' },
+        @{ rule = 'the notes that point to Event and Finding Cards'; text = '事件和实证结果' },
+        @{ rule = 'the level field'; text = '"level"' }
+    )) {
+    Assert ($models.Contains($case.text)) "the model supplement keeps $($case.rule)"
+}
+$history = Prompt 'dsh-history-cards.zh.md'
+foreach ($case in @(
+        @{ rule = 'no Model Card'; text = '不写模型卡' },
+        @{ rule = 'no Event Card'; text = '不写事件卡' },
+        @{ rule = 'no Finding Card'; text = '不写实证卡' },
+        @{ rule = 'the skill sections it does not use'; text = 'zettelkasten' },
+        @{ rule = 'the omitted type field'; text = '不传' },
+        @{ rule = 'the mechanism as a plain note'; text = '普通笔记' },
+        @{ rule = 'the primary sources'; text = '史料' },
+        @{ rule = 'the historians the author answers'; text = '史家' }
+    )) {
+    Assert ($history.Contains($case.text)) "the history supplement states $($case.rule)"
+}
+$terms = Prompt 'dsh-terms-instructions.zh.md'
+Assert ($terms.Contains('历史著作')) 'the terms prompt names what a term is in a history book'
+
 if ($failed) { Write-Output "$failed check(s) failed"; exit 1 }
 Write-Output 'digest prompt: ok'

@@ -409,6 +409,9 @@ pub(crate) fn run_contract(
         "math" => {
             include_str!("../../../scripts/book-digest/workflow/zt-math-digest.blueprint.json")
         }
+        "history" => {
+            include_str!("../../../scripts/book-digest/workflow/zt-history-digest.blueprint.json")
+        }
         _ => bail!("unsupported prepared-run variant `{variant}`"),
     })?;
     let file = |path: &str| -> Result<Value> {
@@ -587,7 +590,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let no_event_candidates = a.flag("NoEventCandidates");
     let no_figures = a.flag("NoFigures");
     let apply = a.flag("Apply");
-    let variant=if a.has("Variant") {a.choice("Variant",&["econ","math"])?} else {String::new()};
+    let variant=if a.has("Variant") {a.choice("Variant",&["econ","math","history"])?} else {String::new()};
     if !variant.is_empty() && !apply {bail!("Variant requires Apply so the prepared run can bind its actual archive");}
     if a.has("RunOptions") && variant.is_empty() {bail!("RunOptions requires Variant and Apply");}
     if (a.has("MaxAttempts") || a.has("DshRunCap")) && variant.is_empty() {bail!("MaxAttempts and DshRunCap require Variant and Apply");}

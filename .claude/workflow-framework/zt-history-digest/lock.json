@@ -1,0 +1,168 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "name": "zt-history-digest",
+  "version": "1.0.0",
+  "scope": "project",
+  "script": ".claude/workflows/zt-history-digest.js",
+  "scriptRel": "workflows/zt-history-digest.js",
+  "sha256": "4af2bbbcdf23509ab42a2b0aa4905f1e14f32c291c96da373c0c641c97200d2d",
+  "fingerprint": "710d40404d61b861",
+  "blueprintSha256": "54de3409fd09e046940e5cdaccb6b0bc5de897026fe9a7e5e4d134d7fa6558d0",
+  "modules": {
+    "gate": "1",
+    "zt-workflow-lib": "10",
+    "zt-digest-lib": "50",
+    "zt-audit": "7",
+    "zt-book-terms": "8",
+    "zt-bridge": "10",
+    "zt-cards-book": "6",
+    "zt-cards-layer": "4",
+    "zt-cited-cards": "3",
+    "zt-digest-prepare": "22",
+    "zt-digest-report": "24",
+    "zt-dsh-cleanup": "13",
+    "zt-dsh-source": "2",
+    "zt-figures": "6",
+    "zt-term-link-lib": "4",
+    "zt-finalize": "7",
+    "zt-group-cycle": "8",
+    "zt-link-check": "3",
+    "zt-link-pass": "10",
+    "zt-link-prepare": "8",
+    "zt-organize": "9",
+    "zt-term-cards": "11",
+    "zt-term-link": "5"
+  },
+  "moduleFiles": {
+    "gate": {
+      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\gate.js",
+      "sha256": "815c5e2f1436500333cd43f30f53b09f6f13d6a27f26a89eb475ab16ceec6c05"
+    },
+    "zt-workflow-lib": {
+      "file": "scripts/workflow-shared/modules/zt-workflow-lib.js",
+      "sha256": "f11b762d8b90485c7bc3b6247f6a11857b9a8c05dc15fac519a25f86b153e3bc"
+    },
+    "zt-digest-lib": {
+      "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
+      "sha256": "d036cc4a966468677ed88bc2f246a9b9f0b5b06d9dfd23f8fabc6a48f001e4e4"
+    },
+    "zt-audit": {
+      "file": "scripts/book-digest/workflow/modules/zt-audit.js",
+      "sha256": "41d95c31df853cf6406e14e9ab5008ab40f763ceae7e78eb6934b5e485fba1ba"
+    },
+    "zt-book-terms": {
+      "file": "scripts/book-digest/workflow/modules/zt-book-terms.js",
+      "sha256": "10a3e8a98998b695fa60eb230c25df361e7142fc8a809da47b1516025cf1c58e"
+    },
+    "zt-bridge": {
+      "file": "scripts/book-digest/workflow/modules/zt-bridge.js",
+      "sha256": "a195a1db7ec0c27007fdaf6f48bb59c337615f1d12a0261f4ed26e5e7d0d3ddb"
+    },
+    "zt-cards-book": {
+      "file": "scripts/book-digest/workflow/modules/zt-cards-book.js",
+      "sha256": "93966690b765704ad8eeb837eec13583d180ebbd97648cad0e1ee1cee7b639c2"
+    },
+    "zt-cards-layer": {
+      "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
+      "sha256": "ebca05d2b43c857459459ec000f8ad43482b0c61980e391a07eedc60c1ec17b9"
+    },
+    "zt-cited-cards": {
+      "file": "scripts/book-digest/workflow/modules/zt-cited-cards.js",
+      "sha256": "ace45a9c03ac44f969ad77e646824ca55a0f8981647fe7e9e05009940fdcb9cf"
+    },
+    "zt-digest-prepare": {
+      "file": "scripts/book-digest/workflow/modules/zt-digest-prepare.js",
+      "sha256": "11117f105fc85bfb95b65097befbdda4aca834f1516c90b2795a85f9c66b2c78"
+    },
+    "zt-digest-report": {
+      "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
+      "sha256": "19008d3bb32177be63e9fc6c6d4e96a57042885c681bfaa0be8fad6407049050"
+    },
+    "zt-dsh-cleanup": {
+      "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
+      "sha256": "fc5bbbfdf831a718ce5a1e1d43982467a88fb8c4d1537a141693e33ee781a9c8"
+    },
+    "zt-dsh-source": {
+      "file": "scripts/book-digest/workflow/modules/zt-dsh-source.js",
+      "sha256": "a43be6faefb0ef4fa5a3bdc63867431a4c37985552fde247a271fe011750b2fd"
+    },
+    "zt-figures": {
+      "file": "scripts/book-digest/workflow/modules/zt-figures.js",
+      "sha256": "2bc6b811fab5a7f27c2476a728940ad390c9d75f44937115bbe0ba05143cfb15"
+    },
+    "zt-term-link-lib": {
+      "file": "scripts/book-digest/workflow/modules/zt-term-link-lib.js",
+      "sha256": "d34b2bf007b20983bdd462af1920f6876e70ee0cc8421d558c42d7b439fdc179"
+    },
+    "zt-finalize": {
+      "file": "scripts/book-digest/workflow/modules/zt-finalize.js",
+      "sha256": "969472aab0c7271ebfd44f866ab0d71a1a40e162a2e89301382cd148ade71ffc"
+    },
+    "zt-group-cycle": {
+      "file": "scripts/book-digest/workflow/modules/zt-group-cycle.js",
+      "sha256": "fc26ff9734d45e50755fb7df8e034899edc04745f99d6db74ae18838f12b636b"
+    },
+    "zt-link-check": {
+      "file": "scripts/book-digest/workflow/modules/zt-link-check.js",
+      "sha256": "f44c067be6d311b54c2ccb1c23047040e20fda505826bf47f16f64bafdd99dbe"
+    },
+    "zt-link-pass": {
+      "file": "scripts/book-digest/workflow/modules/zt-link-pass.js",
+      "sha256": "598672e620c1eddb613389a8293a11853d42d2be79c90effd14f2cc54aaedead"
+    },
+    "zt-link-prepare": {
+      "file": "scripts/book-digest/workflow/modules/zt-link-prepare.js",
+      "sha256": "ba606277cf4c139e2ed12ac5a0e0fda63556b1210238fd0a05b6b7550ce19410"
+    },
+    "zt-organize": {
+      "file": "scripts/book-digest/workflow/modules/zt-organize.js",
+      "sha256": "3fa450e1fa3fd5f718eb728185dce3f01f4a83fa24d5cbbd0b42b18b24f639da"
+    },
+    "zt-term-cards": {
+      "file": "scripts/book-digest/workflow/modules/zt-term-cards.js",
+      "sha256": "ed0f636a40c3dd4b6e6d74354e6663c26154922c4ce4cd5cf5832a7390ca625c"
+    },
+    "zt-term-link": {
+      "file": "scripts/book-digest/workflow/modules/zt-term-link.js",
+      "sha256": "5800b8af7cbf426172def3ae056d0ab7caf903547b43acd545c8e136ac4a4f06"
+    }
+  },
+  "sources": [
+    {
+      "file": "scripts/book-digest/workflow/zt-history-digest.blueprint.json",
+      "sha256": "cc6a25aab37b190486c046a8c0f8b53e110b3860e44fc4245b435e0d63d922ad"
+    },
+    {
+      "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
+      "sha256": "da46e60c754d25ef6b1dcbb5c9047c4d4d2a0224aa983085695702b8d60ad5a1"
+    }
+  ],
+  "base": "./zt-digest-base.blueprint.json",
+  "installedAt": "2026-11-04T05:17:09.888Z",
+  "dryRun": {
+    "agents": 64,
+    "order": [
+      "args",
+      "source",
+      "prepare",
+      "terms",
+      "cited",
+      "digest",
+      "cards",
+      "cards-book",
+      "link-prepare",
+      "term-cards",
+      "cited-cards",
+      "link",
+      "link-check",
+      "organize",
+      "figures",
+      "bridge",
+      "term-link",
+      "audit",
+      "finalize",
+      "cleanup",
+      "report"
+    ]
+  }
+}

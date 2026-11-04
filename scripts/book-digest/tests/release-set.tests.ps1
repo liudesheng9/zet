@@ -123,7 +123,7 @@ $digestExe = (Get-Command 'zt-digest' -CommandType Application -ErrorAction Sile
 if ($digestExe) {
     $embedded = $null
     try { $embedded = "$(& $digestExe version -Workflows 2>&1 | Select-Object -Last 1)" | ConvertFrom-Json -ErrorAction Stop } catch { $embedded = $null }
-    foreach ($bp in @(@{ key = 'base'; file = 'zt-digest-base' }, @{ key = 'econ'; file = 'zt-econ-digest' }, @{ key = 'math'; file = 'zt-math-digest' })) {
+    foreach ($bp in @(@{ key = 'base'; file = 'zt-digest-base' }, @{ key = 'econ'; file = 'zt-econ-digest' }, @{ key = 'math'; file = 'zt-math-digest' }, @{ key = 'history'; file = 'zt-history-digest' })) {
         $source = (Read-Json (Join-Path $repo "scripts\book-digest\workflow\$($bp.file).blueprint.json")).version
         Assert ($embedded -and "$($embedded.($bp.key))" -eq "$source") "the installed zt-digest embeds $($bp.file) $source ($($embedded.($bp.key)))"
     }
@@ -134,7 +134,7 @@ $workflow = $manifest.contracts.workflow
 $baseSource = Read-Json (Join-Path $repo 'scripts\book-digest\workflow\zt-digest-base.blueprint.json')
 Assert ($baseSource.kind -eq 'base' -and $baseSource.version -eq $workflow.base) "the base source is $($workflow.base)"
 $retained = $manifest.retained_workflows
-foreach ($name in @('zt-econ-digest', 'zt-math-digest')) {
+foreach ($name in @('zt-econ-digest', 'zt-math-digest', 'zt-history-digest')) {
     $expected = $workflow.$name
     $source = Read-Json (Join-Path $repo "scripts\book-digest\workflow\$name.blueprint.json")
     Assert ($source.version -eq $expected -and $source.base -eq './zt-digest-base.blueprint.json') "the $name source is $expected on the release base"
@@ -149,10 +149,13 @@ foreach ($name in @('zt-econ-digest', 'zt-math-digest')) {
     foreach ($entry in @($lock.sources)) {
         Assert ((Get-Sha256 (Join-Path $repo ($entry.file -replace '/', '\'))) -eq $entry.sha256) "the lock records the current source $($entry.file)"
     }
-    $old = Get-Semver $retained.$name
-    $new = Get-Semver $expected
-    Assert ((Compare-Semver $new $old) -gt 0) "$name rose from $($old.text) to $($new.text)"
-    foreach ($version in @($retained.$name, $expected)) {
+    # A variant new in this release has no earlier build to keep.
+    if ($retained.$name) {
+        $old = Get-Semver $retained.$name
+        $new = Get-Semver $expected
+        Assert ((Compare-Semver $new $old) -gt 0) "$name rose from $($old.text) to $($new.text)"
+    }
+    foreach ($version in @($retained.$name, $expected) | Where-Object { $_ }) {
         $historyScript = Join-Path $registry "history\$version\$name.js"
         Assert (Test-Path -LiteralPath $historyScript) "$name keeps its frozen $version build in history"
     }

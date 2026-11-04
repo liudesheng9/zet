@@ -229,7 +229,7 @@ fn publication_prerequisite(conn: &Connection, layer: &str) -> Result<Option<Str
 
 /// Flat effective choices use the existing workflow flag names. Core verification stays required.
 pub(crate) fn run_options(variant: &str, no_figures: bool, input: Option<&Value>) -> Result<Value> {
-    if !["econ", "math"].contains(&variant) {
+    if !["econ", "math", "history"].contains(&variant) {
         bail!("unknown run variant `{variant}`");
     }
     let mut options = serde_json::Map::new();
@@ -237,6 +237,8 @@ pub(crate) fn run_options(variant: &str, no_figures: bool, input: Option<&Value>
         let applicable = match name {
             "events" | "findings" => variant == "econ",
             "notation" | "boundary" | "proof" | "theory" => variant == "math",
+            // A history book is read as notes: it has no model layer at all.
+            "models" => variant != "history",
             // docs/literature-only-digest-design.md: a digest builds no hubs; zt-idea-grow does.
             "hubs" => false,
             _ => true,
@@ -258,9 +260,10 @@ pub(crate) fn run_options(variant: &str, no_figures: bool, input: Option<&Value>
                 .as_bool()
                 .with_context(|| format!("run option `{name}` must be boolean"))?;
             if enabled
-                && ((variant == "econ"
+                && ((variant != "math"
                     && ["notation", "boundary", "proof", "theory"].contains(&name.as_str()))
-                    || (variant == "math" && ["events", "findings"].contains(&name.as_str())))
+                    || (variant != "econ" && ["events", "findings"].contains(&name.as_str()))
+                    || (variant == "history" && name == "models"))
             {
                 bail!("run option `{name}` is not available for {variant}");
             }
@@ -322,12 +325,19 @@ fn target(contract: &Value) -> Result<Value> {
         enabled.retain(|s| s != "figures");
         excluded.push("figures");
     }
-    if contract["variant"] == "econ" {
-        enabled.extend(["events".into(), "findings".into()]);
-        excluded.extend_from_slice(MATH);
-    } else {
-        enabled.extend(MATH.iter().map(|s| s.to_string()));
-        excluded.extend(["events", "findings"]);
+    match contract["variant"].as_str() {
+        Some("econ") => {
+            enabled.extend(["events".into(), "findings".into()]);
+            excluded.extend_from_slice(MATH);
+        }
+        Some("history") => {
+            excluded.extend_from_slice(MATH);
+            excluded.extend(["events", "findings"]);
+        }
+        _ => {
+            enabled.extend(MATH.iter().map(|s| s.to_string()));
+            excluded.extend(["events", "findings"]);
+        }
     }
     let declared = contract["options"].get("run_options");
     let run = run_options(
@@ -466,6 +476,9 @@ impl Prepared {
             }
             "math" => {
                 include_str!("../../../scripts/book-digest/workflow/zt-math-digest.blueprint.json")
+            }
+            "history" => {
+                include_str!("../../../scripts/book-digest/workflow/zt-history-digest.blueprint.json")
             }
             _ => bail!("incompatible workflow contract: unknown variant {variant}"),
         })?;
@@ -8519,8 +8532,27 @@ fn source_is_empty(group: &Value) -> Result<Value> {
     Ok(json!({"reason":"source_has_no_body","sections":sections,"body_lines":0}))
 }
 
+/// A history run writes reading notes only: it has no layer that owns a Model, Event or Finding
+/// Card, so one in its tree would never be finished. Group coverage names the same fault to the
+/// writer as C5, and this refusal keeps a card the writer left in from reaching the tree.
+fn notes_only_fault(contract: &Value, card: &Value) -> Option<String> {
+    if contract["variant"] != "history" {
+        return None;
+    }
+    let kind = card["type"].as_str()?;
+    ["model", "event", "finding"].contains(&kind).then(|| {
+        format!(
+            "a history run writes reading notes only: `{}` is a {kind} Card",
+            card["address"].as_str().unwrap_or("draft")
+        )
+    })
+}
+
 fn verify_group_consumers(p: &Prepared, cards: &[Value], check: &Value) -> Result<()> {
     use std::collections::{HashMap, HashSet};
+    if let Some(fault) = cards.iter().find_map(|card| notes_only_fault(&p.contract, card)) {
+        bail!("{fault}");
+    }
     let declared = target(&p.contract)?;
     let models = declared["enabled"]
         .as_array()
@@ -19520,6 +19552,49 @@ mod term_link_ledger_tests {
             .unwrap()
             .to_string();
         assert!(error.contains("not one readable Card address"), "{error}");
+    }
+
+    #[test]
+    fn the_history_variant_has_no_model_event_or_finding_layer() {
+        let run = run_options("history", false, None).unwrap();
+        for name in ["models", "events", "findings", "notation", "boundary", "proof", "theory", "hubs"] {
+            assert_eq!(run[name], json!(false), "{name}");
+        }
+        for name in ["terms", "figures", "bridge", "termCards", "termLink"] {
+            assert_eq!(run[name], json!(true), "{name}");
+        }
+        let contract = json!({"variant":"history","citation_key":"K","groups":[],"options":{"run_options":run}});
+        let target = target(&contract).unwrap();
+        let enabled = target["enabled"].as_array().unwrap();
+        let excluded = target["excluded"].as_array().unwrap();
+        for layer in ["models", "explain", "events", "findings", "boundary", "theory"] {
+            assert!(!enabled.contains(&json!(layer)), "{layer} stays out");
+            assert!(excluded.contains(&json!(layer)), "{layer} is declared excluded");
+        }
+        for layer in ["digest", "cards", "cards-book", "link", "link-check", "organize", "figures", "bridge", "audit"] {
+            assert!(enabled.contains(&json!(layer)), "{layer} stays in");
+        }
+        // A false switch agrees with the variant; a true one is refused, never ignored.
+        assert!(run_options("history", false, Some(&json!({"models": false}))).is_ok());
+        for name in ["models", "events", "findings", "theory"] {
+            let error = run_options("history", false, Some(&json!({name: true}))).unwrap_err().to_string();
+            assert!(error.contains("not available for history"), "{error}");
+        }
+        assert!(run_options("law", false, None).is_err());
+    }
+
+    #[test]
+    fn a_history_run_refuses_a_card_kind_of_the_layers_it_leaves_out() {
+        let history = json!({"variant":"history"});
+        let econ = json!({"variant":"econ"});
+        assert!(notes_only_fault(&history, &json!({"address":"K/1|a","type":"idea"})).is_none());
+        assert!(notes_only_fault(&history, &json!({"address":"K/1","type":"anchor"})).is_none());
+        for kind in ["model", "event", "finding"] {
+            let card = json!({"address":"K/1|a","type":kind});
+            let fault = notes_only_fault(&history, &card).expect("a refused kind");
+            assert!(fault.contains("K/1|a") && fault.contains(kind), "{fault}");
+            assert!(notes_only_fault(&econ, &card).is_none());
+        }
     }
 
     #[test]

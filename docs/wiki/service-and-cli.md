@@ -855,6 +855,7 @@ Gaps:
 - **Case:** a Citation key is unique case-insensitively but found case-sensitively; `[[deletelit]]` does not reach `DeleteLit`.
 
 ## Change history
+- `2026-11-03` — `release-live.ps1`, `verify-release.ps1` and `tests/release_manifest.rs` cover `zt-history-digest`; the manifest test reads a retained version with `get`, because a variant new in a release has none.
 - `2026-11-03` — #263 (zt 0.57.0): `export::write` splits from `export::run` so the GUI can export a tree.
 - `2026-11-03` — #257, #258 (zt 0.56.0): `zt export` writes one tree as a portable folder (`src/export.rs`, see Portable export above). Tests: `tests/portable_export.rs`.
 - `2026-11-03` — #253: `zt dp` (`cmd_dump`) takes no edit lock. `dump_view(root)` reads the Cards, the next Topic id and the Lock export in one SQLite read transaction, which in WAL mode sees one committed state while other clients write, so the dump still describes one archive state (R314, S13-AC01) and no longer refuses while a digest or another client writes. The edit lock stays with every writer; `zt status --check-locks` and the GUI's Lock panel take it only to record a new fault. Test: `tests::a_dump_reads_while_another_client_holds_the_edit_lock`.

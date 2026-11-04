@@ -1,0 +1,570 @@
+{
+  "args": {
+    "out": "D:/x/Key",
+    "citationKey": "Key",
+    "source": "S.md",
+    "bibtex": "@book{Key}",
+    "bookTitle": "书"
+  },
+  "answers": [
+    {
+      "label": "^prepare backfill: term-cards$",
+      "answer": {
+        "ok": true,
+        "output": "{\"schema_version\":1,\"kind\":\"backfill_preparation\",\"step\":\"sections\",\"book\":\"Key\",\"tree_address\":\"Key\",\"workspace\":\"agent\",\"tree\":{\"cards\":9,\"heads\":0,\"parts\":0,\"occupying\":[]},\"list\":{\"address\":\"Key/1|a\",\"type\":\"term\",\"title\":\"术语表：模拟\",\"legacy\":false,\"rows\":2,\"terms\":[\"均衡\",\"剩余控制权\"],\"sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\"},\"list_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"source\":{\"path\":\"S.md\",\"sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"sections\":2,\"book_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"reused\":true,\"rebuilt\":[],\"bound\":true},\"drafts\":null,\"contract\":\"5.6.0/6.6.0\",\"archive_revision\":7,\"conflicts\":[],\"complete\":true,\"record\":\"D:\\\\x\\\\Key\\\\backfill.json\",\"ok\":true}"
+      }
+    },
+    {
+      "label": "^prepare backfill: term-link$",
+      "answer": {
+        "ok": true,
+        "output": "{\"schema_version\":1,\"kind\":\"backfill_preparation\",\"step\":\"validate\",\"book\":\"Key\",\"tree_address\":\"Key\",\"workspace\":\"agent\",\"tree\":{\"cards\":9,\"heads\":0,\"parts\":0,\"occupying\":[]},\"list\":{\"address\":\"Key/1|a\",\"type\":\"term\",\"title\":\"术语表：模拟\",\"legacy\":false,\"rows\":2,\"terms\":[\"均衡\",\"剩余控制权\"],\"sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\"},\"list_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"source\":{\"path\":\"S.md\",\"sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"sections\":2,\"book_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"reused\":true,\"rebuilt\":[],\"bound\":true},\"drafts\":null,\"contract\":\"5.6.0/6.6.0\",\"archive_revision\":7,\"conflicts\":[],\"complete\":true,\"record\":\"D:\\\\x\\\\Key\\\\backfill.json\",\"ok\":true}"
+      }
+    },
+    {
+      "label": "^bridge: plan$",
+      "prompt": "Run the jobs with these ids",
+      "answer": {
+        "ok": true,
+        "output": "",
+        "results": [
+          {
+            "id": "br-001",
+            "session_id": "s-sim",
+            "status": "done",
+            "answer": "{\"job\":\"br-001\",\"proposals\":1,\"faults\":0}"
+          }
+        ]
+      }
+    },
+    {
+      "label": "^bridge: plan$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"status\":\"done\",\"plan_id\":\"p-sim\",\"selected\":1,\"jobs\":[{\"id\":\"br-001\",\"files\":[\"prompt.md\",\"job.md\"],\"prompt\":\"judge\"}]}",
+        "results": []
+      }
+    },
+    {
+      "label": "^bridge: report$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"step\":\"report\",\"report_id\":\"r-sim\",\"proposals\":1,\"new\":1,\"earlier\":0,\"refused\":0}",
+        "results": []
+      }
+    },
+    {
+      "label": "^bridge: apply new$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"status\":\"done\",\"applied\":1,\"refused\":0,\"unit\":\"bridge/book@2\",\"state\":\"done\"}"
+      }
+    },
+    {
+      "label": "^prepare book$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"groups\":2,\"citation_key\":\"Key\"}"
+      }
+    },
+    {
+      "label": "^digest manager",
+      "answer": {
+        "reports": [
+          {
+            "group": 1,
+            "status": "done",
+            "cards": 3,
+            "models": 0,
+            "events": 0,
+            "links": 0,
+            "errors": "无",
+            "deleted": true
+          },
+          {
+            "group": 2,
+            "status": "done",
+            "cards": 3,
+            "models": 0,
+            "events": 0,
+            "links": 0,
+            "errors": "无",
+            "deleted": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "^find models",
+      "answer": {
+        "answer": "{\"ok\":true,\"units\":[],\"claimed\":0,\"models\":[],\"missing\":[],\"gate\":{\"complete\":true,\"counts\":{}}}"
+      }
+    },
+    {
+      "label": "^prepare link pass$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"pending\":2,\"no_gap\":0,\"blocked\":0,\"gaps\":3,\"gap_total\":3,\"skipped_total\":0,\"owned_total\":3,\"unowned\":0,\"digest_state\":\"ledger\"}"
+      }
+    },
+    {
+      "label": "^link manager",
+      "answer": {
+        "reports": [
+          {
+            "group": 1,
+            "status": "done",
+            "cards": 2,
+            "links": 2,
+            "errors": "无",
+            "deleted": true
+          },
+          {
+            "group": 2,
+            "status": "done",
+            "cards": 2,
+            "links": 2,
+            "errors": "无",
+            "deleted": true
+          }
+        ]
+      }
+    },
+    {
+      "label": "^organize: survey$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"merges\":0,\"moves\":0,\"issues\":0}"
+      }
+    },
+    {
+      "label": "^organize: decisions$",
+      "answer": {
+        "thesis": "论点",
+        "merges": 0,
+        "moves": 0,
+        "notes": 0,
+        "report": "无"
+      }
+    },
+    {
+      "label": "^organize: apply$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"merges\":0,\"moves\":0,\"refused\":0,\"notes\":0,\"thesis\":true}"
+      }
+    },
+    {
+      "label": "^show figures$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"shown\":0,\"cards\":0,\"figures\":0,\"labelled\":0,\"literature\":true}"
+      }
+    },
+    {
+      "label": "^audit cards$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"books\":1,\"cards\":9,\"style_faults\":0,\"layer_faults\":0,\"orphans\":0,\"no_source\":0,\"unkinded\":0,\"not_self_sufficient\":0,\"models\":0,\"explained\":0,\"derivations\":0,\"figures_missing\":0,\"terms\":\"complete\",\"term_published\":2,\"term_rows\":2,\"term_heads\":2,\"term_uses\":2,\"term_faults\":0,\"hubs_missing\":0,\"broken_links\":0}"
+      }
+    },
+    {
+      "prompt": "zt-digest card -Step plan",
+      "answer": {
+        "ok": true,
+        "output": "{\"picked\":0,\"with_faults\":0,\"faults\":0,\"review\":0,\"orphans\":0,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest card -Step report",
+      "answer": {
+        "ok": true,
+        "output": "{\"cards\":0,\"faults_before\":0,\"faults_after\":0}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest terms -Step apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"terms\":2,\"with_avoid\":1,\"card\":\"Key/1|a\"}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest skeleton -Step apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"thesis\":\"论点\",\"argument\":2,\"models\":0,\"events\":0,\"written\":{\"structure\":\"Key/1|b\"}}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest event -Step plan",
+      "answer": {
+        "ok": true,
+        "output": "{\"candidates\":2,\"groups\":2,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest event -Step apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"applied_jobs\":0,\"created\":0,\"merged\":0,\"linked\":0,\"refused\":[],\"pending_jobs\":0}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest event -Step report",
+      "answer": {
+        "ok": true,
+        "output": "{\"jobs\":0,\"created\":0,\"merged\":0,\"linked\":0,\"refused\":0,\"errors\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest finding -Step plan",
+      "answer": {
+        "ok": true,
+        "output": "{\"candidates\":3,\"groups\":2,\"jobs\":[]}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest finding -Step apply",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"applied_jobs\":0,\"created\":0,\"linked\":0,\"refused\":[],\"pending_jobs\":0}",
+        "results": []
+      }
+    },
+    {
+      "prompt": "zt-digest finding -Step report",
+      "answer": {
+        "ok": true,
+        "output": "{\"jobs\":0,\"created\":0,\"linked\":0,\"refused\":0,\"errors\":[]}",
+        "results": []
+      }
+    },
+    {
+      "label": "^finalize plan$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"step\":\"plan\",\"branch\":\"fix\",\"audit_unit\":\"audit/book@1\",\"audit_revision\":1,\"graph_revision\":7,\"faults\":2,\"hard\":1,\"advisory\":1,\"fix\":1,\"stale\":0,\"conflict\":0,\"blocked\":0,\"cycle_permitted\":1,\"cycle_used\":0,\"cycle_cards\":1,\"cycle_rules\":\"R3\",\"cycle_card_list\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix-cards.txt\",\"refresh\":\"\"}"
+      }
+    },
+    {
+      "label": "^finalize scope$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"step\":\"scope\",\"graph_revision\":8,\"cards\":1,\"trees\":1,\"changes\":\"D:\\\\x\\\\Key\\\\finalize\\\\changes.json\",\"cycle_report\":\"D:\\\\x\\\\Key\\\\finalize\\\\fix\\\\report.json\",\"term_applicable\":true,\"term_scope\":\"cards\",\"term_round\":1,\"term_cards\":1,\"refresh\":\"link-check\"}"
+      }
+    },
+    {
+      "label": "^finalize refresh link-check$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"changed_cards\":1}"
+      }
+    },
+    {
+      "label": "^finalize final$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"status\":\"done\",\"branch\":\"fix\",\"graph_revision\":8,\"audit_unit\":\"audit/book@2\",\"audit_revision\":2,\"changes_cards\":1,\"changes_trees\":1,\"term_status\":\"complete\",\"term_round\":1,\"term_scope\":\"cards\",\"term_unit\":\"termlink/final@1\",\"term_state\":\"done\",\"terms_status\":\"complete\",\"terms_published\":2,\"terms_rows\":2,\"terms_heads\":2,\"terms_uses\":2,\"terms_complete\":true}"
+      }
+    },
+    {
+      "label": "^terms block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"terms\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
+      }
+    },
+    {
+      "label": "^digest block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"digest\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
+      }
+    },
+    {
+      "label": "^events block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"events\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
+      }
+    },
+    {
+      "label": "^findings block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"findings\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
+      }
+    },
+    {
+      "label": "^explain block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"explain\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
+      }
+    },
+    {
+      "label": "^link (l\\d+ )?block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"link\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
+      }
+    },
+    {
+      "label": "^cards block \\d+: start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"cards\",\"units\":0,\"claimed\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
+      }
+    },
+    {
+      "label": "^term-cards: drive start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"jobs\":0,\"plan_revision\":1}"
+      }
+    },
+    {
+      "label": "^term-cards: drive review$",
+      "answer": {
+        "answer": "{\"ok\":true,\"reviews\":0}"
+      }
+    },
+    {
+      "label": "^term-cards: drive fix$",
+      "answer": {
+        "answer": "{\"ok\":true,\"fixes\":0}"
+      }
+    },
+    {
+      "label": "^term-cards: drive finish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"done\":0,\"failed\":0,\"book\":\"done\",\"complete\":true,\"rows\":2,\"committed\":2}"
+      }
+    },
+    {
+      "label": "^term-link: drive link$",
+      "answer": {
+        "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/book@1\",\"cards_changed\":0,\"links_added\":0,\"second_cards_changed\":0,\"second_cards_refused\":0}"
+      }
+    },
+    {
+      "label": "^cards publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"cards-book\",\"unit\":\"cards-book/book@1\",\"revision\":1,\"state\":\"ready\"}"
+      }
+    },
+    {
+      "label": "^cards-book claim$",
+      "answer": {
+        "answer": "{\"ok\":true,\"unit\":\"cards-book/book@1\",\"token\":1,\"input_hash\":\"ih-cb\",\"revision\":\"cards-book/book@1\",\"open\":0}"
+      }
+    },
+    {
+      "label": "^whole book: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"picked\":9,\"with_faults\":2,\"faults\":2,\"review\":0,\"orphans\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^whole book: check 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":1,\"faults\":0,\"orphans\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^whole book: report$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
+      }
+    },
+    {
+      "label": "^cards-book finish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"unit\":\"cards-book/book@1\",\"state\":\"done\",\"disposition\":\"published\",\"complete\":true}"
+      }
+    },
+    {
+      "label": "^cards-book fault$",
+      "answer": {
+        "answer": "{\"ok\":true,\"unit\":\"cards-book/book@1\",\"state\":\"retry\"}"
+      }
+    },
+    {
+      "label": "^link check: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"picked\":9,\"with_faults\":2,\"faults\":2,\"review\":0,\"orphans\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^link check: check 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":1,\"faults\":0,\"orphans\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^link check: report$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
+      }
+    },
+    {
+      "label": "^link-check: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"link-check\",\"unit\":\"link-check/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
+      }
+    },
+    {
+      "label": "^organize: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"organize\",\"unit\":\"organize/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
+      }
+    },
+    {
+      "label": "^organize: skeleton$",
+      "answer": {
+        "answer": "{\"ok\":true,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\skeleton\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^organize: skeleton apply$",
+      "answer": {
+        "answer": "{\"ok\":true,\"structure\":\"Key/1|b\",\"thesis\":\"论点\",\"argument\":2,\"models\":0,\"events\":0}"
+      }
+    },
+    {
+      "label": "^skeleton: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"skeleton\",\"unit\":\"skeleton/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
+      }
+    },
+    {
+      "label": "^figures: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"figures\",\"unit\":\"figures/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
+      }
+    },
+    {
+      "label": "^bridge: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"bridge\",\"unit\":\"bridge/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
+      }
+    },
+    {
+      "label": "^cleanup: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"deletes\":0,\"workspaces\":0,\"evidence_recorded\":0,\"evidence_missing\":0,\"plan_file\":\"D:\\\\x\\\\Key\\\\cleanup\\\\settle-plan.json\",\"results_file\":\"D:\\\\x\\\\Key\\\\cleanup\\\\settle-results.json\"}"
+      }
+    },
+    {
+      "label": "^cleanup: settle the run$",
+      "answer": {
+        "answer": "{\"settle\":\"{\\\"ops\\\":0}\",\"ok\":true}"
+      }
+    },
+    {
+      "label": "^cleanup: apply$",
+      "answer": {
+        "answer": "{\"ok\":true,\"fallback\":false,\"deleted\":0,\"absent\":0,\"workspaces_removed\":0,\"workspaces_kept\":0,\"failed\":0,\"unknown\":0,\"unrecorded\":0,\"ready_claimed\":0,\"ready_done\":0,\"ready_partial\":0,\"ready_retry\":0,\"ready_failed\":0,\"book_unit\":\"cleanup/book@1\",\"book_ok\":true,\"book_status\":\"complete\"}"
+      }
+    },
+    {
+      "label": "^report the run from the ledger$",
+      "answer": {
+        "answer": "{\"ok\":true,\"settled\":true,\"content_complete\":true,\"quality_complete\":true,\"cleanup_complete\":true,\"complete\":true,\"declared\":3,\"done\":3,\"failed\":0,\"open\":0,\"gaps\":0,\"placeholders\":0,\"resume_available\":false,\"usage\":\"complete,per-run,1,0,100,20\"}"
+      }
+    },
+    {
+      "label": "^zt-finalize: term-link round$",
+      "answer": {
+        "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/final@1\",\"cards_changed\":1,\"links_added\":2,\"second_cards_changed\":0,\"second_cards_refused\":0,\"no_op\":false,\"complete\":true}"
+      }
+    },
+    {
+      "label": "^prepare resume$",
+      "answer": {
+        "answer": "{\"ok\":true,\"groups\":2,\"resumed\":true,\"citation_key\":\"Key\",\"variant\":\"econ\",\"max_attempts\":3,\"dsh_run_cap\":1200}"
+      }
+    },
+    {
+      "label": " gate$",
+      "answer": {
+        "answer": "{\"ok\":true,\"complete\":true,\"counts\":{\"total\":2,\"done\":2,\"failed\":0,\"open\":0}}"
+      }
+    },
+    {
+      "label": "^final correction: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"picked\":9,\"with_faults\":2,\"faults\":2,\"review\":0,\"orphans\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^final correction: check 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":1,\"faults\":0,\"orphans\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^final correction: report$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
+      }
+    },
+    {
+      "label": "^organize notes: plan$",
+      "answer": {
+        "answer": "{\"ok\":true,\"picked\":9,\"with_faults\":2,\"faults\":2,\"review\":0,\"orphans\":0,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^organize notes: check 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":1,\"faults\":0,\"orphans\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\cards\\\\out\\\\jobs.json\"}"
+      }
+    },
+    {
+      "label": "^organize notes: report$",
+      "answer": {
+        "answer": "{\"ok\":true,\"applied\":1,\"cards\":9,\"picked\":9,\"faults_before\":2,\"faults_after\":0,\"splits\":0,\"merges\":0,\"refused\":0,\"orphan_links\":0,\"orphans_after\":0,\"quality_complete\":true}"
+      }
+    },
+    {
+      "label": "^report: coverage$",
+      "answer": {
+        "ok": true,
+        "output": "{\"ok\":true,\"units\":200,\"covered\":159,\"skipped\":0,\"uncovered\":41,\"pct\":80,\"detail\":\"D:\\\\\\\\x\\\\\\\\Key\\\\\\\\coverage.json\"}"
+      }
+    },
+    {
+      "label": "^prepare backfill: cited-cards$",
+      "answer": {
+        "ok": true,
+        "output": "{\"schema_version\":1,\"kind\":\"backfill_preparation\",\"step\":\"validate\",\"book\":\"Key\",\"tree_address\":\"Key\",\"workspace\":\"agent\",\"tree\":{\"cards\":9,\"heads\":0,\"parts\":0,\"occupying\":[]},\"list\":{\"address\":\"Key/1|a\",\"type\":\"term\",\"title\":\"术语表：模拟\",\"legacy\":false,\"rows\":2,\"terms\":[\"均衡\",\"剩余控制权\"],\"sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\"},\"list_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"source\":{\"path\":\"S.md\",\"sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"sections\":2,\"book_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"reused\":true,\"rebuilt\":[],\"bound\":true},\"drafts\":null,\"contract\":\"5.6.0/6.6.0\",\"archive_revision\":7,\"conflicts\":[],\"complete\":true,\"record\":\"D:\\\\x\\\\Key\\\\backfill.json\",\"ok\":true}"
+      }
+    },
+    {
+      "label": "^cited: drive list$",
+      "answer": {
+        "answer": "{\"ok\":true,\"rows\":3}"
+      }
+    },
+    {
+      "label": "^cited: drive list-finish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"rows\":3,\"card\":\"Key/1|b\",\"unit\":\"done\"}"
+      }
+    },
+    {
+      "label": "^cited-cards: drive start$",
+      "answer": {
+        "answer": "{\"ok\":true,\"jobs\":0,\"plan_revision\":1}"
+      }
+    },
+    {
+      "label": "^cited-cards: drive finish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"book\":\"done\",\"complete\":true,\"rows\":3,\"committed\":3}"
+      }
+    }
+  ]
+}

@@ -152,7 +152,7 @@ $hashes = [ordered]@{
 $assembler = Join-Path $HOME '.claude\skills\workflow-framework-protocol\tools\assemble.mjs'
 $workflows = [ordered]@{}
 if (Test-Path -LiteralPath $assembler) {
-    foreach ($name in @('zt-econ-digest', 'zt-math-digest')) {
+    foreach ($name in @('zt-econ-digest', 'zt-math-digest', 'zt-history-digest')) {
         $run = Invoke-Lines (Get-Command node -CommandType Application | Select-Object -First 1).Source @($assembler, 'verify', $name, '--scope', 'project', '--project', $Project)
         $answer = $null
         try { $answer = $run.lines[-1] | ConvertFrom-Json -DateKind String } catch { }
