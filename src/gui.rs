@@ -1324,6 +1324,7 @@ impl App {
             (Method::Post, "/api/delete") => self.delete(body),
             (Method::Post, "/api/move") => self.move_card(body),
             (Method::Post, "/api/batch") => self.batch(body),
+            (Method::Post, "/api/export") => self.export(body),
             (Method::Post, "/api/insert") => self.insert_card(body),
             (Method::Post, "/api/reply") => self.reply(body),
             (Method::Get, "/api/locks") => self.locks(),
@@ -2232,6 +2233,22 @@ impl App {
             body,
             &mut crate::scope::WriteScope::default(),
         )?)
+    }
+
+    /// Write one tree as a portable export into the default folder (#263). It reads the cached
+    /// Snapshot and changes no Card, so the archive revision stays where it is.
+    fn export(&self, body: &Value) -> ApiResult {
+        let tree = str_field(body, "tree")?;
+        let snapshot = self.snapshot()?;
+        let written = crate::export::write(&self.root, &snapshot, &tree, None)?;
+        Ok(json!({
+            "tree": written.tree,
+            "folder": written.folder.display().to_string(),
+            "cards": written.cards,
+            "bytes": written.bytes,
+            "outside": written.outside,
+            "missing": written.missing,
+        }))
     }
 
     /// Insert a new Card at the place of `before`, which moves down.
@@ -4591,7 +4608,7 @@ mod tests {
 
     #[test]
     fn every_route_that_needs_the_service_says_it_is_not_available() {
-        let writes = ["edit", "create", "delete", "move", "insert", "batch", "reply", "ask", "metadata", "hub/draft", "hub/check", "literature", "literature/check", "render", "scholar/artifact", "scholar/preview", "lock/plan", "anything-new"];
+        let writes = ["edit", "create", "delete", "move", "insert", "batch", "reply", "ask", "export", "metadata", "hub/draft", "hub/check", "literature", "literature/check", "render", "scholar/artifact", "scholar/preview", "lock/plan", "anything-new"];
         let list = serde_json::to_string(&writes).unwrap();
         let Some(answers) = portable_js(&format!("({list}).map((route) => ask(route, 'POST', {{}})).concat([ask('scholar/works?q=x'), ask('register?ws=agent')])")) else {
             eprintln!("node is not installed; the portable rules were not run");

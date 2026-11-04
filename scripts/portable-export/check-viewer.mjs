@@ -4,6 +4,9 @@
 // clicks every function that needs the service and expects the portable notice.
 //
 //   node scripts/portable-export/check-viewer.mjs --folder <export> [--scene <scene.json>] [--browser <exe>]
+//   node scripts/portable-export/check-viewer.mjs --live <gui url> --tree <tree> [--browser <exe>]
+//
+// With --live it checks the other side: the running GUI's own Export action, on a scratch service.
 //
 // The scene names the facts of a scratch export (see `browser_check` in tests/portable_export.rs).
 // Without one the export counts as a whole real book: it times the moves, draws every chart, opens
@@ -11,7 +14,7 @@
 // one JSON line and exits 0 when all passed.
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -25,6 +28,7 @@ const args = Object.fromEntries(
   }, []),
 );
 const folder = resolve(args.folder ?? '.');
+const live = args.live ?? null;
 const scene = args.scene ? JSON.parse(readFileSync(args.scene, 'utf8')) : null;
 
 const BROWSERS = [
@@ -294,6 +298,10 @@ async function checkUnsupported(page) {
   await reach('the command `e`', command('e'));
   await reach('the command `del`', command('del'));
   await reach('the command `lv formal`', command('lv formal'));
+  await reach('the command `export`', command('export'));
+  const menuRow = (act) => `(() => { document.querySelector('.drawer').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 200 })); document.querySelector('.tree-menu [data-act="${act}"]').click(); })()`;
+  await reach('Export tree in the tree menu', menuRow('export'));
+  await reach('Lock tree in the tree menu', menuRow('lock'));
   const key = async (name, letter) => {
     await page.value(`${clearToasts}; document.activeElement?.blur(); 0`);
     await page.press(letter);
@@ -424,6 +432,39 @@ async function checkHostileFile(page) {
   trap.close();
 }
 
+/** The running GUI's Export action: the tree menu and the command bar, on a scratch service. */
+async function checkLiveExport(page) {
+  await page.go(`${live}#/card/${encodeURIComponent(args.tree)}`);
+  check('the running GUI opens', await page.until(stampIs(args.tree), 'the Card', 20000));
+  check('the running GUI is no portable page', await page.value('!window.ZtPortable'));
+  await page.until(`document.querySelectorAll('.drawer').length > 0`, 'the cabinet');
+  await page.value(`document.querySelector('.drawer').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 200 })); 0`);
+  await page.until(`!!document.querySelector('.tree-menu')`, 'the tree menu');
+  const rows = await page.value(`[...document.querySelectorAll('.tree-menu .nav-row')].map((row) => row.dataset.act)`);
+  check('Export sits under Open in the tree menu', rows[0] === 'open' && rows[1] === 'export', rows);
+
+  const exported = async (name, start) => {
+    await page.value(`${clearToasts}; 0`);
+    await page.value(`${start}; 0`);
+    const ok = await page.until(toastHas('Exported'), `the toast of ${name}`, 30000);
+    const line = ok ? await page.value(`[...document.querySelectorAll('#toasts .toast')].find((n) => n.textContent.includes('Exported')).textContent`) : '';
+    const place = /to (.+?)(?:Copy path)?$/.exec(line)?.[1]?.trim();
+    const files = place && existsSync(place) ? readdirSync(place).sort() : [];
+    check(`${name} writes the two files`, files.join() === 'cards.json,index.html', { line, files });
+    return page.value(`[...document.querySelectorAll('#toasts .toast-act')].some((n) => n.textContent === 'Copy path')`);
+  };
+  check('the toast offers the path', await exported('Export tree', `document.querySelector('.tree-menu [data-act="export"]').click()`));
+  check('the waiting toast leaves', !(await page.value(toastHas('Exporting'))));
+  await sleep(1100);
+  const command = (line) => `(() => { const input = document.getElementById('command-input'); input.value = ${JSON.stringify(line)}; input.focus(); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`;
+  await exported('the command `export`', command('export'));
+  await sleep(1100);
+  await exported('the command `export <tree>`', command(`export ${args.tree}`));
+  await page.value(`${clearToasts}; 0`);
+  await page.value(`${command('export Nope2026')}; 0`);
+  check('a tree that is not there is named', await page.until(toastHas('tree `Nope2026` does not exist'), 'the refusal'));
+}
+
 async function checkFromHttp(page) {
   const server = await serveFolder();
   await page.go(`http://127.0.0.1:${server.address().port}/`);
@@ -551,9 +592,12 @@ async function checkBook(page) {
 let page;
 try {
   page = await connect();
-  await checkFromDisk(page);
-  await checkSameGui(page);
-  if (scene) {
+  if (live) await checkLiveExport(page);
+  else await checkFromDisk(page);
+  if (!live) await checkSameGui(page);
+  if (live) {
+    // The Export action alone.
+  } else if (scene) {
     await checkReader(page);
     await checkContent(page);
     await checkUnsupported(page);

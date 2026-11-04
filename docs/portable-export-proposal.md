@@ -189,7 +189,9 @@ link has any other label, because that would lose the address.
   the `DumpArtifacts` pattern.
 - Success line: `exported 321 cards of grossman2002integration to <folder> (3.1 MB)`, plus one line
   each when there are outside Links or missing figures.
-- First release is CLI only. No MCP tool and no GUI button.
+- The first release was CLI only. zt 0.57.0 added `Export tree` to the GUI's tree menu and the command
+  `export [<tree>]` (#263), through one `POST /api/export` that shares `export::write`. There is still no
+  MCP tool.
 
 New code: `src/export.rs` (collect, write), the render target in `src/gui.rs`, and
 `src/gui/portable.html` with its script. `cmd_export` joins the dispatch in `src/main.rs`.

@@ -656,6 +656,9 @@ a book can leave this machine and read by itself:
   index.html    the zt GUI itself, with KaTeX inside and no Card data
 ```
 
+In the GUI, right-click a tree's drawer or stack and choose `Export tree`, or type `export [<tree>]` in
+the command bar; a message then says where the folder went. The GUI always uses the default folder.
+
 `<tree>` is a Topic number, a Citation key, or any address in the tree. A bare `zt export` is a usage
 error: no form of the command exports the box. `--out` names another folder, which must be new or
 empty. Read the folder with no `zt`, service, Scholar Archive or network:

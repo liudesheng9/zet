@@ -521,3 +521,102 @@ fn a_real_browser_opens_the_export_from_disk() {
         assert_eq!(report["failures"], json!([]), "{report}");
     }
 }
+
+/// The running GUI of a scratch box: its port and its token.
+fn gui_of(scratch: &ScratchBox) -> (u16, String) {
+    let out = scratch.cmd().arg("gui").output().expect("zt gui");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let port: u16 = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("zt gui: http://127.0.0.1:"))
+        .and_then(|rest| rest.trim_end_matches('/').parse().ok())
+        .unwrap_or_else(|| panic!("zt gui prints its URL: {text}"));
+    let (_, page) = http(port, "GET", "/", "", "");
+    let token = page
+        .split("name=\"zt-token\" content=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the page carries the GUI token")
+        .to_string();
+    (port, token)
+}
+
+fn http(port: u16, method: &str, path: &str, token: &str, body: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect to the GUI");
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nConnection: close\r\nHost: 127.0.0.1:{port}\r\nX-ZT-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).expect("send");
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply).expect("read");
+    let reply = String::from_utf8_lossy(&reply).to_string();
+    let status = reply.split(' ').nth(1).and_then(|code| code.parse().ok()).expect("status line");
+    let body = reply.split_once("\r\n\r\n").map(|(_, body)| body.to_string()).unwrap_or_default();
+    (status, body)
+}
+
+fn post_export(port: u16, token: &str, body: &Value) -> (u16, Value) {
+    let (status, text) = http(port, "POST", "/api/export", token, &body.to_string());
+    (status, serde_json::from_str(&text).unwrap_or_else(|_| panic!("JSON answer: {text}")))
+}
+
+#[test]
+fn the_gui_route_writes_the_same_two_files_into_the_export_folder() {
+    let book = book();
+    let (port, token) = gui_of(&book.scratch);
+    let (status, answer) = post_export(port, &token, &json!({ "tree": book.second }));
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["tree"], "Test2026", "any address names its tree");
+    assert_eq!(answer["cards"], 3);
+    assert_eq!(answer["outside"], 1);
+    assert_eq!(answer["missing"], 0);
+    assert!(answer["bytes"].as_u64().unwrap() > 1_000_000, "{answer}");
+    let folder = PathBuf::from(answer["folder"].as_str().expect("folder"));
+    assert!(folder.starts_with(book.scratch.archive_root.join("export")), "{folder:?}");
+    assert_eq!(file_names(&folder), [CARDS, VIEWER]);
+    assert_eq!(cards_json(&folder)["tree"]["id"], "Test2026");
+}
+
+#[test]
+fn the_gui_route_refuses_what_it_cannot_export_and_writes_nothing() {
+    let book = book();
+    let (port, token) = gui_of(&book.scratch);
+    let (status, answer) = post_export(port, &token, &json!({ "tree": "Nope2026" }));
+    assert_eq!(status, 400);
+    assert_eq!(answer["error"], "tree `Nope2026` does not exist");
+    let (status, answer) = post_export(port, &token, &json!({}));
+    assert_eq!(status, 400);
+    assert_eq!(answer["error"], "missing `tree` field");
+    let (status, _) = post_export(port, "wrong", &json!({ "tree": "Test2026" }));
+    assert_eq!(status, 403);
+    assert!(!book.scratch.archive_root.join("export").exists());
+}
+
+#[test]
+fn a_real_browser_exports_from_the_running_gui() {
+    let scene = rich();
+    let (port, _) = gui_of(&scene.scratch);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/portable-export/check-viewer.mjs");
+    let output = match std::process::Command::new("node")
+        .arg(script)
+        .arg("--live")
+        .arg(format!("http://127.0.0.1:{port}/"))
+        .arg("--tree")
+        .arg("Test2026")
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => {
+            eprintln!("node is not installed; the GUI was not opened");
+            return;
+        }
+    };
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let report: Value = serde_json::from_str(text.lines().last().unwrap_or_default())
+        .unwrap_or_else(|_| panic!("check printed {text:?}\n{}", String::from_utf8_lossy(&output.stderr)));
+    if report.get("skipped").is_none() {
+        assert_eq!(report["failures"], json!([]), "{report}");
+    }
+}

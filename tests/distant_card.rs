@@ -255,9 +255,25 @@ impl Gui {
             self.port
         )
         .expect("request asset");
-        let mut page = String::new();
-        stream.read_to_string(&mut page).expect("read asset");
-        page
+        let mut page = Vec::new();
+        stream.read_to_end(&mut page).expect("read asset");
+        let page = String::from_utf8_lossy(&page).to_string();
+        let (head, body) = page.split_once("\r\n\r\n").expect("headers");
+        if !head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+            return body.to_string();
+        }
+        // A large asset arrives in chunks; a word can straddle two of them.
+        let mut text = String::new();
+        let mut rest = body;
+        while let Some((size, after)) = rest.split_once("\r\n") {
+            let size = usize::from_str_radix(size.trim(), 16).expect("chunk size");
+            if size == 0 {
+                break;
+            }
+            text.push_str(&after[..size]);
+            rest = &after[size + 2..];
+        }
+        text
     }
 
     fn register(&self) -> Value {

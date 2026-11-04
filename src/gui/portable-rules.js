@@ -29,6 +29,7 @@
     create: 'Writing a Card',
     delete: 'Deleting a Card',
     edit: 'Editing a Card',
+    export: 'Exporting a tree',
     'hub/check': 'Filing a hub',
     'hub/draft': 'Filing a hub',
     insert: 'Inserting a Card',

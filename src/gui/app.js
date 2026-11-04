@@ -107,6 +107,7 @@
       node.addEventListener('mouseenter', () => clearTimeout(timer));
       node.addEventListener('mouseleave', () => { clearTimeout(timer); timer = setTimeout(() => node.remove(), 2500); });
     }
+    return node;
   }
 
   /**
@@ -433,6 +434,7 @@
     ['ty <idea|event|finding|model|hub|term|cited> [<facet|name>]', 'make the current card an Idea, Event, Finding, Model, Hub, Term, or Cited Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part; a name makes a Term Card that term\'s definition (none: a Term list)', 'regular'],
     ['lv <level|none>', 'set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)', 'regular'],
     ['mf <form|none>', 'set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary', 'regular'],
+    ['export [<tree>]', 'write a tree as a portable folder: its data and this GUI, which read with no service (default: the open tree)', 'always'],
     ['stats', 'count cards by kind', 'always'],
     ['status', 'show service status', 'always'],
     ['lsbk', 'list broken links', 'always'],
@@ -461,6 +463,11 @@
     if (state.card && ZtLock.COMMAND_WRITES[name]) gateWrite(state.card, ZtLock.COMMAND_WRITES[name]);
     switch (name) {
       case 'q': return quit();
+      case 'export': {
+        if (rest.length > 1) throw new Error('usage: export [<tree>]');
+        if (!rest.length) needCard();
+        return exportTree(rest[0] || state.card.tree);
+      }
       case 'root': return go(null);
       case 'back':
         if (rest.length) throw new Error('usage: back');
@@ -6328,7 +6335,24 @@
   }
 
   /** Lock tree: review the whole tree's plan, then freeze it. */
+  /** Write one tree as a portable folder, and say where it went: nothing else shows that it happened. */
+  async function exportTree(tree) {
+    if (notInPortable('Exporting a tree')) return;
+    const waiting = toast(`Exporting ${tree}…`);
+    let written;
+    try {
+      written = await api('export', { tree });
+    } finally {
+      waiting.remove();
+    }
+    toast(`Exported ${written.cards} cards of ${written.tree} to ${written.folder}`, null, {
+      label: 'Copy path',
+      run: () => navigator.clipboard?.writeText(written.folder).then(() => toast('copied the folder path'), () => {}),
+    });
+  }
+
   async function lockTree(rootAddress) {
+    if (notInPortable('Tree Locks')) return;
     const done = await lockDialog({
       action: 'lock', path: 'lock', verb: 'Lock tree', noteField: true, note: '',
       heading: `Lock tree ${rootAddress}`,
@@ -6534,6 +6558,7 @@
 
     async function run(id, tree) {
       if (id === 'open') { go(tree.root); openRail(false); return; }
+      if (id === 'export') { await exportTree(tree.root); return; }
       if (id === 'lock') { await lockTree(tree.root); return; }
       if (id === 'panel') { await lockPanel(tree.root); return; }
       // Note and unlock act on the exact active Lock, read fresh if the page has none in hand.
@@ -6546,7 +6571,9 @@
 
     function open(tree, x, y) {
       close();
-      const rows = ZtLock.treeActions(tree.root, tree.locked, state.locks).map((item) => h('button', {
+      const [first, ...lockRows] = ZtLock.treeActions(tree.root, tree.locked, state.locks);
+      const actions = [first, { id: 'export', label: 'Export tree', note: 'a folder that reads by itself' }, ...lockRows];
+      const rows = actions.map((item) => h('button', {
         class: 'nav-row' + (item.danger ? ' danger' : ''), role: 'menuitem', dataset: { act: item.id },
         onclick: () => { close(); run(item.id, tree).catch(fail); },
       }, h('span', { class: 't', text: item.label }), item.note ? h('span', { class: 'addr', text: item.note }) : null));

@@ -35,7 +35,41 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     let (tree, out) = parse_args(args)?;
     let root = crate::require_service_up()?;
     let snapshot = Snapshot::read(&root)?;
-    let tree = crate::tree_id(&tree).to_string();
+    let written = write(&root, &snapshot, &tree, out)?;
+    println!(
+        "exported {} cards of {} to {} ({:.1} MB)",
+        written.cards,
+        written.tree,
+        written.folder.display(),
+        written.bytes as f64 / 1_048_576.0
+    );
+    if written.outside > 0 {
+        println!("{} Link targets lie outside this tree and stay inert", written.outside);
+    }
+    if written.missing > 0 {
+        println!("{} figures are not in this archive", written.missing);
+    }
+    Ok(())
+}
+
+/// What one export wrote; the command line and the GUI each report it in their own words.
+pub(crate) struct Written {
+    pub(crate) tree: String,
+    pub(crate) folder: PathBuf,
+    pub(crate) cards: usize,
+    pub(crate) bytes: usize,
+    pub(crate) outside: usize,
+    pub(crate) missing: usize,
+}
+
+/// Write one tree, named by its id or any address in it, into `folder` or the default folder.
+pub(crate) fn write(
+    root: &Path,
+    snapshot: &Snapshot,
+    tree: &str,
+    out: Option<PathBuf>,
+) -> Result<Written> {
+    let tree = crate::tree_id(tree).to_string();
     let root_address = crate::tree_root_address(&tree);
     if !snapshot.by_address.contains_key(&root_address) {
         bail!("tree `{tree}` does not exist");
@@ -52,24 +86,18 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         bail!("{} already exists and is not empty", folder.display());
     }
 
-    let export = collect(&root, &snapshot, &tree, &root_address, seconds)?;
+    let export = collect(root, snapshot, &tree, &root_address, seconds)?;
     let viewer = portable_viewer();
     let cards = serde_json::to_vec(&export.document)?;
     publish(&folder, &cards, viewer.as_bytes())?;
-
-    println!(
-        "exported {} cards of {tree} to {} ({:.1} MB)",
-        export.cards,
-        folder.display(),
-        (cards.len() + viewer.len()) as f64 / 1_048_576.0
-    );
-    if export.outside > 0 {
-        println!("{} Link targets lie outside this tree and stay inert", export.outside);
-    }
-    if export.missing > 0 {
-        println!("{} figures are not in this archive", export.missing);
-    }
-    Ok(())
+    Ok(Written {
+        tree,
+        folder,
+        cards: export.cards,
+        bytes: cards.len() + viewer.len(),
+        outside: export.outside,
+        missing: export.missing,
+    })
 }
 
 fn parse_args(args: &[String]) -> Result<(String, Option<PathBuf>)> {
