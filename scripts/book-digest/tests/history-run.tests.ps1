@@ -85,6 +85,41 @@ try {
     $finish = @(& $Digest group-finish -Out $out -Group 1 -Token $claim.token -Draft $started.draft 2>&1)
     Assert ($LASTEXITCODE -ne 0 -or ($finish -join ' ').Contains('reading notes only')) "the group finish refuses a Model Card ($($finish[-1]))"
     Assert (($finish -join ' ').Contains('reading notes only')) 'the refusal names the reason'
+
+    # The Figures stage on the real archive: a Card that never names a figure receives it through a reader's answer.
+    & $write @($note, $anchor)
+    $null = Run-Digest @('group-finish', '-Out', $out, '-Group', '1', '-Token', "$($claim.token)", '-Draft', $started.draft)
+    $store = Join-Path (Join-Path $scratch 'archive') 'artifacts'
+    New-Item -ItemType Directory -Force $store | Out-Null
+    $bytes = [byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) + [Text.Encoding]::ASCII.GetBytes('fixture')
+    $sha = -join ([Security.Cryptography.SHA256]::HashData($bytes) | ForEach-Object { $_.ToString('x2') })
+    [IO.File]::WriteAllBytes((Join-Path $store "$sha.png"), $bytes)
+    $figures = Join-Path $scratch 'figures.json'
+    [IO.File]::WriteAllText($figures, (@{ figures = @(@{ name = 'a.jpg'; sha256 = $sha; path = 'a.jpg'; labels = @('7.8'); alt = '图 7.8'; line = "![图 7.8](artifact:$sha)" }) } | ConvertTo-Json -Depth 6), $utf8)
+    $plan = Run-Digest @('figures', '-Step', 'plan', '-CitationKey', 'HistBook', '-Staging', $out, '-FiguresFile', $figures)
+    Assert ($plan.figures -eq 1 -and $plan.jobs -eq 1 -and $plan.chunks -eq 1) "the figure plan lists the figure and one reader job ($($plan | ConvertTo-Json -Compress))"
+    $jobs = @(Get-Content -LiteralPath (Join-Path $out 'figures\jobs-001.json') -Raw -Encoding utf8 | ConvertFrom-Json)
+    Assert ($jobs.Count -eq 1 -and $jobs[0].files.Count -eq 3) 'the manager job file lists the job with its instructions, list and Cards'
+    Assert ([IO.File]::ReadAllText($jobs[0].files[1]).Contains('7.8')) 'the figure list names the figure'
+    $task = [IO.File]::ReadAllText($jobs[0].files[2])
+    Assert ($task.Contains('行会控制呢绒贸易') -and -not $task.Contains('术语表')) 'the job holds the notes of the group'
+    $card = ([regex]::Match($task, '## `([^`]+)`')).Groups[1].Value
+    $answer = Join-Path $out 'figures\out\g001.json'
+    [IO.File]::WriteAllText($answer, (@{ links = @(@{ card = 'HistBook/9'; figures = @('9.9') }) } | ConvertTo-Json -Depth 6), $utf8)
+    $bad = @(& $Digest figures -Step precheck -CitationKey HistBook -Staging $out -Job g001 2>&1)
+    Assert ($LASTEXITCODE -ne 0 -and $bad[-1] -eq 'faults: 2') "the reader's SELF-CHECK refuses a Card and a label it does not know ($($bad -join ' | '))"
+    [IO.File]::WriteAllText($answer, (@{ links = @(@{ card = $card; figures = @('7.8') }) } | ConvertTo-Json -Depth 6), $utf8)
+    $good = @(& $Digest figures -Step precheck -CitationKey HistBook -Staging $out -Job g001 2>&1)
+    Assert ($LASTEXITCODE -eq 0 -and $good[-1] -eq 'faults: 0') "the reader's SELF-CHECK passes ($($good -join ' | '))"
+    $report = Join-Path $out 'figures-report.json'
+    $null = Run-Digest @('figures', '-CitationKey', 'HistBook', '-Staging', $out, '-FiguresFile', $figures, '-NoDocuments', '-Report', $report, '-Apply')
+    . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
+    $shown = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $card } })
+    Assert ("$($shown.body)".Contains("artifact:$sha")) 'the Card that never names the figure now shows it'
+    Assert ("$($shown.body)".IndexOf("artifact:$sha") -lt "$($shown.body)".IndexOf('来源：')) 'the figure stands before the source line'
+    $null = Run-Digest @('figures', '-CitationKey', 'HistBook', '-Staging', $out, '-FiguresFile', $figures, '-NoDocuments', '-Report', $report, '-Apply')
+    $again = Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $card } })
+    Assert ("$($again.body)" -ceq "$($shown.body)") 'a second pass changes nothing'
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

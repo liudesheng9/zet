@@ -8,6 +8,12 @@
   },
   "answers": [
     {
+      "label": "^figures: list$",
+      "answer": {
+        "answer": "{\"ok\":true,\"figures\":0,\"jobs\":0}"
+      }
+    },
+    {
       "label": "^prepare backfill: term-cards$",
       "answer": {
         "ok": true,

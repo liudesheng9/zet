@@ -372,7 +372,8 @@ fn mention_text(block: &str) -> String {
 }
 
 /// `Add-FiguresToBody`: the Card's new body and the alt texts of the figures it gains, or None.
-fn add_figures(card: &Card, by_label: &[(String, usize)], figures: &[(Figure, Vec<Mention>)]) -> Option<(String, Vec<String>)> {
+/// `related`: the sha256 of the figures a DeepSeek reader found related to this Card, named in it or not.
+fn add_figures(card: &Card, by_label: &[(String, usize)], figures: &[(Figure, Vec<Mention>)], related: &HashSet<String>) -> Option<(String, Vec<String>)> {
     let body = card.body.trim();
     let blocks: Vec<&str> = BLOCKS.split(body).filter(|b| !b.trim().is_empty()).collect();
     // Whether a chart or code fence is still open after each block.
@@ -418,12 +419,12 @@ fn add_figures(card: &Card, by_label: &[(String, usize)], figures: &[(Figure, Ve
         }
         let mut at = match at {
             Some(at) => at,
-            None => {
-                if !named(&card.title) {
-                    continue;
-                }
-                -1
+            None if named(&card.title) => -1,
+            None if related.contains(&sha) => {
+                // A related figure the Card never names goes after its last paragraph, before the source line.
+                (0..blocks.len() as i64).rev().find(|b| !blocks[*b as usize].trim_start().starts_with("来源")).unwrap_or(0)
             }
+            None => continue,
         };
         // A mention in a block that opens a fence goes after the fence closes.
         while at >= 0 && open[at as usize] && ((at + 1) as usize) < blocks.len() {
@@ -446,6 +447,141 @@ fn add_figures(card: &Card, by_label: &[(String, usize)], figures: &[(Figure, Ve
         }
     }
     Some((out.join("\n\n"), added))
+}
+
+/// A figure's caption: the first lines of text after its image, in English and Chinese, cut to 300 characters.
+fn caption_of(text: &str, name: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(at) = lines.iter().position(|line| image_name(line).as_deref() == Some(name)) else {
+        return String::new();
+    };
+    let taken: Vec<&str> = lines[at + 1..].iter().map(|l| l.trim()).filter(|l| !l.is_empty() && image_name(l).is_none()).take(2).collect();
+    ps::cut16(&taken.join(" "), 300)
+}
+
+/// The faults of one reader's answer: a Card that is not the job's, a label that is not the book's.
+fn answer_faults(answer: &Value, cards: &HashSet<String>, labels: &HashSet<String>) -> Vec<String> {
+    let Some(links) = answer["links"].as_array() else {
+        return vec!["the answer has no `links` list".to_string()];
+    };
+    let mut faults = Vec::new();
+    for link in links {
+        let card = s(&link["card"]);
+        if !cards.contains(&card) {
+            faults.push(format!("`{card}` is not a Card of this job"));
+        }
+        for figure in ps::ps_items(&link["figures"]).iter().map(s) {
+            if !labels.contains(&figure) {
+                faults.push(format!("`{figure}` is not a label of the figure list"));
+            }
+        }
+    }
+    faults
+}
+
+/// `figures -Step precheck`: the reader's SELF-CHECK.
+fn precheck(staging: &str, job: &str) -> Result<i32> {
+    let work = ps::join_path(staging, "figures");
+    let scope = util::read_json(ps::join_path(&work, &format!("scope/{job}.json")))?;
+    let list = util::read_json(ps::join_path(&work, "list.json"))?;
+    let cards: HashSet<String> = ps::ps_items(&scope["cards"]).iter().map(s).collect();
+    let labels: HashSet<String> = ps::ps_items(&list["figures"]).iter().flat_map(|f| ps::ps_items(&f["labels"])).map(|l| s(&l)).collect();
+    let faults = match util::read_json(ps::join_path(&work, &format!("out/{job}.json"))) {
+        Ok(answer) => answer_faults(&answer, &cards, &labels),
+        Err(error) => vec![format!("the answer cannot be read: {error}")],
+    };
+    let mut lines = faults.clone();
+    lines.push(format!("faults: {}", faults.len()));
+    util::print_lines(&lines)?;
+    Ok(if faults.is_empty() { 0 } else { 1 })
+}
+
+/// `figures -Step plan`: the book's figure list, and one reader job per group that holds notes.
+fn plan_jobs(zt: &mut Zt, key: &str, staging: &str, source: &str, ordered: &[(Figure, Vec<Mention>)]) -> Result<i32> {
+    use std::collections::BTreeMap;
+    let work = ps::join_path(staging, "figures");
+    for folder in ["jobs", "scope", "out"] {
+        std::fs::create_dir_all(ps::join_path(&work, folder))?;
+    }
+    let text = if source.is_empty() { String::new() } else { util::read_text(source)? };
+    let mut rows = Vec::new();
+    let mut lines = vec!["# 全书图表表".to_string(), String::new()];
+    for (figure, _) in ordered.iter().filter(|(f, _)| !f.labels.is_empty()) {
+        let name = s(&figure.path).rsplit(['/', '\\']).next().unwrap_or_default().to_string();
+        let caption = caption_of(&text, &name);
+        lines.push(format!("- {}：{}", figure.labels.join("、"), caption));
+        rows.push(json!({ "labels": figure.labels, "caption": caption, "sha256": figure.sha256 }));
+    }
+    let count = rows.len();
+    util::write_atomic(&ps::join_path(&work, "list.json"), &serde_json::to_string_pretty(&json!({ "figures": rows }))?)?;
+    util::write_atomic(&ps::join_path(&work, "list.md"), &format!("{}\n", lines.join("\n")))?;
+    util::write_atomic(&ps::join_path(&work, "instructions.md"), include_str!("../../../scripts/book-digest/dsh-figure-instructions.zh.md"))?;
+    let mut jobs = Vec::new();
+    if count > 0 {
+        let tree = zt.call("get_tree", json!({ "tree": key }))?;
+        let summaries = ps::ps_items(&tree["cards"]);
+        let group = Regex::new(&format!("(?i)^{}/(\\d+)\\|", regex::escape(key)))?;
+        let literature = HashSet::from([key.to_string()]);
+        let anchors = HashMap::from([(key.to_string(), util::read_json(ps::join_path(staging, "manifest.json"))?["groups"].as_array().map_or(0, Vec::len))]);
+        let mut by_group: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+        for card in &summaries {
+            let address = s(&card["address"]);
+            if !["idea", "event", "finding"].contains(&zt_check::graph::category(card, &literature, &anchors).as_str()) {
+                continue;
+            }
+            if let Some(caps) = group.captures(&address) {
+                by_group.entry(caps[1].parse()?).or_default().push(address);
+            }
+        }
+        for (number, addresses) in by_group {
+            let id = format!("g{number:03}");
+            let mut body = format!("# 第 {number} 组\n\n答案路径：`{}`\nSELF-CHECK: zt-digest figures -Step precheck -CitationKey {key} -Staging \"{staging}\" -Job {id}\n", ps::join_path(&work, &format!("out/{id}.json")));
+            for chunk in addresses.chunks(200) {
+                for card in zt.cards(chunk, "text")?.cards {
+                    body.push_str(&format!("\n## `{}` {}\n\n{}\n", s(&card["address"]), s(&card["title"]), s(&card["body"])));
+                }
+            }
+            let job_file = ps::join_path(&work, &format!("jobs/{id}.md"));
+            util::write_atomic(&job_file, &body)?;
+            util::write_atomic(&ps::join_path(&work, &format!("scope/{id}.json")), &serde_json::to_string(&json!({ "cards": addresses }))?)?;
+            jobs.push(json!({
+                "id": format!("figures-{id}"), "unit": "run", "token": 1,
+                "files": [ps::join_path(&work, "instructions.md"), ps::join_path(&work, "list.md"), job_file],
+                "prompt": "按图表核对任务生成 JSON 答案并运行 SELF-CHECK。",
+                "output": ps::join_path(&work, &format!("out/{id}.json")),
+            }));
+        }
+    }
+    let chunks = jobs.len().div_ceil(8);
+    for (k, chunk) in jobs.chunks(8).enumerate() {
+        util::write_atomic(&ps::join_path(&work, &format!("jobs-{:03}.json", k + 1)), &serde_json::to_string_pretty(chunk)?)?;
+    }
+    let file = ps::join_path(&work, "jobs.json");
+    util::write_atomic(&file, &serde_json::to_string_pretty(&jobs)?)?;
+    util::print_line(&util::compact(&json!({ "ok": true, "figures": count, "jobs": jobs.len(), "chunks": chunks, "file": file })))?;
+    Ok(0)
+}
+
+/// The readers' answers: each Card and the sha256 of the figures related to it.
+fn read_answers(staging: &str, ordered: &[(Figure, Vec<Mention>)]) -> Result<HashMap<String, HashSet<String>>> {
+    let mut related: HashMap<String, HashSet<String>> = HashMap::new();
+    let folder = ps::join_path(staging, "figures/out");
+    let Ok(entries) = std::fs::read_dir(&folder) else {
+        return Ok(related);
+    };
+    let by_label: HashMap<&str, &Figure> = ordered.iter().flat_map(|(f, _)| f.labels.iter().map(move |l| (l.as_str(), f))).collect();
+    for entry in entries {
+        let answer = util::read_json(entry?.path().to_string_lossy().as_ref())?;
+        for link in ps::ps_items(&answer["links"]) {
+            let shown = related.entry(s(&link["card"])).or_default();
+            for label in ps::ps_items(&link["figures"]).iter().map(s) {
+                if let Some(figure) = by_label.get(label.as_str()) {
+                    shown.insert(s(&figure.sha256));
+                }
+            }
+        }
+    }
+    Ok(related)
 }
 
 /// Writes through the helper semantics in one batch; a failure ends the run as `Invoke-Zt` did.
@@ -481,11 +617,14 @@ fn figure_presence(figures: &CiMap<Figure>, bodies: &[String], digested: Option<
 
 /// `zt-digest figures` (attach-figures.ps1).
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let params = ["CitationKey", "FileId", "Staging", "Source", "MinFigureBytes", "Report", "Batch", "FiguresFile"];
+    let params = ["CitationKey", "FileId", "Staging", "Source", "MinFigureBytes", "Report", "Batch", "FiguresFile", "Step", "Job"];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoDocuments", "Apply"])?;
     let key = a.required("CitationKey")?;
     if key.is_empty() {
         bail!("-CitationKey is required");
+    }
+    if a.str("Step") == "precheck" {
+        return precheck(&a.required("Staging")?, &a.required("Job")?);
     }
     let mut file_id = a.int_or("FileId", 0)?;
     let staging = a.str("Staging");
@@ -548,6 +687,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         return crate::lockcheck::stop("figures", &refusal);
     }
     let (ordered, by_label) = attach_order(&figures);
+    if a.str("Step") == "plan" {
+        return plan_jobs(&mut zt, &key, &staging, &source, &ordered);
+    }
+    // The DeepSeek readers' answers: Card address -> the figures related to it.
+    let related = read_answers(&staging, &ordered)?;
 
     // --- the Cards of this book that name a figure ---
     let mut queries: Vec<(&str, Value)> = Vec::new();
@@ -570,6 +714,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                     candidates.push(address);
                 }
             }
+        }
+    }
+    for address in related.keys() {
+        if candidate_set.insert(address.clone()) {
+            candidates.push(address.clone());
         }
     }
     let anchor = Regex::new(&format!("(?i)^{}/\\d+$", regex::escape(&key)))?;
@@ -595,7 +744,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
     let mut plan: Vec<Value> = Vec::new();
     for card in &cards {
-        if let Some((body, added)) = add_figures(card, &by_label, &ordered) {
+        let none = HashSet::new();
+        if let Some((body, added)) = add_figures(card, &by_label, &ordered, related.get(&card.address).unwrap_or(&none)) {
             let mut entry = Map::new();
             entry.insert("address".into(), json!(card.address));
             entry.insert("title".into(), json!(card.title));
@@ -785,7 +935,7 @@ mod tests {
         let names: Vec<String> = by_label.iter().map(|(label, i)| format!("{label}:{}", s(&ordered[*i].0.sha256))).collect();
         assert_eq!(names, vec!["1.1:11", "1.1:22", "2.1:33"], "every image of a label, in the book's order");
         let card = Card { address: "K/2|b".into(), title: "增值税的传播".into(), body: "图 1.1 标出各国引入增值税的年代。\n\n来源：[[K]]".into(), text: String::new() };
-        let (body, added) = add_figures(&card, &by_label, &ordered).unwrap();
+        let (body, added) = add_figures(&card, &by_label, &ordered, &HashSet::new()).unwrap();
         assert_eq!(added.len(), 2, "both panels are attached");
         let first = body.find("artifact:11").unwrap();
         let second = body.find("artifact:22").unwrap();
@@ -793,9 +943,43 @@ mod tests {
         assert!(!body.contains("artifact:33"), "a figure the Card does not name is not attached");
         // A Card that already shows the first panel gains only the second.
         let shown = Card { body: "图 1.1 见下。\n\n![图 1.1](artifact:11)".into(), ..card };
-        let (body, added) = add_figures(&shown, &by_label, &ordered).unwrap();
+        let (body, added) = add_figures(&shown, &by_label, &ordered, &HashSet::new()).unwrap();
         assert_eq!(added.len(), 1);
         assert!(body.find("artifact:11").unwrap() < body.find("artifact:22").unwrap());
+    }
+
+    #[test]
+    fn a_related_figure_goes_into_a_card_that_never_names_it() {
+        let figure = Figure { sha256: json!("aa"), path: json!("a.jpg"), labels: vec!["2.1".into()], alt: "图 2.1".into(), line: "![图 2.1](artifact:aa)".into(), position: 0 };
+        let mut map: CiMap<Figure> = CiMap::new();
+        map.insert("a.jpg", figure);
+        let (ordered, by_label) = attach_order(&map);
+        let card = Card { address: "K/1|a".into(), title: "圆城的城门".into(), body: "城门朝向四方。\n\n第二段。\n\n来源：[[K]] §1".into(), text: String::new() };
+        assert!(add_figures(&card, &by_label, &ordered, &HashSet::new()).is_none(), "no mention and no relation adds nothing");
+        let related: HashSet<String> = ["aa".to_string()].into_iter().collect();
+        let (body, added) = add_figures(&card, &by_label, &ordered, &related).unwrap();
+        assert_eq!(body, "城门朝向四方。\n\n第二段。\n\n![图 2.1](artifact:aa)\n\n来源：[[K]] §1", "before the source line");
+        assert_eq!(added, ["图 2.1"]);
+        let shown = Card { body, ..card };
+        assert!(add_figures(&shown, &by_label, &ordered, &related).is_none(), "a second pass adds nothing");
+    }
+
+    #[test]
+    fn a_caption_comes_from_the_lines_after_the_image() {
+        let text = "前文。\n\n![](images/a.jpg)\n\nFigure 7.8 The round city\n\n图 7.8 圆城平面图\n\n后文很长。\n";
+        assert_eq!(caption_of(text, "a.jpg"), "Figure 7.8 The round city 图 7.8 圆城平面图");
+        assert_eq!(caption_of(text, "b.jpg"), "");
+    }
+
+    #[test]
+    fn a_figure_answer_names_only_its_own_cards_and_known_labels() {
+        let cards: HashSet<String> = ["K/1|a".to_string()].into_iter().collect();
+        let labels: HashSet<String> = ["2.1".to_string()].into_iter().collect();
+        assert!(answer_faults(&json!({"links":[{"card":"K/1|a","figures":["2.1"]}]}), &cards, &labels).is_empty());
+        assert!(answer_faults(&json!({"links":[]}), &cards, &labels).is_empty());
+        let faults = answer_faults(&json!({"links":[{"card":"K/9","figures":["2.1","7.7"]}]}), &cards, &labels);
+        assert_eq!(faults.len(), 2, "{faults:?}");
+        assert_eq!(answer_faults(&json!({}), &cards, &labels).len(), 1, "no links list");
     }
 
     #[test]
@@ -804,14 +988,14 @@ mod tests {
         let figures = vec![(figure.clone(), vec![Mention::new("2.C.1")])];
         let by_label = vec![("2.C.1".to_string(), 0)];
         let card = |title: &str, body: &str| Card { address: "x".into(), title: title.into(), body: body.into(), text: String::new() };
-        let (body, added) = add_figures(&card("t", "图 2.C.1 画出。\n\n第二段。"), &by_label, &figures).unwrap();
+        let (body, added) = add_figures(&card("t", "图 2.C.1 画出。\n\n第二段。"), &by_label, &figures, &HashSet::new()).unwrap();
         assert_eq!(body, "图 2.C.1 画出。\n\n![图 2.C.1](artifact:aa)\n\n第二段。");
         assert_eq!(added, vec!["图 2.C.1"]);
-        let (body, _) = add_figures(&card("t", "```chart\n图 2.C.1\n\n```\n\n后文。"), &by_label, &figures).unwrap();
+        let (body, _) = add_figures(&card("t", "```chart\n图 2.C.1\n\n```\n\n后文。"), &by_label, &figures, &HashSet::new()).unwrap();
         assert_eq!(body, "```chart\n图 2.C.1\n\n```\n\n![图 2.C.1](artifact:aa)\n\n后文。");
-        let (body, _) = add_figures(&card("图 2.C.1 的含义", "正文。"), &by_label, &figures).unwrap();
+        let (body, _) = add_figures(&card("图 2.C.1 的含义", "正文。"), &by_label, &figures, &HashSet::new()).unwrap();
         assert_eq!(body, "![图 2.C.1](artifact:aa)\n\n正文。");
-        assert!(add_figures(&card("t", "图 2.C.1 ![图 2.C.1](artifact:aa)"), &by_label, &figures).is_none());
-        assert!(add_figures(&card("t", "见 [[图 2.C.1]]。"), &by_label, &figures).is_none());
+        assert!(add_figures(&card("t", "图 2.C.1 ![图 2.C.1](artifact:aa)"), &by_label, &figures, &HashSet::new()).is_none());
+        assert!(add_figures(&card("t", "见 [[图 2.C.1]]。"), &by_label, &figures, &HashSet::new()).is_none());
     }
 }

@@ -1,10 +1,14 @@
-// ==== module zt-figures v6 ====
+// ==== module zt-figures v7 ====
+// 7 (2026-11-04, the owner's design): the one structure. The start step writes the book's figure list and one reader job
+// per group; the managers run one queue of DeepSeek readers, each naming every figure related to each Card of its group,
+// cited in the text or not; the finish step puts each figure in every Card related to it. One figure may stand in
+// hundreds of Cards, because that helps the reader.
 // The book's figures in its Cards: attach-figures puts every figure a Card names but does not show yet into that
 // Card, and links the book's documents from the Literature Card. It runs after Organize, which rewrites bodies.
 // 6 (#176, docs/workflow-module-structure-proposal.md): the figure pass and the stage's own publication are two
 // book-steps.ps1 steps run by DeepSeek drive jobs; no Claude relay runs a command.
 defineModule({
-  id: 'zt-figures', version: '6', requires: ['zt-digest-lib'],
+  id: 'zt-figures', version: '7', requires: ['zt-digest-lib'],
   summary: 'ZT digest: show the book\'s own figures in the Cards that name them (one book-steps.ps1 step).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -17,6 +21,12 @@ defineModule({
     const A = Z.A
     const options = { CitationKey: Z.KEY }
     if (A.fileId) options.FileId = A.fileId
+    const listed = await Z.bookStep('figures: list', 'figures-start', options)
+    if (!listed || listed.ok !== true) return { status: 'failed', error: (listed && listed.error) || 'no figure list' }
+    log(`Figures: ${listed.figures || 0} figures in the list, ${listed.jobs || 0} reader jobs.`)
+    if (Number(listed.jobs || 0)) {
+      await Z.runJobs('figures: read', listed.file, listed.jobs, { dsh: `${Z.OUT}\\figures`, writes: `${Z.OUT}\\figures\\out`, phase: 'Figures', skills: [], effort: Z.DSH_EFFORT, what: 'figure readers', run: true, chunks: Number(listed.chunks || 0) })
+    }
     const summary = await Z.bookStep('show figures', 'figures', options)
     log(summary && summary.ok === true ? `Figures: ${summary.shown} figures shown in ${summary.cards} Cards (${summary.figures} kept, ${summary.labelled} labelled); documents ${summary.literature ? 'linked' : 'already linked'}.` : `Figures failed: ${(summary && summary.error) || 'no output'}`)
     if (!summary || summary.ok !== true) return { status: 'failed', error: (summary && summary.error) || 'no output' }

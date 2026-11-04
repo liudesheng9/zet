@@ -48,7 +48,7 @@ param(
         'cards-start', 'cards-apply', 'cards-finish',
         'unit-fail', 'cards-book-start', 'cards-book-finish',
         'organize-survey', 'organize-apply', 'skeleton-start', 'skeleton-finish',
-        'figures', 'bridge-start', 'bridge-report', 'bridge-apply',
+        'figures-start', 'figures', 'bridge-start', 'bridge-report', 'bridge-apply',
         'audit', 'coverage', 'finalize-plan', 'finalize-changes', 'finalize-scope', 'finalize-refresh', 'finalize-final',
         'term-link', 'cleanup-start', 'cleanup-apply', 'cleanup-report')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
@@ -499,6 +499,15 @@ switch ($Step) {
         if ($refusal) { Reply $refusal.line $refusal.raw; break }
         $s = $r.json
         Reply @{ ok = ($s.ok -ne $false); structure = "$($s.written.structure)"; thesis = "$($s.thesis)"; argument = [int]$s.argument; models = [int]$s.models; events = [int]$s.events; problems = (Count-Of $s.problems) } $s
+    }
+    'figures-start' {
+        # The book's figure list and one reader job per group (zt-figures v7).
+        $argv = @('figures', '-Step', 'plan', '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Staging', $Out)
+        if (Opt 'FileId') { $argv += @('-FileId', "$(Opt 'FileId')") }
+        $r = Run $argv
+        if (-not $r.json) { Fail 'figure list' "the figure list printed no line: $($r.tail)"; break }
+        $f = $r.json
+        Reply @{ ok = ($f.ok -ne $false); figures = [int]$f.figures; jobs = [int]$f.jobs; chunks = [int]$f.chunks; file = "$($f.file)" }
     }
     'figures' {
         $argv = @('figures', '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Staging', $Out)

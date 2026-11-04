@@ -144,6 +144,7 @@ switch -Regex ($cmd) {
         }
         Out @{ ok = $true; thesis = '论点'; argument = 2; written = @{ structure = 'Key/1|b' } }
     }
+    '^figures -Step' { Out @{ ok = $true; figures = 4; jobs = 9; chunks = 2; file = 'D:\x\figures\jobs.json' } }
     '^figures ' { Out @{ shown = 3; cards = 2; figures = 4; labelled = 1; literature = $true } }
     '^bridge ' {
         if ($flat -match '-Step plan') {
@@ -341,7 +342,9 @@ Assert ($skJobs.Count -eq 1 -and $skJobs[0].id -eq 'skeleton' -and $skJobs[0].fi
 $skFinish = Step 'skeleton-finish' @{ Work = $sk; Decisions = (Join-Path $org 'decisions.json') }
 Assert ($skFinish.json -and $skFinish.json.ok -eq $true -and $skFinish.json.thesis -eq '论点' -and (Has $skFinish.calls 'skeleton -Step apply -Staging .* -Work .*skeleton -Decisions .*decisions.json -Apply')) "skeleton finish: the applied skeleton is the step's answer ($($skFinish.text))"
 
-# 12. Figures: one pass shows the book's figures and writes its report.
+# 12. Figures: the start step lists the figures and the reader jobs; one pass shows them and writes its report.
+$start = Step 'figures-start' @{ CitationKey = 'Key'; FileId = 77 }
+Assert ($start.json.ok -eq $true -and $start.json.figures -eq 4 -and $start.json.jobs -eq 9 -and $start.json.chunks -eq 2) "figures-start: the list and the jobs ($($start.text))"
 $fig = Step 'figures' @{ CitationKey = 'Key'; FileId = 77 }
 Assert ($fig.json -and $fig.json.ok -eq $true -and $fig.json.shown -eq 3 -and $fig.json.literature -eq $true) "figures: the pass's summary is the step's answer ($($fig.text))"
 Assert (Has $fig.calls 'figures -CitationKey Key -Staging .* -FileId 77 -Report .*figures-report.json -Apply') 'figures: one apply pass with its report and the chosen document'

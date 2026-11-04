@@ -141,6 +141,7 @@ const CANNED = {
   'bridge plan': () => ({ ok: true, step: 'plan', status: 'done', plan_id: 'p-fixture', report_id: 'r-fixture', counts: { selected: 1, new: 1, earlier: 0 }, jobs: [{ id: 'br-001', files: ['a'], prompt: 'p' }] }),
   'bridge report': () => ({ ok: true, step: 'report', status: 'done', plan_id: 'p-fixture', report_id: 'r-fixture', counts: { selected: 1, new: 1, earlier: 0 }, jobs: [] }),
   'audit': () => ({ hubs_missing: 0, broken_links: 0, books: [{ key: 'Key', cards: 9, topic_trees: 1, style_faults: 0, orphans: 0, no_source: 0, unkinded: 0, models: 0, not_self_sufficient: 0, figures_missing: 0 }] }),
+  'figures-start': () => ({ ok: true, figures: 0, jobs: 0, chunks: 0 }),
   'figures': () => ({ shown: 0, cards: 0, figures: 0, labelled: 0, literature: false }),
   // #110: group 1 has semantic gaps; group 2's owned Cards are all linked, so it needs no job.
   'prepare-link': () => ({ pending: [1], no_gap: [2], blocked: [], groups: [{ n: 1, id: 'g01', owned: 3, done: false, digest: 'done', blocked: false, gaps: 2, skipped: 1, position: 'anchor_position_missing' }, { n: 2, id: 'g02', owned: 3, done: false, digest: 'done', blocked: false, gaps: 0, skipped: 3, position: 'linked' }], owned_total: 6, gap_total: 2, skipped_total: 4, pending_count: 1, no_gap_count: 1, scheduled: 1, unowned: 0, digest_state: 'ledger', cards_all: 'D:\\x\\Key\\cards-all.md' }),
@@ -1286,6 +1287,7 @@ function runtime(kind, opts = {}) {
       case 'organize-apply': return { ok: true, merges: n(raw.merges), moves: n(raw.moves), refused: n(raw.refused), notes: n(raw.notes), thesis: raw.thesis !== false }
       case 'skeleton-start': return { ok: true, jobs: n(raw.jobs), file: raw.file }
       case 'skeleton-finish': return { ok: raw.ok !== false, structure: raw.written && raw.written.structure, thesis: raw.thesis, argument: n(raw.argument), models: n(raw.models), events: n(raw.events), problems: list(raw.problems) }
+      case 'figures-start': return { ok: raw.ok !== false, figures: n(raw.figures), jobs: n(raw.jobs), chunks: n(raw.chunks), file: raw.file }
       case 'figures': return { ok: raw.ok !== false, shown: n(raw.shown), cards: n(raw.cards), figures: n(raw.figures), labelled: n(raw.labelled), literature: raw.literature === true, missing: list(raw.missing) }
       case 'bridge-start': return { ok: raw.ok !== false, jobs: n(raw.jobs), file: raw.file }
       case 'bridge-report': return { ok: raw.ok !== false, status: raw.status || 'done', step: raw.step, report_id: raw.report_id, proposals: list(raw.proposals), new: n(raw.counts && raw.counts.new), earlier: n(raw.counts && raw.counts.earlier), refused: n(raw.counts && raw.counts.refused) }
@@ -1437,6 +1439,7 @@ function runtime(kind, opts = {}) {
         return { ok: true, ...line, ...cardJobs(o.Work, line) }
       }
       case 'skeleton-finish': return { ok: true, ...(run(`zt-digest skeleton -Step apply -Staging "${out}" -Work "${o.Work}" -Decisions "${o.Decisions}" -Apply`) || {}) }
+      case 'figures-start': return { ok: true, figures: 0, jobs: 0, chunks: 0 }
       case 'figures': return { ok: true, ...(run(`zt-digest figures -CitationKey ${o.CitationKey} -Staging "${out}"${o.FileId ? ` -FileId ${o.FileId}` : ''} -Report "${out}\\figures-report.json" -Apply`) || {}) }
       case 'bridge-start': {
         const line = run(`zt-digest bridge -Step plan -Staging "${out}" -CitationKey ${o.CitationKey} -Work "${o.Work}" -Profile ${o.Profile} -MaxSources ${o.MaxSources} -Candidates ${o.Candidates}${o.Books ? ` -Books ${o.Books}` : ''}`) || {}
@@ -2600,6 +2603,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: the block records each checked completion with the draft bound to its start')
   check(cmds.some((c) => /zt-digest group-start -Out/.test(c)) && !cmds.some((c) => /-Groups \d/.test(c)), 'group cycle: no per-block legacy digest command remains')
   check(layerCalls.every((c) => !/ -Queue\b/.test(c.cmd)) && !labels.some((l) => /^group \d attempt/.test(l)), 'group cycle: the queue is the only structure, no switch selects it')
+  check(bookCalls.findIndex((c) => c.step === 'figures-start') >= 0 || !bookCalls.some((c) => c.step === 'figures'), 'figures: the figure list comes first')
   check(['digest', 'link', 'cards', 'events', 'findings', 'explain'].every((l) => layerCalls.filter((c) => c.layer === l).every((c) => !/-Lane /.test(c.cmd))), 'one queue: no layer of the base runs lanes')
   check(['digest', 'link'].every((l) => layerCalls.filter((c) => c.layer === l && c.step === 'finish').length === 1), `one queue: one finish applies the layer (${layerCalls.filter((c) => c.layer === 'digest' && c.step === 'finish').length})`)
   check(cmds.some((c) => /ledger next .* -Layer events -Take 64 /.test(c)) && cmds.some((c) => /ledger next .* -Layer findings -Take 64 /.test(c)), 'one claim: the Event and Finding layers take the whole ready queue in one block, whose writers run in parallel')
@@ -3359,7 +3363,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '51' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '4' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '11' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v51, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '52' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '4' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '11' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v52, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
