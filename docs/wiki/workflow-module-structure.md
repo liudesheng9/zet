@@ -14,8 +14,8 @@ paths:
   - "scripts/book-digest/tests/model-steps.tests.ps1"
   - "scripts/book-digest/tests/math-steps.tests.ps1"
   - "docs/workflow-module-structure-proposal.md"
-synced: d20469bdd67f
-updated: 2026-11-02
+synced: dfcdce497fbf
+updated: 2026-11-04
 ---
 
 # Workflow module structure
