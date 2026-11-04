@@ -14,6 +14,7 @@ Judgement decides this work. Sources differ in every way, so the scripts only sh
 - **The source's own division is the skeleton.** Take the division its author made: chapters, lectures, articles of a law, acts, episodes, essays of a collection. Only a source with no division of its own gets a derived one.
 - **The top line** holds one Card per division a reader navigates by: the highest level that holds its own content. A wrapper with little of its own (the Parts of a book of chapters) yields to the level below, and its short intro opens the first division inside it. A short source may have its sections as the top line, a long one its chapters.
 - **Lower divisions nest.** A subdivision is a Side branch of its division's lead Card, and the next level is a Side branch of that.
+- **A lead summarizes its division.** The first Card of any division with subdivisions is a summary of that whole division, at every level, so a reader gets the division in one Card and goes down only for detail. What the old lead said goes where it belongs inside.
 - **Front and back matter** with content (preface, a new edition's introduction, appendices, notes) takes its own place, where the source puts it. An appendix to one chapter stays with that chapter; an appendix to the whole work is a top Card.
 - **Whole units stay whole.** A Model Card with its parts, a Theory Card, a proof chain: one thing, filed where it starts, even when it runs across divisions.
 - **Reference lists are the tail.** The Term list, then the Cited list, are the last top Cards. Tools find them by role, so moving them is safe.
@@ -24,13 +25,30 @@ Judgement decides this work. Sources differ in every way, so the scripts only sh
 1. **Read the source's structure** from its contents page or headings, or by reading it; for a source without headings, or one that is not sectioned text, see `references/source-forms.md`. The result is your written list of divisions at every level. Done when you can say which level is the top line and why.
 2. **Survey the tree.** `node scripts/outline.mjs <key> --out <scratch>` saves a snapshot and prints the tree with each Card's source line. Check `list_trees`: a locked tree stops here and goes to the owner. On the live box, back up first (`VACUUM INTO`, as in `zt-model-fold`).
 3. **Place every note.** For each top Card and each branch, say which division it belongs to, by its source line where it has one and by reading it where it has none. List the **crossers**: branches holding Cards of two divisions, and top Cards that are two divisions at once. Source lines are evidence in whatever form they come, and a label can repeat across divisions, so read the neighbours before you trust a bare name. Done when every note has a home.
-4. **Pick the lead of each division**: the Card that already introduces it, else the first Card of it. For a crosser, the head Card joins the side holding most of its content (a tie goes to the later division), and its other Cards go to their own divisions.
+4. **Pick the head of each division**: the Card that already introduces it, else the first Card of it. For a crosser, the head Card joins the side holding most of its content (a tie goes to the later division), and its other Cards go to their own divisions.
 5. **Move.** Write ops files and run `node scripts/batch.mjs <key> <ops>`, then again with `--commit` once the preview is clean (see **Moves**).
 6. **Put each division in order.** Read the outline again and `reorder` wherever a Side branch stands against the source's order.
-7. **Make the leads tell the truth.** A lead's title and body now introduce its division. Where a lead still describes Cards that moved away, cut that passage, link the new home, and retitle if needed (`edit_card`). The root Card's index, if the tree has one, lists the new top line. Links follow moves by themselves, so every other Card keeps its text.
+7. **Make every lead a summary** (see **Summary leads**). Then the root Card's index, if the tree has one, lists the new top line. Links follow moves by themselves, so other Cards keep their text; correct only a sentence that a move made false.
 8. **Verify.** `node scripts/check.mjs <key> <scratch>/<key>.tree.json` shows the top line and reports structural faults. Then walk the outline once against your division list from step 1. Done when every division is in place and in order.
 
 Report the top line, the crossers and how each was settled, and any call that could go the other way.
+
+## Summary leads
+
+Every head of a division with subdivisions gets one of two treatments. A head with no subdivisions is left alone unless a move made it false.
+
+- **rewrite**: the head already speaks for the whole division. It stays and gets a new text.
+- **demote**: the head speaks for only part of the division, usually its first subdivision. A new summary Card takes its place, and the old head becomes the first Side branch, opening the subdivision it really belongs to, retitled for that subdivision. Its passages that belong elsewhere move into the Cards they belong to, or are dropped when the summary now carries them. The Side children of its subdivision stay with it, a division's preamble Cards stand before it, and the rest move up to the summary.
+
+A summary is written from the Cards under it, and states nothing they do not. It follows the division's order, and holds:
+
+1. A title: the source's name for the division, `：`, then the division's main claim.
+2. One or two paragraphs: the question, the path through the subdivisions, the conclusion.
+3. `小节索引：`, one line per subdivision with a Link to its head.
+4. `在全书中的位置：`, the previous and next divisions, with Links.
+5. The source line, `来源：[[<key>]] <the division's label>`.
+
+Write them into a leads file, in today's addresses, and run `node scripts/leads.mjs <key> <leads.json> --commit` (the entry format is at the top of the script). It goes deepest first, keeps its Links current as Cards move, and turns Term names in the new text into Term uses. Run one tree at a time, since any other write to the box stales a batch's preview; the script resumes where it stopped. Done when every division with subdivisions opens on a Card that speaks for all of it.
 
 ## Moves
 
