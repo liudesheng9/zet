@@ -38,6 +38,12 @@ $ErrorActionPreference = 'Stop'
 $args2 = $Rest
 $flat = $args2 -join ' '
 Add-Content -LiteralPath $env:LS_CALLS -Value $flat -Encoding utf8
+# Two lanes of one layer: a start or a finish that overlaps another leaves a mark.
+if ($env:LS_TURN -and $args2[0] -match '^(group|link)-(start|finish)$') {
+    try { $held = [IO.File]::Open($env:LS_TURN, 'OpenOrCreate', 'ReadWrite', 'None') } catch { Add-Content -LiteralPath "$($env:LS_TURN).overlap" -Value $flat; $held = $null }
+    Start-Sleep -Milliseconds 300
+    if ($held) { $held.Dispose() }
+}
 $cmd = "$($args2[0]) $($args2[1])"
 $layer = ''
 if (($args2 -join ' ') -match '-Layer (\w+)') { $layer = $Matches[1]; Set-Content -LiteralPath $env:LS_LAYER -Value $layer }
@@ -278,6 +284,22 @@ $wide = Step (@('-Step', 'start', '-Layer', 'digest', '-Take', '8', '-Owner', 'd
 $env:LS_GATE_OPEN = ''
 Assert-Line $wide 'wide gate'
 Assert ($wide.json.gate_open -eq 8 -and -not $wide.json.gate_complete -and -not $wide.json.PSObject.Properties['unresolved']) 'wide gate: eight open units answer one count, never the gate''s unit list'
+
+# scheiner2022baghdad (2026-11-04): eight digest lanes run side by side. A group start or finish reads the whole
+# archive view and refuses when another lane commits, so these steps take turns; the writers run free.
+$turn = Join-Path $scratch 'turn.lock'
+$env:LS_TURN = $turn
+Remove-Item -LiteralPath "$turn.overlap" -ErrorAction SilentlyContinue
+foreach ($step in @('start', 'finish')) {
+    $lines = 'l1', 'l2', 'l3' | ForEach-Object -Parallel {
+        $argv = @('-Step', $using:step, '-Layer', 'digest', '-Lane', $_) + $(if ($using:step -eq 'start') { @('-Take', '8', '-Owner', "digest $_") } else { @() }) + $using:common
+        & pwsh -NoProfile -File $using:script @argv | Select-Object -Last 1
+    } -ThrottleLimit 3
+    Assert (@($lines | Where-Object { $_ -match '"ok":true' }).Count -eq 3) "digest lanes: three lanes answer ok on $step"
+}
+Assert (-not (Test-Path -LiteralPath "$turn.overlap")) 'digest lanes: no group start or finish overlaps another lane'
+Assert ((Test-Path -LiteralPath $turn)) 'digest lanes: the stand-in saw the steps'
+$env:LS_TURN = ''
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''

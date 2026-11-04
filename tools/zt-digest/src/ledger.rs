@@ -7696,6 +7696,22 @@ fn read_group_job(
     Ok((path, job))
 }
 
+/// The term table a group's writer reads: the head, and the rows whose term or avoided word stands in the group's
+/// own text. The checks keep reading the whole table; a writer has no use for the rest of a long book's rows.
+fn terms_for_source(table: &str, source: &str) -> String {
+    let mut out = String::new();
+    for line in table.split_inclusive('\n') {
+        let cells: Vec<&str> = line.trim().trim_matches('|').split('|').map(str::trim).collect();
+        let row = line.starts_with('|') && cells.len() >= 2 && cells[0] != "术语" && !cells[0].starts_with("---");
+        let used = |word: &str| !word.is_empty() && word != "—" && source.contains(word);
+        let bare = cells[0].split('（').next().unwrap_or(cells[0]);
+        if !row || used(cells[0]) || used(bare) || cells[1].split('、').any(|word| used(word.trim())) {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Value> {
     let group = p.contract["groups"]
         .as_array()
@@ -7757,7 +7773,10 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         bail!("read_view_changed: group-start archive view changed; retry");
     }
     // docs/literature-only-digest-design.md: the group reads and links Literature trees only.
-    let (snapshot, _) = crate::snapshot::render(&trees, 40);
+    // scheiner2022baghdad (2026-11-04): a 1.34 MB list of every Card of the box went to each writer. The frozen
+    // record keeps this book only, and no job carries it: the earlier-context pack names the related Cards.
+    let own: Vec<Value> = trees.iter().filter(|t| t["tree"] == p.contract["citation_key"]).cloned().collect();
+    let (snapshot, _) = crate::snapshot::render(&own, 40);
     let directory = p
         .out
         .join("group-jobs")
@@ -7779,6 +7798,15 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         p.contract["options"]["no_figures"] == true,
         p.contract["options"].get("run_options"),
     )?;
+    let mut source = String::new();
+    for section in group["sections"].as_array().unwrap() {
+        let bytes = std::fs::read(field(section, "path")?)?;
+        if canon::sha256_hex(&bytes) != section["sha256"] {
+            bail!("group source section hash mismatch during startup");
+        }
+        source.push_str(std::str::from_utf8(&bytes)?);
+        source.push_str("\n\n");
+    }
     let mut terms_text = String::new();
     let terms = if run_options["terms"] == true {
         let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
@@ -7798,7 +7826,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         let terms = terms.strip_prefix('\u{feff}').unwrap_or(terms);
         terms_text = terms.to_string();
         let path = directory.join("terms.md");
-        publish(&path, terms)?
+        publish(&path, &terms_for_source(terms, &source))?
     } else {
         Value::Null
     };
@@ -7812,15 +7840,6 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         &directory.join("shared-prefix.md"),
         std::str::from_utf8(&prefix_bytes)?,
     )?;
-    let mut source = String::new();
-    for section in group["sections"].as_array().unwrap() {
-        let bytes = std::fs::read(field(section, "path")?)?;
-        if canon::sha256_hex(&bytes) != section["sha256"] {
-            bail!("group source section hash mismatch during startup");
-        }
-        source.push_str(std::str::from_utf8(&bytes)?);
-        source.push_str("\n\n");
-    }
     // S05 (#98): the bounded earlier-Card pack, built once from this start's own title catalogue
     // and one bounded body read. It is frozen in `inputs`, so a resumed group reads the same pack
     // (D088, D093).
@@ -7926,10 +7945,9 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         draft_path.display()
     );
     let prompt = format!(
-        "# 第 {number} 组\n\n本任务只把本组的小节写成 ZET 卡片，表示成 JSON 草稿，写入 `{}`：`calls` 里每项是一次写入提案（`tool` 和 `arguments`），归档写入由 group-finish 工具完成，你不调用 zt，也不自己写卡片。写完后按顺序运行下面两条 SELF-CHECK，改到两条都打印 `faults: 0`；最多运行三次，仍有问题就照常回复，并在 `errors` 里写出剩下的问题。\nSELF-CHECK: {card_check_command}\nSELF-CHECK: {coverage_command}\n\n共享规则：`{}`\n只读启动快照：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n全部卡片都写在本书的文献树里：不新建主题，不写主题树的卡，不写枢纽卡，不链接主题树的卡（主题树归 zt-idea-grow）。\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。每个 `create_successor` 的 `arguments` 里写 `src`（小节文件和行号范围）：不写行号会被 coverage 记为 C2。仅有空数组或原始占位锚点不能建立覆盖。第一张卡建成本组锚点的侧后继，其余按阅读顺序建成前一张卡的直接后继；不要建锚点的直接后继（锚点的直接位置留给其他组）。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
+        "# 第 {number} 组\n\n本任务只把本组的小节写成 ZET 卡片，表示成 JSON 草稿，写入 `{}`：`calls` 里每项是一次写入提案（`tool` 和 `arguments`），归档写入由 group-finish 工具完成，你不调用 zt，也不自己写卡片。写完后按顺序运行下面两条 SELF-CHECK，改到两条都打印 `faults: 0`；最多运行三次，仍有问题就照常回复，并在 `errors` 里写出剩下的问题。\nSELF-CHECK: {card_check_command}\nSELF-CHECK: {coverage_command}\n\n共享规则：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n全部卡片都写在本书的文献树里：不新建主题，不写主题树的卡，不写枢纽卡，不链接主题树的卡（主题树归 zt-idea-grow）。\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。每个 `create_successor` 的 `arguments` 里写 `src`（小节文件和行号范围）：不写行号会被 coverage 记为 C2。仅有空数组或原始占位锚点不能建立覆盖。第一张卡建成本组锚点的侧后继，其余按阅读顺序建成前一张卡的直接后继；不要建锚点的直接后继（锚点的直接位置留给其他组）。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
         draft_path.display(),
         field(&inputs["prefix"], "path")?,
-        snapshot_path.display(),
         if terms.is_null() {
             "本次明确关闭术语层。".to_string()
         } else {
@@ -7947,7 +7965,6 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
     let mut files = vec![
         prefix["path"].clone(),
         json!(prompt_path.to_string_lossy()),
-        json!(snapshot_path.to_string_lossy()),
         earlier.1["path"].clone(),
         earlier.3["path"].clone(),
     ];
@@ -10010,8 +10027,20 @@ pub fn group_finish_cli(argv: &[String]) -> Result<i32> {
     let mut zt = crate::zt::start()?;
     let p = Prepared::read(&out, &mut zt)?;
     // `-CheckOnly` prints the checker's own answer (`faults: N` last) and returns no JSON line.
-    if let Some(result) = group_finish(&p, &mut zt, group, token, &draft, check_only)? {
-        util::print_line(&serde_json::to_string(&result)?)?;
+    // scheiner2022baghdad (2026-11-04): a writer's SELF-CHECK runs beside the other lanes' finishes, and a commit
+    // between its reads is no fault of its draft. A finish holds its turn and never retries here.
+    for attempt in 0.. {
+        match group_finish(&p, &mut zt, group, token, &draft, check_only) {
+            Err(error) if check_only && attempt < 8 && format!("{error:#}").contains("read_view_changed") => {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            Err(error) => return Err(error),
+            Ok(Some(result)) => {
+                util::print_line(&serde_json::to_string(&result)?)?;
+                break;
+            }
+            Ok(None) => break,
+        }
     }
     Ok(0)
 }
@@ -15231,12 +15260,46 @@ fn closure_of(view: &Value, downstream: bool) -> Vec<String> {
 }
 
 /// R278–R285: one resume of a prepared run.
+/// `ledger resume-grant -Out <dir> -Reason <text>` (scheiner2022baghdad, 2026-11-04): the owner stopped a run on purpose
+/// to change the workflow. One recorded grant gives the run one more resume, so an owner's stop does not cost the
+/// resume a crash needs. The reason is required and stays in the events.
+fn resume_grant(p: &Prepared, reason: &str) -> Result<Value> {
+    if reason.trim().is_empty() {
+        bail!("-Reason must say why the run gets another resume");
+    }
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let grants = resume_grants(&tx)? + 1;
+    put_meta(&tx, "resume_grants", &json!(grants))?;
+    tx.execute(
+        "INSERT INTO events(unit_id,invocation,utc,event,facts_json) VALUES(NULL,?1,?2,?3,?4)",
+        params![meta(&tx, "invocation")?.as_i64().unwrap_or(1), canon::utc_now_o(), "resume_granted", canon::canonical_json(&json!({"reason":reason,"grants":grants}))],
+    )?;
+    tx.commit()?;
+    Ok(json!({"schema_version":1,"kind":"resume_grant","grants":grants}))
+}
+
+fn resume_grants(conn: &Connection) -> Result<i64> {
+    let raw: Option<String> = conn.query_row("SELECT value FROM meta WHERE key='resume_grants'", [], |r| r.get(0)).optional()?;
+    Ok(raw.and_then(|v| v.parse().ok()).unwrap_or(0))
+}
+
+/// One resume per run, plus one per recorded grant.
+fn resume_allowed(spent: i64, grants: i64) -> bool {
+    spent < 1 + grants
+}
+
 fn resume_run(p: &Prepared) -> Result<Value> {
     // R278: the persisted identity, sources, versions, artifacts and effective options were
     // verified by `Prepared::read` before this call; the ledger's own binding is next.
     let before = status(&p.out, "", None)?;
     let spent = meta_i64(&before, "resume_count")?;
-    if spent >= 1 {
+    let grants = {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        resume_grants(&conn)?
+    };
+    if !resume_allowed(spent, grants) {
         bail!(
             "resume_used: this run already spent its one supported resume (resume_count {spent}); the remaining work is a manual worklist, and a later repair or rebuild is a separate preparation"
         );
@@ -17500,6 +17563,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 | "math"
                 | "reclaim"
                 | "reopen"
+                | "resume-grant"
                 | "job"
                 | "resource"
                 | "report"
@@ -17532,6 +17596,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             vec!["Out", "Unit", "Take"]
         } else if command == "reopen" {
             vec!["Out", "Units", "Reason"]
+        } else if command == "resume-grant" {
+            vec!["Out", "Reason"]
         } else if command == "job" {
             vec!["Out", "Unit", "Token", "Register", "Observe", "Cancel"]
         } else if command == "resource" {
@@ -17761,6 +17827,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
         publication(&p, &a.str("Layer"), &a.str_or("Key", "book"), &a.str("Scope"))?
+    } else if command == "resume-grant" {
+        let mut zt = crate::zt::start()?;
+        let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
+        resume_grant(&p, &a.required("Reason")?)?
     } else if command == "reopen" {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read_mode(&a.str("Out"), &mut zt, false)?;
@@ -19552,6 +19622,22 @@ mod term_link_ledger_tests {
             .unwrap()
             .to_string();
         assert!(error.contains("not one readable Card address"), "{error}");
+    }
+
+    #[test]
+    fn a_group_reads_only_the_terms_of_its_own_text() {
+        let table = "术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 腹地 | — | 冲积平原 | §1 |\n| 萨瓦德 | 黑土地 | 农业腹地 | §1 |\n| 和平之城（Madīnat al-Salām） | 平安之城、萨拉姆城 | 都城 | §2 |\n| 贾兹拉 | 杰济拉 | 北部 | §1 |\n";
+        let kept = terms_for_source(table, "腹地的村庄。城里的人把它叫作黑土地。和平之城建于河边。");
+        assert_eq!(kept, "术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 腹地 | — | 冲积平原 | §1 |\n| 萨瓦德 | 黑土地 | 农业腹地 | §1 |\n| 和平之城（Madīnat al-Salām） | 平安之城、萨拉姆城 | 都城 | §2 |\n");
+        assert!(!terms_for_source(table, "无关的文字。").contains("| 腹地 |"), "an avoid cell of — matches nothing");
+    }
+
+    #[test]
+    fn a_run_has_one_resume_and_one_more_per_recorded_grant() {
+        assert!(resume_allowed(0, 0));
+        assert!(!resume_allowed(1, 0));
+        assert!(resume_allowed(1, 1));
+        assert!(!resume_allowed(2, 1));
     }
 
     #[test]

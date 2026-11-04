@@ -283,7 +283,7 @@
       }
     },
     {
-      "label": "^digest block \\d+: start$",
+      "label": "^digest (l\\d+ )?block \\d+: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"digest\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }

@@ -47,7 +47,9 @@ const db=new DatabaseSync(p);db.prepare("update units set lease_until=? where id
     Assert ($started.lease_until -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+110 -and $active.units[0].lease_until -eq $started.lease_until -and $active.units[0].attempts -eq 1 -and $active.units[0].state -eq 'claimed' -and -not $active.complete) 'startup renews a nearly expired claim without spending another attempt or completing the group'
     $job=Get-Content -LiteralPath $started.job -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     Assert ($job.expected_jobs -eq 1 -and $job.jobs.Count -eq 1 -and $job.mode -eq 'draft_only' -and $job.jobs[0].output -eq $started.draft -and $job.jobs[0].permissions.archive_write -eq $false) 'the job manifest explicitly requests one draft file with no archive write permission'
-    Assert ([IO.File]::ReadAllText($started.snapshot).Contains('启动时新增文献') -and [IO.File]::ReadAllText($started.snapshot).Contains('人类工作区（只读')) 'the startup snapshot includes post-preparation context and marks human Cards read-only'
+    $ownSnapshot=[IO.File]::ReadAllText($started.snapshot)
+    Assert ($ownSnapshot.Contains('StartBook') -and -not $ownSnapshot.Contains('启动时新增文献')) 'the frozen snapshot lists only this book, not every Card of the box'
+    Assert (-not (@($job.jobs[0].files) -contains $started.snapshot) -and -not [IO.File]::ReadAllText($started.prompt).Contains('snapshot.md')) 'the writer job carries no snapshot'
     Assert ([IO.File]::ReadAllText($started.prompt).Contains('企业的融资约束影响生产选择') -and [IO.File]::ReadAllText($started.prompt).Contains($started.input_hash)) 'the prompt contains the selected source and exact draft binding'
     $trace=@(Get-Content $env:ZT_TRACE_TOOLS | ForEach-Object {$_ | ConvertFrom-Json -AsHashtable})
     Assert (@($trace | Where-Object tool -EQ export_titles).Count -eq 1 -and @($trace.process_id | Select-Object -Unique).Count -eq 1) 'one fresh title export shares the command MCP process'

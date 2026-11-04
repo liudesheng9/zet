@@ -75,6 +75,7 @@ Assert ($link.Contains('Link 写在使用它意思的那句话里')) 'the link p
 Assert (-not $link.Contains('关系词紧贴在 Link 前')) 'the link prompt drops the required relation word before the Link'
 Assert ($link.Contains('句子说出') -or $link.Contains('这句话说出')) 'the link prompt requires the sentence to state the connection'
 
+Assert (-not $digest.Contains('snapshot')) 'the digest prompt sends no list of every Card'
 # The base prompt is neutral: a book type's Card kinds come from its supplement (zt-history-digest).
 foreach ($word in @('模型', '事件', '实证', 'dsh-model-cards')) {
     Assert (-not $digest.Contains($word)) "the base digest prompt does not name $word"

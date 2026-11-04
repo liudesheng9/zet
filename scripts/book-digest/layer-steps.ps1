@@ -143,6 +143,22 @@ function Jobs-Of($Json) {
     }
     return @()
 }
+# scheiner2022baghdad (2026-11-04): eight digest lanes run side by side, and a group's start and finish each read the
+# whole archive view and refuse when another lane commits. They take about two seconds, so they take turns through
+# one named mutex of the run; the writers between them run free. The mutex dies with its process.
+function In-Turn([scriptblock]$Work) {
+    if ($Layer -ne 'digest') { return & $Work }
+    $sha = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Out.ToLowerInvariant()))
+    $mutex = [Threading.Mutex]::new($false, "zt-digest-turn-$([Convert]::ToHexString($sha).Substring(0, 16))")
+    $held = $false
+    try {
+        try { $held = $mutex.WaitOne(900000) } catch [Threading.AbandonedMutexException] { $held = $true }
+        & $Work
+    } finally {
+        if ($held) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
 # The layer's own per-block start or plan command, and the jobs it lists.
 function Start-Block($Units) {
     $firstUnit = $Units[0]
@@ -150,7 +166,8 @@ function Start-Block($Units) {
         $startName = if ($Layer -eq 'digest') { 'group-start' } else { 'link-start' }
         return @($Units | ForEach-Object {
                 $n = Group-Of $_.id
-                $s = Run @($startName, '-Out', $Out, '-Group', "$n", '-Token', "$($_.token)")
+                $token = "$($_.token)"
+                $s = In-Turn { Run @($startName, '-Out', $Out, '-Group', "$n", '-Token', $token) }
                 [pscustomobject]@{ unit = $_; group = $n; line = $s; jobs = (Jobs-Of $s.json); error = $(if ($s.json) { $null } else { (Tail $s.tail) }) }
             })
     }
@@ -170,7 +187,7 @@ function Start-Block($Units) {
 # The checked completion command of one held unit (the digest and link layers).
 function Finish-Unit($Unit, [string]$Draft) {
     $finishName = if ($Layer -eq 'digest') { 'group-finish' } else { 'link-finish' }
-    Run @($finishName, '-Out', $Out, '-Group', "$(Group-Of $Unit.id)", '-Token', "$($Unit.token)", '-Draft', $Draft)
+    In-Turn { Run @($finishName, '-Out', $Out, '-Group', "$(Group-Of $Unit.id)", '-Token', "$($Unit.token)", '-Draft', $Draft) }
 }
 # The Link pass's own totals (#180): the run report carries the gap counts and the L1/L2 quality of the whole
 # block, summed from the units' completions, never the per-unit rows.
