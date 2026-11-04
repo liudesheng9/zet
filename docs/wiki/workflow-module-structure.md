@@ -228,6 +228,7 @@ A module change follows the review checklist:
   Claude agents instead of one per relayed command.
 
 ## Change history
+- `2026-11-04` — `layer-steps.ps1`: no `-Queue` switch; the queue is the only structure, Cards included.
 - `2026-11-04` — `layer-steps.ps1 -Queue` (one queue) replaces `-Lane` and `In-Turn`.
 - `2026-11-04` — `layer-steps.ps1` `In-Turn`: a digest group's start and finish take turns across lanes through a named mutex of the run.
 - `2026-11-01` — `layer-steps.ps1` `apply` serves the terms layer too: `terms -Step merge -Token` checks the explorers' answers and lists the one merge job in `apply-jobs.json` (`{ok, jobs, parts, rows, distinct, file}`), so the Term table is a feature block of DeepSeek explorers and one merge job under Haiku managers (zt-book-terms v7). `layer-steps.tests.ps1` checks the merge round. The test-box run (hart1995firms, mode terms) found that `Save` in `layer-steps.ps1`, `term-steps.ps1` and `model-steps.ps1` piped its value to `ConvertTo-Json`, which writes a one-entry list as a bare object (and an empty piped list as nothing): the merge manager, told to read a JSON array, started no job, and the unit failed. `Save` now passes `-InputObject`, so a list stays an array whatever its length; `layer-steps.tests.ps1` checks every saved list of the terms and explain rounds (84 checks).

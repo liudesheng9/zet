@@ -880,6 +880,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+- `2026-11-04` — `layer-steps.tests.ps1` models the eight-unit limit of `finish-batch` and checks that a refused command fails the step.
 - `2026-11-04` — `layer-steps.tests.ps1` checks `-Queue`: every page claimed, one job file per manager.
 - `2026-11-04` — `cited-steps.ps1 -Step list -SkipDone`: a finished list answers `settled` and plans nothing.
 - `2026-11-04` — `layer-steps.tests.ps1` runs three digest lanes side by side and checks that no group start or finish overlaps.

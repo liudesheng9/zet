@@ -1029,8 +1029,11 @@ function runtime(kind, opts = {}) {
     const take = Number(layerArg(cmd, 'Take') || 8), wait = Number(layerArg(cmd, 'Wait') || 0), lease = Number(layerArg(cmd, 'Lease') || 0)
     const opts2 = [wait ? ` -Wait ${wait}` : '', lease ? ` -Lease ${lease}` : ''].join('')
     if (layer === 'cards') {
+      // The real command refuses a batch over eight.
+      if (take > 8) return { ok: false, step: 'cards claim', error: 'zt-digest finish-batch: -Take must be a whole number from 1 through 8' }
       const line = commandAnswer(`zt-digest finish-batch -Out "${out}" -Layer cards -Take ${take} -Owner "${owner}"${opts2}`)
       const j = lastJson(line.output)
+      if (j && j.kind === 'finish_batch' && Number(j.claimed || 0) > 0) commandAnswer(`zt-digest finish-batch -Out "${out}" -Layer cards -Take ${take} -Owner "${owner}"${opts2}`)
       if (!line.ok || !j || j.kind !== 'finish_batch') {
         // A cut line is never a failed claim: the ledger decides what this owner still holds.
         const held = (lastJson(commandAnswer(`zt-digest ledger status -Out "${out}" -Held "${owner}"`).output) || {}).units || []
@@ -1044,8 +1047,7 @@ function runtime(kind, opts = {}) {
     for (let attempt = 0; attempt < 3; attempt++) { claim = commandAnswer(`zt-digest ledger next -Out "${out}" -Layer ${layer} -Take ${take} -Brief -Owner "${owner}"${opts2}`); if (claim.ok || lastJson(claim.output)) break }
     const parsed = lastJson(claim.output)
     let units = parsed && Array.isArray(parsed.units) ? parsed.units.filter((u) => u && u.id) : null
-    const everyPage = / -Queue\b/.test(cmd)
-    while (everyPage && units && units.length) {
+    while (units && units.length) {
       const page = (lastJson(commandAnswer(`zt-digest ledger next -Out "${out}" -Layer ${layer} -Take ${take} -Brief -Owner "${owner}"${lease ? ` -Lease ${lease}` : ''}`).output) || {}).units || []
       if (!page.length) break
       units.push(...page)
@@ -1096,7 +1098,7 @@ function runtime(kind, opts = {}) {
     state.jobs = jobs
     const file = `${out}\\layer-steps\\${layer}\\jobs.json`
     layerJobs.set(file, jobs)
-    const chunks = everyPage ? Math.ceil(jobs.length / 8) : 0
+    const chunks = Math.ceil(jobs.length / 8)
     for (let k = 0; k < chunks; k++) layerJobs.set(`${out}\\layer-steps\\${layer}\\jobs-${String(k + 1).padStart(3, '0')}.json`, jobs.slice(k * 8, k * 8 + 8))
     const extra = layer === 'events' || layer === 'findings' ? { plan: { candidates: state.plan.candidates, groups: state.plan.groups, jobs: jobs.length } }
       : layer === 'explain' ? { plan: { parts: state.plan.parts, jobs: jobs.length } } : {}
@@ -2597,14 +2599,13 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(cmds.filter((c) => /group-start -Out "D:\\x\\Key" -Group \d+ -Token \d+/.test(c)).length === 2, 'group cycle: the block starts each held group (snapshot before the job manifest)')
   check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: the block records each checked completion with the draft bound to its start')
   check(cmds.some((c) => /zt-digest group-start -Out/.test(c)) && !cmds.some((c) => /-Groups \d/.test(c)), 'group cycle: no per-block legacy digest command remains')
-  check(layerCalls.filter((c) => c.layer === 'digest' && c.step === 'start').every((c) => / -Queue\b/.test(c.cmd)) && !labels.some((l) => /^group \d attempt/.test(l)), 'group cycle: the start step claims the whole queue, not one manager per group')
+  check(layerCalls.every((c) => !/ -Queue\b/.test(c.cmd)) && !labels.some((l) => /^group \d attempt/.test(l)), 'group cycle: the queue is the only structure, no switch selects it')
   check(['digest', 'link', 'cards', 'events', 'findings', 'explain'].every((l) => layerCalls.filter((c) => c.layer === l).every((c) => !/-Lane /.test(c.cmd))), 'one queue: no layer of the base runs lanes')
-  check(layerCalls.filter((c) => c.step === 'start' && ['digest', 'link', 'events', 'findings', 'explain'].includes(c.layer)).every((c) => / -Queue\b/.test(c.cmd)), 'one queue: a writer layer claims every ready unit in one start')
   check(['digest', 'link'].every((l) => layerCalls.filter((c) => c.layer === l && c.step === 'finish').length === 1), `one queue: one finish applies the layer (${layerCalls.filter((c) => c.layer === 'digest' && c.step === 'finish').length})`)
   check(cmds.some((c) => /ledger next .* -Layer events -Take 64 /.test(c)) && cmds.some((c) => /ledger next .* -Layer findings -Take 64 /.test(c)), 'one claim: the Event and Finding layers take the whole ready queue in one block, whose writers run in parallel')
   // docs/digest-claude-token-proposal.md P1/P2: the Cards layer claims and finishes a block in ONE command, and no
   // layer spends a relay per unit finish.
-  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 64 -Owner "cards block 1" -Lease 7200$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
+  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 8 -Owner "cards block 1" -Lease 7200$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
   check(!cmds.some((c) => /^zt-digest (cards|events|findings|model|explain)-finish /.test(c)), 'layers: no layer relays one command per unit finish')
   check(batchCalls.every((b) => b.units.length <= 8), 'layers: a batch finish holds at most eight units')
   const models = [...led.units.values()].filter((u) => u.layer === 'models')

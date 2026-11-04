@@ -1,5 +1,5 @@
 // ==== module zt-digest-lib v51 ====
-// 51 (scheiner2022baghdad, 2026-11-04, the owner's design): no lanes. A layer with `all` claims every ready unit in one start, its
+// 51 (scheiner2022baghdad, 2026-11-04, the owner's design): no lanes. One structure: a layer claims every ready unit in one start, its
 // managers run one queue, and one finish applies the layer. A later block is only the retry of what failed.
 // 48 (#227): the Write scope is the server's (#225, #226): the helper `call` declares the Literature scope and the open
 // scope is its own command, `open-call`. Every approval rule that lets a DeepSeek job run the helper refuses a
@@ -482,7 +482,6 @@ Return steps: one entry per step with name, ok (true when it exited without an e
     if (o.lease) parts.push(`-Lease ${o.lease}`)
     if (o.maxParts) parts.push(`-MaxParts ${o.maxParts}`)
     if (o.limits) parts.push(`-Limits ${psQuote(o.limits)}`)
-    if (o.all) parts.push('-Queue')
     const json = await ztDrive(ctx, { label, command: parts.join(' '), out: OUT, cwd: o.cwd || OUT, phase: o.phase, ledger: ZD_LEDGER, deepseek: o.deepseek })
     const lock = ztLockRefusal(JSON.stringify(json)) || ((json.code === ZD_LOCK || json.error === ZD_LOCK) ? json : null)
     if (lock) throw ztLockStop(label, lock.refusal || lock)
@@ -611,7 +610,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
     for (let block = 1, quiet = 0; block <= MAX_BLOCKS && quiet < rounds && !failure; block++) {
       const label = `${name} block ${block}`
       const started = await driveStep(`${label}: start`, 'start', {
-        layer, take, all: o.all, owner: label, wait: o.wait, lease: LAYER_LEASE, phase: o.phase, cwd: o.dsh, maxParts: o.maxParts, limits: o.limits, deepseek: o.deepseek,
+        layer, take, owner: label, wait: o.wait, lease: LAYER_LEASE, phase: o.phase, cwd: o.dsh, maxParts: o.maxParts, limits: o.limits, deepseek: o.deepseek,
       })
       if (!started.ok) { failure = { error: started.error, gate: started.gate }; break }
       add(started)

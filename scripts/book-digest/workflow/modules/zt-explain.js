@@ -36,7 +36,7 @@ defineModule({
     const tally = { parts: 0, refused: 0 }
     const result = await Z.layerRun('explain', {
       // The block's conversations stay open for the second content round; the run cleanup deletes them.
-      layer: 'explain', take: 64, all: true, rounds: Z.MAX_ATTEMPTS, phase: 'Models', jobs: true, keep: true,
+      layer: 'explain', take: 64, rounds: Z.MAX_ATTEMPTS, phase: 'Models', jobs: true, keep: true,
       dsh: work, writes: `${work}\\out`, skills: Z.FILL_SKILLS, effort: Z.DSH_EFFORT, what: 'explanation writers',
       limits: Z.LIMITS, maxParts: A.explainMax || 0, apply: true,
       onStart: (started) => { tally.parts += Number(started.plan_parts || 0) },

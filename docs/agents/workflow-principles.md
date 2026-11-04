@@ -13,6 +13,16 @@ What the 2026-10-26 migration to the Haiku-manager + DeepSeek module structure t
 - A trial that works is not reworked: updates found in it wait for the next trial; a broken trial is fixed and resumed at its break.
 - Watch a run only with `zt-digest ledger watch -Out <staging folder> -Journal <workflow journal>` (#245), started once per run with `run_in_background`. It holds `<staging>/watch.lock`, so a second watcher of the same run refuses (`watch_running`). It prints a line when the counts change, and it ends by itself when the run has no open unit, when the journal says `halted`, or after 12 hours (`-MaxHours`). Never poll a ledger from a shell loop, and never start a process per poll. Before a session reports a run done, it checks that its watcher has ended. Why: on 2026-11-02, 54 forgotten `watch3.sh` loops of the finished atkinson2015lectures run each started `node st.mjs` → `zt-digest ledger status` every 240 s. Each read cost 7.5 s CPU and 337 MB, because the ledger had a 2 GB WAL that every read-only open replays. Up to 19 ran at once and, with a GUI probe, locked the machine.
 
+## One structure, no fallback (the owner, 2026-11-04)
+
+The structure the principle reveals is the only structure to apply. Do not keep another structure beside it, behind a switch, as a fallback, or as an exception for one layer. When a design changes, delete the old path in the same change. Why: on the scheiner2022baghdad run, Cards kept a block loop as an exception (`-Take 64`) and an optional `-Queue` switch kept the old path selectable. The old path then answered a refused command as "ok, nothing to do", and the stage went on with 134 groups unchecked.
+
+- A digest layer has one structure: one start claims every ready unit, the managers run one queue (eight jobs each, at most eight at once, the next starting when one ends), and one finish applies the layer. No lanes and no blocks side by side.
+- A command that refuses fails its step. An empty success is never the answer to a refusal.
+- A stand-in models the real limits of the command it replaces.
+- A resume goes on from where the run broke and reruns no finished work.
+- While a run waits, test only the modules a change touches.
+
 ## Principles added 2026-10-27 (Literature notes, #183–#192)
 
 From the Literature-note pilot (#189), the one-conversation card cycle (#191) and the live backfill and relink (#190; final versions base 5.8.5, econ 6.8.5, math 5.8.5, zt-digest 0.33.6).

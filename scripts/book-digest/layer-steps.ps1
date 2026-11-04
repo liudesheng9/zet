@@ -36,8 +36,7 @@ param(
     [ValidateRange(0, 7200)][int]$Lease = 0,
     [ValidateRange(0, 1000)][int]$MaxParts = 0,
     [string]$Limits = '',
-    [string]$Tool = 'zt-digest',
-    [switch]$Queue
+    [string]$Tool = 'zt-digest'
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'step-line.ps1')
@@ -216,8 +215,15 @@ switch ($Step) {
             $argv = @('finish-batch', '-Out', $Out, '-Layer', 'cards', '-Take', "$Take", '-Owner', $Owner)
             if ($Wait -gt 0) { $argv += @('-Wait', "$Wait") }
             if ($Lease -gt 0) { $argv += @('-Lease', "$Lease") }
-            $line = Run $argv
-            if (-not $line.json -or $line.json.kind -ne 'finish_batch') {
+            # One start works the whole queue: a batch holds at most eight, so the command repeats until none is ready.
+            $all = @(); $claimed = 0
+            while ($true) {
+                $line = Run $argv
+                if ($line.json.kind -ne 'finish_batch') { break }
+                if (-not [int]$line.json.claimed) { break }
+                $all += @($line.json.results); $claimed += [int]$line.json.claimed
+            }
+            if ($line.json.kind -ne 'finish_batch') {
                 # The line came back unreadable: the ledger decides. Finish whatever this owner still holds;
                 # the gate below says whether anything is still open.
                 $held = @(Held-Units)
@@ -231,13 +237,14 @@ switch ($Step) {
                     Reply (@{ ok = $true; layer = 'cards'; claimed = $held.Count; units = $held.Count; jobs = 0 } + $fields + (Gate-Fields $gate)) @{ results = $againResults; gate = $gate; units = @() }
                 }
                 $gate = Gate
+                # A refused command fails the step: an empty success would let the stage go on with the checks undone.
+                if ($line.code -ne 0) { Fail 'cards claim' (Tail $line.tail); break }
                 Reply @{ ok = $true; layer = 'cards'; claimed = 0; units = 0; jobs = 0; results = 0; done = 0; failed = 0; partial = 0 } + (Gate-Fields $gate) @{ results = @(); gate = $gate; units = @() }
             }
-            $all = @($line.json.results)
             Save 'units.json' @()
             $gate = Gate
             $fields = Results-Line $all
-            Reply (@{ ok = $true; layer = 'cards'; claimed = [int]$line.json.claimed; units = [int]$line.json.claimed; jobs = 0 } + $fields + (Gate-Fields $gate)) @{ results = $all; gate = $gate; units = @() }
+            Reply (@{ ok = $true; layer = 'cards'; claimed = $claimed; units = $claimed; jobs = 0 } + $fields + (Gate-Fields $gate)) @{ results = $all; gate = $gate; units = @() }
         }
         $claimArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Take", '-Brief', '-Owner', $Owner)
         if ($Wait -gt 0) { $claimArgs += @('-Wait', "$Wait") }
@@ -261,9 +268,9 @@ switch ($Step) {
             $units = @(Held-Units)
             if (-not $units.Count -and -not $claim.json) { Fail 'claim' (Tail $claim.tail); break }
         }
-        # -Queue (scheiner2022baghdad, 2026-11-04, the owner's design): one start claims every ready unit, page by page, so the
-        # managers run one queue and one finish applies the layer, as the Term cards do.
-        if ($Queue -and $units.Count) {
+        # The one structure (scheiner2022baghdad, 2026-11-04, the owner's design): one start claims every ready unit, page by
+        # page, the managers run one queue, and one finish applies the layer, as the Term cards do.
+        if ($units.Count) {
             $pageArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Take", '-Brief', '-Owner', $Owner)
             if ($Lease -gt 0) { $pageArgs += @('-Lease', "$Lease") }
             while ($true) {
@@ -300,11 +307,8 @@ switch ($Step) {
         Save 'jobs.json' $allJobs
         # One job file per manager: a manager runs every entry of its own file (zt-term-cards v11).
         Get-ChildItem -LiteralPath $Work -Filter 'jobs-*.json' -ErrorAction SilentlyContinue | Remove-Item -Force
-        $chunks = 0
-        if ($Queue) {
-            $chunks = [int][Math]::Ceiling(@($allJobs).Count / 8)
-            for ($k = 0; $k -lt $chunks; $k++) { Save ('jobs-{0:D3}.json' -f ($k + 1)) @($allJobs | Select-Object -Skip ($k * 8) -First 8) }
-        }
+        $chunks = [int][Math]::Ceiling(@($allJobs).Count / 8)
+        for ($k = 0; $k -lt $chunks; $k++) { Save ('jobs-{0:D3}.json' -f ($k + 1)) @($allJobs | Select-Object -Skip ($k * 8) -First 8) }
         $plan = $null
         if ($Layer -eq 'events' -or $Layer -eq 'findings') { $plan = @{ candidates = [int]$blocks[0].line.json.candidates; groups = [int]$blocks[0].line.json.groups; jobs = @($blocks[0].jobs).Count } }
         if ($Layer -eq 'explain') { $plan = @{ parts = [int]$blocks[0].line.json.parts; jobs = @($blocks[0].jobs).Count } }

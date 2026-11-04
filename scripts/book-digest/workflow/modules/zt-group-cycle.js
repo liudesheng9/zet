@@ -29,7 +29,7 @@ defineModule({
     const groups = Math.max(1, Number(p.groups) || 1)
     const deepseek = { deleted: 0, not_deleted: [] }
     const result = await Z.layerRun('digest', {
-      layer: 'digest', take: 64, all: true, rounds: Z.MAX_ATTEMPTS, phase: 'Digest',
+      layer: 'digest', take: 64, rounds: Z.MAX_ATTEMPTS, phase: 'Digest',
       dsh: work, writes: work, skills: Z.DSH_SKILLS, effort: Z.DSH_EFFORT, what: 'digest group writers', deepseek,
     })
     const verified = Number(result.verified || 0)

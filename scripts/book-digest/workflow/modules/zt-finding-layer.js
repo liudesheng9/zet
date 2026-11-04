@@ -30,7 +30,7 @@ defineModule({
     const Z = zdMake(ctx, p)
     const work = `${Z.OUT}\\findings`
     const result = await Z.layerRun('findings', {
-      layer: 'findings', take: 64, all: true, rounds: Math.max(3, Z.MAX_ATTEMPTS), wait: 600, phase: 'Findings',
+      layer: 'findings', take: 64, rounds: Math.max(3, Z.MAX_ATTEMPTS), wait: 600, phase: 'Findings',
       dsh: work, writes: `${work}\\out`, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, what: 'finding writers',
       onStart: (started) => {
         log(`Findings: ${started.plan_candidates || 0} result sentences in ${started.plan_groups || 0} groups, ${started.jobs || 0} DeepSeek jobs.`)

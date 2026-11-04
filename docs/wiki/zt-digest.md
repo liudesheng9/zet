@@ -1527,6 +1527,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
+- `2026-11-04` — 0.43.6 embeds base 5.11.17 and its variants; no tool change.
 - `2026-11-04` — 0.43.5: `group-finish -CheckOnly` no longer reads again; no writer runs beside a commit.
 - `2026-11-04` — 0.43.4 embeds base 5.11.15 and its variants; no tool change.
 - `2026-11-04` — 0.43.3: `ledger resume-grant` updates its count, so a second grant is not refused on the primary key. Test: `history-run.tests.ps1`.

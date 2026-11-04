@@ -34,7 +34,7 @@ defineModule({
     const work = `${Z.OUT}\\link-jobs`
     const deepseek = { deleted: 0, not_deleted: [] }
     const result = await Z.layerRun('link', {
-      layer: 'link', take: 64, all: true, rounds: Z.MAX_ATTEMPTS, phase: 'Link',
+      layer: 'link', take: 64, rounds: Z.MAX_ATTEMPTS, phase: 'Link',
       dsh: work, writes: work, skills: Z.DSH_SKILLS, effort: Z.DSH_EFFORT, what: 'Link writers', deepseek,
     })
     const t = result.totals || {}

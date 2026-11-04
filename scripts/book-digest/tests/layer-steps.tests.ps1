@@ -61,7 +61,7 @@ switch -Regex ($cmd) {
         Set-Content -LiteralPath $env:LS_COUNT -Value $n
         if ($env:LS_CLAIM_FAIL -and $n -le [int]$env:LS_CLAIM_FAIL) { Write-Output 'zt-digest ledger: archive changed while checking preparation'; exit 1 }
         if ($env:LS_CLAIM_STRING) { Write-Output (ConvertTo-Json -Compress @{ schema_version = 1; layer = $layer; units = "(2 units claimed)" }); exit 0 }
-        if ($env:LS_NO_UNITS -or ($env:LS_PAGES -and $n -gt [int]$env:LS_PAGES)) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @() }); exit 0 }
+        if ($env:LS_NO_UNITS -or $n -gt ([int]$env:LS_PAGES + [int]$env:LS_CLAIM_FAIL)) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @() }); exit 0 }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; layer = $layer; units = @(Units $layer) })
         exit 0
     }
@@ -99,8 +99,17 @@ switch -Regex ($cmd) {
         exit 0
     }
     '^finish-batch' {
+        # The real command's limit: a batch holds at most eight.
+        if ($flat -match '-Take (\d+)' -and [int]$Matches[1] -gt 8) { Write-Output 'zt-digest finish-batch: -Take must be a whole number from 1 through 8'; exit 2 }
         $claimed = 0
-        if (($args2 -join ' ') -match '-Layer cards') { $claimed = 2 }
+        if (($args2 -join ' ') -match '-Layer cards') {
+            $n = 0
+            if (Test-Path -LiteralPath $env:LS_COUNT) { $n = [int](Get-Content -LiteralPath $env:LS_COUNT -Raw) }
+            $n++
+            Set-Content -LiteralPath $env:LS_COUNT -Value $n
+            if ($n -gt [int]$env:LS_PAGES) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'finish_batch'; units = 0; done = 0; claimed = 0; results = @() }); exit 0 }
+            $claimed = 2
+        }
         $results = @(@{ unit = 'cards/g001@1'; token = 1; status = 'done'; disposition = 'verified' }, @{ unit = 'cards/g002@1'; token = 2; status = 'done'; disposition = 'verified' })
         if (($args2 -join ' ') -match '-Units') { $results = @(@{ unit = 'events/g001@1'; token = 1; status = 'done'; disposition = 'verified' }) }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'finish_batch'; units = $results.Count; done = $results.Count; claimed = $claimed; results = $results })
@@ -137,6 +146,7 @@ $env:LS_CALLS = $calls
 $env:LS_COUNT = $count
 $env:LS_OUT = $out
 $env:LS_LAYER = (Join-Path $scratch 'layer.txt')
+$env:LS_PAGES = '1'
 
 function Step([string[]]$argv) {
     Remove-Item -LiteralPath $count -ErrorAction SilentlyContinue
@@ -165,7 +175,7 @@ $units = Get-Content -Raw (Join-Path $out 'layer-steps\digest\units.json') | Con
 $jobs = Get-Content -Raw (Join-Path $out 'layer-steps\digest\jobs.json') | ConvertFrom-Json
 Assert (@($units).Count -eq 2 -and @($jobs).Count -eq 2 -and @($jobs)[0].unit -eq 'digest/g001@1' -and @($jobs)[0].token -eq 1) 'digest start: units and jobs carry each job''s own unit and token'
 $all = Get-Content -LiteralPath $calls -Raw
-Assert (($all -split "`n" | Where-Object { $_ -match '^ledger next .*-Layer digest .*-Take 8 .*-Owner digest block 1 -Lease 7200' }).Count -eq 1) 'digest start: one claim command carries the owner and the two-hour lease'
+Assert (($all -split "`n" | Where-Object { $_ -match '^ledger next .*-Layer digest .*-Take 8 .*-Owner digest block 1 -Lease 7200' }).Count -eq 2) 'digest start: every claim command carries the owner and the two-hour lease'
 Assert (($all -split "`n" | Where-Object { $_ -match '^group-start .*-Group 1 -Token 1' }).Count -eq 1 -and ($all -split "`n" | Where-Object { $_ -match '^group-start .*-Group 2 -Token 2' }).Count -eq 1) 'digest start: each held group runs group-start with its group and token'
 
 # 2. finish: each held unit's checked completion, then the gate.
@@ -183,6 +193,13 @@ $cards = Step (@('-Step', 'start', '-Layer', 'cards', '-Take', '4', '-Owner', 'c
 Assert-Line $cards 'cards start'
 Assert ($cards.json -and $cards.json.ok -eq $true -and $cards.json.claimed -eq 2 -and $cards.json.done -eq 2) "cards start: one finish-batch claims and records the block ($($cards.text))"
 $cardCalls = Get-Content -LiteralPath $calls -Raw
+# scheiner2022baghdad (2026-11-04): one start works the whole queue, and a refused command fails the step.
+$env:LS_PAGES = '3'
+$pages = Step (@('-Step', 'start', '-Layer', 'cards', '-Take', '8', '-Owner', 'cards block 2', '-Lease', '7200') + $common)
+$env:LS_PAGES = '1'
+Assert ($pages.json.ok -eq $true -and $pages.json.claimed -eq 6 -and $pages.json.done -eq 6) "cards queue: one start finishes every page ($($pages.text))"
+$refused = Step (@('-Step', 'start', '-Layer', 'cards', '-Take', '64', '-Owner', 'cards block 3', '-Lease', '7200') + $common)
+Assert ($refused.json.ok -eq $false -and "$($refused.json.error)" -match '-Take must be') "cards queue: a refused command fails the step ($($refused.text))"
 Assert ($cardCalls -match 'finish-batch .*-Layer cards -Take 4 -Owner cards block 1 -Lease 7200') 'cards start: the claim-and-finish command carries the owner and lease'
 
 # 4. the owner's Lock stops the finish step with the typed refusal and keeps the unit's content fault.
@@ -281,8 +298,8 @@ Assert ($wide.json.gate_open -eq 8 -and -not $wide.json.gate_complete -and -not 
 
 # scheiner2022baghdad (2026-11-04): -Queue claims every page and saves one job file per manager.
 $env:LS_PAGES = '2'
-$queue = Step (@('-Step', 'start', '-Layer', 'digest', '-Take', '64', '-Queue', '-Owner', 'digest block 1', '-Lease', '7200') + $common)
-$env:LS_PAGES = ''
+$queue = Step (@('-Step', 'start', '-Layer', 'digest', '-Take', '64', '-Owner', 'digest block 1', '-Lease', '7200') + $common)
+$env:LS_PAGES = '1'
 Assert-Line $queue 'queue'
 Assert ($queue.json.units -eq 4 -and $queue.json.jobs -eq 4 -and $queue.json.chunks -eq 1) "queue: one start claims every page ($($queue.text))"
 $chunk = Join-Path $out 'layer-steps\digest\jobs-001.json'
