@@ -4,8 +4,8 @@ title: Agent skills and integrations
 paths:
   - "skills/**"
   - "scripts/install-agent-integrations.ps1"
-synced: ae78668ec2b7
-updated: 2026-11-01
+synced: 7437a2026a00
+updated: 2026-11-05
 ---
 
 # Agent skills and integrations
@@ -455,6 +455,7 @@ Gaps: `-Allow` has unit tests only (`allow_refusal` in `tools/zt-digest/src/call
 - **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
 
 ## Change history
+- `2026-11-04` — `zt-digest-protocol` names OpenCode Go as the frozen DeepSeek source of the digests.
 - `2026-11-03` — `zt-digest-protocol` names the three installed variants, and its stage graph matches the blueprint: the `cited` stage before the digest, the slot `after-models`, and `term-cards` and `cited-cards` beside the Link stages after `cards-book`.
 - `2026-11-03` — `zt-literature-organize` adds summary leads (owner's request): every division with subdivisions opens on a summary of the whole division. `leads.mjs` applies a leads file, one batch per entry, deepest first: `rewrite` keeps the lead with a new text; `demote` creates the summary as a Side Card, moves it into the lead's place (an insert would shift the Term list while the new Card's Term uses are checked), and files the old lead under it. It turns Term names into Term uses and, once every Card has settled, points the summaries' Links and the root's section headings at the final summaries. Applied to all nine agent Literature trees on the live box.
 - `2026-11-03` — New skill `zt-literature-organize` (owner's request): reorganizes one Literature tree by its source, for any discipline and form of material, with few format checks. Tried on `atkinson2015lectures` on the live box (7,440 Cards), which met the batch limit of 2,000 renamed Cards and gave the skill its parking method. Installed for Claude Code and Codex, linked for DeepSeek Harness.
