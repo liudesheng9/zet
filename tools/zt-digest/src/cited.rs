@@ -72,7 +72,7 @@ const CANDIDATE_CHARS: usize = 240;
 /// The most entries one normalize job holds.
 const NORMALIZE_PER_JOB: usize = 40;
 
-pub const MODEL: &str = "deepseek-official/deepseek-flash";
+pub const MODEL: &str = "opencode-go/deepseek-v4.1-flash";
 const NORMALIZE_INSTRUCTION: &str = "dsh-cited-normalize-instructions.zh.md";
 const NORMALIZE_PROMPT: &str = "按以上说明拆分这些参考文献条目，写出 JSON 文件。最后只回复一行 JSON。";
 

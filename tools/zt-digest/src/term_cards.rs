@@ -108,7 +108,7 @@ const MAX_PROSE_RANGE: (i64, i64) = (0, 20_000);
 /// The managed content role (design 12.4, R0326; S20 / #164): DeepSeek V4.1 Flash from the official
 /// source at high effort writes, reviews and fixes the drafts. The Haiku manager stays the
 /// blueprint's low-effort role, so a job never picks a model of its own.
-pub const JOB_MODEL: &str = "deepseek-official/deepseek-flash";
+pub const JOB_MODEL: &str = "opencode-go/deepseek-v4.1-flash";
 pub const JOB_EFFORT: &str = "high";
 /// The skills a content job receives through its own field (R0333), never copied skill text: the
 /// writer composes ZT Cards in Chinese, the reviewer reads and answers in Chinese.
@@ -5063,12 +5063,12 @@ mod tests {
         assert_eq!(writer["delete_after_collect"], json!(false));
         assert_eq!(writer["id"], json!("t001"), "the job's own fields stay: {writer}");
         let review = managed_job(json!({"id": "t001-r001-review"}), &REVIEWER_SKILLS, true);
-        assert_eq!(review["model"], json!("deepseek-official/deepseek-flash"));
+        assert_eq!(review["model"], json!("opencode-go/deepseek-v4.1-flash"));
         assert_eq!(review["effort"], json!("high"));
         assert_eq!(review["skills"], json!(["asd-ste100-zh"]));
         assert_eq!(review["delete_after_collect"], json!(true));
         // The protocol's role is frozen: the same model and the same effort everywhere.
-        assert_eq!(JOB_MODEL, "deepseek-official/deepseek-flash");
+        assert_eq!(JOB_MODEL, "opencode-go/deepseek-v4.1-flash");
         assert_eq!(JOB_EFFORT, "high");
     }
 }

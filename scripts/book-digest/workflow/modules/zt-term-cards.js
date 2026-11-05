@@ -1,4 +1,5 @@
-// ==== module zt-term-cards v11 ====
+// ==== module zt-term-cards v12 ====
+// v12 (the owner, 2026-11-04): the DeepSeek source is OpenCode Go.
 // v11 (atkinson2015lectures, 2026-11-02): two managers told to run "entries 232 through 239 (0-based)" ran the job ids
 // t232..t239 instead, and 16 jobs never ran. The start writes one chunk file per manager (drive\jobs-NNN.json, at most
 // DSMP.perManager jobs) and each writer manager runs every entry of its own file.
@@ -27,7 +28,7 @@
 // v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
 // only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '11', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '12', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers and review-and-fix jobs for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -43,7 +44,7 @@ defineModule({
     const OUT = String(p.out).replace(/[\\/]+$/, '')
     const WORK = `${OUT}\\term-cards`
     const DRIVE = `${WORK}\\drive`
-    const MODEL = 'deepseek-official/deepseek-flash'
+    const MODEL = 'opencode-go/deepseek-v4.1-flash'
     const phase = ctx.phase
     const tail = (text) => String(text || '').trim().slice(0, 400)
     const report = { status: 'done', book: p.key, work: WORK, jobs: { total: 0, done: 0, failed: 0 }, reviews: 0, publication: null, deepseek: { deleted: 0, not_deleted: [] } }

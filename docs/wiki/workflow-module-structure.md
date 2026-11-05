@@ -170,7 +170,7 @@ The rules every module follows:
 10. Every step answers one compact line (at most 400 characters, boolean `ok`, counts and paths only) with its full data in the detail file the line names; `ztDrive` reads only a verbatim last line that is one JSON object with a boolean `ok`, so a retyped line fails the stage instead of being reinterpreted.
 11. The book's Citation key has one source: the prepared run (`stages.prepare.output.citation_key`). The blueprint hands it to each stage's `key` param (`args.citationKey` reaches only `prepare`, which creates a fresh run), `zdMake` never reads `args.citationKey`, and `book-steps.ps1`/`model-steps.ps1` fall back to `<out>\manifest.json`'s `citation_key` when a step's options name none, so a resume (which passes only `out`) never hands `zt-digest` an empty `-CitationKey`/`-Book` (#181).
 
-Models: Haiku (effort low) for every manager; DeepSeek V4.1 Flash, official source, effort high, for all labour; Sonnet only for the overall designer of a complicated task (the model architect) and the HTML visual composer; Opus only for the judgement roles the user approved (the Organize decision).
+Models: Haiku (effort low) for every manager; DeepSeek V4.1 Flash, OpenCode Go source, effort high, for all labour; Sonnet only for the overall designer of a complicated task (the model architect) and the HTML visual composer; Opus only for the judgement roles the user approved (the Organize decision).
 
 ## Data and storage
 

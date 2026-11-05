@@ -754,7 +754,7 @@ function runtime(kind, opts = {}) {
         if (step === 'jobs') {
           const listed = (cmd.match(/-Tokens '([^']*)'/) || [])[1] || ''
           const ids = listed.split(',').filter(Boolean).map((e) => e.slice(0, e.lastIndexOf(':')))
-          const jobs = ids.map((id) => ({ id, kind: 'concept', rows: [Number(id.slice(1))], terms: [`术语${id.slice(1)}`], files: [`${out}\\term-cards\\dsh-term-card-instructions.zh.md`, `${out}\\term-cards\\jobs\\${id}.md`], prompt: 'p', output: `${out}\\term-cards\\out\\${id}.json`, permissions: { archive_read: true, archive_write: false }, model: 'deepseek-official/deepseek-flash', effort: 'high', skills: ['zettelkasten', 'asd-ste100-zh'], delete_after_collect: false }))
+          const jobs = ids.map((id) => ({ id, kind: 'concept', rows: [Number(id.slice(1))], terms: [`术语${id.slice(1)}`], files: [`${out}\\term-cards\\dsh-term-card-instructions.zh.md`, `${out}\\term-cards\\jobs\\${id}.md`], prompt: 'p', output: `${out}\\term-cards\\out\\${id}.json`, permissions: { archive_read: true, archive_write: false }, model: 'opencode-go/deepseek-v4.1-flash', effort: 'high', skills: ['zettelkasten', 'asd-ste100-zh'], delete_after_collect: false }))
           return { ok: true, exit: 0, output: json({ ok: true, step: 'jobs', plan_revision: 1, plan_hash: 'ph-terms', units: [], jobs }) }
         }
         if (step === 'check' || step === 'review-plan' || step === 'fix-plan') {
@@ -3372,13 +3372,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '53' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '4' && modules['zt-workflow-lib'] === '10' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '11' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '54' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '4' && modules['zt-workflow-lib'] === '11' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '12' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '10', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '11', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -3420,7 +3420,7 @@ for (const which of ['econ', 'math']) {
   // their chains to script steps.
   check(commandCalls.length === 0 && !calls.some((c) => c.agentType === 'zt-relay'), `S1 ${which}: no agent relays a command (${commandCalls.filter((c) => c.agentType !== 'zt-relay').map((c) => c.label).slice(0, 3).join(', ')})`)
   check(!calls.some((c) => /^You prepare a book|^List the Model Cards|^Prepare the receipt-owned|^You check which DeepSeek Harness source/.test(c.prompt)), `S1 ${which}: no Haiku agent runs prepare, prepare-link, the model list or a source probe`)
-  check(!calls.some((c) => c.label === 'choose DeepSeek source') && result && result.dsh_model === 'deepseek-official/deepseek-flash', `S1 ${which}: the DeepSeek source is the frozen official one (${result && result.dsh_model})`)
+  check(!calls.some((c) => c.label === 'choose DeepSeek source') && result && result.dsh_model === 'opencode-go/deepseek-v4.1-flash', `S1 ${which}: the DeepSeek source is the frozen OpenCode Go one (${result && result.dsh_model})`)
   check(!calls.some((c) => /^You drive DeepSeek Harness/.test(c.prompt) && !/Run every job below|Run the jobs with these ids/.test(c.prompt)), `S1 ${which}: a DSH drive agent runs only DeepSeek jobs, never its step command`)
   const prep = bookCalls.find((c) => c.step === 'prepare')
   check(prep && /'-Apply', '-Brief'/.test(scriptOf(which)), `S1 ${which}: prepare runs one book-steps.ps1 step and the step script keeps its brief line`)
@@ -3689,7 +3689,11 @@ for (const which of ['econ', 'math']) {
   check(!/ztRelay|runScript|wfpScript/.test(growSteps), '#179: grow-steps.ps1 names no relay helper')
   check((growSim.answers || []).filter((a) => a.label === '^grow: next$').every((a) => a.answer && typeof a.answer.answer === 'string' && a.answer.session_id), '#179: the dry run answers each grow step as the drive job it is')
   const shared = readText('scripts/workflow-shared/modules/zt-workflow-lib.js')
-  check(/version: '10'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  // The owner, 2026-11-04: the digests have one DeepSeek source. The drive default stayed official when the content jobs moved.
+  const OPENCODE_DRIVE = "ZT_DRIVE_MODEL = 'opencode-go/deepseek-v4.1-flash'"
+  const named = fs.readdirSync(path.join(root, 'scripts', 'book-digest', 'workflow', 'modules')).filter((f) => readText(`scripts/book-digest/workflow/modules/${f}`).includes('deepseek-official'))
+  check(named.length === 0 && !shared.includes('deepseek-official') && shared.includes(OPENCODE_DRIVE), `every digest job names OpenCode Go, drive jobs included (${named.join() || 'the drive default'})`)
+  check(/version: '11'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
 }
 
 // ================================================================================================================

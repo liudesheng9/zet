@@ -1,4 +1,5 @@
-// ==== module zt-workflow-lib v10 ====
+// ==== module zt-workflow-lib v11 ====
+// v11 (the owner, 2026-11-04): drive jobs run on OpenCode Go, the digests' one DeepSeek source.
 // The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6; docs/workflow-module-structure-proposal.md):
 // the digests (zt-digest-lib) and zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
 //  - S6, one lock reader: the owner's typed `card_locked` refusal (#140, R326/R337/R338) is read here and only
@@ -45,7 +46,7 @@
 //    `{`, when every line after it is prose (none opens with `{` or `[`). The line itself is still read strictly:
 //    one object with a boolean top-level `ok`, with no prose before it on the same line.
 const ZT_LOCK = 'card_locked'
-const ZT_DRIVE_MODEL = 'deepseek-official/deepseek-flash'
+const ZT_DRIVE_MODEL = 'opencode-go/deepseek-v4.1-flash'
 const ZT_DRIVE_SCHEMA = {
   type: 'object',
   properties: {
@@ -192,7 +193,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '10', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '11', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====

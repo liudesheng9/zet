@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v53 ====
+// ==== module zt-digest-lib v54 ====
 // 51 (scheiner2022baghdad, 2026-11-04, the owner's design): no lanes. One structure: a layer claims every ready unit in one start, its
 // managers run one queue, and one finish applies the layer. A later block is only the retry of what failed.
 // 48 (#227): the Write scope is the server's (#225, #226): the helper `call` declares the Literature scope and the open
@@ -99,7 +99,7 @@ function zdTool(name, scripts = ZD_SCRIPTS) {
   return ZD_TOOLS[name] ? `${ZD_DIGEST} ${ZD_TOOLS[name]}` : `pwsh -NoProfile -File "${scripts}\\${name}.ps1"`
 }
 const ZD_DSH_SOURCES = {
-  official: 'deepseek-official/deepseek-flash',
+  opencode: 'opencode-go/deepseek-v4.1-flash',
 }
 const ZD_PER_MANAGER_MAX = 8
 const ZD_MAX_MANAGERS = 8
@@ -124,9 +124,10 @@ function zdLockRefusal(text) { return ztLockRefusal(text) }
 function zdLockSaid(refusal) { return ztLockSaid(refusal) }
 function zdLockStop(where, refusal) { return ztLockStop(where, refusal) }
 
-// The DeepSeek source is frozen at the official one (the user's rule, 2026-10-20; S1): no probe, no argument.
+// The DeepSeek source is frozen at OpenCode Go (the owner, 2026-11-04, replacing the official source of 2026-10-20): no
+// probe, no argument, no second source.
 function zdDefaultModel() {
-  return { source: 'official', model: ZD_DSH_SOURCES.official }
+  return { source: 'opencode', model: ZD_DSH_SOURCES.opencode }
 }
 
 function zdMake(ctx, p) {
@@ -1142,7 +1143,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '53', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '54', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====
