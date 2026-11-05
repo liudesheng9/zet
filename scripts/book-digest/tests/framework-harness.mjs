@@ -2755,6 +2755,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // Bridge, the hub writer and the audit never run again (the resume reran Organize's survey and decisions).
   const retained = [['terms', 'terms/book@1'], ['digest', 'digest/g001@1'], ['organize', 'organize/book@1'], ['skeleton', 'skeleton/book@1'], ['figures', 'figures/book@1'], ['bridge', 'bridge/book@1'], ['audit', 'audit/book@1'], ['link-check', 'link-check/book@1']]
   const rt = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained, retainedDone: ['organize', 'skeleton', 'figures', 'bridge', 'audit', 'link-check'] })
+  // scheiner2022baghdad: a resume started 182 link-check writers on a book whose link check was already published.
+  check(!rt.bookCalls.some((c) => c.step === 'cards-start' && /cards-link/.test((c.options || {}).Work || '')), 'resume reuse: a completed link check starts no writer')
   const labels = rt.calls.map((c) => c.label)
   check(!labels.some((l) => /^organize: (decisions|survey)|^hubs write|^audit cards|^bridge: plan|^finalize plan/.test(l)), `resume reuse: completed later layers are not redone (${labels.filter((l) => /^organize|^hubs|^audit|^bridge|^finalize/.test(l)).join(', ')})`)
 }
