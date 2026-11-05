@@ -280,19 +280,43 @@ pub(crate) fn fold(text: &str) -> String {
     text.chars()
         .filter_map(|c| {
             let base = match c {
-                'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' | 'Á' | 'À' | 'Â' | 'Ä' | 'Ã' | 'Å' => 'a',
-                'é' | 'è' | 'ê' | 'ë' | 'É' | 'È' | 'Ê' | 'Ë' => 'e',
-                'í' | 'ì' | 'î' | 'ï' | 'Í' | 'Ì' | 'Î' | 'Ï' => 'i',
-                'ó' | 'ò' | 'ô' | 'ö' | 'õ' | 'ø' | 'Ó' | 'Ò' | 'Ô' | 'Ö' | 'Õ' | 'Ø' => 'o',
-                'ú' | 'ù' | 'û' | 'ü' | 'Ú' | 'Ù' | 'Û' | 'Ü' => 'u',
-                'ç' | 'Ç' => 'c',
-                'ñ' | 'Ñ' => 'n',
-                'ß' => 's',
+                'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' | 'Á' | 'À' | 'Â' | 'Ä' | 'Ã' | 'Å' | 'ā' | 'ă' | 'ą' | 'Ā' | 'Ă' | 'Ą' => 'a',
+                'é' | 'è' | 'ê' | 'ë' | 'É' | 'È' | 'Ê' | 'Ë' | 'ē' | 'ĕ' | 'ę' | 'ė' | 'ě' | 'Ē' | 'Ě' => 'e',
+                'í' | 'ì' | 'î' | 'ï' | 'Í' | 'Ì' | 'Î' | 'Ï' | 'ī' | 'ĭ' | 'į' | 'ı' | 'Ī' | 'İ' => 'i',
+                'ó' | 'ò' | 'ô' | 'ö' | 'õ' | 'ø' | 'Ó' | 'Ò' | 'Ô' | 'Ö' | 'Õ' | 'Ø' | 'ō' | 'ŏ' | 'ő' | 'Ō' => 'o',
+                'ú' | 'ù' | 'û' | 'ü' | 'Ú' | 'Ù' | 'Û' | 'Ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'Ū' => 'u',
+                'ç' | 'Ç' | 'ć' | 'č' | 'Ć' | 'Č' => 'c',
+                'ñ' | 'Ñ' | 'ń' | 'ň' | 'ṇ' | 'Ṇ' => 'n',
+                'ß' | 'ś' | 'š' | 'ş' | 'ṣ' | 'Ś' | 'Š' | 'Ş' | 'Ṣ' => 's',
+                // The letters of Arabic and Persian transliteration (scheiner2022baghdad): `Ṭāhir` folded to `hir`.
+                'ḍ' | 'ď' | 'đ' | 'Ḍ' | 'Ď' | 'Đ' => 'd',
+                'ġ' | 'ğ' | 'ǧ' | 'Ġ' | 'Ğ' => 'g',
+                'ḥ' | 'ḫ' | 'ħ' | 'Ḥ' | 'Ḫ' => 'h',
+                'ḳ' | 'ķ' | 'Ḳ' => 'k',
+                'ḷ' | 'ł' | 'Ḷ' | 'Ł' => 'l',
+                'ṛ' | 'ř' | 'Ṛ' => 'r',
+                'ṭ' | 'ť' | 'ţ' | 'Ṭ' | 'Ť' => 't',
+                'ẓ' | 'ž' | 'ż' | 'ź' | 'Ẓ' | 'Ž' => 'z',
+                'ý' | 'ÿ' | 'Ý' => 'y',
                 other => other,
             };
             base.is_ascii_alphanumeric().then(|| base.to_ascii_lowercase())
         })
         .collect()
+}
+
+/// A folded name with its doubled letters squeezed: transliteration writes a doubled consonant in different places
+/// (`Ibn Batūṭṭa` in the list, `Ibn Baṭṭūṭa` in the text).
+pub(crate) fn squeeze(folded: &str) -> String {
+    let mut letters: Vec<char> = folded.chars().collect();
+    letters.dedup();
+    letters.into_iter().collect()
+}
+
+/// Whether a Term hit (`uses `X` for `Y`: <sentence>`) stands in a sentence the reference itself holds: the `文献：` line
+/// quotes the reference verbatim, and a title with a full stop in it splits into sentences that lose the line's prefix.
+pub(crate) fn quotes_the_reference(message: &str, entry: &str) -> bool {
+    message.split_once(": ").is_some_and(|(_, sentence)| entry.contains(sentence.trim()))
 }
 
 /// Split one cleaned entry. `previous` is the entry before it, whose authors a dash run repeats.
@@ -837,6 +861,29 @@ fn apply_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_transliterated_name_folds_to_its_plain_letters() {
+        assert_eq!(fold("Ṭāhir"), "tahir");
+        assert_eq!(fold("Tāhir"), "tahir");
+        assert_eq!(fold("al-Aṣīl"), fold("Al-Asil"));
+        assert_eq!(fold("Mīrkhwānd"), fold("Mirkhwānd"));
+        assert_eq!(fold("Ḥasan ibn Ẓāhir ʿAlī"), "hasanibnzahiràli".replace('à', "a").as_str());
+        assert_eq!(fold("Ab Iorwerth"), "abiorwerth");
+    }
+
+    #[test]
+    fn a_doubled_consonant_may_stand_anywhere_in_a_name() {
+        assert_eq!(squeeze(&fold("Ibn Batūṭṭa")), squeeze(&fold("Ibn Baṭṭūṭa")));
+        assert_ne!(squeeze(&fold("Ibn Baṭṭūṭa")), squeeze(&fold("Ibn Jubayr")));
+    }
+
+    #[test]
+    fn a_term_hit_inside_the_quoted_reference_is_no_fault() {
+        let entry = "Messina, V., L'area di al-Madā'in. Dal declino di Seleucia alla Fondazione di Veh Ardashir, in: Genito, B. and Caterina, L. (eds.), Naples 2015.";
+        assert!(quotes_the_reference("uses `Veh Ardashir` for `韦赫·阿尔达希尔`: Dal declino di Seleucia alla Fondazione di Veh Ardashir, in: Genito, B.", entry));
+        assert!(!quotes_the_reference("uses `Veh Ardashir` for `韦赫·阿尔达希尔`: 本书在这里写 Veh Ardashir。", entry));
+    }
 
     #[test]
     fn a_year_is_cited_only_with_its_own_letter() {

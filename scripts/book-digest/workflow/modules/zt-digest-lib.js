@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v52 ====
+// ==== module zt-digest-lib v53 ====
 // 51 (scheiner2022baghdad, 2026-11-04, the owner's design): no lanes. One structure: a layer claims every ready unit in one start, its
 // managers run one queue, and one finish applies the layer. A later block is only the retry of what failed.
 // 48 (#227): the Write scope is the server's (#225, #226): the helper `call` declares the Literature scope and the open
@@ -642,6 +642,8 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
       add(finished)
       gate = finished.gate || gate
       if (o.onFinish) o.onFinish(finished, label, started)
+      // One finish applies the layer; a later block is only a retry of what failed.
+      if (gate && gate.complete === true) break
     }
     if (failure) return { status: 'failed', layer, error: failure.error, totals, claimed, gate: failure.gate, finishes }
     const final = gate || { complete: false, counts: {} }
@@ -1140,7 +1142,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '52', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '53', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

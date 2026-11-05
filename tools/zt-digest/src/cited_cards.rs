@@ -472,7 +472,7 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
                 .split(|c: char| !c.is_alphanumeric())
                 .map(cited::fold)
                 .any(|word| one_edit(&word, &surname));
-        let names = (!surname.is_empty() && near.contains(&surname))
+        let names = (!surname.is_empty() && cited::squeeze(&near).contains(&cited::squeeze(&surname)))
             || near_spelling
             || first_name.as_ref().is_some_and(|name| near.contains(name.as_str()))
             || words.iter().filter(|w| near.contains(w.as_str())).count() >= 2;
@@ -500,7 +500,7 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
     for d in report {
         // The `文献：` line quotes the reference verbatim; it is never reworded, so R6 does not count there
         // (ebrill2001modern: `CVAT, VIVAT, and All That`, where the Term list avoids CVAT).
-        if d.rule == "R6" && (d.message.contains(": 文献：") || only_in_section_title(&d.message)) {
+        if d.rule == "R6" && (d.message.contains(": 文献：") || cited::quotes_the_reference(&d.message, &pstr(row, "entry")) || only_in_section_title(&d.message)) {
             continue;
         }
         // R6 counts here: a Cited Card keeps the book's Term spellings.
