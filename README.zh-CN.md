@@ -354,6 +354,7 @@ Claude Code 工作流 `zt-econ-digest`（经济学书）、`zt-history-digest`�
 | `search_cards`、`list_links`、`list_broken_links` | 全文搜索（可限定 Card `type`；`mode: entry` 先给出登记簿词条及其入口卡、hub 成员行和模型入口，再给普通标题与正文命中；已确认的同述入口，或两张陈述指纹完全相同的 Idea Card，合成一行，并给出规范陈述卡与全部成员）、Link 图（可只看跨 Workspace 的 Link）、Broken link |
 | `create_topic`、`create_literature` | 在 agent Workspace 中新建 Topic 树或 Literature 树 |
 | `create_successor` | 为 agent Card 添加 direct 或 side successor，可以是 Event、Finding、Model、Hub 或 Term Card（`type`；Model Card 的 `level`/`form`、Model part 的 `facet`/`emphasis`、Hub Card 的 `level`、Term Card 的 `term` 名称） |
+| `set_literature_type` | 修改 agent Literature Card 的文献类型（`history`、`economics`、`mathematics`、`others`） |
 | `edit_card`、`edit_literature_metadata` | 修改 agent Card 的标题、正文、类型、术语名、facet、emphasis、层级、hub 层级、数学形式或 BibTeX |
 | `delete_card`、`move_card` | 删除或移动 agent Card（删除计划列出会断开的 Link，`into` 把它们改指一张保留的卡；`move_card` 用 `to` 移到空位，用 `before` 占用另一张卡的位置，用 `alone` 不带后继） |
 | `insert_card` | 把新的 agent Card 插到另一张卡的位置上；那张卡及其子树下移 |

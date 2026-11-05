@@ -363,6 +363,26 @@ fn pilot(zt: &Zt, step: &str, args: &[&str]) -> Output {
 }
 
 #[test]
+fn a_digest_labels_the_tree_it_creates_with_its_literature_type() {
+    let Some(program) = zt_program() else {
+        eprintln!("skipped: no zt binary");
+        return;
+    };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    let holder = tempfile::tempdir().expect("work");
+    prepared(&zt, holder.path());
+    let trees = mcp.call("list_trees", json!({}));
+    let book = trees["trees"]
+        .as_array()
+        .expect("trees")
+        .iter()
+        .find(|tree| tree["root"] == KEY)
+        .unwrap_or_else(|| panic!("the prepared run made its tree: {trees}"));
+    assert_eq!(book["literature_type"], "economics", "{book}");
+}
+
+#[test]
 fn a_copied_book_pilot_is_planned_preflighted_qualified_and_recorded() {
     let Some(program) = zt_program() else {
         eprintln!("skipped: no zt binary");

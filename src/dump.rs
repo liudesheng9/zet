@@ -11,6 +11,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hub::HubLevel;
+use crate::literature::LiteratureType;
 use crate::math::MathForm;
 use crate::model::{Emphasis, Facet, Level};
 use crate::{CardType, Workspace};
@@ -34,6 +35,7 @@ pub(crate) struct DumpCard {
     level: Option<Level>,
     form: Option<MathForm>,
     hub_level: Option<HubLevel>,
+    literature_type: Option<LiteratureType>,
     bibtex: Option<String>,
     text: String,
 }
@@ -60,6 +62,7 @@ impl DumpCard {
             level: None,
             form: None,
             hub_level: None,
+            literature_type: None,
             bibtex: None,
             text,
         }
@@ -90,6 +93,12 @@ impl DumpCard {
         self
     }
 
+    /// The Literature type of a Literature Card.
+    pub(crate) fn with_literature_type(mut self, literature_type: LiteratureType) -> Self {
+        self.literature_type = Some(literature_type);
+        self
+    }
+
     /// The Hub level of a Hub Card.
     pub(crate) fn with_hub_level(mut self, hub_level: Option<HubLevel>) -> Self {
         self.hub_level = hub_level;
@@ -112,6 +121,7 @@ impl DumpCard {
             level: None,
             form: None,
             hub_level: None,
+            literature_type: None,
             bibtex: Some(bibtex),
             text,
         }
@@ -127,7 +137,8 @@ impl DumpCard {
 /// facet, `emphasis` maps every core or aside part to its emphasis, `levels`
 /// maps every Model Card with an elaboration level to it, `forms` maps every
 /// Model Card that states a mathematical unit to its Math form, `hub_levels` maps
-/// every Hub Card to its Hub level, and `next_topic_id`
+/// every Hub Card to its Hub level, `literature_types` maps every Literature Card to its Literature
+/// type, and `next_topic_id`
 /// keeps deleted Topic numbers from being reused.
 fn manifest(cards: &[DumpCard], next_topic_id: u64) -> Result<String> {
     let workspaces = cards
@@ -179,9 +190,16 @@ fn manifest(cards: &[DumpCard], next_topic_id: u64) -> Result<String> {
                 .map(|level| (card.address.clone(), level.id()))
         })
         .collect::<BTreeMap<_, _>>();
+    let literature_types = cards
+        .iter()
+        .filter_map(|card| {
+            card.literature_type
+                .map(|kind| (card.address.clone(), kind.id()))
+        })
+        .collect::<BTreeMap<_, _>>();
     // serde_json sorts object keys, so the documented key order is written out.
     Ok(format!(
-        r#"{{"next_topic_id":{next_topic_id},"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}}"#,
+        r#"{{"next_topic_id":{next_topic_id},"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{},"literature_types":{}}}"#,
         serde_json::to_string(&workspaces)?,
         serde_json::to_string(&types)?,
         serde_json::to_string(&term_names)?,
@@ -189,7 +207,8 @@ fn manifest(cards: &[DumpCard], next_topic_id: u64) -> Result<String> {
         serde_json::to_string(&emphasis)?,
         serde_json::to_string(&levels)?,
         serde_json::to_string(&forms)?,
-        serde_json::to_string(&hub_levels)?
+        serde_json::to_string(&hub_levels)?,
+        serde_json::to_string(&literature_types)?
     ))
 }
 
@@ -1050,15 +1069,15 @@ mod tests {
         ];
         assert_eq!(
             manifest(&cards, 7).unwrap(),
-            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent","1/1|b":"agent","1/1|c":"agent","1/1|d":"agent","Smith2024":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"event","1/1|b":"finding","1/1|c":"hub","1/1|d":"term"},"term_names":{"1/1|d":"均衡"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"},"hub_levels":{"1/1|c":"topic"}}"#
+            r#"{"next_topic_id":7,"workspaces":{"0/0":"human","0/1":"human","0/1|a":"human","1/0":"agent","1/1|a":"agent","1/1|b":"agent","1/1|c":"agent","1/1|d":"agent","Smith2024":"agent"},"types":{"0/1":"model","0/1|a":"model","1/1|a":"event","1/1|b":"finding","1/1|c":"hub","1/1|d":"term"},"term_names":{"1/1|d":"均衡"},"facets":{"0/1|a":"assumptions"},"emphasis":{"0/1|a":"core"},"levels":{"0/1":"formal"},"forms":{"0/1":"theorem"},"hub_levels":{"1/1|c":"topic"},"literature_types":{}}"#
         );
         assert_eq!(
             manifest(&cards[..1], 1).unwrap(),
-            r#"{"next_topic_id":1,"workspaces":{"0/0":"human"},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
+            r#"{"next_topic_id":1,"workspaces":{"0/0":"human"},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{},"literature_types":{}}"#
         );
         assert_eq!(
             manifest(&[], 0).unwrap(),
-            r#"{"next_topic_id":0,"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
+            r#"{"next_topic_id":0,"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{},"literature_types":{}}"#
         );
     }
 

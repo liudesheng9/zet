@@ -1,10 +1,97 @@
 use anyhow::{Context, Result, bail};
 use nom_bibtex::{Bibtex, Entry};
+use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LiteratureMetadata {
     pub(crate) citation_key: String,
     pub(crate) title: String,
+}
+
+/// What kind of work a Literature Card is (CONTEXT.md). Every Literature Card has exactly one; a
+/// Card nothing has declared reads as `Others`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum LiteratureType {
+    History,
+    Economics,
+    Mathematics,
+    #[default]
+    Others,
+}
+
+impl LiteratureType {
+    pub(crate) const ALL: [Self; 4] = [Self::History, Self::Economics, Self::Mathematics, Self::Others];
+
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::History => "history",
+            Self::Economics => "economics",
+            Self::Mathematics => "mathematics",
+            Self::Others => "others",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        match Self::ALL.into_iter().find(|kind| kind.id() == value) {
+            Some(kind) => Ok(kind),
+            None => bail!(
+                "unknown Literature type `{value}`; expected {}",
+                Self::ALL.map(Self::id).join(", ")
+            ),
+        }
+    }
+}
+
+/// The Literature type lives beside `cards`, keyed by the Card's row, so a Citation-key rename
+/// keeps it and a Lock (which promises the Cards, not how the box shelves them) does not hold it.
+/// The trigger forgets a deleted root, so a later row that reuses the number starts as `others`.
+pub(crate) fn ensure_type_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS literature_types (
+            row_id INTEGER PRIMARY KEY,
+            literature_type TEXT NOT NULL
+                CHECK (literature_type IN ('history', 'economics', 'mathematics', 'others'))
+        );
+        CREATE TRIGGER IF NOT EXISTS literature_type_forget AFTER DELETE ON cards
+        WHEN OLD.is_lit = 1
+        BEGIN
+            DELETE FROM literature_types WHERE row_id = OLD.row_id;
+        END;",
+    )?;
+    Ok(())
+}
+
+pub(crate) fn stored_type(conn: &Connection, row_id: i64) -> Result<LiteratureType> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT literature_type FROM literature_types WHERE row_id = ?1",
+            [row_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    stored.map_or(Ok(LiteratureType::Others), |id| LiteratureType::parse(&id))
+}
+
+/// Every declared type by Card row: what a Snapshot carries.
+pub(crate) fn stored_types(conn: &Connection) -> Result<BTreeMap<i64, LiteratureType>> {
+    let mut stmt = conn.prepare("SELECT row_id, literature_type FROM literature_types")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+    let mut types = BTreeMap::new();
+    for row in rows {
+        let (row_id, id) = row?;
+        types.insert(row_id, LiteratureType::parse(&id)?);
+    }
+    Ok(types)
+}
+
+pub(crate) fn store_type(conn: &Connection, row_id: i64, kind: LiteratureType) -> Result<()> {
+    conn.execute(
+        "INSERT INTO literature_types (row_id, literature_type) VALUES (?1, ?2)
+         ON CONFLICT(row_id) DO UPDATE SET literature_type = excluded.literature_type",
+        params![row_id, kind.id()],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn parse_metadata(raw: &str) -> Result<LiteratureMetadata> {

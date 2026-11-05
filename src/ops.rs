@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::link::{LinkBody, LinkLifecycle};
+use crate::literature::LiteratureType;
 use crate::model::{Emphasis, Facet, Level, Part};
 pub(crate) use crate::place::Target;
 
@@ -247,7 +248,7 @@ pub(crate) fn create_literature(
     let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "create_literature")?;
     let mut conn = crate::open_db(root)?;
     let tx = conn.transaction()?;
-    let (address, accepted) = create_literature_tx(&tx, access, workspace, bibtex, text)?;
+    let (address, accepted) = create_literature_tx(&tx, access, workspace, bibtex, text, None)?;
     crate::link_index::source_changed(&tx, &address)?;
     tx.commit()?;
     Ok((address, accepted))
@@ -259,6 +260,7 @@ pub(crate) fn create_literature_tx(
     workspace: Workspace,
     bibtex: &str,
     text: &str,
+    literature_type: Option<LiteratureType>,
 ) -> Result<(String, crate::gate::Accepted)> {
     access.ensure_writable(workspace)?;
     let metadata = crate::literature::parse_metadata(bibtex)?;
@@ -266,7 +268,40 @@ pub(crate) fn create_literature_tx(
     let text = crate::compose_card_text(&metadata.title, &parsed.body, "");
     let accepted =
         crate::insert_literature_card_tx(conn, &metadata.citation_key, workspace, bibtex, &text)?;
+    if let Some(literature_type) = literature_type {
+        let row_id = crate::load_card(conn, &metadata.citation_key)?.row_id;
+        crate::literature::store_type(conn, row_id, literature_type)?;
+    }
     Ok((metadata.citation_key, accepted))
+}
+
+/// Set a Literature Card's type. It is a shelf label, not Card content: no Card text changes, a
+/// Lock does not hold it, and setting the same type again writes nothing.
+pub(crate) fn set_literature_type(
+    root: &Path,
+    access: Access,
+    at: &str,
+    literature_type: LiteratureType,
+) -> Result<Value> {
+    let _lock = crate::acquire_edit_lock_within(root, EDIT_PATIENCE, "set_literature_type")?;
+    let mut conn = crate::open_db(root)?;
+    let tx = conn.transaction()?;
+    let card = crate::load_card(&tx, at)?;
+    access.ensure_writable(card.workspace)?;
+    if !card.is_lit {
+        bail!("`{at}` has no Literature type: only a Literature Card has one");
+    }
+    let changed = crate::literature::stored_type(&tx, card.row_id)? != literature_type;
+    if changed {
+        crate::literature::store_type(&tx, card.row_id, literature_type)?;
+        crate::link_index::bump_revision(&tx)?;
+    }
+    tx.commit()?;
+    Ok(json!({
+        "address": card.address,
+        "literature_type": literature_type.id(),
+        "changed": changed,
+    }))
 }
 
 /// A change to a Card's type, Model facet, emphasis, elaboration level, hub
@@ -776,6 +811,8 @@ pub(crate) struct Snapshot {
     /// ask (#243): the GUI's graph and tree answers and its per-tree fingerprints all read it, so a
     /// Snapshot kept across requests builds each summary once.
     summaries: OnceLock<Summaries>,
+    /// The declared Literature types of the same read, by Card row.
+    literature_types: BTreeMap<i64, LiteratureType>,
 }
 
 /// The serialized Card summaries of one Snapshot (#243).
@@ -850,7 +887,19 @@ impl Snapshot {
         let cards = crate::load_cards(conn)?;
         let lock = crate::tree_lock::LockView::read(conn, None)?;
         let revision = crate::link_index::revision(conn)?;
-        Self::from_cards(cards, lock, revision)
+        Ok(Self::from_cards(cards, lock, revision)?
+            .with_literature_types(crate::literature::stored_types(conn)?))
+    }
+
+    pub(crate) fn with_literature_types(mut self, types: BTreeMap<i64, LiteratureType>) -> Self {
+        self.literature_types = types;
+        self
+    }
+
+    /// A Literature Card's type (`others` until one is declared); `None` for every other Card.
+    pub(crate) fn literature_type(&self, card: &Card) -> Option<&'static str> {
+        card.is_lit
+            .then(|| self.literature_types.get(&card.row_id).copied().unwrap_or_default().id())
     }
 
     /// Shared domain calculations over a complete request context. The GUI keeps
@@ -914,6 +963,7 @@ impl Snapshot {
             fingerprint: OnceLock::new(),
             term_meanings: OnceLock::new(),
             summaries: OnceLock::new(),
+            literature_types: BTreeMap::new(),
         })
     }
 
@@ -1126,6 +1176,9 @@ impl Snapshot {
             "term_use_targets": term_use_targets,
             "inbound": self.inbound.get(&card.address).map_or(0, BTreeSet::len),
         });
+        if let Some(literature_type) = self.literature_type(card) {
+            value["literature_type"] = json!(literature_type);
+        }
         // Only a Term Card carries its exact name and a computed Term role and list, so every
         // other Card keeps its existing summary shape (S14, #161; design 15.1).
         if card.card_type == CardType::Term {
@@ -1184,6 +1237,7 @@ impl Snapshot {
                     "root": card.address,
                     "workspace": card.workspace.id(),
                     "kind": zone(card),
+                    "literature_type": self.literature_type(card),
                     "title": self.title(&card.address),
                     "excerpt": excerpt(&self.parsed[&card.address].body),
                     "count": members.len(),

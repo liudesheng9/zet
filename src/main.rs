@@ -1572,6 +1572,7 @@ fn initialize_database(root: &Path) -> Result<()> {
     // inspects the protection catalog BEFORE repairing it, so an accidentally missing or altered
     // trigger is recorded and latched rather than silently restored (R290, R296–R298).
     let conn = open_db(root)?;
+    literature::ensure_type_table(&conn)?;
     {
         let _lock = acquire_edit_lock(root, "startup integrity check")?;
         // R051/R304 (S07-AC05): the rebuilds above dropped the triggers that belong to `cards`.
@@ -2419,7 +2420,8 @@ fn dump_view(root: &Path) -> Result<(Vec<dump::DumpCard>, u64, serde_json::Value
                     card.bibtex
                         .context("Literature Card is missing its BibTeX metadata")?,
                     card.text,
-                ))
+                )
+                .with_literature_type(literature::stored_type(&view, card.row_id)?))
             } else {
                 Ok(
                     dump::DumpCard::new(card.address, card.workspace, card.card_type, card.text)

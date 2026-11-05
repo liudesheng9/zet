@@ -8729,14 +8729,16 @@ fn setup_calls(p: &Prepared) -> Result<Vec<Value>> {
     }
     for (i, call) in calls.iter().enumerate() {
         let a = &call["arguments"];
-        let allowed: &[&str] = if i == 0 {
+        let required: &[&str] = if i == 0 {
             &["workspace", "bibtex", "body"]
         } else {
             &["at", "kind", "title", "body"]
         };
+        // A run prepared before the Literature type declares none; its tree stays `others`.
+        let known = |k: &str| required.contains(&k) || (i == 0 && k == "literature_type");
         if call.as_object().is_none_or(|v| v.len() != 2)
             || a.as_object().is_none_or(|v| {
-                v.len() != allowed.len() || v.keys().any(|k| !allowed.contains(&k.as_str()))
+                required.iter().any(|k| !v.contains_key(*k)) || v.keys().any(|k| !known(k))
             })
         {
             bail!("invalid retained setup operation {i}");

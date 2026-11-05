@@ -366,6 +366,24 @@ kbd {
 }
 .mini-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .drawers { display: flex; flex-direction: column; gap: 4px; }
+/* A shelf's name: quiet ink over its drawers or stacks, so the books stay the focus. */
+.shelf-head {
+  display: flex; align-items: baseline; gap: 8px; margin: 10px 4px 2px;
+  font: 500 11px var(--sans); color: var(--ink-faint);
+}
+.drawers .shelf-head:first-child { margin-top: 0; }
+.shelf-head .n { font: 500 10.5px var(--mono); }
+.shelf { max-width: 1100px; margin: 0 auto 22px; }
+.shelf .shelf-head { margin: 0 0 10px; font-size: 12px; }
+/* The label stuck on a Literature root: paper like the Workspace tag, and it opens the shelves. */
+.shelf-tag {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; cursor: pointer;
+  border: 1px solid var(--hairline); border-radius: 4px; background: var(--paper);
+  font: 500 11.5px var(--sans); color: var(--ink-soft);
+  transition: border-color .15s, color .15s;
+}
+.shelf-tag:hover { border-color: var(--lit); color: var(--lit); }
+.shelf-tag .caret { font-size: 9px; opacity: .7; }
 .drawer {
   position: relative; display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: center;
   width: 100%; text-align: left; padding: 9px 11px 9px 16px;
@@ -2818,6 +2836,7 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .tree-menu .nav-row .addr { font: 11px var(--mono); }
 .tree-menu .nav-row.danger .t { color: var(--broken); }
 .tree-menu .nav-row:focus-visible { outline: none; background: var(--accent-soft); }
+.tree-menu .nav-row.current .t { font-weight: 600; }
 .toast-act {
   margin-left: 10px; padding: 2px 9px; border: 1px solid rgba(255, 255, 255, .6); border-radius: 7px;
   background: none; color: inherit; font: 600 12px var(--sans); cursor: pointer;

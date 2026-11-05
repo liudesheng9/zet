@@ -93,6 +93,9 @@ pub(crate) fn card_value(snapshot: &Snapshot, at: &str, term_links: TermLinks) -
         .get(at)
         .with_context(|| format!("card `{at}` does not exist"))?;
     let mut value = text_value(card, snapshot.lock(), term_links)?;
+    if let Some(literature_type) = snapshot.literature_type(card) {
+        value["literature_type"] = json!(literature_type);
+    }
     value["model"] = json!(snapshot.model(at));
     value["hubs"] = json!(crate::hub::hubs_of(snapshot, at));
     value["parent"] = json!(snapshot.nav(crate::parent_location(at)));
@@ -480,7 +483,8 @@ fn context(conn: &Connection, addresses: &[String], models: bool) -> Result<Snap
     let rows = cards.iter().map(|card| card.row_id).collect::<Vec<_>>();
     let lock = crate::tree_lock::LockView::read(conn, Some(&rows))?;
     let revision = crate::link_index::revision(conn)?;
-    Snapshot::from_cards(cards, lock, revision)
+    Ok(Snapshot::from_cards(cards, lock, revision)?
+        .with_literature_types(crate::literature::stored_types(conn)?))
 }
 
 fn log_large_context(
@@ -815,7 +819,7 @@ pub(crate) fn trees(
         let lower = format!("{tree}/");
         let upper = format!("{tree}0");
         let (count,events,findings,models,terms):(u64,u64,u64,u64,u64)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(card_type='event' AND model_facet IS NULL),0),COALESCE(SUM(card_type='finding' AND model_facet IS NULL),0),COALESCE(SUM(card_type='model' AND model_facet IS NULL),0),COALESCE(SUM(card_type='term'),0) FROM cards WHERE (location>=?1 AND location<?2) OR citation_key=?3",rusqlite::params![lower,upper,tree],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-        trees.push(json!({"tree":tree,"root":at,"workspace":card.workspace.id(),"kind":crate::ops::zone(&card),"title":parsed.title,"excerpt":crate::ops::excerpt(&parsed.body),"count":count,"events":events,"findings":findings,"models":models,"terms":terms,"locked":lock.is_locked(card.row_id)}));
+        trees.push(json!({"tree":tree,"root":at,"workspace":card.workspace.id(),"kind":crate::ops::zone(&card),"literature_type":if card.is_lit {Some(crate::literature::stored_type(&tx,card.row_id)?.id())} else {None},"title":parsed.title,"excerpt":crate::ops::excerpt(&parsed.body),"count":count,"events":events,"findings":findings,"models":models,"terms":terms,"locked":lock.is_locked(card.row_id)}));
     }
     tx.commit()?;
     Ok(json!({"trees":trees}))

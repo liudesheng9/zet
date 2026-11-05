@@ -217,7 +217,7 @@ fn card_value(
     for field in [
         "address", "parent", "edge", "kind", "title", "type", "facet", "emphasis", "level", "form",
         "head", "excerpt", "restatement", "links", "kinds", "term_use_targets", "term", "term_role",
-        "term_list",
+        "term_list", "literature_type",
     ] {
         if !summary[field].is_null() {
             value.insert(field.to_string(), summary[field].clone());

@@ -24,10 +24,11 @@ pub(crate) const DEFAULT_SIMILARITY: f64 = 1.0;
 
 /// The tools a connection under an allow list may not run: each makes a tree, renames Cards, or
 /// deletes one, so its effect reaches Cards the list does not name.
-const STRUCTURAL: [&str; 12] = [
+const STRUCTURAL: [&str; 13] = [
     "create_topic",
     "create_literature",
     "edit_literature_metadata",
+    "set_literature_type",
     "move_card",
     "insert_card",
     "delete_card",

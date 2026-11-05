@@ -11,6 +11,7 @@ use serde_json::{Map, Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use crate::literature::LiteratureType;
 use crate::model::{Emphasis, Facet, Level};
 use crate::ops::{self, Outcome, Snapshot, Successor};
 use crate::{Access, CardType, Workspace};
@@ -391,7 +392,7 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
         return call_scholar_tool(name, args);
     }
     let root = archive_root()?;
-    if matches!(name, "edit_literature_metadata" | "delete_card" | "move_card" | "insert_card")
+    if matches!(name, "edit_literature_metadata" | "set_literature_type" | "delete_card" | "move_card" | "insert_card")
         || crate::tree_ops::is_structural(name)
     {
         // These writers open their own transaction; the scope check reads only the addresses the
@@ -561,6 +562,12 @@ fn call_tool(name: &str, args: &Value, scope: &mut crate::scope::WriteScope) -> 
             )?;
             Ok(plan_or_done(outcome))
         }
+        "set_literature_type" => ops::set_literature_type(
+            &root,
+            ACCESS,
+            &string_arg(args, "at")?,
+            LiteratureType::parse(&string_arg(args, "literature_type")?)?,
+        ),
         "delete_card" => {
             let into = optional_string(args, "into")?;
             let outcome = ops::delete(
@@ -736,6 +743,7 @@ pub(crate) fn write_card_as(
             workspace,
             &string_arg(args, "bibtex")?,
             &body,
+            literature_type_arg(args)?,
         )?;
         let mut value = json!({"address":address,"workspace":workspace.id()});
         accepted.attach(&mut value);
@@ -880,6 +888,7 @@ pub(crate) fn canonical_write_args(name: &str, args: &Value) -> Result<Value> {
             if optional_term(args)?.flatten().is_some() {
                 bail!(crate::term::NAME_NEEDS_TERM_CARD);
             }
+            literature_type_arg(args)?;
             canonical["workspace"] = json!(requested_workspace(args)?.id());
             canonical["body"] = json!(optional_string(args, "body")?);
             if name == "create_topic" {
@@ -1034,6 +1043,14 @@ fn string_arg(args: &Value, name: &str) -> Result<String> {
         .with_context(|| format!("missing string argument `{name}`"))
 }
 
+fn literature_type_arg(args: &Value) -> Result<Option<LiteratureType>> {
+    match args.get("literature_type") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => LiteratureType::parse(value).map(Some),
+        Some(_) => bail!("argument `literature_type` must be a string"),
+    }
+}
+
 fn optional_string(args: &Value, name: &str) -> Result<String> {
     match args.get(name) {
         None | Some(Value::Null) => Ok(String::new()),
@@ -1183,6 +1200,11 @@ fn tool_definitions() -> Vec<Value> {
     let at = json!({
         "type": "string",
         "description": "A Card address: a Location such as `3/1|a` or a Citation key such as `Smith2024`.",
+    });
+    let literature_type = json!({
+        "type": "string",
+        "enum": ["history", "economics", "mathematics", "others"],
+        "description": "What kind of work this is. `others` when omitted at creation.",
     });
     let confirm = json!({
         "type": "string",
@@ -1516,6 +1538,7 @@ fn tool_definitions() -> Vec<Value> {
                 "bibtex": { "type": "string", "description": "Exactly one BibTeX entry with a title field, e.g. `@book{Smith2024, title = {Example}}`." },
                 "body": body,
                 "workspace": { "type": "string", "enum": ["agent"], "description": "Always the agent Workspace." },
+                "literature_type": literature_type,
             }),
             &["bibtex"],
             false,
@@ -1571,6 +1594,15 @@ fn tool_definitions() -> Vec<Value> {
             &["at", "bibtex"],
             false,
             true,
+        ),
+        tool(
+            "set_literature_type",
+            "Set literature type",
+            "Change what kind of work an agent Literature Card is: `history`, `economics`, `mathematics`, or `others`. It changes no Card text and works on a locked tree. `list_trees` and `get_card` report it; a Card nothing has declared reads as `others`.",
+            json!({ "at": at, "literature_type": literature_type }),
+            &["at", "literature_type"],
+            false,
+            false,
         ),
         tool(
             "delete_card",

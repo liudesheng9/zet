@@ -1531,7 +1531,8 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
-- `2026-11-05` — 0.44.11: Term links. A `不用` word neither links nor blocks, a Term no longer cuts a longer word, an unclosed `\[` ends with its paragraph, and `scripts/book-digest/term-relink.ps1` relinks any book after a later write. Linking `不用` words themselves was tried and dropped: Chinese has no word boundary, so 说明教法 held 明教 and 正确信仰 held 确信.
+
+- `2026-11-05` — 0.45.0: the Literature type. `prepare` declares it on the setup's `create_literature` from the variant (`econ` → `economics`, `history` → `history`, `math` → `mathematics`), so the digest labels only the tree it creates and never overwrites a later client change. The retained-setup check accepts a run prepared without it.- `2026-11-05` — 0.44.11: Term links. A `不用` word neither links nor blocks, a Term no longer cuts a longer word, an unclosed `\[` ends with its paragraph, and `scripts/book-digest/term-relink.ps1` relinks any book after a later write. Linking `不用` words themselves was tried and dropped: Chinese has no word boundary, so 说明教法 held 明教 and 正确信仰 held 确信.
 - `2026-11-04` — 0.44.10: `cleanup-finish -Ready` claims until nothing is ready. It stopped when no unit was retrying, so a book with more than 64 cleanup units kept the rest open (scheiner2022baghdad: 56 of 374).
 - `2026-11-04` — 0.44.9 embeds base 5.11.26 and its variants; no tool change.
 - `2026-11-04` — 0.44.7 embeds base 5.11.24 and its variants; no tool change.

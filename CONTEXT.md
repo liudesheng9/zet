@@ -83,6 +83,10 @@ _Avoid_: Attachment, file link, source link
 A Card representing one bibliographic work. It carries bibliographic metadata in addition to Card text, and is the root of its own Literature tree.
 _Avoid_: Reference Card
 
+**Literature type**:
+What kind of work a Literature Card is: `history`, `economics`, `mathematics`, or `others`. Every Literature Card has exactly one, and one nothing has declared is `others`. A digest declares it when it creates the tree, and any client may change it afterwards. It is a shelf label beside the Card, not Card content: it changes no Card text, a Citation-key rename keeps it, and a Lock does not hold it.
+_Avoid_: Card type (that is what a Card holds), category, tag
+
 **Tree root**:
 The Topic or Literature Card at the top of a tree. A Tree root has a direct successor but no side successors, cannot be moved, and deleting it deletes its whole tree.
 

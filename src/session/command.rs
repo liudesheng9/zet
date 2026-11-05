@@ -16,6 +16,7 @@ pub(super) enum PointerContext {
 enum Availability {
     Always,
     OnCard,
+    OnTreeRoot,
     OnRegular,
 }
 
@@ -129,6 +130,11 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
         Availability::OnRegular,
     ),
     (
+        "lt <history|economics|mathematics|others>",
+        "set the Literature type of the current Literature Card",
+        Availability::OnTreeRoot,
+    ),
+    (
         "mf <form|none>",
         "set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary",
         Availability::OnRegular,
@@ -148,6 +154,7 @@ fn command_available(availability: Availability, context: PointerContext) -> boo
     match availability {
         Availability::Always => true,
         Availability::OnCard => context != PointerContext::Root,
+        Availability::OnTreeRoot => context == PointerContext::TreeRoot,
         Availability::OnRegular => context == PointerContext::Regular,
     }
 }
@@ -1063,6 +1070,13 @@ fn execute_command(
             Ok(Execution::Continue(CommandResult::Changed))
         }
         ["lv", ..] => bail!("usage: lv <level|none>"),
+        ["lt", value] => {
+            let at = state.current_card("lt")?;
+            let literature_type = crate::literature::LiteratureType::parse(value)?;
+            crate::ops::set_literature_type(root, crate::Access::Owner, &at, literature_type)?;
+            Ok(Execution::Continue(CommandResult::Changed))
+        }
+        ["lt", ..] => bail!("usage: lt <history|economics|mathematics|others>"),
         ["mf", value] => {
             let at = state.current_card("mf")?;
             let form = crate::math::parse_optional_form(value)?;
@@ -1808,11 +1822,11 @@ mod tests {
             ),
             (
                 SessionState::at("0/0"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | lt <history|economics|mathematics|others> | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA"),
-                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | stats | status | lsbk | help | q",
+                "go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | lt <history|economics|mathematics|others> | stats | status | lsbk | help | q",
             ),
             (
                 SessionState::at("LitA/1"),

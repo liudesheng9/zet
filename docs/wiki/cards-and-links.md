@@ -8,6 +8,7 @@ paths:
   - "src/cited.rs"
   - "tests/cited_cards.rs"
   - "src/literature.rs"
+  - "tests/literature_types.rs"
   - "src/workspace.rs"
   - "src/link.rs"
   - "tests/card_types.rs"
@@ -345,6 +346,15 @@ The `## Term uses` section appears only on a Card that Term uses name, and `## R
 | `card_type` | `TEXT NOT NULL DEFAULT 'idea' CHECK(IN ('idea','event','finding','model','hub','term'))` | | `CardType` |
 | `term_name` | `TEXT`, `CHECK(term_name IS NULL OR length BETWEEN 1 AND 40)`, `CHECK(term_name IS NULL OR card_type = 'term')` | the exact name of a named Term Card; NULL for a list or another type | `term::normalize_name` |
 
+The Literature type does not sit in `cards`. `literature_types` holds one row per declared Literature Card:
+
+| Column | Type | Meaning | Type in Rust |
+|---|---|---|---|
+| `row_id` | `INTEGER PRIMARY KEY` | the Literature Card's `cards.row_id` | `Card::row_id` |
+| `literature_type` | `TEXT NOT NULL CHECK(IN ('history','economics','mathematics','others'))` | | `literature::LiteratureType` |
+
+`literature::ensure_type_table` creates the table and the trigger `literature_type_forget`, which removes the row when its Literature Card is deleted. A Literature Card with no row reads as `others`. The row key survives a Citation-key rename. The side table also lets a binary that predates it keep opening the archive, because `initialize_database` refuses an unknown `cards` column list. `Snapshot::literature_type` reads the type for summaries and tree rows.
+
 The table definition and its migrations are in `cards_table`, `ensure_card_type_column`, `ensure_workspace_column`, `ensure_finding_cards`, and `ensure_markdown_cards` in `src/main.rs` ([Service, CLI and storage](service-and-cli.md)). `metadata.card_format = 'markdown'` records that `from_legacy_text` has run.
 
 ### Authored identity and a Lock (`card::authored_fingerprint`)
@@ -497,6 +507,7 @@ Gaps: no unit test drives `Access::ensure_link_rewrites_allowed`, `tree_workspac
 - **Stale test message.** In `tests/card_types.rs`, the assertion message "the schema accepts only the three Card types" predates Finding and Hub Cards; the check itself (refusing `fact`) is still right.
 
 ## Change history
+- `2026-11-05` — zt 0.58.0: the Literature type. `literature::LiteratureType`, the `literature_types` side table, and `ops::set_literature_type`, which every client calls. It writes nothing when the type is the same, and a change moves the archive revision. A dump records every type in `archive.json` under `literature_types`. Tests: `tests/literature_types.rs`.
 - `2026-11-03` — #255: `tests/term_lifecycle.rs` reads a Card's stored text from the GUI with `text=1`, because `/api/card` now sends it only on request ([GUI](gui.md)). No behaviour of this block changed.
 
 - `2026-10-31` — #217: the seventh Card type `cited` (`CardType::Cited`). A Cited list Card is a `cited` Card whose parent is not one; its immediate Side successors of type `cited` are its Cited Cards, matched to the list's five-column table (`编号`, `文献`, `年份`, `引用处`, `关系`) by order. No field is stored for the role or the row: `src/cited.rs` computes them (`structure`, `resolve_list`, `tree_lists`, `table`, `named_row`) and reports `cited_unfiled`, `cited_row_without_card`, `cited_card_without_row` and `cited_row_mismatch` (a Card whose `参考文献第 n 条` names another row). The only schema change is the type CHECK: `ensure_cited_cards` rebuilds the cards table with every column kept, after a `VACUUM INTO` backup of a non-empty archive, as the Finding Card upgrade did; Lock fingerprints, dump and the edit paths are unchanged. The type lists in the refusals, the Session's `ty` and the GUI's `CARD_TYPES` name `cited`. zt 0.49.0. Tests: `tests/cited_cards.rs` (structure, faults, root refusal, in-place upgrade with its backup, the write gate).

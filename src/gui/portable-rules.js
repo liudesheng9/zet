@@ -35,6 +35,7 @@
     insert: 'Inserting a Card',
     literature: 'Writing a Literature Card',
     'literature/check': 'Writing a Literature Card',
+    'literature/type': 'Changing the Literature type',
     locks: 'Tree Locks',
     metadata: 'Editing a Card',
     move: 'Moving a Card',
@@ -171,6 +172,7 @@
       html: card.html,
       bibtex: card.bibtex ?? null,
       citation_key: card.kind === 'literature' ? address : null,
+      literature_type: card.literature_type ?? null,
       parent: ix.byAddress.has(card.parent) ? reference(ix, card.parent) : null,
       direct: ix.direct.has(address) ? reference(ix, ix.direct.get(address)) : null,
       sides: (query.get('sides') === 'all' ? sides : sides.slice(0, 1)).map((at) => reference(ix, at)),
@@ -197,6 +199,7 @@
     return {
       ...tree,
       tree: tree.id,
+      literature_type: cards[0].literature_type ?? null,
       count: cards.length,
       events: count('event'),
       findings: count('finding'),

@@ -880,7 +880,11 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             bail!("Literature tree {key} already exists; delete it or choose another key.");
         }
         let body = if documents_line.is_empty() { "（全书索引待整理。）".to_string() } else { format!("（全书索引待整理。）\n\n{documents_line}") };
-        let mut setup = vec![json!({ "tool": "create_literature", "arguments": { "workspace": "agent", "bibtex": bibtex, "body": body } })];
+        let mut root = json!({ "workspace": "agent", "bibtex": bibtex, "body": body });
+        if let Some(literature_type) = literature_type_of(&variant) {
+            root["literature_type"] = json!(literature_type);
+        }
+        let mut setup = vec![json!({ "tool": "create_literature", "arguments": root })];
         for group in ps::each(&manifest["groups"]) {
             let n = group["n"].as_u64().unwrap_or(0);
             let at = if n == 1 { key.clone() } else { format!("{key}/{}", n - 1) };
@@ -945,6 +949,16 @@ impl<V> ByAddress<V> {
 }
 
 /// The digest state of every prepared group, read from the staging folder's own ledger (#92).
+/// The Literature type a digest variant declares for the tree it creates.
+fn literature_type_of(variant: &str) -> Option<&'static str> {
+    match variant {
+        "econ" => Some("economics"),
+        "history" => Some("history"),
+        "math" => Some("mathematics"),
+        _ => None,
+    }
+}
+
 /// `None` when the folder holds no ledger (a preparation with no declared variant): such a folder
 /// can only offer its write receipts. A folder with a ledger names the exact state of each group's
 /// `digest/gNNN@R` unit, so a group that never completed is refused instead of guessed.

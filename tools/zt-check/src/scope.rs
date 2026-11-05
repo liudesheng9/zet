@@ -58,7 +58,7 @@ pub fn literature_violation(tool: &str, arguments: &Value) -> Option<Violation> 
             "",
             format!("{scope}: it creates no Topic tree; Topic trees belong to zt-idea-grow"),
         ),
-        "create_successor" | "edit_card" | "insert_card" | "move_card" | "delete_card" | "edit_literature_metadata" => {
+        "create_successor" | "edit_card" | "insert_card" | "move_card" | "delete_card" | "edit_literature_metadata" | "set_literature_type" => {
             for name in ["at", "before", "to", "into"] {
                 let address = text(name);
                 if is_topic_address(address) {

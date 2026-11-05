@@ -1174,6 +1174,25 @@
     };
   }
 
+  /** The Literature zone's shelves, in the order the cabinet keeps them. */
+  const SHELVES = [
+    { id: 'history', label: 'History' },
+    { id: 'economics', label: 'Economics' },
+    { id: 'mathematics', label: 'Mathematics' },
+    { id: 'others', label: 'Others' },
+  ];
+
+  /** Literature trees by Literature type, in shelf order. A shelf with nothing on it is left out,
+   *  except `keep`, the shelf a caller always draws; a tree with no type stands in Others. */
+  function shelves(trees, keep) {
+    return SHELVES
+      .map((shelf) => ({
+        ...shelf,
+        trees: trees.filter((tree) => (SHELVES.some((s) => s.id === tree.literature_type) ? tree.literature_type : 'others') === shelf.id),
+      }))
+      .filter((shelf) => shelf.trees.length || shelf.id === keep);
+  }
+
   /** Which request is the latest (#254): `begin()` numbers a new one, and `isLatest(n)` says
    *  whether request `n` still is, so an answer that arrives after a later move is dropped. */
   function latestOnly() {
@@ -1188,7 +1207,7 @@
   }
 
   return {
-    worldRect, visible, glidePlan, foldRows, changedTrees, latestOnly, pendingStage,
+    worldRect, visible, glidePlan, foldRows, changedTrees, latestOnly, pendingStage, SHELVES, shelves,
     blockLayout, bridgeLayout, blockTree, treeLayout, foldedTreeLayout, demotionOrder, trunks, threadPath, roundedPath, tilt,
     sideRank, outline, pathTo, focusLens, edgePath, elbow, edgeSplit, isTermEdge, focusEdges, linkArc, constellation, LOD, GUTTER,
     TABLE, addressOrder, freeSpot, readingOrder, lineUp, gather, byTree, thread,

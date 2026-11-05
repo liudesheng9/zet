@@ -855,6 +855,7 @@ Gaps:
 - **Case:** a Citation key is unique case-insensitively but found case-sensitively; `[[deletelit]]` does not reach `DeleteLit`.
 
 ## Change history
+- `2026-11-05` — zt 0.58.0: `initialize_database` runs `literature::ensure_type_table`; `dump_view` and `archive.json` carry `literature_types`; `zt export` keeps `literature_type` on the root.
 - `2026-11-03` — `release-live.ps1`, `verify-release.ps1` and `tests/release_manifest.rs` cover `zt-history-digest`; the manifest test reads a retained version with `get`, because a variant new in a release has none.
 - `2026-11-03` — #263 (zt 0.57.0): `export::write` splits from `export::run` so the GUI can export a tree.
 - `2026-11-03` — #257, #258 (zt 0.56.0): `zt export` writes one tree as a portable folder (`src/export.rs`, see Portable export above). Tests: `tests/portable_export.rs`.

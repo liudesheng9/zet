@@ -490,6 +490,7 @@ Reverse links to the human Card.
 | `search_cards`, `list_links`, `list_broken_links` | full-text search (optionally of one Card `type`; `mode: entry` ranks a register term and its entry Cards, a hub member line, and a model head before ordinary title and body hits, and folds a confirmed restatement entry or an exact duplicate Idea-Card statement into one row that names its canonical Card and every member), the Link graph (optionally only cross-Workspace Links), Broken links |
 | `create_topic`, `create_literature` | start a Topic or Literature tree in the agent Workspace |
 | `create_successor` | add a direct or side successor to an agent Card, optionally an Event, Finding, Model, Hub or Term Card (`type`; a Model Card's `level`/`form`, a Model part's `facet`/`emphasis`, a Hub Card's `level`, a Term Card's `term` name) |
+| `set_literature_type` | change an agent Literature Card's Literature type (`history`, `economics`, `mathematics`, `others`) |
 | `edit_card`, `edit_literature_metadata` | change an agent Card's title, body, type, term name, facet, emphasis, level, hub level, math form, or BibTeX |
 | `delete_card`, `move_card` | delete or move agent Cards (the delete plan lists the Links it would break, and `into` re-points them to a Card that stays; `move_card` to a free slot with `to`, into another Card's place with `before`, `alone` without its successors) |
 | `insert_card` | insert a new agent Card in another Card's place; that Card and its subtree move down |

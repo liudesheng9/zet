@@ -1319,6 +1319,7 @@ impl App {
             (Method::Post, "/api/create") => self.create(body),
             (Method::Post, "/api/literature/check") => self.literature_check(body),
             (Method::Post, "/api/literature") => self.create_literature(body),
+            (Method::Post, "/api/literature/type") => self.set_literature_type(body),
             (Method::Post, "/api/edit") => self.edit(body),
             (Method::Post, "/api/metadata") => self.edit_metadata(body),
             (Method::Post, "/api/delete") => self.delete(body),
@@ -1616,6 +1617,9 @@ impl App {
             "term_use_count": term_use_count,
             "outbound": snapshot.outbound(&card.address),
         });
+        if let Some(literature_type) = snapshot.literature_type(card) {
+            value["literature_type"] = json!(literature_type);
+        }
         // The stored text is the writing desk's and the Stored Markdown fold's, asked for when
         // they open (#255): a root's generated Reverse links section alone can be 366 KB.
         if parts.text {
@@ -1921,6 +1925,16 @@ impl App {
             &str_field(body, "text")?,
         )?;
         Ok(accepted.value(&address))
+    }
+
+    fn set_literature_type(&self, body: &Value) -> ApiResult {
+        let literature_type = str_field(body, "literature_type")?;
+        Ok(ops::set_literature_type(
+            &self.root,
+            ACCESS,
+            &str_field(body, "at")?,
+            crate::literature::LiteratureType::parse(&literature_type)?,
+        )?)
     }
 
     /// Save a Card's text, its type, facet, emphasis, and level, or both.
@@ -3441,7 +3455,7 @@ mod tests {
             tree:{id:'K',root:'K',kind:'literature',workspace:'agent',title:'Book'},\
             exported:{archive_revision:7},\
             cards:[\
-              {address:'K',edge:'root',kind:'literature',type:'idea',title:'Book',text:'',html:'',bibtex:'@book{K}',excerpt:'ex',links:[],term_use_targets:[]},\
+              {address:'K',edge:'root',kind:'literature',literature_type:'history',type:'idea',title:'Book',text:'',html:'',bibtex:'@book{K}',excerpt:'ex',links:[],term_use_targets:[]},\
               {address:'K/1',edge:'direct',parent:'K',kind:'regular',type:'idea',title:'One',text:'# One\\n\\n见 [[K/2]]',html:'<p>one</p>',links:['K/2'],term_use_targets:[],broken:['Gone']},\
               {address:'K/1|a',edge:'side',parent:'K/1',kind:'regular',type:'idea',title:'Aside',text:'# Aside\\n\\n均衡 [[均衡@K/2|a]] 决定 Price',html:'',links:['K/2|a','Far/1'],term_use_targets:['K/2|a']},\
               {address:'K/1|a|1',edge:'direct',parent:'K/1|a',kind:'regular',type:'idea',title:'Aside next',text:'',html:'',links:['K/1'],term_use_targets:[]},\
@@ -4537,6 +4551,7 @@ mod tests {
         assert_eq!(overview["trees"][0]["count"], 8);
         assert_eq!(overview["trees"][0]["models"], 1, "a Model part is not a model");
         assert_eq!(overview["trees"][0]["terms"], 1);
+        assert_eq!(overview["trees"][0]["literature_type"], "history", "the export keeps the shelf");
         assert_eq!(overview["stats"]["total"], 8);
         assert_eq!(overview["broken"], 1);
         assert!(overview["archive_root"].as_str().unwrap().contains("portable export"));
@@ -4607,8 +4622,38 @@ mod tests {
     }
 
     #[test]
+    fn literature_trees_stand_on_their_type_shelf_in_a_fixed_order() {
+        let Some(out) = layout_js(
+            "(() => {
+              const t = (root, literature_type) => ({ root, kind: 'literature', literature_type });
+              const trees = [t('a', 'others'), t('b', 'economics'), t('c', 'history'), t('d', 'economics'), t('e')];
+              const ids = (shelves) => shelves.map((s) => [s.id, s.label, s.trees.map((tree) => tree.root)]);
+              return {
+                filled: ids(L.shelves(trees)),
+                noOthers: ids(L.shelves([t('b', 'economics')])),
+                keepOthers: ids(L.shelves([t('b', 'economics')], 'others')),
+                empty: ids(L.shelves([])),
+                names: L.SHELVES.map((s) => s.id),
+              };
+            })()",
+        ) else {
+            eprintln!("node is not installed; the shelves were not run");
+            return;
+        };
+        assert_eq!(out["filled"], json!([
+            ["history", "History", ["c"]],
+            ["economics", "Economics", ["b", "d"]],
+            ["others", "Others", ["a", "e"]],
+        ]), "a tree with no type stands in Others, and a shelf with nothing on it is not drawn");
+        assert_eq!(out["noOthers"], json!([["economics", "Economics", ["b"]]]));
+        assert_eq!(out["keepOthers"], json!([["economics", "Economics", ["b"]], ["others", "Others", []]]));
+        assert_eq!(out["empty"], json!([]));
+        assert_eq!(out["names"], json!(["history", "economics", "mathematics", "others"]));
+    }
+
+    #[test]
     fn every_route_that_needs_the_service_says_it_is_not_available() {
-        let writes = ["edit", "create", "delete", "move", "insert", "batch", "reply", "ask", "export", "metadata", "hub/draft", "hub/check", "literature", "literature/check", "render", "scholar/artifact", "scholar/preview", "lock/plan", "anything-new"];
+        let writes = ["edit", "create", "delete", "move", "insert", "batch", "reply", "ask", "export", "metadata", "hub/draft", "hub/check", "literature", "literature/check", "literature/type", "render", "scholar/artifact", "scholar/preview", "lock/plan", "anything-new"];
         let list = serde_json::to_string(&writes).unwrap();
         let Some(answers) = portable_js(&format!("({list}).map((route) => ask(route, 'POST', {{}})).concat([ask('scholar/works?q=x'), ask('register?ws=agent')])")) else {
             eprintln!("node is not installed; the portable rules were not run");

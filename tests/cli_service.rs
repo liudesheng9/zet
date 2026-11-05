@@ -3000,7 +3000,7 @@ fn empty_dump_creates_timestamped_zip_with_empty_mapping() {
     std::io::Read::read_to_string(&mut manifest, &mut body).expect("manifest text");
     assert_eq!(
         body,
-        r#"{"next_topic_id":0,"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{}}"#
+        r#"{"next_topic_id":0,"workspaces":{},"types":{},"term_names":{},"facets":{},"emphasis":{},"levels":{},"forms":{},"hub_levels":{},"literature_types":{}}"#
     );
     drop(manifest);
     // R315, S13-AC02: a dump of an archive that holds no Lock still carries the version-1 evidence.
@@ -4430,7 +4430,7 @@ fn line_session_grows_a_literature_tree_and_navigates_it_with_up_ls_and_help() {
     let stdout = String::from_utf8(output).expect("session output is UTF-8");
 
     assert!(stdout.contains(
-        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | stats | status | lsbk | help | q\n"
+        "commands: go [<target>] | root | ws [<workspace>] | up | back | fwd | ls | t <title> | l | n | e | del [keep-root] | ord side <card> <card> ... | ord direct <from>..<through> ... | lt <history|economics|mathematics|others> | stats | status | lsbk | help | q\n"
     ));
     assert!(
         stdout.contains(

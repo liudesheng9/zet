@@ -455,6 +455,7 @@ Gaps: `-Allow` has unit tests only (`allow_refusal` in `tools/zt-digest/src/call
 - **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
 
 ## Change history
+- `2026-11-05` — the `zt` skill names `set_literature_type`.
 - `2026-11-05` — the five Card-writing skills (`zt-literature-organize`, `zt-model-fold`, `zt-model-settings`, `zt-model-restructure`, `zt-model-import`) end on `term-relink.ps1`, because a rewritten Card loses its Term links.
 - `2026-11-04` — `zt-digest-protocol` names OpenCode Go as the frozen DeepSeek source of the digests.
 - `2026-11-03` — `zt-digest-protocol` names the three installed variants, and its stage graph matches the blueprint: the `cited` stage before the digest, the slot `after-models`, and `term-cards` and `cited-cards` beside the Link stages after `cards-book`.

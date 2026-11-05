@@ -1874,6 +1874,7 @@ mod perf {
             Workspace::Agent,
             "@book{Book2026, title={Book 2026}}",
             "# Book 2026\n\n这本书说明一个模型。\n",
+            None,
         )
         .expect("literature");
         crate::ops::create_successor_tx_with_term(

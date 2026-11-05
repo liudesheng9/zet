@@ -433,6 +433,7 @@
     ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
     ['ty <idea|event|finding|model|hub|term|cited> [<facet|name>]', 'make the current card an Idea, Event, Finding, Model, Hub, Term, or Cited Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part; a name makes a Term Card that term\'s definition (none: a Term list)', 'regular'],
     ['lv <level|none>', 'set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)', 'regular'],
+    ['lt <history|economics|mathematics|others>', 'set the Literature type of the current Literature Card', 'tree-root'],
     ['mf <form|none>', 'set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary', 'regular'],
     ['export [<tree>]', 'write a tree as a portable folder: its data and this GUI, which read with no service (default: the open tree)', 'always'],
     ['stats', 'count cards by kind', 'always'],
@@ -444,6 +445,7 @@
   const context = () => (!state.card ? 'root' : state.card.context === 'tree-root' ? 'tree-root' : 'regular');
   const available = (scope) =>
     scope === 'always' || (scope === 'card' && context() !== 'root') || (scope === 'regular' && context() === 'regular')
+    || (scope === 'tree-root' && context() === 'tree-root')
     || (scope === 'agent-card' && context() !== 'root' && !!state.card && state.card.workspace === 'agent');
   // A command of a reader feature the service has off (`ask`, `reply`) is not offered (S28, #121).
   const offered = (syntax, scope) => available(scope)
@@ -562,6 +564,10 @@
         const result = await api('edit', { at: state.card.address, level: none ? '' : rest[0] });
         return afterChange(result.address, none ? `${result.address} has no level` : `${result.address} is a ${rest[0]} ${state.card.type === 'hub' ? 'hub' : 'model'}`, result);
       }
+      case 'lt':
+        needCard();
+        if (rest.length !== 1) throw new Error('usage: lt <history|economics|mathematics|others>');
+        return setLiteratureType(state.card.address, rest[0].toLowerCase());
       case 'mf': {
         needCard();
         if (rest.length !== 1) throw new Error('usage: mf <form|none>');
@@ -1356,7 +1362,7 @@
         title: (tree.locked
           ? `${tree.title || tree.root} — locked tree${lock ? ` (seal ${ZtLock.sealShort(lock.seal)})` : ''}: readable and linkable; its Cards wait for an unlock`
           : tree.title) + ' · right-click for the tree menu',
-        'aria-haspopup': 'menu',
+        'aria-haspopup': 'menu', dataset: { shelved: 'drawer:' + tree.root },
         onclick: () => { go(tree.root); openRail(false); },
       },
         h('span', { class: 'addr', text: tree.root }),
@@ -1373,9 +1379,16 @@
       $(id).replaceChildren(...(list.length ? list.map(drawer) : [h('div', { class: 'empty-hint', text: hint })]));
     };
     fill('#topic-drawers', 'topic', state.workspace === 'agent' ? 'No agent Topics yet.' : 'No Topics yet — press t.');
-    fill('#literature-drawers', 'literature', state.workspace === 'agent' ? 'No agent Literature yet.' : 'No Literature yet — press l.');
+    // Literature stands on its type's shelf: a quiet name over the drawers, in one fixed order.
+    const shelved = ZtLayout.shelves(trees.filter((tree) => tree.kind === 'literature'));
+    $('#literature-drawers').replaceChildren(...(shelved.length
+      ? shelved.flatMap((shelf) => [shelfHead(shelf), ...shelf.trees.map(drawer)])
+      : [h('div', { class: 'empty-hint', text: state.workspace === 'agent' ? 'No agent Literature yet.' : 'No Literature yet — press l.' })]));
     $('#archive-root').textContent = state.overview.archive_root;
   }
+
+  const shelfHead = (shelf) => h('h3', { class: 'shelf-head' },
+    h('span', { text: shelf.label }), h('span', { class: 'n', text: String(shelf.trees.length) }));
 
   function openRail(open) {
     $('#app').classList.toggle('rail-open', open ?? !$('#app').classList.contains('rail-open'));
@@ -1536,6 +1549,7 @@
     // `locked` and the seal's 12 characters in words. The stack opens the same tree menu as its drawer.
     const stack = (tree) => treeMenu.wire(h('button', {
       class: 'stack ' + tree.kind + (tree.locked ? ' locked' : ''), onclick: () => go(tree.root),
+      dataset: { shelved: 'stack:' + tree.root },
       title: `${tree.title}${tree.locked ? ' — locked tree' : ''} · right-click for the tree menu`, 'aria-haspopup': 'menu',
     },
       tree.count > 6 ? h('span', { class: 'sheet s4' }) : null,
@@ -1561,10 +1575,18 @@
     ), tree);
     const newStack = (label, key, action) => h('button', { class: 'stack new', onclick: action },
       h('span', { class: 'face' }, h('span', { class: 'plus', text: '+' }), h('span', { text: label }), h('kbd', { text: key })));
+    const zoneHead = (kind, label) => h('h2', { class: 'zone-head ' + kind }, h('span', { text: label }), h('span', { class: 'n', text: String(zone(kind).length) }));
     const zoneSection = (kind, label, newLabel, key, action) => [
-      h('h2', { class: 'zone-head ' + kind }, h('span', { text: label }), h('span', { class: 'n', text: String(zone(kind).length) })),
+      zoneHead(kind, label),
       h('div', { class: 'desk-grid' }, zone(kind).map(stack), newStack(newLabel, key, action)),
     ];
+    // Each Literature type is a shelf of stacks. A new Literature Card starts in Others, so its
+    // blank stack stands on that shelf, which is always drawn.
+    const literatureShelves = () => ZtLayout.shelves(zone('literature'), 'others').map((shelf) => h('section', { class: 'shelf' },
+      shelfHead(shelf),
+      h('div', { class: 'desk-grid' }, shelf.trees.map(stack),
+        shelf.id === 'others' ? newStack('New Literature', 'l', () => newLiterature()) : null),
+    ));
     $('#desk').replaceChildren(
       h('div', { class: 'desk-intro' },
         h('span', { class: 'ws-tag ' + state.workspace, text: `${wsLabel(state.workspace)} workspace` }),
@@ -1578,7 +1600,8 @@
             : 'Start a Topic for your own ideas, or a Literature Card for a work you are reading.') }),
       ),
       ...zoneSection('topic', 'Topic zone', 'New Topic', 't', () => newCard('topic', '')),
-      ...zoneSection('literature', 'Literature zone', 'New Literature', 'l', () => newLiterature()),
+      zoneHead('literature', 'Literature zone'),
+      ...literatureShelves(),
     );
   }
 
@@ -3891,6 +3914,7 @@
       h('header', { class: 'card-head' },
         h('div', { class: 'card-meta' },
           h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
+          card.kind === 'literature' ? shelfTag(card) : null,
           h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
           typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
           h('button', {
@@ -6556,8 +6580,10 @@
     document.addEventListener('pointerdown', (event) => { if (menu && !menu.contains(event.target)) close(); }, true);
     window.addEventListener('blur', close);
 
-    async function run(id, tree) {
+    async function run(id, tree, x, y) {
       if (id === 'open') { go(tree.root); openRail(false); return; }
+      if (id === 'shelf') { open(tree, x, y, 'shelf'); return; }
+      if (id.startsWith('shelf:')) { await setLiteratureType(tree.root, id.slice(6)); return; }
       if (id === 'export') { await exportTree(tree.root); return; }
       if (id === 'lock') { await lockTree(tree.root); return; }
       if (id === 'panel') { await lockPanel(tree.root); return; }
@@ -6569,16 +6595,27 @@
       else if (id === 'unlock') await unlockTree(lock);
     }
 
-    function open(tree, x, y) {
-      close();
+    /** The rows of one view: the tree's actions, or (`shelf`) the four Literature types. */
+    function actionsOf(tree, view) {
+      const current = shelfOf(tree);
+      if (view === 'shelf') {
+        return ZtLayout.SHELVES.map((shelf) => ({ id: 'shelf:' + shelf.id, label: shelf.label, note: shelf.id === current.id ? 'here now' : null, current: shelf.id === current.id }));
+      }
       const [first, ...lockRows] = ZtLock.treeActions(tree.root, tree.locked, state.locks);
-      const actions = [first, { id: 'export', label: 'Export tree', note: 'a folder that reads by itself' }, ...lockRows];
-      const rows = actions.map((item) => h('button', {
-        class: 'nav-row' + (item.danger ? ' danger' : ''), role: 'menuitem', dataset: { act: item.id },
-        onclick: () => { close(); run(item.id, tree).catch(fail); },
+      return [first, { id: 'export', label: 'Export tree', note: 'a folder that reads by itself' },
+        ...(tree.kind === 'literature' ? [{ id: 'shelf', label: 'Literature type', note: current.label }] : []), ...lockRows];
+    }
+
+    function open(tree, x, y, view = 'actions') {
+      close();
+      const rows = actionsOf(tree, view).map((item) => h('button', {
+        class: 'nav-row' + (item.danger ? ' danger' : '') + (item.current ? ' current' : ''), role: 'menuitem', dataset: { act: item.id },
+        onclick: () => { close(); run(item.id, tree, x, y).catch(fail); },
       }, h('span', { class: 't', text: item.label }), item.note ? h('span', { class: 'addr', text: item.note }) : null));
       menu = h('div', { class: 'nav-menu tree-menu', role: 'menu', 'aria-label': `Tree ${tree.root}` },
-        h('div', { class: 'nav-menu-head', text: `${tree.kind === 'literature' ? 'Literature' : 'Topic'} ${tree.root}${tree.locked ? ' · locked' : ''}` }),
+        h('div', { class: 'nav-menu-head', text: view === 'shelf'
+          ? `Shelve ${tree.root} under`
+          : `${tree.kind === 'literature' ? 'Literature' : 'Topic'} ${tree.root}${tree.locked ? ' · locked' : ''}` }),
         rows);
       menu.addEventListener('keydown', (event) => {
         const items = [...menu.querySelectorAll('.nav-row')];
@@ -6599,7 +6636,7 @@
       const box = menu.getBoundingClientRect();
       menu.style.left = `${Math.round(Math.max(8, Math.min(x, innerWidth - box.width - 8)))}px`;
       menu.style.top = `${Math.round(Math.max(8, Math.min(y, innerHeight - box.height - 8)))}px`;
-      menu.querySelector('.nav-row').focus();
+      (menu.querySelector('.nav-row.current') || menu.querySelector('.nav-row')).focus();
     }
 
     /** Give one drawer or stack its menu; answers the element. */
@@ -6624,6 +6661,63 @@
 
     return { wire, close, open };
   })();
+
+  /** The shelf a Literature tree stands on. */
+  const shelfOf = (tree) => ZtLayout.shelves([tree])[0] || ZtLayout.SHELVES[ZtLayout.SHELVES.length - 1];
+
+  /** The label stuck on a Literature root in the reader; it opens the four shelves beside itself. */
+  function shelfTag(card) {
+    const tree = { root: card.address, kind: 'literature', literature_type: card.literature_type };
+    return h('button', {
+      class: 'shelf-tag', 'aria-haspopup': 'menu', title: 'Literature type: click to shelve this book under another type',
+      onclick: (event) => {
+        const box = event.currentTarget.getBoundingClientRect();
+        treeMenu.open(tree, box.left, box.bottom + 6, 'shelf');
+      },
+    }, h('span', { text: shelfOf(tree).label }), h('span', { class: 'caret', 'aria-hidden': 'true', text: '▾' }));
+  }
+
+  const SHELF_GLIDE_MS = 420;
+
+  /** Where each drawer and stack sits now, so a change of shelf can glide them from there. */
+  const shelvedBoxes = () => new Map([...document.querySelectorAll('[data-shelved]')]
+    .map((el) => [el.dataset.shelved, el.getBoundingClientRect()]));
+
+  /** Every drawer and stack glides from its old place to its new one: the same object, moved. */
+  function glideShelved(before) {
+    if (reduceMotion()) return;
+    for (const el of document.querySelectorAll('[data-shelved]')) {
+      const from = before.get(el.dataset.shelved);
+      if (!from) continue;
+      const to = el.getBoundingClientRect();
+      const dx = from.left - to.left;
+      const dy = from.top - to.top;
+      if (!dx && !dy) continue;
+      el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: SHELF_GLIDE_MS, easing: 'cubic-bezier(.4, 0, .2, 1)' });
+    }
+  }
+
+  /** Move one Literature tree to another shelf. No Card changes, so a Locked tree moves too. */
+  async function setLiteratureType(root, literatureType) {
+    const shelf = ZtLayout.SHELVES.find((item) => item.id === literatureType);
+    if (!shelf) throw new Error(`unknown Literature type \`${literatureType}\`; expected ${ZtLayout.SHELVES.map((item) => item.id).join(', ')}`);
+    const before = shelvedBoxes();
+    const result = await api('literature/type', { at: root, literature_type: literatureType });
+    if (!result.changed) return;
+    // The book moves at once, and the full read waits for the glide: it redraws these elements.
+    const tree = state.overview.trees.find((item) => item.root === root);
+    if (tree) tree.literature_type = literatureType;
+    if (state.card && state.card.address === root) {
+      state.card.literature_type = literatureType;
+      document.querySelector('.shelf-tag')?.replaceWith(shelfTag(state.card));
+    }
+    renderRail();
+    if (!state.card) renderDesk();
+    glideShelved(before);
+    toast(`${root} is on the ${shelf.label} shelf`);
+    await new Promise((settle) => setTimeout(settle, SHELF_GLIDE_MS));
+    await refresh();
+  }
 
   /** The tree root's lock line in the reader: its state in words, and the one action that fits it. */
   function lockLine(card) {
