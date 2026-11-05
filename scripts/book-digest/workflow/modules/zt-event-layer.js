@@ -1,4 +1,5 @@
-// ==== module zt-event-layer v8 ====
+// ==== module zt-event-layer v9 ====
+// 9 (2026-11-05): the block size is gone; one start, one queue, one finish.
 // 8 (2026-11-04, the owner's design): one queue: one start claims every ready unit, the managers run it, one finish applies.
 // 7 (2026-11-04, the owner's order): one claim takes up to 64 ready groups, and their writers run in parallel under the
 // managers. The compiler plans the whole book into one shared work folder, so lanes would overwrite each other's files.
@@ -18,7 +19,7 @@
 // 6 (#180): a step answers counts, so the stage reports the block's created/merged/linked totals and how many
 // group units were verified; the per-unit outcomes are the ledger's run report.
 defineModule({
-  id: 'zt-event-layer', version: '8', requires: ['zt-digest-lib'],
+  id: 'zt-event-layer', version: '9', requires: ['zt-digest-lib'],
   summary: 'ZT digest event layer: the ledger\'s ready Event work, plan → DeepSeek JSON → apply → per-group checked completion, in two script steps run by DeepSeek drive jobs.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -30,7 +31,7 @@ defineModule({
     const Z = zdMake(ctx, p)
     const work = `${Z.OUT}\\events`
     const result = await Z.layerRun('events', {
-      layer: 'events', take: 64, rounds: Math.max(3, Z.MAX_ATTEMPTS), wait: 600, phase: 'Events',
+      layer: 'events', rounds: Z.MAX_ATTEMPTS, phase: 'Events',
       dsh: work, writes: `${work}\\out`, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, what: 'event writers',
       onStart: (started) => {
         log(`Events: ${started.plan_candidates || 0} dated sentences in ${started.plan_groups || 0} groups, ${started.jobs || 0} DeepSeek jobs.`)

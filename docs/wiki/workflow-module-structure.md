@@ -39,7 +39,7 @@ The basic structure every module of the digest workflows (`zt-econ-digest`, `zt-
 
 ## Concepts
 
-- `Feature block` — one Haiku manager and the DeepSeek subagents it runs (at most 8 per manager, at most 8 managers at once).
+- `Feature block` — one Haiku manager and the DeepSeek subagents it runs (at most 8 per manager, at most 2 managers at once).
 - `Content job` — a DeepSeek job that writes Cards, Links, Term drafts, reviews or fixes, runs its own self-check tool and fixes its own faults; it writes large output to a file and answers with one status line.
 - `Drive job` — a DeepSeek job that runs one script step exactly as given and answers with the step's last line (one JSON line). It replaces every Claude agent that only ran a command. `zt-workflow-lib`'s `ztDrive` builds its manager prompt, registers the conversation, collects the answer and deletes the conversation.
 - `Script step` — one PowerShell call that runs a whole deterministic chain (for example plan + claim + list jobs, or the whole-book card cycle's apply + check) in one process, records unit outcomes in the run ledger, and prints one compact JSON line.
@@ -178,7 +178,7 @@ The Term steps write only under `<staging>\term-cards\drive`; the model steps on
 
 ## Configuration
 
-`term-steps.ps1`: `-Step`, `-Out`, `-Occurrences first|all`, `-PerJob`, `-MathPerJob`, `-Tool` (default `zt-digest`). `layer-steps.ps1`: `-Step start|apply|finish`, `-Out`, `-Layer`, `-Owner`, `-Take`, `-Wait`, `-Lease`, `-MaxParts`, `-Limits` (the run's `-MaxSentences …` string), `-Tool`. `book-steps.ps1`: `-Step`, `-Out`, `-Json` (the step's options), `-Tool`. `model-steps.ps1`: `-Step`, `-Out`, `-Work`, `-Models`, `-Units`, `-CitationKey`, `-Need`, `-Level`, `-Rebuild`, `-Changed`, `-Take`, `-Owner`, the compile limits, the math instruction files (`-BriefDoc`, `-FillDoc`, `-ReviewDoc`) and `-Tool`. `math-steps.ps1`: `-Step`, `-Out`, `-UnitsPerJob` (4), `-Supply` (`examples`), `-MainResults` (7), `-Tool`. `grow-steps.ps1`: `-Step next`, `-Work` (the run's folder), `-Options` (the frozen options JSON), `-After` (the confirmed job set's token), `-ZtConfig` (the box copy; it sets `ZT_CONFIG_DIR` for the step and its children) and `-Tool` (default `zt-digest`). The modules pass the scripts' paths (defaults `E:\zet\scripts\book-digest\term-steps.ps1`, `layer-steps.ps1`, `book-steps.ps1`, `model-steps.ps1`, `math-steps.ps1` and `E:\zet\scripts\idea-grow\grow-steps.ps1`; the kernel passes no param defaults, so the module holds its own).
+`term-steps.ps1`: `-Step`, `-Out`, `-Occurrences first|all`, `-PerJob`, `-MathPerJob`, `-Tool` (default `zt-digest`). `layer-steps.ps1`: `-Step start|apply|finish`, `-Out`, `-Layer`, `-Owner`, `-Lease`, `-MaxParts`, `-Limits` (the run's `-MaxSentences …` string), `-Tool`. `book-steps.ps1`: `-Step`, `-Out`, `-Json` (the step's options), `-Tool`. `model-steps.ps1`: `-Step`, `-Out`, `-Work`, `-Models`, `-Units`, `-CitationKey`, `-Need`, `-Level`, `-Rebuild`, `-Changed`, `-Take`, `-Owner`, the compile limits, the math instruction files (`-BriefDoc`, `-FillDoc`, `-ReviewDoc`) and `-Tool`. `math-steps.ps1`: `-Step`, `-Out`, `-UnitsPerJob` (4), `-Supply` (`examples`), `-MainResults` (7), `-Tool`. `grow-steps.ps1`: `-Step next`, `-Work` (the run's folder), `-Options` (the frozen options JSON), `-After` (the confirmed job set's token), `-ZtConfig` (the box copy; it sets `ZT_CONFIG_DIR` for the step and its children) and `-Tool` (default `zt-digest`). The modules pass the scripts' paths (defaults `E:\zet\scripts\book-digest\term-steps.ps1`, `layer-steps.ps1`, `book-steps.ps1`, `model-steps.ps1`, `math-steps.ps1` and `E:\zet\scripts\idea-grow\grow-steps.ps1`; the kernel passes no param defaults, so the module holds its own).
 
 ## Usage
 
@@ -228,7 +228,8 @@ A module change follows the review checklist:
   Claude agents instead of one per relayed command.
 
 ## Change history
-- `2026-11-04` — `layer-steps.ps1`: no `-Queue` switch; the queue is the only structure, Cards included.
+
+- `2026-11-05` — `layer-steps.ps1`: no `-Take`. A start claims every ready unit, page by page (`$Page`, the eight the claim commands hold), and `Start-Block` is `Start-Layer`.- `2026-11-04` — `layer-steps.ps1`: no `-Queue` switch; the queue is the only structure, Cards included.
 - `2026-11-04` — `layer-steps.ps1 -Queue` (one queue) replaces `-Lane` and `In-Turn`.
 - `2026-11-04` — `layer-steps.ps1` `In-Turn`: a digest group's start and finish take turns across lanes through a named mutex of the run.
 - `2026-11-01` — `layer-steps.ps1` `apply` serves the terms layer too: `terms -Step merge -Token` checks the explorers' answers and lists the one merge job in `apply-jobs.json` (`{ok, jobs, parts, rows, distinct, file}`), so the Term table is a feature block of DeepSeek explorers and one merge job under Haiku managers (zt-book-terms v7). `layer-steps.tests.ps1` checks the merge round. The test-box run (hart1995firms, mode terms) found that `Save` in `layer-steps.ps1`, `term-steps.ps1` and `model-steps.ps1` piped its value to `ConvertTo-Json`, which writes a one-entry list as a bare object (and an empty piped list as nothing): the merge manager, told to read a JSON array, started no job, and the unit failed. `Save` now passes `-InputObject`, so a list stays an array whatever its length; `layer-steps.tests.ps1` checks every saved list of the terms and explain rounds (84 checks).

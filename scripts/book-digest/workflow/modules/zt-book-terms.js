@@ -1,4 +1,5 @@
-// ==== module zt-book-terms v8 ====
+// ==== module zt-book-terms v9 ====
+// 9 (2026-11-05): the block size is gone; the layer driver names no block.
 // 4 (S5): a fault names its code and leaves the class to the ledger.
 // 5 (#175): the chain is two script steps run by DeepSeek drive jobs under Haiku managers.
 // 6 (#180): the finish step answers the table's counts (`terms`, `card`) instead of a nested report.
@@ -19,7 +20,7 @@
 // itself with its checked evidence. A failure is recorded against the unit, so the groups that depend on it stay
 // waiting instead of digesting without the table.
 defineModule({
-  id: 'zt-book-terms', version: '8', requires: ['zt-digest-lib'],
+  id: 'zt-book-terms', version: '9', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the claimed Term table (terms/book@1), uncapped: plan → DeepSeek explorers (one per part of the book) → merge → one DeepSeek merge job → apply, completing the unit, in three script steps run by DeepSeek drive jobs.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -31,7 +32,7 @@ defineModule({
     const Z = zdMake(ctx, p)
     const termWork = `${Z.OUT}\\terms`
     const result = await Z.layerRun('terms', {
-      layer: 'terms', take: 1, rounds: 1, phase: 'Prepare', apply: true,
+      layer: 'terms', rounds: 1, phase: 'Prepare', apply: true,
       dsh: termWork, writes: `${termWork}\\out`, skills: ['asd-ste100-zh'], effort: Z.DSH_EFFORT, what: 'the Term table explorers and merge',
       onApply: (merged) => log(`Term table: ${Number(merged.parts || 0)} explorer parts proposed ${Number(merged.rows || 0)} rows (${Number(merged.distinct || 0)} distinct words); one merge job writes the list.`),
     })

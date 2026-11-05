@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-history-digest",
-  "version": "1.0.14",
+  "version": "1.0.17",
   "description": "Digest a Chinese-translated history book into ZET Cards: the ZT digest base alone, with the history prompt supplement: reading notes, Links, the Term layer, the Cited layer, Organize, Figures and the Bridge, and no Model, Event or Finding layer; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive history book or history-related academic work (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree of reading notes joined by Links, with Term Cards and Cited Cards. It writes no Model, Event or Finding Card: use zt-econ-digest for a book with models or empirical results. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those from the Literature trees afterwards. Modes link, cards, figures, audit, bridge, term-cards, term-link, cited-cards, terms, finalize, complete and resume re-run stages on an existing digest.",
   "preflight": {
@@ -124,7 +124,7 @@
     "dshManagers": {
       "type": "number",
       "min": 1,
-      "description": "Haiku managers of one compiler step in parallel (default 8, at most 8)"
+      "description": "Haiku managers of one compiler step in parallel (default 2, at most 2)"
     },
     "applyShare": {
       "type": "number",
@@ -851,7 +851,7 @@
     {
       "id": "digest",
       "title": "Digest",
-      "detail": "the group cycle in blocks: one manager claims up to 8 digest/gNNN@1 units, a snapshot and frozen job per group, their DeepSeek runs side by side, each conversation recorded and deleted by that manager, checked group-finish (R250/R252/R253); at most 8 lanes",
+      "detail": "the group queue: one start claims every ready digest/gNNN@1 unit with a snapshot and frozen job per group, one queue of managers runs the DeepSeek writers (eight jobs each, at most two managers at once, the next starting when one ends), each conversation recorded and deleted by its manager, and one finish records each checked group-finish (R250/R252/R253)",
       "after": [
         "terms",
         "cited"
@@ -1500,6 +1500,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.11.26"
+    "version": "5.11.29"
   }
 }

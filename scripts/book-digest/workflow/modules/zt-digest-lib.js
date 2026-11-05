@@ -1,6 +1,13 @@
-// ==== module zt-digest-lib v54 ====
+// ==== module zt-digest-lib v56 ====
+// 56 (hoyland2015path, 2026-11-05, the owner's order): two managers of eight jobs at once. 59 writers started in 15 s on
+// OpenCode Go and turns failed with 429 overloaded. The limit is the protocol's (DSMP.maxManagers). `wait` is gone: no
+// layer blocks a pool slot while it waits for another layer.
+// 55 (hoyland2015path, 2026-11-05, the owner's order): the block loop is gone from the layer driver. A layer is one start
+// (every ready unit), one queue of managers, one finish; the same three steps repeat only as a named retry of what
+// failed. No module gives a block size, and no label or owner names a block. The driver reads the gate from the
+// step's flat counts: it read a nested `gate` no line carries, so every finished layer ran one more start.
 // 51 (scheiner2022baghdad, 2026-11-04, the owner's design): no lanes. One structure: a layer claims every ready unit in one start, its
-// managers run one queue, and one finish applies the layer. A later block is only the retry of what failed.
+// managers run one queue, and one finish applies the layer. A later round is only the retry of what failed.
 // 48 (#227): the Write scope is the server's (#225, #226): the helper `call` declares the Literature scope and the open
 // scope is its own command, `open-call`. Every approval rule that lets a DeepSeek job run the helper refuses a
 // command that runs `open-call` (ZD_NO_OPEN), in place of a command that carries -Open.
@@ -102,7 +109,7 @@ const ZD_DSH_SOURCES = {
   opencode: 'opencode-go/deepseek-v4.1-flash',
 }
 const ZD_PER_MANAGER_MAX = 8
-const ZD_MAX_MANAGERS = 8
+const ZD_MAX_MANAGERS = 2
 // R343–R346: run usage is per provider run, recorded from that run's own result. This framework never
 // reads the account-wide usage ledger: the difference of two rolling totals is not a run's cost (I22/R344).
 const ZD_RUN_SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] }
@@ -178,7 +185,7 @@ function zdMake(ctx, p) {
   const IDEA_SAMPLE = Math.max(0, Math.min(1, A.ideaSample ?? ((MODE === 'full' || MODE === 'cards' || MODE === 'resume') ? 0.1 : 0)))
   const CARD_SKILLS = ['asd-ste100-zh']
   const APPLY_SHARE = Math.max(1, A.applyShare || 30)
-  const DSH_MANAGERS = Math.min(ZD_MAX_MANAGERS, Math.max(1, A.dshManagers || 8))
+  const DSH_MANAGERS = Math.min(ZD_MAX_MANAGERS, Math.max(1, A.dshManagers || ZD_MAX_MANAGERS))
   // R273: only the two bounded run settings are exposed; the tool keeps leases, batch
   // sizes and heartbeat intervals as versioned defaults. Both are persisted at
   // preparation, so a resume reuses the frozen effective values.
@@ -478,8 +485,6 @@ Return steps: one entry per step with name, ok (true when it exited without an e
   const driveStep = async (label, step, o = {}) => {
     const parts = [`pwsh -NoProfile -File "${LAYER_STEPS}"`, `-Step ${step}`, `-Out "${OUT}"`, `-Layer ${o.layer}`]
     if (o.owner) parts.push(`-Owner "${o.owner}"`)
-    if (o.take) parts.push(`-Take ${o.take}`)
-    if (o.wait) parts.push(`-Wait ${o.wait}`)
     if (o.lease) parts.push(`-Lease ${o.lease}`)
     if (o.maxParts) parts.push(`-MaxParts ${o.maxParts}`)
     if (o.limits) parts.push(`-Limits ${psQuote(o.limits)}`)
@@ -591,40 +596,33 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
     const notDeleted = (answer && Array.isArray(answer.not_deleted)) ? answer.not_deleted : list.map((r) => r.session_id)
     return { deleted: Number((answer && answer.deleted) || 0), not_deleted: notDeleted }
   }
-  // Runs one layer in blocks until it offers no ready unit (at most `rounds` claims that found nothing). o:
-  // layer, take, rounds, wait, dsh, writes, skills, effort, phase, what (the manager's subject), jobs (false:
+  // Runs one layer: one start claims every ready unit, the managers run one queue, one finish applies the layer. The
+  // same steps repeat, at most `rounds` times in all, only for what failed or what a producer released late. o:
+  // layer, rounds, dsh, writes, skills, effort, phase, what (the manager's subject), jobs (false:
   // the layer lists no content job), apply (a second content round between start and finish), maxParts, limits,
   // deepseek (the deletion tally), onStart/onApply/onFinish (a module's own reading of a step's flat counts).
-  // #180: a step answers counts only, so the driver sums them over the layer's blocks and the stage reports
+  // #180: a step answers counts only, so the driver sums them over the layer's rounds and the stage reports
   // totals; the per-unit outcomes are the ledger's (its run report), never a module's array.
   const layerRun = async (name, o) => {
     const layer = o.layer || name
-    const take = Math.max(1, Math.min(64, o.take || 8))
     const rounds = Math.max(1, Math.min(12, o.rounds || MAX_ATTEMPTS))
-    const MAX_BLOCKS = 200
     const totals = Object.fromEntries(LAYER_TOTALS.map((k) => [k, 0]))
     const finishes = []
     let claimed = 0
     let gate = null
     const add = (line) => { for (const k of LAYER_TOTALS) if (line && line[k] !== undefined) totals[k] += Number(line[k]) || 0 }
     let failure = null
-    for (let block = 1, quiet = 0; block <= MAX_BLOCKS && quiet < rounds && !failure; block++) {
-      const label = `${name} block ${block}`
+    for (let round = 1; round <= rounds && !failure; round++) {
+      const label = round === 1 ? name : `${name} retry ${round - 1}`
       const started = await driveStep(`${label}: start`, 'start', {
-        layer, take, owner: label, wait: o.wait, lease: LAYER_LEASE, phase: o.phase, cwd: o.dsh, maxParts: o.maxParts, limits: o.limits, deepseek: o.deepseek,
+        layer, owner: label, lease: LAYER_LEASE, phase: o.phase, cwd: o.dsh, maxParts: o.maxParts, limits: o.limits, deepseek: o.deepseek,
       })
       if (!started.ok) { failure = { error: started.error, gate: started.gate }; break }
       add(started)
-      gate = started.gate || gate
+      gate = zdGateOf(started) || gate
       if (o.onStart) o.onStart(started, label)
       const units = Number(started.units || 0)
-      if (!units) {
-        quiet += 1
-        if (!gate || gate.complete === true) break
-        if (o.wait === undefined) break
-        continue
-      }
-      quiet = 0
+      if (!units) break
       claimed += units
       // The Cards layer's work is the checked finish the start step already ran.
       if (o.jobs === false) { if (gate && gate.complete === true) break; continue }
@@ -641,9 +639,9 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
       if (!finished.ok) { failure = { error: finished.error, gate: finished.gate || gate }; break }
       finishes.push(finished)
       add(finished)
-      gate = finished.gate || gate
+      gate = zdGateOf(finished) || gate
       if (o.onFinish) o.onFinish(finished, label, started)
-      // One finish applies the layer; a later block is only a retry of what failed.
+      // One finish applies the layer; a later round is only a retry of what failed.
       if (gate && gate.complete === true) break
     }
     if (failure) return { status: 'failed', layer, error: failure.error, totals, claimed, gate: failure.gate, finishes }
@@ -1143,7 +1141,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '54', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '56', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

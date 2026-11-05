@@ -2198,10 +2198,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(['concepts', 'review', 'hubs', 'hubs-first'].every((id) => !stageOf('econ', id)), 'schedule: a digest has no concept review, restatement review or hub stage (they are zt-idea-grow\'s)')
   check(after('cards') === 'digest', 'schedule: the per-group Card checks follow their own group completion (the cadrs stage)')
   check(after('models') === 'cards', 'schedule: the model layer is released when the digest managers settle (after the Cards layer)')
-  check(after('explain') === 'models', 'schedule: explanations follow the model layer')
+  check(/models/.test(after('explain')), 'schedule: explanations follow the model layer')
   check(after('cards-book') === 'explain', 'schedule: the whole-book card cycle waits for the model reviews (R248)')
-  check(stageOf('econ', 'events').after.join(',') === 'terms' && stageOf('econ', 'findings').after.join(',') === 'terms', 'schedule: Event and Finding continuations run from readiness while the remaining groups digest')
-  check(/cards-book/.test(after('link-prepare')) && /events|findings/.test(after('link-prepare')), 'schedule: the gap-only Link pass waits for the term evidence (after-terms) and the whole-book cycle')
+  check(stageOf('econ', 'events').after.join(',') === 'cards' && stageOf('econ', 'findings').after.join(',') === 'cards', 'schedule: Events and Findings run after the digest, so no stage holds a pool slot while it waits for the digest')
+  check(/cards-book/.test(after('link-prepare')), 'schedule: the gap-only Link pass waits for the whole-book cycle')
   check(after('organize') === 'link-check', 'schedule: Organize runs after the link checks settle')
   // scheiner2022baghdad: the link check reads the whole book, and Term and Cited cards write into it.
   check(after('link-check') === 'link,term-cards,cited-cards', `schedule: the link check waits for every writer of the tree (${after('link-check')})`)
@@ -2588,7 +2588,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(!calls.some((c) => /\{"out":/.test(c.prompt) && /"citationKey"/.test(c.prompt)), 'runner: no stage relays the whole args object (each step carries its own instructions)')
   const stageCommands = commands.filter((c) => /^(zt-digest|pwsh -NoProfile -File) /.test(c))
   check(stageCommands.length > 0 && stageCommands.every((c) => /^zt-digest [a-z-]+ /.test(c)), `service: every stage command is a zt-digest tool, so the stage resolves the service before its archive work and its retries do too (R320; ${stageCommands.filter((c) => !/^zt-digest [a-z-]+ /.test(c)).length} other)`)
-  check(pool.peak <= 8, `runner: at most eight managers are alive at once (peak ${pool.peak})`)
+  check(pool.peak === 2, `runner: the digest's one pool keeps two managers alive at most, and uses both (peak ${pool.peak})`)
   check(report && Object.values(report.stages).every((s) => s.status !== 'failed'), `runner: a full stand-in run has no failed stage${report ? Object.entries(report.stages).filter(([, s]) => s.status === 'failed').map(([k, s]) => ` (${k}: ${s.error})`).join('') : ''}`)
 }
 
@@ -2600,19 +2600,22 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const cmds = commands
   const labels = calls.map((c) => c.label)
   check(result && result.mode === 'full', 'full: the run reaches its report')
-  const digestClaims = cmds.filter((c) => /ledger next -Out "D:\\x\\Key" -Layer digest -Take 64 /.test(c))
+  const digestClaims = cmds.filter((c) => /ledger next -Out "D:\\x\\Key" -Layer digest -Take 8 /.test(c))
   check(digestClaims.length >= 1 && !cmds.some((c) => /-Layer digest -Take 1 /.test(c)), `group cycle: one start claims every ready group (${digestClaims.length} claims)`)
-  check(cmds.filter((c) => /group-start -Out "D:\\x\\Key" -Group \d+ -Token \d+/.test(c)).length === 2, 'group cycle: the block starts each held group (snapshot before the job manifest)')
-  check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: the block records each checked completion with the draft bound to its start')
+  check(cmds.filter((c) => /group-start -Out "D:\\x\\Key" -Group \d+ -Token \d+/.test(c)).length === 2, 'group cycle: the start starts each held group (snapshot before the job manifest)')
+  check(cmds.filter((c) => /group-finish .* -Draft "D:\\x\\Key\\group-jobs\\g00\d\\claim-\d+\\draft\.json"/.test(c)).length === 2, 'group cycle: the finish records each checked completion with the draft bound to its start')
   check(cmds.some((c) => /zt-digest group-start -Out/.test(c)) && !cmds.some((c) => /-Groups \d/.test(c)), 'group cycle: no per-block legacy digest command remains')
   check(layerCalls.every((c) => !/ -Queue\b/.test(c.cmd)) && !labels.some((l) => /^group \d attempt/.test(l)), 'group cycle: the queue is the only structure, no switch selects it')
   check(bookCalls.findIndex((c) => c.step === 'figures-start') >= 0 || !bookCalls.some((c) => c.step === 'figures'), 'figures: the figure list comes first')
   check(['digest', 'link', 'cards', 'events', 'findings', 'explain'].every((l) => layerCalls.filter((c) => c.layer === l).every((c) => !/-Lane /.test(c.cmd))), 'one queue: no layer of the base runs lanes')
+  check(!labels.some((l) => /\b(digest|link|cards|terms|events|findings|explain) block\b/.test(l)) && layerCalls.every((c) => !/ block \d/.test(c.cmd)), 'one queue: no layer label or owner names a block')
+  check(layerCalls.every((c) => !/ -Take /.test(c.cmd)), 'one queue: a module gives a layer no block size')
+  check(['digest', 'link', 'terms'].every((l) => layerCalls.filter((c) => c.layer === l && c.step === 'start').length === 1), `one queue: a finished layer starts once (${layerCalls.filter((c) => c.step === 'start').map((c) => c.layer).join(',')})`)
   check(['digest', 'link'].every((l) => layerCalls.filter((c) => c.layer === l && c.step === 'finish').length === 1), `one queue: one finish applies the layer (${layerCalls.filter((c) => c.layer === 'digest' && c.step === 'finish').length})`)
-  check(cmds.some((c) => /ledger next .* -Layer events -Take 64 /.test(c)) && cmds.some((c) => /ledger next .* -Layer findings -Take 64 /.test(c)), 'one claim: the Event and Finding layers take the whole ready queue in one block, whose writers run in parallel')
+  check(cmds.some((c) => /ledger next .* -Layer events -Take 8 /.test(c)) && cmds.some((c) => /ledger next .* -Layer findings -Take 8 /.test(c)), 'one claim: the Event and Finding layers take the whole ready queue in one start, whose writers run in one queue')
   // docs/digest-claude-token-proposal.md P1/P2: the Cards layer claims and finishes a block in ONE command, and no
   // layer spends a relay per unit finish.
-  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 8 -Owner "cards block 1" -Lease 7200$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
+  check(cmds.some((c) => /^zt-digest finish-batch -Out "D:\\x\\Key" -Layer cards -Take 8 -Owner "cards" -Lease 7200$/.test(c)) && !cmds.some((c) => /ledger next .* -Layer cards /.test(c)), 'cards: one finish-batch command claims the ready checks and records them, with the covering lease')
   check(!cmds.some((c) => /^zt-digest (cards|events|findings|model|explain)-finish /.test(c)), 'layers: no layer relays one command per unit finish')
   check(batchCalls.every((b) => b.units.length <= 8), 'layers: a batch finish holds at most eight units')
   const models = [...led.units.values()].filter((u) => u.layer === 'models')
@@ -2657,7 +2660,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const coverageAt = bookCalls.findIndex((c) => c.step === 'coverage')
   check(coverageAt > bookCalls.findIndex((c) => c.step === 'cleanup-report') && /-Step coverage\b/.test(bookCalls[coverageAt].cmd) && /book-steps\.ps1/.test(bookCalls[coverageAt].cmd), `report: the coverage step is one book-steps.ps1 call after the settlement (${coverageAt})`)
   // #92: every claim covers the frozen provider-run cap, and a chain renews it while its job runs.
-  check(digestClaims.length >= 1 && digestClaims.every((c) => / -Lease 7200/.test(c)), `lease: each block claim requests a lease covering the run cap (${cmds.filter((c) => /-Lease 7200/.test(c)).length} claims)`)
+  check(digestClaims.length >= 1 && digestClaims.every((c) => / -Lease 7200/.test(c)), `lease: each claim requests a lease covering the run cap (${cmds.filter((c) => /-Lease 7200/.test(c)).length} claims)`)
   check(cmds.some((c) => /ledger next .* -Layer link .* -Lease 7200/.test(c)), 'lease: the Link units are claimed with the same covering lease')
   const chainPrompts = calls.map((c) => c.prompt).join('\n')
   const movedClaims = cmds.filter((c) => /ledger next .* -Layer (digest|link|events|findings|explain|terms) /.test(c)).concat(cmds.filter((c) => /finish-batch .* -Layer cards /.test(c)))
@@ -2681,7 +2684,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const fails = failClasses.filter((f) => f.class === 'retryable')
   check(failClasses.every((f) => !f.given), 'S5: no fault names its class; the ledger classifies')
   check(fails.length >= 1, `retries: a failed group is recorded against its own unit as retryable (${fails.length} faults)`)
-  check(cmds.filter((c) => /-Layer digest -Take 64/.test(c)).length >= 2, 'retries: a later block claims again after a failure, not a rerun of the stage')
+  check(cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length >= 2, 'retries: a retry claims again after a failure, not a rerun of the stage')
 }
 {
   // A block manager that summarizes its claim line in prose: the lane still knows the units it held from
@@ -2690,7 +2693,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const cmds = commands
   check(failClasses.some((f) => f.unit === 'digest/g002@1' && f.class === 'retryable'), 'prose claim: a failed unit of a summarized claim is still recorded against its own attempt')
   check(faultRefusals.length === 0, 'prose claim: the fault carries the unit input hash the ledger holds (' + faultRefusals.length + ' refused)')
-  check(cmds.filter((c) => /-Layer digest -Take 64/.test(c)).length >= 2, `prose claim: the stage keeps claiming after a summarized claim (${cmds.filter((c) => /-Layer digest -Take 64/.test(c)).length} claims)`)
+  check(cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length >= 2, `prose claim: the stage keeps claiming after a summarized claim (${cmds.filter((c) => /-Layer digest -Take 8/.test(c)).length} claims)`)
   check(!logs.some((l) => /the claim did not run/.test(l)), 'prose claim: a summarized claim is not mistaken for a failed claim')
 }
 {
@@ -2709,7 +2712,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // with its own token, and never records a fault against an undefined unit.
   const { commands, led, heldReads, layerCalls } = await run('econ', { ...base, figures: false }, { summarizedClaim: 'explain', batchExplain: false })
   const cmds = commands
-  check(heldReads.length > 0 && heldReads.every((o) => /^explain block [0-9]+$/.test(o)), `summarized layer claim: the step reads its held units from the ledger by owner (${heldReads.join(', ')})`)
+  check(heldReads.length > 0 && heldReads.every((o) => /^explain( retry [0-9]+)?$/.test(o)), `summarized layer claim: the step reads its held units from the ledger by owner (${heldReads.join(', ')})`)
   check(!cmds.some((c) => /undefined/.test(c)), 'summarized layer claim: no command names an undefined unit or token')
   check(led.layer('explain').length > 0 && led.layer('explain').every((u) => u.state === 'done'), `summarized layer claim: every explain unit is finished (${led.layer('explain').filter((u) => u.state === 'done').length}/${led.layer('explain').length})`)
 }
@@ -2807,7 +2810,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // unit ends done with no fault.
   const { commands, led, logs } = await run('econ', { ...base, figures: false }, { cutFinish: /finish-batch .*-Layer cards / })
   check(led.layer('cards').length === 2 && led.layer('cards').every((u) => u.state === 'done') && !commands.some((c) => /ledger fail .*cards\//.test(c)), 'cut claim-and-finish: every card check ends done and none is faulted')
-  check(commands.filter((c) => /finish-batch .*-Layer cards /.test(c)).length >= 1 && commands.some((c) => /ledger status .* -Held "cards block 1"/.test(c)) && led.layer('cards').every((u) => u.state === 'done'), 'cut claim-and-finish: the layer asks the ledger what its owner holds and every card check ends done')
+  check(commands.filter((c) => /finish-batch .*-Layer cards /.test(c)).length >= 1 && commands.some((c) => /ledger status .* -Held "cards"/.test(c)) && led.layer('cards').every((u) => u.state === 'done'), 'cut claim-and-finish: the layer asks the ledger what its owner holds and every card check ends done')
 }
 {
   // trial 10: the relay rewrote the end of a done cards completion as prose, the line still held a nested file
@@ -3374,7 +3377,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '54' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '4' && modules['zt-workflow-lib'] === '12' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '12' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '56' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '4' && modules['zt-workflow-lib'] === '12' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '12' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3456,9 +3459,9 @@ for (const which of ['econ', 'math']) {
 {
   const { calls, layerCalls, layerManagers } = await run('econ', { ...base, figures: false })
   const MANAGER = /^You are a DeepSeek subagent manager/
-  const layerAgents = calls.filter((c) => /^(digest|link|events|findings|explain|terms|cards) block \d+[:\s]/.test(c.label || ''))
+  const layerAgents = calls.filter((c) => /^(digest|link|events|findings|explain|terms|cards)( retry \d+)?:/.test(c.label || ''))
   check(layerAgents.length > 0 && layerAgents.every((c) => c.model === 'haiku' && !c.agentType && MANAGER.test(c.prompt || '')), `#175: every agent a moved layer starts is a Haiku DeepSeek manager (${layerAgents.length} agents: ${[...new Set(layerAgents.map((c) => `${c.model || 'none'}/${c.agentType || 'no-type'}`))].join(', ')})`)
-  check(!calls.some((c) => c.agentType === 'zt-relay' && /^(digest|link|events|findings|explain|terms|cards) block \d+[:]/.test(c.label || '')), 'S1 (#175): no moved layer step runs as a Claude relay')
+  check(!calls.some((c) => c.agentType === 'zt-relay' && /^(digest|link|events|findings|explain|terms|cards)( retry \d+)?[:]/.test(c.label || '')), 'S1 (#175): no moved layer step runs as a Claude relay')
   const drives = layerManagers.filter((m) => m.kind === 'drive')
   check(drives.length > 0 && drives.every((m) => /layer-steps\.ps1" -Step (start|apply|finish) -Out "[^"]+" -Layer \w+/.test(m.cmd)), `#175: every moved layer step is one layer-steps.ps1 call (${drives.length} drive jobs)`)
   for (const l of ['digest', 'link', 'events', 'findings', 'terms']) {

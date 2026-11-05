@@ -283,43 +283,43 @@
       }
     },
     {
-      "label": "^terms block \\d+: start$",
+      "label": "^terms( retry \\d+)?: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"terms\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
-      "label": "^digest (l\\d+ )?block \\d+: start$",
+      "label": "^digest( retry \\d+)?: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"digest\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
-      "label": "^events block \\d+: start$",
+      "label": "^events( retry \\d+)?: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"events\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
-      "label": "^findings block \\d+: start$",
+      "label": "^findings( retry \\d+)?: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"findings\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
-      "label": "^explain block \\d+: start$",
+      "label": "^explain( retry \\d+)?: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"explain\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
-      "label": "^link (l\\d+ )?block \\d+: start$",
+      "label": "^link( retry \\d+)?: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"link\",\"units\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }
     },
     {
-      "label": "^cards (l\\d+ )?block \\d+: start$",
+      "label": "^cards( retry \\d+)?: start$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"cards\",\"units\":0,\"claimed\":0,\"jobs\":0,\"gate_complete\":true,\"gate_open\":0}"
       }

@@ -5,8 +5,8 @@
 
   pwsh -NoProfile -File layer-steps.ps1 -Step start|apply|finish -Out <staging> -Layer <layer> -Owner <label> [options]
 
-  start   claim a bounded block of the layer's ready units, run the layer's own start or plan command for
-          the block, and list the DeepSeek jobs it printed
+  start   claim every ready unit of the layer, run the layer's own start or plan command for them, and
+          list the DeepSeek jobs it printed
                                                           -> layer-steps\<layer>\units.json, start.json, jobs.json
   apply   the second content round of the explain layer: apply the drafts and list the fix jobs it prints;
           of the terms layer: check every explorer answer and list the one merge job (`terms -Step merge`)
@@ -14,8 +14,8 @@
   finish  record every held unit's checked completion, fault the units that cannot finish, then run the
           layer's own apply and report commands and its ledger gate
 
-  The Cards layer's work is the checked finish alone: its `start` claims and finishes a block in one
-  command and has no finish step.
+  The Cards layer's work is the checked finish alone: its `start` claims and finishes every ready
+  check, page by page, and has no finish step.
 
   #180: each step prints ONE compact JSON line: `ok` first, then the counts and file paths the module reads
   (units, jobs, file, gate_complete, gate_open, gate_total, done, failed), at most 400 characters. The gate,
@@ -31,8 +31,6 @@ param(
     [Parameter(Mandatory)][string]$Out,
     [Parameter(Mandatory)][ValidateSet('digest', 'link', 'cards', 'events', 'findings', 'explain', 'terms')][string]$Layer,
     [string]$Owner = '',
-    [ValidateRange(1, 64)][int]$Take = 8,
-    [ValidateRange(0, 600)][int]$Wait = 0,
     [ValidateRange(0, 7200)][int]$Lease = 0,
     [ValidateRange(0, 1000)][int]$MaxParts = 0,
     [string]$Limits = '',
@@ -45,6 +43,8 @@ $Work = Join-Path (Join-Path $Out 'layer-steps') $Layer
 New-Item -ItemType Directory -Force $Work | Out-Null
 if (-not $Owner) { $Owner = "$Layer steps" }
 $LineName = $Step
+# One page of a claim: the claim commands hold at most eight units, and a start repeats them until none is ready.
+$Page = 8
 
 # One command: its last JSON line (or $null), its exit code and its last lines.
 function Run([string[]]$CommandArgs) {
@@ -140,8 +140,8 @@ function Jobs-Of($Json) {
     }
     return @()
 }
-# The layer's own per-block start or plan command, and the jobs it lists.
-function Start-Block($Units) {
+# The layer's own start or plan command for every claimed unit, and the jobs it lists.
+function Start-Layer($Units) {
     $firstUnit = $Units[0]
     if ($Layer -eq 'digest' -or $Layer -eq 'link') {
         $startName = if ($Layer -eq 'digest') { 'group-start' } else { 'link-start' }
@@ -170,7 +170,7 @@ function Finish-Unit($Unit, [string]$Draft) {
     Run @($finishName, '-Out', $Out, '-Group', "$(Group-Of $Unit.id)", '-Token', "$($Unit.token)", '-Draft', $Draft)
 }
 # The Link pass's own totals (#180): the run report carries the gap counts and the L1/L2 quality of the whole
-# block, summed from the units' completions, never the per-unit rows.
+# layer, summed from the units' completions, never the per-unit rows.
 function Link-Line($Results) {
     $list = @($Results | Where-Object { $_ })
     $fields = @{}
@@ -212,8 +212,7 @@ switch ($Step) {
         if ($Layer -eq 'cards') {
             # The Cards layer's work is the checked finish alone: one command claims the ready checks and
             # records each one's completion.
-            $argv = @('finish-batch', '-Out', $Out, '-Layer', 'cards', '-Take', "$Take", '-Owner', $Owner)
-            if ($Wait -gt 0) { $argv += @('-Wait', "$Wait") }
+            $argv = @('finish-batch', '-Out', $Out, '-Layer', 'cards', '-Take', "$Page", '-Owner', $Owner)
             if ($Lease -gt 0) { $argv += @('-Lease', "$Lease") }
             # One start works the whole queue: a batch holds at most eight, so the command repeats until none is ready.
             $all = @(); $claimed = 0
@@ -246,8 +245,7 @@ switch ($Step) {
             $fields = Results-Line $all
             Reply (@{ ok = $true; layer = 'cards'; claimed = $claimed; units = $claimed; jobs = 0 } + $fields + (Gate-Fields $gate)) @{ results = $all; gate = $gate; units = @() }
         }
-        $claimArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Take", '-Brief', '-Owner', $Owner)
-        if ($Wait -gt 0) { $claimArgs += @('-Wait', "$Wait") }
+        $claimArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Page", '-Brief', '-Owner', $Owner)
         if ($Lease -gt 0) { $claimArgs += @('-Lease', "$Lease") }
         # A claim that fails is tried three times before the layer hears of it (a refused claim while parallel
         # stages change the archive is transient).
@@ -271,7 +269,7 @@ switch ($Step) {
         # The one structure (scheiner2022baghdad, 2026-11-04, the owner's design): one start claims every ready unit, page by
         # page, the managers run one queue, and one finish applies the layer, as the Term cards do.
         if ($units.Count) {
-            $pageArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Take", '-Brief', '-Owner', $Owner)
+            $pageArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Page", '-Brief', '-Owner', $Owner)
             if ($Lease -gt 0) { $pageArgs += @('-Lease', "$Lease") }
             while ($true) {
                 $page = @((Run $pageArgs).json.units | Where-Object { $_ -and $_.id })
@@ -285,12 +283,12 @@ switch ($Step) {
             Reply (@{ ok = $true; layer = $Layer; units = 0; claimed = 0; jobs = 0 } + (Gate-Fields $gate)) @{ units = @(); gate = $gate; plan = $null }
         }
 
-        $blocks = @(Start-Block $units)
-        $bad = @($blocks | Where-Object { $_.error })
+        $begun = @(Start-Layer $units)
+        $bad = @($begun | Where-Object { $_.error })
         if ($bad.Count) { Fail "$Layer start" (Tail $bad[0].error) @{ units = $units }; break }
         $starts = @()
         $allJobs = @()
-        foreach ($b in $blocks) {
+        foreach ($b in $begun) {
             $u = $b.unit
             $starts += [pscustomobject]@{
                 unit = $u.id; token = $u.token; group = $b.group; input_hash = "$($u.input_hash)";
@@ -310,8 +308,8 @@ switch ($Step) {
         $chunks = [int][Math]::Ceiling(@($allJobs).Count / 8)
         for ($k = 0; $k -lt $chunks; $k++) { Save ('jobs-{0:D3}.json' -f ($k + 1)) @($allJobs | Select-Object -Skip ($k * 8) -First 8) }
         $plan = $null
-        if ($Layer -eq 'events' -or $Layer -eq 'findings') { $plan = @{ candidates = [int]$blocks[0].line.json.candidates; groups = [int]$blocks[0].line.json.groups; jobs = @($blocks[0].jobs).Count } }
-        if ($Layer -eq 'explain') { $plan = @{ parts = [int]$blocks[0].line.json.parts; jobs = @($blocks[0].jobs).Count } }
+        if ($Layer -eq 'events' -or $Layer -eq 'findings') { $plan = @{ candidates = [int]$begun[0].line.json.candidates; groups = [int]$begun[0].line.json.groups; jobs = @($begun[0].jobs).Count } }
+        if ($Layer -eq 'explain') { $plan = @{ parts = [int]$begun[0].line.json.parts; jobs = @($begun[0].jobs).Count } }
         $gate = Gate
         $line = @{ ok = $true; layer = $Layer; units = $units.Count; jobs = @($allJobs).Count; chunks = $chunks; file = (Join-Path $Work 'jobs.json') }
         if ($plan -and $plan.ContainsKey('candidates')) { $line.plan_candidates = [int]$plan.candidates; $line.plan_groups = [int]$plan.groups }

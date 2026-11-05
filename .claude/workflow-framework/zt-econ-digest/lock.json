@@ -1,37 +1,37 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.11.26",
+  "version": "6.11.29",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "500194e4a214c3d7f143979a97ede94ea97e4f3e93cb22eb92f7c07f6a18fc35",
-  "fingerprint": "5d905bbe8b220613",
-  "blueprintSha256": "84ee99d4da6a242557e8ff401b9d18298450bccf91e8c62cf8b8e6eb82ff5720",
+  "sha256": "6144320538f07401702638c6193e5a984bf3c6f154a7c8c2451ae51826719e1b",
+  "fingerprint": "08367df5f2cc9f7a",
+  "blueprintSha256": "8302172bb6eff5c125aba0282692fac22cab6569084265a65687b55b0916892a",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "12",
-    "zt-digest-lib": "54",
+    "zt-digest-lib": "56",
     "zt-audit": "7",
-    "zt-book-terms": "8",
+    "zt-book-terms": "9",
     "zt-bridge": "10",
     "zt-cards-book": "6",
-    "zt-cards-layer": "7",
+    "zt-cards-layer": "8",
     "zt-cited-cards": "4",
     "zt-digest-prepare": "22",
     "zt-digest-report": "24",
     "zt-dsh-cleanup": "13",
     "zt-dsh-source": "3",
-    "zt-event-layer": "8",
+    "zt-event-layer": "9",
     "zt-model-lib": "17",
-    "zt-explain": "12",
+    "zt-explain": "13",
     "zt-figures": "7",
     "zt-term-link-lib": "4",
     "zt-finalize": "7",
-    "zt-finding-layer": "8",
-    "zt-group-cycle": "10",
+    "zt-finding-layer": "9",
+    "zt-group-cycle": "11",
     "zt-link-check": "5",
-    "zt-link-pass": "11",
+    "zt-link-pass": "12",
     "zt-link-prepare": "8",
     "zt-model-layer": "11",
     "zt-organize": "9",
@@ -49,7 +49,7 @@
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "3fd2eff9bb945072faacb0dd0fd9a53a4272927eec6cf850a61eca9d18d345e2"
+      "sha256": "83d8e2241e42a0f42385610b1c3fa06b7bda2a450067f270d3b0b27a97ec26f8"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -57,7 +57,7 @@
     },
     "zt-book-terms": {
       "file": "scripts/book-digest/workflow/modules/zt-book-terms.js",
-      "sha256": "10a3e8a98998b695fa60eb230c25df361e7142fc8a809da47b1516025cf1c58e"
+      "sha256": "4a2bb38135f76830cb42fd8a9d5ce443e9f150ff311f089daf3d26e5684c977b"
     },
     "zt-bridge": {
       "file": "scripts/book-digest/workflow/modules/zt-bridge.js",
@@ -69,7 +69,7 @@
     },
     "zt-cards-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
-      "sha256": "65a5ff8eaeaf5595ff204699c0a48a43537388ea3e62d125217223cf085c33d8"
+      "sha256": "8b8d965de18250afbaa62dce3d2524cd7af18efb68f3144a39f4038d493c370d"
     },
     "zt-cited-cards": {
       "file": "scripts/book-digest/workflow/modules/zt-cited-cards.js",
@@ -93,7 +93,7 @@
     },
     "zt-event-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-event-layer.js",
-      "sha256": "8bab61f2964cd525e0f0133a60bb905b2fc7976a29b7e5be346882195583fac7"
+      "sha256": "d770d91d0e8e8a5f5be9f84205d24ccb83ac8acf414a31fc10cb39a798044bb3"
     },
     "zt-model-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-model-lib.js",
@@ -101,7 +101,7 @@
     },
     "zt-explain": {
       "file": "scripts/book-digest/workflow/modules/zt-explain.js",
-      "sha256": "6fb7b08c3b75570e85074874d8cde90d934c132ba276b2239c2ce1dd5854d927"
+      "sha256": "6576a89fed4f7e9d212b199ffd7c1631ed947b056ee69f8910109d3157f19349"
     },
     "zt-figures": {
       "file": "scripts/book-digest/workflow/modules/zt-figures.js",
@@ -117,11 +117,11 @@
     },
     "zt-finding-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-finding-layer.js",
-      "sha256": "2e622cae377c8e6c1cfcd2e4632252b893d705237407057e16f1dde6159d8705"
+      "sha256": "e55447abc888380b8657c20b8d5dd45e14ab449f4ba62e6a39d942c4f446fe73"
     },
     "zt-group-cycle": {
       "file": "scripts/book-digest/workflow/modules/zt-group-cycle.js",
-      "sha256": "7a22efd565d37a4ba35f86eb018ed7d3af0aace322e8a00cdf92dcd69d256d5f"
+      "sha256": "36248ec17bdaa0a9ee0474851b507547d3ff3c8ffe4d8214d4e4352adbf5717a"
     },
     "zt-link-check": {
       "file": "scripts/book-digest/workflow/modules/zt-link-check.js",
@@ -129,7 +129,7 @@
     },
     "zt-link-pass": {
       "file": "scripts/book-digest/workflow/modules/zt-link-pass.js",
-      "sha256": "4acea812b5f15578a149746259c8b246a873a752698eecf552583a682047308e"
+      "sha256": "52713d022705858ad5badfe56b2dc6bc2a711ca1f499efaa50035ce2f3730fae"
     },
     "zt-link-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-link-prepare.js",
@@ -155,15 +155,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "57e0d0d2e0f34c074b97a8e69447d4c234fdb4f8fdea1d4286841f39b662ddb2"
+      "sha256": "f13d4f45c439be8a4a3943f708dd4426044de878cbdeb88522a987fb2f58685c"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "a83cb981cc1419aabe70e9cae584f831cf6fbe803bfa28caec459e477ad09dab"
+      "sha256": "664622746e4618ccfa6bb5a4ef9c4aee8ce693d43d9e3893c5671f5fa73705b2"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-05T04:50:12.358Z",
+  "installedAt": "2026-11-05T22:00:00.089Z",
   "dryRun": {
     "agents": 69,
     "order": [
@@ -171,11 +171,11 @@
       "source",
       "prepare",
       "terms",
-      "events",
-      "findings",
       "cited",
       "digest",
       "cards",
+      "events",
+      "findings",
       "models",
       "explain",
       "cards-book",

@@ -1,7 +1,8 @@
-// ==== module zt-link-pass v11 ====
+// ==== module zt-link-pass v12 ====
+// 12 (2026-11-05): the block size is gone; one start claims every ready group, one queue of managers links them, one finish applies.
 // 11 (2026-11-04, the owner's design): one queue: one start claims every ready unit, the managers run it, one finish applies.
 // The Link pass over the receipt-owned gap set, in blocks. The layer driver runs the stage as script steps:
-// `start` claims a block of up to eight `link/gNNN@1` units and runs each group's `link-start` (the frozen gap
+// `start` claims every ready `link/gNNN@1` unit and runs each group's `link-start` (the frozen gap
 // scope and the one job that writes the draft), the block's jobs run in Haiku managers, and `finish` records each
 // checked completion with `link-finish` (R250/R251/R263). Every step is one `layer-steps.ps1` call run by a
 // DeepSeek drive job, so no Claude agent relays a command and no Claude agent is spent per group.
@@ -15,8 +16,8 @@
 // faults), never per-group rows; the per-group outcomes are the ledger's run report. The report carries the
 // run's own totals and how many groups were scheduled, gap-free, verified and blocked.
 defineModule({
-  id: 'zt-link-pass', version: '11', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: verified Link units in blocks of up to eight per manager, for every scheduled or gap-free group, with the gap totals and L1/L2 quality recorded.',
+  id: 'zt-link-pass', version: '12', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: one start claims the verified Link units, one queue of managers (eight jobs each) works them, for every scheduled or gap-free group, with the gap totals and L1/L2 quality recorded.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -34,7 +35,7 @@ defineModule({
     const work = `${Z.OUT}\\link-jobs`
     const deepseek = { deleted: 0, not_deleted: [] }
     const result = await Z.layerRun('link', {
-      layer: 'link', take: 64, rounds: Z.MAX_ATTEMPTS, phase: 'Link',
+      layer: 'link', rounds: Z.MAX_ATTEMPTS, phase: 'Link',
       dsh: work, writes: work, skills: Z.DSH_SKILLS, effort: Z.DSH_EFFORT, what: 'Link writers', deepseek,
     })
     const t = result.totals || {}

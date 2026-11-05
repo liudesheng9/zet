@@ -1,8 +1,9 @@
-// ==== module zt-group-cycle v10 ====
+// ==== module zt-group-cycle v11 ====
+// 11 (2026-11-05): the block size is gone; one start claims every ready group, one queue of managers writes them, one finish applies.
 // 10 (2026-11-04, the owner's design): one queue: one start claims every ready unit, the managers run it, one finish applies.
 // The Digest stage of a managed run, in blocks. One layer driver runs the stage as script steps: `start`
-// claims a block of up to eight `digest/gNNN@1` units and runs each group's `group-start` (the snapshot is
-// generated before any usable job manifest exists, R262), the block's DeepSeek writer jobs run in Haiku
+// claims every ready `digest/gNNN@1` unit and runs each group's `group-start` (the snapshot is
+// generated before any usable job manifest exists, R262), the DeepSeek writer jobs run in the queue of Haiku
 // managers (at most eight per manager), and `finish` records each held unit's checked completion with
 // `group-finish` (R250/R251/R253), faults the units whose draft is not ready and runs the layer gate. Every
 // step is one `layer-steps.ps1` call run by a DeepSeek drive job, so no Claude agent relays a command and no
@@ -14,8 +15,8 @@
 // 8 (#180): a step answers counts, so the stage reports how many group units were verified and how many were
 // not; the per-unit outcomes are the ledger's run report, never a module's array.
 defineModule({
-  id: 'zt-group-cycle', version: '10', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: verified groups in blocks of up to eight per manager, at most eight managers, claimed from the ledger ready work, recovering a group whose accepted plan already committed.',
+  id: 'zt-group-cycle', version: '11', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: one start claims every ready group, one queue of managers (eight jobs each, at most eight at once) writes them, one finish records each verified group, recovering a group whose accepted plan already committed.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
@@ -29,7 +30,7 @@ defineModule({
     const groups = Math.max(1, Number(p.groups) || 1)
     const deepseek = { deleted: 0, not_deleted: [] }
     const result = await Z.layerRun('digest', {
-      layer: 'digest', take: 64, rounds: Z.MAX_ATTEMPTS, phase: 'Digest',
+      layer: 'digest', rounds: Z.MAX_ATTEMPTS, phase: 'Digest',
       dsh: work, writes: work, skills: Z.DSH_SKILLS, effort: Z.DSH_EFFORT, what: 'digest group writers', deepseek,
     })
     const verified = Number(result.verified || 0)

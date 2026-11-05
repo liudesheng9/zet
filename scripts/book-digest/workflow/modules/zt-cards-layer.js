@@ -1,4 +1,5 @@
-// ==== module zt-cards-layer v7 ====
+// ==== module zt-cards-layer v8 ====
+// 8 (2026-11-05): the block size is gone; one start works the whole queue.
 // 7 (2026-11-04): the one structure: one start step works the whole queue; a batch of the command holds at most eight.
 // 6 (2026-11-04, the owner's design): one queue: one start claims every ready unit, the managers run it, one finish applies.
 // The Cards layer of a managed run: one deterministic offline check per verified group (`cards/gNNN@1`).
@@ -13,7 +14,7 @@
 // 3 (#175): that command is the `start` step of `layer-steps.ps1`, run by a DeepSeek drive job under a Haiku manager.
 // 4 (#180): a step answers counts (`done`, `failed`), never the block's per-unit results.
 defineModule({
-  id: 'zt-cards-layer', version: '7', requires: ['zt-digest-lib'],
+  id: 'zt-cards-layer', version: '8', requires: ['zt-digest-lib'],
   summary: 'ZT digest: the per-group offline Card checks, claimed from the ledger ready work and recorded by cards-finish.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -23,7 +24,7 @@ defineModule({
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
     const result = await Z.layerRun('cards', {
-      layer: 'cards', take: 8, rounds: Z.MAX_ATTEMPTS, phase: 'Cards', jobs: false,
+      layer: 'cards', rounds: Z.MAX_ATTEMPTS, phase: 'Cards', jobs: false,
     })
     const verified = Number(result.verified || 0)
     const failed = Number(result.failed || 0)

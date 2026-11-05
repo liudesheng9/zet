@@ -1,22 +1,22 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-history-digest",
-  "version": "1.0.14",
+  "version": "1.0.17",
   "scope": "project",
   "script": ".claude/workflows/zt-history-digest.js",
   "scriptRel": "workflows/zt-history-digest.js",
-  "sha256": "71dec66f4b1633ac101c69a809235203f52ee356a25eee3e16b2daf410c1653a",
-  "fingerprint": "9a21ac5fd4729c98",
-  "blueprintSha256": "6fa95e93312b0dd795aa63bd453336bde317383e87fa2c8498aee6893dfbeb97",
+  "sha256": "3c591cc364e80b4673793fe1c9af7f58acafcb8c2e0462cdb4a640d8805e2974",
+  "fingerprint": "e2016a4672a7c9e9",
+  "blueprintSha256": "ad4462716182517ec548e969f500b0f941706b6c9cda3064dc3226ac2f4bcea0",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "12",
-    "zt-digest-lib": "54",
+    "zt-digest-lib": "56",
     "zt-audit": "7",
-    "zt-book-terms": "8",
+    "zt-book-terms": "9",
     "zt-bridge": "10",
     "zt-cards-book": "6",
-    "zt-cards-layer": "7",
+    "zt-cards-layer": "8",
     "zt-cited-cards": "4",
     "zt-digest-prepare": "22",
     "zt-digest-report": "24",
@@ -25,9 +25,9 @@
     "zt-figures": "7",
     "zt-term-link-lib": "4",
     "zt-finalize": "7",
-    "zt-group-cycle": "10",
+    "zt-group-cycle": "11",
     "zt-link-check": "5",
-    "zt-link-pass": "11",
+    "zt-link-pass": "12",
     "zt-link-prepare": "8",
     "zt-organize": "9",
     "zt-term-cards": "12",
@@ -44,7 +44,7 @@
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "3fd2eff9bb945072faacb0dd0fd9a53a4272927eec6cf850a61eca9d18d345e2"
+      "sha256": "83d8e2241e42a0f42385610b1c3fa06b7bda2a450067f270d3b0b27a97ec26f8"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -52,7 +52,7 @@
     },
     "zt-book-terms": {
       "file": "scripts/book-digest/workflow/modules/zt-book-terms.js",
-      "sha256": "10a3e8a98998b695fa60eb230c25df361e7142fc8a809da47b1516025cf1c58e"
+      "sha256": "4a2bb38135f76830cb42fd8a9d5ce443e9f150ff311f089daf3d26e5684c977b"
     },
     "zt-bridge": {
       "file": "scripts/book-digest/workflow/modules/zt-bridge.js",
@@ -64,7 +64,7 @@
     },
     "zt-cards-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
-      "sha256": "65a5ff8eaeaf5595ff204699c0a48a43537388ea3e62d125217223cf085c33d8"
+      "sha256": "8b8d965de18250afbaa62dce3d2524cd7af18efb68f3144a39f4038d493c370d"
     },
     "zt-cited-cards": {
       "file": "scripts/book-digest/workflow/modules/zt-cited-cards.js",
@@ -100,7 +100,7 @@
     },
     "zt-group-cycle": {
       "file": "scripts/book-digest/workflow/modules/zt-group-cycle.js",
-      "sha256": "7a22efd565d37a4ba35f86eb018ed7d3af0aace322e8a00cdf92dcd69d256d5f"
+      "sha256": "36248ec17bdaa0a9ee0474851b507547d3ff3c8ffe4d8214d4e4352adbf5717a"
     },
     "zt-link-check": {
       "file": "scripts/book-digest/workflow/modules/zt-link-check.js",
@@ -108,7 +108,7 @@
     },
     "zt-link-pass": {
       "file": "scripts/book-digest/workflow/modules/zt-link-pass.js",
-      "sha256": "4acea812b5f15578a149746259c8b246a873a752698eecf552583a682047308e"
+      "sha256": "52713d022705858ad5badfe56b2dc6bc2a711ca1f499efaa50035ce2f3730fae"
     },
     "zt-link-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-link-prepare.js",
@@ -130,15 +130,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-history-digest.blueprint.json",
-      "sha256": "b1b2c211c0f0b84d017595fbee5c53162b977295221acb71ab60f2ac0388f545"
+      "sha256": "c3c5a92e07987275931eab2ba3c5f0a03d863b860ba24df971535c3f8ad81def"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "a83cb981cc1419aabe70e9cae584f831cf6fbe803bfa28caec459e477ad09dab"
+      "sha256": "664622746e4618ccfa6bb5a4ef9c4aee8ce693d43d9e3893c5671f5fa73705b2"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-05T04:50:22.980Z",
+  "installedAt": "2026-11-05T21:59:55.113Z",
   "dryRun": {
     "agents": 57,
     "order": [
