@@ -1,4 +1,6 @@
-// ==== module zt-digest-lib v56 ====
+// ==== module zt-digest-lib v57 ====
+// 57 (hoyland2015path, 2026-11-05, the owner's order): the DeepSeek source is the official one again, and the managers go
+// back to the protocol's eight: OpenCode Go still answered 429 with two managers of eight jobs.
 // 56 (hoyland2015path, 2026-11-05, the owner's order): two managers of eight jobs at once. 59 writers started in 15 s on
 // OpenCode Go and turns failed with 429 overloaded. The limit is the protocol's (DSMP.maxManagers). `wait` is gone: no
 // layer blocks a pool slot while it waits for another layer.
@@ -106,10 +108,10 @@ function zdTool(name, scripts = ZD_SCRIPTS) {
   return ZD_TOOLS[name] ? `${ZD_DIGEST} ${ZD_TOOLS[name]}` : `pwsh -NoProfile -File "${scripts}\\${name}.ps1"`
 }
 const ZD_DSH_SOURCES = {
-  opencode: 'opencode-go/deepseek-v4.1-flash',
+  official: 'deepseek-official/deepseek-flash',
 }
 const ZD_PER_MANAGER_MAX = 8
-const ZD_MAX_MANAGERS = 2
+const ZD_MAX_MANAGERS = 8
 // R343–R346: run usage is per provider run, recorded from that run's own result. This framework never
 // reads the account-wide usage ledger: the difference of two rolling totals is not a run's cost (I22/R344).
 const ZD_RUN_SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' }, output: { type: 'string' } }, required: ['ok', 'output'] }
@@ -131,10 +133,10 @@ function zdLockRefusal(text) { return ztLockRefusal(text) }
 function zdLockSaid(refusal) { return ztLockSaid(refusal) }
 function zdLockStop(where, refusal) { return ztLockStop(where, refusal) }
 
-// The DeepSeek source is frozen at OpenCode Go (the owner, 2026-11-04, replacing the official source of 2026-10-20): no
+// The DeepSeek source is frozen at the official one (the owner, 2026-11-05, after OpenCode Go answered 429 overloaded): no
 // probe, no argument, no second source.
 function zdDefaultModel() {
-  return { source: 'opencode', model: ZD_DSH_SOURCES.opencode }
+  return { source: 'official', model: ZD_DSH_SOURCES.official }
 }
 
 function zdMake(ctx, p) {
@@ -1141,7 +1143,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '56', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '57', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

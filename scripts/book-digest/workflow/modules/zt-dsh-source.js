@@ -1,10 +1,11 @@
-// ==== module zt-dsh-source v3 ====
+// ==== module zt-dsh-source v4 ====
+// v4 (the owner, 2026-11-05): the source is frozen at the official one again.
 // The DeepSeek source. v3 (the owner, 2026-11-04): the source is frozen at OpenCode Go, in place of the official one.
 // v2 (docs/workflow-simplicity-proposal.md S1): no Haiku probe runs and no argument chooses the source. The stage reports
 // the model and logs the DeepSeek efforts raised to high.
 defineModule({
-  id: 'zt-dsh-source', version: '3', requires: ['zt-digest-lib'],
-  summary: 'ZT digest: report the frozen DeepSeek source (OpenCode Go) and its model.',
+  id: 'zt-dsh-source', version: '4', requires: ['zt-digest-lib'],
+  summary: 'ZT digest: report the frozen DeepSeek source (the official one) and its model.',
   params: {
     args: { type: 'object', required: true, description: 'the run\'s args ({{args}})' },
     mode: { type: 'string', required: true, description: 'the run\'s mode ({{mode}})' },

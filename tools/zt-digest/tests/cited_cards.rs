@@ -308,7 +308,7 @@ fn the_plan_groups_every_row_into_jobs_that_name_the_whole_source_and_writes_no_
     let jobs = jobs["jobs"].as_array().unwrap().clone();
     assert_eq!(jobs.len(), 2);
     assert_eq!(jobs[0]["id"], json!("t001"));
-    assert_eq!(jobs[0]["model"], json!("opencode-go/deepseek-v4.1-flash"));
+    assert_eq!(jobs[0]["model"], json!("deepseek-official/deepseek-flash"));
     let files: Vec<String> = jobs[0]["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
     assert!(files.iter().all(|f| Path::new(f).is_file()), "{files:?}");
     let job = std::fs::read_to_string(&files[1]).unwrap();

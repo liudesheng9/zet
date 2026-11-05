@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.11.29",
+  "version": "6.11.30",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree with Idea, Event, Finding, and Model Cards (economic models at concept or formal level). It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those from the Literature trees afterwards. Modes link, models, cards, explain, events, findings, figures, audit and bridge re-run single stages on an existing digest.",
   "preflight": {
@@ -124,7 +124,7 @@
     "dshManagers": {
       "type": "number",
       "min": 1,
-      "description": "Haiku managers of one compiler step in parallel (default 2, at most 2)"
+      "description": "Haiku managers of one compiler step in parallel (default 8, at most 8)"
     },
     "applyShare": {
       "type": "number",
@@ -640,7 +640,7 @@
     {
       "id": "source",
       "title": "Prepare",
-      "detail": "the DeepSeek source (frozen at OpenCode Go)",
+      "detail": "the DeepSeek source (frozen at the official one)",
       "after": [
         "args"
       ],
@@ -858,7 +858,7 @@
     {
       "id": "digest",
       "title": "Digest",
-      "detail": "the group queue: one start claims every ready digest/gNNN@1 unit with a snapshot and frozen job per group, one queue of managers runs the DeepSeek writers (eight jobs each, at most two managers at once, the next starting when one ends), each conversation recorded and deleted by its manager, and one finish records each checked group-finish (R250/R252/R253)",
+      "detail": "the group queue: one start claims every ready digest/gNNN@1 unit with a snapshot and frozen job per group, one queue of managers runs the DeepSeek writers (eight jobs each, at most eight managers at once, the next starting when one ends), each conversation recorded and deleted by its manager, and one finish records each checked group-finish (R250/R252/R253)",
       "after": [
         "terms",
         "cited"
@@ -1747,6 +1747,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.11.29"
+    "version": "5.11.30"
   }
 }
