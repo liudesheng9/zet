@@ -1527,6 +1527,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
+- `2026-11-04` — 0.44.8 embeds base 5.11.25 and its variants; no tool change.
 - `2026-11-04` — 0.44.7 embeds base 5.11.24 and its variants; no tool change.
 - `2026-11-04` — 0.44.6: Term and Cited jobs print `opencode-go/deepseek-v4.1-flash`; embeds base 5.11.23 and its variants.
 - `2026-11-04` — 0.44.4 embeds base 5.11.21 and its variants; no tool change.

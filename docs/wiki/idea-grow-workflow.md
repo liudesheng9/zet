@@ -255,6 +255,7 @@ Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-idea-grow.js",
 - **Launch only after a matching user request.** Workflow subagents judge each command against the session's latest user message (see the digest trial 13 note in memory).
 
 ## Change history
+- `2026-11-04` — **4.0.11** (zt-workflow-lib v12): the drive prompt says a user message never cancels its step.
 - `2026-11-04` — **4.0.10** (zt-workflow-lib v11): drive jobs run on OpenCode Go through the shared `ZT_DRIVE_MODEL`; the content jobs keep the official model in `consts.model`.
 - `2026-10-26` — `grow-steps.ps1` sets ZT_CONFIG_DIR with one separator per step (a JSON-escaped `-ZtConfig` named `D:\\box\\config` and the box pin refused it on the live run grow5); `grow-steps.tests.ps1` (19) checks it.
 

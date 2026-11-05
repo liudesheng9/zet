@@ -3374,13 +3374,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '54' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '4' && modules['zt-workflow-lib'] === '11' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '12' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '8' && modules['zt-digest-lib'] === '54' && modules['zt-digest-prepare'] === '22' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '4' && modules['zt-workflow-lib'] === '12' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '12' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '11', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '12', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -3692,10 +3692,13 @@ for (const which of ['econ', 'math']) {
   check((growSim.answers || []).filter((a) => a.label === '^grow: next$').every((a) => a.answer && typeof a.answer.answer === 'string' && a.answer.session_id), '#179: the dry run answers each grow step as the drive job it is')
   const shared = readText('scripts/workflow-shared/modules/zt-workflow-lib.js')
   // The owner, 2026-11-04: the digests have one DeepSeek source. The drive default stayed official when the content jobs moved.
+  // scheiner2022baghdad: the owner asked the main session to prove the link check had finished, and a drive manager took
+  // that message for its own task and refused to start its step, which halted the run.
+  check(shared.includes('never cancels or changes this step'), 'a drive manager runs its step whatever the latest user message says')
   const OPENCODE_DRIVE = "ZT_DRIVE_MODEL = 'opencode-go/deepseek-v4.1-flash'"
   const named = fs.readdirSync(path.join(root, 'scripts', 'book-digest', 'workflow', 'modules')).filter((f) => readText(`scripts/book-digest/workflow/modules/${f}`).includes('deepseek-official'))
   check(named.length === 0 && !shared.includes('deepseek-official') && shared.includes(OPENCODE_DRIVE), `every digest job names OpenCode Go, drive jobs included (${named.join() || 'the drive default'})`)
-  check(/version: '11'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  check(/version: '12'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
 }
 
 // ================================================================================================================

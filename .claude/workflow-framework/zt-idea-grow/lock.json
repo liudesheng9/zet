@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-idea-grow",
-  "version": "4.0.10",
+  "version": "4.0.11",
   "scope": "project",
   "script": ".claude/workflows/zt-idea-grow.js",
   "scriptRel": "workflows/zt-idea-grow.js",
-  "sha256": "299f71f7a123107796a065e39a5456a7e16230fa00a2cb8a72074c04d0da339b",
-  "fingerprint": "c0d55e31210b0618",
-  "blueprintSha256": "82411af37cc220736b53f87a1bbd338617c9acd4832d99bd3209c6c3dfc44d6b",
+  "sha256": "e5d5d5d570a2499a572a54cffbb7a71695dc97cf10a9b3104fe6f1221fa522dc",
+  "fingerprint": "96da910c8381fad1",
+  "blueprintSha256": "c4fdb0e6071c8765feaca6d4f2332a2d45efb89c1049200a8ba519afa667a6ff",
   "modules": {
     "value": "1",
     "deepseek": "1",
@@ -35,10 +35,10 @@
   "sources": [
     {
       "file": "scripts/idea-grow/workflow/zt-idea-grow.blueprint.json",
-      "sha256": "eed4a26c25c46c4ab6de354e2683b16e67ea401665d20fdbac792688846c64c5"
+      "sha256": "d052d9319159dfa95fa4364aae0ac722a1b02eda11e8faa7a950fdd6ff3236f9"
     }
   ],
-  "installedAt": "2026-11-05T04:13:15.027Z",
+  "installedAt": "2026-11-05T04:46:09.331Z",
   "dryRun": {
     "agents": 18,
     "order": [
