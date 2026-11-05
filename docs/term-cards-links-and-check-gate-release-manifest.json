@@ -9,7 +9,7 @@
     "executable": {
       "zt": "0.57.0",
       "zt_check": "0.19.2",
-      "zt_digest": "0.44.8"
+      "zt_digest": "0.44.9"
     },
     "rule": {
       "rule_version": "6",
@@ -27,11 +27,11 @@
       "older_binary_refuses": "2"
     },
     "workflow": {
-      "base": "5.11.25",
-      "zt-econ-digest": "6.11.25",
-      "zt-math-digest": "5.11.25",
-      "zt-history-digest": "1.0.13",
-      "zt-idea-grow": "4.0.11"
+      "base": "5.11.26",
+      "zt-econ-digest": "6.11.26",
+      "zt-math-digest": "5.11.26",
+      "zt-history-digest": "1.0.14",
+      "zt-idea-grow": "4.0.12"
     }
   },
   "capabilities": {

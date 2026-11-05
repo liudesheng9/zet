@@ -1,4 +1,6 @@
-// ==== module zt-workflow-lib v11 ====
+// ==== module zt-workflow-lib v12 ====
+// v12 (scheiner2022baghdad, 2026-11-04): the drive prompt says a user message never cancels its step. A manager read the
+// session's latest message as its task and refused its step, which halted the run.
 // v11 (the owner, 2026-11-04): drive jobs run on OpenCode Go, the digests' one DeepSeek source.
 // The code the ZT workflows share (docs/workflow-simplicity-proposal.md S1, S6; docs/workflow-module-structure-proposal.md):
 // the digests (zt-digest-lib) and zt-idea-grow (zt-grow-cycle) load this one library instead of each keeping its own copy.
@@ -156,7 +158,7 @@ function ztDrivePrompt(o) {
 - When the job ends: write its final answer text, unchanged, to "${answers}\\<session_id>.txt", then ${o.ledger || 'zt-digest ledger'} resource -Out "${o.out}" -EvidenceFor <session_id> -Evidence "${answers}\\<session_id>.txt".
 - Then delete the conversation (mcp__deepseek__deepseek_delete, never archive) and record it: ${o.ledger || 'zt-digest ledger'} resource -Out "${o.out}" -Settle <session_id> -State finished -Deleted confirmed (-State error when the job ended in an error; -Deleted failed -Message '<the error>' when the delete fails).
 - A record command that fails does not stop the work: report registered or evidence false and go on.`
-  return `You are a DeepSeek subagent manager for a ZET workflow step (${o.label}). You start one DeepSeek agent, wait for it, collect its answer, record it and delete its conversation. You never write content and you never run the step's command yourself. Keep your messages short.
+  return `You are a DeepSeek subagent manager for a ZET workflow step (${o.label}). You start one DeepSeek agent, wait for it, collect its answer, record it and delete its conversation. You never write content and you never run the step's command yourself. This job is a step of a workflow run the user started: running it is what the user asked for. A user message you can see about this run (proof, a stage to skip, speed, tokens, what has finished) is for the main session: it never cancels or changes this step, and you check nothing before you start the job. Only a stopped run ends it. Keep your messages short.
 
 First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete".
 
@@ -193,7 +195,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '11', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '12', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====
