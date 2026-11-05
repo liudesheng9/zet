@@ -212,14 +212,18 @@ zt-digest term-link -Step plan|apply -Staging <folder>
   excludes, or a repeat is refused. Term heads and parts are in scope with their own exact term
   protected, and their uses of other terms link normally.
 - **Vocabulary and matching.** Link words are the exact row spellings with one valid head and
-  automatic linking enabled. Blockers are every `不用` word, every name without a usable head or
+  automatic linking enabled. Blockers are every name without a usable head or
   with `自动链接：否`, the conservative short names (one Han character, or a Latin name under three
   letters), the ambiguous bare form of qualified homonyms, and named Term Cards that publish no
-  row. One leftmost-longest literal scan matches inside eligible prose runs, with blocker precedence
+  row, and a row's own name that another row rejects. Any other `不用` word is no word of the scan: it
+  neither links nor blocks, so a Term in or around it links normally. One leftmost-longest literal scan matches inside eligible prose runs, with blocker precedence
   on an exact tie and case-sensitive ASCII word boundaries for Latin edges (`GDP` never links inside
   `GDPR` or `GDP_2024`). `-Occurrences first` links the first eligible unblocked occurrence per term
   and body; `all` links every one. A protected or blocked occurrence never consumes the
-  first-occurrence allowance. Duplicate list rows stop the plan before anything is frozen.
+  first-occurrence allowance. Duplicate list rows stop the plan before anything is frozen. A match gives way
+  to the next Term when that Term starts on the match's last character, runs past it, and the text before
+  that character is a word too (a Term, or the stem of at least two Terms): `阿拔斯宫廷` is 阿拔斯 + 宫廷, while
+  `泰西封地` stays 泰西封 + 地. A stored use cut this way is repaired in one edit.
 - **Protected spans.** Without reserializing Markdown, the pass protects fenced and inline code,
   chart fences, dollar and LaTeX math, every Link macro, Markdown links and images (inline,
   reference, definition and autolink forms), raw HTML, headings, table rows (a `|` inside a `[[…]]` Link is its address, never a cell separator), `来源`/`出处` lines,
@@ -1527,6 +1531,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
+- `2026-11-05` — 0.44.11: Term links. A `不用` word neither links nor blocks, a Term no longer cuts a longer word, an unclosed `\[` ends with its paragraph, and `scripts/book-digest/term-relink.ps1` relinks any book after a later write. Linking `不用` words themselves was tried and dropped: Chinese has no word boundary, so 说明教法 held 明教 and 正确信仰 held 确信.
 - `2026-11-04` — 0.44.10: `cleanup-finish -Ready` claims until nothing is ready. It stopped when no unit was retrying, so a book with more than 64 cleanup units kept the rest open (scheiner2022baghdad: 56 of 374).
 - `2026-11-04` — 0.44.9 embeds base 5.11.26 and its variants; no tool change.
 - `2026-11-04` — 0.44.7 embeds base 5.11.24 and its variants; no tool change.
@@ -1747,14 +1752,18 @@ zt-digest term-link -Step plan|apply -Staging <folder>
   excludes, or a repeat is refused. Term heads and parts are in scope with their own exact term
   protected, and their uses of other terms link normally.
 - **Vocabulary and matching.** Link words are the exact row spellings with one valid head and
-  automatic linking enabled. Blockers are every `不用` word, every name without a usable head or
+  automatic linking enabled. Blockers are every name without a usable head or
   with `自动链接：否`, the conservative short names (one Han character, or a Latin name under three
   letters), the ambiguous bare form of qualified homonyms, and named Term Cards that publish no
-  row. One leftmost-longest literal scan matches inside eligible prose runs, with blocker precedence
+  row, and a row's own name that another row rejects. Any other `不用` word is no word of the scan: it
+  neither links nor blocks, so a Term in or around it links normally. One leftmost-longest literal scan matches inside eligible prose runs, with blocker precedence
   on an exact tie and case-sensitive ASCII word boundaries for Latin edges (`GDP` never links inside
   `GDPR` or `GDP_2024`). `-Occurrences first` links the first eligible unblocked occurrence per term
   and body; `all` links every one. A protected or blocked occurrence never consumes the
-  first-occurrence allowance. Duplicate list rows stop the plan before anything is frozen.
+  first-occurrence allowance. Duplicate list rows stop the plan before anything is frozen. A match gives way
+  to the next Term when that Term starts on the match's last character, runs past it, and the text before
+  that character is a word too (a Term, or the stem of at least two Terms): `阿拔斯宫廷` is 阿拔斯 + 宫廷, while
+  `泰西封地` stays 泰西封 + 地. A stored use cut this way is repaired in one edit.
 - **Protected spans.** Without reserializing Markdown, the pass protects fenced and inline code,
   chart fences, dollar and LaTeX math, every Link macro, Markdown links and images (inline,
   reference, definition and autolink forms), raw HTML, headings, table rows (a `|` inside a `[[…]]` Link is its address, never a cell separator), `来源`/`出处` lines,

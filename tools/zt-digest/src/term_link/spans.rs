@@ -317,7 +317,8 @@ fn incomplete_tails(body: &str, code: &[Range<usize>]) -> Vec<(Range<usize>, Pro
             && !escaped(body, index)
         {
             // Every closed span is opaque, so a visible opener is exactly an unclosed one.
-            let end = if display { body.len() } else { line_end(index) };
+            // A quotation's escaped `\[…]` is an unclosed opener too, so no tail leaves its paragraph.
+            let end = if display { paragraph_end(index) } else { line_end(index) };
             if end > index {
                 tails.push((index..end, protection));
             }
@@ -1004,6 +1005,15 @@ mod tests {
     }
 
     /// R0385: an unclosed delimiter protects its uncertain tail instead of relinking it.
+    #[test]
+    // scheiner2022baghdad: a quotation's `\[…]` read as display math and protected the rest of the Card.
+    #[test]
+    fn an_unclosed_bracket_opener_ends_with_its_paragraph() {
+        let body = "引文\\[…]。\n\n后 均衡";
+        let layout = layout(body, &Profile::default());
+        assert!(layout.runs.iter().any(|run| body[run.clone()].contains("后 均衡")), "{:?}", layout.runs);
+    }
+
     #[test]
     fn unclosed_code_and_math_protect_their_uncertain_tail() {
         let body = "前 $x 没有闭合\n后 均衡\n\n前 `code 没有闭合\n后 均衡\n\n前 $$x\n均衡\n";

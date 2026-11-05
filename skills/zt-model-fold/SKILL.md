@@ -66,6 +66,8 @@ Settings of a folded head are the model's assumptions: they go to that model's s
 - `list_broken_links` is empty; the tree has the same number of Cards.
 - Record the pass in the project docs with the decision table, tell the user how many models the book holds and why each is its own, say which tree is still unlocked, and hand each Model Card's address to `zt-model-settings`, then to `zt-model-restructure`.
 
+**Relink the Terms last.** A rewritten Card loses Term links, and nothing else restores them. Run `pwsh -NoProfile -File E:\zet\scripts\book-digest\term-relink.ps1 -CitationKey <key>`. It keeps every visible character, and it fails if a second plan still changes a Card.
+
 ## Helper facts (zt-digest call)
 
 - Input is a JSON **array** of `{tool, arguments}`; one call per line of output: `N ok <address>`, `N error …`, or `N {json}` for reads. `scripts/zt.mjs` returns that output even when the batch exits 1 because one call failed.

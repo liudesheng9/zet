@@ -9,7 +9,7 @@
 
 use crate::canon;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The occurrence policy of one pass.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,8 +124,11 @@ impl Vocabulary {
                 Some(reason) => insert(&term.term, None, Some(reason)),
             }
         }
+        // A rejected word is no Term use: it neither links nor blocks the Terms in and around it. Only a
+        // row's own name that another row rejects stays blocked, because that spelling has two readings.
+        let names: BTreeSet<&str> = terms.iter().map(|term| term.term.as_str()).collect();
         for term in terms {
-            for avoid in &term.avoid {
+            for avoid in term.avoid.iter().filter(|avoid| names.contains(avoid.as_str())) {
                 insert(avoid, None, Some("avoid_word"));
             }
         }
@@ -227,6 +230,31 @@ impl Vocabulary {
             }
         }
         best.map(|candidate| (index + self.words[candidate].text.len(), &self.words[candidate]))
+    }
+
+    /// Whether this text stands as a word of the book: a Term, or the stem of at least two Terms
+    /// (阿拔斯 starts 阿拔斯宫 and 阿拔斯王朝; 泰西 starts only 泰西封).
+    fn is_stem(&self, text: &str) -> bool {
+        self.words
+            .iter()
+            .filter(|word| word.link.is_some() && word.text.starts_with(text))
+            .take(2)
+            .count()
+            >= 2
+            || self.words.iter().any(|word| word.text == text)
+    }
+
+    /// The next Term when the match `index..end` cuts it: it starts on the match's last character and
+    /// runs past the match, inside `limit`, and the text before that character is a word too. Then
+    /// `阿拔斯宫廷` is 阿拔斯 + 宫廷, not 阿拔斯宫 + 廷. `泰西封地` stays 泰西封 + 地, and a longer overlap
+    /// is one word with a suffix (`半理性主义者`).
+    pub(crate) fn handover(&self, body: &str, index: usize, end: usize, limit: usize) -> Option<(usize, usize, &Word)> {
+        let last = index + body[index..end].char_indices().last()?.0;
+        if last == index || !self.is_stem(&body[index..last]) {
+            return None;
+        }
+        let (next_end, next) = self.longest_at(body, last)?;
+        (next.blocker.is_none() && next.link.is_some() && next_end > end && next_end <= limit).then_some((last, next_end, next))
     }
 
     /// The link-word occurrences inside one protected span, leftmost-longest, as `(start, end)`.
@@ -348,7 +376,7 @@ mod tests {
     fn link_words_and_blockers_are_built_from_heads_avoid_words_and_the_short_rule() {
         let vocabulary = book();
         assert_eq!(word(&vocabulary, "替代弹性").1.link, Some(0));
-        assert_eq!(word(&vocabulary, "替代弹性系数").1.blocker, Some("avoid_word"));
+        assert!(!vocabulary.words.iter().any(|word| word.text == "替代弹性系数"), "an avoid word is no word of the scan");
         assert_eq!(word(&vocabulary, "相对要素价格").1.blocker, Some("no_head"));
         assert_eq!(word(&vocabulary, "要素价格").1.link, Some(4));
         assert_eq!(word(&vocabulary, "学").1.blocker, Some("short"));
@@ -432,6 +460,6 @@ mod tests {
             .into_iter()
             .map(|(start, end)| &text[start..end])
             .collect();
-        assert_eq!(found, ["净生产函数", "生产函数", "学习（个体行为）"]);
+        assert_eq!(found, ["净生产函数", "生产函数", "替代弹性", "学习（个体行为）"]);
     }
 }

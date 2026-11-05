@@ -86,6 +86,8 @@ Draft the text with DeepSeek: one job per chapter or per group, each with the fo
 - Look at it in the GUI: the **model board** under the Model Card draws the chapters as cards joined by transit lines, each chapter under the chapter it builds on most, a forward fault in red; open a chapter to see its cards tucked under the chapter card, the open Card pulled out with page flags for the blocks it rests on and the blocks resting on it, and each proof cascading under its result. The Map's **Focus** mode (`x`) shows the low-memory view (the main line as slips, the selected chapter's results, every proof folded into `+N`); "Whole tree" unfolds everything.
 - Record the pass in the project docs and tell the user which tree is still unlocked.
 
+**Relink the Terms last.** A rewritten Card loses Term links, and nothing else restores them. Run `pwsh -NoProfile -File E:\zet\scripts\book-digest\term-relink.ps1 -CitationKey <key>`. It keeps every visible character, and it fails if a second plan still changes a Card.
+
 ## Helper facts (zt-digest call)
 
 - Input is a JSON **array** of `{tool, arguments}`; one call per line of output: `N ok <address>`, `N error …`, or `N {json}` for reads.

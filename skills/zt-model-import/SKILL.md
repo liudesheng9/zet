@@ -69,6 +69,8 @@ What an import is **not**:
    4. `node scripts/explain.mjs finish <head>` relinks Terms in the changed parts only (`zt-digest term-link -Cards`), checks that a second Term-link plan changes nothing, and plans the explanations again. It exits 0 when nothing is left and nothing was refused.
    5. Delete the conversations (`deepseek_delete`) and remove the work folder from the DeepSeek sidebar (`deepseek_remove_workspace`).
 
+**Relink the Terms last.** A rewritten Card loses Term links, and nothing else restores them. Run `pwsh -NoProfile -File E:\zet\scripts\book-digest\term-relink.ps1 -CitationKey <key>`. It keeps every visible character, and it fails if a second plan still changes a Card.
+
 ## Where this skill sits
 
 - After `zt-model-fold`: an import is intended sharing between two models, and the fold never joins two models because of one (only a legacy share counts as evidence of a split).

@@ -33,6 +33,8 @@ Judgement decides this work. Sources differ in every way, so the scripts only sh
 
 Report the top line, the crossers and how each was settled, and any call that could go the other way.
 
+9. **Relink the Terms last.** A rewritten Card loses Term links, and nothing else restores them. Run `pwsh -NoProfile -File E:\zet\scripts\book-digest\term-relink.ps1 -CitationKey <key>`. It keeps every visible character, and it fails if a second plan still changes a Card.
+
 ## Summary leads
 
 Every head of a division with subdivisions gets one of two treatments. A head with no subdivisions is left alone unless a move made it false.

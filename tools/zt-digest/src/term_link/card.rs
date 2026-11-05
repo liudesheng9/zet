@@ -271,6 +271,11 @@ pub(crate) fn plan_card(
             let end = span.range.end;
             if span.protection == Protection::Link {
                 if let Some((label, target)) = macros.get(&index) {
+                    let run_end = layout.runs.iter().find(|run| run.start <= end && end < run.end).map(|run| run.end);
+                    if let Some(tail) = run_end.and_then(|limit| repair_cut(&mut plan, vocabulary, policy, profile, body, label, target, book, index..end, limit, &mut used)) {
+                        index = tail;
+                        continue;
+                    }
                     handle_macro(
                         &mut plan,
                         vocabulary,
@@ -304,7 +309,10 @@ pub(crate) fn plan_card(
             let run_end = run.end;
             match vocabulary.longest_at(body, index) {
                 Some((end, word)) if end <= run_end => {
-                    if let Some(reason) = word.blocker {
+                    let handed = vocabulary.handover(body, index, end, run_end).filter(|_| word.blocker.is_none());
+                    if handed.is_some() {
+                        // The next Term cuts this match, so it takes the text from its first character.
+                    } else if let Some(reason) = word.blocker {
                         plan.skips.push(Skip {
                             start: index,
                             end,
@@ -336,7 +344,7 @@ pub(crate) fn plan_card(
                             });
                         }
                     }
-                    index = end;
+                    index = handed.map_or(end, |(next, _, _)| next);
                 }
                 Some(_) => {
                     // A longer word starts here but leaves this run: never cross a protected
@@ -388,6 +396,56 @@ pub(crate) fn plan_card(
         }
     }
     plan
+}
+
+/// A stored same-book use cut through a word: `[[阿拔斯宫@…]]廷`. One edit moves the use to the next
+/// Term, or reads as plain prose when that Term was already used. Answers the end of the edit.
+#[allow(clippy::too_many_arguments)]
+fn repair_cut(
+    plan: &mut CardPlan,
+    vocabulary: &Vocabulary,
+    policy: Policy,
+    profile: &Profile<'_>,
+    body: &str,
+    label: &str,
+    target: &str,
+    book: &str,
+    range: std::ops::Range<usize>,
+    limit: usize,
+    used: &mut BTreeSet<usize>,
+) -> Option<usize> {
+    if matches::literature_owner(target) != Some(book) || profile.own_term == Some(label) {
+        return None;
+    }
+    matches::link_word(vocabulary, label)?;
+    // The plain reading of this stretch, so the shared rule decides, on the same text a new match sees.
+    let plain = format!("{label}{}", &body[range.end..limit]);
+    let (next_at, next_end, next) = vocabulary.handover(&plain, 0, label.len(), plain.len())?;
+    let link = next.link?;
+    let term = &vocabulary.terms[link];
+    if profile.own_term == Some(term.term.as_str()) {
+        return None;
+    }
+    let tail = range.end + next_end - label.len();
+    let head = term.link_head()?;
+    let allowed = policy == Policy::All || !used.contains(&link);
+    let after = if allowed {
+        used.insert(link);
+        format!("{}[[{}@{head}]]", &label[..next_at], term.term)
+    } else {
+        format!("{label}{}", &body[range.end..tail])
+    };
+    plan.edits.push(Edit {
+        kind: EditKind::Repair,
+        start: range.start,
+        end: tail,
+        term: Some(term.term.clone()),
+        target: Some(head.to_string()),
+        label: term.term.clone(),
+        before: body[range.start..tail].to_string(),
+        after,
+    });
+    Some(tail)
 }
 
 /// Handle one same-book, foreign-book or non-book Term macro.
@@ -584,6 +642,7 @@ mod tests {
                 ("link", "净生产函数", "[[净生产函数@K/5]]"),
                 ("link", "生产函数", "[[生产函数@K/4]]"),
                 ("link", "替代弹性", "[[替代弹性@K/3]]"),
+                ("link", "替代弹性", "[[替代弹性@K/3]]"),
                 ("link", "要素价格", "[[要素价格@K/6]]"),
             ]
         );
@@ -594,9 +653,84 @@ mod tests {
             .collect();
         assert_eq!(
             reasons,
-            [("替代弹性系数", "avoid_word"), ("相对要素价格", "no_head")]
+            [("相对要素价格", "no_head")]
         );
         assert_preserved(body, &planned);
+    }
+
+    fn own_book(terms: &[Term]) -> Vocabulary {
+        Vocabulary::build(terms, &[])
+    }
+
+    fn run(vocabulary: &Vocabulary, body: &str) -> CardPlan {
+        plan_card(body, &Profile::default(), vocabulary, Policy::First, "K")
+    }
+
+    // scheiner2022baghdad: 不用 words swallowed the Terms inside and around them: `和平之城（Madīnat al-Salām）`,
+    // `哈里发宫`. Linking the words themselves was worse: 说明教法 holds 明教, 正确信仰 holds 确信. A rejected
+    // word neither links nor blocks.
+    #[test]
+    fn an_avoid_word_neither_links_nor_blocks() {
+        let vocabulary = own_book(&[
+            term(1, "和平之城", &["和平之城（Madīnat al-Salām）"], &["K/1"], true),
+            term(2, "摩尼教", &["明教"], &["K/2"], true),
+            term(3, "教法", &[], &["K/3"], true),
+        ]);
+        let body = "和平之城（Madīnat al-Salām）与说明教法。";
+        let planned = run(&vocabulary, body);
+        assert_eq!(
+            edits(&planned),
+            [("link", "和平之城", "[[和平之城@K/1]]"), ("link", "教法", "[[教法@K/3]]")]
+        );
+        assert_preserved(body, &planned);
+        // A word that is only a variant stays plain, and the check still advises on it.
+        assert!(run(&vocabulary, "他信明教。").edits.is_empty());
+    }
+
+    fn palace_book() -> Vocabulary {
+        own_book(&[
+            term(1, "阿拔斯宫", &[], &["K/1"], true),
+            term(2, "阿拔斯王朝", &[], &["K/2"], true),
+            term(3, "宫廷", &[], &["K/3"], true),
+            term(4, "泰西封", &[], &["K/4"], true),
+            term(5, "封地", &[], &["K/5"], true),
+            term(6, "半理性主义", &[], &["K/6"], true),
+            term(7, "理性主义者", &[], &["K/7"], true),
+        ])
+    }
+
+    // scheiner2022baghdad: 98 uses read `[[阿拔斯宫@…]]廷`. 阿拔斯 starts two Terms, so 阿拔斯 + 宫廷 are two
+    // words. 泰西 starts one Term, so 泰西封 + 地 stands, and `封地` is no word here.
+    #[test]
+    fn the_next_term_wins_only_when_both_halves_are_words() {
+        let vocabulary = palace_book();
+        let body = "阿拔斯宫廷与阿拔斯宫。";
+        let planned = run(&vocabulary, body);
+        assert_eq!(
+            edits(&planned),
+            [("link", "宫廷", "[[宫廷@K/3]]"), ("link", "阿拔斯宫", "[[阿拔斯宫@K/1]]")]
+        );
+        assert_preserved(body, &planned);
+        assert_eq!(edits(&run(&vocabulary, "泰西封地。")), [("link", "泰西封", "[[泰西封@K/4]]")]);
+        // A longer overlap is one word with a suffix: the leftmost Term keeps it.
+        assert_eq!(edits(&run(&vocabulary, "半理性主义者。")), [("link", "半理性主义", "[[半理性主义@K/6]]")]);
+    }
+
+    #[test]
+    fn a_stored_term_cut_through_a_word_is_repaired_in_one_edit() {
+        let vocabulary = palace_book();
+        let body = "[[阿拔斯宫@K/1]]廷的礼仪。";
+        let planned = run(&vocabulary, body);
+        assert_eq!(planned.new_body, "阿拔斯[[宫廷@K/3]]的礼仪。");
+        assert_preserved(body, &planned);
+        assert!(run(&vocabulary, &planned.new_body).edits.is_empty());
+        // The Term was already used: the word reads as plain prose, and no second use appears.
+        let body = "宫廷与[[阿拔斯宫@K/1]]廷。";
+        let planned = run(&vocabulary, body);
+        assert_eq!(planned.new_body, "[[宫廷@K/3]]与阿拔斯宫廷。");
+        assert_preserved(body, &planned);
+        // A stored use that cuts no word is kept.
+        assert!(run(&vocabulary, "[[泰西封@K/4]]地。").edits.is_empty());
     }
 
     #[test]
@@ -637,11 +771,6 @@ mod tests {
         let mismatched = plan("[[GDP@K/10]]", Policy::First);
         assert_eq!(edits(&mismatched), [("repair", "[[GDP@K/10]]", "[[GDP@K/7]]")]);
         // A label that is no link word keeps its text and loses only the stale macro.
-        let avoided = plan("[[替代弹性系数@K/3]]", Policy::First);
-        assert_eq!(
-            edits(&avoided),
-            [("normalize", "[[替代弹性系数@K/3]]", "替代弹性系数")]
-        );
         let unrowed = plan("[[无行术语@K/3]]", Policy::First);
         assert_eq!(edits(&unrowed), [("normalize", "[[无行术语@K/3]]", "无行术语")]);
     }

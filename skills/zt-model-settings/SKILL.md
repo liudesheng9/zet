@@ -149,6 +149,8 @@ Last, the citations: replace each bare `假设 N` the `cite` faults name with `[
 - `list_broken_links` is empty; the tree has the same number of Cards.
 - Rebuild the head's **结构** section, record the pass in the project docs, and tell the user which tree is still unlocked.
 
+**Relink the Terms last.** A rewritten Card loses Term links, and nothing else restores them. Run `pwsh -NoProfile -File E:\zet\scripts\book-digest\term-relink.ps1 -CitationKey <key>`. It keeps every visible character, and it fails if a second plan still changes a Card.
+
 ## Helper facts (zt-digest call)
 
 - Input is a JSON **array** of `{tool, arguments}`; one call per line of output: `N ok <address>`, `N error …`, or `N {json}` for reads.
