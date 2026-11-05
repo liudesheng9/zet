@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "zt-digest"
-version = "0.44.9"
+version = "0.44.10"
 dependencies = [
  "anyhow",
  "getrandom",

@@ -17375,7 +17375,8 @@ fn reverify_reconciliations(p: &Prepared) -> Result<Vec<String>> {
 /// agent per unit (about 150, one after another), and every failed finish left its unit claimed. Prints one
 /// short line: counts, the first open causes, and the run-level unit's completeness.
 fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
-    const ROUNDS: usize = 6;
+    // 64 units a round: the bound holds thousands of units, and an empty claim ends the loop.
+    const ROUNDS: usize = 512;
     let mut claimed = 0usize;
     let mut done = 0usize;
     let mut partial = 0usize;
@@ -17427,9 +17428,6 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
                     Err(cause) => json!({"unit":id,"ok":false,"cause":cause}),
                 };
             }
-        }
-        if !open.values().any(|(state, _)| state == "retry") {
-            break;
         }
     }
     let reconciled = reverify_reconciliations(p)?;
