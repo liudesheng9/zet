@@ -1393,6 +1393,7 @@ function runtime(kind, opts = {}) {
         return { ok: true, ...(run(`zt-digest finalize -Step stage -Out "${out}" -Layer ${o.Layer}${more}`) || {}) }
       }
       case 'cards-start': {
+        if (scenario.linkCheckFails && /cards-link/.test(o.Work || '')) return { ok: false, step: 'plan', error: 'the card plan printed no line: zt-digest card: incomplete book relationship source catalogue' }
         if (opts.garbledCardPlan) return { ok: false, step: 'plan', error: 'the card plan printed no line: (abridged)' }
         const more = `${o.Rules ? ` -Rules "${o.Rules}"` : ''}${o.MaxCards ? ` -MaxCards ${o.MaxCards}` : ''}${o.Sample !== undefined ? ` -Sample ${o.Sample}` : ''}${o.ModelReview ? ' -ModelReview' : ''}${o.Notes ? ` -Notes "${o.Notes}"` : ''}${o.NoOrphans ? ' -NoOrphans' : ''}${o.Cards ? ` -Cards "${o.Cards}"` : ''}`
         const line = run(`zt-digest card -Step plan -Work "${o.Work}" -Compact -Book ${o.Book} -Staging "${out}"${more}`) || {}
@@ -2202,6 +2203,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(stageOf('econ', 'events').after.join(',') === 'terms' && stageOf('econ', 'findings').after.join(',') === 'terms', 'schedule: Event and Finding continuations run from readiness while the remaining groups digest')
   check(/cards-book/.test(after('link-prepare')) && /events|findings/.test(after('link-prepare')), 'schedule: the gap-only Link pass waits for the term evidence (after-terms) and the whole-book cycle')
   check(after('organize') === 'link-check', 'schedule: Organize runs after the link checks settle')
+  // scheiner2022baghdad: the link check reads the whole book, and Term and Cited cards write into it.
+  check(after('link-check') === 'link,term-cards,cited-cards', `schedule: the link check waits for every writer of the tree (${after('link-check')})`)
   check(after('figures') === 'organize', 'schedule: Figures is released by Organize')
   check(after('bridge') === 'figures', 'schedule: the report-first Bridge follows Figures (its endpoint snapshots are the final Card text)')
   check(after('audit') === 'bridge,term-link', 'schedule: the final audit follows the Bridge report and the Term-link pass (R0420: tl --> audit)')
@@ -2277,7 +2280,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(resumeRun.result.stage === 'prepare' && /no retained digest groups/.test(resumeRun.result.error), 'resume: a resume of a folder without a retained prepared run halts at prepare with its reason')
   const m = builds.math.bp
   const mathAfter = (id) => (m.stages.find((s) => s.id === id).after || []).join(',')
-  check(mathAfter('cards-book') === 'explain' && mathAfter('link-check') === 'link' && mathAfter('math-theory') === 'link-check', 'schedule: the mathematics variant keeps Theory after the link check')
+  check(mathAfter('cards-book') === 'explain' && mathAfter('link-check') === 'link,term-cards,cited-cards' && mathAfter('math-theory') === 'link-check', 'schedule: the mathematics variant keeps Theory after the link check')
   check(mathAfter('audit') === 'bridge,term-link' && mathAfter('math-check') === 'finalize' && mathAfter('cleanup') === 'math-check', 'schedule: the mathematics check describes the final audit revision, then the settlement')
   check(m.stages.some((s) => s.id === 'finalize'), 'schedule: the mathematics variant holds the finalization stage its base declares')
 }
@@ -3236,6 +3239,12 @@ for (const kind of ['econ', 'math']) {
 // ================================================================================================================
 // zt-history-digest: reading notes, Links, Terms and citations, with no Model, Event or Finding layer
 // ================================================================================================================
+{
+  // scheiner2022baghdad: a link check that could not plan ended quietly, and Organize ran on unchecked Links.
+  const { report, bookCalls } = await run('econ', { ...base, figures: false }, { linkCheckFails: true })
+  check(report && report.halted && report.halted.stage === 'link-check', `a failed link check stops the run (${report && report.halted && report.halted.stage})`)
+  check(!bookCalls.some((c) => c.step === 'organize-survey'), 'a failed link check starts no Organize')
+}
 {
   // scheiner2022baghdad (2026-11-04): a resume reran the normalize jobs of a finished Cited list, and its list-finish
   // would have written the list again without a claim.

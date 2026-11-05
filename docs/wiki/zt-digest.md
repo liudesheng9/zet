@@ -1527,6 +1527,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 - **Error texts are not PowerShell's.** A PowerShell runtime error (a null hashtable index, a failed `[int]` cast) had a localized message; the tool writes an English one. Errors on stderr are `zt-digest model: <error>`, not a PowerShell error record.
 
 ## Change history
+- `2026-11-04` — 0.44.4 embeds base 5.11.21 and its variants; no tool change.
 - `2026-11-04` — 0.44.3: `cited::fold` keeps the letters of transliteration (`Ṭāhir` folded to `hir`, so a right C3 location was refused), and R6 skips a sentence the quoted reference holds, because a full stop in a title splits the `文献：` line.
 - `2026-11-04` — 0.44.2: a footnote marker (`$^{20}---
 block: zt-digest

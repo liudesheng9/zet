@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-history-digest",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "scope": "project",
   "script": ".claude/workflows/zt-history-digest.js",
   "scriptRel": "workflows/zt-history-digest.js",
-  "sha256": "0e6a97fb4eedbe51c37079ae8d1924bb68402a4450e7b52b45b1cf5d50e26850",
-  "fingerprint": "82b2c3c354a390f0",
-  "blueprintSha256": "96972c5461e8cd6f48177470696089adcf8cb5e7b18ca8f110348d2446364bf2",
+  "sha256": "9b1542ed84ae9de8e6b41b07c5702247f9985c2183a1fe76f50da89ac646e2a7",
+  "fingerprint": "2bb415511f24136a",
+  "blueprintSha256": "9fa9ef2208be4b04c9e9e822fb75eca6609316a528b5ec71afde64e9aca9ce6a",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "10",
@@ -26,7 +26,7 @@
     "zt-term-link-lib": "4",
     "zt-finalize": "7",
     "zt-group-cycle": "10",
-    "zt-link-check": "3",
+    "zt-link-check": "4",
     "zt-link-pass": "11",
     "zt-link-prepare": "8",
     "zt-organize": "9",
@@ -104,7 +104,7 @@
     },
     "zt-link-check": {
       "file": "scripts/book-digest/workflow/modules/zt-link-check.js",
-      "sha256": "f44c067be6d311b54c2ccb1c23047040e20fda505826bf47f16f64bafdd99dbe"
+      "sha256": "ce3a406ede75d69c123ceaebd9b722de5f06be25406fdcb9c925e71f7d5bf32b"
     },
     "zt-link-pass": {
       "file": "scripts/book-digest/workflow/modules/zt-link-pass.js",
@@ -130,15 +130,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-history-digest.blueprint.json",
-      "sha256": "d110408b5102a661ebf5f96d1a0675da61e53a12a66c26fc849cb54e1cbb628d"
+      "sha256": "2b5f52f034899baf4ebdc6295bb911ad8f51c345a4d36c0194526259f3d6c257"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "bfb2d9b44bf8468e6e108dd06b58bd35685e039e4567ca4a5c226503766c883e"
+      "sha256": "5c1063029c4b5a00864bd7ead6b4538d306ec4ad340ec4f49920f7d955f082e4"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-05T02:00:35.121Z",
+  "installedAt": "2026-11-05T02:12:39.378Z",
   "dryRun": {
     "agents": 57,
     "order": [
