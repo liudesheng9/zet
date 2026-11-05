@@ -9,7 +9,7 @@
     "executable": {
       "zt": "0.57.0",
       "zt_check": "0.19.2",
-      "zt_digest": "0.44.1"
+      "zt_digest": "0.44.2"
     },
     "rule": {
       "rule_version": "6",

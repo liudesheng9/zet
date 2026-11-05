@@ -1849,11 +1849,15 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// The formula spans of one text, exactly as written.
+/// A footnote marker of the book's Markdown (`$^{20}$`): scheiner2022baghdad's text holds thousands, and each one read as a
+/// formula made 263 of 501 Term jobs of a history book mathematical.
+static FOOTNOTE_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\$\s*\^\s*\{?[\d,\s-]+\}?\s*\$$").unwrap());
+
 pub(crate) fn formulas(text: &str) -> Vec<String> {
     FORMULA
         .find_iter(text)
         .map(|found| found.as_str().trim().to_string())
-        .filter(|formula| formula.len() > 2)
+        .filter(|formula| formula.len() > 2 && !FOOTNOTE_MARK.is_match(formula))
         .collect()
 }
 
@@ -5040,6 +5044,12 @@ mod tests {
             .path();
         let text = util::read_text(request).unwrap();
         assert!(text.contains("（补：书中略去）"), "{text}");
+    }
+
+    #[test]
+    fn a_footnote_marker_is_no_formula() {
+        assert!(formulas("侍从长管控渠道。$^{20}$ 后文。$^{15,16}$").is_empty(), "a footnote marker of the Markdown");
+        assert_eq!(formulas("需求 $x^{2}$ 上升。$^{3}$"), ["$x^{2}$"]);
     }
 
     #[test]
