@@ -1,0 +1,26 @@
+{
+  "args": {
+    "fileIds": [
+      95,
+      1283
+    ]
+  },
+  "answers": [
+    {
+      "label": "start 1",
+      "answer": {
+        "answer": "{\"ok\":true,\"figures\":9,\"settled\":0,\"jobs\":3,\"chunks\":1,\"file\":\"D:\\\\zt-digest\\\\_figure-explain\\\\95-1283\\\\jobs.json\"}",
+        "session_id": "d1",
+        "deleted": true
+      }
+    },
+    {
+      "label": "finish 1",
+      "answer": {
+        "answer": "{\"ok\":true,\"saved\":9,\"open\":0,\"refused\":0}",
+        "session_id": "d2",
+        "deleted": true
+      }
+    }
+  ]
+}

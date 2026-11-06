@@ -1,6 +1,7 @@
 // Harness for the zt-figure-explain workflow and module: builds the blueprint with the Workflow Framework assembler and
 // runs it in the framework's stand-in runtime (no model runs).
 //   node scripts/figure-explain/tests/figure-explain.tests.mjs
+import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -74,6 +75,17 @@ await test('what stays open gets one more round, then the stage fails with expla
 await test('a failed step fails the stage, never an empty success', async () => {
   const r = await run([{ label: 'start 1', answer: line({ ok: false, error: 'bridge refused' }) }])
   assert.match(String(r.error || JSON.stringify(r.result)), /bridge refused/)
+})
+
+await test('each digest installs: its dry run answers the figure-explain stage and reaches the last stage', async () => {
+  for (const name of ['econ', 'math', 'history']) {
+    const file = path.join(here, '..', '..', 'book-digest', 'workflow', `zt-${name}-digest`)
+    const digest = loadBlueprint(`${file}.blueprint.json`)
+    const sim = JSON.parse(fs.readFileSync(`${file}.sim.json`, 'utf8'))
+    const r = await simulate(build(digest.bp, loadModules(digest.dirs)).script, { sim, args: sim.args })
+    assert.equal(r.error, undefined, `${name}: ${String(r.error).slice(0, 200)}`)
+    assert.ok(r.calls.some((c) => /figure explanations: start 1/.test(label(c))), `${name}: the stage ran`)
+  }
 })
 
 console.log(`${passed} passed`)

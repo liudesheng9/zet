@@ -8,6 +8,14 @@
   },
   "answers": [
     {
+      "label": "^figure explanations: start 1$",
+      "answer": {
+        "answer": "{\"ok\":true,\"figures\":0,\"settled\":0,\"jobs\":0,\"chunks\":0}",
+        "session_id": "fx",
+        "deleted": true
+      }
+    },
+    {
       "label": "^figures: list$",
       "answer": {
         "answer": "{\"ok\":true,\"figures\":0,\"jobs\":0}"
