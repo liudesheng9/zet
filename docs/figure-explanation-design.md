@@ -80,7 +80,7 @@ Module `zt-figure-explain` (no ledger, no Card, no zt write). It has one shape:
 ```mermaid
 flowchart LR
     S["explain-start<br/>open images, jobs"] --> Q["one queue of Haiku managers<br/>8 jobs each, 8 at once"]
-    Q --> D["DeepSeek reader<br/>images input, 4 images a job"]
+    Q --> D["DeepSeek reader<br/>images input, 8 images a job"]
     D --> C["explain-check SELF-CHECK"]
     Q --> F["explain-finish<br/>check, save through the bridge"]
     F --> R{"open images?"}
@@ -96,7 +96,7 @@ flowchart LR
 
 Conversations are deleted as DSMP requires. The manager prompt names the job's `images` field, and the approval rule allows only the `explain-check` command and JSON writes under the job's `out` folder.
 
-Four images per job: 317 figures across the 12 books need about 80 jobs and 10 managers. A job per image would need 40 managers, and Claude tokens are the scarce resource.
+Eight images per job, the most one `deepseek_run` takes (`images` has `maxItems: 8`): 317 figures across the 12 books need about 40 jobs and 5 managers. The owner asked for 6 to 15 images per job on 2026-11-05 to save tokens; the first backfill ran at four (83 jobs, 11 managers, no job failed). A larger job needs the bridge's limit raised first.
 
 ## 6. Where the pass runs
 

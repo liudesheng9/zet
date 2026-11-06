@@ -21,8 +21,8 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
 
-/// Images of one job: 317 figures need about 80 jobs and 10 Haiku managers.
-const IMAGES_PER_JOB: usize = 4;
+/// Images of one job, the most one `deepseek_run` takes: 317 figures need about 40 jobs and 5 Haiku managers.
+const IMAGES_PER_JOB: usize = 8;
 const JOBS_PER_MANAGER: usize = 8;
 const KINDS: [&str; 8] = ["chart", "map", "photo", "diagram", "table", "text", "logo", "other"];
 const MIN_CHINESE: usize = 20;
@@ -349,6 +349,11 @@ fn finish(work: &str, model: &str) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_job_carries_as_many_images_as_one_deepseek_run_takes() {
+        assert_eq!(IMAGES_PER_JOB, 8, "the owner's range is 6 to 15; the images input of deepseek_run takes at most 8");
+    }
 
     const GOOD: &str = "这是一幅九世纪巴格达的城区平面图，标出底格里斯河两岸的主要城区和运河走向，圆城位于西岸。";
 
