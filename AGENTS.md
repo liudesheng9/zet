@@ -19,3 +19,5 @@ The developer wiki is `docs/wiki/`: one doc per functional block, listed in `doc
 ## Workflows
 
 Before you change or run a digest or idea-grow workflow, read `docs/agents/workflow-principles.md`: the user's working rules, the failure classes met on live runs, and the release discipline.
+
+Before you lower a workflow's token cost, resize its jobs, or change what a DeepSeek job is told, read `docs/digest-cost-experience.md`: the measuring method, the cost evidence, and the next candidates.

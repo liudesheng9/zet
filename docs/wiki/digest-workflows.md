@@ -6,6 +6,7 @@ paths:
   - "scripts/book-digest/tests/*.mjs"
   - "scripts/book-digest/watch-run.mjs"
   - "scripts/book-digest/token-usage.mjs"
+  - "scripts/book-digest/session-report.mjs"
   - "scripts/book-digest/copy-tree.mjs"
   - ".claude/agents/zt-relay.md"
   - "scripts/workflow-shared/**"
@@ -775,6 +776,7 @@ Gaps:
 
 ## Change history
 
+- `2026-11-06` — `scripts/book-digest/session-report.mjs`: keeps a run's DeepSeek sessions before their deletion and reports tool calls, faults and reasoning per job. The method and the cost evidence are in `docs/digest-cost-experience.md`.
 - `2026-11-06` — zt-figures v11, base **5.11.34**, econ **6.11.34**, math **5.11.34**, history **1.0.22**: a figure reader copies each figure's own `F` id, never a printed number.
 - `2026-11-06` — zt-figures v10, base **5.11.33**, econ **6.11.33**, math **5.11.33**, history **1.0.21**: a figure reader job counts Cards, at most 80, not groups. The three-group job is gone.
 - `2026-11-05` — zt-figures v9, base **5.11.32**, econ **6.11.32**, math **5.11.32**, history **1.0.20**: a figure reader job carries three whole groups, by the owner's order to lower the cost. The one structure stands: one start, one queue of managers (at most 8 jobs each), one finish; the one-group job is gone, with no switch.
