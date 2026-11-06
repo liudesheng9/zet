@@ -35,6 +35,8 @@ use std::sync::LazyLock;
 /// A year in parentheses: `(2017)`, `(2003a)`.
 static PAREN_YEAR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\((1[5-9]\d\d|20\d\d)([a-z]?)\)").unwrap());
+/// A year in any form, for telling a reference section from an index: `(Princeton, 1980)`, `A.H. 1352`.
+static ANY_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[^\d])(1[0-9]\d\d|20\d\d)(?:[^\d]|$)").unwrap());
 /// A year between commas: `, 1998,` (the IMF style of Ebrill et al.).
 static COMMA_YEAR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r",\s*(1[5-9]\d\d|20\d\d)([a-z]?)\s*[,.]").unwrap());
@@ -59,8 +61,11 @@ const REFERENCE_HEADINGS: &[&str] = &[
     "reference",
     "bibliography",
     "references and notes",
+    "select bibliography",
+    "selected bibliography",
     "works cited",
     "参考文献",
+    "参考文献选目",
     "参考",
     "文献",
 ];
@@ -156,15 +161,31 @@ fn is_reference_heading(text: &str, custom: &str) -> bool {
     REFERENCE_HEADINGS.contains(&lower.as_str()) || (!custom.is_empty() && lower == custom.trim().to_lowercase())
 }
 
-/// The source's lines, each marked when it stands in a reference list.
+/// Whether the section after a heading goes on with a reference list: at least half of its lines
+/// carry a year. A section with no line of its own goes on too: the bilingual source writes each
+/// heading twice, and the first has only the second under it. A book's index and its appendices
+/// carry no years, so the list ends there.
+fn section_goes_on(lines: &[&str], from: usize) -> bool {
+    let body: Vec<&str> = lines[from..]
+        .iter()
+        .take_while(|line| heading_text(line).is_none())
+        .copied()
+        .filter(|line| !line.trim().is_empty() && !translated(line))
+        .collect();
+    let dated = body.iter().filter(|line| ANY_YEAR.is_match(line)).count();
+    dated * 2 >= body.len()
+}
+
+/// The source's lines, each marked when it stands in a reference list. A list runs on through its
+/// own subheadings (hoyland2015path, donner1981conquests: a bibliography split by kind or region).
 pub fn reference_lines(source: &str, custom: &str) -> Vec<(usize, String, bool)> {
+    let all: Vec<&str> = source.lines().collect();
     let mut inside = false;
-    source
-        .lines()
+    all.iter()
         .enumerate()
         .map(|(index, line)| {
             if let Some(text) = heading_text(line) {
-                inside = is_reference_heading(&text, custom);
+                inside = is_reference_heading(&text, custom) || (inside && section_goes_on(&all, index + 1));
                 return (index + 1, line.to_string(), false);
             }
             (index + 1, line.to_string(), inside)
@@ -902,5 +923,20 @@ mod tests {
         assert_eq!(surname_of("Benmelech, E. and Frydman, C."), "Benmelech");
         assert_eq!(surname_of("Economist"), "Economist");
         assert_eq!(fold("Ab Iorwerth"), "abiorwerth");
+    }
+
+    #[test]
+    fn a_reference_list_runs_on_through_its_own_subheadings_and_stops_at_the_index() {
+        // hoyland2015path and donner1981conquests: a book's bibliography is split by subheadings at the
+        // list's own level, and the bilingual source writes each heading twice. The plan stopped at the
+        // first subheading, so Hoyland's list had no row and Donner's lost most of its rows.
+        let text = "# 正文\n\n正文。\n\n# SELECT BIBLIOGRAPHY\n\n# 参考文献选目\n\n# General Studies\n\n# 一般研究\n\nDonner, F. The Early Islamic Conquests (Princeton, 1980).\\\nKaegi, W. Byzantium and the Early Islamic Conquests (Cambridge, 1992).\\\n\n# Regional Studies\n\n# 区域研究\n\n## Egypt\n\n## 埃及\n\nBell, H. Egypt from Alexander the Great (Oxford, 1948).\n\n# INDEX\n\n# 索引\n\nAbbasids, 12, 45\n\nYarmuk, 45, 66, 95\n\nZiyad, 112\n";
+        let marked: Vec<String> = reference_lines(text, "")
+            .into_iter()
+            .filter(|(_, line, inside)| *inside && !line.trim().is_empty())
+            .map(|(_, line, _)| line)
+            .collect();
+        assert_eq!(marked.len(), 3, "{marked:?}");
+        assert!(marked.iter().all(|line| line.contains('(') && !line.contains("Yarmuk")), "{marked:?}");
     }
 }

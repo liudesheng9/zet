@@ -1532,6 +1532,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 
 ## Change history
 
+- `2026-11-05` — zt-digest **0.45.5**: the Cited list runs on through its own subheadings. `reference_lines` keeps a list open across a heading while at least half of the next section's lines carry a year, and ends it at the index or an appendix; new list names `select bibliography`, `selected bibliography`, `参考文献选目`. On hoyland2015path the plan found 0 rows (184 now), and on donner1981conquests the list stopped at each subheading (690 rows now).
 - `2026-11-05` — zt-digest **0.45.4**: `cited::MODEL` and `term_cards::JOB_MODEL` name the official source again; it embeds base 5.11.30, econ 6.11.30, math 5.11.30 and history 1.0.18.
 - `2026-11-05` — zt-digest **0.45.3** embeds base 5.11.29, econ 6.11.29, math 5.11.29 and history 1.0.17 (two managers at once). No code of the binary changed.
 - `2026-11-05` — zt-digest **0.45.1** embeds base 5.11.27, econ 6.11.27, math 5.11.27 and history 1.0.15 (the layer driver without blocks). No code of the binary changed.
