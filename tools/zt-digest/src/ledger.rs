@@ -8498,7 +8498,7 @@ fn checked_lines(lines: Vec<String>) -> Result<Value> {
     let fault_line = regex::Regex::new(r"^\S+ [A-Z][0-9]+ ")?;
     let observations = &lines[..lines.len() - 1];
     if observations.iter().any(|line| !fault_line.is_match(line)) {
-        bail!("incomplete group checker fault format");
+        bail!("incomplete group checker fault format: {}", observations.iter().find(|line| !fault_line.is_match(line)).map_or("", String::as_str));
     }
     // Since S06 (#148) every zt-check mode counts blocking diagnostics only, so
     // `faults: N` is the number of observation lines without an `(advisory)` tag.

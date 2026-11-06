@@ -776,7 +776,7 @@ Gaps:
 
 ## Change history
 
-- `2026-11-06` — zt-term-cards v14, base **5.11.35**, econ **6.11.35**, math **5.11.35**, history **1.0.23**, zt-digest **0.45.11**: a Term Card job holds 12 concept terms (`DEFAULT_PER_JOB`, cap 12; math stays at 1). A concept job carries up to 10 more source lines per term under their section names, the working rules and a full sample, and points at no folder, so it reads no file. A concept draft that uses the term in the book must name its section in at least 2 sentences, or `precheck` refuses it. Evidence: `docs/digest-cost-experience.md`.
+- `2026-11-06` — zt-term-cards v14, base **5.11.35**, econ **6.11.35**, math **5.11.35**, history **1.0.23**, zt-digest **0.46.1**: a Term Card job holds 12 concept terms (`DEFAULT_PER_JOB`, cap 12; math stays at 1). A concept job carries up to 10 more source lines per term under their section names, the working rules and a full sample, and points at no folder, so it reads no file. A concept draft that uses the term in the book must name its section in at least 2 sentences, or `precheck` refuses it. Evidence: `docs/digest-cost-experience.md`.
 - `2026-11-06` — `scripts/book-digest/session-report.mjs`: keeps a run's DeepSeek sessions before their deletion and reports tool calls, faults and reasoning per job. The method and the cost evidence are in `docs/digest-cost-experience.md`.
 - `2026-11-06` — zt-figures v11, base **5.11.34**, econ **6.11.34**, math **5.11.34**, history **1.0.22**: a figure reader copies each figure's own `F` id, never a printed number.
 - `2026-11-06` — zt-figures v10, base **5.11.33**, econ **6.11.33**, math **5.11.33**, history **1.0.21**: a figure reader job counts Cards, at most 80, not groups. The three-group job is gone.

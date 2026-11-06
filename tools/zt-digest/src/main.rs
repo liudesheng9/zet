@@ -62,6 +62,9 @@ mod skeleton;
 mod snapshot;
 mod term_cards;
 mod term_pilot;
+mod term_align;
+mod term_review;
+mod term_standard;
 mod term_link;
 mod terms;
 mod topic_home;
@@ -183,6 +186,8 @@ fn main() {
         "cited" => cited::cli(&rest),
         "cited-cards" => cited_cards::cli(&rest),
         "term-pilot" => term_pilot::cli(&rest),
+        "term-align" => term_align::cli(&rest),
+        "term-review" => term_review::cli(&rest),
         "term-link" => term_link::cli(&rest),
         "skeleton" => skeleton::cli(&rest),
         "organize-survey" => organize::survey_cli(&rest),

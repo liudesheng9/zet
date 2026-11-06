@@ -95,7 +95,7 @@ try {
     $sha = -join ([Security.Cryptography.SHA256]::HashData($bytes) | ForEach-Object { $_.ToString('x2') })
     [IO.File]::WriteAllBytes((Join-Path $store "$sha.png"), $bytes)
     $figures = Join-Path $scratch 'figures.json'
-    [IO.File]::WriteAllText($figures, (@{ figures = @(@{ name = 'a.jpg'; sha256 = $sha; path = 'a.jpg'; labels = @('7.8'); alt = '图 7.8'; line = "![图 7.8](artifact:$sha)" }) } | ConvertTo-Json -Depth 6), $utf8)
+    [IO.File]::WriteAllText($figures, (@{ figures = @(@{ name = 'a.jpg'; sha256 = $sha; path = 'a.jpg'; labels = @('7.8'); alt = '图 7.8'; line = "![图 7.8](artifact:$sha)"; explanation = @{ image_sha256 = $sha; kind = 'chart'; title = '呢绒贸易'; explanation = '一幅折线图，显示城内呢绒贸易的规模。' } }) } | ConvertTo-Json -Depth 6), $utf8)
     $plan = Run-Digest @('figures', '-Step', 'plan', '-CitationKey', 'HistBook', '-Staging', $out, '-FiguresFile', $figures)
     Assert ($plan.figures -eq 1 -and $plan.jobs -eq 1 -and $plan.chunks -eq 1) "the figure plan lists the figure and one reader job ($($plan | ConvertTo-Json -Compress))"
     $jobs = @(Get-Content -LiteralPath (Join-Path $out 'figures\jobs-001.json') -Raw -Encoding utf8 | ConvertFrom-Json)
