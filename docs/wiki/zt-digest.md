@@ -1537,6 +1537,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 
 ## Change history
 
+- `2026-11-06` — zt-digest **0.45.11**: `term-cards` plans 12 concept terms a job, `Section` carries its heading as `label`, `RowEvidence.sources` holds the lines a concept job shows, and `check_draft_item` refuses a concept draft with fewer than `MIN_CITED` cited sentences.
 - `2026-11-06` — zt-digest **0.45.10**: `labels` reads a printed number whole, with any dash and a Roman chapter (`10–4`, `I.1`); a label holds the plain hyphen and `Mention` takes every dash, and the audit's `figure_labels` follows. Every figure gets its own `cite` (`F12`), the reader's list shows the printed number in brackets, and `read_answers` and `precheck` take only that id.
 - `2026-11-06` — zt-digest **0.45.9**: a figure reader job holds at most 80 Cards in reading order (`CARDS_PER_JOB`, `reader_jobs`), in place of three groups. On atkinson2015lectures three top-level sections made jobs of 410 Cards, which found half the pairs an 80 to 110 Card job finds on the same Cards.
 - `2026-11-05` — zt-digest **0.45.8**: `figures -Step plan` writes one reader job per three whole groups (`GROUPS_PER_JOB`, `job_groups`), ids `j001`..., and clears `jobs/`, `scope/` and `out/` first, because the finish reads every answer in `out/`. The instructions forbid files and images and ask for two passes in thought before one write and one check.

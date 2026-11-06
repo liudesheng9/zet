@@ -320,6 +320,14 @@ fn the_term_cards_plan_reads_a_real_list_and_writes_no_card() {
         staged.join("term-cards").join("out").join("t001.json").to_str().unwrap()
     );
     assert_eq!(said["jobs"][0]["permissions"]["archive_write"], false);
+    // A concept job holds its material: real lines under their section names, the sample the
+    // instructions point to, and no folder to browse (docs/digest-cost-experience.md).
+    let job = std::fs::read_to_string(staged.join("term-cards").join("jobs").join("t002.md")).unwrap();
+    assert!(job.contains("【§"), "a source line names its section:\n{job}");
+    assert!(job.contains("完整样例"), "the job carries the sample:\n{job}");
+    assert!(job.contains("## 工作方式"), "the job sets the shape of the work:\n{job}");
+    assert!(!job.contains("本书原文小节"), "the job points at no folder:\n{job}");
+    assert!(!job.contains("共享说明（先读它）"), "the instructions already open the message:\n{job}");
     // The managed contract travels with the job (S20, #164): the official DeepSeek model at high
     // effort, the Chinese language skill through the job's own field, and no deletion after the
     // answer because the wave keeps its writers through the review/fix opportunity.

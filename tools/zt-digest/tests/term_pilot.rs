@@ -264,7 +264,7 @@ fn concept_draft() -> Value {
         "term": "剩余控制权",
         "category": "concept",
         "first_defined": "§2",
-        "explanation": ["剩余控制权是对资产用途的决定权。", "本书用它区分所有权与控制。", "这个概念不等于日常的经营权。"],
+        "explanation": ["剩余控制权是对资产用途的决定权。", "§2 用它区分所有权与控制。", "这个概念不等于日常的经营权。"],
         "book_definition": { "text": ["§2 把它定义为合同没有写明的决定权。"], "section": "§2", "quote": "" },
         "distinctions": [ { "term": "均衡", "text": "均衡指双方都不改变选择。" } ],
         "misreadings": ["这个概念不是剩余收益。"],

@@ -2,7 +2,7 @@
 //! S27 / #166).
 //!
 //!   zt-digest term-cards -Step plan|jobs|precheck|check|review-plan|fix-plan|apply|report
-//!                        -Staging <folder> [-PerJob 4] [-MathPerJob 1]
+//!                        -Staging <folder> [-PerJob 12] [-MathPerJob 1]
 //!                        [-MaxStepsPerCard 12] [-MaxProse 0]
 //!                        [-Jobs <ids>] [-Token <claim>] [-Tokens <job:claim,...>] [-Apply]
 //!
@@ -92,7 +92,10 @@ pub const STEPS: [&str; 8] = [
 /// The work folder under `-Staging`.
 const WORK: &str = "term-cards";
 
-pub const DEFAULT_PER_JOB: i64 = 4;
+/// Concept terms of one job. Tested on 24 Hoyland terms (docs/digest-cost-experience.md): 12 kept the
+/// quality of the old jobs at about a fifth of the cost; 24 still passed every check with a third
+/// fewer distinctions.
+pub const DEFAULT_PER_JOB: i64 = 12;
 pub const DEFAULT_MATH_PER_JOB: i64 = 1;
 pub const DEFAULT_MAX_STEPS: i64 = 12;
 /// 0: no prose bound (2026-10-26, the user's request: some books have very long terms, so a Term
@@ -100,7 +103,17 @@ pub const DEFAULT_MAX_STEPS: i64 = 12;
 pub const DEFAULT_MAX_PROSE: i64 = 0;
 /// The bounds the option parser accepts. They are deliberately wider than the defaults: a slice
 /// may lower a limit for one book and never switch grouping off; a prose budget of 0 is no bound.
-const PER_JOB_RANGE: (i64, i64) = (1, 8);
+const PER_JOB_RANGE: (i64, i64) = (1, 12);
+/// Lines of the book a concept job carries for each term, beyond its definition sentences.
+pub(crate) const SOURCE_LINES: usize = 10;
+/// Characters kept on each side of the term in a long source line.
+pub(crate) const SOURCE_CONTEXT: usize = 150;
+/// Sentences of a Card that must name where in the book they stand.
+const MIN_CITED: usize = 2;
+/// A complete concept term: the instructions point to this sample.
+const SAMPLE: &str = r#"{"term":"牧首","category":"concept","link":true,"first_defined":"§普世一神教的传播","explanation":["牧首是基督教大城市的最高主教。","§普世一神教的传播 说牧首、主教和修士可以借助帝国的支持推行其意志。","§埃及 说居鲁士曾任亚历山大里亚的牧首。","§埃及 说居鲁士主张缴纳贡赋换取和平。","§进攻君士坦丁堡的尝试 说牧首 Thomas 的书信两年未能送出。"],"book_definition":{"section":"§普世一神教的传播","text":["§普世一神教的传播 说教会等级体系与政治权力结盟。","同一小节说牧首可以借助帝国的支持推行其意志。"],"quote":"牧首、主教和修士"},"distinctions":[{"term":"主教","text":"主教管理一个教区。牧首是大城市的最高主教，地位在主教之上。"},{"term":"哈里发","text":"哈里发是穆斯林共同体的统治者。牧首是基督教会的领袖，不统治穆斯林。"},{"term":"迦克墩派","text":"迦克墩派是一个教义派别。牧首是一个教职，不同派别各有牧首。"},{"term":"教皇","text":"教皇是罗马的主教。牧首指东方大城市的最高主教。"}],"misreadings":["把牧首当成世俗官员是误读。§普世一神教的传播 说他是教会领袖，只是借助帝国的支持。","以为每座城市都有牧首是误读。§普世一神教的传播 只把牧首用于大城市。","把牧首的谈判当成教会的统一立场是误读。§埃及 说亚历山大里亚的民众起来反对牧首。"],"role_in_book":["§埃及 用牧首的谈判说明城市如何归顺。","§进攻君士坦丁堡的尝试 用牧首的书信给封锁断代。"]}"#;
+/// The shape of a concept job. All its material is in the message, so it reads no file.
+const WORKING_RULES: &str = "## 工作方式\n\n判断要用的材料全在本条消息里：共享说明、本组术语，以及每个术语在书中的原文。\n\n- 不读取、不列出、不搜索任何文件，不写脚本。不打开小节文件夹。\n- 写之前想两遍，都在推理里做，不用工具：第一遍逐个术语写内容；第二遍逐个术语核对，每句话都要有下面的原文支持，区别只比下面列出的术语。\n- 每条事实都写明小节：`explanation` 和 `role_in_book` 里的事实句按原文前的【§小节名】写成“§小节名 说……”。不要写“本书说”这类不标小节的句子。\n- 写够内容，不要照样例的条数减少：`explanation` 5–8 句，`distinctions` 写 4–6 条相近术语，`misreadings` 写 3–5 条，`role_in_book` 2–4 句。原文实在不够时可以少写，不要编造。\n- 然后一次写完答案文件，运行一次 SELF-CHECK。只有 faults 不是 0 才改答案再运行。faults 是 0 就结束，不再复查。";
 const MATH_PER_JOB_RANGE: (i64, i64) = (1, 8);
 const MAX_STEPS_RANGE: (i64, i64) = (1, 64);
 const MAX_PROSE_RANGE: (i64, i64) = (0, 20_000);
@@ -132,6 +145,7 @@ fn managed_job(job: Value, skills: &[&str], delete_after_collect: bool) -> Value
 static DEFINES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(称为|叫做|定义为|是指|即所谓|我们把)").unwrap());
 /// One formula span. It is a candidate signal outside a definition and evidence inside one.
+static CHAPTER_CITED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"第[0-9一二三四五六七八九十百]+[章节]").unwrap());
 static FORMULA: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\$[^$]*\$\$|\$[^$\n]+\$").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
@@ -976,18 +990,14 @@ fn job_text(
         inputs.book.citation_key, inputs.book.title
     ));
     sb.line(format!(
-        "- 共享说明（先读它）：`{}`",
-        ps::join(&work, INSTRUCTION)
-    ));
-    sb.line(format!(
         "- 只写一个 JSON 文件：`{}`",
         pstr(job, "output")
     ));
-    sb.line(format!("- 本书原文小节：`{}`", ps::join(inputs.staging, "sections")));
-    sb.line(format!(
-        "- 冻结计划（只读，核对行号与指纹）：`{}`",
-        ps::join(&work, "plan.json")
-    ));
+    if pstr(job, "kind") == "math" {
+        sb.line(format!("- 共享说明（先读它）：`{}`", ps::join(&work, INSTRUCTION)));
+        sb.line(format!("- 本书原文小节：`{}`", ps::join(inputs.staging, "sections")));
+        sb.line(format!("- 冻结计划（只读，核对行号与指纹）：`{}`", ps::join(&work, "plan.json")));
+    }
     sb.line(format!(
         "- 任务绑定：plan_revision={} plan_hash=`{}` job=`{id}` rows={}",
         pstr(plan, "revision"),
@@ -1082,10 +1092,13 @@ fn job_text(
         } else {
             sb.line("- 定义句：");
             for snippet in &item.snippets {
-                sb.line(format!(
-                    "  - `{}:{}` {}",
-                    snippet.file, snippet.line, snippet.text
-                ));
+                sb.line(format!("  - 【§{}】 {}", snippet.section, snippet.text));
+            }
+        }
+        if !item.sources.is_empty() {
+            sb.line("- 书中原文：");
+            for line in &item.sources {
+                sb.line(format!("  - 【§{}】 {}", line.section, line.text));
             }
         }
         if item.occurrences.is_empty() {
@@ -1201,6 +1214,9 @@ fn job_text(
     }
     sb.blank();
     sb.line("## 输出").blank();
+    if pstr(job, "kind") != "math" {
+        sb.line(WORKING_RULES).blank();
+    }
     sb.line(format!(
         "把结果写入 `{}`，UTF-8，只写这一个文件。",
         pstr(job, "output")
@@ -1209,6 +1225,8 @@ fn job_text(
         "格式：`{{\"terms\":[…]}}`。本组只写这些术语，拼写必须和任务文件完全一致：{}。",
         rows_terms(job)
     ));
+    sb.line("下面是一个术语的完整样例，字段和结构照它写：").blank();
+    sb.line("```json").line(SAMPLE).line("```");
     // The writer's exact SELF-CHECK (S27, #166, design 14.5): the same check the deterministic
     // `check` step runs, printed as fault lines, writing nothing. Its command is not invented here:
     // it is this tool's own `precheck` step on this job.
@@ -1739,6 +1757,8 @@ pub(crate) fn book_unit_inputs(plan: &Value) -> Value {
 #[derive(Clone, Debug)]
 pub(crate) struct Section {
     pub(crate) file: String,
+    /// The section's own heading: what a Card cites.
+    pub(crate) label: String,
     pub(crate) path: String,
     pub(crate) sha256: String,
     pub(crate) lines: Vec<String>,
@@ -1749,6 +1769,7 @@ pub(crate) struct Section {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Snippet {
     pub(crate) file: String,
+    pub(crate) section: String,
     pub(crate) line: usize,
     pub(crate) text: String,
     pub(crate) defines: bool,
@@ -1792,6 +1813,8 @@ pub(crate) fn is_setting_facet(facet: &str) -> bool {
 pub(crate) struct RowEvidence {
     pub(crate) row: Row,
     pub(crate) snippets: Vec<Snippet>,
+    /// Lines of the book that use the term, beyond `snippets`: what a concept job reads.
+    pub(crate) sources: Vec<Snippet>,
     pub(crate) occurrences: Vec<Occurrence>,
     pub(crate) planning_artifact: Option<Value>,
     pub(crate) classification: Classification,
@@ -1829,6 +1852,7 @@ pub(crate) fn read_sections(staging: &str) -> Result<Vec<Section>> {
         let path = ps::join(&dir, &name);
         let text = util::read_text(&path)?;
         sections.push(Section {
+            label: section_label(&text, &name),
             file: format!("sections/{name}"),
             sha256: canon::sha256_hex(text.as_bytes()),
             lines: ps::split_lines(&text),
@@ -1861,6 +1885,40 @@ pub(crate) fn formulas(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// A section's own heading, or its file name when it has none.
+fn section_label(text: &str, name: &str) -> String {
+    text.lines()
+        .find_map(|line| line.trim_start().strip_prefix('#').map(|rest| rest.trim_start_matches('#').trim().to_string()))
+        .filter(|heading| !heading.is_empty())
+        .unwrap_or_else(|| name.trim_end_matches(".md").to_string())
+}
+
+/// One source line as a job shows it: a long line cut around the term.
+pub(crate) fn around_term(line: &str, term: &str) -> String {
+    let text = line.trim();
+    if text.chars().count() <= 2 * SOURCE_CONTEXT {
+        return text.to_string();
+    }
+    let Some(at) = text.find(term) else {
+        return clip(text, 2 * SOURCE_CONTEXT);
+    };
+    let before: Vec<char> = text[..at].chars().rev().take(SOURCE_CONTEXT).collect();
+    let after: String = text[at + term.len()..].chars().take(SOURCE_CONTEXT - term.chars().count().min(SOURCE_CONTEXT)).collect();
+    format!("{}{term}{after}", before.into_iter().rev().collect::<String>())
+}
+
+/// The sentences of a concept draft that name where in the book they stand.
+fn cited_sentences(item: &Value) -> usize {
+    ["explanation", "role_in_book"]
+        .iter()
+        .flat_map(|field| item[*field].as_array().cloned().unwrap_or_default())
+        .filter(|sentence| {
+            let text = sentence.as_str().unwrap_or_default();
+            text.contains('§') || CHAPTER_CITED.is_match(text)
+        })
+        .count()
+}
+
 /// The source evidence of one row (R0315): definition sentences with `sections/<file>:<line>`,
 /// every section where the term occurs, the formula candidates outside definitions, and the
 /// planning artifact's own locator when it names the term.
@@ -1874,6 +1932,7 @@ pub(crate) fn row_evidence(
     let mut snippets = Vec::new();
     let mut occurrences = Vec::new();
     let mut fallback: Vec<Snippet> = Vec::new();
+    let mut others: Vec<Snippet> = Vec::new();
     let mut formula_candidates = 0;
     for section in sections {
         let mut count = 0;
@@ -1892,8 +1951,18 @@ pub(crate) fn row_evidence(
             if has_formula && !defines {
                 formula_candidates += found;
             }
+            if others.len() < SOURCE_LINES + 6 {
+                others.push(Snippet {
+                    file: section.file.clone(),
+                    section: section.label.clone(),
+                    line: index + 1,
+                    text: around_term(line, &row.term),
+                    defines,
+                });
+            }
             let snippet = Snippet {
                 file: section.file.clone(),
+                section: section.label.clone(),
                 line: index + 1,
                 text: clip(line, 240),
                 defines,
@@ -1917,6 +1986,11 @@ pub(crate) fn row_evidence(
     if snippets.is_empty() {
         snippets = fallback;
     }
+    let sources: Vec<Snippet> = others
+        .into_iter()
+        .filter(|line| !snippets.iter().any(|snippet| snippet.file == line.file && snippet.line == line.line))
+        .take(SOURCE_LINES)
+        .collect();
     let coverage = RowCoverage {
         term: &row.term,
         meaning: &row.meaning,
@@ -1929,6 +2003,7 @@ pub(crate) fn row_evidence(
     Ok(RowEvidence {
         row: row.clone(),
         snippets,
+        sources,
         occurrences,
         planning_artifact: planning.and_then(|artifact| artifact.row(&row.term)),
         classification,
@@ -2511,6 +2586,19 @@ fn check_draft_item(
             "message": format!(
                 "the plan classified `{term}` as math (the book gives formal notation); a concept draft cannot clear the required review"
             ),
+        }]);
+        return Ok(check);
+    }
+    // A check cannot see what it does not ask for: without this a job that lost every citation
+    // passed with faults 0 (Term Card size test, 2026-11-06).
+    if draft.category == zt_check::term::Category::Concept
+        && row["occurrences"].as_array().is_some_and(|found| !found.is_empty())
+        && cited_sentences(item) < MIN_CITED
+    {
+        check["status"] = json!("faulty");
+        check["schema_faults"] = json!([{
+            "path": "explanation",
+            "message": format!("`{term}` 至少要有 {MIN_CITED} 句写明小节：按原文前的【§小节名】写成“§小节名 说……”"),
         }]);
         return Ok(check);
     }
@@ -3745,7 +3833,9 @@ mod tests {
         assert!(params(&argv(&["-Step", "plan"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", " "])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "0"])).is_err());
-        assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "9"])).is_err());
+        assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "13"])).is_err());
+        assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "12"])).is_ok());
+        assert_eq!(DEFAULT_PER_JOB, 12);
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Apply"])).is_err());
         assert!(params(&argv(&["-Step", "apply", "-Staging", "s"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Token", "3"])).is_err());
@@ -3872,11 +3962,41 @@ mod tests {
 
     fn section(name: &str, text: &str) -> Section {
         Section {
+            label: section_label(text, name),
             file: format!("sections/{name}"),
             path: format!("D:\\s\\sections\\{name}"),
             sha256: canon::sha256_hex(text.as_bytes()),
             lines: ps::split_lines(text),
         }
+    }
+
+    #[test]
+    fn a_concept_job_gets_its_lines_with_their_section_names() {
+        let text = "# 埃及\n\n甲一。\n\n甲二。\n\n甲三。\n\n甲四。\n\n甲五。\n\n别的行。\n";
+        let evidence = row_evidence(&row(1, "甲", "意思"), &[section("s01.md", text)], None, &[], &[]).unwrap();
+        assert_eq!(evidence.sources.len(), 2, "{:?}", evidence.sources);
+        assert_eq!(evidence.snippets[0].section, "埃及");
+        assert_eq!(evidence.sources[0].section, "埃及");
+        assert_eq!(evidence.sources[0].text, "甲四。");
+    }
+
+    #[test]
+    fn a_line_past_the_limit_is_left_out_and_a_long_line_is_cut_around_the_term() {
+        let lines: Vec<String> = (0..30).map(|n| format!("第 {n} 行提到甲。")).collect();
+        let text = format!("# 节\n\n{}\n", lines.join("\n\n"));
+        let evidence = row_evidence(&row(1, "甲", "意思"), &[section("s01.md", &text)], None, &[], &[]).unwrap();
+        assert_eq!(evidence.sources.len(), SOURCE_LINES);
+        let long = format!("{}甲{}", "前".repeat(400), "后".repeat(400));
+        let cut = around_term(&long, "甲");
+        assert!(cut.contains('甲') && cut.chars().count() <= 2 * SOURCE_CONTEXT + 1, "{cut}");
+    }
+
+    #[test]
+    fn a_card_must_cite_its_sections_in_two_sentences() {
+        let cited = json!({"explanation": ["甲是一个词。", "§埃及 说甲很重要。"], "role_in_book": ["第三章用甲说明征服。"]});
+        assert_eq!(cited_sentences(&cited), 2);
+        let bare = json!({"explanation": ["甲是一个词。", "本书说甲很重要。"], "role_in_book": ["本书用甲说明征服。"]});
+        assert_eq!(cited_sentences(&bare), 0);
     }
 
     fn row(number: usize, term: &str, meaning: &str) -> Row {
@@ -4264,7 +4384,7 @@ mod tests {
             json!(canon::sha256_hex(section_text(&section).as_bytes()))
         );
         assert_eq!(plan["source"]["fingerprint"].as_str().unwrap().len(), 64);
-        assert_eq!(plan["limits"]["per_job"], 4);
+        assert_eq!(plan["limits"]["per_job"], 12);
         assert_eq!(plan["limits"]["math_per_job"], 1);
         assert_eq!(plan["limits"]["max_steps_per_card"], 12);
         assert_eq!(plan["limits"]["max_prose"], 0);
@@ -4377,10 +4497,9 @@ mod tests {
         let mut plan = built(staging, &rows, &section, Vec::new());
         let job_text = plan.job_files.remove("t001").unwrap();
         assert!(job_text.contains("术语卡任务 t001"));
-        assert!(job_text.contains(&ps::join(&ps::join(staging, "term-cards"), INSTRUCTION)));
         assert!(job_text.contains(&ps::join(&ps::join(staging, "term-cards"), "out\\t001.json")));
         assert!(job_text.contains("剩余控制权"));
-        assert!(job_text.contains("`sections/s01.md:1` 剩余控制权是指决定权。"));
+        assert!(job_text.contains("【§s01】 剩余控制权是指决定权。"), "{job_text}");
         assert!(job_text.contains("本书其他术语"));
         assert!(job_text.contains("若其中某个术语实际是数学概念"));
         assert!(job_text.contains("只写这些术语"));
