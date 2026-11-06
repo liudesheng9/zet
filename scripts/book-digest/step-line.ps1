@@ -25,6 +25,10 @@
 #>
 $StepLineMax = 400
 
+# The tool reads its instruction files from here. Its built-in default is the folder it was built in, which a
+# release built outside this repository does not keep (2026-11-06: D:zt-tb, gone before the next run).
+$env:ZT_DIGEST_SCRIPTS = $PSScriptRoot
+
 # The folder of a run's step detail files.
 function Step-LineDir([string]$Out) {
     $dir = Join-Path $Out 'drive-lines'

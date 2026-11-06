@@ -34,6 +34,7 @@ $toolBody = @'
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
 $ErrorActionPreference = 'Stop'
 Add-Content -LiteralPath $env:CS_CALLS -Value ($Rest -join ' ') -Encoding utf8
+if ($env:CS_SCRIPTS) { Set-Content -LiteralPath $env:CS_SCRIPTS -Value "$env:ZT_DIGEST_SCRIPTS" -Encoding utf8 }
 $flat = $Rest -join ' '
 switch -Regex ($flat) {
     '^cited -Step plan' {
@@ -240,6 +241,14 @@ $bad = Step (@('-Step', 'list') + $common)
 Assert-Line $bad 'list (failed)'
 Assert ($bad.json.ok -eq $false -and $bad.json.step -eq 'plan' -and $bad.json.error -match 'names no source') "a failed plan answers ok:false with its reason ($($bad.text))"
 Remove-Item Env:CS_PLAN_FAIL
+
+# 2026-11-06: an installed zt-digest was built in a folder that is gone, so its own default for the instruction
+# files named no folder; a step script tells the tool where they are, as the forwarders do.
+$env:CS_SCRIPTS = Join-Path $scratch 'scripts.txt'
+Remove-Item Env:ZT_DIGEST_SCRIPTS -ErrorAction SilentlyContinue
+$null = Step (@('-Step', 'list') + $common)
+Assert ((Get-Content -LiteralPath $env:CS_SCRIPTS -Raw).Trim() -eq (Split-Path $here -Parent)) "a step names its own folder as the tool's scripts folder"
+Remove-Item Env:CS_SCRIPTS
 
 Remove-Item -Recurse -Force $scratch
 Write-Host "cited-steps: $ok ok, $failed failed"

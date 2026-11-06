@@ -790,6 +790,7 @@ Gaps:
 
 ## Change history
 
+- `2026-11-06` — `step-line.ps1` sets `ZT_DIGEST_SCRIPTS` to its own folder, so every step script tells `zt-digest` where the instruction files are. The installed 0.47.0 was built in `D:zt-tb`, a folder that is gone, and its built-in default named that folder; `cited -Step plan` was the step that failed. No reinstall: a step script runs from the repository. Test: `cited-steps.tests.ps1`.
 - `2026-11-06` — the wiki follows the code again: the stage, mode, role and module tables name `zt-history-digest`, the Cited stages, `figure-explain`, the official source and the one queue, every module version comes from the code, and the model layer's lanes are recorded as the one exception. No code changed.
 
 - `2026-11-06` — zt-term-cards v14, base **5.11.35**, econ **6.11.35**, math **5.11.35**, history **1.0.23**, zt-digest **0.46.1**: a Term Card job holds 12 concept terms (`DEFAULT_PER_JOB`, cap 12; math stays at 1). A concept job carries up to 10 more source lines per term under their section names, the working rules and a full sample, and points at no folder, so it reads no file. A concept draft that uses the term in the book must name its section in at least 2 sentences, or `precheck` refuses it. Evidence: `docs/digest-cost-experience.md`.
