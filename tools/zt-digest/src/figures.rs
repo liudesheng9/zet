@@ -26,7 +26,7 @@ use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::LazyLock;
 
 
@@ -578,18 +578,35 @@ fn kind_name(kind: &str) -> &'static str {
     }
 }
 
-/// `figures -Step plan`: the book's figure list, and one reader job per group that holds notes.
+/// Groups of one reader job. Nobel lecture cost test, 2026-11-05: three groups a job cost 83% less than one and covered
+/// as many of the pairs most readers agreed on, once the reader stopped browsing files (docs/agents/workflow-principles.md).
+const GROUPS_PER_JOB: usize = 3;
+
+/// The reader jobs: groups in reading order, whole, `GROUPS_PER_JOB` to a job. Each job names its groups and its Cards.
+fn job_groups(by_group: BTreeMap<u64, Vec<String>>) -> Vec<(Vec<u64>, Vec<String>)> {
+    let groups: Vec<(u64, Vec<String>)> = by_group.into_iter().collect();
+    groups
+        .chunks(GROUPS_PER_JOB)
+        .map(|part| (part.iter().map(|(number, _)| *number).collect(), part.iter().flat_map(|(_, cards)| cards.iter().cloned()).collect()))
+        .collect()
+}
+
+/// `figures -Step plan`: the book's figure list, and one reader job per `GROUPS_PER_JOB` groups that hold notes.
 fn plan_jobs(zt: &mut Zt, key: &str, staging: &str, source: &str, ordered: &[(Figure, Vec<Mention>)]) -> Result<i32> {
-    use std::collections::BTreeMap;
     let work = ps::join_path(staging, "figures");
-    for folder in ["jobs", "scope", "out"] {
-        std::fs::create_dir_all(ps::join_path(&work, folder))?;
-    }
     // Every figure is read through its explanation; one without it waits for the explanation pass.
     let open = ordered.iter().filter(|(f, _)| current_explanation(f).is_none()).count();
     if open > 0 {
         util::print_line(&util::compact(&json!({ "ok": false, "code": "explanations_open", "open": open, "error": format!("{open} figures have no explanation: run zt-figure-explain first") })))?;
         return Ok(1);
+    }
+    // A start writes the whole pass: the finish reads every answer in out/, so an earlier pass's answers go first.
+    for folder in ["jobs", "scope", "out"] {
+        let path = ps::join_path(&work, folder);
+        if ps::exists(&path) {
+            std::fs::remove_dir_all(&path)?;
+        }
+        std::fs::create_dir_all(&path)?;
     }
     let text = if source.is_empty() { String::new() } else { util::read_text(source)? };
     let mut rows = Vec::new();
@@ -623,9 +640,10 @@ fn plan_jobs(zt: &mut Zt, key: &str, staging: &str, source: &str, ordered: &[(Fi
                 by_group.entry(caps[1].parse()?).or_default().push(address);
             }
         }
-        for (number, addresses) in by_group {
-            let id = format!("g{number:03}");
-            let mut body = format!("# 第 {number} 组\n\n答案路径：`{}`\nSELF-CHECK: zt-digest figures -Step precheck -CitationKey {key} -Staging \"{staging}\" -Job {id}\n", ps::join_path(&work, &format!("out/{id}.json")));
+        for (k, (numbers, addresses)) in job_groups(by_group).into_iter().enumerate() {
+            let id = format!("j{:03}", k + 1);
+            let named = numbers.iter().map(u64::to_string).collect::<Vec<_>>().join("、");
+            let mut body = format!("# 第 {named} 组\n\n答案路径：`{}`\nSELF-CHECK: zt-digest figures -Step precheck -CitationKey {key} -Staging \"{staging}\" -Job {id}\n", ps::join_path(&work, &format!("out/{id}.json")));
             for chunk in addresses.chunks(200) {
                 for card in zt.cards(chunk, "text")?.cards {
                     body.push_str(&format!("\n## `{}` {}\n\n{}\n", s(&card["address"]), s(&card["title"]), s(&card["body"])));
@@ -928,6 +946,22 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reader_takes_three_whole_groups_in_reading_order() {
+        let groups: BTreeMap<u64, Vec<String>> = (1..=7).map(|n| (n, vec![format!("k/{n}|a"), format!("k/{n}|b")])).collect();
+        let jobs = job_groups(groups);
+        assert_eq!(jobs.iter().map(|(numbers, _)| numbers.clone()).collect::<Vec<_>>(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![7]]);
+        assert_eq!(jobs[0].1.len(), 6, "a job carries every Card of its groups");
+        assert_eq!(jobs[2].1, vec!["k/7|a", "k/7|b"], "the last job takes what is left");
+    }
+
+    #[test]
+    fn the_reader_reads_nothing_else_and_goes_over_the_list_twice() {
+        let text = include_str!("../../../scripts/book-digest/dsh-figure-instructions.zh.md");
+        assert!(text.contains("不读取、不列出、不搜索任何文件"), "the reader needs no file: all of it is in the message");
+        assert!(text.contains("第二遍反过来"), "the second pass goes figure by figure");
+    }
 
     #[test]
     fn a_figure_is_shown_by_any_card_body_and_outside_when_the_digest_never_holds_it() {
