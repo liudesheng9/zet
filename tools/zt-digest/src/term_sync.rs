@@ -1,40 +1,35 @@
-//! `zt-digest term-align`: one book aligned to the standard terminology list of its Literature type
-//! (docs/term-align-design.md). The skill `zt-term-align` conducts it: no Workflow, no staging, no ledger.
+//! `zt-digest term-sync`: the Terms of one book linked to their equivalents in the other books of its
+//! Literature type (docs/term-sync-design.md). The skill `zt-term-sync` conducts it: no Workflow, no
+//! staging, no ledger. A Term never changes: the only write is one Link line on a book's own Term Cards.
 //!
-//!   zt-digest term-align -Step status  [-Type history]
-//!   zt-digest term-align -Step start   -Book <key> -Work <folder> [-Type history] [-Model <m>]
-//!   zt-digest term-align -Step review  -Work <folder> [-Job <id>]
-//!   zt-digest term-align -Step apply   -Work <folder> -Relink <term-relink.ps1>
-//!   zt-digest term-align -Step respell -Entry <id> -Term <spelling> [-Type history]
-//!   zt-digest term-align -Step check   [-Type history]
+//!   zt-digest term-sync -Step status [-Type history]
+//!   zt-digest term-sync -Step start  -Book <key> -Work <folder> [-Type history] [-Model <m>]
+//!   zt-digest term-sync -Step review -Work <folder> [-Job <id>]
+//!   zt-digest term-sync -Step apply  -Work <folder>
 //!
 //!   status  which books of the shelf the list knows.
 //!   start   reads one book, settles its exact matches, and writes jobs for the rows with candidates. The
 //!           first book of a shelf has none, so it seeds the list and spends nothing.
 //!   review  the answer's faults and real sentences: the job's SELF-CHECK, and what Opus reads before apply.
-//!   apply   renames this book's Terms, replaces what is safe in its prose and titles, enters the book into
-//!           the list and relinks it. Earlier books are never touched.
-//!   respell gives a standard term a better spelling. Each book that holds the old one follows at its next
-//!           start and apply, with no agent: this is how Opus corrects a poor spelling the first book set.
-//!   check   the cross-book Term check: a term of one book that another book of the shelf rejects.
+//!   apply   enters the book into the list and writes the Link lines on this book's Term Cards. A Reverse
+//!           link shows each on the other Card, so an earlier book is never touched.
 
 use crate::args::Args;
 use crate::canon;
 use crate::ps;
-use crate::term_link::spans::{self, Profile};
-use crate::term_standard::{self, Rename, Row, Standard, Triage};
+use crate::term_standard::{self, Row, Standard, Triage};
 use crate::util;
 use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
 /// The align instructions, embedded so a job never depends on a checkout.
-const ALIGN_DOC: &str = include_str!("../../../scripts/book-digest/dsh-term-align-instructions.zh.md");
+const ALIGN_DOC: &str = include_str!("../../../scripts/book-digest/dsh-term-sync-instructions.zh.md");
 /// Candidates of one row: one above the 5 that found every known pair on the three history books.
 const CANDIDATES: usize = 6;
 /// Rows of one align job.
@@ -42,18 +37,14 @@ const ROWS_PER_JOB: usize = 300;
 /// An identified `apply_batch` call.
 const BATCH_ITEMS: usize = 64;
 const BATCH_BYTES: usize = 1 << 20;
+/// Opens the line that holds a Term's Links to its equivalents.
+const LINK_LABEL: &str = "等义术语：";
 /// `get_cards` takes at most this many addresses.
 const READ_CARDS: usize = 200;
 /// Characters of context on each side of an evidence sentence.
 const EVIDENCE: usize = 42;
 const SAMPLES: usize = 2;
-/// A Han word shorter than this is never replaced without a reader.
-const SAFE_HAN: usize = 3;
-
-static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]@\n]+)@([^\]\n]+)\]\]").unwrap());
 static LABEL_PLAIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]@\n]+)@[^\]\n]+\]\]").unwrap());
-static HAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\x{3400}-\x{9FFF}]").unwrap());
-
 struct Params {
     step: String,
     work: String,
@@ -61,21 +52,10 @@ struct Params {
     book: String,
     job: String,
     model: String,
-    relink: String,
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
-    let a = Args::parse(argv, &["Step", "Work", "Type", "Book", "Job", "Model", "Relink", "Entry", "Term"], &[])?;
-    if a.str("Step") == "respell" {
-        let kind = a.str_or("Type", "history");
-        let mut zt = crate::zt::start()?;
-        let path = store_of(&mut zt, &kind)?;
-        let mut standard = term_standard::load(&path, &kind)?;
-        term_standard::respell(&mut standard, &a.str("Entry"), &a.str("Term"))?;
-        term_standard::save(&path, &standard)?;
-        util::print_last(&json!({"ok": true, "entry": a.str("Entry"), "term": a.str("Term")}))?;
-        return Ok(0);
-    }
+    let a = Args::parse(argv, &["Step", "Work", "Type", "Book", "Job", "Model"], &[])?;
     let p = Params {
         step: a.str("Step"),
         work: a.str("Work").trim_end_matches(['\\', '/']).to_string(),
@@ -83,18 +63,16 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         book: a.str("Book"),
         job: a.str("Job"),
         model: a.str_or("Model", crate::cited::MODEL),
-        relink: a.str("Relink"),
     };
-    if !matches!(p.step.as_str(), "status" | "check") && p.work.is_empty() {
-        bail!("term-align: -Work is required");
+    if p.step != "status" && p.work.is_empty() {
+        bail!("term-sync: -Work is required");
     }
     match p.step.as_str() {
         "status" => status(&p),
         "start" => start(&p),
         "review" => review(&p),
         "apply" => apply(&p),
-        "check" => check(&p),
-        other => bail!("term-align: unknown -Step `{other}`"),
+        other => bail!("term-sync: unknown -Step `{other}`"),
     }
 }
 
@@ -102,7 +80,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
 /// One book: its rows, with its Cards when the step needs them.
 #[derive(Clone, Debug)]
-pub(crate) struct Book {
+struct Book {
     pub key: String,
     pub title: String,
     pub list: String,
@@ -125,7 +103,7 @@ fn shelf_keys(zt: &mut Zt, kind: &str) -> Result<Vec<(String, String, bool)>> {
 }
 
 /// One book's rows from its Term list. A tree with no Term list is no book of the shelf.
-pub(crate) fn read_rows(zt: &mut Zt, key: &str, title: &str) -> Result<Option<Book>> {
+fn read_rows(zt: &mut Zt, key: &str, title: &str) -> Result<Option<Book>> {
     let reply = zt.request("get_terms", json!({ "at": key }))?;
     if zt_check::mcp::reply_error(&reply).is_some() {
         return Ok(None);
@@ -157,7 +135,7 @@ pub(crate) fn read_rows(zt: &mut Zt, key: &str, title: &str) -> Result<Option<Bo
 }
 
 /// One book with its Cards, or a refusal the step prints.
-pub(crate) fn read_book(zt: &mut Zt, kind: &str, key: &str) -> Result<std::result::Result<Book, Value>> {
+fn read_book(zt: &mut Zt, kind: &str, key: &str) -> Result<std::result::Result<Book, Value>> {
     let keys = shelf_keys(zt, kind)?;
     let Some((_, title, locked)) = keys.iter().find(|(book, _, _)| book == key) else {
         return Ok(Err(json!({"ok": false, "code": "no_book", "error": format!("{key} is no {kind} book of the agent Workspace")})));
@@ -189,7 +167,7 @@ fn row_of(value: &Value) -> Row {
 }
 
 /// The list's file for the archive this command serves. A copied box has its own.
-pub(crate) fn store_of(zt: &mut Zt, kind: &str) -> Result<PathBuf> {
+fn store_of(zt: &mut Zt, kind: &str) -> Result<PathBuf> {
     zt.call("list_workspaces", json!({}))?;
     let root = zt_check::mcp::observed_service().and_then(|facts| facts.archive_root).context("the archive root is not known")?;
     Ok(term_standard::store_path(&root, kind))
@@ -212,7 +190,7 @@ fn answer_path(p: &Params, job: &str) -> String {
 }
 
 fn read_saved_book(p: &Params) -> Result<(Book, String)> {
-    let saved = util::read_json(book_path(p)).context("term-align: run -Step start first")?;
+    let saved = util::read_json(book_path(p)).context("term-sync: run -Step start first")?;
     let book = Book {
         key: ps::s(&saved["key"]),
         title: ps::s(&saved["title"]),
@@ -224,12 +202,9 @@ fn read_saved_book(p: &Params) -> Result<(Book, String)> {
 }
 
 fn read_triage(p: &Params) -> Result<Triage> {
-    let saved = util::read_json(triage_path(p)).context("term-align: run -Step start first")?;
-    let pairs = |value: &Value| -> Vec<(String, String)> {
-        value.as_array().into_iter().flatten().map(|pair| (ps::s(&pair[0]), ps::s(&pair[1]))).collect()
-    };
+    let saved = util::read_json(triage_path(p)).context("term-sync: run -Step start first")?;
     Ok(Triage {
-        same: pairs(&saved["same"]),
+        same: saved["same"].as_array().into_iter().flatten().map(|pair| (ps::s(&pair[0]), ps::s(&pair[1]))).collect(),
         open: saved["open"]
             .as_array()
             .into_iter()
@@ -237,7 +212,7 @@ fn read_triage(p: &Params) -> Result<Triage> {
             .map(|item| (ps::s(&item[0]), item[1].as_array().into_iter().flatten().map(ps::s).collect()))
             .collect(),
         new: saved["new"].as_array().into_iter().flatten().map(ps::s).collect(),
-        known: pairs(&saved["known"]),
+        known: saved["known"].as_array().into_iter().flatten().map(ps::s).collect(),
     })
 }
 
@@ -249,9 +224,8 @@ fn status(p: &Params) -> Result<i32> {
     let mut waiting: Vec<(usize, String)> = Vec::new();
     for (key, title, _) in shelf_keys(&mut zt, &p.kind)? {
         let Some(book) = read_rows(&mut zt, &key, &title)? else { continue };
-        let follow = term_standard::must_follow(&standard, &key);
-        let known = !follow && standard.aligned.get(&key).is_some_and(|hash| *hash == term_standard::rows_hash(&book.rows));
-        lines.push(format!("{key}\t{} rows\t{}", book.rows.len(), if known { "aligned" } else if follow { "follows a respelled term" } else { "not aligned" }));
+        let known = standard.aligned.get(&key).is_some_and(|hash| *hash == term_standard::rows_hash(&book.rows));
+        lines.push(format!("{key}\t{} rows\t{}", book.rows.len(), if known { "linked" } else { "not linked" }));
         if !known {
             waiting.push((book.rows.len(), key));
         }
@@ -263,7 +237,7 @@ fn status(p: &Params) -> Result<i32> {
 }
 
 /// The rows of one align job with their candidates, in the form the instructions describe.
-pub(crate) fn job_text(rows: &[Row], open: &[(String, Vec<String>)], standard: &Standard) -> String {
+fn job_text(rows: &[Row], open: &[(String, Vec<String>)], standard: &Standard) -> String {
     let mut text = String::from("\n## 本书待对齐的术语行\n\n");
     for (id, offered) in open {
         let Some(row) = rows.iter().find(|row| row.id == *id) else { continue };
@@ -285,7 +259,7 @@ fn offered_entries(standard: &Standard, sorted: &Triage) -> Standard {
 
 fn start(p: &Params) -> Result<i32> {
     if p.book.is_empty() {
-        bail!("term-align: -Book names the book to align");
+        bail!("term-sync: -Book names the book to align");
     }
     std::fs::create_dir_all(ps::join(&p.work, "out"))?;
     std::fs::create_dir_all(ps::join(&p.work, "drive"))?;
@@ -311,7 +285,7 @@ fn start(p: &Params) -> Result<i32> {
     for (index, part) in sorted.open.chunks(ROWS_PER_JOB).enumerate() {
         let id = format!("a{:03}", index + 1);
         let answer = answer_path(p, &id);
-        let command = format!("zt-digest term-align -Step review -Work \"{}\" -Job {id}", p.work);
+        let command = format!("zt-digest term-sync -Step review -Work \"{}\" -Job {id}", p.work);
         let text = ALIGN_DOC.replace("{{REVIEW}}", &command).replace("{{ANSWER}}", &answer);
         let task = ps::join(&ps::join(&p.work, "drive"), &format!("{id}.md"));
         util::write_atomic(&task, &format!("{text}{}", job_text(&book.rows, part, &standard)))?;
@@ -352,13 +326,13 @@ fn job_ids(p: &Params) -> Result<Vec<String>> {
 }
 
 /// One char-safe excerpt of `text` around a byte range.
-pub(crate) fn around(text: &str, range: Range<usize>, width: usize) -> (String, String) {
+fn around(text: &str, range: Range<usize>, width: usize) -> (String, String) {
     let before: Vec<char> = text[..range.start].chars().rev().take(width).collect();
     let after: String = text[range.end..].chars().take(width).collect();
     (before.into_iter().rev().collect(), after)
 }
 
-pub(crate) fn flat(text: &str) -> String {
+fn flat(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -417,229 +391,22 @@ fn review(p: &Params) -> Result<i32> {
     Ok(0)
 }
 
-// --- The replacement ---------------------------------------------------------------------------
-
-/// A word in a body that a reader must judge.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Held {
-    pub at: usize,
-    pub word: String,
-    pub term: String,
-}
-
-fn han_count(word: &str) -> usize {
-    HAN.find_iter(word).count()
-}
-
-fn is_auto(old: &str) -> bool {
-    han_count(old) >= SAFE_HAN || han_count(old) == 0
-}
-
-/// Whether the word at `range` lies inside a longer term the book keeps.
-fn covered(body: &str, range: &Range<usize>, word: &str, kept: &[String]) -> bool {
-    kept.iter().filter(|term| term.len() > word.len()).any(|term| {
-        term.match_indices(word).any(|(offset, _)| {
-            range.start >= offset && body.get(range.start - offset..).is_some_and(|rest| rest.starts_with(term.as_str()))
-        })
-    })
-}
-
-/// Every eligible place of `word` in the body: prose runs only, whole characters.
-fn places(body: &str, word: &str, runs: &[Range<usize>]) -> Vec<Range<usize>> {
-    let mut found = Vec::new();
-    for run in runs {
-        let text = &body[run.clone()];
-        let mut from = 0;
-        while let Some(at) = text[from..].find(word) {
-            let start = run.start + from + at;
-            let end = start + word.len();
-            if spans::boundaries_ok(body, start, end) {
-                found.push(start..end);
-            }
-            from += at + word.len();
-        }
+/// The Link line, closing the explanation. A later run replaces it, so a Card holds one.
+pub(crate) fn with_equivalents(body: &str, links: &[String]) -> String {
+    let line = format!("{LINK_LABEL}{}", links.iter().map(|address| format!("[[{address}]]")).collect::<Vec<_>>().join("、"));
+    let mut lines: Vec<&str> = body.split('\n').collect();
+    if let Some(held) = lines.iter().position(|text| text.starts_with(LINK_LABEL)) {
+        lines[held] = &line;
+        return lines.join("\n");
     }
-    found
-}
-
-/// The labels of the renamed Terms' links. A label must equal its Term's name in every Card, a Cited
-/// Card too, whose prose stays as it is.
-pub(crate) fn relabel(body: &str, renames: &[Rename]) -> (String, usize) {
-    let mut count = 0;
-    let relabelled = LABEL
-        .replace_all(body, |caps: &regex::Captures<'_>| {
-            let (label, target) = (&caps[1], caps[2].replace("\\|", "|"));
-            match renames.iter().find(|rename| rename.old == label && rename.head == target) {
-                Some(rename) => {
-                    count += 1;
-                    format!("[[{}@{}]]", rename.canon, &caps[2])
-                }
-                None => caps[0].to_string(),
-            }
-        })
-        .into_owned();
-    (relabelled, count)
-}
-
-/// Replace the labels of the renamed Terms' links, then the safe prose occurrences.
-pub(crate) fn auto_edit(body: &str, renames: &[Rename], kept: &[String], profile: Profile<'_>) -> (String, usize) {
-    let (relabelled, mut count) = relabel(body, renames);
-    let runs = spans::layout(&relabelled, &profile).runs;
-    let mut edits: Vec<(Range<usize>, &str)> = Vec::new();
-    let mut ordered: Vec<&Rename> = renames.iter().filter(|rename| is_auto(&rename.old)).collect();
-    ordered.sort_by_key(|rename| std::cmp::Reverse(rename.old.len()));
-    for rename in ordered {
-        for range in places(&relabelled, &rename.old, &runs) {
-            let free = edits.iter().all(|(edit, _)| edit.end <= range.start || range.end <= edit.start);
-            if free && !covered(&relabelled, &range, &rename.old, kept) {
-                edits.push((range, &rename.canon));
-            }
-        }
-    }
-    count += edits.len();
-    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
-    let mut text = relabelled;
-    for (range, canon) in edits {
-        text.replace_range(range, canon);
-    }
-    (text, count)
-}
-
-/// Every remaining use of a word a reader must judge, longest word first at each place.
-pub(crate) fn scan_held(body: &str, variants: &[(String, String)], kept: &[String], profile: Profile<'_>) -> Vec<Held> {
-    let runs = spans::layout(body, &profile).runs;
-    let mut taken: Vec<Range<usize>> = Vec::new();
-    let mut held = Vec::new();
-    let mut ordered: Vec<&(String, String)> = variants.iter().collect();
-    ordered.sort_by_key(|(word, _)| std::cmp::Reverse(word.len()));
-    for (word, term) in ordered {
-        for range in places(body, word, &runs) {
-            let free = taken.iter().all(|edit| edit.end <= range.start || range.end <= edit.start);
-            if free && !covered(body, &range, word, kept) {
-                held.push(Held { at: range.start, word: word.clone(), term: term.clone() });
-                taken.push(range);
-            }
-        }
-    }
-    held.sort_by_key(|item| item.at);
-    held
-}
-
-/// The Term list table with its rows renamed; each old name joins the row's 不用 cell.
-pub(crate) fn rewrite_table(body: &str, renames: &[Rename]) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    for line in body.split('\n') {
-        let mut cells: Vec<String> = line.split('|').map(str::to_string).collect();
-        let hit = (cells.len() >= 5)
-            .then(|| renames.iter().find(|rename| cells[1].trim() == rename.old))
-            .flatten();
-        let Some(rename) = hit else {
-            lines.push(line.to_string());
-            continue;
-        };
-        let mut avoid: Vec<String> = cells[2]
-            .trim()
-            .split('、')
-            .map(|word| word.trim().to_string())
-            .filter(|word| !word.is_empty() && word != "—" && *word != rename.canon)
-            .collect();
-        avoid.push(rename.old.clone());
-        cells[1] = format!(" {} ", rename.canon);
-        cells[2] = format!(" {} ", avoid.join("、"));
-        lines.push(cells.join("|"));
-    }
+    let Some(open) = lines.iter().position(|text| text.trim() == "## 释义") else { return body.to_string() };
+    let close = lines.iter().skip(open + 1).position(|text| text.starts_with("## ") || text.starts_with("来源：")).map_or(lines.len(), |at| at + open + 1);
+    lines.splice(close..close, [line.as_str(), ""]);
     lines.join("\n")
 }
 
-/// A Term Card's head lines under its new name.
-pub(crate) fn rewrite_head(body: &str, rename: &Rename) -> String {
-    body.split('\n')
-        .map(|line| {
-            if let Some(rest) = line.strip_prefix("术语：").filter(|rest| rest.trim() == rename.old) {
-                let _ = rest;
-                format!("术语：{}", rename.canon)
-            } else if let Some(rest) = line.strip_prefix("不用：") {
-                let mut words: Vec<&str> = rest.split('、').map(str::trim).filter(|word| !word.is_empty() && *word != "无" && *word != rename.canon).collect();
-                words.push(&rename.old);
-                format!("不用：{}", words.join("、"))
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The terms a book keeps after its renames, longest first.
-pub(crate) fn kept_terms(book: &Book, renames: &[Rename]) -> Vec<String> {
-    let mut kept: Vec<String> = book
-        .rows
-        .iter()
-        .map(|row| renames.iter().find(|rename| rename.old == row.term).map_or_else(|| row.term.clone(), |rename| rename.canon.clone()))
-        .collect();
-    kept.sort_by_key(|term| std::cmp::Reverse(term.len()));
-    kept
-}
-
-/// One planned Card change.
-struct Change {
-    address: String,
-    title: String,
-    body: String,
-    term: Option<String>,
-    base_title: String,
-    base_body: String,
-}
-
-fn changes_of(book: &Book, renames: &[Rename], kept: &[String]) -> (Vec<Change>, usize) {
-    let mut changes = Vec::new();
-    let mut replaced = 0;
-    for card in &book.cards {
-        let address = ps::s(&card["address"]);
-        let kind = ps::s(&card["type"]);
-        let (base_title, base_body) = (ps::s(&card["title"]), ps::s(&card["body"]));
-        if kind == "cited" {
-            let (body, count) = relabel(&base_body, renames);
-            if count > 0 {
-                replaced += count;
-                changes.push(Change { address, title: base_title.clone(), body, term: None, base_title, base_body });
-            }
-            continue;
-        }
-        if address == book.list {
-            let body = rewrite_table(&base_body, renames);
-            if body != base_body {
-                changes.push(Change { address, title: base_title.clone(), body, term: None, base_title, base_body });
-            }
-            continue;
-        }
-        let name = card["term"].as_str().unwrap_or_default().to_string();
-        let own = renames.iter().find(|rename| rename.old == name);
-        let (mut body, mut title) = (base_body.clone(), base_title.clone());
-        let profile = Profile { own_term: if own.is_some() || name.is_empty() { None } else { Some(name.as_str()) }, term_card: kind == "term" };
-        if let Some(rename) = own {
-            body = rewrite_head(&body, rename);
-            if title == rename.old {
-                title = rename.canon.clone();
-            }
-        }
-        let (next, count) = auto_edit(&body, renames, kept, profile);
-        replaced += count;
-        body = next;
-        if !(own.is_some() && title == own.map_or("", |rename| rename.canon.as_str())) {
-            let (next, count) = auto_edit(&title, renames, kept, Profile::default());
-            replaced += count;
-            title = next;
-        }
-        if body != base_body || title != base_title {
-            changes.push(Change { address, title, body, term: own.map(|rename| rename.canon.clone()), base_title, base_body });
-        }
-    }
-    (changes, replaced)
-}
-
 /// Read Cards fresh, in order, with the fields `authored_fingerprint` needs.
-pub(crate) fn fresh_cards(zt: &mut Zt, addresses: &[String]) -> Result<HashMap<String, Value>> {
+fn fresh_cards(zt: &mut Zt, addresses: &[String]) -> Result<HashMap<String, Value>> {
     let mut cards = HashMap::new();
     for part in addresses.chunks(READ_CARDS) {
         let read = zt.call("get_cards", json!({ "addresses": part, "view": "full" }))?;
@@ -651,7 +418,7 @@ pub(crate) fn fresh_cards(zt: &mut Zt, addresses: &[String]) -> Result<HashMap<S
 }
 
 /// Send edits in identified calls. A refusal stops the pass with the archive's own words.
-pub(crate) fn send(zt: &mut Zt, run: &str, phase: &str, items: Vec<Value>) -> Result<usize> {
+fn send(zt: &mut Zt, run: &str, phase: &str, items: Vec<Value>) -> Result<usize> {
     let mut sent = 0;
     let mut batch: Vec<Value> = Vec::new();
     let mut bytes = 0;
@@ -661,7 +428,7 @@ pub(crate) fn send(zt: &mut Zt, run: &str, phase: &str, items: Vec<Value>) -> Re
         }
         let reply = zt.request("apply_batch", json!({ "items": batch }))?;
         if let Some(message) = zt_check::mcp::reply_error(&reply) {
-            bail!("apply_batch refused a term-align edit: {message}");
+            bail!("apply_batch refused a term-sync edit: {message}");
         }
         sent += batch.len();
         batch.clear();
@@ -682,56 +449,7 @@ pub(crate) fn send(zt: &mut Zt, run: &str, phase: &str, items: Vec<Value>) -> Re
     Ok(sent)
 }
 
-fn edit_item(change: &Change, card: &Value) -> Value {
-    let mut arguments = json!({
-        "at": change.address, "body": change.body,
-        "base_fingerprint": crate::calls::authored_fingerprint(card),
-    });
-    if change.title != change.base_title {
-        arguments["title"] = json!(change.title);
-    }
-    if let Some(term) = &change.term {
-        arguments["term"] = json!(term);
-    }
-    json!({ "tool": "edit_card", "arguments": arguments })
-}
-
-/// Replace chosen byte ranges of one text, last first.
-pub(crate) fn replace_at(text: &str, chosen: &[(usize, String, String)]) -> Option<String> {
-    let mut out = text.to_string();
-    let mut order: Vec<&(usize, String, String)> = chosen.iter().collect();
-    order.sort_by_key(|(at, _, _)| std::cmp::Reverse(*at));
-    for (at, word, term) in order {
-        if !out.get(*at..).is_some_and(|rest| rest.starts_with(word.as_str())) {
-            return None;
-        }
-        out.replace_range(*at..*at + word.len(), term);
-    }
-    Some(out)
-}
-
-/// A term of one book that another book of the shelf rejects, unless that book uses it too.
-pub(crate) fn cross_faults(books: &[Book]) -> Vec<String> {
-    let mut faults = Vec::new();
-    for book in books {
-        for other in books.iter().filter(|other| other.key != book.key) {
-            let terms: HashSet<&String> = other.rows.iter().map(|row| &row.term).collect();
-            for row in other.rows.iter() {
-                for word in row.avoid.iter().filter(|word| !terms.contains(word)) {
-                    if book.rows.iter().any(|mine| mine.term == *word) {
-                        faults.push(format!("{}: `{word}` is rejected by {} for `{}`", book.key, other.key, row.term));
-                    }
-                }
-            }
-        }
-    }
-    faults
-}
-
 fn apply(p: &Params) -> Result<i32> {
-    if p.relink.is_empty() {
-        bail!("term-align: -Relink names term-relink.ps1");
-    }
     let (book, kind) = read_saved_book(p)?;
     let sorted = read_triage(p)?;
     let jobs = job_ids(p)?;
@@ -755,66 +473,44 @@ fn apply(p: &Params) -> Result<i32> {
         .filter_map(|row| samples(&book, &row.term, 1).into_iter().next().map(|sentence| (row.id.clone(), sentence)))
         .collect();
     let before = standard.entries.len();
-    let renames = term_standard::merge(&mut standard, &book.key, &book.rows, &sorted, &pairs, &examples);
-    let kept = kept_terms(&book, &renames);
-    let (mut changes, replaced) = changes_of(&book, &renames, &kept);
-    // The list first: a Term Card's new name must find its row.
-    changes.sort_by_key(|change| change.address != book.list);
-    let addresses: Vec<String> = changes.iter().map(|change| change.address.clone()).collect();
+    term_standard::merge(&mut standard, &book.key, &book.rows, &sorted, &pairs, &examples);
+    let equivalents = term_standard::equivalents(&standard, &book.key);
+    // Addresses are read live: a Card may have moved since its book joined the list.
+    let keys: BTreeSet<&String> = equivalents.iter().flat_map(|item| item.others.iter().map(|(key, _)| key)).chain([&book.key]).collect();
+    let mut heads: HashMap<(String, String), String> = HashMap::new();
+    for key in keys {
+        for row in read_rows(&mut zt, key, "")?.map(|held| held.rows).unwrap_or_default() {
+            if !row.head.is_empty() {
+                heads.insert((key.clone(), row.term), row.head);
+            }
+        }
+    }
+    let mut planned: Vec<(String, Vec<String>)> = Vec::new();
+    for item in &equivalents {
+        let Some(head) = heads.get(&(book.key.clone(), item.term.clone())) else { continue };
+        let links: Vec<String> = item.others.iter().filter_map(|(key, term)| heads.get(&(key.clone(), term.clone())).cloned()).collect();
+        if !links.is_empty() {
+            planned.push((head.clone(), links));
+        }
+    }
+    let addresses: Vec<String> = planned.iter().map(|(head, _)| head.clone()).collect();
     let fresh = fresh_cards(&mut zt, &addresses)?;
     let mut items = Vec::new();
-    for change in &changes {
-        let card = fresh.get(&change.address).with_context(|| format!("`{}` is gone", change.address))?;
-        let (title, body) = (ps::s(&card["title"]), ps::s(&card["body"]));
-        if title == change.title && body == change.body {
-            continue; // an earlier apply wrote it
+    for (head, links) in &planned {
+        let card = fresh.get(head).with_context(|| format!("`{head}` is gone"))?;
+        let body = ps::s(&card["body"]);
+        let next = with_equivalents(&body, links);
+        if next != body {
+            items.push(json!({"tool": "edit_card", "arguments": {"at": head, "body": next, "base_fingerprint": crate::calls::authored_fingerprint(card)}}));
         }
-        if title != change.base_title || body != change.base_body {
-            util::print_last(&json!({"ok": false, "code": "plan_stale", "error": format!("`{}` changed since the start; run the start again", change.address)}))?;
-            return Ok(0);
-        }
-        items.push(edit_item(change, card));
     }
-    let edited = items.len();
-    let run = format!("term-align-{}", &canon::sha256_hex(format!("{}|{}", book.key, ps::json_compact(&json!(pairs))).as_bytes())[..16]);
-    send(&mut zt, &run, "apply", items)?;
+    let run = format!("term-sync-{}", &canon::sha256_hex(ps::json_compact(&json!([book.key, items])).as_bytes())[..16]);
+    let linked = send(&mut zt, &run, "apply", items)?;
     term_standard::save(&path, &standard)?;
-    drop(zt);
-    let links = relink(&p.relink, &book.key)?;
     util::print_last(&json!({
-        "ok": true, "book": book.key, "aligned": pairs.len(), "renamed": renames.len(), "cards": edited, "replaced": replaced,
-        "same": sorted.same.len(), "added": standard.entries.len() - before, "entries": standard.entries.len(), "links_added": links,
+        "ok": true, "book": book.key, "aligned": pairs.len(), "same": sorted.same.len(), "cards": linked,
+        "added": standard.entries.len() - before, "entries": standard.entries.len(),
     }))?;
-    Ok(0)
-}
-
-/// Bring a book's Term links up to date; answers the links added.
-pub(crate) fn relink(script: &str, key: &str) -> Result<i64> {
-    let output = std::process::Command::new("pwsh")
-        .args(["-NoProfile", "-File", script, "-CitationKey", key])
-        .output()
-        .context("failed to start term-relink.ps1")?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let last = text.lines().rev().find(|line| line.trim_start().starts_with('{')).unwrap_or_default();
-    let line: Value = serde_json::from_str(last).unwrap_or(json!({}));
-    if line["ok"] != true {
-        bail!("term-relink of {key} failed: {}", ps::s(&line["error"]));
-    }
-    Ok(line["links_added"].as_i64().unwrap_or(0))
-}
-
-fn check(p: &Params) -> Result<i32> {
-    let mut zt = crate::zt::start()?;
-    let mut books = Vec::new();
-    for (key, title, _) in shelf_keys(&mut zt, &p.kind)? {
-        if let Some(book) = read_rows(&mut zt, &key, &title)? {
-            books.push(book);
-        }
-    }
-    let mut lines = cross_faults(&books);
-    let count = lines.len();
-    lines.push(format!("faults: {count}"));
-    util::print_lines(&lines)?;
     Ok(0)
 }
 
@@ -822,93 +518,31 @@ fn check(p: &Params) -> Result<i32> {
 mod tests {
     use super::*;
 
-    fn rename(old: &str, canon: &str, head: &str) -> Rename {
-        Rename { old: old.into(), canon: canon.into(), head: head.into() }
-    }
+    const CARD: &str = "术语：撒拉森人\n不用：无\n类别：概念\n\n## 释义\n\n正文一句。\n\n## 书中的说法\n\n另一句。\n\n来源：[[k]] §1";
 
-    fn row(term: &str, avoid: &[&str]) -> Row {
-        Row { term: term.into(), avoid: avoid.iter().map(ToString::to_string).collect(), ..Row::default() }
-    }
-
-    fn book(key: &str, rows: Vec<Row>) -> Book {
-        Book { key: key.into(), title: key.into(), list: format!("{key}/1|a"), rows, cards: Vec::new() }
+    fn link(address: &str) -> String {
+        address.to_string()
     }
 
     #[test]
-    fn labels_and_long_words_change_and_source_lines_do_not() {
-        let renames = [rename("萨拉森人", "撒拉森人", "b/1")];
-        let kept = vec!["撒拉森人".to_string()];
-        let body = "[[萨拉森人@b/1]]进入城市。后来萨拉森人离开。\n\n来源：[[b]] 萨拉森人史";
-        let (text, count) = auto_edit(body, &renames, &kept, Profile::default());
-        assert_eq!(text, "[[撒拉森人@b/1]]进入城市。后来撒拉森人离开。\n\n来源：[[b]] 萨拉森人史");
-        assert_eq!(count, 2);
+    fn the_link_line_closes_the_explanation_and_nothing_else_changes() {
+        let text = with_equivalents(CARD, &[link("a/1|b"), link("c/2")]);
+        assert_eq!(text, "术语：撒拉森人\n不用：无\n类别：概念\n\n## 释义\n\n正文一句。\n\n等义术语：[[a/1|b]]、[[c/2]]\n\n## 书中的说法\n\n另一句。\n\n来源：[[k]] §1");
     }
 
     #[test]
-    fn a_word_inside_a_longer_kept_term_stays_and_a_short_word_goes_to_a_reader() {
-        let renames = [rename("类比", "类比推理", "b/1"), rename("人头税", "人丁税", "b/2")];
-        let kept = vec!["类比推理".to_string(), "人头税额".to_string(), "人丁税".to_string()];
-        let body = "类比推理很常见。这是类比。人头税额很高，人头税很重。";
-        let (text, count) = auto_edit(body, &renames, &kept, Profile::default());
-        assert_eq!(text, "类比推理很常见。这是类比。人头税额很高，人丁税很重。");
-        assert_eq!(count, 1);
-        let held = scan_held(&text, &[("类比".into(), "类比推理".into())], &kept, Profile::default());
-        assert_eq!(held.len(), 1, "{held:?}");
-        assert_eq!(&text[held[0].at..held[0].at + held[0].word.len()], "类比");
-        assert!(text[..held[0].at].ends_with("这是"));
+    fn a_later_run_replaces_the_line_and_adds_no_second_one() {
+        let once = with_equivalents(CARD, &[link("a/1")]);
+        assert_eq!(with_equivalents(&once, &[link("a/1")]), once);
+        let twice = with_equivalents(&once, &[link("a/1"), link("c/2")]);
+        assert_eq!(twice.matches("等义术语：").count(), 1, "{twice}");
+        assert!(twice.contains("等义术语：[[a/1]]、[[c/2]]\n"), "{twice}");
     }
 
     #[test]
-    fn a_cited_card_takes_the_new_label_and_keeps_its_prose() {
-        let (text, count) = relabel("皈依史。[[皈依@b/1]]见此。", &[rename("皈依", "改宗", "b/1")]);
-        assert_eq!((text.as_str(), count), ("皈依史。[[改宗@b/1]]见此。", 1));
-    }
-
-    #[test]
-    fn a_label_of_another_term_keeps_its_name() {
-        let renames = [rename("皈依", "改宗", "b/1")];
-        let (text, _) = auto_edit("[[皈依@a/9]]与[[皈依@b/1]]", &renames, &[], Profile::default());
-        assert_eq!(text, "[[皈依@a/9]]与[[改宗@b/1]]");
-    }
-
-    #[test]
-    fn an_address_with_an_escaped_bar_still_matches_its_head() {
-        let renames = [rename("皈依", "改宗", "b/10|et")];
-        let (text, _) = auto_edit(r"[[皈依@b/10\|et]]", &renames, &[], Profile::default());
-        assert_eq!(text, r"[[改宗@b/10\|et]]");
-    }
-
-    #[test]
-    fn the_table_row_takes_the_canon_and_keeps_the_old_name_as_a_rejected_word() {
-        let table = "| 术语 | 不用 | 意思 | 首次定义 |\n|---|---|---|---|\n| 萨拉森人 | 撒拉森人、撒拉逊人 | 穆斯林的通称 | §1 |\n| 其他 | — | 别的 | §2 |";
-        let text = rewrite_table(table, &[rename("萨拉森人", "撒拉森人", "b/1")]);
-        assert!(text.contains("| 撒拉森人 | 撒拉逊人、萨拉森人 | 穆斯林的通称 | §1 |"), "{text}");
-        assert!(text.contains("| 其他 | — | 别的 | §2 |"));
-    }
-
-    #[test]
-    fn a_term_card_head_takes_the_new_name_and_rejects_the_old() {
-        let body = "术语：萨拉森人\n不用：撒拉逊人\n类别：概念\n\n## 释义\n\n正文。";
-        let text = rewrite_head(body, &rename("萨拉森人", "撒拉森人", "b/1"));
-        assert!(text.starts_with("术语：撒拉森人\n不用：撒拉逊人、萨拉森人\n类别：概念"), "{text}");
-        let none = rewrite_head("术语：甲\n不用：无", &rename("甲", "乙", "b/1"));
-        assert_eq!(none, "术语：乙\n不用：甲");
-    }
-
-    #[test]
-    fn a_chosen_occurrence_is_replaced_in_place_and_a_moved_one_refuses() {
-        let text = "这是类比，那也是类比。";
-        let second = text.rfind("类比").unwrap();
-        assert_eq!(replace_at(text, &[(second, "类比".into(), "类比推理".into())]).unwrap(), "这是类比，那也是类比推理。");
-        assert_eq!(replace_at(text, &[(1, "类比".into(), "甲".into())]), None);
-    }
-
-    #[test]
-    fn the_check_names_a_term_another_book_rejects_unless_that_book_also_uses_it() {
-        let shelf = vec![book("a", vec![row("甲", &[])]), book("b", vec![row("乙", &["甲"])])];
-        assert_eq!(cross_faults(&shelf), vec!["a: `甲` is rejected by b for `乙`".to_string()]);
-        let aligned = vec![book("a", vec![row("甲", &[])]), book("b", vec![row("甲", &["乙"])])];
-        assert!(cross_faults(&aligned).is_empty());
+    fn a_card_with_only_an_explanation_keeps_its_source_line_last() {
+        let text = with_equivalents("术语：甲\n\n## 释义\n\n正文。\n\n来源：[[k]] §1", &[link("a/1")]);
+        assert_eq!(text, "术语：甲\n\n## 释义\n\n正文。\n\n等义术语：[[a/1]]\n\n来源：[[k]] §1");
     }
 
     #[test]

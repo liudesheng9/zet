@@ -1,8 +1,8 @@
-//! The standard terminology list of one Literature type (docs/term-align-design.md): the shelf's index
+//! The standard terminology list of one Literature type (docs/term-sync-design.md): the shelf's index
 //! over its books' Term lists. A new book is matched against it, so a job holds the new book's rows and a
 //! few candidates each, and the list can grow without entering a job.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ pub(crate) struct Entry {
     pub variants: Vec<String>,
     pub meaning: String,
     pub example: String,
-    /// What each book holds. A spelling that differs from `term` means the book must follow a respell.
+    /// Each book's own spelling. A book's Term never changes.
     pub books: BTreeMap<String, String>,
 }
 
@@ -54,8 +54,8 @@ pub(crate) struct Triage {
     pub open: Vec<(String, Vec<String>)>,
     /// A row with no candidate: it joins the list by script.
     pub new: Vec<String>,
-    /// A row whose entry was respelled since this book joined: (row, entry). It follows by script.
-    pub known: Vec<(String, String)>,
+    /// A row this book entered earlier: nothing to decide.
+    pub known: Vec<String>,
 }
 
 /// The standard list.
@@ -117,21 +117,26 @@ impl<'a> Index<'a> {
 /// Sort a book's rows by what they need.
 pub(crate) fn triage(standard: &Standard, key: &str, rows: &[Row], limit: usize) -> Triage {
     let index = Index::new(standard);
-    let by_term: HashMap<&str, &str> = standard.entries.iter().map(|entry| (entry.term.as_str(), entry.id.as_str())).collect();
+    let mut by_term: HashMap<&str, &str> = HashMap::new();
+    for entry in &standard.entries {
+        by_term.entry(entry.term.as_str()).or_insert(entry.id.as_str());
+        for spelling in entry.books.values() {
+            by_term.entry(spelling.as_str()).or_insert(entry.id.as_str());
+        }
+    }
     let mut sorted = Triage::default();
+    // The entries this book already holds, which a row of it is never offered.
+    let mut held: HashSet<&str> = HashSet::new();
     for row in rows {
-        if let Some(id) = by_term.get(row.term.as_str()) {
-            sorted.same.push((row.id.clone(), (*id).to_string()));
-        }
-    }
-    let same: HashSet<&str> = sorted.same.iter().map(|(row, _)| row.as_str()).collect();
-    for row in rows.iter().filter(|row| !same.contains(row.id.as_str())) {
         if let Some(entry) = standard.entries.iter().find(|entry| entry.books.get(key) == Some(&row.term)) {
-            sorted.known.push((row.id.clone(), entry.id.clone()));
+            sorted.known.push(row.id.clone());
+            held.insert(entry.id.as_str());
+        } else if let Some(id) = by_term.get(row.term.as_str()) {
+            sorted.same.push((row.id.clone(), (*id).to_string()));
+            held.insert(id);
         }
     }
-    let held: HashSet<&str> = sorted.same.iter().chain(&sorted.known).map(|(_, id)| id.as_str()).collect();
-    let settled: HashSet<&str> = sorted.same.iter().chain(&sorted.known).map(|(row, _)| row.as_str()).collect();
+    let settled: HashSet<&str> = sorted.same.iter().map(|(row, _)| row.as_str()).chain(sorted.known.iter().map(String::as_str)).collect();
     for row in rows.iter().filter(|row| !settled.contains(row.id.as_str())) {
         let probe = Probe { term: row.term.clone(), avoid: row.avoid.clone(), meaning: row.meaning.clone() };
         let offered: Vec<String> = index.candidates(&probe, limit + held.len()).into_iter().filter(|id| !held.contains(id.as_str())).take(limit).collect();
@@ -165,48 +170,27 @@ pub(crate) fn answer_faults(triage: &Triage, answer: &[(String, String)]) -> Vec
     faults
 }
 
-/// One Term of a book that takes the standard name.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Rename {
-    pub old: String,
-    pub canon: String,
-    pub head: String,
-}
-
 /// Enter a book into the list: its aligned rows join their entries, and every other row becomes a new
-/// entry. Answers the renames this book needs. An earlier book's rows are never touched.
-pub(crate) fn merge(standard: &mut Standard, key: &str, rows: &[Row], triage: &Triage, answer: &[(String, String)], examples: &HashMap<String, String>) -> Vec<Rename> {
+/// entry. An entry records each book's own spelling, so nothing here renames a Term.
+pub(crate) fn merge(standard: &mut Standard, key: &str, rows: &[Row], triage: &Triage, answer: &[(String, String)], examples: &HashMap<String, String>) {
     let terms: HashSet<String> = standard.entries.iter().map(|entry| entry.term.clone()).collect();
     let by_row: HashMap<&str, &Row> = rows.iter().map(|row| (row.id.as_str(), row)).collect();
-    let mut join = |standard: &mut Standard, row: &Row, id: &str| -> Option<String> {
-        let entry = standard.entries.iter_mut().find(|entry| entry.id == id)?;
-        entry.books.insert(key.to_string(), entry.term.clone());
+    // A row already entered stays settled, so an apply run twice from one start adds nothing.
+    let held: Vec<&Row> = rows.iter().filter(|row| standard.entries.iter().any(|entry| entry.books.get(key) == Some(&row.term))).collect();
+    let mut settled: HashSet<&str> = held.iter().map(|row| row.id.as_str()).collect();
+    for (row_id, id) in triage.same.iter().chain(answer) {
+        let Some(row) = by_row.get(row_id.as_str()) else { continue };
+        let Some(entry) = standard.entries.iter_mut().find(|entry| entry.id == *id) else { continue };
+        entry.books.insert(key.to_string(), row.term.clone());
         for word in row.avoid.iter().chain(std::iter::once(&row.term)) {
             if !terms.contains(word) && *word != entry.term && !entry.variants.contains(word) {
                 entry.variants.push(word.clone());
             }
         }
-        Some(entry.term.clone())
-    };
-    let mut renames = Vec::new();
-    for (row, id) in &triage.same {
-        if let Some(row) = by_row.get(row.as_str()) {
-            join(standard, row, id);
-        }
-    }
-    let mut joined: HashSet<&str> = HashSet::new();
-    let pairs = answer.iter().chain(&triage.known);
-    for (row_id, id) in pairs {
-        if let Some(row) = by_row.get(row_id.as_str())
-            && let Some(canon) = join(standard, row, id)
-        {
-            joined.insert(row_id);
-            renames.push(Rename { old: row.term.clone(), canon, head: row.head.clone() });
-        }
+        settled.insert(row_id);
     }
     // Every other row is a term the list does not know yet.
-    let settled: HashSet<&str> = triage.same.iter().map(|(row, _)| row.as_str()).collect();
-    for row in rows.iter().filter(|row| !settled.contains(row.id.as_str()) && !joined.contains(row.id.as_str())) {
+    for row in rows.iter().filter(|row| !settled.contains(row.id.as_str())) {
         let number = standard.entries.iter().filter_map(|entry| entry.id.trim_start_matches('s').parse::<u64>().ok()).max().unwrap_or(0) + 1;
         standard.entries.push(Entry {
             id: format!("s{number}"),
@@ -217,34 +201,29 @@ pub(crate) fn merge(standard: &mut Standard, key: &str, rows: &[Row], triage: &T
             books: BTreeMap::from([(key.to_string(), row.term.clone())]),
         });
     }
-    let after: Vec<Row> = rows
+    standard.aligned.insert(key.to_string(), rows_hash(rows));
+}
+
+/// One Term of a book and what the other books call it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Equivalent {
+    pub term: String,
+    /// (book, that book's spelling), in book order.
+    pub others: Vec<(String, String)>,
+}
+
+/// The Terms of a book that another book of the shelf also holds.
+pub(crate) fn equivalents(standard: &Standard, key: &str) -> Vec<Equivalent> {
+    standard
+        .entries
         .iter()
-        .map(|row| {
-            let term = renames.iter().find(|rename| rename.old == row.term).map_or_else(|| row.term.clone(), |rename| rename.canon.clone());
-            Row { term, ..row.clone() }
+        .filter(|entry| entry.books.len() > 1)
+        .filter_map(|entry| {
+            let term = entry.books.get(key)?.clone();
+            let others = entry.books.iter().filter(|(book, _)| *book != key).map(|(book, spelling)| (book.clone(), spelling.clone())).collect();
+            Some(Equivalent { term, others })
         })
-        .collect();
-    standard.aligned.insert(key.to_string(), rows_hash(&after));
-    renames
-}
-
-/// Give a standard entry a better spelling. The old one becomes a variant.
-pub(crate) fn respell(standard: &mut Standard, id: &str, term: &str) -> Result<()> {
-    if standard.entries.iter().any(|entry| entry.term == term && entry.id != id) {
-        bail!("{term} is already another standard term");
-    }
-    let entry = standard.entries.iter_mut().find(|entry| entry.id == id).with_context(|| format!("{id} is no entry of the list"))?;
-    let old = std::mem::replace(&mut entry.term, term.to_string());
-    entry.variants.retain(|word| word != term);
-    if old != term && !entry.variants.contains(&old) {
-        entry.variants.push(old);
-    }
-    Ok(())
-}
-
-/// Whether a book holds a spelling the list has since changed.
-pub(crate) fn must_follow(standard: &Standard, key: &str) -> bool {
-    standard.entries.iter().any(|entry| entry.books.get(key).is_some_and(|spelling| *spelling != entry.term))
+        .collect()
 }
 
 /// The hash that says a book's rows are the ones the list knows.
@@ -403,12 +382,12 @@ mod tests {
     }
 
     #[test]
-    fn the_first_book_seeds_the_list_and_renames_nothing() {
+    fn the_first_book_seeds_the_list() {
         let mut list = Standard { kind: "history".into(), ..Standard::default() };
         let rows = [row("C1", "撒拉森人", "通称")];
         let sorted = triage(&list, "k", &rows, 6);
         let examples = HashMap::from([("C1".to_string(), "一句原句。".to_string())]);
-        assert!(merge(&mut list, "first", &rows, &sorted, &[], &examples).is_empty());
+        merge(&mut list, "first", &rows, &sorted, &[], &examples);
         assert_eq!(list.entries[0].id, "s1");
         assert_eq!(list.entries[0].example, "一句原句。");
         assert_eq!(list.entries[0].books["first"], "撒拉森人");
@@ -416,18 +395,68 @@ mod tests {
     }
 
     #[test]
-    fn an_aligned_row_renames_this_book_and_leaves_the_earlier_book_alone() {
+    fn an_aligned_row_joins_its_entry_and_each_book_keeps_its_own_spelling() {
         let mut list = seeded();
         let mut rows = vec![row("D1", "萨拉森人", "罗马人的称呼")];
         rows[0].avoid = vec!["撒拉逊人".into()];
-        let sorted = triage(&list, "k", &rows, 6);
-        let renames = merge(&mut list, "second", &rows, &sorted, &[("D1".to_string(), "s1".to_string())], &HashMap::new());
-        assert_eq!(renames, vec![Rename { old: "萨拉森人".into(), canon: "撒拉森人".into(), head: "k/D1".into() }]);
+        let sorted = triage(&list, "second", &rows, 6);
+        merge(&mut list, "second", &rows, &sorted, &[("D1".to_string(), "s1".to_string())], &HashMap::new());
         let entry = &list.entries[0];
-        assert_eq!(entry.term, "撒拉森人", "a standard term does not change");
-        assert_eq!(entry.books["first"], "撒拉森人", "the earlier book stays as it was");
-        assert_eq!(entry.books["second"], "撒拉森人", "the list records what the book holds after the rename");
-        assert!(entry.variants.contains(&"萨拉森人".to_string()) && entry.variants.contains(&"撒拉逊人".to_string()), "{entry:?}");
+        assert_eq!(entry.term, "撒拉森人");
+        assert_eq!(entry.books["first"], "撒拉森人");
+        assert_eq!(entry.books["second"], "萨拉森人");
+        assert!(entry.variants.contains(&"撒拉逊人".to_string()), "{entry:?}");
+    }
+
+    #[test]
+    fn a_spelling_some_book_holds_settles_a_later_book_without_a_job() {
+        let mut list = seeded();
+        let rows = [row("D1", "萨拉森人", "罗马人的称呼")];
+        let sorted = triage(&list, "second", &rows, 6);
+        merge(&mut list, "second", &rows, &sorted, &[("D1".to_string(), "s1".to_string())], &HashMap::new());
+        let third = triage(&list, "third", &[row("E1", "萨拉森人", "别的说明")], 6);
+        assert_eq!(third.same, vec![("E1".to_string(), "s1".to_string())]);
+    }
+
+    #[test]
+    fn a_book_entered_again_needs_no_job_and_changes_nothing() {
+        let mut list = seeded();
+        let rows = [row("D1", "萨拉森人", "罗马人的称呼")];
+        let sorted = triage(&list, "second", &rows, 6);
+        merge(&mut list, "second", &rows, &sorted, &[("D1".to_string(), "s1".to_string())], &HashMap::new());
+        let before = list.entries.clone();
+        let again = triage(&list, "second", &rows, 6);
+        assert_eq!(again.known, vec!["D1".to_string()]);
+        assert!(again.open.is_empty() && again.new.is_empty() && again.same.is_empty(), "{again:?}");
+        merge(&mut list, "second", &rows, &again, &[], &HashMap::new());
+        assert_eq!(list.entries, before);
+    }
+
+    #[test]
+    fn an_apply_run_twice_from_one_start_adds_no_second_entry() {
+        let mut list = seeded();
+        let rows = [row("D1", "琐罗亚斯德", "古代波斯宗教")];
+        let sorted = triage(&list, "second", &rows, 6);
+        merge(&mut list, "second", &rows, &sorted, &[], &HashMap::new());
+        let before = list.entries.clone();
+        merge(&mut list, "second", &rows, &sorted, &[], &HashMap::new());
+        assert_eq!(list.entries, before);
+    }
+
+    #[test]
+    fn a_book_links_every_other_book_of_its_entries() {
+        let mut list = seeded();
+        let second = [row("D1", "萨拉森人", "罗马人的称呼")];
+        let sorted = triage(&list, "second", &second, 6);
+        merge(&mut list, "second", &second, &sorted, &[("D1".to_string(), "s1".to_string())], &HashMap::new());
+        let third = [row("E1", "萨拉森人", "说明"), row("E2", "琐罗亚斯德", "古代波斯宗教")];
+        let sorted = triage(&list, "third", &third, 6);
+        merge(&mut list, "third", &third, &sorted, &[], &HashMap::new());
+        let found = equivalents(&list, "third");
+        assert_eq!(found, vec![Equivalent {
+            term: "萨拉森人".into(),
+            others: vec![("first".to_string(), "撒拉森人".to_string()), ("second".to_string(), "萨拉森人".to_string())],
+        }], "a term no other book holds has no link");
     }
 
     #[test]
@@ -435,24 +464,9 @@ mod tests {
         let mut list = seeded();
         let rows = [row("D1", "哈里发国", "哈里发统治的国家")];
         let sorted = triage(&list, "k", &rows, 6);
-        assert!(merge(&mut list, "second", &rows, &sorted, &[], &HashMap::new()).is_empty());
+        merge(&mut list, "second", &rows, &sorted, &[], &HashMap::new());
         let added = list.entries.last().unwrap();
         assert_eq!((added.id.as_str(), added.term.as_str()), ("s3", "哈里发国"));
-    }
-
-    #[test]
-    fn a_book_merged_again_after_its_renames_changes_nothing() {
-        let mut list = seeded();
-        let rows = [row("D1", "萨拉森人", "罗马人的称呼")];
-        let sorted = triage(&list, "k", &rows, 6);
-        merge(&mut list, "second", &rows, &sorted, &[("D1".to_string(), "s1".to_string())], &HashMap::new());
-        let before = list.entries.clone();
-        let renamed = [row("D1", "撒拉森人", "罗马人的称呼")];
-        let again = triage(&list, "second", &renamed, 6);
-        assert!(merge(&mut list, "second", &renamed, &again, &[], &HashMap::new()).is_empty());
-        assert_eq!(list.entries[0].books["second"], "撒拉森人");
-        assert_eq!(list.entries.len(), before.len(), "no entry is added");
-        assert_eq!(list.entries[0].variants, before[0].variants);
     }
 
     #[test]
@@ -463,55 +477,6 @@ mod tests {
         let sorted = triage(&list, "k", &rows, 6);
         merge(&mut list, "second", &rows, &sorted, &[("D1".to_string(), "s1".to_string())], &HashMap::new());
         assert!(!list.entries[0].variants.contains(&"哈里发".to_string()), "{:?}", list.entries[0]);
-    }
-
-    #[test]
-    fn a_respelled_entry_keeps_the_old_spelling_as_a_variant() {
-        let mut list = seeded();
-        respell(&mut list, "s1", "萨拉森人").unwrap();
-        assert_eq!(list.entries[0].term, "萨拉森人");
-        assert!(list.entries[0].variants.contains(&"撒拉森人".to_string()));
-        assert!(respell(&mut list, "s1", "哈里发").is_err(), "the spelling of another entry is refused");
-        assert!(respell(&mut list, "s9", "甲").is_err(), "an unknown entry is refused");
-    }
-
-    #[test]
-    fn a_book_follows_a_respelled_entry_with_no_agent() {
-        let mut list = seeded();
-        respell(&mut list, "s1", "萨拉森人").unwrap();
-        let rows = [row("C1", "撒拉森人", "拜占庭史料对穆斯林的通称")];
-        let sorted = triage(&list, "first", &rows, 6);
-        assert_eq!(sorted.known, vec![("C1".to_string(), "s1".to_string())]);
-        assert!(sorted.open.is_empty(), "no agent reads this row: {sorted:?}");
-        let renames = merge(&mut list, "first", &rows, &sorted, &[], &HashMap::new());
-        assert_eq!(renames, vec![Rename { old: "撒拉森人".into(), canon: "萨拉森人".into(), head: "k/C1".into() }]);
-        assert_eq!(list.entries.len(), 2, "no entry is added");
-    }
-
-    #[test]
-    fn a_book_that_was_renamed_follows_a_later_respell() {
-        let mut list = seeded();
-        let rows = [row("D1", "萨拉森人", "罗马人的称呼")];
-        let sorted = triage(&list, "second", &rows, 6);
-        merge(&mut list, "second", &rows, &sorted, &[("D1".to_string(), "s1".to_string())], &HashMap::new());
-        assert!(!must_follow(&list, "second"));
-        respell(&mut list, "s1", "撒拉逊人").unwrap();
-        assert!(must_follow(&list, "second") && must_follow(&list, "first"));
-        let renamed = [row("D1", "撒拉森人", "罗马人的称呼")];
-        let again = triage(&list, "second", &renamed, 6);
-        assert_eq!(again.known, vec![("D1".to_string(), "s1".to_string())], "{again:?}");
-        let renames = merge(&mut list, "second", &renamed, &again, &[], &HashMap::new());
-        assert_eq!(renames[0].canon, "撒拉逊人");
-        assert!(!must_follow(&list, "second"));
-    }
-
-    #[test]
-    fn a_new_book_with_the_old_spelling_still_goes_to_a_job() {
-        // The automatic path follows a book's own record, never a word that merely matches.
-        let mut list = seeded();
-        respell(&mut list, "s1", "萨拉森人").unwrap();
-        let sorted = triage(&list, "another", &[row("D1", "撒拉森人", "通称")], 6);
-        assert!(sorted.known.is_empty() && sorted.open.len() == 1, "{sorted:?}");
     }
 
     #[test]

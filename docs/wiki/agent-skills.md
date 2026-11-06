@@ -455,7 +455,7 @@ Gaps: `-Allow` has unit tests only (`allow_refusal` in `tools/zt-digest/src/call
 - **Write the batch as UTF-8.** The helper reads files as UTF-8 and sets the console to UTF-8; a caller under a GBK console must decode the output as UTF-8 (`zt-calls.ps1` sets `[Console]::OutputEncoding` for this; `zt-calls.tests.ps1` guards it).
 
 ## Change history
-- `2026-11-06` — New skills `zt-term-align` and `zt-term-review` (owner's request): Opus conducts them, DeepSeek jobs do the matching and the review, and `zt-digest term-align` and `term-review` do the rest. They replace the Workflow `zt-term-align` 1.0.0, which never ran live. Design: `docs/term-align-design.md`.
+- `2026-11-06` — New skill `zt-term-sync` (owner's request): Opus conducts it, a DeepSeek job does the matching, and `zt-digest term-sync` does the rest. It adds a Link between equivalent Terms of different books and changes no Term. It replaces the skills `zt-term-align` and `zt-term-review` and the Workflow `zt-term-align` 1.0.0, none of which ran live. Design: `docs/term-sync-design.md`.
 - `2026-11-05` — the `zt` skill names `set_literature_type`.
 - `2026-11-05` — the five Card-writing skills (`zt-literature-organize`, `zt-model-fold`, `zt-model-settings`, `zt-model-restructure`, `zt-model-import`) end on `term-relink.ps1`, because a rewritten Card loses its Term links.
 - `2026-11-04` — `zt-digest-protocol` names OpenCode Go as the frozen DeepSeek source of the digests.

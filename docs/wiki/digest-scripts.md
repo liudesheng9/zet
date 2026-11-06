@@ -880,7 +880,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
-- `2026-11-06` — `tests/history-run.tests.ps1`: the figure fixture carries an explanation. `scripts/term-align/` is removed: the term alignment is the skills `zt-term-align` and `zt-term-review`, with `zt-digest term-align` and `term-review` behind them.
+- `2026-11-06` — `tests/history-run.tests.ps1`: the figure fixture carries an explanation. `scripts/term-align/` is removed: the skill `zt-term-sync` and `zt-digest term-sync` took its place.
 - `2026-11-05` — `book-steps.ps1 figures-start`: a refused figure list (`explanations_open`) fails the step with its reason.
 n- `2026-11-05` — `layer-steps.ps1` has no `-Take` and no `-Wait`: a start claims every ready unit page by page, and no layer waits for another. `tests/layer-steps.tests.ps1` follows.
 - `2026-11-05` — new `term-relink.ps1 -CitationKey <key> [-Occurrences first|all] [-PlanOnly]`: plans, applies and plans again on any agent Literature tree, with no run. The Card-writing skills end on it, because a rewritten Card loses its Term links.

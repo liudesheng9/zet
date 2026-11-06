@@ -49,7 +49,7 @@ A DeepSeek job should do a whole sequence of operations, or check a large round 
 - A tool that lists what the job left undecided.
 - Answers as copied ids that a script applies, whenever the decision is yes or no.
 
-A job must not grow with what is already settled. Keep a standard list and let a script hand a job only what it needs (the term alignment, `docs/term-align-design.md`). A process with no fixed shape, where Opus reads and decides, is a skill and not a Workflow, which also saves the drive steps.
+A job must not grow with what is already settled. Keep a standard list and let a script hand a job only what it needs (the term alignment, `docs/term-sync-design.md`). A process with no fixed shape, where Opus reads and decides, is a skill and not a Workflow, which also saves the drive steps. Ask first whether the result must rewrite anything: a Link in place of a rename removed a whole review stage.
 
 Automatic replacement in Chinese needs a reader: there is no word boundary, so a short word or a rejected word goes to a job with its sentence, never to a blind replace.
 

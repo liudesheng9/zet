@@ -359,7 +359,7 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 - **Per-prompt command budgets** ("全程最多 7 条命令", and 12 for the digest group since S28) are part of the cost design: each extra DSH command re-reads the conversation. Do not add steps that read files back to confirm a write.
 
 ## Change history
-- `2026-11-06` — `dsh-term-align-instructions.zh.md` and `dsh-term-residual-instructions.zh.md` (new): the jobs of the skills `zt-term-align` (rows and their candidates, answer `{"align":[{"row","to"}]}`) and `zt-term-review` (held occurrences, answer `{"replace":[ids]}`). The shelf paragraph of `dsh-terms-merge-instructions.zh.md` is removed: the digest knows nothing of the shelf.
+- `2026-11-06` — `dsh-term-sync-instructions.zh.md` (new): the job of the skill `zt-term-sync`: rows and their candidates, answer `{"align":[{"row","to"}]}`. An equivalence becomes a Link, so the job no longer weighs what a replacement would do to a sentence. The shelf paragraph of `dsh-terms-merge-instructions.zh.md` is removed: the digest knows nothing of the shelf.
 - `2026-11-06` — `dsh-figure-instructions.zh.md`: the answer names each figure by its `F` id; the printed number stands in brackets, for recognition only.
 - `2026-11-05` — `dsh-figure-instructions.zh.md` gains 工作方式: all material is in the message, so the reader opens no file and no image, thinks two passes (Card by Card, then figure by figure), writes once and checks once.
 - `2026-11-05` — New `dsh-figure-explain-instructions.zh.md`: the explanation reader looks at the image and says what it shows, in Chinese, never copying its text. `dsh-figure-instructions.zh.md`: the reader judges by the explanation and may cite `F12` ids.

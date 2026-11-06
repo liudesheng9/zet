@@ -67,7 +67,7 @@ The repair loops cost little, because they mostly resend cached context. Cost pe
 
 ## What the term alignment taught
 
-Measured on a copied box, three history books, 1,392 Term rows (2026-11-06). The design is `docs/term-align-design.md`. These jobs ran by hand through `deepseek_run`; the Claude cost of the managers and drive steps has not been measured yet.
+Measured on a copied box, three history books, 1,392 Term rows (2026-11-06). The design is `docs/term-sync-design.md`. These jobs ran by hand through `deepseek_run`; the Claude cost of the managers and drive steps has not been measured yet.
 
 | Job | Jobs | Tool calls a job | Slowest job | Ledger cost | Result |
 |---|---:|---:|---:|---:|---|
@@ -127,6 +127,10 @@ The size test nearly recommended a job that had lost every section citation, bec
 ### Give the sample the instructions point to
 
 The Term Card instructions point to a sample at the end of the task file, and the task file has none. One baseline agent said it had to go and find the schema. Include the sample in the message.
+
+### The cheapest job is the one the design no longer needs
+
+The rename design needed a second stage: 3 to 7 review jobs a book to judge each remaining word, a relink, a spelling step and a cross-book check. The owner's change to add a Link and leave every Term as it is removed all of them. The cost of a wrong decision also fell, from a damaged sentence to one Link a reader can ignore. Before tuning a job, ask whether its result needs to be this expensive to undo.
 
 ### Make the job's size follow its new work, not its history
 
