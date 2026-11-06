@@ -35,7 +35,7 @@
 mod apply;
 mod card;
 pub(crate) mod matches;
-mod spans;
+pub(crate) mod spans;
 
 use crate::args::Args;
 use crate::calls;

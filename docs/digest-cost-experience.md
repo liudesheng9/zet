@@ -65,6 +65,79 @@ Every figure now has a unique id (`F12`) made for the job, and the printed numbe
 
 The repair loops cost little, because they mostly resend cached context. Cost per job stayed flat after the fix: 0.36 before, 0.37 after, about 33K output tokens a job. Reasoning output is what a job costs now. Report this kind of result as it is: fewer faults is a correctness gain until the ledger says otherwise.
 
+## What the term alignment taught
+
+Measured on a copied box, three history books, 1,392 Term rows (2026-11-06). The design is `docs/term-align-design.md`. These jobs ran by hand through `deepseek_run`; the Claude cost of the managers and drive steps has not been measured yet.
+
+| Job | Jobs | Tool calls a job | Slowest job | Ledger cost | Result |
+|---|---:|---:|---:|---:|---|
+| Align, rows only | 1 | 1 | 388 s | 0.39 | 68 groups, about a quarter wrong |
+| Align, review with real sentences | 1 | 5 | 555 s | 0.58 | 33 groups, none of the wrong ones, one true pair missed |
+| Align, review also lists open conflicts | 1 | 4 | 315 s | 0.43 | 39 groups, the missed pair found |
+| Residual, 150 occurrences a job | 6 | 2 | 260 s | 0.91 | 798 occurrences judged, 627 replaced |
+
+The whole pass cost about 1.3 and rewrote 546 Cards.
+
+### One long job beats many small ones when the material is small
+
+A Term row is short, so 1,392 rows are 110 KB, and one job read them all with one tool call. Splitting would have cost more and lost the comparisons across books, which are the point. Before you split a job, measure the bytes of its material. Size follows the unit of the work (see above), and here the unit is the whole shelf.
+
+### A self-check can hand the job its evidence
+
+Rows alone misled the job: 地形→城市肌理 at 190 uses, 辩论→学术辩论, 精英→统治精英. A separate review job would have cost a second conversation and a drive step. Instead the job's own SELF-CHECK (`term-align -Step review`) prints faults and two real sentences per member, and the same conversation corrects itself. Every wrong group went, for 0.19 more.
+
+### Show a job what it left undone
+
+The reviewed job dropped a true pair. The review now also lists the known conflicts that no group settles, and the job decides each one. Groups rose from 33 to 39, and the job took fewer tool calls and cost less, because this run needed no rewrite round. One run each, so read this as direction and not as a measured saving.
+
+### Answer with ids, and let the script do the edit
+
+A residual job answers with the ids to replace and nothing else: 2 tool calls a job, 0.15 a job, about 0.001 an occurrence. The agent cannot change a sentence, so nothing needs reviewing afterwards. Use this shape whenever the decision is yes or no and a script can act on it.
+
+### Cut the scope before you pay for the work
+
+Counting every rejected word held 3,284 occurrences, about 22 jobs, most of them an old backlog no other book asked to change. Scoping to the rows in a group left 798 in 6 jobs. The narrow scope was also the correct one: the backlog words would have changed sentences for no cross-book reason.
+
+## What the Term Card size test taught
+
+Tested on a staging copy, 24 concept terms of `hoyland2015path` (rows 21-44), 2026-11-06, one variant at a time. Jobs ran by hand through `deepseek_run`, with the real skills, model and effort, and the real `term-cards -Step precheck`. Every variant passed it with `faults: 0`, and all 24 quotes were found in the book. Each row is one run, so small differences are noise. Citations are the `§` marks per term in `explanation` and `role_in_book`.
+
+| Variant | Jobs | Tool calls a job | Ledger cost | Distinctions | Misreadings | Role, characters | Citations |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Current job, reads the book | 6 | 25 to 91 | 1.63 | 5.1 | 3.9 | 100 | 3.2 |
+| 4 terms, source in the message | 6 | 2 | 0.45 | 5.8 | 5.0 | 108 | 0.7 |
+| 8 terms | 3 | 2 | 0.39 | 4.3 | 4.2 | 82 | 0.0 |
+| 12 terms | 2 | 2 | 0.37 | 5.4 | 4.5 | 79 | 0.0 |
+| 16 terms, then 8 | 2 | 2 | 0.28 | 5.2 | 4.1 | 74 | 0.1 |
+| 24 terms | 1 | 2 | 0.27 | 3.2 | 3.1 | 67 | 0.0 |
+| **12 terms, sources labelled by section** | 2 | 2 | 0.29 | 4.9 | 4.0 | 101 | 6.5 |
+
+### Browsing was the cost again, and size came second
+
+Keeping 4 terms and putting the source lines in the message cut the cost by 72%. Moving from 4 to 12 terms saved little more. Stop the browsing first, then look at size.
+
+### Too large a job thins the work before it fails
+
+At 24 terms the job still passed every check and cost the least, but it wrote about a third fewer distinctions. A passing check does not show that a job held its quality. Score the content against a baseline at each size.
+
+### A check cannot see what it does not ask for
+
+The size test nearly recommended a job that had lost every section citation, because the checker does not count citations. The lines were labelled `s10.md:17`, so the agent had no section name to cite. Labelling each line with its section restored them. Compare the old output and the new one on what a reader uses, not only on what the checker counts. If a job drops something, look at its input before you blame its size.
+
+### Give the sample the instructions point to
+
+The Term Card instructions point to a sample at the end of the task file, and the task file has none. One baseline agent said it had to go and find the schema. Include the sample in the message.
+
+### Make the job's size follow its new work, not its history
+
+The first alignment job read every book's rows. It worked at three books, but its size grew with the shelf and it redid settled work. Keeping a standard list and letting a script find 6 candidates for each new row made the job follow the new book: when the list grew by 18%, bytes per row moved from 475 to 489. Measure the retrieval first, against answers you already trust. Here it found 42 of 42 known pairs, and that one number decided the design. It cost nothing, because no model ran.
+
+Two lessons from that measurement. A number is only true for the code that produced it: the first Rust index summed 不用 words where the measured script took the maximum, and it found 40 of 42 until a second measurement exposed the difference. And at a small size the new shape may not be cheaper: two jobs here match the one old job at three books. Report the slope as the gain, and do not claim a saving the shelf has not reached yet.
+
+### A self-check must not need the service
+
+A job runs in its own process and may see another box. The review command read the standard list from the box, so on a copied box it would have read the live one. Freeze what a job needs into its work folder at the start. Its SELF-CHECK then reads files only.
+
 ## Real run costs
 
 | Run | Jobs | Cards read | Ledger cost | Per job | Per Card |
@@ -81,7 +154,7 @@ Larger books cost about twice as much per Card as the Nobel lecture. The likely 
 In order of expected saving; none of these is tested yet.
 
 1. **Reasoning effort.** Every job runs at high by the owner's rule, and reasoning is the main cost of a job. Test medium on a staging copy, score coverage, and ask the owner before changing the rule.
-2. **The same audit on other modules.** Term Cards, Cited Cards, Links and the card cycle have never had a session report. The message-only rule applies to any job that holds its own material. Start with the module that spends the most.
+2. **The same audit on other modules.** Term Cards, Cited Cards, Links and the card cycle have never had a session report. The message-only rule applies to any job that holds its own material, and a SELF-CHECK that returns evidence may replace a review job. Start with the module that spends the most.
 3. **Drive steps.** Each deterministic step runs one Haiku manager and one DeepSeek job, about 84K Claude tokens. A book's `mode figures` run spends about 500K tokens this way, whatever its size. Fewer steps, or one chained step, would cut this directly.
 4. **Shared context in a job.** Test giving a job only the figures of its own part of the book, against the owner's wish that a figure may stand in any related Card.
 5. **The explanation pass.** It ran at 4 images a job and now takes 8, the `deepseek_run` limit (`images` has `maxItems: 8`). It has had one 8-image probe and no full run. It spent about 15K Claude tokens a job on manager polling. More than 8 needs a bridge change.

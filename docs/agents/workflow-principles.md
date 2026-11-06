@@ -40,6 +40,19 @@ From the Literature-note pilot (#189), the one-conversation card cycle (#191) an
 
 Digests run on the official source (`deepseek-official/deepseek-flash`) with the protocol's limit, eight managers of eight jobs. OpenCode Go answered `429 ... overloaded` with 59 writers started at once and still on about one job in eight with two managers, and a retry in the same conversation recovered only some of them. A stage must never hold a pool slot while it waits for another stage: Events and Findings waited for the digest with `-Wait 600`, so they now run after it.
 
+## Long jobs (the owner, 2026-11-06)
+
+A DeepSeek job should do a whole sequence of operations, or check a large round of material, in one conversation. Measure the job's material first, and split only when it does not fit the unit of the work. Four shapes make a long job cheap and safe (evidence in `docs/digest-cost-experience.md`):
+
+- All material in the message, with the passes set out in thought, then one write and one check.
+- A SELF-CHECK that returns evidence, so the job corrects itself and no second job or drive step exists.
+- A tool that lists what the job left undecided.
+- Answers as copied ids that a script applies, whenever the decision is yes or no.
+
+A job must not grow with what is already settled. Keep a standard list and let a script hand a job only what it needs (the term alignment, `docs/term-align-design.md`). A process with no fixed shape, where Opus reads and decides, is a skill and not a Workflow, which also saves the drive steps.
+
+Automatic replacement in Chinese needs a reader: there is no word boundary, so a short word or a rejected word goes to a job with its sentence, never to a blind replace.
+
 ## Module structure in one paragraph
 
 Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 managers alive at once) plus DeepSeek subagents. Content jobs write Cards, Links, Term drafts, reviews and fixes and run their own self-check. Deterministic chains are one script step (`term-steps`, `layer-steps`, `book-steps`, `model-steps`, `math-steps`, `grow-steps`) run by a DeepSeek drive job through `ztDrive`. No relay agents. A step answers with one compact JSON line of ≤400 characters. The DSMP block is inlined in every install, in project and global scope. Conversations are deleted, never archived.
