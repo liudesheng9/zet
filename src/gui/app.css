@@ -1718,6 +1718,8 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 }
 .figure-view img { max-width: 100%; max-height: 74vh; background: #fff; padding: 8px; box-shadow: 0 0 0 .5px var(--stock-edge); }
 .figure-caption { margin: 0; max-width: 70ch; font: 16px/1.5 var(--serif); text-align: center; color: var(--ink); }
+.figure-explanation { margin: 0; max-width: 70ch; font: 14.5px/1.65 var(--serif); color: var(--ink-soft); }
+.figure-explanation:empty { display: none; }
 .figure-source { margin: 0; font: 11.5px var(--sans); color: var(--ink-faint); }
 .figure-source:empty { display: none; }
 .pane-label .figure-btn {

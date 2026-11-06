@@ -461,7 +461,9 @@ fn source_state(
     // A reconstruction reads the source under the frozen options and the staged figure map, so the
     // artifact lines it reproduces are the ones the original preparation wrote.
     let figures = staged_figures(staging);
-    let kept = prepare::chinese_blocks(&raw, &figures);
+    // A preparation before the explanations kept the converter's blocks, and its frozen hashes hold them.
+    let explained = util::read_json(ps::join(staging, "figures.json")).is_ok_and(|record| record["explained"] == json!(true));
+    let kept = if explained { prepare::chinese_blocks(&crate::figures::strip_converter_blocks(&raw), &figures) } else { prepare::chinese_blocks(&raw, &figures) };
     let empty = format!("the source text has no section between `{start}` and `{end}`; the frozen options no longer select text");
     let rebuilt = match prepare::staged_sections(&kept, &start, &end, &skip, min_unit_chars, &empty) {
         Ok(staged) => staged,
@@ -578,6 +580,9 @@ fn staged_figures(staging: &str) -> CiMap<Figure> {
                     .unwrap_or_default(),
                 alt: pstr(figure, "alt"),
                 line: pstr(figure, "line"),
+                explanation: figure["explanation"].clone(),
+                cite: pstr(figure, "cite"),
+                stored: String::new(),
                 position: 0,
             },
         );

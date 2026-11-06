@@ -507,7 +507,8 @@ switch ($Step) {
         $r = Run $argv
         if (-not $r.json) { Fail 'figure list' "the figure list printed no line: $($r.tail)"; break }
         $f = $r.json
-        Reply @{ ok = ($f.ok -ne $false); figures = [int]$f.figures; jobs = [int]$f.jobs; chunks = [int]$f.chunks; file = "$($f.file)" }
+        if ($f.ok -eq $false) { Fail 'figure list' "$($f.error)"; break }
+        Reply @{ ok = $true; figures = [int]$f.figures; jobs = [int]$f.jobs; chunks = [int]$f.chunks; file = "$($f.file)" }
     }
     'figures' {
         $argv = @('figures', '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Staging', $Out)

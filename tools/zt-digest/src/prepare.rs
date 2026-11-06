@@ -55,7 +55,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 pub(crate) mod notes;
-mod resolve;
+pub(crate) mod resolve;
 
 static BLOCKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap());
 static CJK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\x{3400}-\x{9FFF}\x{F900}-\x{FAFF}]").unwrap());
@@ -120,7 +120,8 @@ fn names_a_year(text: &str) -> bool {
 
 /// The Chinese-only blocks: a block without CJK characters is dropped when the next block is its
 /// translation; formulas, tables, and unpaired blocks stay. A kept figure's image line becomes its
-/// `artifact:` line, once (its bilingual copy in the next blocks is dropped); other images go.
+/// `artifact:` line, once (its bilingual copy in the next blocks is dropped), followed by its
+/// explanation from the Scholar Archive; other images go.
 pub(crate) fn chinese_blocks(raw: &str, figures: &CiMap<Figure>) -> Vec<String> {
     let blocks: Vec<&str> = BLOCKS.split(raw).map(str::trim).filter(|b| !b.is_empty()).collect();
     let mut kept: Vec<String> = Vec::new();
@@ -129,6 +130,7 @@ pub(crate) fn chinese_blocks(raw: &str, figures: &CiMap<Figure>) -> Vec<String> 
     for i in 0..blocks.len() {
         let mut lines: Vec<String> = Vec::new();
         let mut shown = false;
+        let mut explained: Vec<String> = Vec::new();
         for line in blocks[i].split('\n') {
             let Some(name) = figures::image_name(line).filter(|n| !n.is_empty()) else {
                 lines.push(line.to_string());
@@ -143,6 +145,9 @@ pub(crate) fn chinese_blocks(raw: &str, figures: &CiMap<Figure>) -> Vec<String> 
             figure_at.insert(ci(&name), kept.len());
             lines.push(figure.line.clone());
             shown = true;
+            if let Some(held) = figures::current_explanation(figure) {
+                explained.push(format!("图表说明（据图像）：{}", s(&held["explanation"]).trim().replace('\n', " ")));
+            }
         }
         let block = lines.join("\n").trim().to_string();
         if block.is_empty() {
@@ -150,6 +155,7 @@ pub(crate) fn chinese_blocks(raw: &str, figures: &CiMap<Figure>) -> Vec<String> 
         }
         if shown || CJK.is_match(&block) || KEEP_BLOCK.is_match(&block) {
             kept.push(block);
+            kept.append(&mut explained);
             continue;
         }
         let next = blocks.get(i + 1).copied().unwrap_or_default();
@@ -640,7 +646,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if file_id != 0 && !no_figures {
         figure_map = figures::book_figures(&raw, file_id, min_figure_bytes)?;
     }
-    let kept = chinese_blocks(&raw, &figure_map);
+    // The converter's OCR of each image reaches no writer: the explanation stands in its place.
+    let kept = chinese_blocks(&figures::strip_converter_blocks(&raw), &figure_map);
 
     // --- units and groups ---
     let skip: Vec<String> = skip_headings.split(',').map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect();
@@ -750,9 +757,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     ps::ps_sort(&mut listed, |a, b| culture_cmp(&s(&a.1.path), &s(&b.1.path)));
     let figure_list: Vec<Value> = listed
         .iter()
-        .map(|(name, f)| json!({ "name": name, "labels": f.labels, "alt": f.alt, "line": f.line, "sha256": f.sha256, "path": f.path }))
+        .map(|(name, f)| json!({ "name": name, "labels": f.labels, "alt": f.alt, "line": f.line, "sha256": f.sha256, "path": f.path, "explanation": f.explanation, "cite": f.cite }))
         .collect();
-    write(&join_path(&staging, "figures.json"), &ps::json_pretty(&json!({ "file_id": file_id, "figures": figure_list })))?;
+    // `explained`: this preparation left the converter's blocks out, so a reconstruction does too.
+    write(&join_path(&staging, "figures.json"), &ps::json_pretty(&json!({ "file_id": file_id, "explained": true, "figures": figure_list })))?;
 
     let mut outline = String::new();
     let mut all_candidates: Vec<Value> = Vec::new();
@@ -1313,6 +1321,10 @@ mod tests {
     fn a_figure_is_written_once_and_other_images_go() {
         let mut figures: CiMap<Figure> = CiMap::new();
         figures.insert("a.jpg", Figure { line: "![图 1](artifact:aa)".into(), ..Figure::default() });
+        let explained = json!({ "image_sha256": "cc", "explanation": "一幅折线图，显示税率逐年上升。" });
+        figures.insert("c.jpg", Figure { sha256: json!("cc"), line: "![图 2](artifact:cc)".into(), explanation: explained, ..Figure::default() });
+        let shown = chinese_blocks("![](x/c.jpg)\n\n图 2 税率", &figures);
+        assert_eq!(shown, vec!["![图 2](artifact:cc)", "图表说明（据图像）：一幅折线图，显示税率逐年上升。", "图 2 税率"]);
         let kept = chinese_blocks("![](x/A.jpg)\nFigure 1\n\n![](x/a.jpg)\n图 1\n\n![](x/b.jpg)\n\n正文。", &figures);
         assert_eq!(kept, vec!["![图 1](artifact:aa)\nFigure 1", "图 1", "正文。"]);
     }

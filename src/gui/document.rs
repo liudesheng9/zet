@@ -43,6 +43,13 @@ fn answer(request: Request, path: &str, query: &BTreeMap<String, String>) {
                 format!("Scholar Archive document {file_id}: {error:#}"),
             ),
         }
+    } else if let (Some(file_id), Some(figure), Some(sha)) = (id("/scholar/explanation/"), query.get("path"), query.get("sha")) {
+        // A figure's explanation comes from the Scholar Archive, here and only here, on this thread of its own.
+        let found = Bridge::connect().and_then(|mut bridge| bridge.explanation(file_id, figure, sha));
+        match found {
+            Ok(held) => respond_text(request, 200, "application/json", serde_json::json!({ "explanation": held }).to_string()),
+            Err(error) => respond_text(request, 502, "text/plain; charset=utf-8", format!("{error:#}")),
+        }
     } else if let (Some(file_id), Some(figure)) = (id("/scholar/figure/"), query.get("path")) {
         match Bridge::connect().and_then(|mut bridge| bridge.artifact(file_id, figure)) {
             Ok((bytes, _)) => match crate::artifact::sniff(&bytes) {
@@ -121,9 +128,57 @@ fn respond_document(request: Request, document: &Document) {
     request.respond(response).ok();
 }
 
+/// The explanation text of each image of a document, by its path. The page reads without them
+/// when the archive does not answer.
+fn explanations(file_id: u64) -> BTreeMap<String, String> {
+    let listing = Bridge::connect()
+        .and_then(|mut bridge| bridge.call("list_work_artifacts", &serde_json::json!({ "file_id": file_id })))
+        .unwrap_or_default();
+    listing["artifacts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let text = item["explanation"]["explanation"].as_str()?;
+            Some((item["path"].as_str()?.to_string(), text.to_string()))
+        })
+        .collect()
+}
+
+/// The text without the `<details>` block a converter writes after an image: its OCR of the image.
+/// A `<details>` block that follows no image belongs to the document.
+fn without_converter_blocks(text: &str) -> String {
+    let opens = |line: &str| line.trim_start().to_ascii_lowercase().starts_with("<details");
+    let closes = |line: &str| line.to_ascii_lowercase().contains("</details>");
+    let mut kept: Vec<&str> = Vec::new();
+    let mut after_image = false;
+    let mut lines = text.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        if after_image && opens(line) {
+            let mut at = line;
+            while !closes(at) {
+                match lines.next() {
+                    Some(next) => at = next,
+                    None => break,
+                }
+            }
+            after_image = false;
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("![") {
+            after_image = true;
+        } else if !line.trim().is_empty() {
+            after_image = false;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
+}
+
 /// A Markdown document as a page to read: one sheet of paper, the book's own figures in place.
 fn reading_page(text: &str, document: &Document) -> String {
-    let body = render_document(text, document);
+    let body = render_document(&without_converter_blocks(text), document, &explanations(document.file_id));
     let title = escape_html(&document.name);
     let path = escape_html(&document.relative_path);
     format!(
@@ -151,8 +206,9 @@ fn reading_page(text: &str, document: &Document) -> String {
 }
 
 /// The document's Markdown as HTML. Relative images become this server's `/scholar/figure/`
-/// addresses, each with the id `fig-<file stem>`; TeX becomes math spans for KaTeX.
-fn render_document(text: &str, document: &Document) -> String {
+/// addresses, each with the id `fig-<file stem>` and its explanation below it; TeX becomes math
+/// spans for KaTeX.
+fn render_document(text: &str, document: &Document, explained: &BTreeMap<String, String>) -> String {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
@@ -177,11 +233,15 @@ fn render_document(text: &str, document: &Document) -> String {
                     let (path, alt) = image.take().unwrap_or_default();
                     events.push(Event::InlineHtml(
                         format!(
-                            "<img id=\"{id}\" src=\"/scholar/figure/{file_id}?path={query}\" alt=\"{alt}\" loading=\"lazy\">",
+                            "<img id=\"{id}\" src=\"/scholar/figure/{file_id}?path={query}\" alt=\"{alt}\" loading=\"lazy\">{note}",
                             id = figure_anchor(&path),
                             file_id = document.file_id,
                             query = percent_encode(&path),
                             alt = escape_html(&alt),
+                            note = explained.get(&path).map_or(String::new(), |text| format!(
+                                "<span class=\"doc-explanation\">{}</span>",
+                                escape_html(text)
+                            )),
                         )
                         .into(),
                     ));
@@ -275,6 +335,7 @@ fn percent_encode(text: &str) -> String {
 
 /// The reading page: a sheet on the desk, set like the Cards, light or dark with the system.
 const READING_CSS: &str = r#"
+.doc-explanation { display: block; margin: 6px 0 14px; font: 14px/1.6 var(--sans); color: var(--ink-soft); }
 :root { --desk: #f2eee6; --paper: #fffefa; --ink: #1c1915; --ink-soft: #5a5348; --ink-faint: #9b9281;
   --edge: rgba(90, 65, 30, .16); --rule: #e3dacb; --link: #2c5aa8; --mark: #f6e5d9; --accent: #b4572a;
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
@@ -318,6 +379,16 @@ mod tests {
     }
 
     #[test]
+    fn the_converters_ocr_goes_and_the_explanation_stands_under_the_figure() {
+        let text = "![](images/a.jpg)\n\n<details>\n<summary>text_image</summary>\n\nGARBLED OCR\n\n</details>\n\nFigure 1\n\n<details>\n正文的折叠\n</details>\n";
+        let page = without_converter_blocks(text);
+        assert!(!page.contains("GARBLED") && page.contains("Figure 1") && page.contains("正文的折叠"), "{page}");
+        let explained = BTreeMap::from([("Books/MWG/images/a.jpg".to_string(), "一张 <折线> 图。".to_string())]);
+        let html = render_document(&page, &book(), &explained);
+        assert!(html.contains("<span class=\"doc-explanation\">一张 &lt;折线&gt; 图。</span>"), "{html}");
+    }
+
+    #[test]
     fn relative_images_resolve_below_the_archive_and_nothing_climbs_out() {
         assert_eq!(
             resolve("Books/MWG", "images/a.jpg").as_deref(),
@@ -337,6 +408,7 @@ mod tests {
         let html = render_document(
             "# 第一章\n\n![](images/0b30f66.jpg)\nFigure 2.C.1\n\n价格 $p$ 与 $$w$$。\n\n<script>alert(1)</script>",
             &book(),
+            &BTreeMap::new(),
         );
         assert!(
             html.contains("<img id=\"fig-0b30f66\" src=\"/scholar/figure/83?path=Books/MWG/images/0b30f66.jpg\""),

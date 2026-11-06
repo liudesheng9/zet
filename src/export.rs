@@ -161,7 +161,8 @@ fn collect(
         .filter(|row| row["source"].as_str().is_some_and(|source| crate::tree_id(source) == tree))
         .collect();
     let (charts, figures) = portable.gathered();
-    let (artifacts, missing) = artifacts(root, &figures);
+    let (mut artifacts, missing) = artifacts(root, &figures);
+    add_explanations(root, &mut artifacts);
     let root_card = &snapshot.by_address[root_address];
     let outside: Vec<Value> = outside
         .into_iter()
@@ -375,6 +376,34 @@ fn artifacts(root: &Path, figures: &BTreeSet<String>) -> (BTreeMap<String, Value
         }
     }
     (held, missing)
+}
+
+/// A portable export has no Scholar Archive, so each figure's explanation goes with it. Figures
+/// with no recorded source ask nothing; the export stands without the texts the archive cannot give.
+fn add_explanations(root: &Path, artifacts: &mut BTreeMap<String, Value>) {
+    let sources: Vec<(String, u64, String)> = artifacts
+        .keys()
+        .filter_map(|digest| {
+            let source = crate::artifact::source(root, digest)?;
+            Some((digest.clone(), source["file_id"].as_u64()?, source["path"].as_str()?.to_string()))
+        })
+        .collect();
+    if sources.is_empty() {
+        return;
+    }
+    let Ok(mut bridge) = crate::scholar::Bridge::connect() else { return };
+    for (digest, file_id, path) in sources {
+        if let Ok(Some(held)) = bridge.explanation(file_id, &path, &digest) {
+            artifacts.insert(
+                digest.clone(),
+                json!({
+                    "type": artifacts[&digest]["type"],
+                    "base64": artifacts[&digest]["base64"],
+                    "explanation": { "kind": held["kind"], "title": held["title"], "explanation": held["explanation"] },
+                }),
+            );
+        }
+    }
 }
 
 fn timestamp(root: &Path, seconds: u64) -> Result<String> {

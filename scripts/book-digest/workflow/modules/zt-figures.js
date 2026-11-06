@@ -1,4 +1,7 @@
-// ==== module zt-figures v7 ====
+// ==== module zt-figures v8 ====
+// 8 (docs/figure-explanation-design.md): the reader's list carries each figure's explanation from the Scholar Archive, and
+// a figure with no printed label joins it under an id. A figure with no explanation stops the start step
+// (explanations_open): zt-figure-explain makes them.
 // 7 (2026-11-04, the owner's design): the one structure. The start step writes the book's figure list and one reader job
 // per group; the managers run one queue of DeepSeek readers, each naming every figure related to each Card of its group,
 // cited in the text or not; the finish step puts each figure in every Card related to it. One figure may stand in
@@ -8,7 +11,7 @@
 // 6 (#176, docs/workflow-module-structure-proposal.md): the figure pass and the stage's own publication are two
 // book-steps.ps1 steps run by DeepSeek drive jobs; no Claude relay runs a command.
 defineModule({
-  id: 'zt-figures', version: '7', requires: ['zt-digest-lib'],
+  id: 'zt-figures', version: '8', requires: ['zt-digest-lib'],
   summary: 'ZT digest: show the book\'s own figures in the Cards that name them (one book-steps.ps1 step).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },

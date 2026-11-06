@@ -6784,9 +6784,14 @@
   /** One figure, large, over a dimmed desk: the only thing to look at. */
   function showFigure(sha, caption) {
     const source = h('p', { class: 'figure-source' });
+    // The explanation: written from the image and kept beside it in the Scholar Archive, read here at each click.
+    const explanation = h('p', { class: 'figure-explanation' });
+    const explained = (held) => { if (held && held.explanation) explanation.textContent = held.explanation; };
+    if (PORTABLE) explained(PORTABLE.explanation(sha));
     const close = openOverlay(h('div', { class: 'figure-view', role: 'dialog', 'aria-label': 'Figure', onclick: (event) => { if (event.target === event.currentTarget) close(); } },
       h('img', { src: PORTABLE ? PORTABLE.figure(sha) : '/artifact/' + sha, alt: caption || '' }),
       caption ? h('p', { class: 'figure-caption' }, titleNodes(caption)) : null,
+      explanation,
       source,
       h('button', { class: 'btn', text: 'Close', onclick: () => close() }),
     ));
@@ -6796,6 +6801,12 @@
       const from = info.source || {};
       if (!from.work_id) return;
       source.append(`From Scholar Archive · Work ${from.work_id} · `);
+      if (from.file_id && from.path) {
+        fetch(`/scholar/explanation/${from.file_id}?path=${enc(from.path)}&sha=${enc(sha)}`)
+          .then((answer) => (answer.ok ? answer.json() : null))
+          .then((found) => explained(found && found.explanation))
+          .catch(() => {});
+      }
       // The figure's own place in the book it came from: the print goes back to its source.
       source.append(info.in_document
         ? h('a', { href: info.in_document, target: '_blank', rel: 'noopener noreferrer', text: 'open it in the book' })

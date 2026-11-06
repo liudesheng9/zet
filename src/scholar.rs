@@ -42,6 +42,7 @@ pub(crate) const READ_TOOLS: &[&str] = &[
     "list_work_files",
     "get_work_file",
     "list_work_artifacts",
+    "get_artifact_explanation",
     "list_source_labels",
     "list_source_updates",
     "find_duplicate_works",
@@ -554,6 +555,19 @@ impl Bridge {
         })
     }
 
+    /// The bridge's one write: explanations saved beside a Markdown's images. The archive checks each
+    /// one against the image's bytes and answers `{ saved, refused }`.
+    pub(crate) fn save_explanations(&mut self, file_id: u64, items: &Value) -> Result<Value> {
+        self.request("explanations", &json!({ "file_id": file_id, "items": items }))?
+            .json()
+    }
+
+    /// The explanation the archive holds for exactly these bytes, or None.
+    pub(crate) fn explanation(&mut self, file_id: u64, path: &str, digest: &str) -> Result<Option<Value>> {
+        let answer = self.call("get_artifact_explanation", &json!({ "file_id": file_id, "path": path }))?;
+        Ok(current_explanation(&answer["explanation"], digest).cloned())
+    }
+
     /// Fetch one artifact (an image of a Markdown document) and verify its SHA-256.
     pub(crate) fn artifact(&mut self, file_id: u64, path: &str) -> Result<(Vec<u8>, String)> {
         let answer = self.request("artifact", &json!({ "file_id": file_id, "path": path }))?;
@@ -575,6 +589,12 @@ impl Bridge {
             &json!({ "scholar_id": scholar_id, "format": format, "view": view }),
         )
     }
+}
+
+/// An explanation counts only for the bytes it was written from: `image_sha256` binds it to them.
+pub(crate) fn current_explanation<'a>(held: &'a Value, digest: &str) -> Option<&'a Value> {
+    (held["image_sha256"] == digest && held["explanation"].as_str().is_some_and(|text| !text.trim().is_empty()))
+        .then_some(held)
 }
 
 /// Take an artifact from the Scholar Archive into this archive's artifact store, and say how a
@@ -666,6 +686,8 @@ pub(crate) fn keep_figures(
             "sha256": digest,
             "markdown": figure_markdown(caption, &digest),
             "bytes": bytes.len(),
+            "stored": crate::artifact::path(root, &digest).map(|path| path.display().to_string()),
+            "explanation": item["explanation"],
         }));
     }
     Ok(json!({
@@ -932,6 +954,13 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
             )?);
             Ok(())
         }
+        [sub, id, flag, path] if sub == "explain-save" && flag == "--in" => {
+            let file_id: u64 = id.parse().context("file id must be a number")?;
+            let text = fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?;
+            let list: Value = serde_json::from_str(&text).with_context(|| format!("{path} is not JSON"))?;
+            println!("{}", Bridge::connect()?.save_explanations(file_id, &list["items"])?);
+            Ok(())
+        }
         [sub, id, rest @ ..] if sub == "keep-figures" => {
             let file_id: u64 = id.parse().context("file id must be a number")?;
             let (mut min_bytes, mut out) = (0u64, None);
@@ -1003,7 +1032,7 @@ pub(crate) fn run_cli(args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "expected `zt scholar [status|pair [--rotate]|unpair|tools|call <tool> [<json>]|sql <sql>|file <id> [--out <path>]|figures <work-id>|figure <file-id> <path>|keep-figures <file-id>|export ...]`"
+            "expected `zt scholar [status|pair [--rotate]|unpair|tools|call <tool> [<json>]|sql <sql>|file <id> [--out <path>]|figures <work-id>|figure <file-id> <path>|keep-figures <file-id>|explain-save <file-id> --in <json>|export ...]`"
         ),
     }
 }
@@ -1034,6 +1063,15 @@ fn status_cli() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_explanation_counts_only_for_the_bytes_it_was_written_from() {
+        let held = json!({ "image_sha256": "aa", "explanation": "一张折线图。" });
+        assert!(current_explanation(&held, "aa").is_some());
+        assert!(current_explanation(&held, "bb").is_none(), "a replaced image has no explanation");
+        assert!(current_explanation(&json!({ "image_sha256": "aa", "explanation": " " }), "aa").is_none());
+        assert!(current_explanation(&Value::Null, "aa").is_none());
+    }
 
     // Scholar Archive's tests/test_bridge.py checks the same vectors.
     #[test]

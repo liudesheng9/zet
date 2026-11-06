@@ -1,0 +1,79 @@
+{
+  "protocol": "workflow-framework-protocol/1",
+  "name": "zt-figure-explain",
+  "version": "1.0.0",
+  "description": "Explain the figures of Scholar Archive documents: a DeepSeek agent looks at each image and writes what it shows, and the explanation is saved beside the image in the Scholar Archive (docs/figure-explanation-design.md). It reads no OCR text, writes no Card and needs no digest staging. A rerun redoes nothing: only images with no explanation for their current bytes get a job.",
+  "whenToUse": "Backfill the figure explanations of books already digested, or explain the figures of any archived Markdown. args: {fileIds: [the Markdown file ids], root?: the existing folder to work under}. The digests run the same module by themselves before Prepare.",
+  "modules": [
+    "../../workflow-shared/modules"
+  ],
+  "preflight": {
+    "P1": "Goal and result: every figure of the named Markdown documents has an explanation beside its image in the Scholar Archive. The result is the module's counts.",
+    "P2": "Inputs: fileIds (Markdown file ids), root (an existing folder).",
+    "P3": "Units of work: one job per four images of a document; the archive's explanation files are the record of what is done, so there is no ledger.",
+    "P4": "Roles: manager = Haiku, runs the drive jobs and the reader jobs; DeepSeek writes the text; zt-digest checks and saves it.",
+    "P5": "Stage graph: args gate, then explain.",
+    "P6": "Modules: gate, zt-workflow-lib, zt-figure-explain.",
+    "P7": "Checks: explain-check is every job's SELF-CHECK and the finish's gate (names, kinds, length, Chinese, no OCR copy); the archive checks each explanation against the image's bytes.",
+    "P8": "Failure policy: images still open after two rounds fail the stage with explanations_open; saved explanations stay, and a rerun takes only the open ones.",
+    "P9": "Dry run: zt-figure-explain.sim.json; scripts/figure-explain/tests/figure-explain.tests.mjs."
+  },
+  "roles": {
+    "manager": {
+      "model": "haiku",
+      "effort": "low",
+      "description": "Haiku: runs the DeepSeek drive and reader jobs; it runs no command of its own"
+    }
+  },
+  "args": {
+    "fileIds": {
+      "type": "array",
+      "required": true,
+      "description": "the Markdown file ids of the documents, e.g. [95, 1283]"
+    },
+    "root": {
+      "type": "string",
+      "default": "D:\\zt-digest",
+      "description": "an existing folder; the pass works in its _figure-explain folder"
+    }
+  },
+  "consts": {},
+  "stages": [
+    {
+      "id": "args",
+      "title": "Check",
+      "detail": "the document list",
+      "module": "gate",
+      "params": {
+        "subject": {
+          "args": "{{args}}"
+        },
+        "checks": [
+          {
+            "path": "args.fileIds",
+            "op": "nonempty",
+            "message": "args.fileIds must name at least one Markdown file id"
+          }
+        ]
+      }
+    },
+    {
+      "id": "explain",
+      "title": "Explain",
+      "detail": "one start, one queue of managers, one finish",
+      "after": [
+        "args"
+      ],
+      "module": "zt-figure-explain",
+      "params": {
+        "fileIds": "{{args.fileIds}}",
+        "root": "{{args.root}}"
+      }
+    }
+  ],
+  "modes": {},
+  "checkpoints": [],
+  "result": {
+    "$ref": "stages.explain.output"
+  }
+}

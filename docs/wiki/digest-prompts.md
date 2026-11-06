@@ -359,6 +359,7 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 - **Per-prompt command budgets** ("全程最多 7 条命令", and 12 for the digest group since S28) are part of the cost design: each extra DSH command re-reads the conversation. Do not add steps that read files back to confirm a write.
 
 ## Change history
+- `2026-11-05` — New `dsh-figure-explain-instructions.zh.md`: the explanation reader looks at the image and says what it shows, in Chinese, never copying its text. `dsh-figure-instructions.zh.md`: the reader judges by the explanation and may cite `F12` ids.
 - `2026-11-04` — New `dsh-figure-instructions.zh.md`: the figure readers. `dsh-digest-base.zh.md`: one figure may stand in many Cards.
 - `2026-11-04` — `dsh-digest-base.zh.md` drops the snapshot of every Literature Card; `zt-digest group-start` no longer sends it. The earlier-context pack names the related Cards.
 - `2026-11-03` — `dsh-digest-base.zh.md` is neutral: it names no Model, Event or Finding Card. The placement of Model Cards, the notes that point to them, the `type` and `level` parameters and the reply's `models` and `events` fields moved to `dsh-model-cards.zh.md`, so an econ or math writer reads the same rules. New supplement `dsh-history-cards.zh.md`: notes only, the three voices (the source, other historians, the author), primary sources, period wording. `dsh-terms-instructions.zh.md` says what a term is in a history book. Test: `digest-prompt.tests.ps1`.

@@ -229,6 +229,7 @@ A module change follows the review checklist:
 
 ## Change history
 
+- `2026-11-05` — `book-steps.ps1 figures-start`: a refusal is a failed step with its reason.
 - `2026-11-05` — `layer-steps.ps1`: no `-Take`. A start claims every ready unit, page by page (`$Page`, the eight the claim commands hold), and `Start-Block` is `Start-Layer`.- `2026-11-04` — `layer-steps.ps1`: no `-Queue` switch; the queue is the only structure, Cards included.
 - `2026-11-04` — `layer-steps.ps1 -Queue` (one queue) replaces `-Lane` and `In-Turn`.
 - `2026-11-04` — `layer-steps.ps1` `In-Turn`: a digest group's start and finish take turns across lanes through a named mutex of the run.

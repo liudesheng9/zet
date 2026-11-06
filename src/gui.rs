@@ -1129,7 +1129,9 @@ impl App {
                 return;
             }
             (Method::Get, path)
-                if path.starts_with("/scholar/file/") || path.starts_with("/scholar/figure/") =>
+                if path.starts_with("/scholar/file/")
+                    || path.starts_with("/scholar/figure/")
+                    || path.starts_with("/scholar/explanation/") =>
             {
                 document::serve(request, path.to_string(), query);
                 return;

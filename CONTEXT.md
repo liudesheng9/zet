@@ -71,6 +71,10 @@ _Avoid_: Widget, embed, diagram card
 An image a Card shows: a figure, table, or cover taken from a Scholar Archive Work's Markdown. A Card shows it with `![caption](artifact:<sha256>)`, where the address is the SHA-256 of the image's bytes. ZET keeps the bytes once, in the archive's `artifacts/` folder, beside a record of where they came from; an artifact belongs to no Card, never changes, and stays when the Scholar Archive moves or drops its copy. A Card may show only artifacts ZET holds.
 _Avoid_: Attachment, asset, embed, image card
 
+**Explanation**:
+What an Artifact shows, written by a DeepSeek agent that looked at the image, never OCR text. The Scholar Archive keeps it beside the original image, bound to the image's bytes; a Card never holds it, and the GUI reads it from the archive when a reader opens the figure.
+_Avoid_: Caption, alt text, OCR
+
 **Portable export**:
 One tree written by `zt export` as a folder of exactly two files: `cards.json`, the tree's Card data with each Card's rendered HTML, its models, figures and chart pages, and `index.html`, the GUI itself with no Card data. It reads with no `zt`, service, Scholar Archive or network; a function that needs the service says it is not available in the portable version. It is for reading: it restores nothing, and a dump stays the backup of the whole box.
 _Avoid_: Backup, static site, snapshot
@@ -141,7 +145,7 @@ The user's separate local archive of scholars' publications (Works, abstracts, s
 _Avoid_: Paper database, library
 
 **Scholar Archive bridge**:
-The authenticated, read-only connection between ZET and the Scholar Archive. Each side has its own connector; only a paired ZET may use it, and every request and answer is signed with the pairing secret. It exchanges information only: it never changes the Scholar Archive, and nothing read through it changes a Card. Taking an artifact through it copies the image into ZET's own `artifacts/` folder; opening a Document link reads the document through it into ZET's cache.
+The authenticated connection between ZET and the Scholar Archive. Each side has its own connector; only a paired ZET may use it, and every request and answer is signed with the pairing secret. It exchanges information, with one narrow write: an Explanation saved beside its image. Nothing read through it changes a Card. Taking an artifact through it copies the image into ZET's own `artifacts/` folder; opening a Document link reads the document through it into ZET's cache.
 _Avoid_: API, sync, import
 
 **Location**:

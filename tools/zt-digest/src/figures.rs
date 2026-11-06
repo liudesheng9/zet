@@ -45,6 +45,7 @@ static QUERY_PART: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[?#]").unwrap
 static BLOCKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap());
 static DETAILS_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</details>").unwrap());
 static DETAILS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^<details").unwrap());
+static SUMMARY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*<summary>.*</summary>\s*$").unwrap());
 static CHINESE_ONLY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^[一二三四五六七八九十]+$").unwrap());
 static FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(```|~~~)").unwrap());
 static ALT_OR_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)!\[[^\]]*\]\([^)]*\)").unwrap());
@@ -57,6 +58,12 @@ static ARCHIVE_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[\\/]sc
 pub(crate) struct Figure {
     pub sha256: Value,
     pub path: Value,
+    /// The image's copy in ZET's store, which the explanation pass shows to DeepSeek.
+    pub stored: String,
+    /// The explanation file beside the image in the Scholar Archive (docs/figure-explanation-design.md).
+    pub explanation: Value,
+    /// The id a figure the book gives no label goes by in the reader's list (`F12`); empty for a labelled one.
+    pub cite: String,
     pub labels: Vec<String>,
     pub alt: String,
     pub line: String,
@@ -71,6 +78,53 @@ pub(crate) fn image_name(line: &str) -> Option<String> {
     let target = QUERY_PART.split(&caps[1]).next().unwrap_or_default();
     let target = unescape_data_string(target);
     Some(target.rsplit(['\\', '/']).next().unwrap_or_default().to_string())
+}
+
+/// The explanation the Scholar Archive holds for these exact bytes.
+pub(crate) fn current_explanation(figure: &Figure) -> Option<&Value> {
+    let held = &figure.explanation;
+    (held["image_sha256"] == figure.sha256 && !s(&held["explanation"]).trim().is_empty()).then_some(held)
+}
+
+/// Each `<details>` block that follows an image: (the image's file name, the block's text). MinerU writes its OCR
+/// of the image there. Any other `<details>` belongs to the book.
+pub(crate) fn converter_blocks(text: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    walk_converter_blocks(text, |name, block| found.push((name.to_string(), block.join("\n"))), |_| {});
+    found
+}
+
+/// The text without the converter's blocks. The Scholar Archive keeps them; no reader of this tool does.
+pub(crate) fn strip_converter_blocks(text: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    walk_converter_blocks(text, |_, _| {}, |line| out.push(line));
+    out.join("\n")
+}
+
+/// Calls `block` per block after an image and `keep` per line outside the blocks.
+fn walk_converter_blocks<'a>(text: &'a str, mut block: impl FnMut(&str, Vec<&'a str>), mut keep: impl FnMut(&'a str)) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut last_image: Option<String> = None;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if let Some(name) = last_image.as_ref().filter(|_| DETAILS.is_match(line.trim_start()))
+            && let Some(end) = (i..lines.len()).find(|k| DETAILS_END.is_match(lines[*k]))
+        {
+            let inside: Vec<&str> = lines[i..=end].iter().copied().filter(|l| !DETAILS.is_match(l.trim_start()) && !DETAILS_END.is_match(l) && !SUMMARY.is_match(l) && !l.trim().is_empty()).collect();
+            block(name, inside);
+            last_image = None;
+            i = end + 1;
+            continue;
+        }
+        if let Some(name) = image_name(line).filter(|n| !n.is_empty()) {
+            last_image = Some(name);
+        } else if !line.trim().is_empty() {
+            last_image = None;
+        }
+        keep(line);
+        i += 1;
+    }
 }
 
 /// `[uri]::UnescapeDataString`: %XX runs decode as UTF-8; a run that is not UTF-8 stays as written.
@@ -191,6 +245,8 @@ pub(crate) fn figures_from_text(text: &str, kept: &Value) -> Result<CiMap<Figure
             Figure {
                 sha256: figure["sha256"].clone(),
                 path: figure["path"].clone(),
+                stored: s(&figure["stored"]),
+                explanation: figure["explanation"].clone(),
                 position: usize::MAX,
                 ..Figure::default()
             },
@@ -269,8 +325,19 @@ pub(crate) fn figures_from_text(text: &str, kept: &Value) -> Result<CiMap<Figure
     Ok(figures)
 }
 
-/// The alt text names each figure once: an Arabic or Roman label, else the Chinese one.
+/// The alt text names each figure once: an Arabic or Roman label, else the Chinese one. A figure the book gives
+/// no label goes by its place in the book, and its alt text is the title of its explanation; a mark or ornament
+/// is no figure for a reader.
 fn set_alt(figure: &mut Figure) {
+    if figure.labels.is_empty()
+        && figure.position != usize::MAX
+        && let Some(held) = current_explanation(figure).filter(|held| s(&held["kind"]) != "logo").cloned()
+    {
+        figure.cite = format!("F{}", figure.position + 1);
+        figure.alt = s(&held["title"]).replace(['[', ']'], "");
+        figure.line = format!("![{}](artifact:{})", figure.alt, s(&figure.sha256));
+        return;
+    }
     let mut shown: Vec<&String> = figure.labels.iter().filter(|l| !CHINESE_ONLY.is_match(l)).collect();
     if shown.is_empty() {
         shown = figure.labels.iter().collect();
@@ -321,7 +388,7 @@ pub(crate) fn document_line(file_id: i64) -> Result<String> {
 }
 
 /// The cached copy of a Scholar Archive document (`zt scholar file <id>`): its path.
-fn document_path(file_id: i64) -> Result<String> {
+pub(crate) fn document_path(file_id: i64) -> Result<String> {
     let (ok, said) = zt_scholar(&["file", &file_id.to_string()])?;
     if !ok {
         bail!("zt scholar file {file_id} failed");
@@ -358,7 +425,7 @@ fn attach_order(figures: &CiMap<Figure>) -> (Vec<(Figure, Vec<Mention>)>, Vec<(S
     ps::ps_sort(&mut ordered, |a, b| a.0.position.cmp(&b.0.position).then_with(|| ps::culture_cmp(&s(&a.0.path), &s(&b.0.path))));
     let mut by_label: Vec<(String, usize)> = Vec::new();
     for (i, (figure, _)) in ordered.iter().enumerate() {
-        for label in &figure.labels {
+        for label in figure.labels.iter().chain((!figure.cite.is_empty()).then_some(&figure.cite)) {
             by_label.push((label.clone(), i));
         }
     }
@@ -450,7 +517,9 @@ fn add_figures(card: &Card, by_label: &[(String, usize)], figures: &[(Figure, Ve
 }
 
 /// A figure's caption: the first lines of text after its image, in English and Chinese, cut to 300 characters.
-fn caption_of(text: &str, name: &str) -> String {
+/// The converter's OCR of the image is no caption.
+pub(crate) fn caption_of(text: &str, name: &str) -> String {
+    let text = strip_converter_blocks(text);
     let lines: Vec<&str> = text.lines().collect();
     let Some(at) = lines.iter().position(|line| image_name(line).as_deref() == Some(name)) else {
         return String::new();
@@ -496,6 +565,19 @@ fn precheck(staging: &str, job: &str) -> Result<i32> {
     Ok(if faults.is_empty() { 0 } else { 1 })
 }
 
+fn kind_name(kind: &str) -> &'static str {
+    match kind {
+        "chart" => "统计图",
+        "map" => "地图",
+        "photo" => "照片或绘画",
+        "diagram" => "示意图",
+        "table" => "表格",
+        "text" => "文字图像",
+        "logo" => "标志",
+        _ => "图像",
+    }
+}
+
 /// `figures -Step plan`: the book's figure list, and one reader job per group that holds notes.
 fn plan_jobs(zt: &mut Zt, key: &str, staging: &str, source: &str, ordered: &[(Figure, Vec<Mention>)]) -> Result<i32> {
     use std::collections::BTreeMap;
@@ -503,14 +585,22 @@ fn plan_jobs(zt: &mut Zt, key: &str, staging: &str, source: &str, ordered: &[(Fi
     for folder in ["jobs", "scope", "out"] {
         std::fs::create_dir_all(ps::join_path(&work, folder))?;
     }
+    // Every figure is read through its explanation; one without it waits for the explanation pass.
+    let open = ordered.iter().filter(|(f, _)| current_explanation(f).is_none()).count();
+    if open > 0 {
+        util::print_line(&util::compact(&json!({ "ok": false, "code": "explanations_open", "open": open, "error": format!("{open} figures have no explanation: run zt-figure-explain first") })))?;
+        return Ok(1);
+    }
     let text = if source.is_empty() { String::new() } else { util::read_text(source)? };
     let mut rows = Vec::new();
     let mut lines = vec!["# 全书图表表".to_string(), String::new()];
-    for (figure, _) in ordered.iter().filter(|(f, _)| !f.labels.is_empty()) {
+    for (figure, _) in ordered.iter().filter(|(f, _)| !f.labels.is_empty() || !f.cite.is_empty()) {
         let name = s(&figure.path).rsplit(['/', '\\']).next().unwrap_or_default().to_string();
         let caption = caption_of(&text, &name);
-        lines.push(format!("- {}：{}", figure.labels.join("、"), caption));
-        rows.push(json!({ "labels": figure.labels, "caption": caption, "sha256": figure.sha256 }));
+        let cited: Vec<String> = if figure.labels.is_empty() { vec![figure.cite.clone()] } else { figure.labels.clone() };
+        let held = current_explanation(figure).cloned().unwrap_or_default();
+        lines.push(format!("- {}（{}）：{} ｜ 图像说明：{}", cited.join("、"), kind_name(&s(&held["kind"])), caption, s(&held["explanation"]).replace('\n', " ")));
+        rows.push(json!({ "labels": cited, "caption": caption, "sha256": figure.sha256 }));
     }
     let count = rows.len();
     util::write_atomic(&ps::join_path(&work, "list.json"), &serde_json::to_string_pretty(&json!({ "figures": rows }))?)?;
@@ -569,7 +659,7 @@ fn read_answers(staging: &str, ordered: &[(Figure, Vec<Mention>)]) -> Result<Has
     let Ok(entries) = std::fs::read_dir(&folder) else {
         return Ok(related);
     };
-    let by_label: HashMap<&str, &Figure> = ordered.iter().flat_map(|(f, _)| f.labels.iter().map(move |l| (l.as_str(), f))).collect();
+    let by_label: HashMap<&str, &Figure> = ordered.iter().flat_map(|(f, _)| f.labels.iter().chain((!f.cite.is_empty()).then_some(&f.cite)).map(move |l| (l.as_str(), f))).collect();
     for entry in entries {
         let answer = util::read_json(entry?.path().to_string_lossy().as_ref())?;
         for link in ps::ps_items(&answer["links"]) {
@@ -617,6 +707,9 @@ fn figure_presence(figures: &CiMap<Figure>, bodies: &[String], digested: Option<
 
 /// `zt-digest figures` (attach-figures.ps1).
 pub fn cli(argv: &[String]) -> Result<i32> {
+    if argv.iter().any(|arg| arg.starts_with("explain-") || arg.starts_with("-Step:explain-")) {
+        return crate::figure_explain::cli(argv);
+    }
     let params = ["CitationKey", "FileId", "Staging", "Source", "MinFigureBytes", "Report", "Batch", "FiguresFile", "Step", "Job"];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoDocuments", "Apply"])?;
     let key = a.required("CitationKey")?;
@@ -659,6 +752,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 Figure {
                     sha256: f["sha256"].clone(),
                     path: f["path"].clone(),
+                    explanation: f["explanation"].clone(),
+                    cite: s(&f["cite"]),
+                    stored: String::new(),
                     labels: ps::ps_items(&f["labels"]).iter().map(s).collect(),
                     alt: s(&f["alt"]),
                     line: s(&f["line"]),
@@ -696,8 +792,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     // --- the Cards of this book that name a figure ---
     let mut queries: Vec<(&str, Value)> = Vec::new();
     let mut asked: HashSet<String> = HashSet::new();
-    for (label, _) in &by_label {
-        if !asked.insert(label.to_lowercase()) {
+    for (label, at) in &by_label {
+        // A figure with no printed label is named in no Card; only its readers place it.
+        if !ordered[*at].0.labels.contains(label) || !asked.insert(label.to_lowercase()) {
             continue;
         }
         for q in [format!("图 {label}"), format!("图{label}")] {
@@ -950,7 +1047,7 @@ mod tests {
 
     #[test]
     fn a_related_figure_goes_into_a_card_that_never_names_it() {
-        let figure = Figure { sha256: json!("aa"), path: json!("a.jpg"), labels: vec!["2.1".into()], alt: "图 2.1".into(), line: "![图 2.1](artifact:aa)".into(), position: 0 };
+        let figure = Figure { sha256: json!("aa"), path: json!("a.jpg"), labels: vec!["2.1".into()], alt: "图 2.1".into(), line: "![图 2.1](artifact:aa)".into(), position: 0, ..Figure::default() };
         let mut map: CiMap<Figure> = CiMap::new();
         map.insert("a.jpg", figure);
         let (ordered, by_label) = attach_order(&map);
@@ -971,6 +1068,14 @@ mod tests {
         assert_eq!(caption_of(text, "b.jpg"), "");
     }
 
+    /// scheiner2022baghdad: the two lines after each image were `<details>` and `<summary>text_image</summary>`,
+    /// so the reader's list said nothing about the figure.
+    #[test]
+    fn a_caption_never_comes_from_the_converters_details_block() {
+        let text = "![](images/a.jpg)\n\n<details>\n<summary>text_image</summary>\n\nAL-RUSAFA\nTsuch of Taha\n\n</details>\n\nFigure 1.1 The city\n\n图 1.1 城市\n\n后文。\n";
+        assert_eq!(caption_of(text, "a.jpg"), "Figure 1.1 The city 图 1.1 城市");
+    }
+
     #[test]
     fn a_figure_answer_names_only_its_own_cards_and_known_labels() {
         let cards: HashSet<String> = ["K/1|a".to_string()].into_iter().collect();
@@ -980,6 +1085,36 @@ mod tests {
         let faults = answer_faults(&json!({"links":[{"card":"K/9","figures":["2.1","7.7"]}]}), &cards, &labels);
         assert_eq!(faults.len(), 2, "{faults:?}");
         assert_eq!(answer_faults(&json!({}), &cards, &labels).len(), 1, "no links list");
+    }
+
+    #[test]
+    fn the_converters_blocks_after_an_image_go_and_the_books_details_stay() {
+        let text = "![](i/a.jpg)\n\n<details>\n<summary>text_image</summary>\n\nOCR 一\nOCR 二\n\n</details>\n\n图 1\n\n<details>\n正文的折叠块\n</details>\n\n![](i/b.jpg)\n<details><summary>seal</summary>印</details>\n结束";
+        assert_eq!(strip_converter_blocks(text), "![](i/a.jpg)\n\n\n图 1\n\n<details>\n正文的折叠块\n</details>\n\n![](i/b.jpg)\n结束");
+        assert_eq!(converter_blocks(text)[0], ("a.jpg".to_string(), "OCR 一\nOCR 二".to_string()));
+        assert_eq!(converter_blocks(text).len(), 2);
+    }
+
+    #[test]
+    fn a_figure_with_no_label_is_cited_through_its_explanation_and_a_mark_is_not() {
+        let held = |sha: &str, kind: &str| json!({ "image_sha256": sha, "kind": kind, "title": "商队 [示意]", "explanation": "一支商队穿过沙漠。" });
+        let kept = json!({ "figures": [
+            { "name": "a.jpg", "sha256": "aa", "path": "B/a.jpg", "explanation": held("aa", "photo") },
+            { "name": "b.jpg", "sha256": "bb", "path": "B/b.jpg", "explanation": held("bb", "logo") },
+            { "name": "c.jpg", "sha256": "cc", "path": "B/c.jpg", "explanation": held("old", "photo") },
+        ]});
+        let figures = figures_from_text("![](i/a.jpg)\n\n正文。\n\n![](i/b.jpg)\n\n![](i/c.jpg)", &kept).unwrap();
+        let a = figures.get("a.jpg").unwrap();
+        assert_eq!((a.cite.as_str(), a.line.as_str()), ("F1", "![商队 示意](artifact:aa)"));
+        assert_eq!(figures.get("b.jpg").unwrap().cite, "", "a mark is no figure for a reader");
+        assert_eq!(figures.get("c.jpg").unwrap().cite, "", "an explanation of other bytes is no explanation");
+        assert!(current_explanation(figures.get("c.jpg").unwrap()).is_none());
+        let (ordered, by_label) = attach_order(&figures);
+        assert_eq!(by_label.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(), vec!["F1"]);
+        let card = Card { address: "K/1|a".into(), title: "商路".into(), body: "商队沿河而行。\n\n来源：[[K]]".into(), text: String::new() };
+        let related: HashSet<String> = ["aa".to_string()].into_iter().collect();
+        let (body, _) = add_figures(&card, &by_label, &ordered, &related).unwrap();
+        assert!(body.contains("![商队 示意](artifact:aa)"), "{body}");
     }
 
     #[test]

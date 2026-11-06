@@ -2206,6 +2206,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   // scheiner2022baghdad: the link check reads the whole book, and Term and Cited cards write into it.
   check(after('link-check') === 'link,term-cards,cited-cards', `schedule: the link check waits for every writer of the tree (${after('link-check')})`)
   check(after('figures') === 'organize', 'schedule: Figures is released by Organize')
+  check(after('prepare') === 'figure-explain' && after('figure-explain') === 'source', 'schedule: the figure explanations stand before Prepare, so book.zh.md is written once with them')
+  check(JSON.stringify(builds.econ.bp.stages.find((s) => s.id === 'figure-explain').when).includes('"full"'), 'schedule: the figure explanations run in mode full only; the backfill is the zt-figure-explain workflow')
   check(after('bridge') === 'figures', 'schedule: the report-first Bridge follows Figures (its endpoint snapshots are the final Card text)')
   check(after('audit') === 'bridge,term-link', 'schedule: the final audit follows the Bridge report and the Term-link pass (R0420: tl --> audit)')
   check(after('finalize') === 'audit', 'schedule: the finite finalization follows the audit it plans from (#86)')
@@ -2252,7 +2254,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
     const when = JSON.stringify(stageOf('econ', stage).when || [])
     check(/resume/.test(when), `resume: the ${stage} stage declares mode resume in its own condition`)
   }
-  check(builds.econ.bp.stages.concat(builds.math.bp.stages).filter((s) => s.params && !['args', 'source', 'prepare'].includes(s.id)).every((s) => s.params.key && s.params.key.$ref === 'stages.prepare.output.citation_key'), 'resume: every stage downstream of prepare reads the Citation key from the prepared run, so mode resume never repeats args.citationKey')
+  check(builds.econ.bp.stages.concat(builds.math.bp.stages).filter((s) => s.params && !['args', 'source', 'figure-explain', 'prepare'].includes(s.id)).every((s) => s.params.key && s.params.key.$ref === 'stages.prepare.output.citation_key'), 'resume: every stage downstream of prepare reads the Citation key from the prepared run, so mode resume never repeats args.citationKey')
   // #181: mode resume carries only `out`, so every stage takes the book's Citation key from the prepared run. No
   // command and no agent prompt may name `undefined`; no step may hand zt-digest an empty -CitationKey/-Book; and
   // Organize, Figures, the link-check card cycle and the Bridge must name the prepared run's key.

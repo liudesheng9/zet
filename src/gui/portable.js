@@ -148,5 +148,8 @@ window.ZtPortable = (() => {
   }
 
   load();
-  return { ready, figure, fillChart, notice: rules.notice, elsewhere: rules.elsewhere };
+  /** A figure's explanation, copied from the Scholar Archive when the tree was exported. */
+  const explanation = (sha) => index?.data.artifacts?.[sha]?.explanation ?? null;
+
+  return { ready, figure, explanation, fillChart, notice: rules.notice, elsewhere: rules.elsewhere };
 })();

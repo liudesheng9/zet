@@ -26,6 +26,7 @@
 mod args;
 mod audit;
 mod backfill;
+mod figure_explain;
 mod bridge;
 mod calls;
 mod canon;

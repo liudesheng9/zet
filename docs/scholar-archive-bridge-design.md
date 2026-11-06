@@ -5,8 +5,8 @@ This specification is shared: Scholar Archive keeps it as `docs/zet-bridge.md` a
 The ZET bridge is the one connection between Scholar Archive and ZET (`zt`, github.com/liudesheng9/zet).
 Through it, ZET reads everything the archive holds: scholars, Works and their sources, versions and
 topics, journals, workspaces, source history, the linked PDF/Markdown documents and their artifacts
-(the figure images the Markdown shows), any table through read-only SQL, and whole exports. The exchange is **information only**: nothing on the bridge can change
-the archive, start collection, contact a provider, or write a file in the archive folder.
+(the figure images the Markdown shows), any table through read-only SQL, and whole exports. The exchange is **information**, with one narrow write: the action `explanations` saves a figure's explanation file
+beside its image. Nothing else on the bridge can change the archive, and nothing can start collection or contact a provider.
 
 Each project has its half of the connector:
 
@@ -61,10 +61,11 @@ All actions are `POST` with a JSON object body.
 | `file` | `{"file_id"}` | the document's bytes, with `X-Zet-Bridge-File-Sha256` and URL-safe base64 `X-Zet-Bridge-File-Name`/`-Path` |
 | `artifact` | `{"file_id", "path"}` | one artifact's bytes (an image a Markdown document references, or one in its artifact folder), with its media type and the same headers as `file` |
 | `export` | `{"scholar_id"?, "format"? (json, csv, bibtex), "view"?}` | the export's bytes, as the Export action renders them |
+| `explanations` | `{"file_id", "items": [{"path", "image_sha256", "kind", "title", "explanation", "made_by"}], "overwrite"?}` | `{"file_id", "saved", "refused"}`: each item is checked against the image's bytes and written beside it |
 
 Read tools: `archive_status`, `list_scholars`, `scholar_report`, `list_works`, `get_work`,
 `list_journals`, `list_workspaces`, `get_workspace`, `list_work_files`, `get_work_file`,
-`list_work_artifacts`, `list_source_labels`, `list_source_updates`, `find_duplicate_works`, `job_status`,
+`list_work_artifacts`, `get_artifact_explanation`, `list_source_labels`, `list_source_updates`, `find_duplicate_works`, `job_status`,
 `vector_index_status`, `semantic_search`, `similar_works`. Every other MCP tool (edits, operations,
 collection, provider searches, imports, export files, backups, vector updates) is refused with `403`.
 
@@ -88,6 +89,10 @@ ZET keeps every artifact a Card shows in its own archive, as `artifacts/<sha256>
 `<sha256>.json` record of its source (`work_id`, `file_id`, `path`, caption). A Card shows it with
 `![caption](artifact:<sha256>)`. The Card depends only on ZET's copy, so the archive may move,
 rename or drop its file without breaking the Card.
+
+## Explanations
+
+An explanation says what an artifact shows, written by an agent that looked at the image; a converter's OCR is never one. It is the file `<image name>.explanation.json` beside the image, with `schema`, `path`, `image_sha256`, `kind` (`chart`, `map`, `photo`, `diagram`, `table`, `text`, `logo`, `other`), `title`, `explanation`, `made_by` and `made_at`. `list_work_artifacts` adds it to each item as `explanation`, and `get_artifact_explanation` reads one. A reader compares `image_sha256` with the image it holds. No row, Markdown or image changes.
 
 ## Running automatically
 
