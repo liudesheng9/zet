@@ -501,7 +501,7 @@ switch ($Step) {
         Reply @{ ok = ($s.ok -ne $false); structure = "$($s.written.structure)"; thesis = "$($s.thesis)"; argument = [int]$s.argument; models = [int]$s.models; events = [int]$s.events; problems = (Count-Of $s.problems) } $s
     }
     'figures-start' {
-        # The book's figure list and one reader job per three groups (zt-figures v9).
+        # The book's figure list and one reader job per 80 Cards (zt-figures v10).
         $argv = @('figures', '-Step', 'plan', '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Staging', $Out)
         if (Opt 'FileId') { $argv += @('-FileId', "$(Opt 'FileId')") }
         $r = Run $argv

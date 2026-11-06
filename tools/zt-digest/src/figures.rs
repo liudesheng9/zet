@@ -578,20 +578,18 @@ fn kind_name(kind: &str) -> &'static str {
     }
 }
 
-/// Groups of one reader job. Nobel lecture cost test, 2026-11-05: three groups a job cost 83% less than one and covered
-/// as many of the pairs most readers agreed on, once the reader stopped browsing files (docs/agents/workflow-principles.md).
-const GROUPS_PER_JOB: usize = 3;
+/// Cards of one reader job. Nobel lecture cost test, 2026-11-05: jobs of 41 and 76 Cards cost 83% less than five
+/// one-group jobs and kept their coverage. A job counts Cards, not groups: a top-level section of a reorganized tree
+/// holds up to 150 Cards, and three of them made jobs of 410 Cards that found half the pairs (atkinson2015lectures).
+const CARDS_PER_JOB: usize = 80;
 
-/// The reader jobs: groups in reading order, whole, `GROUPS_PER_JOB` to a job. Each job names its groups and its Cards.
-fn job_groups(by_group: BTreeMap<u64, Vec<String>>) -> Vec<(Vec<u64>, Vec<String>)> {
-    let groups: Vec<(u64, Vec<String>)> = by_group.into_iter().collect();
-    groups
-        .chunks(GROUPS_PER_JOB)
-        .map(|part| (part.iter().map(|(number, _)| *number).collect(), part.iter().flat_map(|(_, cards)| cards.iter().cloned()).collect()))
-        .collect()
+/// The reader jobs: the book's Cards in reading order, `CARDS_PER_JOB` to a job.
+fn reader_jobs(by_group: BTreeMap<u64, Vec<String>>) -> Vec<Vec<String>> {
+    let cards: Vec<String> = by_group.into_values().flatten().collect();
+    cards.chunks(CARDS_PER_JOB).map(<[String]>::to_vec).collect()
 }
 
-/// `figures -Step plan`: the book's figure list, and one reader job per `GROUPS_PER_JOB` groups that hold notes.
+/// `figures -Step plan`: the book's figure list, and one reader job per `CARDS_PER_JOB` Cards of notes.
 fn plan_jobs(zt: &mut Zt, key: &str, staging: &str, source: &str, ordered: &[(Figure, Vec<Mention>)]) -> Result<i32> {
     let work = ps::join_path(staging, "figures");
     // Every figure is read through its explanation; one without it waits for the explanation pass.
@@ -640,10 +638,9 @@ fn plan_jobs(zt: &mut Zt, key: &str, staging: &str, source: &str, ordered: &[(Fi
                 by_group.entry(caps[1].parse()?).or_default().push(address);
             }
         }
-        for (k, (numbers, addresses)) in job_groups(by_group).into_iter().enumerate() {
+        for (k, addresses) in reader_jobs(by_group).into_iter().enumerate() {
             let id = format!("j{:03}", k + 1);
-            let named = numbers.iter().map(u64::to_string).collect::<Vec<_>>().join("、");
-            let mut body = format!("# 第 {named} 组\n\n答案路径：`{}`\nSELF-CHECK: zt-digest figures -Step precheck -CitationKey {key} -Staging \"{staging}\" -Job {id}\n", ps::join_path(&work, &format!("out/{id}.json")));
+            let mut body = format!("# 第 {} 批\n\n答案路径：`{}`\nSELF-CHECK: zt-digest figures -Step precheck -CitationKey {key} -Staging \"{staging}\" -Job {id}\n", k + 1, ps::join_path(&work, &format!("out/{id}.json")));
             for chunk in addresses.chunks(200) {
                 for card in zt.cards(chunk, "text")?.cards {
                     body.push_str(&format!("\n## `{}` {}\n\n{}\n", s(&card["address"]), s(&card["title"]), s(&card["body"])));
@@ -948,12 +945,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_reader_takes_three_whole_groups_in_reading_order() {
-        let groups: BTreeMap<u64, Vec<String>> = (1..=7).map(|n| (n, vec![format!("k/{n}|a"), format!("k/{n}|b")])).collect();
-        let jobs = job_groups(groups);
-        assert_eq!(jobs.iter().map(|(numbers, _)| numbers.clone()).collect::<Vec<_>>(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![7]]);
-        assert_eq!(jobs[0].1.len(), 6, "a job carries every Card of its groups");
-        assert_eq!(jobs[2].1, vec!["k/7|a", "k/7|b"], "the last job takes what is left");
+    fn a_reader_takes_eighty_cards_in_reading_order_however_large_a_section_is() {
+        let groups: BTreeMap<u64, Vec<String>> = [(1, 200), (2, 10), (3, 30)].into_iter().map(|(n, size)| (n, (0..size).map(|k| format!("k/{n}|{k}")).collect())).collect();
+        let jobs = reader_jobs(groups);
+        assert_eq!(jobs.iter().map(Vec::len).collect::<Vec<_>>(), vec![80, 80, 80]);
+        assert_eq!(jobs[0][0], "k/1|0");
+        assert_eq!(jobs[2][40], "k/2|0", "the groups keep their order across a job's edge");
     }
 
     #[test]
