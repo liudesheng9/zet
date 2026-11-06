@@ -38,7 +38,7 @@ const ROMAN: [&str; 21] = [
 ];
 
 static FIGURE_LABEL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(?:FIGURE|Figure|Fig\.?|FIG\.?)\s+([0-9]+(?:[.\-][0-9A-Za-z]+)*|[IVXLC]+)\b|^\s*图\s*([0-9]+(?:[.\-][0-9A-Za-z]+)*|[一二三四五六七八九十]+|[IVXLC]+)").unwrap()
+    Regex::new(r"^\s*(?:FIGURE|Figure|Fig\.?|FIG\.?)\s+([0-9]+(?:[.\-–—][0-9A-Za-z]+)*|[IVXLC]+(?:[.\-–—][0-9]+)*)\b|^\s*图\s*([0-9]+(?:[.\-–—][0-9A-Za-z]+)*|[一二三四五六七八九十]+|[IVXLC]+(?:[.\-–—][0-9]+)*)").unwrap()
 });
 static IMAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*!\[[^\]]*\]\(([^)\s]+)").unwrap());
 static QUERY_PART: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[?#]").unwrap());
@@ -62,7 +62,7 @@ pub(crate) struct Figure {
     pub stored: String,
     /// The explanation file beside the image in the Scholar Archive (docs/figure-explanation-design.md).
     pub explanation: Value,
-    /// The id a figure the book gives no label goes by in the reader's list (`F12`); empty for a labelled one.
+    /// The figure's own id in the reader's list (`F12`): a reader never copies a printed number. Empty for a mark.
     pub cite: String,
     pub labels: Vec<String>,
     pub alt: String,
@@ -169,7 +169,8 @@ fn unescape_data_string(text: &str) -> String {
 /// Roman or Chinese number.
 pub(crate) fn labels(line: &str) -> Vec<String> {
     let Some(caps) = FIGURE_LABEL.captures(line) else { return Vec::new() };
-    let label = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str().to_string()).unwrap_or_default();
+    // A book prints 10–4 and a Card may write 10-4: a label holds the plain hyphen, and Mention takes every dash.
+    let label = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str().replace(['\u{2013}', '\u{2014}'], "-")).unwrap_or_default();
     let mut out = vec![label.clone()];
     let roman = ROMAN.iter().position(|r| *r == label).unwrap_or(0);
     let chinese = CHINESE.iter().position(|c| *c == label).unwrap_or(0);
@@ -191,7 +192,7 @@ pub(crate) struct Mention(Regex);
 
 impl Mention {
     pub fn new(label: &str) -> Self {
-        Self(Regex::new(&format!(r"(?i)(?:图|Figure|Fig\.)\s*{}", regex::escape(label))).unwrap())
+        Self(Regex::new(&format!(r"(?i)(?:图|Figure|Fig\.)\s*{}", regex::escape(label).replace(r"\-", "[-\u{2013}\u{2014}]"))).unwrap())
     }
 
     pub fn is_in(&self, text: &str) -> bool {
@@ -329,6 +330,9 @@ pub(crate) fn figures_from_text(text: &str, kept: &Value) -> Result<CiMap<Figure
 /// no label goes by its place in the book, and its alt text is the title of its explanation; a mark or ornament
 /// is no figure for a reader.
 fn set_alt(figure: &mut Figure) {
+    if !figure.labels.is_empty() && figure.position != usize::MAX {
+        figure.cite = format!("F{}", figure.position + 1);
+    }
     if figure.labels.is_empty()
         && figure.position != usize::MAX
         && let Some(held) = current_explanation(figure).filter(|held| s(&held["kind"]) != "logo").cloned()
@@ -425,7 +429,7 @@ fn attach_order(figures: &CiMap<Figure>) -> (Vec<(Figure, Vec<Mention>)>, Vec<(S
     ps::ps_sort(&mut ordered, |a, b| a.0.position.cmp(&b.0.position).then_with(|| ps::culture_cmp(&s(&a.0.path), &s(&b.0.path))));
     let mut by_label: Vec<(String, usize)> = Vec::new();
     for (i, (figure, _)) in ordered.iter().enumerate() {
-        for label in figure.labels.iter().chain((!figure.cite.is_empty()).then_some(&figure.cite)) {
+        for label in figure.labels.iter().chain((figure.labels.is_empty() && !figure.cite.is_empty()).then_some(&figure.cite)) {
             by_label.push((label.clone(), i));
         }
     }
@@ -609,13 +613,13 @@ fn plan_jobs(zt: &mut Zt, key: &str, staging: &str, source: &str, ordered: &[(Fi
     let text = if source.is_empty() { String::new() } else { util::read_text(source)? };
     let mut rows = Vec::new();
     let mut lines = vec!["# 全书图表表".to_string(), String::new()];
-    for (figure, _) in ordered.iter().filter(|(f, _)| !f.labels.is_empty() || !f.cite.is_empty()) {
+    for (figure, _) in ordered.iter().filter(|(f, _)| !f.cite.is_empty()) {
         let name = s(&figure.path).rsplit(['/', '\\']).next().unwrap_or_default().to_string();
         let caption = caption_of(&text, &name);
-        let cited: Vec<String> = if figure.labels.is_empty() { vec![figure.cite.clone()] } else { figure.labels.clone() };
+        let printed = if figure.labels.is_empty() { String::new() } else { format!("，书中编号 {}", figure.labels.join("、")) };
         let held = current_explanation(figure).cloned().unwrap_or_default();
-        lines.push(format!("- {}（{}）：{} ｜ 图像说明：{}", cited.join("、"), kind_name(&s(&held["kind"])), caption, s(&held["explanation"]).replace('\n', " ")));
-        rows.push(json!({ "labels": cited, "caption": caption, "sha256": figure.sha256 }));
+        lines.push(format!("- {}（{}{printed}）：{} ｜ 图像说明：{}", figure.cite, kind_name(&s(&held["kind"])), caption, s(&held["explanation"]).replace('\n', " ")));
+        rows.push(json!({ "labels": [figure.cite], "caption": caption, "sha256": figure.sha256 }));
     }
     let count = rows.len();
     util::write_atomic(&ps::join_path(&work, "list.json"), &serde_json::to_string_pretty(&json!({ "figures": rows }))?)?;
@@ -674,13 +678,13 @@ fn read_answers(staging: &str, ordered: &[(Figure, Vec<Mention>)]) -> Result<Has
     let Ok(entries) = std::fs::read_dir(&folder) else {
         return Ok(related);
     };
-    let by_label: HashMap<&str, &Figure> = ordered.iter().flat_map(|(f, _)| f.labels.iter().chain((!f.cite.is_empty()).then_some(&f.cite)).map(move |l| (l.as_str(), f))).collect();
+    let by_id: HashMap<&str, &Figure> = ordered.iter().filter(|(f, _)| !f.cite.is_empty()).map(|(f, _)| (f.cite.as_str(), f)).collect();
     for entry in entries {
         let answer = util::read_json(entry?.path().to_string_lossy().as_ref())?;
         for link in ps::ps_items(&answer["links"]) {
             let shown = related.entry(s(&link["card"])).or_default();
             for label in ps::ps_items(&link["figures"]).iter().map(s) {
-                if let Some(figure) = by_label.get(label.as_str()) {
+                if let Some(figure) = by_id.get(label.as_str()) {
                     shown.insert(s(&figure.sha256));
                 }
             }
@@ -943,6 +947,38 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// atkinson2015lectures: `Figure 10–4` was cut to `10`, so a whole chapter's figures shared one label and a Card
+    /// naming one of them showed them all. scheiner2022baghdad: `FIGURE I.1` was cut to `I`.
+    #[test]
+    fn a_printed_number_is_read_whole_with_any_dash_and_a_roman_chapter() {
+        assert_eq!(labels("Figure 10–4 Non-single-peaked preferences."), vec!["10-4"]);
+        assert_eq!(labels("FIGURE 12—2 Directions of improvement"), vec!["12-2"]);
+        assert_eq!(labels("图 10–4 非单峰偏好"), vec!["10-4"]);
+        assert_eq!(labels("FIGURE I.1 Al-Bīrūnī's horoscope"), vec!["I.1"]);
+        assert_eq!(labels("FIGURE IV Something"), vec!["IV", "四"]);
+    }
+
+    #[test]
+    fn a_card_naming_one_figure_of_a_chapter_does_not_name_its_siblings() {
+        let figure = Mention::new("2-3");
+        assert!(figure.is_in("见图 2–3。"), "the book's en dash");
+        assert!(figure.is_in("见图 2-3。"));
+        assert!(!figure.is_in("见图 2–1 与图 2–30。"));
+        assert!(!Mention::new("2-1").is_in("见图 2–3。"));
+    }
+
+    #[test]
+    fn every_figure_goes_by_its_own_id_in_the_readers_list() {
+        let kept = json!({ "figures": [
+            { "name": "a.jpg", "sha256": "aa", "path": "B/a.jpg" },
+            { "name": "b.jpg", "sha256": "bb", "path": "B/b.jpg" },
+        ]});
+        let figures = figures_from_text("![](i/a.jpg)\n\nFigure 2–1 One.\n\n![](i/b.jpg)\n\nFigure 2–2 Two.", &kept).unwrap();
+        assert_eq!(figures.get("a.jpg").unwrap().cite, "F1");
+        assert_eq!(figures.get("b.jpg").unwrap().cite, "F2");
+        assert_eq!(figures.get("b.jpg").unwrap().labels, vec!["2-2"]);
+    }
 
     #[test]
     fn a_reader_takes_eighty_cards_in_reading_order_however_large_a_section_is() {

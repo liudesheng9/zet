@@ -83,8 +83,8 @@ static TERMS_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^术语�
 static NOTATION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(符号表|notation)").unwrap());
 static THINKING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?mi)^\s*\*\*思路\*\*\s*$").unwrap());
 static READING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?mi)^\s*\*\*解读\*\*\s*$").unwrap());
-static ALT1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+(?:\.[0-9A-Za-z]+)*").unwrap());
-static ALT2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[IVXL]+").unwrap());
+static ALT1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+(?:[.\-–—][0-9A-Za-z]+)*").unwrap());
+static ALT2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[IVXL]+(?:[.\-–—][0-9]+)*").unwrap());
 static ALT3: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[一二三四五六七八九十]+").unwrap());
 
 /// The figure labels a text names: the .NET pattern
@@ -115,7 +115,7 @@ pub(crate) fn figure_labels(text: &str) -> Vec<String> {
         }
         match label {
             Some(l) => {
-                out.push(l.to_string());
+                out.push(l.replace(['\u{2013}', '\u{2014}'], "-"));
                 at = body + l.len();
             }
             None => at = start,
@@ -1158,6 +1158,7 @@ mod tests {
 
     #[test]
     fn figure_names_follow_the_dotnet_pattern() {
+        assert_eq!(figure_labels("见图 2–3 与图 I.1。"), vec!["2-3", "I.1"]);
         assert_eq!(figure_labels("见图 2.C.1 与图3，图 IV 和图十二。"), vec!["2.C.1", "3", "IV", "十二"]);
         // A label followed by a dot, a Latin letter, or a Han character after a Chinese numeral is no name.
         // (Checked against [regex]::Matches in pwsh: only `X`, a Roman numeral, is a name here.)

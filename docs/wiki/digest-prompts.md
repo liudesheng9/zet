@@ -359,6 +359,7 @@ Gaps: no test covers the insert-before-`## 回复` step of `prepare-book-digest.
 - **Per-prompt command budgets** ("全程最多 7 条命令", and 12 for the digest group since S28) are part of the cost design: each extra DSH command re-reads the conversation. Do not add steps that read files back to confirm a write.
 
 ## Change history
+- `2026-11-06` — `dsh-figure-instructions.zh.md`: the answer names each figure by its `F` id; the printed number stands in brackets, for recognition only.
 - `2026-11-05` — `dsh-figure-instructions.zh.md` gains 工作方式: all material is in the message, so the reader opens no file and no image, thinks two passes (Card by Card, then figure by figure), writes once and checks once.
 - `2026-11-05` — New `dsh-figure-explain-instructions.zh.md`: the explanation reader looks at the image and says what it shows, in Chinese, never copying its text. `dsh-figure-instructions.zh.md`: the reader judges by the explanation and may cite `F12` ids.
 - `2026-11-04` — New `dsh-figure-instructions.zh.md`: the figure readers. `dsh-digest-base.zh.md`: one figure may stand in many Cards.

@@ -775,6 +775,7 @@ Gaps:
 
 ## Change history
 
+- `2026-11-06` — zt-figures v11, base **5.11.34**, econ **6.11.34**, math **5.11.34**, history **1.0.22**: a figure reader copies each figure's own `F` id, never a printed number.
 - `2026-11-06` — zt-figures v10, base **5.11.33**, econ **6.11.33**, math **5.11.33**, history **1.0.21**: a figure reader job counts Cards, at most 80, not groups. The three-group job is gone.
 - `2026-11-05` — zt-figures v9, base **5.11.32**, econ **6.11.32**, math **5.11.32**, history **1.0.20**: a figure reader job carries three whole groups, by the owner's order to lower the cost. The one structure stands: one start, one queue of managers (at most 8 jobs each), one finish; the one-group job is gone, with no switch.
 - `2026-11-05` — Each digest's `sim.json` now answers the `figure-explain` start: without it `assemble.mjs install` refused the dry run and left the old version in place. `scripts/figure-explain/tests/figure-explain.tests.mjs` dry-runs all three digests from their own `sim.json`, so a new stage with no answer fails there before an install.

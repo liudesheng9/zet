@@ -1,4 +1,7 @@
-// ==== module zt-figures v10 ====
+// ==== module zt-figures v11 ====
+// 11 (2026-11-06, session history of 30 readers): 21 of them met `10-4 is not a label` 348 times, because a printed number
+// was cut at its dash and readers were pushed to `10`. A printed number is read whole, and a reader copies each figure's
+// own id (`F12`), never a printed number.
 // 10 (2026-11-06): a reader job holds at most 80 Cards in reading order. Three top-level sections made jobs of 410 Cards
 // on atkinson2015lectures, and those found half the pairs that an 80 to 110 Card job finds on the same Cards.
 // 9 (2026-11-05, the owner's order to lower the cost): a reader job carries three whole groups, and the reader works from
@@ -16,7 +19,7 @@
 // 6 (#176, docs/workflow-module-structure-proposal.md): the figure pass and the stage's own publication are two
 // book-steps.ps1 steps run by DeepSeek drive jobs; no Claude relay runs a command.
 defineModule({
-  id: 'zt-figures', version: '10', requires: ['zt-digest-lib'],
+  id: 'zt-figures', version: '11', requires: ['zt-digest-lib'],
   summary: 'ZT digest: show the book\'s own figures in the Cards that name them (one book-steps.ps1 step).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
