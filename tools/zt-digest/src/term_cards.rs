@@ -108,12 +108,13 @@ const PER_JOB_RANGE: (i64, i64) = (1, 12);
 pub(crate) const SOURCE_LINES: usize = 10;
 /// Characters kept on each side of the term in a long source line.
 pub(crate) const SOURCE_CONTEXT: usize = 150;
+const HISTORY: &str = "history";
 /// Sentences of a Card that must name where in the book they stand.
 const MIN_CITED: usize = 2;
 /// A complete concept term: the instructions point to this sample.
-const SAMPLE: &str = r#"{"term":"牧首","category":"concept","link":true,"first_defined":"§普世一神教的传播","explanation":["牧首是基督教大城市的最高主教。","§普世一神教的传播 说牧首、主教和修士可以借助帝国的支持推行其意志。","§埃及 说居鲁士曾任亚历山大里亚的牧首。","§埃及 说居鲁士主张缴纳贡赋换取和平。","§进攻君士坦丁堡的尝试 说牧首 Thomas 的书信两年未能送出。"],"book_definition":{"section":"§普世一神教的传播","text":["§普世一神教的传播 说教会等级体系与政治权力结盟。","同一小节说牧首可以借助帝国的支持推行其意志。"],"quote":"牧首、主教和修士"},"distinctions":[{"term":"主教","text":"主教管理一个教区。牧首是大城市的最高主教，地位在主教之上。"},{"term":"哈里发","text":"哈里发是穆斯林共同体的统治者。牧首是基督教会的领袖，不统治穆斯林。"},{"term":"迦克墩派","text":"迦克墩派是一个教义派别。牧首是一个教职，不同派别各有牧首。"},{"term":"教皇","text":"教皇是罗马的主教。牧首指东方大城市的最高主教。"}],"misreadings":["把牧首当成世俗官员是误读。§普世一神教的传播 说他是教会领袖，只是借助帝国的支持。","以为每座城市都有牧首是误读。§普世一神教的传播 只把牧首用于大城市。","把牧首的谈判当成教会的统一立场是误读。§埃及 说亚历山大里亚的民众起来反对牧首。"],"role_in_book":["§埃及 用牧首的谈判说明城市如何归顺。","§进攻君士坦丁堡的尝试 用牧首的书信给封锁断代。"]}"#;
+const SAMPLE: &str = r#"{"term":"牧首","category":"concept","link":true,"first_defined":"§普世一神教的传播","explanation":["牧首是基督教大城市的最高主教，地位在一般主教之上。","他领导所在城市及其周边的教会，负责任命主教和裁断教义争端。","他的权力来自教会等级，也来自帝国的支持，所以他常常同时参与政治。","城市受到围攻时，牧首可以代表居民与进攻者谈判。","不同的教义派别各立牧首，因此一座城市的基督徒可能不只承认一位牧首。"],"book_definition":{"section":"§普世一神教的传播","text":["§普世一神教的传播 说教会等级体系与政治权力结盟。","同一小节说牧首可以借助帝国的支持推行其意志。"],"quote":"牧首、主教和修士"},"distinctions":[{"term":"主教","text":"主教管理一个教区。牧首是大城市的最高主教，地位在主教之上。"},{"term":"哈里发","text":"哈里发是穆斯林共同体的统治者。牧首是基督教会的领袖，不统治穆斯林。"},{"term":"迦克墩派","text":"迦克墩派是一个教义派别。牧首是一个教职，不同派别各有牧首。"},{"term":"教皇","text":"教皇是罗马的主教。牧首指东方大城市的最高主教。"}],"misreadings":["把牧首当成世俗官员是误读。§普世一神教的传播 说他是教会领袖，只是借助帝国的支持。","以为每座城市都有牧首是误读。§普世一神教的传播 只把牧首用于大城市。","把牧首的谈判当成教会的统一立场是误读。§埃及 说亚历山大里亚的民众起来反对牧首。"],"role_in_book":["§埃及 用牧首的谈判说明城市如何归顺。","§进攻君士坦丁堡的尝试 用牧首的书信给封锁断代。"]}"#;
 /// The shape of a concept job. All its material is in the message, so it reads no file.
-const WORKING_RULES: &str = "## 工作方式\n\n判断要用的材料全在本条消息里：共享说明、本组术语，以及每个术语在书中的原文。\n\n- 不读取、不列出、不搜索任何文件，不写脚本。不打开小节文件夹。\n- 写之前想两遍，都在推理里做，不用工具：第一遍逐个术语写内容；第二遍逐个术语核对，每句话都要有下面的原文支持，区别只比下面列出的术语。\n- 每条事实都写明小节：`explanation` 和 `role_in_book` 里的事实句按原文前的【§小节名】写成“§小节名 说……”。不要写“本书说”这类不标小节的句子。\n- 写够内容，不要照样例的条数减少：`explanation` 5–8 句，`distinctions` 写 4–6 条相近术语，`misreadings` 写 3–5 条，`role_in_book` 2–4 句。原文实在不够时可以少写，不要编造。\n- 然后一次写完答案文件，运行一次 SELF-CHECK。只有 faults 不是 0 才改答案再运行。faults 是 0 就结束，不再复查。";
+const WORKING_RULES: &str = "## 工作方式\n\n判断要用的材料全在本条消息里：共享说明、本组术语，以及每个术语在书中的原文。\n\n- 不读取、不列出、不搜索任何文件，不写脚本。不打开小节文件夹。\n- 写之前想两遍，都在推理里做，不用工具：第一遍逐个术语写内容；第二遍逐个术语核对，每句话都要有下面的原文支持，区别只比下面列出的术语。\n- `explanation` 是教读者学会这个术语的讲解：第一句下定义，后面每句回答它怎样运作、由谁做、为什么这样、带来什么结果。每句都和上一句有因果、条件、对比或先后关系，帮不上读者懂这个术语的事实不写。这一栏不写小节号和章号，不提“本书”“作者”，不按出处逐条罗列书中的记述。\n- 书中怎么说放进别的字段：`book_definition`、`misreadings` 和 `role_in_book` 里的事实句按原文前的【§小节名】写成“§小节名 说……”。不要写“本书说”这类不标小节的句子。\n- 写够内容，不要照样例的条数减少：`explanation` 4–8 句，`distinctions` 写 4–6 条相近术语，`misreadings` 写 3–5 条，`role_in_book` 2–4 句。原文实在不够时可以少写，不要编造。\n- 然后一次写完答案文件，运行一次 SELF-CHECK。只有 faults 不是 0 才改答案再运行。faults 是 0 就结束，不再复查。";
 const MATH_PER_JOB_RANGE: (i64, i64) = (1, 8);
 const MAX_STEPS_RANGE: (i64, i64) = (1, 64);
 const MAX_PROSE_RANGE: (i64, i64) = (0, 20_000);
@@ -146,6 +147,10 @@ static DEFINES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(称为|叫做|定义为|是指|即所谓|我们把)").unwrap());
 /// One formula span. It is a candidate signal outside a definition and evidence inside one.
 static CHAPTER_CITED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"第[0-9一二三四五六七八九十百]+[章节]").unwrap());
+/// The book as the subject of a sentence: `本书说`, `作者认为`, `书中写道`.
+static BOOK_NARRATION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"本书|(作者|书中|同一小节)(说|称|认为|指出|提到|写|记|用|把|讲|谈|论|主张|强调)").unwrap()
+});
 static FORMULA: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\$[^$]*\$\$|\$[^$\n]+\$").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
@@ -607,6 +612,7 @@ pub(crate) fn build_plan(
             &inputs.settings,
         )?);
     }
+    no_math_in_a_history_book(&inputs.book.variant, &mut evidence);
     let mut incomplete = Vec::new();
     for item in &evidence {
         if item.row.meaning.trim().is_empty()
@@ -808,6 +814,17 @@ fn plan_hash_of(frozen: &Value) -> String {
         list.remove("legacy");
     }
     canon::hash_value(&value)
+}
+
+/// A history book has no mathematical Term: its digest has no model layer, and every "formula" met
+/// so far was a footnote mark or a foreign word in math italics.
+fn no_math_in_a_history_book(variant: &str, evidence: &mut [RowEvidence]) {
+    if variant == HISTORY {
+        for item in evidence {
+            item.classification.kind = "concept";
+            item.classification.evidence.clear();
+        }
+    }
 }
 
 /// The previous revision and its history: `state.json` is the derived local progress, and an
@@ -1216,6 +1233,9 @@ fn job_text(
     sb.line("## 输出").blank();
     if pstr(job, "kind") != "math" {
         sb.line(WORKING_RULES).blank();
+        if pstr(&plan["book"], "variant") == HISTORY {
+            sb.line("本书是历史书：`category` 一律写 `concept`，不写数学部分，不为术语构造公式或模型。").blank();
+        }
     }
     sb.line(format!(
         "把结果写入 `{}`，UTF-8，只写这一个文件。",
@@ -1875,13 +1895,23 @@ fn clip(text: &str, max: usize) -> String {
 /// The formula spans of one text, exactly as written.
 /// A footnote marker of the book's Markdown (`$^{20}$`): scheiner2022baghdad's text holds thousands, and each one read as a
 /// formula made 263 of 501 Term jobs of a history book mathematical.
-static FOOTNOTE_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\$\s*\^\s*\{?[\d,\s-]+\}?\s*\$$").unwrap());
+static FOOTNOTE_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\$\s*(\{\s*\})?\s*\^\s*\{?([\d,\s-]+|[a-z])\}?\s*\$$").unwrap());
+
+/// A foreign word the OCR set in math italics: `$bakkā'ūn$`, `$ahl\ malāma$`, `$\text{Tabaqāt}$`.
+/// morony2005iraq: every one of its 31 mathematical rows came from such a mark, and a writer then
+/// invented a formula for 哭泣.
+fn word_in_math(formula: &str) -> bool {
+    let inner = formula.trim_matches('$').replace(r"\text", "").replace(r"\ ", " ");
+    let letters: Vec<char> = inner.chars().filter(|c| c.is_alphabetic()).collect();
+    let plain = inner.chars().all(|c| c.is_alphabetic() || " '’‘ʿʾ{}-".contains(c));
+    plain && (letters.len() >= 4 || letters.iter().any(|c| !c.is_ascii()))
+}
 
 pub(crate) fn formulas(text: &str) -> Vec<String> {
     FORMULA
         .find_iter(text)
         .map(|found| found.as_str().trim().to_string())
-        .filter(|formula| formula.len() > 2 && !FOOTNOTE_MARK.is_match(formula))
+        .filter(|formula| formula.len() > 2 && !FOOTNOTE_MARK.is_match(formula) && !word_in_math(formula))
         .collect()
 }
 
@@ -1907,9 +1937,15 @@ pub(crate) fn around_term(line: &str, term: &str) -> String {
     format!("{}{term}{after}", before.into_iter().rev().collect::<String>())
 }
 
+/// An `explanation` sentence that tells where in the book something stands or who says it.
+fn source_narration(text: &str) -> bool {
+    text.contains('§') || CHAPTER_CITED.is_match(text) || BOOK_NARRATION.is_match(text)
+}
+
 /// The sentences of a concept draft that name where in the book they stand.
+/// `explanation` is left out: it teaches the term and never tells the book's account.
 fn cited_sentences(item: &Value) -> usize {
-    ["explanation", "role_in_book"]
+    ["role_in_book", "misreadings"]
         .iter()
         .flat_map(|field| item[*field].as_array().cloned().unwrap_or_default())
         .filter(|sentence| {
@@ -2589,6 +2625,22 @@ fn check_draft_item(
         }]);
         return Ok(check);
     }
+    // morony2005iraq, 2026-11-06: a sample and a rule that asked for `§小节名 说` turned 85% of the
+    // explanation lines into a list of the book's statements, and the Card taught nothing.
+    if draft.category == zt_check::term::Category::Concept {
+        let narrated = item["explanation"]
+            .as_array()
+            .map(|lines| lines.iter().filter(|line| source_narration(line.as_str().unwrap_or_default())).count())
+            .unwrap_or(0);
+        if narrated > 0 {
+            check["status"] = json!("faulty");
+            check["schema_faults"] = json!([{
+                "path": "explanation",
+                "message": format!("`{term}` 的 explanation 有 {narrated} 句在转述书：这一栏用自己的话讲术语本身，不写小节号、章号、“本书说”。书中的说法放进 book_definition 或 role_in_book"),
+            }]);
+            return Ok(check);
+        }
+    }
     // A check cannot see what it does not ask for: without this a job that lost every citation
     // passed with faults 0 (Term Card size test, 2026-11-06).
     if draft.category == zt_check::term::Category::Concept
@@ -2597,8 +2649,16 @@ fn check_draft_item(
     {
         check["status"] = json!("faulty");
         check["schema_faults"] = json!([{
-            "path": "explanation",
-            "message": format!("`{term}` 至少要有 {MIN_CITED} 句写明小节：按原文前的【§小节名】写成“§小节名 说……”"),
+            "path": "role_in_book",
+            "message": format!("`{term}` 的 role_in_book 与 misreadings 至少要有 {MIN_CITED} 句写明小节：按原文前的【§小节名】写成“§小节名 说……”"),
+        }]);
+        return Ok(check);
+    }
+    if draft.category == zt_check::term::Category::Math && pstr(&compiled.plan["book"], "variant") == HISTORY {
+        check["status"] = json!("faulty");
+        check["schema_faults"] = json!([{
+            "path": "category",
+            "message": format!("`{term}` 必须写 concept：历史书的术语没有数学部分，不要为它构造公式或模型"),
         }]);
         return Ok(check);
     }
@@ -3993,10 +4053,70 @@ mod tests {
 
     #[test]
     fn a_card_must_cite_its_sections_in_two_sentences() {
-        let cited = json!({"explanation": ["甲是一个词。", "§埃及 说甲很重要。"], "role_in_book": ["第三章用甲说明征服。"]});
+        let cited = json!({"misreadings": ["把甲当成乙是误读。§埃及 说甲很重要。"], "role_in_book": ["第三章用甲说明征服。"]});
         assert_eq!(cited_sentences(&cited), 2);
-        let bare = json!({"explanation": ["甲是一个词。", "本书说甲很重要。"], "role_in_book": ["本书用甲说明征服。"]});
-        assert_eq!(cited_sentences(&bare), 0);
+        let bare = json!({"explanation": ["§埃及 说甲很重要。"], "role_in_book": ["本书用甲说明征服。"]});
+        assert_eq!(cited_sentences(&bare), 0, "an explanation never counts as a citation");
+    }
+
+    #[test]
+    fn an_explanation_teaches_the_term_and_does_not_list_the_book() {
+        // The lines of morony2005iraq/1|a|a, as published on 2026-11-06.
+        for line in [
+            "§导论 说晚期古代约指公元300年至600年这一时期。",
+            "§为什么是伊拉克？ 说以往的趋势是把整个晚期古代当作单一、静止的整体。",
+            "第一章说，游牧阿拉伯人在晚期古代史料中比定居者更突出。",
+            "本书把晚期古代当作阿拉伯征服的前史。",
+            "作者认为这一时期是过渡。",
+        ] {
+            assert!(source_narration(line), "{line}");
+        }
+        assert!(!source_narration("晚期古代是约公元300年至600年的西亚历史时期。"));
+        assert!(!source_narration("抄本的作者不明。"), "a word, not the book as a subject");
+    }
+
+    #[test]
+    fn the_job_sample_obeys_the_rule_it_teaches() {
+        let sample: Value = serde_json::from_str(SAMPLE).unwrap();
+        let lines = sample["explanation"].as_array().unwrap();
+        assert!(lines.len() >= 5, "a sample sets the amount of work");
+        assert!(lines.iter().all(|line| !source_narration(line.as_str().unwrap())));
+        assert!(cited_sentences(&sample) >= MIN_CITED);
+    }
+
+    #[test]
+    fn a_history_book_plans_no_mathematical_term() {
+        let classified = |kind| RowEvidence {
+            classification: Classification {
+                kind,
+                evidence: vec![json!({"kind": "definition_formula"})],
+                formula_candidates: 1,
+                setting_term_tables: Vec::new(),
+                promoted: false,
+            },
+            row: row(1, "哭泣", "礼拜时流泪"),
+            snippets: Vec::new(),
+            sources: Vec::new(),
+            occurrences: Vec::new(),
+            planning_artifact: None,
+        };
+        let mut history = vec![classified("math")];
+        no_math_in_a_history_book(HISTORY, &mut history);
+        assert_eq!(history[0].classification.kind, "concept");
+        assert!(history[0].classification.evidence.is_empty());
+        let mut economics = vec![classified("math")];
+        no_math_in_a_history_book("econ", &mut economics);
+        assert_eq!(economics[0].classification.kind, "math");
+    }
+
+    #[test]
+    fn a_foreign_word_in_math_italics_is_no_formula() {
+        for word in ["$bakkā'ūn$", "$Irjā'$", "$ahl\\ malāma$", "$sūfīs$", "$pādhghōsbān$", "$\\text{Tabaqāt}$", "$limitanei$", "$^{e}$", "${}^{99}$"] {
+            assert!(formulas(word).is_empty(), "{word}");
+        }
+        for math in ["$x^{2}$", "$w^{\\star}$", "$L(w)$", "$\\sigma$", "$MRS$", "$\\alpha+\\beta$"] {
+            assert_eq!(formulas(math), [math], "{math}");
+        }
     }
 
     fn row(number: usize, term: &str, meaning: &str) -> Row {
@@ -4765,12 +4885,12 @@ mod tests {
             "first_defined": "§2",
             "explanation": [
                 "这个词指对资产用途的决定权。",
-                "本书用它区分所有权与控制。",
+                "它决定合同没有写明时资产怎样使用。",
                 "这个概念不等于日常的经营权。"
             ],
             "book_definition": { "text": ["§2 把这个词定义为合同没有写明的决定权。"], "section": "§2", "quote": "" },
             "distinctions": [ { "term": distinction, "text": "均衡指双方都不改变选择。" } ],
-            "misreadings": ["这个概念不是剩余收益。"],
+            "misreadings": ["这个概念不是剩余收益。§2 把它与收益分开。"],
             "role_in_book": ["本书第二章用它解释企业边界。"]
         })
     }

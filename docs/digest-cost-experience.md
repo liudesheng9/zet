@@ -157,6 +157,12 @@ The first build of this change used a short sample with 1 distinction and 1 misr
 
 A plan at 12 terms makes 19 jobs for Hoyland, against 57. Baghdad's jobs reach 154 KB, because each job lists the book's other terms, and that size also held.
 
+## What the Morony explanation fault taught
+
+The size test above restored citations by asking every fact of `explanation` to read `§小节名 说……`, and it scored citations per term. On the first real book, morony2005iraq, that rule gave 85% of 679 explanations as a list of the book's statements (2 to 10% in eight other books). Citations belong in `book_definition`, `misreadings` and `role_in_book`; `explanation` carries none (zt-digest 0.47.6). Score a job by reading its Cards as well as by counting.
+
+The repair (`scripts/book-digest/term-explain-repair.mjs`) rewrites the `## 释义` alone: 12 terms a job, message only, 17 KB, 2 tool calls. A first prompt that only forbade the marks ran 59 s and kept the list; a prompt that set the structure ran 200 s and gave 5.5 connected sentences. A whole Term job for the same work would resend every source line and rewrite fields that were right.
+
 ## What the Card review size test taught
 
 Measured 2026-11-06 for the owner's request that one DeepSeek job carry three times the Card faithful check. A job held one group: 10.8 Cards on average over 689 real jobs. The 118 Card jobs of `morony2005iraq` (kept sessions) made 31 model calls a job and read 4.25M cached tokens, and each cost about 0.9. All three sets below come from real plan-time job files of finished books, run by hand through `deepseek_run` and `deepseek_prompt` on the official source, at high effort.
