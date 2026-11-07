@@ -138,19 +138,24 @@ try {
     $bothState = Get-Content -LiteralPath (Join-Path $bothWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $bothJob = $bothState.jobs[$bothJobs[0].id]
     Assert (@($bothJob.orphans) -contains $orphan -and @($bothJob.candidates[$orphan]).Count -ge 1) "plan: the job names its orphan and its candidates ($(@($bothJob.orphans) -join ', '))"
-    $bothTask = Get-Content -LiteralPath $bothJob.file -Raw -Encoding utf8
+    $bothFirst = Get-Content -LiteralPath $bothJob.file -Raw -Encoding utf8
+    $bothLast = Get-Content -LiteralPath ($bothJob.file -replace '\.md$', '.p2.md') -Raw -Encoding utf8
+    Assert ((@($bothJobs[0].then) -join ',') -eq "$($bothJobs[0].id).p2.md" -and $bothFirst -notmatch '本任务的孤立卡片') 'plan: the orphan Links are the last message of the conversation'
+    $bothTask = $bothFirst + $bothLast
     Assert ($bothTask -match '## 本任务的孤立卡片' -and $bothTask -match [regex]::Escape($orphan) -and $bothTask -match '候选卡片') 'plan: the task file carries the orphan-link section'
     $bothPrecheck = "(?m)^SELF-CHECK: zt-digest card -Step precheck -Work ""$([regex]::Escape((Resolve-Path $bothWork).Path))"" -Job $([regex]::Escape($bothJobs[0].id))\s*$"
     Assert ($bothTask -match $bothPrecheck -and -not ($bothTask -match 'SELF-CHECK: zt-digest coverage')) 'plan: the one job has its one check'
     # A group draft answers for every orphan it names: `links` or `none` per orphan, in the same JSON.
-    $bothDraft = $bothJob.out
+    $bothDraft = $bothJob.out -replace '\.json$', '.p1.json'
+    $bothLinks = $bothJob.out -replace '\.json$', '.p2.json'
     $okCards = @(@($bothJob.cards) | ForEach-Object { @{ address = $_; verdict = 'ok'; note = '与原文一致。' } })
     $otherOrphans = @(@($bothJob.orphans) | Where-Object { $_ -ne $orphan })
-    Save-Json $bothDraft @{ cards = $okCards; adds = @(); skips = @(); links = @(); none = @() }
+    Save-Json $bothDraft @{ cards = $okCards; adds = @(); skips = @() }
+    Save-Json $bothLinks @{ links = @(); none = @() }
     $bothPre = Run-Digest @('card', '-Step', 'precheck', '-Work', $bothWork, '-Job', $bothJobs[0].id)
     Assert (@($bothPre | Where-Object { $_ -match [regex]::Escape($orphan) -and $_ -match 'no entry for this orphan' }).Count -eq 1) "precheck: the group job answers for its orphan Link ($($bothPre -join ' | '))"
     $from = @($bothJob.candidates[$orphan])[0]
-    Save-Json $bothDraft @{ cards = $okCards; adds = @(); skips = @()
+    Save-Json $bothLinks @{
         links = @(@{ to = $orphan; from = $from; text = "对照 [[$orphan]]：这里讨论的是没有链接的笔记。" })
         none = @($otherOrphans | ForEach-Object { @{ orphan = $_; note = '本组的候选卡片都不合适。' } }) }
     $bothPre = @(Run-Digest @('card', '-Step', 'precheck', '-Work', $bothWork, '-Job', $bothJobs[0].id))

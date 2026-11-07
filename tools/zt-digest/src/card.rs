@@ -52,11 +52,11 @@ const CARDS_PER_JOB: usize = 40;
 const CARDS_PER_PART: usize = 12;
 const FIX_PROMPT: &str = "按以上说明处理任务文件中的每张卡，写出 JSON 文件。最后只回复一行 JSON。";
 /// The later messages of one review job: one conversation, one part at a time.
-const PART_PROMPT: &str = "按说明处理这一部分，写出这一部分的结果文件。最后只回复一行 JSON。";
+const PART_PROMPT: &str = "按说明审查这一部分的每张卡，写出这一部分的结果文件。只回复一行 JSON。";
 const ORPHAN_PROMPT: &str = "按以上说明为每张孤立卡片选出链接，写出 JSON 文件。最后只回复一行 JSON。";
 const FOLLOW_PROMPT: &str = "按以上问题修正这些卡片，写出 JSON 文件。最后只回复一行 JSON。";
-/// A review job's first message when it also links orphans (#191): both instruction files open it.
-const BOTH_PROMPT: &str = "按以上说明处理这一部分，写出这一部分的结果文件。最后只回复一行 JSON。";
+/// The first message of a review job (#187, #191).
+const BOTH_PROMPT: &str = "按以上说明审查这一部分的每张卡，写出这一部分的结果文件。只回复一行 JSON。";
 
 static RULE_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[,\s]+").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
@@ -727,7 +727,7 @@ impl Compiler {
         self.state["jobs"][&id] = job;
         // Both instruction files, the shared ones first: DeepSeek caches that prefix (#191).
         if orphans.is_empty() {
-            Ok(json!({ "id": id, "files": [self.fix_doc(), file], "prompt": FIX_PROMPT, "then": then }))
+            Ok(json!({ "id": id, "files": [self.fix_doc(), file], "prompt": BOTH_PROMPT, "then": then }))
         } else {
             Ok(json!({
                 "id": id, "files": [self.fix_doc(), self.orphan_doc(), file], "prompt": BOTH_PROMPT, "then": then,

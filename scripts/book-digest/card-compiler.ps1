@@ -14,7 +14,10 @@
   and decisions.json. Every step prints compact JSON as its last line. A step that hands work to
   DeepSeek prints {"jobs":[{"id","files":[...],"prompt","continue"?,"fallback"?}], ...}.
 
-    plan     runs digest-audit on -Book; picks its Idea Cards, Event Cards, and anchors (only
+    plan     (on a prepared staging folder: whole groups fill a job up to 40 Cards, one message per
+             12 Cards in one conversation; each part answers in out\fix-NN.pK.json and precheck and
+             apply join them into out\fix-NN.json; with -Cards or -Notes the rule below holds)
+             runs digest-audit on -Book; picks its Idea Cards, Event Cards, and anchors (only
              the Cards of -Groups when given: owned-gNN.txt in -Staging and the anchors); writes
              one fix job per -PerJob Cards with faults of -Rules, a review job for a -Sample of
              the Cards without faults (only with -Staging: the reviewer reads the source), and one
