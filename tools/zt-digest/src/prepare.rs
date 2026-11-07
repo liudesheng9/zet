@@ -122,6 +122,38 @@ fn names_a_year(text: &str) -> bool {
 /// translation; formulas, tables, and unpaired blocks stay. A kept figure's image line becomes its
 /// `artifact:` line, once (its bilingual copy in the next blocks is dropped), followed by its
 /// explanation from the Scholar Archive; other images go.
+/// The source lines of Chinese blocks that stop where a DeepSeek read cut their English: a read shows 2,000
+/// characters of a line, so a translator wrote up to there and ended with an ellipsis (hoyland2015path/8|a|a|3,
+/// 2026-11-07). A writer reads the Chinese alone, so no later check can see the lost sentences.
+pub(crate) fn cut_translations(raw: &str) -> Vec<usize> {
+    let note = |line: &str| {
+        let line = line.trim().trim_end_matches('\\').trim_end();
+        match line.rfind("$^{") {
+            Some(at) if line.ends_with("}$") => line[..at].trim_end().to_string(),
+            _ => line.to_string(),
+        }
+    };
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut cut = Vec::new();
+    for (index, english) in lines.iter().enumerate() {
+        if english.chars().count() < 2000 || has_cjk(english) {
+            continue;
+        }
+        let whole = note(english);
+        if whole.ends_with("...") || whole.ends_with('…') {
+            continue;
+        }
+        let next = lines[index + 1..].iter().position(|line| !line.trim().is_empty()).map(|at| index + 1 + at);
+        if let Some(at) = next
+            && has_cjk(lines[at])
+            && note(lines[at]).ends_with('…')
+        {
+            cut.push(at + 1);
+        }
+    }
+    cut
+}
+
 pub(crate) fn chinese_blocks(raw: &str, figures: &CiMap<Figure>) -> Vec<String> {
     let blocks: Vec<&str> = BLOCKS.split(raw).map(str::trim).filter(|b| !b.is_empty()).collect();
     let mut kept: Vec<String> = Vec::new();
@@ -645,6 +677,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let mut figure_map: CiMap<Figure> = CiMap::new();
     if file_id != 0 && !no_figures {
         figure_map = figures::book_figures(&raw, file_id, min_figure_bytes)?;
+    }
+    let cut = cut_translations(&raw);
+    if !cut.is_empty() {
+        bail!(
+            "{} Chinese blocks of {source} stop at a cut English line, at lines {cut:?}; repair the translation with pdf-ocr-bilingual first",
+            cut.len()
+        );
     }
     // The converter's OCR of each image reaches no writer: the explanation stands in its place.
     let kept = chinese_blocks(&figures::strip_converter_blocks(&raw), &figure_map);
@@ -1300,6 +1339,28 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
         "archive_revision": read.archive_revision,
     })))?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod cut_translation_tests {
+    use super::cut_translations;
+
+    fn english(ending: &str) -> String {
+        format!("{}{ending}", "word ".repeat(420))
+    }
+
+    #[test]
+    fn a_long_english_line_with_a_chinese_ellipsis_is_cut() {
+        let raw = format!("# 标题\n\n{}\n\n这段译文停在伊斯兰教已……\n", english("to be uprooted. $^{1}$"));
+        assert_eq!(cut_translations(&raw), vec![5]);
+    }
+
+    #[test]
+    fn a_whole_translation_a_short_line_and_an_ellipsis_in_the_english_pass() {
+        assert!(cut_translations(&format!("{}\n\n这段译文是完整的。\n", english("to be uprooted."))).is_empty());
+        assert!(cut_translations("A short line.\n\n短句……\n").is_empty());
+        assert!(cut_translations(&format!("{}\n\n原文也以省略号结束……\n", english("and so on..."))).is_empty());
+    }
 }
 
 #[cfg(test)]
