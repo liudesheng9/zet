@@ -790,6 +790,7 @@ Gaps:
 
 ## Change history
 
+- `2026-11-06` — zt-digest **0.47.1**: a Cited Card job holds 8 works by default, up from 4 (`cited-cards -Step plan`, `-PerJob` 1–8; the owner, to save tokens). A plan at a new size keeps every job with a draft on disk and groups the other rows at the new size under ids no job used, so a stopped run keeps its progress (morony2005iraq, at job 145 of 396). The blueprint text of `citedCardsPerJob` still says 4 and passes no value, so the compiler default governs; it changes with the next blueprint bump. Test: `a_new_job_size_keeps_the_written_drafts`.
 - `2026-11-06` — `step-line.ps1` sets `ZT_DIGEST_SCRIPTS` to its own folder, so every step script tells `zt-digest` where the instruction files are. The installed 0.47.0 was built in `D:zt-tb`, a folder that is gone, and its built-in default named that folder; `cited -Step plan` was the step that failed. No reinstall: a step script runs from the repository. Test: `cited-steps.tests.ps1`.
 - `2026-11-06` — the wiki follows the code again: the stage, mode, role and module tables name `zt-history-digest`, the Cited stages, `figure-explain`, the official source and the one queue, every module version comes from the code, and the model layer's lanes are recorded as the one exception. No code changed.
 
