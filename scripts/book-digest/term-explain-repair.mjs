@@ -327,10 +327,12 @@ const around = (line, term, width = 160) => {
 };
 
 async function judgePlan(a) {
+  const pass = a.pass || 'judge';
   const out = a.out; const perJob = Number(a['per-job'] || 12);
-  fs.mkdirSync(path.join(out, 'judge', 'jobs'), { recursive: true });
-  fs.mkdirSync(path.join(out, 'judge', 'answers'), { recursive: true });
+  fs.mkdirSync(path.join(out, pass, 'jobs'), { recursive: true });
+  fs.mkdirSync(path.join(out, pass, 'answers'), { recursive: true });
   // A row the plan classified from a real formula, a notation table or a setting symbol is mathematics in the book.
+  const only = onlyTerms(a);
   const planFile = path.join(a.staging, 'term-cards', 'plan.json');
   const planned = new Map();
   if (fs.existsSync(planFile)) {
@@ -349,6 +351,7 @@ async function judgePlan(a) {
   const items = [];
   for (const card of read) {
     if (!/^类别：数学概念$/m.test(card.body) || planned.get(card.term) === true) continue;
+    if (only && !only.has(card.term)) continue;
     const def = (card.body.split('## 数学定义')[1] || '').split('\n符号表')[0];
     const formula = (def.match(/\$\$[\s\S]*?\$\$/) || [''])[0];
     const reading = lines(def.slice(def.indexOf(formula) + formula.length)).slice(0, 3);
@@ -364,16 +367,16 @@ async function judgePlan(a) {
   for (let i = 0; i < items.length; i += perJob) jobs.push(items.slice(i, i + perJob));
   const index = jobs.map((job, n) => {
     const id = `j${String(n + 1).padStart(3, '0')}`;
-    const file = path.join(out, 'judge', 'jobs', `${id}.md`); const answer = path.join(out, 'judge', 'answers', `${id}.json`);
-    fs.writeFileSync(file, judgeText(out, id, job, answer), 'utf8');
+    const file = path.join(out, pass, 'jobs', `${id}.md`); const answer = path.join(out, pass, 'answers', `${id}.json`);
+    fs.writeFileSync(file, judgeText(out, id, job, answer, pass), 'utf8');
     return { id, file, answer, ids: job.map((t) => t.id) };
   });
-  fs.writeFileSync(path.join(out, 'judge', 'items.json'), JSON.stringify(items, null, 1), 'utf8');
-  fs.writeFileSync(path.join(out, 'judge', 'jobs.json'), JSON.stringify(index, null, 1), 'utf8');
+  fs.writeFileSync(path.join(out, pass, 'items.json'), JSON.stringify(items, null, 1), 'utf8');
+  fs.writeFileSync(path.join(out, pass, 'jobs.json'), JSON.stringify(index, null, 1), 'utf8');
   console.log(JSON.stringify({ ok: true, math: read.filter((c) => /^类别：数学概念$/m.test(c.body)).length, judged: items.length, jobs: index.length, bytes: Math.max(0, ...index.map((j) => fs.statSync(j.file).size)) }));
 }
 
-function judgeText(out, id, job, answer) {
+function judgeText(out, id, job, answer, pass) {
   const body = job.map((t) => [
     `### ${t.id} ${t.term}`, `- 一句话意思：${t.meaning}`, '- 卡上的定义公式：', t.formula || '（没有）', ...t.reading.map((l) => `  ${l}`),
     `- 定义部分标「补：书中未写」的次数：${t.marked}`,
@@ -392,7 +395,8 @@ function judgeText(out, id, job, answer) {
 ## 判定规则
 
 - ${tick}math${tick}：书本身用公式或模型定义、推导或使用这个术语。例如书给出它的公式，或书的模型里它是一个变量、一条曲线、一个条件、一个均衡、一个比率。卡上的公式与书的公式一致，或是书的公式的直接写法。
-- ${tick}concept${tick}：书只用文字讨论这个术语，卡上的公式是写卡的人为它构造的。例如一种制度、一项政策、一个历史现象、一个群体、一种观点，书没有给它公式，卡却给它造了效用函数、成本函数或集合模型。
+- 这个术语本身是有标准数学定义的概念（例如基尼系数、双曲贴现、位似偏好、某种效用函数、偏序、弹性），书没有印出公式也写 ${tick}math${tick}：卡上的标准定义帮助读者学会它。
+- ${tick}concept${tick}：这个术语本身不是数学对象，没有标准的数学定义，书也只用文字讨论它，卡上的公式是写卡的人为它临时构造的模型。例如一种制度、一项规则、一项政策、一个历史现象、一个群体、一种观点、一种态度，卡却给它造了效用函数、成本函数、方差比或集合模型。
 - 书中这一行有公式，不等于这个术语是数学概念：公式可能讲的是别的量。看公式里有没有这个术语对应的量。
 - 拿不准时写 ${tick}math${tick}：误删书中的数学，比留下一张多余的推导代价大。
 
@@ -404,7 +408,7 @@ ${body}
 
 把结果写入 ${tick}${answer}${tick}，UTF-8，只写这一个文件。格式：${tick}{"terms":[{"id":"m001","verdict":"math","reason":"一句理由"}]}${tick}，本组每个术语一项，id 照抄。
 
-SELF-CHECK: node "${process.argv[1]}" judge-check --out "${out}" --job ${id}
+SELF-CHECK: node "${process.argv[1]}" judge-check --out "${out}" --pass ${pass} --job ${id}
 写完运行这一行命令自查，按故障行改正，直到最后一行是 ${tick}faults: 0${tick}（最多三次）。
 写完后只回复一行 JSON：${tick}{"math":数,"concept":数}${tick}。
 `;
@@ -423,7 +427,8 @@ function judgeFaults(job, answer) {
 }
 
 function judgeCheck(a) {
-  const jobs = JSON.parse(fs.readFileSync(path.join(a.out, 'judge', 'jobs.json'), 'utf8'));
+  const pass = a.pass || 'judge';
+  const jobs = JSON.parse(fs.readFileSync(path.join(a.out, pass, 'jobs.json'), 'utf8'));
   const job = jobs.find((j) => j.id === a.job); let answer = null;
   try { answer = JSON.parse(fs.readFileSync(job.answer, 'utf8')); } catch (e) { console.log(`答案文件读不了：${e.message}`); }
   const faults = answer ? judgeFaults(job, answer) : ['没有答案'];
@@ -433,8 +438,9 @@ function judgeCheck(a) {
 
 /** The terms judged concept, one a line, for `plan --only @file`. */
 function judgeList(a) {
-  const jobs = JSON.parse(fs.readFileSync(path.join(a.out, 'judge', 'jobs.json'), 'utf8'));
-  const items = new Map(JSON.parse(fs.readFileSync(path.join(a.out, 'judge', 'items.json'), 'utf8')).map((i) => [i.id, i]));
+  const pass = a.pass || 'judge';
+  const jobs = JSON.parse(fs.readFileSync(path.join(a.out, pass, 'jobs.json'), 'utf8'));
+  const items = new Map(JSON.parse(fs.readFileSync(path.join(a.out, pass, 'items.json'), 'utf8')).map((i) => [i.id, i]));
   const concept = []; let math = 0, missing = 0;
   for (const job of jobs) {
     if (!fs.existsSync(job.answer)) { missing += job.ids.length; continue; }
@@ -442,8 +448,8 @@ function judgeList(a) {
     if (judgeFaults(job, answer).length) throw new Error(`${job.id} still has faults`);
     for (const t of answer.terms) { if (t.verdict === 'concept') concept.push(items.get(t.id).term); else math++; }
   }
-  fs.writeFileSync(path.join(a.out, 'judge', 'concept.txt'), concept.join('\n') + '\n', 'utf8');
-  console.log(JSON.stringify({ ok: missing === 0, math, concept: concept.length, missing, list: path.join(a.out, 'judge', 'concept.txt') }));
+  fs.writeFileSync(path.join(a.out, pass, 'concept.txt'), concept.join('\n') + '\n', 'utf8');
+  console.log(JSON.stringify({ ok: missing === 0, math, concept: concept.length, missing, list: path.join(a.out, pass, 'concept.txt') }));
 }
 
 /** `--only t1,t2`, or `--only @file` with one term a line. */

@@ -163,6 +163,12 @@ The size test above restored citations by asking every fact of `explanation` to 
 
 The repair (`scripts/book-digest/term-explain-repair.mjs`) rewrites the `## 释义` alone: 12 terms a job, message only, 17 KB, 2 tool calls. A first prompt that only forbade the marks ran 59 s and kept the list; a prompt that set the structure ran 200 s and gave 5.5 connected sentences. A whole Term job for the same work would resend every source line and rewrite fields that were right.
 
+### Judging the other books' mathematical Term Cards
+
+Every book was checked for maths Term Cards built on no mathematics (2026-11-07). History books are false by rule (Donner 2, Baghdad 3). In economics books, 371 of 695 maths Cards had no real formula behind their plan row (footnote marks such as `$^{17}$` in plans before 0.44.2, writer promotions, and books digested before plans recorded evidence). A count of book lines with the term and a formula could not separate them: Atkinson's "dd 曲线" is real maths with no such line, and Ebrill's "增值税" has many.
+
+A message-only judging job (12 Cards, the Card's definition formula and up to four book lines, answer by id) costs about 2 tool calls. The first rule, "the book gives no formula", flagged 42 Cards, and many were standard mathematical concepts with correct textbook definitions (基尼系数, 双曲贴现, 偏序). A second pass over those 42 alone, with the rule "the term is no mathematical object and the model was built for it", kept 28 and flagged 14 (一致同意, 配套拨款, 机会主义, 路径依赖, 波特假说 …). Because the second rule only narrows the first, the first pass's maths verdicts stand, and the second pass costs one small job a book. Each Haiku manager of 8 jobs cost about 31K tokens.
+
 ## What the Card review size test taught
 
 Measured 2026-11-06 for the owner's request that one DeepSeek job carry three times the Card faithful check. A job held one group: 10.8 Cards on average over 689 real jobs. The 118 Card jobs of `morony2005iraq` (kept sessions) made 31 model calls a job and read 4.25M cached tokens, and each cost about 0.9. All three sets below come from real plan-time job files of finished books, run by hand through `deepseek_run` and `deepseek_prompt` on the official source, at high effort.
