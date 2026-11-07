@@ -143,10 +143,12 @@ pub(crate) fn cut_translations(raw: &str) -> Vec<usize> {
         if whole.ends_with("...") || whole.ends_with('…') {
             continue;
         }
+        let ends_sentence = whole.ends_with(['.', '?', '!']);
         let next = lines[index + 1..].iter().position(|line| !line.trim().is_empty()).map(|at| index + 1 + at);
         if let Some(at) = next
             && has_cjk(lines[at])
-            && note(lines[at]).ends_with('…')
+            && (note(lines[at]).trim_end_matches(['”', '’', '」', '』', '）', ')', '"', '\'']).ends_with('…')
+                || (ends_sentence && note(lines[at]).ends_with(|c: char| HAN.is_match(&c.to_string()) || c == '，' || c == '、')))
         {
             cut.push(at + 1);
         }
@@ -614,7 +616,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             a.str("SkipHeadings"),
         ),
     };
-    let max_chars = a.int_or("MaxChars", 20000)?;
+    let max_chars = a.int_or("MaxChars", 25000)?;
     let max_units = a.int_or("MaxUnits", 3)?;
     let min_unit_chars = a.int_or("MinUnitChars", 1000)?;
     let mut file_id = match &resolved {
@@ -1353,6 +1355,24 @@ mod cut_translation_tests {
     fn a_long_english_line_with_a_chinese_ellipsis_is_cut() {
         let raw = format!("# 标题\n\n{}\n\n这段译文停在伊斯兰教已……\n", english("to be uprooted. $^{1}$"));
         assert_eq!(cut_translations(&raw), vec![5]);
+    }
+
+    #[test]
+    fn a_cut_inside_a_quotation_is_cut() {
+        let raw = format!("{}
+
+这座都城还被描述为“一座伟大而……”
+", english("of respect."));
+        assert_eq!(cut_translations(&raw), vec![3]);
+    }
+
+    #[test]
+    fn a_translation_that_stops_with_no_ellipsis_is_cut() {
+        let raw = format!("{}
+
+以呈现被视为正统的
+", english("and guidance."));
+        assert_eq!(cut_translations(&raw), vec![3]);
     }
 
     #[test]

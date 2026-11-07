@@ -1,4 +1,4 @@
-// ==== module zt-term-cards v14 ====
+// ==== module zt-term-cards v15 ====
 // v14 (the owner, 2026-11-06): 12 concept terms a job (docs/digest-cost-experience.md). A concept job holds its source
 // lines under their section names and reads no file, and a draft must cite its sections.
 // v13 (the owner, 2026-11-05): the DeepSeek source is the official one again.
@@ -31,14 +31,14 @@
 // v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
 // only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '14', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '15', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers and review-and-fix jobs for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
     key: { type: 'string', required: true, description: 'the book\'s Citation key' },
     tool: { type: 'string', default: 'zt-digest', description: 'the zt-digest command' },
-    perJob: { type: 'number', min: 1, max: 12, description: 'concept terms per writer job (the compiler\'s default is 4)' },
-    mathPerJob: { type: 'number', min: 1, max: 8, description: 'math terms per writer job (the compiler\'s default is 1)' },
+    perJob: { type: 'number', min: 1, max: 12, description: 'concept terms per writer job (the compiler\'s default is 12)' },
+    mathPerJob: { type: 'number', min: 1, max: 8, description: 'math terms per writer job (the compiler\'s default is 2)' },
     script: { type: 'string', default: 'E:\\zet\\scripts\\book-digest\\term-steps.ps1', description: 'the Term step script the drive jobs run' },
   },
   run: async (ctx, p) => {

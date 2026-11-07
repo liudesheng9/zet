@@ -1,4 +1,4 @@
-// ==== module zt-cited-cards v4 ====
+// ==== module zt-cited-cards v5 ====
 // v4 (scheiner2022baghdad, 2026-11-04): a resume leaves a finished Cited list alone (`list -SkipDone`). It reran 27
 // normalize jobs, and its list-finish would have written the list again without a claim. Mode cited-cards still rewrites.
 // v3 (atkinson2015lectures, 2026-11-02): the start claims every page of jobs (one claim takes at most 64), each manager
@@ -18,14 +18,14 @@
 // v2 (pilot 2026-10-31): `source` names the whole bilingual source for a backfill, whose adopted staging names the
 // Chinese-only book.zh.md; the list step passes it as -Source and the plan freezes it for the Cards.
 defineModule({
-  id: 'zt-cited-cards', version: '4', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-cited-cards', version: '5', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Cited list and Cited Cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers for the content; each unit completes only from the compiler\'s own artifacts.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
     key: { type: 'string', required: true, description: 'the book\'s Citation key' },
     mode: { type: 'string', description: "the run's mode ({{mode}}): a resume leaves a finished list alone" },
     part: { type: 'string', required: true, description: '`list` (the Cited list) or `cards` (the Cited Cards)' },
-    perJob: { type: 'number', min: 1, max: 8, description: 'works per writer job (the compiler\'s default is 4)' },
+    perJob: { type: 'number', min: 1, max: 12, description: 'works per writer job (the compiler\'s default is 12)' },
     heading: { type: 'string', description: 'the reference-list heading when it is not References, Bibliography or 参考文献' },
     source: { type: 'string', description: 'the whole bilingual source when the staging manifest names another file (an adopted backfill)' },
     script: { type: 'string', default: 'E:\\zet\\scripts\\book-digest\\cited-steps.ps1', description: 'the Cited step script the drive jobs run' },

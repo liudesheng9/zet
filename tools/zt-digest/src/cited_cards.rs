@@ -4,10 +4,10 @@
 //! citations out); the tool renders, checks and publishes the Cards as the list's immediate Side
 //! successors in row order.
 //!
-//!   zt-digest cited-cards -Step plan|jobs|precheck|check|apply -Staging <folder> [-PerJob 8]
+//!   zt-digest cited-cards -Step plan|jobs|precheck|check|apply -Staging <folder> [-PerJob 12]
 //!                         [-Tokens <job:token,...>] [-Draft <file>] [-Token <n>] [-Apply]
 //!
-//!   plan      groups the list's rows into writer jobs (-PerJob, 1–8), freezes cited-cards\plan.json
+//!   plan      groups the list's rows into writer jobs (-PerJob, 1–12), freezes cited-cards\plan.json
 //!             and writes each job's file; in a prepared run it registers `citedcards/tNNN@<rev>`
 //!             and `citedcards/book@<rev>`. Writes no Card. Prints {"ok","jobs","revision","rows"}.
 //!   jobs      lists the writer jobs (only those -Tokens names, when given). Prints {"ok","jobs":[…]}.
@@ -59,9 +59,9 @@ struct Book {
 pub fn cli(argv: &[String]) -> Result<i32> {
     let names = ["Step", "Staging", "PerJob", "Tokens", "Draft", "Token"];
     let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &["Apply"])?;
-    let per_job = a.int_or("PerJob", 8)?;
-    if !(1..=8).contains(&per_job) {
-        bail!("-PerJob is 1 to 8");
+    let per_job = a.int_or("PerJob", 12)?;
+    if !(1..=12).contains(&per_job) {
+        bail!("-PerJob is 1 to 12");
     }
     let p = Params {
         step: a.choice("Step", &["plan", "jobs", "precheck", "check", "apply"])?,

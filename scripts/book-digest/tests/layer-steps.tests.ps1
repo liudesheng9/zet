@@ -45,7 +45,10 @@ elseif (Test-Path -LiteralPath $env:LS_LAYER) { $layer = (Get-Content -LiteralPa
 function Units([string]$l) {
     switch ($l) {
         'digest' { return @(@{ id = 'digest/g001@1'; layer = 'digest'; token = 1; input_hash = 'ih-1' }, @{ id = 'digest/g002@1'; layer = 'digest'; token = 2; input_hash = 'ih-2' }) }
-        'link' { return @(@{ id = 'link/g001@1'; layer = 'link'; token = 1; input_hash = 'ih-l1' }) }
+        'link' {
+            if ($env:LS_LINK_JOBS) { return @(1..4 | ForEach-Object { @{ id = ('link/g{0:D3}@1' -f $_); layer = 'link'; token = 1; input_hash = "ih-l$_" } }) }
+            return @(@{ id = 'link/g001@1'; layer = 'link'; token = 1; input_hash = 'ih-l1' })
+        }
         'events' { return @(@{ id = 'events/g001@1'; layer = 'events'; token = 1; input_hash = 'ih-e1' }) }
         'findings' { return @(@{ id = 'findings/g001@1'; layer = 'findings'; token = 1; input_hash = 'ih-f1' }) }
         'explain' { return @(@{ id = 'explain/g001-m0000@1'; layer = 'explain'; token = 1; input_hash = 'ih-x1'; inputs = @{ model = 'Key/2|c' } }) }
@@ -92,6 +95,15 @@ switch -Regex ($cmd) {
         exit 0
     }
     '^group-start|^link-start' {
+        if ($env:LS_LINK_JOBS) {
+            $n = [int][regex]::Match($flat, '-Group ([0-9]+)').Groups[1].Value
+            $g = '{0:D3}' -f $n
+            $job = Join-Path $env:LS_OUT "job-$g.json"
+            $draft = "C:/s/link-draft-g$g.json"
+            Set-Content -LiteralPath $job -Value (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; expected_jobs = 1; jobs = @(@{ id = "link-g$g-t1"; kind = 'link'; files = @('C:/s/link-prefix.md', "C:/s/link-g$g.md", "C:/s/link-job-g$g.md"); prompt = "write $draft"; output = $draft; permissions = @{ archive_read = $true; archive_write = $false } }) }) -Encoding utf8
+            Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; job = $job; draft = $draft; expected_jobs = 1; recovered = $false })
+            exit 0
+        }
         $job = Join-Path $env:LS_OUT 'job.json'
         Set-Content -LiteralPath $job -Value (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; jobs = @(@{ id = 'j1'; files = @(); prompt = 'p' }); expected_jobs = 1 }) -Encoding utf8
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; job = $job; draft = (Join-Path $env:LS_OUT 'draft.json'); expected_jobs = 1; recovered = $false })
@@ -314,6 +326,21 @@ Assert-Line $queue 'queue'
 Assert ($queue.json.units -eq 4 -and $queue.json.jobs -eq 4 -and $queue.json.chunks -eq 1) "queue: one start claims every page ($($queue.text))"
 $chunk = Join-Path $out 'layer-steps\digest\jobs-001.json'
 Assert ((Test-Path -LiteralPath $chunk) -and @(Get-Content -LiteralPath $chunk -Raw | ConvertFrom-Json).Count -eq 4) 'queue: the manager job file lists every job'
+
+# docs/digest-job-size-proposal.md: one Link job holds three groups, and each group keeps its own draft and unit.
+$env:LS_LINK_JOBS = '1'
+$env:LS_PAGES = '1'
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$joined = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $common)
+Assert-Line $joined 'start (joined Link jobs)'
+$joinedJobs = @(Get-Content -LiteralPath (Join-Path $out 'layer-steps/link/jobs.json') -Raw -Encoding utf8 | ConvertFrom-Json -Depth 16)
+Assert ([int]$joined.json.units -eq 4 -and [int]$joined.json.jobs -eq 2 -and $joinedJobs.Count -eq 2) "four groups make two jobs ($($joined.last))"
+Assert (@($joinedJobs[0].files).Count -eq 7 -and @($joinedJobs[0].files | Where-Object { $_ -match 'link-prefix' }).Count -eq 1) 'a joined job lists the shared prefix once and each group''s two files'
+Assert ($joinedJobs[0].prompt -match 'link-draft-g001' -and $joinedJobs[0].prompt -match 'link-draft-g002' -and $joinedJobs[0].prompt -match 'link-draft-g003') 'the prompt names the draft of each group'
+Assert ($joinedJobs[0].unit -eq 'link/g001@1' -and $joinedJobs[0].id -eq 'link-g001-g003-t1') 'a joined job carries its first unit'
+Assert (@($joinedJobs[1].files).Count -eq 3 -and $joinedJobs[1].id -like 'link-g004-*') 'the last group stays a plain job'
+Remove-Item Env:LS_LINK_JOBS
+$env:LS_PAGES = '1'
 
 # morony2005iraq, 2026-11-06: a stopped run's Link units stayed claimed, the start got no unit, answered ok, and the
 # stage went on with no Link written. A start begins the layer, so it releases what a stopped run held.

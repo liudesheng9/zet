@@ -277,7 +277,7 @@ switch ($Step) {
             $bookArgs = @('-Source', "$(Opt 'Source')", '-BibTeX', "$(Opt 'BibTeX')", '-BookTitle', "$(Opt 'BookTitle')")
         }
         $argv = @('prepare') + $bookArgs + @('-Out', $Out, '-CitationKey', $key,
-            '-MaxChars', "$(Opt 'MaxChars' 20000)", '-MaxUnits', "$(Opt 'MaxUnits' 3)")
+            '-MaxChars', "$(Opt 'MaxChars' 25000)", '-MaxUnits', "$(Opt 'MaxUnits' 3)")
         if (Opt 'StartHeading') { $argv += @('-StartHeading', "$(Opt 'StartHeading')") }
         if (Opt 'EndHeading') { $argv += @('-EndHeading', "$(Opt 'EndHeading')") }
         if (Opt 'SkipHeadings') { $argv += @('-SkipHeadings', "$(Opt 'SkipHeadings')") }

@@ -140,6 +140,26 @@ function Jobs-Of($Json) {
     }
     return @()
 }
+# docs/digest-job-size-proposal.md: one Link job holds three groups, one conversation for three drafts. Each group keeps its
+# own unit, draft, SELF-CHECK and link-finish. The conversation is recorded once, under its first group's unit.
+function Join-LinkJobs($Jobs) {
+    $joined = @()
+    $list = @($Jobs)
+    for ($k = 0; $k -lt $list.Count; $k += 3) {
+        $part = @($list | Select-Object -Skip $k -First 3)
+        if ($part.Count -eq 1) { $joined += $part[0]; continue }
+        $first = $part[0]
+        $files = @($part | ForEach-Object { $_.files } | Select-Object -Unique)
+        $drafts = (@($part | ForEach-Object { $_.output }) -join '、')
+        $name = ($first.id -replace '-t[0-9]+$', '') + ($part[-1].id -replace '^link(-g[0-9]+)-t[0-9]+$', '$1') + "-t$($first.token)"
+        $joined += [pscustomobject]@{
+            id = $name; kind = $first.kind; files = $files; output = $first.output; permissions = $first.permissions
+            unit = $first.unit; token = $first.token
+            prompt = "本任务含 $($part.Count) 组，每组有自己的任务文件。按任务说明把每组的连接草稿写入它自己的文件：$drafts。每份草稿保留本组的绑定字段，并运行本组的 SELF-CHECK 行。"
+        }
+    }
+    return $joined
+}
 # The layer's own start or plan command for every claimed unit, and the jobs it lists.
 function Start-Layer($Units) {
     $firstUnit = $Units[0]
@@ -311,6 +331,7 @@ switch ($Step) {
             }
         }
         Save 'start.json' $starts
+        if ($Layer -eq 'link') { $allJobs = @(Join-LinkJobs $allJobs) }
         Save 'jobs.json' $allJobs
         # One job file per manager: a manager runs every entry of its own file (zt-term-cards v11).
         Get-ChildItem -LiteralPath $Work -Filter 'jobs-*.json' -ErrorAction SilentlyContinue | Remove-Item -Force

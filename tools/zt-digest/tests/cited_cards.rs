@@ -305,7 +305,7 @@ fn a_new_job_size_keeps_the_written_drafts() {
     let line = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     assert_eq!(line["revision"], json!(2));
     let plan: Value = serde_json::from_str(&std::fs::read_to_string(staging.join("cited-cards").join("plan.json")).unwrap()).unwrap();
-    assert_eq!(plan["per_job"], json!(8));
+    assert_eq!(plan["per_job"], json!(12));
     assert_eq!(plan["jobs"], json!([{"id":"t002","rows":[2]},{"id":"t004","rows":[1,3]}]));
     let again = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     assert_eq!(again["revision"], json!(2));

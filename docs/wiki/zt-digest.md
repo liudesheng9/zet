@@ -1537,6 +1537,7 @@ A DeepSeek run or a script calls the helper as `zt-digest call - -Log <file>` wi
 
 ## Change history
 
+- `2026-11-06` — 0.47.4: `NORMALIZE_PER_JOB` 60, `prepare` default `MaxChars` 25000, Term `DEFAULT_MATH_PER_JOB` 2, `cited-cards` default and range 12 (`docs/digest-job-size-proposal.md`).
 - `2026-11-06` — zt-digest **0.47.2**: card jobs of whole groups up to 40 Cards, one message per 12 Cards; `coverage` reads a draft's `span`, takes no C2 from a file token beside a line range or from an anchor, and no C3 number from a `§` mark.
 - `2026-11-06` — zt-digest **0.46.1**: `term-cards` plans 12 concept terms a job, `Section` carries its heading as `label`, `RowEvidence.sources` holds the lines a concept job shows, and `check_draft_item` refuses a concept draft with fewer than `MIN_CITED` cited sentences.
 - `2026-11-06` — `term-sync` and `term_standard.rs` (design `docs/term-sync-design.md`): one book is matched to the standard list of its Literature type, `<archive_root>	erms<type>.json`. Steps `status`, `start`, `review` (the job's SELF-CHECK and evidence, from entries frozen at the start) and `apply`. A candidate index gives each row at most 6 entries, so a job follows the new book and not the shelf. `apply` writes one `等义术语：` Link line at the end of `## 释义` on the book's own Term Cards and changes nothing else. The digest takes no part.

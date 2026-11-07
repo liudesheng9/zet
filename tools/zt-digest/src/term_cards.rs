@@ -2,7 +2,7 @@
 //! S27 / #166).
 //!
 //!   zt-digest term-cards -Step plan|jobs|precheck|check|review-plan|fix-plan|apply|report
-//!                        -Staging <folder> [-PerJob 12] [-MathPerJob 1]
+//!                        -Staging <folder> [-PerJob 12] [-MathPerJob 2]
 //!                        [-MaxStepsPerCard 12] [-MaxProse 0]
 //!                        [-Jobs <ids>] [-Token <claim>] [-Tokens <job:claim,...>] [-Apply]
 //!
@@ -96,7 +96,7 @@ const WORK: &str = "term-cards";
 /// quality of the old jobs at about a fifth of the cost; 24 still passed every check with a third
 /// fewer distinctions.
 pub const DEFAULT_PER_JOB: i64 = 12;
-pub const DEFAULT_MATH_PER_JOB: i64 = 1;
+pub const DEFAULT_MATH_PER_JOB: i64 = 2;
 pub const DEFAULT_MAX_STEPS: i64 = 12;
 /// 0: no prose bound (2026-10-26, the user's request: some books have very long terms, so a Term
 /// Card's length is not restricted; zt-check reads 0 as no bound).

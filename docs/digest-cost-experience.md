@@ -205,6 +205,10 @@ The old job held 10.8 Cards, so 33 is three times that. A book's jobs fall to ab
 
 The manager's new rule first landed in the wrong prompt, because the string it was inserted before occurs three times in the library. Rendering the template and reading it found that; no test would have.
 
+## Job sizes set by the owner, 2026-11-06
+
+The sizes in `docs/digest-job-size-proposal.md` are the owner's decision and have not run on a book: Cited Cards 12 works, Term Cards 12 concept and 2 mathematical terms, Links 3 groups, Cited normalize 60 rows. Cited Cards at 8 works wrote slightly less than at 4 on Morony (locations 4.5 against 4.7, role text 80 against 88 characters). Score the first book against those numbers.
+
 ## Real run costs
 
 | Run | Jobs | Cards read | Ledger cost | Per job | Per Card |

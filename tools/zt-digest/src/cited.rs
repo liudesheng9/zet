@@ -75,7 +75,7 @@ const MAX_CANDIDATES: usize = 60;
 /// The most characters of one candidate line the plan keeps.
 const CANDIDATE_CHARS: usize = 240;
 /// The most entries one normalize job holds.
-const NORMALIZE_PER_JOB: usize = 40;
+const NORMALIZE_PER_JOB: usize = 60;
 
 pub const MODEL: &str = "deepseek-official/deepseek-flash";
 const NORMALIZE_INSTRUCTION: &str = "dsh-cited-normalize-instructions.zh.md";
