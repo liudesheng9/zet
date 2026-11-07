@@ -245,6 +245,15 @@ switch ($Step) {
             $fields = Results-Line $all
             Reply (@{ ok = $true; layer = 'cards'; claimed = $claimed; units = $claimed; jobs = 0 } + $fields + (Gate-Fields $gate)) @{ results = $all; gate = $gate; units = @() }
         }
+        # A start begins the layer, so a claim still held belongs to a stopped run: release it (morony2005iraq, 2026-11-06:
+        # 118 Link units stayed claimed, the start got none, answered ok, and the stage went on with no Link written).
+        $stuck = @(@((Run @('ledger', 'status', '-Out', $Out, '-Layer', $Layer)).json.units) | Where-Object { $_ -and $_.state -eq 'claimed' })
+        $refusal = $null
+        foreach ($u in $stuck) {
+            $released = Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release')
+            if ($released.code -ne 0) { $refusal = "$($u.id): $(Tail $released.tail)"; break }
+        }
+        if ($refusal) { Fail 'release' $refusal; break }
         $claimArgs = @('ledger', 'next', '-Out', $Out, '-Layer', $Layer, '-Take', "$Page", '-Brief', '-Owner', $Owner)
         if ($Lease -gt 0) { $claimArgs += @('-Lease', "$Lease") }
         # A claim that fails is tried three times before the layer hears of it (a refused claim while parallel
