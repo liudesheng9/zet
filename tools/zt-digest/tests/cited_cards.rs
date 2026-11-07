@@ -291,6 +291,27 @@ fn precheck(zt: &Zt, staging: &Path, draft: &Path) -> String {
 }
 
 #[test]
+fn a_new_job_size_keeps_the_written_drafts() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    let dir = tempfile::tempdir().unwrap();
+    let staging = prepared(&zt, &mut mcp, dir.path());
+    let s = staging.to_str().unwrap();
+    // morony2005iraq, 2026-11-06: the job size doubled at job 145 of 396. A job with a draft keeps its rows;
+    // the rest are grouped at the new size under ids no job used, and a further plan changes nothing.
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s, "-PerJob", "1"]));
+    std::fs::write(draft_path(&staging, "t002"), json!([jones()]).to_string()).unwrap();
+    let line = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    assert_eq!(line["revision"], json!(2));
+    let plan: Value = serde_json::from_str(&std::fs::read_to_string(staging.join("cited-cards").join("plan.json")).unwrap()).unwrap();
+    assert_eq!(plan["per_job"], json!(8));
+    assert_eq!(plan["jobs"], json!([{"id":"t002","rows":[2]},{"id":"t004","rows":[1,3]}]));
+    let again = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    assert_eq!(again["revision"], json!(2));
+}
+
+#[test]
 fn the_plan_groups_every_row_into_jobs_that_name_the_whole_source_and_writes_no_card() {
     let Some(program) = zt_program() else { return };
     let zt = Zt::new(program);

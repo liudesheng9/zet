@@ -4,7 +4,7 @@
 //! citations out); the tool renders, checks and publishes the Cards as the list's immediate Side
 //! successors in row order.
 //!
-//!   zt-digest cited-cards -Step plan|jobs|precheck|check|apply -Staging <folder> [-PerJob 4]
+//!   zt-digest cited-cards -Step plan|jobs|precheck|check|apply -Staging <folder> [-PerJob 8]
 //!                         [-Tokens <job:token,...>] [-Draft <file>] [-Token <n>] [-Apply]
 //!
 //!   plan      groups the list's rows into writer jobs (-PerJob, 1–8), freezes cited-cards\plan.json
@@ -59,7 +59,7 @@ struct Book {
 pub fn cli(argv: &[String]) -> Result<i32> {
     let names = ["Step", "Staging", "PerJob", "Tokens", "Draft", "Token"];
     let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &["Apply"])?;
-    let per_job = a.int_or("PerJob", 4)?;
+    let per_job = a.int_or("PerJob", 8)?;
     if !(1..=8).contains(&per_job) {
         bail!("-PerJob is 1 to 8");
     }
@@ -180,12 +180,8 @@ fn plan_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     if rows.is_empty() {
         bail!("the Cited list has no row");
     }
-    let jobs: Vec<Value> = rows
-        .chunks(p.per_job)
-        .enumerate()
-        .map(|(n, chunk)| json!({ "id": format!("t{:03}", n + 1), "rows": chunk.iter().map(|r| r["row"].clone()).collect::<Vec<_>>() }))
-        .collect();
     let list_address = pstr(&list, "list");
+    let jobs = job_list(p, book, &rows, &list_address);
     let plan_hash = crate::canon::hash_value(&json!({ "list": list_address, "rows": rows, "jobs": jobs }));
     let old = util::read_json(plan_path(book)).ok();
     let revision = match &old {
@@ -223,6 +219,30 @@ fn plan_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     }
     util::print_line(&util::compact(&json!({ "ok": true, "jobs": jobs.len(), "revision": revision, "rows": rows.len() })))?;
     Ok(0)
+}
+
+/// The writer jobs of a plan. The same list at the same size keeps its jobs. At a new size a job with a
+/// draft on disk keeps its rows (morony2005iraq, 2026-11-06: the size doubled at job 145 of 396), and the
+/// other rows are grouped at the new size under ids no job used, so no written draft is lost.
+fn job_list(p: &Params, book: &Book, rows: &[Value], list_address: &str) -> Vec<Value> {
+    let group = |rows: &[Value], first: usize| -> Vec<Value> {
+        rows.chunks(p.per_job)
+            .enumerate()
+            .map(|(n, chunk)| json!({ "id": format!("t{:03}", first + n), "rows": chunk.iter().map(|r| r["row"].clone()).collect::<Vec<_>>() }))
+            .collect()
+    };
+    let old = util::read_json(plan_path(book)).ok().filter(|old| pstr(old, "list") == list_address && old["rows"].as_array().map(Vec::as_slice) == Some(rows));
+    let Some(old) = old else { return group(rows, 1) };
+    let old_jobs = old["jobs"].as_array().cloned().unwrap_or_default();
+    if old["per_job"].as_u64() == Some(p.per_job as u64) {
+        return old_jobs;
+    }
+    let (written, open): (Vec<Value>, Vec<Value>) = old_jobs.iter().cloned().partition(|job| std::path::Path::new(&draft_path(book, &pstr(job, "id"))).is_file());
+    let number = |job: &Value| pstr(job, "id").trim_start_matches('t').parse::<usize>().unwrap_or(0);
+    let last = old_jobs.iter().map(number).max().unwrap_or(0);
+    let open_rows: std::collections::HashSet<u64> = open.iter().flat_map(|job| job["rows"].as_array().cloned().unwrap_or_default()).filter_map(|n| n.as_u64()).collect();
+    let rest: Vec<Value> = rows.iter().filter(|row| row["row"].as_u64().is_some_and(|n| open_rows.contains(&n))).cloned().collect();
+    written.into_iter().chain(group(&rest, last + 1)).collect()
 }
 
 /// One writer job's file: the works, the whole source, the candidate lines, the Term spellings.
