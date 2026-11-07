@@ -4385,7 +4385,7 @@ mod tests {
         );
         assert_eq!(plan["source"]["fingerprint"].as_str().unwrap().len(), 64);
         assert_eq!(plan["limits"]["per_job"], 12);
-        assert_eq!(plan["limits"]["math_per_job"], 1);
+        assert_eq!(plan["limits"]["math_per_job"], 2);
         assert_eq!(plan["limits"]["max_steps_per_card"], 12);
         assert_eq!(plan["limits"]["max_prose"], 0);
         assert_eq!(plan["versions"]["compiler"], env!("CARGO_PKG_VERSION"));
