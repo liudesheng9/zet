@@ -1,17 +1,17 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-history-digest",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "scope": "project",
   "script": ".claude/workflows/zt-history-digest.js",
   "scriptRel": "workflows/zt-history-digest.js",
-  "sha256": "04e1f9ff24babd858bfd105134047706adc586f93fddf5bfedd514a9613e76f1",
-  "fingerprint": "6c8c13fc5a01a6e9",
-  "blueprintSha256": "81ca7e94f383acf1c460136a787dcbac500e5f3eafd4f74e6ce075d7e5916814",
+  "sha256": "cc59554a76614aef65ef85154cedb8360ec993ba5f984b4143384e34aa03310f",
+  "fingerprint": "cda521f77c485952",
+  "blueprintSha256": "816183ee7644cd99ea99244732eda8d2a648539f80648b3154d166f49ed186c5",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "13",
-    "zt-digest-lib": "57",
+    "zt-digest-lib": "58",
     "zt-audit": "7",
     "zt-book-terms": "9",
     "zt-bridge": "10",
@@ -36,7 +36,7 @@
   },
   "moduleFiles": {
     "gate": {
-      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\gate.js",
+      "file": "C:\\Users\\chenx\\AppData\\Local\\Temp\\claude\\5dc1a7b076fcfbe3\\1c4352da-675a-476b-bfe6-7c1ffd2966c7\\scratchpad\\wfp\\modules\\gate.js",
       "sha256": "815c5e2f1436500333cd43f30f53b09f6f13d6a27f26a89eb475ab16ceec6c05"
     },
     "zt-workflow-lib": {
@@ -45,7 +45,7 @@
     },
     "zt-digest-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-lib.js",
-      "sha256": "f8a1040dfa0953955b7e301b44f2ff5af8026d1221bf3f21f00bd9ad12bfcc25"
+      "sha256": "25d3e077383fc6996c5bede327853e1b9764d70a4079317912817dbbb1a457cf"
     },
     "zt-audit": {
       "file": "scripts/book-digest/workflow/modules/zt-audit.js",
@@ -135,15 +135,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-history-digest.blueprint.json",
-      "sha256": "b822008e70d27db177d70e419b96f642f97639ba2435fe76b56ee1b761d2f676"
+      "sha256": "0cb5555af26d4ef6f58287284f51a9df7fbd02e9c820b4a354094ff8509ade77"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "44745b6b6bb59938695a77f8198568058654e46866f718b1762a0efb7953d6ae"
+      "sha256": "2d1cffde76a589a1236635b9694a44bfd5325122120fb3ac1f44f6157f4087a1"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-06T19:14:43.678Z",
+  "installedAt": "2026-11-07T04:05:14.890Z",
   "dryRun": {
     "agents": 58,
     "order": [

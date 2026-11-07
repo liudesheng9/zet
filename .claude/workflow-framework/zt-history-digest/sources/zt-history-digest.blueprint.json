@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "base": "./zt-digest-base.blueprint.json",
   "name": "zt-history-digest",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "Digest a Chinese-translated history book into ZET Cards: the ZT digest base alone, with the history prompt supplement: reading notes, Links, the Term layer, the Cited layer, Organize, Figures and the Bridge, and no Model, Event or Finding layer; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive history book or history-related academic work (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree of reading notes joined by Links, with Term Cards and Cited Cards. It writes no Model, Event or Finding Card: use zt-econ-digest for a book with models or empirical results. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those from the Literature trees afterwards. Modes link, cards, figures, audit, bridge, term-cards, term-link, cited-cards, terms, finalize, complete and resume re-run stages on an existing digest.",
   "preflight": {
