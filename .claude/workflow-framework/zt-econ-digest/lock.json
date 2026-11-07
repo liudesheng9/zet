@@ -41,7 +41,7 @@
   },
   "moduleFiles": {
     "gate": {
-      "file": "C:\\Users\\chenx\\AppData\\Local\\Temp\\claude\\5dc1a7b076fcfbe3\\1c4352da-675a-476b-bfe6-7c1ffd2966c7\\scratchpad\\wfp\\modules\\gate.js",
+      "file": "C:\\Users\\chenx\\.claude\\skills\\workflow-framework-protocol\\modules\\gate.js",
       "sha256": "815c5e2f1436500333cd43f30f53b09f6f13d6a27f26a89eb475ab16ceec6c05"
     },
     "zt-workflow-lib": {
