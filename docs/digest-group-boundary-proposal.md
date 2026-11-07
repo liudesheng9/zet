@@ -112,3 +112,7 @@ The owner handed these decisions to this session on 2026-11-07.
 3. Scope: the history digest first. The economics and mathematics digests keep their groups until their own layers are tested.
 4. Job shape: one conversation, one message per unit, one check on the last message.
 5. Links: a job holds up to 3 groups and up to 30 gaps, so a large group runs alone and the three digests share one rule.
+
+## Release, 2026-11-07
+
+Released in zt-digest 0.47.5, history 1.0.26, base and mathematics 5.11.38, economics 6.11.38. A dry run gives Morony 36 groups and Kennedy 15. A Haiku manager drove a three-message `then` job through DeepSeek in the required order, on a small test job. The whole flow has not run on a book. The manager rule says a conversation "answers finished"; it should say its status is `finished`, and that wording waits for the next release. The chapter notes of a group that crosses chapters still come from its first chapter only. The history books attach no endnotes now, so this waits until they do, or until the economics digest adopts the rule.
