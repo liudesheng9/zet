@@ -133,6 +133,7 @@ Each feature block is one Haiku manager (≤8 DeepSeek conversations each, ≤8 
 | A self-check fault no job can clear | morony2005iraq Cards: `coverage -Draft` ignored a draft's `span`, so C2 could not clear; all 118 jobs ran the check to its limit, 6,160 lines, 31 model calls a job. The C3 list named each note's `§52` | A check reads what it asks a job to write. When every job has faults, read a session before you size anything (zt-digest 0.47.2) |
 | A job that passes every check and reads less | Card jobs of 40 Cards in one message caught 15 of 18 planted errors but 1 of 12 natural ones. The planted errors were coarse, and the check saw nothing | Score against the old run's natural findings as well as planted ones. Hold one message at about 12 Cards (zt-digest-lib v58) |
 | A replace that hits the first of three | The `then` rule went into another manager prompt, since `Keep at most` occurs three times in the library | Render the changed prompt and read it |
+| A claim a stopped run left reads as no work | morony2005iraq, 2026-11-06: after a stop the 118 Link units stayed claimed; the next `link: start` got no unit and answered ok, the layer driver broke out of its loop, and link check and Organize ran with no Link written. The sign was `link-check publish` refusing with open units, and the watcher showing `claimed 118` with no manager | Every layer start releases a stopped run's claims, and a refused release fails the step. After a resume, read the journal for a stage that ended with no writers. |
 
 ## Release discipline
 

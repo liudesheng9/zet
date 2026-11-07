@@ -54,7 +54,14 @@ function Units([string]$l) {
     return @()
 }
 switch -Regex ($cmd) {
+    '^ledger reclaim' {
+        if ($env:LS_RELEASE_FAIL) { Write-Output 'zt-digest ledger: recent activity'; exit 1 }
+        Set-Content -LiteralPath $env:LS_RELEASED -Value 'released'
+        Write-Output '{"ok":true}'
+        exit 0
+    }
     '^ledger next' {
+        if ($env:LS_HELD_RELEASE -and -not (Test-Path -LiteralPath $env:LS_RELEASED)) { Write-Output (ConvertTo-Json -Compress @{ schema_version = 1; layer = $layer; units = @() }); exit 0 }
         $n = 0
         if (Test-Path -LiteralPath $env:LS_COUNT) { $n = [int](Get-Content -LiteralPath $env:LS_COUNT -Raw) }
         $n++
@@ -68,6 +75,7 @@ switch -Regex ($cmd) {
     '^ledger status' {
         $held = ($args2 -join ' ') -match '-Held'
         $u = @(Units $layer)
+        if ($env:LS_HELD_RELEASE -and -not $held -and -not (Test-Path -LiteralPath $env:LS_RELEASED)) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = @($u | ForEach-Object { @{ id = $_.id; token = $_.token; state = 'claimed' } }) }); exit 0 }
         if ($held) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = $u }) }
         else { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = @($u | ForEach-Object { @{ id = $_.id; token = $_.token; state = $(if ($env:LS_STATE) { $env:LS_STATE } else { 'done' }); input_hash = $_.input_hash } }) }) }
         exit 0
@@ -306,6 +314,22 @@ Assert-Line $queue 'queue'
 Assert ($queue.json.units -eq 4 -and $queue.json.jobs -eq 4 -and $queue.json.chunks -eq 1) "queue: one start claims every page ($($queue.text))"
 $chunk = Join-Path $out 'layer-steps\digest\jobs-001.json'
 Assert ((Test-Path -LiteralPath $chunk) -and @(Get-Content -LiteralPath $chunk -Raw | ConvertFrom-Json).Count -eq 4) 'queue: the manager job file lists every job'
+
+# morony2005iraq, 2026-11-06: a stopped run's Link units stayed claimed, the start got no unit, answered ok, and the
+# stage went on with no Link written. A start begins the layer, so it releases what a stopped run held.
+$env:LS_RELEASED = Join-Path $scratch 'released.txt'
+$env:LS_HELD_RELEASE = '1'
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$held = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $common)
+Assert-Line $held 'start (a stopped run held the units)'
+Assert ([int]$held.json.units -gt 0) "a start claims again the units a stopped run held ($($held.last))"
+Assert ((Get-Content -LiteralPath $calls -Raw) -match 'ledger reclaim -Out .* -Release') 'the start released the held units'
+Remove-Item -LiteralPath $env:LS_RELEASED -ErrorAction SilentlyContinue
+$env:LS_RELEASE_FAIL = '1'
+$refused = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $common)
+Assert-Line $refused 'start (a refused release)'
+Assert ($refused.json.ok -eq $false -and $refused.json.step -eq 'release') "a refused release fails the step, never an empty success ($($refused.last))"
+Remove-Item Env:LS_RELEASE_FAIL, Env:LS_HELD_RELEASE, Env:LS_RELEASED
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''
