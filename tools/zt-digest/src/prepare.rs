@@ -1485,7 +1485,7 @@ mod tests {
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[1].headings, vec!["第一章", "1.1 甲"]);
         assert_eq!(group_units(&merged, 3, 20000, false), vec![vec![0], vec![1, 2]]);
-        assert_eq!(group_units(&merged, 1, 20000), vec![vec![0], vec![1], vec![2]]);
+        assert_eq!(group_units(&merged, 1, 20000, false), vec![vec![0], vec![1], vec![2]]);
         assert!(merge_units(units_of("# 导论\n\n短。"), 1000).is_err());
     }
 
