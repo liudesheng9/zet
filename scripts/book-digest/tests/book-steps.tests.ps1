@@ -110,9 +110,9 @@ switch -Regex ($cmd) {
     '^card ' {
         if ($flat -match '-Step plan') {
             $dir = Join-Path $env:BS_OUT 'cards'
-            $planJobs = @(@{ id = 'fix-01'; kind = 'fix'; file = 'fix-01.md' }, @{ id = 'follow-02'; kind = 'follow'; file = 'follow-02.md'; continue = 'fix-01' })
+            $planJobs = @(@{ id = 'fix-01'; kind = 'fix'; file = 'fix-01.md'; then = @('fix-01.p2.md') }, @{ id = 'follow-02'; kind = 'follow'; file = 'follow-02.md'; continue = 'fix-01' })
             if ($env:BS_CARDS_BOTH) { $planJobs += @{ id = 'fix-09'; kind = 'both'; file = 'fix-09.md' } }
-            Out @{ book = 'Key'; picked = 4; with_faults = 1; review = 0; models = 1; orphans = 0; faults = 2; dir = $dir; lead = @{ fix = (Join-Path $dir 'card.md'); orphans = (Join-Path $dir 'orphan.md') }; prompts = @{ fix = 'pf'; orphans = 'po'; follow = 'pw'; both = 'pb' }; jobs = $planJobs }
+            Out @{ book = 'Key'; picked = 4; with_faults = 1; review = 0; models = 1; orphans = 0; faults = 2; dir = $dir; lead = @{ fix = (Join-Path $dir 'card.md'); orphans = (Join-Path $dir 'orphan.md') }; prompts = @{ part = 'pp'; fix = 'pf'; orphans = 'po'; follow = 'pw'; both = 'pb' }; jobs = $planJobs }
         }
         if ($flat -match '-Step apply') {
             $n = 0
@@ -276,6 +276,7 @@ Assert ($cardsStart.json -and $cardsStart.json.ok -eq $true -and $cardsStart.jso
 Assert ((Has $cardsStart.calls 'card -Step plan -Work .* -Compact -Book Key -Staging .* -MaxCards 5 -Sample 0.1 -ModelReview')) 'cards start: the cycle plan names the book, the cap and the sample'
 $jobs = @(Get-Content -Raw (Join-Path $work 'out\jobs.json') | ConvertFrom-Json)
 Assert ($jobs.Count -eq 2 -and $jobs[0].id -eq 'fix-01' -and $jobs[0].prompt -eq 'pf' -and $jobs[0].files.Count -eq 2) 'cards start: a fix job expands to its instruction file and its own file'
+Assert (@($jobs[0].then).Count -eq 1 -and $jobs[0].then[0].prompt -eq 'pp' -and $jobs[0].then[0].files[0] -like '*fix-01.p2.md') "cards start: a job's next message keeps its file and the part prompt ($($jobs[0] | ConvertTo-Json -Compress -Depth 5))"
 Assert ($jobs[1].id -eq 'follow-02' -and $jobs[1].continue -eq 'fix-01' -and $jobs[1].prompt -eq 'pw' -and $jobs[1].fallback.Count -eq 2) 'cards start: a follow job keeps its continue and its fallback'
 # #191: one group job holds the group's Cards and its orphan Links: its expansion names both shared
 # instruction files first, then its own file.

@@ -396,9 +396,18 @@ pub fn report(input: &Input) -> Coverage {
     }
     // C2: a span that names only a file covers nothing. Every such span is one fault, so the count
     // is the run's file-only span count, as the PRD measures it.
+    let anchors: BTreeSet<&str> = input.cards.iter().filter(|c| c.category == "anchor").map(|c| c.address.as_str()).collect();
     for source in &input.sources {
+        // An anchor heads its group: a line range on it would cover units no note covers.
+        if anchors.contains(source.address.as_str()) {
+            continue;
+        }
         for span in &source.spans {
             if span.start.is_some() || !text_of.contains_key(span.section.as_str()) {
+                continue;
+            }
+            // A file token beside a line range of the same section adds nothing to fix.
+            if source.spans.iter().any(|other| other.section == span.section && other.start.is_some()) {
                 continue;
             }
             faults.push(Fault {
@@ -610,6 +619,8 @@ static DISPLAY_MATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\$\$.*?
 static INLINE_MATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$[^$\n]+\$").unwrap());
 static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?:<|\(|href="|src=")https?://[^\s)>"\]]+"#).unwrap());
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[0-9０-９]+(?:\.[0-9０-９]+)?").unwrap());
+/// A section mark (§52, the source line of a note) points at a section; it states no quantity.
+static SECTION_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"§\s?[0-9A-Za-z.]+").unwrap());
 /// An artifact reference (`artifact:<sha256>`) is an address, not a statement.
 static ARTIFACT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"artifact:[0-9a-fA-F]+").unwrap());
 /// A scholar locator (`scholar:<file id>`), likewise.
@@ -626,7 +637,7 @@ static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[[^\]]*\]\]").un
 /// separator between digits is dropped.
 pub fn numbers_in(text: &str) -> Vec<String> {
     let mut body = text.to_string();
-    for pattern in [&*FENCED, &*DISPLAY_MATH, &*INLINE_MATH, &*URL, &*ARTIFACT, &*SCHOLAR, &*LINK_TARGET, &*LINK] {
+    for pattern in [&*FENCED, &*DISPLAY_MATH, &*INLINE_MATH, &*URL, &*ARTIFACT, &*SCHOLAR, &*LINK_TARGET, &*LINK, &*SECTION_MARK] {
         body = pattern.replace_all(&body, " ").to_string();
     }
     let body = fold_digits(&body);
@@ -775,13 +786,23 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     if a.has("Draft") {
         let path = a.required("Draft")?;
         let draft = util::read_json(&path)?;
-        let (adds, add_sources, draft_skips, record) = read_draft(&path, &draft)?;
-        run.input.cards.extend(adds);
-        run.input.sources.extend(add_sources);
-        run.input.skips.extend(draft_skips);
-        draft_record = record;
+        let part = read_draft(&path, &draft)?;
+        draft_record = part.record.clone();
+        take_draft(&mut run.input, part);
     }
     finish(&run, &staging, group, &draft_record, a.flag("Step"))
+}
+
+/// The blocking coverage lines of one card job's draft over the job's groups: the job's single
+/// SELF-CHECK reads these beside its Card check. C3 is advice the job already has in its task file.
+pub fn draft_faults(staging: &Path, groups: &[i64], path: &str, draft: &Value) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    for &group in groups {
+        let mut run = read_run(staging, Some(group))?;
+        take_draft(&mut run.input, read_draft(path, draft)?);
+        lines.extend(report(&run.input).faults.iter().filter(|fault| !fault.advisory).map(Fault::line));
+    }
+    Ok(lines)
 }
 
 fn finish(run: &Run, staging: &Path, group: Option<i64>, draft: &Value, step: bool) -> Result<i32> {
@@ -1070,8 +1091,35 @@ fn read_snapshot(staging: &Path) -> Result<Snapshot> {
     Ok(Snapshot::default())
 }
 
-/// A group or review draft: the Cards it adds, their spans, and the skips it proposes.
-fn read_draft(path: &str, draft: &Value) -> Result<(Vec<CardRecord>, Vec<Source>, Vec<Skip>, Value)> {
+/// What a group or review draft says about coverage.
+struct DraftPart {
+    /// The Cards it adds, each named `draft#n`.
+    cards: Vec<CardRecord>,
+    /// The spans of those Cards.
+    sources: Vec<Source>,
+    /// The spans it corrects on Cards that exist: each replaces that Card's logged record.
+    spans: Vec<Source>,
+    skips: Vec<Skip>,
+    record: Value,
+}
+
+/// Lays a draft over the run's input. A run read for one group takes only that group's part: a
+/// job of several groups has one draft.
+fn take_draft(input: &mut Input, part: DraftPart) {
+    let own: Option<BTreeSet<String>> = input.group.map(|_| input.sections.iter().map(|(name, _)| name.clone()).collect());
+    let keeps = |span: &Span| own.as_ref().is_none_or(|own| own.contains(&span.section));
+    let foreign: BTreeSet<&str> = part.sources.iter().filter(|s| !s.spans.is_empty() && !s.spans.iter().any(keeps)).map(|s| s.address.as_str()).collect();
+    let corrected: BTreeSet<&str> = part.spans.iter().map(|s| s.address.as_str()).collect();
+    input.sources.retain(|s| !corrected.contains(s.address.as_str()));
+    input.cards.extend(part.cards.iter().filter(|c| !foreign.contains(c.address.as_str())).cloned());
+    input.sources.extend(part.sources.iter().filter(|s| !foreign.contains(s.address.as_str())).cloned());
+    input.sources.extend(part.spans.iter().cloned());
+    input.skips.extend(part.skips.into_iter().filter(|s| keeps(&s.span)));
+}
+
+/// A group or review draft: the Cards it adds, their spans, the spans it corrects and the skips it
+/// proposes.
+fn read_draft(path: &str, draft: &Value) -> Result<DraftPart> {
     let mut cards = Vec::new();
     let mut sources = Vec::new();
     let mut skips = Vec::new();
@@ -1121,8 +1169,15 @@ fn read_draft(path: &str, draft: &Value) -> Result<(Vec<CardRecord>, Vec<Source>
             skips.push(skip);
         }
     }
+    let mut spans = Vec::new();
+    for entry in ps::ps_items(&draft["cards"]) {
+        let (address, raw) = (ps::field(&entry, "address"), ps::field(&entry, "span"));
+        if !address.is_empty() && !raw.trim().is_empty() {
+            spans.push(Source { address, spans: parse_spans(&raw) });
+        }
+    }
     let record = json!({"path": path, "cards": cards.len(), "skips": skips.len()});
-    Ok((cards, sources, skips, record))
+    Ok(DraftPart { cards, sources, spans, skips, record })
 }
 #[cfg(test)]
 mod tests {
@@ -1283,10 +1338,73 @@ mod tests {
         let coverage = report(&input);
         assert_eq!(coverage.covered, 1);
         let c2: Vec<String> = coverage.faults.iter().filter(|f| f.code == "C2").map(Fault::line).collect();
-        assert_eq!(c2, ["s01.md C2 file-only K/1", "s01.md C2 file-only K/1|a"]);
-        assert_eq!(coverage.faults_c2, 2);
+        assert_eq!(c2, ["s01.md C2 file-only K/1"]);
+        assert_eq!(coverage.faults_c2, 1);
         // A span naming a file this run has no section for covers nothing and faults nothing.
         assert!(!coverage.faults.iter().any(|f| f.message.contains("K/1|b")));
+    }
+
+    #[test]
+    fn a_file_token_beside_a_range_of_its_section_is_no_c2() {
+        // morony2005iraq: every note's log line read <file>; sections/s52.md:3-3, so each job met
+        // one C2 per Card, though the Card names its lines.
+        let mut input = setup();
+        input.sources = vec![source("K/1|a", r"\?\D:\b\sections\s01.md; sections/s01.md:1-2")];
+        let coverage = report(&input);
+        assert_eq!(coverage.covered, 1);
+        assert_eq!(coverage.faults_c2, 0);
+    }
+
+    #[test]
+    fn a_group_anchor_needs_no_lines() {
+        // An anchor heads the group: a line range on it would cover units no note covers.
+        let mut input = setup();
+        input.sources = vec![source("K/1", r"\?\D:\b\sections\s01.md"), source("K/1|b", "sections/s01.md")];
+        input.cards = vec![
+            CardRecord { address: "K/1".into(), category: "anchor".into(), body: String::new() },
+            CardRecord { address: "K/1|b".into(), category: "idea".into(), body: String::new() },
+        ];
+        let c2: Vec<String> = report(&input).faults.iter().filter(|f| f.code == "C2").map(Fault::line).collect();
+        assert_eq!(c2, ["s01.md C2 file-only K/1|b"]);
+    }
+
+    #[test]
+    fn a_section_mark_states_no_number() {
+        // Every note ends on 来源：[[K]] §52: the C3 block listed the section of every Card as a number.
+        assert_eq!(numbers_in("作者说 63 人。\n\n来源：[[K]] §52"), vec!["63".to_string()]);
+        assert!(numbers_in("见 § 5.2 与 §A3。").is_empty());
+    }
+
+    #[test]
+    fn a_drafts_card_span_replaces_the_logged_one() {
+        // A job corrects a span in its draft; the check must read it, or the fault can never clear
+        // (morony2005iraq: 6,160 C2 lines over 118 jobs, 5.4 coverage runs a job).
+        let mut input = setup();
+        input.sources = vec![source("K/1|a", "sections/s01.md")];
+        let draft = json!({"cards": [{"address": "K/1|a", "verdict": "ok", "span": "sections/s01.md:1-2"}]});
+        let part = read_draft("d.json", &draft).unwrap();
+        take_draft(&mut input, part);
+        let coverage = report(&input);
+        assert_eq!(coverage.faults_c2, 0);
+        assert_eq!(coverage.covered, 1);
+    }
+
+    #[test]
+    fn a_group_of_a_job_reads_only_its_own_part_of_the_draft() {
+        // One job holds several groups, so one draft holds adds and skips of each.
+        let (b, bt) = section("s02.md", &["另一节的第一段正文，长度也超过二十个字。", "另一节的第二段正文，长度也超过二十个字。"]);
+        let mut input = Input { groups: vec![group(1, &["s01.md"]), group(2, &["s02.md"])], sections: vec![(b, bt)], ..Default::default() };
+        input.group = Some(2);
+        let draft = json!({
+            "adds": [{"title": "t", "body": "b", "span": "sections/s01.md:1-2"}, {"title": "t", "body": "b", "span": "sections/s02.md:1-2"}],
+            "skips": [{"unit": "sections/s01.md:3-4", "reason": "版式"}, {"unit": "sections/s02.md:3-4", "reason": "版式"}]
+        });
+        let part = read_draft("d.json", &draft).unwrap();
+        take_draft(&mut input, part);
+        assert_eq!(input.cards.len(), 1);
+        assert_eq!(input.sources.len(), 1);
+        assert_eq!(input.skips.len(), 1);
+        assert_eq!(report(&input).counted(), 0);
     }
 
     #[test]

@@ -42,13 +42,21 @@ use std::sync::LazyLock;
 const WRITABLE: &[&str] = &["idea", "anchor"];
 /// Rules that need the whole Workspace: only the audit checks them.
 const WHOLE_WORKSPACE: &[&str] = &["I5", "E4", "I6", "E5", "L3"];
+/// The Cards one review job holds at most: whole groups in book order fill a job up to this size
+/// (#187's group job, tripled 2026-11-06). Real plans then hold 31 to 35 Cards a job against 10.8; a
+/// group larger than this stays one whole job, because a group's fills and coverage are one check.
+const CARDS_PER_JOB: usize = 40;
+/// The Cards one message of a job holds. A DeepSeek turn writes 35K to 60K output tokens whatever it
+/// holds, and it thinks only about what a user message gave it: 40 Cards in one message found 1 of 12
+/// natural faults, the same Cards in messages of 12 found 9 (docs/digest-cost-experience.md).
+const CARDS_PER_PART: usize = 12;
 const FIX_PROMPT: &str = "按以上说明处理任务文件中的每张卡，写出 JSON 文件。最后只回复一行 JSON。";
+/// The later messages of one review job: one conversation, one part at a time.
+const PART_PROMPT: &str = "按说明处理这一部分，写出这一部分的结果文件。最后只回复一行 JSON。";
 const ORPHAN_PROMPT: &str = "按以上说明为每张孤立卡片选出链接，写出 JSON 文件。最后只回复一行 JSON。";
 const FOLLOW_PROMPT: &str = "按以上问题修正这些卡片，写出 JSON 文件。最后只回复一行 JSON。";
-/// One group job holds the group's review, fix and fill Cards and its orphan-link candidates
-/// (#191): one prompt, one draft, and both instruction files as `prompt_files`.
-const BOTH_PROMPT: &str =
-    "按以上说明处理任务文件中的每张卡和每张孤立卡片：改写要修的卡、补写缺失的段落，并为孤立卡片选出链接，写进同一个 JSON 文件。最后只回复一行 JSON。";
+/// A review job's first message when it also links orphans (#191): both instruction files open it.
+const BOTH_PROMPT: &str = "按以上说明处理这一部分，写出这一部分的结果文件。最后只回复一行 JSON。";
 
 static RULE_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[,\s]+").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
@@ -238,6 +246,86 @@ fn format_card(card: &Value, faults: &[(String, String)], parent_title: &str, so
         line("");
     }
     sb
+}
+
+/// One group's share of a review job.
+struct GroupPart<'a> {
+    group: &'a coverage::Group,
+    cards: Vec<Value>,
+    fills: Vec<Fill>,
+    c3: Vec<(String, Vec<String>)>,
+    orphans: Vec<Value>,
+}
+
+/// Consecutive whole groups, by their Card counts, each run filling one job up to `cap` Cards. A
+/// group over the cap is a job of its own.
+fn job_ranges(sizes: &[usize], cap: usize) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let (mut start, mut held) = (0, 0);
+    for (i, size) in sizes.iter().enumerate() {
+        if i > start && held + size > cap {
+            out.push(start..i);
+            (start, held) = (i, 0);
+        }
+        held += size;
+    }
+    if start < sizes.len() {
+        out.push(start..sizes.len());
+    }
+    out
+}
+
+/// The file one part of a job answers in.
+fn part_file(out: &str, part: usize) -> String {
+    match out.strip_suffix(".json") {
+        Some(stem) => format!("{stem}.p{part}.json"),
+        None => format!("{out}.p{part}.json"),
+    }
+}
+
+/// Writes a job's part files as its one draft, so the check and the apply read a single file. A
+/// part that is missing or unreadable is named; a job with no parts has nothing to join.
+fn join_parts(job: &Value) -> std::result::Result<(), String> {
+    let count = job["parts"].as_u64().unwrap_or(0) as usize;
+    if count < 2 {
+        return Ok(());
+    }
+    let out = field(job, "out");
+    let mut joined = Map::new();
+    for key in ["cards", "adds", "skips", "links", "none"] {
+        joined.insert(key.to_string(), json!([]));
+    }
+    for k in 1..=count {
+        let path = part_file(&out, k);
+        if !Path::new(&path).is_file() {
+            return Err(format!("no JSON file for part {k} at {path}"));
+        }
+        let part = read_json_file(&path).map_err(|error| format!("unreadable JSON in {path}: {error:#}"))?;
+        if !part.is_object() {
+            return Err(format!("the file {path} holds no JSON object"));
+        }
+        for (key, list) in joined.iter_mut() {
+            if let Some(items) = list.as_array_mut() {
+                items.extend(ps_items(&part[key.as_str()]));
+            }
+        }
+    }
+    util::write_text(&out, &ps::json_pretty(&Value::Object(joined))).map_err(|error| format!("{error:#}"))
+}
+
+/// The groups a review job holds: none for a job that is not a group job.
+fn job_groups(job: &Value) -> Vec<i64> {
+    ps_items(&job["groups"]).iter().filter_map(Value::as_i64).collect()
+}
+
+/// A logged span as a job reads it: the line ranges alone, when the log also names the bare file;
+/// a bare file by its name in the staging folder, never the path it was logged with.
+fn ranged_only(span: &str) -> String {
+    let ranged: Vec<&str> = span.split(';').map(str::trim).filter(|token| coverage::parse_spans(token).iter().any(|s| s.start.is_some())).collect();
+    if !ranged.is_empty() {
+        return ranged.join("; ");
+    }
+    coverage::parse_spans(span).iter().map(|s| format!("sections/{}", s.section)).collect::<Vec<_>>().join("; ")
 }
 
 /// The group a Card of the book belongs to: the number of its address' first path component
@@ -486,19 +574,6 @@ impl Compiler {
         Ok(())
     }
 
-    /// The two SELF-CHECK lines of a review-and-fill job (#187): the Card check of the draft, and
-    /// the run's own coverage measurement over the group and this draft. Both print `faults: 0`
-    /// when the draft is clean.
-    fn add_fill_self_check(&self, sb: &mut String, id: &str, group: i64) -> Result<()> {
-        let staging = std::path::absolute(&self.p.staging)?.to_string_lossy().into_owned();
-        let out = std::path::absolute(join_path(&self.out_dir, &format!("{id}.json")))?.to_string_lossy().into_owned();
-        sb.push_str(&format!(
-            "写完 JSON 文件后，按说明的“自查”一节运行这两条自查命令，改到两条都打印 `faults: 0`；最多运行三次。{NL}{NL}{}{NL}SELF-CHECK: zt-digest coverage -Out \"{staging}\" -Group {group} -Draft \"{out}\"{NL}{NL}",
-            self.self_check(id)?
-        ));
-        Ok(())
-    }
-
     /// The group's uncovered units with the Card each fill note is filed under (#187).
     fn fills_of_group(&self, audit: &AuditView, coverage: &coverage::Coverage, group: &coverage::Group) -> Vec<Fill> {
         let book = self.book_key();
@@ -543,74 +618,107 @@ impl Compiler {
         sb
     }
 
-    /// One review-and-fill job of one group (#187): every writable Card of the group with the text
-    /// of its source lines, the group's uncovered units and C3 numbers, and both SELF-CHECK lines.
-    /// #191: the same job carries the group's orphan-link candidates, under the same prompt and
-    /// self-checks, so review, fix, fill and orphan Links are one DeepSeek conversation.
-    #[allow(clippy::too_many_arguments)]
-    fn group_job(
-        &mut self,
-        audit: &AuditView,
-        model: Option<&Relatedness>,
-        group: &coverage::Group,
-        cards: &[Value],
-        fills: &[Fill],
-        c3: &[(String, Vec<String>)],
-        orphans: &[Value],
-    ) -> Result<Value> {
+    /// One review-and-fill job (#187): whole groups, each with every writable Card and the text of
+    /// its source lines, its uncovered units and C3 numbers, then the job's orphan-link candidates
+    /// (#191), under one prompt and one self-check.
+    fn group_job(&mut self, audit: &AuditView, model: Option<&Relatedness>, parts: &[GroupPart]) -> Result<Value> {
         let seq = self.next_seq();
         let id = format!("fix-{seq:02}");
         let out = join_path(&self.out_dir, &format!("{id}.json"));
-        let n = group.n;
+        let numbers: Vec<String> = parts.iter().map(|p| p.group.n.to_string()).collect();
+        let numbers = numbers.join("、");
+        let total: usize = parts.iter().map(|p| p.cards.len()).sum();
         let mut sb = format!(
-            "# 任务 {id}（第 {n} 组）{NL}{NL}本任务审查第 {n} 组的文献笔记：逐张对照原文，按说明改写有问题的卡片；并为下面“未覆盖的段落”补写卡片或写明跳过。只把结果写入 `{out}`。{NL}{NL}"
+            "# 任务 {id}（第 {numbers} 组，共 {total} 张卡）{NL}{NL}本任务审查这些组的文献笔记：逐张对照原文，按说明改写有问题的卡片；并为下面“未覆盖的段落”补写卡片或写明跳过。只把结果写入 `{out}`。{NL}{NL}"
         );
-        self.add_fill_self_check(&mut sb, &id, n)?;
-        if !fills.is_empty() {
-            let anchor = &group.anchor;
-            sb.push_str(&format!("## 未覆盖的段落（{}）{NL}{NL}每段写一条 `adds`（标题、正文和一个有行号的 span），或一条 `skips`（理由只取 致谢、参考文献、目录、版式、重复）。{NL}{NL}", fills.len()));
-            for fill in fills {
-                let parent = if fill.parent == *anchor {
-                    format!("作为本组锚点 `{anchor}` 的侧后继")
-                } else {
-                    format!("作为 `{}` 的侧后继", fill.parent)
-                };
-                sb.push_str(&format!("### `{}` {parent}{NL}{NL}````markdown{NL}{}{NL}````{NL}{NL}", fill.unit(), fill.text.trim_end()));
-            }
-        }
-        if !c3.is_empty() {
-            sb.push_str(&Self::c3_block_of(c3));
-        }
+        let orphan_part = parts.iter().any(|p| !p.orphans.is_empty());
+        let count = total.div_ceil(CARDS_PER_PART).max(1) + usize::from(orphan_part);
+        sb.push_str(&format!("本任务分 {count} 部分，这条消息是第 1 部分。{NL}{NL}"));
+        let mut messages: Vec<String> = Vec::new();
         let parent_title = |a: &str| -> String {
             if a.is_empty() {
                 return String::new();
             }
             audit.card(a).map(|c| field(c, "title")).unwrap_or_default()
         };
-        sb.push_str(&format!("## 本组卡片（{}）{NL}{NL}", cards.len()));
-        for card in cards {
-            let a = field(card, "address");
-            let faults = self.hard_faults(audit, &a);
-            let span = field(&self.state["src"], &a);
-            let text = span_text(&self.p.staging, &span);
-            sb.push_str(&format_card(card, &faults, &parent_title(&field(card, "parent")), "", &span, &text));
+        let mut placed = 0usize;
+        let mut part_no = 0usize;
+        // A job of one message writes its draft itself.
+        let heading = |k: usize| format!("# 第 {k} 部分（共 {count} 部分）：结果写入 `{}`{NL}{NL}", if count == 1 { out.clone() } else { part_file(&out, k) });
+        let mut addresses: Vec<String> = Vec::new();
+        let mut fill_json: Vec<Value> = Vec::new();
+        let mut orphans: Vec<Value> = Vec::new();
+        for part in parts {
+            let n = part.group.n;
+            if part_no == 0 || placed == CARDS_PER_PART {
+                if part_no > 0 {
+                    messages.push(std::mem::take(&mut sb));
+                }
+                part_no += 1;
+                placed = 0;
+                sb.push_str(&heading(part_no));
+            }
+            sb.push_str(&format!("## 第 {n} 组{NL}{NL}"));
+            if !part.fills.is_empty() {
+                let anchor = &part.group.anchor;
+                sb.push_str(&format!("## 未覆盖的段落（{}）{NL}{NL}每段写一条 `adds`（标题、正文和一个有行号的 span），或一条 `skips`（理由只取 致谢、参考文献、目录、版式、重复）。{NL}{NL}", part.fills.len()));
+                for fill in &part.fills {
+                    let parent = if fill.parent == *anchor {
+                        format!("作为本组锚点 `{anchor}` 的侧后继")
+                    } else {
+                        format!("作为 `{}` 的侧后继", fill.parent)
+                    };
+                    sb.push_str(&format!("### `{}` {parent}{NL}{NL}````markdown{NL}{}{NL}````{NL}{NL}", fill.unit(), fill.text.trim_end()));
+                    fill_json.push(json!({"unit": fill.unit(), "section": fill.section, "start": fill.start, "end": fill.end, "text": fill.text, "parent": fill.parent}));
+                }
+            }
+            if !part.c3.is_empty() {
+                sb.push_str(&Self::c3_block_of(&part.c3));
+            }
+            sb.push_str(&format!("## 本组卡片（{}）{NL}{NL}", part.cards.len()));
+            for card in &part.cards {
+                if placed == CARDS_PER_PART {
+                    messages.push(std::mem::take(&mut sb));
+                    part_no += 1;
+                    placed = 0;
+                    sb.push_str(&heading(part_no));
+                }
+                placed += 1;
+                let a = field(card, "address");
+                let faults = self.hard_faults(audit, &a);
+                let span = field(&self.state["src"], &a);
+                let text = span_text(&self.p.staging, &span);
+                sb.push_str(&format_card(card, &faults, &parent_title(&field(card, "parent")), "", &ranged_only(&span), &text));
+                addresses.push(a);
+            }
+            orphans.extend(part.orphans.iter().cloned());
         }
-        // #191: the group's orphan Links, in the same task and the same draft.
+        // #191: the orphan Links of these groups, in the same task and the same draft.
         let (block, candidates) = match model {
-            Some(model) => self.orphan_block(audit, model, orphans, "本组孤立卡片"),
+            Some(model) => self.orphan_block(audit, model, &orphans, "本任务的孤立卡片"),
             None => (String::new(), Map::new()),
         };
+        if !block.is_empty() {
+            messages.push(std::mem::take(&mut sb));
+            sb.push_str(&heading(count));
+        }
         sb.push_str(&block);
+        self.add_self_check(&mut sb, &id)?;
+        messages.push(sb);
         let file = join_path(&self.p.work, &format!("{id}.md"));
-        util::write_text(&file, &sb)?;
-        let addresses: Vec<String> = cards.iter().map(|c| field(c, "address")).collect();
-        let fill_json: Vec<Value> = fills
-            .iter()
-            .map(|f| json!({"unit": f.unit(), "section": f.section, "start": f.start, "end": f.end, "text": f.text, "parent": f.parent}))
-            .collect();
+        let mut then: Vec<Value> = Vec::new();
+        for (k, message) in messages.iter().enumerate() {
+            if k == 0 {
+                util::write_text(&file, message)?;
+            } else {
+                let path = join_path(&self.p.work, &format!("{id}.p{}.md", k + 1));
+                util::write_text(&path, message)?;
+                then.push(json!({ "files": [path], "prompt": PART_PROMPT }));
+            }
+        }
         let mut job = json!({
             "kind": "fix", "file": file, "out": out, "cards": addresses, "applied": false,
-            "group": n, "fills": fill_json,
+            "groups": parts.iter().map(|p| p.group.n).collect::<Vec<_>>(), "fills": fill_json, "parts": count,
         });
         if !orphans.is_empty() {
             job["orphans"] = json!(orphans.iter().map(|o| field(o, "address")).collect::<Vec<_>>());
@@ -619,10 +727,10 @@ impl Compiler {
         self.state["jobs"][&id] = job;
         // Both instruction files, the shared ones first: DeepSeek caches that prefix (#191).
         if orphans.is_empty() {
-            Ok(json!({ "id": id, "files": [self.fix_doc(), file], "prompt": FIX_PROMPT }))
+            Ok(json!({ "id": id, "files": [self.fix_doc(), file], "prompt": FIX_PROMPT, "then": then }))
         } else {
             Ok(json!({
-                "id": id, "files": [self.fix_doc(), self.orphan_doc(), file], "prompt": BOTH_PROMPT,
+                "id": id, "files": [self.fix_doc(), self.orphan_doc(), file], "prompt": BOTH_PROMPT, "then": then,
                 // The compact list reads the job's orphan half from this field (#191).
                 "orphans": orphans.iter().map(|o| field(o, "address")).collect::<Vec<_>>()
             }))
@@ -1157,12 +1265,31 @@ impl Compiler {
                 return field(&fill, "parent");
             }
         }
-        let n = job["group"].as_i64().unwrap_or(0);
+        let n = spans.first().and_then(|s| self.group_of_section(job, &s.section));
         ps_items(&self.state["staging_groups"])
             .iter()
-            .find(|g| g["n"].as_i64() == Some(n))
+            .find(|g| g["n"].as_i64() == n)
             .map(|g| field(g, "anchor"))
             .unwrap_or_default()
+    }
+
+    /// The group of a job that a section belongs to.
+    fn group_of_section(&self, job: &Value, section: &str) -> Option<i64> {
+        let groups = job_groups(job);
+        ps_items(&self.state["staging_groups"])
+            .iter()
+            .find(|g| g["n"].as_i64().is_some_and(|n| groups.contains(&n)) && ps_array(&g["sections"]).iter().any(|name| s(name) == section))
+            .and_then(|g| g["n"].as_i64())
+    }
+
+    /// The staged sections of a job's groups.
+    fn sections_of(&self, job: &Value) -> Vec<String> {
+        let groups = job_groups(job);
+        ps_items(&self.state["staging_groups"])
+            .iter()
+            .filter(|g| g["n"].as_i64().is_some_and(|n| groups.contains(&n)))
+            .flat_map(|g| ps_array(&g["sections"]).iter().map(s).collect::<Vec<_>>())
+            .collect()
     }
 
     // --- what a rewrite must keep ----------------------------------------------------------------
@@ -1562,6 +1689,11 @@ impl Compiler {
             if truthy(&j["continue"]) {
                 c["continue"] = j["continue"].clone();
             }
+            let then = ps_items(&j["then"]);
+            if !then.is_empty() {
+                prompts.insert("part".to_string(), json!(PART_PROMPT));
+                c["then"] = json!(then.iter().map(|m| leaf(&s(ps_array(&m["files"]).last().unwrap_or(&Value::Null)))).collect::<Vec<_>>());
+            }
             list.push(c);
         }
         json!({
@@ -1826,13 +1958,14 @@ impl Compiler {
         // The orphans a group job took: an orphan job is written only for an orphan no group job holds.
         let mut absorbed: HashSet<String> = HashSet::new();
         if let (Some(groups), Some(cov)) = (&staging_groups, &group_coverage) {
-            // One job per group: every Card of the group, its source lines, the group's uncovered
-            // units and C3 numbers, its orphan-link candidates and the double SELF-CHECK (#187, #191).
+            // Whole groups fill a job up to CARDS_PER_JOB: every Card of each group, its source lines,
+            // its uncovered units and C3 numbers, its orphan-link candidates and one SELF-CHECK (#187, #191).
             let only: Option<HashSet<i64>> = if self.p.groups.is_empty() {
                 None
             } else {
                 Some(RULE_SPLIT.split(&self.p.groups).filter(|g| !g.is_empty()).filter_map(|g| g.trim().parse::<i64>().ok()).collect())
             };
+            let mut parts: Vec<GroupPart> = Vec::new();
             for group in groups {
                 if only.as_ref().is_some_and(|set| !set.contains(&group.n)) {
                     continue;
@@ -1848,11 +1981,14 @@ impl Compiler {
                 if cards.is_empty() && fills.is_empty() && c3.is_empty() && group_orphans.is_empty() {
                     continue;
                 }
-                let model = orphan_model.as_ref();
-                let job = self.group_job(&audit, model, group, &cards, &fills, &c3, &group_orphans)?;
                 for o in &group_orphans {
                     absorbed.insert(ci(&field(o, "address")));
                 }
+                parts.push(GroupPart { group, cards, fills, c3, orphans: group_orphans });
+            }
+            let sizes: Vec<usize> = parts.iter().map(|p| p.cards.len()).collect();
+            for range in job_ranges(&sizes, CARDS_PER_JOB) {
+                let job = self.group_job(&audit, orphan_model.as_ref(), &parts[range])?;
                 jobs.push(job);
             }
         } else {
@@ -1943,6 +2079,13 @@ impl Compiler {
             bail!("run plan first");
         }
         let job_ids: Vec<String> = ps::keys(&self.state["jobs"]);
+        // A job's parts become its one draft as soon as they are all there.
+        for id in &job_ids {
+            let job = &self.state["jobs"][id.as_str()];
+            if !truthy(&job["applied"]) {
+                let _ = join_parts(job);
+            }
+        }
         let exists = |job: &Value| {
             let out = field(job, "out");
             !out.is_empty() && Path::new(&out).exists()
@@ -2140,7 +2283,7 @@ impl Compiler {
                 // replaces its log entry, an `add` becomes a Side successor of the note covering
                 // the unit before the gap (else of the group's anchor), and a `skip` is recorded
                 // where the coverage command reads it.
-                if let Some(n) = job["group"].as_i64() {
+                if !job_groups(&job).is_empty() {
                     for entry in ps_array(&answer("cards")) {
                         let a = field(&entry, "address");
                         let span = field(&entry, "span").trim().to_string();
@@ -2179,8 +2322,17 @@ impl Compiler {
                             }
                         }
                     }
-                    let skips = ps_array(&answer("skips"));
-                    let added = self.record_skips(n, &skips)?;
+                    let mut added: Vec<Value> = Vec::new();
+                    for n in job_groups(&job) {
+                        let skips: Vec<Value> = ps_array(&answer("skips"))
+                            .into_iter()
+                            .filter(|skip| {
+                                let spans = coverage::parse_spans(&field(skip, "unit"));
+                                spans.first().and_then(|span| self.group_of_section(&job, &span.section)) == Some(n)
+                            })
+                            .collect();
+                        added.extend(self.record_skips(n, &skips)?);
+                    }
                     for skip in &added {
                         push(&mut self.state["skips"], json!({ "job": id, "unit": field(skip, "unit"), "reason": field(skip, "reason"), "names": field(skip, "names") }));
                         bump(&mut counts, "skip");
@@ -2350,12 +2502,13 @@ impl Compiler {
             let mut follow_orphans: Vec<String> = Vec::new();
             let mut follow_candidates = Map::new();
             let mut orphan_block = String::new();
-            let follow_group = job["group"].as_i64();
-            if let Some(n) = follow_group {
-                if let (Some(cov), Some(g)) = (&group_coverage, groups.iter().find(|g| g.n == n)) {
+            let follow_groups = job_groups(&job);
+            self.add_self_check(&mut sb, &fid)?;
+            if let Some(cov) = &group_coverage {
+                for g in groups.iter().filter(|g| follow_groups.contains(&g.n)) {
                     let fills = self.fills_of_group(&audit, cov, g);
                     if !fills.is_empty() {
-                        fill_block.push_str(&format!("## 仍未覆盖的段落（{}）{NL}{NL}每段写一条 `adds` 或一条 `skips`。{NL}{NL}", fills.len()));
+                        fill_block.push_str(&format!("## 第 {} 组仍未覆盖的段落（{}）{NL}{NL}每段写一条 `adds` 或一条 `skips`。{NL}{NL}", g.n, fills.len()));
                         for fill in &fills {
                             let parent = if fill.parent == g.anchor {
                                 format!("作为本组锚点 `{}` 的侧后继", g.anchor)
@@ -2365,17 +2518,9 @@ impl Compiler {
                             fill_block.push_str(&format!("### `{}` {parent}{NL}{NL}````markdown{NL}{}{NL}````{NL}{NL}", fill.unit(), fill.text.trim_end()));
                         }
                     }
-                    fill_block.push_str(&Self::c3_block(cov, &self.book_key(), n));
-                    fills_line = fills
-                        .iter()
-                        .map(|f| json!({"unit": f.unit(), "section": f.section, "start": f.start, "end": f.end, "text": f.text, "parent": f.parent}))
-                        .collect();
-                    self.add_fill_self_check(&mut sb, &fid, n)?;
-                } else {
-                    self.add_self_check(&mut sb, &fid)?;
+                    fill_block.push_str(&Self::c3_block(cov, &self.book_key(), g.n));
+                    fills_line.extend(fills.iter().map(|f| json!({"unit": f.unit(), "section": f.section, "start": f.start, "end": f.end, "text": f.text, "parent": f.parent})));
                 }
-            } else {
-                self.add_self_check(&mut sb, &fid)?;
             }
             sb.push_str(&fill_block);
             // #191: a group job's orphan Links that are still open, and whose writer has not answered
@@ -2430,8 +2575,8 @@ impl Compiler {
             self.state["jobs"][&id]["followed"] = json!(true);
             let cards: Vec<String> = open.iter().map(|o| o.0.clone()).collect();
             let mut follow = json!({ "kind": "fix", "file": file, "out": out, "cards": cards, "applied": false, "followed": true });
-            if let Some(n) = follow_group {
-                follow["group"] = json!(n);
+            if !follow_groups.is_empty() {
+                follow["groups"] = json!(follow_groups);
                 follow["fills"] = json!(fills_line);
             }
             if !follow_orphans.is_empty() {
@@ -2742,22 +2887,15 @@ impl Compiler {
         // #187: the fill half. A Card's corrected span must name its lines inside this group's
         // sections, an `add` needs a title, a body and such a span, and a `skip` must name a unit
         // and one of the listed reasons (the coverage check then resolves the unit).
-        let group = the_job["group"].as_i64();
-        let sections: Vec<String> = match group {
-            Some(n) => ps_items(&self.state["staging_groups"])
-                .iter()
-                .find(|g| g["n"].as_i64() == Some(n))
-                .map(|g| ps_array(&g["sections"]).iter().map(s).collect())
-                .unwrap_or_default(),
-            None => Vec::new(),
-        };
+        let grouped = !job_groups(the_job).is_empty();
+        let sections: Vec<String> = self.sections_of(the_job);
         for entry in ps_items(&result["cards"]).into_iter().filter(truthy) {
             let a = field(&entry, "address");
             let span = field(&entry, "span").trim().to_string();
             if span.is_empty() || !is_in(&a, &job_cards) {
                 continue;
             }
-            if group.is_none() {
+            if !grouped {
                 add(&a, "refuse", "this job has no group: a span is not written here");
             } else if let Some(why) = span_fault(&span, &sections) {
                 add(&a, "refuse", &why);
@@ -2770,7 +2908,7 @@ impl Compiler {
             let title = field(&entry, "title").trim().to_string();
             let body = trim_end(&field(&entry, "body"));
             let at = if span.is_empty() { "add".to_string() } else { span.clone() };
-            if group.is_none() {
+            if !grouped {
                 add(&at, "refuse", "this job has no group: a fill Card is not written here");
                 continue;
             }
@@ -2788,7 +2926,7 @@ impl Compiler {
             let span = field(&entry, "unit").trim().to_string();
             let reason = field(&entry, "reason").trim().to_string();
             let at = if span.is_empty() { "skip".to_string() } else { span.clone() };
-            if group.is_none() {
+            if !grouped {
                 add(&at, "refuse", "this job has no group: a skip is not written here");
                 continue;
             }
@@ -2909,7 +3047,10 @@ impl Compiler {
             Some(the_job) => {
                 let path = if !self.p.file.is_empty() { self.p.file.clone() } else { field(&the_job, "out") };
                 let mut result = None;
-                if !Path::new(&path).is_file() {
+                let joined = if self.p.file.is_empty() { join_parts(&the_job) } else { Ok(()) };
+                if let Err(why) = joined {
+                    add(&job, "json", &why);
+                } else if !Path::new(&path).is_file() {
                     add(&job, "json", &format!("no JSON file at {path}"));
                 } else {
                     match read_json_file(&path) {
@@ -2925,6 +3066,16 @@ impl Compiler {
                         // #191: a group job answers for its orphan Links in the same draft.
                         if the_job["candidates"].is_object() && !Self::orphan_cards(&the_job).is_empty() {
                             self.orphan_draft(&the_job, &result, &mut add)?;
+                        }
+                        // The job's one check also measures its groups' coverage over this draft.
+                        let groups = job_groups(&the_job);
+                        if !groups.is_empty() {
+                            let staging = field(&self.state, "staging");
+                            for line in coverage::draft_faults(Path::new(&staging), &groups, &path, &result)? {
+                                let (at, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+                                let (rule, text) = rest.split_once(' ').unwrap_or((rest, ""));
+                                add(at, rule, text);
+                            }
                         }
                     } else {
                         self.orphan_draft(&the_job, &result, &mut add)?;
@@ -3232,6 +3383,46 @@ mod tests {
         assert!(!Compiler::follows_up(&[], &Value::Null, &json!({"verdict": "ok"})));
         // A Card an `ok` or `merge` verdict recorded, but whose rewrite was refused, is still sent back.
         assert!(Compiler::follows_up(&[], &zt_refusal, &json!({"verdict": "ok"})));
+    }
+
+    #[test]
+    fn whole_groups_fill_a_job_up_to_its_size() {
+        assert_eq!(job_ranges(&[10, 12, 18, 1, 39, 2], 40), vec![0..3, 3..5, 5..6]);
+        assert_eq!(job_ranges(&[], 40), Vec::<std::ops::Range<usize>>::new());
+        // A group with no Card to review still has its fills: it joins the job it follows.
+        assert_eq!(job_ranges(&[40, 0, 1], 40), vec![0..2, 2..3]);
+    }
+
+    #[test]
+    fn a_job_answers_in_one_file_per_part_and_they_join_into_its_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("fix-07.json").to_string_lossy().into_owned();
+        assert!(part_file(&out, 2).ends_with("fix-07.p2.json"));
+        let job = json!({"out": out, "parts": 2});
+        std::fs::write(part_file(&out, 1), r#"{"cards":[{"address":"K/1|a","verdict":"ok"}],"skips":[{"unit":"sections/s01.md:3","reason":"版式"}]}"#).unwrap();
+        let missing = join_parts(&job).unwrap_err();
+        assert!(missing.contains("part 2"), "{missing}");
+        assert!(!Path::new(&out).exists());
+        std::fs::write(part_file(&out, 2), r#"{"cards":[{"address":"K/1|b","verdict":"ok"}],"links":[{"to":"K/1|b"}]}"#).unwrap();
+        join_parts(&job).unwrap();
+        let draft = read_json_file(&out).unwrap();
+        assert_eq!(draft["cards"].as_array().unwrap().len(), 2);
+        assert_eq!(draft["skips"].as_array().unwrap().len(), 1);
+        assert_eq!(draft["links"].as_array().unwrap().len(), 1);
+        // A job that has no parts writes its draft itself.
+        assert!(join_parts(&json!({"out": "x.json"})).is_ok());
+    }
+
+    #[test]
+    fn a_group_over_the_job_size_stays_whole_and_alone() {
+        assert_eq!(job_ranges(&[42, 3, 41], 40), vec![0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn a_job_reads_the_line_ranges_of_a_logged_span() {
+        assert_eq!(ranged_only(r"\\?\D:\z\sections\s52.md; sections/s52.md:3-3"), "sections/s52.md:3-3");
+        assert_eq!(ranged_only(r"\\?\D:\z\sections\s52.md"), "sections/s52.md");
+        assert_eq!(ranged_only("sections/s05.md:3,7-11"), "sections/s05.md:3,7-11");
     }
 
     #[test]
