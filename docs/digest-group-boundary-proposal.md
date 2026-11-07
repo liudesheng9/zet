@@ -1,6 +1,6 @@
 # Digest group boundary
 
-Status: proposal, 2026-11-06. Nothing is implemented. The owner decides the items under "Decisions", and a pilot comes before any release.
+Status: pilot done 2026-11-07, variant C adopted for the history digest. See "Pilot results" and "Decisions taken".
 
 ## Problem
 
@@ -78,9 +78,37 @@ Run on a staging copy of one Morony chapter, one variant at a time, with real jo
 
 Score Cards per 1,000 characters, output per source character, source coverage, faithfulness on a sample of notes, tool calls, and ledger cost. Compare what a reader uses as well as what the checker counts. Adopt the rule only if C holds the density of A at a lower cost. Then run one small history book before any large one.
 
-## Decisions for the owner
+## Pilot results, 2026-11-07
 
-1. Boundary: stop at numbered chapters, as proposed, or stop at no heading. The second gives fewer jobs, but a group can cross two chapters.
-2. Unit limit: remove the limit of 3 units, as proposed, or keep it. Keeping it gives about 2.5 times as many groups on the history books.
-3. Scope: history digest first, as proposed. The economics digest follows only after its Model, Event and Finding layers are tested. The mathematics digest stays as it is.
-4. Links: return to 1 group a job when this rule lands, as proposed.
+Two chapters ran with real instructions, the real model and effort, and the coverage SELF-CHECK. The card check `group-finish -CheckOnly` could not run, because the archive sources changed after these books were digested, so both shapes faced only the coverage check. Each cell is one run. Names and years count those of the chapter's source text that appear in the Cards. Cost is the DeepSeek ledger in CNY.
+
+**Morony, chapter 7 (4 sections, 21,961 characters)**
+
+| Variant | Jobs | Model calls | Cost | Cards | Text | Cards per 1,000 | Names of 196 | Years of 42 | Coverage faults |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Published run | 4 | | | 43 | 17,446 | 1.96 | 180 | 31 | |
+| A, one job per group | 4 | 38 | 0.81 | 40 | 16,048 | 1.82 | 176 | 27 | 0 |
+| B, one big message | 1 | 19 | 0.30 | 26 | 13,474 | 1.18 | 168 | 27 | 0 |
+| C, one message per unit | 1 | 15 | 0.35 | 49 | 18,596 | 2.23 | 193 | 33 | 0 |
+
+**Donner, groups 19 to 22 (4 sections, 18,625 characters)**
+
+| Variant | Jobs | Model calls | Cost | Cards | Text | Cards per 1,000 | Names of 174 | Coverage faults |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Published run | 4 | | | 50 | 19,801 | 2.68 | 131 | |
+| A, one job per group | 4 | 58 | 0.92 | 53 | 21,682 | 2.85 | 138 | 0 |
+| C, one message per unit | 1 | 14 | 0.42 | 47 | 19,741 | 2.52 | 138 | 0 |
+
+C cost 57% and 54% less than A. B confirmed the risk: one message lost a third of the Cards. C wrote more than A on Morony and 9% less text than A on Donner, which equals the published text. C wrote fewer Link phrases on Donner, 49 against 84; the Link stage fills those gaps afterwards. A read of five sampled Cards of C against their source lines found their statements in the source and no repeated title. This is a small sample, and C needs its score on a whole book.
+
+The cost covers the job shape only. It leaves out the jobs that a group count saves in later stages.
+
+## Decisions taken
+
+The owner handed these decisions to this session on 2026-11-07.
+
+1. Boundary: a group stops at a numbered chapter, a part, or an appendix.
+2. Unit limit: removed for the history digest.
+3. Scope: the history digest first. The economics and mathematics digests keep their groups until their own layers are tested.
+4. Job shape: one conversation, one message per unit, one check on the last message.
+5. Links: a job holds up to 3 groups and up to 30 gaps, so a large group runs alone and the three digests share one rule.
