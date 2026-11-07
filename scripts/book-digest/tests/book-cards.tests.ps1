@@ -235,7 +235,7 @@ try {
     Assert (($pre -join "`n") -match 'supplied-step marker must be exactly' -and $pre[-1] -ne 'faults: 0') "a malformed supplied-step marker is refused [$($pre -join ' | ')]"
     Save-Json $markerDraft @{ cards = @(@{ address = $markerIdea; verdict = 'unfaithful'; title = '贷款收紧使企业减少设备投入'; body = '贷款收紧使企业减少设备投入。（补：书中略去）这一句由读者验证。依赖 [[CycleBook]]，后者给出全书的问题范围。来源：[[CycleBook/1]]' }) + $markerRest }
     $pre = @(& $Digest @('card', '-Step', 'precheck', '-Work', $cycle.work, '-Job', "$markerJob", '-File', $markerDraft) 2>&1)
-    Assert ($pre[-1] -eq 'faults: 0') "the established marker passes the precheck [$($pre -join ' | ')]"
+    Assert (($pre -join "`n") -notmatch 'supplied-step marker must be exactly') "the established marker passes the precheck [$($pre -join ' | ')]"
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

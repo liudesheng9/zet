@@ -157,6 +157,54 @@ The first build of this change used a short sample with 1 distinction and 1 misr
 
 A plan at 12 terms makes 19 jobs for Hoyland, against 57. Baghdad's jobs reach 154 KB, because each job lists the book's other terms, and that size also held.
 
+## What the Card review size test taught
+
+Measured 2026-11-06 for the owner's request that one DeepSeek job carry three times the Card faithful check. A job held one group: 10.8 Cards on average over 689 real jobs. The 118 Card jobs of `morony2005iraq` (kept sessions) made 31 model calls a job and read 4.25M cached tokens, and each cost about 0.9. All three sets below come from real plan-time job files of finished books, run by hand through `deepseek_run` and `deepseek_prompt` on the official source, at high effort.
+
+### Remove the loop before you measure the job
+
+Most of the old cost was a fault no job could clear. `coverage -Draft` did not read a draft's `span`, so C2 stayed: 6,160 lines and 5.4 coverage runs a job on Morony. A log line `<file>; sections/s52.md:3-3` also counted as file-only, and every anchor did. The C3 block listed each note's `§52` as a number. All of this was input, and the first draft of a typical job already passed the Card check. These are fixed in `coverage.rs`. The job now has one check.
+
+### One message thinks about what it holds, and no more
+
+A turn wrote 35K to 60K output tokens whatever it held. Over 16 Cards or 40 it was the same, and 65,520 tokens looks like a cap on one turn. Planted errors hide this: they are coarse, and a thin read still finds them. Each row covers Donner groups 3-6 and 13-17 (78 Cards) unless it says otherwise.
+
+| Job shape | Conversations | Planted errors found | Real-run `unfaithful` Cards flagged | Output tokens | Cost |
+|---|---:|---:|---:|---:|---:|
+| 1x, one group a job, message only | 9 | 16 of 18 | 6 of 12 | 442K | 2.05 |
+| 3x, one message, one write | 2 | 15 of 18 | 1 of 12 | 107K | 0.64 |
+| 3x, one message, a file per part | 1 of 2 | 7 of 9 | 1 of 4 | 85K | 0.47 |
+| 3x, every sentence quoted from the source | 2 | 10 of 18 | 2 of 12 | 167K | 1.00 |
+| 3x, effort max (set B only) | 1 | 8 of 9 | 2 of 8 | 63K | 0.49 |
+| 3x, a tool prints the next part | 2 | 18 of 18 | 2 of 12 | 175K | 1.47 |
+| **3x, one conversation, one message per 12 Cards** | **2** | **18 of 18** | **9 of 12** | **309K** | **1.78** |
+
+The same final shape on Atkinson groups 29-32 (39 Cards, no orphans): 7 of 7 planted, 0.44, against 7 of 7 and 0.85 in four 1x jobs. Together, 117 Cards: 3 conversations against 13, 25 of 25 planted against 23 of 25, 9 of 13 natural against 6 of 13, 2.22 against 2.93, 24 tool calls against 30. Each row is one run. Costs are computed from tokens at the prices the usage ledger implies (about 1.0 miss, 0.14 cached, 3.2 output a million), because the source was shared with a live run. The natural Cards are the old run's own findings, not a right answer: the jobs also flag others, and those were not all read.
+
+A second message is not a retry: the depth came back on message 2 and 3 of the same conversation, at about 30K tokens each. What resets the thinking is a user message. A tool result does not do it, a new file does not do it, written quotes do not do it, and more effort does not do it. Quotes came back on topic and proved nothing.
+
+So the job's message count follows the unit of the work, one message per 12 Cards, and the conversation holds three times as many Cards at about a third of the old cost per Card (0.023 against 0.075). The manager sends each part; the Claude cost of that has not been measured on a run.
+
+### What a plan looks like
+
+Whole groups fill a job up to 40 Cards (`CARDS_PER_JOB`, `card.rs`). A group is not split, so 42 Cards is the largest job seen.
+
+| Book | Jobs, old | Cards a job, old | Jobs, new | Cards a job, new | Largest | Largest message set |
+|---|---:|---:|---:|---:|---:|---:|
+| hansen2021demand | 15 | 10.1 | 5 | 30.4 | 39 | 171 KB |
+| donner1981conquests | 52 | 12.4 | 20 | 32.3 | 40 | 244 KB |
+| hoyland2015path | 59 | 9.4 | 16 | 34.7 | 40 | 248 KB |
+| morony2005iraq | 118 | 11.9 | 41 | 34.3 | 40 | 234 KB |
+| scheiner2022baghdad | 182 | 10.8 | 59 | 33.3 | 40 | 314 KB |
+| atkinson2015lectures | 229 | 9.3 | 62 | 34.4 | 40 | 145 KB |
+| hart1995firms | 21 | 21.2 | 14 | 31.8 | 42 | 196 KB |
+
+The old job held 10.8 Cards, so 33 is three times that. A book's jobs fall to about a third.
+
+### Render what you changed
+
+The manager's new rule first landed in the wrong prompt, because the string it was inserted before occurs three times in the library. Rendering the template and reading it found that; no test would have.
+
 ## Real run costs
 
 | Run | Jobs | Cards read | Ledger cost | Per job | Per Card |

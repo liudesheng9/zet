@@ -61,7 +61,7 @@ try {
     Assert ($coverage.units -eq 2 -and $coverage.covered -eq 1 -and $coverage.uncovered -eq 1 -and $coverage.pct -eq 50) "coverage audit: the counts come from the paragraph units and the recorded span ($($coverage.covered)/$($coverage.units), $($coverage.pct)%)"
     Assert (@($coverage.uncovered_units).Count -eq 1 -and @($coverage.uncovered_units)[0].section -ceq 's01.md' -and @($coverage.uncovered_units)[0].line -ceq '3' -and @($coverage.uncovered_units)[0].text -match '第二段') 'coverage audit: the uncovered unit is listed with its section, lines and text'
     $numbers = @($coverage.c3 | Where-Object { $_.address -ceq $note } | ForEach-Object { $_.number })
-    Assert ($numbers -contains '63' -and $numbers -contains '1') "coverage audit: the numbers on the note are listed as findings ($($numbers -join ', '))"
+    Assert ($numbers -contains '63' -and $numbers -notcontains '1') "coverage audit: the numbers on the note are listed as findings, a section mark is none ($($numbers -join ', '))"
     Assert ($report.books[0].coverage -and $report.books[0].coverage.units -eq 2) 'coverage audit: the finding belongs to the book the staging folder names'
     $md = Get-Content -LiteralPath (Join-Path $staging 'audit.md') -Raw -Encoding utf8
     Assert ($md -match '\*\*Coverage\*\* \(Literature notes\): 2 units: 1 covered' -and $md -match 'Uncovered units:.*s01\.md:3' -and $md -match 'C3 numbers:.*63') 'coverage audit: audit.md lists the uncovered unit and the C3 number'

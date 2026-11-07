@@ -1,9 +1,11 @@
 #Requires -Version 7.5
 # Run: pwsh -NoProfile -File scripts\book-digest\tests\card-review-fill.tests.ps1 [-Zt <zt.exe>] [-Digest <zt-digest.exe>]
-# #187 (L4): the card layer's one review, fix and fill job per group. On a scratch archive and a
-# prepared staging folder: the plan writes one job per group with every Card's title, body, recorded
-# span and the text of those lines, the group's uncovered units and C3 numbers, and two SELF-CHECK
-# lines; a file-only `add` span is refused by precheck; apply files each `add` as a Side successor of
+# #187 (L4): the card layer's one review, fix and fill job. On a scratch archive and a prepared
+# staging folder: the plan fills a job with whole groups, each with every Card's title, body, recorded
+# span and the text of those lines, the group's uncovered units and C3 numbers, under one SELF-CHECK
+# line that also measures coverage; a file-only `add` span is refused by precheck; a job of more than
+# twelve Cards is one conversation of several messages, its draft joined from one file per message, and
+# each group's part of that draft is read and filed apart; apply files each `add` as a Side successor of
 # the note before the gap, appends its span to the group's source log, records the skips, and the
 # coverage command counts both. The live archive is never touched.
 param([string]$Zt = '', [string]$Digest = '')
@@ -23,6 +25,7 @@ if ($Zt) {
 }
 $env:ZT_CONFIG_DIR = Join-Path $scratch 'config'
 $env:ZT_GUI_PORT = '0'
+$env:ZT_DIGEST_SCRIPTS = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $digest = if ($Digest) { $Digest } else { (Get-Command zt-digest -CommandType Application | Select-Object -First 1).Source }
 . (Join-Path $PSScriptRoot '..\zt-calls.ps1')
 $failed = 0
@@ -63,13 +66,12 @@ try {
     Assert ($jobs.Count -eq 1) "plan: one fix job for the one group ($($jobs.Count))"
     $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $job = $state.jobs[$jobs[0].id]
-    Assert ($job.group -eq 1 -and @($job.cards).Count -eq 3) "plan: the job names its group and holds the group's Cards with the anchor ($(@($job.cards) -join ', '))"
+    Assert ((@($job.groups) -join ',') -eq '1' -and @($job.cards).Count -eq 3) "plan: the job names its group and holds the group's Cards with the anchor ($(@($job.cards) -join ', '))"
     Assert (@($job.fills).Count -ge 4) "plan: the job carries the group's uncovered units ($(@($job.fills).Count))"
     $task = Get-Content -LiteralPath $job.file -Raw -Encoding utf8
     $precheck = "(?m)^SELF-CHECK: zt-digest card -Step precheck -Work ""$([regex]::Escape((Resolve-Path $work).Path))"" -Job $([regex]::Escape($jobs[0].id))\s*$"
-    $coverage = "(?m)^SELF-CHECK: zt-digest coverage -Out ""$([regex]::Escape((Resolve-Path $staging).Path))"" -Group 1 -Draft "".*$([regex]::Escape($jobs[0].id))\.json""\s*$"
-    Assert ($task -match $precheck) 'plan: the task file names its Card precheck'
-    Assert ($task -match $coverage) 'plan: the task file names the coverage self-check of the group'
+    Assert ($task -match $precheck) 'plan: the task file names its one check'
+    Assert (([regex]::Matches($task, '(?m)^SELF-CHECK:')).Count -eq 1) 'plan: the job has one SELF-CHECK line'
     Assert ($task -match "记录来源行：``sections/s01.md:1-2``" -and $task -match '### 原文行' -and $task -match '第 1 段的正文内容') 'plan: each Card gets its recorded span and the text of those lines'
     Assert ($task -match '## 未覆盖的段落' -and $task -match '作为 `' + [regex]::Escape($n1) + '` 的侧后继' -and $task -match '第 3 段的正文内容') 'plan: the uncovered units carry their text and their planned parent'
     Assert ($task -match '## C3' -and $task -match ([regex]::Escape($n1) + '`：12')) 'plan: the C3 numbers are listed for the group'
@@ -89,9 +91,13 @@ try {
     Save-Json $draftPath @{ cards = $base; adds = $adds; skips = @(@{ unit = 'sections/s01.md:5-6'; reason = '背景' }) }
     $pre = Run-Digest @('card', '-Step', 'precheck', '-Work', $work, '-Job', $jobs[0].id)
     Assert (@($pre | Where-Object { $_ -match '背景' -and $_ -match 'not one of' }).Count -eq 1) "precheck: a reason outside the list is refused ($($pre -join ' | '))"
+    Save-Json $draftPath @{ cards = $base; adds = $adds; skips = @() }
+    $pre = Run-Digest @('card', '-Step', 'precheck', '-Work', $work, '-Job', $jobs[0].id)
+    Assert (@($pre | Where-Object { $_ -match ' C1 uncovered' }).Count -eq 2 -and $pre[-1] -eq 'faults: 2') "precheck: the one check names the units the draft leaves uncovered ($($pre -join ' | '))"
     Save-Json $draftPath @{ cards = $base; adds = $adds; skips = $skips }
     $pre = Run-Digest @('card', '-Step', 'precheck', '-Work', $work, '-Job', $jobs[0].id)
-    Assert ($pre[-1] -eq 'faults: 0') "precheck: a clean review-and-fill draft gives faults: 0 ($($pre -join ' | '))"
+    Assert ($pre[-1] -eq 'faults: 0') "precheck: a clean draft gives faults: 0, the span it corrects counted ($($pre -join ' | '))"
+    Assert (@($pre | Where-Object { $_ -match ' C3 ' }).Count -eq 0) "precheck: the C3 advice stays in the task file ($($pre -join ' | '))"
 
     # --- apply: the adds become Side successors, their spans join the source log, the skips are recorded ---
     $applied = Last (Run-Digest @('card', '-Step', 'apply', '-Work', $work))
@@ -132,19 +138,24 @@ try {
     $bothState = Get-Content -LiteralPath (Join-Path $bothWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
     $bothJob = $bothState.jobs[$bothJobs[0].id]
     Assert (@($bothJob.orphans) -contains $orphan -and @($bothJob.candidates[$orphan]).Count -ge 1) "plan: the job names its orphan and its candidates ($(@($bothJob.orphans) -join ', '))"
-    $bothTask = Get-Content -LiteralPath $bothJob.file -Raw -Encoding utf8
-    Assert ($bothTask -match '## 本组孤立卡片' -and $bothTask -match [regex]::Escape($orphan) -and $bothTask -match '候选卡片') 'plan: the task file carries the orphan-link section'
+    $bothFirst = Get-Content -LiteralPath $bothJob.file -Raw -Encoding utf8
+    $bothLast = Get-Content -LiteralPath ($bothJob.file -replace '\.md$', '.p2.md') -Raw -Encoding utf8
+    Assert ((@($bothJobs[0].then) -join ',') -eq "$($bothJobs[0].id).p2.md" -and $bothFirst -notmatch '本任务的孤立卡片') 'plan: the orphan Links are the last message of the conversation'
+    $bothTask = $bothFirst + $bothLast
+    Assert ($bothTask -match '## 本任务的孤立卡片' -and $bothTask -match [regex]::Escape($orphan) -and $bothTask -match '候选卡片') 'plan: the task file carries the orphan-link section'
     $bothPrecheck = "(?m)^SELF-CHECK: zt-digest card -Step precheck -Work ""$([regex]::Escape((Resolve-Path $bothWork).Path))"" -Job $([regex]::Escape($bothJobs[0].id))\s*$"
-    Assert ($bothTask -match $bothPrecheck -and $bothTask -match 'SELF-CHECK: zt-digest coverage') 'plan: the one job keeps both SELF-CHECK lines'
+    Assert ($bothTask -match $bothPrecheck -and -not ($bothTask -match 'SELF-CHECK: zt-digest coverage')) 'plan: the one job has its one check'
     # A group draft answers for every orphan it names: `links` or `none` per orphan, in the same JSON.
-    $bothDraft = $bothJob.out
+    $bothDraft = $bothJob.out -replace '\.json$', '.p1.json'
+    $bothLinks = $bothJob.out -replace '\.json$', '.p2.json'
     $okCards = @(@($bothJob.cards) | ForEach-Object { @{ address = $_; verdict = 'ok'; note = '与原文一致。' } })
     $otherOrphans = @(@($bothJob.orphans) | Where-Object { $_ -ne $orphan })
-    Save-Json $bothDraft @{ cards = $okCards; adds = @(); skips = @(); links = @(); none = @() }
+    Save-Json $bothDraft @{ cards = $okCards; adds = @(); skips = @() }
+    Save-Json $bothLinks @{ links = @(); none = @() }
     $bothPre = Run-Digest @('card', '-Step', 'precheck', '-Work', $bothWork, '-Job', $bothJobs[0].id)
     Assert (@($bothPre | Where-Object { $_ -match [regex]::Escape($orphan) -and $_ -match 'no entry for this orphan' }).Count -eq 1) "precheck: the group job answers for its orphan Link ($($bothPre -join ' | '))"
     $from = @($bothJob.candidates[$orphan])[0]
-    Save-Json $bothDraft @{ cards = $okCards; adds = @(); skips = @()
+    Save-Json $bothLinks @{
         links = @(@{ to = $orphan; from = $from; text = "对照 [[$orphan]]：这里讨论的是没有链接的笔记。" })
         none = @($otherOrphans | ForEach-Object { @{ orphan = $_; note = '本组的候选卡片都不合适。' } }) }
     $bothPre = @(Run-Digest @('card', '-Step', 'precheck', '-Work', $bothWork, '-Job', $bothJobs[0].id))
@@ -153,6 +164,66 @@ try {
     $bothApplied = Last (Run-Digest @('card', '-Step', 'apply', '-Work', $bothWork))
     Assert ($bothApplied.counts.orphan_links -eq 1) "apply: the group job writes its orphan Link ($($bothApplied.counts | ConvertTo-Json -Compress))"
     Assert ((Get-Card $from).body -match "对照 \[\[$([regex]::Escape($orphan))\]\]") 'apply: the candidate links the orphan'
+
+    # --- whole groups fill one job: one draft, each group's part read and filed apart ---
+    $twoKey = 'Two2024'
+    $twoStaging = Join-Path $scratch 'two'
+    $twoWork = Join-Path $twoStaging 'cards'
+    New-Item -ItemType Directory -Force (Join-Path $twoStaging 'sections'), $twoWork | Out-Null
+    foreach ($s in 'g1', 'g2') {
+        $text = (1..3 | ForEach-Object { "$s 第 $_ 段的正文内容，长度超过二十个字，是一个段落单元。" }) -join "`n`n"
+        $name = if ($s -eq 'g1') { 's01.md' } else { 's02.md' }
+        [IO.File]::WriteAllText((Join-Path $twoStaging "sections\$name"), "$text`n", $utf8)
+    }
+    Save-Json (Join-Path $twoStaging 'manifest.json') @{ schema_version = 1; citation_key = $twoKey; groups = @(
+            @{ n = 1; id = 'g01'; anchor = "$twoKey/1"; chapter = '第一章'; headings = @('§1'); sections = @('s01.md') },
+            @{ n = 2; id = 'g02'; anchor = "$twoKey/2"; chapter = '第二章'; headings = @('§2'); sections = @('s02.md') }) }
+    $twoMade = Write-Calls @(
+        @{ tool = 'create_literature'; arguments = @{ workspace = 'agent'; bibtex = "@book{$twoKey, title={Two}, author={Hart, Oliver}, year={2024}}"; body = '全书索引。' } },
+        @{ tool = 'create_successor'; arguments = @{ at = $twoKey; kind = 'direct'; title = '第 1 组'; body = '§1' } },
+        @{ tool = 'create_successor'; arguments = @{ at = "$twoKey/1"; kind = 'side'; title = '第一组的笔记'; body = "第一组的笔记正文。`n`n来源：[[$twoKey]] §1" } },
+        @{ tool = 'create_successor'; arguments = @{ at = "$twoKey/1"; kind = 'direct'; title = '第 2 组'; body = '§2' } },
+        @{ tool = 'create_successor'; arguments = @{ at = "$twoKey/2"; kind = 'side'; title = '第二组的笔记'; body = "第二组的笔记正文。`n`n来源：[[$twoKey]] §2" } }
+    )
+    $g1Note = $twoMade[2]; $g2Anchor = $twoMade[3]; $g2Note = $twoMade[4]
+    Assert ($g2Anchor -eq "$twoKey/2") "fixture: the second group has its anchor ($g2Anchor)"
+    $extra = Write-Calls @(1..11 | ForEach-Object { @{ tool = 'create_successor'; arguments = @{ at = $g2Anchor; kind = 'side'; title = "第二组的笔记 $_"; body = "第二组的另一条笔记。`n`n来源：[[$twoKey]] §2" } } })
+    [IO.File]::WriteAllText((Join-Path $twoStaging 'src-g01.txt'), "$g1Note`t$($twoStaging)\sections\s01.md; sections/s01.md:1`n", $utf8)
+    [IO.File]::WriteAllText((Join-Path $twoStaging 'src-g02.txt'), (((@($g2Note) + $extra) | ForEach-Object { "$_`tsections/s02.md:1" }) -join "`n") + "`n", $utf8)
+    $two = Last (Run-Digest @('card', '-Step', 'plan', '-Work', $twoWork, '-Compact', '-Book', $twoKey, '-Staging', $twoStaging, '-NoOrphans'))
+    Assert (@($two.jobs).Count -eq 1) "plan: two small groups fill one job ($(@($two.jobs).Count))"
+    Assert ((@($two.jobs[0].then) -join ',') -eq "$($two.jobs[0].id).p2.md" -and $two.prompts.part) "plan: a job of 15 Cards has a second message ($(@($two.jobs[0].then) -join ','))"
+    $twoState = Get-Content -LiteralPath (Join-Path $twoWork 'state.json') -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    $twoJob = $twoState.jobs[$two.jobs[0].id]
+    Assert ((@($twoJob.groups) -join ',') -eq '1,2' -and @($twoJob.cards) -contains $g1Note -and @($twoJob.cards) -contains $g2Note) "plan: the job names both groups and holds their Cards ($(@($twoJob.groups) -join ','))"
+    $twoTask = Get-Content -LiteralPath $twoJob.file -Raw -Encoding utf8
+    Assert ($twoTask -match '(?m)^## 第 1 组' -and $twoTask -match '(?m)^## 第 2 组') 'plan: the task file heads each group'
+    $twoSecond = Get-Content -LiteralPath (Join-Path $twoWork "$($two.jobs[0].id).p2.md") -Raw -Encoding utf8
+    Assert (([regex]::Matches($twoTask, '(?m)^## 卡片 ')).Count -eq 12 -and ([regex]::Matches($twoSecond, '(?m)^## 卡片 ')).Count -eq 3) 'plan: one message holds twelve Cards, the next one the rest'
+    Assert ($twoTask -notmatch 'SELF-CHECK:' -and $twoSecond -match '(?m)^SELF-CHECK:') 'plan: the check comes with the last message'
+    Assert ($twoTask -match '\.p1\.json' -and $twoSecond -match '\.p2\.json') 'plan: each message names its own result file'
+    Assert ($twoTask -match '记录来源行：`sections/s01.md:1`' -and $twoTask -notmatch 'sections\\s01\.md') 'plan: a logged file token beside a line range stays out of the task file'
+    Assert ($twoTask -notmatch '## C3') 'plan: a section mark in the source line is no C3 number'
+    $twoCards = @(@($twoJob.cards) | ForEach-Object { @{ address = $_; verdict = 'ok'; note = '与原文一致。' } })
+    $partOne = $twoJob.out -replace '\.json$', '.p1.json'
+    $partTwo = $twoJob.out -replace '\.json$', '.p2.json'
+    Save-Json $partOne @{ cards = @($twoCards | Select-Object -First 12); adds = @(); skips = @(@{ unit = 'sections/s01.md:3'; reason = '版式' }, @{ unit = 'sections/s01.md:5'; reason = '版式' }) }
+    $twoPre = @(Run-Digest @('card', '-Step', 'precheck', '-Work', $twoWork, '-Job', $two.jobs[0].id))
+    Assert ($twoPre[0] -match 'part 2') "precheck: a part with no file is named ($($twoPre -join ' | '))"
+    Save-Json $partTwo @{ cards = @($twoCards | Select-Object -Skip 12) }
+    $twoPre = @(Run-Digest @('card', '-Step', 'precheck', '-Work', $twoWork, '-Job', $two.jobs[0].id))
+    Assert (@($twoPre | Where-Object { $_ -match '^s02\.md:\d+ C1 ' }).Count -eq 2 -and $twoPre[-1] -eq 'faults: 2') "precheck: the check measures the second group of the job ($($twoPre -join ' | '))"
+    $twoAdd = @{ title = '第二组补写的笔记'; body = "第二组第二段的内容。`n`n来源：[[$twoKey]] §2"; span = 'sections/s02.md:3' }
+    Save-Json $partTwo @{ cards = @($twoCards | Select-Object -Skip 12); adds = @($twoAdd); skips = @(@{ unit = 'sections/s02.md:5'; reason = '版式' }) }
+    $twoPre = @(Run-Digest @('card', '-Step', 'precheck', '-Work', $twoWork, '-Job', $two.jobs[0].id))
+    Assert ($twoPre[-1] -eq 'faults: 0') "precheck: a draft that answers for both groups is clean ($($twoPre -join ' | '))"
+    $twoApplied = Last (Run-Digest @('card', '-Step', 'apply', '-Work', $twoWork))
+    Assert ($twoApplied.counts.add -eq 1 -and $twoApplied.counts.skip -eq 3) "apply: the add and the skips of both groups ($($twoApplied | ConvertTo-Json -Compress))"
+    Assert (@((Get-Content -LiteralPath (Join-Path $twoStaging 'coverage-skips-g01.json') -Raw -Encoding utf8 | ConvertFrom-Json).skips).Count -eq 2) 'apply: the first group keeps its own skips'
+    Assert (@((Get-Content -LiteralPath (Join-Path $twoStaging 'coverage-skips-g02.json') -Raw -Encoding utf8 | ConvertFrom-Json).skips).Count -eq 1) 'apply: the second group keeps its own skip'
+    Assert ((Get-Content -LiteralPath (Join-Path $twoStaging 'src-g02.txt') -Raw -Encoding utf8) -match 'sections/s02\.md:3') 'apply: the add joins the source log of its own group'
+    $twoCov = Last (Run-Digest @('coverage', '-Out', $twoStaging, '-Step'))
+    Assert ($twoCov.uncovered -eq 0 -and $twoCov.pct -eq 100) "coverage: both groups are resolved ($($twoCov | ConvertTo-Json -Compress))"
 } finally {
     zt down 2>&1 | Out-Null
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

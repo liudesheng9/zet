@@ -167,6 +167,8 @@ function Expand-Cards($Json) {
                 }
             }
         } else { continue }
+        # One job, one conversation: its later parts are the next messages of that conversation.
+        if ($j.then) { $entry.then = @(@($j.then) | ForEach-Object { [ordered]@{ files = @((Join-Path $dir "$_")); prompt = "$($Json.prompts.part)" } }) }
         $jobs += $entry
     }
     return @($jobs)
