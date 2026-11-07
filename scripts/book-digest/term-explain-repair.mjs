@@ -97,7 +97,7 @@ export function narrated(body) {
 
 async function plan(a) {
   const out = a.out; const perJob = Number(a['per-job'] || 12);
-  const only = a.only ? new Set(a.only.split(',')) : null;
+  const only = onlyTerms(a);
   fs.mkdirSync(path.join(out, 'jobs'), { recursive: true });
   fs.mkdirSync(path.join(out, 'answers'), { recursive: true });
   const zt = new Zt(); await zt.init();
@@ -278,7 +278,7 @@ async function apply(a) {
   const jobs = JSON.parse(fs.readFileSync(path.join(a.out, 'jobs.json'), 'utf8'));
   const list = JSON.parse(fs.readFileSync(path.join(a.out, 'items.json'), 'utf8'));
   const items = new Map(list.map((i) => [i.term, i]));
-  const only = a.only ? new Set(a.only.split(',')) : null;
+  const only = onlyTerms(a);
   const answers = new Map();
   for (const job of jobs) {
     if (!fs.existsSync(job.answer)) continue;
@@ -311,10 +311,155 @@ async function apply(a) {
   console.log(JSON.stringify(result));
 }
 
+// ---- judge: is a mathematical Term Card mathematics in the book, or a formula the writer built? ----
+
+const word = (f) => {
+  const inner = f.replace(/^\$+|\$+$/g, '').replaceAll('\\text', '').replaceAll('\\ ', ' ');
+  const letters = [...inner].filter((c) => /\p{L}/u.test(c));
+  return [...inner].every((c) => /\p{L}/u.test(c) || " '’‘ʿʾ{}-".includes(c)) && (letters.length >= 4 || letters.some((c) => c.charCodeAt(0) > 127));
+};
+const footnote = (f) => /^\$\s*(\{\s*\})?\s*\^\s*\{?([\d,\s-]+|[a-z])\}?\s*\$$/.test(f);
+const realFormulas = (line) => (line.match(/\$\$[^$]*\$\$|\$[^$\n]+\$/g) || []).filter((f) => f.length > 2 && !word(f) && !footnote(f));
+const around = (line, term, width = 160) => {
+  const at = line.indexOf(term);
+  if (at < 0 || line.length <= 2 * width) return line.slice(0, 2 * width);
+  return '…' + line.slice(Math.max(0, at - width), at + term.length + width) + '…';
+};
+
+async function judgePlan(a) {
+  const out = a.out; const perJob = Number(a['per-job'] || 12);
+  fs.mkdirSync(path.join(out, 'judge', 'jobs'), { recursive: true });
+  fs.mkdirSync(path.join(out, 'judge', 'answers'), { recursive: true });
+  // A row the plan classified from a real formula, a notation table or a setting symbol is mathematics in the book.
+  const planFile = path.join(a.staging, 'term-cards', 'plan.json');
+  const planned = new Map();
+  if (fs.existsSync(planFile)) {
+    for (const r of JSON.parse(fs.readFileSync(planFile, 'utf8')).rows) {
+      const real = r.classification.evidence.filter((e) => !(e.kind.endsWith('formula') && (word(e.formula) || footnote(e.formula))));
+      planned.set(r.term, real.length > 0);
+    }
+  }
+  const sectionsDir = path.join(a.staging, 'sections');
+  const book = fs.readdirSync(sectionsDir).sort().flatMap((file) => fs.readFileSync(path.join(sectionsDir, file), 'utf8').split('\n').map((text, i) => ({ file, line: i + 1, text })));
+  const zt = new Zt(); await zt.init();
+  const list = await zt.call('get_card', { at: a.list, term_links: 'label' });
+  const meaning = new Map([...list.body.matchAll(/^\| (.+?) \| (.+?) \| (.+?) \| (.+?) \|$/gm)].map((m) => [m[1], m[3]]));
+  const read = await cards(zt, list.sides.map((h) => h.address), 'label');
+  zt.close();
+  const items = [];
+  for (const card of read) {
+    if (!/^类别：数学概念$/m.test(card.body) || planned.get(card.term) === true) continue;
+    const def = (card.body.split('## 数学定义')[1] || '').split('\n符号表')[0];
+    const formula = (def.match(/\$\$[\s\S]*?\$\$/) || [''])[0];
+    const reading = lines(def.slice(def.indexOf(formula) + formula.length)).slice(0, 3);
+    const marked = (def.match(/补：书中未写/g) || []).length;
+    const withFormula = book.filter((l) => l.text.includes(card.term) && realFormulas(l.text).length).slice(0, 4);
+    const plain = withFormula.length ? [] : book.filter((l) => l.text.includes(card.term)).slice(0, 3);
+    items.push({
+      id: `m${String(items.length + 1).padStart(3, '0')}`, term: card.term, address: card.address, meaning: meaning.get(card.term) || '', formula, reading, marked,
+      lines: [...withFormula, ...plain].map((l) => ({ formula: realFormulas(l.text).length > 0, text: around(l.text, card.term) })),
+    });
+  }
+  const jobs = [];
+  for (let i = 0; i < items.length; i += perJob) jobs.push(items.slice(i, i + perJob));
+  const index = jobs.map((job, n) => {
+    const id = `j${String(n + 1).padStart(3, '0')}`;
+    const file = path.join(out, 'judge', 'jobs', `${id}.md`); const answer = path.join(out, 'judge', 'answers', `${id}.json`);
+    fs.writeFileSync(file, judgeText(out, id, job, answer), 'utf8');
+    return { id, file, answer, ids: job.map((t) => t.id) };
+  });
+  fs.writeFileSync(path.join(out, 'judge', 'items.json'), JSON.stringify(items, null, 1), 'utf8');
+  fs.writeFileSync(path.join(out, 'judge', 'jobs.json'), JSON.stringify(index, null, 1), 'utf8');
+  console.log(JSON.stringify({ ok: true, math: read.filter((c) => /^类别：数学概念$/m.test(c.body)).length, judged: items.length, jobs: index.length, bytes: Math.max(0, ...index.map((j) => fs.statSync(j.file).size)) }));
+}
+
+function judgeText(out, id, job, answer) {
+  const body = job.map((t) => [
+    `### ${t.id} ${t.term}`, `- 一句话意思：${t.meaning}`, '- 卡上的定义公式：', t.formula || '（没有）', ...t.reading.map((l) => `  ${l}`),
+    `- 定义部分标「补：书中未写」的次数：${t.marked}`,
+    t.lines.length ? '- 书中含这个术语的行：' : '- 书中没有含这个术语原文写法的行。',
+    ...t.lines.map((l) => `  - [${l.formula ? '有公式' : '无公式'}] ${l.text}`),
+  ].join('\n')).join('\n\n');
+  const tick = '`';
+  return `# 数学术语卡判定任务 ${id}
+
+下面每张术语卡都写成了数学概念：卡上有定义公式、符号、推导。有些卡的公式来自书，有些是写卡的人自己构造的。你判定每张卡属于哪一种。
+
+## 工作方式
+
+判断要用的材料全在本条消息里。不读取、不列出、不搜索任何文件，不写脚本。逐个术语在推理里判断，然后一次写完答案文件，运行一次 SELF-CHECK。
+
+## 判定规则
+
+- ${tick}math${tick}：书本身用公式或模型定义、推导或使用这个术语。例如书给出它的公式，或书的模型里它是一个变量、一条曲线、一个条件、一个均衡、一个比率。卡上的公式与书的公式一致，或是书的公式的直接写法。
+- ${tick}concept${tick}：书只用文字讨论这个术语，卡上的公式是写卡的人为它构造的。例如一种制度、一项政策、一个历史现象、一个群体、一种观点，书没有给它公式，卡却给它造了效用函数、成本函数或集合模型。
+- 书中这一行有公式，不等于这个术语是数学概念：公式可能讲的是别的量。看公式里有没有这个术语对应的量。
+- 拿不准时写 ${tick}math${tick}：误删书中的数学，比留下一张多余的推导代价大。
+
+## 术语
+
+${body}
+
+## 输出
+
+把结果写入 ${tick}${answer}${tick}，UTF-8，只写这一个文件。格式：${tick}{"terms":[{"id":"m001","verdict":"math","reason":"一句理由"}]}${tick}，本组每个术语一项，id 照抄。
+
+SELF-CHECK: node "${process.argv[1]}" judge-check --out "${out}" --job ${id}
+写完运行这一行命令自查，按故障行改正，直到最后一行是 ${tick}faults: 0${tick}（最多三次）。
+写完后只回复一行 JSON：${tick}{"math":数,"concept":数}${tick}。
+`;
+}
+
+function judgeFaults(job, answer) {
+  const faults = []; const seen = new Map((answer?.terms || []).map((t) => [t.id, t]));
+  for (const id of job.ids) {
+    const t = seen.get(id);
+    if (!t) faults.push(`${id} 缺少这一项`);
+    else if (!['math', 'concept'].includes(t.verdict)) faults.push(`${id} verdict 必须是 math 或 concept`);
+    else if (!t.reason || !String(t.reason).trim()) faults.push(`${id} 缺少 reason`);
+  }
+  for (const id of seen.keys()) if (!job.ids.includes(id)) faults.push(`${id} 不是本组的 id`);
+  return faults;
+}
+
+function judgeCheck(a) {
+  const jobs = JSON.parse(fs.readFileSync(path.join(a.out, 'judge', 'jobs.json'), 'utf8'));
+  const job = jobs.find((j) => j.id === a.job); let answer = null;
+  try { answer = JSON.parse(fs.readFileSync(job.answer, 'utf8')); } catch (e) { console.log(`答案文件读不了：${e.message}`); }
+  const faults = answer ? judgeFaults(job, answer) : ['没有答案'];
+  for (const f of faults) console.log(f);
+  console.log(`faults: ${faults.length}`);
+}
+
+/** The terms judged concept, one a line, for `plan --only @file`. */
+function judgeList(a) {
+  const jobs = JSON.parse(fs.readFileSync(path.join(a.out, 'judge', 'jobs.json'), 'utf8'));
+  const items = new Map(JSON.parse(fs.readFileSync(path.join(a.out, 'judge', 'items.json'), 'utf8')).map((i) => [i.id, i]));
+  const concept = []; let math = 0, missing = 0;
+  for (const job of jobs) {
+    if (!fs.existsSync(job.answer)) { missing += job.ids.length; continue; }
+    const answer = JSON.parse(fs.readFileSync(job.answer, 'utf8'));
+    if (judgeFaults(job, answer).length) throw new Error(`${job.id} still has faults`);
+    for (const t of answer.terms) { if (t.verdict === 'concept') concept.push(items.get(t.id).term); else math++; }
+  }
+  fs.writeFileSync(path.join(a.out, 'judge', 'concept.txt'), concept.join('\n') + '\n', 'utf8');
+  console.log(JSON.stringify({ ok: missing === 0, math, concept: concept.length, missing, list: path.join(a.out, 'judge', 'concept.txt') }));
+}
+
+/** `--only t1,t2`, or `--only @file` with one term a line. */
+function onlyTerms(a) {
+  if (!a.only) return null;
+  const list = a.only.startsWith('@') ? fs.readFileSync(a.only.slice(1), 'utf8').split(/\r?\n/) : a.only.split(',');
+  return new Set(list.map((t) => t.trim()).filter(Boolean));
+}
+
 const a = args(process.argv.slice(2));
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/').replace(/^\//, '')}`) {
   if (a._ === 'plan') await plan(a);
   else if (a._ === 'check') check(a);
   else if (a._ === 'apply') await apply(a);
+  else if (a._ === 'judge-plan') await judgePlan(a);
+  else if (a._ === 'judge-check') judgeCheck(a);
+  else if (a._ === 'judge-list') judgeList(a);
   else throw new Error('usage: plan | check | apply');
 }
