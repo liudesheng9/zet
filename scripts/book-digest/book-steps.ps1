@@ -278,6 +278,7 @@ switch ($Step) {
         }
         $argv = @('prepare') + $bookArgs + @('-Out', $Out, '-CitationKey', $key,
             '-MaxChars', "$(Opt 'MaxChars' 25000)", '-MaxUnits', "$(Opt 'MaxUnits' 3)")
+        if (Opt 'GroupBy') { $argv += @('-GroupBy', "$(Opt 'GroupBy')") }
         if (Opt 'StartHeading') { $argv += @('-StartHeading', "$(Opt 'StartHeading')") }
         if (Opt 'EndHeading') { $argv += @('-EndHeading', "$(Opt 'EndHeading')") }
         if (Opt 'SkipHeadings') { $argv += @('-SkipHeadings', "$(Opt 'SkipHeadings')") }

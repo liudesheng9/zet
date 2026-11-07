@@ -1,4 +1,4 @@
-// ==== module zt-digest-lib v58 ====
+// ==== module zt-digest-lib v59 ====
 // 58 (2026-11-06, the owner's order: three times the Card faithful check per job): a card job can be one
 // conversation of several messages (an entry's `then`). A turn thinks only about what its user message gave it,
 // so the manager, and not a tool result, hands over each part.
@@ -543,8 +543,8 @@ JOBS: read the JSON array in "${o.file}" (Read tool) and ${o.from === undefined 
 - A job with "continue": find the session of the job id it names in this table (job id, then session_id):
 ${o.table || '(empty)'}
   With a session: deepseek_prompt with that session_id, prompt_files = files, prompt = prompt, skills ${JSON.stringify(o.skills || [])}, reasoning_effort "${o.effort || DSH_EFFORT}", wait_seconds 0. Without one: deepseek_run as above, with prompt_files = the job's fallback. When deepseek_prompt answers that the session is unknown or closed, run the job once as a new conversation: deepseek_run as above, with prompt_files = the job's fallback.`}
-${o.keep ? `- A job with "then" is one conversation of several messages. When its conversation answers "finished", send the next item of its "then": deepseek_prompt with the same session_id, prompt_files = that item's files, prompt = that item's prompt, skills ${JSON.stringify(o.skills || [])}, reasoning_effort "${o.effort || DSH_EFFORT}", wait_seconds 0. Send every item, in order, one at a time. The job ends with the answer to its last item; that last answer is its answer.
-` : ''}Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
+- A job with "then" is one conversation of several messages. When its conversation answers "finished", send the next item of its "then": deepseek_prompt with the same session_id, prompt_files = that item's files, prompt = that item's prompt, skills ${JSON.stringify(o.skills || [])}, reasoning_effort "${o.effort || DSH_EFFORT}", wait_seconds 0. Send every item, in order, one at a time. The job ends with the answer to its last item; that last answer is its answer.
+Keep at most ${DSH_PER_BATCH} jobs running at a time; start the next job when one ends. Start independent jobs in one message.
 Follow "status" until each job ends:
 - "running": deepseek_wait (session_id, wait_seconds 600).
 - "needs_response": approve (decision "allow") ${o.readOnly ? `only these, and refuse every other compiler step and every zt write: the Bridge compiler (${ZD_DIGEST} bridge, or bridge-compiler.ps1) with -Step precheck (never -Apply); the check zt-check (read-only); a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}) with -Allow "${o.dsh}\\read-only.allow.txt" (an empty allow-list: reads only); a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"; and writing JSON files under "${o.writes}"` : `a command that runs the zt helper (${ZD_CALL}, or pwsh with zt-mcp.ps1; ${ZD_NO_OPEN}), the check zt-check (read-only), the figure check (${ZD_DIGEST} figures with -Step precheck), a read-only read (Read, Get-Content, Select-String) of a file under "${OUT}"${A.source ? ` or of "${A.source}"` : ''}, and writing JSON files under "${o.writes || o.dsh}"`}. Reject anything else that writes, moves, or deletes files. Answer a question with custom text "按任务说明自行决定，不需要询问。".
@@ -1147,7 +1147,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '58', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '59', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

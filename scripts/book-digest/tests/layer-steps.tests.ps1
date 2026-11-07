@@ -100,7 +100,7 @@ switch -Regex ($cmd) {
             $g = '{0:D3}' -f $n
             $job = Join-Path $env:LS_OUT "job-$g.json"
             $draft = "C:/s/link-draft-g$g.json"
-            Set-Content -LiteralPath $job -Value (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; expected_jobs = 1; jobs = @(@{ id = "link-g$g-t1"; kind = 'link'; files = @('C:/s/link-prefix.md', "C:/s/link-g$g.md", "C:/s/link-job-g$g.md"); prompt = "write $draft"; output = $draft; permissions = @{ archive_read = $true; archive_write = $false } }) }) -Encoding utf8
+            Set-Content -LiteralPath $job -Value (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; expected_jobs = 1; jobs = @(@{ id = "link-g$g-t1"; kind = 'link'; gaps = [int]$env:LS_LINK_GAPS; files = @('C:/s/link-prefix.md', "C:/s/link-g$g.md", "C:/s/link-job-g$g.md"); prompt = "write $draft"; output = $draft; permissions = @{ archive_read = $true; archive_write = $false } }) }) -Encoding utf8
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; job = $job; draft = $draft; expected_jobs = 1; recovered = $false })
             exit 0
         }
@@ -331,6 +331,7 @@ Assert ((Test-Path -LiteralPath $chunk) -and @(Get-Content -LiteralPath $chunk -
 $env:LS_LINK_JOBS = '1'
 $env:LS_PAGES = '1'
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$env:LS_LINK_GAPS = '5'
 $joined = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $common)
 Assert-Line $joined 'start (joined Link jobs)'
 $joinedJobs = @(Get-Content -LiteralPath (Join-Path $out 'layer-steps/link/jobs.json') -Raw -Encoding utf8 | ConvertFrom-Json -Depth 16)
@@ -339,7 +340,11 @@ Assert (@($joinedJobs[0].files).Count -eq 7 -and @($joinedJobs[0].files | Where-
 Assert ($joinedJobs[0].prompt -match 'link-draft-g001' -and $joinedJobs[0].prompt -match 'link-draft-g002' -and $joinedJobs[0].prompt -match 'link-draft-g003') 'the prompt names the draft of each group'
 Assert ($joinedJobs[0].unit -eq 'link/g001@1' -and $joinedJobs[0].id -eq 'link-g001-g003-t1') 'a joined job carries its first unit'
 Assert (@($joinedJobs[1].files).Count -eq 3 -and $joinedJobs[1].id -like 'link-g004-*') 'the last group stays a plain job'
-Remove-Item Env:LS_LINK_JOBS
+$env:LS_LINK_GAPS = '20'
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$sized = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $common)
+Assert ([int]$sized.json.units -eq 4 -and [int]$sized.json.jobs -eq 4) "a job stops at 30 gaps: groups of 20 gaps each run alone ($($sized.last))"
+Remove-Item Env:LS_LINK_JOBS, Env:LS_LINK_GAPS
 $env:LS_PAGES = '1'
 
 # morony2005iraq, 2026-11-06: a stopped run's Link units stayed claimed, the start got no unit, answered ok, and the

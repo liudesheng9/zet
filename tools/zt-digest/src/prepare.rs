@@ -61,6 +61,11 @@ static BLOCKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap(
 static CJK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\x{3400}-\x{9FFF}\x{F900}-\x{FAFF}]").unwrap());
 static HAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\x{3400}-\x{9FFF}]").unwrap());
 static KEEP_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(\$\$|\||<|```)").unwrap());
+/// A heading that opens a numbered chapter, a part or an appendix. `1.1` is a section, so a number
+/// that a dot and a digit follow does not match.
+static CHAPTER_START: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(第\s*[0-9一二三四五六七八九十百]+\s*[章卷编部篇]|第[一二三四五六七八九十]+部分|chapter\s+\d|part\s+[ivx\d]+|附录|appendix|\d{1,2}(?:[.．、]\s*|\s+)[^\d.\s])").unwrap()
+});
 pub(crate) static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(#{1,2})\s+(.+)$").unwrap());
 static NOT_EVENT_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(!\[|\||#|\d+\))").unwrap());
 static CITATION_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\?\[[^\]]*\d{4}[^\]]*\\?\]|[（(]\s*\d{4}[a-z]?\s*[)）]").unwrap());
@@ -366,18 +371,29 @@ pub(crate) fn staged_sections(
     })
 }
 
-/// Groups of up to `max_units` consecutive units of one chapter, at most `max_chars` characters
-/// unless one unit is larger: indexes into `merged`.
-fn group_units(merged: &[Unit], max_units: i64, max_chars: i64) -> Vec<Vec<usize>> {
+/// Whether a unit opens a numbered chapter, a part or an appendix.
+fn opens_chapter(unit: &Unit) -> bool {
+    unit.headings.iter().any(|heading| CHAPTER_START.is_match(heading.trim()))
+}
+
+/// Consecutive units as groups, at most `max_chars` characters unless one unit is larger: indexes
+/// into `merged`. By heading, a group holds at most `max_units` units of one level-1 heading. By
+/// chapter, it runs across headings and stops at a numbered chapter
+/// (docs/digest-group-boundary-proposal.md), because the translated books set every section heading
+/// at level 1.
+fn group_units(merged: &[Unit], max_units: i64, max_chars: i64, by_chapter: bool) -> Vec<Vec<usize>> {
     let mut groups = Vec::new();
     let mut i = 0;
     while i < merged.len() {
         let mut members = vec![i];
         let mut size = len16(&merged[i].text) as i64;
-        while (members.len() as i64) < max_units
-            && i + 1 < merged.len()
-            && eq(&merged[i + 1].chapter, &merged[i].chapter)
+        while i + 1 < merged.len()
             && size + len16(&merged[i + 1].text) as i64 <= max_chars
+            && if by_chapter {
+                !opens_chapter(&merged[i + 1])
+            } else {
+                (members.len() as i64) < max_units && eq(&merged[i + 1].chapter, &merged[i].chapter)
+            }
         {
             i += 1;
             members.push(i);
@@ -529,6 +545,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "SkipHeadings",
         "MaxChars",
         "MaxUnits",
+        "GroupBy",
         "MinUnitChars",
         "FileId",
         "MinFigureBytes",
@@ -618,6 +635,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     };
     let max_chars = a.int_or("MaxChars", 25000)?;
     let max_units = a.int_or("MaxUnits", 3)?;
+    let by_chapter = a.has("GroupBy") && a.choice("GroupBy", &["heading", "chapter"])? == "chapter";
     let min_unit_chars = a.int_or("MinUnitChars", 1000)?;
     let mut file_id = match &resolved {
         Some(resolved) => resolved.file_id,
@@ -701,7 +719,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     };
     let staged = staged_sections(&kept, &start, &end, &skip, min_unit_chars, &empty)?;
     let merged = staged.merged;
-    let groups = group_units(&merged, max_units, max_chars);
+    let groups = group_units(&merged, max_units, max_chars, by_chapter);
 
     for dir in ["groups", "sections", "notes"] {
         let path = join_path(&out, dir);
@@ -947,6 +965,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         write(&join_path(&staging, "setup-calls.json"), &ps::json_pretty(&Value::Array(setup.clone())))?;
         if !variant.is_empty() {
             let options=json!({"book_title":title,"bibtex_sha256":crate::canon::sha256_hex(bibtex.as_bytes()),"start_heading":start,"end_heading":end,"skip_headings":skip_headings,"max_chars":max_chars,"max_units":max_units,"min_unit_chars":min_unit_chars,"min_figure_bytes":min_figure_bytes,"max_event_candidates":max_event_candidates,"instructions":instructions,"no_event_candidates":no_event_candidates,"no_figures":no_figures,"run_options":run_options});
+            let mut options = options;
+            if by_chapter {
+                options["group_by"] = json!("chapter");
+            }
             let mut contract = run_contract(&manifest, &variant, &source_hash, options, archive)?;
             contract["settings"] = settings.clone();
             manifest.insert("run_contract".into(), contract);
@@ -1411,6 +1433,29 @@ mod tests {
     }
 
     #[test]
+    fn a_chapter_group_crosses_headings_and_stops_at_a_numbered_chapter() {
+        let unit = |heading: &str, chars: usize| Unit {
+            chapter: heading.to_string(),
+            heading: heading.to_string(),
+            headings: vec![heading.to_string()],
+            text: "字".repeat(chars),
+        };
+        let merged = vec![
+            unit("第三章", 4000),
+            unit("军事移民", 5000),
+            unit("城市聚落形态", 5000),
+            unit("结论", 2000),
+            unit("1.1 一片土地", 3000),
+            unit("第四章", 4000),
+            unit("5 第一阶段", 3000),
+            unit("长节", 24000),
+            unit("短节", 2000),
+        ];
+        assert_eq!(group_units(&merged, 3, 25000, true), vec![vec![0, 1, 2, 3, 4], vec![5], vec![6], vec![7], vec![8]]);
+        assert_eq!(group_units(&merged, 3, 25000, false).len(), 9, "by heading each level-1 unit stands alone");
+    }
+
+    #[test]
     fn headings_without_blank_lines_still_bound_the_selected_range() {
         let units = units_of("# 导论\n正文。\n## 小节\n第二段。\n# 参考\n未选择。");
         assert_eq!(
@@ -1439,7 +1484,7 @@ mod tests {
         let merged = merge_units(units, 12).unwrap();
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[1].headings, vec!["第一章", "1.1 甲"]);
-        assert_eq!(group_units(&merged, 3, 20000), vec![vec![0], vec![1, 2]]);
+        assert_eq!(group_units(&merged, 3, 20000, false), vec![vec![0], vec![1, 2]]);
         assert_eq!(group_units(&merged, 1, 20000), vec![vec![0], vec![1], vec![2]]);
         assert!(merge_units(units_of("# 导论\n\n短。"), 1000).is_err());
     }

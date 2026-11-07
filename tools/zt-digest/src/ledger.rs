@@ -7640,6 +7640,31 @@ fn start_view(job: &Value, path: &Path, reused: bool, lease_until: i64) -> Value
     json!({"schema_version":1,"unit":job["unit"],"token":job["token"],"run_id":job["run_id"],"input_hash":job["input_hash"],"unit_input_hash":job["unit_input_hash"],"job":path.to_string_lossy(),"prompt":job["artifacts"]["prompt"]["path"],"snapshot":job["artifacts"]["snapshot"]["path"],"snapshot_revision":job["inputs"]["snapshot"]["archive_revision"],"earlier_context":job["earlier_context"],"earlier_context_path":job["artifacts"]["earlier_context"]["path"],"earlier_context_text":job["artifacts"]["earlier_context_text"]["path"],"draft":job["draft"],"expected_jobs":job["expected_jobs"],"reused":reused,"recovered":job["recovery"]["reason"]==json!("receipts_committed"),"recovery":job["recovery"],"lease_until":lease_until})
 }
 
+/// One group as messages of one conversation, one source unit each. The first message is the group's
+/// task with its first unit; the last one carries the SELF-CHECK lines.
+fn message_parts(first: &str, units: &[String], checks: &[&str]) -> (String, Vec<String>) {
+    let n = units.len();
+    let lead: String = first.lines().filter(|line| !line.starts_with("SELF-CHECK:")).collect::<Vec<_>>().join("\n");
+    let lead = lead.replace("写完后按顺序运行下面两条 SELF-CHECK", "写完最后一段后按顺序运行那条消息里的 SELF-CHECK");
+    let plan = format!(
+        "## 分段方式\n\n本组共 {n} 段原文，分 {n} 条消息发给你。这是第 1 段。每条消息只为这一段原文写卡，要写得和只有这一段时一样细，不因为后面还有内容而压缩。把卡片写进草稿的 calls，后面的消息把新卡追加到 calls 末尾，不改已写的卡。前面的消息不运行 SELF-CHECK，只在最后一条消息运行。写完本段只回复一行 JSON：{{\"part\":1,\"cards\":卡数}}。\n\n## 本组选定原文"
+    );
+    let head = lead.replacen("## 本组选定原文", &plan, 1);
+    let lines: String = checks.iter().map(|check| format!("SELF-CHECK: {check}\n")).collect();
+    let later = (1..n)
+        .map(|k| {
+            let m = k + 1;
+            let tail = if m == n {
+                format!("这是最后一段。写完后补齐锚点改写，然后按顺序运行：\n{lines}改到两条都打印 `faults: 0`，再回复全组的一行 JSON。")
+            } else {
+                format!("写完本段只回复一行 JSON：{{\"part\":{m},\"cards\":卡数}}。")
+            };
+            format!("# 第 {m} 段，共 {n} 段\n\n这一段只为下面的原文写卡，要写得和只有这一段时一样细。把新卡追加到同一份草稿 calls 的末尾，不改已写的卡。{tail}\n\n## 本段原文\n\n{}\n", units[k])
+        })
+        .collect();
+    (head, later)
+}
+
 fn read_group_job(
     p: &Prepared,
     unit: &str,
@@ -7799,6 +7824,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         p.contract["options"].get("run_options"),
     )?;
     let mut source = String::new();
+    let mut source_units: Vec<String> = Vec::new();
     for section in group["sections"].as_array().unwrap() {
         let bytes = std::fs::read(field(section, "path")?)?;
         if canon::sha256_hex(&bytes) != section["sha256"] {
@@ -7806,6 +7832,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         }
         source.push_str(std::str::from_utf8(&bytes)?);
         source.push_str("\n\n");
+        source_units.push(std::str::from_utf8(&bytes)?.to_string());
     }
     let mut terms_text = String::new();
     let terms = if run_options["terms"] == true {
@@ -7944,6 +7971,9 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         p.out.display(),
         draft_path.display()
     );
+    // docs/digest-group-boundary-proposal.md: a turn writes a limited amount whatever it holds, so a
+    // group that crosses headings goes to its writer one source unit at a time, in one conversation.
+    let by_messages = p.contract["options"]["group_by"] == json!("chapter") && source_units.len() > 1;
     let prompt = format!(
         "# 第 {number} 组\n\n本任务只把本组的小节写成 ZET 卡片，表示成 JSON 草稿，写入 `{}`：`calls` 里每项是一次写入提案（`tool` 和 `arguments`），归档写入由 group-finish 工具完成，你不调用 zt，也不自己写卡片。写完后按顺序运行下面两条 SELF-CHECK，改到两条都打印 `faults: 0`；最多运行三次，仍有问题就照常回复，并在 `errors` 里写出剩下的问题。\nSELF-CHECK: {card_check_command}\nSELF-CHECK: {coverage_command}\n\n共享规则：`{}`\n术语输入：{}\n早前上下文包：`{}`（本组之前最多 {} 张卡片，含摘要与读全文的 locator；写卡前先读它）\n全部卡片都写在本书的文献树里：不新建主题，不写主题树的卡，不写枢纽卡，不链接主题树的卡（主题树归 zt-idea-grow）。\n\n草稿必须保留以下 schema_version、unit、token 和 input_hash，填写 calls。每个 `create_successor` 的 `arguments` 里写 `src`（小节文件和行号范围）：不写行号会被 coverage 记为 C2。仅有空数组或原始占位锚点不能建立覆盖。第一张卡建成本组锚点的侧后继，其余按阅读顺序建成前一张卡的直接后继；不要建锚点的直接后继（锚点的直接位置留给其他组）。编辑本锚点时的 base_fingerprint 为 `{}`。\n\n```json\n{}\n```\n\n## 当前锚点\n\n{}\n\n{}\n\n## 本组选定原文\n\n{}",
         draft_path.display(),
@@ -7959,9 +7989,21 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         serde_json::to_string_pretty(&draft)?,
         field(anchor, "title")?,
         field(anchor, "body")?,
-        source
+        if by_messages { &source_units[0] } else { &source }
     );
+    let (prompt, later_messages) = if by_messages {
+        message_parts(&prompt, &source_units, &[card_check_command.as_str(), coverage_command.as_str()])
+    } else {
+        (prompt, Vec::new())
+    };
     let prompt = publish(&prompt_path, &prompt)?;
+    let mut then = Vec::new();
+    for (k, body) in later_messages.iter().enumerate() {
+        let n = k + 2;
+        let part = publish(&directory.join(format!("part-{n}.md")), body)?;
+        let tail = if n == source_units.len() { "，这是最后一段" } else { "" };
+        then.push(json!({"files":[part["path"].clone()],"prompt":format!("按上面的第 {n} 段继续{tail}。")}));
+    }
     let mut files = vec![
         prefix["path"].clone(),
         json!(prompt_path.to_string_lossy()),
@@ -7975,7 +8017,7 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         // The recovered draft is already the group's checked result: no job is offered to an agent.
         json!([])
     } else {
-        json!([{"id":format!("digest-g{number:03}-t{token}"),"kind":"digest","files":files,"prompt":format!("按组任务生成 JSON 草稿并写入 {}，保留绑定字段。",draft_path.display()),"output":draft_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}])
+        json!([{"id":format!("digest-g{number:03}-t{token}"),"kind":"digest","files":files,"then":then,"prompt":format!("按组任务生成 JSON 草稿并写入 {}，保留绑定字段。",draft_path.display()),"output":draft_path.to_string_lossy(),"permissions":{"archive_read":true,"archive_write":false}}])
     };
     let expected_jobs = if recovered { json!(0) } else { json!(1) };
     let mut job = json!({"schema_version":1,"unit":unit,"token":token,"run_id":run,"owner":claimed.owner,"unit_input_hash":claimed.input_hash,"input_hash":input_hash,"inputs":inputs,"mode":"draft_only","expected_jobs":expected_jobs,"draft":draft_path.to_string_lossy(),"earlier_context":earlier.2.facts(),"place_beside":{"count":earlier.4.len()},"artifacts":{"prompt":prompt,"prefix":prefix,"snapshot":snapshot_record,"terms":terms,"earlier_context":earlier.0,"earlier_context_text":earlier.1,"place_beside":earlier.3,"rebound_draft":draft_record},"jobs":jobs});
@@ -11184,6 +11226,7 @@ fn link_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Valu
         json!([{
             "id": format!("link-g{number:03}-t{token}"),
             "kind": "link",
+            "gaps": gaps.len(),
             "files": [
                 prefix.to_string_lossy(),
                 gap_doc.to_string_lossy(),
@@ -18334,6 +18377,18 @@ mod tests {
 
     // #92: a claim that starts a provider run asks for that run's cap, and the base lease never
     // shortens the request.
+    #[test]
+    fn a_group_splits_into_one_message_per_unit_and_the_last_runs_the_checks() {
+        let first = "# 第 1 组\n写完后按顺序运行下面两条 SELF-CHECK，改好。\nSELF-CHECK: one\nSELF-CHECK: two\n\n## 本组选定原文\n\n甲段";
+        let units = vec!["甲段".to_string(), "乙段".to_string(), "丙段".to_string()];
+        let (head, later) = message_parts(first, &units, &["one", "two"]);
+        assert!(!head.contains("SELF-CHECK: one"), "{head}");
+        assert!(head.contains("本组共 3 段原文") && head.ends_with("甲段"), "{head}");
+        assert_eq!(later.len(), 2);
+        assert!(later[0].contains("乙段") && !later[0].contains("SELF-CHECK:"), "{}", later[0]);
+        assert!(later[1].contains("丙段") && later[1].contains("SELF-CHECK: one") && later[1].contains("SELF-CHECK: two"), "{}", later[1]);
+    }
+
     #[test]
     fn a_claim_lease_covers_a_requested_provider_run() {
         assert_eq!(claim_lease(120, 0), 120);

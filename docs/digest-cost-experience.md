@@ -209,6 +209,10 @@ The manager's new rule first landed in the wrong prompt, because the string it w
 
 The sizes in `docs/digest-job-size-proposal.md` are the owner's decision and have not run on a book: Cited Cards 12 works, Term Cards 12 concept and 2 mathematical terms, Links 3 groups, Cited normalize 60 rows. Cited Cards at 8 works wrote slightly less than at 4 on Morony (locations 4.5 against 4.7, role text 80 against 88 characters). Score the first book against those numbers.
 
+## Digest job shape, 2026-11-07
+
+One chapter as one conversation of one message per unit cost 0.35 and 0.42 CNY, against 0.81 and 0.92 for one job per group, at the published density. One big message cost 0.30 and lost a third of the Cards. Details are in `docs/digest-group-boundary-proposal.md`.
+
 ## Real run costs
 
 | Run | Jobs | Cards read | Ledger cost | Per job | Per Card |

@@ -882,6 +882,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+- `2026-11-07` — `book-steps.ps1 -Step prepare` passes `GroupBy`; `Join-LinkJobs` stops a job at 3 groups or 30 gaps.
 - `2026-11-06` — `layer-steps.ps1 -Step start` joins Link jobs in threes (`Join-LinkJobs`); `book-steps.ps1` prepares with `MaxChars` 25000; `dsh-link-instructions.zh.md` says a job holds up to three groups (`docs/digest-job-size-proposal.md`).
 - `2026-11-06` — `tests/history-run.tests.ps1`: the figure fixture carries an explanation. `scripts/term-align/` is removed: the skill `zt-term-sync` and `zt-digest term-sync` took its place.
 - `2026-11-05` — `book-steps.ps1 figures-start`: a refused figure list (`explanations_open`) fails the step with its reason.
