@@ -1663,7 +1663,9 @@ fn book_definition_lines(book: &BookDefinition) -> Vec<String> {
     let mut lines = Vec::new();
     let section = book.section.trim();
     for (index, sentence) in book.text.iter().enumerate() {
-        if index == 0 && !section.is_empty() && !sentence.starts_with(section) {
+        // A sentence that already opens on a section mark keeps it: `§13、§31` before `§13 用……`
+        // printed the mark twice (hoyland2015path/10|aw).
+        if index == 0 && !section.is_empty() && !sentence.starts_with(section) && !sentence.trim_start().starts_with('§') {
             lines.push(format!("{section} {sentence}"));
         } else {
             lines.push(sentence.clone());
@@ -1769,6 +1771,19 @@ fn inline_math(formula: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_sentence_that_cites_its_section_gets_no_second_label() {
+        // hoyland2015path/10|aw printed `§13、§31 §13 用这个词……`.
+        let book = BookDefinition {
+            text: vec!["§13 用这个词描述联盟的成员。".into(), "§31 说史家有争论。".into()],
+            section: "§13、§31".into(),
+            quote: String::new(),
+        };
+        assert_eq!(book_definition_lines(&book)[0], "§13 用这个词描述联盟的成员。");
+        let bare = BookDefinition { text: vec!["把这个词定义为决定权。".into()], section: "§2".into(), quote: String::new() };
+        assert_eq!(book_definition_lines(&bare)[0], "§2 把这个词定义为决定权。");
+    }
 
     fn row(term: &str) -> TermRow {
         TermRow {

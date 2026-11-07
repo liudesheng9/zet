@@ -122,7 +122,9 @@ async function plan(a) {
   zt.close();
   const items = [];
   for (const card of read) {
-    const math = /^类别：数学概念$/m.test(card.body);
+    // A mathematical Card is rebuilt only when it is named (`--only`, from a judging pass or a history book);
+    // any other Card, mathematical or not, gets a new `## 释义` when its explanation tells the book.
+    const math = /^类别：数学概念$/m.test(card.body) && only !== null;
     const count = narrated(card.body);
     if (!math && !count) continue;
     const parts = (partsOf.get(card.address) || []).map((x) => byAddress.get(x)?.body || '');
