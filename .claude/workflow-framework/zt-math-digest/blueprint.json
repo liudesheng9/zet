@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.11.36",
+  "version": "5.11.37",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -88,7 +88,7 @@
     },
     "maxChars": {
       "type": "number",
-      "description": "the most characters of a group (default 20000)"
+      "description": "the soft limit of a group in characters (default 25000): a group takes the next unit up to this size, and one larger unit stays whole"
     },
     "maxUnits": {
       "type": "number",
@@ -283,16 +283,16 @@
     "termCardsPerJob": {
       "type": "number",
       "min": 1,
-      "max": 8,
-      "default": 4,
-      "description": "concept terms per Term-card writer job (the compiler's default is 4)"
+      "max": 12,
+      "default": 12,
+      "description": "concept terms per Term-card writer job (the compiler's default is 12)"
     },
     "termCardsMathPerJob": {
       "type": "number",
       "min": 1,
       "max": 8,
-      "default": 1,
-      "description": "mathematical terms per Term-card writer job (the compiler's default is 1)"
+      "default": 2,
+      "description": "mathematical terms per Term-card writer job (the compiler's default is 2)"
     },
     "termLinkOccurrences": {
       "type": "string",
@@ -316,9 +316,9 @@
     "citedCardsPerJob": {
       "type": "number",
       "min": 1,
-      "max": 8,
-      "default": 4,
-      "description": "works per Cited Card writer job (the compiler's default is 4)"
+      "max": 12,
+      "default": 12,
+      "description": "works per Cited Card writer job (the compiler's default is 12)"
     },
     "citedHeading": {
       "type": "string",
@@ -1924,6 +1924,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.11.36"
+    "version": "5.11.37"
   }
 }
