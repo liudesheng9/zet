@@ -56,7 +56,7 @@ A dry run of `prepare` at both limits gave these group counts.
 | Morony | 118 | 117 |
 | Kennedy | 53 | 53 |
 
-The new limit changes almost nothing on these books. A group can only join units of one chapter, and `prepare` starts a new chapter at every top-level heading. These translated books write their section headings at the top level, so most groups hold one unit. The Morony manifest has 120 sections in 118 groups and no group of 3 units. The change is applied as decided. A larger Digest job would need a change to the chapter boundary, which this proposal does not make.
+The new limit changes almost nothing on these books. A group can only join units of one chapter, and `prepare` starts a new chapter at every top-level heading. These translated books write their section headings at the top level, so most groups hold one unit. The Morony manifest has 120 sections in 118 groups and no group of 3 units. The change is applied as decided. A larger Digest job needs a change to the group boundary, which `docs/digest-group-boundary-proposal.md` proposes.
 
 ## Risks
 
