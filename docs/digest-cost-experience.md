@@ -163,6 +163,10 @@ The size test above restored citations by asking every fact of `explanation` to 
 
 The repair (`scripts/book-digest/term-explain-repair.mjs`) rewrites the `## 释义` alone: 12 terms a job, message only, 17 KB, 2 tool calls. A first prompt that only forbade the marks ran 59 s and kept the list; a prompt that set the structure ran 200 s and gave 5.5 connected sentences. A whole Term job for the same work would resend every source line and rewrite fields that were right.
 
+### The fault was in every book, not only Morony
+
+Morony made it visible, but the first Term module's instruction already asked `explanation` to say "本书怎么用它", so every book's 释义 held "本书用它……" or "（§x）" lines. The module rule (no `§`, chapter, 本书, 作者/书中 说) selected 2,770 of 3,304 Term Cards outside Morony, Kennedy included. The same message-only repair ran as 237 jobs of 12 terms under 30 Haiku managers (about 31K tokens each), with 3 silent empty turns rerun; a rescan of every book then selected 0. Counting lines that start with `§` had shown 2 to 10% in those books and hid the fault: count with the rule the check uses.
+
 ### Judging the other books' mathematical Term Cards
 
 Every book was checked for maths Term Cards built on no mathematics (2026-11-07). History books are false by rule (Donner 2, Baghdad 3). In economics books, 371 of 695 maths Cards had no real formula behind their plan row (footnote marks such as `$^{17}$` in plans before 0.44.2, writer promotions, and books digested before plans recorded evidence). A count of book lines with the term and a formula could not separate them: Atkinson's "dd 曲线" is real maths with no such line, and Ebrill's "增值税" has many.
