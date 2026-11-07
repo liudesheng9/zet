@@ -8,6 +8,7 @@ paths:
   - "scripts/book-digest/token-usage.mjs"
   - "scripts/book-digest/session-report.mjs"
   - "scripts/book-digest/copy-tree.mjs"
+  - "scripts/book-digest/term-explain-repair.mjs"
   - ".claude/agents/zt-relay.md"
   - "scripts/workflow-shared/**"
   - "scripts/figure-explain/**"
@@ -790,6 +791,7 @@ Gaps:
 
 ## Change history
 
+- `2026-11-07` — zt-digest **0.47.6** (not yet deployed): a Term Card `explanation` teaches the term and names no source, and a history book plans no mathematical Term. `scripts/book-digest/term-explain-repair.mjs plan | check | apply` repairs a published book: message-only DeepSeek jobs of 12 terms rewrite `## 释义`; a false mathematical Card is rebuilt as a concept Card and its parts are deleted; run `term-relink.ps1` afterwards. Run on morony2005iraq.
 - `2026-11-07` — zt-digest **0.47.5**, history **1.0.26**, base **5.11.38**, econ **6.11.38**, math **5.11.38**, zt-digest-lib v59, zt-digest-prepare v24 (`docs/digest-group-boundary-proposal.md`): the history digest groups by chapter (`profile.groupBy`, `-GroupBy chapter`): a group crosses section headings up to 25,000 characters and stops at a numbered chapter, a part or an appendix, with no unit limit. A group of several units is one conversation of one message per unit (`then`), with the checks on the last message. The manager rule for `then` now applies to every job list. A Link job holds up to 3 groups and up to 30 gaps. Pilot: 54–57% cheaper than one job per group at the published density. Economics and mathematics keep their groups.
 - `2026-11-06` — zt-digest **0.47.4**, base **5.11.37**, econ **6.11.37**, math **5.11.37**, history **1.0.25**, zt-term-cards v15, zt-cited-cards v5, zt-digest-prepare v23 (`docs/digest-job-size-proposal.md`): Cited normalize 60 rows a job; digest group soft limit 25,000 characters; a Link job joins three groups in `layer-steps.ps1`, with one unit, draft and check per group; Term Cards 12 concept and 2 mathematical terms; Cited Cards 12 works. The workflow defaults and limits now carry these sizes, because the old default of 4 overrode the binary. Tests: `layer-steps.tests.ps1`, `cited_cards.rs`, `framework-harness.mjs`.
 - `2026-11-07` — zt-digest **0.47.3**: `prepare` refuses a source with a Chinese block that ends in an ellipsis after an English line of 2,000 characters or more (`cut_translations`). A DeepSeek `read` shows 2,000 characters of a line, so a translator stopped there; a digest writer reads the Chinese alone, so no later check can see the loss (hoyland2015path/8|a|a|3). The cause is fixed in pdf-ocr-bilingual; repair a refused source there. Test: `cut_translation_tests`.
