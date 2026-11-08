@@ -2,7 +2,7 @@
   "protocol": "workflow-framework-protocol/1",
   "kind": "base",
   "name": "zt-digest-base",
-  "version": "5.11.39",
+  "version": "5.11.40",
   "description": "The shared base of the ZT digest workflows. A digest builds only the book's Literature tree: Prepare, the book term table, the ledger-driven group cycle, the per-group Card checks, the whole-book card cycle, Link, Organize (the Literature index and the structure Card), Figures and the report-first Bridge between Literature trees, joined by the final audit, with slots where a book type installs its own layers (models, explanations, events, findings, math stages). Topic trees, Topic Cards, hubs and the concept register belong to zt-idea-grow. Modes term-cards and term-link backfill the Terms of one already digested book: they validate it and reuse or reconstruct only its staged source slices, run the Term stages and the read-only audit, and never rerun its digest, model, organize or Bridge stages (S25, #168).",
   "whenToUse": "Not run by itself: a variant (zt-econ-digest, zt-math-digest) names it in \"base\", sets consts.profile, and fills its slots",
   "modules": [
@@ -289,8 +289,8 @@
       "type": "number",
       "min": 1,
       "max": 12,
-      "default": 12,
-      "description": "concept terms per Term-card writer job (the compiler's default is 12)"
+      "default": 6,
+      "description": "concept terms per Term-card writer job; a job is one message, and 4 concept jobs run as one DeepSeek conversation (24 terms; the compiler's default is 6, docs/digest-job-messages-proposal.md)"
     },
     "termCardsMathPerJob": {
       "type": "number",
@@ -322,8 +322,8 @@
       "type": "number",
       "min": 1,
       "max": 12,
-      "default": 12,
-      "description": "works per Cited Card writer job (the compiler's default is 12)"
+      "default": 6,
+      "description": "works per Cited Card writer job; a job is one message, and 4 jobs run as one DeepSeek conversation (24 works; the compiler's default is 6, docs/digest-job-messages-proposal.md)"
     },
     "citedHeading": {
       "type": "string",

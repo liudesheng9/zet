@@ -15,7 +15,7 @@ paths:
   - "scripts/book-digest/tests/math-steps.tests.ps1"
   - "docs/workflow-module-structure-proposal.md"
 synced: 274535d62b16
-updated: 2026-11-06
+updated: 2026-11-08
 ---
 
 # Workflow module structure
@@ -229,6 +229,7 @@ A module change follows the review checklist:
 
 ## Change history
 
+- `2026-11-08` — `term-steps.ps1 start` (`docs/digest-job-messages-proposal.md`): a Term Card writer entry may be one conversation of four concept jobs (`then`, one message a job, 6 terms each); each later message carries the self-review clause for its own rows, and the line answers `messages` beside `jobs` (conversations). `zt-term-cards` v16: the manager loads `deepseek_prompt` and sends the `then` items in order. Tests: term-steps 69, `framework-harness.mjs`.
 - `2026-11-05` — `book-steps.ps1 figures-start`: a refusal is a failed step with its reason.
 - `2026-11-05` — `layer-steps.ps1`: no `-Take`. A start claims every ready unit, page by page (`$Page`, the eight the claim commands hold), and `Start-Block` is `Start-Layer`.- `2026-11-04` — `layer-steps.ps1`: no `-Queue` switch; the queue is the only structure, Cards included.
 - `2026-11-04` — `layer-steps.ps1 -Queue` (one queue) replaces `-Lane` and `In-Turn`.

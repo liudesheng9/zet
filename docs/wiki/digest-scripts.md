@@ -19,7 +19,7 @@ paths:
   - "!scripts/book-digest/tests/math-steps.tests.ps1"
   - "!scripts/book-digest/tests/grow-steps.tests.ps1"
 synced: 537e30c9a0fc
-updated: 2026-11-05
+updated: 2026-11-08
 ---
 
 # Digest scripts
@@ -883,6 +883,7 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 
 ## Change history
 
+- `2026-11-08` — `term-steps.ps1 start` (`docs/digest-job-messages-proposal.md`): a writer entry may be a conversation of four concept jobs (its `then`); each later message gets the self-review clause with the verdict files of its own rows, the review instructions travel once with the first message, and the line answers `messages` beside `jobs` (conversations; a chunk counts conversations). `cited-read-drive.mjs --cards` sends each entry's `then` messages in the same conversation and reports each job's draft. Tests: term-steps 69.
 - `2026-11-07` — `cited-steps.ps1 list` names the reading jobs (`read-NNN.json` chunks; `rows` material lines, `parts`) and `list-finish` answers `repeated`. New `cited-read-drive.mjs` runs reading jobs (one conversation, a message a part) or, with `--cards`, Cited Card writer jobs straight through the DeepSeek bridge for a backfill outside a workflow, skips parts that already pass, retries a failing part once and deletes every conversation; `cited-relink.mjs record|apply` points Links into Cited Cards back to their works after a list is read again; `cited-backfill.sh` chains one book's list, carry, writers, publication, relink and Term-link. Tests: cited-steps 47.
 - `2026-11-07` — `book-steps.ps1 -Step prepare` passes `GroupBy`; `Join-LinkJobs` stops a job at 3 groups or 30 gaps.
 - `2026-11-06` — `layer-steps.ps1 -Step start` joins Link jobs in threes (`Join-LinkJobs`); `book-steps.ps1` prepares with `MaxChars` 25000; `dsh-link-instructions.zh.md` says a job holds up to three groups (`docs/digest-job-size-proposal.md`).

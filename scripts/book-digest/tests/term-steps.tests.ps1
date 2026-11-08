@@ -76,7 +76,12 @@ switch -Regex ($flat) {
     '^term-cards -Step jobs' {
         $all = @(@{ id = 't001'; kind = 'concept'; rows = @(1); files = @('instr.md', 'jobs\t001.md'); prompt = 'p' }, @{ id = 't002'; kind = 'math'; rows = @(2); files = @('instr.md', 'jobs\t002.md'); prompt = 'p' }, @{ id = 't003'; kind = 'concept'; rows = @(3); files = @('instr.md', 'jobs\t003.md'); prompt = 'p' })
         $wanted = @(([regex]::Matches($flat, 't\d{3}(?=:)')) | ForEach-Object { $_.Value })
-        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = @($all | Where-Object { $wanted -contains $_.id }) })
+        $listed = @($all | Where-Object { $wanted -contains $_.id })
+        # The compiler runs concept jobs as conversations (2026-11-08): t003 is the second message of t001's.
+        if ($wanted -contains 't001' -and $wanted -contains 't003') {
+            $listed = @(@{ id = 't001'; kind = 'concept'; rows = @(1); files = @('instr.md', 'jobs\t001.md'); prompt = 'p'; then = @(@{ id = 't003'; kind = 'concept'; rows = @(3); files = @('jobs\t003.next.md'); prompt = 'n' }) }) + @($listed | Where-Object { $_.id -eq 't002' })
+        }
+        Write-Output (ConvertTo-Json -Compress -Depth 8 @{ ok = $true; jobs = $listed })
         exit 0
     }
     '^term-cards -Step check' {
@@ -164,7 +169,7 @@ Set-Content -LiteralPath $calls -Value '' -Encoding utf8
 $env:TS_TWO_PAGES = '1'
 $all = Step (@('-Step', 'start') + $common)
 $env:TS_TWO_PAGES = ''
-Assert ($all.json.ok -eq $true -and $all.json.jobs -eq 3) "start v10: two pages of claims list all three jobs ($($all.text))"
+Assert ($all.json.ok -eq $true -and $all.json.jobs -eq 2 -and $all.json.messages -eq 3) "start v10: two pages of claims list all three jobs, two concept jobs as one conversation of two messages ($($all.text))"
 $allCalls = @(Get-Content -LiteralPath $calls)
 $nexts = @($allCalls | Where-Object { $_ -match '^ledger next .*-Layer termcards' })
 Assert ($nexts.Count -eq 3 -and @($nexts | Where-Object { $_ -match '-Take 64' -and $_ -match '-Lease 7200' }).Count -eq 3) "start v10: it claims until a page is empty, 64 at a time, under the ledger's longest lease ($($nexts -join ' / '))"
@@ -180,6 +185,12 @@ Assert (@($math.files -match 'dsh-term-review-instructions\.zh\.md$').Count -eq 
 Assert ($math.prompt -match '审查' -and $math.prompt -match '修正|改' -and $math.prompt.Contains($verdict)) "start v10: a math job's prompt asks it to review and fix its draft and write its verdict to $verdict ($($math.prompt))"
 $conceptVerdict = Join-Path $out 'term-cards\review\answers\t001-r001-self.json'
 Assert ($concept.prompt.StartsWith('p') -and $concept.prompt.Contains($conceptVerdict) -and @($concept.files -match 'dsh-term-review-instructions\.zh\.md$').Count -eq 1) "start v10: a concept job keeps its writer prompt and, for a term it promotes to math, reviews it and writes its verdict ($($concept.prompt))"
+# 2026-11-08 (docs/digest-job-messages-proposal.md): a later message of a writer conversation carries the same
+# self-review clause for its own rows, and only its follow-up file (the review instructions are in the first message).
+$second = @($concept.then)[0]
+$secondVerdict = Join-Path $out 'term-cards\review\answers\t003-r003-self.json'
+Assert ($second -and $second.id -eq 't003' -and $second.prompt.StartsWith('n') -and $second.prompt.Contains($secondVerdict) -and -not $second.prompt.Contains($conceptVerdict)) "start: a later message names its own verdict file ($($second | ConvertTo-Json -Compress))"
+Assert ((@($second.files) -join ',') -eq 'jobs\t003.next.md' -and @($second.verdicts).Count -eq 1) "start: a later message reads only its follow-up file ($(@($second.files) -join ','))"
 Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
 
 # 1c. v10 (atkinson2015lectures, 2026-11-01): a rebuilt zt-digest registered plan revision 3 and every job was open
@@ -214,11 +225,11 @@ $c1 = @(Get-Content -Raw (Join-Path $out 'term-cards\drive\jobs-001.json') | Con
 Assert ($chunked.json.chunks -eq 1 -and $c1.Count -eq 2 -and -not (Test-Path -LiteralPath (Join-Path $out 'term-cards\drive\jobs-002.json'))) "start v11: two jobs make one chunk of two, and an old chunk file is removed ($($chunked.text))"
 Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
 $env:TS_TWO_PAGES = '1'
-$chunked3 = Step (@('-Step', 'start', '-Chunk', '2') + $common)
+$chunked3 = Step (@('-Step', 'start', '-Chunk', '1') + $common)
 $env:TS_TWO_PAGES = ''
 $c1 = @(Get-Content -Raw (Join-Path $out 'term-cards\drive\jobs-001.json') | ConvertFrom-Json)
 $c2 = @(Get-Content -Raw (Join-Path $out 'term-cards\drive\jobs-002.json') | ConvertFrom-Json)
-Assert ($chunked3.json.chunks -eq 2 -and ($c1.id -join ',') -eq 't001,t002' -and ($c2.id -join ',') -eq 't003') "start v11: three jobs make chunks of two and one, in job-list order ($($chunked3.text))"
+Assert ($chunked3.json.chunks -eq 2 -and ($c1.id -join ',') -eq 't001' -and ($c2.id -join ',') -eq 't002') "start v11: a conversation and a math job make chunks of one each, in job-list order; a chunk counts conversations, not messages ($($chunked3.text))"
 Remove-Item -LiteralPath $env:TS_NEXT_COUNT -ErrorAction SilentlyContinue
 $rj1 = $revJobs | Where-Object { $_.id -eq 't001-r001-review' }
 Assert ($rj1 -and $rj1.prompt -match '修正' -and @($rj1.files -match 'dsh-term-card-instructions\.zh\.md$').Count -eq 1 -and $rj1.writes -eq (Join-Path $out 'term-cards')) "start v10: the review job reviews and fixes the draft with the writer's instructions ($($rj1 | ConvertTo-Json -Compress))"

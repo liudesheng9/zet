@@ -2,6 +2,8 @@
 
 What the 2026-10-26 migration to the Haiku-manager + DeepSeek module structure taught (issues #175–#182, commits 0727978 … 09dfc2a; final versions base 5.7.1, econ 6.7.1, math 5.7.1, idea-grow 4.0.6, zt 0.41.0, zt-check 0.14.1, zt-digest 0.29.16). The module rules themselves are in [workflow-module-structure](../wiki/workflow-module-structure.md); stages and modes are in [digest-workflows](../wiki/digest-workflows.md) and [idea-grow-workflow](../wiki/idea-grow-workflow.md). This file holds the working rules and the lessons behind them.
 
+> **★ Restart point: [digest-job-map.md](digest-job-map.md).** The job map lists every DeepSeek job, what one subagent covers, its messages, and the proposed changes waiting. Start every restart there.
+
 ## Working rules (from the user)
 
 - When the user has authorized you and said not to ask, do every follow-up yourself: no proposal cards, no `wrap_up` questions, no "want me to…". Report what was done. Why: a card is still a question; the user objected on 2026-10-26.

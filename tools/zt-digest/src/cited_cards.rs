@@ -33,6 +33,14 @@ use std::sync::LazyLock;
 
 const INSTRUCTION: &str = "dsh-cited-card-instructions.zh.md";
 const PROMPT: &str = "按以上说明，先在全书原文里查清每篇文献被怎样使用，再写出 JSON 文件并运行自查。最后只回复一行 JSON。";
+/// The prompt of a later message of a writer conversation (`then`).
+const NEXT_PROMPT: &str = "继续：按第一条消息的说明处理本条任务文件里的文献，先在全书原文里查清每篇被怎样使用，再写出本条指定的 JSON 文件并运行它的自查。最后只回复一行 JSON。";
+/// Works of one job, and one job is one message of a writer conversation. The owner's order of 2026-11-08
+/// (docs/digest-job-messages-proposal.md): 6 works a message, 4 messages a conversation, so one DeepSeek
+/// subagent writes 24 works. A turn thinks only about what its user message gave it.
+const DEFAULT_PER_JOB: usize = 6;
+/// The writer jobs one conversation holds, one message each.
+const MESSAGES_PER_CONVERSATION: usize = 4;
 /// The most locations one Cited Card lists.
 const MAX_LOCATIONS: usize = 12;
 const RELATIONS: &[&str] = zt_check::cited::RELATIONS;
@@ -65,7 +73,7 @@ struct Book {
 pub fn cli(argv: &[String]) -> Result<i32> {
     let names = ["Step", "Staging", "PerJob", "Tokens", "Draft", "Token"];
     let a = Args::parse(&util::bind_positional(argv, &names)?, &names, &["Apply"])?;
-    let per_job = a.int_or("PerJob", 12)?;
+    let per_job = a.int_or("PerJob", DEFAULT_PER_JOB as i64)?;
     if !(1..=12).contains(&per_job) {
         bail!("-PerJob is 1 to 12");
     }
@@ -228,8 +236,9 @@ fn plan_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
         let id = pstr(job, "id");
         util::write_atomic(
             ps::join(&ps::join(&book.work, "jobs"), &format!("{id}.md")),
-            &job_file(p, book, &plan, job, terms.as_deref()),
+            &job_file(p, book, &plan, job, terms.as_deref(), false),
         )?;
+        util::write_atomic(next_file(book, &id), &job_file(p, book, &plan, job, terms.as_deref(), true))?;
     }
     if std::path::Path::new(&ps::join(&p.staging, "ledger.sqlite3")).is_file() {
         let prepared = crate::ledger::Prepared::read(&p.staging, zt)?;
@@ -369,22 +378,34 @@ fn job_list(p: &Params, book: &Book, rows: &[Value], list_address: &str) -> Vec<
     written.into_iter().chain(group(&rest, last + 1)).collect()
 }
 
-/// One writer job's file: the works, the whole source, the candidate lines, the Term spellings.
-fn job_file(p: &Params, book: &Book, plan: &Value, job: &Value, terms: Option<&str>) -> String {
+/// The follow-up text of a writer job: the job as a later message of a conversation.
+fn next_file(book: &Book, id: &str) -> String {
+    ps::join(&ps::join(&book.work, "jobs"), &format!("{id}.next.md"))
+}
+
+/// One writer job's file: the works, the whole source, the candidate lines, the Term spellings. A
+/// follow-up (a later message of a writer conversation) leaves out the Term spellings and the relation
+/// words, which the conversation's first message already holds.
+fn job_file(p: &Params, book: &Book, plan: &Value, job: &Value, terms: Option<&str>, follow_up: bool) -> String {
     let id = pstr(job, "id");
     let draft = draft_path(book, &id);
     let mut text = format!(
         "# 文献引用卡任务 {id}\n\n本书：《{}》（文献卡 [[{}]]）\n参考文献表卡：[[{}]]\n全书原文：{}（中英对照的 Markdown；行号从第 1 行起数）\n输出文件：{draft}\n\n",
         book.title, book.key, pstr(plan, "list"), book.source_path
     );
-    if let Some(body) = terms {
+    if follow_up {
+        text.push_str("这是同一次对话里的下一条消息。共享说明、本书的术语和关系词都在第一条消息里，照第一条消息的做法写。只写本条列出的文献，要写得和只有这几篇文献时一样细，不因为前面写过别的文献而压缩。\n\n## 文献\n\n");
+    }
+    if let Some(body) = terms.filter(|_| !follow_up) {
         text.push_str("## 本书的术语（写左列，不用右列的词）\n\n");
         for row in zt_check::text::term_table(body) {
             text.push_str(&format!("- {}：不用 {}\n", row.term, if row.avoid.is_empty() { "—".to_string() } else { row.avoid.join("、") }));
         }
         text.push('\n');
     }
-    text.push_str(&format!("## 关系词\n\n{}\n\n## 文献\n\n", RELATIONS.join("、")));
+    if !follow_up {
+        text.push_str(&format!("## 关系词\n\n{}\n\n## 文献\n\n", RELATIONS.join("、")));
+    }
     for n in job["rows"].as_array().into_iter().flatten() {
         let n = n.as_u64().unwrap_or(0);
         let row = plan["rows"].as_array().and_then(|rows| rows.iter().find(|r| r["row"].as_u64() == Some(n))).cloned().unwrap_or(Value::Null);
@@ -432,7 +453,11 @@ fn jobs_step(p: &Params, book: &Book) -> Result<i32> {
         .filter(|job| !plan["carried"].as_array().is_some_and(|c| c.contains(&job["id"])))
         .map(|job| {
             let id = pstr(job, "id");
-            json!({
+            let next = next_file(book, &id);
+            if !std::path::Path::new(&next).is_file() {
+                bail!("the follow-up file `{next}` is missing; rerun -Step plan");
+            }
+            Ok(json!({
                 "id": id,
                 "files": [ps::join(&book.work, INSTRUCTION), ps::join(&ps::join(&book.work, "jobs"), &format!("{id}.md"))],
                 "prompt": PROMPT,
@@ -440,11 +465,33 @@ fn jobs_step(p: &Params, book: &Book) -> Result<i32> {
                 "model": cited::MODEL,
                 "effort": "high",
                 "answer": draft_path(book, &id),
-            })
+                "next_file": next,
+            }))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
+    let jobs = conversations(jobs);
     util::print_line(&util::compact(&json!({ "ok": true, "jobs": jobs })))?;
     Ok(0)
+}
+
+/// The writer jobs as conversations (2026-11-08, docs/digest-job-messages-proposal.md): the jobs in their
+/// order, `MESSAGES_PER_CONVERSATION` to a conversation. The first job is the entry with its full files; each
+/// later job is an item of its `then` with only its follow-up text, its own draft and SELF-CHECK. Each job keeps
+/// its own ledger unit, so a message is checked and completed like a job.
+fn conversations(jobs: Vec<Value>) -> Vec<Value> {
+    jobs.chunks(MESSAGES_PER_CONVERSATION)
+        .map(|chunk| {
+            let mut first = chunk[0].clone();
+            first.as_object_mut().map(|map| map.remove("next_file"));
+            if chunk.len() > 1 {
+                first["then"] = json!(chunk[1..]
+                    .iter()
+                    .map(|job| json!({ "id": job["id"], "files": [job["next_file"]], "prompt": NEXT_PROMPT, "answer": job["answer"] }))
+                    .collect::<Vec<_>>());
+            }
+            first
+        })
+        .collect()
 }
 
 // --- render and check ----------------------------------------------------------------------------
@@ -1050,6 +1097,23 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-11-08 (docs/digest-job-messages-proposal.md): nine writer jobs of six works are three conversations
+    /// of four, four and one messages; a later message reads only its follow-up text and keeps its own draft.
+    #[test]
+    fn writer_jobs_run_as_conversations_of_four_messages() {
+        assert_eq!(DEFAULT_PER_JOB, 6);
+        let jobs: Vec<Value> = (1..=9)
+            .map(|n| json!({ "id": format!("t{n:03}"), "files": ["I.md", format!("jobs\\t{n:03}.md")], "prompt": PROMPT, "answer": format!("drafts\\t{n:03}.json"), "next_file": format!("jobs\\t{n:03}.next.md") }))
+            .collect();
+        let entries = conversations(jobs);
+        let shape: Vec<(String, usize)> = entries.iter().map(|e| (pstr(e, "id"), e["then"].as_array().map_or(0, Vec::len))).collect();
+        assert_eq!(shape, vec![("t001".into(), 3), ("t005".into(), 3), ("t009".into(), 0)]);
+        assert_eq!(entries[0]["files"], json!(["I.md", "jobs\\t001.md"]));
+        assert_eq!(entries[0]["then"][2], json!({ "id": "t004", "files": ["jobs\\t004.next.md"], "prompt": NEXT_PROMPT, "answer": "drafts\\t004.json" }));
+        assert!(entries.iter().all(|e| e.get("next_file").is_none()));
+        assert!(entries[2].get("then").is_none(), "a lone job is one message");
+    }
 
     /// Live backfill 2026-11-07: a reorganized tree moved its section Cards, so the manifest's anchor
     /// (`acemoglu2007equilibrium/10`) named no Card and the publication was refused. A carried Card keeps the

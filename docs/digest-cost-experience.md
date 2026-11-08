@@ -262,3 +262,12 @@ In order of expected saving; none of these is tested yet.
 - A drive answer came back with its start damaged twice (`ok":true,...` and `ok {"ok":true,...`), which halts a run at the strict reader in `scripts/workflow-shared/modules/zt-workflow-lib.js`. The step's full line is in `drive-lines/<step>.json`.
 - Older stagings refuse the stage publication and term-link (`incompatible workflow contract`). The figure step needs no ledger, so Cards are written; those ledgers miss the pass.
 - `hoyland2015path` ran the reader before explanations existed.
+
+## What the Term and Cited message conversations taught (2026-11-08)
+
+The owner's order made Term Cards (concept) and Cited Cards one conversation of four messages of 6 items (`docs/digest-job-messages-proposal.md`, section 5 has the tables). On the same 24 items, one run each:
+
+- **Depth held or rose.** Term role text 100 characters against 63–72, citations 9.1 against 7.2–7.8; Cited why/role/relationship 73/73/61 characters against 55/55/51, nearer the published Cards. Every draft passed its self-check.
+- **Cost rose: Term +69%, Cited +23%.** Output fell (Term 71K against 93K tokens); the extra cost is cached re-reads. Every model call in a conversation re-reads all of it, so a later message with many tool calls costs more than the same message alone (Cited message 4: 0.63 against 0.22–0.35). A message-only job grows the conversation little; a job that searches the source grows it fast.
+- **The first message carries the variance.** Term message 1 needed 14 small edits to clear its self-check; messages 2–4 cost 0.12–0.22 each.
+- **Price per session, not per day.** The usage ledger keeps daily totals per provider, so a shared source hides one module's cost. Copy the session file before the conversation is deleted and sum `usage` (`inputTokens`, `cacheReadTokens`, `outputTokens`) of each `assistant/message` by `turn`. The balance in `provider-snapshots.json` gives the real spend; the doc rates here priced about twice the balance change.

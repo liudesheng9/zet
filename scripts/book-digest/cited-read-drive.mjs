@@ -6,8 +6,9 @@
 //
 //   node cited-read-drive.mjs <staging> [<staging> ...] [--parallel 8] [--cards] [--bridge E:/dsh-mcp-bridge/dist/index.js]
 //
-// --cards runs the Cited Card writer jobs instead (`zt-digest cited-cards -Step jobs`, one message each, a job is
-// done when `cited-cards -Step precheck` of its draft prints faults: 0).
+// --cards runs the Cited Card writer jobs instead (`zt-digest cited-cards -Step jobs`): an entry is one conversation of
+// one message a job (its first message, then each item of its `then`, 2026-11-08), and a job is done when
+// `cited-cards -Step precheck` of its draft prints faults: 0. A conversation with a failing draft runs once more.
 //
 // Prints one JSON line per job and a summary line {"ok","jobs","parts","passed","failed"}.
 import { spawn, execFileSync } from 'node:child_process';
@@ -91,29 +92,41 @@ if (CARDS) {
     const work = path.join(staging, 'cited-cards');
     const old = await call('deepseek_list', { cwd: work }).catch(() => ({}));
     for (const c of old.conversations || []) { await call('deepseek_cancel', { session_id: c.session_id }).catch(() => {}); await call('deepseek_delete', { session_id: c.session_id }).catch(() => {}); }
-    for (const j of listed) if (!passesCard(staging, j.answer)) all.push({ staging, work, j });
+    for (const j of listed) {
+      const messages = [{ id: j.id, files: j.files, prompt: j.prompt, answer: j.answer }, ...(j.then || [])];
+      if (!messages.every((m) => passesCard(staging, m.answer))) all.push({ staging, work, j, messages });
+    }
   }
   let n = 0, failed = 0;
-  const one = async ({ staging, work, j }) => {
+  const one = async ({ staging, work, j, messages }) => {
     const sessions = [];
-    for (let attempt = 0; attempt < 2 && !passesCard(staging, j.answer); attempt++) {
+    const settled = () => messages.every((m) => passesCard(staging, m.answer));
+    for (let attempt = 0; attempt < 2 && !settled(); attempt++) {
       try {
-        let r = await call('deepseek_run', { cwd: work, prompt_files: j.files, prompt: j.prompt, skills: j.skills, model: j.model, reasoning_effort: j.effort, wait_seconds: 600 });
-        const sid = r.session_id; sessions.push(sid); const t0 = Date.now();
-        while (r.status === 'running' || r.status === 'needs_response') {
-          if (r.status === 'needs_response') for (const p of r.pending || []) await call('deepseek_respond', { session_id: sid, request_id: p.request_id, ...(p.questions ? { decline: '按任务说明自行决定，不需要询问。' } : { decision: 'allow' }) }).catch(() => {});
-          if (Date.now() - t0 > 40 * 60 * 1000) { await call('deepseek_cancel', { session_id: sid }).catch(() => {}); break; }
-          r = await call('deepseek_wait', { session_id: sid, wait_seconds: 600 });
+        let sid = null;
+        for (const [k, m] of messages.entries()) {
+          let r = k === 0
+            ? await call('deepseek_run', { cwd: work, prompt_files: m.files, prompt: m.prompt, skills: j.skills, model: j.model, reasoning_effort: j.effort, wait_seconds: 600 })
+            : await call('deepseek_prompt', { session_id: sid, prompt_files: m.files, prompt: m.prompt, skills: j.skills, reasoning_effort: j.effort, wait_seconds: 600 });
+          if (k === 0) { sid = r.session_id; sessions.push(sid); }
+          const t0 = Date.now();
+          while (r.status === 'running' || r.status === 'needs_response') {
+            if (r.status === 'needs_response') for (const p of r.pending || []) await call('deepseek_respond', { session_id: sid, request_id: p.request_id, ...(p.questions ? { decline: '按任务说明自行决定，不需要询问。' } : { decision: 'allow' }) }).catch(() => {});
+            if (Date.now() - t0 > 40 * 60 * 1000) { await call('deepseek_cancel', { session_id: sid }).catch(() => {}); break; }
+            r = await call('deepseek_wait', { session_id: sid, wait_seconds: 600 });
+          }
         }
       } catch (e) { console.log(JSON.stringify({ job: j.id, error: String(e.message).slice(0, 200) })); }
     }
     for (const s of sessions) await call('deepseek_delete', { session_id: s }).catch(() => {});
-    const ok = passesCard(staging, j.answer); if (!ok) failed++;
-    console.log(JSON.stringify({ book: path.basename(staging), job: j.id, ok }));
+    for (const m of messages) {
+      const ok = passesCard(staging, m.answer); if (!ok) failed++;
+      console.log(JSON.stringify({ book: path.basename(staging), job: m.id, conversation: j.id, ok }));
+    }
   };
   await Promise.all(Array.from({ length: Math.min(PARALLEL, all.length) }, async () => { while (n < all.length) await one(all[n++]); }));
   for (const staging of stagings) await call('deepseek_remove_workspace', { cwd: path.join(staging, 'cited-cards') }).catch(() => {});
-  console.log(JSON.stringify({ ok: failed === 0, jobs: all.length, failed }));
+  console.log(JSON.stringify({ ok: failed === 0, conversations: all.length, jobs: all.reduce((k, x) => k + x.messages.length, 0), failed }));
   bridge.stdin.end();
   setTimeout(() => process.exit(failed === 0 ? 0 : 1), 500);
 } else {

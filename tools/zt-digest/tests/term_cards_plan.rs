@@ -288,6 +288,10 @@ fn the_term_cards_plan_reads_a_real_list_and_writes_no_card() {
     assert_eq!(frozen["source"]["sections"][0]["file"], "sections/s01.md");
     assert!(staged.join("term-cards").join("jobs").join("t001.md").is_file());
     assert!(staged.join("term-cards").join("jobs").join("t002.md").is_file());
+    // A concept job also has its follow-up text (a later message of a writer conversation); a math
+    // job is a conversation of its own and has none (docs/digest-job-messages-proposal.md).
+    assert!(staged.join("term-cards").join("jobs").join("t002.next.md").is_file());
+    assert!(!staged.join("term-cards").join("jobs").join("t001.next.md").exists());
     assert!(staged.join("term-cards").join("out").is_dir());
     assert!(staged.join("term-cards").join("check").is_dir());
     assert!(staged.join("term-cards").join("review").is_dir());

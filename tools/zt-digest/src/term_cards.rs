@@ -92,10 +92,14 @@ pub const STEPS: [&str; 8] = [
 /// The work folder under `-Staging`.
 const WORK: &str = "term-cards";
 
-/// Concept terms of one job. Tested on 24 Hoyland terms (docs/digest-cost-experience.md): 12 kept the
-/// quality of the old jobs at about a fifth of the cost; 24 still passed every check with a third
-/// fewer distinctions.
-pub const DEFAULT_PER_JOB: i64 = 12;
+/// Concept terms of one job, and one job is one message of a writer conversation. Tested on 24
+/// Hoyland terms (docs/digest-cost-experience.md): 24 in one message passed every check with a third
+/// fewer distinctions, because a turn thinks only about what its user message gave it. The owner's
+/// order of 2026-11-08 (docs/digest-job-messages-proposal.md): 6 terms a message, 4 messages a
+/// conversation, so one DeepSeek subagent writes 24 terms.
+pub const DEFAULT_PER_JOB: i64 = 6;
+/// The concept jobs one writer conversation holds, one message each (`then`).
+pub const MESSAGES_PER_CONVERSATION: usize = 4;
 pub const DEFAULT_MATH_PER_JOB: i64 = 2;
 pub const DEFAULT_MAX_STEPS: i64 = 12;
 /// 0: no prose bound (2026-10-26, the user's request: some books have very long terms, so a Term
@@ -115,6 +119,12 @@ const MIN_CITED: usize = 2;
 const SAMPLE: &str = r#"{"term":"牧首","category":"concept","link":true,"first_defined":"§普世一神教的传播","explanation":["牧首是基督教大城市的最高主教，地位在一般主教之上。","他领导所在城市及其周边的教会，负责任命主教和裁断教义争端。","他的权力来自教会等级，也来自帝国的支持，所以他常常同时参与政治。","城市受到围攻时，牧首可以代表居民与进攻者谈判。","不同的教义派别各立牧首，因此一座城市的基督徒可能不只承认一位牧首。"],"book_definition":{"section":"§普世一神教的传播","text":["§普世一神教的传播 说教会等级体系与政治权力结盟。","同一小节说牧首可以借助帝国的支持推行其意志。"],"quote":"牧首、主教和修士"},"distinctions":[{"term":"主教","text":"主教管理一个教区。牧首是大城市的最高主教，地位在主教之上。"},{"term":"哈里发","text":"哈里发是穆斯林共同体的统治者。牧首是基督教会的领袖，不统治穆斯林。"},{"term":"迦克墩派","text":"迦克墩派是一个教义派别。牧首是一个教职，不同派别各有牧首。"},{"term":"教皇","text":"教皇是罗马的主教。牧首指东方大城市的最高主教。"}],"misreadings":["把牧首当成世俗官员是误读。§普世一神教的传播 说他是教会领袖，只是借助帝国的支持。","以为每座城市都有牧首是误读。§普世一神教的传播 只把牧首用于大城市。","把牧首的谈判当成教会的统一立场是误读。§埃及 说亚历山大里亚的民众起来反对牧首。"],"role_in_book":["§埃及 用牧首的谈判说明城市如何归顺。","§进攻君士坦丁堡的尝试 用牧首的书信给封锁断代。"]}"#;
 /// The shape of a concept job. All its material is in the message, so it reads no file.
 const WORKING_RULES: &str = "## 工作方式\n\n判断要用的材料全在本条消息里：共享说明、本组术语，以及每个术语在书中的原文。\n\n- 不读取、不列出、不搜索任何文件，不写脚本。不打开小节文件夹。\n- 写之前想两遍，都在推理里做，不用工具：第一遍逐个术语写内容；第二遍逐个术语核对，每句话都要有下面的原文支持，区别只比下面列出的术语。\n- `explanation` 是教读者学会这个术语的讲解：第一句下定义，后面每句回答它怎样运作、由谁做、为什么这样、带来什么结果。每句都和上一句有因果、条件、对比或先后关系，帮不上读者懂这个术语的事实不写。这一栏不写小节号和章号，不提“本书”“作者”，不按出处逐条罗列书中的记述。\n- 书中怎么说放进别的字段：`book_definition`、`misreadings` 和 `role_in_book` 里的事实句按原文前的【§小节名】写成“§小节名 说……”。不要写“本书说”这类不标小节的句子。\n- 写够内容，不要照样例的条数减少：`explanation` 4–8 句，`distinctions` 写 4–6 条相近术语，`misreadings` 写 3–5 条，`role_in_book` 2–4 句。原文实在不够时可以少写，不要编造。\n- 然后一次写完答案文件，运行一次 SELF-CHECK。只有 faults 不是 0 才改答案再运行。faults 是 0 就结束，不再复查。";
+/// The rules of a later message of a writer conversation: the shared material is in the first one.
+const FOLLOW_UP_RULES: &str = "## 写法
+
+这是同一次对话里的下一条消息。共享说明、样例、本书其他术语和本书符号表都在第一条消息里，照第一条消息的工作方式写。本条消息给出本组术语和它们在书中的原文：判断只用这些材料和第一条消息的材料，不读取、不列出、不搜索任何文件。
+
+要写得和只有这一组时一样细，不因为前面写过别的术语而压缩：`explanation` 4–8 句，`distinctions` 写 4–6 条相近术语，`misreadings` 写 3–5 条，`role_in_book` 2–4 句。`book_definition`、`misreadings` 和 `role_in_book` 的事实句按原文前的【§小节名】写成“§小节名 说……”；`explanation` 不写小节号，不提“本书”“作者”。";
 const MATH_PER_JOB_RANGE: (i64, i64) = (1, 8);
 const MAX_STEPS_RANGE: (i64, i64) = (1, 64);
 const MAX_PROSE_RANGE: (i64, i64) = (0, 20_000);
@@ -588,6 +598,8 @@ pub(crate) struct BuiltPlan {
     pub(crate) state: Value,
     pub(crate) instruction: String,
     pub(crate) job_files: BTreeMap<String, String>,
+    /// The follow-up text of each concept job: the job as a later message of a conversation.
+    pub(crate) next_files: BTreeMap<String, String>,
     pub(crate) incomplete: Vec<Value>,
 }
 
@@ -782,8 +794,12 @@ pub(crate) fn build_plan(
     }
     let instruction = render_instruction(&instruction_source, inputs);
     let mut job_files = BTreeMap::new();
+    let mut next_files = BTreeMap::new();
     for job in &jobs_json {
-        job_files.insert(pstr(job, "id"), job_text(inputs, &plan, job, &evidence)?);
+        job_files.insert(pstr(job, "id"), job_text(inputs, &plan, job, &evidence, false)?);
+        if pstr(job, "kind") != "math" {
+            next_files.insert(pstr(job, "id"), job_text(inputs, &plan, job, &evidence, true)?);
+        }
     }
     let state = state_of(existing_state, &plan, revision, revisions, &jobs_json);
     Ok(BuiltPlan {
@@ -791,6 +807,7 @@ pub(crate) fn build_plan(
         state,
         instruction,
         job_files,
+        next_files,
         incomplete,
     })
 }
@@ -986,6 +1003,7 @@ fn job_text(
     plan: &Value,
     job: &Value,
     evidence: &[RowEvidence],
+    follow_up: bool,
 ) -> Result<String> {
     let work = inputs.work();
     let id = pstr(job, "id");
@@ -1170,72 +1188,76 @@ fn job_text(
         }
         sb.blank();
     }
-    sb.line("## 本书其他术语（`distinctions` 用这里的原名）").blank();
-    let own: BTreeSet<usize> = rows.iter().copied().collect();
-    let others: Vec<String> = evidence
-        .iter()
-        .filter(|item| !own.contains(&item.row.row))
-        .map(|item| format!("- {}：{}", item.row.term, item.row.meaning))
-        .collect();
-    if others.is_empty() {
-        sb.line("（本书没有其他术语）");
-    } else {
-        for line in others {
-            sb.line(line);
-        }
-    }
-    sb.blank();
-    sb.line("## 本书符号表").blank();
-    if inputs.notation.rows.is_empty() && inputs.settings.is_empty() {
-        sb.line("（没有符号表；按原文用符号）");
-    } else {
-        for source in &inputs.notation.sources {
-            let kind = pstr(source, "kind");
-            if kind == "card" {
-                sb.line(format!(
-                    "- 本书符号表卡片：`{}`（{} 行）",
-                    pstr(source, "address"),
-                    pstr(source, "rows")
-                ));
-            } else if kind == "file" {
-                sb.line(format!("- 本书记号文件：`{}`", pstr(source, "path")));
-            } else if kind == "setting" {
-                sb.line(format!(
-                    "- 设定 `{}` 的符号表：`{}`",
-                    pstr(source, "address"),
-                    pstr(source, "title")
-                ));
+    if !follow_up {
+        sb.line("## 本书其他术语（`distinctions` 用这里的原名）").blank();
+        let own: BTreeSet<usize> = rows.iter().copied().collect();
+        let others: Vec<String> = evidence
+            .iter()
+            .filter(|item| !own.contains(&item.row.row))
+            .map(|item| format!("- {}：{}", item.row.term, item.row.meaning))
+            .collect();
+        if others.is_empty() {
+            sb.line("（本书没有其他术语）");
+        } else {
+            for line in others {
+                sb.line(line);
             }
         }
-        if pstr(job, "kind") == "math" {
-            sb.blank();
-            sb.line("| 符号 | 含义 | 定义于 |");
-            sb.line("| --- | --- | --- |");
-            let mut shown: Vec<NotationRow> = inputs.notation.rows.clone();
-            for setting in &inputs.settings {
-                for row in &setting.symbols {
-                    if !shown.contains(row) {
-                        shown.push(row.clone());
-                    }
+        sb.blank();
+        sb.line("## 本书符号表").blank();
+        if inputs.notation.rows.is_empty() && inputs.settings.is_empty() {
+            sb.line("（没有符号表；按原文用符号）");
+        } else {
+            for source in &inputs.notation.sources {
+                let kind = pstr(source, "kind");
+                if kind == "card" {
+                    sb.line(format!(
+                        "- 本书符号表卡片：`{}`（{} 行）",
+                        pstr(source, "address"),
+                        pstr(source, "rows")
+                    ));
+                } else if kind == "file" {
+                    sb.line(format!("- 本书记号文件：`{}`", pstr(source, "path")));
+                } else if kind == "setting" {
+                    sb.line(format!(
+                        "- 设定 `{}` 的符号表：`{}`",
+                        pstr(source, "address"),
+                        pstr(source, "title")
+                    ));
                 }
             }
-            for row in &shown {
-                sb.line(format!(
-                    "| {} | {} | {} |",
-                    row.symbol,
-                    row.meaning.replace('|', "/"),
-                    row.defined
-                ));
+            if pstr(job, "kind") == "math" {
+                sb.blank();
+                sb.line("| 符号 | 含义 | 定义于 |");
+                sb.line("| --- | --- | --- |");
+                let mut shown: Vec<NotationRow> = inputs.notation.rows.clone();
+                for setting in &inputs.settings {
+                    for row in &setting.symbols {
+                        if !shown.contains(row) {
+                            shown.push(row.clone());
+                        }
+                    }
+                }
+                for row in &shown {
+                    sb.line(format!(
+                        "| {} | {} | {} |",
+                        row.symbol,
+                        row.meaning.replace('|', "/"),
+                        row.defined
+                    ));
+                }
             }
         }
     }
     sb.blank();
     sb.line("## 输出").blank();
-    if pstr(job, "kind") != "math" {
+    if follow_up {
+        sb.line(FOLLOW_UP_RULES).blank();
+    } else if pstr(job, "kind") != "math" {
         sb.line(WORKING_RULES).blank();
-        if pstr(&plan["book"], "variant") == HISTORY {
-            sb.line("本书是历史书：`category` 一律写 `concept`，不写数学部分，不为术语构造公式或模型。").blank();
-        }
+    }
+    if pstr(job, "kind") != "math" && pstr(&plan["book"], "variant") == HISTORY {
+        sb.line("本书是历史书：`category` 一律写 `concept`，不写数学部分，不为术语构造公式或模型。").blank();
     }
     sb.line(format!(
         "把结果写入 `{}`，UTF-8，只写这一个文件。",
@@ -1245,8 +1267,10 @@ fn job_text(
         "格式：`{{\"terms\":[…]}}`。本组只写这些术语，拼写必须和任务文件完全一致：{}。",
         rows_terms(job)
     ));
-    sb.line("下面是一个术语的完整样例，字段和结构照它写：").blank();
-    sb.line("```json").line(SAMPLE).line("```");
+    if !follow_up {
+        sb.line("下面是一个术语的完整样例，字段和结构照它写：").blank();
+        sb.line("```json").line(SAMPLE).line("```");
+    }
     // The writer's exact SELF-CHECK (S27, #166, design 14.5): the same check the deterministic
     // `check` step runs, printed as fault lines, writing nothing. Its command is not invented here:
     // it is this tool's own `precheck` step on this job.
@@ -1287,6 +1311,52 @@ fn job_terms(job: &Value) -> Vec<String> {
 /// The writer's prompt for one job: the job file carries the exact paths and named terms.
 const PROMPT: &str =
     "按共享说明和任务文件，写好本组术语的 JSON 草稿，只写任务文件指定的输出文件，最后只回复一行 JSON。";
+/// The prompt of a later message of a writer conversation (`then`).
+const NEXT_PROMPT: &str =
+    "继续：按第一条消息的共享说明和本条任务文件，写好这一组术语的 JSON 草稿，只写本条任务文件指定的输出文件，运行它的自查，最后只回复一行 JSON。";
+
+/// The follow-up text of a concept job: the job as a later message of a writer conversation.
+fn next_file(work: &str, id: &str) -> String {
+    ps::join(&ps::join(work, "jobs"), &format!("{id}.next.md"))
+}
+
+/// The writer jobs as conversations (2026-11-08, docs/digest-job-messages-proposal.md): concept jobs
+/// in their order, `MESSAGES_PER_CONVERSATION` to a conversation, one message each. The first job is
+/// the conversation's entry with its full files; each later job is an item of its `then` with only
+/// its follow-up text. A math job stays a conversation of its own. Each job keeps its own output,
+/// SELF-CHECK and ledger unit, so a message is checked and completed like a job.
+pub(crate) fn conversations(jobs: Vec<Value>) -> Vec<Value> {
+    let mut entries: Vec<Value> = Vec::new();
+    let mut open: Option<usize> = None;
+    for mut job in jobs {
+        let next = job.as_object_mut().and_then(|map| map.remove("next_file"));
+        if pstr(&job, "kind") == "math" {
+            entries.push(job);
+            continue;
+        }
+        let room = open.is_some_and(|at| entries[at]["then"].as_array().map_or(0, Vec::len) + 1 < MESSAGES_PER_CONVERSATION);
+        match open.filter(|_| room) {
+            Some(at) => {
+                let item = json!({
+                    "id": job["id"], "kind": job["kind"], "rows": job["rows"], "terms": job["terms"],
+                    "files": [next.unwrap_or(Value::Null)], "prompt": NEXT_PROMPT, "output": job["output"],
+                });
+                entries[at]["then"].as_array_mut().expect("an open conversation").push(item);
+            }
+            None => {
+                job["then"] = json!([]);
+                entries.push(job);
+                open = Some(entries.len() - 1);
+            }
+        }
+    }
+    for entry in &mut entries {
+        if entry["then"].as_array().is_some_and(Vec::is_empty) {
+            entry.as_object_mut().map(|map| map.remove("then"));
+        }
+    }
+    entries
+}
 
 /// The staging folder's `manifest.json` with a usable Citation key: the book every term-card step
 /// is about. A missing or empty key stops before any archive read.
@@ -1402,6 +1472,9 @@ fn plan(p: &Params) -> Result<i32> {
             ps::join(&ps::join(&work, "jobs"), &format!("{id}.md")),
             text,
         )?;
+    }
+    for (id, text) in &built.next_files {
+        util::write_atomic(next_file(&work, id), text)?;
     }
     if existing_plan
         .as_ref()
@@ -1669,7 +1742,7 @@ fn jobs(p: &Params) -> Result<i32> {
             if !std::path::Path::new(&file).is_file() {
                 bail!("the job file `{file}` is missing; rerun -Step plan");
             }
-            Ok(managed_job(json!({
+            let mut printed = json!({
                 "id": job["id"],
                 "kind": job["kind"],
                 "rows": job["rows"],
@@ -1678,9 +1751,18 @@ fn jobs(p: &Params) -> Result<i32> {
                 "prompt": PROMPT,
                 "output": job["output"],
                 "permissions": {"archive_read": true, "archive_write": false},
-            }), &WRITER_SKILLS, false))
+            });
+            if pstr(job, "kind") != "math" {
+                let next = next_file(&work, &pstr(job, "id"));
+                if !std::path::Path::new(&next).is_file() {
+                    bail!("the follow-up file `{next}` is missing; rerun -Step plan");
+                }
+                printed["next_file"] = json!(next);
+            }
+            Ok(managed_job(printed, &WRITER_SKILLS, false))
         })
         .collect::<Result<Vec<_>>>()?;
+    let printed = conversations(printed);
     let summary = json!({
         "schema_version": 1,
         "ok": true,
@@ -3895,7 +3977,7 @@ mod tests {
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "0"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "13"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "12"])).is_ok());
-        assert_eq!(DEFAULT_PER_JOB, 12);
+        assert_eq!(DEFAULT_PER_JOB, 6);
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Apply"])).is_err());
         assert!(params(&argv(&["-Step", "apply", "-Staging", "s"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Token", "3"])).is_err());
@@ -4504,7 +4586,7 @@ mod tests {
             json!(canon::sha256_hex(section_text(&section).as_bytes()))
         );
         assert_eq!(plan["source"]["fingerprint"].as_str().unwrap().len(), 64);
-        assert_eq!(plan["limits"]["per_job"], 12);
+        assert_eq!(plan["limits"]["per_job"], 6);
         assert_eq!(plan["limits"]["math_per_job"], 2);
         assert_eq!(plan["limits"]["max_steps_per_card"], 12);
         assert_eq!(plan["limits"]["max_prose"], 0);
@@ -4628,6 +4710,105 @@ mod tests {
         assert!(plan.instruction.contains("12"));
         assert!(plan.instruction.contains("长度不限"));
         assert!(!plan.instruction.contains("{{"));
+    }
+
+    #[test]
+    fn a_concept_job_has_a_follow_up_message_with_only_its_own_terms() {
+        // 2026-11-08 (docs/digest-job-messages-proposal.md): a concept job is one message of a writer
+        // conversation. When it is not the first message, the shared material is already in the
+        // conversation, so its follow-up text carries its own terms, output and SELF-CHECK only.
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().to_str().unwrap();
+        let rows = vec![
+            plan_row(1, "剩余控制权", "决定权"),
+            plan_row(2, "敲竹杠", "机会主义"),
+        ];
+        let section = section("s01.md", "剩余控制权是指决定权。\n敲竹杠是机会主义。\n");
+        let plan = built(staging, &rows, &section, Vec::new());
+        let next = plan.next_files.get("t001").expect("a concept job has a follow-up text");
+        assert!(next.contains("术语卡任务 t001"), "{next}");
+        assert!(next.contains("【§s01】 剩余控制权是指决定权。"), "{next}");
+        assert!(next.contains(&ps::join(&ps::join(staging, "term-cards"), "out\\t001.json")));
+        assert!(next.contains("-Step precheck") && next.contains("-Jobs t001"), "{next}");
+        assert!(next.contains("第一条消息"), "it points to the shared material: {next}");
+        assert!(next.contains("一样细"), "it asks for the same depth: {next}");
+        for shared in ["## 本书其他术语", "## 本书符号表", "牧首", "## 工作方式"] {
+            assert!(!next.contains(shared), "the follow-up repeats `{shared}`: {next}");
+        }
+        // The first-message text keeps every shared part.
+        assert!(plan.job_files["t001"].contains("本书其他术语"));
+        assert!(plan.job_files["t001"].contains("牧首"));
+    }
+
+    #[test]
+    fn a_math_job_has_no_follow_up_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().to_str().unwrap();
+        let rows = vec![plan_row(1, "数学1", "形式定义"), plan_row(2, "概念2", "一个概念")];
+        let section = section("s01.md", "数学1定义为 $x$。\n概念2。\n");
+        let plan = built(staging, &rows, &section, Vec::new());
+        assert_eq!(plan.plan["jobs"][0]["kind"], "math");
+        assert!(!plan.next_files.contains_key("t001"));
+        assert!(plan.next_files.contains_key("t002"));
+    }
+
+    #[test]
+    fn a_concept_job_holds_six_terms_and_a_conversation_four_jobs() {
+        assert_eq!(DEFAULT_PER_JOB, 6);
+        assert_eq!(MESSAGES_PER_CONVERSATION, 4);
+        let section = section("s01.md", &(1..=13).map(|n| format!("概念{n}。\n")).collect::<String>());
+        let evidence = evidence_rows(&concept_rows(13), &section);
+        let jobs = group_jobs(&evidence, DEFAULT_PER_JOB, DEFAULT_MATH_PER_JOB);
+        assert_eq!(
+            jobs.iter().map(|job| job.rows.len()).collect::<Vec<_>>(),
+            vec![6, 6, 1]
+        );
+    }
+
+    fn printed(id: &str, kind: &str) -> Value {
+        json!({
+            "id": id, "kind": kind, "rows": [1], "terms": [id],
+            "files": ["I.md", format!("jobs\\{id}.md")], "next_file": format!("jobs\\{id}.next.md"),
+            "prompt": PROMPT, "output": format!("out\\{id}.json"),
+        })
+    }
+
+    #[test]
+    fn concept_jobs_run_as_conversations_of_four_messages_and_math_jobs_alone() {
+        let jobs: Vec<Value> = ["t001", "t007", "t013", "t019", "t025"]
+            .iter()
+            .map(|id| printed(id, "concept"))
+            .chain([printed("t031", "math")])
+            .chain(["t032", "t038"].iter().map(|id| printed(id, "concept")))
+            .collect();
+        let entries = conversations(jobs);
+        let shape: Vec<(String, Vec<String>)> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    pstr(entry, "id"),
+                    entry["then"].as_array().map(|then| then.iter().map(|item| pstr(item, "id")).collect()).unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("t001".to_string(), vec!["t007".to_string(), "t013".to_string(), "t019".to_string()]),
+                ("t025".to_string(), vec!["t032".to_string(), "t038".to_string()]),
+                ("t031".to_string(), Vec::new()),
+            ]
+        );
+        // The first message carries the shared instruction and the full job file; a later message
+        // carries only that job's follow-up text, its own prompt, rows and output.
+        assert_eq!(entries[0]["files"], json!(["I.md", "jobs\\t001.md"]));
+        let second = &entries[0]["then"][0];
+        assert_eq!(second["files"], json!(["jobs\\t007.next.md"]));
+        assert_eq!(second["output"], "out\\t007.json");
+        assert_eq!(second["rows"], json!([1]));
+        assert_eq!(second["prompt"], json!(NEXT_PROMPT));
+        assert!(entries[2].get("then").is_none(), "a math job is one message: {}", entries[2]);
+        assert!(entries.iter().all(|entry| entry.get("next_file").is_none()), "no entry leaks its follow-up path");
     }
 
     #[test]

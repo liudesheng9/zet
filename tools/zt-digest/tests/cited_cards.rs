@@ -308,7 +308,7 @@ fn a_new_job_size_keeps_the_written_drafts() {
     let line = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     assert_eq!(line["revision"], json!(2));
     let plan: Value = serde_json::from_str(&std::fs::read_to_string(staging.join("cited-cards").join("plan.json")).unwrap()).unwrap();
-    assert_eq!(plan["per_job"], json!(12));
+    assert_eq!(plan["per_job"], json!(6));
     assert_eq!(plan["jobs"], json!([{"id":"t002","rows":[2]},{"id":"t004","rows":[1,3]}]));
     let again = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     assert_eq!(again["revision"], json!(2));
@@ -330,8 +330,25 @@ fn the_plan_groups_every_row_into_jobs_that_name_the_whole_source_and_writes_no_
 
     let jobs = last_json(&zt.digest(&["cited-cards", "-Step", "jobs", "-Staging", s]));
     let jobs = jobs["jobs"].as_array().unwrap().clone();
-    assert_eq!(jobs.len(), 2);
+    // 2026-11-08 (docs/digest-job-messages-proposal.md): a job is one message, and up to four jobs run as one
+    // conversation; the second job is the first conversation's "then" message.
+    assert_eq!(jobs.len(), 1, "two jobs, one conversation: {jobs:?}");
     assert_eq!(jobs[0]["id"], json!("t001"));
+    let then = jobs[0]["then"].as_array().expect("a later message").clone();
+    assert_eq!(then.len(), 1);
+    assert_eq!(then[0]["id"], json!("t002"));
+    assert_eq!(then[0]["answer"], json!(draft_path(&staging, "t002").to_string_lossy().to_string()));
+    let later: Vec<String> = then[0]["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
+    assert_eq!(later.len(), 1, "a later message reads only its own job: {later:?}");
+    let next = std::fs::read_to_string(&later[0]).unwrap();
+    assert!(next.contains("Brown") || next.contains("第 3 条"), "the later message holds its own work:\n{next}");
+    assert!(next.contains("SELF-CHECK: zt-digest cited-cards -Step precheck") && next.contains("t002"), "{next}");
+    assert!(next.contains("第一条消息"), "it points to the shared material:\n{next}");
+    assert!(!next.contains("契约"), "the Term list travels once, in the first message:\n{next}");
+    let default = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    assert_eq!(default["ok"], json!(true), "{default}");
+    let frozen: Value = serde_json::from_str(&std::fs::read_to_string(staging.join("cited-cards").join("plan.json")).unwrap()).unwrap();
+    assert_eq!(frozen["per_job"], json!(6), "a job holds six works by default");
     assert_eq!(jobs[0]["model"], json!("deepseek-official/deepseek-flash"));
     let files: Vec<String> = jobs[0]["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
     assert!(files.iter().all(|f| Path::new(f).is_file()), "{files:?}");

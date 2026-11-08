@@ -142,12 +142,19 @@ switch ($Step) {
         # The run keeps the exact review text its jobs were asked against (the compiler's review-plan copies the same file).
         $reviewText = Join-Path $PSScriptRoot 'dsh-term-review-instructions.zh.md'
         if (Test-Path -LiteralPath $reviewText) { Copy-Item -LiteralPath $reviewText -Destination (Join-Path $Work 'dsh-term-review-instructions.zh.md') -Force }
-        foreach ($j in @($writerJobs | Where-Object { $_.kind -ne 'math' })) {
+        # A concept job may promote a term to math: each message (a job of a writer conversation, 2026-11-08) names the
+        # verdict files of its own rows. The review instructions travel once, with the conversation's first message.
+        $promote = {
+            param($j)
             $verdicts = @(@($j.rows) | ForEach-Object { Join-Path $answersDir ('{0}-r{1:D3}-self.json' -f $j.id, [int]$_) })
-            $files = @($j.files)
-            $j | Add-Member -Force files (@($files[0], (Join-Path $Work 'dsh-term-review-instructions.zh.md')) + @($files | Select-Object -Skip 1))
             $j | Add-Member -Force prompt ("$($j.prompt)" + ' 如果你把其中某个术语提升为数学概念：写完并自查通过后，再按审查与修正说明像独立审查者那样核对并修正这个术语，再运行自查直到通过，然后把审查结论写入它对应的文件（按术语表行号：' + ($verdicts -join '、') + '；通过：{"ok":true}；不通过：{"ok":false,"faults":[{"where":"…","what":"…","fix":"…"}]}）。没有提升的术语不写结论文件。')
             $j | Add-Member -Force verdicts $verdicts
+        }
+        foreach ($j in @($writerJobs | Where-Object { $_.kind -ne 'math' })) {
+            $files = @($j.files)
+            $j | Add-Member -Force files (@($files[0], (Join-Path $Work 'dsh-term-review-instructions.zh.md')) + @($files | Select-Object -Skip 1))
+            & $promote $j
+            foreach ($m in @($j.then | Where-Object { $_ })) { & $promote $m }
         }
         foreach ($j in @($writerJobs | Where-Object { $_.kind -eq 'math' })) {
             $verdicts = @(@($j.rows) | ForEach-Object { Join-Path $answersDir ('{0}-r{1:D3}-self.json' -f $j.id, [int]$_) })
@@ -172,7 +179,8 @@ switch ($Step) {
         for ($k = 0; $k -lt $chunks; $k++) {
             Save ('jobs-{0:D3}.json' -f ($k + 1)) @($all | Select-Object -Skip ($k * $Chunk) -First $Chunk)
         }
-        Reply @{ ok = $true; jobs = $all.Count; chunks = $chunks; reviews = $reviewJobs.Count; settled = $settled.Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = (@($units) + @($reviewUnits)); settled = $settled; review_only = $reviewOnly; plan = $plan.json; jobs = $all }
+        $messages = $all.Count + @($all | ForEach-Object { @($_.then | Where-Object { $_ }) }).Count
+        Reply @{ ok = $true; jobs = $all.Count; messages = $messages; chunks = $chunks; reviews = $reviewJobs.Count; settled = $settled.Count; plan_revision = [int]$plan.json.revision; file = (Join-Path $Drive 'jobs.json') } @{ units = (@($units) + @($reviewUnits)); settled = $settled; review_only = $reviewOnly; plan = $plan.json; jobs = $all }
     }
     'review' {
         Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null
