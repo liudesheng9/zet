@@ -595,6 +595,13 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
         .next()
         .map(cited::fold)
         .filter(|name| name.len() >= 4 && *name != surname);
+    // An Arabic name of three words or more that opens on Ibn or Abū is cited by its first two words
+    // (`Ibn Yūnus al-Miṣrī` in the list, `Ibn Yūnus, Ta'rīkh` in the notes; sijpesteijn2013shaping, 2026-11-08).
+    let lead = {
+        let parts: Vec<String> = pstr(row, "surname").split_whitespace().map(cited::fold).collect();
+        (parts.len() >= 3 && ["ibn", "abu", "umm", "bint"].contains(&parts[0].as_str()) && parts[1].len() >= 3)
+            .then(|| format!("{}{}", parts[0], parts[1]))
+    };
     let raw = item["locations"].as_array().cloned().unwrap_or_default();
     if raw.len() > MAX_LOCATIONS {
         faults.push((format!("{tag} C3 {} locations; list at most {MAX_LOCATIONS}", raw.len()), true));
@@ -614,6 +621,12 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
             .map(|(_, text, _)| cited::fold(text))
             .collect();
         let near = near.join(" ");
+        // `fold` drops spaces, so the words of the nearby lines are split before folding.
+        let near_words: Vec<String> = (line.saturating_sub(1)..=line + 1)
+            .filter_map(|i| i.checked_sub(1).and_then(|i| book.lines.get(i)))
+            .flat_map(|(_, text, _)| text.split(|c: char| !c.is_alphanumeric()).map(cited::fold).collect::<Vec<_>>())
+            .filter(|w| w.len() >= 6)
+            .collect();
         let alias = pstr(l, "as");
         if !alias.is_empty() {
             // A work cited by its authors' initials (`AJR (2001, 2012)`): the line itself holds the initials
@@ -640,9 +653,16 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
             || bare.as_ref().is_some_and(|b| cited::squeeze(&near).contains(&cited::squeeze(b)))
             || near_spelling
             || first_name.as_ref().is_some_and(|name| near.contains(name.as_str()))
+            || lead.as_ref().is_some_and(|l| cited::squeeze(&near).contains(&cited::squeeze(l)))
             // A work without a surname whose title has one long word (an author index's `Kharāj`, morony2005iraq,
-            // live backfill 2026-11-07) is named by that word alone.
-            || words.iter().filter(|w| near.contains(w.as_str())).count() >= if surname.is_empty() { words.len().clamp(1, 2) } else { 2 };
+            // live backfill 2026-11-07) is named by that word alone. A title word of seven letters or more also
+            // counts when the line spells it one letter apart (`Eutychios` in the list, `Eutychius` in the notes;
+            // sijpesteijn2013shaping, 2026-11-08).
+            || words
+                .iter()
+                .filter(|w| near.contains(w.as_str()) || (w.chars().count() >= 7 && near_words.iter().any(|x| one_edit(x, w.as_str()))))
+                .count()
+                >= if surname.is_empty() { words.len().clamp(1, 2) } else { 2 };
         if !names {
             faults.push((format!("{tag} C3 line {line} does not name the work (its surname or two title words)"), true));
         }

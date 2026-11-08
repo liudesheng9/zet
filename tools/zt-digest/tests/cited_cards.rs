@@ -733,3 +733,55 @@ fn an_arabic_surname_is_found_without_its_article() {
     std::fs::write(&draft, item(6).to_string()).unwrap();
     assert!(precheck(&zt, &staging, &draft).contains("row1 C3"));
 }
+
+/// Live run of sijpesteijn2013shaping (2026-11-08): the list writes `Ibn Yūnus al-Miṣrī (d. 347/958), Ta'rīkh
+/// al-Miṣriyyīn`, the notes `Ibn Yūnus, Ta'rīkh, I, 269`; an Arabic name opening on Ibn or Abū is found by its
+/// first two words.
+#[test]
+fn an_arabic_name_is_found_by_its_first_two_words() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "yunus2026", "Yunus");
+    let source = "# 1 Introduction\n# 1 引言\nThe taxes were kept (Ibn Yūnus, Ta'rīkh, I, 269-70).\n\nOther text.\nAnother ruler (Ibn Sa'd, Ṭabaqāt, 12).\n\n# Bibliography\n\nIbn Yūnus al-Miṣrī (d. 347/958), Ta'rīkh al-Miṣriyyīn. Ed. 'Abd al-Faṭṭāḥ, Beirut, 1421/2000.\n";
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "yunus2026", "Yunus", source, json!([{ "anchor": "yunus2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &|_| Some(("Ibn Yūnus al-Miṣrī".into(), "1421/2000".into(), "Ta'rīkh al-Miṣriyyīn".into())));
+    last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let draft = draft_path(&staging, "t001");
+    std::fs::create_dir_all(draft.parent().unwrap()).unwrap();
+    let item = |line: u64| json!([{ "row": 1, "short_title": "埃及人史", "why": "本书引用它说明税收。", "role": "它提供税收的记载。", "relationship": "本书依赖它的记载。", "relations": ["依赖"], "locations": [{ "line": line, "use": "本书用它说明税收。" }] }]);
+    std::fs::write(&draft, item(3).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).trim_end().ends_with("faults: 0"), "Ibn Yūnus names Ibn Yūnus al-Miṣrī");
+    std::fs::write(&draft, item(6).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).contains("row1 C3"), "Ibn Sa'd names another author");
+}
+
+/// Live run of sijpesteijn2013shaping (2026-11-08): the list writes `Ibn al-Biṭrīq (d. 328/940), Das Annalenwerk
+/// des Eutychios von Alexandrien`, the notes `Eutychius, Annalenwerk, 120`; a long title word spelled one letter
+/// apart counts as a title word.
+#[test]
+fn a_long_title_word_spelled_one_letter_apart_names_the_work() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "eutychius2026", "Eutychius");
+    let source = "# 1 Introduction\n# 1 引言\nOr six months (Eutychius, Annalenwerk, 122, § 283).\n\nOther text.\nThe Annalenwerk is a genre of its own.\n\n# Bibliography\n\nIbn al-Biṭrīq (d. 328/940), Das Annalenwerk des Eutychios von Alexandrien. Tr. M. Breydy, Louvain, 1985.\n";
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "eutychius2026", "Eutychius", source, json!([{ "anchor": "eutychius2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &|_| Some(("Ibn al-Biṭrīq".into(), "1985".into(), "Das Annalenwerk des Eutychios von Alexandrien".into())));
+    last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let draft = draft_path(&staging, "t001");
+    std::fs::create_dir_all(draft.parent().unwrap()).unwrap();
+    let item = |line: u64| json!([{ "row": 1, "short_title": "欧提基乌斯编年史", "why": "本书引用它核对征服事件。", "role": "它提供围城的时长。", "relationship": "本书对照它的记载。", "relations": ["对照"], "locations": [{ "line": line, "use": "本书用它说明围城的时长。" }] }]);
+    std::fs::write(&draft, item(3).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).trim_end().ends_with("faults: 0"), "Eutychius, Annalenwerk names the work");
+    std::fs::write(&draft, item(6).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).contains("row1 C3"), "one title word alone does not");
+}
