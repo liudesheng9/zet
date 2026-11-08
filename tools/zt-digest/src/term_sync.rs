@@ -34,6 +34,8 @@ const ALIGN_DOC: &str = include_str!("../../../scripts/book-digest/dsh-term-sync
 const CANDIDATES: usize = 6;
 /// Rows of one align job.
 const ROWS_PER_JOB: usize = 300;
+/// A last job smaller than this joins the others (see job_sizes).
+const TAIL_ROWS: usize = 50;
 /// An identified `apply_batch` call.
 const BATCH_ITEMS: usize = 64;
 const BATCH_BYTES: usize = 1 << 20;
@@ -251,6 +253,20 @@ fn job_text(rows: &[Row], open: &[(String, Vec<String>)], standard: &Standard) -
     text
 }
 
+/// Job sizes for `rows` open rows: at most ROWS_PER_JOB a job, except that a tail under
+/// TAIL_ROWS joins the other jobs, and the jobs are even. Each job pays its instructions and
+/// session again, so a job of a few rows is waste.
+fn job_sizes(rows: usize) -> Vec<usize> {
+    if rows == 0 {
+        return Vec::new();
+    }
+    let mut count = rows.div_ceil(ROWS_PER_JOB);
+    if count > 1 && rows - (count - 1) * ROWS_PER_JOB < TAIL_ROWS {
+        count -= 1;
+    }
+    (0..count).map(|index| rows / count + usize::from(index < rows % count)).collect()
+}
+
 /// The entries a book's jobs were offered, so a review reads them without the box.
 fn offered_entries(standard: &Standard, sorted: &Triage) -> Standard {
     let offered: HashSet<&String> = sorted.open.iter().flat_map(|(_, ids)| ids).collect();
@@ -282,7 +298,14 @@ fn start(p: &Params) -> Result<i32> {
     util::write_atomic(triage_path(p), &ps::json_compact(&json!({"same": sorted.same, "open": sorted.open, "new": sorted.new, "known": sorted.known})))?;
     term_standard::save(std::path::Path::new(&entries_path(p)), &offered_entries(&standard, &sorted))?;
     let mut jobs = Vec::new();
-    for (index, part) in sorted.open.chunks(ROWS_PER_JOB).enumerate() {
+    let mut parts = Vec::new();
+    let mut rest = sorted.open.as_slice();
+    for size in job_sizes(rest.len()) {
+        let (part, tail) = rest.split_at(size);
+        parts.push(part);
+        rest = tail;
+    }
+    for (index, part) in parts.into_iter().enumerate() {
         let id = format!("a{:03}", index + 1);
         let answer = answer_path(p, &id);
         let command = format!("zt-digest term-sync -Step review -Work \"{}\" -Job {id}", p.work);
@@ -543,6 +566,18 @@ mod tests {
     fn a_card_with_only_an_explanation_keeps_its_source_line_last() {
         let text = with_equivalents("术语：甲\n\n## 释义\n\n正文。\n\n来源：[[k]] §1", &[link("a/1")]);
         assert_eq!(text, "术语：甲\n\n## 释义\n\n正文。\n\n等义术语：[[a/1]]\n\n来源：[[k]] §1");
+    }
+
+    #[test]
+    fn a_small_tail_joins_the_other_jobs_and_the_jobs_are_even() {
+        // 602 rows once made jobs of 300, 300 and 2: a whole job for 2 rows.
+        assert_eq!(job_sizes(602), vec![301, 301]);
+        assert_eq!(job_sizes(300), vec![300]);
+        assert_eq!(job_sizes(349), vec![349]);
+        assert_eq!(job_sizes(350), vec![175, 175]);
+        assert_eq!(job_sizes(700), vec![234, 233, 233]);
+        assert_eq!(job_sizes(1), vec![1]);
+        assert!(job_sizes(0).is_empty());
     }
 
     #[test]

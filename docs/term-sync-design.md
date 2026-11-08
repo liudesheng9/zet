@@ -99,3 +99,19 @@ One file per Literature type, `<archive_root>\terms\<type>.json`, kept with the 
 - A later rerun of `term-cards` on a book would write its Term Cards again and lose the line; `status` would not show it.
 - The list is a file, so `VACUUM INTO` backups do not hold it. `.bak` keeps one version.
 - History books only, until a second shelf has a `-Type`.
+
+## First live run (2026-11-08, history shelf)
+
+Six history books on the live box, zt-digest 0.48.2. The ledger was quiet during the run, so its delta is the run's cost.
+
+| Book | Open rows | Jobs | Decisions | Rejected by Opus | Term Cards linked | DeepSeek cost (CNY) |
+|---|---:|---:|---:|---:|---:|---:|
+| scheiner2022baghdad (seed) | 0 | 0 | 0 | 0 | 0 | 0 |
+| morony2005iraq | 602 | 2 | 61 | 15 | 138 | 0.667 |
+| kennedy2001armies | 215 | 1 | 34 | 3 | 72 | 0.222 |
+| donner1981conquests | 200 | 1 | 34 | 2 | 81 | 0.244 |
+| sijpesteijn2013shaping | 194 | 1 | 17 | 3 | 48 | 0.157 |
+| hoyland2015path | 155 | 1 | 36 | 2 | 104 | 0.410 |
+| **Total** | 1,366 | 6 | 182 | 25 | 443 | **1.70** |
+
+The list grew to 2,156 entries. A job cost about 0.1 to 0.2 CNY per 100 open rows. Most of a job's cost is its own reasoning and output, not the material it reads. Before 0.48.2, Morony's 602 rows made jobs of 300, 300 and 2. `job_sizes` now joins a tail under 50 rows to the other jobs and makes the jobs even. The reviews found two faults in Morony, which were the same concept under two rows (mōbadhān mōbadh; 修道制度 and 共同修道制). The usual reasons for a rejection were a wider word (土地税, 人头税, 非穆斯林, 归顺) or a list entry whose sentence used another sense (谱系 of a city, 世界史 as a field).
