@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Implemented 2026-11-08** (zt-digest 0.49.0, base 5.11.40, econ 6.11.40, math 5.11.40, history 1.0.28, zt-term-cards v16). Section 2 describes the design as built; section 5 records the verification and its cost. |
+| Status | **Implemented 2026-11-08** (zt-digest 0.49.0, base 5.11.40; the owner chose 4 messages × 12 items after section 6, zt-digest 0.49.1, base 5.11.41, econ 6.11.41, math 5.11.41, history 1.0.29, zt-term-cards v16). Section 2 describes the design as built; section 5 records the verification and its cost. |
 | Restart point | [docs/agents/digest-job-map.md](agents/digest-job-map.md) — the rows marked PROPOSED are this proposal |
 | Code read | `main` at 3a1dcf33: zt-digest 0.48.2, `zt-digest-lib` v59, `zt-cited-cards` v6, `zt-term-cards` v14 |
 | Read first | [docs/agents/workflow-principles.md](agents/workflow-principles.md), [docs/digest-cost-experience.md](digest-cost-experience.md) |
@@ -43,7 +43,7 @@ The first draft of this proposal (2026-11-08) cut its parts to 30 lines (120 lin
 
 Both jobs use the existing **Messages** pattern (`then`). The design as built keeps the existing **job** as the unit of everything that is checked and recorded (its rows, its output file, its SELF-CHECK, its ledger unit), and makes it **one message**:
 
-- A job holds 6 items (`-PerJob` default 6). The compiler's `jobs` step lists four jobs, in plan order, as **one conversation**: the first job is the entry with its full files; jobs 2–4 are items of its `then`.
+- A job holds 12 items (`-PerJob` default 12; 6 in 0.49.0, see section 6). The compiler's `jobs` step lists four jobs, in plan order, as **one conversation**: the first job is the entry with its full files; jobs 2–4 are items of its `then`.
 - **Message 1** is the first job's full file: the shared instructions, the sample, the shared material (the book's term list and notation, or the Term spellings and relation words) and its own 6 items. **Messages 2–4** are each job's **follow-up file** (`jobs\<id>.next.md`, written by `plan`): its own items, its own output file and its own SELF-CHECK line, and a short note that the shared material is in the first message and that the work must be as deep as in a job of its own.
 - Each message writes its own output file and runs its own SELF-CHECK before it answers. A fault is fixed inside the message that caused it.
 - The manager sends each next message only after the conversation answers `finished`, one at a time, with `deepseek_prompt` on the same `session_id`. The entry's answer is the answer to its last message.
@@ -57,7 +57,7 @@ One structure, no fallback ([workflow-principles](agents/workflow-principles.md)
 
 | What | Today | New |
 |---|---|---|
-| Terms per job (= per message) | `DEFAULT_PER_JOB` 12, `PER_JOB_RANGE` (1, 12) | `DEFAULT_PER_JOB` 6, range unchanged |
+| Terms per job (= per message) | `DEFAULT_PER_JOB` 12, `PER_JOB_RANGE` (1, 12) | `DEFAULT_PER_JOB` 12 (6 in 0.49.0), range unchanged |
 | Jobs per conversation | 1 | `MESSAGES_PER_CONVERSATION` 4 (concept jobs in plan order; a math job stays alone) |
 | Message 1 | the job file | unchanged: instructions, `WORKING_RULES`, `SAMPLE`, the book's other terms, the notation, its 6 terms with their source lines |
 | Messages 2–4 | — | `jobs\<id>.next.md` (`job_text` with `follow_up`): its 6 terms with their source lines, `FOLLOW_UP_RULES`, its output and SELF-CHECK, prompt `NEXT_PROMPT` |
@@ -78,7 +78,7 @@ One structure, no fallback ([workflow-principles](agents/workflow-principles.md)
 
 | What | Today | New |
 |---|---|---|
-| Works per job (= per message) | `-PerJob` default 12, range 1–12 | `DEFAULT_PER_JOB` 6, range unchanged |
+| Works per job (= per message) | `-PerJob` default 12, range 1–12 | `DEFAULT_PER_JOB` 12 (6 in 0.49.0), range unchanged |
 | Jobs per conversation | 1 | `MESSAGES_PER_CONVERSATION` 4 |
 | Job file | `jobs\<id>.md` | unchanged, plus `jobs\<id>.next.md`: the works, output and SELF-CHECK without the Term spellings and relation words |
 | Draft, SELF-CHECK | one per job | unchanged, one per job (= per message) |
@@ -199,3 +199,5 @@ Reading:
 - One run each, so read these as a direction.
 
 The account balance fell 2.35 CNY (232.06 → 229.71) during these runs (6.3 CNY at the doc rates). Cost of this second test: about 6.3 CNY at the doc rates, about 2.4 CNY on the account.
+
+**Decision (the owner, 2026-11-08): 4 messages × 12 items.** zt-digest 0.49.1, base 5.11.41, econ 6.11.41, math 5.11.41, history 1.0.29: `termCardsPerJob` and `citedCardsPerJob` default 12, and the compilers' `DEFAULT_PER_JOB` 12. One DeepSeek subagent writes 48 concept terms or 48 cited works.

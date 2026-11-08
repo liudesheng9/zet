@@ -36,9 +36,9 @@ const PROMPT: &str = "按以上说明，先在全书原文里查清每篇文献�
 /// The prompt of a later message of a writer conversation (`then`).
 const NEXT_PROMPT: &str = "继续：按第一条消息的说明处理本条任务文件里的文献，先在全书原文里查清每篇被怎样使用，再写出本条指定的 JSON 文件并运行它的自查。最后只回复一行 JSON。";
 /// Works of one job, and one job is one message of a writer conversation. The owner's order of 2026-11-08
-/// (docs/digest-job-messages-proposal.md): 6 works a message, 4 messages a conversation, so one DeepSeek
-/// subagent writes 24 works. A turn thinks only about what its user message gave it.
-const DEFAULT_PER_JOB: usize = 6;
+/// (docs/digest-job-messages-proposal.md): 12 works a message, 4 messages a conversation, so one DeepSeek
+/// subagent writes 48 works (6 a message cost 17% more a work than one message of 12; 12 cost 4% more).
+const DEFAULT_PER_JOB: usize = 12;
 /// The writer jobs one conversation holds, one message each.
 const MESSAGES_PER_CONVERSATION: usize = 4;
 /// The most locations one Cited Card lists.
@@ -1098,11 +1098,11 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
 mod tests {
     use super::*;
 
-    /// 2026-11-08 (docs/digest-job-messages-proposal.md): nine writer jobs of six works are three conversations
+    /// 2026-11-08 (docs/digest-job-messages-proposal.md): nine writer jobs of twelve works are three conversations
     /// of four, four and one messages; a later message reads only its follow-up text and keeps its own draft.
     #[test]
     fn writer_jobs_run_as_conversations_of_four_messages() {
-        assert_eq!(DEFAULT_PER_JOB, 6);
+        assert_eq!(DEFAULT_PER_JOB, 12);
         let jobs: Vec<Value> = (1..=9)
             .map(|n| json!({ "id": format!("t{n:03}"), "files": ["I.md", format!("jobs\\t{n:03}.md")], "prompt": PROMPT, "answer": format!("drafts\\t{n:03}.json"), "next_file": format!("jobs\\t{n:03}.next.md") }))
             .collect();

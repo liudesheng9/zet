@@ -95,9 +95,10 @@ const WORK: &str = "term-cards";
 /// Concept terms of one job, and one job is one message of a writer conversation. Tested on 24
 /// Hoyland terms (docs/digest-cost-experience.md): 24 in one message passed every check with a third
 /// fewer distinctions, because a turn thinks only about what its user message gave it. The owner's
-/// order of 2026-11-08 (docs/digest-job-messages-proposal.md): 6 terms a message, 4 messages a
-/// conversation, so one DeepSeek subagent writes 24 terms.
-pub const DEFAULT_PER_JOB: i64 = 6;
+/// order of 2026-11-08 (docs/digest-job-messages-proposal.md): 12 terms a message, 4 messages a
+/// conversation, so one DeepSeek subagent writes 48 terms. 6 a message wrote the deepest Cards but cost
+/// 67% more a term than one message of 12; 12 a message cost 18% more, at the old depth (section 6).
+pub const DEFAULT_PER_JOB: i64 = 12;
 /// The concept jobs one writer conversation holds, one message each (`then`).
 pub const MESSAGES_PER_CONVERSATION: usize = 4;
 pub const DEFAULT_MATH_PER_JOB: i64 = 2;
@@ -3977,7 +3978,7 @@ mod tests {
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "0"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "13"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-PerJob", "12"])).is_ok());
-        assert_eq!(DEFAULT_PER_JOB, 6);
+        assert_eq!(DEFAULT_PER_JOB, 12);
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Apply"])).is_err());
         assert!(params(&argv(&["-Step", "apply", "-Staging", "s"])).is_err());
         assert!(params(&argv(&["-Step", "plan", "-Staging", "s", "-Token", "3"])).is_err());
@@ -4586,7 +4587,7 @@ mod tests {
             json!(canon::sha256_hex(section_text(&section).as_bytes()))
         );
         assert_eq!(plan["source"]["fingerprint"].as_str().unwrap().len(), 64);
-        assert_eq!(plan["limits"]["per_job"], 6);
+        assert_eq!(plan["limits"]["per_job"], 12);
         assert_eq!(plan["limits"]["math_per_job"], 2);
         assert_eq!(plan["limits"]["max_steps_per_card"], 12);
         assert_eq!(plan["limits"]["max_prose"], 0);
@@ -4753,15 +4754,15 @@ mod tests {
     }
 
     #[test]
-    fn a_concept_job_holds_six_terms_and_a_conversation_four_jobs() {
-        assert_eq!(DEFAULT_PER_JOB, 6);
+    fn a_concept_job_holds_twelve_terms_and_a_conversation_four_jobs() {
+        assert_eq!(DEFAULT_PER_JOB, 12);
         assert_eq!(MESSAGES_PER_CONVERSATION, 4);
         let section = section("s01.md", &(1..=13).map(|n| format!("概念{n}。\n")).collect::<String>());
         let evidence = evidence_rows(&concept_rows(13), &section);
         let jobs = group_jobs(&evidence, DEFAULT_PER_JOB, DEFAULT_MATH_PER_JOB);
         assert_eq!(
             jobs.iter().map(|job| job.rows.len()).collect::<Vec<_>>(),
-            vec![6, 6, 1]
+            vec![12, 1]
         );
     }
 

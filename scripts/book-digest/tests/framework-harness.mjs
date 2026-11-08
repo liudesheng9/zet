@@ -2306,7 +2306,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   }
   const args = builds.econ.bp.args
   check(args.termCards && args.termCards.type === 'boolean' && args.termCards.default === true && args.termLink && args.termLink.type === 'boolean' && args.termLink.default === true, 'S24: the termCards and termLink layer switches are declared boolean and default on')
-  check(args.termCardsPerJob && args.termCardsPerJob.type === 'number' && args.termCardsPerJob.min === 1 && args.termCardsPerJob.max === 12 && args.termCardsPerJob.default === 6 && args.termCardsMathPerJob && args.termCardsMathPerJob.default === 2, 'S24: the per-job sizing args are declared and bounded 1..12; a concept job is one message of 6 terms (2026-11-08)')
+  check(args.termCardsPerJob && args.termCardsPerJob.type === 'number' && args.termCardsPerJob.min === 1 && args.termCardsPerJob.max === 12 && args.termCardsPerJob.default === 12 && args.termCardsMathPerJob && args.termCardsMathPerJob.default === 2, 'S24: the per-job sizing args are declared and bounded 1..12; a concept job is one message of 12 terms (2026-11-08)')
   check(args.termLinkOccurrences && args.termLinkOccurrences.enum && args.termLinkOccurrences.enum.join(',') === 'first,all' && args.termLinkOccurrences.default === 'first', 'S24: the occurrence arg is an enum of first and all')
   const badOccurrences = await run('econ', { ...base, termLinkOccurrences: 'second', until: 'digest' })
   check(badOccurrences.thrown && /args\.termLinkOccurrences must be one of/.test(badOccurrences.thrown.message), 'S24: an undeclared occurrence policy is refused before any stage')
@@ -2323,7 +2323,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const drives = full.termCalls.filter((c) => c.tool === 'term-steps').map((c) => c.step)
   check(drives.join(',') === 'start,finish,link', `v10: the drive steps run in order start, finish, link (one DeepSeek job writes, reviews and fixes) (${drives.join(',')})`)
   check(full.termCalls.filter((c) => c.tool === 'term-steps').every((c) => /term-steps\.ps1" -Step \w+ -Out "/.test(c.cmd)), `v4: each drive job runs the one term-steps.ps1 step (${JSON.stringify(full.termCalls.map((c) => c.cmd))})`)
-  check(full.termCalls.some((c) => c.step === 'start' && / -PerJob 6/.test(c.cmd) && / -MathPerJob 2/.test(c.cmd)) && full.termCalls.some((c) => c.step === 'link' && /-Occurrences first/.test(c.cmd)), 'v4: the per-job sizes and the occurrence policy reach the script')
+  check(full.termCalls.some((c) => c.step === 'start' && / -PerJob 12/.test(c.cmd) && / -MathPerJob 2/.test(c.cmd)) && full.termCalls.some((c) => c.step === 'link' && /-Occurrences first/.test(c.cmd)), 'v4: the per-job sizes and the occurrence policy reach the script')
   const writes = full.termManagers.filter((m) => m.kind === 'write')
   // 2026-11-08 (docs/digest-job-messages-proposal.md): a writer entry may be a conversation of several messages; the
   // manager sends each item of its "then" with deepseek_prompt on the same session, one at a time.
@@ -2410,13 +2410,13 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
     check((bp.modes.resume || []).includes('cited') && (bp.modes.resume || []).includes('cited-cards'), `#221 (${which}): mode resume drains both Cited stages`)
   }
   const args = builds.econ.bp.args
-  check(args.cited && args.cited.default === true && args.citedCards && args.citedCards.default === true && args.citedCardsPerJob && args.citedCardsPerJob.max === 12 && args.citedCardsPerJob.default === 6 && args.citedHeading && args.citedHeading.type === 'string', '#221: the Cited switches, the per-job size and the heading are declared')
+  check(args.cited && args.cited.default === true && args.citedCards && args.citedCards.default === true && args.citedCardsPerJob && args.citedCardsPerJob.max === 12 && args.citedCardsPerJob.default === 12 && args.citedHeading && args.citedHeading.type === 'string', '#221: the Cited switches, the per-job size and the heading are declared')
 
   const full = await run('econ', { ...base, figures: false })
   check(full.report.stages.cited.status === 'done' && full.report.stages['cited-cards'].status === 'done', `#221: a full run completes both Cited stages (${JSON.stringify([full.report.stages.cited, full.report.stages['cited-cards']])})`)
   const drives = full.citedCalls.map((c) => c.step)
   check(drives.join(',') === 'list,list-finish,start,finish', `#221: the drive steps run in order list, list-finish, start, finish (${drives.join(',')})`)
-  check(full.citedCalls.every((c) => /cited-steps\.ps1" -Step [\w-]+ -Out "/.test(c.cmd)) && full.citedCalls.some((c) => c.step === 'start' && / -PerJob 6/.test(c.cmd)), `#221: each drive job runs one cited-steps.ps1 step and the per-job size reaches the plan (${JSON.stringify(full.citedCalls.map((c) => c.cmd))})`)
+  check(full.citedCalls.every((c) => /cited-steps\.ps1" -Step [\w-]+ -Out "/.test(c.cmd)) && full.citedCalls.some((c) => c.step === 'start' && / -PerJob 12/.test(c.cmd)), `#221: each drive job runs one cited-steps.ps1 step and the per-job size reaches the plan (${JSON.stringify(full.citedCalls.map((c) => c.cmd))})`)
   const citedAgents = full.calls.filter((c) => /^cited(-cards)?: /.test(c.label || ''))
   check(citedAgents.length > 0 && citedAgents.filter((c) => !/: workspace$/.test(c.label)).every((c) => c.model === 'haiku' && !c.agentType && /You are a DeepSeek subagent manager/.test(c.prompt || '')), `#221: every Cited stage agent is a Haiku DeepSeek manager (${citedAgents.length})`)
   check(citedAgents.every((c) => c.agentType !== 'zt-relay'), '#221: no Cited step runs as a Claude relay')

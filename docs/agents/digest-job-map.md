@@ -7,8 +7,8 @@
 | | |
 |---|---|
 | Map written | 2026-11-08 |
-| Code it was read from | `main` at 3a1dcf33 (zt-digest 0.48.2, `zt-digest-lib` v59, `zt-cited-cards` v6); Cited Cards and Term Cards rows updated for zt-digest 0.49.0 (base 5.11.40, `zt-term-cards` v16) |
-| Last proposal | [docs/digest-job-messages-proposal.md](../digest-job-messages-proposal.md) — Cited Cards and Term Cards (concept) as conversations of 4 messages of 6 items. **Implemented 2026-11-08** (zt-digest 0.49.0). No proposal is open. |
+| Code it was read from | `main` at 3a1dcf33 (zt-digest 0.48.2, `zt-digest-lib` v59, `zt-cited-cards` v6); Cited Cards and Term Cards rows updated for zt-digest 0.49.1 (base 5.11.41, `zt-term-cards` v16) |
+| Last proposal | [docs/digest-job-messages-proposal.md](../digest-job-messages-proposal.md) — Cited Cards and Term Cards (concept) as conversations of 4 messages of 12 items. **Implemented 2026-11-08** (zt-digest 0.49.0; 12 items a message since 0.49.1). No proposal is open. |
 | Read with | [workflow-principles.md](workflow-principles.md) (the owner's rules), [docs/digest-cost-experience.md](../digest-cost-experience.md) (the cost evidence), [docs/wiki/workflow-module-structure.md](../wiki/workflow-module-structure.md) (the module shape) |
 
 ## How every module runs
@@ -38,10 +38,10 @@ Status: **current** = the code on `main` does this. **PROPOSED** = the owner ord
 | Card review (whole-book card cycle, link check) | Faithful check and fix of Literature Cards | Whole groups up to 40 Cards | One per 12 Cards (3–4) | Messages, then Continued | current | `CARDS_PER_JOB` 40, `CARDS_PER_PART` 12, `card.rs` |
 | Card review, fix rounds | Fix what the check found | The same job's Cards | +1 per fix round | Continued | current | `cardFixRounds`, `zt-digest-lib` `cardCycle` |
 | Cited list read (the successor of "Cited normalize") | Copy one entry per work from numbered reference lines | 4 parts of up to 60 lines (12,000 characters) = up to 240 lines | 4 (one per part) | Messages | current (owner kept it, 2026-11-08) | `PART_LINES` 60, `PART_CHARS` 12,000, `PARTS_PER_JOB` 4, `cited.rs` |
-| Cited Cards | Write a Cited Card per cited work | 24 works (4 jobs of 6) | 4 (one job of 6 works each) | Messages | current (2026-11-08) | `DEFAULT_PER_JOB` 6, `MESSAGES_PER_CONVERSATION` 4, `cited_cards.rs`; blueprint `citedCardsPerJob` 6 |
+| Cited Cards | Write a Cited Card per cited work | 48 works (4 jobs of 12) | 4 (one job of 12 works each) | Messages | current (2026-11-08) | `DEFAULT_PER_JOB` 12, `MESSAGES_PER_CONVERSATION` 4, `cited_cards.rs`; blueprint `citedCardsPerJob` 12 |
 | Links | Fill link gaps | Up to 3 groups or 30 gaps | 1 | One message | current | `Join-LinkJobs`, `layer-steps.ps1` |
 | Term table | Find Term candidates (explorers), then merge | One explorer part of about `-ExploreChars` characters; one merge job | 1 each | One message | current | `terms.rs` |
-| Term Cards, concept | Write Term Cards | 24 terms (4 jobs of 6) | 4 (one job of 6 terms each) | Messages | current (2026-11-08) | `DEFAULT_PER_JOB` 6, `MESSAGES_PER_CONVERSATION` 4, `term_cards.rs`; blueprint `termCardsPerJob` 6 |
+| Term Cards, concept | Write Term Cards | 48 terms (4 jobs of 12) | 4 (one job of 12 terms each) | Messages | current (2026-11-08) | `DEFAULT_PER_JOB` 12, `MESSAGES_PER_CONVERSATION` 4, `term_cards.rs`; blueprint `termCardsPerJob` 12 |
 | Term Cards, mathematical | Write → self-check → review → fix in one job | 2 terms | 1 | One message | current | `DEFAULT_MATH_PER_JOB` 2; blueprint `termCardsMathPerJob` |
 | Term link | Link Terms in Card text | No content job (a drive step only) | — | — | current | `term-steps.ps1 -Step link` |
 | Events / Findings | Write Event or Finding Cards | 3 groups | 1 | One message | current | `-GroupsPerJob` 3, `event.rs`, `finding.rs` |
@@ -61,6 +61,6 @@ Status: **current** = the code on `main` does this. **PROPOSED** = the owner ord
 - **"Cited normalize" no longer exists.** zt-digest 0.48.0 (2026-11-07) deleted the reference-list parser and its normalize jobs (60 rows a job). The job that reads the reference list now is the **Cited list read** (`zt-digest cited -Step plan`), already a conversation of 4 messages. A 2026-11-08 draft cut it to 30 lines a message (120 a job); the owner withdrew that the same day, so it keeps 240 lines a job.
 - **Which managers send `then`:** the content manager of `zt-digest-lib` (card cycle, digest groups), the manager of `zt-cited-cards` (Cited list read and Cited Cards writers), and since v16 the manager of `zt-term-cards`. A job is one message: its own rows, output, SELF-CHECK and ledger unit; the compiler's `jobs` step groups four jobs into one conversation and writes each later job as a follow-up file (`jobs\<id>.next.md`).
 - **A job size lives in two places:** the compiler's default and range, and the blueprint arg (`termCardsPerJob`, `citedCardsPerJob`). Change both together, or the blueprint's old default overrides the binary (this happened once: the 12-term release never ran).
-- **Measured cost of the 2026-11-08 change:** on 24 items, the 4-message conversation wrote as much or more per item but cost more (Term +69%, Cited +23%), all of it cached re-reads (proposal section 5). A second test at 4 messages × 12 items (48 a subagent, no code change: `-PerJob 12`) cut the extra cost to Term +18% and Cited +4%, with depth about that of the old jobs (proposal section 6); the default stays 6 until the owner decides. Read that before resizing these jobs again.
+- **Measured cost of the 2026-11-08 change:** on 24 items, the 4-message conversation wrote as much or more per item but cost more (Term +69%, Cited +23%), all of it cached re-reads (proposal section 5). A second test at 4 messages × 12 items (48 a subagent, no code change: `-PerJob 12`) cut the extra cost to Term +18% and Cited +4%, with depth about that of the old jobs (proposal section 6); the owner chose 4 × 12 (zt-digest 0.49.1). Read that before resizing these jobs again.
 - **Not yet run on a real book:** the card-review messages (v58), the history chapter grouping (0.47.5) and the owner's 2026-11-06 job sizes. Score the first book against the baselines in docs/digest-cost-experience.md.
 - **Never measured with a session report:** Term Cards, Cited Cards, Links and the card cycle.
