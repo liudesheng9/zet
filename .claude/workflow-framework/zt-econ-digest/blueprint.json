@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.11.39",
+  "version": "6.11.40",
   "description": "Digest a Chinese-translated economics book into ZET Cards: the ZT digest base with the economics set: the model layer (Model Cards in the digest, the model compiler with the economic architect), the event layer (Event Cards from the book's dated sentences), the empirical-results layer (Finding Cards, one per result), and the economics prompts; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive economics book (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree with Idea, Event, Finding, and Model Cards (economic models at concept or formal level). It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those from the Literature trees afterwards. Modes link, models, cards, explain, events, findings, figures, audit and bridge re-run single stages on an existing digest.",
   "preflight": {
@@ -284,8 +284,8 @@
       "type": "number",
       "min": 1,
       "max": 12,
-      "default": 12,
-      "description": "concept terms per Term-card writer job (the compiler's default is 12)"
+      "default": 6,
+      "description": "concept terms per Term-card writer job; a job is one message, and 4 concept jobs run as one DeepSeek conversation (24 terms; the compiler's default is 6, docs/digest-job-messages-proposal.md)"
     },
     "termCardsMathPerJob": {
       "type": "number",
@@ -317,8 +317,8 @@
       "type": "number",
       "min": 1,
       "max": 12,
-      "default": 12,
-      "description": "works per Cited Card writer job (the compiler's default is 12)"
+      "default": 6,
+      "description": "works per Cited Card writer job; a job is one message, and 4 jobs run as one DeepSeek conversation (24 works; the compiler's default is 6, docs/digest-job-messages-proposal.md)"
     },
     "citedHeading": {
       "type": "string",
@@ -1776,6 +1776,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.11.39"
+    "version": "5.11.40"
   }
 }
