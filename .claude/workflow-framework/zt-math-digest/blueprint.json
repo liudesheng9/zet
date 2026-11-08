@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.11.40",
+  "version": "5.11.41",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -284,8 +284,8 @@
       "type": "number",
       "min": 1,
       "max": 12,
-      "default": 6,
-      "description": "concept terms per Term-card writer job; a job is one message, and 4 concept jobs run as one DeepSeek conversation (24 terms; the compiler's default is 6, docs/digest-job-messages-proposal.md)"
+      "default": 12,
+      "description": "concept terms per Term-card writer job; a job is one message, and 4 concept jobs run as one DeepSeek conversation (48 terms; the compiler's default is 12, docs/digest-job-messages-proposal.md)"
     },
     "termCardsMathPerJob": {
       "type": "number",
@@ -317,8 +317,8 @@
       "type": "number",
       "min": 1,
       "max": 12,
-      "default": 6,
-      "description": "works per Cited Card writer job; a job is one message, and 4 jobs run as one DeepSeek conversation (24 works; the compiler's default is 6, docs/digest-job-messages-proposal.md)"
+      "default": 12,
+      "description": "works per Cited Card writer job; a job is one message, and 4 jobs run as one DeepSeek conversation (48 works; the compiler's default is 12, docs/digest-job-messages-proposal.md)"
     },
     "citedHeading": {
       "type": "string",
@@ -1924,6 +1924,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.11.40"
+    "version": "5.11.41"
   }
 }
