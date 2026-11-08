@@ -48,6 +48,9 @@ if (mode === 'record') {
   for (const key of keys) books[key] = await cards(key);
   for (const r of rows) {
     const all = books[r.book].cards;
+    // A source that no longer links the old Card (a later pass rewrote it) has nothing to repoint.
+    const src = await call('get_card', { at: r.from }).catch(() => null);
+    if (!src || !(src.body.includes(`[[${r.to}]]`) || src.body.includes(`@${r.to}]]`))) { kept.push(r.from); continue; }
     const old = fold(r.entry);
     const now = all.find((c) => c.address === r.to);
     if (now && fold(now.entry) === old) { kept.push(r.from); continue; }
@@ -60,7 +63,17 @@ if (mode === 'record') {
       target = named.length === 1 ? named[0] : inside.length === 1 ? inside[0] : null;
     }
     if (!target) { unresolved.push(r); continue; }
-    await call('relink', { from: r.to, to: target.address, sources: [r.from] });
+    if (now) {
+      await call('relink', { from: r.to, to: target.address, sources: [r.from] });
+    } else {
+      // The old Card went with the rows beyond the new list (donner1981conquests, 2026-11-07): relink needs an
+      // existing `from`, so the source's Link is rewritten in its own text.
+      const raw = await call('get_card', { at: r.from });
+      const esc = r.to.replace(/[|\\^$.*+?()[\]{}]/g, '\\$&');
+      const body = raw.body.replace(new RegExp(`\\[\\[${esc}\\]\\]`, 'g'), `[[${target.address}]]`).replace(new RegExp(`@${esc}\\]\\]`, 'g'), `@${target.address}]]`);
+      if (body === raw.body) { unresolved.push({ ...r, reason: 'no such Link in the source text' }); continue; }
+      await call('edit_card', { at: r.from, base: raw.text, body });
+    }
     done.push({ from: r.from, was: r.to, now: target.address });
   }
   console.log(JSON.stringify({ ok: unresolved.length === 0, relinked: done.length, kept: kept.length, unresolved }));

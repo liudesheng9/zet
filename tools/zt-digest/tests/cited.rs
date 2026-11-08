@@ -363,7 +363,8 @@ fn apply_waits_for_every_part_then_removes_repeated_works_and_writes_the_list_on
         { "lines": [8], "entry": "Smith, J. (1999). Bargaining. Journal of Tests, 1:1–2.", "authors": "Smith, J.", "year": "1999", "title": "Bargaining", "venue": "" },
         { "lines": [9], "entry": "——(2001). More Bargaining. Journal of Tests, 3:1–2.", "authors": "Smith, J.", "year": "2001", "title": "More Bargaining", "venue": "" },
         { "lines": [10], "entry": "al-Azdī: al-Azdī, Abū Zakarīyā, Ta’rīkh al-Mawṣil (Cairo, 1967).", "authors": "al-Azdī, Abū Zakarīyā", "year": "1967", "title": "Ta’rīkh al-Mawṣil", "venue": "" },
-        { "lines": [11], "entry": "Smith, J. (1999). Bargaining. Journal of Tests, 1:1–2.", "authors": "Smith, J.", "year": "1999", "title": "Bargaining", "venue": "" }
+        // The repeat came back with another title: the same entry text still makes it the same work.
+        { "lines": [11], "entry": "Smith, J. (1999). Bargaining. Journal of Tests, 1:1–2.", "authors": "Smith, J.", "year": "1999", "title": "Bargaining. Journal of Tests", "venue": "" }
     ], "skip": [] }).to_string()).unwrap();
     let applied = last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
     assert_eq!(applied["ok"], json!(true), "{applied}");
@@ -467,4 +468,35 @@ fn an_explicit_source_and_extra_headings_reach_the_frozen_plan() {
     last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     let job = std::fs::read_to_string(staging.join("cited-cards").join("jobs").join("t001.md")).unwrap();
     assert!(job.contains(&whole.to_string_lossy().to_string()), "the writer reads the frozen whole source:\n{job}");
+}
+
+/// Live backfill of morony2005iraq (2026-11-07): an author index names the author once and lists the works after
+/// it on the same line. The reader copies each work and leaves the later ones without authors; apply gives them
+/// the authors of the entry before them on that line, so every work has its surname, its id and its citing lines.
+#[test]
+fn a_work_later_on_an_author_index_line_takes_that_line_s_author() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "morony2026", "Morony");
+    let source = "# 1 Introduction\n# 1 引言\nSee Abbott, “Arabic Paleography,” for the script.\n\n# AUTHOR INDEX\n\nAbbott, N., Arabic Literary Papyri, 437; “Arabic Paleography,” 560\\\nBoyce, M., “Arabic Paleography,” 609\\\n";
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "morony2026", "Morony", source, json!([{ "anchor": "morony2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s, "-Heading", "AUTHOR INDEX"]));
+    let answer = staging.join("cited").join("read").join("out").join("r01-1.json");
+    std::fs::write(&answer, json!({ "entries": [
+        { "lines": [7], "entry": "Abbott, N., Arabic Literary Papyri, 437;", "authors": "Abbott, N.", "year": "", "title": "Arabic Literary Papyri", "venue": "" },
+        { "lines": [7], "entry": "“Arabic Paleography,” 560", "authors": "", "year": "", "title": "Arabic Paleography", "venue": "" },
+        { "lines": [8], "entry": "Boyce, M., “Arabic Paleography,” 609", "authors": "Boyce, M.", "year": "", "title": "Arabic Paleography", "venue": "" }
+    ], "skip": [] }).to_string()).unwrap();
+    let text = precheck(&zt, &staging, &answer);
+    assert!(text.trim_end().ends_with("faults: 0"), "{text}
+{}", std::fs::read_to_string(staging.join("cited").join("read").join("part-r01-1.md")).unwrap());
+    let applied = last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s]));
+    assert_eq!(applied["rows"], json!(3), "two authors' works of one title are two works: {applied}");
+    let rows = merged_rows(&staging);
+    assert_eq!(rows[1]["surname"], json!("Abbott"), "{:#?}", rows[1]);
+    assert_eq!(lines_of(&rows[1]), vec![3], "the work finds the line that cites it");
+    assert_eq!(rows[2]["surname"], json!("Boyce"));
 }

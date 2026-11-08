@@ -240,6 +240,13 @@ One chapter as one conversation of one message per unit cost 0.35 and 0.42 CNY, 
 
 Larger books cost about twice as much per Card as the Nobel lecture. The likely reason, not yet tested, is that every job carries the book's whole figure table.
 
+## What the Cited list backfill taught (2026-11-07)
+
+Reading a whole book's reference material cost 0.38 CNY for Kennedy (281 lines, 2 jobs) and 104 parts over 31 jobs for the other 13 books, every part passing its self-check, most on the first draft. A job is message-only: the numbered lines are the material, so the reader never browses. Two lessons:
+
+- **Carry what is already written.** Matching each new row to the live Card (and the previous plan's drafts) by its entry text left only the new works to writers: Atkinson 4 jobs of 72, Hoyland 2 of 16, Nobel 1 of 8. A changed list is otherwise a full rewrite.
+- **Batch the writes, one writer at a time.** The per-Card `edit_card` path of `cited-cards apply` took 0.25 s a write while four writers queued on the one writer lane; a test box measured 103 ms a single edit and 78 ms an edit in a batch of 64. Publication now batches edits, creates and deletes, and a backfill publishes one book at a time. Details in `docs/cited-list-reading-proposal.md`.
+
 ## Where to look next
 
 In order of expected saving; none of these is tested yet.

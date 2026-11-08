@@ -280,6 +280,25 @@ fn parse_card(title: &str, body: &str) -> Option<(String, Value)> {
 /// Returns the jobs and the carried job ids.
 fn carry(p: &Params, book: &Book, zt: &mut Zt, list: &Value, rows: &[Value], terms: Option<&str>) -> Result<(Vec<Value>, Vec<Value>)> {
     let drafts = ps::join(&book.work, "drafts");
+    // The drafts of the previous plan are carried too, by the entry of the row they were written for: a list
+    // read again after its writers ran (morony2005iraq, 2026-11-07: authors filled in, 1,549 drafts ready)
+    // keeps that work. They come before the live Cards, being newer.
+    let mut old: HashMap<String, Value> = HashMap::new();
+    if let Ok(previous) = util::read_json(plan_path(book)) {
+        let entry_of: HashMap<u64, String> = previous["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["row"].as_u64().map(|n| (n, pstr(r, "entry"))))
+            .collect();
+        for job in previous["jobs"].as_array().into_iter().flatten() {
+            for item in read_items(&draft_path(book, &pstr(job, "id"))) {
+                if let Some(entry) = item["row"].as_u64().and_then(|n| entry_of.get(&n)) {
+                    old.entry(cited::fold(entry)).or_insert(item);
+                }
+            }
+        }
+    }
     if std::path::Path::new(&drafts).is_dir() && std::fs::read_dir(&drafts)?.next().is_some() {
         let mut n = 1;
         while std::path::Path::new(&ps::join(&book.work, &format!("drafts-old-{n}"))).exists() {
@@ -289,7 +308,6 @@ fn carry(p: &Params, book: &Book, zt: &mut Zt, list: &Value, rows: &[Value], ter
     }
     std::fs::create_dir_all(&drafts)?;
     let addresses: Vec<String> = list["cards"].as_array().into_iter().flatten().map(|c| pstr(c, "address")).collect();
-    let mut old: HashMap<String, Value> = HashMap::new();
     for chunk in addresses.chunks(100) {
         let reply = zt.call("get_cards", json!({ "addresses": chunk }))?;
         for card in reply["cards"].as_array().into_iter().flatten() {
@@ -552,10 +570,22 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
     }
     // Names are compared folded, so `Jaszi` in the text names `Jászi` in the list (live backfill, 2026-10-31).
     let surname = cited::fold(&pstr(row, "surname"));
+    // An Arabic surname listed with its article is cited without it (`al-Sharaf` in the list, `Sharaf` in the
+    // notes; scheiner2022baghdad, live backfill 2026-11-07).
+    let bare = {
+        let raw = pstr(row, "surname");
+        let lower = raw.to_lowercase();
+        ["al-", "el-", "ad-", "an-", "ar-", "as-", "at-", "az-", "ash-", "al ", "el "]
+            .iter()
+            .find_map(|article| lower.starts_with(article).then(|| cited::fold(&raw[article.len()..])))
+            .filter(|b| b.len() >= 4)
+    };
     let words: Vec<String> = pstr(row, "title")
         .split(|c: char| !c.is_alphanumeric())
         .map(cited::fold)
-        .filter(|w| w.len() >= 4)
+        // A number of three digits counts as a title word: an anonymous work is named by it (`Chronicle of 741`,
+        // hoyland2015path, live backfill 2026-11-07).
+        .filter(|w| w.len() >= 4 || (w.len() == 3 && w.chars().all(|c| c.is_ascii_digit())))
         .collect();
     let year: String = pstr(row, "year").chars().take(4).collect();
     // A surname written without a comma before the initials (`Salter W. E. G. 1966.`, the JPE list of
@@ -607,9 +637,12 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
                 .map(cited::fold)
                 .any(|word| one_edit(&word, &surname));
         let names = (!surname.is_empty() && cited::squeeze(&near).contains(&cited::squeeze(&surname)))
+            || bare.as_ref().is_some_and(|b| cited::squeeze(&near).contains(&cited::squeeze(b)))
             || near_spelling
             || first_name.as_ref().is_some_and(|name| near.contains(name.as_str()))
-            || words.iter().filter(|w| near.contains(w.as_str())).count() >= 2;
+            // A work without a surname whose title has one long word (an author index's `Kharāj`, morony2005iraq,
+            // live backfill 2026-11-07) is named by that word alone.
+            || words.iter().filter(|w| near.contains(w.as_str())).count() >= if surname.is_empty() { words.len().clamp(1, 2) } else { 2 };
         if !names {
             faults.push((format!("{tag} C3 line {line} does not name the work (its surname or two title words)"), true));
         }
@@ -748,12 +781,12 @@ fn check_step(book: &Book, zt: &mut Zt) -> Result<i32> {
 const BATCH_ITEMS: usize = 64;
 const BATCH_BYTES: usize = 1024 * 1024;
 
-/// Create the new Cards in identified `apply_batch` calls of at most [`BATCH_ITEMS`] items and
+/// Write Cards (edits or creates) in identified `apply_batch` calls of at most [`BATCH_ITEMS`] items and
 /// [`BATCH_BYTES`] authored bytes, in row order, so each is appended after the last and nothing moves.
 /// atkinson2015lectures (2026-11-02): 1,589 rows, and one `create_successor` call per Card cost about
 /// 5 s of fixed archive time each. Answers each call's slots with the addresses it created; the
 /// operation keys make a retry replay the archive's own receipts.
-fn create_in_batches(zt: &mut Zt, cards: &[(usize, Value)]) -> Result<Vec<(Vec<usize>, Vec<String>)>> {
+fn write_in_batches(zt: &mut Zt, cards: &[(usize, Value)]) -> Result<Vec<(Vec<usize>, Vec<String>)>> {
     let bytes = |item: &Value| pstr(&item["arguments"], "title").len() + pstr(&item["arguments"], "body").len();
     let mut calls: Vec<Vec<&(usize, Value)>> = Vec::new();
     let mut size = 0usize;
@@ -819,6 +852,30 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     let mut new_cards: Vec<(usize, Value)> = Vec::new();
     let mut cells: HashMap<u64, (String, String)> = HashMap::new();
     let mut stop: Option<String> = None;
+    // The current text of every published Card, read in bulk: a backfill compares about 1,500 Cards, and a read
+    // and an edit per Card took about half a second each (live backfill 2026-11-07).
+    let mut current: HashMap<String, (String, String, String)> = HashMap::new();
+    // Every Link into a Cited Card from outside the list, with the work its Card holds now: the Cards are written in
+    // row order, so a row that moves takes another address, and the Link must follow its work (live backfill
+    // 2026-11-07: removing repeats moved later rows).
+    let mut inbound: Vec<(String, String, String)> = Vec::new();
+    if p.apply {
+        let addresses: Vec<String> = existing.iter().map(|c| pstr(c, "address")).collect();
+        for chunk in addresses.chunks(200) {
+            let reply = zt.call("get_cards", json!({ "addresses": chunk }))?;
+            for card in reply["cards"].as_array().into_iter().flatten() {
+                let address = pstr(card, "address");
+                let entry = pstr(card, "body").lines().find_map(|l| l.strip_prefix("文献：").map(str::to_string)).unwrap_or_default();
+                for source in card["inbound"].as_array().into_iter().flatten().map(|x| pstr(x, "address")) {
+                    if !source.starts_with(&list_address) {
+                        inbound.push((source, address.clone(), cited::fold(&entry)));
+                    }
+                }
+                current.insert(address, (pstr(card, "title"), pstr(card, "body"), crate::calls::authored_fingerprint(card)));
+            }
+        }
+    }
+    let mut edits: Vec<(usize, Value)> = Vec::new();
     for (index, row) in plan_rows.iter().enumerate() {
         let n = row["row"].as_u64().unwrap_or(0);
         let Some(item) = items.get(&n) else {
@@ -833,11 +890,18 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
                     stop = Some(format!("the Card {address} names another row"));
                     break;
                 }
-                if p.apply {
-                    let current = zt.call("get_card", json!({ "at": address }))?;
-                    if pstr(&current, "title") != title || pstr(&current, "body").trim_end() != body.trim_end() {
-                        zt.call("edit_card", json!({ "at": address, "title": title, "body": body }))?;
-                    }
+                let base = current.get(&address).map(|(_, _, f)| f.clone()).unwrap_or_default();
+                let changed = current.get(&address).is_none_or(|(t, b, _)| *t != title || b.trim_end() != body.trim_end());
+                if p.apply && changed {
+                    edits.push((
+                        published.len(),
+                        json!({
+                            "op_key": format!("{run}/{}/{}/apply/e{n:04}", book.key, plan["revision"]),
+                            "client_ref": format!("e{n:04}"),
+                            "tool": "edit_card",
+                            "arguments": { "at": address, "title": title, "body": body, "base_fingerprint": base },
+                        }),
+                    ));
                 }
                 address
             }
@@ -859,7 +923,9 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
         cells.insert(n, (cited_at(&found), relations(item).join("、")));
         published.push(json!({ "row": n, "card": address, "status": "committed" }));
     }
-    for (slots, created) in create_in_batches(zt, &new_cards)? {
+    // Edits first, in identified batches: they keep their addresses, so the new Cards still append after them.
+    write_in_batches(zt, &edits)?;
+    for (slots, created) in write_in_batches(zt, &new_cards)? {
         for (slot, address) in slots.into_iter().zip(created) {
             published[slot]["card"] = json!(address);
         }
@@ -867,17 +933,46 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     // A complete publication owns every Cited Card of the list: one filed beyond the rows is stale (the list
     // got shorter after a parser fix; live backfill of grossman2002integration) and is removed.
     let mut removed = 0usize;
+    let mut relinked = 0usize;
     if p.apply && stop.is_none() && published.len() == plan_rows.len() {
-        // From the last one back: deleting a Side successor renumbers the later ones.
-        for card in existing.iter().skip(plan_rows.len()).rev() {
-            // delete_card plans first and applies with the plan's own confirmation token.
-            let address = pstr(card, "address");
-            let plan = zt.call("delete_card", json!({ "at": address }))?;
-            let done = zt.call("delete_card", json!({ "at": address, "confirm": pstr(&plan, "confirm") }))?;
-            if done["applied"] != true {
-                bail!("delete_card {address} did not apply: {done}");
+        // Each Link goes to the Card that now holds its work, before any stale Card is deleted.
+        let home: HashMap<String, String> = plan_rows
+            .iter()
+            .zip(&published)
+            .map(|(row, done)| (cited::fold(&pstr(row, "entry")), pstr(done, "card")))
+            .collect();
+        for (source, old, entry) in &inbound {
+            match home.get(entry) {
+                Some(target) if target != old && !target.is_empty() => {
+                    zt.call("relink", json!({ "from": old, "to": target, "sources": [source] }))?;
+                    relinked += 1;
+                }
+                _ => {}
             }
-            removed += 1;
+        }
+        // From the last one back, in start-state batches of BATCH_ITEMS: deleting a Side successor renumbers only
+        // the later ones, so each batch names addresses no earlier batch moved. A tree batch previews and commits
+        // under its own plan hash (zt 0.51, PRD #228).
+        let stale: Vec<String> = existing.iter().skip(plan_rows.len()).map(|c| pstr(c, "address")).collect();
+        for chunk in stale.rchunks(BATCH_ITEMS) {
+            let items: Vec<Value> = chunk
+                .iter()
+                .rev()
+                .map(|a| json!({ "op_key": format!("{run}/{}/{}/delete/{}", book.key, plan["revision"], a.replace(['/', '|'], "-")), "client_ref": format!("d-{}", a.replace(['/', '|'], "-")), "tool": "delete_card", "arguments": { "at": a } }))
+                .collect();
+            let planned = zt.request("apply_batch", json!({ "preview": true, "items": items }))?;
+            if let Some(message) = zt_check::mcp::reply_error(&planned) {
+                bail!("apply_batch refused deleting {}: {message}", chunk[0]);
+            }
+            let plan: Value = serde_json::from_str(&zt_check::mcp::reply_text(&planned)).context("the apply_batch preview is not JSON")?;
+            if plan["complete"] != true {
+                bail!("deleting {} is blocked: {}", chunk[0], plan["refusals"]);
+            }
+            let done = zt.request("apply_batch", json!({ "items": items, "confirm": plan["plan_hash"] }))?;
+            if let Some(message) = zt_check::mcp::reply_error(&done) {
+                bail!("apply_batch did not delete {}: {message}", chunk[0]);
+            }
+            removed += chunk.len();
         }
     }
     // The list's 引用处 and 关系 cells follow the published Cards.
@@ -914,6 +1009,7 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
         "stop": stop,
         "rows": published,
         "removed": removed,
+        "relinked": relinked,
         "readiness": states,
     });
     util::write_atomic(ps::join(&book.work, "report.json"), &ps::json_pretty(&report))?;
@@ -923,6 +1019,9 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     }
     if removed > 0 {
         line["removed"] = json!(removed);
+    }
+    if relinked > 0 {
+        line["relinked"] = json!(relinked);
     }
     util::print_line(&util::compact(&line))?;
     Ok(0)

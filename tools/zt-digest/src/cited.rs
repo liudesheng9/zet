@@ -784,17 +784,32 @@ fn read_rows(plan: &Value, work: &str) -> Result<(Vec<Entry>, usize, Vec<String>
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut rows = Vec::new();
     let mut repeated = 0usize;
-    for (_, _, item) in gathered {
-        let authors = pstr(&item, "authors").trim().to_string();
+    // An author index names the author once and lists the works after it on the same line (`Abbott, N., Arabic
+    // Literary Papyri, 437; “Arabic Paleography,” 560`): an entry without authors takes the authors of the entry
+    // before it on the same line. morony2005iraq: 1,164 of 2,819 entries had none, so 642 of its works had no
+    // surname, no citing line, no id of their own, and a one-word title no Card check could pass.
+    let mut previous: Option<(usize, String)> = None;
+    for (first, _, item) in gathered {
+        let mut authors = pstr(&item, "authors").trim().to_string();
+        match &previous {
+            Some((line, before)) if authors.is_empty() && *line == first && !before.is_empty() => authors = before.clone(),
+            _ => {}
+        }
+        previous = Some((first, authors.clone()));
         let title = pstr(&item, "title").trim().to_string();
         let year = pstr(&item, "year").trim().to_string();
         let surname = surname_of(&authors);
         let entry = display(&pstr(&item, "entry"), &authors);
         let identity = format!("{}|{}|{}", fold(&surname), year, title_key(if title.is_empty() { &entry } else { &title }).chars().take(60).collect::<String>());
-        if !seen.insert(identity) {
+        // The same entry text is the same work too: a repeated passage read twice can give it two titles
+        // (`*The Public Finances*` and `The Public Finances (3rd edn)`, atkinson2015lectures, 2026-11-07).
+        let text = format!("entry|{}", fold(&entry));
+        if seen.contains(&identity) || seen.contains(&text) {
             repeated += 1;
             continue;
         }
+        seen.insert(identity);
+        seen.insert(text);
         let mut lines = line_numbers(&item["lines"]);
         lines.sort_unstable();
         rows.push(Entry {

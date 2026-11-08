@@ -600,6 +600,10 @@ fn a_changed_list_carries_the_live_cards_of_the_works_it_keeps() {
     last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     std::fs::write(draft_path(&staging, "t001"), json!([smith(), jones(), brown()]).to_string()).unwrap();
     assert_eq!(last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]))["complete"], json!(true));
+    // A Card of the tree links Smith's Cited Card; the Link must follow Smith when the rows move.
+    let smith_card = mcp.call("get_cited", json!({ "at": "tiny2026" }))["cards"][0]["address"].as_str().unwrap().to_string();
+    let note = mcp.call("create_successor", json!({ "at": "tiny2026/2", "title": "谈判的引用", "body": format!("本书引用 Smith 说明谈判，见 [[{smith_card}]]。\n\n来源：[[tiny2026]] §2") }));
+    let note = note["address"].as_str().unwrap().to_string();
 
     let source = std::fs::read_to_string(staging.join("book.md")).unwrap().replace("Smith, J. (1999).", "Adams, B. (1990). Early Work. Press.\\\nSmith, J. (1999).");
     std::fs::write(staging.join("book.md"), source).unwrap();
@@ -623,4 +627,109 @@ fn a_changed_list_carries_the_live_cards_of_the_works_it_keeps() {
     let second = mcp.call("get_card", json!({ "at": cited["cards"][1]["address"] }));
     assert!(second["title"].as_str().unwrap().contains("谈判的作用"), "{second}");
     assert!(second["body"].as_str().unwrap().contains("本书依赖它关于谈判的结论。"), "{second}");
+    assert_eq!(applied["relinked"], json!(1), "{applied}");
+    let linked = mcp.call("get_card", json!({ "at": note }));
+    let smith_now = cited["cards"][1]["address"].as_str().unwrap();
+    assert!(linked["body"].as_str().unwrap().contains(&format!("[[{smith_now}]]")), "the Link follows Smith to {smith_now}: {linked}");
+}
+
+/// Live backfill of hoyland2015path (2026-11-07): an anonymous work has no surname and one long title word
+/// (`Chronicle of 741`); the text names it with that word and its number, which counts as a title word.
+#[test]
+fn an_anonymous_work_is_named_by_its_title_word_and_number() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "anon2026", "Anon");
+    let source = "# 1 Introduction\n# 1 引言\nThe Chronicle of 741, §15, records the battle.\nThe Chronicle of 754 is another work.\n\n# Bibliography\n\nChronicle of 741 trans. in Hoyland, Seeing Islam, Excursus B.\\n\n# Appendix\n";
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "anon2026", "Anon", source, json!([{ "anchor": "anon2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &|_| Some((String::new(), String::new(), "Chronicle of 741".into())));
+    last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let draft = draft_path(&staging, "t001");
+    std::fs::create_dir_all(draft.parent().unwrap()).unwrap();
+    let item = |line: u64| json!([{ "row": 1, "short_title": "741 年编年史", "why": "本书引用它记述战役。", "role": "它提供战役的记载。", "relationship": "本书依赖它的记载。", "relations": ["依赖"], "locations": [{ "line": line, "use": "本书用它记述战役。" }] }]);
+    std::fs::write(&draft, item(3).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).trim_end().ends_with("faults: 0"), "the title word and its number name the work");
+    std::fs::write(&draft, item(6).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).contains("row1 C3"), "another number names another work");
+}
+
+/// Live backfill of morony2005iraq (2026-11-07): an author index lists later works of an author without the
+/// author (`“Djaysh,” 582`); the text cites such a work by its one title word, which then names it.
+#[test]
+fn a_work_without_a_surname_and_a_one_word_title_is_named_by_that_word() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "index2026", "Index");
+    let source = "# 1 Introduction\n# 1 引言\nAccording to Abū Yūsuf (Kharāj, pp. 27, 29) the share is fixed.\n\nOther text.\nNo work here.\n\n# AUTHOR INDEX\n\nKharāj, 37, 585\\n";
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "index2026", "Index", source, json!([{ "anchor": "index2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s, "-Heading", "AUTHOR INDEX"]));
+    cited_read::answer_parts(&staging, &|_| Some((String::new(), String::new(), "Kharāj".into())));
+    last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let draft = draft_path(&staging, "t001");
+    std::fs::create_dir_all(draft.parent().unwrap()).unwrap();
+    let item = |line: u64| json!([{ "row": 1, "short_title": "税收之书", "why": "本书引用它说明战利品的分配。", "role": "它提供分配的规则。", "relationship": "本书依赖它的规则。", "relations": ["依赖"], "locations": [{ "line": line, "use": "本书用它说明分配。" }] }]);
+    std::fs::write(&draft, item(3).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).trim_end().ends_with("faults: 0"), "the one title word names the work");
+    std::fs::write(&draft, item(6).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).contains("row1 C3"), "a line without the word does not");
+}
+
+/// Live backfill of morony2005iraq (2026-11-07): the list was read again after its writers ran and before any Card
+/// was published. The drafts of the previous plan are carried by their entries, so no writer runs again.
+#[test]
+fn a_list_read_again_before_publication_carries_the_written_drafts() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    let dir = tempfile::tempdir().unwrap();
+    let staging = prepared(&zt, &mut mcp, dir.path());
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    std::fs::write(draft_path(&staging, "t001"), json!([smith(), jones(), brown()]).to_string()).unwrap();
+
+    let source = std::fs::read_to_string(staging.join("book.md")).unwrap().replace("Smith, J. (1999).", "Adams, B. (1990). Early Work. Press.\\\nSmith, J. (1999).");
+    std::fs::write(staging.join("book.md"), source).unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
+    assert_eq!(last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]))["rows"], json!(4));
+    assert!(mcp.call("get_cited", json!({ "at": "tiny2026" }))["cards"].as_array().unwrap().is_empty(), "nothing is published yet");
+    let plan = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    assert_eq!(plan["carried"], json!(1), "{plan}");
+    let jobs = last_json(&zt.digest(&["cited-cards", "-Step", "jobs", "-Staging", s]));
+    let listed: Vec<&str> = jobs["jobs"].as_array().unwrap().iter().map(|j| j["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, ["t002"], "only the new work goes to a writer: {jobs}");
+}
+
+/// Live backfill of scheiner2022baghdad (2026-11-07): the list writes `al-Sharaf, M.`, the notes `Sharaf,
+/// *al-Taṣawwuf*`; a surname is also found without its Arabic article.
+#[test]
+fn an_arabic_surname_is_found_without_its_article() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "sharaf2026", "Sharaf");
+    let source = "# 1 Introduction\n# 1 引言\nSome scholars claim this (Sharaf, al-Taṣawwuf, 136).\n\nOther text.\nNo work here.\n\n# Bibliography\n\nal-Sharaf, M., al-Taṣawwuf al-islāmī fī madrasat Baghdād, Alexandria 1972.\n";
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "sharaf2026", "Sharaf", source, json!([{ "anchor": "sharaf2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &|_| Some(("al-Sharaf, M.".into(), "1972".into(), "al-Taṣawwuf al-islāmī fī madrasat Baghdād".into())));
+    last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let draft = draft_path(&staging, "t001");
+    std::fs::create_dir_all(draft.parent().unwrap()).unwrap();
+    let item = |line: u64| json!([{ "row": 1, "short_title": "巴格达学派的苏非主义", "why": "本书引用它说明一种看法。", "role": "它提供这种看法。", "relationship": "本书对照它的看法。", "relations": ["对照"], "locations": [{ "line": line, "use": "本书用它说明看法。" }] }]);
+    std::fs::write(&draft, item(3).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).trim_end().ends_with("faults: 0"), "Sharaf names al-Sharaf");
+    std::fs::write(&draft, item(6).to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).contains("row1 C3"));
 }

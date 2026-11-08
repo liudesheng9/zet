@@ -49,3 +49,35 @@ Kennedy's material is 281 lines in 5 parts and 2 jobs. Reading it cost 0.38 CNY 
 ## Backfill
 
 Backfill reads every finished book again (`scripts/book-digest/cited-read-drive.mjs`, no workflow, no manager agent), then applies the list. It carries the live Cards, writes Cards for the new rows only (`--cards`), applies them and runs `term-relink.ps1`. A link into a Cited Card from another Card is pointed again to the Card of the same work. Results by book are in the table below.
+
+## Faults met in the backfill, and their fixes
+
+| Fault | Book | Cause | Fix |
+|---|---|---|---|
+| A publication refused: `link target <key>/10 does not exist` | Acemoglu 2007, Acemoglu 2010, Hansen | A reorganized tree moved its section Cards; the manifest's group anchors still named the old addresses | A carried Card keeps the `另见` anchor its own body names; `apply` drops a manifest anchor that names no Card |
+| 2 rows never passed C3 | Hoyland (`Chronicle of 741`) | An anonymous work had one long title word; C3 asked for a surname or two title words | A three-digit number counts as a title word |
+| 18 rows never passed C3; 642 of 1,553 works had no surname | Morony | **Root cause:** an author index names the author once per line and lists that author's works after it. The reader copied each work as written, and the reading check R3 demanded that the surname stand inside each entry, so 1,164 of 2,819 entries had no authors. Without a surname a work has no id of its own, no citing lines and no surname for C3, and two authors' works with the same title were one repeat | `apply` gives an entry without authors the authors of the entry before it on the same line (no reader change). Works without a surname: 642 → 80; works: 1,553 → 1,611. C3 also accepts the one title word of a work without a surname whose title has one word |
+| 1 row never passed C3 | Baghdad (`al-Sharaf` in the list, `Sharaf` in the notes) | The surname kept its Arabic article | C3 also finds the surname without `al-`, `el-`, `ad-` … |
+| A list read again lost the written drafts | Morony | The carry read only the live Cards, which were not yet published | The carry also reads the previous plan's drafts by their entries |
+| A Link into a deleted Cited Card could not be relinked | Donner | `relink` needs an existing `from` | `cited-relink.mjs` rewrites the Link in the source text; 11 Links whose old row had merged several works were decided by hand from their sentences |
+| Links into Cited Cards drifted | Donner, Atkinson, Baghdad, Morony | `apply` writes Cards in row order, so a row that moves takes another address and a Link keeps the old one | `apply` records each inbound Link with its Card's work and repoints it to the Card that holds that work, before deleting stale Cards. After the repeat rerun, an exact position map found 3 shifted Links, now repointed |
+| The same work twice | Atkinson 10, Donner 2, Baghdad 1, Morony 39 | A repeated passage read twice came back with two titles, so the surname, year and title key differed | A row whose folded entry text an earlier row has is a repeat too |
+
+## Publication speed
+
+The Cited Card `apply` wrote each existing Card with its own `get_card` and `edit_card` call, and each stale Card with two `delete_card` calls. Only new Cards went in `apply_batch`. A fresh digest writes only new Cards, so it never met this path. A backfill rewrites nearly every Card in place.
+
+Measured on 2026-11-07:
+
+- A Card read costs about 6 ms on the live archive. Reads are not the cost.
+- On a test box built from the live backup (24,299 Cards), 64 single `edit_card` calls took 6.6 s (103 ms each). One `apply_batch` of the same 64 edits took 5.0 s (78 ms each). Batching saves about a quarter. The rest is the per-write work of the archive: the write gate with the book's Term list, the link and Term indexes, the revision record and the commit.
+- On the live archive, Morony's and Baghdad's publications ran at the same time as two Term-link passes. The archive has one writer lane, so the four writers queued. Together they reached about 4 writes a second (0.25 s each), about 2.5 times slower than one writer alone. Each book took about 12 minutes.
+
+The fix:
+
+- `apply` reads the current Cards with `get_cards` (200 a call).
+- It writes changed Cards in `apply_batch` calls of 64 `edit_card` items, each with its authored `base_fingerprint`.
+- It deletes stale Cards in previewed, confirmed tree batches of 64, from the last one back.
+- Publications run one book at a time, never beside another writer.
+
+The cost left is the archive's own work per write, about 80 ms. Lowering it is work for the `zt` service, not for this module.
