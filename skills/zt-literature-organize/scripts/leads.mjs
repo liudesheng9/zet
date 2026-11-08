@@ -1,10 +1,10 @@
 // node leads.mjs <key> <leads.json> [--commit]
-// Gives each division a summary lead, one batch per entry, deepest first. An entry, in addresses of the tree as it
-// stands when the run starts:
+// Gives each division a summary lead, one batch per entry, deepest first. An entry, in full addresses (<key>/<location>)
+// of the tree as it stands when the run starts:
 //   { lead, mode: "demote", title, body, keep: [Side children that stay with the old lead], first?: [Side children placed before the old lead], old_title?, old_drop?: [line starts] }
 //   { lead, mode: "rewrite", title, body }
 // demote: a new summary Card takes the lead's place, the old lead becomes its first Side branch (with `keep` and its
-// Direct chain), every other Side child moves up to the summary. rewrite: the lead keeps its place with a new text.
+// Direct chain), every other Side child moves up to the summary with its own Direct chain. rewrite: the lead keeps its place with a new text.
 // Term names in the new text become Term uses, the first time each appears. Resumable: <leads.json>.state.json.
 import fs from 'node:fs'
 import { call, tree } from './zt.mjs'
@@ -19,6 +19,30 @@ export function linkTerms(body, terms) {
   }
   const show = s => s.replace(/\u0001(\d+)\u0002/g, (_, n) => show(hidden[+n]))
   return show(text)
+}
+
+/** The Direct chain that runs on from a Card, in order; empty for a Card on the top line, whose chain is the top line. */
+export function chainAfter(now, address) {
+  const out = []
+  if (/\/\d+$/.test(address)) return out
+  for (let c = now.find(k => k.parent === address && k.edge === 'direct'); c; c = now.find(k => k.parent === c.address && k.edge === 'direct')) out.push(c)
+  return out
+}
+
+/** One demote batch: a new summary takes the lead's place, the old lead (with `keep` and its Direct chain) becomes its
+ *  first Side branch after `first`, and every other Side child moves up to the summary with its own Direct chain. */
+export function demoteItems({ now, lead, title, body, keep = [], first = [], run }) {
+  const item = (tool, args, n) => ({ op_key: `${run}/1/step/i${n}`, client_ref: `op${n}`, tool, arguments: args })
+  const items = [
+    { ...item('create_successor', { at: lead, kind: 'side', title, body }, 0), client_ref: 's' },
+    item('move_span', { from: '@@s', before: lead }, 1),
+  ]
+  const through = a => { const chain = chainAfter(now, a); return chain.length ? { through: chain.at(-1).address } : {} }
+  const up = a => items.push(item('move_span', { from: a, ...through(a), side_of: '@@s' }, items.length))
+  first.forEach(up)
+  items.push(item('move_span', { from: lead, ...through(lead), side_of: '@@s' }, items.length))
+  for (const c of now.filter(k => k.parent === lead)) if (c.edge === 'side' && !keep.includes(c.address) && !first.includes(c.address)) up(c.address)
+  return items
 }
 
 function send(args) {
@@ -62,21 +86,8 @@ if (process.argv[1].endsWith('leads.mjs')) {
       edit({ at: lead, title: e.title, body })
     } else {
       const now = tree(key)
-      const kids = now.filter(c => c.parent === lead)
-      const keep = new Set((e.keep ?? []).map(T))
-      const chain = []
-      for (let c = kids.find(k => k.edge === 'direct'); c && !/\/\d+$/.test(lead); c = now.find(k => k.parent === c.address && k.edge === 'direct')) chain.push(c)
       const run = `organize/${key}-${process.pid}-${e.i}`
-      const item = (tool, args, n) => ({ op_key: `${run}/1/step/i${n}`, client_ref: `op${n}`, tool, arguments: args })
-      const items = [
-        { ...item('create_successor', { at: lead, kind: 'side', title: e.title, body }, 0), client_ref: 's' },
-        item('move_span', { from: '@@s', before: lead }, 1),
-      ]
-      const first = (e.first ?? []).map(T)
-      const up = a => items.push(item('move_span', { from: a, side_of: '@@s' }, items.length))
-      first.forEach(up)
-      items.push(item('move_span', { from: lead, ...(chain.length ? { through: chain.at(-1).address } : {}), side_of: '@@s' }, items.length))
-      for (const c of kids) if (c.edge === 'side' && !keep.has(c.address) && !first.includes(c.address)) up(c.address)
+      const items = demoteItems({ now, lead, title: e.title, body, keep: (e.keep ?? []).map(T), first: (e.first ?? []).map(T), run })
       if (items.length > 64) throw new Error(`${lead}: ${items.length} items`)
       const pre = send({ items, preview: true, lean: true })
       if (!pre.complete || pre.plan.links_that_will_break.length) { console.log(lead, JSON.stringify(pre.refusals).slice(0, 1500)); process.exit(1) }
