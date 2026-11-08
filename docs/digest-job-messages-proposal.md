@@ -162,3 +162,40 @@ Content (every draft of both shapes passed its SELF-CHECK, `faults: 0`):
 Reading: the new shape writes as much (Term) or more (Cited) per item, closer to the published Cards, and uses fewer output tokens on Terms. It costs more per item in this run: Term +69%, Cited +23%. The extra cost is cached re-reads of a longer conversation, not writing. One run each, so read this as direction. The account balance fell 2.95 CNY (235.44 → 232.49) over the window that holds most of these runs, about half the priced figure, so the rates above overstate the real price.
 
 Total DeepSeek cost of the verification: the two old-shape runs (the first one's sessions were deleted before they were read, so it is priced like the second, about 1.80) and the new-shape run (2.47), about 6.1 CNY at the doc rates and about 3 CNY on the account.
+
+## 6. Second test: 4 messages × 12 items (2026-11-08)
+
+The owner asked whether 4 messages of 12 items (48 a subagent) cost less than 4 of 6. The setting needs no code change: `-PerJob 12` makes each job 12 items and the `jobs` step still puts four jobs in one conversation. The released default stays 6 until the owner decides. Same method as section 5, zt-digest 0.49.0, on 48 items per module: Hoyland Term rows 25–72 and Morony Cited rows 817–864. The old one-message jobs of 12 for rows 25–48 and 817–840 are the section 5 runs; rows 49–72 and 841–864 ran now.
+
+| Module | Shape | Items | Conversations | Model calls | Uncached in | Cached in | Output | Cost | Cost an item | Against old |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Term Cards | old: 1 message × 12 | 48 | 4 | 24 | 169,009 | 2,327,808 | 190,409 | 1.10 | 0.0230 | — |
+| | 4 messages × 6 (section 5) | 24 | 1 | 34 | 136,710 | 3,979,904 | 70,780 | 0.92 | 0.0383 | +67% |
+| | **4 messages × 12** | 48 | 1 | 30 | 181,365 | 5,464,320 | 112,792 | 1.31 | 0.0272 | **+18%** |
+| Cited Cards | old: 1 message × 12 | 48 | 4 | 108 | 455,974 | 13,285,504 | 105,880 | 2.65 | 0.0553 | — |
+| | 4 messages × 6 (section 5) | 24 | 1 | 65 | 134,881 | 8,898,816 | 52,390 | 1.55 | 0.0645 | +17% |
+| | **4 messages × 12** | 48 | 1 | 64 | 299,941 | 15,917,056 | 71,798 | 2.76 | 0.0575 | **+4%** |
+
+Per message of 4 × 12: Term 0.31, 0.28, 0.34, 0.38 (an old job of 12: 0.23–0.32); Cited 0.62, 0.53, 0.87, 0.74 (an old job of 12: 0.55–0.70). Wall time of one conversation: Term 575 s, Cited 495 s (an old job: 200–270 s, and the old jobs run side by side).
+
+Content (every draft passed its SELF-CHECK, `faults: 0`):
+
+| Term Cards (per term) | Explanation sentences | Distinctions | Misreadings | Role, characters | Section citations | Quotes |
+|---|---:|---:|---:|---:|---:|---:|
+| Published Cards, rows 25–72 | 7.9 | 4.6 | 4.4 | 92 | 7.0 | 48/48 |
+| Old 1 × 12, rows 49–72 (rows 25–48 in section 5) | 7.2 | 4.2 | 3.4 | 60 | 7.8 | 24/24 |
+| 4 × 12, rows 25–72 | 7.0 | 5.0 | 3.0 | 64 | 7.4 | 48/48 |
+
+| Cited Cards (per work) | Locations | Why, characters | Role, characters | Relationship, characters | Works without a location |
+|---|---:|---:|---:|---:|---:|
+| Published Cards, rows 817–864 | 2.5 | 71 | 91 | 53 | 5 |
+| Old 1 × 12, rows 841–864 (rows 817–840 in section 5) | 3.3 | 58 | 67 | 48 | 0 |
+| 4 × 12, rows 817–864 | 3.2 | 90 | 50 | 36 | 0 |
+
+Reading:
+
+- **4 × 12 removes most of the extra cost of 4 × 6** (Term +67% → +18%, Cited +17% → +4%), but **it is still not cheaper than one message of 12 in its own conversation.** Every model call re-reads the whole conversation, so a later message pays again for the earlier messages' material; the shared material that a conversation saves sending is already a cheap cached prefix in separate jobs.
+- **Depth at 4 × 12 is about that of the old jobs, not more:** Term distinctions up (5.0 against 4.2–4.8), misreadings down (3.0 against 3.4–3.9); Cited why up (90 against 55–58), role and relationship down (50/36 against 55–67/48–53). The 4 × 6 shape (section 5) was the deeper one.
+- One run each, so read these as a direction.
+
+The account balance fell 2.35 CNY (232.06 → 229.71) during these runs (6.3 CNY at the doc rates). Cost of this second test: about 6.3 CNY at the doc rates, about 2.4 CNY on the account.
