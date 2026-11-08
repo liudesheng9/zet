@@ -29,7 +29,9 @@ use serde_json::{Map, Value, json};
 /// 6 (the owner, 2026-11-01): a Model Card is held to every size limit twice as loose (100%
 /// looser than the base limit; `core::loosen`), so the same authored text is decided
 /// differently than under 5.
-pub const RULE_VERSION: &str = "6";
+/// 7 (the owner, 2026-11-06): R22 and T10 read one line at a time and also refuse a broken `$$`
+/// block (`text::broken_display`), so the same authored text is decided differently than under 6.
+pub const RULE_VERSION: &str = "7";
 
 /// The version of the published diagnostic shape: the eight fields of
 /// `core::Diagnostic::to_json` and the `block`/`advise` and `local`/`graph`

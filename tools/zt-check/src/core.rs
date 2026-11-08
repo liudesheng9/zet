@@ -5,7 +5,7 @@
 //! zt service evaluate one definition of Card legality.
 
 use crate::text::{
-    TitleContext, TitleRow, Terms, bigrams, book_place, culture, culture_cmp,
+    TitleContext, TitleRow, Terms, bigrams, book_place, broken_display, culture, culture_cmp,
     culture_starts_with, entry_section, from_utf16_form, is_high_stand_in, is_low_stand_in, key,
     leads_to, length, link_occurrences, literature_tree, measure, open_math, passive, plain, prop,
     prose_lines, ps_eq, ps_in, ps_int, ps_string, read_terms, similarity, split_sentences,
@@ -696,6 +696,15 @@ impl Check {
                 "open_formula",
                 &format!("body:{authored_body}"),
                 "the body leaves an inline formula open (an odd number of $; write a currency as 美元 or \\$)",
+            );
+        }
+        if broken_display(&authored_body) {
+            faults.add(
+                address,
+                formula_rule,
+                "broken_display",
+                &format!("body:{authored_body}"),
+                "the body breaks a display formula: close each $$ block, keep single $ out of it, and keep every line inside it from reading as Markdown (no blank line, no line that starts with `- `, `+ `, `* `, `>`, `# ` or `1. `; write a leading minus as -x); a \\tag holds plain text, with any script in $…$ (\\tag{6-9$^{\\prime}$}); a backspace or form feed means a JSON escape ate the backslash of \\bar or \\frac",
             );
         }
         let facet = text(prop(card, "facet"));
@@ -3164,7 +3173,7 @@ mod tests {
         assert!(open_math("普遍纵向一体化均衡稳定当且仅当 <A_O$"));
         assert!(open_math("当 $A_I<A_O 时稳定"));
         assert!(!open_math("均衡稳定当且仅当 $A_I<A_O$"));
-        assert!(!open_math("$$\na=b$c\n$$ 之后 $x$"));
+        assert!(!open_math("$$\na=b\n$$ 之后 $x$"));
         assert!(!open_math("代码 `$x` 与价格 \\$5"));
         let cards = json!([{ "address": "K/4", "title": "均衡稳定当且仅当 <A_O$", "body": "成立条件是 $A_I<A_O$。\n\n来源：[[K]] §4" },
             { "address": "K/4|a", "title": "两个门槛决定稳定性", "body": "稳定要求 $A_I<A_O。\n\n来源：[[K]] §4" }]);
@@ -3172,6 +3181,74 @@ mod tests {
         assert!(lines.iter().any(|l| l.starts_with("K/4 R22 the title leaves an inline formula open")), "{lines:#?}");
         assert!(lines.iter().any(|l| l.starts_with("K/4|a R22 the body leaves an inline formula open")), "{lines:#?}");
         assert!(!lines.iter().any(|l| l.starts_with("K/4 R22 the body")), "{lines:#?}");
+    }
+
+    // R22: one line holds its own `$` count, so two open rows of a table no longer add up to an
+    // even body (atkinson2015lectures/22|ci).
+    #[test]
+    fn each_line_closes_its_own_inline_formulas() {
+        assert!(open_math("| $q' | $q$ 的导数 |\n| $p' | $p$ 的导数 |"));
+        assert!(!open_math("| $q'$ | $q$ 的导数 |\n| $p'$ | $p$ 的导数 |"));
+        assert!(!open_math("价格 \\$5\n价格 $x$"));
+    }
+
+    // R22: the GUI's Markdown parser ends a `$$` block at a line it reads as another block, so the
+    // TeX shows raw (acemoglu2007equilibrium/2|a|a|f|1), and a single `$` inside a block is no TeX
+    // (atkinson2015lectures/22|py). KaTeX alone never sees the first fault.
+    #[test]
+    fn a_display_block_a_markdown_line_cuts_is_broken() {
+        for cut in ["- w", "+ w", "* w", "> 0", "# w", "1. w", "1) w", "-", "---", "===", ""] {
+            assert!(broken_display(&format!("$$\na\n{cut}\nb\n$$")), "{cut:?}");
+        }
+        assert!(broken_display("$$\n- w_2 u_1 > 0 \\tag{2-22}\n$$"));
+        assert!(broken_display("   $$\n   - w\n   $$"));
+        assert!(!broken_display("$$\n-w_2 u_1 > 0 \\tag{2-22}\n$$"));
+        assert!(!broken_display("$$\n\\begin{aligned}\n&a \\\\\n& - b\n\\end{aligned}\n$$"));
+        assert!(!broken_display("$$\na\n= b\n2. c\n-b\n$$"));
+    }
+
+    #[test]
+    fn a_display_block_stays_closed_and_holds_no_single_dollar() {
+        assert!(broken_display("- $$E^{h}$ 对 $\\eta^{h}$ 严格递增$：导数为正"));
+        assert!(broken_display("$$\\theta\\mapsto F$ 严格凹$$"));
+        assert!(broken_display("$$\na=b$c\n$$"));
+        assert!(broken_display("$$\na=b"));
+        assert!(!broken_display("1. 写出。\n   $$a=b$$\n2. 代入。\n   $$c$$\n\n结果 $x$"));
+        assert!(!broken_display("$$\na=\\$5\n$$"));
+        assert!(!broken_display("代码 `$$` 与\n```\n$$\n- x\n```\n价格 \\$5"));
+        assert!(!broken_display("公式 $$a$$ 之后 $x$"));
+        // A text-mode argument may hold its own `$…$` pair (atkinson2015lectures/8|b|b|c|6).
+        assert!(!broken_display("$$\na=b \\tag {$5-5^{\\prime}$}\n$$"));
+        assert!(!broken_display("$$\na=b \\tag{9-30$^{\\prime}$}$$"));
+        assert!(!broken_display("$$\na \\text{当 $x$ 时}\n$$"));
+        // A tag on its own line leaves the block whole (acemoglu2007equilibrium/2|a|a|f|1).
+        assert!(!broken_display("$$\na=b\n\\tag{10}\n$$"));
+    }
+
+    // R22: a `\tag` argument is text mode, so KaTeX refuses a bare script in it, and a JSON `\b` or
+    // `\f` eats the backslash of `\bar` or `\frac` (atkinson2015lectures/9|d|c|b|2, 22|abb).
+    #[test]
+    fn a_tag_holds_plain_text_and_a_lost_backslash_is_a_broken_formula() {
+        assert!(broken_display("$$\na \\tag{6-9^{\\prime}}\n$$"));
+        assert!(broken_display("$$\na \\tag {12-36_1}\n$$"));
+        assert!(broken_display("$$\na \\tag {$3-11^{\\prime$}}\n$$"));
+        assert!(!broken_display("$$\na \\tag{6-9$^{\\prime}$}\n$$"));
+        assert!(!broken_display("$$\na \\tag{T1}\n$$"));
+        assert!(broken_display("当 $\u{8}ar X$ 时"));
+        assert!(broken_display("当 $\u{c}rac{1}{2}$ 时"));
+    }
+
+    #[test]
+    fn a_broken_display_block_is_r22_and_t10_on_a_term_card() {
+        let body = "利润如下。\n\n$$\n- w q\n$$\n\n来源：[[K]] §4";
+        let cards = json!([{ "address": "K/4", "title": "利润减去成本得到净值", "body": body }]);
+        let lines = run_json(&cards, "", Limits::default(), false, "");
+        assert!(lines.iter().any(|l| l.starts_with("K/4 R22 the body breaks a display formula")), "{lines:#?}");
+        assert!(!lines.iter().any(|l| l.contains("leaves an inline formula open")), "{lines:#?}");
+        let body = "术语：均衡\n不用：平衡\n类别：概念\n首次定义：§1.1\n\n## 释义\n\n$$\n- p\n$$\n";
+        let lines = term_lines(&[term_entry("均衡", body)]);
+        assert!(of_rule(&lines, "T10").iter().any(|l| l.contains("breaks a display formula")), "{lines:#?}");
+        assert!(of_rule(&lines, "R22").is_empty(), "one predicate family, one label: {lines:#?}");
     }
 
     // R2: a book title in 《…》 counts as one name, and the Literature Card's document line is a locator; a

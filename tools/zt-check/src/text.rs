@@ -27,6 +27,13 @@ pub(crate) use pattern;
 
 // Prose: what the rules apply to.
 pattern!(DISPLAY_MATH, r"\$\$[\s\S]*?\$\$");
+// A line that ends a paragraph, so it ends a `$$` block that runs across lines. Only a list that
+// starts at 1 can interrupt a paragraph.
+pattern!(DISPLAY_CUT, r"^\s*(?:$|[-+*][ \t]|>|#{1,6}[ \t]|1[.)][ \t]|-+\s*$|=+\s*$)");
+// A text-mode argument inside a formula: its own `$…$` pair is valid TeX (`\tag{$5-5^{\prime}$}`).
+pattern!(DISPLAY_TEXT_ARG, r"\\(?:tag|text|mbox|hbox)\s*\{(?:[^{}]|\{[^{}]*\})*\}");
+pattern!(DISPLAY_TAG, r"\\tag\s*\{((?:[^{}]|\{[^{}]*\})*)\}");
+pattern!(INLINE_MATH_PAIR, r"\$[^$]*\$");
 pattern!(INLINE_MATH, r"\$[^$\n]+\$");
 pattern!(LINK, r"\[\[[^\]]+\]\]");
 pattern!(LINK_TARGET, r"\[\[([^\]]+)\]\]");
@@ -418,23 +425,67 @@ pub(crate) fn prose_lines(body: &str) -> Vec<ProseLine> {
 
 /// Exact structural checks retain authored text and original body line numbers.
 /// They do not rewrite Chinese characters or compare paraphrases.
-/// R22: whether a text leaves an inline formula open, an odd number of unescaped `$` once its
-/// `$$` display blocks and its code are set aside. A writer that builds a Card in a PowerShell
-/// double-quoted string loses `$A_I` (an unset variable) and leaves `当且仅当 <A_O$`: on
-/// grossman2002integration trial 8 two titles of group 4 reached the archive that way.
+/// R22: whether a text leaves an inline formula open, a line with an odd number of unescaped `$`
+/// once its `$$` display blocks and its code are set aside. A writer that builds a Card in a
+/// PowerShell double-quoted string loses `$A_I` (an unset variable) and leaves `当且仅当 <A_O$`: on
+/// grossman2002integration trial 8 two titles of group 4 reached the archive that way. The count
+/// is per line because two open table rows add up to an even body.
 pub(crate) fn open_math(text: &str) -> bool {
-let probe = FENCED.replace_all(text, "");
-let probe = DISPLAY_MATH.replace_all(&probe, "");
-let probe = CODE.replace_all(&probe, "");
-let mut count = 0usize;
-let mut escaped = false;
-for c in probe.chars() {
-    if c == '$' && !escaped {
-        count += 1;
-    }
-    escaped = c == '\\' && !escaped;
+    let probe = FENCED.replace_all(text, "");
+    let probe = DISPLAY_MATH.replace_all(&probe, "");
+    let probe = CODE.replace_all(&probe, "");
+    probe.lines().any(|line| {
+        let mut count = 0usize;
+        let mut escaped = false;
+        for c in line.chars() {
+            if c == '$' && !escaped {
+                count += 1;
+            }
+            escaped = c == '\\' && !escaped;
+        }
+        count % 2 == 1
+    })
 }
-count % 2 == 1
+
+/// R22: whether a text breaks a `$$` display block, so the GUI shows its TeX raw or KaTeX refuses
+/// it: a line inside the block that Markdown reads as a list item, a quote, a heading, a heading
+/// underline or a blank line ends the block; a block is never closed; or a block holds a single
+/// `$`. A formula that starts with a minus sign reached the archive this way on five Cards. It
+/// also reads two faults that make KaTeX refuse a formula: a `\tag` argument, which is text mode,
+/// that is not plain text outside its own `$…$` pair; and a backspace or form feed, which a JSON
+/// escape leaves when it eats the backslash of `\bar` or `\frac`.
+pub(crate) fn broken_display(text: &str) -> bool {
+    let probe = FENCED.replace_all(text, "");
+    let probe = CODE.replace_all(&probe, "");
+    if probe.contains(['\u{8}', '\u{c}']) {
+        return true;
+    }
+    let tag_text = |caps: &Captures| INLINE_MATH_PAIR.replace_all(&caps[1], "").into_owned();
+    if DISPLAY_TAG.captures_iter(&probe).any(|caps| tag_text(&caps).contains(['^', '_', '$', '{', '}'])) {
+        return true;
+    }
+    // A placeholder, not nothing: a tag on its own line must not leave a blank line.
+    let probe = DISPLAY_TEXT_ARG.replace_all(&probe, "F");
+    let mut open = false;
+    for line in probe.lines() {
+        if open && DISPLAY_CUT.is_match(line) {
+            return true;
+        }
+        let mut chars = line.chars().peekable();
+        let mut escaped = false;
+        while let Some(c) = chars.next() {
+            if c == '$' && !escaped {
+                if chars.peek() == Some(&'$') {
+                    chars.next();
+                    open = !open;
+                } else if open {
+                    return true;
+                }
+            }
+            escaped = c == '\\' && !escaped;
+        }
+    }
+    open
 }
 
 /// The sentences of a line; formulas and Links split nothing.

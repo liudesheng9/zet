@@ -362,7 +362,7 @@ every rule they check.
 | R19 | A repeated Card title heading in authored body text | every authored body outside excluded regions | yes | `repeated Card title at body line N` |
 | R20 | Advisory: a local label that stands in for content — `式 (12)`, `命题 3.G.3`, `第 6 章`, `模型 1`, `本节`/`本章`, `§11.D`. The text left after the labels must carry at least `LOCAL_REFERENCE_CONTENT` (5) characters of content, so `式 (12) 的加成项来自需求弹性` passes and `式 (12) 有该项` does not. `第一福利定理` is a name, code/quotes/formulas are skipped, and a `来源` line may carry the locator (D126, D132–D134) | every title and authored prose sentence | yes (advice) | ``(advisory) local reference `<label>` names no content: <text>`` |
 | R21 | Advisory: a deictic phrase (`那里`, `那儿`, `那张卡`, `这张卡`, `该卡`, `该卡片`) with no `[[Link]]` in the same sentence. A Link in the sentence before does not name it (D127, D134) | every title and authored prose sentence | yes (advice) | ``(advisory) unnamed referent `<word>` with no named Link in its sentence: <text>`` |
-| R22 | An inline formula left open: an odd number of unescaped `$` in the title, or in the body once `$$` display blocks, fenced code and inline code are set aside (`open_math`). A writer that builds a Card in a PowerShell double-quoted string loses `$A_I` and leaves `<A_O$` | every title and authored body | yes | `the title leaves an inline formula open (an odd number of $): <title>` / `the body leaves an inline formula open …` |
+| R22 | A formula the GUI cannot typeset. Open: a line with an odd number of unescaped `$` in the title, or in the body once `$$` display blocks, fenced code and inline code are set aside (`open_math`, per line since rule version 7, because two open table rows add up to an even body). Broken: in the body, a `$$` block that a line inside cuts (a blank line, or a line that starts with `- `, `+ `, `* `, `>`, `# `, `1. `, or a run of `-` or `=`, which Markdown reads as another block, so the TeX shows raw), that never closes, or that holds a single `$`; a `\tag` argument that is not plain text outside its own `$…$` pair; a backspace or form feed left by a JSON escape that ate the backslash of `\bar` or `\frac` (`broken_display`). A `$…$` pair inside a text-mode argument (`\tag`, `\text`, `\mbox`, `\hbox`) is valid. A writer that builds a Card in a PowerShell double-quoted string loses `$A_I` and leaves `<A_O$` | every title and authored body | yes | `the title leaves an inline formula open (an odd number of $): <title>` / `the body leaves an inline formula open …` |
 | I1 | Advisory: a title of at most 6 characters with no claim verb (`CLAIM_VERB`) | `idea`, `anchor` | yes | `(advisory) the title states no claim: <title>` |
 | I2 | Prose size: over `max-idea-chars` is a split candidate, under `min-idea-chars` a merge candidate | `idea` | yes | `(N characters > 300) split candidate` |
 | I3 | A Link to the book's Literature Card or one of its anchors (`<key>/<n>`) | `idea`, `event` with `book` and `links` | yes | `no source line: no Link to [[key]] or one of its anchors` |
@@ -390,7 +390,7 @@ every rule they check.
 | T7 | Advisory: a retained legacy Term-link target is no head, and a Term-link label differs from the head's exact name. A new invalid target is the mandatory Link invariant, not this rule | any Card whose body holds a Term use | yes (T7 is the mandatory rule; these are its advisory subcases) | `the retained Term link target is no Term head`, `the Term link label differs from the term` |
 | T8 | The book audit of one Term list (`get_terms`): exactly one head per table row, every row has a head, every head has a row, a row has no fifth column, and the list body carries no HTML comment other than the generated Reverse marker | one Term list (graph) | no | `term_duplicate`, `term_row_without_card`, `term_card_without_row`, `extra_column`, `hidden_comment` |
 | T9 | A named Term Card holds at most `max_term_prose` measured prose units, and only when that limit is set: it defaults to 0, no bound, so by default T9 never fires. Formulas and tables do not count and a source locator is not prose. It replaces the Idea-size rule | a named Term Card | yes | `(1700 prose units > 1600) split the term into a head and continuation parts` |
-| T10 | A Term Card's title or body leaves an inline formula open: an odd number of unescaped `$` after `$$` blocks and code are set aside (the R22 predicate under its Term-facing rule id) | a Term Card | yes | `the body leaves an inline formula open …` / `the title leaves an inline formula open …` |
+| T10 | A Term Card's title or body leaves an inline formula open, or its body breaks a display formula (the R22 predicates under their Term-facing rule id) | a Term Card | yes | `the body leaves an inline formula open …` / `the title leaves an inline formula open …` |
 
 Rules R1, R8, R10, R11, and E3 exist in the design docs but zt-check does not check them.
 
@@ -446,6 +446,7 @@ Every diagnostic names a rule-specific `fault` and a `key` built from the full o
 | R20 | `local_reference` | `<label>\|<full text>` |
 | R21 | `unnamed_referent` | `<word>\|<full text>` |
 | R22 | `open_formula` | `title:<full title>` or `body:<full body>` |
+| R22 | `broken_display` | `body:<full body>` |
 | I1 | `no_claim_title` | the title |
 | I2 | `idea_size` | `<n> characters > <max>` or `<n> characters < <min>` |
 | I3 | `no_source` | the book key |
@@ -470,6 +471,7 @@ Every diagnostic names a rule-specific `fault` and a `key` built from the full o
 | T7 | `target_role` / `label_mismatch` | the target address, or `<label>\|<target>` |
 | T9 | `prose_size` | `prose:<n>/<limit>` |
 | T10 | `open_formula` | `title:<title>` or `body:<body>` |
+| T10 | `broken_display` | `body:<body>` |
 
 `policy::severity` and `policy::scope` (`ADVISORY_RULES`, `GRAPH_RULES`) give each rule its default severity and scope; the core asks them in `Faults::add`, and only I7's unknown-source subcase overrides the severity itself (`Faults::advise`). A new rule must add its catalog entry and its `Applicability` signature (see "Adding a rule").
 
@@ -789,6 +791,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **R16 does not report an empty 思路 or 解读**, although [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) lists "an empty section" as an R16 fault; only too many sentences are reported.
 
 ## Change history
+- `2026-11-06` — 0.20.0, rule version 7, at the owner's request: R22 and T10 count `$` per line and read `text::broken_display` (fault `broken_display`, same setting as `open_formula`). The fault came from `acemoglu2007equilibrium/2|a|a|f|1`: a formula that opened with `- ` read as a list, so the Card showed raw TeX while KaTeX alone accepted the formula. The live box was cleaned first: every Card passes, and all 224,406 formulas parse under the vendored KaTeX.
 - `2026-11-05` — 0.19.3: `literature_violation` reads `set_literature_type` like the other writers that name a Card.
 - `2026-11-03` — Tests and this doc caught up with two decisions of 2026-10-26. `tests/term_cards.rs::a_long_term_card_is_accepted_and_one_over_long_sentence_is_not` replaces a test that expected T9 at the default limit: a Term Card now has no prose bound, and R2 still refuses one over-long sentence. `tests/term_session.rs::accepted_write_warnings_stay_on_the_session_status_row` edits a Topic Card, because a Literature note's row turns R3 off (#184). This doc named a fixed 1,600-unit limit in three places.
 - `2026-11-03` — 0.19.2 (#249): `term_rows` (behind `term_table` and `term_rows_raw`) and `read_terms` keep each kept row's folded name in a `HashMap`, so a repeat finds the row it replaces in one step instead of folding every earlier name again. Rows, order and the replacement rule are unchanged; no rule or limit moved. The GUI parsed atkinson's 748-row Term list once per head on every new Snapshot (40 s, [GUI](gui.md)). Test: `a_large_term_table_parses_quickly_and_keeps_the_replacement_rule` (2,000 rows with late case-variant repeats, under 250 ms in a debug build; 527 ms before).
