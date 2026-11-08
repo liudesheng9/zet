@@ -13,6 +13,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 #[path = "support/zt_program.rs"]
 mod zt_program;
 use zt_program::zt_program;
+#[path = "support/cited_read.rs"]
+mod cited_read;
 
 struct Zt {
     _dir: tempfile::TempDir,
@@ -241,6 +243,7 @@ fn prepared(zt: &Zt, mcp: &mut Mcp, dir: &Path) -> PathBuf {
     );
     let s = staging.to_str().unwrap();
     assert_eq!(last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]))["rows"], json!(3));
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
     assert_eq!(last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]))["card"], json!("tiny2026/1|b"));
     staging
 }
@@ -436,7 +439,7 @@ fn apply_publishes_the_ready_prefix_in_row_order_and_fills_the_list_columns() {
 }
 
 /// Live backfill of acemoglu2025nobel (2026-10-31): the text writes \`Jaszi 1929\` for \`Jászi\`, cites a work by
-/// its authors' initials (\`AJR (2001, 2012)\`), and a \`Forthcoming\` entry got its authors from the normalize job.
+/// its authors' initials (\`AJR (2001, 2012)\`), and a \`Forthcoming\` entry has no year.
 const NOBEL: &str = "# 1 Introduction\n# 1 引言\nThe elites resisted, as Jaszi 1929 (p. 80) records.\nThis line names no work.\nThe 2SLS results are robust, as discussed at length in AJR (2001, 2012).\nThis line names no work either.\nSee Acemoglu and Robinson (forthcoming) for a framework.\nAs Salter (1966) showed, factor prices matter.\nThis example is drawn from Boycko *et al.* (1995: ch. 2).\nBoycko (1994) is another work.\n\n# References\n\nAcemoglu, Daron, Simon Johnson, and James A. Robinson. 2012. “The Colonial Origins of Comparative Development: An Empirical Investigation: Reply.” American Economic Review 102 (6): 3077–3110.\\\nAcemoglu, Daron, and James A. Robinson. Forthcoming. “Culture, Institutions and Social Equilibria: A Framework.” Journal of Economic Literature.\\\nJászi, Oscar. 1929. The Dissolution of the Habsburg Monarchy. University of Chicago Press.\\\nSalter W. E. G. 1966. Productivity and Technical Change. 2nd ed. Cambridge: Cambridge Univ. Press.\\\nBoyco, M., Shleifer, A., and Vishny, R. (1995). *Privatizing Russia*, Cambridge, Mass.: MIT Press.\\\n\n# Appendix\n";
 
 #[test]
@@ -449,9 +452,16 @@ fn the_precheck_reads_unaccented_names_initials_and_normalized_entries() {
     let staging = staging(dir.path(), "nobel2026", "Nobel", NOBEL, json!([{ "anchor": "nobel2026/1", "headings": ["1 引言"] }]));
     let s = staging.to_str().unwrap();
     let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
-    assert_eq!(line["unparsed"], json!(1), "{line}");
-    let answer = staging.join("cited").join("normalize").join("out").join("n01.json");
-    std::fs::write(&answer, json!([{ "row": 2, "authors": "Acemoglu, Daron, and James A. Robinson", "year": "", "title": "Culture, Institutions and Social Equilibria: A Framework", "venue": "Journal of Economic Literature" }]).to_string()).unwrap();
+    assert_eq!(line["rows"], json!(5), "{line}");
+    cited_read::answer_parts(&staging, &|text: &str| {
+        if text.contains("Forthcoming") {
+            return Some(("Acemoglu, Daron, and James A. Robinson".into(), String::new(), "Culture, Institutions and Social Equilibria: A Framework".into()));
+        }
+        if text.starts_with("Boyco") {
+            return Some(("Boyco, M., Shleifer, A., and Vishny, R.".into(), "1995".into(), "Privatizing Russia".into()));
+        }
+        cited_read::default_fields(text)
+    });
     last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
     last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     let draft = draft_path(&staging, "t001");
@@ -501,6 +511,7 @@ fn a_complete_publication_removes_cited_cards_beyond_the_rows() {
         .replace("Jones, K. (2001). Contracts and Control. Review of Tests, 2:3–4.\\\n", "");
     std::fs::write(staging.join("book.md"), source).unwrap();
     assert_eq!(last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]))["rows"], json!(1));
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
     last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
     last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s, "-PerJob", "2"]));
     let applied = last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]));
@@ -530,6 +541,7 @@ fn r6_leaves_the_quoted_reference_line_alone() {
     let staging = staging(dir.path(), "vat2026", "VAT", source, json!([{ "anchor": "vat2026/1", "headings": ["1 引言"] }]));
     let s = staging.to_str().unwrap();
     last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
     last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
     last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     let draft = draft_path(&staging, "t001");
@@ -561,6 +573,7 @@ fn r6_leaves_a_quoted_section_title_alone() {
     let staging = staging(dir.path(), "tax2026", "Tax", source, json!([{ "anchor": "tax2026/1", "headings": ["1 公司税的影响"] }]));
     let s = staging.to_str().unwrap();
     last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
     last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
     last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
     let draft = draft_path(&staging, "t001");
@@ -571,4 +584,43 @@ fn r6_leaves_a_quoted_section_title_alone() {
     assert!(text.trim_end().ends_with("faults: 0"), "the quoted section title is no R6 fault:\n{text}");
     std::fs::write(&draft, item("本书用它说明公司税落在资本上。").to_string()).unwrap();
     assert!(precheck(&zt, &staging, &draft).contains("row1 R6"), "the writer's own text still counts");
+}
+
+/// 2026-11-07: the agentic Cited list replaced the parser on every finished book. A new reading changes the
+/// rows; each live Cited Card whose work the new list still holds is read back and carried (no writer job),
+/// the old drafts move aside, and only a new work goes to a writer. The carried Card keeps its text.
+#[test]
+fn a_changed_list_carries_the_live_cards_of_the_works_it_keeps() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    let dir = tempfile::tempdir().unwrap();
+    let staging = prepared(&zt, &mut mcp, dir.path());
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    std::fs::write(draft_path(&staging, "t001"), json!([smith(), jones(), brown()]).to_string()).unwrap();
+    assert_eq!(last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]))["complete"], json!(true));
+
+    let source = std::fs::read_to_string(staging.join("book.md")).unwrap().replace("Smith, J. (1999).", "Adams, B. (1990). Early Work. Press.\\\nSmith, J. (1999).");
+    std::fs::write(staging.join("book.md"), source).unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
+    assert_eq!(last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]))["rows"], json!(4));
+    let plan = last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    assert_eq!(plan["carried"], json!(1), "{plan}");
+    assert!(staging.join("cited-cards").join("drafts-old-1").join("t001.json").is_file(), "the old drafts move aside");
+    let jobs = last_json(&zt.digest(&["cited-cards", "-Step", "jobs", "-Staging", s]));
+    let listed: Vec<&str> = jobs["jobs"].as_array().unwrap().iter().map(|j| j["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, ["t002"], "only the new work goes to a writer: {jobs}");
+    let mut adams = brown();
+    adams["row"] = json!(1);
+    std::fs::write(draft_path(&staging, "t002"), json!([adams]).to_string()).unwrap();
+    let applied = last_json(&zt.digest(&["cited-cards", "-Step", "apply", "-Staging", s, "-Apply"]));
+    assert_eq!(applied["complete"], json!(true), "{applied}");
+    let cited = mcp.call("get_cited", json!({ "at": "tiny2026" }));
+    assert_eq!(cited["coverage"], json!({ "rows": 4, "cards": 4, "missing": 0 }), "{cited}");
+    assert_eq!(cited["faults"], json!([]), "{cited}");
+    let second = mcp.call("get_card", json!({ "at": cited["cards"][1]["address"] }));
+    assert!(second["title"].as_str().unwrap().contains("谈判的作用"), "{second}");
+    assert!(second["body"].as_str().unwrap().contains("本书依赖它关于谈判的结论。"), "{second}");
 }

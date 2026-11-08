@@ -1,7 +1,8 @@
-//! The Cited list seam (#219): `zt-digest cited -Step plan|precheck|apply` over a real scratch
-//! archive and staged sources cut from four real books (Hansen 2021, Hart 1995, Ebrill 2001,
-//! Acemoglu 2007). The plan parses the reference list of the whole source, indexes the lines that
-//! cite each work, and writes no Card; apply writes the Cited list Card beside the Term list.
+//! The Cited list seam (#219): `zt-digest cited -Step plan|precheck|apply` over a real scratch archive.
+//! Since 2026-11-07 DeepSeek reads the reference material: the plan cuts it into parts and writes no Card,
+//! the precheck holds each entry to its source lines and every line to an entry, and apply removes
+//! repeated works, indexes the citing lines and writes the Cited list Card beside the Term list.
+//! `support/cited_read.rs` answers the parts in place of the reading jobs.
 //!
 //! The test needs a `zt` binary built from this repository (or on PATH): it starts its own service
 //! on a temporary archive. `ZT_TEST_ZT` overrides the binary.
@@ -14,6 +15,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 #[path = "support/zt_program.rs"]
 mod zt_program;
 use zt_program::zt_program;
+#[path = "support/cited_read.rs"]
+mod cited_read;
 
 struct Zt {
     _dir: tempfile::TempDir,
@@ -218,12 +221,12 @@ fn book(mcp: &mut Mcp, key: &str, title: &str) {
     );
 }
 
-fn plan_rows(staging: &Path) -> Vec<Value> {
-    let plan: Value = serde_json::from_str(
-        &std::fs::read_to_string(staging.join("cited").join("plan.json")).expect("cited plan"),
+fn merged_rows(staging: &Path) -> Vec<Value> {
+    let merged: Value = serde_json::from_str(
+        &std::fs::read_to_string(staging.join("cited").join("merged.json")).expect("cited merged rows"),
     )
-    .expect("plan JSON");
-    plan["rows"].as_array().expect("rows").clone()
+    .expect("merged JSON");
+    merged["rows"].as_array().expect("rows").clone()
 }
 
 fn row<'a>(rows: &'a [Value], id: &str) -> &'a Value {
@@ -234,182 +237,110 @@ fn lines_of(row: &Value) -> Vec<u64> {
     row["candidates"].as_array().unwrap().iter().map(|c| c["line"].as_u64().unwrap()).collect()
 }
 
+fn precheck(zt: &Zt, staging: &Path, answer: &Path) -> String {
+    let out = zt.digest(&["cited", "-Step", "precheck", "-Staging", staging.to_str().unwrap(), "-Draft", answer.to_str().unwrap()]);
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
 #[test]
-fn the_plan_parses_the_whole_hansen_reference_list_and_indexes_the_citing_lines() {
+fn the_plan_cuts_the_reference_material_into_reading_parts_and_writes_no_card() {
     let Some(program) = zt_program() else { return };
     let zt = Zt::new(program);
     let mut mcp = zt.mcp();
-    book(&mut mcp, "hansen2021demand", "The Demand for Executive Skills");
+    book(&mut mcp, "long2026", "Long Book");
     let before = mcp.revision();
+    let mut source = String::from("# 1 Introduction\n# 1 引言\nAs Author7 (1907) argues, things matter.\n\n# Bibliography\n\n# 参考文献\n\nWorks are cited by short title in the notes.\n\n");
+    for n in 1..=130 {
+        source.push_str(&format!("Author{n}, A., Title number {n} (London, {}).\\\n", 1900 + n % 100));
+        source.push_str(&format!("作者{n}，题名第 {n} 号（伦敦，{}）。\\\n", 1900 + n % 100));
+    }
+    source.push_str("\n# Index\n\nAbbasids, 12, 45\n");
     let dir = tempfile::tempdir().unwrap();
-    let staging = staging(
-        dir.path(),
-        "hansen2021demand",
-        "The Demand for Executive Skills",
-        &fixture("hansen.md"),
-        json!([
-            { "anchor": "hansen2021demand/1", "headings": ["1 引言"] },
-            { "anchor": "hansen2021demand/9", "headings": ["5 社交技能需求", "5.1 高管层社交技能需求的建模"] },
-        ]),
-    );
-    let out = zt.digest(&["cited", "-Step", "plan", "-Staging", staging.to_str().unwrap()]);
-    let line = last_json(&out);
+    let staging = staging(dir.path(), "long2026", "Long Book", &source, json!([{ "anchor": "long2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
     assert_eq!(line["ok"], json!(true), "{line}");
-    assert_eq!(line["rows"], json!(35), "{line}");
-    assert_eq!(line["unparsed"], Value::Null, "every Hansen entry splits: {line}");
+    assert_eq!(line["rows"], json!(131), "the note and 130 entries, no translation, no index: {line}");
+    assert_eq!(line["parts"], json!(3), "{line}");
+    assert_eq!(line["jobs"], json!(1), "{line}");
     assert_eq!(mcp.revision(), before, "the plan writes no Card");
-
-    let rows = plan_rows(&staging);
-    assert_eq!(rows.len(), 35);
-    assert_eq!(rows[0]["row"], json!(1));
-    assert_eq!(rows[0]["id"], json!("adams2018"));
-    assert_eq!(rows[0]["surname"], json!("Adams"));
-    assert_eq!(rows[0]["title"], json!("Director skill sets"));
-    let ids: std::collections::HashSet<_> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
-    assert_eq!(ids.len(), 35, "the reference ids are unique");
-    assert!(ids.contains("bandiera2015") && ids.contains("bandiera2020"));
-    assert!(ids.contains("custodio2013a") && ids.contains("custodio2013b"), "{ids:?}");
-
-    let deming = row(&rows, "deming2017");
-    assert_eq!(deming["year"], json!("2017"));
-    let lines = lines_of(deming);
-    for expected in [13, 14, 16, 46, 47, 48] {
-        assert!(lines.contains(&expected), "line {expected} cites Deming (2017): {lines:?}");
+    let jobs: Value = serde_json::from_str(&std::fs::read_to_string(line["file"].as_str().unwrap()).unwrap()).unwrap();
+    let job = &jobs[0];
+    assert_eq!(job["files"].as_array().unwrap().len(), 2, "{job}");
+    assert_eq!(job["then"].as_array().unwrap().len(), 2, "one conversation, one message a part: {job}");
+    for file in job["files"].as_array().unwrap().iter().chain(job["then"].as_array().unwrap().iter().flat_map(|t| t["files"].as_array().unwrap())) {
+        assert!(Path::new(file.as_str().unwrap()).is_file(), "{file}");
     }
-    let first = &deming["candidates"][0];
-    assert_eq!(first["heading"], json!("1 引言"));
-    assert_eq!(first["anchor"], json!("hansen2021demand/1"));
-    let later = deming["candidates"].as_array().unwrap().iter().find(|c| c["line"] == 46).unwrap();
-    assert_eq!(later["anchor"], json!("hansen2021demand/9"));
-    // Deming and Kahn (2018) is another work: the 2017 lines are not its candidates.
-    assert!(!lines_of(row(&rows, "deming2018")).contains(&46));
+    let first = std::fs::read_to_string(job["files"][1].as_str().unwrap()).unwrap();
+    assert!(first.contains("L9: Works are cited by short title in the notes."), "{first}");
+    assert!(first.contains("SELF-CHECK: zt-digest cited -Step precheck"), "{first}");
+    assert!(!first.contains("作者1，"), "the translation is no material:\n{first}");
+
+    // A job whose parts all pass is not listed again.
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
+    let again = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    assert_eq!(again["jobs"], json!(0), "{again}");
+    assert_eq!(again["settled"], json!(1), "{again}");
 }
 
+const SMALL: &str = "# 1 Introduction\n# 1 引言\nAs Smith (1999) argues, bargaining matters.\nAl-Azdi's chronicle (1967) is used here.\n\n# References\n\nSmith, J. (1999). Bargaining. Journal of Tests, 1:1–2.\\\n——(2001). More Bargaining. Journal of Tests, 3:1–2.\\\nal-Azdī: al-Azdī, Abū Zakarīyā, Ta’rīkh al-Mawṣil (Cairo, 1967). Fihrist: see al-Nadīm.\\\nSmith, J. (1999). Bargaining. Journal of Tests, 1:1–2.\\\n\n# Appendix\n";
+
 #[test]
-fn the_plan_reads_repeated_authors_comma_years_and_capital_surnames() {
-    let Some(program) = zt_program() else { return };
-    let zt = Zt::new(program);
-    let mut mcp = zt.mcp();
-    let dir = tempfile::tempdir().unwrap();
-    for (key, file) in [("hart1995firms", "hart.md"), ("ebrill2001modern", "ebrill.md"), ("acemoglu2007equilibrium", "acemoglu.md")] {
-        book(&mut mcp, key, key);
-        let staging = staging(dir.path(), key, key, &fixture(file), json!([{ "anchor": format!("{key}/1"), "headings": ["1 引言", "1. 引言"] }]));
-        let out = zt.digest(&["cited", "-Step", "plan", "-Staging", staging.to_str().unwrap()]);
-        assert_eq!(last_json(&out)["ok"], json!(true), "{key}: {}", String::from_utf8_lossy(&out.stderr));
-    }
-
-    let hart = plan_rows(&dir.path().join("hart1995firms"));
-    assert_eq!(hart.len(), 7);
-    assert!(hart[1]["entry"].as_str().unwrap().starts_with("Adler, B. E. (1994)."), "{}", hart[1]);
-    assert_eq!(hart[1]["id"], json!("adler1994"));
-    assert!(hart[4]["entry"].as_str().unwrap().starts_with("Aghion, P., and Bolton, P. (1992)."), "{}", hart[4]);
-    assert!(hart[5]["entry"].as_str().unwrap().starts_with("Aghion, P. and Tirole, J. (1994)."), "{}", hart[5]);
-    assert_eq!(hart[6]["id"], json!("aghion1995"));
-    assert!(lines_of(row(&hart, "aghion1992")).contains(&4));
-    assert!(lines_of(row(&hart, "aghion1987")).is_empty());
-
-    let ebrill = plan_rows(&dir.path().join("ebrill2001modern"));
-    assert_eq!(ebrill.len(), 7);
-    assert_eq!(ebrill[0]["id"], json!("abiorwerth1998"));
-    assert_eq!(ebrill[5]["id"], json!("atkinson1980"));
-    assert_eq!(ebrill[5]["title"], json!("Lectures on Public Economics"));
-    assert!(ebrill[5]["entry"].as_str().unwrap().starts_with("Atkinson, Anthony B., and Joseph E. Stiglitz, 1980, Lectures"), "{}", ebrill[5]);
-
-    let ecta = plan_rows(&dir.path().join("acemoglu2007equilibrium"));
-    assert_eq!(ecta.len(), 8);
-    assert_eq!(ecta[0]["id"], json!("acemoglu1998"));
-    assert_eq!(ecta[0]["surname"], json!("Acemoglu"));
-    assert!(!ecta[0]["entry"].as_str().unwrap().contains("[1374"), "page markers are cut: {}", ecta[0]);
-    assert_eq!(ecta[2]["id"], json!("acemoglu2003a"));
-    assert_eq!(ecta[3]["id"], json!("acemoglu2003b"));
-    assert_eq!(ecta[7]["id"], json!("aghion1998"));
-    assert_eq!(lines_of(&ecta[0]), vec![3, 4], "the English line and its translation");
-}
-
-/// Live run of the parser over the seven live books (2026-10-31): the Nobel lecture, the JPE paper and Becker et al.
-/// use the Chicago style (`Surname, First. 2000. “Title.”`), Hart wraps a long entry onto a line that starts in
-/// capitals, and Hart repeats its whole list in Chinese translation under the same heading.
-#[test]
-fn the_plan_reads_chicago_years_wrapped_entries_and_skips_a_translated_list() {
-    let Some(program) = zt_program() else { return };
-    let zt = Zt::new(program);
-    let mut mcp = zt.mcp();
-    book(&mut mcp, "chicago2026", "Chicago");
-    let dir = tempfile::tempdir().unwrap();
-    let staging = staging(dir.path(), "chicago2026", "Chicago", &fixture("chicago.md"), json!([{ "anchor": "chicago2026/1", "headings": ["1 引言"] }]));
-    let out = zt.digest(&["cited", "-Step", "plan", "-Staging", staging.to_str().unwrap()]);
-    let line = last_json(&out);
-    assert_eq!(line["rows"], json!(8), "{line}");
-    assert_eq!(line["unparsed"], Value::Null, "every entry splits: {line}");
-    let rows = plan_rows(&staging);
-    let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["abernathy2000", "acemoglu2003a", "acemoglu2003b", "acemoglu2002", "acemoglu2008", "arkolakis2012", "aumann1974", "aumann1994"], "{rows:#?}");
-    assert_eq!(rows[0]["title"], json!("The Dynamics of Global Dominance: European Overseas Empires, 1415–1980"));
-    assert!(rows[3]["entry"].as_str().unwrap().starts_with("Acemoglu, Daron. 2002. “Directed Technical Change.”"), "{}", rows[3]);
-    assert_eq!(rows[3]["title"], json!("Directed Technical Change"));
-    assert_eq!(rows[5]["surname"], json!("Arkolakis"));
-    assert!(rows[7]["entry"].as_str().unwrap().starts_with("Aumann, Robert J., Gertner, R., and Scharfstein, D. (1994)."), "{}", rows[7]);
-    assert_eq!(rows[7]["title"], json!("Anatomy of Financial Distress: An Examination of Junk-Bond Issuers"), "the wrapped line joins its entry");
-    assert!(rows.iter().all(|r| !r["raw"].as_str().unwrap().contains("斯坦福")), "the translated list is no entry");
-}
-
-/// Pilot 2026-10-31: an adopted staging names the staged Chinese-only `book.zh.md` as its source, which holds
-/// no English reference list. `-Source` names the whole bilingual file; the plan freezes it, and the Cited
-/// Card jobs read that file, never the manifest's.
-#[test]
-fn an_explicit_source_replaces_a_manifest_source_without_a_reference_list() {
+fn the_precheck_holds_each_entry_to_its_lines_and_every_line_to_an_entry() {
     let Some(program) = zt_program() else { return };
     let zt = Zt::new(program);
     let mut mcp = zt.mcp();
     book(&mut mcp, "small2026", "Small Book");
     let dir = tempfile::tempdir().unwrap();
-    let staging = staging(dir.path(), "small2026", "Small Book", "# 1 引言\n正如 Smith（1999）所说，谈判很重要。\n", json!([{ "anchor": "small2026/1", "headings": ["1 引言"] }]));
+    let staging = staging(dir.path(), "small2026", "Small Book", SMALL, json!([{ "anchor": "small2026/1", "headings": ["1 引言"] }]));
     let s = staging.to_str().unwrap();
     let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
-    assert_eq!(line["rows"], json!(0), "the Chinese-only source has no list: {line}");
+    assert_eq!(line["rows"], json!(4), "{line}");
+    let answer = staging.join("cited").join("read").join("out").join("r01-1.json");
+    let smith = json!({ "lines": [8], "entry": "Smith, J. (1999). Bargaining. Journal of Tests, 1:1–2.", "authors": "Smith, J.", "year": "1999", "title": "Bargaining", "venue": "Journal of Tests" });
+    let dash = json!({ "lines": [9], "entry": "——(2001). More Bargaining. Journal of Tests, 3:1–2.", "authors": "Smith, J.", "year": "2001", "title": "More Bargaining", "venue": "Journal of Tests" });
+    // One OCR line holds an entry and a cross-reference: the entry is cut out of it, the line counts as covered.
+    let azdi = json!({ "lines": [10], "entry": "al-Azdī: al-Azdī, Abū Zakarīyā, Ta’rīkh al-Mawṣil (Cairo, 1967).", "authors": "al-Azdī, Abū Zakarīyā", "year": "1967", "title": "Ta'rīkh al-Mawṣil", "venue": "Cairo" });
+    let again = json!({ "lines": [11], "entry": "Smith, J. (1999). Bargaining. Journal of Tests, 1:1–2.", "authors": "Smith, J.", "year": "1999", "title": "Bargaining", "venue": "Journal of Tests" });
+    let write = |entries: Value, skip: Value| std::fs::write(&answer, json!({ "entries": entries, "skip": skip }).to_string()).unwrap();
 
-    let whole = dir.path().join("whole.md");
-    std::fs::write(&whole, SMALL).unwrap();
-    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s, "-Source", whole.to_str().unwrap()]));
-    assert_eq!(line["rows"], json!(2), "{line}");
-    let plan: Value = serde_json::from_str(&std::fs::read_to_string(staging.join("cited").join("plan.json")).unwrap()).unwrap();
-    assert_eq!(plan["source"], json!(whole.to_string_lossy()));
-    assert_eq!(plan["rows"][0]["candidates"][0]["line"], json!(3), "the lines are the whole file's");
+    write(json!([smith, dash, azdi, again]), json!([]));
+    let text = precheck(&zt, &staging, &answer);
+    assert!(text.trim_end().ends_with("faults: 0"), "{text}");
 
-    std::fs::write(staging.join("cited").join("normalize").join("out").join("n01.json"), json!([{ "row": 2, "authors": "Jones, K.", "year": "", "title": "Unpublished notes on contracts", "venue": "" }]).to_string()).unwrap();
-    assert_eq!(last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]))["rows"], json!(2));
-    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
-    let job = std::fs::read_to_string(staging.join("cited-cards").join("jobs").join("t001.md")).unwrap();
-    assert!(job.contains(&whole.to_string_lossy().to_string()), "the writer reads the frozen whole source:\n{job}");
+    let mut wrong = azdi.clone();
+    wrong["entry"] = json!("al-Azdi: al-Azdi, Abu Zakariya, Tarikh al-Mawsil (Cairo, 1967).");
+    write(json!([smith, dash, wrong, again]), json!([]));
+    assert!(precheck(&zt, &staging, &answer).contains("entry3 R2"), "an entry not copied letter by letter");
+    let mut wrong = smith.clone();
+    wrong["authors"] = json!("Jones, K.");
+    write(json!([wrong, dash, azdi, again]), json!([]));
+    assert!(precheck(&zt, &staging, &answer).contains("entry1 R3"));
+    let mut wrong = dash.clone();
+    wrong["authors"] = json!("");
+    write(json!([smith, wrong, azdi, again]), json!([]));
+    assert!(precheck(&zt, &staging, &answer).contains("entry2 R3"), "a dash entry names the authors it repeats");
+    let mut wrong = smith.clone();
+    wrong["year"] = json!("");
+    write(json!([wrong, dash, azdi, again]), json!([]));
+    assert!(precheck(&zt, &staging, &answer).contains("entry1 R4"));
+    let mut wrong = smith.clone();
+    wrong["title"] = json!("Haggling");
+    write(json!([wrong, dash, azdi, again]), json!([]));
+    assert!(precheck(&zt, &staging, &answer).contains("entry1 R5"));
+    write(json!([smith, dash, azdi]), json!([]));
+    let text = precheck(&zt, &staging, &answer);
+    assert!(text.contains("L11 R6") && text.contains("Smith, J. (1999)"), "an uncovered line is shown with its text:\n{text}");
+    write(json!([smith, dash, azdi]), json!([11]));
+    assert!(precheck(&zt, &staging, &answer).trim_end().ends_with("faults: 0"));
+    let mut wrong = smith.clone();
+    wrong["lines"] = json!([3]);
+    write(json!([wrong, dash, azdi, again]), json!([]));
+    assert!(precheck(&zt, &staging, &answer).contains("entry1 R1"), "a line outside the job");
 }
 
-/// Live backfill of grossman2002integration (2026-10-31): the QJE list puts the year after the volume
-/// (`Coles, Melvin G., and Eric Smith, “Title,” Economica, LXIII (1996), 589–597.`), and the source repeats the
-/// list in Chinese under the same heading with Latin author names (`Coles、Melvin G. 和 Eric Smith，“…”`).
 #[test]
-fn the_plan_reads_qje_entries_and_leaves_out_their_translation() {
-    let Some(program) = zt_program() else { return };
-    let zt = Zt::new(program);
-    let mut mcp = zt.mcp();
-    book(&mut mcp, "grossman2026", "Grossman");
-    let dir = tempfile::tempdir().unwrap();
-    let staging = staging(dir.path(), "grossman2026", "Grossman", &fixture("grossman.md"), json!([{ "anchor": "grossman2026/1", "headings": ["I. 引言"] }]));
-    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", staging.to_str().unwrap()]));
-    assert_eq!(line["rows"], json!(6), "the six English entries, not their seven translations: {line}");
-    let rows = plan_rows(&staging);
-    assert!(rows.iter().all(|r| !r["raw"].as_str().unwrap().contains('，')), "{rows:#?}");
-    assert_eq!(rows[0]["surname"], json!("Abraham"));
-    assert_eq!(rows[0]["authors"], json!("Abraham, Katharine G., and Susan K. Taylor"));
-    assert_eq!(rows[0]["title"], json!("Firm's Use of Outside Contractors: Theory and Evidence"));
-    assert_eq!(rows[0]["year"], json!("1996"));
-    assert_eq!(rows[2]["id"], json!("coles1996"));
-    assert_eq!(rows[2]["title"], json!("Cross-Section Estimation of the Matching Function: Evidence from England and Wales"));
-}
-
-const SMALL: &str = "# 1 Introduction\n# 1 引言\nAs Smith (1999) argues, bargaining matters.\n\n# References\n\nSmith, J. (1999). Bargaining. Journal of Tests, 1:1–2.\\\nJones, K. Unpublished notes on contracts.\\\n\n# Appendix\n";
-
-#[test]
-fn an_entry_without_a_year_goes_to_a_checked_normalize_job_and_apply_writes_the_list_once() {
+fn apply_waits_for_every_part_then_removes_repeated_works_and_writes_the_list_once() {
     let Some(program) = zt_program() else { return };
     let zt = Zt::new(program);
     let mut mcp = zt.mcp();
@@ -422,40 +353,118 @@ fn an_entry_without_a_year_goes_to_a_checked_normalize_job_and_apply_writes_the_
     let dir = tempfile::tempdir().unwrap();
     let staging = staging(dir.path(), "small2026", "Small Book", SMALL, json!([{ "anchor": "small2026/1", "headings": ["1 引言"] }]));
     let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    let refused = zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]);
+    assert!(!refused.status.success(), "apply refuses while a part has no answer");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("r01-1"), "{}", String::from_utf8_lossy(&refused.stderr));
 
-    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
-    assert_eq!(line["rows"], json!(2), "{line}");
-    assert_eq!(line["unparsed"], json!(1), "{line}");
-    assert_eq!(line["jobs"], json!(1), "{line}");
-    let jobs: Value = serde_json::from_str(&std::fs::read_to_string(line["file"].as_str().unwrap()).unwrap()).unwrap();
-    assert_eq!(jobs.as_array().unwrap().len(), 1);
-    assert!(jobs[0]["files"].as_array().unwrap().iter().all(|f| Path::new(f.as_str().unwrap()).is_file()), "{jobs}");
-
-    // The normalize answer is accepted only when its surname and year stand in the raw entry.
-    let answer = staging.join("cited").join("normalize").join("out").join("n01.json");
-    std::fs::create_dir_all(answer.parent().unwrap()).unwrap();
-    std::fs::write(&answer, json!([{ "row": 2, "authors": "Brown, K.", "year": "", "title": "Unpublished notes on contracts", "venue": "" }]).to_string()).unwrap();
-    let check = zt.digest(&["cited", "-Step", "precheck", "-Staging", s, "-Draft", answer.to_str().unwrap()]);
-    let text = String::from_utf8_lossy(&check.stdout).to_string();
-    assert!(text.trim_end().ends_with("faults: 1"), "{text}");
-    std::fs::write(&answer, json!([{ "row": 2, "authors": "Jones, K.", "year": "", "title": "Unpublished notes on contracts", "venue": "" }]).to_string()).unwrap();
-    let check = zt.digest(&["cited", "-Step", "precheck", "-Staging", s, "-Draft", answer.to_str().unwrap()]);
-    assert!(String::from_utf8_lossy(&check.stdout).trim_end().ends_with("faults: 0"));
-
+    let answer = staging.join("cited").join("read").join("out").join("r01-1.json");
+    std::fs::write(&answer, json!({ "entries": [
+        { "lines": [8], "entry": "Smith, J. (1999). Bargaining. Journal of Tests, 1:1–2.", "authors": "Smith, J.", "year": "1999", "title": "Bargaining", "venue": "" },
+        { "lines": [9], "entry": "——(2001). More Bargaining. Journal of Tests, 3:1–2.", "authors": "Smith, J.", "year": "2001", "title": "More Bargaining", "venue": "" },
+        { "lines": [10], "entry": "al-Azdī: al-Azdī, Abū Zakarīyā, Ta’rīkh al-Mawṣil (Cairo, 1967).", "authors": "al-Azdī, Abū Zakarīyā", "year": "1967", "title": "Ta’rīkh al-Mawṣil", "venue": "" },
+        { "lines": [11], "entry": "Smith, J. (1999). Bargaining. Journal of Tests, 1:1–2.", "authors": "Smith, J.", "year": "1999", "title": "Bargaining", "venue": "" }
+    ], "skip": [] }).to_string()).unwrap();
     let applied = last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
     assert_eq!(applied["ok"], json!(true), "{applied}");
     assert_eq!(applied["card"], json!("small2026/1|b"), "{applied}");
-    assert_eq!(applied["rows"], json!(2));
+    assert_eq!(applied["rows"], json!(3), "{applied}");
+    assert_eq!(applied["repeated"], json!(1), "{applied}");
+    let rows = merged_rows(&staging);
+    assert_eq!(rows[1]["entry"], json!("Smith, J. (2001). More Bargaining. Journal of Tests, 3:1–2."), "the dash run names its authors");
+    assert_eq!(rows[1]["id"], json!("smith2001"));
+    assert_eq!(lines_of(row(&rows, "smith1999")), vec![3]);
+    assert_eq!(lines_of(row(&rows, "alazdi1967")), vec![4], "a transliterated name is found folded");
     let cited = mcp.call("get_cited", json!({ "at": "small2026" }));
     assert_eq!(cited["list"], json!("small2026/1|b"));
-    assert_eq!(cited["rows"][0]["year"], json!("1999"));
-    assert_eq!(cited["rows"][1]["entry"], json!("Jones, K. Unpublished notes on contracts."));
+    assert_eq!(cited["rows"].as_array().unwrap().len(), 3);
     let card = mcp.call("get_card", json!({ "at": "small2026/1|b" }));
     assert_eq!(card["type"], json!("cited"));
-    assert_eq!(card["title"], json!("参考文献：《Small Book》引用的 2 篇文献"));
+    assert_eq!(card["title"], json!("参考文献：《Small Book》引用的 3 篇文献"));
 
     let revision = mcp.revision();
     let again = last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
     assert_eq!(again["card"], json!("small2026/1|b"));
     assert_eq!(mcp.revision(), revision, "a second apply changes nothing");
+}
+
+#[test]
+fn the_material_leaves_out_a_translated_list_and_indexes_the_hansen_citing_lines() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    let dir = tempfile::tempdir().unwrap();
+    book(&mut mcp, "grossman2026", "Grossman");
+    let gross = staging(dir.path(), "grossman2026", "Grossman", &fixture("grossman.md"), json!([{ "anchor": "grossman2026/1", "headings": ["I. 引言"] }]));
+    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", gross.to_str().unwrap()]));
+    assert_eq!(line["rows"], json!(6), "the six English entries, not their seven translations: {line}");
+
+    book(&mut mcp, "hansen2021demand", "The Demand for Executive Skills");
+    let staging = staging(
+        dir.path(),
+        "hansen2021demand",
+        "The Demand for Executive Skills",
+        &fixture("hansen.md"),
+        json!([
+            { "anchor": "hansen2021demand/1", "headings": ["1 引言"] },
+            { "anchor": "hansen2021demand/9", "headings": ["5 社交技能需求", "5.1 高管层社交技能需求的建模"] },
+        ]),
+    );
+    let s = staging.to_str().unwrap();
+    assert_eq!(last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]))["rows"], json!(35));
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
+    let applied = last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    assert_eq!(applied["rows"], json!(35), "{applied}");
+    let rows = merged_rows(&staging);
+    let ids: std::collections::HashSet<_> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), 35, "the reference ids are unique");
+    assert!(ids.contains("custodio2013a") && ids.contains("custodio2013b"), "{ids:?}");
+    let deming = row(&rows, "deming2017");
+    let lines = lines_of(deming);
+    for expected in [13, 14, 16, 46, 47, 48] {
+        assert!(lines.contains(&expected), "line {expected} cites Deming (2017): {lines:?}");
+    }
+    assert_eq!(deming["candidates"][0]["anchor"], json!("hansen2021demand/1"));
+    assert!(!lines_of(row(&rows, "deming2018")).contains(&46), "Deming and Kahn (2018) is another work");
+}
+
+/// Pilot 2026-10-31: an adopted staging names the staged Chinese-only `book.zh.md` as its source, which holds
+/// no English reference list. `-Source` names the whole bilingual file; the plan freezes it, and the Cited
+/// Card jobs read that file, never the manifest's. 2026-11-07: `-Heading` adds headings, comma-separated.
+#[test]
+fn an_explicit_source_and_extra_headings_reach_the_frozen_plan() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "small2026", "Small Book");
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "small2026", "Small Book", "# 1 引言\n正如 Smith（1999）所说，谈判很重要。\n", json!([{ "anchor": "small2026/1", "headings": ["1 引言"] }]));
+    let s = staging.to_str().unwrap();
+    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    assert_eq!(line["rows"], json!(0), "the Chinese-only source has no list: {line}");
+
+    let whole = dir.path().join("whole.md");
+    std::fs::write(&whole, format!("{SMALL}\n# AUTHOR INDEX\n\nFull citations of the works listed here may be found on the pages indicated.\n\nBrown, L., A Listed Work, 12\n")).unwrap();
+    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s, "-Source", whole.to_str().unwrap()]));
+    assert_eq!(line["rows"], json!(4), "{line}");
+    let line = last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s, "-Source", whole.to_str().unwrap(), "-Heading", "Sources,Author Index"]));
+    assert_eq!(line["rows"], json!(6), "{line}");
+    let plan: Value = serde_json::from_str(&std::fs::read_to_string(staging.join("cited").join("plan.json")).unwrap()).unwrap();
+    assert_eq!(plan["source"], json!(whole.to_string_lossy()));
+    assert_eq!(plan["heading"], json!("Sources,Author Index"));
+    cited_read::answer_parts(&staging, &|text: &str| {
+        if text.starts_with("Brown") {
+            return Some(("Brown, L.".into(), String::new(), "A Listed Work".into()));
+        }
+        cited_read::default_fields(text).filter(|_| !text.starts_with("al-Azd") && !text.starts_with("——"))
+    });
+    let applied = last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    assert_eq!(applied["rows"], json!(2), "{applied}");
+    let rows = merged_rows(&staging);
+    assert_eq!(rows[0]["candidates"][0]["line"], json!(3), "the lines are the whole file's");
+    assert_eq!(rows[1]["year"], json!(""), "an author index has no years");
+
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let job = std::fs::read_to_string(staging.join("cited-cards").join("jobs").join("t001.md")).unwrap();
+    assert!(job.contains(&whole.to_string_lossy().to_string()), "the writer reads the frozen whole source:\n{job}");
 }

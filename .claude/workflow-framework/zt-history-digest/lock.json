@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-history-digest",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "scope": "project",
   "script": ".claude/workflows/zt-history-digest.js",
   "scriptRel": "workflows/zt-history-digest.js",
-  "sha256": "a3aef8b52df33d063f9d41db682cfe1676e5466ff3ca41b45c86b2714982d226",
-  "fingerprint": "1c91fe0704ff1a88",
-  "blueprintSha256": "a1d7491ff7be5d97fdbe4bdf009c4411e98ef3c173f401672f5d50419f280abe",
+  "sha256": "b138b3af2058897eb7554d0286a0fc652177ec9387c4ffc69d3181b49bf56f02",
+  "fingerprint": "8820349e46a079d5",
+  "blueprintSha256": "c9fdc2b88162ef9b64f48a3e191533d6905fa1125cca129fb32d296786f8d44a",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "13",
@@ -17,9 +17,9 @@
     "zt-bridge": "10",
     "zt-cards-book": "6",
     "zt-cards-layer": "8",
-    "zt-cited-cards": "5",
+    "zt-cited-cards": "6",
     "zt-digest-prepare": "24",
-    "zt-digest-report": "24",
+    "zt-digest-report": "25",
     "zt-dsh-cleanup": "13",
     "zt-dsh-source": "4",
     "zt-figure-explain": "1",
@@ -61,7 +61,7 @@
     },
     "zt-cards-book": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-book.js",
-      "sha256": "93966690b765704ad8eeb837eec13583d180ebbd97648cad0e1ee1cee7b639c2"
+      "sha256": "3f3ebf3b548f92a66fb5eb7d206043dbb17a910d5a9481e883c8a72ad8cf474c"
     },
     "zt-cards-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
@@ -69,7 +69,7 @@
     },
     "zt-cited-cards": {
       "file": "scripts/book-digest/workflow/modules/zt-cited-cards.js",
-      "sha256": "00ece9ff2669eefc9a99e48fcc915e9dbeca66532c4b9a7846d382a3c28dea89"
+      "sha256": "69b15706afd41cba3fe9b749487599c20ec6f9b553e8ec6baed6fdb7a74fd82a"
     },
     "zt-digest-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-prepare.js",
@@ -77,11 +77,11 @@
     },
     "zt-digest-report": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
-      "sha256": "19008d3bb32177be63e9fc6c6d4e96a57042885c681bfaa0be8fad6407049050"
+      "sha256": "2240c8418f47b638c168bb404e92108ee69feea243266cd492119156a3e31c2e"
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
-      "sha256": "fc5bbbfdf831a718ce5a1e1d43982467a88fb8c4d1537a141693e33ee781a9c8"
+      "sha256": "d88f83d402b7e48f4d6a50c08af9c82157788c10b96e58bccc9cbca89d9cfbbf"
     },
     "zt-dsh-source": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-source.js",
@@ -89,7 +89,7 @@
     },
     "zt-figure-explain": {
       "file": "scripts/workflow-shared/modules/zt-figure-explain.js",
-      "sha256": "2463ede61ecbad46e19ddd0d67ec4f3f25cac6a20cff91e009f3cb5fb9f10c9e"
+      "sha256": "903be0158b18950f618e4e1835bea72ede1a29c63df8edb1fde377faeffc4cbb"
     },
     "zt-figures": {
       "file": "scripts/book-digest/workflow/modules/zt-figures.js",
@@ -97,7 +97,7 @@
     },
     "zt-term-link-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-term-link-lib.js",
-      "sha256": "d34b2bf007b20983bdd462af1920f6876e70ee0cc8421d558c42d7b439fdc179"
+      "sha256": "2ed51e3ad56fa73aee63bad8494abd139b947494779688e7e94461e808ea5fa9"
     },
     "zt-finalize": {
       "file": "scripts/book-digest/workflow/modules/zt-finalize.js",
@@ -135,15 +135,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-history-digest.blueprint.json",
-      "sha256": "8006c14bac29513e0e290eafa275b32b89c8b59f76db42a33f6d64b512c56443"
+      "sha256": "bcd6e06545d1b2d0ab563221ce74c0c7f5dbedc7d5c5f9eee71a0d63e19d8ced"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "013174060cd8349e97b2d164353f0da4c2d85e79040e89069c121a3cd78d46c4"
+      "sha256": "a4655a7c28d5db1eebef40c26ac7c0ab45ab7bcae9b20a79743a7cbf00ae0a3f"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-07T06:45:35.494Z",
+  "installedAt": "2026-11-07T23:18:20.071Z",
   "dryRun": {
     "agents": 58,
     "order": [

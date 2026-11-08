@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-history-digest",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "description": "Digest a Chinese-translated history book into ZET Cards: the ZT digest base alone, with the history prompt supplement: reading notes, Links, the Term layer, the Cited layer, Organize, Figures and the Bridge, and no Model, Event or Finding layer; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive history book or history-related academic work (Chinese bilingual Markdown, digested as Chinese only) into an agent Literature tree of reading notes joined by Links, with Term Cards and Cited Cards. It writes no Model, Event or Finding Card: use zt-econ-digest for a book with models or empirical results. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those from the Literature trees afterwards. Modes link, cards, figures, audit, bridge, term-cards, term-link, cited-cards, terms, finalize, complete and resume re-run stages on an existing digest.",
   "preflight": {
@@ -753,7 +753,7 @@
     {
       "id": "cited",
       "title": "Cited list",
-      "detail": "the Cited list (#221): parse the reference list of the whole source, index the lines that cite each work, normalize the entries the parser could not split in checked DeepSeek jobs, and write the Cited list Card beside the Term list under cited/book@1, completed only from the apply report; it runs before the digest writers, so the list takes <key>/1|b in a fresh run",
+      "detail": "the Cited list (#221; read by DeepSeek since 2026-11-07): cut the reference material of the whole source into parts, read each part in a self-checked DeepSeek job (one conversation, one message a part), remove repeated works, index the lines that cite each work, and write the Cited list Card beside the Term list under cited/book@1, completed only from the apply report; it runs before the digest writers, so the list takes <key>/1|b in a fresh run",
       "after": [
         "terms"
       ],
@@ -1530,6 +1530,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.11.38"
+    "version": "5.11.39"
   }
 }

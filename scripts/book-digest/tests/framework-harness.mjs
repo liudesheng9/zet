@@ -252,9 +252,9 @@ function runtime(kind, opts = {}) {
   // S30 (#172): a longer plan, so a later wave exists after a failed one.
   for (let n = 3; n <= (opts.termJobCount || 2); n++) termJobs.push({ id: `t${String(n).padStart(3, '0')}`, kind: 'concept', rows: [n], terms: [`术语${n}`] })
   const termNotReady = new Set(opts.termNotReady || [])
-  // #221: the Cited Card writer jobs and the one normalize job the Cited list plan lists.
+  // #221: the Cited Card writer jobs and the one reading job the Cited list plan lists (2026-11-07).
   const citedJobs = [{ id: 't001' }, { id: 't002' }]
-  const normalizeJobs = [{ id: 'n01' }]
+  const readJobs = [{ id: 'r01' }]
   const pool = { alive: 0, peak: 0, prompts: [] }
   const led = makeLedger()
   // #181: the prepared run's Citation key, which a resume must take from its prepare stage.
@@ -1868,7 +1868,7 @@ function runtime(kind, opts = {}) {
         if (opts.driveNested && opts.driveNested.test(label)) return { answer: JSON.stringify({ state: 'done', counts: { open: 0 } }), session_id: session, ...recorded }
         return { answer, session_id: session, ...recorded }
       }
-      // #221: the Cited stages' steps (cited-steps.ps1): the list, its normalize jobs, the list Card; the Cards.
+      // #221: the Cited stages' steps (cited-steps.ps1): the list, its reading jobs, the list Card; the Cards.
       if (/cited-steps\.ps1/.test(command)) {
         const step = (command.match(/-Step ([\w-]+)/) || [])[1] || 'list'
         citedCalls.push({ step, cmd: command, phase: callOpts.phase })
@@ -1878,9 +1878,9 @@ function runtime(kind, opts = {}) {
           if (opts.citedNoList) return reply({ ok: true }, 'drive-cited-list')
           if (/-SkipDone/.test(command) && led.find('cited/book@1') && led.find('cited/book@1').state === 'done') return reply({ ok: true, settled: true }, 'drive-cited-list')
           led.add('cited/book@1', 'cited', {})
-          return reply({ ok: true, rows: 3, unparsed: 1, jobs: normalizeJobs.length, file: 'D:\\x\\cited\\normalize\\jobs.json' }, 'drive-cited-list')
+          return reply({ ok: true, rows: 3, parts: 1, jobs: readJobs.length, file: 'D:\\x\\cited\\read\\jobs.json' }, 'drive-cited-list')
         }
-        if (step === 'list-finish') { led.finish('cited/book@1'); return reply({ ok: true, rows: 3, card: `${led.key}/1|b`, unit: 'done' }, 'drive-cited-list-finish') }
+        if (step === 'list-finish') { led.finish('cited/book@1'); return reply({ ok: true, rows: 3, card: `${led.key}/1|b`, repeated: 1, unit: 'done' }, 'drive-cited-list-finish') }
         if (step === 'start') {
           for (const job of citedJobs) { const u = led.add('citedcards/' + job.id + '@1', 'citedcards', { job }); u.state = 'claimed' }
           led.add('citedcards/book@1', 'citedcards', {}).state = 'registered'
@@ -1981,13 +1981,13 @@ function runtime(kind, opts = {}) {
     }
     // S24 (#167): a Term writer, reviewer or fixer manager runs entries [from, to] of the job file the
     // start step wrote.
-    // #221: a Cited content manager runs entries [from, to] of the normalize or the writer job list.
+    // #221: a Cited content manager runs entries [from, to] of the reading or the writer job list.
     if (text.startsWith('You are a DeepSeek subagent manager for ZET Cited Cards (')) {
       const kind = (text.match(/Cited Cards \(([a-z]+)/) || [])[1] || 'write'
       const range = text.match(/entries (\d+) through (\d+)/)
-      const all = kind === 'normalize' ? normalizeJobs : citedJobs
-      // v3: a manager runs every entry of its own chunk file (drive\jobs-NNN.json or normalize-NNN.json, eight each).
-      const chunk = text.match(/(?:jobs|normalize)-(\d{3})\.json/)
+      const all = kind === 'read' ? readJobs : citedJobs
+      // v3: a manager runs every entry of its own chunk file (drive\jobs-NNN.json or read-NNN.json, eight each).
+      const chunk = text.match(/(?:jobs|read)-(\d{3})\.json/)
       const listed = chunk ? all.slice((Number(chunk[1]) - 1) * 8, Number(chunk[1]) * 8) : range ? all.slice(Number(range[1]), Number(range[2]) + 1) : []
       citedManagers.push({ label, phase: callOpts.phase, kind, jobs: listed.map((job) => job.id), prompt: text })
       const failed = kind === 'write' && !!opts.citedWriterFails
@@ -2418,10 +2418,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(citedAgents.length > 0 && citedAgents.filter((c) => !/: workspace$/.test(c.label)).every((c) => c.model === 'haiku' && !c.agentType && /You are a DeepSeek subagent manager/.test(c.prompt || '')), `#221: every Cited stage agent is a Haiku DeepSeek manager (${citedAgents.length})`)
   check(citedAgents.every((c) => c.agentType !== 'zt-relay'), '#221: no Cited step runs as a Claude relay')
   const content = full.citedManagers.filter((m) => m.kind !== 'drive')
-  check(content.some((m) => m.kind === 'normalize' && m.jobs.join(',') === 'n01') && content.filter((m) => m.kind === 'write').flatMap((m) => m.jobs).join(',') === 't001,t002' && content.every((m) => m.jobs.length <= 8), `#221: the normalize job and both writer jobs run in content managers of at most eight (${JSON.stringify(content.map((m) => [m.kind, m.jobs]))})`)
+  check(content.some((m) => m.kind === 'read' && m.jobs.join(',') === 'r01' && /"then"/.test(m.prompt)) && content.filter((m) => m.kind === 'write').flatMap((m) => m.jobs).join(',') === 't001,t002' && content.every((m) => m.jobs.length <= 8), `#221: the reading job (one conversation, its "then" messages) and both writer jobs run in content managers of at most eight (${JSON.stringify(content.map((m) => [m.kind, m.jobs]))})`)
   check(content.filter((m) => m.kind === 'write').every((m) => /WHOLE source|whole source/.test(m.prompt) || /the book's source file/.test(m.prompt)), '#221: a writer manager may let its job read the book\'s whole source file')
   check(full.led.find('cited/book@1').state === 'done' && full.led.find('citedcards/book@1').state === 'done', '#221: the Cited list unit and the Cited Card book unit complete')
-  check(full.result.cited.status === 'done' && full.result.cited.list === 'Key/1|b' && full.result.cited.unparsed === 1 && full.result.cited_cards.status === 'done' && full.result.cited_cards.publication.complete === true, `#221: the report carries the Cited list and the complete Cited Cards (${JSON.stringify([full.result.cited, full.result.cited_cards])})`)
+  check(full.result.cited.status === 'done' && full.result.cited.list === 'Key/1|b' && full.result.cited.parts === 1 && full.result.cited.repeated === 1 && full.result.cited_cards.status === 'done' && full.result.cited_cards.publication.complete === true, `#221: the report carries the Cited list and the complete Cited Cards (${JSON.stringify([full.result.cited, full.result.cited_cards])})`)
   check(full.result.schedule.cited === 'done' && full.result.schedule.cited_cards === 'done', '#221: the schedule names both Cited statuses')
   const order = full.calls.map((c) => c.label || '')
   const firstDigest = order.findIndex((l) => /^digest/.test(l))
@@ -3253,11 +3253,11 @@ for (const kind of ['econ', 'math']) {
   check(!bookCalls.some((c) => c.step === 'organize-survey'), 'a failed link check starts no Organize')
 }
 {
-  // scheiner2022baghdad (2026-11-04): a resume reran the normalize jobs of a finished Cited list, and its list-finish
+  // scheiner2022baghdad (2026-11-04): a resume reran the reading (then normalize) jobs of a finished Cited list, and its list-finish
   // would have written the list again without a claim.
   const again = await run('econ', { out: 'D:\\x\\Key', mode: 'resume' }, { retained: [['terms', 'terms/book@1'], ['cited', 'cited/book@1'], ['digest', 'digest/g001@1'], ['digest', 'digest/g002@1']], retainedDone: ['cited'] })
   const labels = again.calls.map((c) => c.label || '')
-  check(labels.some((l) => /^cited: drive list$/.test(l)) && !labels.some((l) => /^cited: (normalize|drive list-finish)/.test(l)), 'resume: a finished Cited list runs no normalize job and no list-finish')
+  check(labels.some((l) => /^cited: drive list$/.test(l)) && !labels.some((l) => /^cited: (read|drive list-finish)/.test(l)), 'resume: a finished Cited list runs no reading job and no list-finish')
   const fresh = await run('econ', { ...base, until: 'digest' })
   check(fresh.calls.some((c) => /^cited: drive list-finish/.test(c.label || '')) && !fresh.citedCalls.some((c) => /-SkipDone/.test(c.cmd)), 'a fresh run writes the Cited list')
 }
@@ -3379,7 +3379,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '59' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '24' && modules['zt-cited-cards'] === '5' && modules['zt-workflow-lib'] === '13' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '15' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '59' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '6' && modules['zt-workflow-lib'] === '13' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '15' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

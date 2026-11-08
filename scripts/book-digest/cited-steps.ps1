@@ -6,9 +6,9 @@
   pwsh -NoProfile -File cited-steps.ps1 -Step list|list-finish|start|finish -Out <staging> [-PerJob 4] [-Heading <h>]
                                         [-Source <the whole bilingual source, when the manifest's source is not it>]
 
-  list         (-SkipDone: a finished list answers settled and plans nothing) plan the Cited list (parse the whole source's reference list, index the citing lines; it
-               registers cited/book@1 in a prepared run) -> cited\normalize\jobs.json for the entries the
-               parser could not split
+  list         (-SkipDone: a finished list answers settled and plans nothing) plan the Cited list (mark the reference material and cut it into parts; it registers
+               cited/book@1 in a prepared run) -> cited\read\jobs.json, one DeepSeek reading job per four
+               parts (one message a part); a job whose parts all pass is not listed again
   list-finish  claim cited/book@1, write the Cited list Card under the claim (-Apply -Token) and complete the
                unit from the apply report; without a unit (no ledger, or the unit is done) write it without one
   start        release a stopped run's Cited Card claims, plan the writer jobs, claim every ready job unit and
@@ -78,7 +78,7 @@ function Save-Chunks([string]$Prefix, [object[]]$Items) {
 switch ($Step) {
     'list' {
         # scheiner2022baghdad (2026-11-04): a resume goes on from where the run broke, so a finished list is left alone:
-        # no plan, no normalize job and no list-finish, which would write the list again without a claim.
+        # no plan, no reading job and no list-finish, which would write the list again without a claim.
         if ($SkipDone -and $HasLedger) {
             $listed = @((Run @('ledger', 'status', '-Out', $Out, '-Layer', 'cited')).json.units)
             if ($listed.Count -and -not @($listed | Where-Object { $_.state -ne 'done' }).Count) { Reply @{ ok = $true; settled = $true }; break }
@@ -90,9 +90,9 @@ switch ($Step) {
         if (-not $plan.json -or $plan.json.ok -ne $true) { Fail 'plan' $plan.tail; break }
         $chunks = 0
         if ("$($plan.json.file)" -and (Test-Path -LiteralPath "$($plan.json.file)")) {
-            $chunks = Save-Chunks 'normalize' @(Get-Content -LiteralPath "$($plan.json.file)" -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64)
+            $chunks = Save-Chunks 'read' @(Get-Content -LiteralPath "$($plan.json.file)" -Raw -Encoding utf8 | ConvertFrom-Json -Depth 64)
         }
-        Reply @{ ok = $true; rows = [int]$plan.json.rows; unparsed = [int]$plan.json.unparsed; jobs = [int]$plan.json.jobs; chunks = $chunks; file = "$($plan.json.file)" } @{ plan = $plan.json }
+        Reply @{ ok = $true; rows = [int]$plan.json.rows; parts = [int]$plan.json.parts; jobs = [int]$plan.json.jobs; chunks = $chunks; file = "$($plan.json.file)" } @{ plan = $plan.json }
     }
     'list-finish' {
         $unit = if ($HasLedger) { Claim-One 'cited' 'cited/book@*' 'cited list' } else { $null }
@@ -107,7 +107,7 @@ switch ($Step) {
             if (-not $a.json -or $a.json.ok -ne $true) { Fail 'apply' $a.tail; break }
             $state = 'unclaimed'
         }
-        Reply @{ ok = $true; rows = [int]$a.json.rows; card = "$($a.json.card)"; refused = [int]$a.json.refused; unit = $state } @{ apply = $a.json; unit = $unit }
+        Reply @{ ok = $true; rows = [int]$a.json.rows; card = "$($a.json.card)"; repeated = [int]$a.json.repeated; unit = $state } @{ apply = $a.json; unit = $unit }
     }
     'start' {
         if ($HasLedger) {

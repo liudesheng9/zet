@@ -8,7 +8,7 @@
 .DESCRIPTION
   A stand-in zt-digest answers the tool's commands from a small table, so the suite proves the step's own
   behaviour without an archive, a model or a provider:
-  - `list` plans the Cited list and names the normalize jobs;
+  - `list` plans the Cited list and names the reading jobs;
   - `list-finish` claims cited/book@1, applies under the claim and completes it, or applies without a unit;
   - `start` releases a stopped run's claims, plans, claims every ready job unit and lists the claimed jobs;
   - `finish` completes each claimed job from the readiness result, publishes the book and answers counts;
@@ -39,8 +39,8 @@ $flat = $Rest -join ' '
 switch -Regex ($flat) {
     '^cited -Step plan' {
         if ($env:CS_PLAN_FAIL) { Write-Output 'zt-digest cited: the staging manifest names no source'; exit 1 }
-        $nf = if ($env:CS_NORM) { $env:CS_NORM } else { 'D:\x\cited\normalize\jobs.json' }
-        Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 35; unparsed = 2; jobs = 1; file = $nf; plan = 'D:\x\cited\plan.json' })
+        $nf = if ($env:CS_NORM) { $env:CS_NORM } else { 'D:\x\cited\read\jobs.json' }
+        Write-Output (ConvertTo-Json -Compress @{ ok = $true; rows = 35; parts = 2; jobs = 1; file = $nf; plan = 'D:\x\cited\plan.json' })
         exit 0
     }
     '^cited -Step apply' {
@@ -137,16 +137,16 @@ $common = @('-Out', $out, '-Tool', $tool)
 # 1. Without a ledger: list, list-finish without a unit, start lists every job, finish publishes without a claim.
 $list = Step (@('-Step', 'list', '-Heading', 'Bibliography') + $common)
 Assert-Line $list 'list'
-Assert ($list.json.ok -eq $true -and $list.json.rows -eq 35 -and $list.json.unparsed -eq 2 -and $list.json.jobs -eq 1 -and $list.json.file) "list: rows, unparsed entries and the normalize job file ($($list.text))"
-# v3: the normalize jobs are cut into one chunk file per manager too.
-$norm = Join-Path $scratch 'normalize-jobs.json'
+Assert ($list.json.ok -eq $true -and $list.json.rows -eq 35 -and $list.json.parts -eq 2 -and $list.json.jobs -eq 1 -and $list.json.file) "list: material lines, parts and the reading job file ($($list.text))"
+# v3: the reading jobs are cut into one chunk file per manager too.
+$norm = Join-Path $scratch 'read-jobs.json'
 ConvertTo-Json -Depth 4 @(@{ id = 'n1' }, @{ id = 'n2' }, @{ id = 'n3' }) | Set-Content -LiteralPath $norm -Encoding utf8
 $env:CS_NORM = $norm
 $nl = Step (@('-Step', 'list', '-Chunk', '2') + $common)
 $env:CS_NORM = ''
-$n1 = @(Get-Content -Raw (Join-Path $out 'cited\drive\normalize-001.json') | ConvertFrom-Json)
-$n2 = @(Get-Content -Raw (Join-Path $out 'cited\drive\normalize-002.json') | ConvertFrom-Json)
-Assert ($nl.json.chunks -eq 2 -and ($n1.id -join ',') -eq 'n1,n2' -and ($n2.id -join ',') -eq 'n3') "list v3: the normalize jobs are cut into chunk files ($($nl.text))"
+$n1 = @(Get-Content -Raw (Join-Path $out 'cited\drive\read-001.json') | ConvertFrom-Json)
+$n2 = @(Get-Content -Raw (Join-Path $out 'cited\drive\read-002.json') | ConvertFrom-Json)
+Assert ($nl.json.chunks -eq 2 -and ($n1.id -join ',') -eq 'n1,n2' -and ($n2.id -join ',') -eq 'n3') "list v3: the reading jobs are cut into chunk files ($($nl.text))"
 Assert ((Get-Content -LiteralPath $calls -Raw) -match 'cited -Step plan -Staging .* -Heading Bibliography') 'list: the heading reaches the plan'
 $withSource = Step (@('-Step', 'list', '-Source', 'C:\books\whole.md') + $common)
 Assert ($withSource.json.ok -eq $true -and ((Get-Content -LiteralPath $calls -Raw) -match 'cited -Step plan -Staging .* -Source C:\\books\\whole\.md')) 'list: -Source reaches the plan'

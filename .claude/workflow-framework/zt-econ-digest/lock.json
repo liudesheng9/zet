@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-econ-digest",
-  "version": "6.11.38",
+  "version": "6.11.39",
   "scope": "project",
   "script": ".claude/workflows/zt-econ-digest.js",
   "scriptRel": "workflows/zt-econ-digest.js",
-  "sha256": "44c84c395bc59bbf9beed44c239301b84854afef0c302b6248e2c36f6cb9eedf",
-  "fingerprint": "2ef8ce433374518e",
-  "blueprintSha256": "b7b41a475eb7ecddfadd03e5c19f0b2be92bf0b3fa43c8bee9595acdc78f1042",
+  "sha256": "c4f55f81e6367088e3eeca0a3c7d076a439eccb6e8a6625e9e79eb72cd2306c0",
+  "fingerprint": "5f4d4ca8e9dd2c2f",
+  "blueprintSha256": "e6d59e6bd30ba20d52e0a31197e27790b2e0a8bef914d2c6c3732268f1a61d09",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "13",
@@ -17,9 +17,9 @@
     "zt-bridge": "10",
     "zt-cards-book": "6",
     "zt-cards-layer": "8",
-    "zt-cited-cards": "5",
+    "zt-cited-cards": "6",
     "zt-digest-prepare": "24",
-    "zt-digest-report": "24",
+    "zt-digest-report": "25",
     "zt-dsh-cleanup": "13",
     "zt-dsh-source": "4",
     "zt-event-layer": "9",
@@ -66,7 +66,7 @@
     },
     "zt-cards-book": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-book.js",
-      "sha256": "93966690b765704ad8eeb837eec13583d180ebbd97648cad0e1ee1cee7b639c2"
+      "sha256": "3f3ebf3b548f92a66fb5eb7d206043dbb17a910d5a9481e883c8a72ad8cf474c"
     },
     "zt-cards-layer": {
       "file": "scripts/book-digest/workflow/modules/zt-cards-layer.js",
@@ -74,7 +74,7 @@
     },
     "zt-cited-cards": {
       "file": "scripts/book-digest/workflow/modules/zt-cited-cards.js",
-      "sha256": "00ece9ff2669eefc9a99e48fcc915e9dbeca66532c4b9a7846d382a3c28dea89"
+      "sha256": "69b15706afd41cba3fe9b749487599c20ec6f9b553e8ec6baed6fdb7a74fd82a"
     },
     "zt-digest-prepare": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-prepare.js",
@@ -82,11 +82,11 @@
     },
     "zt-digest-report": {
       "file": "scripts/book-digest/workflow/modules/zt-digest-report.js",
-      "sha256": "19008d3bb32177be63e9fc6c6d4e96a57042885c681bfaa0be8fad6407049050"
+      "sha256": "2240c8418f47b638c168bb404e92108ee69feea243266cd492119156a3e31c2e"
     },
     "zt-dsh-cleanup": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-cleanup.js",
-      "sha256": "fc5bbbfdf831a718ce5a1e1d43982467a88fb8c4d1537a141693e33ee781a9c8"
+      "sha256": "d88f83d402b7e48f4d6a50c08af9c82157788c10b96e58bccc9cbca89d9cfbbf"
     },
     "zt-dsh-source": {
       "file": "scripts/book-digest/workflow/modules/zt-dsh-source.js",
@@ -106,7 +106,7 @@
     },
     "zt-figure-explain": {
       "file": "scripts/workflow-shared/modules/zt-figure-explain.js",
-      "sha256": "2463ede61ecbad46e19ddd0d67ec4f3f25cac6a20cff91e009f3cb5fb9f10c9e"
+      "sha256": "903be0158b18950f618e4e1835bea72ede1a29c63df8edb1fde377faeffc4cbb"
     },
     "zt-figures": {
       "file": "scripts/book-digest/workflow/modules/zt-figures.js",
@@ -114,7 +114,7 @@
     },
     "zt-term-link-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-term-link-lib.js",
-      "sha256": "d34b2bf007b20983bdd462af1920f6876e70ee0cc8421d558c42d7b439fdc179"
+      "sha256": "2ed51e3ad56fa73aee63bad8494abd139b947494779688e7e94461e808ea5fa9"
     },
     "zt-finalize": {
       "file": "scripts/book-digest/workflow/modules/zt-finalize.js",
@@ -160,15 +160,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-econ-digest.blueprint.json",
-      "sha256": "764adeed727e2bc7529424243a3db1a9ae41baf5f3314f0386d449fad2aa3155"
+      "sha256": "dfce0c7f41d22d656943c4464c9b20450c4d65183021dca81b0b0d3f28db83c5"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "013174060cd8349e97b2d164353f0da4c2d85e79040e89069c121a3cd78d46c4"
+      "sha256": "a4655a7c28d5db1eebef40c26ac7c0ab45ab7bcae9b20a79743a7cbf00ae0a3f"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-07T06:45:40.409Z",
+  "installedAt": "2026-11-07T23:18:15.350Z",
   "dryRun": {
     "agents": 70,
     "order": [

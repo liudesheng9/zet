@@ -27,7 +27,9 @@ use crate::util;
 use crate::zt::Zt;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use regex::Regex;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 const INSTRUCTION: &str = "dsh-cited-card-instructions.zh.md";
 const PROMPT: &str = "按以上说明，先在全书原文里查清每篇文献被怎样使用，再写出 JSON 文件并运行自查。最后只回复一行 JSON。";
@@ -54,6 +56,10 @@ struct Book {
     headings: Vec<(Option<String>, Option<String>)>,
     cited: Value,
     work: String,
+    /// The section anchors that exist in the box, when apply has checked them: a reorganized tree moves its
+    /// section Cards, and the manifest's anchors then name Cards that are gone (acemoglu2007equilibrium/10,
+    /// live backfill 2026-11-07). `None` keeps every anchor (plan and precheck write no Card).
+    live: std::cell::RefCell<Option<std::collections::HashSet<String>>>,
 }
 
 pub fn cli(argv: &[String]) -> Result<i32> {
@@ -113,11 +119,11 @@ fn read_book(staging: &str) -> Result<Book> {
     };
     let bytes = std::fs::read(&source_path).with_context(|| format!("failed to read the source {source_path}"))?;
     let source = String::from_utf8_lossy(&bytes).trim_start_matches('\u{FEFF}').to_string();
-    let lines = cited::reference_lines(&source, "");
+    let lines = cited::reference_lines(&source, &pstr(&cited, "heading"));
     let headings = cited::line_headings(&lines, &manifest["groups"]);
     let work = ps::join(staging, "cited-cards");
     std::fs::create_dir_all(ps::join(&work, "drafts"))?;
-    Ok(Book { key, title: pstr(&manifest, "book_title"), source_path, lines, headings, cited, work })
+    Ok(Book { key, title: pstr(&manifest, "book_title"), source_path, lines, headings, cited, work, live: std::cell::RefCell::new(None) })
 }
 
 fn plan_path(book: &Book) -> String {
@@ -181,7 +187,19 @@ fn plan_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
         bail!("the Cited list has no row");
     }
     let list_address = pstr(&list, "list");
-    let jobs = job_list(p, book, &rows, &list_address);
+    let terms = term_body(zt, &book.key);
+    // The same list keeps its jobs and drafts. A changed list (a new reading of the reference material) moves
+    // the old drafts aside, carries every live Cited Card whose work the new list still holds, and gives only
+    // the other rows to writers (2026-11-07: the agentic Cited list replaced the parser on every finished book).
+    let same = util::read_json(plan_path(book))
+        .ok()
+        .is_some_and(|old| pstr(&old, "list") == list_address && old["rows"].as_array().map(Vec::as_slice) == Some(rows.as_slice()));
+    let (jobs, carried) = if same {
+        let old = util::read_json(plan_path(book))?;
+        (job_list(p, book, &rows, &list_address), old["carried"].as_array().cloned().unwrap_or_default())
+    } else {
+        carry(p, book, zt, &list, &rows, terms.as_deref())?
+    };
     let plan_hash = crate::canon::hash_value(&json!({ "list": list_address, "rows": rows, "jobs": jobs }));
     let old = util::read_json(plan_path(book)).ok();
     let revision = match &old {
@@ -198,13 +216,13 @@ fn plan_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
         "plan_hash": plan_hash,
         "per_job": p.per_job,
         "jobs": jobs,
+        "carried": carried,
         "rows": rows,
     });
     util::write_atomic(plan_path(book), &ps::json_pretty(&plan))?;
 
     let doc = util::read_text(ps::join(&common::scripts_dir(), INSTRUCTION))?.replace("{{KEY}}", &book.key);
     util::write_atomic(ps::join(&book.work, INSTRUCTION), &doc)?;
-    let terms = term_body(zt, &book.key);
     std::fs::create_dir_all(ps::join(&book.work, "jobs"))?;
     for job in &jobs {
         let id = pstr(job, "id");
@@ -217,8 +235,96 @@ fn plan_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
         let prepared = crate::ledger::Prepared::read(&p.staging, zt)?;
         crate::ledger::cited_cards_register(&prepared, &plan)?;
     }
-    util::print_line(&util::compact(&json!({ "ok": true, "jobs": jobs.len(), "revision": revision, "rows": rows.len() })))?;
+    util::print_line(&util::compact(&json!({ "ok": true, "jobs": jobs.len(), "carried": carried.len(), "revision": revision, "rows": rows.len() })))?;
     Ok(0)
+}
+
+/// A published Cited Card read back into its draft item (the inverse of [`render`]): its entry and the item,
+/// or `None` when the body is not a rendered Cited Card.
+fn parse_card(title: &str, body: &str) -> Option<(String, Value)> {
+    let entry = body.lines().find_map(|l| l.strip_prefix("文献："))?.trim().to_string();
+    let relations: Vec<String> = body
+        .lines()
+        .find_map(|l| l.strip_prefix("关系："))
+        .map(|r| r.split('、').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let section = |name: &str| -> Option<String> {
+        let start = body.find(&format!("## {name}\n"))? + name.len() + 4;
+        let rest = &body[start..];
+        let end = ["\n## ", "\n本库中的这篇文献：", "\n来源：[["].iter().filter_map(|m| rest.find(m)).min().unwrap_or(rest.len());
+        Some(rest[..end].trim().to_string())
+    };
+    let why = section("为什么引用")?;
+    let role = section("在本书研究中的作用")?;
+    let relationship = section("本书与该文献的关系")?;
+    static LOCATION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^- .*?（第 (\d+) 行）：(.*?)(?: 另见 \[\[([^\]]+)\]\])?$").unwrap());
+    let locations: Vec<Value> = section("引用处")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| LOCATION.captures(l.trim()))
+        .map(|c| {
+            let mut l = json!({ "line": c[1].parse::<u64>().unwrap_or(0), "use": c[2].trim() });
+            if let Some(see) = c.get(3) {
+                l["see"] = json!(see.as_str());
+            }
+            l
+        })
+        .collect();
+    let short = title.split_once('：').map(|(_, s)| s.trim().to_string())?;
+    Some((entry, json!({ "short_title": short, "why": why, "role": role, "relationship": relationship, "relations": relations, "locations": locations })))
+}
+
+/// A changed list: move the old drafts aside, read the live Cited Cards back, and carry each one whose entry
+/// the new list holds (same letters and digits) and whose item passes the checks against its new row. Carried
+/// rows fill their own jobs, whose drafts are written now; the other rows go to writer jobs after them.
+/// Returns the jobs and the carried job ids.
+fn carry(p: &Params, book: &Book, zt: &mut Zt, list: &Value, rows: &[Value], terms: Option<&str>) -> Result<(Vec<Value>, Vec<Value>)> {
+    let drafts = ps::join(&book.work, "drafts");
+    if std::path::Path::new(&drafts).is_dir() && std::fs::read_dir(&drafts)?.next().is_some() {
+        let mut n = 1;
+        while std::path::Path::new(&ps::join(&book.work, &format!("drafts-old-{n}"))).exists() {
+            n += 1;
+        }
+        std::fs::rename(&drafts, ps::join(&book.work, &format!("drafts-old-{n}")))?;
+    }
+    std::fs::create_dir_all(&drafts)?;
+    let addresses: Vec<String> = list["cards"].as_array().into_iter().flatten().map(|c| pstr(c, "address")).collect();
+    let mut old: HashMap<String, Value> = HashMap::new();
+    for chunk in addresses.chunks(100) {
+        let reply = zt.call("get_cards", json!({ "addresses": chunk }))?;
+        for card in reply["cards"].as_array().into_iter().flatten() {
+            if let Some((entry, item)) = parse_card(&pstr(card, "title"), &pstr(card, "body")) {
+                old.entry(cited::fold(&entry)).or_insert(item);
+            }
+        }
+    }
+    let provisional = json!({ "rows": rows });
+    let mut carried_items: Vec<Value> = Vec::new();
+    let mut open: Vec<Value> = Vec::new();
+    for row in rows {
+        let mut item = old.remove(&cited::fold(&pstr(row, "entry"))).unwrap_or(Value::Null);
+        if item.is_object() {
+            item["row"] = row["row"].clone();
+            if item_faults(book, &provisional, &item, terms).iter().all(|(_, blocking)| !blocking) {
+                carried_items.push(item);
+                continue;
+            }
+        }
+        open.push(row.clone());
+    }
+    let mut jobs = Vec::new();
+    let mut carried = Vec::new();
+    for chunk in carried_items.chunks(p.per_job) {
+        let id = format!("t{:03}", jobs.len() + 1);
+        util::write_atomic(draft_path(book, &id), &ps::json_pretty(&json!(chunk)))?;
+        jobs.push(json!({ "id": id, "rows": chunk.iter().map(|i| i["row"].clone()).collect::<Vec<_>>() }));
+        carried.push(json!(id));
+    }
+    for chunk in open.chunks(p.per_job) {
+        let id = format!("t{:03}", jobs.len() + 1);
+        jobs.push(json!({ "id": id, "rows": chunk.iter().map(|r| r["row"].clone()).collect::<Vec<_>>() }));
+    }
+    Ok((jobs, carried))
 }
 
 /// The writer jobs of a plan. The same list at the same size keeps its jobs. At a new size a job with a
@@ -304,6 +410,8 @@ fn jobs_step(p: &Params, book: &Book) -> Result<i32> {
         .into_iter()
         .flatten()
         .filter(|job| wanted.is_empty() || wanted.contains(&pstr(job, "id")))
+        // A carried job holds the live Cards read back at plan time: nothing for a writer.
+        .filter(|job| !plan["carried"].as_array().is_some_and(|c| c.contains(&job["id"])))
         .map(|job| {
             let id = pstr(job, "id");
             json!({
@@ -339,6 +447,12 @@ fn locations(book: &Book, item: &Value) -> Vec<Location> {
         .filter_map(|l| {
             let line = l["line"].as_u64()? as usize;
             let (heading, anchor) = book.headings.get(line.checked_sub(1)?).cloned().unwrap_or((None, None));
+            // A carried Card keeps the anchor it already names (the box moved it with the section); a new one takes
+            // the manifest's anchor only while that Card exists.
+            let anchor = match l["see"].as_str().filter(|a| !a.is_empty()) {
+                Some(see) => Some(see.to_string()),
+                None => anchor.filter(|a| book.live.borrow().as_ref().is_none_or(|live| live.contains(a))),
+            };
             Some(Location { line, use_text: pstr(l, "use"), heading, anchor })
         })
         .collect();
@@ -687,6 +801,13 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     let terms = term_body(zt, &book.key);
     let (states, items) = readiness(book, &plan, terms.as_deref());
     let list = cited::existing_list(zt, &book.key)?.context("the book has no Cited list")?;
+    let anchors: Vec<String> = book.headings.iter().filter_map(|(_, a)| a.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let mut live = std::collections::HashSet::new();
+    for chunk in anchors.chunks(200) {
+        let reply = zt.call("get_cards", json!({ "addresses": chunk, "view": "text" }))?;
+        live.extend(reply["cards"].as_array().into_iter().flatten().map(|c| pstr(c, "address")));
+    }
+    *book.live.borrow_mut() = Some(live);
     let list_address = pstr(&list, "list");
     if list_address != pstr(&plan, "list") {
         bail!("the Cited list moved from {} to {list_address}; rerun -Step plan", pstr(&plan, "list"));
@@ -805,4 +926,25 @@ fn apply_step(p: &Params, book: &Book, zt: &mut Zt) -> Result<i32> {
     }
     util::print_line(&util::compact(&line))?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Live backfill 2026-11-07: a reorganized tree moved its section Cards, so the manifest's anchor
+    /// (`acemoglu2007equilibrium/10`) named no Card and the publication was refused. A carried Card keeps the
+    /// anchor its own body names; the parse reads it back with the rest of the item.
+    #[test]
+    fn a_published_card_reads_back_into_its_item_with_its_anchors() {
+        let body = "文献：Smith, J. (1999). Bargaining.\n引用处：1 引言（共 1 处）\n关系：依赖、对照\n\n## 为什么引用\n\n说明谈判。\n\n## 在本书研究中的作用\n\n给出起点。\n\n## 本书与该文献的关系\n\n依赖它。\n\n## 引用处\n\n- 1 引言（第 3 行）：本书用它说明谈判。 另见 [[tiny2026/7|a]]\n- 2 模型（第 9 行）：再次引用。\n\n来源：[[tiny2026]] 参考文献第 1 条";
+        let (entry, item) = parse_card("Smith（1999）：谈判的作用", body).expect("a rendered Card");
+        assert_eq!(entry, "Smith, J. (1999). Bargaining.");
+        assert_eq!(item["short_title"], json!("谈判的作用"));
+        assert_eq!(item["relations"], json!(["依赖", "对照"]));
+        assert_eq!(item["relationship"], json!("依赖它。"));
+        assert_eq!(item["locations"][0], json!({ "line": 3, "use": "本书用它说明谈判。", "see": "tiny2026/7|a" }));
+        assert_eq!(item["locations"][1], json!({ "line": 9, "use": "再次引用。" }));
+        assert!(parse_card("标题", "不是文献引用卡。").is_none());
+    }
 }

@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.11.38",
+  "version": "5.11.39",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -822,7 +822,7 @@
     {
       "id": "cited",
       "title": "Cited list",
-      "detail": "the Cited list (#221): parse the reference list of the whole source, index the lines that cite each work, normalize the entries the parser could not split in checked DeepSeek jobs, and write the Cited list Card beside the Term list under cited/book@1, completed only from the apply report; it runs before the digest writers, so the list takes <key>/1|b in a fresh run",
+      "detail": "the Cited list (#221; read by DeepSeek since 2026-11-07): cut the reference material of the whole source into parts, read each part in a self-checked DeepSeek job (one conversation, one message a part), remove repeated works, index the lines that cite each work, and write the Cited list Card beside the Term list under cited/book@1, completed only from the apply report; it runs before the digest writers, so the list takes <key>/1|b in a fresh run",
       "after": [
         "terms"
       ],
@@ -1924,6 +1924,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.11.38"
+    "version": "5.11.39"
   }
 }

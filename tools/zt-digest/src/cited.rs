@@ -1,25 +1,37 @@
 //! `zt-digest cited`: the Cited list of a digest (#219, docs/cited-literature-cards-proposal.md).
-//! The tool parses the reference list of the whole source, indexes the lines that cite each work,
-//! and writes the Cited list Card (type `cited`, a Side successor of `<key>/1`, beside the Term
-//! list). An entry the parser cannot split goes to one DeepSeek normalize job, whose rows are
-//! accepted only when the first author's surname and the year stand in the raw entry.
+//! DeepSeek reads the book's reference material and writes one entry per work; the tool checks each
+//! entry against the source lines it names, removes repeated works, indexes the lines that cite each
+//! work, and writes the Cited list Card (type `cited`).
 //!
-//!   zt-digest cited -Step plan|precheck|apply -Staging <folder> [-Heading <h>] [-Source <file>]
+//! Why reading jobs and no parser (2026-11-07, docs/cited-list-reading-proposal.md): a reference list
+//! that came through OCR and the bilingual pipeline has no fixed shape. A rule-based parser merged
+//! entries that do not start with `Surname, ` (`al-Azdī: …`, `‘Arīb: …`), took a humanities title for
+//! the authors (`Author, Title (Place, Year)`), carried that error down every `——` entry, kept the
+//! passages the OCR repeated (Atkinson 729 repeated rows, Morony 517), and kept preface prose as entries.
+//!
+//!   zt-digest cited -Step plan|precheck|apply -Staging <folder> [-Heading <h1,h2>] [-Source <file>]
 //!                   [-Draft <file>] [-Token <n>] [-Apply]
 //!
+//! -Heading adds headings (comma-separated) that open reference material besides References,
+//! Bibliography and 参考文献 (morony2005iraq: `AUTHOR INDEX`, whose works point to the full citations).
 //! -Source names the whole bilingual source when manifest.json's `source` is not it: an adopted staging
 //! names the staged Chinese-only `book.zh.md`, which holds no English reference list (pilot 2026-10-31).
-//! The plan freezes the file it read as `source`; `cited-cards` reads that file.
+//! The plan freezes the file it read as `source` and the headings as `heading`; `cited-cards` reads both.
 //!
-//!   plan      reads manifest.json's `source` (the whole bilingual file) and `groups` (the section
-//!             headings and their anchors), writes cited\plan.json (one row per entry: its id,
-//!             authors, year, title, venue, display entry, the Literature tree it matches in the
-//!             box, and the candidate lines that cite it) and, for the entries it could not split,
-//!             cited\normalize\jobs.json. Writes no Card. Prints {"ok","rows","unparsed","jobs","file"}.
-//!   precheck  checks one normalize answer (-Draft): one fault per line, then `faults: N`.
-//!   apply     merges the accepted normalize answers, then with -Apply creates or updates the Cited
-//!             list Card, keeping the `引用处`/`关系` cells of an unchanged row, and writes
-//!             cited\apply.json (the ledger's evidence). Prints {"ok","rows","card","refused"}.
+//!   plan      marks the reference material (the sections under the reference headings, without their
+//!             translation), cuts it into parts of about [`PART_LINES`] lines, and writes one reading job
+//!             per [`PARTS_PER_JOB`] parts (one conversation, one message per part) to cited\read\jobs.json.
+//!             A job whose parts all hold a passing answer is not listed again. Writes no Card. Prints
+//!             {"ok","rows" (material lines),"parts","jobs","file"}.
+//!   precheck  checks one part's answer (-Draft): every entry is copied from the lines it names, its
+//!             surname, year and title stand in it, and every line of the part is an entry's or skipped.
+//!             One fault per line, then `faults: N`.
+//!   apply     refuses while any part lacks a passing answer; otherwise orders the entries by their
+//!             lines, removes a work listed twice, indexes the citing lines, writes cited\merged.json (the
+//!             rows the Cited Cards read) and, with -Apply, creates or updates the Cited list Card,
+//!             keeping the `引用处`/`关系` cells of an unchanged row, and writes cited\apply.json (the
+//!             ledger's evidence). Prints {"ok","rows","card","repeated"}.
+
 
 use crate::args::Args;
 use crate::organize::common::{self, pstr};
@@ -32,21 +44,11 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-/// A year in parentheses: `(2017)`, `(2003a)`.
-static PAREN_YEAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\((1[5-9]\d\d|20\d\d)([a-z]?)\)").unwrap());
 /// A year in any form, for telling a reference section from an index: `(Princeton, 1980)`, `A.H. 1352`.
 static ANY_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[^\d])(1[0-9]\d\d|20\d\d)(?:[^\d]|$)").unwrap());
-/// A year between commas: `, 1998,` (the IMF style of Ebrill et al.).
-static COMMA_YEAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r",\s*(1[5-9]\d\d|20\d\d)([a-z]?)\s*[,.]").unwrap());
-/// A year between periods: `Daron. 1998. “Title.”` (the Chicago style of the Nobel lecture, the JPE and
-/// Becker et al.; live run of the parser over the seven live books, 2026-10-31).
-static PERIOD_YEAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\.\s+(1[5-9]\d\d|20\d\d)([a-z]?)\.(?:\s|$)").unwrap());
-/// The start of an entry: a capitalised name followed by a comma (`Jones, K.`, `Ab Iorwerth, Aled`).
-static AUTHOR_START: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\p{Lu}[\p{L}'’\-]*(?: \p{Lu}[\p{L}'’\-]*)*,\s").unwrap());
+/// A four-digit year an entry may hold (`1866`, `(1920–1)`, `A.H. 1352` holds none in range).
+static YEAR4: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[^\d])(1[5-9]\d\d|20\d\d)(?:[^\d]|$)").unwrap());
+
 /// The leading run of `——`, `____` or `---` that stands for the previous entry's authors.
 static DASHES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^((?:—{1,3}|_{2,}|-{3,})\s*)+").unwrap());
@@ -74,12 +76,7 @@ const REFERENCE_HEADINGS: &[&str] = &[
 const MAX_CANDIDATES: usize = 60;
 /// The most characters of one candidate line the plan keeps.
 const CANDIDATE_CHARS: usize = 240;
-/// The most entries one normalize job holds.
-const NORMALIZE_PER_JOB: usize = 60;
 
-pub const MODEL: &str = "deepseek-official/deepseek-flash";
-const NORMALIZE_INSTRUCTION: &str = "dsh-cited-normalize-instructions.zh.md";
-const NORMALIZE_PROMPT: &str = "按以上说明拆分这些参考文献条目，写出 JSON 文件。最后只回复一行 JSON。";
 
 struct Params {
     step: String,
@@ -142,7 +139,6 @@ pub struct Entry {
     pub title: String,
     pub venue: String,
     pub parsed: bool,
-    pub previous_authors: String,
 }
 
 /// The text of a heading line, without its `#` marks.
@@ -158,7 +154,8 @@ fn is_reference_heading(text: &str, custom: &str) -> bool {
         .trim_end_matches(['*', '\\', ':', '：'])
         .trim()
         .to_lowercase();
-    REFERENCE_HEADINGS.contains(&lower.as_str()) || (!custom.is_empty() && lower == custom.trim().to_lowercase())
+    REFERENCE_HEADINGS.contains(&lower.as_str())
+        || custom.split(',').map(|h| h.trim().to_lowercase()).any(|h| !h.is_empty() && h == lower)
 }
 
 /// Whether the section after a heading goes on with a reference list: at least half of its lines
@@ -204,39 +201,12 @@ fn clean(line: &str) -> String {
     PAGE_MARKERS.replace(&text, "").trim().to_string()
 }
 
-/// The year of an entry and the byte range of its match: the earliest of a parenthesised, a
-/// period-delimited and a comma-delimited year.
-fn year_of(text: &str) -> Option<(String, usize, usize)> {
-    [&*PAREN_YEAR, &*PERIOD_YEAR, &*COMMA_YEAR]
-        .iter()
-        .filter_map(|pattern| pattern.captures(text))
-        .min_by_key(|caps| caps.get(0).unwrap().start())
-        .map(|caps| {
-            let whole = caps.get(0).unwrap();
-            (format!("{}{}", &caps[1], &caps[2]), whole.start(), whole.end())
-        })
-}
-
 /// Whether a reference line is a translation of the list: more Han characters than Latin letters
 /// (Hart 1995 repeats its whole list in Chinese under the same heading).
 fn translated(line: &str) -> bool {
     let han = line.chars().filter(|c| HAN.is_match(&c.to_string())).count();
     let latin = line.chars().filter(char::is_ascii_alphabetic).count();
     han > latin
-}
-
-/// The first author of an author string: `Aghion, P., and Bolton, P.` → `Aghion, P.`.
-fn first_author(authors: &str) -> String {
-    let parts: Vec<&str> = authors.split(", ").collect();
-    match parts.as_slice() {
-        [one] => one.split(" and ").next().unwrap_or(one).trim().trim_end_matches(',').to_string(),
-        [surname, given, ..] if !given.starts_with("and ") && !given.starts_with("AND ") => {
-            let given = given.split(" and ").next().unwrap_or(given).split(" AND ").next().unwrap_or(given);
-            format!("{surname}, {}", given.trim().trim_end_matches(','))
-        }
-        [surname, ..] => surname.to_string(),
-        [] => String::new(),
-    }
 }
 
 /// The first author's surname, in the case a text cites it (`ACEMOGLU` → `Acemoglu`).
@@ -269,31 +239,6 @@ fn surname_of(authors: &str) -> String {
     } else {
         first
     }
-}
-
-/// The title and the venue after the year.
-fn title_and_venue(rest: &str) -> (String, String) {
-    let rest = rest.trim_start_matches([')', '.', ':', ',', ';', ' ']).trim();
-    for (open, close) in [('‘', '’'), ('“', '”'), ('"', '"')] {
-        if let Some(inner) = rest.strip_prefix(open) {
-            if let Some(end) = inner.find(close) {
-                let title = inner[..end].trim().trim_end_matches([',', '.']).to_string();
-                let venue = inner[end + close.len_utf8()..]
-                    .trim_start_matches(['.', ',', ';', ' '])
-                    .trim()
-                    .to_string();
-                return (title, venue);
-            }
-        }
-    }
-    let end = [rest.find(". "), rest.find(" (")]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(rest.len());
-    let title = rest[..end].trim().trim_end_matches('.').to_string();
-    let venue = rest[end..].trim_start_matches(['.', ' ']).trim().to_string();
-    (title, venue)
 }
 
 /// ASCII folding for a reference id: `Custódio` → `custodio`.
@@ -340,90 +285,6 @@ pub(crate) fn quotes_the_reference(message: &str, entry: &str) -> bool {
     message.split_once(": ").is_some_and(|(_, sentence)| entry.contains(sentence.trim()))
 }
 
-/// Split one cleaned entry. `previous` is the entry before it, whose authors a dash run repeats.
-fn split_entry(row: usize, raw: &str, previous: Option<&Entry>) -> Entry {
-    let mut text = clean(raw);
-    let mut previous_authors = String::new();
-    if let Some(found) = DASHES.find(&text) {
-        if let Some(prev) = previous.filter(|prev| !prev.authors.is_empty()) {
-            // One dash run repeats the previous authors (`—— (1994)`, `——, 1980`, `——. 2002`); a run of
-            // two or more (`—— ——`) repeats them all too. One run before `and X` repeats only the first
-            // author, and one run before another name (`—— Gertner, R.`) starts with the first author.
-            let runs = found.as_str().split_whitespace().count();
-            let rest = text[found.end()..].trim_start().to_string();
-            let joins = rest.starts_with("and ") || rest.starts_with("AND ") || rest.starts_with("& ");
-            let names = rest.chars().next().is_some_and(char::is_uppercase);
-            text = if runs == 1 && joins {
-                format!("{} {rest}", first_author(&prev.authors))
-            } else if runs == 1 && names {
-                format!("{}, {rest}", first_author(&prev.authors))
-            } else {
-                let gap = if rest.starts_with([',', '.', ':']) { "" } else { " " };
-                format!("{}{gap}{rest}", prev.authors)
-            };
-            previous_authors = prev.authors.clone();
-        }
-    }
-    let mut entry = Entry { row, raw: raw.trim().to_string(), entry: text.clone(), previous_authors, ..Entry::default() };
-    if let Some((year, start, end)) = year_of(&text) {
-        // The QJE style quotes the title before the year (`Coles, Melvin G., and Eric Smith, “Title,” Economica,
-        // LXIII (1996), 589–597.`): the authors end at the quote, and the title is the quoted text.
-        let quote = text[..start].find(['“', '"']);
-        let authors = match quote {
-            Some(at) => text[..at].trim().trim_end_matches([',', ' ']).trim().to_string(),
-            None => text[..start].trim().trim_end_matches([',', '(', ' ']).trim().to_string(),
-        };
-        if !authors.is_empty() {
-            let (title, venue) = match quote {
-                Some(at) => title_and_venue(&text[at..start]),
-                None => title_and_venue(&text[end..]),
-            };
-            entry.surname = surname_of(&authors);
-            entry.authors = authors;
-            entry.year = year;
-            entry.title = title;
-            entry.venue = venue;
-            entry.parsed = !entry.surname.is_empty() && !entry.title.is_empty();
-        }
-    }
-    entry
-}
-
-/// Every entry of the source's reference lists, in order. A line in translation is no entry. A line
-/// without a year that does not start like an entry (a dash run, or a name and a comma) continues
-/// the entry before it: Hart wraps a long entry onto a line that starts in capitals, after a line
-/// that ends with the same `\` as every entry.
-pub fn entries(source: &str, custom: &str) -> Vec<Entry> {
-    let lines = reference_lines(source, custom);
-    // A list that holds both Latin entries and entries with Chinese in them is the original followed by
-    // its translation (Grossman 2002 repeats its QJE list with Latin author names and Chinese titles): the
-    // lines with Chinese in them are no entries. A list that is all Chinese is the book's own.
-    let han = |line: &str| HAN.find_iter(line).count() >= 2;
-    let listed: Vec<&String> = lines.iter().filter(|(_, l, inside)| *inside && !l.trim().is_empty()).map(|(_, l, _)| l).collect();
-    let mixed = listed.iter().any(|l| han(l)) && listed.iter().any(|l| !han(l));
-    let mut raws: Vec<String> = Vec::new();
-    for (_, line, inside) in lines {
-        if !inside || line.trim().is_empty() || translated(&line) || (mixed && han(&line)) {
-            continue;
-        }
-        let text = clean(&line);
-        let starts = DASHES.is_match(&text) || AUTHOR_START.is_match(&text);
-        let continues = year_of(&text).is_none() && !starts && !raws.is_empty();
-        if continues {
-            let last = raws.last_mut().unwrap();
-            *last = format!("{} {}", last.trim_end().trim_end_matches('\\'), line.trim());
-        } else {
-            raws.push(line.trim().to_string());
-        }
-    }
-    let mut out: Vec<Entry> = Vec::new();
-    for (index, raw) in raws.iter().enumerate() {
-        let entry = split_entry(index + 1, raw, out.last());
-        out.push(entry);
-    }
-    out
-}
-
 /// The reference id of each entry: the folded surname and the year; entries that share it get
 /// `a`, `b`, … in order (an entry that names its own suffix keeps it). An unsplit entry is `refNNN`.
 pub fn ids(entries: &[Entry]) -> Vec<String> {
@@ -461,11 +322,13 @@ pub fn ids(entries: &[Entry]) -> Vec<String> {
         .collect()
 }
 
-/// The candidate lines of one work: every line outside the reference lists that names its
-/// surname and its year (with the year's own letter, when it has one).
+/// The candidate lines of one work: every line outside the reference lists that names its surname and its
+/// year (with the year's own letter, when it has one); a work without a year (an author index) needs its
+/// surname and the first long word of its title. `folded_lines` holds each line lower-cased and folded, computed once.
 fn candidates(
     lines: &[(usize, String, bool)],
     headings: &[(Option<String>, Option<String>)],
+    folded_lines: &[(String, String)],
     entry: &Entry,
 ) -> Vec<Value> {
     if !entry.parsed {
@@ -474,14 +337,16 @@ fn candidates(
     let surname = entry.surname.to_lowercase();
     let folded = fold(&entry.surname);
     let year = entry.year.clone();
+    let word = entry.title.split(|c: char| !c.is_alphanumeric()).map(fold).find(|w| w.len() >= 5);
     let mut found = Vec::new();
     for (index, (number, line, inside)) in lines.iter().enumerate() {
         if *inside || line.trim_start().starts_with('#') {
             continue;
         }
-        let lower = line.to_lowercase();
-        let names = lower.contains(&surname) || (!folded.is_empty() && fold(&lower).contains(&folded) && folded.len() > 3);
-        if !names || !cites_year(line, &year) {
+        let (lower, flat) = &folded_lines[index];
+        let names = lower.contains(&surname) || (folded.len() > 3 && flat.contains(&folded));
+        let dated = if year.is_empty() { word.as_ref().is_some_and(|w| flat.contains(w.as_str())) } else { cites_year(line, &year) };
+        if !names || !dated {
             continue;
         }
         let (heading, anchor) = &headings[index];
@@ -552,6 +417,94 @@ pub(crate) fn title_key(title: &str) -> String {
     fold(title)
 }
 
+/// About this many material lines make one part (one message of a reading job).
+const PART_LINES: usize = 60;
+/// A part closes early when its text passes this many characters.
+const PART_CHARS: usize = 12_000;
+/// The parts one reading job (one conversation) holds.
+const PARTS_PER_JOB: usize = 4;
+
+pub const MODEL: &str = "deepseek-official/deepseek-flash";
+const READ_INSTRUCTION: &str = "dsh-cited-read-instructions.zh.md";
+const READ_PROMPT: &str = "按以上说明读本段的参考文献，写出 JSON 文件并运行自查。最后只回复一行 JSON。";
+const NEXT_PROMPT: &str = "继续：按同一份说明读下一段，写出 JSON 文件并运行自查。最后只回复一行 JSON。";
+
+/// One line of the reference material: its source line number and its cleaned text.
+#[derive(Clone, Debug)]
+pub struct Material {
+    pub line: usize,
+    pub text: String,
+}
+
+/// The reference material of a source: every non-empty line of its reference sections, cleaned, without
+/// the lines in translation. A list that holds both Latin entries and entries with Chinese in them is the
+/// original followed by its translation (Grossman 2002, Hart 1995): its Chinese lines are left out. A list
+/// that is all Chinese is the book's own.
+pub fn material(source: &str, custom: &str) -> Vec<Material> {
+    let lines = reference_lines(source, custom);
+    let han = |line: &str| HAN.find_iter(line).count() >= 2;
+    let listed: Vec<&String> = lines.iter().filter(|(_, l, inside)| *inside && !l.trim().is_empty()).map(|(_, l, _)| l).collect();
+    let mixed = listed.iter().any(|l| han(l)) && listed.iter().any(|l| !han(l));
+    lines
+        .into_iter()
+        .filter(|(_, line, inside)| *inside && !line.trim().is_empty() && !translated(line) && !(mixed && han(line)))
+        .map(|(n, line, _)| Material { line: n, text: clean(&line) })
+        .filter(|m| !m.text.is_empty())
+        .collect()
+}
+
+/// Cut the material into parts of about [`PART_LINES`] lines or [`PART_CHARS`] characters. A part ends,
+/// where it can, after a line that closes an entry (`.`, `)` or a line-break `\`), so an entry is not cut.
+fn parts(material: &[Material], raw: &[&str]) -> Vec<Vec<Material>> {
+    let closes = |m: &Material| {
+        let line = raw.get(m.line - 1).map(|l| l.trim_end()).unwrap_or_default();
+        line.ends_with('\\') || line.ends_with('.') || line.ends_with(')') || line.ends_with('。')
+    };
+    let mut out: Vec<Vec<Material>> = Vec::new();
+    let mut current: Vec<Material> = Vec::new();
+    let mut chars = 0usize;
+    for m in material {
+        chars += m.text.chars().count();
+        current.push(m.clone());
+        let full = current.len() >= PART_LINES || chars >= PART_CHARS;
+        let hard = current.len() >= PART_LINES + 15 || chars >= PART_CHARS + 3_000;
+        if (full && closes(m)) || hard {
+            out.push(std::mem::take(&mut current));
+            chars = 0;
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// Text as the entry check compares it: one space for any run of spaces, one kind of quote mark, lower case.
+fn norm(text: &str) -> String {
+    let mapped: String = text
+        .chars()
+        .map(|c| match c {
+            '‘' | '’' | 'ʼ' | '`' | '′' => '\'',
+            '“' | '”' | '″' => '"',
+            '\u{a0}' => ' ',
+            other => other,
+        })
+        .collect();
+    mapped.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+fn part_id(job: usize, part: usize) -> String {
+    format!("r{job:02}-{part}")
+}
+
+fn read_dir(work: &str) -> String {
+    ps::join(work, "read")
+}
+
+fn answer_path(work: &str, id: &str) -> String {
+    ps::join(&ps::join(&read_dir(work), "out"), &format!("{id}.json"))
+}
+
 // --- plan ----------------------------------------------------------------------------------------
 
 fn plan_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) -> Result<i32> {
@@ -561,111 +514,94 @@ fn plan_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) -
     }
     let bytes = std::fs::read(&source_path).with_context(|| format!("failed to read {source_path}"))?;
     let source = String::from_utf8_lossy(&bytes).trim_start_matches('\u{FEFF}').to_string();
-    let lines = reference_lines(&source, &p.heading);
-    let headings = line_headings(&lines, &manifest["groups"]);
-    let parsed = entries(&source, &p.heading);
-    let ids = ids(&parsed);
+    let raw: Vec<&str> = source.lines().collect();
+    let found = material(&source, &p.heading);
+    let cut = parts(&found, &raw);
 
-    // The Literature trees of the box, for the works the box already holds.
-    let listed = zt.call("list_trees", json!({ "zone": "literature" }))?;
-    let mut box_titles: HashMap<String, String> = HashMap::new();
-    for tree in listed["trees"].as_array().into_iter().flatten() {
-        let root = pstr(tree, "root");
-        let title = title_key(&pstr(tree, "title"));
-        if root != key && title.len() >= 12 {
-            box_titles.entry(title).or_insert(root);
-        }
+    // One job per PARTS_PER_JOB parts; part (job, k) is `rJJ-K`.
+    let mut plan_parts = Vec::new();
+    for (index, part) in cut.iter().enumerate() {
+        let (job, k) = (index / PARTS_PER_JOB + 1, index % PARTS_PER_JOB + 1);
+        plan_parts.push(json!({
+            "id": part_id(job, k),
+            "job": job,
+            "lines": part.iter().map(|m| m.line).collect::<Vec<_>>(),
+        }));
     }
-
-    let rows: Vec<Value> = parsed
-        .iter()
-        .zip(&ids)
-        .map(|(e, id)| {
-            let in_box = (e.parsed && title_key(&e.title).len() >= 12)
-                .then(|| box_titles.get(&title_key(&e.title)).cloned())
-                .flatten();
-            json!({
-                "row": e.row,
-                "id": id,
-                "raw": e.raw,
-                "entry": e.entry,
-                "authors": e.authors,
-                "surname": e.surname,
-                "year": e.year,
-                "title": e.title,
-                "venue": e.venue,
-                "parsed": e.parsed,
-                "previous_authors": e.previous_authors,
-                "box": in_box,
-                "candidates": candidates(&lines, &headings, e),
-            })
-        })
-        .collect();
-    let plan_hash = crate::canon::hash_value(&json!(rows));
+    let plan_hash = crate::canon::hash_value(&json!({ "source": crate::canon::sha256_hex(&bytes), "heading": p.heading, "parts": plan_parts }));
     let plan = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "cited_plan",
         "book": key,
         "title": pstr(manifest, "book_title"),
         "source": source_path,
+        "heading": p.heading,
         "source_sha256": crate::canon::sha256_hex(&bytes),
         "plan_hash": plan_hash,
-        "rows": rows,
+        "parts": plan_parts,
+        "rows": [],
     });
     let plan_path = ps::join(work, "plan.json");
+    // A new plan of other parts makes every old answer stale.
+    let old = util::read_json(&plan_path).ok();
+    let read = read_dir(work);
+    if old.as_ref().is_some_and(|old| old["plan_hash"] != json!(plan_hash)) && std::path::Path::new(&read).is_dir() {
+        std::fs::remove_dir_all(&read)?;
+    }
     util::write_atomic(&plan_path, &ps::json_pretty(&plan))?;
 
-    // One normalize job per forty unsplit entries.
-    let unparsed: Vec<&Entry> = parsed.iter().filter(|e| !e.parsed).collect();
-    let normalize = ps::join(work, "normalize");
+    std::fs::create_dir_all(ps::join(&read, "out"))?;
+    let doc = util::read_text(ps::join(&common::scripts_dir(), READ_INSTRUCTION))?.replace("{{KEY}}", key);
+    let doc_path = ps::join(&read, READ_INSTRUCTION);
+    util::write_atomic(&doc_path, &doc)?;
+    let text_of: HashMap<usize, &str> = found.iter().map(|m| (m.line, m.text.as_str())).collect();
     let mut jobs = Vec::new();
-    if !unparsed.is_empty() {
-        std::fs::create_dir_all(ps::join(&normalize, "out"))?;
-        let doc = util::read_text(ps::join(&common::scripts_dir(), NORMALIZE_INSTRUCTION))?
-            .replace("{{KEY}}", key);
-        let doc_path = ps::join(&normalize, NORMALIZE_INSTRUCTION);
-        util::write_atomic(&doc_path, &doc)?;
-        for (n, chunk) in unparsed.chunks(NORMALIZE_PER_JOB).enumerate() {
-            let id = format!("n{:02}", n + 1);
-            let answer = ps::join(&ps::join(&normalize, "out"), &format!("{id}.json"));
-            let mut text = format!("# 拆分任务 {id}\n\n输出文件：{answer}\n\n");
-            for e in chunk {
-                text.push_str(&format!("- row {}：{}\n", e.row, clean(&e.raw)));
-                if !e.previous_authors.is_empty() {
-                    text.push_str(&format!("  上一条的作者：{}\n", e.previous_authors));
-                }
+    let mut settled = 0usize;
+    let jobs_total = cut.len().div_ceil(PARTS_PER_JOB);
+    for job in 1..=jobs_total {
+        let own: Vec<&Value> = plan["parts"].as_array().into_iter().flatten().filter(|x| x["job"].as_u64() == Some(job as u64)).collect();
+        let mut files = Vec::new();
+        for (k, part) in own.iter().enumerate() {
+            let id = pstr(part, "id");
+            let answer = answer_path(work, &id);
+            let mut text = format!("# 参考文献读取任务 {id}（第 {} 段，共 {} 段）\n\n输出文件：{answer}\n\n## 本段的原文行\n\n", k + 1, own.len());
+            for n in part["lines"].as_array().into_iter().flatten().filter_map(Value::as_u64) {
+                text.push_str(&format!("L{n}: {}\n", text_of.get(&(n as usize)).copied().unwrap_or_default()));
             }
-            text.push_str(&format!(
-                "\n样例：`[{{\"row\":{},\"authors\":\"Jones, K.\",\"year\":\"\",\"title\":\"…\",\"venue\":\"\"}}]`\n\nSELF-CHECK: zt-digest cited -Step precheck -Staging \"{}\" -Draft \"{answer}\"\n",
-                chunk[0].row, p.staging
-            ));
-            let job_path = ps::join(&normalize, &format!("job-{id}.md"));
-            util::write_atomic(&job_path, &text)?;
-            jobs.push(json!({
-                "id": id,
-                "files": [doc_path, job_path],
-                "prompt": NORMALIZE_PROMPT,
-                "skills": ["asd-ste100-zh"],
-                "model": MODEL,
-                "effort": "high",
-                "answer": answer,
-            }));
+            text.push_str(&format!("\nSELF-CHECK: zt-digest cited -Step precheck -Staging \"{}\" -Draft \"{answer}\"\n", p.staging));
+            let path = ps::join(&read, &format!("part-{id}.md"));
+            util::write_atomic(&path, &text)?;
+            files.push((id, path, answer));
         }
+        let passed = files.iter().all(|(_, _, answer)| answer_faults_for(&plan, &found, answer).is_empty());
+        if passed {
+            settled += 1;
+            continue;
+        }
+        let (first, rest) = files.split_first().context("a job without parts")?;
+        jobs.push(json!({
+            "id": format!("r{job:02}"),
+            "files": [doc_path, first.1],
+            "prompt": READ_PROMPT,
+            "then": rest.iter().map(|(_, path, _)| json!({ "files": [path], "prompt": NEXT_PROMPT })).collect::<Vec<_>>(),
+            "skills": ["asd-ste100-zh"],
+            "model": MODEL,
+            "effort": "high",
+            "answer": files.last().map(|f| f.2.clone()),
+        }));
     }
-    let jobs_path = ps::join(&normalize, "jobs.json");
-    if !jobs.is_empty() {
-        util::write_atomic(&jobs_path, &ps::json_pretty(&json!(jobs)))?;
-    }
+    let jobs_path = ps::join(&read, "jobs.json");
+    util::write_atomic(&jobs_path, &ps::json_pretty(&json!(jobs)))?;
 
     if std::path::Path::new(&ps::join(&p.staging, "ledger.sqlite3")).is_file() {
         let prepared = crate::ledger::Prepared::read(&p.staging, zt)?;
         crate::ledger::cited_register(&prepared, key)?;
     }
-
-    let mut line = json!({ "ok": true, "rows": parsed.len(), "plan": plan_path });
-    if !unparsed.is_empty() {
-        line["unparsed"] = json!(unparsed.len());
-        line["jobs"] = json!(jobs.len());
+    let mut line = json!({ "ok": true, "rows": found.len(), "parts": cut.len(), "jobs": jobs.len(), "plan": plan_path });
+    if settled > 0 {
+        line["settled"] = json!(settled);
+    }
+    if !jobs.is_empty() {
         line["file"] = json!(jobs_path);
     }
     util::print_line(&util::compact(&line))?;
@@ -676,48 +612,112 @@ fn plan_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) -
 
 fn read_plan(work: &str) -> Result<Value> {
     let plan = util::read_json(ps::join(work, "plan.json")).context("no cited plan; run -Step plan first")?;
-    if plan["kind"] != "cited_plan" {
-        bail!("cited\\plan.json is not a cited plan");
+    if plan["kind"] != "cited_plan" || plan["schema_version"] != 2 {
+        bail!("cited\\plan.json is not a reading plan; run -Step plan");
     }
     Ok(plan)
 }
 
-/// The faults of one normalize answer against the plan's raw entries.
-fn normalize_faults(plan: &Value, answer: &Value) -> Vec<String> {
-    let rows = plan["rows"].as_array().cloned().unwrap_or_default();
-    let mut faults = Vec::new();
-    let Some(items) = answer.as_array() else {
-        return vec!["answer N0 the answer is not a JSON array".to_string()];
+/// The plan's material, read again from its frozen source.
+fn plan_material(plan: &Value) -> Result<Vec<Material>> {
+    let path = pstr(plan, "source");
+    let bytes = std::fs::read(&path).with_context(|| format!("failed to read {path}"))?;
+    let source = String::from_utf8_lossy(&bytes).trim_start_matches('\u{FEFF}').to_string();
+    Ok(material(&source, &pstr(plan, "heading")))
+}
+
+/// The part an answer file belongs to: the one whose answer path it is.
+fn part_of<'a>(plan: &'a Value, answer: &str) -> Option<&'a Value> {
+    let stem = std::path::Path::new(answer).file_stem()?.to_str()?.to_string();
+    plan["parts"].as_array()?.iter().find(|part| pstr(part, "id") == stem)
+}
+
+fn answer_faults_for(plan: &Value, material: &[Material], answer: &str) -> Vec<String> {
+    match util::read_json(answer) {
+        Ok(value) => part_faults(plan, material, &value, answer),
+        Err(_) => vec![format!("answer R0 no readable JSON answer at {answer}")],
+    }
+}
+
+/// The lines of a part's job (an entry may name a line of an earlier part of its job, when it starts there).
+fn job_lines(plan: &Value, job: u64) -> std::collections::HashSet<usize> {
+    plan["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|part| part["job"].as_u64() == Some(job))
+        .flat_map(|part| part["lines"].as_array().cloned().unwrap_or_default())
+        .filter_map(|n| n.as_u64().map(|n| n as usize))
+        .collect()
+}
+
+fn line_numbers(value: &Value) -> Vec<usize> {
+    value.as_array().into_iter().flatten().filter_map(|n| n.as_u64().map(|n| n as usize)).collect()
+}
+
+/// The faults of one part's answer. `answer_file` names the part; an empty name takes the part from the
+/// answer's own `part` field (plan time). Each fault is one line: `<where> <rule> <what>`.
+fn part_faults(plan: &Value, material: &[Material], answer: &Value, answer_file: &str) -> Vec<String> {
+    let part = if answer_file.is_empty() { None } else { part_of(plan, answer_file) };
+    let Some(part) = part else {
+        return vec![format!("answer R0 `{answer_file}` is no part's answer file")];
     };
-    for item in items {
-        let number = item["row"].as_u64().unwrap_or(0) as usize;
-        let Some(row) = rows.iter().find(|row| row["row"].as_u64() == Some(number as u64)) else {
-            faults.push(format!("row{number} N1 no reference row {number} in the plan"));
+    let text_of: HashMap<usize, &str> = material.iter().map(|m| (m.line, m.text.as_str())).collect();
+    let allowed = job_lines(plan, part["job"].as_u64().unwrap_or(0));
+    let own: Vec<usize> = line_numbers(&part["lines"]);
+    let Some(entries) = answer["entries"].as_array() else {
+        return vec!["answer R0 the answer has no `entries` array".to_string()];
+    };
+    let mut faults = Vec::new();
+    let mut covered: std::collections::HashSet<usize> = line_numbers(&answer["skip"]).into_iter().collect();
+    for (index, item) in entries.iter().enumerate() {
+        let at = format!("entry{}", index + 1);
+        let lines = line_numbers(&item["lines"]);
+        if lines.is_empty() {
+            faults.push(format!("{at} R1 `lines` is empty"));
             continue;
-        };
-        let raw = clean(&format!(
-            "{} {}",
-            pstr(row, "raw"),
-            pstr(row, "previous_authors")
-        ));
+        }
+        if let Some(bad) = lines.iter().find(|n| !allowed.contains(n)) {
+            faults.push(format!("{at} R1 L{bad} is not a line of this job"));
+            continue;
+        }
+        covered.extend(lines.iter().copied());
+        let mut sorted = lines.clone();
+        sorted.sort_unstable();
+        let joined = norm(&sorted.iter().map(|n| text_of.get(n).copied().unwrap_or_default()).collect::<Vec<_>>().join(" "));
+        let entry = pstr(item, "entry");
+        let entry_n = norm(&entry);
+        if entry_n.is_empty() || !joined.contains(&entry_n) {
+            faults.push(format!("{at} R2 `entry` is not copied from its lines: copy it letter by letter from L{}", sorted[0]));
+            continue;
+        }
+        let dashed = DASHES.is_match(entry.trim());
         let authors = pstr(item, "authors");
         let surname = surname_of(&authors);
-        if surname.is_empty() || !raw.to_lowercase().contains(&surname.to_lowercase()) {
-            faults.push(format!(
-                "row{number} N1 the first author's surname `{surname}` is not in the raw entry"
-            ));
+        if !authors.trim().is_empty() && !dashed && !entry_n.contains(&norm(&surname)) {
+            faults.push(format!("{at} R3 the first author's surname `{surname}` is not in `entry`"));
+        }
+        if dashed && authors.trim().is_empty() {
+            faults.push(format!("{at} R3 `entry` starts with a dash run: write the authors it repeats in `authors`"));
         }
         let year = pstr(item, "year");
         if year.is_empty() {
-            if year_of(&raw).is_some() || Regex::new(r"\b(1[5-9]\d\d|20\d\d)\b").unwrap().is_match(&raw) {
-                faults.push(format!("row{number} N2 the raw entry has a year; write it"));
+            if let Some(caps) = YEAR4.captures(&entry) {
+                faults.push(format!("{at} R4 `entry` holds the year {}; write it in `year`", &caps[1]));
             }
-        } else if !raw.contains(&year) {
-            faults.push(format!("row{number} N2 the year `{year}` is not in the raw entry"));
+        } else if !entry.contains(&year) {
+            faults.push(format!("{at} R4 the year `{year}` is not in `entry`"));
         }
-        if pstr(item, "title").trim().is_empty() {
-            faults.push(format!("row{number} N3 the title is empty"));
+        let title = pstr(item, "title");
+        if title.trim().is_empty() {
+            faults.push(format!("{at} R5 `title` is empty"));
+        } else if !entry_n.contains(&norm(&title)) {
+            faults.push(format!("{at} R5 `title` is not copied from `entry`"));
         }
+    }
+    for n in own.iter().filter(|n| !covered.contains(n)) {
+        let text: String = text_of.get(n).copied().unwrap_or_default().chars().take(120).collect();
+        faults.push(format!("L{n} R6 this line is in no entry and not in `skip`: {text}"));
     }
     faults
 }
@@ -727,8 +727,8 @@ fn precheck_step(p: &Params, work: &str) -> Result<i32> {
         bail!("-Draft is required for -Step precheck");
     }
     let plan = read_plan(work)?;
-    let answer = util::read_json(&p.draft).unwrap_or(Value::Null);
-    let faults = normalize_faults(&plan, &answer);
+    let found = plan_material(&plan)?;
+    let faults = answer_faults_for(&plan, &found, &p.draft);
     let mut lines = faults.clone();
     lines.push(format!("faults: {}", faults.len()));
     util::print_lines(&lines)?;
@@ -742,39 +742,74 @@ pub(crate) fn cell(text: &str) -> String {
     text.replace('|', "／").replace(['\n', '\r'], " ").trim().to_string()
 }
 
-/// The list rows after the accepted normalize answers: (row, entry, year) per row, plus the
-/// refused rows.
-fn merged_rows(plan: &Value, work: &str) -> Result<(Vec<Value>, Vec<usize>)> {
-    let mut rows = plan["rows"].as_array().cloned().unwrap_or_default();
-    let mut refused = Vec::new();
-    let out = ps::join(&ps::join(work, "normalize"), "out");
-    if let Ok(dir) = std::fs::read_dir(&out) {
-        let mut files: Vec<_> = dir.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
-        files.sort();
-        for file in files {
-            let answer = util::read_json(&file).unwrap_or(Value::Null);
-            for item in answer.as_array().into_iter().flatten() {
-                let number = item["row"].as_u64().unwrap_or(0);
-                if !normalize_faults(plan, &json!([item])).is_empty() {
-                    refused.push(number as usize);
-                    continue;
-                }
-                if let Some(row) = rows.iter_mut().find(|row| row["row"].as_u64() == Some(number)) {
-                    if row["parsed"] == true {
-                        continue;
-                    }
-                    for field in ["authors", "year", "title", "venue"] {
-                        row[field] = item[field].clone();
-                    }
-                    row["surname"] = json!(surname_of(&pstr(item, "authors")));
-                    row["parsed"] = json!(true);
-                }
+/// The entry as the list shows it: a leading dash run is replaced by the authors it repeats.
+fn display(entry: &str, authors: &str) -> String {
+    let entry = entry.trim();
+    match DASHES.find(entry) {
+        Some(found) if !authors.trim().is_empty() => {
+            let rest = entry[found.end()..].trim_start();
+            // `——Futūḥ: al-Balādhurī, …` names its author after the short title: the dash run only goes.
+            if norm(rest).contains(&norm(&surname_of(authors))) {
+                return rest.to_string();
             }
+            let gap = if rest.starts_with([',', '.', ':', ';']) { "" } else if rest.starts_with('(') { " " } else { ", " };
+            format!("{}{gap}{rest}", authors.trim().trim_end_matches(','))
+        }
+        _ => entry.to_string(),
+    }
+}
+
+/// Every passing entry of the plan, in source order, with the repeated works removed, as list rows; or the
+/// parts whose answer is missing or faulty.
+fn read_rows(plan: &Value, work: &str) -> Result<(Vec<Entry>, usize, Vec<String>)> {
+    let found = plan_material(plan)?;
+    let text_of: HashMap<usize, &str> = found.iter().map(|m| (m.line, m.text.as_str())).collect();
+    let mut open = Vec::new();
+    let mut gathered: Vec<(usize, usize, Value)> = Vec::new();
+    for part in plan["parts"].as_array().into_iter().flatten() {
+        let id = pstr(part, "id");
+        let answer = answer_path(work, &id);
+        let faults = answer_faults_for(plan, &found, &answer);
+        if !faults.is_empty() {
+            open.push(format!("{id} ({})", faults.len()));
+            continue;
+        }
+        let value = util::read_json(&answer)?;
+        for (index, item) in value["entries"].as_array().into_iter().flatten().enumerate() {
+            let first = line_numbers(&item["lines"]).into_iter().min().unwrap_or(0);
+            gathered.push((first, index, item.clone()));
         }
     }
-    refused.sort_unstable();
-    refused.dedup();
-    Ok((rows, refused))
+    gathered.sort_by_key(|(line, index, _)| (*line, *index));
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut rows = Vec::new();
+    let mut repeated = 0usize;
+    for (_, _, item) in gathered {
+        let authors = pstr(&item, "authors").trim().to_string();
+        let title = pstr(&item, "title").trim().to_string();
+        let year = pstr(&item, "year").trim().to_string();
+        let surname = surname_of(&authors);
+        let entry = display(&pstr(&item, "entry"), &authors);
+        let identity = format!("{}|{}|{}", fold(&surname), year, title_key(if title.is_empty() { &entry } else { &title }).chars().take(60).collect::<String>());
+        if !seen.insert(identity) {
+            repeated += 1;
+            continue;
+        }
+        let mut lines = line_numbers(&item["lines"]);
+        lines.sort_unstable();
+        rows.push(Entry {
+            row: rows.len() + 1,
+            raw: lines.iter().map(|n| text_of.get(n).copied().unwrap_or_default()).collect::<Vec<_>>().join(" "),
+            entry,
+            parsed: !surname.is_empty(),
+            surname,
+            authors,
+            year,
+            title,
+            venue: pstr(&item, "venue").trim().to_string(),
+        });
+    }
+    Ok((rows, repeated, open))
 }
 
 /// The Cited list Card's title and body.
@@ -812,9 +847,52 @@ pub fn existing_list(zt: &mut Zt, key: &str) -> Result<Option<Value>> {
     Ok(Some(serde_json::from_str(text).context("get_cited: the answer is not JSON")?))
 }
 
+
 fn apply_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) -> Result<i32> {
     let plan = read_plan(work)?;
-    let (rows, refused) = merged_rows(&plan, work)?;
+    let (parsed, repeated, open) = read_rows(&plan, work)?;
+    if !open.is_empty() {
+        bail!("{} part(s) have no passing answer: {}", open.len(), open.join(", "));
+    }
+    let ids = ids(&parsed);
+    let bytes = std::fs::read(pstr(&plan, "source"))?;
+    let source = String::from_utf8_lossy(&bytes).trim_start_matches('\u{FEFF}').to_string();
+    let lines = reference_lines(&source, &pstr(&plan, "heading"));
+    let headings = line_headings(&lines, &manifest["groups"]);
+    let folded_lines: Vec<(String, String)> = lines.iter().map(|(_, l, _)| { let lower = l.to_lowercase(); let flat = fold(&lower); (lower, flat) }).collect();
+
+    // The Literature trees of the box, for the works the box already holds.
+    let listed = zt.call("list_trees", json!({ "zone": "literature" }))?;
+    let mut box_titles: HashMap<String, String> = HashMap::new();
+    for tree in listed["trees"].as_array().into_iter().flatten() {
+        let root = pstr(tree, "root");
+        let title = title_key(&pstr(tree, "title"));
+        if root != key && title.len() >= 12 {
+            box_titles.entry(title).or_insert(root);
+        }
+    }
+    let rows: Vec<Value> = parsed
+        .iter()
+        .zip(&ids)
+        .map(|(e, id)| {
+            let in_box = (title_key(&e.title).len() >= 12).then(|| box_titles.get(&title_key(&e.title)).cloned()).flatten();
+            json!({
+                "row": e.row,
+                "id": id,
+                "raw": e.raw,
+                "entry": e.entry,
+                "authors": e.authors,
+                "surname": e.surname,
+                "year": e.year,
+                "title": e.title,
+                "venue": e.venue,
+                "parsed": e.parsed,
+                "box": in_box,
+                "candidates": candidates(&lines, &headings, &folded_lines, e),
+            })
+        })
+        .collect();
+
     let existing = existing_list(zt, key)?;
     let kept = |entry: &str, field: &str| -> Option<String> {
         existing.as_ref().and_then(|list| {
@@ -864,18 +942,14 @@ fn apply_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) 
         "applied": p.apply,
         "list": card,
         "rows": table.len(),
-        "refused": refused,
+        "repeated": repeated,
+        "refused": [],
         "changed": changed,
     });
     util::write_atomic(ps::join(work, "apply.json"), &ps::json_pretty(&report))?;
-    // The rows after the accepted normalize answers: the Cited Cards read these (a normalized entry has
-    // its surname and title only here; live backfill of acemoglu2025nobel, 2026-10-31).
+    // The rows the Cited Cards read (cited-cards reads them when their plan_hash is the plan's).
     util::write_atomic(ps::join(work, "merged.json"), &ps::json_pretty(&json!({ "plan_hash": plan["plan_hash"], "rows": rows })))?;
-    let mut line = json!({ "ok": true, "rows": table.len(), "card": card });
-    if !refused.is_empty() {
-        line["refused"] = json!(refused.len());
-    }
-    util::print_line(&util::compact(&line))?;
+    util::print_line(&util::compact(&json!({ "ok": true, "rows": table.len(), "card": card, "repeated": repeated })))?;
     Ok(0)
 }
 
@@ -917,8 +991,6 @@ mod tests {
 
     #[test]
     fn the_first_author_and_the_surname_come_from_the_author_string() {
-        assert_eq!(first_author("Aghion, P., and Bolton, P."), "Aghion, P.");
-        assert_eq!(first_author("Atkinson, Anthony B., and Joseph E. Stiglitz"), "Atkinson, Anthony B.");
         assert_eq!(surname_of("ACEMOGLU, D., AND F. ZILIBOTTI"), "Acemoglu");
         assert_eq!(surname_of("Benmelech, E. and Frydman, C."), "Benmelech");
         assert_eq!(surname_of("Economist"), "Economist");

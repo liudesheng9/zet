@@ -1,4 +1,5 @@
-// ==== module zt-digest-report v24 ====
+// ==== module zt-digest-report v25 ====
+// 25 (2026-11-07): the Cited list is read by DeepSeek: its summary carries parts and repeated works, no unparsed or refused rows.
 // 24 (2026-11-01): mode terms (the Term list rebuilt by explorers and a merge) returns its prepare and terms reports.
 // The run's result, in the shape zt-book-digest.js returned for each mode: a stage-only mode returns that
 // stage's report; mode full (and link, and models with organize) returns the whole digest report. A
@@ -38,10 +39,10 @@
 // never thrown away; a successful measurement of zero units is `coverage` 0/0/0/0/100, not "not measured" (the
 // step line omits zero fields, so its `ok:true` is the measurement's own answer).
 // 23 (#221): the Cited list and the Cited Cards. Every whole report and mode cited-cards carry `cited` (the list:
-// rows, unparsed, refused, its Card) and `cited_cards` (jobs, publication, reason), and the schedule names both
+// rows, parts, repeated works, its Card) and `cited_cards` (jobs, publication, reason), and the schedule names both
 // statuses, so a book whose reference list did not publish in full reports that debt.
 defineModule({
-  id: 'zt-digest-report', version: '24', requires: ['zt-digest-lib'],
+  id: 'zt-digest-report', version: '25', requires: ['zt-digest-lib'],
   summary: 'ZT digest: assemble the run\'s result from the stage outputs, per mode, with the settings, the schedule summary and the verified ledger run report.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -53,7 +54,7 @@ defineModule({
     cards: { type: 'any', description: 'the Cards layer output (the per-group offline checks)' },
     termCards: { type: 'any', description: 'the Term-card branch output: its units, waves, readiness and publication (S24, #167)' },
     termLink: { type: 'any', description: 'the deterministic Term-link pass output: its unit, plan, counts and no_op (S24, #167)' },
-    citedList: { type: 'any', description: 'the Cited list stage output: rows, unparsed, refused and its Card (#221)' },
+    citedList: { type: 'any', description: 'the Cited list stage output: rows, parts, repeated works and its Card (#221)' },
     citedCards: { type: 'any', description: 'the Cited Card stage output: its jobs and publication (#221)' },
     models: { type: 'any', description: 'the output of the model layer (the models stage of a book type)' },
     terms: { type: 'any', description: 'the term table stage output' },
@@ -114,8 +115,8 @@ defineModule({
         status: value.status || 'unknown',
         rows: value.rows ?? (value.publication && value.publication.rows) ?? null,
         list: value.list || null,
-        unparsed: Number(value.unparsed || 0),
-        refused: Number(value.refused || 0),
+        parts: Number(value.parts || 0),
+        repeated: Number(value.repeated || 0),
         jobs: value.jobs ? { total: value.jobs.total || 0, done: value.jobs.done || 0, failed: Number(value.jobs.failed || 0) } : null,
         publication: value.publication || null,
         blocked: Number(value.not_ready || 0),

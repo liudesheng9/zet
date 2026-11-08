@@ -882,6 +882,8 @@ Caption labels, image names, and mention patterns are Rust unit tests of `src/fi
 - `skills/zt-digest-protocol/references/scripts.md` does not list `event-compiler.ps1`, `finding-compiler.ps1`, or their tests; it now names the checker's full rule set (R2 to R19 with I, E, F, L), and the code (and `docs/zt-digest-framework.md`) has both layers.
 
 ## Change history
+
+- `2026-11-07` — `cited-steps.ps1 list` names the reading jobs (`read-NNN.json` chunks; `rows` material lines, `parts`) and `list-finish` answers `repeated`. New `cited-read-drive.mjs` runs reading jobs (one conversation, a message a part) or, with `--cards`, Cited Card writer jobs straight through the DeepSeek bridge for a backfill outside a workflow, skips parts that already pass, retries a failing part once and deletes every conversation; `cited-relink.mjs record|apply` points Links into Cited Cards back to their works after a list is read again; `cited-backfill.sh` chains one book's list, carry, writers, publication, relink and Term-link. Tests: cited-steps 47.
 - `2026-11-07` — `book-steps.ps1 -Step prepare` passes `GroupBy`; `Join-LinkJobs` stops a job at 3 groups or 30 gaps.
 - `2026-11-06` — `layer-steps.ps1 -Step start` joins Link jobs in threes (`Join-LinkJobs`); `book-steps.ps1` prepares with `MaxChars` 25000; `dsh-link-instructions.zh.md` says a job holds up to three groups (`docs/digest-job-size-proposal.md`).
 - `2026-11-06` — `tests/history-run.tests.ps1`: the figure fixture carries an explanation. `scripts/term-align/` is removed: the skill `zt-term-sync` and `zt-digest term-sync` took its place.

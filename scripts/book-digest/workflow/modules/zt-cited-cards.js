@@ -1,4 +1,8 @@
-// ==== module zt-cited-cards v5 ====
+// ==== module zt-cited-cards v6 ====
+// v6 (2026-11-07, docs/cited-list-reading-proposal.md): the Cited list is read by DeepSeek, not parsed. `list` cuts the
+// reference material into parts and lists one reading job per four parts; a job is one conversation of one message a
+// part (an entry's "then"), and each part's answer passes the `cited -Step precheck` self-check. The parser, its
+// normalize jobs and their instruction are gone. A changed list carries every live Cited Card whose work it still holds.
 // v4 (scheiner2022baghdad, 2026-11-04): a resume leaves a finished Cited list alone (`list -SkipDone`). It reran 27
 // normalize jobs, and its list-finish would have written the list again without a claim. Mode cited-cards still rewrites.
 // v3 (atkinson2015lectures, 2026-11-02): the start claims every page of jobs (one claim takes at most 64), each manager
@@ -7,9 +11,10 @@
 // only, the shape of zt-term-cards v8 without a review round. Every deterministic step is one `cited-steps.ps1`
 // call that a DeepSeek agent runs (a "drive" job, the shared zt-workflow-lib helper `ztDrive`), so no Claude agent
 // relays a single command. Two stages use it:
-//   list   (stage `cited`): drive list (parse the whole source's reference list, index the citing lines) ->
-//          the normalize jobs for the entries the parser could not split -> drive list-finish (the Cited list Card
-//          under the claimed cited/book@1, completed from the apply report)
+//   list   (stage `cited`): drive list (mark the reference material, cut it into parts) -> the reading jobs (one
+//          conversation each, one message a part, each part self-checked) -> drive list-finish (remove repeated
+//          works, index the citing lines, the Cited list Card under the claimed cited/book@1, completed from the
+//          apply report)
 //   cards  (stage `cited-cards`): drive start (plan, claim every ready job unit, list the jobs) -> writers (each
 //          reviews how its works are used in the WHOLE source and self-checks; at most eight per manager,
 //          managers in parallel) -> drive finish (complete each job from the readiness result, fail the rest;
@@ -18,7 +23,7 @@
 // v2 (pilot 2026-10-31): `source` names the whole bilingual source for a backfill, whose adopted staging names the
 // Chinese-only book.zh.md; the list step passes it as -Source and the plan freezes it for the Cards.
 defineModule({
-  id: 'zt-cited-cards', version: '5', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-cited-cards', version: '6', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Cited list and Cited Cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers for the content; each unit completes only from the compiler\'s own artifacts.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -50,14 +55,15 @@ defineModule({
     }
     const manager = (label, source) => dsmpSlot(() => ctx.agent(`You are a DeepSeek subagent manager for ZET Cited Cards (${label}). You start DeepSeek agents, wait for them, collect their answers and delete their conversations. You never write content and never run commands yourself. Keep your messages short.
 
-First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete".
+First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_run,mcp__deepseek__deepseek_prompt,mcp__deepseek__deepseek_wait,mcp__deepseek__deepseek_respond,mcp__deepseek__deepseek_cancel,mcp__deepseek__deepseek_delete".
 
 JOBS: ${source}
-Each job has id, files, prompt, skills, model, effort.
+Each job has id, files, prompt, skills, model, effort. A job may also have "then".
 
 1. Start every job in ONE message: mcp__deepseek__deepseek_run with cwd "${WORK}", prompt_files = its "files", prompt = its "prompt", skills = its "skills", model = its "model", reasoning_effort = its "effort", wait_seconds 0.
 2. Keep at most 8 jobs running at a time. Until no job is running: call mcp__deepseek__deepseek_wait (wait_seconds ${DSMP.pollSeconds}) on one running job, then mcp__deepseek__deepseek_wait (wait_seconds 0) on the others. A job asking a question: answer "按任务说明自行决定，不需要询问。". A job asking approval for a command, or for reading or writing a file under "${OUT}" or the book's source file its job file names: allow; anything else: reject. A job running longer than ${DSMP.budgetMinutes} minutes: cancel it.
-3. A job that failed or gave an empty answer gets ONE more attempt in a new conversation. Never a third.
+3. A job with "then" is one conversation of several messages. When its conversation answers "finished", send the next item of its "then": mcp__deepseek__deepseek_prompt with the same session_id, prompt_files = that item's files, prompt = that item's prompt, skills = the job's skills, reasoning_effort = the job's effort, wait_seconds 0. Send every item, in order, one at a time. The job ends with the answer to its last item.
+3b. A job that failed or gave an empty answer gets ONE more attempt in a new conversation (from its first message). Never a third.
 4. When a job ends, delete its conversation with mcp__deepseek__deepseek_delete. Never archive.
 5. Use the session_id that deepseek_run returned, never a word in its place. A step whose job list is empty starts no run: never send a placeholder prompt.
 6. You have no terminal tabs, no Monitor loop, no session handoff and no general shell: never start another agent, never hand the work on, never poll with Start-Sleep or any other timer, and wait only with deepseek_wait. Any command you are given to run is run in the foreground with timeout_ms: 600000.
@@ -108,10 +114,10 @@ Each job has id, files, prompt, skills, model, effort.
           return report
         }
         report.rows = Number(listed.rows || 0)
-        report.unparsed = Number(listed.unparsed || 0)
+        report.parts = Number(listed.parts || 0)
         if (listed.jobs > 0) {
           report.jobs.total = listed.jobs
-          const ran = listed.chunks > 0 ? await runChunks('normalize', 'normalize', listed.jobs) : await runFile('normalize', listed.file, listed.jobs)
+          const ran = listed.chunks > 0 ? await runChunks('read', 'read', listed.jobs) : await runFile('read', listed.file, listed.jobs)
           report.jobs.failed = ran.filter((j) => j.status !== 'done').length
           report.jobs.done = ran.length - report.jobs.failed
         }
@@ -121,7 +127,7 @@ Each job has id, files, prompt, skills, model, effort.
         } else {
           const finished = await drive('list-finish')
           report.list = finished.card || null
-          report.refused = Number(finished.refused || 0)
+          report.repeated = Number(finished.repeated || 0)
           report.unit = finished.unit || null
         }
       } else {
