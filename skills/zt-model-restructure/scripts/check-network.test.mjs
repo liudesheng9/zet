@@ -75,3 +75,12 @@ test('a part shared from another model is a premise block before the setting: re
   assert.ok(r.lines.some((l) => /^共用 共用前提/.test(l)), r.lines.join('\n'))
   assert.equal(r.ok, true, JSON.stringify(r, null, 1))
 })
+
+test('an empirical model gets no "no result card" advice: its results are 估计 cards, which the board does not count yet', async () => {
+  // hansen2021demand/5|c|e on the copied box: every block of the evidence spine (数据, 假说, 设计, 规格 and the
+  // chapters of estimates) was flagged "0 结果".
+  const L = await loadLayout()
+  const m = { ...fixture(), level: 'empirical' }
+  assert.deepEqual(analyse(m, L).empty, [])
+  assert.deepEqual(analyse(fixture(), L).empty.map((e) => e.block), ['b3', 'b4'])
+})

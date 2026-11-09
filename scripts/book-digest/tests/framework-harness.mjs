@@ -1848,7 +1848,7 @@ function runtime(kind, opts = {}) {
     if (text.startsWith('You are a DeepSeek subagent manager for a ZET workflow step (')) {
       const stepLabel = (text.match(/workflow step \(([^)]*)\)/) || [])[1] || label
       const plain = text.replace(/\\\\/g, '\\').replace(/\\"/g, '"')
-      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps|model-steps|math-steps|cited-steps)\.ps1[^\n]*/) || [])[0] || ''
+      const command = (plain.match(/pwsh -NoProfile -File [^\n]*?(?:term-steps|layer-steps|book-steps|model-steps|math-steps|cited-steps)\.ps1[^\n]*|zt-digest evidence-link [^\n]*/) || [])[0] || ''
       // #180: a drive answer is ONLY the step's last line, one JSON object with a boolean top-level `ok`. Each
       // answer is checked here, so the stand-in's every drive answer is at most 400 characters.
       const reply = (value, id) => {
@@ -1960,6 +1960,12 @@ function runtime(kind, opts = {}) {
         bookManagers.push({ label: stepLabel, phase: callOpts.phase, kind: 'drive', step, prompt: text, cmd: command, options })
         bookCalls.push({ step, cmd: command, options, label: stepLabel })
         return reply(await bookStep(step, { ...options, __out: out }), `drive-book-${step}`)
+      }
+      // docs/empirical-models-proposal.md §8.2 step 9: the evidence link, one deterministic zt-digest step.
+      if (/^zt-digest evidence-link /.test(command)) {
+        commands.push(command.trim())
+        const linkOut = (command.match(/-Out "([^"]+)"/) || [])[1] || ''
+        return reply({ ok: true, findings: 2, estimates: 2, linked: 1, unmatched: 1, ambiguous: 0, writes: 2, file: `${linkOut}\\evidence-link.json` }, 'drive-evidence-link')
       }
       // #177: the model layer's one step (model-steps.ps1): the listing and claim, a batch's chain, or the
       // block's checked finish, answered on the in-memory ledger.
@@ -2147,7 +2153,7 @@ const base = { out: 'D:\\x\\Key', citationKey: 'Key', source: 'S.md', bibtex: '@
   const pick = (bp, id) => bp.stages.find((s) => (s.id || `[${s.slot}]`) === id)
   check(baseIds.every((id) => pick(e, id) && pick(m, id)), `base: both variants hold every base stage (${baseIds.length})`)
   const own = (bp) => bp.stages.map((s) => s.id).filter((id) => id && !baseIds.includes(id)).join(',')
-  check(own(e) === 'events,findings,models,explain', `base: the economics set adds the Event and Finding layers, the model layer and explanations (${own(e)})`)
+  check(own(e) === 'events,findings,models,explain,evidence-link', `base: the economics set adds the Event and Finding layers, the model layer, explanations and the evidence link (${own(e)})`)
   check(own(m) === 'math-skeleton,models,math-boundary,math-proof,explain,math-theory,math-check', `base: the mathematics set adds its math stages, the model layer and explanations (${own(m)})`)
   check(!baseIds.some((id) => /^\[?after-(digest|models|terms)\]?$/.test(id)) || true, 'base: the ready-work slots are declared in the shared base')
   for (const which of ['econ', 'math']) {
@@ -2199,7 +2205,7 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(after('cards') === 'digest', 'schedule: the per-group Card checks follow their own group completion (the cadrs stage)')
   check(after('models') === 'cards', 'schedule: the model layer is released when the digest managers settle (after the Cards layer)')
   check(/models/.test(after('explain')), 'schedule: explanations follow the model layer')
-  check(after('cards-book') === 'explain', 'schedule: the whole-book card cycle waits for the model reviews (R248)')
+  check(after('cards-book') === 'evidence-link' && after('evidence-link') === 'explain', 'schedule: the whole-book card cycle waits for the model reviews (R248) and the evidence link, which follows the explanations (after the model and Findings layers)')
   check(stageOf('econ', 'events').after.join(',') === 'cards' && stageOf('econ', 'findings').after.join(',') === 'cards', 'schedule: Events and Findings run after the digest, so no stage holds a pool slot while it waits for the digest')
   check(/cards-book/.test(after('link-prepare')), 'schedule: the gap-only Link pass waits for the whole-book cycle')
   check(after('organize') === 'link-check', 'schedule: Organize runs after the link checks settle')
@@ -2955,6 +2961,14 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(stagePublications.some((c) => /-Layer link-check -Report "[^"]*\\cards-link\\report\.json"/.test(c)), `stage publish: the Link check publishes its own revision from its cycle report (${layers.join(', ')})`)
 }
 {
+  // docs/empirical-models-proposal.md §8: the model start step batches empirical models apart (-PerEmpirical, default 4),
+  // and after the explanations one DeepSeek drive job runs the deterministic zt-digest evidence-link step.
+  const { commands, modelCalls } = await run('econ', { ...base, figures: false })
+  check(modelCalls.some((c) => c.step === 'start' && /-PerEmpirical 4/.test(c.cmd)), 'empirical: the model start step batches empirical models with -PerEmpirical 4')
+  const link = commands.filter((c) => /^zt-digest evidence-link -CitationKey "Key" -Out "D:.x.Key"/.test(c))
+  check(link.length === 1, `empirical: one drive job runs zt-digest evidence-link after the model and Findings layers (${link.length}: ${commands.filter((c) => /evidence/.test(c)).join(' / ').slice(0, 300)})`)
+}
+{
   // trial 8: the full resource listing (about 52 KB) came back as prose and the cleanup settled nothing. The cleanup
   // stage reads the brief listing and still settles every recorded conversation.
   // trial 11: the relay abridged even the brief listing's id arrays and left out two model workspaces. The stage reads
@@ -3382,7 +3396,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '59' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '6' && modules['zt-workflow-lib'] === '13' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '16' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '60' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '6' && modules['zt-workflow-lib'] === '13' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '16' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

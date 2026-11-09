@@ -174,6 +174,7 @@ fn main() {
         "model" => model::cli(&rest),
         "model-context" => model::context_cli(&rest),
         "list-models" => model::list_cli(&rest),
+        "evidence-link" => model::evidence_link_cli(&rest),
         "hub" => hub::cli(&rest),
         "register" => register::cli(&rest),
         "bridge" => bridge::cli(&rest),

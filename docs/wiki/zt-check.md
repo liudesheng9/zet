@@ -679,6 +679,20 @@ The gate policy is not a file of the checker. The service builds one `PolicySet`
 
 The fixed limits R2 (40/30 characters, 25/20 words), R12 (40/25), R16 (5 and 6), R17 (2 per 说明), I1 (6 characters), I6 (0.8), and E5 (0.5) are constants in `tools/zt-check/src/core.rs` and `tools/zt-check/src/text.rs`. A Model Card or Model part (type `model`, or any Card with a facet) is held to every size limit twice as loose (`core::loosen`, rule version 6, the owner's decision of 2026-11-01; half again as loose under rule version 5): R2 80/60 characters and 50/40 words, R12 80/50, R13 24 sentences or 800 characters, R14 12 steps, R16 10 and 12, R17 4 per 说明 and 32 sentences or 1200 characters of explanation. The `--max-*` flags and the published `Limits` keep the base numbers; the factor applies on top. `text::sentence_fits`/`title_fits` (used by zt-digest's drafts) keep the strict 40, so a draft they pass also passes the gate.
 
+### The empirical rules (EM1–EM5)
+
+`src/empirical.rs` holds the role vocabulary of an empirical model (`role_of`, `EmpiricalRole`, `DESIGNS`, `design_of` from the Model Card's **设计** line), the symbol reading (`symbols`, `display_formulas`, `table_names`), a bold-section reader (`section`, ending at the next bold label or the source line) and the card rules a part of an empirical model takes (the entry's `level` is `empirical`; a body that is only `待写` is a placeholder):
+
+| Rule | Check | Default |
+| --- | --- | --- |
+| EM1 | an `估计：` part has the labels 估计, 量级, 依据; its 估计 section links a specification and names a table, a figure or the source's text (表 n, 图 n, 正文) | block |
+| EM2 | the 估计 section states a value and an uncertainty (标准误, t, 置信区间, p, a significance word) or says 原书未写明 | block |
+| EM3 | a `规格：` part has 估计式 (a `$$` equation or 书中没有写出估计式) and 各项 naming 因变量, 回归元 and 标准误 (a variant with 相对基准的改动 may name fewer) | block |
+| EM4 | a `设计` part has 变异来源 and 识别假设 | block |
+| EM5 | a causal verb (导致, 造成, 使得, 引起, 提高了, …) in an `估计：` part of a model whose design is `descriptive` or `cross-section` (the entry's `design`; the write gate reads it from the head) | advice |
+
+Rule version 8. A value, a standard error and N stand on separate list lines: R3 refuses a semicolon.
+
 ## Usage
 
 The digest scripts call it through `Invoke-ZtCheck` (`scripts/book-digest/zt-calls.ps1`), which maps PowerShell parameters to flags, always passes all eight limits, merges stderr into the output, and throws when no `faults: N` line appears:
@@ -791,6 +805,7 @@ Gaps: no unit test of `mcp.rs` itself (the scope's refusal inside `Zt::request` 
 - **R16 does not report an empty 思路 or 解读**, although [docs/derivation-explanations-proposal.md](../derivation-explanations-proposal.md) lists "an empty section" as an R16 fault; only too many sentences are reported.
 
 ## Change history
+- `2026-11-08` — zt-check 0.21.0, rule version 8: the empirical module and rules EM1–EM5 (EM5 advice) for the parts of an empirical model; `--level` takes `empirical`. Tests: `src/empirical.rs` (roles, symbols, the variable table, the design line, each rule).
 - `2026-11-06` — 0.20.0, rule version 7, at the owner's request: R22 and T10 count `$` per line and read `text::broken_display` (fault `broken_display`, same setting as `open_formula`). The fault came from `acemoglu2007equilibrium/2|a|a|f|1`: a formula that opened with `- ` read as a list, so the Card showed raw TeX while KaTeX alone accepted the formula. The live box was cleaned first: every Card passes, and all 224,406 formulas parse under the vendored KaTeX.
 - `2026-11-05` — 0.19.3: `literature_violation` reads `set_literature_type` like the other writers that name a Card.
 - `2026-11-03` — Tests and this doc caught up with two decisions of 2026-10-26. `tests/term_cards.rs::a_long_term_card_is_accepted_and_one_over_long_sentence_is_not` replaces a test that expected T9 at the default limit: a Term Card now has no prose bound, and R2 still refuses one over-long sentence. `tests/term_session.rs::accepted_write_warnings_stay_on_the_session_status_row` edits a Topic Card, because a Literature note's row turns R3 off (#184). This doc named a fixed 1,600-unit limit in three places.

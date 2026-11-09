@@ -79,7 +79,7 @@ switch -Regex ($cmd) {
     '^list-models' {
         if ($env:MS_NO_LIST -eq '1') { Write-Output 'zt-digest list-models: the archive is unreachable'; exit 1 }
         Emit @{ ok = $true; models = @(
-                @{ address = 'Key/2|c'; title = '模型一'; group = 1; level = 'formal'; form = $null; parts = 0; issues = 0; faults = 0 },
+                @{ address = 'Key/2|c'; title = '模型一'; group = 1; level = $(if ($env:MS_EMPIRICAL -eq '1') { 'empirical' } else { 'formal' }); form = $null; parts = 0; issues = 0; faults = 0 },
                 @{ address = 'Key/3|c'; title = '模型二'; group = 2; level = 'concept'; form = 'theory'; parts = 0; issues = 0; faults = 0 },
                 @{ address = 'Key/4|c'; title = '模型三'; group = 3; level = $null; form = $null; parts = 4; issues = 0; faults = 0 },
                 @{ address = 'Key/5|c'; title = '模型四'; group = 4; level = 'formal'; form = $null; parts = 2; issues = 1; faults = 1 }
@@ -242,6 +242,14 @@ New-Item -ItemType Directory -Force $manOut | Out-Null
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $manStart = Step (@('-Step', 'start', '-Take', '8', '-Owner', 'models block 4', '-Out', $manOut, '-Tool', $tool))
 Assert ($manStart.json -and $manStart.json.ok -eq $true -and (Get-Content -LiteralPath $calls -Raw) -match 'list-models -Staging .* -All -CitationKey ManifestKey') "manifest key: the model listing names the prepared run's Citation key when the step names none ($($manStart.text))"
+
+# 9. docs/empirical-models-proposal.md §8.5: an empirical model (level 3) batches apart, -PerEmpirical a batch.
+$empOut = Join-Path $scratch 'out-empirical'
+New-Item -ItemType Directory -Force $empOut | Out-Null
+$env:MS_EMPIRICAL = '1'
+$empStart = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 5', '-PerEmpirical', '1', '-Out', $empOut, '-Tool', $tool))
+$env:MS_EMPIRICAL = ''
+Assert ($empStart.json -and $empStart.json.ok -eq $true -and $empStart.json.plan -eq 'concept:3|c;empirical:2|c') "empirical: an empirical model is its own batch kind ($($empStart.text))"
 
 # 9. Live run 2026-10-26 (staging4): a line over 400 characters was answered as `{ok:true, detail}`, which the module
 # read as a fill with no jobs, so six models stayed unwritten. An overflow is now a failed step, never a silent

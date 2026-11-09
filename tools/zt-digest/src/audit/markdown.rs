@@ -45,7 +45,11 @@ fn n(v: &Value) -> String {
 fn advisory_rules(prefixes: &[char]) -> String {
     zt_check::policy::ADVISORY_RULES
         .iter()
-        .filter(|rule| rule.chars().next().is_some_and(|c| prefixes.contains(&c)))
+        // A rule family is its letter and a number: E5 is an Event rule, EM5 an empirical-model rule.
+        .filter(|rule| {
+            let mut chars = rule.chars();
+            chars.next().is_some_and(|c| prefixes.contains(&c)) && chars.next().is_some_and(|c| c.is_ascii_digit())
+        })
         .copied()
         .collect::<Vec<_>>()
         .join(", ")
@@ -727,6 +731,8 @@ mod tests {
         // No advisory layer rule beyond I1/I6/L3/E5, and the Term rule T4 never leaks into the Card
         // layer's list: it is not a layer rule, whatever the catalog holds.
         assert_eq!(advisory_rules(&['T']), "T4");
+        // EM5 (empirical models) is no Event rule.
+        assert!(!advisory_rules(&['E']).contains("EM5"));
         assert_eq!(advisory_rules(&['Z']), "");
     }
 

@@ -39,6 +39,14 @@ export function propose(heads, links) {
   })
 }
 
+/** A group that holds an empirical model beside a formal or concept one (docs/empirical-models-proposal.md §9.1):
+ *  a theory and its test, or a theory and its structural estimation, are two models; the line says so, or null. */
+export function mixedLevels(heads, levelOf) {
+  const levels = [...new Set(heads.map((h) => String(levelOf.get(h) || 'none')))]
+  if (!levels.includes('empirical') || levels.length < 2) return null
+  return `levels mixed (${levels.sort((a, b) => (a === 'empirical' ? -1 : b === 'empirical' ? 1 : a.localeCompare(b))).join(' + ')}): a theory and its test, or a theory and its estimation, are two models joined by an import; fold only cards of one level`
+}
+
 /** The kind of one shared entry of build.order: an import, a false share (its address is a build.false_share target), or a legacy （共用） share. */
 export function sharedKind(o, falseTargets) {
   if (o.import) return 'import'
@@ -58,6 +66,7 @@ async function main() {
   const owner = (a) => heads.filter((h) => a === h || a.startsWith(h + '|')).sort((x, y) => y.length - x.length)[0]
   const sh = (a) => a.slice(key.length + 1)
   const pairs = new Map()
+  const levelOf = new Map()
   const pair = (from, to) => {
     const k = from + '>' + to
     if (!pairs.has(k)) pairs.set(k, { from, to, rests: 0, shared: 0, imports: 0, falseShares: 0, kin: 0, compare: 0 })
@@ -66,6 +75,7 @@ async function main() {
   console.log(`${heads.length} Model Card(s) in ${key}`)
   for (const h of heads) {
     const m = model(h)
+    levelOf.set(h, m.level)
     const order = m.build.order || []
     // A shared part an **引入** line imports is intended sharing; only a legacy （共用） share is evidence of a split.
     // A false share (a Model Card Link to another model's part) is a comparison, not a split either.
@@ -98,6 +108,8 @@ async function main() {
     console.log(`G${i + 1}: ${g.heads.map(sh).join(' ')}`)
     for (const e of g.evidence) console.log(`    builds on  ${e.replaceAll(key + '/', '')}`)
     for (const a of g.ask) console.log(`    read       ${a.replaceAll(key + '/', '')}`)
+    const mixed = mixedLevels(g.heads, levelOf)
+    if (mixed) console.log(`    ${mixed}`)
   })
   console.log('\nDecide each group by the nature of its models: one model shares the question and the primitives (agents, choices, technology, timing) and continues them; a Model Card that only borrows a result, compares, or changes the question or the primitives is a model of its own. The size of the book decides nothing.')
 }

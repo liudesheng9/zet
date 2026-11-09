@@ -60,3 +60,11 @@ test('a false share (a Model Card Link to another model\'s part) is named as one
   const h = propose(['K/2|a', 'K/3|a'], [{ from: 'K/3|a', to: 'K/2|a', rests: 1, shared: 0, imports: 0, falseShares: 1, kin: 0, compare: 0 }])
   assert.deepEqual(h[0].evidence, ['K/3|a -> K/2|a: rests-on 1, false share 1'])
 })
+
+test('a candidate group that mixes an empirical model with a formal or concept one is flagged: a theory and its test are two models', async () => {
+  const { mixedLevels } = await import('./model-survey.mjs')
+  const level = new Map([['K/2|a', 'formal'], ['K/3|a', 'empirical'], ['K/4|a', 'empirical'], ['K/5|a', 'concept']])
+  assert.equal(mixedLevels(['K/2|a', 'K/3|a'], level), 'levels mixed (empirical + formal): a theory and its test, or a theory and its estimation, are two models joined by an import; fold only cards of one level')
+  assert.equal(mixedLevels(['K/3|a', 'K/4|a'], level), null)
+  assert.equal(mixedLevels(['K/2|a', 'K/5|a'], level), null)
+})

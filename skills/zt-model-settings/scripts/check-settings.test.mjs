@@ -200,3 +200,32 @@ test('balance advice: an overloaded setting and a one-line setting; a one-line a
   assert.deepEqual(r.balance.map((f) => [f.card, f.what]), [[P + '|b', 'heavy'], [P + '|d', 'light']])
   assert.equal(r.format.length, 0)
 })
+
+test('an empirical model: the data tree and the specification ladder (docs/empirical-models-proposal.md §9.2)', async () => {
+  const { auditEmpirical } = await import('./check-settings.mjs')
+  const H = 'K/5|c'
+  const o = (address, role, line = 'side') => ({ address, role, line, facet: role, title: role })
+  const m = {
+    level: 'empirical', head: { address: H },
+    build: {
+      order: [o(H + '|a', 'data', 'main'), o(H + '|a|a', 'variables'), o(H + '|a|1', 'design', 'main'), o(H + '|a|1|a', 'assumption'),
+        o(H + '|a|2', 'spec', 'main'), o(H + '|a|2|a', 'spec'), o(H + '|a|3', 'chapter', 'main'), o(H + '|a|3|a', 'estimate'), o(H + '|a|3|b', 'spec'), o(H + '|a|4', 'assumption')],
+      variable_uncovered: [{ address: H + '|a|2', symbol: 'Z', fix: 'Z has no row' }],
+      estimate_unbound: [], spec_unbound: [], test_unbound: [], empirical_shape: [],
+    },
+  }
+  const cards = new Map([
+    [H + '|a|a', { body: '| 变量 | 含义 |\n| --- | --- |\n| $y_{it}$ | 结果 |\n| $\\beta$ | 系数 |\n| $W$ | 未用 |' }],
+    [H + '|a|2', { body: '**估计式**\n$$ y_{it} = \\beta X_{it} + Z $$' }],
+    [H + '|a|2|a', { body: '**相对基准的改动**\n加入控制变量。' }],
+    [H + '|a|3|b', { body: '**估计式**\n书中没有写出估计式。' }],
+  ])
+  const r = auditEmpirical(m, cards)
+  assert.equal(r.place.length, 0)
+  assert.deepEqual(r.uncovered.map((x) => x.symbol), ['Z'])
+  assert.deepEqual(r.unused.map((x) => x.symbol), ['W'])
+  assert.deepEqual(r.variant_change.map((x) => x.card), [H + '|a|3|b'])
+  assert.deepEqual(r.spec_in_chapter.map((x) => x.card), [H + '|a|3|b'])
+  assert.deepEqual(r.assumption.map((x) => x.card), [H + '|a|4'])
+  assert.equal(r.ok, false)
+})

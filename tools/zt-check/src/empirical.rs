@@ -239,13 +239,42 @@ pub fn symbols(tex: &str) -> Vec<String> {
                 i = end;
             }
         } else if c == '_' || c == '^' {
-            i = group(&chars, i + 1).0;
+            // OCR writes `_ {f t}`: the group may stand after spaces.
+            let mut at = i + 1;
+            while at < chars.len() && chars[at] == ' ' {
+                at += 1;
+            }
+            i = group(&chars, at).0;
         } else if c.is_ascii_alphabetic() {
             let mut end = i;
             while end < chars.len() && chars[end].is_ascii_alphabetic() {
                 end += 1;
             }
-            let run = chars[i..end].iter().collect::<String>();
+            let mut run = chars[i..end].iter().collect::<String>();
+            // OCR spells a name out letter by letter (`S o c i a l`): TeX shows one name.
+            if run.len() == 1 {
+                let mut letters = vec![chars[i]];
+                let mut at = end;
+                loop {
+                    let mut next = at;
+                    while next < chars.len() && chars[next] == ' ' {
+                        next += 1;
+                    }
+                    let single = next < chars.len()
+                        && next > at
+                        && chars[next].is_ascii_alphabetic()
+                        && !chars.get(next + 1).is_some_and(|c| c.is_ascii_alphabetic());
+                    if !single {
+                        break;
+                    }
+                    letters.push(chars[next]);
+                    at = next + 1;
+                }
+                if letters.len() >= 3 {
+                    run = letters.into_iter().collect();
+                    end = at;
+                }
+            }
             if !FUNCTIONS.contains(&run.as_str()) {
                 push(run);
             }
@@ -539,6 +568,17 @@ mod tests {
             symbols(r"\log Q_{st}=\beta^T\log(1+A_{d(s)t}) + \text{Post}_t"),
             ["Q", r"\beta", "A", "Post"]
         );
+    }
+
+    /// OCR writes `S o c i a l _ {f t}`: TeX ignores the spaces and shows one name, so three or
+    /// more single letters separated by spaces read as one symbol; two stay apart (`p q`).
+    #[test]
+    fn letters_an_ocr_spaced_out_read_as_one_name() {
+        assert_eq!(
+            symbols(r"S o c i a l _ {f t} = \alpha + \beta X _ {f t} + \psi_ {o} + \varepsilon_ {j t} \tag {7}"),
+            ["Social", r"\alpha", r"\beta", "X", r"\psi", r"\varepsilon"]
+        );
+        assert_eq!(symbols("p q + r"), ["p", "q", "r"]);
     }
 
     #[test]

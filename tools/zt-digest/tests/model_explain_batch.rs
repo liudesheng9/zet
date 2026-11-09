@@ -419,7 +419,10 @@ fn a_chain_of_derivation_parts_needs_the_architects_explain_entry() {
     let args = |step: &'static str| ["model", "-Step", step, "-Work", work_arg.as_str(), "-Staging", staged_arg.as_str()];
 
     // The brief writes the context pack the source review is judged against.
-    ok_json(&zt.digest(&args("brief")), "brief");
+    // The brief names its batch: a brief without -Models keeps no model in the work order (dbef9580).
+    let mut brief = args("brief").to_vec();
+    brief.extend(["-Models", model.as_str()]);
+    ok_json(&zt.digest(&brief), "brief");
 
     // plan-status: the chain has no design, so the plan is a fault, not a gap the writer fills alone.
     let status = ok_json(&zt.digest(&args("plan-status")), "plan-status");

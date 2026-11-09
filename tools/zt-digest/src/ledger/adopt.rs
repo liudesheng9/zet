@@ -76,6 +76,11 @@ struct Legacy {
     derived: Vec<Value>,
     /// Scope this folder cannot supply: adoption needs an explicit preparation (R417).
     missing: Vec<Value>,
+    /// `-Settled`: the operator says the book's Literature tree is settled (reorganized after the digest, so
+    /// its group anchors and owned Cards moved). A group adoption cannot verify is closed, never resumed.
+    settled: bool,
+    /// The groups a settled adoption closes: their frozen anchors are not checked again.
+    closed: Vec<u64>,
 }
 
 /// One group's verified or missing output, from the actual Cards.
@@ -432,6 +437,8 @@ fn resolve(out: &str, variant: &str) -> Result<Legacy> {
         retained_outputs,
         derived,
         missing,
+        settled: false,
+        closed: Vec::new(),
     })
 }
 
@@ -784,7 +791,7 @@ fn model_fact(
         }
     }
     let mut faults = BTreeMap::new();
-    for name in ["closure", "forward", "unanchored", "beyond_level", "reach_in"] {
+    for name in ["closure", "forward", "unanchored", "beyond_level", "reach_in", "empirical_shape", "estimate_unbound", "spec_unbound", "test_unbound", "variable_uncovered"] {
         let count = model["build"][name].as_array().map(Vec::len).unwrap_or(0);
         if count > 0 {
             faults.insert(name.to_string(), count);
@@ -906,6 +913,9 @@ fn plan_document(
         let unit = format!("digest/g{:03}@1", fact.n);
         match fact.state {
             "verified" => verified.push(json!({"unit":unit,"kind":"group","cards":fact.cards.len()})),
+            "missing" if legacy.settled => {
+                incomplete.push(json!({"unit":unit,"kind":"group","reason":format!("{}; the Literature tree is settled, so the group is closed, never resumed under a guessed anchor", fact.reason)}));
+            }
             "missing" => {
                 missing.push(json!({
                     "what":format!("group {} anchor", fact.n),
@@ -1055,6 +1065,7 @@ fn plan_document(
         "schema_version":1,
         "kind":"adoption_plan",
         "status":if ready {"ready"} else {"insufficient_evidence"},
+        "settled":legacy.settled,
         "out":legacy.out.to_string_lossy(),
         "variant":legacy.variant,
         "created_at":canon::utc_now_o(),
@@ -1409,6 +1420,10 @@ fn prepared_manifest(legacy: &Legacy, snapshot: &Snapshot) -> Result<Value> {
             "file":plain(&group.file),
             "sections":group.sections.iter().map(|(name, _)| json!(name)).collect::<Vec<_>>(),
         }));
+        // A group a settled adoption closes: its anchor moved with the reorganized tree.
+        if legacy.closed.contains(&group.n) {
+            groups.last_mut().expect("the group just pushed")["closed"] = json!(true);
+        }
     }
     let mut manifest = Map::new();
     manifest.insert("citation_key".into(), json!(legacy.key));
@@ -1646,6 +1661,28 @@ fn apply_plan(
         events += 1;
         adopted.push(json!({"unit":unit,"kind":"group","cards":fact.cards.len()}));
     }
+    // `-Settled`: the book's Literature tree was reorganized after its digest, so a group adoption cannot
+    // verify is closed for good (a content failure that names why), never resumed under a moved anchor
+    // (ebrill2001modern and hansen2021demand on the live box, 2026-11-09).
+    let settled = plan["settled"] == json!(true);
+    if settled {
+        for fact in group_facts.iter().filter(|fact| fact.state != "verified") {
+            let unit = format!("digest/g{:03}@1", fact.n);
+            let input_hash: Option<String> =
+                tx.query_row("SELECT input_hash FROM units WHERE id=?1", [&unit], |row| row.get(0)).optional()?;
+            let Some(input_hash) = input_hash else { continue };
+            let fault = json!({
+                "schema_version":1, "unit":unit, "input_hash":input_hash, "code":"settled_literature",
+                "cause":format!("the Literature tree is settled (reorganized after the digest): {}; this group is closed, not resumed", fact.reason),
+            });
+            tx.execute(
+                "UPDATE units SET state='failed',owner=NULL,lease_until=NULL,retry_after=NULL,fault_class='content',fault_json=?2 WHERE id=?1",
+                params![unit, canon::canonical_json(&fault)],
+            )?;
+            event(&tx, &unit, None, None, "settled", &json!({"reason":fact.reason,"plan":plan_record}))?;
+            events += 1;
+        }
+    }
     if let Some((path, sha)) = &prepare_terms(p) {
         let unit = "terms/book@1".to_string();
         let result = json!({
@@ -1686,9 +1723,13 @@ fn apply_plan(
     }
     for fact in model_facts {
         let group_unit = format!("digest/g{:03}@1", group_of_address(&fact.address));
-        let group_hash: Option<String> = tx
-            .query_row("SELECT input_hash FROM units WHERE id=?1", [&group_unit], |row| row.get(0))
-            .optional()?;
+        // On a settled book a group adoption could not verify is closed; its models stand on the prepared book.
+        let closed = settled && !group_facts.iter().any(|g| g.state == "verified" && format!("digest/g{:03}@1", g.n) == group_unit);
+        let group_hash: Option<String> = if closed {
+            None
+        } else {
+            tx.query_row("SELECT input_hash FROM units WHERE id=?1", [&group_unit], |row| row.get(0)).optional()?
+        };
         let producer = if group_hash.is_some() { group_unit.as_str() } else { "prepare/book@1" };
         let inputs = if fact.state == "verified" {
             json!({
@@ -1995,7 +2036,7 @@ fn missing_report(directory: &Path, variant: &str, apply: bool, error: &anyhow::
 }
 
 pub(crate) fn cli(argv: &[String]) -> Result<i32> {
-    let parsed = Args::parse(&argv[1..], &["Out", "Variant"], &["Apply"]);
+    let parsed = Args::parse(&argv[1..], &["Out", "Variant"], &["Apply", "Settled"]);
     let a = match parsed {
         Ok(a) => a,
         Err(error) => {
@@ -2059,15 +2100,19 @@ pub(crate) fn cli(argv: &[String]) -> Result<i32> {
             );
         }
     }
-    let legacy = match resolve(&out, &variant) {
+    let mut legacy = match resolve(&out, &variant) {
         Ok(legacy) => legacy,
         Err(error) => return missing_report(&directory, &variant, apply, &error),
     };
+    legacy.settled = a.flag("Settled");
     let mut zt = crate::zt::start()?;
     let (plan, snapshot, group_facts, model_facts, notes) = match analyse(&legacy, &mut zt) {
         Ok(facts) => facts,
         Err(error) => return missing_report(&directory, &variant, apply, &error),
     };
+    if legacy.settled {
+        legacy.closed = group_facts.iter().filter(|fact| fact.state != "verified").map(|fact| fact.n).collect();
+    }
     let mut plan = plan;
     plan["proposal_hash"] = json!(proposal_hash(&plan));
     // R416: the applied ledger names the plan the operator reviewed. A read-only run writes a

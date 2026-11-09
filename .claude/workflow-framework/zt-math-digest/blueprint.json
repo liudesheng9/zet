@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.11.41",
+  "version": "5.12.0",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
   "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
   "preflight": {
@@ -116,6 +116,15 @@
       "min": 1,
       "description": "concept models per batch (default 10)"
     },
+    "evidenceLink": {
+      "type": "boolean",
+      "description": "link the Finding Cards to the estimates of the empirical models after the model and Findings layers (default true)"
+    },
+    "perEmpirical": {
+      "type": "number",
+      "min": 1,
+      "description": "empirical models (level 3) per architect batch (default 4)"
+    },
     "dshPerBatch": {
       "type": "number",
       "min": 1,
@@ -139,7 +148,8 @@
       "type": "string",
       "enum": [
         "concept",
-        "formal"
+        "formal",
+        "empirical"
       ],
       "description": "build every model of the run to this level"
     },
@@ -1924,6 +1934,6 @@
   },
   "composedFrom": {
     "base": "zt-digest-base",
-    "version": "5.11.41"
+    "version": "5.12.0"
   }
 }

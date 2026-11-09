@@ -125,7 +125,9 @@ fn the_step_writes_coverage_json_and_one_short_line() {
     assert_eq!(coverage["schema_version"], json!(1));
     assert_eq!(coverage["units"], json!(4));
     assert_eq!(coverage["faults"]["c1"], json!(2));
-    assert_eq!(coverage["faults"]["c2"], json!(2));
+    // K/1 is an anchor in audit-cards.json: an anchor heads its group, so its file-only span is no C2
+    // fault since bb6a84b2 (2026-11-06); only K/2's span counts.
+    assert_eq!(coverage["faults"]["c2"], json!(1));
     assert_eq!(coverage["faults"]["c4"], json!(0));
     assert_eq!(coverage["sections"].as_array().unwrap().len(), 2);
     // The anchor's only span names a file, so it carries no lines and no number can be checked;

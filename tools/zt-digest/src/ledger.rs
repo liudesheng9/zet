@@ -379,6 +379,24 @@ fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
         .with_context(|| format!("incomplete prepared contract: {key}"))
 }
 
+/// The Model Card a Model unit builds: its `header`, or for a unit adoption recorded as verified (kind
+/// `model_adopted`, reopened with `-Recheck` for a rebuild) its `model`: those inputs name the model but
+/// no header, and their input hash must not change (ebrill2001modern pilot 2026-11-09: model-finish
+/// refused both rebuilt models with "incomplete prepared contract: header").
+fn model_header(inputs: &Value) -> Result<&str> {
+    match field(inputs, "header") {
+        Ok(header) => Ok(header),
+        Err(_) if inputs["kind"] == json!("model_adopted") => field(inputs, "model"),
+        Err(error) => Err(error),
+    }
+}
+
+/// The Model Card's authored fingerprint when the unit was prepared, recorded as evidence only: an
+/// adopted-verified unit reopened for a rebuild has none (ebrill2001modern pilot 2026-11-09).
+fn start_fingerprint(inputs: &Value) -> Value {
+    inputs.get("fingerprint").filter(|f| f.is_string()).cloned().unwrap_or(Value::Null)
+}
+
 fn check_file(record: &Value, label: &str) -> Result<()> {
     let path = Path::new(field(record, "path")?);
     let bytes = std::fs::read(path)
@@ -613,9 +631,12 @@ impl Prepared {
                 });
             }
             let mut addresses = vec![field(&contract, "citation_key")?.to_string()];
+            // A group a settled adoption closed (`ledger adopt -Settled`) keeps no anchor to check: it moved
+            // with the reorganized Literature tree, and the group never runs again.
             addresses.extend(
                 groups
                     .iter()
+                    .filter(|g| g["closed"] != json!(true))
                     .map(|g| g["anchor"].as_str().unwrap().to_string()),
             );
             // T21: a prepared root or anchor that no longer sits at its frozen address is a precise
@@ -6984,7 +7005,7 @@ fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64, rech
         // atkinson2015lectures: the completion of a rechecked unit inserts its outputs again; the earlier ones
         // (one row per output key) made it fail on the outputs primary key. They leave with the done state, and
         // the event names them.
-        let mut removed: Vec<String> = Vec::new();
+        let removed: Vec<String>;
         {
             let mut statement = tx.prepare("SELECT output_key FROM outputs WHERE unit_id=?1 ORDER BY output_key")?;
             removed = statement.query_map([&unit], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -6995,6 +7016,44 @@ fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64, rech
             "UPDATE units SET state='retry',attempts=0,owner=NULL,lease_until=NULL,retry_after=NULL WHERE id=?1",
             [&unit],
         )?;
+        // ebrill2001modern pilot (2026-11-09): a Model unit adoption recorded as verified names its model, no
+        // header and no producer, so model-finish cannot check a rebuild of it. Reopened (for a recheck, or after a
+        // failed rebuild), it takes
+        // the open form adoption gives an unfinished model, bound to its group's digest unit.
+        if unit.starts_with("models/") {
+            let inputs: Value = serde_json::from_str(&tx.query_row("SELECT inputs_json FROM units WHERE id=?1", [&unit], |r| r.get::<_, String>(0))?)?;
+            if inputs["kind"] == json!("model_adopted") {
+                let model = s(&inputs["model"]);
+                let group = model
+                    .split_once('/')
+                    .and_then(|(_, rest)| rest.split('|').next())
+                    .and_then(|n| n.parse::<i64>().ok())
+                    .with_context(|| format!("{unit}: the model `{model}` names no group"))?;
+                // The producer adoption recorded: the group, or the prepared book for a model of a group a
+                // settled adoption closed (`ledger adopt -Settled`).
+                let recorded: Option<String> = tx
+                    .query_row("SELECT needs_id FROM deps WHERE unit_id=?1 ORDER BY needs_id LIMIT 1", [&unit], |r| r.get(0))
+                    .optional()?;
+                let producer = recorded.unwrap_or_else(|| format!("digest/g{group:03}@1"));
+                let producer_hash: String = tx
+                    .query_row("SELECT input_hash FROM units WHERE id=?1", [&producer], |r| r.get(0))
+                    .optional()?
+                    .with_context(|| format!("{unit}: its group unit {producer} is not registered"))?;
+                let open = json!({
+                    "schema_version":1,
+                    "kind":"model_adoption_need",
+                    "model":model,
+                    "header":model,
+                    "producer":{"producer":producer,"producer_input_hash":producer_hash},
+                    "status":"",
+                    "reason":"a verified adopted model reopened for a recheck or a rebuild",
+                });
+                tx.execute(
+                    "UPDATE units SET inputs_json=?2,input_hash=?3 WHERE id=?1",
+                    rusqlite::params![&unit, open.to_string(), canon::hash_value(&open)],
+                )?;
+            }
+        }
         event(
             tx,
             &unit,
@@ -7529,6 +7588,8 @@ const TRANSIENT_CAUSES: &[&str] = &[
     // atkinson2015lectures (2026-11-01): zt-check refuses a read set whose archive revision moved under it
     // ("incomplete checker inputs: changing read view") while the digest writers commit beside the check.
     "changing read view", "changing view",
+    // autor2004will (2026-11-09): the same for the title catalogue the check classifies against.
+    "changing or partial title view",
 ];
 
 pub(crate) fn cause_code(cause: &str) -> &'static str {
@@ -13006,7 +13067,7 @@ fn structure_lines(body: &str) -> Vec<String> {
 /// state and the authored Cards. It writes nothing; the caller publishes and commits.
 fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Value) -> Result<Value> {
     use std::collections::{BTreeMap, BTreeSet};
-    let header = field(inputs, "header")?;
+    let header = model_header(inputs)?;
     let base = &inputs["producer"];
     let producer = field(base, "producer")?;
     let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
@@ -13208,7 +13269,7 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         bail!("the model's level is `{level}`, the accepted plan says `{}`", s(&plan["level"]));
     }
     let build = &model["build"];
-    for name in ["closure", "forward", "unanchored", "beyond_level", "reach_in"] {
+    for name in ["closure", "forward", "unanchored", "beyond_level", "reach_in", "empirical_shape", "estimate_unbound", "spec_unbound", "test_unbound", "variable_uncovered"] {
         if build[name].as_array().is_some_and(|faults| !faults.is_empty()) {
             bail!("the model has build faults ({name}); repair the model before completing it");
         }
@@ -13387,7 +13448,7 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         "parts": part_map,
         "part_order": part_order,
         "head_fingerprint": crate::calls::authored_fingerprint(head_card),
-        "start_fingerprint": field(inputs, "fingerprint")?,
+        "start_fingerprint": start_fingerprint(inputs),
         "card_fingerprints": fingerprints,
         "card_unlinked_fingerprints": unlinked_fingerprints,
         "structure": {"lines":structure,"fingerprint":canon::hash_value(&json!(structure))},
@@ -13521,7 +13582,7 @@ fn model_finish(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, check_only: b
     let explain = if result["explanation"]["applicable"] == json!(true) && own_derivations > 0 {
         let wanted = json!({
             "schema_version":1,
-            "model":field(&inputs, "header")?,
+            "model":model_header(&inputs)?,
             "unit":unit,
             "plan_hash":result["plan_hash"],
             "parts":result["explanation"]["needs"].as_array().unwrap().iter().map(|n| n["address"].clone()).collect::<Vec<_>>(),
@@ -13690,7 +13751,7 @@ fn model_deps(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Result<Value
     if canon::hash_value(&inputs) != claimed.input_hash {
         bail!("Model unit input hash mismatch");
     }
-    let header = field(&inputs, "header")?.to_string();
+    let header = model_header(&inputs)?.to_string();
     let (dir, plan_hash, plan, compiler) = model_plan_state(p, &header)?;
     if !ps::eq(&s(&plan["model"]), &header) {
         bail!("the plan for `{header}` describes `{}`", s(&plan["model"]));
@@ -15463,8 +15524,17 @@ fn resume_run(p: &Prepared) -> Result<Value> {
         .filter(|unit| is_superseded(unit))
         .filter_map(|unit| unit["id"].as_str().map(str::to_string))
         .collect::<std::collections::BTreeSet<_>>();
+    // A group a settled adoption closed (`ledger adopt -Settled`): its anchor moved with the reorganized
+    // Literature tree, so it is terminal history too, never resumed under a guessed anchor.
+    let settled = before["units"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|unit| unit["fault"]["code"] == "settled_literature")
+        .filter_map(|unit| unit["id"].as_str().map(str::to_string))
+        .collect::<std::collections::BTreeSet<_>>();
     for (unit, layer, state, attempts) in rows {
-        if superseded.contains(&unit) {
+        if superseded.contains(&unit) || settled.contains(&unit) {
             // A superseded revision is terminal history, never outstanding work.
             continue;
         }
@@ -18475,6 +18545,12 @@ mod tests {
         // Every other cause keeps its old reading.
         assert_eq!(cause_code("card `K/1` changed since the plan"), "check_failed");
         assert_eq!(cause_code("transport_closed"), "provider_transient");
+        // autor2004will (2026-11-09): the title catalogue moved while the model layer wrote beside the
+        // findings check; that check never ran, so it is retried, never a content failure.
+        assert_eq!(
+            cause_code("zt-check did not run: incomplete checker classification: changing or partial title view"),
+            "provider_transient"
+        );
         // atkinson2015lectures: a check whose read view moved is retried, never a content failure.
         assert_eq!(
             cause_code("zt-check did not run: incomplete checker inputs: changing read view"),
@@ -19337,6 +19413,48 @@ mod term_card_ledger_tests {
         tx.commit().unwrap();
         assert_eq!(count(&conn, "SELECT count(*) FROM outputs WHERE unit_id='models/g009-m0000@1'"), 0);
         assert_eq!(count(&conn, "SELECT count(*) FROM units WHERE id='models/g009-m0000@1' AND state!='done'"), 1);
+        // ebrill2001modern pilot (2026-11-09): a Model unit adoption recorded as verified names its model but no
+        // header and no producer; reopened with -Recheck for a rebuild, it takes the open form adoption gives an
+        // unfinished model, bound to its group's digest unit, so model-finish can check the rebuild.
+        conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,attempts,inputs_json,input_hash,progress_json,created_by,created_at) SELECT 'digest/g009@1','digest','g009',1,'done',1,inputs_json,'h9',progress_json,created_by,created_at FROM units WHERE id='termcards/t001@1'", []).unwrap();
+        let adopted = json!({"schema_version":1,"kind":"model_adopted","model":"K/9|b","level":"formal","plan_hash":"p","build_order":["K/9|b|a"]});
+        conn.execute(
+            "INSERT INTO units(id,layer,logical_key,revision,state,attempts,inputs_json,input_hash,progress_json,created_by,created_at) SELECT 'models/adopted-K-9-b@1','models','adopted-K-9-b',1,'done',0,?1,?2,progress_json,created_by,created_at FROM units WHERE id='termcards/t001@1'",
+            [adopted.to_string(), canon::hash_value(&adopted)],
+        )
+        .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        super::reopen_units(&tx, &["models/adopted-K-9-b@1".to_string()], "rebuild at level 3", 1, true).unwrap();
+        tx.commit().unwrap();
+        let (inputs, hash): (String, String) = conn
+            .query_row("SELECT inputs_json,input_hash FROM units WHERE id='models/adopted-K-9-b@1'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        let inputs: Value = serde_json::from_str(&inputs).unwrap();
+        assert_eq!(inputs["header"], json!("K/9|b"), "{inputs}");
+        assert_eq!(inputs["producer"], json!({"producer":"digest/g009@1","producer_input_hash":"h9"}), "{inputs}");
+        assert_eq!(hash, canon::hash_value(&inputs), "the input hash follows the new inputs");
+        assert_eq!(super::model_header(&inputs).unwrap(), "K/9|b");
+        // model-finish records no start fingerprint for it, and refuses nothing for that.
+        assert_eq!(super::start_fingerprint(&inputs), Value::Null);
+        assert_eq!(super::start_fingerprint(&json!({"fingerprint":"f1"})), json!("f1"));
+        // A settled adoption (`ledger adopt -Settled`) bound a model of a closed group to the prepared book; the
+        // reopen keeps the producer adoption recorded (ebrill2001modern/4|d|a on the live box, 2026-11-09).
+        conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,attempts,inputs_json,input_hash,progress_json,created_by,created_at) SELECT 'prepare/book@1','prepare','book',1,'done',1,inputs_json,'hp',progress_json,created_by,created_at FROM units WHERE id='termcards/t001@1'", []).unwrap();
+        let closed = json!({"schema_version":1,"kind":"model_adopted","model":"K/4|d|a","level":"formal","plan_hash":"p","build_order":["K/4|d|a|a"]});
+        conn.execute(
+            "INSERT INTO units(id,layer,logical_key,revision,state,attempts,inputs_json,input_hash,progress_json,created_by,created_at) SELECT 'models/adopted-K-4-d-a@1','models','adopted-K-4-d-a',1,'done',0,?1,?2,progress_json,created_by,created_at FROM units WHERE id='termcards/t001@1'",
+            [closed.to_string(), canon::hash_value(&closed)],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO deps(unit_id,needs_id,condition) VALUES('models/adopted-K-4-d-a@1','prepare/book@1','success')", []).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        super::reopen_units(&tx, &["models/adopted-K-4-d-a@1".to_string()], "rebuild at level 3", 1, true).unwrap();
+        tx.commit().unwrap();
+        let inputs: Value = serde_json::from_str(
+            &conn.query_row("SELECT inputs_json FROM units WHERE id='models/adopted-K-4-d-a@1'", [], |r| r.get::<_, String>(0)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inputs["producer"], json!({"producer":"prepare/book@1","producer_input_hash":"hp"}), "{inputs}");
         // -Recheck reopens a done unit only in the models layer.
         conn.execute("UPDATE units SET state='done' WHERE id='termcards/t002@1'", []).unwrap();
         let tx = conn.unchecked_transaction().unwrap();

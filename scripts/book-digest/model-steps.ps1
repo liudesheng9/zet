@@ -46,6 +46,8 @@ param(
     [string]$SkipForms = '',
     [int]$PerConcept = 2,
     [int]$PerSonnet = 8,
+    # Empirical models per architect batch (docs/empirical-models-proposal.md §8.5).
+    [int]$PerEmpirical = 4,
     [int]$Take = 8,
     [string]$Owner = 'models',
     [int]$MaxSentences = 12,
@@ -215,10 +217,12 @@ switch ($Step) {
         $groupOf = { param($m) $g = [int]$m.group; if (-not $g) { $g = [int]("$($m.address)".Split('/')[1].Split('|')[0]) }; $g }
         $todo = @($todo | Sort-Object @{ Expression = { & $groupOf $_ } }, @{ Expression = { "$($_.address)" } })
         $concept = @($todo | Where-Object { $(if ($Level) { $Level } else { "$($_.level)" }) -eq 'concept' })
-        $formal = @($todo | Where-Object { $(if ($Level) { $Level } else { "$($_.level)" }) -ne 'concept' })
+        $empirical = @($todo | Where-Object { $(if ($Level) { $Level } else { "$($_.level)" }) -eq 'empirical' })
+        $formal = @($todo | Where-Object { @('concept', 'empirical') -notcontains $(if ($Level) { $Level } else { "$($_.level)" }) })
         $batches = @()
         for ($i = 0; $i -lt $concept.Count; $i += [Math]::Max(1, $PerConcept)) { $batches += @{ kind = 'concept'; models = @($concept[$i..([Math]::Min($i + [Math]::Max(1, $PerConcept) - 1, $concept.Count - 1))] | ForEach-Object { "$($_.address)" }) } }
         for ($i = 0; $i -lt $formal.Count; $i += [Math]::Max(1, $PerSonnet)) { $batches += @{ kind = 'formal'; models = @($formal[$i..([Math]::Min($i + [Math]::Max(1, $PerSonnet) - 1, $formal.Count - 1))] | ForEach-Object { "$($_.address)" }) } }
+        for ($i = 0; $i -lt $empirical.Count; $i += [Math]::Max(1, $PerEmpirical)) { $batches += @{ kind = 'empirical'; models = @($empirical[$i..([Math]::Min($i + [Math]::Max(1, $PerEmpirical) - 1, $empirical.Count - 1))] | ForEach-Object { "$($_.address)" }) } }
         Save 'batches.json' $batches
         # The plan as one short string: `concept:a,b|formal:c` (#180).
         $plan = (@($batches | ForEach-Object { "$($_.kind):$((@($_.models | ForEach-Object { Short "$_" })) -join ',')" }) -join ';')
@@ -282,12 +286,14 @@ switch ($Step) {
         $still = @($plans | Where-Object { $_.status -eq 'planned' })
         $go = @($still | Where-Object { $deferred.model -notcontains $_.model })
         $derive = @($go | Where-Object { [int]$_.derivations -gt 0 }).Count -gt 0
+        # An empirical model is reviewed against its source even without a derivation (§8.2 step 5).
+        $review = @($go | Where-Object { "$($_.level)" -eq 'empirical' }).Count -gt 0
         if ($deferred.Count) {
             $d = Compiler 'defer' @('-Models', (($deferred | ForEach-Object { $_.model } | Select-Object -Unique) -join ','))
             if (-not $d.json -or $d.json.ok -ne $true) { Fail 'defer' $d; break }
         }
         $line = @{
-            ok = $true; step = 'fill'; plans = $plans.Count; derive = [bool]$derive
+            ok = $true; step = 'fill'; plans = $plans.Count; derive = [bool]$derive; review = [bool]$review
             deferred = (@($deferred | ForEach-Object { "$(Short "$($_.model)"):$($_.why)" }) -join ';')
             statuses = (Status-List $plans)
         }

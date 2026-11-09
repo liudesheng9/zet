@@ -21,6 +21,29 @@ use serde_json::{Value, json};
 use std::sync::LazyLock;
 
 static GROUP_OF_ADDRESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^/]+/(\d+)(\||$)").unwrap());
+static SOURCE_SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"§\s*([0-9]+(?:\.[0-9]+)*)").unwrap());
+
+/// The group the Model Card's source line names: the first `§x.y` it cites that a group's heading opens
+/// with (`6.1 估计模型的实施`). A reorganized Literature tree renumbers the Cards, so neither the address
+/// nor an old owned log tells the group any more (becker2025division/6|g is the paper's §6, group 13).
+pub(crate) fn group_from_source(body: &str, groups: &[Value]) -> Option<i64> {
+    for line in body.lines().filter(|l| l.contains("来源")) {
+        for c in SOURCE_SECTION.captures_iter(line) {
+            let number = &c[1];
+            for g in groups {
+                let opens = pipe(&g["headings"]).iter().any(|h| {
+                    let h = s(h);
+                    let head = h.trim();
+                    head == number || head.strip_prefix(number).is_some_and(|rest| rest.starts_with([' ', '\u{3000}']))
+                });
+                if opens {
+                    return g["n"].as_i64();
+                }
+            }
+        }
+    }
+    None
+}
 static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#{1,4}\s").unwrap());
 
 pub fn cli(argv: &[String]) -> Result<i32> {
@@ -66,9 +89,14 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
     let structure = answers.get(1).cloned().unwrap_or(Value::Null);
     let found = answers.get(2).cloned().unwrap_or(Value::Null);
 
-    // Which group wrote the Model Card.
-    let mut group: Option<i64> = None;
-    for name in ps::child_files(staging, "owned-g", ".txt") {
+    // Which group wrote the Model Card: the one its source line names first (a reorganized tree renumbers the
+    // Cards, so an owned log may name an old address), then the owned log, then the address.
+    let manifest_file = ps::join(staging, "manifest.json");
+    let manifest = if ps::exists(&manifest_file) { Some(util::read_json(&manifest_file)?) } else { None };
+    let mut group: Option<i64> = manifest
+        .as_ref()
+        .and_then(|m| group_from_source(&s(&card["body"]), &pipe(&m["groups"]).into_iter().cloned().collect::<Vec<_>>()));
+    for name in ps::child_files(staging, "owned-g", ".txt").into_iter().filter(|_| group.is_none()) {
         let path = ps::join(staging, &name);
         let owned: Vec<String> = ps::read_lines(&path)?.iter().map(|l| l.trim().to_string()).collect();
         if ps::is_in(model, &owned) {
@@ -84,8 +112,6 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
     }
     let anchor = group.filter(|g| *g != 0).map(|g| format!("{key}/{g}"));
 
-    let manifest_file = ps::join(staging, "manifest.json");
-    let manifest = if ps::exists(&manifest_file) { Some(util::read_json(&manifest_file)?) } else { None };
     let entry = match (&manifest, group.filter(|g| *g != 0)) {
         (Some(m), Some(g)) => pipe(&m["groups"]).into_iter().find(|e| same_number(&e["n"], g)).cloned(),
         _ => None,
@@ -107,6 +133,8 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
         "第 1 层，概念模型（concept）"
     } else if ps::eq(&level, "formal") && !structure["level"].is_null() {
         "第 2 层，形式模型（formal）"
+    } else if ps::eq(&level, "empirical") && !structure["level"].is_null() {
+        "第 3 层，实证模型（empirical）"
     } else {
         "未定（按模型说明第 0 步决定）"
     };
@@ -380,6 +408,22 @@ mod tests {
     // import one (owner decision 4) instead of restating it: per model its setting (a 整块 block) and
     // a few result Cards; this book's models and Cards that are no model's parts stay out; the list
     // stops at `max` lines.
+    // 2026-11-09, the live migration of the empirical models: zt-literature-organize renumbered the trees, so
+    // `becker2025division/6|g` (the paper's §6) read as group 6 (§4) by its address, and an owned log still named
+    // `ebrill2001modern/5|a` from before the reorganization. The Model Card's source line names its sections.
+    #[test]
+    fn the_source_line_names_the_models_group() {
+        let groups = vec![
+            json!({"n": 6, "headings": ["4 封闭经济中的劳动分工", "4.1 封闭经济中的利润最大化"]}),
+            json!({"n": 12, "headings": ["5.2 基准模型中的开放经济均衡"]}),
+            json!({"n": 13, "headings": ["6 模型的结构估计与量化", "6.1 估计模型的实施", "6.2 出口固定成本"]}),
+        ];
+        assert_eq!(super::group_from_source("问题。\n\n来源：[[B]] §6、§6.1、§6.2", &groups), Some(13));
+        assert_eq!(super::group_from_source("来源：[[B]] §5.2", &groups), Some(12));
+        assert_eq!(super::group_from_source("来源：[[B]] §5", &groups), None, "5 is no heading's number (5.2 is another section)");
+        assert_eq!(super::group_from_source("没有来源行。", &groups), None);
+    }
+
     #[test]
     fn the_catalogue_lists_other_books_settings_and_results() {
         let row = |address: &str, title: &str, facet: Option<&str>| json!({ "address": address, "title": title, "facet": facet, "type": "model" });

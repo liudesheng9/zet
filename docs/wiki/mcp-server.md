@@ -549,6 +549,7 @@ The Lock paragraph itself is checked end to end by `scripts/book-digest/tests/ag
 - **`INSTRUCTIONS` breaks its own Card-language rule** in one place ("use insert_card with `before`; A Hub Card"): a semicolon joins two sentences and the next one starts with a capital.
 
 ## Change history
+- `2026-11-08` — zt 0.61.0 (af6e89e4): `level` takes `empirical` (aliases 3, l3, 实证, 实证模型) wherever a Model Card level is set or filtered, and the tool texts name L3; a `get_model` answer carries the role faults (`empirical_shape`, `estimate_unbound`, `spec_unbound`, `test_unbound`, `variable_uncovered`, `evidence_bound`) and `role` on each order entry. Tests: `tests/model_levels.rs`.
 - `2026-11-05` — zt 0.58.0: `set_literature_type`; `create_literature` and batch items take `literature_type`; `list_trees` and `get_card` report it.
 - `2026-11-03` — #255: the GUI's `/api/card` became lean (its first 50 inbound entries, the stored text on `text=1`); the MCP `get_card` answer is unchanged. `tests/workspaces_mcp.rs` compares `get_card` with `/api/card?…&sides=all&inbound=all&text=1`, and `tests/term_editing.rs` reads the GUI text with `text=1`.
 - `2026-11-02` — #242: the GUI's `/api/card` now carries one Side successor and `sides_count` unless asked for `sides=all`, so `indexed_model_context_matches_the_gui_full_snapshot_for_shared_math_and_human_links` (`tests/workspaces_mcp.rs`) reads its full-Snapshot oracle with `sides=all`. `get_card` itself is unchanged and still lists every Side successor.

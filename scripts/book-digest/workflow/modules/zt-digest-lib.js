@@ -1,4 +1,6 @@
-// ==== module zt-digest-lib v59 ====
+// ==== module zt-digest-lib v60 ====
+// 60 (docs/empirical-models-proposal.md §8.5): level 3. `level` takes empirical, `perEmpirical` (default 4) sizes an
+// empirical architect batch, and ARCH_EMPIRICAL names the empirical architect's instructions (model-architect-empirical.md).
 // 58 (2026-11-06, the owner's order: three times the Card faithful check per job): a card job can be one
 // conversation of several messages (an entry's `then`). A turn thinks only about what its user message gave it,
 // so the manager, and not a tool result, hands over each part.
@@ -171,8 +173,12 @@ function zdMake(ctx, p) {
   const PER_SONNET = Math.max(1, A.perSonnet || 8)
   const DSH_PER_BATCH = Math.min(ZD_PER_MANAGER_MAX, Math.max(1, A.dshPerBatch || 8))
   const REBUILD = !!A.rebuild
-  const LEVEL = ['concept', 'formal'].includes(A.level) ? A.level : null
+  const LEVEL = ['concept', 'formal', 'empirical'].includes(A.level) ? A.level : null
   const PER_CONCEPT = Math.max(1, A.perConcept || 10)
+  // Empirical models per architect batch (docs/empirical-models-proposal.md §8.5).
+  const PER_EMPIRICAL = Math.max(1, A.perEmpirical || 4)
+  // The empirical architect's instructions (§8.2 step 3); the formal architect keeps model-architect.md.
+  const ARCH_EMPIRICAL = `${SCRIPTS}\\model-architect-empirical.md`
   const BRIEF_EFFORT = atLeastHigh(A.briefEffort, 'briefEffort')
   const DERIVE_EFFORT = atLeastHigh(A.deriveEffort, 'deriveEffort')
   const REVIEW_EFFORT = atLeastHigh(A.reviewEffort, 'reviewEffort')
@@ -1141,13 +1147,13 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
     LOCK: ZD_LOCK, lockRefusal: zdLockRefusal, lockSaid: zdLockSaid, lockStop: zdLockStop,
     // Owned provider resources (R322-R330): the owner of each recorded id, the cleanup phase, the run report.
     resourceOwner, CLEANUP_PHASE, ledgerReport,
-    runCards, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET, PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL,
+    runCards, profile, ARCH_DOC, ARCH_SUPPLEMENT, ARCH_EMPIRICAL, MODEL_WORK, PER_SONNET, PER_CONCEPT, PER_EMPIRICAL, DSH_PER_BATCH, REBUILD, LEVEL,
     BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, COMPILER_DOCS, SKIP_FORMS,
   }
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '59', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '60', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

@@ -357,6 +357,12 @@
       }
     },
     {
+      "label": "^evidence-link: evidence link$",
+      "answer": {
+        "answer": "{\"ok\":true,\"findings\":0,\"estimates\":0,\"linked\":0,\"unmatched\":0,\"ambiguous\":0,\"writes\":0,\"file\":\"D:\\\\x\\\\Key\\\\evidence-link.json\"}"
+      }
+    },
+    {
       "label": "^term-link: drive link$",
       "answer": {
         "answer": "{\"ok\":true,\"status\":\"done\",\"unit\":\"termlink/book@1\",\"cards_changed\":0,\"links_added\":0,\"second_cards_changed\":0,\"second_cards_refused\":0}"

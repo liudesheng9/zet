@@ -3,6 +3,7 @@ block: models-and-math
 title: Model structure and math units
 paths:
   - "src/model.rs"
+  - "src/model/**"
   - "src/math.rs"
   - "tests/model_*.rs"
   - "tests/self_sufficient_models.rs"
@@ -429,6 +430,14 @@ The shape `get_model` returns (MCP adds `body` to `head` and to each part). Valu
 
 None: the block reads no flag, environment variable, or config key; its limits (`Facet::MAX_CHARS`, `CORE_BUDGET`, `MAIN_RESULTS`, `HIGH_LOAD`, `COMPANIONS`, the 140-character note clip) are compile-time constants in `src/model.rs` and `src/math.rs`.
 
+### Empirical models (level 3)
+
+A Model Card of level `empirical` (`3`, `l3`, `实证`, `实证模型`) is a model the source estimates from data (docs/empirical-models-proposal.md). The level is stored in `model_level` like the other two; the archive's CHECK was widened by one cards-table rebuild (`ensure_empirical_level` in `src/main.rs`, backup `zt.sqlite3.pre-empirical-models-*.bak`, the Cited-Cards migration's pattern).
+
+- **Roles.** A part's role is its facet prefix, read by `zt_check::empirical::role_of` (shared by zt's build report and the digest's evidence check): `数据`, `变量表`, `样本`, `测量`, `描述`, `假说`, `设计`, `背景`, `假设 k`, `规格`, `第 k 章`, `估计`, `表 n`, `图 n`, `检验`, `换算`, `参数`, `反事实`, `推导`, `局限`/`外部有效性`. ZT stores no role. The build report's `order` entries of an empirical model carry `role`.
+- **Build faults** (`src/model/empirical.rs`, reported, never enforced by zt): `empirical_shape` (the main line starts with 数据 and holds 设计 and 规格; the model holds an 估计 or 参数; each entry names what it `lacks`), `estimate_unbound` (an estimate or parameter rests on no 规格 member), `spec_unbound` (a main-line 规格 rests on no 数据/测量/样本 part; a side 规格, a variant, on no 规格), `test_unbound` (a 检验 rests on no 假设 or 参数), `variable_uncovered` (a symbol of a 规格 display equation without a 变量表 row; symbols read by `zt_check::empirical::symbols`: Greek letters, letter runs, font groups; sub- and superscripts, tags and functions are no symbols), and `beyond_level` for a Derivation part that is not `推导：估计式`/`推导：估计量`. `evidence_bound` is true when all of them are empty (null for another level). `self_sufficient` keeps its meaning.
+- The digest's `model-finish` refuses a model with any role fault, as it does with closure or forward faults.
+
 ## Usage
 
 ### Build a model over MCP
@@ -539,6 +548,8 @@ Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `
 - **A new Math form needs a migration** for archives whose `math_form` column was added by `ALTER TABLE`, because the column CHECK lists the forms of the time.
 
 ## Change history
+- `2026-11-09` — `empirical::badge(facet, body)`: an estimate's value, uncertainty as written (标准误 in parentheses, t, z), stars and N; a table card's columns and rows; a specification variant's change and column. Every block child carries `badge`, a 规格 child also `chain_badges` for the variants filed under it. A chapter `lead` reads a Term link as its label. Tests: `an_estimate_shows_its_value_its_uncertainty_as_the_source_writes_it_and_its_stars`, `a_table_card_shows_its_size_and_a_variant_its_change_and_column`, `a_chapter_lead_reads_a_term_link_as_its_label`.
+- `2026-11-08` — zt 0.61.0: Elaboration level 3, `empirical`, with the role faults of the build report (`empirical_shape`, `estimate_unbound`, `spec_unbound`, `test_unbound`, `variable_uncovered`, `beyond_level` for a Derivation part other than `推导：估计式`/`估计量`), `evidence_bound` and each part's `role`; the cards table rebuilt once to widen the level CHECK. Tests: `tests/model_levels.rs` (level 3, every fault, the out-of-shape model, the migration, the write gate's EM rules).
 - `2026-11-03` — #255: `tests/self_sufficient_models.rs` reads a Card's stored text from the GUI with `text=1`, because `/api/card` now sends it only on request ([GUI](gui.md)). No behaviour of this block changed.
 - `2026-10-31` — #213 live: `migrate.mjs --apply` on the live box after a backup (`D:/zt/backups/zt-before-model-imports-20261031.sqlite3`): 18 models, 53 `**引入**` lines, tolerated 79 → 9, no （共用） line left in them, 0 Broken links, `check-network`/`check-settings` unchanged; a second dry run finds nothing to migrate.
 - `2026-10-31` — #213 (I8 of #205): `scripts/model-imports/migrate.mjs` migrates legacy shares to `**引入**` imports (dry run by default, `--apply` edits through `zt-digest call` and reads each model again; it enumerates Model Cards through `list_trees` + `get_tree`, since a type listing stops at 200 rows). Box-copy run on the live data: 78 Model Cards read, 18 migrated with 53 引入 lines, tolerated premises 79 → 9 (the 9 of `grossman2002integration/8|a` lie outside its imports' home models), no build fault, `check-network`/`check-settings` results unchanged; 10 False shares and 4 possible copies listed. The run found that import blocks must follow the build order, not the line order (a red forward line between two shelves): `blocks_report_with` sorts them by their first Card. Test: `import_blocks_follow_the_build_order_so_no_import_rests_on_a_later_one`.

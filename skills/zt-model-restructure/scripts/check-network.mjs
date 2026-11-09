@@ -76,7 +76,9 @@ export function analyse(m, L) {
     .filter(Boolean)
     .map((l) => ({ ...l, fix: l.why === 'missing' ? `give ${byId.get(l.block).head} a **直觉** section: its first sentence opens the block` : `the 直觉 of ${byId.get(l.block).head} opens with "${l.lead}"; state the mechanism in its first sentence (${LEAD_MIN}+ characters)` }))
   const isResult = (c) => /^结果/.test(c.facet || '')
-  const empty = chapters.filter((b) => !b.children.some(isResult)).map((b) => ({ block: b.id, fix: `chapter ${name(b.id)} has no result card (facet 结果：…): its block shows no result` }))
+  // An empirical model's results are 估计 cards, and its 数据, 假说, 设计 and 规格 blocks hold none by nature; the
+  // board counts only 结果 cards so far (docs/empirical-models-proposal.md §11 P5), so the advice says nothing there.
+  const empty = m.level === 'empirical' ? [] : chapters.filter((b) => !b.children.some(isResult)).map((b) => ({ block: b.id, fix: `chapter ${name(b.id)} has no result card (facet 结果：…): its block shows no result` }))
   const parts = (m.build && m.build.parts) || []
   // One move per Card, however many later blocks it rests on.
   const moves = []
@@ -116,14 +118,14 @@ async function main() {
   const m = model(head)
   if (!m.blocks || m.blocks.length < 2) { console.error(`${head}: no blocks (zt 0.43+ and a model with a main line)`); process.exit(2) }
   const r = analyse(m, await loadLayout())
-  if (process.argv.includes('--json')) { console.log(JSON.stringify(r, null, 1)); process.exit(r.ok ? 0 : 1) }
+  if (process.argv.includes('--json')) { console.log(JSON.stringify(r, null, 1)); process.exitCode = r.ok ? 0 : 1; return }
   console.log(`network of ${head}: ${r.shape.blocks} blocks, ${r.shape.depth} layers, ${r.shape.width}px wide${r.shape.fits ? '' : ' (scaled down on the board)'}, ${r.threads.head} paths with the Model Card open`)
   for (const l of r.lines) console.log('  ' + l)
   for (const [k, list] of [['forward', r.moves], ['unanchored', r.unanchored], ['parts', r.parts], ['lead', r.leads], ['advice', r.empty]]) {
     for (const f of list) console.log(`${k}: ${f.fix}`)
   }
   console.log(r.ok ? 'network: clean' : 'network: faults above')
-  process.exit(r.ok ? 0 : 1)
+  process.exitCode = r.ok ? 0 : 1
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()

@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v17 ====
+// ==== module zt-model-lib v18 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list and the
 // model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill, derive, review, split →
 // report and clean-up. A book type installs the model layer with its profile (economics: the economic
@@ -38,11 +38,14 @@
 // 17 (atkinson2015lectures, 2026-11-01: 188 Model Cards, one block of eight at a time took ~45 min a block): model
 // lanes. `start`, every batch step and `finish` pass the lane (`-Lane`), so model-steps.ps1 keeps each lane's block
 // files apart, and a lane's start keeps the other lanes' claims (`-KeepClaims`).
+// 18 (docs/empirical-models-proposal.md §8): level 3. The start step batches empirical models apart
+// (`empirical:<addresses>`, `perEmpirical` a batch), their architect reads model-architect-empirical.md, and a
+// batch whose fill names `review` runs the evidence review even when no model derives.
 function zmlMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const {
-    A, KEY, OUT, SCRIPTS, DSH_EFFORT, LIMITS, FILL_SKILLS, profile, ARCH_DOC, ARCH_SUPPLEMENT, MODEL_WORK, PER_SONNET,
-    PER_CONCEPT, DSH_PER_BATCH, REBUILD, LEVEL, BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, SKIP_FORMS,
+    A, KEY, OUT, SCRIPTS, DSH_EFFORT, LIMITS, FILL_SKILLS, profile, ARCH_DOC, ARCH_SUPPLEMENT, ARCH_EMPIRICAL, MODEL_WORK, PER_SONNET,
+    PER_CONCEPT, PER_EMPIRICAL, DSH_PER_BATCH, REBUILD, LEVEL, BRIEF_EFFORT, DERIVE_EFFORT, REVIEW_EFFORT, REVIEW_ROUNDS, SKIP_FORMS,
     zAgent, answerLines, runJobs, psQuote, LEDGER,
   } = Z
   // The model stage's one step script: every deterministic chain runs there, one process per step.
@@ -76,6 +79,7 @@ function zmlMake(ctx, p) {
     if (o.skipForms && o.skipForms.length) parts.push(`-SkipForms "${o.skipForms.join(',')}"`)
     if (o.perConcept) parts.push(`-PerConcept ${o.perConcept}`)
     if (o.perSonnet) parts.push(`-PerSonnet ${o.perSonnet}`)
+    if (o.perEmpirical) parts.push(`-PerEmpirical ${o.perEmpirical}`)
     // #194: the math variant's reviewer opens its own conversation; the compiler names it `<slug>:review`.
     if (o.independentReview) parts.push('-IndependentReview')
     // #195: the batch's explain round, in the models' own conversations, from the architect's design.
@@ -122,7 +126,7 @@ function zmlMake(ctx, p) {
   // batching is the step's, because a module reads no listing row).
   const start = async (o = {}) => modelStep(`find models: ${o.lane ? `${o.lane} ` : ''}block ${o.block || 1}`, 'start', {
     citationKey: KEY, take: o.take || 8, owner: o.owner || 'models', cwd: o.cwd, deepseek: o.deepseek, lane: o.lane, keepClaims: o.keepClaims,
-    only: A.only, skipForms: SKIP_FORMS, perConcept: PER_CONCEPT, perSonnet: PER_SONNET, level: LEVEL, rebuild: REBUILD,
+    only: A.only, skipForms: SKIP_FORMS, perConcept: PER_CONCEPT, perSonnet: PER_SONNET, perEmpirical: PER_EMPIRICAL, level: LEVEL, rebuild: REBUILD,
   })
   // One batch of up to eight models: brief -> the Sonnet architect's plan -> fill -> derive -> review and
   // split rounds -> the close rounds -> the report. Every command is one step; every job round is one or more
@@ -156,13 +160,17 @@ function zmlMake(ctx, p) {
     const todo = addresses.filter((at) => !skipped.has(at))
     if (!todo.length) return addresses.map((model) => ({ model, status: 'skipped' }))
     // 2. Plan: Sonnet reads the briefs and writes plan.json for each model; nothing else.
-    const levelOf = (at) => (LEVEL || (batch.kind === 'concept' ? 'concept' : 'formal'))
+    const levelOf = (at) => (LEVEL || (batch.kind === 'concept' ? 'concept' : batch.kind === 'empirical' ? 'empirical' : 'formal'))
+    // Level 3 plans against the empirical schema with its own instructions; the supplement is the formal one's.
+    const empirical = batch.kind === 'empirical' || LEVEL === 'empirical'
+    const archDoc = empirical ? ARCH_EMPIRICAL : ARCH_DOC
+    const archSupplement = empirical ? null : ARCH_SUPPLEMENT
     const entry = (at, i) => `## Model ${i + 1}
 MODEL: ${at}
 DIR: ${dsh}\\${slug(at)}
 LEVEL NOW: ${levelOf(at)}`
     const planned = await zAgent(
-      `You are the Sonnet architect in the Models stage of the ZET digest of 《${A.bookTitle || KEY}》. Read your instructions first: ${ARCH_DOC}${ARCH_SUPPLEMENT ? `, then ${profile.architectSupplement.name || 'the supplement'} ${ARCH_SUPPLEMENT}` : ''} (Read tool). Then follow them for each model in turn. These models are near each other in the book: where one part serves two of them, plan it in the first and take it in from the second (\`<model>#<id>\`). Each model's own brief is \`brief.md\` in its DIR; read it for the book's wording and the model's title.
+      `You are the Sonnet architect in the Models stage of the ZET digest of 《${A.bookTitle || KEY}》. Read your instructions first: ${archDoc}${archSupplement ? `, then ${profile.architectSupplement.name || 'the supplement'} ${archSupplement}` : ''} (Read tool).${empirical ? ' Each model\'s DIR also holds tables.json, the source tables a script read: every cell you name must be there.' : ''} Then follow them for each model in turn. These models are near each other in the book: where one part serves two of them, plan it in the first and take it in from the second (\`<model>#<id>\`). Each model's own brief is \`brief.md\` in its DIR; read it for the book's wording and the model's title.
 COMPILER: ${Z.tool('model-compiler')}
 WORK: ${dsh}
 LIMITS: ${LIMITS}${REBUILD ? '\nREBUILD: rebuild each model even if it already has parts.' : ''}${LEVEL ? `\nLEVEL: ${LEVEL}` : ''}
@@ -200,10 +208,12 @@ Return plans: one entry per model, in this order.`,
     // 4. The fill, 5. derive and 6. review (only where the plans have Derivation parts).
     const written = await content('fill', fill.file, fill.jobs, DSH_EFFORT)
     await splitNeeds(written)
-    if (fill.derive) {
-      const derive = await step('derive', 'derive')
-      if (!derive.ok) return failed(`derive failed: ${derive.error}`)
-      await splitNeeds(await content('derive', derive.file, derive.jobs, DERIVE_EFFORT))
+    if (fill.derive || fill.review) {
+      if (fill.derive) {
+        const derive = await step('derive', 'derive')
+        if (!derive.ok) return failed(`derive failed: ${derive.error}`)
+        await splitNeeds(await content('derive', derive.file, derive.jobs, DERIVE_EFFORT))
+      }
       for (let round = 0; round < REVIEW_ROUNDS; round++) {
         const review = await step(`review ${round + 1}`, 'review', { changed: round > 0, independentReview: !!profile.independentReview })
         if (!review.ok) return failed(`review failed: ${review.error}`)
@@ -291,7 +301,7 @@ Return plans: one entry per model, in this order.`,
   // #180: the stage's log from the batch results (a status each), never a per-model row.
   const logModels = (reports) => {
     const done = reports.filter((r) => r.status === 'done')
-    log(`Models: ${done.length} structured, ${reports.filter((r) => r.status === 'skipped').length} skipped, failed ${reports.filter((r) => r.status === 'failed').map((r) => r.model).join(', ') || 'none'}; ${done.filter((r) => r.level === 'concept').length} concept, ${done.filter((r) => r.level !== 'concept').length} formal; ${dshJobs} DeepSeek jobs.`)
+    log(`Models: ${done.length} structured, ${reports.filter((r) => r.status === 'skipped').length} skipped, failed ${reports.filter((r) => r.status === 'failed').map((r) => r.model).join(', ') || 'none'}; ${done.filter((r) => r.level === 'concept').length} concept, ${done.filter((r) => r.level === 'empirical').length} empirical, ${done.filter((r) => r.level !== 'concept' && r.level !== 'empirical').length} formal; ${dshJobs} DeepSeek jobs.`)
   }
   // R323: the model stage no longer deletes conversations or folders itself. Every batch conversation was
   // recorded when the provider returned its id, so the run's cleanup stage deletes exactly those ids after
@@ -307,7 +317,7 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '17', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '18', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model layer\'s model-steps.ps1 steps (list, claim and batch; brief, fill, derive, review, split, close, report, explain, explain-apply, finish), the Sonnet architect, and the model compiler\'s report and clean-up.',
 })
 // ==== end module zt-model-lib ====

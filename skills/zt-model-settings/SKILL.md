@@ -19,6 +19,17 @@ The structure is fixed, and the check refuses any other (`place`, `outside`, `in
 - The **notation card** (facet `符号表与读法`) is the setting card's first Side successor, `<head>|a|a`.
 - **Every setting, assumption and definition of the model is in the setting card's Side branches**, and nothing else is.
 
+## An empirical model: the data tree and the specification ladder
+
+A Model Card of level `empirical` (level 3, docs/empirical-models-proposal.md §9.2) has no 设定 card: its setting part is the **data tree** and the **specification ladder**, and its parts carry the roles of their facet prefixes (`get_model` names each part's `role`). The structure is fixed, and `scripts/check-settings.mjs <head>` checks it when the model is empirical:
+
+- The **data card** (facet `数据`) is the Model Card's first Side successor, `<head>|a`, and the first main-line part. The **变量表** is the data card's first Side successor (`place`): one row per variable and symbol of every specification (`| 变量 | 含义 | 度量 | 来源 | 首次出现 |`). Every symbol of a specification's equation has a row (`uncovered`), and no row is unused (`unused`). Samples (`样本：`) and measures (`测量：`) hang under the data card, each with its **起点**.
+- The **design card** (`设计`) holds the identifying assumptions as numbered cards (`假设 1`, `假设 2`), filed as its Side successors (`assumption`). Every test cites its assumption by Link (`依赖 [[假设 1]]`), never by name.
+- `规格：基准` stands on the main line before every variant. Each variant hangs under the specification it changes, rests on it, and states only its change in **相对基准的改动** (`variant_change`). No specification is filed in a chapter (`spec_in_chapter`): a robustness chapter holds the estimates of the variants, never the variants.
+- The build report's role faults (`empirical_shape`, `estimate_unbound`, `spec_unbound`, `test_unbound`) are listed too; each is fixed by moving a card or adding the rests-on line the role needs.
+
+The formal rules below (one notation card, **起点**/**设定**/**说明**, assumptions in the setting part) apply to a formal model; for an empirical model the rules of this section replace them.
+
 ## The principle: build the setting, do not list it
 
 A pile of settings, each one more Side of the setting card, does not help a reader: they meet symbols before their definitions, cannot tell which assumption a later one changes, and cannot tell the base model from its variants. So the setting part is a **dependency tree**:

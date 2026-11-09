@@ -506,8 +506,18 @@ switch ($Step) {
             }
             Reply (@{ ok = $true; layer = 'terms' } + (Results-Line $results) + @{ terms = [int]$a.json.terms; with_avoid = [int]$a.json.with_avoid; card = "$($a.json.card)" } + (Gate-Fields $gate)) @{ results = $results; mid = $mid; report = $a.json; gate = $gate }
         }
-        $list = (@($units | ForEach-Object { "$($_.id):$($_.token)" }) -join ',')
-        $batch = Run @('finish-batch', '-Out', $Out, '-Units', $list)
+        # finish-batch takes at most 8 units; one start claims the whole queue (module 9), so the held units
+        # finish in batches of 8 and their lines are read as one (autor2004will: 20 Event units refused at once).
+        $all = @(); $tails = @(); $readable = $true
+        for ($i = 0; $i -lt $units.Count; $i += 8) {
+            $share = @($units[$i..([Math]::Min($i + 7, $units.Count - 1))])
+            $list = (@($share | ForEach-Object { "$($_.id):$($_.token)" }) -join ',')
+            $one = Run @('finish-batch', '-Out', $Out, '-Units', $list)
+            $tails += $one.tail
+            if (-not $one.json -or $one.json.kind -ne 'finish_batch') { $readable = $false; continue }
+            $all += @($one.json.results)
+        }
+        $batch = @{ tail = ($tails -join "`n"); json = $(if ($readable) { [pscustomobject]@{ kind = 'finish_batch'; results = $all } } else { $null }) }
         if (-not $batch.json -or $batch.json.kind -ne 'finish_batch') {
             # The batch line came back unreadable: the ledger decides each unit before any fault.
             $states = @(Unit-States ((@($units | ForEach-Object { $_.id })) -join ','))

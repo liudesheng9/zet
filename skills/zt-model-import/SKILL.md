@@ -31,6 +31,18 @@ What an import is **not**:
 - A `（共用）` line of the `结构` list is the older form (a **legacy share**): `plan` turns it into an import line.
 - A copy: a part of this model that restates another model's setting, symbols or result. Import the block instead, and keep in this model only what it changes.
 
+## Empirical models: hypotheses, data and theories
+
+An empirical model (level 3, docs/empirical-models-proposal.md §7, §9.4) is built without imports (model-compiler v2, D2): its relations to other models are written as prose Links, and this pass turns the premises among them into **引入** lines. Three kinds of block:
+
+- **The prediction it tests.** A `假说：` part names the theory's result with `参照 [[…]]`. Import that result `单卡` in the empirical Model Card's **引入** section, and let the `假说：` part rest on it (`依赖 [[…]]` in place of `参照`). The hypothesis restates nothing: it names the sign or size the theory predicts.
+- **Shared data, a measure or an instrument.** Two studies of the same data set, index or instrument: the later imports the other's `数据：` or `测量：` part `整块`, and its own data card rests on it.
+- **The theory a structural estimation estimates.** The empirical model imports the formal model whole (`整块 [[<formal Model Card>]]`); its `参数：` parts rest on the imported setting, its `反事实：` parts on its parameters and the imported results.
+
+The other relations stay Links with their kind word first: an estimate `印证`s or `反驳`s the hypothesis it bears on; two estimates of one estimand `对照` each other; a formal model calibrated by an estimate imports that `估计：` part `单卡` into its parameter card (or cites the Cited Card with `参照` when the study is not in the box). Comparisons across books are the `zt-evidence-dialogue` pass, which runs after this one.
+
+The explanation refresh (step 8) applies to the empirical model's `推导：估计式` parts as to any Derivation part. Its estimates have no 思路/解读: when a premise of an estimate changed, read its **量级** and **为什么** against the new premise and rewrite only what the change contradicts.
+
 ## Rules before you touch anything
 
 - **Live box only on request.** Work on the live archive (`D:\zt`, GUI port 4717) only when the user asks for it. Otherwise work on a copied box (`ZT_CONFIG_DIR` pointing at a config whose `archive_root` is the copy).

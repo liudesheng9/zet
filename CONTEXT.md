@@ -245,7 +245,7 @@ A model a reader can build from nothing by reading only its own Cards in build o
 _Avoid_: Closed model, complete model
 
 **Elaboration level**:
-How fully a model is built out, stored on its Model Card (never on a part): level 1, `concept`, or level 2, `formal`. A Model Card without a level has not been classified, and its build report applies the formal rules. The book digest decides the level from how the source states the model, and builds each model only as far as its level asks.
+How the source builds a model, stored on its Model Card (never on a part): level 1, `concept` (in words), level 2, `formal` (in mathematics), or level 3, `empirical` (from data). Level 3 is a sibling of level 2 with its own rules, not a more elaborate formal model: the number only names the value. A Model Card without a level has not been classified, and its build report applies the formal rules. The book digest decides the level from how the source states the model, and builds each model only as far as its level asks.
 _Avoid_: Depth, detail level, maturity, tier
 
 **Concept model**:
@@ -255,6 +255,30 @@ _Avoid_: Informal model, sketch, light model
 **Formal model**:
 A model of Elaboration level 2. The source states it in mathematics: symbols, equations, a derivation, or a proposition with a proof. The book digest builds it as a Self-sufficient model: the main line in build order, a setting with its symbol and term tables, and a Derivation part, or a Derivation chain, for each step the source skips. Each of its parts fits one Card (Card size: at most 24 sentences and 800 characters of prose, and at most 12 steps in a Derivation part, by default: twice the base limits, because a Model Card is held to every size limit twice as loose).
 _Avoid_: Math model, full model, rigorous model
+
+**Empirical model**:
+A model of Elaboration level 3. The source estimates or measures a relation from data: it names what it estimates, the data, a specification and the argument that the estimate means what it claims, and it reports estimates with their size and uncertainty. A reduced-form regression, a design-based estimate (difference-in-differences, event study, instrumental variables, regression discontinuity, a randomized experiment), a structural estimation with its counterfactuals, and a measurement framework the source builds and validates on data are empirical models. Its parts take the empirical roles read from their facet prefixes (`数据`, `变量表`, `设计`, `假设 k`, `规格`, `第 k 章`, `估计`, `表 n`, `图 n`, `检验`, `换算`, `参数`, `反事实`, …), its main line is the Evidence spine, and its only Derivation part derives an estimating equation or an estimator. The build report adds the role faults `empirical_shape`, `estimate_unbound`, `spec_unbound`, `test_unbound` and `variable_uncovered`, and reports `evidence_bound` (docs/empirical-models-proposal.md). A theory and its test are two models, joined by an import.
+_Avoid_: Regression model, econometric card, results model
+
+**Estimand**:
+What an Empirical model estimates, in words: the effect (or association) of what on what, for whom (估计对象).
+_Avoid_: Target, parameter of interest (for the words)
+
+**Specification**:
+One estimating equation of an Empirical model with everything that defines its estimate: the outcome, the regressor of interest, the fixed effects, the controls, the sample, the weights, the estimator and the standard errors (规格). The baseline specification stands on the main line; every other specification is a variant filed under the one it changes, and states that one change.
+_Avoid_: Setting (of an empirical model), model column
+
+**Estimate part**:
+A part of an Empirical model that states one reported estimate (`估计：…`): the coefficient, its Specification and table cell, its uncertainty, the sample size and its magnitude in words. Its numbers are written from the source table's cell by script, and the evidence check refuses a number the source does not hold.
+_Avoid_: Result card (for an estimate)
+
+**Evidence chain**:
+The parts filed under an Estimate part that support or qualify it: the tests of the identifying assumptions, the figure, a conversion of the magnitude. It plays the role a proof chain plays under a result.
+_Avoid_: Robustness branch
+
+**Evidence spine**:
+The main line of an Empirical model, in the order a reader comes to trust a number: data, [hypothesis], design, the baseline Specification, then the chapters (main estimates, identification tests, robustness, heterogeneity and mechanisms, quantification or counterfactuals), with the estimates under their chapters and each estimate's Evidence chain under it.
+_Avoid_: Results order
 
 **Tolerated premise**:
 A premise of a shared part that lies in the shared part's home model but is not a member of this model. The build report lists it; it is not a fault. When it is a Derivation part, the report suggests taking it in too, so the whole derivation reads in the model.

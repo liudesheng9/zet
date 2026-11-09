@@ -1532,7 +1532,7 @@ pub(crate) fn blocks_report_with<'b>(
         let children: Vec<Value> = members[i]
             .iter()
             .filter(|e| s(e, "address") != at && (if chaptered { e["line"] != "main" && is_child(&s(e, "address"), &at) } else { true }))
-            .map(|e| child_value(e, &members[i]))
+            .map(|e| child_value(e, &members[i], body_of))
             .collect();
         let kind = if i == 0 && s(h, "facet").starts_with("设定") { "setting" } else { "chapter" };
         blocks.push(json!({
@@ -1545,7 +1545,7 @@ pub(crate) fn blocks_report_with<'b>(
         let children: Vec<Value> = members[aside]
             .iter()
             .filter(|e| is_child(&s(e, "address"), head))
-            .map(|e| child_value(e, &members[aside]))
+            .map(|e| child_value(e, &members[aside], body_of))
             .collect();
         blocks.push(json!({
             "id": format!("b{aside}"), "head": head, "title": "旁注", "facet": null, "emphasis": null,
@@ -1554,7 +1554,7 @@ pub(crate) fn blocks_report_with<'b>(
     }
     if !members[shared].is_empty() {
         let tops = |e: &&&Value| !members[shared].iter().any(|m| under(&s(e, "address"), &s(m, "address")));
-        let children: Vec<Value> = members[shared].iter().filter(tops).map(|e| child_value(e, &members[shared])).collect();
+        let children: Vec<Value> = members[shared].iter().filter(tops).map(|e| child_value(e, &members[shared], body_of)).collect();
         blocks.insert(0, json!({
             "id": format!("b{shared}"), "head": head, "title": "共用前提", "facet": null, "emphasis": null,
             "kind": "shared", "part": null, "members": members[shared].len(), "chaptered": chaptered, "children": children,
@@ -1577,6 +1577,7 @@ pub(crate) fn blocks_report_with<'b>(
                     "address": at, "title": e["title"], "facet": e["facet"], "emphasis": e["emphasis"],
                     "derivation": e["derivation"] == json!(true),
                     "proof": if proof.is_empty() { Value::Null } else { json!({"first": proof[0], "steps": proof.len(), "addresses": proof}) },
+                    "badge": empirical::badge(e["facet"].as_str().unwrap_or_default(), body_of(&at)),
                 })
             })
             .collect::<Vec<_>>();
@@ -1637,6 +1638,9 @@ fn lead(body: &str) -> Option<String> {
             break;
         }
     }
+    // The board shows the lead as prose: a Term link reads as its label (zt-term-sync and
+    // term-relink write them into 直觉 too).
+    let text = zt_check::text::strip_term_links(&text);
     let ends: Vec<usize> = text.char_indices().filter(|(_, c)| matches!(c, '。' | '！' | '？')).map(|(i, c)| i + c.len_utf8()).collect();
     let end = match ends.as_slice() {
         [first, second, ..] if text[..*first].chars().count() < 20 => Some(*second),
@@ -1702,7 +1706,7 @@ fn is_child(address: &str, parent: &str) -> bool {
 }
 
 /// A block's child: the part, and the chain filed under it as its proof.
-fn child_value(e: &Value, block: &[&Value]) -> Value {
+fn child_value<'b>(e: &Value, block: &[&Value], body_of: &dyn Fn(&str) -> &'b str) -> Value {
     let at = e["address"].as_str().unwrap_or_default();
     let proof: Vec<&str> = block
         .iter()
@@ -1713,7 +1717,27 @@ fn child_value(e: &Value, block: &[&Value]) -> Value {
         "address": at, "title": e["title"], "facet": e["facet"], "emphasis": e["emphasis"],
         "derivation": e["derivation"] == json!(true),
         "proof": if proof.is_empty() { Value::Null } else { json!({"first": proof[0], "steps": proof.len(), "addresses": proof}) },
+        // An empirical card's strip on the board: an estimate's value, a table's size, a variant's change.
+        "badge": empirical::badge(e["facet"].as_str().unwrap_or_default(), body_of(at)),
+        // A variant's own variants, filed under it, are rungs of the ladder too.
+        "chain_badges": chain_badges(e, block, &proof, body_of),
     })
+}
+
+/// The badges of the specification variants filed under a 规格 card (its chain), by address; null
+/// for any other card or a chain without a variant.
+fn chain_badges<'b>(e: &Value, block: &[&Value], chain: &[&str], body_of: &dyn Fn(&str) -> &'b str) -> Value {
+    if !e["facet"].as_str().unwrap_or_default().starts_with("规格") {
+        return Value::Null;
+    }
+    let mut out = serde_json::Map::new();
+    for at in chain {
+        let facet = block.iter().find(|m| m["address"].as_str() == Some(at)).and_then(|m| m["facet"].as_str()).unwrap_or_default();
+        if let Some(badge) = empirical::badge(facet, body_of(at)) {
+            out.insert((*at).to_string(), badge);
+        }
+    }
+    if out.is_empty() { Value::Null } else { Value::Object(out) }
 }
 
 /// Whether a facet names a Derivation part: one step of a derivation.
@@ -2380,6 +2404,13 @@ fn build_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // hansen2021demand/5|c|e|a|4 on the box after term-relink: the board showed the macro.
+    #[test]
+    fn a_chapter_lead_reads_a_term_link_as_its_label() {
+        let body = "本章确立结论。\n\n**直觉** 企业面临的问题越多、[[纵向沟通@K/7|am]]越重要，社交技能越有价值。\n";
+        assert_eq!(lead(body).as_deref(), Some("企业面临的问题越多、纵向沟通越重要，社交技能越有价值。"));
+    }
 
     fn entry(address: &str, facet: &str, line: &str) -> Value {
         let mut value = json!({"address": address, "title": format!("{facet} title"), "facet": facet, "emphasis": "core", "line": line});

@@ -121,7 +121,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 "todo": placeholders.len(),
                 "placeholders": placeholders,
                 "issues": count(&st["issues"]),
-                "faults": count(&build["closure"]) + count(&build["forward"]) + count(&build["unanchored"]) + count(&build["beyond_level"]),
+                "faults": count(&build["closure"]) + count(&build["forward"]) + count(&build["unanchored"]) + count(&build["beyond_level"])
+                    + count(&build["empirical_shape"]) + count(&build["estimate_unbound"]) + count(&build["spec_unbound"]) + count(&build["test_unbound"]) + count(&build["variable_uncovered"]),
             }));
         }
     }

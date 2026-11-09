@@ -371,6 +371,57 @@ export function audit(m, cards, parents = new Map()) {
   return { setting: S, notation_card: notes[0]?.address || null, outside, inside, stated, notation, missing, start, misfiled, order: order2, place, uncovered, unused, first, format, repeat, cite, balance, uses, introduces, ok }
 }
 
+// --- level 3: the data tree and the specification ladder (docs/empirical-models-proposal.md §9.2) -------------
+// An empirical model's setting part is its data card (the Model Card's first Side successor) with the 变量表 as
+// its first Side, the samples and measures under it; the design card holds the identifying assumptions; the
+// baseline 规格 comes before every variant, each variant filed under the specification it changes. Faults:
+//   place           the data card is not the first Side successor, or the 变量表 not the data card's first Side
+//   uncovered       a symbol of a specification's equation with no 变量表 row (the build report's variable_uncovered)
+//   unused          a 变量表 row whose symbol no card of the model uses
+//   variant_change  a specification variant with no **相对基准的改动** section
+//   spec_in_chapter a specification filed in a chapter: specifications live on the ladder under 规格：基准
+//   assumption      an assumption (假设 k) not filed under the design card
+// The build report's role faults (empirical_shape, estimate_unbound, spec_unbound, test_unbound) are listed too.
+const roleOf = (o) => o.role || null
+/** The 变量表 rows' base symbols, from the first cell's $…$ formulas. */
+export function variableSymbols(body) {
+  const out = []
+  for (const line of (body || '').split('\n')) {
+    const cell = line.match(/^\|\s*([^|]+?)\s*\|/)
+    if (!cell || /^变量$|---/.test(cell[1].trim())) continue
+    for (const tex of [...cell[1].matchAll(/\$([^$]+)\$/g)].map((x) => x[1])) {
+      for (const s of baseSymbols(tex)) if (!out.includes(s)) out.push(s)
+    }
+  }
+  return out
+}
+export function auditEmpirical(m, cards) {
+  const order = m.build.order || []
+  const head = m.head.address
+  const body = (a) => (cards.get(a) || {}).body || ''
+  const data = order.find((o) => roleOf(o) === 'data' && o.line === 'main')
+  const place = []
+  if (!data || data.address !== `${head}|a`) place.push({ card: data?.address || head, fix: `the data card (数据) is the first Side successor of ${head} (${head}|a)` })
+  const table = order.find((o) => roleOf(o) === 'variables')
+  if (data && (!table || table.address !== `${data.address}|a`)) place.push({ card: table?.address || data.address, fix: `the 变量表 is the first Side successor of the data card ${data.address} (${data.address}|a)` })
+  const uncovered = (m.build.variable_uncovered || []).map((f) => ({ card: f.address, symbol: f.symbol, fix: f.fix }))
+  const used = new Set()
+  for (const o of order) if (o.address !== table?.address) for (const tex of formulas(body(o.address))) for (const s of baseSymbols(tex)) used.add(s)
+  const unused = table ? variableSymbols(body(table.address)).filter((s) => !used.has(s)).map((s) => ({ card: table.address, symbol: s, fix: `the 变量表 row $${s}$ names a symbol no card of the model uses: drop the row` })) : []
+  const chapters = order.filter((o) => roleOf(o) === 'chapter' && o.line === 'main').map((o) => o.address)
+  const specs = order.filter((o) => roleOf(o) === 'spec')
+  const variantChange = specs.filter((o) => o.line !== 'main' && !/^\s*\*\*相对基准的改动\*\*/m.test(body(o.address)))
+    .map((o) => ({ card: o.address, fix: `${o.address} is a specification variant without **相对基准的改动**: state the one change against the specification it is filed under` }))
+  const specInChapter = specs.filter((o) => chapters.some((c) => o.address.startsWith(c + '|')))
+    .map((o) => ({ card: o.address, fix: `${o.address} is a specification filed in a chapter: move it onto the ladder, under the specification it changes (a chapter holds the estimates of a variant, never the variant)` }))
+  const design = order.find((o) => roleOf(o) === 'design' && o.line === 'main')
+  const assumption = order.filter((o) => roleOf(o) === 'assumption' && (!design || !o.address.startsWith(design.address + '|')))
+    .map((o) => ({ card: o.address, fix: `${o.address} is an identifying assumption filed outside the design card${design ? ` ${design.address}` : ''}: file it as a Side successor of the design` }))
+  const roles = ['empirical_shape', 'estimate_unbound', 'spec_unbound', 'test_unbound'].flatMap((k) => (m.build[k] || []).map((f) => ({ card: f.address, kind: k, fix: f.fix })))
+  const ok = !place.length && !uncovered.length && !unused.length && !variantChange.length && !specInChapter.length && !assumption.length && !roles.length
+  return { level: 'empirical', data: data?.address || null, variables: table?.address || null, place, uncovered, unused, variant_change: variantChange, spec_in_chapter: specInChapter, assumption, roles, ok }
+}
+
 async function main() {
   const [head, flag] = process.argv.slice(2)
   if (!head) { console.error('usage: node check-settings.mjs <modelHead> [--json]'); process.exit(2) }
@@ -378,6 +429,14 @@ async function main() {
   const m = model(head)
   if (!m?.head || m.head.address !== head) { console.error(`${head} is not a Model Card${m?.head ? `: it belongs to the model ${m.head.address}; give that address` : ''}`); process.exit(2) }
   const order = m.build.order.map((o) => o.address)
+  if (m.level === 'empirical') {
+    const r = auditEmpirical(m, new Map(cards(order).map((c) => [c.address, c])))
+    if (flag === '--json') { console.log(JSON.stringify(r, null, 2)); process.exit(r.ok ? 0 : 1) }
+    console.log(`empirical model: data card ${r.data || 'none'}, 变量表 ${r.variables || 'none'}`)
+    for (const k of ['place', 'uncovered', 'unused', 'variant_change', 'spec_in_chapter', 'assumption', 'roles']) r[k].forEach((x) => console.log(`${x.kind || k}: ${x.fix}`))
+    console.log(r.ok ? 'settings: the data tree and the specification ladder are in place' : 'settings: faults above; move cards, never delete a Link')
+    process.exit(r.ok ? 0 : 1)
+  }
   const parents = new Map(tree(head.split('/')[0]).map((c) => [c.address, c.parent]))
   const r = audit(m, new Map(cards(order).map((c) => [c.address, c])), parents)
   if (flag === '--json') { console.log(JSON.stringify(r, null, 2)); process.exit(r.ok ? 0 : 1) }

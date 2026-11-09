@@ -49,7 +49,11 @@ function Units([string]$l) {
             if ($env:LS_LINK_JOBS) { return @(1..4 | ForEach-Object { @{ id = ('link/g{0:D3}@1' -f $_); layer = 'link'; token = 1; input_hash = "ih-l$_" } }) }
             return @(@{ id = 'link/g001@1'; layer = 'link'; token = 1; input_hash = 'ih-l1' })
         }
-        'events' { return @(@{ id = 'events/g001@1'; layer = 'events'; token = 1; input_hash = 'ih-e1' }) }
+        'events' {
+            # autor2004will: one start claims the whole queue, 20 Event units.
+            if ($env:LS_EVENT_UNITS) { return @(1..[int]$env:LS_EVENT_UNITS | ForEach-Object { @{ id = ('events/g{0:D3}@1' -f $_); layer = 'events'; token = $_; input_hash = "ih-e$_" } }) }
+            return @(@{ id = 'events/g001@1'; layer = 'events'; token = 1; input_hash = 'ih-e1' })
+        }
         'findings' { return @(@{ id = 'findings/g001@1'; layer = 'findings'; token = 1; input_hash = 'ih-f1' }) }
         'explain' { return @(@{ id = 'explain/g001-m0000@1'; layer = 'explain'; token = 1; input_hash = 'ih-x1'; inputs = @{ model = 'Key/2|c' } }) }
         'terms' { return @(@{ id = 'terms/book@1'; layer = 'terms'; token = 1; input_hash = 'ih-t1' }) }
@@ -131,7 +135,12 @@ switch -Regex ($cmd) {
             $claimed = 2
         }
         $results = @(@{ unit = 'cards/g001@1'; token = 1; status = 'done'; disposition = 'verified' }, @{ unit = 'cards/g002@1'; token = 2; status = 'done'; disposition = 'verified' })
-        if (($args2 -join ' ') -match '-Units') { $results = @(@{ unit = 'events/g001@1'; token = 1; status = 'done'; disposition = 'verified' }) }
+        if (($args2 -join ' ') -match '-Units ([^ ]+)') {
+            # The real command's limit, and one result per unit it was given.
+            $asked = @($Matches[1] -split ',')
+            if ($asked.Count -gt 8) { Write-Output "zt-digest finish-batch: -Units names $($asked.Count) units; a batch holds at most 8"; exit 2 }
+            $results = @($asked | ForEach-Object { $p = $_ -split ':'; @{ unit = $p[0]; token = [int]$p[1]; status = 'done'; disposition = 'verified' } })
+        }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; kind = 'finish_batch'; units = $results.Count; done = $results.Count; claimed = $claimed; results = $results })
         exit 0
     }
@@ -246,6 +255,20 @@ $evCalls = Get-Content -LiteralPath $calls -Raw
 Assert-Line $evFinish 'events finish'
 Assert ($evFinish.json -and $evFinish.json.ok -eq $true -and $evFinish.json.done -eq 1 -and -not $evFinish.json.PSObject.Properties['failed']) "events finish: the held unit's checked completion is recorded ($($evFinish.text))"
 Assert ($evCalls -match 'event -Step apply -Staging .* -Apply' -and $evCalls -match 'event -Step report' -and $evCalls -match 'finish-batch .*-Units events/g001@1:1') 'events finish: apply, report and the checked completion run in that one step'
+
+# 5b. events finish of a whole queue (autor2004will, 20 units): finish-batch holds at most 8, so the step runs
+#     batches of 8 and reads their lines as one.
+$env:LS_EVENT_UNITS = '20'
+Remove-Item -LiteralPath $env:LS_COUNT -ErrorAction SilentlyContinue
+$evStart = Step (@('-Step', 'start', '-Layer', 'events', '-Owner', 'events') + $common)
+Assert ($evStart.json -and $evStart.json.units -eq 20) "events start: the whole queue of 20 is held ($($evStart.text))"
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$evQueue = Step (@('-Step', 'finish', '-Layer', 'events', '-Owner', 'events') + $common)
+$queueCalls = @((Get-Content -LiteralPath $calls) | Where-Object { $_ -match '^finish-batch' })
+$env:LS_EVENT_UNITS = ''
+Assert-Line $evQueue 'events finish of 20'
+Assert ($evQueue.json -and $evQueue.json.ok -eq $true -and $evQueue.json.done -eq 20 -and -not $evQueue.json.PSObject.Properties['failed']) "events finish: all 20 held units are recorded ($($evQueue.text))"
+Assert ($queueCalls.Count -eq 3) "events finish: three batches of at most 8 ($($queueCalls -join ' / '))"
 
 # 6. explain: apply lists the fix jobs, and finish records the block.
 $env:LS_NO_UNITS = ''

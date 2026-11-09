@@ -13,6 +13,9 @@ mod context;
 mod list;
 
 pub(crate) mod source_review;
+pub(crate) mod tables;
+pub(crate) mod empirical;
+mod evidence_link;
 pub(crate) mod text;
 
 use crate::zt::Zt;
@@ -28,6 +31,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 
 pub fn context_cli(argv: &[String]) -> Result<i32> {
     context::cli(argv)
+}
+
+pub fn evidence_link_cli(argv: &[String]) -> Result<i32> {
+    evidence_link::cli(argv)
 }
 
 pub fn list_cli(argv: &[String]) -> Result<i32> {

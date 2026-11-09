@@ -1,6 +1,6 @@
 # 实证模型：模型的第三个层级（提案）
 
-状态：只是提案（2026-11-08）。不改代码、提示词、蓝图、技能或卡片。由所有者审阅，并决定 §12 中的待定事项。英文版是 [empirical-models-proposal.md](empirical-models-proposal.md)，两版内容相同。
+状态：已实施（2026-11-08），并已在复制的卡片盒上试点（2026-11-09）；§14 记录已完成的内容、试点、成本与下一步的速度候选。正式卡片盒未改动。英文版是 [empirical-models-proposal.md](empirical-models-proposal.md)，两版内容相同。
 
 相关文档：[模型细化层级](model-elaboration-levels-design.md)（第 1、2 层）、[实证结果卡](finding-cards-design.md)、[模型编译器](model-compiler-design.md)、[模型编译器 v2](model-compiler-v2-proposal.md)（D2、D3：建模型时不在模型之间共用分卡）、[共享构件](model-shared-blocks-proposal.md)（**引入**）、[自足模型](self-sufficient-models-proposal.md)、[工作流原则](agents/workflow-principles.md)、[任务地图](agents/digest-job-map.md)，以及技能 `zt-model-fold`、`zt-model-settings`、`zt-model-restructure`、`zt-model-import`。
 
@@ -813,3 +813,66 @@ flowchart TD
 - 不新增卡片类型：实证模型使用模型卡、模型分卡和实证结果卡。
 - 不改概念路径、形式路径、数学单元或历史消化流程。
 - 不做元分析、不重新估计、不产生新数字：ZET 只记录原书报告的内容。
+
+## 14. 实施记录
+
+所有者于 2026-11-08 接受 §12 的全部建议，并把试点限定为一到两本书。开发按测试先行进行，发布版本为 zt 0.61.0、zt-check 0.21.0、zt-digest 0.50.0、base 5.12.0、econ 6.12.0、math 5.12.0 与 history 1.1.0。
+
+### 14.1 已完成的内容
+
+| 阶段 | 状态 | 内容 |
+| --- | --- | --- |
+| P0 | 完成 | §12 的决定，全部按建议 |
+| P1 | 完成 | 层级值 `empirical`（编号 3，标签 实证 与 `L3 实证`）；放宽层级 CHECK 的卡片表迁移（备份 `zt.sqlite3.pre-empirical-models-*.bak`）；构建报告中的角色故障（`empirical_shape`、`estimate_unbound`、`spec_unbound`、`test_unbound`、`variable_uncovered`、`beyond_level`、`evidence_bound`，以及每个顺序条目上的 `role`）；zt-check EM1–EM5（EM5 为建议，规则版本 8） |
+| P2 | 完成 | 简报中的 `tables.json`、实证计划格式、由表格单元格写出全部数字的角色骨架、证据审查、收尾中的证据检查、`model-finish` 中的角色故障、`zt-digest evidence-link` 及其工作流阶段、任务图中的行、框架测试用例 |
+| P3 | 未运行 | 所有者把试点限定为下列两本书；所有者提出时，再以一篇新的设计型论文做下一次试点 |
+| P4 | 完成 | `zt-model-fold`、`zt-model-settings`、`zt-model-restructure` 与 `zt-model-import` 的实证分支，以及新技能 `zt-evidence-dialogue` |
+| P5 | 未开始 | GUI 的估计徽标、表格卡与规格阶梯等待所有者审阅样图（所有者规则）；模型板目前只把 结果 卡计为结果 |
+| P6 | 未开始 | 正式卡片盒未改动；每本书按所有者的指示迁移 |
+
+### 14.2 试点
+
+两本书在复制的卡片盒上（`D:\zt-empirical-box`，由 `copy-tree.mjs` 建立）以模式 `models`、`rebuild`、`only` 与 `level: empirical` 重建：
+
+| 模型 | 分卡 | 结果 |
+| --- | --- | --- |
+| `hansen2021demand/5|c|e` | 65 | 无故障；证据已绑定；每个数字等于其单元格；链接 5 张实证结果卡 |
+| `ebrill2001modern/4|d|a` | 41 | 无故障；证据已绑定 |
+| `ebrill2001modern/5|a` | 39 | 无故障；证据已绑定；全书的证据链接：101 张实证结果卡、22 个估计、链接 5 张、1 张有歧义、95 张没有报告其数字的估计 |
+
+模型整理技能的检查已在试点模型上运行：`check-model`、`check-premises` 与 `imports.mjs check` 均无故障；`check-settings` 在 hansen 上无故障，在 5|a 上列出设定整理尚需完成的工作（变量表中四行未被使用，一条识别假设不在设计卡之下）；`check-network` 列出重构步骤要修正的前向链接与缺少的 **直觉** 引导句。这些是整理步骤本身的工作，不是构建故障。
+
+### 14.3 试点中发现并修正的故障
+
+每项修正都先有一个失败的测试。
+
+- 括号中的 t 统计量被标为 标准误。现在由表注决定括号中的内容（`paren_kind`）。
+- 合并步骤指向一张已被前面的插入重新编号的卡。编译器现在跟踪重新编号（`track_renames`、`current_address`）。
+- `model-finish` 拒绝一个重建的模型，因为采纳时其单元被记为已验证（`incomplete prepared contract: header`，随后是 `fingerprint`）。`ledger reopen` 现在把这样的单元转为未完成的形式；`model_header` 与 `start_fingerprint` 接受它。
+- 证据审查原为一个对话中的多条消息，管理者在继续的对话上退回到备用路径。现在每 12 张卡一个任务，每个任务一个独立对话，并行运行。
+- `evidence-link` 曾按 t 值和共同的计数匹配实证结果卡。现在一个值是一个单独的数字；实证结果卡结果中的不确定性数字被移除；给出多个量级的估计需要其中两个相符。
+- 写作者加入了变量表中没有符号的变体估计式（`variable_uncovered`）。填写规则禁止原书没有写出的估计式，故障说明给出两种修正方法。
+- `zt-evidence-dialogue` 从未提出过一对卡。它只从 **估计对象** 读取术语，而术语很少在那里链接。它通过上限为 200 行的搜索查找其他模型。每次调查后它都会重新判断已判断过的卡对。它也从不写 对照 链接。四个问题均已修正（wiki `agent-skills`，2026-11-09）。
+- `check-network.mjs` 在每个模型上退出时中止（Node 25 下的 libuv 断言）。现在它设置 `process.exitCode`。
+
+### 14.4 成本与时间
+
+DeepSeek 官方来源，`deepseek-flash`，推理强度 high，数字取自每次运行前后的用量记录：
+
+| 运行 | 分卡 | 成本 | 每张分卡 |
+| --- | --- | --- | --- |
+| hansen2021demand/5|c|e | 65 | 约 4.0 元 | 约 0.06 元 |
+| ebrill2001modern，两个模型 | 80 | 5.51 元 | 约 0.069 元 |
+| 证据对话，5|a | 54 对 | 0.125 元 | 每对约 0.0023 元 |
+
+两个 ebrill 模型从开始到结束用时 22.8 分钟：简报 5.0、验证与应用 2.0、填写 3.0、审查 7.5、收尾 3.5、完成 0.5。审查为单一对话时，同一运行约用 40 分钟（审查 15–19 分钟）。
+
+### 14.5 速度：下一步的候选
+
+模型流程慢，是因为每个模型要依次经过六个步骤，而每个步骤都要等待其中最慢的任务。按试点的测量，依预期收益排序：
+
+1. **形式模型的审查改为并行任务。** 形式路径仍以一个对话中的多条消息审查一个模型。实证路径的同一改动（每 12 张卡一个任务，每个任务一个独立对话）使审查时间减半；在形式路径上做同一改动，预期能使其最长的步骤减半。
+2. **只用消息的简报。** 简报（5 分钟）让智能体用工具读取原文与 `tables.json`。把该组的原文片段与表格放入消息中，可以省去工具往返，卡片任务的成本经验已经说明了这一点（docs/digest-cost-experience.md）。
+3. **更少的驱动步骤。** 验证、应用与填写的开始是三个脚本步骤，每个由各自的驱动任务运行（简报与填写之间有 2 分钟）。一个驱动任务可以运行全部三个。
+
+第 1 项与第 3 项不改内容，可以通过在试点卡片盒上续跑来测试；第 2 项改变任务所收到的说明，需要先做成本测试（docs/agents/workflow-principles.md）。

@@ -8,7 +8,7 @@
 |---|---|
 | Map written | 2026-11-08 |
 | Code it was read from | `main` at 3a1dcf33 (zt-digest 0.48.2, `zt-digest-lib` v59, `zt-cited-cards` v6); Cited Cards and Term Cards rows updated for zt-digest 0.49.1 (base 5.11.41, `zt-term-cards` v16) |
-| Last proposal | [docs/digest-job-messages-proposal.md](../digest-job-messages-proposal.md) — Cited Cards and Term Cards (concept) as conversations of 4 messages of 12 items. **Implemented 2026-11-08** (zt-digest 0.49.0; 12 items a message since 0.49.1). No proposal is open. |
+| Last proposal | [docs/empirical-models-proposal.md](../empirical-models-proposal.md) — empirical models (level 3): an empirical path in the econ model layer and the evidence link. **Implemented 2026-11-08** (zt 0.61.0, zt-check 0.21.0, zt-digest 0.50.0, base 5.12.0, econ 6.12.0). Piloted 2026-11-09 on a copied box (hansen2021demand/5|c|e, ebrill2001modern/4|d|a and 5|a): every model clean, numbers equal their cells; review time 15–19 min → 7.5 min for two models with the parallel review; about 0.07 CNY a part; record in the proposal §14. Before it: [docs/digest-job-messages-proposal.md](../digest-job-messages-proposal.md) (implemented). No proposal is open. |
 | Read with | [workflow-principles.md](workflow-principles.md) (the owner's rules), [docs/digest-cost-experience.md](../digest-cost-experience.md) (the cost evidence), [docs/wiki/workflow-module-structure.md](../wiki/workflow-module-structure.md) (the module shape) |
 
 ## How every module runs
@@ -46,6 +46,9 @@ Status: **current** = the code on `main` does this. **PROPOSED** = the owner ord
 | Term link | Link Terms in Card text | No content job (a drive step only) | — | — | current | `term-steps.ps1 -Step link` |
 | Events / Findings | Write Event or Finding Cards | 3 groups | 1 | One message | current | `-GroupsPerJob` 3, `event.rs`, `finding.rs` |
 | Model layer | brief → fill → derive → review → split → close → explain | One model | One per step (about 6–8 or more) | Continued | current | `zt-model-lib` `compileBatch` (#194, #195) |
+| Model layer, **empirical** (level 3) | brief (with tables.json) → fill → evidence review → close (evidence check) | One empirical model (architect batch `perEmpirical` 4) | brief 1 and fill 1 (the Model Card and every part but the script-written 变量表) in the model's conversation, +1 per close round (≤ 3); the evidence review is **one job per 12 cards, each its own conversation of one message, side by side** | Continued (brief, fill, close); One message (review) | current (2026-11-09) | `perEmpirical` (blueprint, default 4), `evidence_review_jobs` 12 cards a job, `compiler.rs`. Pilot 2026-11-09: one review conversation of 6 sequential messages took 19 of hansen's 35 minutes; the interpretation (量级, 为什么) is written in the fill from the architect's `magnitude`/`meaning`, no message of its own |
+| Model layer, empirical: tables | Read the source tables into `tables.json` | No content job (a script inside the brief step) | — | — | current | `model/tables.rs` |
+| Evidence link (econ, after the explanations) | Link each Finding Card to the estimate it reports | No content job (a drive step only) | — | — | current | `zt-digest evidence-link`, module `zt-evidence-link` |
 | Explain apply | Fix a refused derivation explanation | One model part | +1 per fix, up to 3 rounds | Continued | current | `model-steps.ps1 -Step explain-apply` |
 | Math stages (boundary, proof, theory) | Write and review mathematical parts | 4 units | 1 | One message | current | `math-steps.ps1 -UnitsPerJob` 4 |
 | Figures (digest stage) | Attach figures to Cards | Up to 80 Cards | 1 | One message (no browsing) | current | `CARDS_PER_JOB` 80, `figures.rs` |

@@ -4062,6 +4062,21 @@
 
   /** A part's title without a leading `facet：` its author wrote for the Folgezettel map. */
   const bareTitle = (title) => (title || '').replace(/^[^：:$]{1,10}[：:]\s*/, '') || title || '(untitled)';
+  // An empirical card's strip mark (docs/mockups/empirical-board.html, option A): an estimate's
+  // value typed like a stamp, its uncertainty as the source writes it, its stars; a table's size.
+  const empiricalBadge = (badge) => {
+    if (!badge) return null;
+    if (badge.kind === 'estimate') {
+      const spread = badge.uncertainty
+        ? (badge.uncertainty.startsWith('(') ? `标准误 ${badge.uncertainty.slice(1, -1)}` : badge.uncertainty)
+        : '表中没有给出不确定性';
+      const tip = [`值 ${badge.value}`, spread, badge.n ? `N = ${badge.n}` : null].filter(Boolean).join(' · ');
+      return h('span', { class: 'mbn-stamp', title: tip }, badge.value,
+        badge.uncertainty ? h('span', { class: 'u', text: ` ${badge.uncertainty}` }) : null, badge.stars || null);
+    }
+    if (badge.kind === 'table') return h('span', { class: 'mbn-grid', title: 'A source table', text: `▦ ${badge.columns} 列 × ${badge.rows} 行` });
+    return null;
+  };
 
   /**
    * What a Link says, read by ZT from the words its author wrote before it (mirrors
@@ -4532,6 +4547,13 @@
       const b = blocks[index.get(id)];
       return PLAIN[b.kind] ? NET.far : NET[level.get(id)] || NET.near;
     };
+    // An empirical chapter's headline on its closed card: its first estimate, and how many lie under it.
+    const headline = (b) => {
+      const estimates = b.children.filter((c) => c.badge && c.badge.kind === 'estimate');
+      if (!estimates.length) return null;
+      return h('span', { class: 'mbn-headline' }, empiricalBadge(estimates[0].badge),
+        h('span', { class: 'mbn-headline-n', text: `${estimates.length} 个估计` }));
+    };
     for (const b of blocks) {
       const lv = PLAIN[b.kind] ? 'far' : level.get(b.id);
       const isOpen = open && b.id === open.id;
@@ -4569,6 +4591,7 @@
               h('span', { class: 'mbn-tab', text: PLAIN[b.kind] || (lv === 'focus' ? headLabel(b.facet) : `${shortName(b.id)} · ${(facetLabel(b.facet).split(/[：:]/)[1] || '').trim()}`.replace(/ · $/, '')) }),
               fault()),
             h('span', { class: 'mbn-title' }, titleNodes(bareTitle(b.title))),
+            headline(b),
             lentFlag(),
           ]);
       node.dataset.block = b.id;
@@ -4638,7 +4661,8 @@
     // ---- the open block close up: the chapter card, its cards tucked under it ----
     let close = null;
     if (open) {
-      const isResult = (c) => Boolean(c.facet && /^结果/.test(c.facet));
+      // An empirical model's results are its estimates (docs/mockups/empirical-board.html).
+      const isResult = (c) => Boolean(c.facet && /^结果/.test(c.facet)) || Boolean(c.badge && c.badge.kind === 'estimate');
       // A Card's own page flags in the close-up: the blocks its Links reach (left) and the blocks
       // whose Links reach it (right); pointing lifts those blocks' cards on the board.
       const cardFlags = (addresses) => {
@@ -4710,7 +4734,33 @@
         if (!home || open.import) return null;
         return homeButton(home);
       };
-      const stackLabel = (c) => c.proof ? `▤ ${isResult(c) ? '证明' : '下面'} ${c.proof.steps} ${isResult(c) ? '步' : '张'}` : null;
+      // A result's chain is its proof; an estimate's cards under it are cards, not proof steps.
+      const proved = (c) => Boolean(c.facet && /^结果/.test(c.facet));
+      const stackLabel = (c) => c.proof ? `▤ ${proved(c) ? '证明' : '下面'} ${c.proof.steps} ${proved(c) ? '步' : '张'}` : null;
+      const badgeOf = (c) => empiricalBadge(c.badge);
+      // The ladder: the baseline is the chapter card; a rung per variant, a variant of a variant on
+      // its own rung under it (its chain), the column it gives at the right.
+      const ladderOf = (b) => {
+        const rung = (at, badge, title) => h('div', {
+          class: 'mbn-rung' + (at === here ? ' here' : ''), role: 'button', tabindex: '0', title: at,
+          onclick: (event) => { event.stopPropagation(); go(at); },
+          onkeydown: (event) => { if (event.key === 'Enter') go(at); },
+        },
+          h('span', { class: 'mbn-rung-text' }, titleNodes(badge && badge.change ? badge.change : bareTitle(title || at))),
+          badge && badge.column ? h('span', { class: 'mbn-rung-col', text: badge.column }) : null);
+        const nest = (c) => {
+          const chain = (c.proof && c.proof.addresses) || [];
+          // The chain below a rung, by depth: a direct child of the rung, then its own children.
+          const kids = chain.filter((at) => at.split('|').length === c.address.split('|').length + 1);
+          return h('li', {}, rung(c.address, c.badge, c.title),
+            kids.length ? h('ul', { class: 'mbn-ladder' }, kids.map((at) => {
+              const p = partOf.get(at) || {};
+              const sub = { address: at, title: p.title, badge: (c.chain_badges || {})[at], chain_badges: c.chain_badges, proof: { addresses: chain.filter((x) => x.startsWith(at + '|')) } };
+              return nest(sub);
+            })) : null);
+        };
+        return h('ul', { class: 'mbn-ladder top', 'aria-label': 'The specification ladder' }, b.children.map(nest));
+      };
       const tuck = (c, i) => {
         const pulled = c.address === here || (c.proof && c.proof.addresses.includes(here));
         const el = h('div', {
@@ -4723,6 +4773,7 @@
           h('div', { class: 'mbn-tuck-head' },
             h('span', { class: 'mbk-facet', text: headLabel(c.facet) }),
             pulled ? null : h('span', { class: 'mbn-tuck-line' }, titleNodes(bareTitle(c.title))),
+            badgeOf(c),
             lentStamp(c.address),
             c.premise ? h('span', { class: 'mbn-premise', text: '前提', title: 'A premise in the home model that the imported block rests on: it comes in with the import' }) : null,
             homeStamp(c),
@@ -4763,7 +4814,9 @@
           h('button', { class: 'mbk-chapter', onclick: () => go(open.head), title: open.head }, titleNodes(bareTitle(open.title))),
           open.lead ? h('p', { class: 'mbk-lead' }, titleNodes(open.lead)) : null,
           cardFlags([open.head]));
-      close = h('div', { class: 'mbn-close' }, chapterEl, h('div', { class: 'mbn-cascade' }, open.children.map(tuck)));
+      // A 规格 block opens as its ladder: each variant a rung that says what it changes.
+      const ladder = /^规格/.test(open.facet || '') && open.children.some((c) => c.badge && c.badge.kind === 'specification');
+      close = h('div', { class: 'mbn-close' }, chapterEl, ladder ? ladderOf(open) : h('div', { class: 'mbn-cascade' }, open.children.map(tuck)));
     }
 
     board = h('div', { class: 'model-board blocks network' + (onHead ? ' on-head' : '') + (open ? ' has-focus' : ''), tabindex: '-1' }, strip, net, close, pairsCard);

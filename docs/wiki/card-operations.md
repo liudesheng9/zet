@@ -537,6 +537,7 @@ Pitfalls:
 - `rustfmt --check --edition 2024 src/place.rs` already reports drift (the long `set(&[...])` lines in its tests). Format only what you change.
 
 ## Change history
+- `2026-11-08` — zt 0.61.0 (af6e89e4): the write gate passes a part of an empirical model its model's design (`Facts.design`, from the head's **设计** through `zt_check::empirical::design_of`), so EM5 can advise on a test the design needs. Test: the gate EM case in `tests/model_levels.rs`.
 - `2026-11-05` — zt 0.58.0: `set_literature_type(root, access, at, type)` changes a Literature type (Workspace Access applies, a Lock does not). `create_literature_tx` takes an optional type; `create_literature` (the GUI and Session route) leaves it `others`.
 - `2026-11-03` — #258 (zt 0.56.0): `Snapshot::model_heads(address)` lists the models a Card belongs to, its home model first, so `zt export` can store each model once under its head instead of asking `model_in` for every part.
 - `2026-11-03` — #250 (zt 0.55.0): `Snapshot::term_meanings` (`src/ops.rs`) parses each Term list's table once and looks every head up in it; it parsed the whole table once per head, which took 40 s for atkinson's 748 heads on every new Snapshot and stalled the GUI's Card reads ([GUI](gui.md)). The first row of a name still answers. Test: `gui::browse_lag_tests::a_term_link_shows_its_meaning_without_a_parse_per_head`.

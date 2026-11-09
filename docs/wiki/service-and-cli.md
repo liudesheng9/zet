@@ -855,6 +855,7 @@ Gaps:
 - **Case:** a Citation key is unique case-insensitively but found case-sensitively; `[[deletelit]]` does not reach `DeleteLit`.
 
 ## Change history
+- `2026-11-08` — zt 0.61.0 (af6e89e4): `ensure_empirical_level` rebuilds the cards table once to widen the `model_level` CHECK to `empirical`, after a `VACUUM INTO` backup `zt.sqlite3.pre-empirical-models-<time>.bak`; every Card keeps its row id and text. Deployed 2026-11-09 on the live box (25,822 Cards). Test: the migration case in `tests/model_levels.rs`.
 - `2026-11-06` — zt 0.60.0: links zt-check 0.20.0, rule version 7 (R22 and T10 read a broken display formula; [zt-check](zt-check.md)).
 - `2026-11-05` — zt 0.59.0: `zt export` writes each figure's explanation from the Scholar Archive into `cards.json` (`add_explanations`); an export the archive does not answer goes without them.
 - `2026-11-05` — zt 0.58.0: `initialize_database` runs `literature::ensure_type_table`; `dump_view` and `archive.json` carry `literature_types`; `zt export` keeps `literature_type` on the root.

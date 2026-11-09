@@ -6,7 +6,7 @@
 //!   zt-digest model -Step brief|validate|apply|derive|review|split|close|report|resume
 //!                         |explain|explain-check|explain-apply|explain-report
 //!                   -Work <folder> [-Staging <folder>] [-Models a,b] [-Plan <file>] [-Need a=N;b=M]
-//!                   [-Changed] [-Rebuild] [-IndependentReview] [-Batch] [-Level concept|formal]
+//!                   [-Changed] [-Rebuild] [-IndependentReview] [-Batch] [-Level concept|formal|empirical]
 //!                   [-MaxSentences 12] [-MaxChars 400]
 //!                   [-MaxSteps 6] [-MaxExplainSentences 16] [-MaxExplainChars 600] [-MaxParts 0]
 //!                   [-BriefDoc f] [-FillDoc f] [-ReviewDoc f] [-Job <id>] [-File <file>]
@@ -28,7 +28,7 @@ use crate::zt::Zt;
 use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::LazyLock;
 
 macro_rules! pattern {
@@ -59,6 +59,30 @@ const STEPS: [&str; 15] = [
     "brief", "validate", "plan-status", "apply", "derive", "review", "split", "close", "defer", "report", "resume", "explain", "explain-check",
     "explain-apply", "explain-report",
 ];
+/// Folds one move map (old address → new address, every Card a write renumbered) into the run's
+/// renames (address when the run began → address now).
+fn track_renames(renamed: &mut BTreeMap<String, String>, map: &Map<String, Value>) {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for current in renamed.values_mut() {
+        if let Some(to) = map.get(current.as_str()).and_then(Value::as_str) {
+            seen.insert(current.clone());
+            *current = to.to_string();
+        }
+    }
+    for (from, to) in map {
+        if !seen.contains(from) && !renamed.contains_key(from)
+            && let Some(to) = to.as_str()
+        {
+            renamed.insert(from.clone(), to.to_string());
+        }
+    }
+}
+
+/// Where a Card the plan named stands now.
+fn current_address(renamed: &BTreeMap<String, String>, at: &str) -> String {
+    renamed.get(at).cloned().unwrap_or_else(|| at.to_string())
+}
+
 /// One model's folder and artifact stem: the address with `\`, `/` and `|` replaced by `_`.
 /// Adoption reads the retained plans and states by the same name the compiler writes them.
 pub(crate) fn slug_of(address: &str) -> String {
@@ -101,6 +125,9 @@ struct Docs {
     fill: String,
     review: String,
     explain: String,
+    /// The empirical path's brief and evidence review (docs/empirical-models-proposal.md §8.2).
+    brief_empirical: String,
+    review_empirical: String,
 }
 
 struct Compiler {
@@ -120,6 +147,9 @@ struct Compiler {
     source_report: Option<Value>,
     /// plan.json per model folder, as Get-PlanPart reads it (the step never writes it).
     plans: HashMap<String, Value>,
+    /// Every Card this run renumbered: its address when the run began → its address now. A plan names
+    /// the Cards it merges by their addresses at planning time (ebrill2001modern pilot 2026-11-09).
+    renamed: BTreeMap<String, String>,
 }
 
 /// What explain-apply would do with one job's result file.
@@ -500,6 +530,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         fill: or(a.str("FillDoc"), "dsh-fill-instructions.zh.md"),
         review: or(a.str("ReviewDoc"), "dsh-review-instructions.zh.md"),
         explain: scripts.file("dsh-explain-instructions.zh.md"),
+        brief_empirical: scripts.file("dsh-empirical-brief-instructions.zh.md"),
+        review_empirical: scripts.file("dsh-empirical-review-instructions.zh.md"),
     };
     let explain_args = format!("-MaxExplainSentences {} -MaxExplainChars {}", p.max_explain_sentences, p.max_explain_chars);
     // Writers check their own new Cards, so a Derivation part must have its 思路 and 解读 (R15).
@@ -545,6 +577,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         figures: None,
         source_report: None,
         plans: HashMap::new(),
+        renamed: BTreeMap::new(),
     };
     match c.p.step.as_str() {
         "brief" => c.step_brief(),
@@ -659,6 +692,7 @@ impl Compiler {
     /// `Update-Moved`: part ids and job addresses follow a moved map.
     fn update_moved(&mut self, map: &Value) {
         let Some(map) = map.as_object().filter(|m| !m.is_empty()) else { return };
+        track_renames(&mut self.renamed, map);
         if let Some(models) = self.state["models"].as_object_mut() {
             for m in models.values_mut() {
                 if let Some(ids) = m["ids"].as_object_mut() {
@@ -746,6 +780,88 @@ impl Compiler {
             self.plans.insert(path.clone(), plan);
         }
         Ok(self.plans[&path].clone())
+    }
+
+    /// The model's `tables.json` (an empirical model's brief writes it), if there is one.
+    fn tables_of(&self, model: &str) -> Option<Value> {
+        let path = ps::join(&self.dir(model), "tables.json");
+        if ps::exists(&path) { util::read_json(&path).ok() } else { None }
+    }
+
+    /// Every number of the source lines the plan's parts name, and of the model's tables: what
+    /// the evidence check reads an empirical card's numbers against.
+    fn source_numbers(&mut self, model: &str) -> Result<BTreeSet<String>> {
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        if let Some(tables) = self.tables_of(model) {
+            out.extend(super::tables::table_numbers(&tables));
+        }
+        let plan = self.plan(model)?;
+        for p in list(&plan["parts"]) {
+            for r in list(&p["src"]) {
+                let r = s(r);
+                let Some(c) = SOURCE_REF.captures(&r) else { continue };
+                let file = c[1].to_string();
+                let from: usize = c[2].parse().unwrap_or(1);
+                let to: usize = c.get(3).and_then(|t| t.as_str().parse().ok()).unwrap_or(from);
+                let path = if ps::rooted(&file) { file } else { ps::join(&self.run_folder(), &file) };
+                if let Ok(lines) = ps::read_lines(&path) {
+                    let text = lines.iter().skip(from.saturating_sub(1)).take(to + 1 - from.min(to)).cloned().collect::<Vec<_>>().join("\n");
+                    out.extend(super::tables::numbers(&text));
+                }
+            }
+        }
+        // The Model Card's estimand and the plan's interpretation are the architect's words, not
+        // numbers to check; the brief and context pack are not a source either.
+        Ok(out)
+    }
+
+    /// The evidence check of one empirical model (docs/empirical-models-proposal.md §8.2 step 6):
+    /// number fidelity and the EM card rules of its own parts, as 修正 notes.
+    fn evidence_check(&mut self, model: &str, st: &Value) -> Result<Vec<(String, String)>> {
+        let own: Vec<String> = self.m(model)["ids"].as_object().map(|ids| ids.values().map(s).collect()).unwrap_or_default();
+        let source = self.source_numbers(model)?;
+        let plan = self.plan(model)?;
+        let designs = super::empirical::designs(&plan);
+        let cards: Vec<(String, String, String)> = list(&st["parts"])
+            .into_iter()
+            .filter(|p| ps::is_in(&s(&p["address"]), &own))
+            .map(|p| (s(&p["address"]), s(&p["facet"]), s(&p["body"])))
+            .collect();
+        Ok(super::empirical::evidence_entries(model, &cards, &designs, &source))
+    }
+
+    /// The evidence review of one empirical model (docs/empirical-models-proposal.md §8.2 step 5): one job
+    /// per twelve cards, each its own conversation of one message (the reviewer is not the writer), each card
+    /// with its source lines; the jobs run side by side. The reviewer re-reads its cards, fixes what the source
+    /// contradicts, and answers one line. Pilot 2026-11-09: one conversation of six sequential messages took 19
+    /// of the model's 35 minutes, and each later message re-read the whole conversation.
+    fn evidence_review_jobs(&mut self, model: &str) -> Result<Vec<Value>> {
+        let plan = self.plan(model)?;
+        let mut parts: Vec<(Value, String)> = Vec::new();
+        for p in list(&plan["parts"]) {
+            if truthy(&p["take"]) {
+                continue;
+            }
+            let id = s(&p["id"]);
+            let Ok(address) = self.resolve(&json!(id), model) else { continue };
+            let src = self.source_lines(&list(&p["src"]))?;
+            let src = if src.is_empty() { "（规划没有给出原文行：按设定里的原书表格核对。）".to_string() } else { src };
+            parts.push((json!(id), format!("## [[{address}]] {}（{}）\r\n\r\n{src}", s(&p["title"]), s(&p["facet"]))));
+        }
+        let total = parts.len().div_ceil(12);
+        let reread = "先用一条命令从档案读回本消息列出的每张卡（把每个地址写成一条 get_card，一次传给 HELPER），不要凭记忆核对。";
+        let dir = self.dir(model);
+        let mut jobs = Vec::new();
+        for (k, chunk) in parts.chunks(12).enumerate() {
+            let ids: Vec<Value> = chunk.iter().map(|(id, _)| id.clone()).collect();
+            let blocks: Vec<String> = chunk.iter().map(|(_, block)| block.clone()).collect();
+            let text = format!("## 第 {} 组，共 {total} 组\r\n\r\n{reread}\r\n\r\n{}", k + 1, blocks.join("\r\n\r\n"));
+            let mut job = self.new_job(model, "e", ids, &text, "按以上说明核对这一组卡，改正原文不支持的地方，最后只回复一行 JSON。")?;
+            let file = s(&self.state["jobs"][&s(&job["id"])]["file"]);
+            job["files"] = json!([self.docs.review_empirical, ps::join(&dir, "setting.md"), file]);
+            jobs.push(job);
+        }
+        Ok(jobs)
     }
 
     fn next_seq(&mut self) -> String {
@@ -873,8 +989,9 @@ impl Compiler {
         let level = s(&plan["level"]);
         let formal = ps::eq(&level, "formal") && !plan["level"].is_null();
         let concept = ps::eq(&level, "concept") && !plan["level"].is_null();
-        if !formal && !concept {
-            faults.push("level must be concept or formal".into());
+        let empirical = ps::eq(&level, "empirical") && !plan["level"].is_null();
+        if !formal && !concept && !empirical {
+            faults.push("level must be concept, formal or empirical".into());
         }
         // The Model Card job and a concept model's setting.md carry nothing else about the model.
         if s(&plan["card"]).trim().is_empty() {
@@ -1068,6 +1185,11 @@ impl Compiler {
             faults.extend(Self::merge_faults(plan, &tree)?);
         }
         faults.extend(Self::take_faults(plan));
+        // Level 3: the empirical plan schema (docs/empirical-models-proposal.md §8.3).
+        if empirical {
+            let tables = self.tables_of(model);
+            faults.extend(super::empirical::plan_faults(plan, tables.as_ref()));
+        }
         Ok(faults)
     }
 
@@ -1085,7 +1207,7 @@ impl Compiler {
                 used.insert(s(&p["of"]));
             }
         }
-        parts
+        let mut faults: Vec<String> = parts
             .iter()
             .filter(|p| truthy(&p["take"]) && !used.contains(&s(&p["id"])))
             .map(|p| {
@@ -1095,7 +1217,21 @@ impl Compiler {
                     s(&p["take"])
                 )
             })
-            .collect()
+            .collect();
+        // autor2004will: `5#S` named the model by a number; the build then failed. The model before `#` is its
+        // Model Card's address (`<key>/<location>#<id>`).
+        for p in parts.iter().filter(|p| truthy(&p["take"])) {
+            let take = s(&p["take"]);
+            if let Some((model, _)) = take.split_once('#')
+                && !model.contains('/')
+            {
+                faults.push(format!(
+                    "take {} ({take}): `{model}` is no Model Card address; write the other model's address before #, as in <key>/5|a#S",
+                    s(&p["id"])
+                ));
+            }
+        }
+        faults
     }
 
     /// #197: the merges the build cannot carry out. `apply` deletes a merged part only when it has no
@@ -1439,6 +1575,12 @@ impl Compiler {
             let kind = if truthy(&part["kind"]) { s(&part["kind"]) } else { "illustrates".into() };
             links.insert(0, self.link(&json!([part["of"], part["why"], kind]), model, "rests")?);
         }
+        // Level 3: the role's sections, with the numbers from the source's tables.
+        if super::empirical::is_empirical(plan) && !derives(part) {
+            let tables = self.tables_of(model);
+            let resolve = |id: &str| self.resolve(&json!(id), model);
+            return super::empirical::skeleton(part, plan, &links, &resolve, tables.as_ref());
+        }
         if derives(part) {
             let mut start: Vec<String> = links.iter().map(|l| format!("- {l}")).collect();
             if let Some(prev) = previous.filter(|p| derives(p)) {
@@ -1589,7 +1731,14 @@ impl Compiler {
         let allow = ps::change_extension(&file, ".allow.txt");
         let addresses = ids.iter().map(|i| self.resolve(i, model)).collect::<Result<Vec<_>>>()?;
         util::write_text(&allow, &(addresses.join("\n") + "\n"))?;
-        let kind = if ps::eq(&s(&self.m(model)["level"]), "concept") { "概念模型" } else { "形式模型" };
+        let level = s(&self.m(model)["level"]);
+        let kind = if ps::eq(&level, "concept") {
+            "概念模型"
+        } else if ps::eq(&level, "empirical") {
+            "实证模型"
+        } else {
+            "形式模型"
+        };
         let head = format!(
             "# 任务 {id}\n\nHELPER: {}\nCHECK: {}\nALLOW: {allow}\nLIMITS: {}\n模型卡: [[{model}]]（{kind}）\n\n",
             self.helper, self.check, self.limits
@@ -1653,6 +1802,25 @@ impl Compiler {
         };
         line(&mut b, &format!("- 分面：{}{emphasis}", s(&part["facet"])));
         line(&mut b, &format!("- 标题：{}", s(&part["title"])));
+        let plan = self.plan(model).unwrap_or(Value::Null);
+        if super::empirical::is_empirical(&plan) {
+            let tables = self.tables_of(model);
+            if truthy(&part["specification"]) {
+                let spec = self.resolve(&part["specification"], model)?;
+                if let Some(kept) = super::empirical::kept_lines(part, tables.as_ref(), &spec) {
+                    line(&mut b, "- 脚本按原书表格写好的数字行（原样放在 **估计** 一节，一个字符也不改）：");
+                    line(&mut b, &kept);
+                }
+            }
+            for (field, label) in [("magnitude", "量级（架构师的设计）"), ("meaning", "为什么（架构师的设计）")] {
+                if truthy(&part[field]) {
+                    line(&mut b, &format!("- {label}：{}", s(&part[field])));
+                }
+            }
+            if truthy(&part["change"]) {
+                line(&mut b, &format!("- 相对基准的改动（{}）：{}", s(&part["change"]["kind"]), s(&part["change"]["text"])));
+            }
+        }
         if truthy(&part["spec"]) {
             line(&mut b, &format!("- 要陈述的内容：{}", s(&part["spec"])));
         }
@@ -1775,8 +1943,41 @@ impl Compiler {
             *self.m_mut(&model) =
                 json!({ "level": st["level"], "status": "brief", "ids": {}, "titles": {}, "derive": [], "main": [], "split": 0, "steps": {} });
             let context = ps::join(&dir, "context.md");
-            if self.context(&model, &context).is_err() {
-                bail!("model-context.ps1 failed for {model}");
+            let staging = self.p.staging.clone();
+            let summary = match context::build(self.zt()?, &staging, &model, &context) {
+                Ok(summary) => summary,
+                Err(_) => bail!("model-context.ps1 failed for {model}"),
+            };
+            // An empirical model reads the source's tables by script (docs/empirical-models-proposal.md
+            // §8.2 step 1): every table of its group's section files, with its file and line.
+            let empirical = if self.p.level.is_empty() { ps::eq(&s(&st["level"]), "empirical") } else { ps::eq(&self.p.level, "empirical") };
+            let tables_file = ps::join(&dir, "tables.json");
+            if empirical {
+                // The group's own sections first (a label that repeats in another chapter resolves to the
+                // model's own table), then every other section of the book: a paper's empirical section
+                // often spans several groups (hansen2021demand: Tables 2-5 in s12-s15).
+                let mut names: Vec<String> = pipe(&summary["sections"]).into_iter().map(s).collect();
+                let mut rest: Vec<String> = std::fs::read_dir(ps::join(&staging, "sections"))
+                    .map(|entries| entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
+                    .unwrap_or_default();
+                rest.retain(|n| n.ends_with(".md") && n != "index.md" && !names.contains(n));
+                rest.sort();
+                names.extend(rest);
+                let mut found = Vec::new();
+                for name in &names {
+                    let path = ps::join(&staging, &format!("sections\\{name}"));
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        found.extend(super::tables::extract(&text, &format!("sections/{name}")));
+                    }
+                }
+                // Last, the tables the digest did not stage (a working paper sets them after its
+                // reference list, autor2004will); a label a section already has keeps the section's.
+                let back = crate::prepare::BACK_MATTER;
+                if let Ok(text) = std::fs::read_to_string(ps::join(&staging, back)) {
+                    let known: Vec<String> = found.iter().map(|t| s(&t["label"])).collect();
+                    found.extend(super::tables::extract(&text, back).into_iter().filter(|t| !known.contains(&s(&t["label"]))));
+                }
+                util::write_text(&tables_file, &serde_json::to_string_pretty(&json!({ "model": model, "tables": found }))?)?;
             }
             let context_hash = Self::file_hash(&context)?;
             let read_only = ps::join(&dir, "read-only.allow.txt");
@@ -1788,14 +1989,15 @@ impl Compiler {
             util::write_text(
                 &job,
                 &format!(
-                    "# 简报任务：[[{model}]]\n\nHELPER: {}（只读：每条命令末尾加 -Allow \"{read_only}\"）\n上下文包: {context}\n简报文件: {brief}\n现在的层级: {level}{asked}\n分卡数: {}\n",
+                    "# 简报任务：[[{model}]]\n\nHELPER: {}（只读：每条命令末尾加 -Allow \"{read_only}\"）\n上下文包: {context}\n简报文件: {brief}\n现在的层级: {level}{asked}\n分卡数: {}\n{}",
                     self.helper,
-                    list(&st["parts"]).len()
+                    list(&st["parts"]).len(),
+                    if empirical { format!("表格文件: {tables_file}\n") } else { String::new() }
                 ),
             )?;
             jobs.push(json!({
                 "id": format!("{}:brief", Self::slug(&model)),
-                "files": [self.docs.brief, job],
+                "files": [if empirical { self.docs.brief_empirical.clone() } else { self.docs.brief.clone() }, job],
                 "prompt": format!("按以上说明写出简报文件 {brief}，最后只回复一行 JSON。"),
             }));
             // The source review is part of the brief: its evidence is the exact context pack,
@@ -1959,6 +2161,20 @@ impl Compiler {
         self.record_step(model, "plan", json!({"plan":plan_path,"plan_hash":plan_hash,"faults":0,"level":plan["level"]}));
         self.m_mut(model)["level"] = plan["level"].clone();
         let mut parts: Vec<Value> = list(&plan["parts"]).into_iter().cloned().collect();
+        // An empirical part rests on what its role names (an estimate on its specification, a variant
+        // on its base, a test on its assumption): the compiler writes those Links itself.
+        let empirical = super::empirical::is_empirical(&plan);
+        if empirical {
+            for p in parts.iter_mut() {
+                let mut rests: Vec<Value> = list(&p["rests"]).into_iter().cloned().collect();
+                for (id, why) in super::empirical::role_rests(p) {
+                    if !rests.iter().any(|r| ps::eq(&s(&ps::at(&pipe(r), 0)), &id)) {
+                        rests.push(json!([id, why]));
+                    }
+                }
+                p["rests"] = Value::Array(rests);
+            }
+        }
         let mut known: CiMap<Value> = CiMap::new();
         for p in list(&st["parts"]) {
             known.insert(&s(&p["address"]), p.clone());
@@ -2111,15 +2327,17 @@ impl Compiler {
         }
         // Merged parts: only a part without successors can go (a delete takes its successors with it).
         for mg in list(&plan["merge"]) {
+            // The plan names the Card where it stood when planned; an insert before it renumbered it.
+            let from = current_address(&self.renamed, &s(&mg["from"]));
             let set = self.tree_addresses(model)?;
-            if Self::has_successors(&s(&mg["from"]), &set)? {
-                let note = format!("not merged: {} has successors", s(&mg["from"]));
+            if Self::has_successors(&from, &set)? {
+                let note = format!("not merged: {from} has successors");
                 let m = self.m_mut(model);
                 m["notes"] = plus(&m["notes"], [json!(note)]);
                 continue;
             }
             let into = self.resolve(&mg["into"], model)?;
-            self.write(vec![json!({ "tool": "delete_card", "arguments": { "at": mg["from"], "into": into, "confirm": "delete" } })])?;
+            self.write(vec![json!({ "tool": "delete_card", "arguments": { "at": from, "into": into, "confirm": "delete" } })])?;
         }
         // A refilled part loses its body to the skeleton: keep the old body for the job that rewrites it.
         self.m_mut(model)["old"] = json!({});
@@ -2169,6 +2387,13 @@ impl Compiler {
         let card = self.card(&json!(model))?;
         let structure = self.structure_list(&plan, model)?;
         let mut body = text::set_section(&s(&card["body"]), "结构", &structure);
+        if empirical {
+            let tables = self.tables_of(model);
+            let resolve = |id: &str| self.resolve(&json!(id), model);
+            for (name, content) in super::empirical::head_sections(&plan, &resolve, tables.as_ref())? {
+                body = text::set_section(&body, &name, &format!("**{name}**\n{content}"));
+            }
+        }
         if let Some(with) = self.with_imports(&body, &plan, model)? {
             body = with;
         }
@@ -2189,7 +2414,11 @@ impl Compiler {
         // setting.md opens every DeepSeek job of this model, after the shared instructions.
         let formal = ps::eq(&s(&plan["level"]), "formal");
         let setting = main.first().map(|&i| parts[i].clone()).unwrap_or(Value::Null);
-        let setting_text = if formal {
+        let setting_text = if empirical {
+            let tables = self.tables_of(model);
+            let resolve = |id: &str| self.resolve(&json!(id), model);
+            super::empirical::setting_text(&plan, model, &resolve, tables.as_ref())?
+        } else if formal {
             format!(
                 "# 本模型的设定：[[{}]] {}\n\n{}\n\n{}\n",
                 self.resolve(&setting["id"], model)?,
@@ -2207,7 +2436,10 @@ impl Compiler {
         let todo: Vec<Value> = parts
             .iter()
             .filter(|p| {
-                !truthy(&p["take"]) && !derives(p) && (!(truthy(&p["existing"]) || truthy(&p["move"])) || truthy(&p["refill"]))
+                !truthy(&p["take"])
+                    && !derives(p)
+                    && (!(truthy(&p["existing"]) || truthy(&p["move"])) || truthy(&p["refill"]))
+                    && !(empirical && super::empirical::role(p) == Some(zt_check::empirical::EmpiricalRole::Variables))
             })
             .cloned()
             .collect();
@@ -2277,6 +2509,16 @@ impl Compiler {
         let mut jobs = Vec::new();
         let independent = self.p.independent_review;
         for model in self.order() {
+            // Level 3: the evidence review, once, one job per twelve cards side by side.
+            if ps::eq(&s(&self.m(&model)["level"]), "empirical") && ps::is_in(&s(&self.m(&model)["status"]), &["built", "derived"]) && !self.p.changed {
+                let before = jobs.len();
+                jobs.extend(self.evidence_review_jobs(&model)?);
+                self.m_mut(&model)["status"] = json!("reviewed");
+                self.record_step(&model, "review", json!({"jobs": jobs.len() - before, "evidence": true}));
+                if list(&self.m(&model)["derive"]).is_empty() {
+                    continue;
+                }
+            }
             let m = self.m(&model);
             if !ps::is_in(&s(&m["status"]), &["derived", "reviewed"]) || list(&m["derive"]).is_empty() {
                 continue;
@@ -2768,6 +3010,13 @@ impl Compiler {
             let st = self.model_of(&json!(model))?;
             let mut entries = close_entries(&model, &st["build"]);
             entries.extend(marker_entries(&st));
+            // Level 3: the role faults of the build report and the evidence check.
+            if ps::eq(&s(&st["build"]["level"]), "empirical") {
+                entries.extend(super::empirical::role_entries(&model, &st["build"]));
+                if ps::exists(&ps::join(&self.dir(&model), "plan.json")) {
+                    entries.extend(self.evidence_check(&model, &st)?);
+                }
+            }
             let plan_path = ps::join(&self.dir(&model), "plan.json");
             if ps::exists(&plan_path)
                 && let Ok(plan) = util::read_json(&plan_path)
@@ -3145,6 +3394,7 @@ impl Compiler {
                     "forward": count(&build["forward"]),
                     "unanchored": count(&build["unanchored"]),
                     "beyond_level": count(&build["beyond_level"]),
+                    "empirical": count(&build["empirical_shape"]) + count(&build["estimate_unbound"]) + count(&build["spec_unbound"]) + count(&build["test_unbound"]) + count(&build["variable_uncovered"]),
                 },
                 "issues": issues,
                 "notes": list(&m["notes"]),
@@ -3403,6 +3653,9 @@ impl Compiler {
         }
         if ps::eq(&s(&plan["level"]), "concept") {
             card_text += "- 概念模型：用文字说清问题、机制和结论，不写推导。\n";
+        }
+        if ps::eq(&s(&plan["level"]), "empirical") {
+            card_text += "- 实证模型：写 **问题**、**数据**（一两句）、**关联**、来源。**估计对象** 和 **主要估计** 两节由脚本写好，原样保留。**设计** 一节第一行冒号前的设计类型原样保留，冒号后写一两句比较（谁和谁比，变异从哪里来）。\n";
         }
         let mut current = text::set_section(&s(&card["body"]), "结构", "").trim().to_string();
         if !current.is_empty() {
@@ -3893,7 +4146,8 @@ fn divisions_section(plan: &Value, resolve: impl Fn(&str) -> Result<String>) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, lacks_main_line, marker_entries, supplied_entries};
+    use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, lacks_main_line, marker_entries, supplied_entries, track_renames, current_address};
+    use std::collections::BTreeMap;
     use serde_json::json;
 
     // #204 (B6): the architect's divisions (the model's parts, 分部) start at main-line parts; the
@@ -4044,6 +4298,21 @@ mod tests {
 
     // -Step defer: the released models leave the order (every later step iterates it) and read deferred;
     // a model the batch does not hold is ignored.
+    /// ebrill2001modern pilot (2026-11-09): an insert renumbers later Cards twice in one apply; a merge
+    /// still finds the Card the plan named.
+    #[test]
+    fn a_merged_card_is_found_after_the_inserts_renumbered_it() {
+        let mut renamed = BTreeMap::new();
+        let first = json!({"K/5|a|a|1": "K/5|a|a|2", "K/5|a|a|2": "K/5|a|a|3", "K/5|a|a|2|b|a|a": "K/5|a|a|3|b|a|a"});
+        track_renames(&mut renamed, first.as_object().unwrap());
+        let second = json!({"K/5|a|a|3": "K/5|a|a|4", "K/5|a|a|3|b|a|a": "K/5|a|a|4|b|a|a"});
+        track_renames(&mut renamed, second.as_object().unwrap());
+        assert_eq!(current_address(&renamed, "K/5|a|a|2|b|a|a"), "K/5|a|a|4|b|a|a");
+        assert_eq!(current_address(&renamed, "K/5|a|a|2"), "K/5|a|a|4");
+        assert_eq!(current_address(&renamed, "K/5|a|a|1"), "K/5|a|a|2");
+        assert_eq!(current_address(&renamed, "K/9"), "K/9");
+    }
+
     #[test]
     fn deferred_models_leave_the_batch_order() {
         let mut state = json!({"order": ["K/2|a", "K/3|a", "K/4|a"], "models": {"K/2|a": {"status": "planned"}, "K/3|a": {"status": "planned"}, "K/4|a": {"status": "planned"}}});
@@ -4145,6 +4414,20 @@ mod tests {
         let faults = super::Compiler::take_faults(&plan);
         assert_eq!(faults.len(), 1, "{faults:?}");
         assert!(faults[0].contains("TD") && faults[0].contains("rests"), "{}", faults[0]);
+    }
+
+    // autor2004will (2026-11-09): `9|a` took `5#S` and `5#R`, a batch number for the model, the plan validated,
+    // and the build failed ("model 5 has no part S yet"). The model before `#` is its Model Card's address.
+    #[test]
+    fn a_take_that_names_no_model_address_is_a_plan_fault() {
+        let plan = json!({"parts":[
+            {"id":"TS","take":"5#S"},
+            {"id":"TR","take":"K/2|a#R"},
+            {"id":"D1","line":"main","rests":[["TS","用到设定"],["TR","用到结果"]]}
+        ]});
+        let faults = super::Compiler::take_faults(&plan);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("TS") && faults[0].contains("5#S") && faults[0].contains("address"), "{}", faults[0]);
     }
 
     // A split Derivation part is one planned target in several pieces (`D11`, `D11~2`, `D11~3`): a Link to

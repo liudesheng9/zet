@@ -67,6 +67,17 @@ The GUI (zt 0.44+) draws a model in chapters as a **network of blocks**. A block
 
 Write the target as a JSON spec (format in `scripts/tree-mover.mjs`) by card identity, then rebuild with `scripts/tree-mover.mjs plan` and `run`. The mover parks each branch (a Side branch, or a chain under a kept card, with its Direct chain) in one move, deepest first, onto a parking chain, then places each card top-down into its slot, and follows every card through each move's rename map. It retries a failed move once, saves its state after every move, and a second `run` resumes at the move that failed. Its tests (`node --test scripts/tree-mover.test.mjs`) run it against a simulator of zt's moves. Freeze the tree first (it does this on the first run), and never change the spec mid-run.
 
+### An empirical model: the evidence spine
+
+For a Model Card of level `empirical` (docs/empirical-models-proposal.md §5.2, §9.3) the spine follows the order in which a reader comes to trust a number:
+
+- **Main line**: data → [hypothesis] → design → [推导：估计式] → baseline specification → chapters. The chapters, in the source's order when it differs: main estimates, identification tests, robustness, heterogeneity and mechanisms, quantification or counterfactuals. Leave out a chapter the source does not have; a chapter holds at least one estimate or test.
+- **Under a chapter**: its estimates (`估计：`, `参数：`, `反事实：`), tables (`表 n：`) and figures (`图 n：`), as Side branches.
+- **Under an estimate**: its evidence chain: the tests that support it (`检验：`), its figure, the conversion of its magnitude (`换算：`). A test rests on the assumption it tests and on its specification, and `印证`s the estimate: only rests-on Links place a card on the board, so the tests hang under the estimate without making it wait for them.
+- `check-network.mjs` works unchanged on rests-on Links: a robustness chapter hangs under the main-estimates chapter it re-estimates, a mechanism chapter under the chapter whose estimate it explains.
+- A chapter card keeps the format `**直觉**` (one sentence: what the chapter establishes, e.g. "the estimate does not come from pre-existing trends"), `**本章估计**` (in place of `**本章结果**`), `**承上启下**`.
+- Never move or rewrite a number of an estimate: the `**估计**` section's lines came from the source's table by script. Move cards, never delete a Link.
+
 ## Step 3: make each card readable
 
 1. **One notation card** as the first Side successor of the setting (`zt-model-settings` keeps every symbol there): every symbol grouped by block, each defined once, the symbols derivations introduce in their own section, plus a legend of the marks (`(n)` equation numbers; `（论文略去，此处补出）` for a step the paper skipped; `推导链第 k 步，共 n 步`; subscripts). Settle conflicting definitions against the source text (Becker: `π` was the circle constant, not a wage parameter).

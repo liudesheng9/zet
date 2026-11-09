@@ -170,16 +170,24 @@ async function main() {
   if (args['dump-only']) { live.close(); return; }
 
   const test = new McpClient(zt, testEnv(toConfig), 'test', false);
+  const unlinked = new Set();
+  const placeholders = new Set();
   await test.init();
 
   if (!args['verify-only']) {
     await copyArtifacts(args['from-root'] || 'D:\\zt', cards, toConfig, log);
-    await copyCards(test, cards, src, log);
+    await copyCards(test, cards, src, log, unlinked, placeholders);
   }
   const dst = await test.call('get_tree', { tree: treeId, bodies: true });
   fs.writeFileSync(path.join(outDir, 'test-tree.json'), JSON.stringify(dst, null, 2));
   const report = compare(cards, treeCards(dst), treeId);
   report.broken_outside_links = outsideLinks(cards, treeId);
+  // A card whose Links to other trees stayed plain text differs from the live card only there.
+  report.outside_outbound_unlinked = report.differences.filter((d) => unlinked.has(d.address)).map((d) => ({ address: d.address, field: d.field }));
+  report.differences = report.differences.filter((d) => !unlinked.has(d.address));
+  // The placeholders of the live tree's empty slots are the copy's own Cards.
+  report.placeholders = [...placeholders];
+  report.differences = report.differences.filter((d) => !(d.field === 'extra_in_test' && placeholders.has(d.address)));
   fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
   log(`compared ${report.live_count} live / ${report.test_count} test cards; ${report.differences.length} differences; ${report.outside_inbound.length} inbound Links from other trees (not copied); ${report.broken_outside_links.length} outside links`);
   live.close();
@@ -205,7 +213,7 @@ async function copyArtifacts(liveRoot, cards, toConfig, log) {
   log(`artifacts: ${refs.size} referenced, ${copied} files copied to ${toDir}`);
 }
 
-function createArgs(card, parentAddr) {
+export function createArgs(card, parentAddr) {
   const a = { at: parentAddr, title: card.title, kind: card.edge === 'side' ? 'side' : 'direct' };
   const body = authoredBody(card);
   if (body) a.body = body;
@@ -214,6 +222,8 @@ function createArgs(card, parentAddr) {
   if (card.emphasis) a.emphasis = card.emphasis;
   if (card.level) a.level = card.level;
   if (card.form) a.form = card.form;
+  // A Term Card is a Term head only with its name; a Term link to a nameless one is refused (2026-11-09).
+  if (card.term) a.term = card.term;
   return a;
 }
 
@@ -228,7 +238,30 @@ function withoutPendingLinks(body, done) {
   return body.replace(/\[\[([^\]]+)\]\]/g, (whole, target) => (done.has(target.trim()) ? whole : target));
 }
 
-async function copyCards(test, cards, src, log) {
+// A live tree can hold an empty slot (a Card deleted after its later siblings were made): a new Side or
+// Direct slot always takes the next free label, so the copy would allocate the empty slot. Such a slot is
+// filled by a placeholder Card, which stays (a delete would renumber the later siblings) and is reported; a
+// slot another source Card owns is a misallocation and stops the copy (2026-11-09, hansen2021demand/1|a).
+export function gapFiller(got, card, sourceAddresses) {
+  if (!got || got === card.address || sourceAddresses.has(got)) return false
+  const cut = got.lastIndexOf('|')
+  const parent = cut < 0 ? null : got.slice(0, cut)
+  return parent === card.parent
+}
+
+/** A body with every Link to a Card outside the tree written as plain text. */
+export function withoutOutsideLinks(body, treeId) {
+  return body.replace(/\[\[([^\]]+)\]\]/g, (whole, target) => {
+    const t = target.trim().replace(/^[^@]*@/, '');
+    if (t === treeId || t.startsWith(`${treeId}/`)) return whole;
+    // A Term link reads as its label.
+    return target.includes('@') ? target.slice(0, target.indexOf('@')) : target;
+  });
+}
+
+async function copyCards(test, cards, src, log, unlinked = new Set(), placeholders = new Set()) {
+  const sourceAddresses = new Set(cards.map((c) => c.address))
+  const fillers = []
   const root = cards.find((c) => c.edge === 'root');
   if (!root) throw new Error('no root card');
   const done = new Set();
@@ -253,8 +286,16 @@ async function copyCards(test, cards, src, log) {
         a.body = withoutPendingLinks(a.body, done);
         if (a.body !== authoredBody(c)) stripped.add(c.address);
       }
-      const res = await test.call('create_successor', a);
-      const got = allocated(res);
+      let res = await test.call('create_successor', a);
+      let got = allocated(res);
+      while (gapFiller(got, c, sourceAddresses)) {
+        // The empty slot holds a placeholder; the source Card takes the next slot.
+        await test.call('edit_card', { at: got, title: '占位卡：复制时补上原树的空位', body: '复制时补上原树的空位，复制结束后删除。' });
+        fillers.push(got);
+        log(`filled the empty slot ${got}`);
+        res = await test.call('create_successor', a);
+        got = allocated(res);
+      }
       if (got !== c.address) throw new Error(`allocated ${got} for source ${c.address} (parent ${c.parent}): ${JSON.stringify(res).slice(0, 500)}`);
       done.add(c.address);
       queue.splice(i, 1); i--;
@@ -263,12 +304,22 @@ async function copyCards(test, cards, src, log) {
     }
   }
   if (queue.length) throw new Error(`cards without a created parent: ${queue.map((c) => c.address).join(', ')}`);
-  // Pass 2: the exact bodies, now that every Link target exists.
+  // Pass 2: the exact bodies, now that every Link target exists. A Link to another tree (another book's
+  // Bridge) has no target in a one-tree copy: zt refuses it, so it stays plain text and is reported.
   for (const c of cards) {
     if (!stripped.has(c.address)) continue;
-    await test.call('edit_card', { at: c.address, body: authoredBody(c) });
+    try {
+      await test.call('edit_card', { at: c.address, body: authoredBody(c) });
+    } catch (e) {
+      if (!/link target `[^`]+` does not exist/.test(String(e.message))) throw e;
+      await test.call('edit_card', { at: c.address, body: withoutOutsideLinks(authoredBody(c), root.address) });
+      unlinked.add(c.address);
+    }
   }
+  if (unlinked.size) log(`pass 2: ${unlinked.size} bodies keep their Links to other trees as plain text`);
   log(`pass 2: ${stripped.size} bodies rewritten with their full Links`);
+  // A placeholder stays: deleting it would renumber its later siblings (zt compacts a Side or Direct run).
+  for (const at of fillers) placeholders.add(at);
 }
 
 function linkSet(card) {

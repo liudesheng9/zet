@@ -57,6 +57,8 @@ use std::sync::LazyLock;
 pub(crate) mod notes;
 pub(crate) mod resolve;
 
+/// The staged text the digest leaves out but an empirical brief reads its tables from.
+pub(crate) const BACK_MATTER: &str = "back-matter.zh.md";
 static BLOCKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap());
 static CJK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\x{3400}-\x{9FFF}\x{F900}-\x{FAFF}]").unwrap());
 static HAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\x{3400}-\x{9FFF}]").unwrap());
@@ -216,7 +218,8 @@ pub(crate) struct Unit {
 
 /// Units at `#` and `##` headings from -StartHeading up to -EndHeading; a unit under a heading of
 /// `skip` is left out up to the next other heading.
-fn split_units(kept: &[String], start: &str, end: &str, skip: &[String]) -> Vec<Unit> {
+/// The kept blocks with every ATX heading as a block of its own.
+fn blocks_of(kept: &[String]) -> Vec<String> {
     // ATX headings do not require a blank line before/after them. Separate
     // them before selecting the range, while leaving fenced examples intact.
     let mut blocks = Vec::new();
@@ -258,6 +261,38 @@ fn split_units(kept: &[String], start: &str, end: &str, skip: &[String]) -> Vec<
             blocks.push(prose.join("\n"));
         }
     }
+    blocks
+}
+
+/// The text the digest does not stage: everything from the end heading on, and the sections it
+/// skips. A working paper sets its tables there (autor2004will: 22 tables after the reference
+/// list), so the empirical brief reads its tables from this text too. Empty without an end
+/// heading and without a skipped section.
+pub(crate) fn back_matter(kept: &[String], start: &str, end: &str, skip: &[String]) -> String {
+    let mut out = String::new();
+    let (mut inside, mut after, mut skipped) = (false, false, false);
+    for block in blocks_of(kept) {
+        if !block.contains('\n')
+            && let Some(caps) = HEADING.captures(&block)
+        {
+            let heading = caps[2].trim().to_string();
+            if !inside && eq(&heading, start) {
+                inside = true;
+            }
+            if inside && !end.is_empty() && eq(&heading, end) {
+                after = true;
+            }
+            skipped = inside && !after && is_in(&heading, skip);
+        }
+        if after || skipped {
+            out.push_str(&format!("{block}{NL}{NL}"));
+        }
+    }
+    out
+}
+
+fn split_units(kept: &[String], start: &str, end: &str, skip: &[String]) -> Vec<Unit> {
+    let blocks = blocks_of(kept);
     let mut units: Vec<Unit> = Vec::new();
     let mut chapter = String::new();
     let mut current: Option<usize> = None;
@@ -495,6 +530,10 @@ pub(crate) fn run_contract(
         record["bytes"] = json!(std::fs::metadata(s(&group["file"]))?.len());
         for key in ["n", "id", "anchor", "chapter", "headings", "chars"] {
             record[key] = group[key].clone();
+        }
+        // A group a settled adoption closed (`ledger adopt -Settled`): its anchor is not checked again.
+        if group["closed"] == json!(true) {
+            record["closed"] = json!(true);
         }
         let mut sections = Vec::new();
         for section in group["sections"]
@@ -767,6 +806,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         write(&join_path(&staging, &format!("sections\\{name}")), text)?;
     }
     write(&join_path(&staging, "book.zh.md"), &staged.book)?;
+    // The tables the digest does not stage (after the end heading, in a skipped section) stay
+    // readable for an empirical model's brief, never as a section of their own.
+    let back = back_matter(&kept, &start, &end, &skip);
+    if !crate::model::tables::extract(&back, BACK_MATTER).is_empty() {
+        write(&join_path(&staging, BACK_MATTER), &back)?;
+    }
     let unit_file: Vec<String> = (0..merged.len()).map(|u| format!("s{:02}.md", u + 1)).collect();
 
     // Which other units each group should look at first, so its run needs fewer searches.
@@ -1412,6 +1457,18 @@ mod tests {
     fn units_of(text: &str) -> Vec<Unit> {
         let kept = chinese_blocks(text, &CiMap::new());
         split_units(&kept, "导论", "参考", &["习题".to_string()])
+    }
+
+    #[test]
+    fn the_back_matter_holds_the_text_after_the_end_and_of_the_skipped_sections() {
+        // autor2004will: a working paper sets its 22 tables after the reference list, and the
+        // empirical brief must still read them (docs/empirical-models-proposal.md §8.2 step 1).
+        let text = "# 导论\n\n正文。\n\n# 习题\n\n<table><tr><td>a</td></tr></table>\n\n# 结论\n\n结语。\n\n# 参考\n\n文献。\n\n表 I. 雇用率\n\n<table><tr><td>b</td></tr></table>";
+        let kept = chinese_blocks(text, &CiMap::new());
+        let back = back_matter(&kept, "导论", "参考", &["习题".to_string()]);
+        assert!(back.contains("<td>a</td>") && back.contains("表 I. 雇用率") && back.contains("<td>b</td>"), "{back}");
+        assert!(!back.contains("正文。") && !back.contains("结语。"), "{back}");
+        assert_eq!(back_matter(&kept, "导论", "", &[]), "");
     }
 
     #[test]

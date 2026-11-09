@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Empirical board mockups</title>
+<style>
+:root {
+  --desk: #f2eee6; --stock: #fdfaf2; --stock-edge: rgba(90, 65, 30, .16); --paper-rule: #d3e0ee; --paper-margin: #e59c94;
+  --ink: #1c1915; --ink-soft: #5a5348; --ink-faint: #9b9281; --cork: #e6d3b1; --model: #26457d; --pointer: #d19a1f;
+  --stamp: #8a2f1d;
+  --card-shadow-lift: 0 0 0 .5px var(--stock-edge), 0 2px 2px rgba(60, 45, 20, .07), 0 6px 8px -2px rgba(60, 45, 20, .08), 0 14px 18px -6px rgba(60, 45, 20, .12), 0 30px 44px -14px rgba(60, 45, 20, .24);
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --sans: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --desk: #17191d; --stock: #23262d; --stock-edge: rgba(0,0,0,.5); --paper-rule: #34404e; --paper-margin: #74403c; --ink: #efe9de; --ink-soft: #b7afa0; --ink-faint: #7a7467; --cork: #3a3328; --model: #8fb0ea; --stamp: #e39a84; }
+}
+:root[data-theme="dark"] { --desk: #17191d; --stock: #23262d; --stock-edge: rgba(0,0,0,.5); --paper-rule: #34404e; --paper-margin: #74403c; --ink: #efe9de; --ink-soft: #b7afa0; --ink-faint: #7a7467; --cork: #3a3328; --model: #8fb0ea; --stamp: #e39a84; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px 16px 48px; background: var(--desk); color: var(--ink); font: 14px/1.6 var(--sans); }
+main { max-width: 980px; margin: 0 auto; }
+h1 { font: 600 20px var(--serif); margin: 0 0 4px; }
+h2 { font: 600 15px var(--serif); margin: 32px 0 6px; }
+p.note { margin: 0 0 14px; color: var(--ink-soft); font-size: 13px; }
+.row { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; align-items: start; }
+.label { font: 600 11px var(--sans); letter-spacing: .05em; color: var(--ink-faint); text-transform: uppercase; margin-bottom: 8px; }
+.chosen { color: var(--stamp); }
+.chapter { position: relative; padding: 0 16px 14px; border: 1px solid var(--stock-edge); border-radius: 3px; background: var(--stock); box-shadow: var(--card-shadow-lift);
+  background-image: repeating-linear-gradient(transparent 0 23px, color-mix(in srgb, var(--paper-rule) 55%, transparent) 23px 24px); background-position: 0 38px; }
+.head { display: flex; align-items: center; gap: 8px; height: 32px; padding: 8px 16px 0; margin: 0 -16px 8px; border-bottom: 1.5px solid var(--paper-margin); }
+.tab { font: 600 11px var(--sans); letter-spacing: .04em; }
+.count { font: 10.5px var(--sans); color: var(--ink-faint); margin-left: auto; }
+.lead { margin: 6px 0 0; font: 13.5px/1.65 var(--serif); color: var(--ink-soft); }
+.cascade { display: flex; flex-direction: column; margin: -10px 10px 0; }
+.tuck { position: relative; margin-top: -9px; padding: 9px 12px; border: 1px solid var(--stock-edge); border-radius: 3px; background: var(--stock);
+  box-shadow: 0 -1px 2px rgba(30,18,6,.12), 0 2px 5px -2px rgba(30,18,6,.35); }
+.tuck:first-child { margin-top: 0; padding-top: 18px; }
+.tuck.aside { background: color-mix(in srgb, var(--stock) 88%, var(--cork)); }
+.th { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.facet { font: 600 10px var(--sans); letter-spacing: .04em; color: var(--ink-soft); flex: none; }
+.line { flex: 1; min-width: 0; font: 12.5px/1.3 var(--serif); color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Option A: a typed stamp at the strip's right edge. */
+.stamp { flex: none; font: 600 11px/16px var(--mono); color: var(--stamp); padding: 0 5px; border: 1px solid color-mix(in srgb, var(--stamp) 45%, transparent); border-radius: 2px; white-space: nowrap; }
+.stamp .u { font-weight: 400; color: color-mix(in srgb, var(--stamp) 75%, var(--ink-soft)); }
+/* Option B: a small slip with the value over its uncertainty. */
+.slip { flex: none; text-align: right; font: 600 12px/1.1 var(--mono); color: var(--stamp); }
+.slip small { display: block; font: 400 9.5px/1.2 var(--mono); color: var(--ink-faint); }
+.grid { flex: none; font: 600 10px/16px var(--sans); color: var(--model); padding: 0 6px; border-radius: 2px; background: color-mix(in srgb, var(--model) 9%, transparent); white-space: nowrap; }
+/* The ladder: the base on top, each variant a rung with its change. */
+.ladder { list-style: none; margin: 0; padding: 0 0 0 6px; border-left: 2px solid color-mix(in srgb, var(--paper-margin) 80%, transparent); }
+.ladder li { position: relative; margin: 8px 0 0 0; padding-left: 14px; }
+.ladder li::before { content: ""; position: absolute; left: -2px; top: 11px; width: 12px; border-top: 2px solid color-mix(in srgb, var(--paper-margin) 80%, transparent); }
+.rung { display: flex; gap: 8px; align-items: baseline; padding: 5px 10px; border: 1px solid var(--stock-edge); border-radius: 3px; background: var(--stock); box-shadow: 0 1px 3px -1px rgba(30,18,6,.3); }
+.rung .kind { flex: none; font: 600 10px var(--sans); color: var(--model); }
+.rung .text { font: 12.5px/1.4 var(--serif); color: var(--ink); }
+.rung .col { flex: none; margin-left: auto; font: 10px var(--mono); color: var(--ink-faint); }
+.ladder .ladder { margin-left: 8px; }
+/* The board card, closed. */
+.node { width: 260px; padding: 8px 12px 10px; border: 1px solid var(--stock-edge); border-radius: 3px; background: var(--stock); box-shadow: var(--card-shadow-lift); }
+.node .tab { display: block; color: var(--ink-soft); }
+.node .title { font: 13px/1.45 var(--serif); }
+.node .foot { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.node .n { font: 10.5px var(--sans); color: var(--ink-faint); }
+.decision { margin-top: 28px; padding: 12px 14px; border-left: 3px solid var(--stamp); background: var(--stock); font-size: 13px; }
+@media (max-width: 520px) { .node { width: 100%; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Empirical models on the model board</h1>
+<p class="note">Mockups for docs/empirical-models-proposal.md §11 P5, drawn on the board's own card stock and ink. Data: hansen2021demand/5|c|e on the pilot box.</p>
+
+<h2>1. The estimate badge in the close-up</h2>
+<p class="note">An open chapter: its chapter card pinned on top, its cards tucked under it. Each 估计 card carries its number and its uncertainty; the 表 card carries its size.</p>
+<div class="row">
+  <div>
+    <div class="label chosen">Option A — typed stamp (chosen)</div>
+    <div class="chapter">
+      <div class="head"><span class="tab">第 1 章 · 主要估计</span><span class="count">6 张 · 5 个估计</span></div>
+      <p class="lead">大企业与跨国企业更常要求社交技能。</p>
+    </div>
+    <div class="cascade">
+      <div class="tuck aside"><div class="th"><span class="facet">表 2</span><span class="line">社交集群与企业特征</span><span class="grid">▦ 5 列 × 5 行</span></div></div>
+      <div class="tuck"><div class="th"><span class="facet">估计 · 就业</span><span class="line">对数就业高一个标准差，概率高 3.5 个百分点</span><span class="stamp">0.014<span class="u"> (0.003)</span>***</span></div></div>
+      <div class="tuck"><div class="th"><span class="facet">估计 · 跨国经营</span><span class="line">跨国企业的概率高 4.7 个百分点</span><span class="stamp">0.047<span class="u"> (0.017)</span>***</span></div></div>
+      <div class="tuck"><div class="th"><span class="facet">估计 · 多元化</span><span class="line">多元化与要求无关</span><span class="stamp">−0.004<span class="u"> (0.017)</span></span></div></div>
+      <div class="tuck"><div class="th"><span class="facet">估计 · 税率</span><span class="line">（ebrill 5|a）高税率伴窄税基</span><span class="stamp">0.70<span class="u"> t 12.09</span>*</span></div></div>
+    </div>
+  </div>
+  <div>
+    <div class="label">Option B — value over uncertainty</div>
+    <div class="chapter">
+      <div class="head"><span class="tab">第 1 章 · 主要估计</span><span class="count">6 张 · 5 个估计</span></div>
+      <p class="lead">大企业与跨国企业更常要求社交技能。</p>
+    </div>
+    <div class="cascade">
+      <div class="tuck aside"><div class="th"><span class="facet">表 2</span><span class="line">社交集群与企业特征</span><span class="grid">▦ 5 × 5</span></div></div>
+      <div class="tuck"><div class="th"><span class="facet">估计 · 就业</span><span class="line">对数就业高一个标准差，概率高 3.5 个百分点</span><span class="slip">0.014***<small>s.e. 0.003</small></span></div></div>
+      <div class="tuck"><div class="th"><span class="facet">估计 · 跨国经营</span><span class="line">跨国企业的概率高 4.7 个百分点</span><span class="slip">0.047***<small>s.e. 0.017</small></span></div></div>
+      <div class="tuck"><div class="th"><span class="facet">估计 · 多元化</span><span class="line">多元化与要求无关</span><span class="slip">−0.004<small>s.e. 0.017</small></span></div></div>
+      <div class="tuck"><div class="th"><span class="facet">估计 · 税率</span><span class="line">（ebrill 5|a）高税率伴窄税基</span><span class="slip">0.70*<small>t 12.09</small></span></div></div>
+    </div>
+  </div>
+</div>
+
+<h2>2. The specification ladder</h2>
+<p class="note">The open 规格 block: the baseline is the chapter card; each variant is a rung that says what it changes; a variant of a variant hangs on its own rung. The column the variant produces stands at the right.</p>
+<div class="row">
+  <div>
+    <div class="chapter">
+      <div class="head"><span class="tab">规格 · 基准</span><span class="count">14 个变体</span></div>
+      <p class="lead">社交集群虚拟变量对企业特征的回归 (7)，按企业聚类。</p>
+    </div>
+    <ul class="ladder" style="margin-top:10px">
+      <li><div class="rung"><span class="text">在对数就业之外加入 MNE 虚拟变量</span><span class="col">表 2 (2)</span></div></li>
+      <li><div class="rung"><span class="text">加入多元化虚拟变量</span><span class="col">表 2 (3)</span></div></li>
+      <li><div class="rung"><span class="text">以 IT 技能占比为回归元</span><span class="col">表 3 (1)</span></div>
+        <ul class="ladder"><li><div class="rung"><span class="text">在 IT 技能占比之外加入空缺的其他特征</span><span class="col">表 3 (2)</span></div></li></ul></li>
+      <li><div class="rung"><span class="text">Probit</span><span class="col">表 5 (2)</span></div></li>
+      <li><div class="rung"><span class="text">只用企业内部的多次搜寻</span><span class="col">表 5 (4)</span></div></li>
+    </ul>
+  </div>
+  <div>
+    <div class="label">The board card, closed</div>
+    <div class="node">
+      <span class="tab">C1 · 主要估计</span>
+      <div class="title">大企业与跨国企业更常要求社交技能</div>
+      <div class="foot"><span class="stamp">0.014<span class="u"> (0.003)</span>***</span><span class="n">5 个估计</span></div>
+    </div>
+    <p class="note" style="margin-top:12px">At focus and near size only; a far card stays a tab. The first estimate of the chapter is its headline; the count says how many lie under it.</p>
+  </div>
+</div>
+
+<div class="decision"><b>Decision (2026-11-09, owner asleep, authorized):</b> Option A. One line keeps the strip's height and the card cascade's rhythm, and a typed stamp reads as ink on the index card, not as an interface chip (memories gui-real-card-aesthetic, gui-attention-first-layout). Uncertainty is written as the source writes it: parentheses for a standard error, <code>t</code>/<code>z</code> for a statistic; stars as printed. The ladder takes each variant's own <b>相对基准的改动</b> line and the column its first sentence names (对应表 2 第 (2) 列); the plan's change kind is not stored on the card, so no kind word is shown.</div>
+</main>
+</body>
+</html>

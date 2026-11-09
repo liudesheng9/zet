@@ -1,6 +1,6 @@
 # Empirical models: a third model level — proposal
 
-Status: proposal only (2026-11-08). No code, prompt, blueprint, skill or Card changes. The owner reads it and decides the open points in §12. The Chinese version is [empirical-models-proposal.zh.md](empirical-models-proposal.zh.md); the two say the same thing.
+Status: implemented (2026-11-08) and piloted on a copied box (2026-11-09); §14 records what was built, the pilot, its cost and the next speed candidates. The live box is unchanged. The Chinese version is [empirical-models-proposal.zh.md](empirical-models-proposal.zh.md); the two say the same thing.
 
 Related: [Model elaboration levels](model-elaboration-levels-design.md) (levels 1 and 2), [Finding Cards](finding-cards-design.md), [The model compiler](model-compiler-design.md), [Model compiler v2](model-compiler-v2-proposal.md) (D2, D3: no sharing while models are built), [Shared building blocks](model-shared-blocks-proposal.md) (the **引入** imports), [Self-sufficient models](self-sufficient-models-proposal.md), [Workflow principles](agents/workflow-principles.md), [Job map](agents/digest-job-map.md), and the skills `zt-model-fold`, `zt-model-settings`, `zt-model-restructure` and `zt-model-import`.
 
@@ -813,3 +813,66 @@ Every rebuild runs on a copied box first. The live box changes only on the owner
 - No new Card type: the empirical model uses Model Cards, Model parts and Finding Cards.
 - No change to the concept and formal paths, the math units, or the history digest.
 - No meta-analysis, no re-estimation and no new numbers: ZET records what the source reports.
+
+## 14. Implementation record
+
+The owner accepted every recommendation of §12 on 2026-11-08 and limited the pilot to one or two books. The work was done test-first and released as zt 0.61.0, zt-check 0.21.0, zt-digest 0.50.0, base 5.12.0, econ 6.12.0, math 5.12.0 and history 1.1.0.
+
+### 14.1 What was built
+
+| Phase | Status | What exists |
+| --- | --- | --- |
+| P0 | done | the decisions of §12, all as recommended |
+| P1 | done | the level value `empirical` (number 3, labels 实证 and `L3 实证`), the cards-table migration that widens the level CHECK (backup `zt.sqlite3.pre-empirical-models-*.bak`), the role faults in the build report (`empirical_shape`, `estimate_unbound`, `spec_unbound`, `test_unbound`, `variable_uncovered`, `beyond_level`, `evidence_bound`, and `role` on each order entry), zt-check EM1–EM5 (EM5 advice, rule version 8) |
+| P2 | done | `tables.json` in the brief, the empirical plan schema, role skeletons that write every number from its table cell, the evidence review, the evidence check in close, the role faults in `model-finish`, `zt-digest evidence-link` and its workflow stage, the job map rows, the framework harness cases |
+| P3 | not run | the owner limited the pilot to the two books below; a fresh design-based paper is the next pilot when the owner asks for one |
+| P4 | done | the empirical branches of `zt-model-fold`, `zt-model-settings`, `zt-model-restructure` and `zt-model-import`, and the new skill `zt-evidence-dialogue` |
+| P5 | not started | the GUI badge, table card and ladder wait for the owner's mockups (owner rule); the board still counts only 结果 cards as results |
+| P6 | not started | the live box is unchanged; each book migrates on the owner's word |
+
+### 14.2 The pilot
+
+Two books on a copied box (`D:\zt-empirical-box`, built with `copy-tree.mjs`), rebuilt with mode `models`, `rebuild`, `only` and `level: empirical`:
+
+| Model | Parts | Result |
+| --- | --- | --- |
+| `hansen2021demand/5|c|e` | 65 | clean; evidence-bound; every number equals its cell; 5 Findings linked |
+| `ebrill2001modern/4|d|a` | 41 | clean; evidence-bound |
+| `ebrill2001modern/5|a` | 39 | clean; evidence-bound; the book's evidence link: 101 Findings, 22 estimates, 5 linked, 1 ambiguous, 95 with no estimate of their number |
+
+The model-pass checks ran on the pilot models: `check-model`, `check-premises` and `imports.mjs check` are clean; `check-settings` is clean on hansen and names the settings work left on 5|a (four unused 变量表 rows, an identifying assumption outside the design card); `check-network` names the forward Links and missing **直觉** leads that the restructure pass fixes. These are the passes' own work, not build faults.
+
+### 14.3 Faults met on the pilot and fixed
+
+Each fix has a test that failed first.
+
+- A t statistic in parentheses was labelled 标准误. The table notes now decide what parentheses hold (`paren_kind`).
+- A merge named a card that earlier inserts had renumbered. The compiler tracks renames (`track_renames`, `current_address`).
+- `model-finish` refused a rebuilt model whose unit adoption had recorded as verified (`incomplete prepared contract: header`, then `fingerprint`). `ledger reopen` converts such a unit to the open form; `model_header` and `start_fingerprint` accept it.
+- The evidence review ran as one conversation of messages, and the manager fell back on a continued conversation. It is now one job per twelve cards, each its own conversation, run in parallel.
+- `evidence-link` matched a Finding by a t value and by a shared count. A value is now one plain number; uncertainty figures are removed from the Finding's result; an estimate that states several magnitudes needs two of them.
+- A writer added variant equations whose symbols the 变量表 lacked (`variable_uncovered`). The fill rule forbids equations the source does not write, and the fault text names both remedies.
+- `zt-evidence-dialogue` never proposed a pair. It read Terms from **估计对象** only, where a Term is rarely linked. It also found other models through a search capped at 200 rows, and it judged a pair again after every survey. It also never wrote a 对照 Link. All four are fixed (wiki `agent-skills`, 2026-11-09).
+- `check-network.mjs` aborted on exit (a libuv assertion under Node 25) on every model. It now sets `process.exitCode`.
+
+### 14.4 Cost and time
+
+DeepSeek official source, `deepseek-flash`, effort high, from the usage ledger before and after each run:
+
+| Run | Parts | Cost | Per part |
+| --- | --- | --- | --- |
+| hansen2021demand/5|c|e | 65 | about 4.0 CNY | about 0.06 CNY |
+| ebrill2001modern, two models | 80 | 5.51 CNY | about 0.069 CNY |
+| evidence dialogue, 5|a | 54 pairs | 0.125 CNY | about 0.0023 CNY a pair |
+
+The two ebrill models took 22.8 min from start to finish: brief 5.0, validate and apply 2.0, fill 3.0, review 7.5, close 3.5, finish 0.5. With the review as one conversation the same run took about 40 min (review 15–19 min).
+
+### 14.5 Speed: the next candidates
+
+The model process is slow because each model passes through six sequential steps, and each step waits for its slowest job. Measured on the pilot, in order of expected gain:
+
+1. **The formal review in parallel jobs.** The formal path still reviews a model as one conversation of messages. The empirical change (one job per twelve cards, each its own conversation) halved the review; the same change on the formal path should halve its longest step.
+2. **A message-only brief.** The brief (5 min) lets the agent read the source and `tables.json` with tools. Sending the group's source slices and the tables in the message removes the tool round trips, as the cost experience showed for card jobs (docs/digest-cost-experience.md).
+3. **Fewer drive steps.** Validate, apply and the start of the fill are three script steps, each run by its own drive job (2 min between the brief and the fill). One drive job can run all three.
+
+Items 1 and 3 change no content and can be tested by resuming the pilot box; item 2 changes what a job is told and need a cost test first (docs/agents/workflow-principles.md).
