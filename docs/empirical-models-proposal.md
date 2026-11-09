@@ -976,3 +976,17 @@ Every same-estimand pair was read before it was written. Two agree within their 
 - On all six models the design, assumption and specification cards keep their premise lines at the end of the card and have no **起点** section, unlike the formats of §5.4. The empirical check does not ask for it there. A deterministic move of the `依赖` lines would fix the live cards, and the empirical writer should write **起点** from the start.
 - ebrill `4|d|a`: its two 背景 cards rest on each other (`依赖` both ways). Moving cards cannot fix a cycle; one of the two lines is a pointer by its meaning, and the owner may decide which.
 - The theory chapters that restate the empirical model (hansen `5|b|b|a` chapter 3, becker `3|a` chapter 10) stay for the owner's decision (§14.6).
+
+### 14.9 Two new empirical papers digested live (2026-11-09)
+
+The owner asked for three more literatures with empirical models. Every economics book on the live box already had its models (§14.7), so three undigested empirical papers of the Scholar Archive were chosen for the evidence dialogue they open: Acemoglu, Johnson and Robinson (2001), Dell (2010) and Deming (2015). A `VACUUM INTO` backup was taken first (`D:\zt\backups\zt.sqlite3.pre-empirical-papers-20261109T201430Z`, integrity ok). AJR and Dell ran in parallel (econ 6.12.1, mode full). The owner cancelled Deming before it started.
+
+| Paper | Citation key | Cards | Models | Findings linked | Run |
+|---|---|---|---|---|---|
+| AJR 2001, settler mortality IV | `acemoglu2001colonial` | 479 | 7: 2 empirical (OLS 3\|a, IV 5\|b), 2 formal, 3 concept | 3 of 41 | 2 h 25 min |
+| Dell 2010, the mining mita RD | `dell2010persistent` | 542 | 8: 7 empirical, 1 concept | 8 of 44 | 2 h 33 min |
+
+Both run reports are complete, no Link is broken and every model builds with no fault. The DeepSeek ledger grew by about 48 CNY over the window of the two runs (the passes of §14.8 ran in the same window), about 24 CNY a paper. The cleanup fix of 0.50.2 held on full live runs: Dell settled by itself, and AJR waited for its last drive conversation and settled on one `cleanup-finish -Ready`.
+
+- One fault, fixed test-first as zt-digest 0.50.4: the Bridge appended its `跨书关联：` paragraphs after a Model Card's **引入** section, so they were read as imports (`import_target`; acemoglu2001colonial/2|b lost its self-sufficiency). A Bridge paragraph now goes before that section. Six live Model Cards had the same shape (ebrill 3|b|a, acemoglu2001colonial 2|b and 5|a, atkinson 11|d|a|a, 12|a|c|a, 17|c|b|a); their Bridge lines were moved by hand and all six are clean.
+- The cost of the parallel runs: 12 Bridges between the two papers were planned against Cards the other run then changed, and apply reported them `stale` (Dell 11, AJR 1). A Bridge report is immutable, so `mode bridge` reuses it and does not propose again. The 12 links are left as a recorded gap; 26 + 52 Bridges were verified. Two digests whose papers will link to each other should run one after the other.
