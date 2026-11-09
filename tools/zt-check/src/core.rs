@@ -873,6 +873,19 @@ impl Check {
                 }
             }
         }
+        // EM1 to EM5 (docs/empirical-models-proposal.md §5.5): a part of an empirical model.
+        if ps_eq(&level, "empirical") {
+            let facet = text(prop(card, "facet"));
+            if !facet.is_empty() {
+                let designs = text(prop(card, "design"))
+                    .to_lowercase()
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                    .filter(|word| crate::empirical::DESIGNS.contains(word))
+                    .map(String::from)
+                    .collect::<Vec<_>>();
+                crate::empirical::rules(&facet, address, &authored_body, &designs, faults);
+            }
+        }
         // R15 to R17: a formal model's Derivation part with an explanation, or any one with --require-explain.
         if derivation && !ps_eq(&level, "concept") {
             let has = order.iter().any(|name| name == "思路" || name == "解读");

@@ -658,6 +658,8 @@ struct Facts {
     book: Option<String>,
     category: String,
     level: String,
+    /// The design types of the empirical model a part belongs to (EM5 reads them).
+    design: String,
     terms: Option<String>,
     targets: BTreeSet<String>,
     term: TermFacts,
@@ -685,6 +687,7 @@ impl Facts {
             book: None,
             category: "idea".to_string(),
             level: String::new(),
+            design: String::new(),
             terms: None,
             targets: BTreeSet::new(),
             term: TermFacts::default(),
@@ -810,6 +813,9 @@ fn entry(candidate: &Candidate, parsed: &crate::ParsedCard, facts: &Facts) -> Va
     if !facts.level.is_empty() {
         value["level"] = json!(facts.level);
     }
+    if !facts.design.is_empty() {
+        value["design"] = json!(facts.design);
+    }
     // The resolved type fields travel with the entry, so a later rule that reads one needs no
     // second candidate family (R0097). The current rules read none of them.
     if let Some(emphasis) = candidate.emphasis {
@@ -909,6 +915,15 @@ fn gather(
         (Some(_), None) => String::new(),
         (None, _) => candidate.level.map(Level::id).unwrap_or_default().to_string(),
     };
+    // EM5 reads the design types from the empirical Model Card's **设计** section.
+    if facts.level == "empirical"
+        && candidate.facet.is_some()
+        && let Some(head) = &head
+        && let Ok(card) = crate::load_card(conn, head)
+    {
+        let body = crate::parse_card_text(&card.text).map(|parsed| parsed.body).unwrap_or_default();
+        facts.design = zt_check::empirical::design_of(&body).join(",");
+    }
     facts.terms = term_table(conn, candidate, parsed, head.as_deref(), facts.book.as_deref())?;
     facts.term = term_facts(conn, candidate, parsed)?;
     facts.category = category(conn, candidate, parsed, &facts)?;

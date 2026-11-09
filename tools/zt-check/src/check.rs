@@ -31,10 +31,10 @@ pub use crate::text::{
 
 const USAGE: &str = "usage:
   zt-check --version
-  zt-check --json <file> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
+  zt-check --json <file> [--setting <address>] [--level concept|formal|empirical] [--require-explain] [limits]
   zt-check --draft <file> [--report <file>] [--workspace human|agent] [--setting <address>] [limits]
-  zt-check --model <address> [--skip-shared] [--setting <address>] [--level concept|formal] [--require-explain] [limits]
-  zt-check --addresses <a,b,...> [--setting <address>] [--level concept|formal] [--require-explain] [limits]
+  zt-check --model <address> [--skip-shared] [--setting <address>] [--level concept|formal|empirical] [--require-explain] [limits]
+  zt-check --addresses <a,b,...> [--setting <address>] [--level concept|formal|empirical] [--require-explain] [limits]
   zt-check --cards <a,b,...> [--log <file>] [--book <key>] [--rules R2,R3,...] [limits]
 every mode: [--workspace human|agent] [--report <file>]
 limits: --max-sentences 12 --max-chars 400 --max-steps 6 --max-explain-sentences 16
@@ -1152,8 +1152,8 @@ impl Options {
                 }
                 "--level" => {
                     let level = value()?;
-                    if !ps_in(&level, &["", "concept", "formal"]) {
-                        bail!("--level is concept or formal, not `{level}`");
+                    if !ps_in(&level, &["", "concept", "formal", "empirical"]) {
+                        bail!("--level is concept, formal or empirical, not `{level}`");
                     }
                     options.level = level.to_lowercase();
                 }

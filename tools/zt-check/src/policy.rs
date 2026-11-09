@@ -13,12 +13,12 @@ use std::sync::LazyLock;
 /// The rules self-check.ps1 reports by default: every hard rule but R6. The Term rules are
 /// reported where they apply, which is only on a Term Card (S09, #152).
 pub const DEFAULT_RULES: &str =
-    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3,T1,T2,T3,T4,T5,T6,T7,T9,T10";
+    "R2,R3,R4,R5,R7,R9,R12,R13,R14,R15,R16,R17,R20,R21,R22,I1,I2,I3,I4,I7,L1,L2,E1,E2,F1,F2,F3,EM1,EM2,EM3,EM4,EM5,T1,T2,T3,T4,T5,T6,T7,T9,T10";
 
 /// The advisory rules of the current default policy: every line they raise is
 /// advice. I7 is not here: it has one advisory subcase (`own_source_unknown`)
 /// and one blocking one, so the core marks that subcase itself.
-pub const ADVISORY_RULES: &[&str] = &["R20", "R21", "I1", "I6", "L3", "E5", "T4"];
+pub const ADVISORY_RULES: &[&str] = &["R20", "R21", "I1", "I6", "L3", "E5", "EM5", "T4"];
 
 /// The whole-archive graph rules: reported by the audit, not decided per write
 /// (design 6.2). Their scope names that boundary in every structured report.
@@ -243,6 +243,13 @@ static CATALOG: &[RuleSpec] = &[
     spec("F2", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("F3", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("F4", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),
+    // The empirical-model rules (docs/empirical-models-proposal.md §5.5): EM1 to EM4 enforce the
+    // card formats of the estimate, specification and design parts; EM5 is advice.
+    spec("EM1", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("EM2", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("EM3", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("EM4", Setting::Block, Setting::Block, Scope::Local, RuleState::Configurable),
+    spec("EM5", Setting::Advise, Setting::Advise, Scope::Local, RuleState::Configurable),
     spec("L1", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("L2", Setting::Advise, Setting::Block, Scope::Local, RuleState::Configurable),
     spec("L3", Setting::Advise, Setting::Advise, Scope::Graph, RuleState::Configurable),

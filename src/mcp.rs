@@ -1235,7 +1235,7 @@ fn tool_definitions() -> Vec<Value> {
     let level = |description: &str| {
         json!({
             "type": "string",
-            "enum": ["concept", "formal", "line", "topic", "field", "register", ""],
+            "enum": ["concept", "formal", "empirical", "line", "topic", "field", "register", ""],
             "description": description,
         })
     };
@@ -1558,7 +1558,7 @@ fn tool_definitions() -> Vec<Value> {
                 "facet": facet("Make the new Card a Model part presenting this facet of its model (implies type model)."),
                 "emphasis": emphasis("For a Model part: core (the heart of the model, what a reader must see first) or aside (detail a reader may skip); omit for a regular part."),
                 "term": term("For a Term Card (type term): its exact term name, one line of at most 40 characters. Omit or null for a candidate Term list."),
-                "level": level("For a Model Card (type model, no facet): concept (level 1, a concept model: stated in words, no Derivation parts) or formal (level 2, a formal model: self-sufficient, with a derivation and Derivation parts); omit when not yet decided. For a Hub Card (type hub): line, topic, field, or register."),
+                "level": level("For a Model Card (type model, no facet): concept (level 1, a concept model: stated in words, no Derivation parts), formal (level 2, a formal model: self-sufficient, with a derivation and Derivation parts), or empirical (level 3, an empirical model: estimated from data, its parts in the empirical roles 数据/设计/规格/估计/检验 read from their facet prefixes); omit when not yet decided. For a Hub Card (type hub): line, topic, field, or register."),
                 "form": form("For a Model Card (type model, no facet) that states a mathematical unit: definition, axiom, theorem, proposition, lemma, or corollary; or theory for a Theory Card, the way into one theory. Omit for an ordinary model."),
             }),
             &["at", "title"],
@@ -1568,7 +1568,7 @@ fn tool_definitions() -> Vec<Value> {
         tool(
             "edit_card",
             "Edit card",
-            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, Finding, Model, Hub, Term, or Cited Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept or formal; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
+            "Change an agent Card. Pass `title` and/or `body` to replace just those parts, or `text` for the whole Markdown document (`# Title` then the body). Pass `type` to make a Regular Card an Idea, Event, Finding, Model, Hub, Term, or Cited Card, `facet` to make a Model Card a Model part or rename its facet (an empty `facet` makes it a Model Card again), `emphasis` to mark a part core or aside (empty for regular), `level` to set a Model Card's elaboration level (concept, formal or empirical; empty for none), and `form` to set the mathematical unit a Model Card states (theory, definition, axiom, theorem, proposition, lemma, corollary; empty for none); each may be given alone. Reverse links are regenerated automatically.",
             json!({
                 "at": at,
                 "title": { "type": "string", "description": "New title (not for Literature Cards)." },
@@ -1577,7 +1577,7 @@ fn tool_definitions() -> Vec<Value> {
                 "facet": facet("New Model facet (implies type model); empty for none."),
                 "emphasis": emphasis("New emphasis of a Model part: core, aside, or empty for a regular part."),
                 "term": term("New exact term name of a Term Card; null or an empty string clears it, and a type change away from term clears it. Omit to keep it."),
-                "level": level("New elaboration level of a Model Card (concept or formal), or new hub level of a Hub Card (line, topic, field, or register); empty for none."),
+                "level": level("New elaboration level of a Model Card (concept, formal or empirical), or new hub level of a Hub Card (line, topic, field, or register); empty for none."),
                 "form": form("New Math form of a Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary; empty for none."),
                 "text": { "type": "string", "description": "The whole Card Markdown; overrides title and body." },
                 "base": { "type": "string", "description": "The stored text you read; refuse the edit if the Card changed since." },

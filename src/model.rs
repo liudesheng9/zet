@@ -26,6 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::link::{LinkBody, LinkForm};
 use crate::{Card, CardType};
 
+pub(crate) mod empirical;
+
 /// Which part of its model a Model part presents: a short, one-line label.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct Facet(String);
@@ -148,6 +150,12 @@ pub(crate) enum Level {
     /// model build: a derivation ledger, the main line in build order, and
     /// Derivation parts for every step the book skips.
     Formal,
+    /// Level 3: an empirical model (docs/empirical-models-proposal.md §4). The
+    /// source estimates or measures a relation from data; its parts follow the
+    /// empirical roles read from their facet prefixes ([`EmpiricalRole`]), and
+    /// its only Derivation part derives an estimating equation or an estimator.
+    /// Level 3 is a sibling of level 2, not a more elaborate formal model.
+    Empirical,
 }
 
 impl Level {
@@ -155,14 +163,17 @@ impl Level {
         match self {
             Level::Concept => "concept",
             Level::Formal => "formal",
+            Level::Empirical => "empirical",
         }
     }
 
-    /// The level's number: 1 for a concept model, 2 for a formal model.
+    /// The level's number: 1 for a concept model, 2 for a formal model, 3 for
+    /// an empirical model.
     pub(crate) fn number(self) -> u8 {
         match self {
             Level::Concept => 1,
             Level::Formal => 2,
+            Level::Empirical => 3,
         }
     }
 
@@ -170,8 +181,9 @@ impl Level {
         match value.trim().to_ascii_lowercase().as_str() {
             "concept" | "1" | "l1" | "概念" | "概念模型" => Ok(Level::Concept),
             "formal" | "2" | "l2" | "形式" | "形式模型" | "形式化" => Ok(Level::Formal),
+            "empirical" | "3" | "l3" | "实证" | "实证模型" => Ok(Level::Empirical),
             other => bail!(
-                "unknown elaboration level `{other}`; expected concept (1), formal (2), or empty for none"
+                "unknown elaboration level `{other}`; expected concept (1), formal (2), empirical (3), or empty for none"
             ),
         }
     }
@@ -2031,6 +2043,12 @@ fn build_report(
             if card.facet.as_ref().is_some_and(is_derivation) {
                 value["derivation"] = json!(true);
             }
+            // An empirical model names each part's role (proposal §5.1), read from its facet.
+            if level == Some(Level::Empirical) {
+                if let Some(role) = card.facet.as_ref().and_then(|facet| empirical::role_of(facet.id())) {
+                    value["role"] = json!(role.id());
+                }
+            }
             value
         })
         .collect::<Vec<_>>();
@@ -2259,9 +2277,44 @@ fn build_report(
                 })
             })
             .collect::<Vec<_>>()
+    } else if level == Some(Level::Empirical) {
+        // Level 3 (proposal §5.5): the only Derivation part derives an estimating equation or an
+        // estimator; the arithmetic of a magnitude is a 换算 part.
+        in_range
+            .iter()
+            .filter(|at| {
+                by_address[*at]
+                    .facet
+                    .as_ref()
+                    .is_some_and(|facet| is_derivation(facet) && !empirical::allowed_derivation(facet.id()))
+            })
+            .map(|at| {
+                json!({
+                    "address": at,
+                    "title": title(at),
+                    "fix": format!(
+                        "`{at}` is a Derivation part, but `{head}` is an empirical model (level 3): only `推导：估计式` or `推导：估计量` derives; the arithmetic of a magnitude is a `换算：` part, and a number the source reports is an `估计：` part"
+                    ),
+                })
+            })
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
+    // The empirical role rules (proposal §5.5), read from the facet prefixes.
+    let roles = (level == Some(Level::Empirical)).then(|| {
+        let facet = |at: &str| by_address.get(at).and_then(|card| card.facet.as_ref().map(|f| f.id().to_string()));
+        let body = |at: &str| parsed.get(at).map(|parsed| parsed.body.clone()).unwrap_or_default();
+        let rests = |at: &str| rests_on(at).into_iter().map(|read| read.target).collect::<Vec<_>>();
+        let titled = |at: &str| title(at);
+        empirical::faults(
+            head,
+            &main,
+            &in_range,
+            &members,
+            &empirical::PartView { facet: &facet, title: &titled, body: &body, rests_on: &rests },
+        )
+    });
     // Derivation chains: runs of Derivation parts that follow each other in the build order
     // (a part beside a step does not break a run). One long step may take several
     // Derivation parts; a chain shows which, between which two members.
@@ -2314,7 +2367,13 @@ fn build_report(
             && unanchored.is_empty()
             && import_target.is_empty()
             && import_cycle.is_empty(),
+        "evidence_bound": roles.as_ref().map(|roles| roles.is_empty() && beyond_level.is_empty()),
         "beyond_level": beyond_level,
+        "empirical_shape": roles.as_ref().map_or_else(Vec::new, |roles| roles.shape.clone()),
+        "estimate_unbound": roles.as_ref().map_or_else(Vec::new, |roles| roles.estimate_unbound.clone()),
+        "spec_unbound": roles.as_ref().map_or_else(Vec::new, |roles| roles.spec_unbound.clone()),
+        "test_unbound": roles.as_ref().map_or_else(Vec::new, |roles| roles.test_unbound.clone()),
+        "variable_uncovered": roles.as_ref().map_or_else(Vec::new, |roles| roles.variable_uncovered.clone()),
     })
 }
 

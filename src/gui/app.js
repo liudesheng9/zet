@@ -299,6 +299,7 @@
   const LEVELS = {
     concept: { label: 'L1 concept', note: 'level 1, a concept model: the question, mechanism, and result in words; no Derivation parts' },
     formal: { label: 'L2 formal', note: 'level 2, a formal model: self-sufficient, built in order with Derivation parts for skipped steps' },
+    empirical: { label: 'L3 实证', note: 'level 3, an empirical model: estimated from data; data, design, specifications, estimates with their uncertainty, and the tests behind them' },
   };
   // A Model Card may state one mathematical unit (mirrors `MathForm` in src/math.rs).
   const MATH_FORMS = {
@@ -432,7 +433,7 @@
     ['mv [alone] <new-location>', 'move the current card and its successors (alone: only the card; its chain closes up)', 'regular'],
     ['mv [alone] before <location>', "move the current card into another card's place; that card moves down", 'regular'],
     ['ty <idea|event|finding|model|hub|term|cited> [<facet|name>]', 'make the current card an Idea, Event, Finding, Model, Hub, Term, or Cited Card; a facet (any short label, e.g. setting, dynamics, 均衡) makes it a Model part; a name makes a Term Card that term\'s definition (none: a Term list)', 'regular'],
-    ['lv <level|none>', 'set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)', 'regular'],
+    ['lv <level|none>', 'set the level of the current Model Card (concept, formal or empirical) or Hub Card (line, topic, field, or register)', 'regular'],
     ['lt <history|economics|mathematics|others>', 'set the Literature type of the current Literature Card', 'tree-root'],
     ['mf <form|none>', 'set the Math form of the current Model Card: theory, definition, axiom, theorem, proposition, lemma, or corollary', 'regular'],
     ['export [<tree>]', 'write a tree as a portable folder: its data and this GUI, which read with no service (default: the open tree)', 'always'],
@@ -6948,7 +6949,7 @@
       // A whole model (no facet) carries its elaboration level instead of an emphasis.
       const levelPick = cardType ? h('select', {
         class: 'emphasis-pick level-pick', 'aria-label': 'Elaboration level', hidden: !!chosenFacet,
-        title: 'How fully the model is elaborated: L1 concept (in words, no Derivation parts) or L2 formal (self-sufficient, with Derivation parts)',
+        title: 'How fully the model is elaborated: L1 concept (in words, no Derivation parts), L2 formal (self-sufficient, with Derivation parts) or L3 empirical (estimated from data)',
         onchange: (event) => { chosenLevel = event.target.value; dirty = true; update(); },
       },
         h('option', { value: '', text: 'no level' }),

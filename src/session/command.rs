@@ -126,7 +126,7 @@ const COMMANDS: &[(&str, &str, Availability)] = &[
     ),
     (
         "lv <level|none>",
-        "set the level of the current Model Card (concept or formal) or Hub Card (line, topic, field, or register)",
+        "set the level of the current Model Card (concept, formal or empirical) or Hub Card (line, topic, field, or register)",
         Availability::OnRegular,
     ),
     (

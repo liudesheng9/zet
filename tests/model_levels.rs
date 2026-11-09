@@ -226,8 +226,8 @@ fn a_model_card_carries_a_concept_or_formal_level_and_only_a_model_card_does() {
             .contains(refusal)
     );
     assert!(
-        mcp.err("edit_card", json!({ "at": concept, "level": "3" }))
-            .contains("unknown elaboration level `3`")
+        mcp.err("edit_card", json!({ "at": concept, "level": "4" }))
+            .contains("unknown elaboration level `4`")
     );
 
     // A Model Card that becomes an Idea Card or a part loses its level.
@@ -316,4 +316,241 @@ fn search_and_tree_summaries_name_the_level() {
         .expect("the Model Card is in its tree")
         .clone();
     assert_eq!(summary["level"], "formal");
+}
+
+/// Level 3 (docs/empirical-models-proposal.md §4.1): a Model Card may be an empirical
+/// model, named `empirical`, `3` or `实证`, stored as `empirical`, with level number 3.
+#[test]
+fn a_model_card_can_be_an_empirical_model_at_level_three() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    book(&mut mcp);
+    let head = mcp.ok(
+        "create_successor",
+        json!({ "at": "Hart1995/1", "kind": "side", "type": "model", "level": "empirical", "title": "增值税收入的跨国回归", "body": "问题：税率高的国家收入高多少？" }),
+    );
+    assert_eq!(head["level"], "empirical");
+    let head = address(head);
+    assert_eq!(level(&home, &head).as_deref(), Some("empirical"));
+    let model = mcp.ok("get_model", json!({ "at": head }));
+    assert_eq!(model["build"]["level"], "empirical");
+    assert_eq!(model["build"]["level_number"], 3);
+    mcp.ok("edit_card", json!({ "at": head, "level": "concept" }));
+    mcp.ok("edit_card", json!({ "at": head, "level": "3" }));
+    assert_eq!(level(&home, &head).as_deref(), Some("empirical"));
+    mcp.ok("edit_card", json!({ "at": head, "level": "concept" }));
+    mcp.ok("edit_card", json!({ "at": head, "level": "实证" }));
+    assert_eq!(level(&home, &head).as_deref(), Some("empirical"));
+}
+
+/// One Model part filed at `at` (`kind` side or direct), titled after its facet.
+fn part(mcp: &mut Mcp, at: &str, kind: &str, facet: &str, body: String) -> String {
+    address(mcp.ok(
+        "create_successor",
+        json!({ "at": at, "kind": kind, "facet": facet, "title": format!("{facet}：标题"), "body": body }),
+    ))
+}
+
+/// The empirical build rules (proposal §5.5), read from the facet prefixes of §5.1:
+/// an estimate rests on a specification, a variant on its base, a test on an assumption,
+/// every symbol of a specification's equation has a row in the 变量表, and the only
+/// Derivation part is one that derives an estimating equation or an estimator.
+#[test]
+fn an_empirical_model_reports_each_role_fault() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    book(&mut mcp);
+    let head = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "Hart1995/1", "kind": "side", "type": "model", "level": "empirical", "title": "增值税收入的跨国回归" }),
+    ));
+    let m = &mut mcp;
+    let data = part(m, &head, "side", "数据", "原始设定：99 个国家。".into());
+    part(
+        m,
+        &data,
+        "side",
+        "变量表",
+        format!("| 变量 | 含义 |\n| --- | --- |\n| $SR$ | 标准税率 |\n| $\\beta$ | 税率的系数 |\n\n依赖 [[{data}]]。"),
+    );
+    let design = part(m, &data, "direct", "设计", format!("依赖 [[{data}]]。"));
+    let assumption = part(m, &design, "side", "假设 1", format!("依赖 [[{design}]]。"));
+    let spec = part(
+        m,
+        &design,
+        "direct",
+        "规格：基准",
+        format!("依赖 [[{data}]]、[[{design}]]。\n\n$$ R = \\beta SR + \\varepsilon \\tag{{1}} $$"),
+    );
+    part(m, &spec, "side", "推导：估计式", format!("依赖 [[{data}]]。"));
+    part(m, &spec, "side", "规格：B 列", format!("依赖 [[{spec}]]。"));
+    let loose_variant = part(m, &spec, "side", "规格：C 列", format!("依赖 [[{data}]]。"));
+    let chapter = part(m, &spec, "direct", "第 1 章：主要估计", format!("依赖 [[{spec}]]。"));
+    let estimate = part(m, &chapter, "side", "估计：税率弹性", format!("依赖 [[{spec}]]。"));
+    let loose_estimate = part(m, &chapter, "side", "估计：开放度", format!("依赖 [[{chapter}]]。"));
+    let test = part(m, &estimate, "side", "检验：前趋势", format!("依赖 [[{spec}]]。"));
+    part(m, &estimate, "side", "检验：安慰剂", format!("依赖 [[{assumption}]]、[[{spec}]]。"));
+    let arithmetic = part(m, &estimate, "side", "推导：系数换算", format!("依赖 [[{estimate}]]。"));
+
+    let build = mcp.ok("get_model", json!({ "at": head }))["build"].clone();
+    let at = |list: &Value| -> Vec<String> {
+        list.as_array()
+            .unwrap_or_else(|| panic!("a list: {list}"))
+            .iter()
+            .map(|entry| entry["address"].as_str().expect("address").to_string())
+            .collect()
+    };
+    assert_eq!(build["level_number"], 3);
+    assert_eq!(build["empirical_shape"], json!([]), "{build}");
+    let role_of = |address: &str| {
+        build["order"]
+            .as_array()
+            .expect("order")
+            .iter()
+            .find(|entry| entry["address"] == address)
+            .map(|entry| entry["role"].clone())
+    };
+    assert_eq!(role_of(&spec), Some(json!("spec")));
+    assert_eq!(role_of(&data), Some(json!("data")));
+    assert_eq!(role_of(&assumption), Some(json!("assumption")));
+    assert_eq!(at(&build["estimate_unbound"]), [loose_estimate.clone()]);
+    assert_eq!(at(&build["spec_unbound"]), [loose_variant.clone()]);
+    assert_eq!(at(&build["test_unbound"]), [test.clone()]);
+    assert_eq!(at(&build["beyond_level"]), [arithmetic.clone()]);
+    assert!(
+        build["beyond_level"][0]["fix"].as_str().unwrap().contains("换算"),
+        "{build}"
+    );
+    let uncovered = build["variable_uncovered"]
+        .as_array()
+        .expect("variable_uncovered")
+        .iter()
+        .map(|entry| entry["symbol"].as_str().expect("symbol").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(uncovered, ["R", "\\varepsilon"], "{build}");
+    assert_eq!(build["variable_uncovered"][0]["address"], spec.as_str());
+    // The role rules add faults; they do not change self-sufficiency.
+    assert_eq!(build["self_sufficient"], true, "{build}");
+    assert_eq!(build["evidence_bound"], false);
+}
+
+/// `empirical_shape`: the main line starts with a 数据 part and holds a 设计 part and a
+/// 规格 part, and the model holds an estimate. A formal model takes none of the role rules.
+#[test]
+fn an_empirical_model_out_of_shape_says_what_its_main_line_lacks() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    book(&mut mcp);
+    let head = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "Hart1995/1", "kind": "side", "type": "model", "level": "empirical", "title": "一个回归" }),
+    ));
+    let setting = part(&mut mcp, &head, "side", "设定", "原始设定。".into());
+    let build = mcp.ok("get_model", json!({ "at": head }))["build"].clone();
+    let lacks = build["empirical_shape"]
+        .as_array()
+        .expect("empirical_shape")
+        .iter()
+        .map(|entry| entry["lacks"].as_str().expect("lacks").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(lacks, ["数据", "设计", "规格", "估计"], "{build}");
+    assert_eq!(build["empirical_shape"][0]["address"], setting.as_str());
+    assert_eq!(build["evidence_bound"], false);
+
+    mcp.ok("edit_card", json!({ "at": head, "level": "formal" }));
+    let build = mcp.ok("get_model", json!({ "at": head }))["build"].clone();
+    assert_eq!(build["empirical_shape"], json!([]));
+    assert_eq!(build["evidence_bound"], Value::Null);
+}
+
+/// An archive whose level CHECK predates level 3 is rebuilt in place, after one backup,
+/// and keeps its Cards; then it stores an empirical level.
+#[test]
+fn an_archive_from_before_empirical_models_upgrades_in_place() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    book(&mut mcp);
+    let head = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "Hart1995/1", "kind": "side", "type": "model", "level": "formal", "title": "旧模型", "body": "旧卡。" }),
+    ));
+    drop(mcp);
+    home.cmd().arg("down").assert().success();
+    {
+        let conn = Connection::open(home.archive_root.join("zt.sqlite3")).expect("open db");
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let old = sql.replace(", 'empirical'", "");
+        assert_ne!(old, sql);
+        conn.execute_batch("PRAGMA writable_schema = ON;").unwrap();
+        conn.execute(
+            "UPDATE sqlite_master SET sql = ?1 WHERE type = 'table' AND name = 'cards'",
+            [&old],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA writable_schema = OFF;").unwrap();
+    }
+    home.cmd().arg("up").assert().success();
+    let backups = fs::read_dir(&home.archive_root)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("zt.sqlite3.pre-empirical-models-")
+        })
+        .count();
+    assert_eq!(backups, 1, "the upgrade backs up a non-empty archive once");
+    let mut mcp = home.mcp();
+    assert_eq!(level(&home, &head).as_deref(), Some("formal"));
+    mcp.ok("edit_card", json!({ "at": head, "level": "empirical" }));
+    assert_eq!(level(&home, &head).as_deref(), Some("empirical"));
+}
+
+/// The write gate applies EM1–EM4 to a part of an empirical model, and EM5 reads the
+/// design from the Model Card's **设计** section; a formal model's parts take none of them.
+#[test]
+fn the_write_gate_applies_the_em_rules_to_the_parts_of_an_empirical_model() {
+    let home = TestHome::new();
+    home.cmd().args(["config", "set", "gate.stage", "enforce"]).assert().success();
+    let mut mcp = home.mcp();
+    book(&mut mcp);
+    let head = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "Hart1995/1", "kind": "side", "type": "model", "level": "empirical", "title": "增值税收入的跨国回归",
+                "body": "**问题**\n税率高的国家收入高多少？\n\n**设计**\ncross-section：99 个国家的横截面比较。\n\n来源：[[Hart1995]] §4.2" }),
+    ));
+    let data = part(&mut mcp, &head, "side", "数据", "原始设定：99 个国家。".into());
+    let (refusal, is_error) = mcp.call(
+        "create_successor",
+        json!({ "at": data, "facet": "设计", "title": "设计：横截面比较", "body": "国家之间比较。" }),
+    );
+    assert!(is_error, "{refusal}");
+    assert_eq!(refusal["error"], json!("card_check"), "{refusal}");
+    assert!(refusal.to_string().contains("EM4"), "{refusal}");
+    let design = part(
+        &mut mcp,
+        &data,
+        "direct",
+        "设计",
+        format!("国家之间比较。\n\n**变异来源**\n各国税率不同。\n\n**识别假设**\n- 依赖 [[{data}]]：税率与误差无关。"),
+    );
+    let estimate = format!(
+        "税率提高导致收入上升。\n\n**估计**\n- 估计量：[[{design}]] 中 $\\beta$，表 4.2 A 列。\n- 值：0.70。\n- 标准误：0.21。\n\n**量级**\n税率升 10%，收入升约 7%。\n\n**依据**\n依赖 [[{design}]]。\n\n来源：[[Hart1995]] §4.2"
+    );
+    let written = mcp.ok(
+        "create_successor",
+        json!({ "at": design, "kind": "side", "facet": "估计：税率弹性", "title": "估计：税率弹性", "body": estimate }),
+    );
+    assert!(written.to_string().contains("EM5"), "EM5 is a warning: {written}");
+
+    // The same unlabelled design part is no fault in a formal model.
+    mcp.ok("edit_card", json!({ "at": head, "level": "formal" }));
+    part(&mut mcp, &data, "side", "设计", "国家之间比较。".into());
 }

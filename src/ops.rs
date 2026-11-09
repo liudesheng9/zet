@@ -420,7 +420,7 @@ pub(crate) fn parse_level_arg(
         Some(Value::String(value)) => value.clone(),
         Some(Value::Number(number)) => number.to_string(),
         Some(_) => bail!(
-            "argument `level` must be concept, formal, line, topic, field, register, or empty"
+            "argument `level` must be concept, formal, empirical, line, topic, field, register, or empty"
         ),
     };
     if crate::hub::names_hub_level(&text) {

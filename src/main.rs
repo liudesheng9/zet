@@ -1565,6 +1565,7 @@ fn initialize_database(root: &Path) -> Result<()> {
     ensure_finding_cards(&conn, root)?;
     ensure_term_cards(&conn, root)?;
     ensure_cited_cards(&conn, root)?;
+    ensure_empirical_level(&conn, root)?;
     drop(conn);
     ensure_markdown_cards(root)?;
     // The Tree Lock tables and triggers are installed after every Card-table rebuild, so a
@@ -1642,7 +1643,7 @@ fn cards_table(name: &str) -> String {
             card_type TEXT NOT NULL DEFAULT 'idea' CHECK(card_type IN ('idea', 'event', 'finding', 'model', 'hub', 'term', 'cited')),
             model_facet TEXT CHECK(model_facet IS NULL OR length(model_facet) BETWEEN 1 AND {}),
             model_emphasis TEXT CHECK(model_emphasis IS NULL OR model_emphasis IN ('core', 'aside')),
-            model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal')),
+            model_level TEXT CHECK(model_level IS NULL OR model_level IN ('concept', 'formal', 'empirical')),
             hub_level TEXT CHECK(hub_level IS NULL OR hub_level IN ('line', 'topic', 'field', 'register')),
             math_form TEXT CHECK(math_form IS NULL OR math_form IN ({})),
             term_name TEXT CHECK(term_name IS NULL OR length(term_name) BETWEEN 1 AND {}),
@@ -1825,7 +1826,7 @@ fn ensure_model_level_column(conn: &Connection, root: &Path) -> Result<()> {
     }
     conn.execute_batch(
         "ALTER TABLE cards ADD COLUMN model_level TEXT
-             CHECK(model_level IS NULL OR model_level IN ('concept', 'formal'));",
+             CHECK(model_level IS NULL OR model_level IN ('concept', 'formal', 'empirical'));",
     )
     .context("failed to add elaboration levels to the archive")?;
     log_event(
@@ -1974,6 +1975,52 @@ fn ensure_cited_cards(conn: &Connection, root: &Path) -> Result<()> {
     })
     .context("failed to add Cited Cards to the archive")?;
     log_event(root, "added cited cards; no card is a cited card yet").ok();
+    Ok(())
+}
+
+/// Archives written before empirical models allow only the levels `concept` and `formal`.
+/// SQLite cannot change a CHECK, so the cards table is rebuilt in one transaction after a
+/// backup copy, as for Cited Cards: every Card keeps its row id, its fields and its text, and no
+/// model is empirical yet (docs/empirical-models-proposal.md §4.1).
+fn ensure_empirical_level(conn: &Connection, root: &Path) -> Result<()> {
+    let definition: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'",
+        [],
+        |row| row.get(0),
+    )?;
+    if definition.contains("'empirical'") {
+        return Ok(());
+    }
+    let cards: i64 = conn.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
+    if cards > 0 {
+        let backup = root.join(format!(
+            "zt.sqlite3.pre-empirical-models-{}.bak",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ));
+        conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+            .with_context(|| format!("failed to back up the archive to {}", backup.display()))?;
+    }
+    let columns = "row_id, location, citation_key, is_topic, is_lit, bibtex, text, workspace, card_type, model_facet, model_emphasis, model_level, hub_level, math_form, term_name";
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         {}
+         INSERT INTO cards_empirical ({columns}) SELECT {columns} FROM cards;
+         DROP TABLE cards;
+         ALTER TABLE cards_empirical RENAME TO cards;
+         CREATE UNIQUE INDEX IF NOT EXISTS cards_citation_key_nocase
+             ON cards(citation_key COLLATE NOCASE)
+             WHERE citation_key IS NOT NULL;
+         COMMIT;",
+        cards_table("cards_empirical")
+    ))
+    .inspect_err(|_| {
+        let _ = conn.execute_batch("ROLLBACK;");
+    })
+    .context("failed to add empirical models to the archive")?;
+    log_event(root, "added empirical models (level 3); no model is empirical yet").ok();
     Ok(())
 }
 
