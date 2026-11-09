@@ -19,8 +19,8 @@ paths:
   - "!.claude/workflow-framework/zt-issue-dev/**"
   - "!.claude/workflows/zt-idea-grow.js"
   - "!.claude/workflow-framework/zt-idea-grow/**"
-synced: eca01df46410
-updated: 2026-11-08
+synced: f1a113d96258
+updated: 2026-11-09
 ---
 
 # Digest workflows
@@ -553,7 +553,7 @@ Stage `figure-explain` runs module `zt-figure-explain` (`scripts/workflow-shared
 | `sources/` | the variant and base blueprints as written (identical to `scripts/book-digest/workflow/` at install) |
 | `sim.json` | the dry-run answers used at install (identical to `scripts/book-digest/workflow/<name>.sim.json`) |
 | `lock.json` | what was installed (below) |
-| `history/<version>/` | `blueprint.json` and the script of each installed version (econ 1.0.0, 2.0.0, 3.0.0; math 2.0.0, 2.1.0); outside this block's paths |
+| `history/<version>/` | `blueprint.json` and the script of each kept installed version (econ from 5.10.2, math from 4.10.2, history from 1.0.0, up to the installed 6.12.1, 5.12.1 and 1.1.1); a project-scope install adds the folder of its own version; outside this block's paths |
 
 `lock.json` (abridged from `zt-econ-digest/lock.json`):
 
@@ -572,7 +572,7 @@ Stage `figure-explain` runs module `zt-figure-explain` (`scripts/workflow-shared
 }
 ```
 
-`sha256` is the installed script's hash, `fingerprint` the FNV-1a fingerprint of the embedded blueprint, `blueprintSha256` the hash of the registry `blueprint.json`. The math lock records 47 dry-run agents.
+`sha256` is the installed script's hash, `fingerprint` the FNV-1a fingerprint of the embedded blueprint, `blueprintSha256` the hash of the registry `blueprint.json`. The math lock records 47 dry-run agents. A current lock also carries `scriptRel` (the script path relative to the scope's `.claude` folder), and each `moduleFiles` entry names the file the assembler read: a framework module such as `gate` names the global skill's copy (`~/.claude/skills/workflow-framework-protocol/modules/gate.js`), never a session scratchpad (2026-11-06, `acd041ec`).
 
 ### sim.json (dry-run answers)
 
@@ -676,6 +676,21 @@ Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: {
 ### A test box
 
 A pilot runs on a copy of the box with its own zt service, never on the live archive (the user's rule: never copy or open `D:ztzt.sqlite3` directly). `scripts/book-digest/copy-tree.mjs --tree <key> --to-config <dir>` copies one tree through MCP: it reads the live box with read tools only, writes the test box parent before child and stops on the first address that differs, writes a body's Links to Cards not yet made as plain text first and its exact text in a second pass, copies the figure files the Cards name, and compares both trees card by card (`report.json`). A Link into the tree from another tree (another book's Bridge, a Topic Card) cannot exist in a one-tree copy, so the comparison drops those lines from the live reverse-links section and lowers the live inbound count by as many; `report.json` lists them in `outside_inbound`, not in `differences` (since 2026-10-25, found on the S30 grossman copy: 12 such Links from `ebrill2001modern`). Tests: `scripts/book-digest/tests/copy-tree.tests.mjs`. The 2026-10-23 box is `D:zt-test-box` (config, archive, a copied `zt.exe` in `bin`; GUI port 48777), holding acemoglu2025nobel. A staging or work folder under it names the box in `zt-box.txt`.
+
+### Repair the Term explanations of a published book
+
+`scripts/book-digest/term-explain-repair.mjs` repairs Term Cards that an earlier digest wrote (zt-digest 0.47.0 to 0.47.5): a `## 释义` that tells the book (`§`, a chapter, `本书`, `作者说` and the like) instead of teaching the term, and a false mathematical Card that a writer built for a term the book treats only in words.
+
+```powershell
+node scripts/book-digest/term-explain-repair.mjs judge-plan --list <Term list address> --staging <staging> --out <folder> [--pass judge2] [--only @file]
+node scripts/book-digest/term-explain-repair.mjs judge-check --out <folder> --job j001 [--pass judge2]
+node scripts/book-digest/term-explain-repair.mjs judge-list --out <folder> [--pass judge2]
+node scripts/book-digest/term-explain-repair.mjs plan  --key <key> --list <Term list address> --out <folder> [--per-job 12] [--only t1,t2 | --only @file]
+node scripts/book-digest/term-explain-repair.mjs check --out <folder> --job r001
+node scripts/book-digest/term-explain-repair.mjs apply --out <folder> [--only ...]
+```
+
+`judge-plan` lists one judging job per 12 mathematical Term Cards whose row the staging's `term-cards\plan.json` did not classify from real evidence; each job holds its material in the message and answers `math` or `concept` per id, checked by `judge-check`. `judge-list` writes the terms judged `concept`, one a line, to `<out>\<pass>\concept.txt` for `plan --only @file`; a second pass (`--pass judge2 --only @<first pass's concept.txt>`) judges the concept verdicts again, so standard mathematical concepts are kept. `plan` rebuilds a mathematical Card as a concept Card only when `--only` names it (from a judging pass, or every mathematical Term of a history book); every other Card, mathematical or not, whose `## 释义` tells the book gets a new `## 释义`. `apply` writes the checked answers. Run `term-relink.ps1` after `apply`.
 
 ### Watch a run
 
@@ -796,6 +811,7 @@ Gaps:
 - `2026-11-08` — zt-digest **0.49.1**, base **5.11.41**, econ **6.11.41**, math **5.11.41**, history **1.0.29** (the owner's choice after `docs/digest-job-messages-proposal.md` section 6): a Term Card (concept) or Cited Card job holds 12 items, so a conversation of four messages writes 48. `termCardsPerJob` and `citedCardsPerJob` default 12, the compilers' `DEFAULT_PER_JOB` 12. Measured against one message of 12 in its own conversation: Term +18%, Cited +4% a item, at about the same depth (4 × 6 cost +67% and +17%). Tests: `framework-harness.mjs`, the term_cards and cited_cards unit and binary tests.
 - `2026-11-08` — zt-digest **0.49.0**, base **5.11.40**, econ **6.11.40**, math **5.11.40**, history **1.0.28**, zt-term-cards **v16** (`docs/digest-job-messages-proposal.md`, the owner's order): Term Cards (concept) and Cited Cards run as conversations of four messages. A job is one message (6 concept terms, `termCardsPerJob` default 6; 6 works, `citedCardsPerJob` default 6), and the compiler's `jobs` step lists four jobs as one entry: the first with its full files, the later three as items of its `then` with only their follow-up text (`<id>.next.md`: own works or terms, own output, own SELF-CHECK; the shared instructions, sample, Term list and notation travel once). A math Term job stays one conversation of its own. Each job keeps its own ledger unit, so `finish` is unchanged. The Term Card manager now loads `deepseek_prompt` and sends a job's `then` in order (the Cited manager already did). `term-steps.ps1 start` gives each later message its own self-review verdict files and answers `messages` beside `jobs` (conversations). The Cited list read keeps 4 parts of 60 lines. Tests: `framework-harness.mjs` (defaults 6, the manager's `then` rule), `term-steps.tests.ps1` (69), the term_cards and cited_cards unit and binary tests.
 - `2026-11-07` — base **5.11.39**, econ **6.11.39**, math **5.11.39**, history **1.0.27**, zt-cited-cards **v6**, zt-digest-report **v25**, zt-digest **0.48.0** (`docs/cited-list-reading-proposal.md`): stage `cited` runs DeepSeek reading jobs over the reference material instead of the parser and its normalize jobs; a reading job is one conversation of one message a part, so the Cited manager prompt sends an entry's `then` with `deepseek_prompt`. The report's Cited summary carries `parts` and `repeated`. Live backfill of all 14 books: see the proposal. Tests: `framework-harness.mjs`, `cited-steps.tests.ps1`.
+- `2026-11-07` — `term-explain-repair.mjs plan` rebuilds a mathematical Term Card only when `--only` names it (from a judging pass or a history book); every other Card whose `## 释义` tells the book, mathematical or not, gets a new `## 释义` (2,503 Cards in 12 books). `--only` also takes `@file`. Usage: "Repair the Term explanations of a published book".
 - `2026-11-07` — zt-digest **0.47.6** (not yet deployed): a Term Card `explanation` teaches the term and names no source, and a history book plans no mathematical Term. `scripts/book-digest/term-explain-repair.mjs plan | check | apply` repairs a published book: message-only DeepSeek jobs of 12 terms rewrite `## 释义`; a false mathematical Card is rebuilt as a concept Card and its parts are deleted; run `term-relink.ps1` afterwards. Run on morony2005iraq. `judge-plan | judge-check | judge-list [--pass judge2] [--only @file]` judges each maths Term Card the plan did not classify from real evidence (math or concept, by id); a second pass over the concept verdicts keeps standard mathematical concepts. Run on every book: 19 false maths Cards rebuilt in 8 books.
 - `2026-11-07` — zt-digest **0.47.5**, history **1.0.26**, base **5.11.38**, econ **6.11.38**, math **5.11.38**, zt-digest-lib v59, zt-digest-prepare v24 (`docs/digest-group-boundary-proposal.md`): the history digest groups by chapter (`profile.groupBy`, `-GroupBy chapter`): a group crosses section headings up to 25,000 characters and stops at a numbered chapter, a part or an appendix, with no unit limit. A group of several units is one conversation of one message per unit (`then`), with the checks on the last message. The manager rule for `then` now applies to every job list. A Link job holds up to 3 groups and up to 30 gaps. Pilot: 54–57% cheaper than one job per group at the published density. Economics and mathematics keep their groups.
 - `2026-11-06` — zt-digest **0.47.4**, base **5.11.37**, econ **6.11.37**, math **5.11.37**, history **1.0.25**, zt-term-cards v15, zt-cited-cards v5, zt-digest-prepare v23 (`docs/digest-job-size-proposal.md`): Cited normalize 60 rows a job; digest group soft limit 25,000 characters; a Link job joins three groups in `layer-steps.ps1`, with one unit, draft and check per group; Term Cards 12 concept and 2 mathematical terms; Cited Cards 12 works. The workflow defaults and limits now carry these sizes, because the old default of 4 overrode the binary. Tests: `layer-steps.tests.ps1`, `cited_cards.rs`, `framework-harness.mjs`.

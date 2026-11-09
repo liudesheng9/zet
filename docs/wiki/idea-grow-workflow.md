@@ -6,8 +6,8 @@ paths:
   - ".claude/workflows/zt-idea-grow.js"
   - ".claude/workflow-framework/zt-idea-grow/**"
   - "!.claude/workflow-framework/*/history/**"
-synced: 93e7b921af82
-updated: 2026-10-25
+synced: f1a113d96258
+updated: 2026-11-09
 ---
 
 # Idea-grow workflow
@@ -23,9 +23,9 @@ Since 3.0.0 this is the **only** workflow that writes Topic trees, Topic Cards, 
 | | |
 |---|---|
 | Installed script | `.claude/workflows/zt-idea-grow.js` and `C:\Users\chenx\.claude\workflows\zt-idea-grow.js` (project and global scope, frozen; registries `.claude/workflow-framework/zt-idea-grow/` and `C:\Users\chenx\.claude\workflow-framework\zt-idea-grow/`) |
-| Blueprint | `scripts/idea-grow/workflow/zt-idea-grow.blueprint.json` (4.0.2), dry run `zt-idea-grow.sim.json` |
+| Blueprint | `scripts/idea-grow/workflow/zt-idea-grow.blueprint.json` (4.0.14), dry run `zt-idea-grow.sim.json` |
 | Modes | full (every stage: grow, report) and `hubs` (the concept review, the hubs round and the register alone) |
-| Module | `scripts/idea-grow/workflow/modules/zt-grow-cycle.js` (v13), and the shared library `scripts/workflow-shared/modules/zt-workflow-lib.js` (v3: the Lock reader and the one drive helper `ztDrive`) |
+| Module | `scripts/idea-grow/workflow/modules/zt-grow-cycle.js` (v14), and the shared library `scripts/workflow-shared/modules/zt-workflow-lib.js` (v14: the Lock reader, the one drive helper `ztDrive` with its strict answer reader, and `ZT_DRIVE_MODEL`, the official source `deepseek-official/deepseek-flash`) |
 | Step script | `scripts/idea-grow/grow-steps.ps1` (v1, #179): the one `next` step, run by a DeepSeek drive job through a Haiku manager |
 | Prompt | `scripts/idea-grow/dsh-grow-instructions.zh.md`, read from disk by `-Step plan` |
 | Compiler | `zt-digest grow` (`tools/zt-digest/src/grow.rs`; the run as one command, `-Step next` and `-Step status`, in `grow_next.rs`; block [zt-digest](zt-digest.md)) |
@@ -255,6 +255,8 @@ Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-idea-grow.js",
 - **Launch only after a matching user request.** Workflow subagents judge each command against the session's latest user message (see the digest trial 13 note in memory).
 
 ## Change history
+- `2026-11-09` — **4.0.14** (zt-workflow-lib v14): a patch reinstall on the shared drive answer reader. A last line that opens with a short label ending in a colon (`Ok: {…}`, at most 24 characters with no brace, bracket or quote) is read as the object after the label; the object is still read strictly. A digest drive job met this on the live run `ebrill2001modern-empirical`; the grow cycle's own behaviour does not change.
+- `2026-11-05` — **4.0.13** (zt-workflow-lib v13): drive jobs run on the official source again (`ZT_DRIVE_MODEL` = `deepseek-official/deepseek-flash`), the same model as the content jobs in `consts.model`.
 - `2026-11-04` — **4.0.12** (zt-workflow-lib v12): the drive prompt says a user message never cancels its step.
 - `2026-11-04` — **4.0.10** (zt-workflow-lib v11): drive jobs run on OpenCode Go through the shared `ZT_DRIVE_MODEL`; the content jobs keep the official model in `consts.model`.
 - `2026-10-26` — `grow-steps.ps1` sets ZT_CONFIG_DIR with one separator per step (a JSON-escaped `-ZtConfig` named `D:\\box\\config` and the box pin refused it on the live run grow5); `grow-steps.tests.ps1` (19) checks it.
