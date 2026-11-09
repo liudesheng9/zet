@@ -229,3 +229,21 @@ test('an empirical model: the data tree and the specification ladder (docs/empir
   assert.deepEqual(r.assumption.map((x) => x.card), [H + '|a|4'])
   assert.equal(r.ok, false)
 })
+
+test('an empirical model: a Greek letter written in prose uses its 变量表 row', async () => {
+  // becker2025division/6|g on the live box (2026-11-09): the 参数 cards write σ, γ and θ in prose, and the
+  // check called the rows $\sigma$, $\gamma$ and $\hat \theta$ unused.
+  const { auditEmpirical } = await import('./check-settings.mjs')
+  const H = 'K/6|g'
+  const o = (address, role, line = 'side') => ({ address, role, line, facet: role, title: role })
+  const m = {
+    level: 'empirical', head: { address: H },
+    build: { order: [o(H + '|a', 'data', 'main'), o(H + '|a|a', 'variables'), o(H + '|a|4|c', 'parameter'), o(H + '|a|4|d', 'parameter')], variable_uncovered: [] },
+  }
+  const cards = new Map([
+    [H + '|a|a', { body: '| 变量 | 含义 |\n| --- | --- |\n| $\\sigma$ | 弹性 |\n| $\\hat \\theta$ | 截断点 |\n| $\\eta$ | 未用 |' }],
+    [H + '|a|4|c', { body: '需求弹性 σ 的估计值是 5.666。' }],
+    [H + '|a|4|d', { body: '截断点 ln θ0* 的估计值。' }],
+  ])
+  assert.deepEqual(auditEmpirical(m, cards).unused.map((x) => x.symbol), ['\\eta'])
+})

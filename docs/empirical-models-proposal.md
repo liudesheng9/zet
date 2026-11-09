@@ -1,6 +1,6 @@
 # Empirical models: a third model level — proposal
 
-Status: implemented (2026-11-08) and piloted on a copied box (2026-11-09); §14 records what was built, the pilot, its cost and the next speed candidates. The live box is unchanged. The Chinese version is [empirical-models-proposal.zh.md](empirical-models-proposal.zh.md); the two say the same thing.
+Status: implemented (2026-11-08), piloted on a copied box (2026-11-09) and completed overnight on 2026-11-09 (P3 on a fresh paper, P5 the model board, P6 the live migration); §14 records what was built, the pilots, the cost, the decisions taken and what is still open. The Chinese version is [empirical-models-proposal.zh.md](empirical-models-proposal.zh.md); the two say the same thing.
 
 Related: [Model elaboration levels](model-elaboration-levels-design.md) (levels 1 and 2), [Finding Cards](finding-cards-design.md), [The model compiler](model-compiler-design.md), [Model compiler v2](model-compiler-v2-proposal.md) (D2, D3: no sharing while models are built), [Shared building blocks](model-shared-blocks-proposal.md) (the **引入** imports), [Self-sufficient models](self-sufficient-models-proposal.md), [Workflow principles](agents/workflow-principles.md), [Job map](agents/digest-job-map.md), and the skills `zt-model-fold`, `zt-model-settings`, `zt-model-restructure` and `zt-model-import`.
 
@@ -825,10 +825,10 @@ The owner accepted every recommendation of §12 on 2026-11-08 and limited the pi
 | P0 | done | the decisions of §12, all as recommended |
 | P1 | done | the level value `empirical` (number 3, labels 实证 and `L3 实证`), the cards-table migration that widens the level CHECK (backup `zt.sqlite3.pre-empirical-models-*.bak`), the role faults in the build report (`empirical_shape`, `estimate_unbound`, `spec_unbound`, `test_unbound`, `variable_uncovered`, `beyond_level`, `evidence_bound`, and `role` on each order entry), zt-check EM1–EM5 (EM5 advice, rule version 8) |
 | P2 | done | `tables.json` in the brief, the empirical plan schema, role skeletons that write every number from its table cell, the evidence review, the evidence check in close, the role faults in `model-finish`, `zt-digest evidence-link` and its workflow stage, the job map rows, the framework harness cases |
-| P3 | not run | the owner limited the pilot to the two books below; a fresh design-based paper is the next pilot when the owner asks for one |
+| P3 | done (§14.6) | `autor2004will`, a fresh design-based paper, digested whole on the copied box |
 | P4 | done | the empirical branches of `zt-model-fold`, `zt-model-settings`, `zt-model-restructure` and `zt-model-import`, and the new skill `zt-evidence-dialogue` |
-| P5 | not started | the GUI badge, table card and ladder wait for the owner's mockups (owner rule); the board still counts only 结果 cards as results |
-| P6 | not started | the live box is unchanged; each book migrates on the owner's word |
+| P5 | done (§14.6) | the estimate stamp, the table card's size, the chapter headline and the specification ladder, zt 0.61.0 |
+| P6 | done (§14.6) | four live models at level 3 (ebrill2001modern 4\|d\|a and 5\|a, hansen2021demand 5\|c\|e, becker2025division 6\|g), after a backup |
 
 ### 14.2 The pilot
 
@@ -876,3 +876,41 @@ The model process is slow because each model passes through six sequential steps
 3. **Fewer drive steps.** Validate, apply and the start of the fill are three script steps, each run by its own drive job (2 min between the brief and the fill). One drive job can run all three.
 
 Items 1 and 3 change no content and can be tested by resuming the pilot box; item 2 changes what a job is told and need a cost test first (docs/agents/workflow-principles.md).
+
+### 14.6 The overnight completion (2026-11-09)
+
+The owner asked for the proposal to be finished overnight and for every blocking decision to be taken without waiting. Each decision taken that way is named below as a decision.
+
+**P3: a fresh design-based paper.** Autor and Scarborough (2004) (Scholar Archive Work 18315, its bilingual Markdown) was digested whole on the copied box as `autor2004will` (mode full, from `I 引言` to `IX 参考文献`, econ 6.12.0, then a resume on 6.12.1). The first invocation ran 09:56–12:43Z and stopped on the faults below; the resume ran 12:49–14:28Z. The book has 568 Cards: the reading notes of 20 groups, 36 Finding Cards, 11 Model Cards, 63 Term Cards, 37 Cited Cards and 6 figure Cards. Five models are empirical (11|a, 13|a, 14|a, 15|a and 17|b, with 36 to 56 parts each), four are formal and two are concepts. Every build report is clean (no closure, forward, unanchored, beyond-level or empirical fault), all 12 Derivation parts are explained, the coverage is 100 % of 204 units, no Link is broken and 18 Bridges were accepted. The evidence link wrote nothing: 35 Findings have no estimate of their number and one (17|d) matches two estimates. The Findings of this paper state each result in words (「略有增加」, 「小幅减少」) and not its coefficient, while the models carry the coefficients (15|a, table VII: logit 2.90, linear probability 0.41, 2SLS 0.78 for the white share). The link step never forces a match, so this is a limit of the Finding layer, not of the model.
+
+Faults the run met, each fixed test-first and installed during the run:
+
+- The paper sets its 22 tables after the reference list, outside the staged text, so the empirical brief saw none. `prepare` now writes the text after the end heading and of the skipped sections to `back-matter.zh.md` when it holds a table, and the brief reads its tables after the sections.
+- Table captions in Roman numerals (表 VI) were untitled tables. A caption may now name its table so.
+- The event finish passed 20 units to `finish-batch`, which holds 8, and all 20 failed. The layer step now finishes in batches of 8. The findings finish of the same run used the fixed step and recorded 19 of 20.
+- One findings check failed as content because the title catalogue moved while the model layer wrote. A check that did not run is now transient.
+- A formal model took `5#S` (a batch number for the model) and its build failed after validation. A take of another model's part must name that model's address.
+- The reference heading `IX 参考文献` carries a section number, so the Cited layer skipped the list. A numbered reference heading now opens the list.
+
+**P5: the model board.** Mockups (`docs/mockups/empirical-board.html`) showed two badge forms. Decision: option A, a one-line typed stamp (`0.014 (0.003)***`), because it keeps the strip's height and reads as ink on the card. Built: the estimate stamp, the table card's size, the closed chapter's headline estimate, and the specification ladder of a 规格 block. Checked on a snapshot of the pilot box: every stamp of hansen2021demand/5|c|e equals its table cell. Deployed in zt 0.61.0.
+
+**P6: the live migration.** A `VACUUM INTO` backup was taken first (`D:\zt\backups\zt.sqlite3.pre-empirical-migration-20261109T105045Z`, integrity ok, 25,822 Cards).
+
+- Every live book was reorganized after its digest (zt-literature-organize), so adoption refused it: group anchors and owned Cards had moved. Decision: a new `ledger adopt -Settled` closes every group adoption cannot verify (a terminal fault `settled_literature`, never resumed under a moved anchor) and lets a model of such a group stand on the prepared book.
+- The model context took a model's source group from its address, which a reorganized tree renumbers. It now reads the group from the Model Card's source line (`§6、§6.1`) first; ebrill2001modern's headings carry no section numbers, so its staging names each model's group in the owned logs.
+- Three live runs (mode `models`, econ 6.12.1), each on an adopted staging, one at a time: `ebrill2001modern/4|d|a` (empirical, 41 parts) and `5|a` (36 parts) rebuilt at level 3; `hansen2021demand/5|c|e` (64 parts) and `becker2025division/6|g` (50 parts: 3 structural parameters, 5 means, 6 distribution parameters, the fit and the counterfactuals) built new. Every build report is clean. Evidence links: ebrill 7, hansen 2, becker 3 Findings linked to their estimates, each pair read before it was written. Terms relinked on each book.
+- The live runs met four more faults, fixed test-first and installed between runs. A drive job answered `Ok: {…}` and the brief read no jobs (zt-workflow-lib v14 reads the object after a short label; base 5.12.1, econ 6.12.1, math 5.12.1, history 1.1.1, idea-grow 4.0.14). The link preparation and the link check read the owned Cards of the closed groups (both now leave them out). The evidence link read only 估计 parts, so the 参数 and 反事实 parts of a structural model were never matched, and a Finding that rounds a value (σ = 5.666 in table 2, 5.67 in the text) did not match it; both are read now, rounding only for a number of three significant digits or more. Nothing was written by the failed attempt. These fixes are zt-digest 0.50.1.
+- hansen: the concept measurement model `3|d|a` was folded into `5|c|e` as its 测量 block (`5|c|e|a|g`, the zt-model-fold steps, 69 parts, clean, no broken Link). Decision: the theory `5|b|b|a` keeps its chapter 3, because its prediction rests on the regression (7) it states, and moving (7) into the empirical model would make the theory rest on the model that imports it (an import cycle); the chapter card gets a 参照 pointer to `5|c|e`.
+- becker: the same decision for the theory `3|a` chapter 10: its chapter 11 and the book's notes rest on chapter 10's results, so the chapter stays and points to `6|g` with 参照. Retiring it is an owner decision, since it would restructure the theory's conclusion chapter.
+- atkinson2015lectures/16|c|a|a|a|e|a got `参照 [[atkinson2015lectures/23|cr]]` for Ashenfelter–Heckman (1973). acemoglu2025nobel and atkinson 13|b|a|a stay as they are (§10).
+- The model-pass checks on the live models: settings clean on all four after one assumption move in ebrill 5|a and a check fix (a Greek letter written in prose uses its 变量表 row); the restructure check still asks for **直觉** leads on the data, hypothesis, design and specification blocks of the new models and names three forward Cards in ebrill 5|a. That is restructure-pass work (zt-model-restructure), not a build fault.
+
+**Cost.** The DeepSeek official source charged 63.98 CNY on 2026-11-09 (UTC) for all work of the day, of which 47.73 CNY had been charged by 12:05Z, at a cache hit rate of 0.972. The runs do not state their own usage (268 of the 275 runs of P3 report none), so the night is measured from the usage ledger only.
+
+**Not done, and why.**
+
+- **The speed candidates of §14.5 are not released.** Item 1: the formal review continues the writer's conversation, whose cached prefix makes each review message cheap; fresh parallel conversations lose that cache, so the change needs a cost test before release (docs/agents/workflow-principles.md). Items 2 and 3 were not tried. The one speed change released is the event and findings finish in batches of 8, which was a fault fix.
+- **The run-level cleanup left conversations.** On the three adopted live stagings the book cleanup unit never became ready, because it waits for the inherited failed units of the legacy ledger to settle. On the P3 box it failed as transient ("the external run is not terminal yet") with 8 Term Card conversations still open in the bridge. The ledger recorded every conversation. The 31 conversations (22 model, 8 Term Card, 1 drive) were deleted by hand on 2026-11-09. Decision: the cleanup readiness rule is not changed unattended, because it keeps the cleanup from deleting the conversations of unsettled work; a fix is for a session with the owner.
+- **Findings without numbers.** A Finding prompt that asks for the coefficient would let `evidence-link` match a paper like autor2004will. It changes what a job is told, so it needs a cost test and the owner's word.
+- **The restructure pass on the new live models** (the **直觉** leads, the three forward Cards of ebrill 5|a) is pass work and was not run.
+- **The theory chapters** of hansen (chapter 3) and becker (chapter 10) stay, as decided above; retiring them is the owner's decision.

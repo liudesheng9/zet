@@ -268,6 +268,12 @@ fn blocks_of(kept: &[String]) -> Vec<String> {
 /// skips. A working paper sets its tables there (autor2004will: 22 tables after the reference
 /// list), so the empirical brief reads its tables from this text too. Empty without an end
 /// heading and without a skipped section.
+/// The groups the Link pass prepares: every group but the ones a settled adoption closed (`ledger adopt
+/// -Settled`), whose receipts name Cards the reorganized tree moved and which never run again.
+fn link_groups<V: std::borrow::Borrow<Value>>(groups: Vec<V>) -> Vec<V> {
+    groups.into_iter().filter(|g| g.borrow()["closed"] != json!(true)).collect()
+}
+
 pub(crate) fn back_matter(kept: &[String], start: &str, end: &str, skip: &[String]) -> String {
     let mut out = String::new();
     let (mut inside, mut after, mut skipped) = (false, false, false);
@@ -1120,7 +1126,7 @@ pub fn link_cli(argv: &[String]) -> Result<i32> {
     let title_chars = a.int_or("TitleChars", 40)?.max(0) as usize;
     let manifest = ps::parse_json(&read_raw(&join_path(&staging, "manifest.json"))?)?;
     let key = s(&manifest["citation_key"]);
-    let groups = ps::each(&manifest["groups"]);
+    let groups = link_groups(ps::each(&manifest["groups"]));
 
     // R328 (§15.2): the link pass allocates the Link jobs that write this book's Cards, so it stops
     // before writing its first file when the book's Literature tree is locked by the owner. It
@@ -1457,6 +1463,15 @@ mod tests {
     fn units_of(text: &str) -> Vec<Unit> {
         let kept = chinese_blocks(text, &CiMap::new());
         split_units(&kept, "导论", "参考", &["习题".to_string()])
+    }
+
+    // ebrill2001modern-empirical (2026-11-09): a settled adoption closed the groups whose Cards the reorganized
+    // tree moved; prepare-link read their receipts and halted on a moved Card.
+    #[test]
+    fn link_preparation_leaves_the_closed_groups_out() {
+        let groups = vec![json!({"n": 1, "id": "g01"}), json!({"n": 2, "id": "g02", "closed": true}), json!({"n": 3, "id": "g03"})];
+        let open: Vec<i64> = super::link_groups(groups).iter().map(|g| g["n"].as_i64().unwrap()).collect();
+        assert_eq!(open, vec![1, 3]);
     }
 
     #[test]

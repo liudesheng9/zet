@@ -76,7 +76,9 @@ pub(crate) fn estimates(cards: &[Value]) -> Vec<Estimate> {
     let mut out = Vec::new();
     for card in cards {
         let at = s(&card["address"]);
-        if s(&card["type"]) != "model" || role_of(&s(&card["facet"])) != Some(EmpiricalRole::Estimate) {
+        // A structural model states its numbers as 参数 and 反事实 parts beside its estimates (becker2025division/6|g).
+        let numbered = matches!(role_of(&s(&card["facet"])), Some(EmpiricalRole::Estimate | EmpiricalRole::Parameter | EmpiricalRole::Counterfactual));
+        if s(&card["type"]) != "model" || !numbered {
             continue;
         }
         if head_level(&at).as_deref() != Some("empirical") {
@@ -103,6 +105,18 @@ pub(crate) fn estimates(cards: &[Value]) -> Vec<Estimate> {
     out
 }
 
+/// Whether a Finding's number is the estimate's value rounded to the Finding's decimals (5.666 → 5.67). Only a
+/// number of three significant digits or more matches so: a short one (6.9) could round many values.
+fn rounds_to(value: &str, number: &str) -> bool {
+    let clean = |t: &str| t.replace([',', '%'], "").replace(['−', '–'], "-");
+    let (v, n) = (clean(value), clean(number));
+    let significant = n.chars().filter(|c| c.is_ascii_digit()).collect::<String>().trim_start_matches('0').len();
+    let decimals = n.split_once('.').map_or(0, |(_, d)| d.len());
+    let (Ok(v), Ok(n)) = (v.parse::<f64>(), n.parse::<f64>()) else { return false };
+    let scale = 10f64.powi(decimals as i32);
+    significant >= 3 && ((v * scale).round() - n * scale).abs() < 1e-6
+}
+
 /// What a Finding Card matches: the estimates of its group whose value its 结果 line holds, else those
 /// whose stated magnitude it holds.
 pub(crate) fn matches<'a>(finding: &Value, estimates: &'a [Estimate]) -> Vec<&'a Estimate> {
@@ -114,8 +128,10 @@ pub(crate) fn matches<'a>(finding: &Value, estimates: &'a [Estimate]) -> Vec<&'a
         .captures_iter(&body)
         .flat_map(|c| tables::numbers(&UNCERTAIN.replace_all(&c[1], " ")))
         .collect();
-    let by_value: Vec<&Estimate> =
-        estimates.iter().filter(|e| e.group == g && e.value.as_ref().is_some_and(|v| numbers.contains(v))).collect();
+    let by_value: Vec<&Estimate> = estimates
+        .iter()
+        .filter(|e| e.group == g && e.value.as_ref().is_some_and(|v| numbers.iter().any(|n| n == v || rounds_to(v, n))))
+        .collect();
     if !by_value.is_empty() {
         return by_value;
     }
@@ -286,6 +302,29 @@ mod tests {
         assert_eq!(hit("K/5|c|d"), ["K/5|b|a|1|1|a"]);
         assert!(hit("K/5|c|f").is_empty(), "3 and 10 are small integers");
         assert_eq!(hit("K/5|c|a"), ["K/5|b|a|1|1|a"], "the value still matches");
+    }
+
+    /// becker2025division/6|g (2026-11-09, a structural estimation): its numbers are 参数 parts, and the Finding
+    /// rounds them (σ = 5.666 in table 2, "5.67" in the text). A rounded value of three significant digits matches;
+    /// a short number never matches by rounding.
+    #[test]
+    fn a_parameter_matches_the_finding_that_rounds_it() {
+        let part = |address: &str, facet: &str, value: &str| json!({"address": address, "type": "model", "facet": facet, "title": facet, "body": format!("**估计**\n- 值：{value}。\n\n**量级**\n待写")});
+        let cards = vec![
+            json!({"address": "K/6|g", "type": "model", "level": "empirical", "body": ""}),
+            part("K/6|g|a|4|c", "参数：σ", "5.666"),
+            part("K/6|g|a|4|b", "参数：γ", "6.924"),
+            part("K/6|g|a|5|b", "估计：效率", "0.794"),
+            json!({"address": "K/6|c", "type": "finding", "body": "结果：替代弹性 σ 的估计值为 5.67。\n来源：[[K]]"}),
+            json!({"address": "K/6|h", "type": "finding", "body": "结果：系数约为 6.9。\n来源：[[K]]"}),
+            json!({"address": "K/6|d", "type": "finding", "body": "结果：预测值为观测值的 0.794。\n来源：[[K]]"}),
+        ];
+        let found = estimates(&cards);
+        assert_eq!(found.len(), 3, "parameters are read beside estimates");
+        let hit = |at: &str| matches(cards.iter().find(|c| c["address"] == at).unwrap(), &found).iter().map(|e| e.address.clone()).collect::<Vec<_>>();
+        assert_eq!(hit("K/6|c"), ["K/6|g|a|4|c"]);
+        assert!(hit("K/6|h").is_empty(), "6.9 has two significant digits: no match by rounding");
+        assert_eq!(hit("K/6|d"), ["K/6|g|a|5|b"]);
     }
 
     /// ebrill2001modern pilot (2026-11-09): a value is read only from a plain number; a Finding's

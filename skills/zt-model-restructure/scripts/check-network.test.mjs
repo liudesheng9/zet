@@ -84,3 +84,14 @@ test('an empirical model gets no "no result card" advice: its results are 估计
   assert.deepEqual(analyse(m, L).empty, [])
   assert.deepEqual(analyse(fixture(), L).empty.map((e) => e.block), ['b3', 'b4'])
 })
+
+test("an empirical model's data block is its primitive: it rests on no earlier block by nature", async () => {
+  // ebrill2001modern/4|d|a on the live box (2026-11-09): two imported blocks stand before the 数据 block, and the
+  // check asked the data to rest on one of them.
+  const L = await loadLayout()
+  const m = fixture()
+  m.blocks[3] = { ...m.blocks[3], facet: '数据', title: '数据：99 国横截面' }
+  const plain = analyse(m, L).unanchored.map((u) => u.block)
+  assert.ok(plain.includes('b3'), JSON.stringify(plain))
+  assert.ok(!analyse({ ...m, level: 'empirical' }, L).unanchored.map((u) => u.block).includes('b3'))
+})

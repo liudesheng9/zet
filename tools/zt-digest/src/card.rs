@@ -420,6 +420,19 @@ fn file_lines(path: &str) -> Result<Vec<String>> {
 /// The addresses of an `owned-gNN.txt` manifest that belong to the book's own Literature tree.
 /// A digest builds Literature trees only; a pre-5.0 manifest also names the Topic Cards that
 /// digest wrote, which zt-idea-grow now owns or removed (#190). An empty `book` keeps every line.
+/// The groups a settled adoption closed (`ledger adopt -Settled`), from the staging's manifest: their owned
+/// logs name Cards the reorganized Literature tree moved, and no check reads them.
+fn closed_groups(staging: &str) -> HashSet<i64> {
+    util::read_json(join_path(staging, "manifest.json"))
+        .ok()
+        .and_then(|m| m["groups"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter(|g| g["closed"] == json!(true))
+        .filter_map(|g| g["n"].as_i64())
+        .collect()
+}
+
 fn owned_lines(path: &str, book: &str) -> Result<Vec<String>> {
     Ok(file_lines(path)?
         .into_iter()
@@ -747,11 +760,15 @@ impl Compiler {
         let book = field(&self.state, "book");
         let groups = field(&self.state, "groups");
         let mut addresses = BTreeSet::new();
+        let closed = closed_groups(&staging);
         for group in RULE_SPLIT.split(&groups).filter(|g| !g.is_empty()) {
             let n = match group.parse::<i64>() {
                 Ok(n) => n,
                 Err(_) => group.parse::<f64>().map(ps::ps_int)?,
             };
+            if closed.contains(&n) {
+                continue;
+            }
             addresses.insert(format!("{book}/{n}"));
             let path = join_path(&staging, &format!("owned-g{n:02}.txt"));
             if !Path::new(&path).is_file() {
@@ -806,11 +823,16 @@ impl Compiler {
             if !staging.is_empty() {
                 let files = std::fs::read_dir(&staging)
                     .with_context(|| format!("incomplete ownership staging `{staging}`"))?;
+                // A group a settled adoption closed names Cards the reorganized tree moved.
+                let closed = closed_groups(&staging);
                 for entry in files {
                     let entry = entry
                         .with_context(|| format!("incomplete ownership staging `{staging}`"))?;
                     let name = entry.file_name().to_string_lossy().to_lowercase();
                     if !name.starts_with("owned-g") || !name.ends_with(".txt") {
+                        continue;
+                    }
+                    if name.trim_start_matches("owned-g").trim_end_matches(".txt").parse::<i64>().is_ok_and(|n| closed.contains(&n)) {
                         continue;
                     }
                     if !entry.file_type()?.is_file() {
@@ -1797,11 +1819,15 @@ impl Compiler {
                 bail!("-Groups needs -Staging (owned-gNN.txt)");
             }
             let mut set = HashSet::new();
+            let closed = closed_groups(&p.staging);
             for g in RULE_SPLIT.split(&p.groups).filter(|g| !g.is_empty()) {
                 let n: i64 = match g.trim().parse::<i64>() {
                     Ok(n) => n,
                     Err(_) => g.trim().parse::<f64>().map(ps::ps_int).with_context(|| format!("Cannot convert value \"{g}\" to type \"System.Int32\""))?,
                 };
+                if closed.contains(&n) {
+                    continue;
+                }
                 set.insert(format!("{}/{n}", p.book));
                 let file = join_path(&p.staging, &format!("owned-g{n:02}.txt"));
                 if Path::new(&file).exists() {
@@ -3230,6 +3256,17 @@ fn not_sampled(picked: &[Value], seed: i32) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ebrill2001modern-empirical (2026-11-09): the link check read the owned Cards of every group, and the 71
+    // groups a settled adoption closed name Cards the reorganized tree moved; the check halted.
+    #[test]
+    fn the_closed_groups_of_a_settled_book_are_read_from_its_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("manifest.json"), r#"{"groups":[{"n":1},{"n":2,"closed":true},{"n":3,"closed":true}]}"#).unwrap();
+        let closed = closed_groups(dir.path().to_str().unwrap());
+        assert!(closed.contains(&2) && closed.contains(&3) && !closed.contains(&1), "{closed:?}");
+        assert!(closed_groups(dir.path().join("none").to_str().unwrap()).is_empty());
+    }
 
     #[test]
     fn a_cycle_without_a_sample_records_that_it_took_none() {

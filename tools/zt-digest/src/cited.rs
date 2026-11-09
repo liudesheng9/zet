@@ -149,11 +149,15 @@ pub(crate) fn heading_text(line: &str) -> Option<String> {
         .then(|| trimmed.trim_start_matches('#').trim().to_string())
 }
 
+/// A section number before a heading's words: `IX`, `VII.`, `7`, `7.1` (autor2004will: "IX References").
+static SECTION_NUMBER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:[IVXLC]+|[0-9]+(?:\.[0-9]+)*)\.?\s+").unwrap());
+
 fn is_reference_heading(text: &str, custom: &str) -> bool {
     let lower = text
         .trim_end_matches(['*', '\\', ':', '：'])
-        .trim()
-        .to_lowercase();
+        .trim();
+    let lower = SECTION_NUMBER.replace(lower, "").trim().to_lowercase();
     REFERENCE_HEADINGS.contains(&lower.as_str())
         || custom.split(',').map(|h| h.trim().to_lowercase()).any(|h| !h.is_empty() && h == lower)
 }
@@ -971,6 +975,18 @@ fn apply_step(p: &Params, manifest: &Value, key: &str, work: &str, zt: &mut Zt) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // autor2004will (2026-11-09): the paper numbers its sections, "# IX References" and "# IX 参考文献", and
+    // the Cited layer found no reference list.
+    #[test]
+    fn a_numbered_reference_heading_opens_the_list() {
+        for heading in ["IX References", "IX 参考文献", "7 参考文献", "VII. Bibliography", "References"] {
+            assert!(is_reference_heading(heading, ""), "{heading}");
+        }
+        for heading in ["IX Conclusion", "IV 文献综述的方法", "Ixion references"] {
+            assert!(!is_reference_heading(heading, ""), "{heading}");
+        }
+    }
 
     #[test]
     fn a_transliterated_name_folds_to_its_plain_letters() {

@@ -384,6 +384,9 @@ export function audit(m, cards, parents = new Map()) {
 // The build report's role faults (empirical_shape, estimate_unbound, spec_unbound, test_unbound) are listed too.
 const roleOf = (o) => o.role || null
 /** The 变量表 rows' base symbols, from the first cell's $…$ formulas. */
+/** Greek letters as a card writes them in prose, by their TeX names. */
+const PROSE_GREEK = { α: 'alpha', β: 'beta', γ: 'gamma', δ: 'delta', ε: 'epsilon', ζ: 'zeta', η: 'eta', θ: 'theta', κ: 'kappa', λ: 'lambda', μ: 'mu', ν: 'nu', ξ: 'xi', π: 'pi', ρ: 'rho', σ: 'sigma', τ: 'tau', φ: 'phi', χ: 'chi', ψ: 'psi', ω: 'omega', Γ: 'Gamma', Δ: 'Delta', Θ: 'Theta', Λ: 'Lambda', Π: 'Pi', Σ: 'Sigma', Φ: 'Phi', Ψ: 'Psi', Ω: 'Omega' }
+
 export function variableSymbols(body) {
   const out = []
   for (const line of (body || '').split('\n')) {
@@ -407,7 +410,11 @@ export function auditEmpirical(m, cards) {
   const uncovered = (m.build.variable_uncovered || []).map((f) => ({ card: f.address, symbol: f.symbol, fix: f.fix }))
   const used = new Set()
   for (const o of order) if (o.address !== table?.address) for (const tex of formulas(body(o.address))) for (const s of baseSymbols(tex)) used.add(s)
-  const unused = table ? variableSymbols(body(table.address)).filter((s) => !used.has(s)).map((s) => ({ card: table.address, symbol: s, fix: `the 变量表 row $${s}$ names a symbol no card of the model uses: drop the row` })) : []
+  // A Greek letter written in prose (σ, θ) uses every row built on it ($\sigma$, $\hat \theta$): becker2025division/6|g.
+  const prose = new Set()
+  for (const o of order) if (o.address !== table?.address) for (const ch of body(o.address)) if (PROSE_GREEK[ch]) prose.add(PROSE_GREEK[ch])
+  const inProse = (s) => [...s.matchAll(/\\([a-zA-Z]+)/g)].some((m) => prose.has(m[1]))
+  const unused = table ? variableSymbols(body(table.address)).filter((s) => !used.has(s) && !inProse(s)).map((s) => ({ card: table.address, symbol: s, fix: `the 变量表 row $${s}$ names a symbol no card of the model uses: drop the row` })) : []
   const chapters = order.filter((o) => roleOf(o) === 'chapter' && o.line === 'main').map((o) => o.address)
   const specs = order.filter((o) => roleOf(o) === 'spec')
   const variantChange = specs.filter((o) => o.line !== 'main' && !/^\s*\*\*相对基准的改动\*\*/m.test(body(o.address)))

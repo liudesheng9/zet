@@ -69,7 +69,9 @@ export function analyse(m, L) {
     })
     forward.push({ from_block: e.from_block, to_block: e.to_block, count: e.count, cards, pairs: e.pairs || [], fixes, fix: fixes.join(' | ') || `block ${name(e.from_block)} rests on the later block ${name(e.to_block)}` })
   }
-  const unanchored = layout.unanchored.map((id) => ({ block: id, fix: `chapter ${name(id)} rests on no earlier block: add a 依赖 line from ${byId.get(id).head} to the chapter it builds on` }))
+  // An empirical model's 数据 block is its primitive, as a setting is: it rests on nothing by nature.
+  const primitive = (id) => m.level === 'empirical' && /^数据/.test(byId.get(id).facet || '')
+  const unanchored = layout.unanchored.filter((id) => !primitive(id)).map((id) => ({ block: id, fix: `chapter ${name(id)} rests on no earlier block: add a 依赖 line from ${byId.get(id).head} to the chapter it builds on` }))
   const chapters = blocks.filter((b) => b.kind === 'chapter')
   const leads = chapters
     .map((b) => (!b.lead ? { block: b.id, why: 'missing' } : [...b.lead].length < LEAD_MIN ? { block: b.id, why: 'short', lead: b.lead } : null))
