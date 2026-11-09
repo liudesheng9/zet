@@ -28,7 +28,7 @@ static CELL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<t([dh])([^>]
 static COLSPAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)colspan\s*=\s*"?(\d+)"#).unwrap());
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 static VALUE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*([-−–]?\s*\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+)\s*(%?)\s*(\\?\*(?:\\?\*)*)?\s*(?:[\(\[]\s*([-−–]?\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+)\s*[\)\]])?\s*(\\?\*(?:\\?\*)*)?\s*$").unwrap()
+    Regex::new(r"^\s*([-−–]?\s*\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+)\s*(%?)\s*(\\?[*†‡](?:\\?[*†‡])*)?\s*(?:[\(\[]\s*([-−–]?\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+)\s*[\)\]])?\s*(\\?[*†‡](?:\\?[*†‡])*)?\s*$").unwrap()
 });
 static PAREN_ONLY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*[\(\[]\s*([-−–]?\d[\d,]*(?:\.\d+)?|[-−–]?\.\d+)\s*[\)\]]\s*$").unwrap());
@@ -237,12 +237,23 @@ fn stars_in(text: &str) -> usize {
 }
 
 /// The significance level the notes give `stars` stars (`*** p<0.01`), if they give one.
-fn significance(notes: &str, stars: usize) -> Option<String> {
-    if stars == 0 {
-        return None;
-    }
+fn significance(notes: &str, stars: usize, mark: &str) -> Option<String> {
     // TeX marks in the notes (`$*$`, `$^{*}$`) are the same stars.
     let plain = notes.replace("\\*", "*").replace("^{", "").replace(['$', '}'], "");
+    if stars == 0 {
+        // A dagger marks a level of its own: 「†表示在10%水平上显著」(ebrill2001modern).
+        if mark.is_empty() {
+            return None;
+        }
+        let words = Regex::new(&format!(
+            r"{}\s*(?:表示|代表|denotes|:|：)?\s*(?:在)?\s*(?:[pP]\s*[<＜≤]\s*)?(\d*\.?\d+)\s*(%?)",
+            regex::escape(mark)
+        ))
+        .ok()?;
+        return words.captures(&plain).map(|c| {
+            if &c[2] == "%" { format!("{}% 水平", &c[1]) } else { format!("p < {}", &c[1]) }
+        });
+    }
     let pattern = Regex::new(&format!(r"(?:^|[^*])\*{{{stars}}}\s*(?:表示|denotes|:|：)?\s*[pP]\s*([<＜≤])\s*(\d*\.?\d+)")).ok()?;
     if let Some(c) = pattern.captures(&plain) {
         return Some(format!("p {} {}", if &c[1] == "＜" { "<" } else { &c[1] }, &c[2]));
@@ -255,7 +266,8 @@ fn significance(notes: &str, stars: usize) -> Option<String> {
 /// What the parentheses of a table hold, as its notes say: `t` (t statistics), `z`, or `se`
 /// (standard errors, the default).
 fn paren_kind(notes: &str) -> &'static str {
-    let lower = notes.to_lowercase();
+    // A note may write the letter in TeX (「$t$统计量」), so the math marks are dropped first.
+    let lower = notes.to_lowercase().replace(['$', '\\'], "");
     if Regex::new(r"t\s*(统计量|值|比率)|t-stat|t stat|t ratio|t-ratio").is_ok_and(|r| r.is_match(&lower)) {
         "t"
     } else if Regex::new(r"z\s*(统计量|值)|z-stat|z stat").is_ok_and(|r| r.is_match(&lower)) {
@@ -276,6 +288,7 @@ pub(crate) fn cell(tables: &Value, table: &str, row: &str, col: &str) -> Option<
     let parsed = VALUE.captures(&text);
     let mut value = parsed.as_ref().map(|p| format!("{}{}", p[1].replace(' ', ""), &p[2]));
     let stars = stars_in(&text);
+    let mark: String = text.chars().filter(|ch| matches!(ch, '†' | '‡')).collect();
     let mut se = parsed.as_ref().and_then(|p| p.get(4)).map(|m| m.as_str().to_string());
     // A standard error in the row below: an empty label and a parenthesized number.
     if se.is_none()
@@ -302,7 +315,8 @@ pub(crate) fn cell(tables: &Value, table: &str, row: &str, col: &str) -> Option<
         "stars": stars,
         "se": se,
         "paren": paren_kind(found["notes"].as_str().unwrap_or_default()),
-        "significance": significance(found["notes"].as_str().unwrap_or_default(), stars),
+        "mark": mark,
+        "significance": significance(found["notes"].as_str().unwrap_or_default(), stars, &mark),
         "n": n,
         "table": found["label"],
         "row": rows[r]["label"],
@@ -402,6 +416,36 @@ mod tests {
         assert_eq!(c["significance"], "5% 水平");
         let plain = json!({ "tables": extract(HANSEN, "sections/s12.md") });
         assert_eq!(cell(&plain, "表 2", "MNE", "2").unwrap()["paren"], "se");
+    }
+
+    /// ebrill2001modern Table 16.2 (live backfill 2026-11-09): the notes write the t in TeX,
+    /// 「括号内为$t$统计量（基于White标准误构造）」, and the cards called the t statistics 标准误.
+    #[test]
+    fn a_t_written_in_tex_still_names_t_statistics() {
+        assert_eq!(paren_kind("注：括号内为$t$统计量（基于White标准误构造）；\\*表示在5%水平上显著。"), "t");
+        assert_eq!(paren_kind("括号内为 $z$ 值。"), "z");
+        assert_eq!(paren_kind("括号中的标准误在行业和通勤区层面聚类。"), "se");
+    }
+
+    /// ebrill2001modern Table 16.2 (live backfill 2026-11-09): a dagger marks 10 % significance,
+    /// 「0.096†(1.81)」, and the card lost both the t statistic and the significance.
+    #[test]
+    fn a_dagger_is_a_significance_mark_like_a_star() {
+        let text = "表16.2. 规模、贸易重要性与增值税绩效\n\n<table><tr><td></td><td>A</td><td>B</td></tr><tr><td>1POP</td><td></td><td>0.096†(1.81)</td></tr><tr><td>SI</td><td>0.34*(3.22)</td><td>0.20(1.35)</td></tr><tr><td>N</td><td>89</td><td>90</td></tr></table>\n\n注：括号内为$t$统计量（基于White标准误构造）；\\*表示在5%水平上显著，†表示在10%水平上显著。";
+        let tables = json!({ "tables": extract(text, "sections/s66.md") });
+        let c = cell(&tables, "表 16.2", "1POP", "B").expect("a cell");
+        assert_eq!(c["value"], "0.096");
+        assert_eq!(c["se"], "1.81");
+        assert_eq!(c["paren"], "t");
+        assert_eq!(c["stars"], 0);
+        assert_eq!(c["mark"], "†");
+        assert_eq!(c["significance"], "10% 水平");
+        let star = cell(&tables, "表 16.2", "SI", "A").expect("a cell");
+        assert_eq!(star["stars"], 1);
+        assert_eq!(star["significance"], "5% 水平");
+        let none = cell(&tables, "表 16.2", "SI", "B").expect("a cell");
+        assert_eq!(none["se"], "1.35");
+        assert!(none["significance"].is_null(), "{none}");
     }
 
     /// A table without a caption is named by its file, so two files' first untitled tables differ

@@ -286,7 +286,15 @@ pub(crate) fn estimate_lines(part: &Value, tables: Option<&Value>, spec: &str) -
                 lines.push("- 标准误：表中没有给出。".into());
             }
             let stars = cell["stars"].as_u64().unwrap_or(0);
-            if truthy(&cell["significance"]) {
+            let mark = s(&cell["mark"]);
+            if stars == 0 && !mark.is_empty() {
+                // A dagger is a mark of its own (ebrill2001modern Table 16.2: † is 10 %).
+                if truthy(&cell["significance"]) {
+                    lines.push(format!("- 显著性：{}（表中标 {mark}）。", s(&cell["significance"])));
+                } else {
+                    lines.push(format!("- 显著性：表中标 {mark}，见表注。"));
+                }
+            } else if truthy(&cell["significance"]) {
                 lines.push(format!("- 显著性：{}（表中标 {stars} 颗星）。", s(&cell["significance"])));
             } else if stars > 0 {
                 lines.push(format!("- 显著性：表中标 {stars} 颗星，见表注。"));
@@ -698,6 +706,19 @@ mod tests {
         for wanted in ["the first main-line part is the data", "the main line needs a design part", "the plan reports no estimate", "no 变量表 part"] {
             assert!(faults.contains(wanted), "missing `{wanted}` in:\n{faults}");
         }
+    }
+
+    /// ebrill2001modern Table 16.2 (live backfill 2026-11-09): 「0.096†(1.81)」 with t statistics in the
+    /// parentheses and † for 10 %; the card wrote 「标准误：表中没有给出」 and 「表中没有标星」.
+    #[test]
+    fn a_dagger_cell_writes_its_t_statistic_and_its_level() {
+        let text = "表16.2. 规模与增值税绩效\n\n<table><tr><td></td><td>A</td><td>B</td></tr><tr><td>1POP</td><td></td><td>0.096†(1.81)</td></tr><tr><td>N</td><td>89</td><td>90</td></tr></table>\n\n注：括号内为$t$统计量（基于White标准误构造）；\\*表示在5%水平上显著，†表示在10%水平上显著。";
+        let tables = json!({ "tables": super::super::tables::extract(text, "sections/s66.md") });
+        let part = json!({"id": "E3", "role": "estimate", "regressor": "人口倒数", "cell": {"table": "表 16.2", "row": "1POP", "col": "B"}});
+        let lines = estimate_lines(&part, Some(&tables), "K/17|c|m|a|3|a");
+        assert!(lines.contains("- t 统计量：1.81。"), "{lines}");
+        assert!(lines.contains("- 显著性：10% 水平（表中标 †）。"), "{lines}");
+        assert!(lines.contains("- 样本量：N = 90。"), "{lines}");
     }
 
     #[test]
