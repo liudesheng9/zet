@@ -212,12 +212,25 @@ async function survey(head, out) {
   const text = (at) => { const c = [...ours, ...theirs].find((x) => x.address === at); return `${c.title}\n\n${c.body}` }
   fs.mkdirSync(out, { recursive: true })
   fs.writeFileSync(path.join(out, 'pairs.json'), JSON.stringify({ head, estimand_terms: [...estimandTerms], pairs }, null, 2))
-  const files = messages(pairs, text).map((body, k) => {
+  const files = writeMessages(out, head, messages(pairs, text))
+  return { head, ours: ours.length, theirs: theirs.length, pairs: pairs.length, messages: files }
+}
+
+/** Writes the judge's message files, after removing the ones an earlier survey left in `out`. */
+export function writeMessages(out, head, bodies) {
+  fs.mkdirSync(out, { recursive: true })
+  for (const f of fs.readdirSync(out)) if (/^judge-\d+\.md$/.test(f)) fs.rmSync(path.join(out, f))
+  return bodies.map((body, k) => {
     const file = path.join(out, `judge-${k + 1}.md`)
     fs.writeFileSync(file, `# 证据对话：[[${head}]] 第 ${k + 1} 组\n\n${body}\n`)
     return file
   })
-  return { head, ours: ours.length, theirs: theirs.length, pairs: pairs.length, messages: files }
+}
+
+/** The links an apply wrote; a model whose survey found no pair has no apply, and no links. */
+export function readApplied(out) {
+  const file = path.join(out, 'applied.json')
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { links: [] }
 }
 
 async function apply(head, out, answersFile) {
@@ -256,7 +269,7 @@ async function apply(head, out, answersFile) {
 
 async function check(head, out) {
   const { reads } = await box()
-  const applied = JSON.parse(fs.readFileSync(path.join(out, 'applied.json'), 'utf8'))
+  const applied = readApplied(out)
   const broken = []
   for (const l of applied.links) {
     for (const at of [l.from, l.to]) {

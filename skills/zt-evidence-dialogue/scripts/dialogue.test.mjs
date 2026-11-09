@@ -139,3 +139,19 @@ test('only a same-estimand verdict with a kind word becomes a Link; an estimate 
     ['p5', '对照 [[F/1]]：同一估计对象，样本不同。', null],
   ])
 })
+
+test('a new survey leaves only its own message files; a model without an apply reads as no links', async () => {
+  // ebrill2001modern/5|a on the live box (2026-11-09): a second survey of 7 messages left judge-8..10.md of the
+  // first one beside them. hansen2021demand/5|c|e: no pair, so no apply, and check failed on a missing applied.json.
+  const { writeMessages, readApplied } = await import('./dialogue.mjs')
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'dialogue-test-'))
+  writeMessages(out, 'K/5|a', ['a', 'b', 'c'])
+  const files = writeMessages(out, 'K/5|a', ['a'])
+  assert.deepEqual(fs.readdirSync(out).filter((f) => f.startsWith('judge-')), ['judge-1.md'])
+  assert.equal(files.length, 1)
+  assert.deepEqual(readApplied(out).links, [])
+  fs.rmSync(out, { recursive: true })
+})

@@ -928,3 +928,51 @@ The §10 survey read only existing Model Cards, so two sections that report the 
 - One fault, fixed test-first as zt-digest 0.50.3 and installed: the notes of Table 16.2 write 「括号内为$t$统计量」 in TeX and mark 10 % with a dagger (「0.096†(1.81)」). The tables step read the parentheses as standard errors and lost the dagger cell's t statistic and level. `paren_kind` now drops TeX marks, a dagger is a significance mark like a star, and its level is read from the notes. The five estimate Cards of 17|c|m were corrected by hand on the live box (t 统计量, and 「10% 水平（表中标 †）」 for the dagger cell); the model was not rebuilt.
 
 With these two models, every own-data estimation section of the nine economics books on the live box has an empirical model, except the ones §10 keeps as they are.
+
+### 14.8 The model passes on the six live empirical models (2026-11-09)
+
+The owner asked for the passes after the workflow (§9) on the six empirical models of the live box: `ebrill2001modern/4|d|a`, `5|a` and `17|c|m`, `hansen2021demand/5|c|e` and `becker2025division/6|g` and `2|g|f`. They ran in a side session on Opus at medium effort, one pass at a time over the six models, in the order settings → restructure → import → evidence dialogue. The fold was already done (§14.6). A `VACUUM INTO` backup was taken first (`D:\zt\backups\zt.sqlite3.pre-empirical-passes-20261109T201355Z`, integrity ok, 26,077 Cards). Every change is an agent-Workspace Card of these three books. No lock was met.
+
+**Settings (`zt-model-settings`).** The check reported clean on all six before the pass. A reading against the skill found three rules the empirical check did not test, and `check-settings.mjs` now tests them (`start`, `order`, and `assumption` as a Side successor of the design). The pass changed 15 Cards and made two moves:
+
+- ebrill `5|a`: 假设 2 stood as the Direct successor of 假设 1. It is now a Side successor of the design (`5|a|a|2|d`; 假设 3–5 moved to `|e`–`|g`). The two 描述 cards got a **起点**.
+- hansen `5|c|e`: the measure card of the social-cluster dummy rested on the measurement framework, which was filed after it. The data card's Side branches were reordered (the framework is now `|a|d`, the dummy `|a|e`, the IT measure `|a|f`). Nine data-tree cards got a **起点**, and the five cards of the folded measurement block got their role prefix in the title (`测量：`, `描述：`).
+- becker `6|g`: the measure card got a **起点**. becker `2|g|f`: the two measure cards got a **起点**, and 假设 5 no longer restates the estimates −3.130 and −0.473; it points to the test card `2|g|f|a|5|b|a` that holds them.
+- ebrill `4|d|a` and `17|c|m`: nothing to change.
+
+**Restructure (`zt-model-restructure`).** Twenty **直觉** leads were written, one per block that `check-network.mjs` named: the data and hypothesis blocks of all six, and the design and specification blocks of `17|c|m`, hansen and both becker models. Each lead states what its block establishes, from the card's own content. The three forward cards of ebrill `5|a` were fixed by moves, with no Link deleted or reworded: the estimate of the tax-rate elasticity (with its two 换算 cards) moved from the design to chapter 1 (`5|a|a|4|a`), table 4.2 moved from the design to chapter 1 (`|4|e`), and the two 换算 cards that read the RANGE estimate moved from specification C to that estimate (`|6|a|a`). Chapter 1 now lists both. `check-premises.mjs` names two hits that stay: becker `6|g` 假设 1 names the system (34a)–(34c), which is a pointer to the specification; becker `2|g|f` 假设 5 names column (7), which the check reads as an equation number.
+
+**Import (`zt-model-import`).** The import lines that §7 names:
+
+- hansen `5|c|e`: `单卡 [[hansen2021demand/5|b|b|a|a|3|a]]` (the prediction β > 0). The 假说 card rests on it in place of its 参照 to the theory's Model Card.
+- becker `6|g`: `整块 [[becker2025division/3|a]]`, the formal model it estimates (151 shared members). The 假说 rests on proposition 3 (`3|a|a|9|c`), the baseline specification on the system (34) (`3|a|a|10|a`), and the counterfactual chapter on `3|a|a|9|c` and the full-model expressions (33) (`3|a|a|9|e`).
+- becker `2|g|f`: three `单卡` lines, one per tested direction (`3|a|a|5|b`, `3|a|a|2|a`, `3|a|a|3|a`), and the 假说 rests on the three.
+- ebrill `17|c|m`: `单卡 [[ebrill2001modern/5|a|a]]`, the chapter 4 data that chapter 16 reuses. Its data card rests on it, and its column A carries `对照 [[ebrill2001modern/5|a|a|3|a]]` (it reproduces column B of table 4.2).
+- ebrill `4|d|a` and `5|a`: no import. The book has no model of its chapter 1 framework, and `4|d|a` already imports the Diamond–Mirrlees theorem.
+
+`imports.mjs plan` proposed to upgrade the tested predictions to `整块`, which would take each prediction's whole proof into the test. Decision: a test imports the prediction alone (§7, §9.4), and `plan` no longer proposes that upgrade for a result that only 假说 parts rest on. `imports.mjs check` exits 0 on all six, with no import cycle. The explanation refresh found nothing to explain, and no premise change contradicts the 量级 or 为什么 of an estimate, so no interpretation was rewritten. The theory chapters (hansen chapter 3, becker chapter 10) stay where they are for the owner's decision.
+
+**Evidence dialogue (`zt-evidence-dialogue`).** One DeepSeek conversation per model (official source, effort high), one message per twelve pairs, each conversation deleted after its last answer. Each model was surveyed after the previous one was applied, so the judged record dropped the mirror pairs (ebrill `5|a` fell from 112 pairs to 79).
+
+| Model | Pairs | Messages | Same estimand | Written |
+| --- | --- | --- | --- | --- |
+| ebrill `4\|d\|a` | 66 | 6 | 0 | — |
+| ebrill `5\|a` | 79 | 7 | 3 | 2 × 印证, 1 × 对照, both ways |
+| ebrill `17\|c\|m` | 53 | 5 | 0 | — |
+| hansen `5\|c\|e` | 0 | — | — | — |
+| becker `6\|g` | 161 | 14 | 0 | — |
+| becker `2\|g\|f` | 0 | — | — | — |
+
+Every same-estimand pair was read before it was written. Two agree within their uncertainty: openness (0.005 in table 4.2 A, 0.006 in table 16.2 A) and the small-island dummy (0.44 and 0.34). The third set the small-island coefficient without a size control (0.44) against the one with the inverse of population (0.20, not significant); the judge called it 印证, and the review changed it to 对照, because the point of the second estimate is that the island effect fades once size is held fixed. Most pairs met only on the book-wide Term 增值税 or set structural parameters against reduced-form coefficients; DeepSeek judged all of them not the same estimand, rightly. Every check is clean, and a second survey proposes no pair for any model.
+
+**Checks at the end.** On all six models: `check-model.mjs` self-sufficient with no closure, forward or unanchored fault; `check-network.mjs` `network: clean`; `check-settings.mjs` clean; `imports.mjs check` exit 0; `dialogue.mjs check` ok. `list_broken_links` is empty for the three books. Terms were relinked on the three books after the passes (14 Cards, 19 Links) and once more on ebrill after the dialogue (1 Card).
+
+**Script faults fixed test-first** (skills only; no zt or zt-digest build): `check-settings.mjs` (`start`, `order`, `assumption`; 17 tests), `imports.mjs plan` (the tested-prediction rule; 7 tests), `dialogue.mjs` (`survey` removes the message files of an earlier survey, and `check` runs on a model with no pair; 12 tests).
+
+**Cost.** The four judging conversations sent 32 messages for 359 pairs, about 0.8 CNY at the pilot's rate of 0.0023 CNY a pair. The usage ledger rose from 77.65 to 88.04 CNY on 2026-11-09 (UTC) during this session, but that figure includes the parent session's digest runs on other books at the same time.
+
+**Left open.**
+
+- On all six models the design, assumption and specification cards keep their premise lines at the end of the card and have no **起点** section, unlike the formats of §5.4. The empirical check does not ask for it there. A deterministic move of the `依赖` lines would fix the live cards, and the empirical writer should write **起点** from the start.
+- ebrill `4|d|a`: its two 背景 cards rest on each other (`依赖` both ways). Moving cards cannot fix a cycle; one of the two lines is a pointer by its meaning, and the owner may decide which.
+- The theory chapters that restate the empirical model (hansen `5|b|b|a` chapter 3, becker `3|a` chapter 10) stay for the owner's decision (§14.6).

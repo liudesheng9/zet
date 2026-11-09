@@ -380,7 +380,9 @@ export function audit(m, cards, parents = new Map()) {
 //   unused          a 变量表 row whose symbol no card of the model uses
 //   variant_change  a specification variant with no **相对基准的改动** section
 //   spec_in_chapter a specification filed in a chapter: specifications live on the ladder under 规格：基准
-//   assumption      an assumption (假设 k) not filed under the design card
+//   assumption      an assumption (假设 k) that is not a Side successor of the design card
+//   start           a sample, measure or descriptive card of the data tree with no **起点** section
+//   order           a card of the data tree that rests (依赖) on a card of the data tree a reader meets later
 // The build report's role faults (empirical_shape, estimate_unbound, spec_unbound, test_unbound) are listed too.
 const roleOf = (o) => o.role || null
 /** The 变量表 rows' base symbols, from the first cell's $…$ formulas. */
@@ -422,11 +424,21 @@ export function auditEmpirical(m, cards) {
   const specInChapter = specs.filter((o) => chapters.some((c) => o.address.startsWith(c + '|')))
     .map((o) => ({ card: o.address, fix: `${o.address} is a specification filed in a chapter: move it onto the ladder, under the specification it changes (a chapter holds the estimates of a variant, never the variant)` }))
   const design = order.find((o) => roleOf(o) === 'design' && o.line === 'main')
-  const assumption = order.filter((o) => roleOf(o) === 'assumption' && (!design || !o.address.startsWith(design.address + '|')))
-    .map((o) => ({ card: o.address, fix: `${o.address} is an identifying assumption filed outside the design card${design ? ` ${design.address}` : ''}: file it as a Side successor of the design` }))
+  const parentOf = (a) => a.replace(/\|[^|]+$/, '')
+  const assumption = order.filter((o) => roleOf(o) === 'assumption' && (!design || parentOf(o.address) !== design.address || /\|\d+$/.test(o.address)))
+    .map((o) => ({ card: o.address, fix: `${o.address} is an identifying assumption that is not a Side successor of the design card${design ? ` ${design.address}` : ''}: file it as the design's next Side successor` }))
+  // The data tree: samples, measures and descriptive facts under the data card name their premises first and rest on nothing later.
+  const tree = order.filter((o) => ['sample', 'measure', 'descriptive'].includes(roleOf(o)) && data && o.address.startsWith(data.address + '|'))
+  const start = tree.filter((o) => !/^\s*\*\*起点\*\*/m.test(body(o.address)))
+    .map((o) => ({ card: o.address, fix: `${o.address} has no **起点**: after its one-line summary, list what it builds on (依赖 [[…]]：…) under **起点**` }))
+  const at = new Map(order.map((o, i) => [o.address, i]))
+  const dataTree = new Set([data?.address, ...tree.map((o) => o.address)])
+  const orderFaults = tree.flatMap((o) => [...body(o.address).matchAll(/依赖\s*\[\[([^\]@]+?)\]\]/g)].map((x) => x[1])
+    .filter((p) => dataTree.has(p) && at.get(p) > at.get(o.address))
+    .map((p) => ({ card: o.address, premise: p, fix: `${o.address} rests on ${p}, which a reader meets later: reorder the data card's Side branches so ${p} comes first` })))
   const roles = ['empirical_shape', 'estimate_unbound', 'spec_unbound', 'test_unbound'].flatMap((k) => (m.build[k] || []).map((f) => ({ card: f.address, kind: k, fix: f.fix })))
-  const ok = !place.length && !uncovered.length && !unused.length && !variantChange.length && !specInChapter.length && !assumption.length && !roles.length
-  return { level: 'empirical', data: data?.address || null, variables: table?.address || null, place, uncovered, unused, variant_change: variantChange, spec_in_chapter: specInChapter, assumption, roles, ok }
+  const ok = !place.length && !uncovered.length && !unused.length && !variantChange.length && !specInChapter.length && !assumption.length && !start.length && !orderFaults.length && !roles.length
+  return { level: 'empirical', data: data?.address || null, variables: table?.address || null, place, uncovered, unused, variant_change: variantChange, spec_in_chapter: specInChapter, assumption, start, order: orderFaults, roles, ok }
 }
 
 async function main() {
@@ -440,7 +452,7 @@ async function main() {
     const r = auditEmpirical(m, new Map(cards(order).map((c) => [c.address, c])))
     if (flag === '--json') { console.log(JSON.stringify(r, null, 2)); process.exit(r.ok ? 0 : 1) }
     console.log(`empirical model: data card ${r.data || 'none'}, 变量表 ${r.variables || 'none'}`)
-    for (const k of ['place', 'uncovered', 'unused', 'variant_change', 'spec_in_chapter', 'assumption', 'roles']) r[k].forEach((x) => console.log(`${x.kind || k}: ${x.fix}`))
+    for (const k of ['place', 'uncovered', 'unused', 'variant_change', 'spec_in_chapter', 'assumption', 'start', 'order', 'roles']) r[k].forEach((x) => console.log(`${x.kind || k}: ${x.fix}`))
     console.log(r.ok ? 'settings: the data tree and the specification ladder are in place' : 'settings: faults above; move cards, never delete a Link')
     process.exit(r.ok ? 0 : 1)
   }

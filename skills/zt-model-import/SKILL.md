@@ -35,7 +35,7 @@ What an import is **not**:
 
 An empirical model (level 3, docs/empirical-models-proposal.md §7, §9.4) is built without imports (model-compiler v2, D2): its relations to other models are written as prose Links, and this pass turns the premises among them into **引入** lines. Three kinds of block:
 
-- **The prediction it tests.** A `假说：` part names the theory's result with `参照 [[…]]`. Import that result `单卡` in the empirical Model Card's **引入** section, and let the `假说：` part rest on it (`依赖 [[…]]` in place of `参照`). The hypothesis restates nothing: it names the sign or size the theory predicts.
+- **The prediction it tests.** A `假说：` part names the theory's result with `参照 [[…]]`. Import that result `单卡` in the empirical Model Card's **引入** section, and let the `假说：` part rest on it (`依赖 [[…]]` in place of `参照`). The hypothesis restates nothing: it names the sign or size the theory predicts. The import stays `单卡`: `plan` proposes no upgrade to `整块` for a result that only 假说 parts rest on, because a test takes the prediction, not its proof.
 - **Shared data, a measure or an instrument.** Two studies of the same data set, index or instrument: the later imports the other's `数据：` or `测量：` part `整块`, and its own data card rests on it.
 - **The theory a structural estimation estimates.** The empirical model imports the formal model whole (`整块 [[<formal Model Card>]]`); its `参数：` parts rest on the imported setting, its `反事实：` parts on its parameters and the imported results.
 

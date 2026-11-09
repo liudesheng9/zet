@@ -247,3 +247,30 @@ test('an empirical model: a Greek letter written in prose uses its 变量表 row
   ])
   assert.deepEqual(auditEmpirical(m, cards).unused.map((x) => x.symbol), ['\\eta'])
 })
+
+test('an empirical model: the data tree names its premises first, and every assumption is a Side of the design', async () => {
+  // hansen2021demand/5|c|e on the live box (2026-11-09): the folded 测量 cards had no **起点**, and |a|d rested on
+  // its later sibling |a|g. ebrill2001modern/5|a: 假设 2 stood as the Direct successor of 假设 1.
+  const { auditEmpirical } = await import('./check-settings.mjs')
+  const H = 'K/5|c'
+  const o = (address, role, line = 'side') => ({ address, role, line, facet: role, title: role })
+  const m = {
+    level: 'empirical', head: { address: H },
+    build: {
+      order: [o(H + '|a', 'data', 'main'), o(H + '|a|a', 'variables'), o(H + '|a|b', 'sample'), o(H + '|a|c', 'measure'), o(H + '|a|d', 'measure'),
+        o(H + '|a|1', 'design', 'main'), o(H + '|a|1|a', 'assumption'), o(H + '|a|1|a|1', 'assumption'), o(H + '|a|1|b', 'assumption')],
+      variable_uncovered: [],
+    },
+  }
+  const cards = new Map([
+    [H + '|a|a', { body: '| 变量 | 含义 |\n| --- | --- |' }],
+    [H + '|a|b', { body: '子样本。\n\n**起点**\n- 依赖 [[K/5|c|a]]：这些数据的子样本。' }],
+    [H + '|a|c', { body: '一个测量。\n依赖 [[K/5|c|a|d]]：用到那套度量。' }],
+    [H + '|a|d', { body: '度量框架。\n\n**起点**\n- 依赖 [[K/5|c|a]]：读这些文本。' }],
+  ])
+  const r = auditEmpirical(m, cards)
+  assert.deepEqual(r.start.map((x) => x.card), [H + '|a|c'])
+  assert.deepEqual(r.order.map((x) => x.card), [H + '|a|c'])
+  assert.deepEqual(r.assumption.map((x) => x.card), [H + '|a|1|a|1'])
+  assert.equal(r.ok, false)
+})

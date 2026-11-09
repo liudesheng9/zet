@@ -88,3 +88,14 @@ test('check: import faults, premises in other models and legacy lines fail; tole
   assert.equal(good.ok, true)
   assert.deepEqual(good.advice.map((a) => a.kind), ['tolerated'])
 })
+
+test('plan: in an empirical model, a 单卡 import that only 假说 parts rest on is the prediction under test and stays 单卡', () => {
+  // hansen2021demand/5|c|e and becker2025division/2|g|f on the live box (2026-11-09): the tested theory result
+  // was proposed as 整块, which would take the whole proof of the prediction into the test (proposal §7, §9.4).
+  const m = model({ level: 'empirical', relations: [{ from: H + '|a|1', to: 'K/9|a|a', kind: 'rests-on' }] })
+  m.build.order = m.build.order.map((o) => (o.address === H + '|a|1' ? { ...o, role: 'hypothesis' } : o))
+  assert.deepEqual(propose(m).changes.filter((c) => c.why === 'upgrade'), [])
+  // A part of another role that rests on the result still needs its premises: the upgrade stands.
+  m.build.order = m.build.order.map((o) => (o.address === H + '|a|1' ? { ...o, role: 'spec' } : o))
+  assert.deepEqual(propose(m).changes.filter((c) => c.why === 'upgrade').map((c) => c.root), ['K/9|a|a'])
+})

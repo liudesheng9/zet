@@ -69,8 +69,16 @@ export function propose(m) {
     const c = outside.get(g.root)
     changes.push({ why: 'premise', root: g.root, mode: g.absorbed.length ? '整块' : '单卡', text: c.card.title || afterColon(c.note), absorbed: g.absorbed })
   }
-  // 单卡 imports whose home model holds their tolerated premises.
+  // 单卡 imports whose home model holds their tolerated premises. In an empirical model, a result that only
+  // 假说 parts rest on is the prediction under test: it stays 单卡 (docs/empirical-models-proposal.md §7, §9.4).
+  const roleOf = new Map((b.order || []).map((o) => [o.address, o.role]))
+  const tested = (root) => {
+    if (m.level !== 'empirical') return false
+    const from = (m.relations || []).filter((r) => r.kind === 'rests-on' && r.to === root && roleOf.has(r.from)).map((r) => r.from)
+    return from.length > 0 && from.every((a) => roleOf.get(a) === 'hypothesis')
+  }
   for (const i of imports.filter((x) => x.mode === 'card')) {
+    if (tested(i.root)) continue
     if ((b.tolerated || []).some((t) => t.part === i.root && (t.premise?.models || []).includes(i.home))) {
       changes.push({ why: 'upgrade', root: i.root, mode: '整块', text: '', absorbed: [] })
     }
