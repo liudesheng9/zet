@@ -420,7 +420,7 @@ impl Bridge {
             let current = ctx.cards.get(&carrier).cloned().unwrap_or(Value::Null);
             let mut body = body_text(get(&current, "body"));
             for bridge in &ready {
-                body.push_str(&format!("\n\n跨书关联：{}", field_of(bridge, "sentence")));
+                body = with_bridge_line(&body, &field_of(bridge, "sentence"));
             }
             let i = match pending.last() {
                 Some(&last) => last,
@@ -573,6 +573,17 @@ fn open_lock(path: &str) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// The body with one more `跨书关联：` paragraph. A Model Card's **引入** section takes every line
+/// after its heading as an import, so the paragraph goes before that section, after any earlier
+/// Bridge paragraph; on any other Card it closes the body.
+pub(crate) fn with_bridge_line(body: &str, sentence: &str) -> String {
+    let paragraph = format!("跨书关联：{sentence}");
+    match body.find("\n\n**引入**") {
+        Some(at) => format!("{}\n\n{paragraph}{}", &body[..at], &body[at..]),
+        None => format!("{body}\n\n{paragraph}"),
+    }
+}
+
 /// The body without the `跨书关联：` paragraphs this stage appends to a carrier, so a writer
 /// that owns the rest of the Card can tell the Bridge's lines from a rewrite.
 pub(crate) fn without_bridge_lines(body: &str) -> String {
@@ -599,6 +610,21 @@ mod tests {
         assert_eq!(expected_fingerprint(&snapshot, &attempts[1..]), json!("sha256:a"));
         assert_eq!(property(&json!({ "Old/1|A": "rests-on" }), "old/1|a"), &json!("rests-on"));
         assert_eq!(keys_of(&Value::Null), json!([null]));
+    }
+
+    /// acemoglu2001colonial/2|b (live 2026-11-09): two Bridge lines appended after the Model Card's
+    /// **引入** section were read as imports (`import_target`), so the model lost its closure.
+    #[test]
+    fn a_bridge_paragraph_goes_before_the_import_section_of_a_model_card() {
+        let card = "问题：A？\n\n**关联**\n\n参照 [[k/2|a]]：一句。\n\n**引入**\n\n- 单卡 [[k/2|a|a]]：同一批参与者";
+        let once = with_bridge_line(card, "对照 [[o/3|d|a]]：一句。");
+        let twice = with_bridge_line(&once, "对照 [[o/5|e]]：二句。");
+        assert_eq!(
+            twice,
+            "问题：A？\n\n**关联**\n\n参照 [[k/2|a]]：一句。\n\n跨书关联：对照 [[o/3|d|a]]：一句。\n\n跨书关联：对照 [[o/5|e]]：二句。\n\n**引入**\n\n- 单卡 [[k/2|a|a]]：同一批参与者"
+        );
+        assert_eq!(without_bridge_lines(&twice), card);
+        assert_eq!(with_bridge_line("问题：A？", "对照 [[o/1]]：一句。"), "问题：A？\n\n跨书关联：对照 [[o/1]]：一句。");
     }
 
     #[test]
