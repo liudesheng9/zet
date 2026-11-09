@@ -12,14 +12,14 @@
   fill    plan-status, the batch's model-deps references, the defer of the models they release, and the
           fill jobs                                                             -> drive\jobs.json
   derive  the Derivation jobs of the batch                                      -> drive\jobs.json
-  review  one review job per model: it continues the model's conversation (the math variant, with
-          -IndependentReview, starts the reviewer's own `<slug>:review` conversation)  -> drive\jobs.json
+  review  parallel review jobs of whole chains, at most 12 Derivation parts each, each its own
+          conversation carrying the Card bodies (proposal §14.5 item 1)            -> drive\jobs.json
   split   apply the review verdicts (and the composers' -Need requests)         -> drive\jobs.json
   close   the build faults back to the writers once; the last round that sends nothing back also writes
-          the batch report (-Report)                                            -> drive\jobs.json
+          the batch report (-Report) and, with -Explain, plans the batch's explain jobs (one job per
+          model, continuing its conversation, §3.7; proposal §14.5 item 3)       -> drive\jobs.json,
+                                                                                   drive\explain-jobs.json
   report  one report per model of the batch
-  explain one explain job per model of the batch, continuing the model's conversation, with the
-          architect's explain design (-Batch, §3.7)                             -> drive\jobs.json
   explain-apply the explanation answers of the batch (and one fix job per refused part)
                                                                                 -> drive\apply-jobs.json
   finish  every named unit's checked completion, in one command, and the layer gate
@@ -31,7 +31,7 @@
   Files stay under <staging>\models\drive; a batch step names its files after its batch folder (jobs.<batch>.json).
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('start', 'brief', 'fill', 'derive', 'review', 'split', 'close', 'report', 'explain', 'explain-apply', 'finish')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('start', 'brief', 'fill', 'derive', 'review', 'split', 'close', 'report', 'explain-apply', 'finish')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
     [string]$Work = '',
     [string]$Models = '',
@@ -57,7 +57,7 @@ param(
     [int]$MaxExplainChars = 600,
     [switch]$Rebuild,
     [switch]$Changed,
-    [switch]$IndependentReview,
+    [switch]$Explain,
     [switch]$Batch,
     [switch]$SkipRenew,
     [string]$Lane = '',
@@ -322,9 +322,6 @@ switch ($Step) {
         Renew
         $extra = @()
         if ($Changed) { $extra += '-Changed' }
-        # #194: the math variant reviews in its own conversation (`<slug>:review`); the economics
-        # variant's reviewer continues the model's conversation.
-        if ($IndependentReview) { $extra += '-IndependentReview' }
         $r = Compiler 'review' $extra
         if (-not $r.json) { Fail 'review' $r; break }
         $file = Jobs 'jobs.json' $r
@@ -347,11 +344,25 @@ switch ($Step) {
         $report = $r.json.report
         # Not `$models`: the `-Models` parameter's type constraint also holds for a local of the same name.
         $reportRows = @($report.models | Where-Object { $_ })
-        Reply @{
+        $line = @{
             ok = $true; step = 'close'; jobs = @($r.json.jobs).Count; faults = [int]$r.json.faults
             unowned = @($r.json.unowned | Where-Object { $_ }).Count; report_models = $reportRows.Count
             statuses = (Status-List $reportRows); file = $file
-        } @{ report = $report; close = $r.json }
+        }
+        $detail = @{ report = $report; close = $r.json }
+        # §14.5 item 3: the round that sends nothing back plans the batch's explanations in this drive job
+        # (one drive job less per batch). A round that sends follow-ups plans none: the explain jobs carry the
+        # Card bodies, which the follow-ups still change.
+        if ($Explain -and @($r.json.jobs).Count -eq 0) {
+            $e = Compiler 'explain' @('-Models', $Models, '-Batch')
+            if (-not $e.json) { Fail 'explain' $e; break }
+            # The file has its fixed batch name (explain-jobs.<batch>.json): the line stays short.
+            $null = Jobs 'explain-jobs.json' $e
+            $line.explain_jobs = @($e.json.jobs).Count
+            $line.explain_parts = [int]$e.json.parts
+            $detail.explain = $e.json
+        }
+        Reply $line $detail
     }
     'report' {
         Renew
@@ -360,18 +371,6 @@ switch ($Step) {
         Save (Batch-File 'report.json') $r.json
         $reportRows = @($r.json.models | Where-Object { $_ })
         Reply @{ ok = $true; step = 'report'; models = $reportRows.Count; statuses = (Status-List $reportRows); file = (Join-Path $Drive (Batch-File 'report.json')) } $r.json
-    }
-    'explain' {
-        # §3.7: after the close rounds the batch writes the explanations in its models' own
-        # conversations, from the architect's explain design. One job per model; a model whose
-        # Derivation parts are all explained needs no job.
-        Renew
-        $extra = @('-Models', $Models)
-        if ($Batch) { $extra += '-Batch' }
-        $r = Compiler 'explain' $extra
-        if (-not $r.json) { Fail 'explain' $r; break }
-        $file = Jobs 'jobs.json' $r
-        Reply @{ ok = $true; step = 'explain'; jobs = @($r.json.jobs).Count; parts = [int]$r.json.parts; file = $file } $r.json
     }
     'explain-apply' {
         # The answers of the batch's explain jobs: accepted text is written; a refused part comes

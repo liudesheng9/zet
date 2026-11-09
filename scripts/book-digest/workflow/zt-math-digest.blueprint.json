@@ -75,8 +75,7 @@
       "skipForms": [
         "theory"
       ],
-      "bridgeProfile": "math",
-      "independentReview": true
+      "bridgeProfile": "math"
     }
   },
   "fill": {

@@ -1,10 +1,10 @@
 //! One DeepSeek conversation per model (#194, docs/model-one-conversation-proposal.md §7).
 //!
 //! The model compiler's content jobs no longer open a conversation per group of three parts: the
-//! brief starts the model's conversation, and every later step — fill, derive, review, split, close —
+//! brief starts the model's conversation, and every later writing step — fill, derive, split, close —
 //! lists ONE job per model that continues it, with a fallback to the files of a fresh conversation.
-//! A math model may instead review in its own conversation (`-IndependentReview`): its first review
-//! round is the new job `<slug>:review`, which the later review rounds continue.
+//! The review (branch model-speed-options, proposal §14.5 item 1) is not the writer: it runs as parallel
+//! jobs of at most twelve Derivation parts, each its own conversation carrying the Card bodies.
 //!
 //! The commands run over a real scratch archive: a Model Card is created through `zt mcp`, the run's
 //! `state.json` and the architect's `plan.json` are written beside it, and each step's job list is
@@ -311,16 +311,17 @@ fn every_content_job_of_a_model_continues_its_brief() {
     assert_eq!(text.matches("## 分卡 ").count(), 2, "the derive job holds both Derivation parts: {text}");
     assert!(text.contains("推导均衡条件") && text.contains("推导数量"));
 
-    // 3. Review: one job per model, continuing the model's conversation, and its job file tells the
-    //    reviewer to re-read the stored Cards from the archive instead of trusting its memory.
+    // 3. Review (§14.5 item 1, branch model-speed-options): the formal review runs as parallel jobs of at
+    //    most twelve Derivation parts, whole chains together, each its own conversation of one message whose
+    //    job file carries the Card bodies. The writer does not review itself.
     let review = ok_json(&zt.digest(&["model", "-Step", "review", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap()]), "review");
     let jobs = review["jobs"].as_array().expect("review jobs");
-    assert_eq!(jobs.len(), 1, "review lists one job per model: {review}");
-    assert_eq!(jobs[0]["continue"], json!(format!("{slug}:brief")));
-    assert_eq!(jobs[0]["fallback"].as_array().map(Vec::len), Some(3));
+    assert_eq!(jobs.len(), 1, "the model's one chain of two parts fits one review job: {review}");
+    assert!(jobs[0]["continue"].is_null() && jobs[0]["fallback"].is_null(), "a review job is its own conversation: {review}");
+    assert!(jobs[0]["id"].as_str().unwrap_or_default().starts_with(&format!("{slug}:r")), "the review job is the model's: {review}");
     let text = review_file(&work, &slug);
-    assert!(text.contains("get_card") && text.contains("不要凭记忆复核"), "the reviewer re-reads the archive: {text}");
-    assert!(text.contains(&format!("[[{model}|")), "the job names the stored Derivation Cards: {text}");
+    assert_eq!(text.matches("## 推导分卡").count(), 2, "the job file carries both Derivation Cards' bodies: {text}");
+    assert!(!text.contains("不要凭记忆复核"), "a new conversation reads nothing back from memory: {text}");
 
     // 4. Split: the follow-up continues the model's conversation with a fallback.
     let f3 = state_of(&work)["models"][&model]["ids"]["F3"].as_str().expect("F3 address").to_string();
@@ -363,7 +364,7 @@ fn every_content_job_of_a_model_continues_its_brief() {
 }
 
 #[test]
-fn the_math_variant_reviews_in_its_own_conversation() {
+fn a_later_review_round_is_new_conversations_too() {
     let Some(program) = zt_program() else {
         eprintln!("skipped: no zt binary");
         return;
@@ -383,31 +384,23 @@ fn the_math_variant_reviews_in_its_own_conversation() {
     let slug = model.replace(['/', '|', '\\'], "_");
     ok_json(&zt.digest(&["model", "-Step", "apply", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap()]), "apply");
     ok_json(&zt.digest(&["model", "-Step", "derive", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap()]), "derive");
+    let first = ok_json(&zt.digest(&["model", "-Step", "review", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap()]), "review");
+    let first_id = first["jobs"][0]["id"].as_str().expect("first review job").to_string();
 
-    // The first round is a new conversation named `<slug>:review`; its job file carries the bodies.
-    let first = ok_json(
-        &zt.digest(&["model", "-Step", "review", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap(), "-IndependentReview"]),
-        "review",
-    );
-    let jobs = first["jobs"].as_array().expect("review jobs");
-    assert_eq!(jobs.len(), 1, "the independent review lists one job per model: {first}");
-    assert_eq!(jobs[0]["id"], json!(format!("{slug}:review")));
-    assert!(jobs[0]["continue"].is_null(), "the first independent round starts a new conversation: {first}");
-    let text = review_file(&work, &slug);
-    assert!(text.contains("## 推导分卡"), "a new conversation gets the Card bodies in its job file: {text}");
-
-    // A later round continues `<slug>:review` with a fallback.
+    // A later round reviews the touched chains whole, again in a new conversation with the bodies.
     let mut state = state_of(&work);
     state["rereview"] = json!([format!("{model}#D1")]);
     set_state(&work, &state);
     let second = ok_json(
-        &zt.digest(&["model", "-Step", "review", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap(), "-IndependentReview", "-Changed"]),
+        &zt.digest(&["model", "-Step", "review", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap(), "-Changed"]),
         "review 2",
     );
     let jobs = second["jobs"].as_array().expect("review jobs");
-    assert_eq!(jobs.len(), 1, "a later round lists one job per model: {second}");
-    assert_eq!(jobs[0]["continue"], json!(format!("{slug}:review")), "a later round continues the reviewer's conversation");
-    assert_eq!(jobs[0]["fallback"].as_array().map(Vec::len), Some(3));
+    assert_eq!(jobs.len(), 1, "the touched chain makes one job: {second}");
+    assert!(jobs[0]["continue"].is_null(), "a later round is a new conversation: {second}");
+    assert_ne!(jobs[0]["id"].as_str(), Some(first_id.as_str()), "each round's job has its own id");
+    assert!(jobs[0]["id"].as_str().unwrap_or_default().starts_with(&format!("{slug}:r")));
+    assert_eq!(review_file(&work, &slug).matches("## 推导分卡").count(), 2, "the touched chain is reviewed again whole, never cut");
 }
 
 

@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v18 ====
+// ==== module zt-model-lib v19 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list and the
 // model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill, derive, review, split →
 // report and clean-up. A book type installs the model layer with its profile (economics: the economic
@@ -23,9 +23,13 @@
 // brief's skipped models travel the same way (a list, no longer a count). An overflow is now a failed step.
 // 14 (#194, docs/model-one-conversation-proposal.md §7): one DeepSeek conversation per model. The brief job
 // (`<slug>:brief`) starts it; the compiler's fill, derive, review, split and close jobs name `continue` for it,
-// so the brief round's sessions are kept and every later content round gets the session table. The math variant
-// (`profile.independentReview`) reviews in the reviewer's own conversation (`<slug>:review`), and the review
-// step is told so with `-IndependentReview`.
+// so the brief round's sessions are kept and every later content round gets the session table.
+// 19 (branch model-speed-options, docs/empirical-models-proposal.md §14.5; never released, no cost test yet):
+// the formal review is parallel jobs of whole chains, at most 12 Derivation parts each, each its own
+// conversation carrying the Card bodies (every variant; `-IndependentReview` and `profile.independentReview` are
+// gone); the brief is message-only (context.md, source.md, tables.json in its prompt files); and the close round
+// that sends nothing back plans the batch's explain jobs in the same drive job (`-Explain`), so the separate
+// explain step is gone.
 // 15 (#195, §3.7): after the close rounds the batch runs the explain round: one job per model of the batch that
 // still has a Derivation part without 思路 or 解读, continuing the model's conversation, carrying the Sonnet
 // architect's `explain` design from plan.json. `explain-apply` writes the accepted text and lists a fix job for
@@ -80,8 +84,8 @@ function zmlMake(ctx, p) {
     if (o.perConcept) parts.push(`-PerConcept ${o.perConcept}`)
     if (o.perSonnet) parts.push(`-PerSonnet ${o.perSonnet}`)
     if (o.perEmpirical) parts.push(`-PerEmpirical ${o.perEmpirical}`)
-    // #194: the math variant's reviewer opens its own conversation; the compiler names it `<slug>:review`.
-    if (o.independentReview) parts.push('-IndependentReview')
+    // §14.5 item 3: the close round that sends nothing back also plans the batch's explanations.
+    if (o.explain) parts.push('-Explain')
     // #195: the batch's explain round, in the models' own conversations, from the architect's design.
     if (o.batch) parts.push('-Batch')
     // 17: a lane's block files and its claim release (model lanes).
@@ -215,7 +219,7 @@ Return plans: one entry per model, in this order.`,
         await splitNeeds(await content('derive', derive.file, derive.jobs, DERIVE_EFFORT))
       }
       for (let round = 0; round < REVIEW_ROUNDS; round++) {
-        const review = await step(`review ${round + 1}`, 'review', { changed: round > 0, independentReview: !!profile.independentReview })
+        const review = await step(`review ${round + 1}`, 'review', { changed: round > 0 })
         if (!review.ok) return failed(`review failed: ${review.error}`)
         if (!Number(review.jobs || 0)) break
         const verdicts = answerLines({ results: await content(`review ${round + 1}`, review.file, review.jobs, REVIEW_EFFORT) })
@@ -230,13 +234,19 @@ Return plans: one entry per model, in this order.`,
     // 7. Close: the build faults the compiler still sees go back once, as 修正 notes, to the conversations that
     // wrote those Cards; the round that sends nothing back also writes the batch report (-Report). At most
     // CLOSE_ROUNDS rounds: a writer can answer a note and leave the fault in place.
+    // §14.5 item 3: when the batch derives, the close round that sends nothing back also plans the batch's
+    // explain jobs in the same drive job (-Explain); a round that sends follow-ups plans none, because the
+    // explain jobs carry the Card bodies the follow-ups still change. A batch whose close rounds end with
+    // follow-ups sent writes no explanation here: the explain stage after the models takes those parts.
     const CLOSE_ROUNDS = 3
     let reported = null
+    let explainPlan = null
     for (let round = 0; round < CLOSE_ROUNDS; round++) {
-      const close = await step(round ? `close ${round + 1}` : 'close', 'close')
+      const close = await step(round ? `close ${round + 1}` : 'close', 'close', { explain: !!fill.derive, models: todo })
       if (!close.ok) return failed(`close failed: ${close.error}`)
       // #180: the close round's report is its models' packed statuses, never their rows.
       if (Number(close.report_models || 0)) reported = new Map(fullPairs(close.statuses))
+      if (close.explain_jobs !== undefined) explainPlan = { jobs: Number(close.explain_jobs || 0), parts: Number(close.explain_parts || 0), file: `${OUT}\\models\\drive\\explain-jobs.${name}.json` }
       if (!close.faults) break
       log(`close ${round + 1} ${tag}: ${close.faults} build fault(s) sent back in ${Number(close.jobs || 0)} follow-up(s)${Number(close.unowned || 0) ? `, ${close.unowned} in Cards no job of this batch wrote` : ''}`)
       if (!Number(close.jobs || 0)) break
@@ -247,10 +257,9 @@ Return plans: one entry per model, in this order.`,
     // same conversation; the compiler allows three rounds in all, and explain-finish later records the
     // unit (finish-batch, or the explain stage when a part stays refused).
     let explained = 0
-    if (fill.derive) {
-      const planned = await step('explain', 'explain', { models: todo, batch: true })
-      if (!planned.ok) return failed(`explain failed: ${planned.error}`)
-      if (Number(planned.jobs || 0)) await content('explain', planned.file, planned.jobs, DSH_EFFORT)
+    if (explainPlan) {
+      const planned = explainPlan
+      if (planned.jobs) await content('explain', planned.file, planned.jobs, DSH_EFFORT)
       for (let round = 0; round < 3; round++) {
         const applied = await step(round ? `explain-apply ${round + 1}` : 'explain-apply', 'explain-apply')
         if (!applied.ok) return failed(`explain failed: ${applied.error}`)
@@ -317,7 +326,7 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '18', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '19', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model layer\'s model-steps.ps1 steps (list, claim and batch; brief, fill, derive, review, split, close, report, explain, explain-apply, finish), the Sonnet architect, and the model compiler\'s report and clean-up.',
 })
 // ==== end module zt-model-lib ====

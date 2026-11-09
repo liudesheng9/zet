@@ -285,6 +285,17 @@ fn an_empirical_model_is_briefed_planned_built_reviewed_and_checked() {
     assert_eq!(labels.iter().filter(|l| **l == "表 2").count(), 1, "the section's 表 2 stays the only one: {tables}");
     let back = tables["tables"].as_array().unwrap().iter().find(|t| t["label"] == "表 VI").expect("the back matter's table");
     assert_eq!(back["file"], "back-matter.zh.md");
+    // §14.5 item 2 (branch model-speed-options): the brief is message-only. Its prompt files carry the
+    // context pack, the group's source text with file and line numbers, and tables.json, so the agent
+    // reads nothing with tools.
+    let files: Vec<String> = job["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
+    for name in ["context.md", "source.md", "tables.json"] {
+        assert!(files.iter().any(|f| f.ends_with(name)), "the brief's message carries {name}: {files:?}");
+    }
+    let source = std::fs::read_to_string(work.join(&slug).join("source.md")).unwrap();
+    assert!(source.contains("## sections/s12.md") && source.contains("3| 表 2 展示了社交技能"), "the source text keeps its file and line numbers: {source}");
+    let task = std::fs::read_to_string(work.join(&slug).join("brief-job.md")).unwrap();
+    assert!(task.contains("全部材料已在本消息里") && !task.contains("上下文包: "), "the task forbids reading files: {task}");
 
     // 2. Validate: the empirical plan has no fault; a cell the table does not hold is one.
     let plan_path = work.join(&slug).join("plan.json");

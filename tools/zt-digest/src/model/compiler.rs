@@ -6,7 +6,7 @@
 //!   zt-digest model -Step brief|validate|apply|derive|review|split|close|report|resume
 //!                         |explain|explain-check|explain-apply|explain-report
 //!                   -Work <folder> [-Staging <folder>] [-Models a,b] [-Plan <file>] [-Need a=N;b=M]
-//!                   [-Changed] [-Rebuild] [-IndependentReview] [-Batch] [-Level concept|formal|empirical]
+//!                   [-Changed] [-Rebuild] [-Batch] [-Level concept|formal|empirical]
 //!                   [-MaxSentences 12] [-MaxChars 400]
 //!                   [-MaxSteps 6] [-MaxExplainSentences 16] [-MaxExplainChars 600] [-MaxParts 0]
 //!                   [-BriefDoc f] [-FillDoc f] [-ReviewDoc f] [-Job <id>] [-File <file>]
@@ -105,7 +105,6 @@ struct Params {
     /// close only: when nothing goes back to a writer, the batch report runs in the same process.
     report: bool,
     /// review only: the reviewer is its own conversation (`<slug>:review`) instead of the model's.
-    independent_review: bool,
     /// explain only (§3.7): the batch's own explain round — one job per model continuing `<slug>:brief`,
     /// with the architect's design entry from `plan.json`.
     batch: bool,
@@ -494,7 +493,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             "Job",
             "File",
         ],
-        &["Changed", "Rebuild", "Report", "IndependentReview", "Batch"],
+        &["Changed", "Rebuild", "Report", "Batch"],
     )?;
     let step = a.choice("Step", &STEPS)?;
     let work = a.required("Work")?;
@@ -510,7 +509,6 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         need: a.str("Need"),
         changed: a.flag("Changed"),
         report: a.flag("Report"),
-        independent_review: a.flag("IndependentReview"),
         batch: a.flag("Batch"),
         rebuild: a.flag("Rebuild"),
         level: a.str("Level"),
@@ -1979,6 +1977,21 @@ impl Compiler {
                 }
                 util::write_text(&tables_file, &serde_json::to_string_pretty(&json!({ "model": model, "tables": found }))?)?;
             }
+            // §14.5 item 2 (branch model-speed-options): the brief is message-only. The group's section files go
+            // into source.md whole, each line with its number, so the agent reads no file with tools; the
+            // context pack, the source and tables.json travel as the job's prompt files.
+            let source_file = ps::join(&dir, "source.md");
+            let mut source = String::from("# 本组原文（每行前是它在小节文件里的行号）\n");
+            for name in pipe(&summary["sections"]).into_iter().map(s) {
+                let rel = format!("sections/{name}");
+                if let Ok(text) = std::fs::read_to_string(ps::join(&staging, &format!("sections\\{name}"))) {
+                    source += &numbered_source(&rel, &text);
+                }
+            }
+            if empirical && let Ok(text) = std::fs::read_to_string(ps::join(&staging, crate::prepare::BACK_MATTER)) {
+                source += &numbered_source(crate::prepare::BACK_MATTER, &text);
+            }
+            util::write_text(&source_file, &source)?;
             let context_hash = Self::file_hash(&context)?;
             let read_only = ps::join(&dir, "read-only.allow.txt");
             util::write_text(&read_only, "")?;
@@ -1989,15 +2002,19 @@ impl Compiler {
             util::write_text(
                 &job,
                 &format!(
-                    "# 简报任务：[[{model}]]\n\nHELPER: {}（只读：每条命令末尾加 -Allow \"{read_only}\"）\n上下文包: {context}\n简报文件: {brief}\n现在的层级: {level}{asked}\n分卡数: {}\n{}",
+                    "# 简报任务：[[{model}]]\n\n全部材料已在本消息里：上下文包（context.md）、本组原文（source.md，每行带文件和行号）{}。不要用工具读文件；只有查别的模型时才用 HELPER。\n\nHELPER: {}（只读：每条命令末尾加 -Allow \"{read_only}\"）\n简报文件: {brief}\n现在的层级: {level}{asked}\n分卡数: {}\n",
+                    if empirical { "和表格（tables.json）" } else { "" },
                     self.helper,
-                    list(&st["parts"]).len(),
-                    if empirical { format!("表格文件: {tables_file}\n") } else { String::new() }
+                    list(&st["parts"]).len()
                 ),
             )?;
+            let mut files = vec![if empirical { self.docs.brief_empirical.clone() } else { self.docs.brief.clone() }, job.clone(), context.clone(), source_file.clone()];
+            if empirical {
+                files.push(tables_file.clone());
+            }
             jobs.push(json!({
                 "id": format!("{}:brief", Self::slug(&model)),
-                "files": [if empirical { self.docs.brief_empirical.clone() } else { self.docs.brief.clone() }, job],
+                "files": files,
                 "prompt": format!("按以上说明写出简报文件 {brief}，最后只回复一行 JSON。"),
             }));
             // The source review is part of the brief: its evidence is the exact context pack,
@@ -2501,13 +2518,15 @@ impl Compiler {
         self.out_last(&json!({ "jobs": jobs }))
     }
 
-    /// `review` (#194): one job per model. By default it continues the model's conversation, and its
-    /// job file tells the reviewer to re-read the stored Derivation Cards from the archive instead of
-    /// trusting its memory. With `-IndependentReview` the first round is a new conversation
-    /// (`<slug>:review`) whose job file carries the Card bodies, and a later round continues it.
+    /// `review` (proposal §14.5 item 1, branch model-speed-options): the formal review runs as parallel jobs.
+    /// Whole chains are packed in order into jobs of at most `REVIEW_PARTS` Derivation parts (`review_packs`);
+    /// each job is its own conversation of one message (no `continue`), and its job file carries the bodies of
+    /// its Derivation Cards and of the Cards around each chain. The reviewer is not the writer. A later round
+    /// (`-Changed`) reviews only the chains a fix or split touched, in new jobs of the same shape. Until this
+    /// change the review continued the writer's conversation as one job per model, so a model's review waited
+    /// for one conversation; the empirical review made the same change and halved its step (§14.4).
     fn step_review(&mut self) -> Result<()> {
         let mut jobs = Vec::new();
-        let independent = self.p.independent_review;
         for model in self.order() {
             // Level 3: the evidence review, once, one job per twelve cards side by side.
             if ps::eq(&s(&self.m(&model)["level"]), "empirical") && ps::is_in(&s(&self.m(&model)["status"]), &["built", "derived"]) && !self.p.changed {
@@ -2540,9 +2559,6 @@ impl Compiler {
                     own.push(self.id_address(&model, &id));
                 }
             }
-            // A round that continues a conversation re-reads the Cards from the archive (its memory may
-            // hold an older body); a new conversation gets the bodies in its job file.
-            let continuing = !independent || self.p.changed;
             let mut chains: Vec<(Vec<String>, String, String)> = Vec::new();
             for c in list(&st["build"]["chains"]) {
                 let parts: Vec<String> = pipe(&c["parts"]).into_iter().map(s).filter(|a| ps::is_in(a, &own)).collect();
@@ -2555,54 +2571,54 @@ impl Compiler {
                 chains.push((parts, s(&c["after"]), s(&c["before"])));
             }
             let before = jobs.len();
-            if !chains.is_empty() {
+            let sizes: Vec<usize> = chains.iter().map(|c| c.0.len()).collect();
+            let dir = self.dir(&model);
+            for pack in review_packs(&sizes, REVIEW_PARTS) {
                 let seq = self.next_seq();
-                let dir = self.dir(&model);
                 let out = ps::join(&dir, &format!("review-{seq}.json"));
-                let id = if independent {
-                    // The reviewer's own conversation: named by the workflow on its first round.
-                    if self.p.changed { format!("{}:review+{seq}", Self::slug(&model)) } else { format!("{}:review", Self::slug(&model)) }
-                } else {
-                    format!("{}:r{seq}", Self::slug(&model))
-                };
+                let id = format!("{}:r{seq}", Self::slug(&model));
                 let mut text = format!(
-                    "# 复核任务 {id}\n\n结果文件: {out}\nMaxSteps: {}\n模型卡: [[{model}]]\n\r\n",
+                    "# 复核任务 {id}
+
+结果文件: {out}
+MaxSteps: {}
+模型卡: [[{model}]]
+
+",
                     self.part_steps()
                 );
-                if continuing {
-                    text += CR;
-                    text += &self.review_reread_text(&chains)?;
-                } else {
-                    text += CR;
-                    for (_, after, before) in &chains {
-                        for (label, at) in [("链之前的分卡（推导从它出发）", after), ("链之后的分卡（它用推导的结果）", before)] {
-                            if !at.is_empty()
-                                && let Some(b) = bodies.get(at).filter(|b| truthy(b))
-                            {
-                                text += &format!("## {label}：[[{}]] {}\n\n{}\n\r\n", at, s(&b["title"]), s(&b["body"]));
-                            }
+                text += CR;
+                for &k in &pack {
+                    let (_, after, before) = &chains[k];
+                    for (label, at) in [("链之前的分卡（推导从它出发）", after), ("链之后的分卡（它用推导的结果）", before)] {
+                        if !at.is_empty()
+                            && let Some(b) = bodies.get(at).filter(|b| truthy(b))
+                        {
+                            text += &format!("## {label}：[[{}]] {}
+
+{}
+
+", at, s(&b["title"]), s(&b["body"]));
                         }
                     }
-                    for (parts, _, _) in &chains {
-                        for a in parts {
-                            let b = bodies.get(a).cloned().unwrap_or(Value::Null);
-                            text += &format!("## 推导分卡 [[{a}]] {}\n\n{}\n\r\n", s(&b["title"]), s(&b["body"]));
-                        }
+                }
+                for &k in &pack {
+                    for a in &chains[k].0 {
+                        let b = bodies.get(a).cloned().unwrap_or(Value::Null);
+                        text += &format!("## 推导分卡 [[{a}]] {}
+
+{}
+
+", s(&b["title"]), s(&b["body"]));
                     }
                 }
                 let file = ps::join(&dir, &format!("review-{seq}.md"));
                 util::write_text(&file, &text)?;
-                let mut job = json!({
+                jobs.push(json!({
                     "id": id,
                     "files": [self.docs.review, ps::join(&dir, "setting.md"), file],
                     "prompt": format!("按以上说明复核这些推导分卡，把结果写进 {out}，最后只回复一行 JSON。"),
-                });
-                if continuing {
-                    let into = if independent { format!("{}:review", Self::slug(&model)) } else { format!("{}:brief", Self::slug(&model)) };
-                    job["continue"] = json!(into);
-                    job["fallback"] = json!([self.docs.review, ps::join(&dir, "setting.md"), file]);
-                }
-                jobs.push(job);
+                }));
             }
             self.m_mut(&model)["status"] = json!("reviewed");
             self.record_step(&model, "review", json!({"jobs":jobs.len()-before,"changed":self.p.changed,"rounds":1}));
@@ -2610,41 +2626,6 @@ impl Compiler {
         self.state["rereview"] = json!([]);
         self.save_state()?;
         self.out_last(&json!({ "jobs": jobs }))
-    }
-
-    /// The job text of a review that continues a conversation: the reviewer must read the stored Cards
-    /// back from the archive, because the conversation's memory may hold a body a fix or split replaced.
-    fn review_reread_text(&self, chains: &[(Vec<String>, String, String)]) -> Result<String> {
-        let mut text = String::from(
-            "这次复核接着你写这些分卡的对话。分卡可能已经被后续的修正和拆分改过：先用一条命令从档案读回它们的当前正文，不要凭记忆复核。\r\n\r\n读法：把下面每个地址写成一条 `get_card`，一次传给助手（HELPER）：\r\n\r\n```text\r\n@'\r\n[{\"tool\":\"get_card\",\"arguments\":{\"at\":\"<地址>\"}},…]\r\n'@ | zt-digest call -\r\n```\r\n\r\n## 要复核的推导分卡\r\n\r\n",
-        );
-        let mut seen: Vec<String> = Vec::new();
-        for (parts, _, _) in chains {
-            for a in parts {
-                if !seen.contains(a) {
-                    seen.push(a.clone());
-                    text += &format!("- [[{a}]]\r\n");
-                }
-            }
-        }
-        let mut around: Vec<(&str, String)> = Vec::new();
-        for (_, after, before) in chains {
-            if !after.is_empty() {
-                around.push(("链之前的分卡（推导从它出发）", after.clone()));
-            }
-            if !before.is_empty() {
-                around.push(("链之后的分卡（它用推导的结果）", before.clone()));
-            }
-        }
-        let mut named: Vec<String> = Vec::new();
-        for (label, at) in around {
-            if seen.contains(&at) || named.contains(&at) {
-                continue;
-            }
-            named.push(at.clone());
-            text += &format!("\r\n## {label}：[[{at}]]\r\n");
-        }
-        Ok(text)
     }
 
     /// `Find-Owner`: the model and plan id of a part this batch built (never a shared part).
@@ -4144,6 +4125,39 @@ fn divisions_section(plan: &Value, resolve: impl Fn(&str) -> Result<String>) -> 
     Ok(Some(format!("**分部**\n\n{}", lines.join("\n"))))
 }
 
+/// One staged file as the brief reads it in its message: a heading with the file's path, then every line
+/// with its 1-based number (`12| text`), so the brief cites `file:line` without opening the file.
+fn numbered_source(rel: &str, text: &str) -> String {
+    let mut out = format!("\n## {rel}\n\n");
+    for (k, line) in text.lines().enumerate() {
+        out += &format!("{}| {line}\n", k + 1);
+    }
+    out
+}
+
+/// The Derivation parts one review job holds at most (§14.5 item 1), as the evidence review's twelve cards.
+const REVIEW_PARTS: usize = 12;
+
+/// Pack whole chains, in order, into review jobs of at most `cap` parts. A chain longer than `cap` is a job of
+/// its own: a chain is reviewed whole, never cut. Returns the chain indexes of each job.
+fn review_packs(sizes: &[usize], cap: usize) -> Vec<Vec<usize>> {
+    let mut packs: Vec<Vec<usize>> = Vec::new();
+    let mut held = 0usize;
+    for (k, &n) in sizes.iter().enumerate() {
+        match packs.last_mut() {
+            Some(last) if held + n <= cap && !last.is_empty() => {
+                last.push(k);
+                held += n;
+            }
+            _ => {
+                packs.push(vec![k]);
+                held = n;
+            }
+        }
+    }
+    packs
+}
+
 #[cfg(test)]
 mod tests {
     use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, lacks_main_line, marker_entries, supplied_entries, track_renames, current_address};
@@ -4471,6 +4485,17 @@ mod tests {
     fn a_structure_line_writes_a_semicolon_as_a_comma() {
         assert_eq!(super::structure_text("用到议价份额 ω；本模型放宽其假设"), "用到议价份额 ω，本模型放宽其假设");
         assert_eq!(super::structure_text("a; b"), "a, b");
+    }
+
+    // §14.5 item 1: whole chains go into review jobs of at most twelve Derivation parts, in order; a chain
+    // longer than twelve is a job of its own and is never cut.
+    #[test]
+    fn review_jobs_pack_whole_chains_up_to_twelve_parts() {
+        assert_eq!(super::review_packs(&[5, 5, 5], 12), vec![vec![0, 1], vec![2]]);
+        assert_eq!(super::review_packs(&[3, 3, 3, 3, 1], 12), vec![vec![0, 1, 2, 3], vec![4]]);
+        assert_eq!(super::review_packs(&[13, 2], 12), vec![vec![0], vec![1]]);
+        assert_eq!(super::review_packs(&[2, 13, 2], 12), vec![vec![0], vec![1], vec![2]]);
+        assert!(super::review_packs(&[], 12).is_empty());
     }
 
     #[test]

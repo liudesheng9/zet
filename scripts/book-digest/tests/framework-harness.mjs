@@ -1531,8 +1531,8 @@ function runtime(kind, opts = {}) {
     }
     const held = modelUnits.get(laneKey) || []
     // #194: one DeepSeek conversation per model. The stand-in names the jobs as the compiler does: the brief
-    // starts `<slug>:brief`, every later content job continues it with a fallback, and the math reviewer's
-    // first round starts its own `<slug>:review` conversation (only `-IndependentReview` asks for that).
+    // starts `<slug>:brief` and every later writing job continues it with a fallback. §14.5 item 1 (branch
+    // model-speed-options): the review is not the writer; each review job is its own conversation (`<slug>:rNN`).
     const batchModels = models.length ? models : [...new Set(held.map((u) => u.model))].filter(Boolean)
     const jobOf = (m, step) => `${String(m).replace(/[\/|]/g, '_')}:${step}`
     const continueJob = (m, step) => job(jobOf(m, step), {
@@ -1588,9 +1588,20 @@ function runtime(kind, opts = {}) {
       if (opts.driveNoFile) layerJobs.set(`${out}\\models\\drive\\jobs.${work.split('\\').pop()}.json`, jobs)
       return { ok: true, step, plans, deferred, jobs: jobs.length, derive: opts.batchExplain === false ? false : true, file: saved('fill-jobs.json', jobs) }
     }
+    // §14.5 item 3 (branch model-speed-options): the close round that sends nothing back plans the batch's
+    // explanations in the same step (`-Explain`): one explain job per model, continuing its conversation,
+    // saved under the batch's fixed name `explain-jobs.<batch>.json`.
+    const closeExplain = () => {
+      if (!/ -Explain\b/.test(cmd)) return {}
+      const line = call(`zt-digest model -Step explain -Work "${work}" -Staging "${out}" -Models "${batchModels.join(',')}" -Batch`)
+      const count = Array.isArray(line.jobs) ? line.jobs.length : 0
+      const jobs = batchModels.slice(0, count || batchModels.length).map((m) => continueJob(m, 'explain'))
+      modelJobLists.push({ step: 'explain', jobs })
+      saved(`explain-jobs.${work.split('\\').pop()}.json`, jobs)
+      return { explain_jobs: jobs.length, explain_parts: Number(line.parts || 0) }
+    }
     if (step === 'derive' || step === 'review' || step === 'split' || step === 'close') {
       const more = step === 'review' ? ' -Changed' : step === 'close' ? ' -Report' : ''
-      const independent = step === 'review' && / -IndependentReview\b/.test(cmd)
       const line = call(`zt-digest model -Step ${step} -Work "${work}" -Staging "${out}"${more}`)
       let jobs = (line.jobs || []).map((j) => job(j.id || `${step}-1`, { continue: j.continue, fallback: j.fallback, files: j.files || [`D:\\x\\Key\\${j.id || step}.md`], prompt: j.prompt }))
       // A close round that sends follow-ups: the first round names one per model, the next one is clean.
@@ -1603,31 +1614,23 @@ function runtime(kind, opts = {}) {
         }
         jobs = []
         modelJobLists.push({ step, jobs })
-        return { ok: true, step, jobs: 0, faults: 0, unowned: [], report: CANNED['model report'](), file: saved(`${step}-jobs.json`, jobs) }
+        return { ok: true, step, jobs: 0, faults: 0, unowned: [], report: CANNED['model report'](), file: saved(`${step}-jobs.json`, jobs), ...closeExplain() }
       }
-      if (!jobs.length && batchModels.length) {
-        if (step === 'review' && independent) {
-          // The independent reviewer opens its own conversation: `<slug>:review`, no continue.
-          jobs = batchModels.map((m) => job(jobOf(m, 'review')))
+      // A close round with no build fault sends nothing back, as the compiler does.
+      if (!jobs.length && batchModels.length && !(step === 'close' && !Number(line.faults || 0))) {
+        if (step === 'review') {
+          // §14.5 item 1: each review job is its own conversation of one message, no continue.
+          jobs = batchModels.map((m) => job(jobOf(m, `r${String(++state.reviewSeq || (state.reviewSeq = 1)).padStart(2, '0')}`)))
         } else {
           jobs = batchModels.map((m) => continueJob(m, step))
         }
       }
       modelJobLists.push({ step, jobs })
-      return { ok: true, step, jobs: jobs.length, faults: Number(line.faults || 0), unowned: line.unowned || [], report: line.report || null, file: saved(`${step}-jobs.json`, jobs) }
+      return { ok: true, step, jobs: jobs.length, faults: Number(line.faults || 0), unowned: line.unowned || [], report: line.report || null, file: saved(`${step}-jobs.json`, jobs), ...(step === 'close' && !jobs.length ? closeExplain() : {}) }
     }
     if (step === 'report') {
       const r = call(`zt-digest model -Step report -Work "${work}" -Staging "${out}"`)
       return { ok: true, step, models: r.models || [], file: `${out}\\models\\drive\\report.json` }
-    }
-    if (step === 'explain') {
-      // #195 (§3.7): after the close rounds, one explain job per model that still needs its explanations,
-      // continuing the model's conversation (the compiler's job file carries the architect's design entry).
-      const line = call(`zt-digest model -Step explain -Work "${work}" -Staging "${out}" -Models "${batchModels.join(',')}"${/ -Batch\b/.test(cmd) ? ' -Batch' : ''}`)
-      const count = Array.isArray(line.jobs) ? line.jobs.length : 0
-      const jobs = batchModels.slice(0, count || batchModels.length).map((m) => continueJob(m, 'explain'))
-      modelJobLists.push({ step, jobs })
-      return { ok: true, step, jobs: jobs.length, parts: Number(line.parts || 0), file: saved('explain-jobs.json', jobs) }
     }
     if (step === 'explain-apply') {
       const line = call(`zt-digest model -Step explain-apply -Work "${work}" -Staging "${out}"`)
@@ -1683,7 +1686,8 @@ function runtime(kind, opts = {}) {
     }
     if (step === 'close') {
       const models = (raw.report && raw.report.models) || []
-      return { ok: true, step, jobs: n(raw.jobs), faults: n(raw.faults), unowned: list(raw.unowned), report_models: models.length, statuses: modelPairs(models), file: raw.file }
+      const explain = raw.explain_jobs === undefined ? {} : { explain_jobs: n(raw.explain_jobs), explain_parts: n(raw.explain_parts) }
+      return { ok: true, step, jobs: n(raw.jobs), faults: n(raw.faults), unowned: list(raw.unowned), report_models: models.length, statuses: modelPairs(models), file: raw.file, ...explain }
     }
     if (step === 'report') { const models = raw.models || []; return { ok: true, step, models: models.length, statuses: modelPairs(models), file: raw.file } }
     if (step === 'finish') {
@@ -3584,7 +3588,8 @@ for (const which of ['econ', 'math']) {
   // model lanes: the blocks run side by side, so one block is the steps of its lane (-Lane l1) up to its finish.
   const laneOne = modelCalls.filter((c) => /-Lane l1\b/.test(c.cmd)).map((c) => c.step)
   const first = laneOne.slice(0, laneOne.indexOf('finish') + 1)
-  check(first.join(',') === 'start,brief,fill,derive,review,close,explain,explain-apply,finish', `#177/#195: one block's drive steps run start, brief, fill, derive, review, close, explain, explain-apply, finish in that order (${order.join(',')})`)
+  check(first.join(',') === 'start,brief,fill,derive,review,close,explain-apply,finish', `#177/#195/§14.5: one block's drive steps run start, brief, fill, derive, review, close (which plans the explanations), explain-apply, finish in that order (${order.join(',')})`)
+  check(!modelCalls.some((c) => c.step === 'explain') && modelCalls.some((c) => c.step === 'close' && / -Explain\b/.test(c.cmd)), '§14.5 item 3: no separate explain drive step; the close step carries -Explain')
   // atkinson2015lectures: up to eight lanes; only the stage's first start releases a stopped run's claims, and every
   // other start keeps the claims the other lanes hold.
   const starts = modelCalls.filter((c) => c.step === 'start')
@@ -3618,13 +3623,15 @@ for (const which of ['econ', 'math']) {
 
 // ================================================================================================================
 // #194: one DeepSeek conversation per model (docs/model-one-conversation-proposal.md §7). The brief starts
-// `<slug>:brief`; every later content job (fill, derive, review, split, close) names it in `continue` and
-// carries the files of a fresh conversation as `fallback`, with one job per model per step. The math variant
-// reviews in its own `<slug>:review` conversation (`-IndependentReview`).
+// `<slug>:brief`; every later writing job (fill, derive, split, close, explain) names it in `continue` and
+// carries the files of a fresh conversation as `fallback`, with one job per model per step. §14.5 item 1
+// (branch model-speed-options): every variant reviews in jobs that are their own conversations.
 // ================================================================================================================
 {
   const { modelCalls, modelJobLists } = await run('econ', { ...base, figures: false }, { modelCloseFollows: true })
-  const after = modelJobLists.filter((list) => list.step !== 'brief' && list.jobs.length)
+  const after = modelJobLists.filter((list) => list.step !== 'brief' && list.step !== 'review' && list.jobs.length)
+  const reviews = modelJobLists.filter((list) => list.step === 'review' && list.jobs.length)
+  check(reviews.length > 0 && reviews.every((list) => list.jobs.every((j) => !j.continue)), `§14.5 item 1: every review job is its own conversation (${reviews.flatMap((l) => l.jobs.map((j) => `${j.id}->${j.continue || 'new'}`)).join(', ')})`)
   const loose = after.flatMap((list) => list.jobs.filter((j) => !j.continue).map((j) => `${list.step}:${j.id}`))
   check(after.length >= 4 && !loose.length, `#194: every content job after the brief names the conversation it continues (${loose.slice(0, 4).join(', ') || 'none'} loose of ${after.flatMap((l) => l.jobs).length})`)
   const wrong = after.flatMap((list) => list.jobs.filter((j) => !/:brief$/.test(String(j.continue))).map((j) => `${list.step}:${j.id}->${j.continue}`))
@@ -3641,11 +3648,11 @@ for (const which of ['econ', 'math']) {
     return twice
   })
   check(modelJobLists.length > 0 && !doubled.length, `#194: no step lists two jobs for one model (${doubled.slice(0, 4).join(', ') || 'none'})`)
-  check(modelCalls.some((c) => c.step === 'review') && !modelCalls.some((c) => / -IndependentReview\b/.test(c.cmd)), '#194: the economics variant never asks for an independent reviewer')
+  check(modelCalls.some((c) => c.step === 'review') && !modelCalls.some((c) => / -IndependentReview\b/.test(c.cmd)), '§14.5 item 1: no variant asks for -IndependentReview (the flag is gone)')
   const math = await run('math', { ...base, figures: false })
-  check(math.modelCalls.some((c) => c.step === 'review' && / -IndependentReview\b/.test(c.cmd)), `#194: the math variant reviews with -IndependentReview (${math.modelCalls.filter((c) => c.step === 'review').map((c) => c.cmd.slice(-60)).join(' | ') || 'no review step'})`)
+  check(math.modelCalls.some((c) => c.step === 'review') && !math.modelCalls.some((c) => / -IndependentReview\b/.test(c.cmd)), `§14.5 item 1: the math variant reviews as every variant does (${math.modelCalls.filter((c) => c.step === 'review').map((c) => c.cmd.slice(-60)).join(' | ') || 'no review step'})`)
   const mathReview = math.modelJobLists.filter((list) => list.step === 'review' && list.jobs.length)
-  check(mathReview.length > 0 && mathReview.every((list) => list.jobs.every((j) => /:review$/.test(String(j.id)) && !j.continue)), `#194: the math reviewer's first round opens its own <slug>:review conversation (${mathReview.flatMap((l) => l.jobs.map((j) => j.id)).join(', ') || 'none'})`)
+  check(mathReview.length > 0 && mathReview.every((list) => list.jobs.every((j) => !j.continue)), `§14.5 item 1: the math variant's review jobs are their own conversations (${mathReview.flatMap((l) => l.jobs.map((j) => j.id)).join(', ') || 'none'})`)
 }
 
 // ================================================================================================================

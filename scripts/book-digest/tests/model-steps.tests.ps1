@@ -191,6 +191,17 @@ $env:MS_CLOSE_JOBS = ''
 Assert ($closeJobs.json -and $closeJobs.json.ok -eq $true -and $closeJobs.json.jobs -eq 1 -and $closeJobs.json.faults -eq 1 -and -not $closeJobs.json.report) "close: a round that sends follow-ups lists them and writes no report ($($closeJobs.text))"
 $close = Step (@('-Step', 'close', '-Work', $work) + $common)
 Assert ($close.json -and $close.json.ok -eq $true -and -not $close.json.jobs -and $close.json.report_models -eq 1 -and $close.json.statuses -eq '2|c:done') "close: the round that sends nothing back carries the batch report ($($close.text))"
+# §14.5 item 3 (branch model-speed-options): the close round that sends nothing back also plans the batch's
+# explain jobs in the same drive job; a round that sends follow-ups plans none (the explain plan carries the
+# Card bodies, which the follow-ups still change). The separate explain step is gone.
+$env:MS_CLOSE_JOBS = '1'
+$closeFix = Step (@('-Step', 'close', '-Work', $work, '-Models', 'Key/2|c', '-Explain') + $common)
+$env:MS_CLOSE_JOBS = ''
+Assert ($closeFix.json -and $closeFix.json.jobs -eq 1 -and -not $closeFix.json.explain_jobs -and (Get-Content -LiteralPath $calls -Raw) -notmatch 'model -Step explain') "close -Explain: a round that sends follow-ups plans no explanation ($($closeFix.text))"
+$closeExplain = Step (@('-Step', 'close', '-Work', $work, '-Models', 'Key/2|c', '-Explain') + $common)
+Assert ($closeExplain.json -and -not $closeExplain.json.jobs -and $closeExplain.json.explain_jobs -eq 1 -and (Test-Path -LiteralPath (Join-Path $out "models\drive\explain-jobs.$(Split-Path $work -Leaf).json")) -and (Get-Content -LiteralPath $calls -Raw) -match 'model -Step explain -Work .* -Models Key/2\|c -Batch') "close -Explain: the round that sends nothing back plans the batch's explanations in the same step ($($closeExplain.text))"
+$gone = Step (@('-Step', 'explain', '-Work', $work, '-Models', 'Key/2|c', '-Batch') + $common)
+Assert ($gone.code -ne 0 -or -not $gone.json -or $gone.json.ok -ne $true) "the separate explain step is gone ($($gone.text))"
 $report = Step (@('-Step', 'report', '-Work', $work) + $common)
 Assert ($report.json -and $report.json.ok -eq $true -and @($report.json.models).Count -eq 1) "report: one report per model of the batch ($($report.text))"
 
