@@ -877,6 +877,8 @@ The model process is slow because each model passes through six sequential steps
 
 Items 1 and 3 change no content and can be tested by resuming the pilot box; item 2 changes what a job is told and need a cost test first (docs/agents/workflow-principles.md).
 
+**The speed options are built on the branch `model-speed-options` (2026-11-09; commits b8567226 and 613585c3, pushed to origin).** The branch is an option the owner keeps on purpose and a backup of the model layer's structure; it is not merged into main, and nothing from it is installed. It holds all three items with their tests: (1) the formal review as parallel jobs of whole chains, at most 12 Derivation parts a job, each its own conversation carrying the bodies, in every variant (`-IndependentReview` is gone); (2) a message-only brief (`context.md`, `source.md` with numbered lines, `tables.json` in the prompt files, no file reads); (3) one drive job less per batch: the premise of item 3 was stale, because validate, apply and the fill start already share one step (S10), so the branch merges the next pair instead, and the close round that sends nothing back plans the explain jobs. No DeepSeek job ran for it, so the cost of the review split is not measured: it loses the writer conversation's cached prefix. Before anyone adopts the branch, run a cost test (docs/digest-cost-experience.md) on a copied box, then bump base, econ, math and history together, rebuild zt-digest and install.
+
 ### 14.6 The overnight completion (2026-11-09)
 
 The owner asked for the proposal to be finished overnight and for every blocking decision to be taken without waiting. Each decision taken that way is named below as a decision.
