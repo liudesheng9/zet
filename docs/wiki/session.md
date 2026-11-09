@@ -6,8 +6,8 @@ paths:
   - "src/session/**"
   - "tests/pty_session.rs"
   - "tests/term_session.rs"
-synced: 1cc9b0f1b1f3
-updated: 2026-11-01
+synced: 2af6bdc72e0b
+updated: 2026-11-09
 ---
 
 # Terminal Session

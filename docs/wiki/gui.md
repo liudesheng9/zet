@@ -13,8 +13,8 @@ paths:
   - "tests/term_reading.rs"
   - "scripts/gui-bench/**"
   - "scripts/portable-export/**"
-synced: ea0e26fea283
-updated: 2026-11-03
+synced: 2af6bdc72e0b
+updated: 2026-11-09
 ---
 
 # GUI
