@@ -335,14 +335,22 @@ try {
     $null = Fail-Unit $audit.id $audit.token 'audit'
     $ready = Run-Digest @('cleanup-finish','-Out',$readyOut,'-Ready','-Owner','cleanup-ready')
     Assert ($ready.kind -eq 'cleanup_ready' -and $ready.claimed -eq 3 -and $ready.done -eq 1) 'one command claims every ready cleanup unit and settles the one that can'
-    Assert ((@($ready.failed) + @($ready.retry)).Count -eq 2 -and @(@($ready.failed) + @($ready.retry) | Where-Object { $_.unit -eq $open.cleanup_unit -and $_.cause -match 'not terminal' }).Count -eq 1) 'a unit that cannot settle is reported with its cause'
+    # autor2004will (2026-11-09): a conversation still open made the run-level unit fail as transient three times
+    # inside one call, and the spent budget failed it for good. A unit that waits on the provider is released
+    # unspent: it waits for the next settle, never fails for good.
+    Assert (@($ready.waiting).Count -eq 2 -and @($ready.waiting | Where-Object { $_.unit -eq $open.cleanup_unit -and $_.cause -match 'not terminal' }).Count -eq 1) 'a unit that waits on an open conversation is reported with its cause'
+    Assert ($ready.failed_count -eq 0 -and $ready.retry_count -eq 0) 'waiting on the provider is neither a failure nor a spent retry'
     $units = @((Run-Digest @('ledger','status','-Out',$readyOut,'-Layer','cleanup')).units)
     Assert (@($units | Where-Object { $_.state -eq 'claimed' }).Count -eq 0) 'no cleanup unit is left claimed'
-    $faulted = @($units | Where-Object { $_.id -eq $open.cleanup_unit })[0]
-    Assert ($faulted.state -in @('failed','retry') -and $faulted.fault.input_hash -eq $faulted.input_hash -and $faulted.fault.code -eq 'provider_transient') 'its fault carries the claim''s own input hash and stays a provider fault'
+    $waiting = @($units | Where-Object { $_.id -eq $open.cleanup_unit })[0]
+    Assert ($waiting.state -eq 'ready' -and $waiting.attempts -eq 0 -and $waiting.fault.code -eq 'cleanup_waiting' -and $waiting.fault.input_hash -eq $waiting.input_hash) 'the waiting unit is ready again with its attempt unspent and its cause recorded'
     Assert ($ready.book.unit -eq 'cleanup/book@1' -and $ready.book.ok -eq $false) 'the run-level unit is reported apart, settled last'
     $again = Run-Digest @('cleanup-finish','-Out',$readyOut,'-Ready','-Owner','cleanup-ready')
-    Assert ($again.claimed -eq 0) 'a second call finds nothing ready'
+    Assert ($again.claimed -eq 2 -and @($again.waiting).Count -eq 2 -and $again.failed_count -eq 0) 'a second call waits again and fails nothing, whatever the attempt budget (here 1)'
+    Finish-Conversation $readyOut $open.resources[0].id 'conv-r2'
+    foreach ($held in @($settles, $open)) { $null = Observe ([ordered]@{ schema_version = 1; op = 'workspace'; resource = $held.resources[0].id; removed = $true }) }
+    $settled = Run-Digest @('cleanup-finish','-Out',$readyOut,'-Ready','-Owner','cleanup-ready')
+    Assert ($settled.done -eq 2 -and @($settled.waiting).Count -eq 0 -and $settled.book.ok -eq $true) 'once the conversation is ended and deleted, the waiting unit and the run-level unit settle'
 
     # --- cleanup-run: the whole DeepSeek cleanup from ledger facts and one provider batch, no agent per id ---
     $runOut = Join-Path $scratch 'run'
@@ -356,13 +364,15 @@ try {
     $null = Observe ([ordered]@{ schema_version = 1; op = 'terminal'; resource = $p2.resources[0].id; conversation = 'conv-p3'; state = 'error'; outcome = 'the provider failed' })
     $answers = Join-Path $runOut 'answers'; New-Item -ItemType Directory -Force $answers | Out-Null
     [IO.File]::WriteAllText((Join-Path $answers 'conv-p1.txt'),'{"group":1,"cards":2}',$utf8)
+    $early = Run-Digest @('cleanup-run','-Out',$runOut,'-Step','plan')
+    Assert ($early.deletes -eq 0 -and $early.workspaces -eq 0) 'a plan made while the owning units still run deletes none of their conversations'
     $null = Fail-Unit $claims[0].id $claims[0].token 'digest'
     $null = Fail-Unit $claims[1].id $claims[1].token 'digest'
     $audit = @((Run-Digest @('ledger','next','-Out',$runOut,'-Layer','audit','-Take','1','-Owner','cleanup-fixture')).units)[0]
     $null = Fail-Unit $audit.id $audit.token 'audit'
     $plan = Run-Digest @('cleanup-run','-Out',$runOut,'-Step','plan')
     $ops = Get-Content -LiteralPath $plan.plan_file -Raw | ConvertFrom-Json
-    Assert ($plan.kind -eq 'cleanup_plan' -and $plan.deletes -eq 3 -and $plan.workspaces -eq 1 -and $plan.evidence_recorded -eq 1) 'the plan names every recorded id still to delete and the workspace once, after the evidence sweep'
+    Assert ($plan.kind -eq 'cleanup_plan' -and $plan.deletes -eq 3 -and $plan.workspaces -eq 1 -and ($early.evidence_recorded + $plan.evidence_recorded) -eq 1) 'the plan names every recorded id still to delete and the workspace once, after the evidence sweep'
     Assert (@($ops | Where-Object op -EQ 'delete').session_id -join ',' -eq 'conv-p1,conv-p2,conv-p3') 'the plan file holds exactly the recorded ids'
     # The bridge answers each op in order; a results file for another plan is refused.
     $wrong = @{ ok = $true; results = @(@{ op = 'delete'; session_id = 'conv-zz'; status = 'deleted' }) }

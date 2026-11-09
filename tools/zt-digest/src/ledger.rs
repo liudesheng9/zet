@@ -5140,8 +5140,9 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
         seal(&tx, "organize")?;
     }
     // The run-level cleanup owns what no single unit registered: the shared workspaces and their
-    // removal. It waits (`settled`, never `success`) for the last content layer, so a halted run
-    // still owes its cleanup (R323, R330).
+    // removal. It has no dependency: it becomes ready once no unit can still run (done, failed for good or
+    // never started), so a halted run, or a mode that runs only some layers, still owes and pays its cleanup
+    // (R323, R330; 2026-11-09).
     if enabled_layer("cleanup") {
         register(
             &tx,
@@ -5152,12 +5153,6 @@ fn initialize(p: &Prepared, prepared: bool) -> Result<Value> {
             None,
             false,
         )?;
-        let tail = if p.contract["variant"] == "math" {
-            "math-check/book@1"
-        } else {
-            "audit/book@1"
-        };
-        dependency(&tx, "cleanup/book@1", tail, "settled")?;
     }
     if let Some(terms) = terms.filter(|_| prepared) {
         tx.execute("UPDATE units SET state='ready' WHERE id=?1", [terms])?;
@@ -6659,9 +6654,15 @@ fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
             } else {
                 json!({"code":"dependency_failed","prerequisites":failed})
             };
-            let ready = deps.iter().all(|(_, c, s)| {
-                s == "done" || (c == "settled" && matches!(s.as_str(), "failed" | "blocked"))
-            });
+            // The run-level cleanup reads no dependency: it is ready once no unit can still run, so a tail layer a
+            // mode never runs (or a dependency an older ledger recorded on it) never holds it back (2026-11-09).
+            let ready = if id == "cleanup/book@1" {
+                units_that_can_still_run(tx)?.is_empty()
+            } else {
+                deps.iter().all(|(_, c, s)| {
+                    s == "done" || (c == "settled" && matches!(s.as_str(), "failed" | "blocked"))
+                })
+            };
             let aggregate = matches!(
                 layer.as_str(),
                 "cards-book"
@@ -7616,6 +7617,7 @@ pub(crate) fn fault_class(code: &str) -> Result<&'static str> {
         | "missing_jobs"
         | "pending_jobs"
         | "read_view_changed"
+        | "cleanup_waiting"
         | "lease_lost" => "retryable",
         "access_refused"
         | "invalid_arguments"
@@ -7688,6 +7690,35 @@ fn fail(p: &Prepared, unit: &str, token: i64, class: &str, fault: &Value) -> Res
     reconcile(&tx, now)?;
     tx.commit()?;
     Ok(json!({"unit":unit,"token":token,"state":state,"fault":fault,"retry_after":retry_after}))
+}
+
+/// A cleanup unit that waits on the provider (a conversation not yet terminal, a deletion not yet confirmed, a
+/// workspace not yet removed) goes back to waiting with its attempt unspent: only the next settle can change
+/// those facts, so a retry in the same call proves nothing, and a spent budget would fail it for good
+/// (autor2004will, 2026-11-09: three refusals in 30 s failed `cleanup/book@1` and it never came back).
+fn wait_for_provider(p: &Prepared, unit: &str, token: i64, cause: &str) -> Result<Value> {
+    check_claim(p, unit, token)?;
+    let _guard = unit_guard(p, unit)?;
+    let mut conn = writer(p)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_binding(&tx, p)?;
+    let claim = claim(&tx, unit, token)?;
+    if !unit.starts_with("cleanup/") {
+        bail!("only a cleanup unit waits on the provider: {unit}");
+    }
+    let fault = json!({"schema_version":1,"unit":unit,"input_hash":claim.input_hash,"code":"cleanup_waiting","cause":cause});
+    tx.execute("UPDATE units SET state='registered',owner=NULL,lease_until=NULL,retry_after=NULL,attempts=max(attempts-1,0),fault_class='retryable',fault_json=?2 WHERE id=?1",params![unit,canon::canonical_json(&fault)])?;
+    event(
+        &tx,
+        unit,
+        Some(&claim.owner),
+        Some(token),
+        "waiting",
+        &json!({"fault":fault,"attempt":claim.attempts,"attempt_spent":false}),
+    )?;
+    reconcile(&tx, now_seconds())?;
+    tx.commit()?;
+    Ok(fault)
 }
 
 fn publish(path: &Path, text: &str) -> Result<Value> {
@@ -15726,6 +15757,20 @@ fn recorded_resources(conn: &Connection, only: Option<&str>) -> Result<Vec<Value
     Ok(resources)
 }
 
+/// The units outside the cleanup layer that can still run, so their conversations must stay: a claimed unit,
+/// one waiting to retry, and one released (ready or registered) after an attempt. A unit done, failed for good
+/// or blocked is terminal; a ready unit that never started holds no conversation (2026-11-09: the book layers
+/// a mode `models` run on an adopted staging never claims).
+fn units_that_can_still_run(conn: &Connection) -> Result<BTreeSet<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id FROM units WHERE layer<>'cleanup' AND (state IN ('claimed','retry') OR (state IN ('ready','registered') AND attempts>0)) ORDER BY id",
+    )?;
+    let rows = statement
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    Ok(rows)
+}
+
 fn write_resources(tx: &Transaction, unit: &str, resources: &[Value]) -> Result<()> {
     let progress: String = tx.query_row(
         "SELECT progress_json FROM units WHERE id=?1",
@@ -17498,6 +17543,7 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
     let mut open: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut book = Value::Null;
     let mut rounds = 0usize;
+    let mut waiting: Vec<(String, i64, String)> = Vec::new();
     for round in 0..ROUNDS {
         // A unit faulted in an earlier round becomes ready after its short retry delay.
         let wait = if round > 0 && open.values().any(|(state, _)| state == "retry") { 30 } else { 0 };
@@ -17522,12 +17568,19 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
                 }
                 Err(error) => {
                     let cause: String = format!("{error:#}").chars().take(300).collect();
-                    let fault = json!({"schema_version":1,"unit":id,"input_hash":unit["input_hash"],"code":"provider_transient","cause":cause});
-                    let state = match fail(p, &id, token, "retryable", &fault) {
-                        Ok(failed) => failed["state"].as_str().unwrap_or("failed").to_string(),
-                        Err(refused) => format!("claimed: {refused:#}").chars().take(200).collect(),
-                    };
-                    open.insert(id.clone(), (state, cause.clone()));
+                    if cause.starts_with("cleanup_transient") {
+                        // It stays claimed until the loop ends, so this call never claims it again; then it waits
+                        // for the next settle with its attempt unspent.
+                        waiting.push((id.clone(), token, cause.clone()));
+                        open.remove(&id);
+                    } else {
+                        let fault = json!({"schema_version":1,"unit":id,"input_hash":unit["input_hash"],"code":"provider_transient","cause":cause});
+                        let state = match fail(p, &id, token, "retryable", &fault) {
+                            Ok(failed) => failed["state"].as_str().unwrap_or("failed").to_string(),
+                            Err(refused) => format!("claimed: {refused:#}").chars().take(200).collect(),
+                        };
+                        open.insert(id.clone(), (state, cause.clone()));
+                    }
                     Err(cause)
                 }
             };
@@ -17545,6 +17598,15 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
             }
         }
     }
+    let mut waited = Vec::new();
+    for (id, token, cause) in &waiting {
+        match wait_for_provider(p, id, *token, cause) {
+            Ok(_) => waited.push(json!({"unit":id,"cause":cause})),
+            Err(refused) => {
+                open.insert(id.clone(), (format!("claimed: {refused:#}").chars().take(200).collect(), cause.clone()));
+            }
+        }
+    }
     let reconciled = reverify_reconciliations(p)?;
     let list = |wanted: &dyn Fn(&str) -> bool| -> Vec<Value> {
         open.iter().filter(|(_, (state, _))| wanted(state)).take(8).map(|(unit, (state, cause))| json!({"unit":unit,"state":state,"cause":cause})).collect()
@@ -17554,6 +17616,7 @@ fn cleanup_ready(p: &Prepared, owner: &str) -> Result<Value> {
         "schema_version":1,"kind":"cleanup_ready","rounds":rounds,"claimed":claimed,"done":done,"partial":partial,
         "retry_count":count(&|state| state == "retry"),"failed_count":count(&|state| state != "retry"),
         "retry":list(&|state| state == "retry"),"failed":list(&|state| state != "retry"),
+        "waiting_count":waited.len(),"waiting":waited.into_iter().take(8).collect::<Vec<_>>(),
         "reconciled":reconciled,
         "book":book
     }))
@@ -19098,6 +19161,86 @@ mod tests {
         let facts = content_facts(&tx).unwrap();
         assert_eq!(facts["complete"], json!(true));
         assert_eq!(facts["unresolved"], json!([]));
+    }
+
+    /// A ledger shaped like the adopted live stagings of 2026-11-09 (becker2025division-empirical and two more):
+    /// inherited digest groups failed for good, the adopted Terms and one rebuilt model done, the book layers a
+    /// mode `models` never runs still ready with no attempt, and the run-level cleanup holding the legacy
+    /// `settled` dependency on the audit tail.
+    fn adopted_staging_ledger() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(&dir.path().join("ledger.sqlite3"), true).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        for (key, value) in [("target", json!({"enabled":[],"excluded":[]})), ("invocation", json!(1)), ("barrier/audit", json!({"sealed":true})), ("barrier/bridge", json!({"sealed":true}))] {
+            conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![key, canon::canonical_json(&value)]).unwrap();
+        }
+        for (id, layer, state, attempts) in [
+            ("digest/g001@1", "digest", "failed", 0),
+            ("digest/g002@1", "digest", "done", 0),
+            ("terms/book@1", "terms", "done", 0),
+            ("models/m-6-g@1", "models", "done", 1),
+            ("audit/book@1", "audit", "ready", 0),
+            ("bridge/book@1", "bridge", "ready", 0),
+            ("cleanup/book@1", "cleanup", "registered", 0),
+        ] {
+            let key = id.split('/').nth(1).unwrap().trim_end_matches("@1");
+            conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,attempts,inputs_json,input_hash,created_at) VALUES(?1,?2,?3,1,?4,?5,'{}','h','now')",params![id,layer,key,state,attempts]).unwrap();
+        }
+        conn.execute("INSERT INTO deps(unit_id,needs_id,condition) VALUES('audit/book@1','digest/g001@1','settled'),('audit/book@1','digest/g002@1','settled'),('cleanup/book@1','audit/book@1','settled')", []).unwrap();
+        (dir, conn)
+    }
+
+    fn book_cleanup_state(conn: &mut Connection) -> String {
+        let tx = conn.transaction().unwrap();
+        reconcile(&tx, now_seconds()).unwrap();
+        tx.commit().unwrap();
+        conn.query_row("SELECT state FROM units WHERE id='cleanup/book@1'", [], |r| r.get(0)).unwrap()
+    }
+
+    // The run-level cleanup becomes ready once no unit can still run: done, failed for good (inherited
+    // failures included) or never started. It never waits on a tail layer the mode does not run, and it waits
+    // while any unit is claimed, waiting to retry, or released after an attempt (2026-11-09: the three adopted
+    // live stagings kept their per-model conversations because `cleanup/book@1` waited on `audit/book@1`).
+    #[test]
+    fn the_run_level_cleanup_waits_only_for_work_that_can_still_run() {
+        let (_dir, mut conn) = adopted_staging_ledger();
+        assert_eq!(book_cleanup_state(&mut conn), "ready", "a ready audit that never ran holds no conversation");
+        for (state, attempts) in [("claimed", 1), ("retry", 1), ("ready", 1), ("registered", 1)] {
+            conn.execute("UPDATE units SET state=?1,attempts=?2 WHERE id='models/m-6-g@1'", params![state, attempts]).unwrap();
+            assert_eq!(book_cleanup_state(&mut conn), "registered", "a model unit {state} after an attempt can still run");
+        }
+        conn.execute("UPDATE units SET state='failed' WHERE id='models/m-6-g@1'", []).unwrap();
+        assert_eq!(book_cleanup_state(&mut conn), "ready", "a unit failed for good is terminal");
+        // The run-level cleanup never waits on a cleanup unit: it settles them all, itself last.
+        conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,attempts,inputs_json,input_hash,created_at) VALUES('cleanup/digest-g001-1-t1@1','cleanup','digest-g001-1-t1',1,'retry',1,'{}','h','now')", []).unwrap();
+        assert_eq!(book_cleanup_state(&mut conn), "ready");
+    }
+
+    // The settle plan deletes a conversation only once the unit that owns it can no longer run; a stage-wide
+    // (run-owned) conversation waits for the whole run.
+    #[test]
+    fn the_settle_plan_spares_the_conversations_of_work_that_can_still_run() {
+        let resources = vec![
+            json!({"owner":"models/a@1","workspace":{"path":"D:\\run\\m"},"conversations":[{"id":"a1","delete":null}]}),
+            json!({"owner":"models/b@1","workspace":{"path":"D:\\run\\m"},"conversations":[{"id":"b1","delete":null}]}),
+            json!({"owner":"run","workspace":{"path":"D:\\run\\chain"},"conversations":[{"id":"r1","delete":null}]}),
+        ];
+        let open: BTreeSet<String> = ["models/b@1".to_string()].into();
+        assert_eq!(
+            cleanup_run::settle_ops(&resources, &open, true),
+            vec![json!({"op":"delete","session_id":"a1"})],
+            "a running owner keeps its conversation, its workspace and every run-owned one"
+        );
+        assert_eq!(
+            cleanup_run::settle_ops(&resources, &BTreeSet::new(), false),
+            vec![
+                json!({"op":"delete","session_id":"a1"}),
+                json!({"op":"delete","session_id":"b1"}),
+                json!({"op":"delete","session_id":"r1"}),
+                json!({"op":"settle_workspace","cwd":"D:\\run\\m"}),
+                json!({"op":"settle_workspace","cwd":"D:\\run\\chain"}),
+            ]
+        );
     }
 
     #[test]

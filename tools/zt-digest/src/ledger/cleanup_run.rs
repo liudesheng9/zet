@@ -29,11 +29,28 @@ fn deleted(conversation: &Value) -> bool {
 }
 
 /// The ops for the run's recorded resources: every recorded id not yet deleted, then every recorded
-/// workspace not yet removed (a folder once, whatever its case).
-pub(super) fn settle_ops(resources: &[Value]) -> Vec<Value> {
+/// workspace not yet removed (a folder once, whatever its case). A conversation whose owner can still run
+/// (`open`: claimed, waiting to retry, or released after an attempt) is never named, nor is a stage-wide
+/// (run-owned) conversation while any unit can still run (`run_open`), nor a workspace that holds a spared
+/// conversation: the next cleanup names them once their work has ended.
+pub(super) fn settle_ops(resources: &[Value], open: &BTreeSet<String>, run_open: bool) -> Vec<Value> {
+    let spared = |resource: &Value| -> bool {
+        match resource["owner"].as_str() {
+            Some("run") => run_open,
+            Some(owner) => open.contains(owner),
+            None => run_open,
+        }
+    };
     let mut ops = Vec::new();
     let mut ids: BTreeSet<String> = BTreeSet::new();
+    let mut kept_folders: BTreeSet<String> = BTreeSet::new();
     for resource in resources {
+        if spared(resource) {
+            if let Some(path) = resource["workspace"]["path"].as_str() {
+                kept_folders.insert(path.to_lowercase());
+            }
+            continue;
+        }
         for conversation in resource["conversations"].as_array().into_iter().flatten() {
             let Some(id) = conversation["id"].as_str() else { continue };
             if conversation["lost"] == json!(true) || deleted(conversation) || !ids.insert(id.to_string()) {
@@ -45,7 +62,7 @@ pub(super) fn settle_ops(resources: &[Value]) -> Vec<Value> {
     let mut folders: BTreeSet<String> = BTreeSet::new();
     for resource in resources {
         let Some(path) = resource["workspace"]["path"].as_str() else { continue };
-        if resource["workspace_removed"] == json!(true) || !folders.insert(path.to_lowercase()) {
+        if resource["workspace_removed"] == json!(true) || kept_folders.contains(&path.to_lowercase()) || !folders.insert(path.to_lowercase()) {
             continue;
         }
         ops.push(json!({"op":"settle_workspace","cwd":path}));
@@ -58,8 +75,11 @@ pub(super) fn settle_ops(resources: &[Value]) -> Vec<Value> {
 pub(super) fn plan(p: &Prepared) -> Result<Value> {
     let answers = p.out.join("answers");
     let swept = if answers.is_dir() { resource_sweep_evidence(p, &answers.to_string_lossy())? } else { json!({"recorded":0,"missing":0}) };
-    let resources = recorded_resources(&connect(&p.out.join("ledger.sqlite3"), false)?, None)?;
-    let ops = settle_ops(&resources);
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let resources = recorded_resources(&conn, None)?;
+    let open = units_that_can_still_run(&conn)?;
+    drop(conn);
+    let ops = settle_ops(&resources, &open, !open.is_empty());
     let (plan, results) = files(p)?;
     if results.exists() {
         std::fs::remove_file(&results)?;
@@ -206,7 +226,7 @@ mod tests {
             json!({"workspace":{"path":"D:\\run\\done"},"workspace_removed":true,"conversations":[{"id":"d","delete":"already_absent"}]}),
         ];
         assert_eq!(
-            settle_ops(&resources),
+            settle_ops(&resources, &BTreeSet::new(), false),
             vec![
                 json!({"op":"delete","session_id":"a"}),
                 json!({"op":"delete","session_id":"c"}),
