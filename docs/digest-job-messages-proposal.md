@@ -201,3 +201,14 @@ Reading:
 The account balance fell 2.35 CNY (232.06 → 229.71) during these runs (6.3 CNY at the doc rates). Cost of this second test: about 6.3 CNY at the doc rates, about 2.4 CNY on the account.
 
 **Decision (the owner, 2026-11-08): 4 messages × 12 items.** zt-digest 0.49.1, base 5.11.41, econ 6.11.41, math 5.11.41, history 1.0.29: `termCardsPerJob` and `citedCardsPerJob` default 12, and the compilers' `DEFAULT_PER_JOB` 12. One DeepSeek subagent writes 48 concept terms or 48 cited works.
+
+## 7. A real Haiku manager runs one conversation (2026-11-08, zt-digest 0.49.1)
+
+The last unproven piece was the Term Card manager's new `then` rule. A Haiku agent received the `zt-term-cards` v16 writer-manager prompt exactly as the module renders it, with one job file holding one conversation of 4 messages × 12 terms (Hoyland rows 73–120, a staging copy, no archive write).
+
+- The manager started the conversation, sent the three later messages with `deepseek_prompt` in order, one at a time, after each `finished`, deleted the conversation and returned one `done` entry. Claude side: 89K tokens, 12 tool calls, 554 s.
+- The four drafts were written in order (18:00, 18:03, 18:04, 18:06) and each passes its SELF-CHECK (`faults: 0`).
+- DeepSeek: 20 model calls, 182,732 uncached, 3,267,840 cached, 101,474 output tokens, 0.96 CNY at the doc rates, **0.0201 a term** (old one message of 12: 0.0230; the section 6 run of 4 × 12: 0.0272). Per message 0.27, 0.24, 0.28, 0.18.
+- Content per term: explanation 5.5 sentences, distinctions 5.0, misreadings 3.8, role 63 characters, citations 6.6, quotes 48/48 (the published Cards of the same rows: 7.4, 4.4, 4.3, 86, 6.4, 45/48).
+
+Two runs of 4 × 12 Term Cards cost +18% and −13% against the old one-message jobs: the shape costs about the same as the old jobs, and run-to-run variance is as large as the difference.
