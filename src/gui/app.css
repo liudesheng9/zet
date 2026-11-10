@@ -1723,9 +1723,38 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 .hub-ok { color: var(--ink-faint); }
 
 /* ---------- math and charts ---------- */
-.md .math-display { display: block; margin: .4em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+.md .math-display {
+  display: block; margin: .4em 0; overflow-x: auto; overflow-y: hidden; text-align: center;
+  scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink-faint) 45%, transparent) transparent;
+}
 .md .katex { font-size: 1.04em; }
 .md .math-display .katex-display { margin: 0; }
+/* An equation's tag belongs to its row, never over it. KaTeX pins the tag to the column's right
+   edge, so a formula wider than the column scrolled under it. Here the formula and the tag share
+   one flex row at least as wide as the column: a formula that fits stays centred with the tag at
+   the right; a wider one scrolls, and the tag comes after its last symbol. */
+.md .math-display .katex-display > .katex > .katex-html:has(> .tag):not(:has(> .newline)) {
+  display: flex; align-items: baseline; width: max-content; min-width: 100%;
+}
+.md .math-display .katex-display > .katex > .katex-html:has(> .tag):not(:has(> .newline)) > .base:first-child { margin-left: auto; }
+.md .math-display .katex-display > .katex > .katex-html:has(> .tag):not(:has(> .newline)) > .tag {
+  position: static; flex: none; margin-left: auto; padding: 0 .2em 0 1.6em;
+}
+/* A formula wider than the column fades out at the edge where more of it waits, so the reader
+   sees it goes on (its tag comes last). The fades follow the scroll position; a formula that
+   fits has no scroll timeline and no fade. Browsers without scroll timelines show no fade. */
+@property --zt-math-fade-l { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@property --zt-math-fade-r { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@keyframes zt-math-fade-l { from { --zt-math-fade-l: 0px; } 8%, to { --zt-math-fade-l: 28px; } }
+@keyframes zt-math-fade-r { from, 92% { --zt-math-fade-r: 28px; } to { --zt-math-fade-r: 0px; } }
+@supports (animation-timeline: scroll()) {
+  .md .math-display {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--zt-math-fade-l), #000 calc(100% - var(--zt-math-fade-r)), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 var(--zt-math-fade-l), #000 calc(100% - var(--zt-math-fade-r)), transparent);
+    animation: zt-math-fade-l linear both, zt-math-fade-r linear both;
+    animation-timeline: scroll(self inline), scroll(self inline);
+  }
+}
 .card .md .math-display { margin: 0 0 var(--rule); }
 .card h1.title .katex, .node .t .katex, .fslip .katex { font-size: 1em; }
 /* An HTML chart is a sheet pasted onto the card, so the rules do not run through it. */
