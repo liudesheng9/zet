@@ -274,3 +274,35 @@ test('an empirical model: the data tree names its premises first, and every assu
   assert.deepEqual(r.assumption.map((x) => x.card), [H + '|a|1|a|1'])
   assert.equal(r.ok, false)
 })
+
+test('first: a bare symbol is not met inside a longer row symbol of the same notation card (β inside β_R)', () => {
+  const note = NOTE + '\n| $\beta_R$ | 链条系数 | [[' + P + '|b]] |\n| $\beta$ | 第一阶段系数 | [[' + P + '|c]] |'
+  const rows = good.map((r) => {
+    if (r[0] === P + '|a') return [r[0], r[1], r[2], note]
+    if (r[0] === P + '|b') return [r[0], r[1], r[2], r[3] + '\n3. 链条 $C=\beta_R L$。']
+    if (r[0] === P + '|c') return [r[0], r[1], r[2], r[3] + '\n2. 第一阶段 $L=\beta\theta$。']
+    return r
+  })
+  const r = strict(rows)
+  assert.deepEqual(r.first, [], JSON.stringify(r.first))
+  assert.deepEqual(r.unused, [])
+  assert.ok(!JSON.stringify(r.introduces.find((x) => (x.card || x.address) === P + '|b') || {}).includes('\\beta"'), JSON.stringify(r.introduces))
+})
+
+test('an empirical model: a card another model lends (an imported block) is audited in its home model, not here', async () => {
+  const { auditEmpirical } = await import('./check-settings.mjs')
+  const H = 'K/5|b'
+  const o = (address, role, line = 'side', extra = {}) => ({ address, role, line, facet: role, title: role, ...extra })
+  const m = {
+    level: 'empirical', head: { address: H },
+    build: {
+      order: [o('K/5|a|a', 'setting', 'shared', { import: 'K/5|a|a|1|a' }), o('K/5|a|a|c', 'assumption', 'shared', { import: 'K/5|a|a|1|a' }),
+        o(H + '|a', 'data', 'main'), o(H + '|a|a', 'variables'), o(H + '|a|1', 'design', 'main'), o(H + '|a|1|a', 'assumption'),
+        o(H + '|a|2', 'spec', 'main'), o(H + '|a|3', 'chapter', 'main')],
+      estimate_unbound: [], spec_unbound: [], test_unbound: [], empirical_shape: [],
+    },
+  }
+  const cards = new Map([[H + '|a|a', { body: '| 变量 | 含义 |\n| --- | --- |' }]])
+  const r = auditEmpirical(m, cards)
+  assert.deepEqual(r.assumption, [], JSON.stringify(r.assumption))
+})

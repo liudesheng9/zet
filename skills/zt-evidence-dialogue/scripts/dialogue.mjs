@@ -58,9 +58,22 @@ export function headTerms(head) {
  * head's Terms that every estimate of the model shares), `specific`; an estimate that names no Term of its own pairs
  * on the head's Terms. `widened`: the estimate's own Terms with their zt-term-sync equivalents (default: its links).
  */
-export function estimateTerms(text, head, widened = new Set(termTargets(text))) {
-  const own = new Set([...widened].filter((t) => !head.has(t)))
+export function estimateTerms(text, head, widened = new Set(termTargets(text)), frame = new Set()) {
+  const own = new Set([...widened].filter((t) => !head.has(t) && !frame.has(t)))
   return own.size ? { terms: own, specific: true } : { terms: new Set(head), specific: false }
+}
+
+/**
+ * The reporting frame of one model: the Terms that at least half of its estimates link (标准误, 设定, 点估计), when it
+ * has three estimates or more. Such a Term tells no estimate apart from its siblings, so it says nothing of what one
+ * estimate measures and forms no pair (dell2010persistent: 1,105 pairs among its own models, nearly all on 标准误).
+ * `termLists`: one list of Term addresses per estimate.
+ */
+export function frameTerms(termLists) {
+  const n = termLists.length
+  const count = new Map()
+  for (const list of termLists) for (const t of new Set(list)) count.set(t, (count.get(t) || 0) + 1)
+  return new Set(n >= 3 ? [...count].filter(([, k]) => 2 * k >= n).map(([t]) => t) : [])
 }
 
 /**
@@ -112,7 +125,8 @@ export function pairsFor(ours, theirs) {
   const pairs = []
   for (const t of theirs) {
     for (const o of ours) {
-      const pool = o.specific ? t.own : new Set([...t.own, ...t.head])
+      const own = t.frame ? new Set([...t.own].filter((x) => !t.frame.has(x))) : t.own
+      const pool = o.specific ? own : new Set([...own, ...t.head])
       const shared = [...pool].filter((x) => o.terms.has(x))
       if (!shared.length) continue
       const linked = linkTargets(o.body).includes(t.address) || linkTargets(t.body).includes(o.address)
@@ -193,7 +207,8 @@ async function survey(head, out) {
   }
   const widened = (terms) => widen(terms, new Map(terms.map((t) => [t, equiv(t)])))
   const estimandTerms = widened(headTerms(m.head))
-  const oursTerms = ours.map((c) => ({ ...c, ...estimateTerms('', estimandTerms, widened(termTargets(`${c.title}\n${c.body}`))) }))
+  const ourFrame = frameTerms(ours.map((c) => termTargets(`${c.title}\n${c.body}`)))
+  const oursTerms = ours.map((c) => ({ ...c, ...estimateTerms('', estimandTerms, widened(termTargets(`${c.title}\n${c.body}`).filter((t) => !ourFrame.has(t))), ourFrame) }))
   // Their side: the estimates of every other empirical model (with their head's Terms), and the Finding Cards of
   // other books.
   const literature = reads([{ tool: 'list_trees', arguments: {} }])[0].trees.filter((t) => t.kind === 'literature')
@@ -204,7 +219,9 @@ async function survey(head, out) {
     const other = model(h)
     const theirHead = new Set(headTerms(other.head))
     const addresses = (other.build.order || []).filter((o) => ['estimate', 'parameter'].includes(o.role) && o.line !== 'shared').map((o) => o.address)
-    for (const c of cards(addresses)) theirs.push({ ...c, kind: 'estimate', own: ownTerms(c), head: theirHead })
+    const theirCards = cards(addresses)
+    const frame = frameTerms(theirCards.map((c) => [...ownTerms(c)]))
+    for (const c of theirCards) theirs.push({ ...c, kind: 'estimate', own: ownTerms(c), frame, head: theirHead })
   }
   for (const c of cards(side.findings)) theirs.push({ ...c, kind: 'finding', own: ownTerms(c), head: new Set() })
   // A pair judged before (by this model's survey or the other model's) is not judged again.

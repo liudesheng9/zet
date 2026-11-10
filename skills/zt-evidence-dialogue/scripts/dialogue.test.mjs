@@ -155,3 +155,24 @@ test('a new survey leaves only its own message files; a model without an apply r
   assert.deepEqual(readApplied(out).links, [])
   fs.rmSync(out, { recursive: true })
 })
+
+test('a Term most estimates of one model link (标准误, 设定) is the model\'s reporting frame and forms no pair', async () => {
+  // dell2010persistent: 1,105 pairs among its own models, 483 on 标准误 (D/1|a|an) alone, ~98% on 标准误 with
+  // other method Terms. Only a Term that tells one estimate apart from its siblings says what it measures.
+  const { frameTerms } = await import('./dialogue.mjs')
+  const se = 'D/1|a|an', hacienda = 'D/1|a|q', mita = 'D/1|a|a'
+  const frame = frameTerms([[se], [se, hacienda], [se]])
+  assert.deepEqual([...frame], [se])
+  assert.deepEqual([...frameTerms([[se], [se]])], [], 'two estimates are too few to tell a frame')
+  const head = new Set([mita])
+  const ours = [
+    { address: 'D/6|b|a|4|b', body: '', ...estimateTerms('', head, new Set([se, hacienda]), frame) },
+    { address: 'D/6|b|a|4|c', body: '', ...estimateTerms('', head, new Set([se]), frame) },
+  ]
+  assert.deepEqual(ours.map((o) => [o.specific, [...o.terms]]), [[true, [hacienda]], [false, [mita]]])
+  const theirs = [
+    { address: 'D/7|b|a|4|b', body: '', kind: 'estimate', own: new Set([se]), frame: new Set([se]), head: new Set(['D/1|a|bf']) },
+    { address: 'D/8|a|a|4|b', body: '', kind: 'estimate', own: new Set([se, hacienda]), frame: new Set([se]), head: new Set(['D/1|a|bj']) },
+  ]
+  assert.deepEqual(pairsFor(ours, theirs).map((p) => [p.from, p.to, p.shared]), [['D/6|b|a|4|b', 'D/8|a|a|4|b', [hacienda]]])
+})

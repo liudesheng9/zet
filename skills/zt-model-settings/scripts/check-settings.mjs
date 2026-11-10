@@ -157,15 +157,20 @@ function scripted(t) {
   }
   return mark
 }
-/** Whether a body uses a symbol in its formulas: the symbol's tokens, starting outside a decoration. */
-const usesSymbol = (body, sym) => {
+/** Whether a body uses a symbol in its formulas: the symbol's tokens, starting outside a decoration.
+ * `longer` lists other notation symbols: an occurrence that is one of them written in full (β inside the
+ * row symbol β_R) belongs to that row, not to this one. */
+const usesSymbol = (body, sym, longer = []) => {
   const want = symbolTokens(sym)
   if (!want.length || (want.length === 1 && isDecor(want[0]))) return false
+  const over = longer.map(symbolTokens).filter((o) => o.length > want.length && want.every((w, k) => o[k] === w))
   for (const f of formulas(body)) {
     const t = tokens(f)
     const mark = scripted(t)
     for (let i = 0; i + want.length <= t.length; i++) {
-      if (!mark[i] && want.every((w, k) => t[i + k] === w)) return true
+      if (mark[i] || !want.every((w, k) => t[i + k] === w)) continue
+      if (over.some((o) => i + o.length <= t.length && o.every((w, k) => t[i + k] === w))) continue
+      return true
     }
   }
   return false
@@ -256,7 +261,7 @@ export function audit(m, cards, parents = new Map()) {
   const syms = notes.length ? notationSymbols(notes.map((c) => c.body).join('\n')) : []
   const introduces = []
   for (const c of settings) {
-    const fresh = syms.filter((x) => !known.has(x) && usesSymbol(c.body, x))
+    const fresh = syms.filter((x) => !known.has(x) && usesSymbol(c.body, x, syms))
     fresh.forEach((x) => known.add(x))
     if (fresh.length) introduces.push({ card: c.address, symbols: fresh })
   }
@@ -282,9 +287,11 @@ export function audit(m, cards, parents = new Map()) {
   const reading = [...all.filter((c) => inPart(c.address)), ...all.filter((c) => !inPart(c.address))].filter(own_)
   const unused = []
   const first = []
-  for (const r of notes.filter((c) => inPart(c.address)).flatMap((c) => notationRows(c.body))) {
+  const rowsAll = notes.filter((c) => inPart(c.address)).flatMap((c) => notationRows(c.body))
+  const allSyms = rowsAll.flatMap((r) => r.symbols)
+  for (const r of rowsAll) {
     for (const sym of r.symbols) {
-      const meet = reading.find((c) => usesSymbol(c.body, sym))
+      const meet = reading.find((c) => usesSymbol(c.body, sym, allSyms))
       if (!meet) { unused.push({ symbol: sym, fix: `the notation card lists $${sym}$, which no card of the model uses: drop the row, or write the symbol as the cards do` }); continue }
       if (r.link && r.link !== meet.address) first.push({ symbol: sym, listed: r.link, reads: meet.address, fix: `the notation card says $${sym}$ is first met in ${r.link}, but a reader meets it first in ${meet.address}: define it there and point the row to it` })
     }
@@ -401,7 +408,8 @@ export function variableSymbols(body) {
   return out
 }
 export function auditEmpirical(m, cards) {
-  const order = m.build.order || []
+  // A Card another model lends (an imported block, build line 'shared') is audited in its home model.
+  const order = (m.build.order || []).filter((o) => o.line !== 'shared')
   const head = m.head.address
   const body = (a) => (cards.get(a) || {}).body || ''
   const data = order.find((o) => roleOf(o) === 'data' && o.line === 'main')
