@@ -63,6 +63,14 @@ function Units([string]$l) {
 switch -Regex ($cmd) {
     '^ledger reclaim' {
         if ($env:LS_RELEASE_FAIL) { Write-Output 'zt-digest ledger: recent activity'; exit 1 }
+        if ($env:LS_RELEASE_RECENT) {
+            $rf = Join-Path $env:LS_OUT 'release-recent-count.txt'
+            $k = 0
+            if (Test-Path -LiteralPath $rf) { $k = [int](Get-Content -LiteralPath $rf -Raw) }
+            $k++
+            Set-Content -LiteralPath $rf -Value $k
+            if ($k -le 1) { Write-Output 'zt-digest ledger: claim_recent: digest/g001@1 recorded activity within the last 120 seconds; its holder may still be working'; exit 1 }
+        }
         Set-Content -LiteralPath $env:LS_RELEASED -Value 'released'
         Write-Output '{"ok":true}'
         exit 0
@@ -99,6 +107,14 @@ switch -Regex ($cmd) {
         exit 0
     }
     '^group-start|^link-start' {
+        if ($env:LS_START_FAIL) {
+            $sf = Join-Path $env:LS_OUT 'start-fail-count.txt'
+            $k = 0
+            if (Test-Path -LiteralPath $sf) { $k = [int](Get-Content -LiteralPath $sf -Raw) }
+            $k++
+            Set-Content -LiteralPath $sf -Value $k
+            if ($k -le [int]$env:LS_START_FAIL) { Write-Output 'zt-digest group-start: read_view_changed: the earlier-Card context could not be read from archive revision 72305; retry the group start'; exit 1 }
+        }
         if ($env:LS_LINK_JOBS) {
             $n = [int][regex]::Match($flat, '-Group ([0-9]+)').Groups[1].Value
             $g = '{0:D3}' -f $n
@@ -384,7 +400,35 @@ $env:LS_RELEASE_FAIL = '1'
 $refused = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $common)
 Assert-Line $refused 'start (a refused release)'
 Assert ($refused.json.ok -eq $false -and $refused.json.step -eq 'release') "a refused release fails the step, never an empty success ($($refused.last))"
-Remove-Item Env:LS_RELEASE_FAIL, Env:LS_HELD_RELEASE, Env:LS_RELEASED
+Remove-Item Env:LS_RELEASE_FAIL
+# brandimarti2026reorganizing, 2026-11-10: a retried start met the claims its own failed try had taken a minute
+# before; the release was refused as claim_recent and the stage went on with no reading note written. A release
+# refused only because the claim is recent waits out the quiet window once and tries again.
+Remove-Item -LiteralPath $env:LS_RELEASED -ErrorAction SilentlyContinue
+$env:LS_RELEASE_RECENT = '1'
+$env:ZT_RELEASE_WAIT_SECONDS = '0'
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$recent = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $common)
+Assert-Line $recent 'start (a recent claim)'
+Assert ($recent.json.ok -eq $true -and [int]$recent.json.units -gt 0) "a release refused as claim_recent waits and claims again ($($recent.last))"
+Assert ((@((Get-Content -LiteralPath $calls) | Where-Object { $_ -match '^ledger reclaim' })).Count -ge 2) 'the recent claim was released on the second try'
+Remove-Item Env:LS_RELEASE_RECENT, Env:LS_HELD_RELEASE, Env:LS_RELEASED, Env:ZT_RELEASE_WAIT_SECONDS
+Remove-Item -LiteralPath (Join-Path $out 'release-recent-count.txt') -ErrorAction SilentlyContinue
+
+# brandimarti2026reorganizing, 2026-11-10: group-start answered read_view_changed (a parallel run changed the
+# archive while the earlier-Card context was read) and the step failed with its claims held. The start command
+# is tried three times before the step fails.
+$env:LS_START_FAIL = '1'
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$transient = Step (@('-Step', 'start', '-Layer', 'digest', '-Owner', 'digest', '-Lease', '7200') + $common)
+Assert-Line $transient 'digest start (a transient group-start)'
+Assert ($transient.json.ok -eq $true -and [int]$transient.json.units -eq 2 -and [int]$transient.json.jobs -eq 2) "a read_view_changed group-start is tried again ($($transient.last))"
+Assert ((@((Get-Content -LiteralPath $calls) | Where-Object { $_ -match '^group-start .*-Group 1 ' })).Count -eq 2) 'group 1 ran group-start twice'
+Remove-Item -LiteralPath (Join-Path $out 'start-fail-count.txt') -ErrorAction SilentlyContinue
+$env:LS_START_FAIL = '5'
+$hard = Step (@('-Step', 'start', '-Layer', 'digest', '-Owner', 'digest', '-Lease', '7200') + $common)
+Assert ($hard.json.ok -eq $false -and $hard.json.step -eq 'digest start') "a start that fails three times still fails the step ($($hard.last))"
+Remove-Item Env:LS_START_FAIL
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''

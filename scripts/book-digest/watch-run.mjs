@@ -44,7 +44,7 @@ const note = (text) => fs.appendFileSync(progressFile, `${new Date().toISOString
 // The words that mean an agent did not do its step. A lane that claims nothing is normal and is not listed.
 function abnormal(text) {
   const t = text.replace(/[\\"]*refused[\\"]*:(\d+|\[\])/g, '')
-  if (/"ok":false|stale_claim|panicked|exit code [1-9]|"status":"failed"|\\"status\\":\\"failed|not recorded|not a declared|card_locked|cannot find|找不到(文件|路径|指定)/i.test(t)) return 'failure'
+  if (/"ok":false|\\"ok\\":false|stale_claim|panicked|exit code [1-9]|"status":"failed"|\\"status\\":\\"failed|not recorded|not a declared|card_locked|cannot find|找不到(文件|路径|指定)/i.test(t)) return 'failure'
   if (/undefined|incomplete prepared contract/.test(t)) return 'undefined value'
   if (/"recorded":false/.test(t)) return 'unrecorded'
   if (/I (cannot|can.t|won.t|will not)|not (authori[sz]ed|permitted)|decline|without (explicit )?(user )?(approval|confirmation)|拒绝/i.test(t)) return 'refusal'

@@ -177,7 +177,13 @@ function Start-Layer($Units) {
         $startName = if ($Layer -eq 'digest') { 'group-start' } else { 'link-start' }
         return @($Units | ForEach-Object {
                 $n = Group-Of $_.id
-                $s = Run @($startName, '-Out', $Out, '-Group', "$n", '-Token', "$($_.token)")
+                # A start that fails is tried three times (brandimarti2026reorganizing, 2026-11-10: read_view_changed while
+                # a parallel run changed the archive; the command itself says to retry the group start).
+                $s = $null
+                for ($try = 1; $try -le 3; $try++) {
+                    $s = Run @($startName, '-Out', $Out, '-Group', "$n", '-Token', "$($_.token)")
+                    if ($s.json) { break }
+                }
                 [pscustomobject]@{ unit = $_; group = $n; line = $s; jobs = (Jobs-Of $s.json); error = $(if ($s.json) { $null } else { (Tail $s.tail) }) }
             })
     }
@@ -281,6 +287,13 @@ switch ($Step) {
         $refusal = $null
         foreach ($u in $stuck) {
             $released = Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release')
+            if ($released.code -ne 0 -and "$($released.tail)" -match 'claim_recent') {
+                # A claim refused only for recent activity was taken by this layer's own failed try a moment ago
+                # (brandimarti2026reorganizing, 2026-11-10): wait out the ledger's quiet window once and release it.
+                $wait = if ($env:ZT_RELEASE_WAIT_SECONDS) { [int]$env:ZT_RELEASE_WAIT_SECONDS } else { 125 }
+                Start-Sleep -Seconds $wait
+                $released = Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release')
+            }
             if ($released.code -ne 0) { $refusal = "$($u.id): $(Tail $released.tail)"; break }
         }
         if ($refusal) { Fail 'release' $refusal; break }
