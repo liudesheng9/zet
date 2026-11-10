@@ -125,6 +125,14 @@ switch -Regex ($cmd) {
         }
         if ($flat -match '-Step check') {
             $dir = Join-Path $env:BS_OUT 'cards'
+            if ($env:BS_CHECK_VIEW) {
+                $cf = Join-Path $env:BS_OUT 'check-view-count.txt'
+                $k = 0
+                if (Test-Path -LiteralPath $cf) { $k = [int](Get-Content -LiteralPath $cf -Raw) }
+                $k++
+                Set-Content -LiteralPath $cf -Value $k
+                if ($k -le [int]$env:BS_CHECK_VIEW) { Write-Output 'zt-digest card: incomplete Card inputs: changing read view'; exit 1 }
+            }
             if ($env:BS_CHECK_NO_JOBS) { Out @{ faults = 0; orphans = 0; dir = $dir; lead = @{ fix = (Join-Path $dir 'card.md'); orphans = (Join-Path $dir 'orphan.md') }; prompts = @{ fix = 'pf'; orphans = 'po'; follow = 'pw' }; jobs = @() } }
             Out @{ faults = 1; orphans = 0; dir = $dir; lead = @{ fix = (Join-Path $dir 'card.md'); orphans = (Join-Path $dir 'orphan.md') }; prompts = @{ fix = 'pf'; orphans = 'po'; follow = 'pw' }; jobs = @(@{ id = 'fix-03'; kind = 'fix'; file = 'fix-03.md' }) }
         }
@@ -291,6 +299,17 @@ $cardsApply = Step 'cards-apply' @{ Work = $work; MaxJobs = 30 }
 $env:BS_APPLY_PENDING = ''
 Assert ($cardsApply.json -and $cardsApply.json.ok -eq $true -and $cardsApply.json.applied -eq 3 -and $cardsApply.json.faults -eq 1 -and $cardsApply.json.jobs -eq 1) "cards apply: every pending share is applied, then the check lists its fix job ($($cardsApply.text))"
 Assert (@(Get-Content -Raw (Join-Path $work 'out\jobs.json') | ConvertFrom-Json).Count -eq 1) 'cards apply: the check writes its own job file for the next content round'
+# becker2025division-appendix (2026-11-10): the check met "changing read view" while another session wrote to the
+# archive, and the whole-book cycle failed. The check is tried three times before the step fails.
+$env:BS_CHECK_VIEW = '1'
+$viewApply = Step 'cards-apply' @{ Work = $work; MaxJobs = 30 }
+Assert ($viewApply.json -and $viewApply.json.ok -eq $true -and $viewApply.json.faults -eq 1) "cards apply: a check that met a changing read view is tried again ($($viewApply.text))"
+Remove-Item -LiteralPath (Join-Path $out 'check-view-count.txt') -ErrorAction SilentlyContinue
+$env:BS_CHECK_VIEW = '5'
+$viewFail = Step 'cards-apply' @{ Work = $work; MaxJobs = 30 }
+Assert ($viewFail.json -and $viewFail.json.ok -eq $false -and $viewFail.json.step -eq 'check') "cards apply: a check that keeps failing still fails the step ($($viewFail.text))"
+$env:BS_CHECK_VIEW = ''
+Remove-Item -LiteralPath (Join-Path $out 'check-view-count.txt') -ErrorAction SilentlyContinue
 $cardsFinish = Step 'cards-finish' @{ Work = $work; MaxJobs = 30 }
 Assert ($cardsFinish.json -and $cardsFinish.json.ok -eq $true -and $cardsFinish.json.cards -eq 4 -and -not $cardsFinish.json.faults_after) "cards finish: the cycle's report is the step's answer ($($cardsFinish.text))"
 Assert ((Has $cardsFinish.calls 'card -Step report -Work ') -and (Has $cardsFinish.calls 'card -Step apply -Work .* -MaxJobs 30')) 'cards finish: the last drafts are applied before the report'
