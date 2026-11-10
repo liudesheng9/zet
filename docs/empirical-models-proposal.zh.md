@@ -1059,3 +1059,24 @@ AJR 的每一对都是同一篇论文的普通最小二乘估计对工具变量�
 - §14.9 中 12 条过时的 AJR↔Dell 跨书关联仍是缺口。它们原本会指向的 Dell 4|a 链接现在都解析到 5|a。
 - 当一个估计没有自己的术语时，`dialogue.mjs` 仍按全书共有的估计对象术语（米塔地区、米塔处理）把同一本书中不同模型的估计配成对。Dell 5|a 的 152 对就来自这里。可以加一条规则：一本书多数模型卡共有的术语，在书内不形成配对。这条规则要先在 ebrill 试点的情形上测试。
 - Dell 5|a 的 **另述（§3.2）** 部分把 4|a 的措辞与 5|a 的并存。以后的处理可以把它们并入各卡自己的部分。
+
+### 14.11 又两篇论文并行在线完成消化（2026-11-09 至 11-10）
+
+所有者指定了两篇论文：Deming 2015《The Growing Importance of Social Skills in the Labor Market》（`deming2015growing`，Work 29899，文件 1472），以及 Brandimarti、Minni、Sadun 与 Tamayo 2026《Reorganizing work inside the firm》（`brandimarti2026reorganizing`，Work 29960，文件 1965）。两篇从当地时间 21:10 起在线上库中并行运行，运行前做了备份 `D:\zt\backups\zt.sqlite3.pre-deming-brandimarti-20261110T031029Z`（完整性检查通过）。同一时间，AJR/Dell 的模型处理子会话（§14.10）也在写入。两篇都从引言消化到 `参考文献`。它们的表格以及 Brandimarti 的模型附录 B 位于参考文献之后，按后置材料读取，与 autor2004will 相同。
+
+**结果。**
+- `deming2015growing`：经一次续跑后运行报告 `complete: true`。551 张卡，10 个模型（2|a、3|a、4|a 为形式模型；1|c、6|a 为概念模型；8|a、9|a、9|b、10|b、10|c 为实证模型），34 张 Finding 卡中 6 张连到其估计，82 条链接，76 张术语卡，84 张文献引用卡，44 条跨书关联。
+- `brandimarti2026reorganizing`：通过 `complete` 模式完成内容（其唯一一次续跑已用掉）。10 组，2 个模型（1|d 概念模型，10|b 实证模型），33 张 Finding 卡中 1 张连到估计，80 条链接，59 个术语，43 条参考文献，37 条跨书关联中 36 条通过验证。未完成的单元：link-check、organize 与 skeleton，`complete` 模式不运行它们。
+- 成本：两篇合计约 69.7 元人民币的 DeepSeek 费用（账本上升 70.5 元，减去 §14.10 对话判定的约 0.8 元）。
+
+**遇到并修正的故障。**
+1. Brandimarti 的 Digest 起始步骤认领了 10 个组，随后 `group-start` 返回 `read_view_changed`（并行写入者改变了档案），该步骤在持有认领的状态下失败。驱动任务的重试因 `claim_recent` 被拒，运行在没有写出任何阅读笔记的情况下继续。修正（33e09ace，先写测试，`layer-steps.tests.ps1`）：一个单元的起始命令最多尝试三次；仅因 `claim_recent` 被拒的释放会等待 125 秒静默窗口一次后再试。运行被停止，删除了 8 个无人收集的术语/引用对话，然后续跑。
+2. `watch-run.mjs` 漏报了这次失败，因为答案字符串中是转义的 `\"ok\":false`。同一提交中修正，并在该运行的日志上验证。
+3. Brandimarti 的 Link 收尾已完成（10 组，80 条链接，闸门完成），但 DeepSeek 驱动任务把它的结果行抄成 `{:true,…`，工作流因此停止。该运行唯一的续跑已用掉，于是用 `complete` 模式完成。尚未修正：当抄回的行不是一个 JSON 对象时，工作流应读取脚本写出的明细文件中的结果行。
+4. Deming 的两个 Findings 单元（g010、g011）写出了卡片，但检查三次遇到 "changing read view"；续跑时通过。Deming 的链接准备也遇到同样情况，并在唯一的重试中通过。沿用 §14.9 的教训：线上库的并行写入者会带来重试。
+
+**仍未完成。**
+- Brandimarti 只有反事实部分（§7.2）有实证模型。它自有数据的估计章节（§4.1–4.2 技术推广，§6.1–6.4 任务干预，§7.1 盈利能力）只有 Finding 卡，没有实证模型。按 §14.7 的方式补建即可补上。
+- Brandimarti 的 link-check、Organize 与 skeleton 单元；Organize 可以通过 `zt-literature-organize` 运行。
+- 一条过时的跨书关联（b027，Brandimarti 5|b|2 → Deming 2|a|1）：Brandimarti 的跨书关联运行时，Deming 改动了那张卡。
+- 两篇论文的模型都还没有运行消化后的模型处理。

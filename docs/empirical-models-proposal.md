@@ -1059,3 +1059,24 @@ Tests: `check-settings.test.mjs` 19, `dialogue.test.mjs` 13.
 - The 12 stale AJR↔Dell Bridges of §14.9 are still a gap. The Dell 4|a Links they would have named now resolve to 5|a.
 - `dialogue.mjs` still pairs the estimates of different models of one book on the book-wide estimand Terms (米塔地区, 米塔处理) when an estimate has no Term of its own. Dell 5|a's 152 pairs came from this. A rule that a Term most of a book's model heads share pairs nothing within that book would remove them; it needs a test on the ebrill pilot case first.
 - The **另述（§3.2）** sections on Dell 5|a keep 4|a's wording beside 5|a's. A later pass may fold each into its card's own sections.
+
+### 14.11 Two more papers digested live in parallel (2026-11-09 to 11-10)
+
+The owner named two papers: Deming 2015, *The Growing Importance of Social Skills in the Labor Market* (`deming2015growing`, Work 29899, file 1472), and Brandimarti, Minni, Sadun and Tamayo 2026, *Reorganizing work inside the firm* (`brandimarti2026reorganizing`, Work 29960, file 1965). Both ran in parallel on the live box from 21:10 local time, after the backup `D:\zt\backups\zt.sqlite3.pre-deming-brandimarti-20261110T031029Z` (integrity ok). The AJR/Dell pass subsession (§14.10) wrote to the box at the same time. Both papers digest from the introduction to `参考文献`. Their tables, and Brandimarti's model appendix B, follow the reference list and are read as back matter, as in autor2004will.
+
+**Results.**
+- `deming2015growing`: run report `complete: true` after one resume. 551 Cards, 10 models (2|a, 3|a, 4|a formal; 1|c, 6|a concept; 8|a, 9|a, 9|b, 10|b, 10|c empirical), 34 Findings with 6 linked to their estimates, 82 Links, 76 Term Cards, 84 Cited Cards, 44 Bridges.
+- `brandimarti2026reorganizing`: content complete through mode `complete` (its one resume was spent). 10 groups, 2 models (1|d concept, 10|b empirical), 33 Findings with 1 linked, 80 Links, 59 Terms, 43 Cited rows, 36 of 37 Bridges verified. Open units: link-check, organize and skeleton, which mode `complete` does not run.
+- Cost: about 69.7 CNY of DeepSeek for the two papers together (ledger rise 70.5 CNY less about 0.8 CNY for the §14.10 dialogue judging).
+
+**Faults met and fixed.**
+1. Brandimarti's Digest start claimed its 10 groups, then `group-start` answered `read_view_changed` (the parallel writers changed the archive), and the step failed holding the claims. The drive job's retry was refused as `claim_recent`, and the run went on with no reading note written. Fix (33e09ace, test-first, `layer-steps.tests.ps1`): a unit's start command is tried three times, and a release refused only as `claim_recent` waits out the 125 s quiet window once. The run was stopped, its 8 orphan Term/Cited conversations deleted, and resumed.
+2. `watch-run.mjs` missed that failure because the answer string held an escaped `\"ok\":false`. Fixed in the same commit; checked on that run's journal.
+3. Brandimarti's Link finish completed (10 groups, 80 Links, gate complete), but the DeepSeek drive job copied its line as `{:true,…` and the workflow halted. The run's one resume was spent, so mode `complete` finished it. Not fixed yet: the workflow should read a step's line from the detail file the script writes when the copied line is not one JSON object.
+4. Deming's two Findings units (g010, g011) wrote their Cards, but the check met "changing read view" three times; the resume passed them. Deming's Link preparation met the same and passed on its one retry. Lesson kept from §14.9: parallel writers on the live box cost retries.
+
+**Left open.**
+- Brandimarti has empirical models for only its counterfactual (§7.2). Its own-data estimation sections (§4.1–4.2 technology roll-out, §6.1–6.4 task intervention, §7.1 profitability) have Findings but no empirical model. A §14.7-style backfill would close it.
+- Brandimarti's link-check, Organize and skeleton units; Organize can run through `zt-literature-organize`.
+- One stale Bridge (b027, Brandimarti 5|b|2 → Deming 2|a|1): Deming changed that Card while Brandimarti's Bridge ran.
+- The post-digest passes have not run on either paper's models.
