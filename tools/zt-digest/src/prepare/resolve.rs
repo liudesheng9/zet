@@ -126,6 +126,8 @@ pub struct Explicit {
     pub start: Option<String>,
     pub end: Option<String>,
     pub skip: Option<String>,
+    /// `-Extend`: the run continues the book's existing tree, so its Citation key must already name it.
+    pub continues: bool,
 }
 
 /// A frozen preparation: every choice the rest of `prepare` reads.
@@ -742,10 +744,19 @@ fn citation_key(zt: &mut Zt, work: &Work, x: &Explicit) -> Result<(String, &'sta
         bail!("invalid Citation key `{key}`; expected ^[A-Za-z][A-Za-z0-9_-]{{0,127}}$");
     }
     let (_, failure) = calls::run(zt, &[json!({"tool":"get_card","arguments":{"at":key}})], &mut calls::Options::new())?;
-    if failure.is_none() {
-        bail!("Citation key `{key}` already names a Card; pass another -CitationKey");
+    if let Some(refusal) = key_refusal(&key, failure.is_none(), x.continues) {
+        bail!(refusal);
     }
     Ok((key, source))
+}
+
+/// A fresh digest needs a free Citation key; an extension (`-Extend`) needs the key of the tree it continues.
+fn key_refusal(key: &str, exists: bool, continues: bool) -> Option<String> {
+    match (exists, continues) {
+        (true, false) => Some(format!("Citation key `{key}` already names a Card; pass another -CitationKey")),
+        (false, true) => Some(format!("-Extend: Citation key `{key}` names no Literature tree to continue")),
+        _ => None,
+    }
 }
 
 /// The BibTeX entry from the saved metadata, or the caller's entry after the conflict check.
@@ -1079,6 +1090,7 @@ pub(crate) fn source_range(raw: &str, path: &str, start: Option<String>, end: Op
         start,
         end,
         skip,
+        continues: false,
     };
     let range = resolve_range(&work, path, &headings, &x)?;
     let end = if to_the_end { String::new() } else { range.end_heading };
@@ -1176,7 +1188,16 @@ mod tests {
             start: None,
             end: None,
             skip: None,
+            continues: false,
         }
+    }
+
+    #[test]
+    fn an_extension_needs_the_existing_key_and_a_fresh_digest_a_free_one() {
+        assert!(key_refusal("K", true, false).is_some());
+        assert!(key_refusal("K", false, false).is_none());
+        assert!(key_refusal("K", true, true).is_none());
+        assert!(key_refusal("K", false, true).is_some());
     }
 
     #[test]

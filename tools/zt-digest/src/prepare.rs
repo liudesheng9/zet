@@ -677,6 +677,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             start: a.has("StartHeading").then(|| a.str("StartHeading")),
             end: a.has("EndHeading").then(|| a.str("EndHeading")),
             skip: a.has("SkipHeadings").then(|| a.str("SkipHeadings")),
+            continues: a.has("Extend"),
         };
         match resolve::run(&mut zt, &out, book.trim(), &explicit)? {
             resolve::Outcome::NeedsSelection(result) => {

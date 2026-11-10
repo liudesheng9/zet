@@ -433,6 +433,20 @@ fn closed_groups(staging: &str) -> HashSet<i64> {
         .collect()
 }
 
+/// The group anchors of an extension (`prepare -Extend`), or None for an ordinary run. An extension's book
+/// cycle reviews only the Cards filed under its own anchors: brandimarti2026reorganizing-appendix (2026-11-10)
+/// picked the earlier digest's Model Card `1|d`, and its finish refused the draft (no model unit in this ledger).
+fn extension_anchors(staging: &str, book: &str) -> Option<Vec<String>> {
+    let manifest = util::read_json(join_path(staging, "manifest.json")).ok()?;
+    manifest.get("extends").filter(|e| !e.is_null())?;
+    Some(manifest["groups"].as_array()?.iter().filter_map(|g| g["n"].as_i64()).map(|n| format!("{book}/{n}")).collect())
+}
+
+/// True when `address` is an anchor or lies in the subtree under it (`key/11`, `key/11|a|2`).
+fn under_anchor(address: &str, anchors: &[String]) -> bool {
+    anchors.iter().any(|a| eq(address, a) || address.to_lowercase().starts_with(&format!("{}|", a.to_lowercase())))
+}
+
 fn owned_lines(path: &str, book: &str) -> Result<Vec<String>> {
     Ok(file_lines(path)?
         .into_iter()
@@ -1847,6 +1861,7 @@ impl Compiler {
                 }
             }
         }
+        let anchors = if p.staging.is_empty() { None } else { extension_anchors(&p.staging, &p.book) };
         let mut picked: Vec<Value> = audit
             .cards
             .iter()
@@ -1854,6 +1869,7 @@ impl Compiler {
                 eq(&field(c, "book"), &self.p.book)
                     && !c["book"].is_null()
                     && is_in(&field(c, "category"), WRITABLE)
+                    && anchors.as_ref().is_none_or(|a| under_anchor(&field(c, "address"), a))
                     && owned.as_ref().is_none_or(|o| o.contains(&field(c, "address")))
                     && scope.as_ref().is_none_or(|o| o.contains(&ci(&field(c, "address"))))
             })
@@ -3266,6 +3282,17 @@ mod tests {
         let closed = closed_groups(dir.path().to_str().unwrap());
         assert!(closed.contains(&2) && closed.contains(&3) && !closed.contains(&1), "{closed:?}");
         assert!(closed_groups(dir.path().join("none").to_str().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn an_extension_reviews_only_the_cards_under_its_own_anchors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("manifest.json"), r#"{"extends":{"first_group":11},"groups":[{"n":11},{"n":12}]}"#).unwrap();
+        let anchors = extension_anchors(dir.path().to_str().unwrap(), "K").unwrap();
+        assert!(under_anchor("K/11", &anchors) && under_anchor("K/12|a|3", &anchors));
+        assert!(!under_anchor("K/1|d", &anchors) && !under_anchor("K/110|a", &anchors) && !under_anchor("K/1", &anchors));
+        std::fs::write(dir.path().join("manifest.json"), r#"{"groups":[{"n":1}]}"#).unwrap();
+        assert!(extension_anchors(dir.path().to_str().unwrap(), "K").is_none(), "an ordinary run reviews the whole book");
     }
 
     #[test]
