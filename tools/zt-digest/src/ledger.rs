@@ -8339,6 +8339,32 @@ fn finish_claim(p: &Prepared, unit: &str, token: i64) -> Result<(Claim, Value, V
     ))
 }
 
+/// The moves `ledger relocate` recorded, old address → new address.
+fn relocations_in(conn: &Connection) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut statement = conn.prepare("SELECT facts_json FROM events WHERE event='relocated'")?;
+    let rows = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut moves = std::collections::BTreeMap::new();
+    for facts in rows {
+        let facts: Value = serde_json::from_str(&facts)?;
+        if let (Some(from), Some(to)) = (facts["from"].as_str(), facts["to"].as_str()) {
+            moves.insert(from.to_string(), to.to_string());
+        }
+    }
+    Ok(moves)
+}
+
+/// A producer's frozen output keys with the recorded moves applied, as `relocate` applied them to its outputs
+/// (becker2025division-appendix, 2026-11-10: `card/…24|a|18` became `card/…24|a|b` and the coverage read the
+/// difference as producer_outputs_mismatch).
+fn moved_output_keys(keys: std::collections::BTreeSet<String>, moves: &std::collections::BTreeMap<String, String>) -> std::collections::BTreeSet<String> {
+    keys.into_iter()
+        .map(|key| match key.strip_prefix("card/").and_then(|at| moves.get(at)) {
+            Some(new) => format!("card/{new}"),
+            None => key,
+        })
+        .collect()
+}
+
 fn completion_output_keys(result: &Value) -> Result<std::collections::BTreeSet<String>> {
     let mut keys = std::collections::BTreeSet::from(
         ["accepted", "owned", "source", "self_check", "completion"].map(str::to_string),
@@ -8544,11 +8570,10 @@ fn emission_faults(conn: &Connection) -> Result<Vec<Value>> {
         if actual != expected {
             faults.push(json!({"code":"producer_children_mismatch","unit":producer,"expected":expected,"actual":actual}));
         }
-        let expected_outputs = if adoption {
-            adoption_output_keys(&result)?
-        } else {
-            completion_output_keys(&result)?
-        };
+        let expected_outputs = moved_output_keys(
+            if adoption { adoption_output_keys(&result)? } else { completion_output_keys(&result)? },
+            &relocations_in(conn)?,
+        );
         let actual_outputs = conn
             .prepare("SELECT output_key FROM outputs WHERE unit_id=?1")?
             .query_map([&producer], |r| r.get::<_, String>(0))?
@@ -18590,6 +18615,14 @@ mod tests {
     // becker2025division-appendix (2026-11-10): a model build merged `24|a|18` into `24|a|b`; `ledger relocate` recorded
     // the move and rewrote owned-g24.txt, and link-start then refused the manifest's hash. With the recorded moves
     // mapped back, the manifest is the frozen one.
+    #[test]
+    fn a_producers_frozen_outputs_follow_the_recorded_moves() {
+        let keys: std::collections::BTreeSet<String> = ["owned", "card/B/24|a|18", "card/B/24|a|17"].map(str::to_string).into();
+        let moves: std::collections::BTreeMap<String, String> = [("B/24|a|18".to_string(), "B/24|a|b".to_string())].into();
+        let moved = moved_output_keys(keys, &moves);
+        assert!(moved.contains("card/B/24|a|b") && !moved.contains("card/B/24|a|18") && moved.contains("card/B/24|a|17") && moved.contains("owned"));
+    }
+
     #[test]
     fn a_writers_moves_file_is_the_relocate_format() {
         let moves: std::collections::BTreeMap<String, String> = [("B/24|a|18".to_string(), "B/24|a|b".to_string())].into();
