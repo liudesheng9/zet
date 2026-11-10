@@ -1242,3 +1242,20 @@ After §14.13 the owner asked for `zt-literature-organize` on `brandimarti2026re
 **脚本问题（先写测试再修复）。** `check.mjs` 按类型与标题匹配整体单元，两个实证模型中同名的规格因此在移动后被报为大小变化；现在按每个标题的大小集合比较（`unitChanges`，`check.test.mjs`，2 个用例）。
 
 **可以另作决定之处。** A.1、A.2 与节一级的卡同列顶层；附录 B 引言的笔记（`13|a|a|1`，记号 $b_k$）仍在形式模型的链中，没有移到 B 总述卡之下；`6|d|a|2`（年龄与剩余职业期限）在 §6.3 中保留 §6.2 的标签，原文即在 §6.3；§10 首卡标题仍写“附录表格”，结构卡 `1|e` 仍列合并前的模型，这两处都不是移动造成的；§5.2 没有自己的笔记。证据对话的已判记录按地址记配对，改名后的估计在以后的调查中可能被再次提出。
+
+### 14.15 Appendices are always digested: the rule and the three extensions (2026-11-10)
+
+The owner ruled (strict): every digest reads the whole work, appendices included. Brandimarti had been launched with `endHeading: 参考文献`, which left out §9 figures, §10 tables, Appendix A and the model Appendix B. A survey of the 14 live economics trees found two more books whose appendices were never digested: becker2025division (Appendix A and B, and the supplement S1–S4) and hansen2021demand (Appendix A and B). The Acemoglu papers had digested theirs; Deming's archived file has no appendix beyond its tables.
+
+**The rule (zt-digest 0.51.0–0.51.2).** An appendix is never back matter. The end is the first back heading after which every top heading is back matter; a reference list with content after it is skipped; a repeated tail title (Becker's two 参考文献) runs the range to the end and skips each. An end heading or skip that would leave out content or an appendix is refused, also for a `-Source` file. The skill `zt-digest-protocol` and the workflow wiki tell the feeding agent never to pass an end heading that cuts a work short.
+
+**The extension (`prepare -Extend <old staging>`).** A book digested before the rule is extended, not re-digested: a prepared run of only the units the old range left out, numbered after the tree's last top-line Card, writing into the same tree, reusing the book's Term table, run with mode `resume` and `cited:false, citedCards:false`.
+- brandimarti2026reorganizing: groups 11–21, run report complete:true. Its empirical models were rebuilt on the appendix tables, and §14.13 rebuilt every model on the appendix.
+- hansen2021demand: groups 9–11, content complete. Three earlier Cards lacked a source line (I3); they were fixed by hand, and the published cards-book record still lists them.
+- becker2025division: groups 10–27 (18 groups), content complete, cleanup settled. One earlier Card (`5|a`) lacked a source line; fixed by hand, and the published record still lists it.
+
+**Faults met and fixed (test-first, each pushed).** zt-digest 0.51.1 (an extension's book Card cycle and its finish see only the extension's own anchors), 0.51.3 (a Link unit reads a relocated owned manifest through its recorded moves), 0.51.4 (the model listing counts only parts filed under the Model Card; a model build that merges a Card into a part records the move), 0.51.5 (the run coverage reads a producer's outputs through the recorded moves); zt-workflow-lib v15 (a drive line whose `ok` key name was dropped), zt-link-prepare v9 (a missing zero count reads as 0), `step-line.ps1` (a long-path prefix, then the detail path, is left out of an over-long line), `book-steps.ps1` and `layer-steps.ps1` (a check or start that meets a changing read view is retried).
+
+**Why Becker took many runs.** The extension path was new, it met trees already reorganized and post-processed, and several writers worked on the live box at once (two extensions, the pass agent, three organize sessions). Two Becker faults came from the new path meeting a post-processed tree (the part count, the unrecorded merge), three from concurrent writers (changing read views), and two from operator mistakes. Lesson kept: one heavy writer on the live box at a time.
+
+**Cost.** About 46.7 CNY for the Brandimarti appendix extension and its empirical models; about 40 CNY for the Becker and Hansen extensions together with the model passes of §14.12 and §14.13 run in the same window.
