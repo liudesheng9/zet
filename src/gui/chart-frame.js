@@ -48,6 +48,10 @@ a.zt-link { color: var(--zt-link); background: var(--zt-link-soft); border-radiu
 a.zt-link.broken { color: var(--zt-event); background: var(--zt-event-soft); cursor: default; }
 [data-zt] { cursor: pointer; }
 .katex { font-size: 1.05em; }
+html.zt-solo [data-part]:not(.zt-part-on) { display: none; }
+.zt-hl:not(g):not(text) { outline: 2px solid var(--zt-accent); outline-offset: 1px; border-radius: 6px; }
+g.zt-hl rect, g.zt-hl path, g.zt-hl ellipse, g.zt-hl circle { stroke: var(--zt-accent) !important; stroke-width: 2.4 !important; }
+text.zt-hl { fill: var(--zt-accent) !important; }
 `;
   document.head.append(style);
 
@@ -124,14 +128,80 @@ a.zt-link.broken { color: var(--zt-event); background: var(--zt-event-soft); cur
   }
 
   let lastHeight = 0;
+  let lastParts = '';
   function report() {
     const root = document.getElementById('zt-chart');
     if (!root) return;
     const height = Math.ceil(Math.max(root.scrollHeight, root.getBoundingClientRect().height)) + 4;
+    reportParts(root);
     if (Math.abs(height - lastHeight) < 2) return;
     lastHeight = height;
     parent.postMessage({ zt: 'height', height }, '*');
   }
+
+  // Parts: a chart may divide itself into `[data-part="<title>"]` elements. The page shows them
+  // all in the Card's print and one at a time on the large sheet; it maps a click on the print
+  // to a part by these offsets.
+  const partsOf = (root) => [...root.querySelectorAll('[data-part]')].filter((one) => !one.parentElement.closest('[data-part]'));
+  function reportParts(root) {
+    if (document.documentElement.classList.contains('zt-solo')) return;
+    const base = root.getBoundingClientRect().top;
+    const parts = partsOf(root).map((one) => {
+      const box = one.getBoundingClientRect();
+      return { title: one.dataset.part || '', top: Math.round(box.top - base), height: Math.round(box.height) };
+    });
+    const key = JSON.stringify(parts);
+    if (key === lastParts) return;
+    lastParts = key;
+    parent.postMessage({ zt: 'parts', parts }, '*');
+  }
+  function showPart(index) {
+    const root = document.getElementById('zt-chart');
+    const parts = partsOf(root);
+    const solo = Number.isInteger(index) && index >= 0 && index < parts.length;
+    document.documentElement.classList.toggle('zt-solo', solo);
+    parts.forEach((one, at) => one.classList.toggle('zt-part-on', solo && at === index));
+    lastHeight = 0;
+    report();
+  }
+  function highlight(target) {
+    for (const one of document.querySelectorAll('.zt-hl')) one.classList.remove('zt-hl');
+    if (typeof target !== 'string' || !target) return;
+    for (const one of document.querySelectorAll('[data-zt]')) {
+      if (one.dataset.zt === target) one.classList.add('zt-hl');
+    }
+  }
+
+  // The page speaks to the frame only to choose a part and to light the boxes of one Card.
+  window.addEventListener('message', (event) => {
+    if (event.source !== parent) return;
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.zt === 'part') showPart(data.index);
+    else if (data.zt === 'hl') highlight(data.target);
+  });
+
+  // Hovering a box names its Card, so the page can light the same Link in the Card.
+  let hovered = null;
+  document.addEventListener('mouseover', (event) => {
+    const one = event.target.closest('[data-zt]');
+    const target = one ? one.dataset.zt : null;
+    if (target === hovered) return;
+    hovered = target;
+    parent.postMessage({ zt: 'hover', target }, '*');
+  });
+  document.documentElement.addEventListener('mouseleave', () => {
+    if (hovered === null) return;
+    hovered = null;
+    parent.postMessage({ zt: 'hover', target: null }, '*');
+  });
+  // A frame that holds the focus hands the sheet's keys back to the page.
+  const SHEET_KEYS = new Set(['Escape', 'ArrowLeft', 'ArrowRight', '+', '=', '-', '0']);
+  document.addEventListener('keydown', (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey || !SHEET_KEYS.has(event.key)) return;
+    if (event.target.closest && event.target.closest('input, textarea, select, [contenteditable]')) return;
+    parent.postMessage({ zt: 'key', key: event.key }, '*');
+  });
 
   document.addEventListener('click', (event) => {
     const target = event.target.closest('[data-zt], a[href^="#/card/"]');

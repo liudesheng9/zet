@@ -396,13 +396,345 @@
     if (!data || typeof data !== 'object') return;
     const frame = [...document.querySelectorAll('iframe.zt-chart-frame')].find((item) => item.contentWindow === event.source);
     if (!frame) return;
+    const onSheet = frame.classList.contains('chart-sheet-frame');
     if (data.zt === 'height' && Number.isFinite(data.height)) {
       frame.style.height = Math.max(40, Math.min(4000, data.height)) + 'px';
+      if (onSheet) chartSheet.sized();
+      else { const figure = frame.closest('figure.zt-print'); if (figure) layoutPrint(figure); }
+    } else if (data.zt === 'parts' && Array.isArray(data.parts)) {
+      frame.ztParts = data.parts.slice(0, 12).filter((part) => part && Number.isFinite(part.top))
+        .map((part) => ({ title: String(part.title || '').slice(0, 48), top: part.top, height: Number(part.height) || 0 }));
+      if (onSheet) chartSheet.partsArrived(frame.ztParts);
+      else { const figure = frame.closest('figure.zt-print'); if (figure) hintPrint(figure); }
+    } else if (data.zt === 'hover' && onSheet) {
+      chartSheet.hover(typeof data.target === 'string' ? data.target : null);
+    } else if (data.zt === 'key' && onSheet && typeof data.key === 'string') {
+      chartSheet.key(data.key);
     } else if (data.zt === 'go' && typeof data.target === 'string') {
       if (state.nodes.some((node) => node.address === data.target)) go(data.target);
       else toast(`card \`${data.target}\` does not exist`, 'err');
     }
   });
+
+  // ------------------------------------------------- chart prints and the chart sheet
+  // In a Card a chart is a print: it is laid out at PRINT_WIDTH (or at the column's width when
+  // that is wider) and scaled into the column, so the print keeps the layout the chart has on
+  // the sheet. A click lifts the same chart onto the sheet, which covers the cabinet and the
+  // stage and leaves the reader open beside it; Esc puts it back into its place in the Card.
+  const PRINT_WIDTH = 860;
+  const PRINT_BAR = 30;
+  const printSizer = window.ResizeObserver ? new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.target.isConnected) { printSizer.unobserve(entry.target); continue; }
+      layoutPrint(entry.target);
+    }
+  }) : null;
+  function layoutPrint(figure) {
+    const frame = figure.querySelector('iframe.zt-chart-frame');
+    const column = figure.clientWidth;
+    if (!frame || !column) return;
+    const width = Math.max(column, PRINT_WIDTH);
+    const scale = column / width;
+    figure.dataset.scale = String(scale);
+    frame.style.width = width + 'px';
+    frame.style.transform = scale < 1 ? `scale(${scale})` : '';
+    const height = parseFloat(frame.style.height) || 160;
+    figure.style.height = Math.ceil(height * scale) + PRINT_BAR + 'px';
+  }
+  function hintPrint(figure) {
+    const frame = figure.querySelector('iframe.zt-chart-frame');
+    const hint = figure.querySelector('.zt-print-hint');
+    const count = frame && frame.ztParts ? frame.ztParts.length : 0;
+    if (hint) hint.textContent = count > 1 ? `${count} parts · click a part to open it there` : '';
+  }
+  function printCharts(root) {
+    for (const figure of root.querySelectorAll('figure.zt-chart')) {
+      if (figure.classList.contains('zt-print') || figure.closest('.chart-sheet, .overlay')) continue;
+      const frame = figure.querySelector('iframe.zt-chart-frame[data-chart]');
+      if (!frame) continue;
+      figure.classList.add('zt-print');
+      figure.tabIndex = 0;
+      figure.setAttribute('role', 'button');
+      figure.setAttribute('aria-label', 'Enlarge the figure');
+      frame.tabIndex = -1;
+      figure.append(
+        h('div', { class: 'zt-print-bar' }, h('b', { text: '⤢ Enlarge' }), h('span', { class: 'zt-print-hint' })),
+        h('div', { class: 'zt-print-ghost' }, h('span', { text: 'On the large sheet · Esc puts it back' })),
+      );
+      figure.addEventListener('click', (event) => chartSheet.open(figure, partAt(figure, event)));
+      figure.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        chartSheet.open(figure, 0);
+      });
+      layoutPrint(figure);
+      if (printSizer) printSizer.observe(figure);
+    }
+  }
+  /** The part of the print under a click, from the offsets the chart reported. */
+  function partAt(figure, event) {
+    const frame = figure.querySelector('iframe.zt-chart-frame');
+    const parts = frame && frame.ztParts;
+    if (!parts || parts.length < 2) return -1;
+    const y = (event.clientY - frame.getBoundingClientRect().top) / (parseFloat(figure.dataset.scale) || 1);
+    let found = 0;
+    parts.forEach((part, index) => { if (y >= part.top - 4) found = index; });
+    return found;
+  }
+
+  const chartSheet = (() => {
+    let sheet = null;
+    let scrim = null;
+    let frame = null;
+    let source = null;
+    let parts = [];
+    let part = -1;
+    let zoom = 1;
+    let fit = true;
+    let closing = false;
+    let lit = null;
+    // The frame reports its full height once before it shows the chosen part; that one is skipped,
+    // and the frame stays hidden behind "Loading" until it shows the part, so the sheet never flashes.
+    let skipHeights = 0;
+    let readyTimer = 0;
+    const els = {};
+    const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const isOpen = () => Boolean(sheet && !sheet.hidden);
+
+    function build() {
+      const tool = (text, title, onclick) => h('button', { class: 'icon-btn chart-sheet-tool', title, 'aria-label': title, text, onclick });
+      els.title = h('strong', {});
+      els.tabs = h('div', { class: 'chart-sheet-tabs', role: 'tablist', 'aria-label': 'Parts of the figure' });
+      els.zoom = h('span', { class: 'chart-sheet-zoom' });
+      els.box = h('div', { class: 'chart-sheet-box' });
+      els.wait = h('div', { class: 'chart-sheet-wait', text: 'Loading the figure…' });
+      els.canvas = h('div', { class: 'chart-sheet-canvas' }, els.wait, els.box);
+      els.keys = h('span', {}, h('kbd', { text: '←' }), ' ', h('kbd', { text: '→' }), ' parts');
+      els.dots = h('span', { class: 'chart-sheet-dots' });
+      sheet = h('section', { class: 'chart-sheet', role: 'dialog', 'aria-label': 'Figure', hidden: true },
+        h('header', { class: 'chart-sheet-head' },
+          h('div', { class: 'chart-sheet-title' }, h('span', { class: 'chart-sheet-eyebrow', text: 'Figure' }), els.title),
+          els.tabs,
+          h('div', { class: 'chart-sheet-tools' },
+            tool('−', 'Zoom out (−)', () => step(1 / 1.2)),
+            els.zoom,
+            tool('+', 'Zoom in (+)', () => step(1.2)),
+            tool('⤢', 'Fit (0)', () => { fit = true; layout(); }),
+            h('span', { class: 'chart-sheet-sep' }),
+            tool('✕', 'Back to the Card (Esc)', () => close()))),
+        els.canvas,
+        h('footer', { class: 'chart-sheet-foot' },
+          h('span', { text: 'Hover a box to light its Link in the Card · click a box to open its Card in the reader' }),
+          els.keys,
+          h('span', {}, h('kbd', { text: 'Esc' }), ' back'),
+          els.dots));
+      scrim = h('div', { class: 'chart-scrim', hidden: true, onclick: () => close() });
+      document.body.append(scrim, sheet);
+      els.canvas.addEventListener('wheel', (event) => {
+        if (!event.ctrlKey) return;
+        event.preventDefault();
+        step(event.deltaY < 0 ? 1.1 : 1 / 1.1);
+      }, { passive: false });
+      const replace = () => { if (isOpen()) { place(); layout(); } };
+      window.addEventListener('resize', replace);
+      window.visualViewport?.addEventListener('resize', replace);
+      window.addEventListener('keydown', (event) => {
+        if (!isOpen() || state.editing || event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.key !== 'Escape' && isTyping(event.target)) return;
+        if (key(event.key)) { event.preventDefault(); event.stopPropagation(); }
+      }, true);
+      // A Link in a Card lights the boxes of its Card on the sheet.
+      document.addEventListener('mouseover', (event) => {
+        if (!isOpen() || !frame) return;
+        const chip = event.target.closest?.('a.zt-link[data-target]');
+        const target = chip ? chip.dataset.target : null;
+        if (target === lit) return;
+        lit = target;
+        frame.contentWindow?.postMessage({ zt: 'hl', target }, '*');
+      });
+    }
+
+    /** The sheet covers the cabinet and the stage; the reader stays open. A phone gets the screen. */
+    function place() {
+      const reader = document.querySelector('.reader');
+      const top = document.querySelector('.topbar')?.getBoundingClientRect().bottom || 0;
+      const box = reader ? reader.getBoundingClientRect() : null;
+      const narrow = innerWidth <= 760 || !box || box.left < 360;
+      // On a phone the layout viewport can be wider than the screen: fill what the reader sees.
+      const seen = window.visualViewport || { offsetLeft: 0, offsetTop: 0, width: innerWidth, height: innerHeight };
+      const right = narrow ? innerWidth : box.left;
+      Object.assign(sheet.style, narrow
+        ? { left: seen.offsetLeft + 'px', top: seen.offsetTop + 'px', width: seen.width + 'px', height: seen.height + 'px' }
+        : { left: '12px', top: top + 12 + 'px', width: right - 24 + 'px', height: innerHeight - top - 24 + 'px' });
+      sheet.classList.toggle('full', narrow);
+      Object.assign(scrim.style, narrow
+        ? { left: '0px', top: '0px', width: innerWidth + 'px', height: innerHeight + 'px' }
+        : { left: '0px', top: top + 'px', width: right + 'px', height: innerHeight - top + 'px' });
+    }
+
+    function layout() {
+      if (!frame) return;
+      const style = getComputedStyle(els.canvas);
+      const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+      const base = Math.min(Math.max(300, els.canvas.clientWidth - padX), 1100);
+      const room = els.canvas.clientHeight - padY;
+      const height = parseFloat(frame.style.height) || 400;
+      frame.style.width = base + 'px';
+      // Fit fills the width; a tall part shrinks to the height, but never below 75%, so text stays readable.
+      if (fit) zoom = Math.max(0.75, Math.min(1, room / height));
+      frame.style.transform = zoom === 1 ? '' : `scale(${zoom})`;
+      els.box.style.width = base * zoom + 'px';
+      els.box.style.height = height * zoom + 'px';
+      els.zoom.textContent = Math.round(zoom * 100) + '%';
+    }
+
+    function step(factor) {
+      fit = false;
+      zoom = Math.min(3, Math.max(0.4, zoom * factor));
+      layout();
+    }
+
+    function renderTabs() {
+      const many = parts.length > 1;
+      els.tabs.hidden = !many;
+      els.keys.hidden = !many;
+      els.dots.hidden = !many;
+      els.tabs.replaceChildren(...(many ? parts.map((one, index) => h('button', {
+        role: 'tab', 'aria-selected': String(index === part), text: one.title || `Part ${index + 1}`,
+        onclick: () => show(index),
+      })) : []));
+      els.dots.replaceChildren(...(many ? parts.map((_, index) => h('i', { class: index === part ? 'on' : '' })) : []));
+    }
+
+    function show(index) {
+      if (parts.length < 2) { part = -1; return; }
+      part = (index + parts.length) % parts.length;
+      frame?.contentWindow?.postMessage({ zt: 'part', index: part }, '*');
+      fit = true;
+      els.canvas.scrollTo(0, 0);
+      renderTabs();
+    }
+
+    function open(figure, index) {
+      if (!sheet) build();
+      const print = figure.querySelector('iframe.zt-chart-frame[data-chart]');
+      if (!print || closing) return;
+      if (isOpen() && source === figure) { show(index); return; }
+      if (source) source.classList.remove('lifted');
+      source = figure;
+      parts = print.ztParts || [];
+      part = parts.length > 1 ? Math.max(0, index) : -1;
+      fit = true;
+      const title = figure.closest('.card')?.querySelector('h1.title');
+      els.title.textContent = title ? title.textContent.trim() : 'Figure';
+      frame = h('iframe', { class: 'zt-chart-frame chart-sheet-frame loading', title: 'Figure', dataset: { chart: print.dataset.chart } });
+      frame.style.height = print.style.height;
+      els.box.replaceChildren(frame);
+      els.wait.hidden = false;
+      skipHeights = 0;
+      clearTimeout(readyTimer);
+      readyTimer = setTimeout(ready, 12000);
+      wireCharts(els.box);
+      renderTabs();
+      const wasOpen = isOpen();
+      sheet.hidden = false;
+      scrim.hidden = false;
+      place();
+      layout();
+      figure.classList.add('lifted');
+      document.body.classList.add('chart-sheet-open');
+      if (!wasOpen) flip(figure.getBoundingClientRect(), false, () => sheet.focus?.());
+    }
+
+    function close() {
+      if (!isOpen() || closing) return;
+      closing = true;
+      lit = null;
+      clearLit();
+      document.body.classList.remove('chart-sheet-open');
+      const back = source && source.isConnected ? source.getBoundingClientRect() : null;
+      flip(back, true, () => {
+        sheet.hidden = true;
+        scrim.hidden = true;
+        sheet.classList.remove('anim');
+        sheet.style.transform = '';
+        sheet.style.opacity = '';
+        frame?.remove();
+        frame = null;
+        if (source && source.isConnected) {
+          source.classList.remove('lifted');
+          source.focus({ preventScroll: true });
+        }
+        source = null;
+        closing = false;
+      });
+    }
+
+    /** The sheet grows out of the print and shrinks back into it, so the eye follows one object. */
+    function flip(rect, reverse, done) {
+      const end = sheet.getBoundingClientRect();
+      sheet.classList.remove('anim');
+      const plain = !rect || !rect.width || reduce();
+      const from = plain ? 'none' : `translate(${rect.left - end.left}px, ${rect.top - end.top}px) scale(${rect.width / end.width}, ${rect.height / end.height})`;
+      sheet.style.transform = reverse ? 'none' : from;
+      sheet.style.opacity = reverse ? '1' : (plain ? '0' : '.5');
+      sheet.getBoundingClientRect();
+      sheet.classList.add('anim');
+      sheet.style.transform = reverse ? from : 'none';
+      sheet.style.opacity = reverse ? (plain ? '0' : '.2') : '1';
+      setTimeout(done, plain ? 220 : 360);
+    }
+
+    function ready() {
+      clearTimeout(readyTimer);
+      frame?.classList.remove('loading');
+      els.wait.hidden = true;
+    }
+
+    function clearLit() {
+      for (const one of document.querySelectorAll('a.zt-link.zt-lit')) one.classList.remove('zt-lit');
+    }
+
+    function key(name) {
+      if (name === 'Escape') { close(); return true; }
+      if (name === 'ArrowRight' && parts.length > 1) { show(part + 1); return true; }
+      if (name === 'ArrowLeft' && parts.length > 1) { show(part - 1); return true; }
+      if (name === '+' || name === '=') { step(1.2); return true; }
+      if (name === '-') { step(1 / 1.2); return true; }
+      if (name === '0') { fit = true; layout(); return true; }
+      return false;
+    }
+
+    return {
+      open,
+      close,
+      isOpen,
+      key: (name) => { if (isOpen()) key(name); },
+      sized() {
+        if (!isOpen()) return;
+        layout();
+        if (skipHeights > 0) skipHeights--;
+        else ready();
+      },
+      partsArrived(list) {
+        parts = list;
+        if (parts.length < 2) part = -1;
+        else if (part < 0 || part >= parts.length) part = 0;
+        skipHeights = part >= 0 ? 1 : 0;
+        if (part >= 0) frame?.contentWindow?.postMessage({ zt: 'part', index: part }, '*');
+        renderTabs();
+      },
+      /** A box hovered on the sheet lights the same Link in every Card on screen. */
+      hover(target) {
+        clearLit();
+        if (!target) return;
+        for (const one of document.querySelectorAll('.card .md a.zt-link[data-target]')) {
+          if (one.dataset.target === target) one.classList.add('zt-lit');
+        }
+      },
+    };
+  })();
 
   function setWorkspace(id, { toRoot } = {}) {
     if (!WORKSPACES[id]) throw new Error(`unknown workspace \`${id}\`; expected human or agent`);
@@ -5907,6 +6239,7 @@
   function wireMarkdown(root) {
     typeset(root);
     wireCharts(root);
+    printCharts(root);
     // Figures: a print clipped to the card. One the archive lacks recedes to a quiet gap.
     for (const figure of root.querySelectorAll('.zt-figure')) {
       const image = figure.querySelector('img');

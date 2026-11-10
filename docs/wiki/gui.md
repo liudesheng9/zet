@@ -244,8 +244,13 @@ Field rules shared by create, edit, and insert (`type_field`, `facet_field`, `em
 |---|---|---|
 | frame → page | `{zt:"height", height:<px>}` | the page sets that iframe's height, clamped to 40–4000 px |
 | frame → page | `{zt:"go", target:"<address>"}` | the page goes to the Card, or toasts `card … does not exist` |
+| frame → page | `{zt:"parts", parts:[{title, top, height}]}` | the chart's top-level `[data-part]` elements and their offsets (sent on each report while the frame shows all parts; `[]` when it has none); kept on the iframe as `ztParts` (at most 12, titles cut to 48 characters) |
+| frame → page | `{zt:"hover", target:"<address>"\|null}` | from the chart sheet only: every `.card .md a.zt-link` whose `data-target` is that address gets `zt-lit` |
+| frame → page | `{zt:"key", key}` | from the chart sheet only: `Escape`, `ArrowLeft`, `ArrowRight`, `+`/`=`, `-`, `0` pressed while the frame holds the focus |
+| page → frame | `{zt:"part", index}` | the frame shows only that part (`html.zt-solo`, `.zt-part-on`) and reports its height again; an index outside the parts shows them all |
+| page → frame | `{zt:"hl", target}` | the frame lights every `[data-zt]` with that address (`.zt-hl`); `null` clears it |
 
-The page accepts a message only when `event.source` is the `contentWindow` of one of its `iframe.zt-chart-frame` elements.
+The page accepts a message only when `event.source` is the `contentWindow` of one of its `iframe.zt-chart-frame` elements; the frame accepts one only from `parent`.
 
 ### Chart authoring surface (inside a chart)
 
@@ -253,6 +258,8 @@ The page accepts a message only when `event.source` is the `contentWindow` of on
 - `[[address]]` in chart text becomes `a.zt-link` (or, in SVG text, sets `data-zt` on the text element); any element with `data-zt="<address>"` or `a[href^="#/card/"]` opens that Card on click.
 - CSS tokens `--zt-paper`, `--zt-ink`, `--zt-ink-soft`, `--zt-ink-faint`, `--zt-rule`, `--zt-line`, `--zt-accent(-soft)`, `--zt-link(-soft)`, `--zt-topic(-soft)`, `--zt-model(-soft)`, `--zt-event(-soft)`, `--zt-series-1` … `--zt-series-6`, `--zt-serif`, `--zt-sans`, `--zt-mono`, with a dark set under `:root[data-theme="dark"]`.
 - TeX in `$…$`, `$$…$$`, `\(…\)`, `\[…\]` in chart text (outside `script, style, textarea, code, pre, svg`) is typeset when KaTeX was inlined.
+- Parts: top-level elements with `data-part="<title>"` divide a chart. The Card's print shows them all; the chart sheet shows one at a time with the titles as tabs. A chart without parts shows whole on the sheet.
+- A chart is laid out at 860 px (`PRINT_WIDTH`) in the Card and at the sheet's width (at most 1100 px) on the sheet, so a grid written with `repeat(auto-fit, minmax(…))` keeps its columns in the print and reflows on a phone.
 
 ### `ZtLayout` (`src/gui/layout.js`)
 
@@ -443,7 +450,16 @@ A portable export runs this same GUI: `app.js`, `layout.js`, `draft.js`, `ask.js
 2. `Charts::add` keys the page by the first 16 bytes of its SHA-256 (32 hex characters) and keeps at most 512 pages, dropping the oldest inserted first; adding an existing page keeps its place.
 3. The page sets each iframe's `src` to `/chart/<id>?theme=<light|dark>` in `wireCharts` (on every render and on theme toggle).
 4. `/chart/<id>` fills the theme, inlines `chart-frame.js` and, when the placeholder is there, KaTeX's JS and its CSS with every font as a `data:font/woff2;base64,…` URI (`katex_inline_css`, built once), and answers with the chart CSP.
-5. In the frame, `chart-frame.js` adds the palette, turns `[[…]]` into links, typesets TeX, and reports its height on load, on resize, and at 300 ms and 1500 ms; clicks post `go`.
+5. In the frame, `chart-frame.js` adds the palette, turns `[[…]]` into links, typesets TeX, and reports its parts and height on load, on resize, and at 300 ms and 1500 ms; clicks post `go`.
+
+### Chart prints and the chart sheet (`printCharts`, `layoutPrint`, `chartSheet` in `app.js`)
+
+1. `wireMarkdown` calls `printCharts`: each `figure.zt-chart` outside `.chart-sheet` and `.overlay` becomes a `zt-print` button. Its iframe is laid out at `max(column, 860)` px and scaled into the column (`layoutPrint`, again on every height report and on every resize the shared `ResizeObserver` sees); the figure's height is the scaled frame plus the 30 px `zt-print-bar` ("⤢ Enlarge", and "N parts · click a part to open it there" when the chart has parts). The print's iframe takes no pointer events: the print is a preview, and a box opens its Card from the sheet.
+2. A click (or Enter/Space) calls `chartSheet.open(figure, part)`; `partAt` maps the click's height in the print to a part by the reported offsets. The sheet (`section.chart-sheet`, fixed, z 40, under the `.overlay` dialogs at 50) covers the cabinet and the stage and leaves the reader open (`place`: from 12 px left of the window to 12 px left of `.reader`, under the top bar). At 760 px or less, or when the reader starts before 360 px, it fills the visual viewport (`.full`, z 45). A `.chart-scrim` over the same area dims the Map; a click on it closes the sheet.
+3. The sheet makes a new iframe with the print's `data-chart` (`wireCharts` fills it, so a portable export works the same) and hides it (`.loading`, "Loading the figure…") until the frame reports the height of the chosen part: the first full-height report after `parts` is skipped, with a 12 s fallback. `layout` lays the frame out at the canvas width (300–1100 px); Fit takes the zoom from the height, between 75% and 100%; −, +, Ctrl+wheel step it between 40% and 300%.
+4. The sheet grows out of the print and shrinks back into it (`flip`: one transform from the print's rectangle, 340 ms; a fade under `prefers-reduced-motion` or when the print has left the page). While it is open the print stays in its place at 40% with a dashed edge and "On the large sheet · Esc puts it back".
+5. Keys while open (a capture listener on `window`; not while a dialog is open or, Esc apart, while typing): Esc closes, ←/→ change part, +/−/0 zoom. A frame that holds the focus posts the same keys.
+6. Hover joins the two views: a box on the sheet posts `hover`, and the matching Links in every Card on screen get `zt-lit`; a Link hovered in a Card posts `hl` to the sheet's frame. A click on a box posts `go`: the reader opens that Card, and the sheet stays open over the stage.
 
 ### Page boot, refresh, and heartbeat (`app.js`)
 
@@ -892,6 +908,7 @@ Gaps: the page has no browsed test harness in the repository. Its two DOM-free m
 - **An over-long Spread name is cut, not refused.** `normalize` truncates `name` to 80 characters by characters and refuses only a `question` over 512; this is what lets a long question name its own Spread. An older binary that lacks the field silently drops every `question` on its next Spread save (rollback risk; see Spreads §5).
 
 ## Change history
+- `2026-11-10` — The chart print and the chart sheet (owner request; mockup `E:\Ema\Podcast\zt-figure-viewer-mockup.html`): a chart in a Card is a print laid out at 860 px and scaled into the column; a click lifts the same chart onto a sheet over the cabinet and the stage, with the reader still open. `[data-part]` parts become tabs; hover lights the matching Link in the Card and back; Esc puts it back. `chart-frame.js` adds the `parts`, `hover`, `key` messages and answers `part` and `hl`. See "Chart prints and the chart sheet". Checked in the browser on the live box (desktop and phone width, light theme); `gui::` tests pass.
 - `2026-11-09` — P5 of docs/empirical-models-proposal.md (mockups in `docs/mockups/empirical-board.html`, option A chosen under the owner's overnight authorization). On the model board an estimate is a result; its strip carries a typed stamp `value (s.e.)stars` (or `t`/`z`) from its `badge`, a table card a `▦ n 列 × m 行` mark; a closed chapter card shows its first estimate and, at focus size, how many it holds; a `规格` block opens as a ladder of rungs (the variant's **相对基准的改动** line and the column it gives), nested variants on their own rungs. An estimate's cards under it read `下面 n 张`, only a 结果's chain is `证明`. New token `--stamp`. Checked on a snapshot of the pilot box (hansen2021demand/5|c|e: every stamp equals table 2's cell).
 - `2026-11-08` — zt 0.61.0 (af6e89e4): the level chip knows level 3, `LEVELS.empirical` `L3 实证` with its note (docs/empirical-models-proposal.md). The board still counts only 结果 cards as a block's results; the estimate badge waits for mockups (P5).
 - `2026-11-05` — zt 0.59.0: a figure's explanation. `showFigure` reads `/scholar/explanation/<file_id>?path=&sha=` on the document thread and shows it under the caption; the reading page leaves the converter's `<details>` blocks out and writes `.doc-explanation` under each figure; `PORTABLE.explanation` reads the copy `export` wrote. Test: `the_converters_ocr_goes_and_the_explanation_stands_under_the_figure`.
