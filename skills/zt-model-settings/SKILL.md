@@ -1,6 +1,6 @@
 ---
 name: zt-model-settings
-description: "Organize the settings of one ZET model, given the address of its Model Card (for example becker2025division/4|a), so a reader builds the whole setting from scratch: every setting, assumption and symbol in the setting part, arranged as a dependency tree (each setting filed under the setting it builds on, primitives first, the base model's blocks before the model variants, each variant on its own branch), each setting naming its premises in a **起点** section and resting on nothing later, every symbol defined where the reader first meets it; no setting in a chapter. Strict placement (the setting card is the Model Card's first Side successor, the notation card the setting card's, every setting in the setting card's Side branches); one card format (**起点**, **设定** or **假设**, **说明**); the notation card covers every symbol of every setting and lists only symbols the model uses, each with the card where a reader meets it first; an assumption is stated once and cited by its Link everywhere; statements reallocated so each card sets up one balanced piece. Checked with scripts/check-settings.mjs. Use when the user wants a model's settings, assumptions, notation or symbols organized, gathered, ordered or made readable, or a model's settings checked. Runs after zt-model-fold and before zt-model-restructure."
+description: "Organize the settings of one ZET model, given the address of its Model Card (for example becker2025division/4|a), so a reader builds the whole setting from scratch: every setting, assumption and symbol in the setting part, arranged as a dependency tree (each setting filed under the setting it builds on, primitives first, the base model's blocks before the model variants, each variant on its own branch), each setting naming its premises in a **起点** section and resting on nothing later, every symbol defined where the reader first meets it; no setting in a chapter. Strict placement (the setting card is the Model Card's first Side successor, the notation card the setting card's, every setting in the setting card's Side branches); one card format (**起点**, **设定** or **假设**, **直觉**, **说明**); the notation card covers every symbol of every setting and lists only symbols the model uses, each with the card where a reader meets it first; an assumption is stated once and cited by its Link everywhere; statements reallocated so each card sets up one balanced piece. Checked with scripts/check-settings.mjs. Use when the user wants a model's settings, assumptions, notation or symbols organized, gathered, ordered or made readable, or a model's settings checked. Runs after zt-model-fold and before zt-model-restructure."
 ---
 
 # Organize a model's settings
@@ -53,7 +53,7 @@ Facets carry the role and the variant, because the GUI shows every Link to a Mod
 
 ## One card format
 
-Every setting card has the same three sections, in this order (`format`):
+Every setting card has the same sections, in this order (`format`):
 
 ```
 **起点**
@@ -65,9 +65,16 @@ Every setting card has the same three sections, in this order (`format`):
 
 $$… \tag{2}$$
 
+**直觉**                                        (optional here; the digest writes it, zt-model-illustrate fills it)
+- 是什么：the setting in plain words.
+- 为什么需要：what the model could not do without it.
+- 怎样进入模型：which problem, chapter or later setting uses it.
+
 **说明**                                        (optional)
 Remarks, the role of the setting, pointers to later cards.
 ```
+
+- **Keep the 直觉 section.** When a pass moves, splits or joins settings, the **直觉** of each card moves with the content it explains; a split card gets the lines that belong to it, and a joined card keeps one **直觉** of three lines.
 
 - The title says the kind: `设定：…` for a setting, `假设 <name>：…` for an assumption (`假设 1：…`, `假设 A1：…`). The facet starts with `设定` or `假设`.
 - Premises appear only in **起点**: a `依赖 [[…]]` line anywhere else moves there.

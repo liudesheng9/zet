@@ -26,7 +26,7 @@
 //   first     a notation row whose 首次出现 Link is not the card where a reader meets the symbol first
 //             (the setting part, then the chapters)
 //   format    a setting card not in the format: title (设定：… / 假设 N：…), sections (**起点**, **设定**
-//             or **假设**, optional **说明**), a 依赖 line outside **起点**, a symbol or term table
+//             or **假设**, optional **直觉**, optional **说明**), a 依赖 line outside **起点**, a symbol or term table
 //   repeat    a setting that restates a statement of an earlier one (assumptions with different names
 //             are different statements)
 //   cite      a card that names 假设 N without a Link to its card
@@ -314,7 +314,9 @@ export function audit(m, cards, parents = new Map()) {
     const bad = (what, fix) => format.push({ card: c.address, what, fix: `${c.address} (${c.facet}): ${fix}` })
     if (kind === '设定' ? !/^设定：/.test(c.title || '') : !/^(假设|假定)\s*[A-Za-z]?\d*[A-Za-z]?\d*：/.test(c.title || '')) bad('title', kind === '设定' ? 'the title opens with 设定：' : 'the title opens with 假设 <name>：')
     const sec = sectionsOf(c.body)
-    if (sec[0] !== '起点' || sec[1] !== kind || sec.length > 3 || (sec[2] && sec[2] !== '说明')) bad('section', `the sections are **起点**, **${kind}**, then an optional **说明** (now ${sec.map((x) => '**' + x + '**').join(', ') || 'none'})`)
+    // After the content: an optional **直觉** (what it is, why the model needs it, how it enters), then an optional **说明**.
+    const tail = sec.slice(2).join(',')
+    if (sec[0] !== '起点' || sec[1] !== kind || !['', '直觉', '说明', '直觉,说明'].includes(tail)) bad('section', `the sections are **起点**, **${kind}**, then an optional **直觉** and an optional **说明** (now ${sec.map((x) => '**' + x + '**').join(', ') || 'none'})`)
     if (/依赖\s*\[\[/.test(afterStart(c.body))) bad('depends', 'a 依赖 line outside **起点**: move the premise into **起点**')
     if (/^\|\s*(符号|术语)\s*\|/m.test(c.body || '')) bad('table', 'a symbol or term table: its rows belong in the notation card')
   }

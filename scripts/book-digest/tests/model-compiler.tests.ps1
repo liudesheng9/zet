@@ -118,7 +118,16 @@ try {
     # stand-in for the fill round
     $state = Get-Content -LiteralPath (Join-Path $work 'state.json') -Raw | ConvertFrom-Json -AsHashtable
     $ids = $state.models[$model].ids
-    Write-Calls @($ids.Keys | Where-Object { $_ -notin 'D1', 'D2' } | ForEach-Object { @{ tool = 'edit_card'; arguments = @{ at = $ids[$_]; body = "已写。依赖 [[$($s.build.setting)]]：用到设定。" } } })
+    # 0.52.0: a setting or an assumption part starts with the three 待写 lines of its **直觉**; a derivation does not.
+    $sskel = (Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['S'] } }))
+    Assert ($sskel.body -match '(?s)\*\*直觉\*\*\n- 是什么：待写\n- 为什么需要：待写\n- 怎样进入模型：待写') "apply: a setting skeleton has its 直觉 lines ($($sskel.body))"
+    Assert ((Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['A'] } })).body -match '\*\*直觉\*\*') 'apply: an assumption skeleton has its 直觉 too'
+    Assert ((Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $ids['D1'] } })).body -notmatch '\*\*直觉\*\*') 'apply: a Derivation skeleton has no 直觉'
+    $intuition = "`n`n**直觉**`n- 是什么：企业家用清算价值作抵押。`n- 为什么需要：没有它就没有还款上限。`n- 怎样进入模型：推导用它求还款上限。"
+    Write-Calls @($ids.Keys | Where-Object { $_ -notin 'D1', 'D2' } | ForEach-Object {
+            $more = if ($_ -in 'S', 'A') { $intuition } else { '' }
+            @{ tool = 'edit_card'; arguments = @{ at = $ids[$_]; body = "已写。依赖 [[$($s.build.setting)]]：用到设定。$more" } }
+        })
 
     # derive: one job with the chain's two parts and the filled premises
     $derive = Last (Run 'derive')

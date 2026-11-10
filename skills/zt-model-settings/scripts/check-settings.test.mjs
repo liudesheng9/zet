@@ -188,6 +188,17 @@ test('format: 起点 first, then 设定 (假设 for an assumption), then 说明;
   assert.deepEqual(what(P + '|c'), ['section'])
 })
 
+test('format: an optional **直觉** section stands between 设定 (or 假设) and 说明, and nowhere else', () => {
+  const intuition = '**直觉**\n- 是什么：资本是工厂的机器。\n- 为什么需要：没有它，产出不随投资变。\n- 怎样进入模型：资本进入生产函数。'
+  const at = (b) => good.map((r) => r[0] === P + '|b' ? [r[0], r[1], r[2], b] : r)
+  const base = '**起点**\n- 依赖 [[' + P + ']] 的设定：工人。\n\n**设定**\n1. 资本总量为 $\\bar Z$。\n2. 技术 $\\theta\\in\\Theta$。'
+  const what = (b) => strict(at(b)).format.filter((f) => f.card === P + '|b').map((f) => f.what)
+  assert.deepEqual(what(`${base}\n\n${intuition}\n\n**说明**\n技术由企业选。`), [])
+  assert.deepEqual(what(`${base}\n\n${intuition}`), [])
+  assert.deepEqual(what(`${base}\n\n**说明**\n技术由企业选。\n\n${intuition}`), ['section'])
+  assert.deepEqual(what(`**起点**\n- 依赖 [[${P}]] 的设定：工人。\n\n${intuition}\n\n**设定**\n1. 资本总量为 $\\bar Z$。`), ['section'])
+})
+
 test('repeat: one assumption is stated in one card; cite: a card that names an assumption links its card', () => {
   const rows = [...good.slice(0, 4),
     [P + '|c|1', '假设 1：变体', '假设 1：在变体中', '**起点**\n- 依赖 [[' + P + '|c]] 的设定。\n\n**假设**\n1. $L$ 与 $\\theta$ 上严格凹。'],

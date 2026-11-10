@@ -229,6 +229,52 @@ pub fn is_setting_facet(facet: &str) -> bool {
     SETTING_FACET.is_match(facet)
 }
 
+// --- intuition ----------------------------------------------------------------------------------
+
+/// The three lines of a setting's **直觉** section: what it is, why the model needs it, how it enters
+/// the building of the model (zt-model-illustrate writes the same section after the model passes).
+pub const INTUITION_LABELS: [&str; 3] = ["是什么", "为什么需要", "怎样进入模型"];
+
+pattern!(INTUITION_FACET, r"(?i)设定|^\s*(假设|假定|定义)");
+pattern!(INTUITION_HEAD, r"(?m)^\s*\*\*直觉\*\*\s*$");
+pattern!(INTUITION_END, r"(?m)^\s*(\*\*[^*\n]+\*\*\s*$|```|来源\s*[：:]|\|)");
+
+/// A part that sets something up (a setting, an assumption, a definition) explains it in a **直觉** section.
+/// A Derivation part explains itself in 思路 and 解读 instead, and an empirical model's parts follow their roles.
+pub fn wants_intuition(part: &Value, empirical: bool) -> bool {
+    !empirical && !derives(part) && INTUITION_FACET.is_match(&s(&part["facet"]))
+}
+
+/// The skeleton's **直觉** section: one 待写 line per label.
+pub fn intuition_skeleton() -> String {
+    let lines: Vec<String> = INTUITION_LABELS.iter().map(|l| format!("- {l}：待写")).collect();
+    format!("**直觉**\n{}", lines.join("\n"))
+}
+
+/// What a written part's **直觉** section still lacks: the section, or the labels whose line is missing,
+/// empty or still 待写. None when all three lines are written.
+pub fn intuition_fault(body: &str) -> Option<String> {
+    let Some(head) = INTUITION_HEAD.find(body) else { return Some("没有 **直觉** 一节".into()) };
+    let rest = &body[head.end()..];
+    let section = match INTUITION_END.find(rest) {
+        Some(end) => &rest[..end.start()],
+        None => rest,
+    };
+    let lacking: Vec<&str> = INTUITION_LABELS
+        .iter()
+        .copied()
+        .filter(|label| {
+            !section.lines().any(|line| {
+                let line = line.trim();
+                let Some(text) = line.strip_prefix('-').map(str::trim).and_then(|t| t.strip_prefix(label)) else { return false };
+                let text = text.trim_start_matches(['：', ':']).trim();
+                !text.is_empty() && !ps::eq(text, "待写")
+            })
+        })
+        .collect();
+    (!lacking.is_empty()).then(|| format!("**直觉** 一节缺少写好的「{}」行", lacking.join("」「")))
+}
+
 // --- explain ------------------------------------------------------------------------------------
 
 /// `Get-SectionText`: a section without the position line and 待写.
@@ -367,6 +413,26 @@ mod tests {
         assert_eq!(result_formula("先 $a$ 再 $$b$$ 和 $$c$$"), "$$c$$");
         assert_eq!(result_formula("没有式子的一句话。第二句"), "没有式子的一句话");
         assert_eq!(result_formula(&"长".repeat(40)), format!("{}…", "长".repeat(30)));
+    }
+
+    // A setting, an assumption or a definition explains itself in **直觉** (是什么, 为什么需要, 怎样进入模型).
+    #[test]
+    fn setting_parts_want_an_intuition_and_say_what_it_lacks() {
+        assert!(wants_intuition(&json!({"facet": "设定"}), false));
+        assert!(wants_intuition(&json!({"facet": "本章设定：辅导"}), false));
+        assert!(wants_intuition(&json!({"facet": "假设 2"}), false));
+        assert!(wants_intuition(&json!({"facet": "定义"}), false));
+        assert!(!wants_intuition(&json!({"facet": "设定"}), true), "an empirical model's parts follow their roles");
+        assert!(!wants_intuition(&json!({"facet": "结果：命题 A.1"}), false));
+        assert!(!wants_intuition(&json!({"facet": "推导：设定下的一阶条件", "derive": true}), false));
+        let skeleton = intuition_skeleton();
+        assert_eq!(skeleton, "**直觉**\n- 是什么：待写\n- 为什么需要：待写\n- 怎样进入模型：待写");
+        assert_eq!(intuition_fault(&format!("设定正文。\n\n{skeleton}")).unwrap(), "**直觉** 一节缺少写好的「是什么」「为什么需要」「怎样进入模型」行");
+        assert_eq!(intuition_fault("设定正文。").unwrap(), "没有 **直觉** 一节");
+        let written = "设定正文。\n\n**直觉**\n- 是什么：员工把努力分到三项任务。\n- 为什么需要：没有它，技术碰不到复杂工作。\n- 怎样进入模型：第 2 章写出一阶条件。\n\n| 符号 | 含义 |\n| --- | --- |";
+        assert_eq!(intuition_fault(written), None);
+        let half = "**直觉**\n- 是什么：员工分配努力。\n- 为什么需要：待写\n\n**说明**\n- 怎样进入模型：在说明里不算。";
+        assert_eq!(intuition_fault(half).unwrap(), "**直觉** 一节缺少写好的「为什么需要」「怎样进入模型」行");
     }
 
     #[test]

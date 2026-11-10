@@ -46,7 +46,8 @@ pattern!(SETTING_OR_PREMISES, r"(?i)设定|前提|premises");
 pattern!(SOURCE_REF, r"(?i)^(.+?):(\d+)(?:-(\d+))?$");
 pattern!(FIGURE_PREFIX, r"(?i)^\s*(图|Figure|Fig\.)\s*");
 pattern!(TODO_BODY, r"(?i)^\s*待写\s*$");
-pattern!(TODO_LINE, r"(?i)(^|\n)\s*待写\s*($|\n)");
+// A whole 待写 line, or an unwritten line of a setting's **直觉** section (`- 是什么：待写`).
+pattern!(TODO_LINE, r"(?i)(^|\n)\s*(-\s*(是什么|为什么需要|怎样进入模型)\s*[：:]\s*)?待写\s*($|\n)");
 pattern!(CHART, r"(?i)```chart");
 pattern!(FAULTS_LINE, r"(?i)^faults: \d+");
 pattern!(FAULTS_PREFIX, r"(?i)^faults: ");
@@ -344,6 +345,32 @@ fn planned_link_entries(
             };
             out.push((address.clone(), format!(
                 "## 修正：[[{address}]]\n\n构建检查（计划的关系）：模型 [[{model}]] 的计划要求这张分卡写出它与 [[{target}]] 的关系，正文里还没有这条 Link。{reason}{split}\n在用到 [[{target}]] 的那句话里放上这条 Link，关系词紧贴在 Link 前（例如「依赖 [[{target}]]：用到……」），说明用到什么。不要增删其余内容，不要移动卡片。改完照常运行 CHECK。\n"
+            )));
+        }
+    }
+    out
+}
+
+/// The 修正 notes for the setting, assumption and definition parts this build wrote whose **直觉** section is
+/// missing or not fully written (zt-digest 0.52.0). A part another model lends, or an existing part the plan
+/// keeps, is not this build's to explain; an unwritten part (`待写`) goes back as a whole, not here. A setting
+/// that `split` cut into pieces explains itself once, on its first piece; the later pieces continue it.
+fn intuition_entries(plan_parts: &[Value], ids: &Value, st: &Value, empirical: bool) -> Vec<(String, String)> {
+    let bodies: BTreeMap<String, String> = list(&st["parts"]).into_iter().map(|p| (s(&p["address"]), s(&p["body"]))).collect();
+    let mut out = Vec::new();
+    for part in plan_parts {
+        let id = s(&part["id"]);
+        if id.is_empty() || truthy(&part["take"]) || (truthy(&part["existing"]) && !truthy(&part["refill"])) || !text::wants_intuition(part, empirical) {
+            continue;
+        }
+        let address = s(&ids[&id]);
+        let Some(body) = bodies.get(&address) else { continue };
+        if TODO_BODY.is_match(body) {
+            continue;
+        }
+        if let Some(lack) = text::intuition_fault(body) {
+            out.push((address.clone(), format!(
+                    "## 修正：[[{address}]]\n\n构建检查（直觉）：{lack}。这张卡设定一个对象，读者先要知道它是什么、为什么需要它、它怎样进入模型。在设定内容之后、符号表和术语表之前写出这一节：\n\n**直觉**\n- 是什么：……\n- 为什么需要：……\n- 怎样进入模型：……\n\n按填写说明的“讲清设定”一节写。不要增删其余内容，不要移动卡片。改完照常运行 CHECK。\n"
             )));
         }
     }
@@ -1602,6 +1629,10 @@ impl Compiler {
         body.push(String::new());
         body.push("待写".into());
         let mut body = body.join("\n");
+        // A setting, an assumption or a definition explains itself: what it is, why the model needs it, how it enters.
+        if text::wants_intuition(part, false) {
+            body += &format!("\n\n{}", text::intuition_skeleton());
+        }
         if ps::eq(&s(&plan["level"]), "formal") && text::is_setting_facet(&s(&part["facet"])) && ps::eq(&line_of(part), "main") {
             body += &format!("\n\n{}", text::tables(plan));
         }
@@ -3059,6 +3090,8 @@ impl Compiler {
                     .collect();
                 let plan_parts: Vec<Value> = list(&plan["parts"]).into_iter().cloned().collect();
                 entries.extend(planned_link_entries(&model, &plan_parts, &own, &models, &resolve, &parts, &pairs, &rests));
+                let empirical = super::empirical::is_empirical(&plan);
+                entries.extend(intuition_entries(&plan_parts, &own, &st, empirical));
             }
             let review_path = ps::join(&self.dir(&model), "source-review.json");
             if ps::exists(&review_path)
@@ -4157,9 +4190,45 @@ fn divisions_section(plan: &Value, resolve: impl Fn(&str) -> Result<String>) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, lacks_main_line, marker_entries, supplied_entries, track_renames, current_address};
+    use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, intuition_entries, lacks_main_line, marker_entries, supplied_entries, track_renames, current_address, TODO_LINE};
     use std::collections::BTreeMap;
     use serde_json::json;
+
+    // 0.52.0: every setting, assumption and definition part this build writes carries a written **直觉**;
+    // close sends one 修正 note per part that lacks it, and an unwritten 直觉 line keeps the part unwritten.
+    #[test]
+    fn a_setting_part_without_a_written_intuition_goes_back_to_its_writer() {
+        let parts = vec![
+            json!({"id": "S", "facet": "设定", "line": "main"}),
+            json!({"id": "A1", "facet": "假设 1", "line": "side"}),
+            json!({"id": "D", "facet": "定义", "line": "side"}),
+            json!({"id": "R", "facet": "结果：命题 1", "line": "side"}),
+            json!({"id": "T", "facet": "设定", "take": true}),
+            json!({"id": "E", "facet": "设定", "existing": true}),
+        ];
+        // `S~2` is a piece `split` cut from S: it continues S, whose first piece holds the one 直觉.
+        let ids = json!({"S": "K/1|a|a", "S~2": "K/1|a|a|e", "A1": "K/1|a|a|a", "D": "K/1|a|a|b", "R": "K/1|a|a|c", "T": "C/2|a|a", "E": "K/1|a|a|d"});
+        let written = "**直觉**\n- 是什么：员工分配努力。\n- 为什么需要：没有它就没有权衡。\n- 怎样进入模型：第 2 章用它。";
+        let st = json!({"parts": [
+            {"address": "K/1|a|a", "body": format!("设定内容。\n\n{written}")},
+            {"address": "K/1|a|a|a", "body": "假设内容。\n\n**直觉**\n- 是什么：待写\n- 为什么需要：待写\n- 怎样进入模型：待写"},
+            {"address": "K/1|a|a|b", "body": "定义内容，没有直觉。"},
+            {"address": "K/1|a|a|c", "body": "结果。"},
+            {"address": "C/2|a|a", "body": "他人的设定。"},
+            {"address": "K/1|a|a|d", "body": "保留的旧设定。"},
+            {"address": "K/1|a|a|e", "body": "依赖上一步 [[K/1|a|a]]：本卡接着上一张卡写。设定的后半。"},
+        ]});
+        let notes = intuition_entries(&parts, &ids, &st, false);
+        let at: Vec<&str> = notes.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(at, ["K/1|a|a|a", "K/1|a|a|b"], "{notes:?}");
+        assert!(notes[0].1.contains("缺少写好的「是什么」「为什么需要」「怎样进入模型」行") && notes[0].1.contains("**直觉**"), "{}", notes[0].1);
+        assert!(notes[1].1.contains("没有 **直觉** 一节"), "{}", notes[1].1);
+        assert!(intuition_entries(&parts, &ids, &st, true).is_empty(), "an empirical model's parts follow their roles");
+        // An unwritten 直觉 line keeps the part unwritten; the empirical skeleton's labelled 待写 lines do not match.
+        assert!(TODO_LINE.is_match("内容。\n\n**直觉**\n- 是什么：待写\n- 为什么需要：好。"));
+        assert!(!TODO_LINE.is_match(&format!("内容。\n\n{written}")));
+        assert!(!TODO_LINE.is_match("- 值：待写（从原文抄录）"));
+    }
 
     // #204 (B6): the architect's divisions (the model's parts, 分部) start at main-line parts; the
     // compiler writes them as the Model Card's 分部 section, which the GUI reads as range blocks.
