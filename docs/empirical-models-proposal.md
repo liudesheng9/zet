@@ -1208,3 +1208,37 @@ The owner asked, after the strict appendix rule of 2026-11-10, that the model fo
 **成本。** 共五个 DeepSeek 对话（起草三条消息、解释一项任务、判断一条消息），完成后均已删除并移除工作区。用量账本（官方源）在本会话期间由 70.23 元升至 73.86 元，其中包含父会话同时进行的 Becker 修复。
 
 **遗留问题。** `create_successor` 带 `before` 时，若正文链接被挤开的同级卡，会按改名后的地址检查而被拒绝；本次先建卡再补链接，建议在 zt 中修复。符号表的 `first` 检查把新符号的行指向第一张公式中含该字母的卡，即使那张卡用的是另一种含义（$F$、$R_i$）；这些行已写明两种含义。
+
+### 14.14 Brandimarti et al. 2026: the Literature tree organized by the paper (2026-11-10)
+
+After §14.13 the owner asked for `zt-literature-organize` on `brandimarti2026reorganizing`; the two digest runs had left the tree in two layers (main text groups 1–10, appendix groups 11–21), with §6 split over four top Cards, §4.2 and §8 filed in the neighbouring sections and the Term and Cited lists under §1. A `VACUUM INTO` backup was taken first (`D:\zt\backups\zt.sqlite3.pre-brandimarti-organize-20261110T151250Z`, integrity ok). Twelve move batches (`batch.mjs`, each previewed clean, 0 broken Links) and one leads run did the work; the tree has 838 Cards (one new summary).
+
+**Top line.** §1 引言, §2 背景, §3 数据与实证策略, §4 技术推广, §5 概念框架, §6 任务干预, §7 重组的经济价值, §8 结论, §9 图, §10 表格, A.1 附录图, A.2 附录表格, B 模型附录, then the Term list and the Cited list. Decisions: the main text's sections are the top line and their subsections nest; Appendix A has no text of its own, so its wrapper yields and A.1 and A.2 are top Cards; Appendix B has its own introduction, so it is one top Card with §B.1–§B.7 as Side branches.
+
+**Crossers and how each was settled.**
+- §6: §6.2, §6.3 and §6.4 were top Cards 7, 8, 9; they are now Side branches of §6, after §6.1, which came out of the §6 intro's Direct chain.
+- §4.2 (the tenure gradient of output and wages, with its finding) was the head of §5's chain; it moved to §4 as its second subsection. §5's lead text no longer says it reports that heterogeneity.
+- §8 was the end of §7's chain; it is a top Card, and §7's lead no longer carries the conclusion.
+- Footnote 12 (which result of Appendix B gives each prediction) was filed under §6 with a §6.1 label; its call-out is in §5.3, so it moved under §5.3.
+- Sections whose notes ran as one Direct chain across subsections (§2, §3, §4, §7) were cut at the subsection boundaries; each subsection is a Side branch of the section lead, and the findings and empirical models of a subsection hang under its head.
+- Whole units moved whole: `15|a` → `13|a|a`, `4|f` → `4|b|e`, `6|g` → `6|b|g`, `7|e` → `6|c|e`, `9|f` → `6|e|f`, `10|b` → `7|c|f` (Links followed; settings, model, network, premises and imports checks are clean on all six).
+
+**Summary leads.** §2–§7 were rewritten (their summaries kept, the sentences the moves made false corrected, a linked 小节索引, the position and the source line); Appendix B was demoted: a new summary takes the top place and the former §B.1 Card is its first Side branch, with the formal model. The root index lists the new top line (the extension had left only groups 11–21 in it). Terms were relinked (6 Cards).
+
+**Script fault, fixed test-first.** `check.mjs` matched whole units by type and title, so units with one title (the same specification in two empirical models) were reported as changed after a move; it now compares each title's sizes as a set (`unitChanges`, `check.test.mjs`, 2 cases).
+
+**Calls that could go the other way.** A.1 and A.2 as top Cards next to section-level Cards; the B introduction's note (`13|a|a|1`, the notation $b_k$) stays in the formal model's chain instead of under the B summary; `6|d|a|2` (age and remaining career) keeps its §6.2 label in §6.3, where the source has it; the §10 lead's title still says 附录表格 and the structure Card `1|e` still lists the pre-fold models, which no move made false; §5.2 has no note of its own. The dialogue's judged record keys pairs by address, so a later survey of a renamed estimate may propose a pair again.
+
+**中文记录（§14.14）**
+
+§14.13 之后，所有者要求对 `brandimarti2026reorganizing` 运行 `zt-literature-organize`。两次消化把树留成两层（正文第 1–10 组、附录第 11–21 组），第 6 节分在四张顶层卡上，§4.2 与 §8 归在相邻的节里，术语表与参考文献挂在 §1 之下。开始前用 `VACUUM INTO` 备份了实时库（`D:\zt\backups\zt.sqlite3.pre-brandimarti-organize-20261110T151250Z`，完整性检查通过）。十二个移动批次（`batch.mjs`，每次预览都通过，0 个断链）与一次总述卡运行完成了全部工作，树现有 838 张卡（新增一张总述卡）。
+
+**顶层。** §1 至 §8、§9 图、§10 表格、A.1 附录图、A.2 附录表格、B 模型附录，然后是术语表与参考文献。决定：正文以节为顶层，小节嵌套在节之下；附录 A 没有自己的正文，外层让位，A.1 与 A.2 各为顶层卡；附录 B 有自己的引言，因此是一张顶层卡，§B.1–§B.7 为其侧枝。
+
+**跨界卡的处理。** §6.2–§6.4 原为顶层卡，现为第 6 节的侧枝，排在从第 6 节引言链中分出的 §6.1 之后。§4.2（产出与工资随任职年限的梯度及其发现卡）原为第 5 节链的开头，现移入第 4 节作为第二个小节，第 5 节总述不再说它报告这一异质性。§8 原在第 7 节链尾，现为顶层卡，第 7 节总述不再包含结论。脚注 12 原挂在第 6 节下，其引用处在 §5.3，现移到 §5.3 之下。§2、§3、§4、§7 原本跨小节连成一条直接链，现按小节边界切开，每个小节是节总述卡的侧枝，小节的发现卡与实证模型挂在小节首卡之下。整体单元整体移动，六个模型的新地址如上，链接自动跟随，六个模型的设定、模型、网络、前提与引入检查均通过。
+
+**总述卡。** §2–§7 的总述卡改写：保留原有总述，改正被移动改错的句子，加上带链接的小节索引、位置与来源行；附录 B 降级处理：新总述卡占据顶层位置，原 §B.1 卡连同形式模型成为其第一个侧枝。根卡索引改为列出新的顶层（扩展消化后它只列第 11–21 组）。术语已重新链接（6 张卡）。
+
+**脚本问题（先写测试再修复）。** `check.mjs` 按类型与标题匹配整体单元，两个实证模型中同名的规格因此在移动后被报为大小变化；现在按每个标题的大小集合比较（`unitChanges`，`check.test.mjs`，2 个用例）。
+
+**可以另作决定之处。** A.1、A.2 与节一级的卡同列顶层；附录 B 引言的笔记（`13|a|a|1`，记号 $b_k$）仍在形式模型的链中，没有移到 B 总述卡之下；`6|d|a|2`（年龄与剩余职业期限）在 §6.3 中保留 §6.2 的标签，原文即在 §6.3；§10 首卡标题仍写“附录表格”，结构卡 `1|e` 仍列合并前的模型，这两处都不是移动造成的；§5.2 没有自己的笔记。证据对话的已判记录按地址记配对，改名后的估计在以后的调查中可能被再次提出。
