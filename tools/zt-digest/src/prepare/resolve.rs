@@ -1058,6 +1058,10 @@ fn propose(headings: &[Heading]) -> Proposal {
     let end = (start + 1..headings.len())
         .find(|index| headings[*index].level == 1 && chinese(index) && is_back(&headings[*index].title) && tail(index))
         .or_else(|| (start + 1..headings.len()).find(|index| headings[*index].level == 1 && is_back(&headings[*index].title) && tail(index)));
+    // A range is cut by heading title: when the tail's title also stands earlier in the range (becker2025division:
+    // 参考文献 after the main text and again after the supplement), an end there would stop at the first one. The range
+    // then runs to the end, and the tail's back headings are skipped with the rest.
+    let end = end.filter(|&e| !(start + 1..e).any(|i| headings[i].level == 1 && eq(&headings[i].title, &headings[e].title)));
     let limit = end.unwrap_or(headings.len());
     let skip = (start + 1..limit)
         .filter(|index| {
@@ -1317,6 +1321,20 @@ mod tests {
         assert_eq!(range.skip_join, "参考文献");
         let excluded: Vec<String> = excluded_sections(&headings, &range).iter().map(|e| s(&e["heading"])).collect();
         assert_eq!(excluded, vec!["参考文献".to_string()]);
+    }
+
+    // becker2025division (2026-11-10): a reference list after the main text, the appendices and the supplement, and a
+    // second reference list at the end. The range is cut by heading title, so an end at the second 参考文献 would stop
+    // at the first; the range runs to the end instead and skips every 参考文献.
+    #[test]
+    fn a_repeated_reference_list_title_is_skipped_and_the_range_runs_to_the_end() {
+        let raw = "# 1 引言\n\nx\n\n# 参考文献\n\nx\n\n# 附录\n\nx\n\n# 补充附录\n\nx\n\n# 参考文献\n\nx\n";
+        let headings = scan_headings(raw);
+        let range = resolve_range(&work("", "T", None, "", ""), "paper.md", &headings, &explicit()).unwrap();
+        assert_eq!(range.end, None);
+        assert_eq!(range.skip_join, "参考文献,参考文献");
+        let excluded: Vec<String> = excluded_sections(&headings, &range).iter().map(|e| s(&e["heading"])).collect();
+        assert_eq!(excluded, vec!["参考文献".to_string(), "参考文献".to_string()]);
     }
 
     #[test]
