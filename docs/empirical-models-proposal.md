@@ -990,3 +990,72 @@ Both run reports are complete, no Link is broken and every model builds with no 
 
 - One fault, fixed test-first as zt-digest 0.50.4: the Bridge appended its `跨书关联：` paragraphs after a Model Card's **引入** section, so they were read as imports (`import_target`; acemoglu2001colonial/2|b lost its self-sufficiency). A Bridge paragraph now goes before that section. Six live Model Cards had the same shape (ebrill 3|b|a, acemoglu2001colonial 2|b and 5|a, atkinson 11|d|a|a, 12|a|c|a, 17|c|b|a); their Bridge lines were moved by hand and all six are clean.
 - The cost of the parallel runs: 12 Bridges between the two papers were planned against Cards the other run then changed, and apply reported them `stale` (Dell 11, AJR 1). A Bridge report is immutable, so `mode bridge` reuses it and does not propose again. The 12 links are left as a recorded gap; 26 + 52 Bridges were verified. Two digests whose papers will link to each other should run one after the other.
+
+### 14.10 The model passes on AJR 2001 and Dell 2010 (2026-11-10)
+
+The owner asked for the passes of §9 on every model of the two papers digested in §14.9, `acemoglu2001colonial` and `dell2010persistent`. They ran in a side session on Opus at medium effort, one model at a time and book by book, in the order fold → settings → restructure → import → evidence dialogue. Meanwhile the parent session digested two other papers on the live box. A `VACUUM INTO` backup was taken first (`D:\zt\backups\zt.sqlite3.pre-ajr-dell-passes-20261110T031110Z`, integrity ok, 27,098 Cards). Every change is an agent-Workspace Card of these two books, made through the zt tools. No lock was met. At the end `list_broken_links` is empty.
+
+**Fold.** AJR keeps its 7 models. Decision: the OLS model `3|a` and the IV model `5|b` are two empirical models, not one. `3|a` states its estimand as an association that it does not read as causal, while `5|b` estimates the causal α. `3|a` also uses the 110-country sample, and `5|b` keeps its own OLS contrast column. The concept models `1|c` (the paper's framework, which `2|a`, `5|a` and `5|b` each fill in), `2|a` (the historical hypothesis) and `2|b` (persistence mechanisms) and the formal models `5|a` (the identifying system (1)–(5)) and `10|a` (appendix C) each ask their own question. Dell had 8 Model Cards and now has 7. `4|a` (§3.2) and `5|a` (§3.3) were one model: the same estimand, the same data and the same Table II estimates. 5|a held a superset of 4|a's specification ladder, so a plain fold would have left two data trees and two ladders. With the parent session's approval (on the owner's authority for the whole pass sequence), 4|a was merged into 5|a in four steps:
+
+1. Its parts that 5|a lacked moved into 5|a: 假设 4 (now `5|a|a|2|f`, renumbered 假设 6), the two 75-km estimates (`5|a|a|4|g`, `|4|h`), Table I and its five balance tests (`5|a|a|5|i`–`|5|m`), the polynomial cross-check (`5|a|a|6|f`, chapter 3), and the two limitations (`5|a|d`, `5|a|e`).
+2. Each of the 25 remaining 4|a cards gave its twin the lines the twin did not state, under **另述（§3.2）**. This kept every formula (the continuity condition $E[c_1|x,y]$, $E[c_0|x,y]$ and estimating equation (1) included) and every Link the twin lacked (the notes `4|f` and `4|g`, `3|a`). The bridge to `atkinson2015lectures/11|c|a|a|3` moved into the 5|a head.
+3. Each twin card was deleted into its twin (`delete_card` with `into`), one leaf at a time, each identified by its title. All Links were redirected: `4|a` → `5|a`, `4|a|a` → `5|a|a`, `4|a|a|a` → `5|a|a|a`, `4|a|a|b` → `5|a|a|b`, `4|a|a|1` → `5|a|a|2`, `4|a|a|1|a` → `5|a|a|2|a`, `4|a|a|1|b` → `5|a|a|2|b`, `4|a|a|1|c` → `5|a|a|2|e`, `4|a|a|2` → `5|a|a|3`, `4|a|a|2|a` → `5|a|a|3|a`, `4|a|a|2|b` → `5|a|a|3|b`, `4|a|a|2|c` → `5|a|a|3|c`, `4|a|a|2|c|a` → `5|a|a|3|c|a`, `4|a|a|2|c|b` → `5|a|a|3|c|b`, `4|a|a|2|c|c` → `5|a|a|3|c|c`, `4|a|a|2|d` → `5|a|a|3|d`, `4|a|a|2|e` → `5|a|a|3|e`, `4|a|a|3` → `5|a|a|4`, `4|a|a|3|a` → `5|a|a|4|a`, `4|a|a|3|b` → `5|a|a|4|b`, `4|a|a|3|d` → `5|a|a|4|c`, `4|a|a|3|e` → `5|a|a|4|d`, `4|a|a|3|g` → `5|a|a|4|e`, `4|a|a|3|h` → `5|a|a|4|f`, `4|a|a|4` → `5|a|a|5` (addresses before the fold).
+4. Before each delete, the check confirmed that no 4|a card was pinned or locked and that none had a Link from another tree. Afterwards no Link was broken. The one rewording: 5|a's `对应 [[4|a]]` line was removed, because after the merge it would have linked 5|a to itself. The 另述 intro lines, which then named their own card, now read as plain text.
+
+Deleting 4|a moved the note section `4|b` up to `4|a`. Its Links followed it.
+
+**Concept models.** The concept models (AJR 1|c, 2|a, 2|b; Dell 1|c) got no settings or restructure pass, as the concept models of ebrill2001modern did not. Their parts serve the imports below.
+
+**Settings (`zt-model-settings`).**
+- AJR `5|a`:
+  - Strict pass: the setting card is now `5|a|a` (the Literature note before it was put second) and has the **起点**/**设定**/**说明** format.
+  - Notation card: new, holding the symbol and term tables the setting card used to carry.
+  - Placement: the assumption moved into the setting part as `假设 1`, and the first stage (5) with the exclusion restriction became a setting card.
+- AJR `10|a`:
+  - The setting card got the same format and a new notation card.
+  - The sign and regularity conditions became `假设 1`.
+  - `cov` in a setting is written `\operatorname{cov}` so it is not read as three symbols.
+- AJR `3|a` and `5|b`: a **起点** was added to one data-tree card each.
+- Dell: a **起点** was added to three data-tree cards (`6|b`, `7|b`, `8|a`). A `\text` in the 7|a 变量表 that had lost its backslash to a tab was restored; it had made eight letters of "geographic location" read as unused symbols.
+- Folded Dell `5|a`:
+  - Its 20 specification variants stated their change only in a `放宽 [[…]]` line. Each got a **相对基准的改动** section, taken from that line.
+  - The measure card got a **起点**.
+
+**Restructure (`zt-model-restructure`).**
+- AJR `5|a` and `10|a` each now read setting → one chapter card → its result → the proof chain under the result. The chapter and result texts were written by hand.
+- AJR `5|a`'s Table 3 example moved from the setting part to the chapter.
+- 37 **直觉** leads were written: 11 for AJR (`3|a`, `5|b`) and 26 for Dell. Each states what its block establishes, from the card's own content.
+- AJR `3|a`'s hypothesis was unanchored, because a `见 [[data]]` line before its `依赖 [[data]]` line made the relation `refers`. The redundant `见` line was dropped.
+- `check-premises.mjs` hits that stay: Dell `7|b`'s design names column (1) as a pointer, and AJR `5|b`'s design names (5) as a roadmap.
+
+**Import (`zt-model-import`).**
+- AJR `3|a`: `单卡 [[acemoglu2001colonial/1|c|a|1]]`, the framework's last link (better institutions, higher income). The hypothesis rests on it.
+- AJR `5|b`: `单卡 [[1|c|a|1]]` (the directions of the chain), on which the hypothesis rests. Also `整块 [[acemoglu2001colonial/5|a|a|1|a]]`, the identification result and its proof, on which the design rests. `plan` proposed the upgrade from 单卡 to 整块, because the design is not a 假说 part.
+- Dell `6|b`: `单卡 [[dell2010persistent/1|c|a]]` (colonial policy kept haciendas out of the mita district).
+- Dell `5|a`, `7|a`, `7|b` and `8|a`: `单卡 [[dell2010persistent/1|c|a|1]]` (landowners with secure title have the returns and the connections to obtain public goods). Each hypothesis rests on it.
+- `imports.mjs check` exits 0 on every model, with no cycle, and the explanation refresh found nothing to explain. The Terms of both books were relinked (AJR 60 Links, Dell 30 Links).
+
+**Evidence dialogue (`zt-evidence-dialogue`).** One DeepSeek conversation per model (official source, effort high), one message per twelve pairs, each conversation deleted after its last answer. Each survey ran after the previous model's apply.
+
+| Model | Pairs | Same estimand | Written |
+| --- | --- | --- | --- |
+| AJR `3\|a` | 76 | 52 judged, 2 kept | 2 × 对照, both ways |
+| AJR `5\|b` | 0 | — | — |
+| Dell `3\|a`, `6\|b`, `7\|a`, `7\|b`, `8\|a` | 5, 17, 20, 48, 9 | 0 | — |
+| Dell `5\|a` | 152 | 0 | — |
+
+Every AJR pair set an OLS estimate against an IV estimate of the same paper. The judge called 52 of them the same estimand. The review kept the two pairs on the same sample with the same controls, 0.52 against 0.95 (`3|a|a|4|c`, `5|b|a|4|c`) and 0.46 against 0.98 (`3|a|a|6|c`, `5|b|a|4|d`), which the paper itself sets side by side. It recorded the other 50 as `same: false`, by the fold decision above. Every Dell pair set the mita effect on one outcome against its effect on another outcome, and no pair was the same estimand. A second survey proposes nothing for any model.
+
+**Script faults fixed test-first** (skills only, commit d3fdb351, installed for Claude Code and Codex):
+- `check-settings.mjs`: a bare notation symbol is no longer found inside a longer row symbol of the same card. $\beta$ inside $\beta_R$ had given a false `first` fault.
+- `check-settings.mjs` (`auditEmpirical`): a card another model lends is no longer audited. AJR 5|b's imported 假设 1 had been called an assumption outside its design.
+- `dialogue.mjs survey`: a Term that at least half of a model's estimates link is the model's reporting frame (标准误, 设定, 点估计) and forms no pair. Dell's surveys fell from 1,105 candidate pairs, nearly all on 标准误 alone, to 129.
+
+Tests: `check-settings.test.mjs` 19, `dialogue.test.mjs` 13.
+
+**Cost.** Only the judging used DeepSeek: 7 judging conversations sent 30 judge messages for 327 pairs, plus one message that asked for the answer file. At the pilot's rate of 0.0023 CNY a pair that is about 0.2 CNY for AJR and 0.6 CNY for Dell. The usage ledger rose from 129.97 to 163.39 CNY on 2026-11-09 (UTC) during this session, but that figure includes the parent session's two live digests.
+
+**Left open.**
+- The 12 stale AJR↔Dell Bridges of §14.9 are still a gap. The Dell 4|a Links they would have named now resolve to 5|a.
+- `dialogue.mjs` still pairs the estimates of different models of one book on the book-wide estimand Terms (米塔地区, 米塔处理) when an estimate has no Term of its own. Dell 5|a's 152 pairs came from this. A rule that a Term most of a book's model heads share pairs nothing within that book would remove them; it needs a test on the ebrill pilot case first.
+- The **另述（§3.2）** sections on Dell 5|a keep 4|a's wording beside 5|a's. A later pass may fold each into its card's own sections.
