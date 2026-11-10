@@ -1275,7 +1275,13 @@ function runtime(kind, opts = {}) {
         if (raw.list && raw.tree) return { ok: true, step: raw.step, book: raw.book, sections: n(raw.source && raw.source.sections), reused: raw.source && raw.source.reused === true, rebuilt: list(raw.source && raw.source.rebuilt), rows: n(raw.list && raw.list.rows), legacy: raw.list && raw.list.legacy === true, heads: n(raw.tree && raw.tree.heads), parts: n(raw.tree && raw.tree.parts), occupying: list(raw.tree && raw.tree.occupying), conflicts: list(raw.conflicts) }
         return { ok: true, groups: n(raw.groups), citation_key: raw.citation_key || 'Key' }
       }
-      case 'link-prepare': return { ok: true, pending: list(raw.pending), no_gap: list(raw.no_gap), blocked: list(raw.blocked), gaps: n(raw.gap_total), gap_total: n(raw.gap_total), skipped_total: n(raw.skipped_total), owned_total: n(raw.owned_total), unowned: n(raw.unowned), digest_state: raw.digest_state }
+      case 'link-prepare': {
+        // The real step's compact line leaves out a zero count (brandimarti2026reorganizing-empirical, 2026-11-10: a
+        // settled book with no gap answered no `pending` at all).
+        const line = { ok: true, pending: list(raw.pending), no_gap: list(raw.no_gap), blocked: list(raw.blocked), gaps: n(raw.gap_total), gap_total: n(raw.gap_total), skipped_total: n(raw.skipped_total), owned_total: n(raw.owned_total), unowned: n(raw.unowned), digest_state: raw.digest_state }
+        for (const k of Object.keys(line)) if (line[k] === 0) delete line[k]
+        return line
+      }
       case 'publish': return { ok: true, layer: raw.layer, unit: raw.unit, revision: n(raw.revision), state: raw.state || (raw.unit ? 'done' : undefined), disposition: raw.disposition, complete: raw.complete === true, changed_cards: n(raw.changed_cards) }
       case 'cards-start': return { ok: true, picked: n(raw.picked), with_faults: n(raw.with_faults), faults: n(raw.faults), review: n(raw.review), orphans: n(raw.orphans), jobs: n(raw.jobs), file: raw.file }
       case 'cards-apply': return { ok: true, applied: n(raw.applied), faults: n(raw.faults), orphans: n(raw.orphans), jobs: n(raw.jobs), file: raw.file }

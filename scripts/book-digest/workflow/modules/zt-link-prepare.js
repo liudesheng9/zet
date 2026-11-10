@@ -1,4 +1,7 @@
-// ==== module zt-link-prepare v8 ====
+// ==== module zt-link-prepare v9 ====
+// v9 (brandimarti2026reorganizing-empirical, 2026-11-10): the compact line leaves out a zero count, so a settled
+// book whose groups all need no Link job answers no `pending`. A missing count reads as 0; only a missing or
+// failed line is a failure.
 // v6 (S1): one relay runs prepare-link -Brief and the module reads its line; the Haiku agent that copied the arrays
 // back (and ran `zt up` itself) leaves: zt-digest starts and waits for the service.
 // v7 (#176, docs/workflow-module-structure-proposal.md): the stage's one command is a book-steps.ps1 step
@@ -13,7 +16,7 @@
 // Fails the stage when the step fails. No stage reads the account-wide usage ledger: run usage is recorded per
 // provider run from that run's own result (R343-R346).
 defineModule({
-  id: 'zt-link-prepare', version: '8', requires: ['zt-digest-lib'],
+  id: 'zt-link-prepare', version: '9', requires: ['zt-digest-lib'],
   summary: 'ZT digest: prepare the receipt-owned semantic gap set of the Link pass (one book-steps.ps1 step); output the scheduled, gap-free and blocked group counts.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -24,7 +27,7 @@ defineModule({
   run: async (ctx, p) => {
     const Z = zdMake(ctx, p)
     const line = await Z.bookStep('prepare link pass', 'link-prepare')
-    if (!line || line.ok !== true || line.pending === undefined) {
+    if (!line || line.ok !== true) {
       const error = (line && line.error) || 'no report'
       log(`Link preparation failed: ${error}`)
       throw new Error(`link preparation failed: ${error}`)
