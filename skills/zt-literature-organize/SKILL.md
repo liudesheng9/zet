@@ -7,6 +7,8 @@ description: "Reorganize one ZET Literature tree so it reads in the order and di
 
 Input: a Literature tree's **citation key**. Output: the same Cards, in a tree a reader can walk with the source open beside it.
 
+**Where it sits.** After a digest or an appendix extension, this skill is the last step of the post-digest sequence of a book: `zt-model-fold` → `zt-model-settings` → `zt-model-restructure` → `zt-model-import` → `zt-evidence-dialogue` (empirical models) → this skill (owner, 2026-11-10). The model passes come first, so each whole model moves once and the summary leads describe the final tree.
+
 Judgement decides this work. Sources differ in every way, so the scripts only show the tree and move it, and no script knows what a section is. Tool mechanics are in the `zt` skill.
 
 ## The shape to reach

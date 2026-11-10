@@ -711,11 +711,13 @@ Mode `models` with `level: "empirical"`, `only` and `rebuild` rebuilds an existi
 
 ## 9. The model passes after the workflow (flexible)
 
-The workflow makes every model correct and complete. The passes after it make a model readable and connected. They are judgement work: Opus decides, scripts move and check, DeepSeek drafts text. For an empirical model the pass order stays the same, with one pass added at the end:
+The workflow makes every model correct and complete. The passes after it make a model readable and connected. They are judgement work: Opus decides, scripts move and check, DeepSeek drafts text. For an empirical model the pass order stays the same, with one pass added at the end. The owner's order of 2026-11-10 then closes the sequence of every book, after a digest or an appendix extension, with the Literature organize:
 
 ```
-fold → settings (data and specifications) → restructure (evidence spine) → import → evidence dialogue
+fold → settings (data and specifications) → restructure (evidence spine) → import → evidence dialogue → literature organize
 ```
+
+The evidence dialogue runs on the empirical models whose estimates or premises changed. The Literature organize (`zt-literature-organize`) runs once per book, last, because the folds move Cards between sections and an extension adds its groups after the Term and Cited lists (§9.6).
 
 ### 9.1 `zt-model-fold`: how many empirical models
 
@@ -763,6 +765,10 @@ One new skill, judgement-led, run per empirical model after its import pass. It 
 2. **Judge (DeepSeek, one job per model, messages of ≤ 12 candidate pairs).** For each pair: same estimand or not; agree within uncertainty, disagree, or not comparable (different units, different populations); the relation kind and one reason sentence. Answers are ids and verdicts; a script applies them.
 3. **Write (script).** The Links in agent Cards only, with the kind word first (`对照`, `印证`, `反驳`), in the `**关联**` section of the Model Card or the `**对应**` section of an estimate. A human Card is never a carrier.
 4. **Check.** Every new Link resolves; a second survey proposes nothing new.
+
+### 9.6 Last: `zt-literature-organize`
+
+After the model passes, the book's Literature tree is organized by its source: the top line takes the source's own divisions, the appendices and supplements stand where the source puts them, and the Term list and the Cited list are the last top Cards. The model passes come first, so the organize moves each whole model once, where its final head stands, and the summary leads describe the final tree. First run in this order on becker2025division and hansen2021demand (§14.16).
 
 ## 10. Migration of the existing models
 
@@ -1259,3 +1265,44 @@ The owner ruled (strict): every digest reads the whole work, appendices included
 **Why Becker took many runs.** The extension path was new, it met trees already reorganized and post-processed, and several writers worked on the live box at once (two extensions, the pass agent, three organize sessions). Two Becker faults came from the new path meeting a post-processed tree (the part count, the unrecorded merge), three from concurrent writers (changing read views), and two from operator mistakes. Lesson kept: one heavy writer on the live box at a time.
 
 **Cost.** About 46.7 CNY for the Brandimarti appendix extension and its empirical models; about 40 CNY for the Becker and Hansen extensions together with the model passes of §14.12 and §14.13 run in the same window.
+
+### 14.16 The post-digest passes on Becker and Hansen after their appendix extensions (2026-11-10)
+
+After the extensions of §14.15 the appendix models of `becker2025division` and `hansen2021demand` had had no model pass, and Becker's appendix groups stood after its Term and Cited lists. The owner asked for the post-digest passes on both books, one book at a time, Becker first, in a side session on Opus at medium effort, with every decision taken and recorded there. The order is the owner's of 2026-11-10, with the Literature organize as a new last step (§9): fold → settings → restructure → import → evidence dialogue → literature organize. A `VACUUM INTO` backup was taken first (`D:\zt\backups\zt.sqlite3.pre-becker-hansen-passes-20261110T172551Z`, integrity ok, 28,694 Cards). Every change is an agent-Workspace Card of these two trees, made through the zt tools. No lock was met, no Card had `pinned_by`, and no Card was deleted. At the end `list_broken_links` is empty. Becker went from 773 to 776 Cards (three new summary leads); Hansen keeps its count.
+
+**Becker: fold.** 6 Model Cards, now 3 models.
+
+| Model Card | Decision | Reason |
+| --- | --- | --- |
+| `16\|a` (S2.1, Stole-Zwiebel bargaining) | into `3\|a`, 第 12 章 | the same factories, tasks and occupations; one assumption changes (the wage is bargained, not set by the wage schedule (7)) |
+| `24\|a` (S3, welfare formulas) | into `3\|a`, 第 13 章 | derives welfare and trade elasticities in the benchmark open economy of `3\|a` ($\tilde\delta=1$) |
+| `26\|a` (S4, estimation model) | into `3\|a`, 第 14 章 | continues chapter 10 of `3\|a` (the system (34), truncated ML, the variance normalization) on the same primitives $u,v,z$ |
+| `6\|g`, `2\|g\|f` | stay | the structural estimation and the plant regressions: an estimation and a test of the theory, joined to it by imports |
+
+- Decision on `26|a`: it is the formal derivation of the likelihood system and holds no data, so it belongs to the formal model and not to the empirical `6|g`; `6|g` imports `3|a` whole and so carries it. `26|a` had imported 假设 1 of `6|g` (`单卡`). After the fold that import would close a cycle, so the S4 assumption now rests on the trivariate-normal setting `3|a|a|e` of `3|a` and names `6|g|a|2|a` with `对应`.
+- Method: no twins, so the option A of §14.10 was not needed. For each Model Card the **结构** section (and the **引入** of `26|a`) was removed, its Links masked, its Idea-note chain moved to its section card (`16`: 9 notes, `24`: 17 notes; the emptied Side slot closed with `reorder`), its parts parked, the card retyped into a chapter, moved after 第 11 章, its parts moved back and its body restored. In the first run the Direct chain of the `16|a` setting stayed parked; a second batch moved it back, and the session's fold script was corrected before the other two.
+
+**Becker: settings (strict) on `3|a`.** The whole setting part was still in the older format (sections **内容** and **为什么需要它**, two cards with their **起点** written twice, three titles without `设定：`): 19 format, 14 notation and 7 uncovered faults after the fold. Now:
+- The old settings have the format **起点** / **设定** / **说明**, and the three titles open with `设定：`.
+- New branches: `3|a|a|h` 设定：讨价还价扩展 (S2.1), a variant beside the closed and the open economy, with `假设 S1` (S.1) `|h|a` and `假设 S2` (recruiting before bargaining, the advertising cost) `|h|b`; `3|a|a|g|a|a`, the S3 setting under the benchmark open economy, with `假设 S3` ($f_x>f_0(t-1)$) `|g|a|a|a`; `3|a|a|g|b|a`, the system (S.14) under the estimation data, with `假设 S4` (the trivariate normal of $(u,v,e)$) `|g|b|a|a`.
+- The three symbol tables and three term tables of the folded settings went to the notation card. The card was rebuilt with a 首次出现 column: each row links the card where a reader meets its symbols first, as `check-settings.mjs` names it, and rows whose symbols are met first in different cards were split. One letter with two meanings has one row that names both ($A$, $B$, $e$, $u$, $H$, $w$, $\psi$, $U$).
+- In `13|c|a|2` a `记` that stated an identity became `利用`. Every display formula is unchanged, compared by script before the write.
+- `check-settings.mjs`: all in the setting part, as a dependency tree (advice only).
+
+**Becker: restructure.** Chapters 12–14 were rebuilt from the former heads: **直觉**, **本章结果** and **承上启下** written by hand, each chapter resting on the chapter it builds on (12 on 5, 13 on 9, 14 on 10), and the former 问题, 概要, 关联 and 跨书关联 lines kept. Chapter 12 has 2 results, chapter 13 has 4 and a limitation, chapter 14 has 1, each with its proof chain as a Side branch and a `结果：` facet. The closing sentence of chapter 11 names the three new chapters. The **结构** of the Model Card was rebuilt (the main line and one level), a **分部** section was added (构件与机制, 三阶段求解, 封闭与开放经济, 量化, 补充附录), and its 概要 names the supplement chapters. Two wordings made relations and were rewritten: `扩展` read as `relaxes`, and a `用到` in the S3 setting read as a premise on chapter 13. `check-model.mjs`: self-sufficient. `check-network.mjs`: `network: clean`. `check-premises.mjs` lists 33 hits: the 31 earlier roadmaps and pointers, and two pointers of `假设 S3` to (24) and (29).
+
+**Becker: import and dialogue.** `imports.mjs check` exits 0 on `3|a`, `6|g` and `2|g|f`, and `plan` proposes nothing. One advice stays: `假设 S4` corresponds to 假设 1 of `6|g`, and `3|a` cannot import from `6|g`, which imports `3|a` whole, so it stays a `对应` Link. `explain.mjs plan` found nothing to explain (the digest had written the 思路 and 解读 of the appendix derivations). Terms relinked (21 Links on 7 Cards). The estimates of `6|g` and `2|g|f` did not change; a survey proposed 0 pairs for each, and `dialogue.mjs check` is ok.
+
+**Becker: Literature organize.** The source has §1–§7, then 附录 (A 经验附录 with A.1; B 理论附录 with B.1–B.5) and 补充附录 (S1–S4). Decisions: the top line is §1–§7, A, B, S1, S2, S3, S4, the Term list, the Cited list; the wrappers 附录 and 补充附录 hold little of their own and yield, as Appendix A did in §14.14; the intro note of the supplement opens S1.1.
+- Crossers: group 10 held A.1 and B.1–B.3 in one chain; the B.1, B.2 and B.3 runs moved to B, and the A.1 Findings went under A.1. Group 15 held S1.3, S1.4 and footnote 2 of S1.2 (the subsample frequencies, with a Finding labelled §S1.3); S1.4 became its own branch, and the footnote and its Finding went to S1.2.
+- Nesting: B.5 under B; S1.2–S1.4 under S1; S2.2–S2.5 under S2; S2.4.2–S2.4.4 under S2.4; S3.1.2–S3.2 under S3; S4.1 under S4. One batch of 23 items (322 Cards renamed, 0 broken Links).
+- Leads: A, S2.4, S3 and S4 rewritten; B, S1 and S2 demoted (new summaries; the old leads became B.4, S1.1 and S2.1 with those titles); the S1.3 lead rewritten, since the move of S1.4 made it false. The root index now lists the whole top line (it listed only the appendix groups). Two Side-letter gaps the moves left were closed. `check.mjs`: no fault, 773 → 776 Cards; a last Term relink changed nothing.
+- Calls that could go the other way: S3.1.2 and S3.2 stay one branch under S3, since the summary of group 25 speaks for both; the S3.1 lead holds S3.1.1 as its Direct chain; the structure card `1|e` was not updated.
+
+**Hansen.** 4 Model Cards, now 3 models. The appendix model `8|b|b` (concept, B.2: the IT-intensity measure from the principal components of 27 skill shares) is the measurement built for `5|c|e`: columns (3) and (5) of Table 3 use its two factor measures (§9.1). It was folded into `5|c|e` as `测量：IT 因子的构造 (B.2)` under `测量：工人 IT 技能` (`5|c|e|a|f|a`), with its sample card (695 firms, the seven-year window, the shares $z_{ij}$), its projection card and its loading example, each with a **起点**. No twin, no delete; the Side slots of `8|b` were closed. `3|c|a` (the CBOW model) and `5|b|b|a` (the manager-time model) are models of their own and were not touched. On `5|c|e`: the data tree and the specification ladder are in place, self-sufficient, `network: clean`, no premise before its card, `imports.mjs check` 0, nothing to import, nothing to explain; Terms relinked (1 Link). The estimates did not change; the survey proposed 0 pairs. The Hansen tree had been organized after its extension (a sibling session, 2026-11-10, 16:21 UTC): §1–§6, 附录 A, 附录 B, the Term list, the Cited list. After the fold, `check.mjs` reports only the expected unit change (`5|c|e`, 70 → 74 Cards), and the B summary is still true.
+
+**Cost.** No DeepSeek job ran: nothing needed an explanation, and no survey found a pair. The usage ledger (official source, 2026-11-10 UTC) stood at 88.998 CNY before Becker, after Becker and after Hansen: 0 CNY for each book.
+
+**Script faults, fixed test-first** (installed for Claude Code and Codex). `check-settings.mjs` read an environment name and an array column spec (`\begin{array}{l l}`) as the symbols $a$ and $l$ (uncovered faults on the S4 setting). `outline.mjs` stopped at a whole unit on the top line, so the Becker Term list at `/8` hid groups 10–27. Tests: `check-settings.test.mjs` 21, `outline.test.mjs` 1.
+
+**Left open.** The Hansen formal models `3|c|a` and `5|b|b|a` are not in the strict settings format (3 and 11 format faults, with notation faults); they predate the appendix rule and were not part of this pass.

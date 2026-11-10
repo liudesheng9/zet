@@ -87,7 +87,7 @@ The explanation refresh (step 8) applies to the empirical model's `推导：估�
 
 - After `zt-model-fold`: an import is intended sharing between two models, and the fold never joins two models because of one (only a legacy share counts as evidence of a split).
 - After `zt-model-settings` and `zt-model-restructure`: both treat an imported block as premises before the setting and never audit a borrowed Card, so a model that already imports keeps its lines through them. This skill then writes the remaining import lines, settles the imported symbols (step 6) and refreshes the explanations (step 8).
-- Last of the model passes: fold → settings → restructure → import. Step 8 refreshes the explanations after all of them, so a book needs no separate run of the digest in mode `explain` (that mode stays for repairing a whole book).
+- Last of the model passes: fold → settings → restructure → import. Step 8 refreshes the explanations after all of them, so a book needs no separate run of the digest in mode `explain` (that mode stays for repairing a whole book). The post-digest sequence of a book then goes on with `zt-evidence-dialogue` (empirical models whose estimates or premises changed) and ends with `zt-literature-organize` on the book: fold → settings → restructure → import → evidence dialogue → literature organize (owner, 2026-11-10).
 - The digest's model compiler writes `**引入**` lines itself (`take` with `"block": true` for 整块); this skill repairs or extends models afterwards, and migrates older models (the whole box was migrated on 2026-10-31 with `E:\zet\scripts\model-imports\migrate.mjs`).
 
 ## Report

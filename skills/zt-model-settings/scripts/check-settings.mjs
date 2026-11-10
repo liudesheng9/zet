@@ -96,7 +96,9 @@ const isLetter = (t) => /^[A-Za-z]$/.test(t) || GREEK.includes(t.slice(1)) && t[
 const formulas = (body) => [...(body || '').matchAll(/\$\$?([^$]+)\$\$?/g)].map((x) => x[1])
 /** The tokens of a TeX string; text, tags and labels are dropped. */
 export function tokens(tex) {
-  const s = tex.replace(/\\(?:text|textrm|textit|mathrm|operatorname|mbox|tag|label)\s*\{[^{}]*\}/g, ' ')
+  // An environment's name and an array's column spec (\begin{array}{l l}, \end{array}) are no symbols.
+  const s = tex.replace(/\\begin\s*\{[^{}]*\}(?:\s*\{[^{}]*\})?|\\end\s*\{[^{}]*\}/g, ' ')
+    .replace(/\\(?:text|textrm|textit|mathrm|operatorname|mbox|tag|label)\s*\{[^{}]*\}/g, ' ')
   let out = [...s.matchAll(/\\[A-Za-z]+|\\.|\S/g)].map((x) => x[0]).filter((t) => !/^\\[ ,;:!]$|^\\(?:left|right|big|Big|bigg|Bigg|quad|qquad|displaystyle|limits)$/.test(t))
   for (let changed = true; changed;) {
     changed = false

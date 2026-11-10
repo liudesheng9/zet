@@ -31,6 +31,23 @@ export function unitSize(kids, c) {
   return 1 + (kids[c.address] || []).filter(k => !(onTop && k.edge === 'direct')).reduce((n, k) => n + size(kids, k.address), 0)
 }
 
+/** The outline's lines. A whole unit prints as one row; on the top line its Direct successor is the next top
+ * Card, not part of the unit, so the walk goes on there (a Term list that is not last hid every Card after it). */
+export function outline(full, key, maxDepth = Infinity) {
+  const kids = children(full)
+  const lines = []
+  const walk = (c, depth) => {
+    const whole = isWhole(c)
+    const src = sourceLine(c.body)
+    lines.push(`${'  '.repeat(depth)}${c.address.slice(key.length + 1) || key} [${c.type}${whole ? ` ${unitSize(kids, c)}` : ''}] ${c.title.slice(0, 50)}${src ? `  <${src.slice(0, 30)}>` : ''}`)
+    const onTop = /\/\d+$/.test(c.address)
+    if (!whole && depth < maxDepth) for (const k of kids[c.address] || []) if (k.edge === 'side') walk(k, depth + 1)
+    if (!whole || onTop) for (const k of kids[c.address] || []) if (k.edge === 'direct') walk(k, depth)
+  }
+  walk(full.find(c => c.edge === 'root'), 0)
+  return lines
+}
+
 if (process.argv[1].endsWith('outline.mjs')) {
   const argv = process.argv.slice(2)
   const key = argv[0]
@@ -41,14 +58,5 @@ if (process.argv[1].endsWith('outline.mjs')) {
   const bodies = Object.fromEntries(cards(list.map(c => c.address)).map(c => [c.address, c.body]))
   const full = list.map(c => ({ ...c, body: bodies[c.address] ?? '' }))
   fs.writeFileSync(path.join(out, `${key}.tree.json`), JSON.stringify(full))
-  const kids = children(full)
-  const walk = (c, depth) => {
-    const whole = isWhole(c)
-    const src = sourceLine(c.body)
-    console.log(`${'  '.repeat(depth)}${c.address.slice(key.length + 1) || key} [${c.type}${whole ? ` ${unitSize(kids, c)}` : ''}] ${c.title.slice(0, 50)}${src ? `  <${src.slice(0, 30)}>` : ''}`)
-    if (whole) return
-    if (depth < maxDepth) for (const k of kids[c.address] || []) if (k.edge === 'side') walk(k, depth + 1)
-    for (const k of kids[c.address] || []) if (k.edge === 'direct') walk(k, depth)
-  }
-  walk(full.find(c => c.edge === 'root'), 0)
+  for (const l of outline(full, key, maxDepth)) console.log(l)
 }

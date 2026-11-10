@@ -7,7 +7,7 @@ description: "Write the conversation of one ZET empirical model (level 3, empiri
 
 Input: the **address of an empirical Model Card** (level 3, for example `hansen2021demand/5|c`), written `<head>` below. Output: Links between its estimates and the Cards elsewhere in the box that estimate the same thing, each with its kind word first and one reason sentence, and a check that a second survey proposes nothing new (docs/empirical-models-proposal.md §7, §9.5).
 
-The order of the model passes for an empirical model: `zt-model-fold` → `zt-model-settings` (the data tree and the specification ladder) → `zt-model-restructure` (the evidence spine) → `zt-model-import` (hypotheses, data, theories) → this skill. The import pass turns premises into **引入** lines; this pass writes the comparisons, which are never premises.
+The order of the model passes for an empirical model: `zt-model-fold` → `zt-model-settings` (the data tree and the specification ladder) → `zt-model-restructure` (the evidence spine) → `zt-model-import` (hypotheses, data, theories) → this skill → `zt-literature-organize` on the book, last of the post-digest sequence (owner, 2026-11-10). The import pass turns premises into **引入** lines; this pass writes the comparisons, which are never premises.
 
 ## What it writes, and what it never does
 

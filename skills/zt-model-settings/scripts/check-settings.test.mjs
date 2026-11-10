@@ -1,7 +1,7 @@
 // node --test check-settings.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { audit, notationSymbols } from './check-settings.mjs'
+import { audit, notationSymbols, baseSymbols } from './check-settings.mjs'
 
 const S = 'K/4|a|a'
 const row = (address, facet, title, line = 'side') => ({ address, facet, title, line })
@@ -312,4 +312,9 @@ test('an empirical model: a card another model lends (an imported block) is audi
   const cards = new Map([[H + '|a|a', { body: '| 变量 | 含义 |\n| --- | --- |' }]])
   const r = auditEmpirical(m, cards)
   assert.deepEqual(r.assumption, [], JSON.stringify(r.assumption))
+})
+
+test('an environment name and an array column spec are not symbols (\begin{array}{l l})', () => {
+  assert.deepEqual(baseSymbols(String.raw`y = \left\{ \begin{array}{l l} x & \text {if} I = 1 \\ w & \text {if} I = 0 \end{array} \right.`), ['y', 'x', 'I', 'w'])
+  assert.deepEqual(baseSymbols(String.raw`\left( \begin{array}{c c c} a & b \\ c & d \end{array} \right)`), ['a', 'b', 'c', 'd'])
 })
