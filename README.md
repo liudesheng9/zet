@@ -230,7 +230,7 @@ The command bar speaks the Session's language (`go 1/2`, `back`, `fwd`, `n`, `b`
 `ws agent`, `del`, `ins`, `mv 1/3`, `mv alone before 1/2`, `ty event`, `lsbk`, `help`). Delete, move, and Citation-key rename ask you to type the
 same confirmation as the CLI. Keys: `:` command bar, `/` or `Ctrl+K` search, `Alt+←` / `Alt+→` back and forward, `g` go, `n` `b` `e` `m` `i` (insert),
 `Delete`, `u` or arrows to walk the map, `x` to unfold or fold the tree, `p` / `P` to lay a card on the Table, `v` to switch views,
-`w` to switch Workspaces, `f` to fit.
+`w` to switch Workspaces, `f` to fit, `c` (or `Ctrl+C` with nothing selected) to copy the open card's address. The address stamp in the card's corner copies it too: press its stub.
 
 The GUI listens on `127.0.0.1` only and requires a token that changes each time the service
 starts. An open GUI window is not a Session, so `zt down` never waits for one: the window's

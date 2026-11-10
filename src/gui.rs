@@ -5198,6 +5198,45 @@ mod tests {
         &body[..body.find("\n  }\n").expect("end of function") + 4]
     }
 
+    /// Every address stamp copies its Card's address through one component: the reader's whole
+    /// stamp copies, a stamp that opens its Card copies from its stub; the copy has a fallback
+    /// past a refused Clipboard API and never fails in silence; `c` and Ctrl+C with nothing
+    /// selected copy the open Card's address from any view; and the stamp wraps inside the card
+    /// instead of running past its edge.
+    #[test]
+    fn every_address_stamp_copies_the_address_and_shows_the_copy_on_the_stamp() {
+        let stamp = js_function("function addressStamp(");
+        assert_eq!(APP_JS.matches("class: 'stamp'").count(), 1, "no stamp is built outside addressStamp");
+        assert!(stamp.contains("class: 'stamp'"), "{stamp}");
+        assert_eq!(APP_JS.matches("addressStamp(card.address)").count(), 2, "the reader and the search preview");
+        assert_eq!(APP_JS.matches("addressStamp(address, () =>").count(), 2, "the pulled-out card and the study desk");
+
+        assert!(stamp.contains("dataset: { address }") && stamp.contains("class: 'addr-stub'") && stamp.contains("class: 'addr-whole'"), "{stamp}");
+        assert!(stamp.contains("title: 'Open this Card in the reader', onclick: open"), "{stamp}");
+        assert!(stamp.contains("role: 'status'"), "the copy is announced: {stamp}");
+
+        let copy = js_function("async function copyText(");
+        assert!(copy.contains("navigator.clipboard.writeText(text)") && copy.contains("document.execCommand('copy')"), "{copy}");
+        let address = js_function("async function copyAddress(");
+        assert!(address.contains("'warn'") && address.contains("addRange(range)"), "a refused copy leaves the address selected: {address}");
+        let shown = js_function("function stampCopied(");
+        assert!(shown.contains("classList.add('copied')") && shown.contains("addr-impression") && shown.contains("toast("), "{shown}");
+
+        let keys = js_function("function installKeys()");
+        assert!(keys.contains("case 'c': return card ? run(() => copyAddress(card.address)) : undefined;"), "{keys}");
+        assert!(keys.contains("event.key.toLowerCase() === 'c'") && keys.contains("selection.isCollapsed") && keys.contains("isTyping(event.target)"), "{keys}");
+        assert!(keys.contains("copyAddress(state.card.address)"), "Ctrl+C with nothing selected copies the address: {keys}");
+
+        assert!(css_rule(".card-meta").contains("flex-wrap: wrap"), "the stamp wraps inside the card");
+        let rule = css_rule(".stamp");
+        assert!(rule.contains("max-width: 100%") && rule.contains("var(--accent)") && rule.contains("rotate(-2deg)"), "{rule}");
+        assert!(css_rule(".stamp .addr-text").contains("overflow-wrap: anywhere"));
+        assert!(css_rule(".stamp .addr-stub").contains("dashed") && css_rule(".stamp .addr-stub").contains("cursor: copy"));
+        let copied = css_rule(".stamp.copied");
+        assert!(copied.contains("background: var(--accent)") && copied.contains("color: var(--paper)"), "{copied}");
+        assert!(APP_CSS.contains("  .addr-impression { display: none; }"), "reduced motion keeps the ink and drops the lift");
+    }
+
     /// S13 (#156, US047/US048, S13-AC01..AC03): a quiet Term link is the authored word in the
     /// prose's own font, size and ink with a restrained dotted line; its meaning and address show
     /// on a slip on hover and on keyboard focus by CSS alone; Enter and Space follow it through

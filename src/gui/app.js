@@ -110,6 +110,104 @@
     return node;
   }
 
+  // ------------------------------------------------------------ address stamp
+  // A Card's address is its name in the box, and the stamp in the card's corner is where the eye
+  // looks for it. The stamp carries a perforated stub on its left with two overlapping slips: a
+  // press on the stub takes a copy of the address. The copy shows where it was taken: the stamp
+  // sinks and inks, an impression of the address lifts off it into the hand, and the slips turn
+  // into a tick. In the reader the whole stamp copies; where the stamp opens its Card (a card on
+  // the study desk or pulled out of the box) only the stub copies. `c`, and Ctrl+C with nothing
+  // selected, copy the open Card's address from any view.
+
+  /** The stub's mark: a slip with its copy behind it, and the tick it turns into once copied. */
+  function copyGlyph() {
+    const icon = svg('svg', { class: 'copy-glyph', viewBox: '0 0 12 12', 'aria-hidden': 'true', focusable: 'false' });
+    icon.append(
+      svg('path', { class: 'slip', d: 'M1.6 8.1V2.6a1 1 0 0 1 1-1h5.1' }),
+      svg('rect', { class: 'slip', x: '4', y: '3.7', width: '6.6', height: '7', rx: '1' }),
+      svg('path', { class: 'tick', d: 'M2.6 6.5 5 8.8 9.6 3.4', pathLength: '1' }));
+    return icon;
+  }
+
+  /** Put text on the clipboard: the Clipboard API, else a hidden field and the copy command. */
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch { /* no permission or no focus: the copy command below still works on a press */ }
+    const keep = document.activeElement;
+    const field = h('textarea', { class: 'copy-buffer', readonly: true, 'aria-hidden': 'true', tabindex: '-1' });
+    field.value = text;
+    document.body.append(field);
+    field.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch { copied = false; }
+    field.remove();
+    if (keep && typeof keep.focus === 'function') keep.focus({ preventScroll: true });
+    return copied;
+  }
+
+  /** The stamp that shows this address in view, if one does: the reader's before any other. */
+  function visibleStamp(address) {
+    const stamps = [...document.querySelectorAll('.stamp[data-address]')].filter((node) => node.dataset.address === address);
+    stamps.sort((a, b) => Number(!a.closest('#reader')) - Number(!b.closest('#reader')));
+    return stamps.find((node) => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.bottom > 0 && box.top < innerHeight && box.right > 0 && box.left < innerWidth;
+    }) || null;
+  }
+
+  /** The copy, shown on the stamp it came from; with no stamp in view, a note in the corner. */
+  function stampCopied(stamp, address) {
+    if (!stamp) { toast(`Copied the address ${address}`); return; }
+    stamp.classList.remove('copied');
+    void stamp.offsetWidth; // restart the press when the same stamp is pressed again
+    stamp.classList.add('copied');
+    stamp.querySelector('.addr-impression')?.remove();
+    const impression = h('span', { class: 'addr-impression', 'aria-hidden': 'true', text: address });
+    impression.addEventListener('animationend', () => impression.remove());
+    stamp.append(impression);
+    const said = stamp.querySelector('.addr-said');
+    if (said) said.textContent = `Copied the address ${address}`;
+    clearTimeout(stamp.copiedTimer);
+    stamp.copiedTimer = setTimeout(() => {
+      stamp.classList.remove('copied');
+      if (said) said.textContent = '';
+    }, 1500);
+  }
+
+  /** Copy a Card's address; a refused clipboard leaves the address selected in a note instead. */
+  async function copyAddress(address, stamp) {
+    if (await copyText(address)) { stampCopied(stamp && stamp.isConnected ? stamp : visibleStamp(address), address); return; }
+    const words = h('span', { class: 'toast-address', text: address });
+    toast('The browser refused the clipboard. The address is selected: press Ctrl+C.', 'warn', null, words);
+    const range = document.createRange();
+    range.selectNodeContents(words);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  }
+
+  /**
+   * The address stamp of a Card. With `open`, the address opens the Card and the stub alone
+   * copies; without it the whole stamp copies.
+   */
+  function addressStamp(address, open) {
+    const stamp = h('span', { class: 'stamp' + (open ? ' opens' : ''), dataset: { address } });
+    const copy = (event) => { event.stopPropagation(); copyAddress(address, stamp).catch(fail); };
+    const label = `Copy the address ${address}`;
+    if (open) {
+      stamp.append(
+        h('button', { class: 'addr-stub', type: 'button', title: `${label} (c copies the open Card's)`, 'aria-label': label, onclick: copy }, copyGlyph()),
+        h('button', { class: 'addr-text', type: 'button', title: 'Open this Card in the reader', onclick: open, text: address }));
+    } else {
+      stamp.append(h('button', { class: 'addr-whole', type: 'button', title: 'Copy the address (c)', 'aria-label': label, onclick: copy },
+        h('span', { class: 'addr-stub' }, copyGlyph()),
+        h('span', { class: 'addr-text', text: address })));
+    }
+    stamp.append(h('span', { class: 'addr-said', role: 'status' }));
+    return stamp;
+  }
+
   /**
    * The check slip under a save note (S04, #146): the stage and the advice count on one faint line,
    * then the advice this save added before the advice the Card already carried, at most three and
@@ -1568,7 +1666,7 @@
               h('span', { class: 'kind-tag ' + card.kind, text: kindLabel }),
               h('span', { class: 'ws-tag ' + card.workspace, text: wsLabel(card.workspace) }),
               typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
-              h('span', { class: 'stamp', text: card.address })),
+              addressStamp(card.address)),
             h('h1', { class: 'title' }, titleNodes(card.title || '(untitled)'))),
           md);
         if (!partial) wireMarkdown(md);
@@ -4206,6 +4304,7 @@
           [': · / or Ctrl+K', 'command bar · search every card'],
           ['Alt+← →', 'back · forward through the cards you visited'],
           ['↑ ↓ →', 'walk parent · direct · side in the map'],
+          ['c · Ctrl+C', 'copy the open card’s address (Ctrl+C with nothing selected)'],
           ['x', 'unfold the whole tree, or fold it back around the pointer'],
           ['p · P', 'lay the card on the Table · with every card it relates to'],
           ['s', 'study a mathematical unit on the desk, one station at a time'],
@@ -4250,10 +4349,7 @@
           card.kind === 'literature' ? shelfTag(card) : null,
           h('span', { class: 'ws-tag ' + card.workspace, title: `${wsLabel(card.workspace)} workspace — ${(WORKSPACES[card.workspace] || WORKSPACES.human).mcp}`, text: wsLabel(card.workspace) }),
           typeStamp(card.type, null, card.facet, card.emphasis, card.level, card.form),
-          h('button', {
-            class: 'stamp', title: 'Copy address', text: card.address,
-            onclick: () => navigator.clipboard?.writeText(card.address).then(() => toast(`copied ${card.address}`), () => {}),
-          }),
+          addressStamp(card.address),
         ),
         card.hubs && card.hubs.length ? h('nav', { class: 'hub-climb', 'aria-label': 'Hubs that list this card' }, card.hubs.map((hub) => h('button', {
           class: 'hub-chip' + (HUB_LEVELS[hub.level] ? ' hub-' + hub.level : ''),
@@ -5593,7 +5689,7 @@
       h('div', { class: 'pullout-card' },
         h('header', { class: 'pullout-head' },
           unitHead ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet', text: facetLabel(card.facet) || card.type }),
-          h('button', { class: 'stamp', title: 'Open this Card in the reader', text: address, onclick: () => { study.close(); dropBack(); go(address); } }),
+          addressStamp(address, () => { study.close(); dropBack(); go(address); }),
           h('button', { class: 'pullout-close', title: 'Drop it back into the box (Esc)', 'aria-label': 'Drop back', text: '×', onclick: () => dropBack() })),
         h('h3', { class: 'pullout-title' }, titleNodes(card.title || address)),
         study.canEnter(card) ? h('button', {
@@ -6038,7 +6134,7 @@
               head ? typeStamp(card.type, null, null, null, card.level, card.form) : h('span', { class: 'sd-facet', text: facetLabel(facet) }),
               crux ? h('span', { class: 'sd-crux', title: 'The crux step: the idea of the proof', text: 'crux' }) : null,
               labels && !head ? h('span', { class: 'sd-uses', title: 'The labels this Card uses' }, labels.split(' ').map((label) => h('span', { class: 'lchip small', tabindex: '0', dataset: { label }, text: label }))) : null,
-              h('button', { class: 'stamp', title: 'Open this Card in the reader', text: address, onclick: () => { close(); go(address); } })),
+              addressStamp(address, () => { close(); go(address); })),
             h('h3', { class: 'sd-title' }, titleNodes(card.title || address)),
             lean && as !== 'focus' ? null : md),
           down ? h('div', { class: 'sd-face back', 'aria-label': 'Face down' },
@@ -7157,7 +7253,7 @@
     const rows = COMMANDS.filter(([syntax, , scope]) => offered(syntax, scope));
     const on = (feature) => ZtFeatures.allows(state.features, feature);
     const keys = [': command', on('search') ? '/ or Ctrl+K search' : null, 'Alt+← Alt+→ back forward', 'g go',
-      on('reply') ? 'n b e r m i' : 'n b e m i', 'Del delete', 'u up', '↑↓→ walk', 'v view', 'x unfold', 'p table',
+      on('reply') ? 'n b e r m i' : 'n b e m i', 'Del delete', 'u up', '↑↓→ walk', 'c copy the address', 'v view', 'x unfold', 'p table',
       'P table with relations', 's study a mathematical unit (on the desk: ← → stations, Space turn over, 1 2 3 Learn Review Look up)',
       'w workspace', 'f fit', on('ask') ? 'ask the box, then y keeps the proposed Table and Esc cancels it' : null, 'Esc close'];
     listDialog('Commands', [
@@ -8487,6 +8583,15 @@
         finder.open();
         return;
       }
+      // Ctrl+C with nothing selected copies the open Card's address, as a file browser copies the
+      // item in focus; a selection and a field keep the ordinary copy.
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'c') {
+        const selection = getSelection();
+        if (!state.card || isTyping(event.target) || (selection && !selection.isCollapsed && String(selection).trim())) return;
+        event.preventDefault();
+        copyAddress(state.card.address).catch(fail);
+        return;
+      }
       // Alt+← / Alt+→ step back and forward, as in a file browser.
       if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
         if (isTyping(event.target)) return;
@@ -8511,6 +8616,7 @@
         case 'g': return run(() => { const input = $('#command-input'); input.value = 'go '; input.focus(); input.dispatchEvent(new Event('input')); });
         case 'n': return run(() => runCommand('n'));
         case 'b': return run(() => runCommand('b'));
+        case 'c': return card ? run(() => copyAddress(card.address)) : undefined;
         case 'e': return run(() => runCommand('e'));
         case 'r': return card && card.workspace === 'agent' ? run(replyTo) : undefined;
         case 't': return run(() => newCard('topic', ''));
