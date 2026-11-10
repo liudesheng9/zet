@@ -10230,9 +10230,12 @@ fn frozen_owned(p: &Prepared, inputs: &Value, label: &str) -> Result<Vec<String>
     let path = Path::new(field(record, "path")?);
     // A card split appends to the manifest after it was frozen (`card::add_owned`): the frozen lines must still
     // lead the file unchanged; the split Cards after them join the scope (grossman2002integration trial 19).
+    // A move `ledger relocate` recorded rewrites the manifest too (becker2025division-appendix): mapped back, it
+    // is the frozen manifest.
     if let Err(error) = check_file(record, &format!("{label} owned manifest")) {
         let text = std::fs::read_to_string(path).unwrap_or_default();
-        if !frozen_prefix_holds(&text, field(record, "sha256")?) {
+        let sha = field(record, "sha256")?;
+        if !frozen_prefix_holds(&text, sha) && !frozen_prefix_holds(&unrelocated(&text, &recorded_relocations(p)?), sha) {
             return Err(error);
         }
     }
@@ -10256,6 +10259,32 @@ fn frozen_owned(p: &Prepared, inputs: &Value, label: &str) -> Result<Vec<String>
 }
 
 /// Whether the text's leading whole lines hash to `sha256`: the frozen manifest, possibly followed by appended lines.
+/// The manifest text with each recorded move mapped back (`back`: new address → the address it replaced), so a
+/// manifest `ledger relocate` rewrote can be compared with its frozen hash.
+fn unrelocated(text: &str, back: &std::collections::BTreeMap<String, String>) -> String {
+    let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut body = text.lines().map(|line| back.get(line.trim()).cloned().unwrap_or_else(|| line.to_string())).collect::<Vec<_>>().join(ending);
+    if text.ends_with('\n') {
+        body.push_str(ending);
+    }
+    body
+}
+
+/// The moves `ledger relocate` recorded in this run, new address → the address it replaced.
+fn recorded_relocations(p: &Prepared) -> Result<std::collections::BTreeMap<String, String>> {
+    let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+    let mut statement = conn.prepare("SELECT facts_json FROM events WHERE event='relocated'")?;
+    let rows = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut back = std::collections::BTreeMap::new();
+    for facts in rows {
+        let facts: Value = serde_json::from_str(&facts)?;
+        if let (Some(from), Some(to)) = (facts["from"].as_str(), facts["to"].as_str()) {
+            back.insert(to.to_string(), from.to_string());
+        }
+    }
+    Ok(back)
+}
+
 fn frozen_prefix_holds(text: &str, sha256: &str) -> bool {
     let mut end = 0;
     loop {
@@ -18535,6 +18564,20 @@ mod tests {
         assert!(frozen_prefix_holds(frozen, &sha));
         assert!(!frozen_prefix_holds("B/8\nB/8|c\nB/8|b\n", &sha), "a changed line is not an extension");
         assert!(!frozen_prefix_holds("B/8\n", &sha), "a shortened manifest is not an extension");
+    }
+
+    // becker2025division-appendix (2026-11-10): a model build merged `24|a|18` into `24|a|b`; `ledger relocate` recorded
+    // the move and rewrote owned-g24.txt, and link-start then refused the manifest's hash. With the recorded moves
+    // mapped back, the manifest is the frozen one.
+    #[test]
+    fn an_owned_manifest_rewritten_by_a_recorded_move_maps_back_to_its_frozen_form() {
+        let frozen = "B/24\nB/24|a|17\nB/24|a|18\n";
+        let sha = canon::sha256_hex(frozen.as_bytes());
+        let moves: std::collections::BTreeMap<String, String> = [("B/24|a|b".to_string(), "B/24|a|18".to_string())].into();
+        let rewritten = "B/24\nB/24|a|17\nB/24|a|b\n";
+        assert!(!frozen_prefix_holds(rewritten, &sha));
+        assert!(frozen_prefix_holds(&unrelocated(rewritten, &moves), &sha));
+        assert!(frozen_prefix_holds(&unrelocated(frozen, &moves), &sha), "an untouched manifest stays itself");
     }
 
     // #92: a claim that starts a provider run asks for that run's cap, and the base lease never
