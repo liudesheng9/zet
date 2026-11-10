@@ -4122,6 +4122,7 @@ fn verify_cards_book_coverage(
                     .any(|form| card["form"] == json!(form))
         })
         .map(|card| s(&card["address"]))
+        .filter(|at| in_run_scope(&p.contract, at))
         .collect();
     let reviews: Vec<Value> = report["reviews"].as_array().cloned().unwrap_or_default();
     let review_of = |at: &str| reviews.iter().find(|review| ps::eq(&s(&review["address"]), at)).cloned();
@@ -8860,6 +8861,20 @@ fn verify_archive_receipts(
 /// contract binds, one past the tree's last top-line Card. Group n is anchored at `key/n` either way.
 pub(crate) fn first_group(contract: &Value) -> u64 {
     contract["extends"]["first_group"].as_u64().unwrap_or(1)
+}
+
+/// True when `address` belongs to this run: always for an ordinary run; for an extension, only under one of its own
+/// group anchors (`key/11`, `key/11|a|2`). brandimarti2026reorganizing-appendix (2026-11-10): the book finish asked a
+/// review owner for every Model Card of the tree, the earlier digest's `1|d` included, and refused the book.
+pub(crate) fn in_run_scope(contract: &Value, address: &str) -> bool {
+    if contract.get("extends").is_none_or(|v| v.is_null()) {
+        return true;
+    }
+    let lower = address.to_lowercase();
+    contract["groups"].as_array().into_iter().flatten().filter_map(|g| g["anchor"].as_str()).any(|anchor| {
+        let anchor = anchor.to_lowercase();
+        lower == anchor || lower.starts_with(&format!("{anchor}|"))
+    })
 }
 
 /// The Cards a prepared run's setup creates, in setup order: the Literature root and every group anchor, or for
@@ -20678,6 +20693,15 @@ mod lean_status_tests {
 #[cfg(test)]
 mod extension_setup_tests {
     use super::*;
+
+    #[test]
+    fn an_extension_owns_only_the_cards_under_its_own_anchors() {
+        let extension = json!({"extends":{"first_group":11},"groups":[{"n":11,"anchor":"K/11"},{"n":12,"anchor":"K/12"}]});
+        assert!(in_run_scope(&extension, "K/11|a") && in_run_scope(&extension, "K/12"));
+        assert!(!in_run_scope(&extension, "K/1|d") && !in_run_scope(&extension, "K/4|f") && !in_run_scope(&extension, "K/110|a"));
+        let ordinary = json!({"groups":[{"n":1,"anchor":"K/1"}]});
+        assert!(in_run_scope(&ordinary, "K/1|d") && in_run_scope(&ordinary, "K/9|f"), "an ordinary run owns the whole book");
+    }
 
     fn prepared(calls: &[Value], extends: Option<u64>) -> (tempfile::TempDir, Prepared) {
         let dir = tempfile::tempdir().unwrap();
