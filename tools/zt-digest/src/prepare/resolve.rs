@@ -57,15 +57,15 @@ const FRONT: &[&str] = &[
     "译者的话",
 ];
 
-/// Headings that open a book's back matter: the first one after the start heading is the end.
+/// Headings that open a book's back matter. The end is the first one after which every top heading is back
+/// matter too; one with content after it (a paper's appendices after its reference list) is skipped instead.
+/// An appendix is never back matter: the owner (2026-11-10) requires every appendix to be digested.
 const BACK: &[&str] = &[
     "references",
     "bibliography",
     "reference",
     "works cited",
     "index",
-    "appendix",
-    "appendices",
     "notes",
     "glossary",
     "afterword",
@@ -74,7 +74,6 @@ const BACK: &[&str] = &[
     "参考文献",
     "引用文献",
     "索引",
-    "附录",
     "注释",
     "术语表",
     "后记",
@@ -101,9 +100,6 @@ const SKIP: &[&str] = &[
     "references",
     "索引",
     "index",
-    "附录",
-    "appendix",
-    "appendices",
     "注释",
     "notes",
     "术语表",
@@ -961,7 +957,13 @@ fn resolve_range(work: &Work, path: &str, headings: &[Heading], x: &Explicit) ->
     };
     let (end, end_explicit) = match x.end.as_deref().filter(|value| !value.trim().is_empty()) {
         Some(title) => match index_of(headings, title) {
-            Some(index) if index > start => (Some(index), true),
+            Some(index) if index > start => {
+                // The owner (2026-11-10): an appendix is always digested, so an end heading may only open the tail.
+                if let Some(after) = content_after(headings, index) {
+                    bail!("the end heading \"{title}\" would leave out \"{}\" (line {}); a digest reads every appendix and every section after the reference list: omit -EndHeading", after.title, after.line);
+                }
+                (Some(index), true)
+            }
             Some(_) => bail!("the end heading \"{title}\" does not follow the start heading in {path}"),
             None => bail!("no heading \"{title}\" found in {path}"),
         },
@@ -974,9 +976,19 @@ fn resolve_range(work: &Work, path: &str, headings: &[Heading], x: &Explicit) ->
         Some(list) => {
             let mut indices = Vec::new();
             for title in split_skip(list) {
+                if is_appendix(&title) {
+                    bail!("-SkipHeadings names \"{title}\", an appendix; a digest reads every appendix");
+                }
                 let index = index_of(headings, &title).with_context(|| format!("no heading \"{title}\" found in {path}"))?;
                 indices.push(index);
             }
+            // The reference list and the other sections a digest never reads stay left out beside the caller's list.
+            for index in &proposal.skip {
+                if !indices.contains(index) {
+                    indices.push(*index);
+                }
+            }
+            indices.sort_unstable();
             (indices, true)
         }
         None => (proposal.skip, false),
@@ -1028,14 +1040,66 @@ fn propose(headings: &[Heading]) -> Proposal {
         .or_else(|| top.iter().copied().find(chinese))
         .or_else(|| top.first().copied())
         .unwrap_or(0);
+    // The end opens the tail: a back heading after which every top heading is back matter. A back heading with
+    // content after it (brandimarti2026reorganizing: figures, tables and the model appendix after the reference
+    // list) is skipped, and the content after it is digested.
+    let tail = |index: &usize| tail_from(headings, *index);
     let end = (start + 1..headings.len())
-        .find(|index| headings[*index].level == 1 && chinese(index) && is_back(&headings[*index].title))
-        .or_else(|| (start + 1..headings.len()).find(|index| headings[*index].level == 1 && is_back(&headings[*index].title)));
+        .find(|index| headings[*index].level == 1 && chinese(index) && is_back(&headings[*index].title) && tail(index))
+        .or_else(|| (start + 1..headings.len()).find(|index| headings[*index].level == 1 && is_back(&headings[*index].title) && tail(index)));
     let limit = end.unwrap_or(headings.len());
     let skip = (start + 1..limit)
-        .filter(|index| headings[*index].level <= 2 && is_skippable(&headings[*index].title))
+        .filter(|index| {
+            let title = &headings[*index].title;
+            headings[*index].level <= 2 && (is_skippable(title) || (headings[*index].level == 1 && is_back(title)))
+        })
         .collect();
     Proposal { start, end, skip }
+}
+
+/// The start, end and skip headings of a source given as a file (`-Source`, no Work): the same rule as a resolved
+/// Work's range, so an appendix is digested whichever way the digest is fed. Returns (start, end, skip).
+pub(crate) fn source_range(raw: &str, path: &str, start: Option<String>, end: Option<String>, skip: Option<String>) -> Result<(String, String, String)> {
+    let headings = scan_headings(raw);
+    // As before this rule: a skip heading the file does not have leaves nothing out, and an explicit empty end
+    // runs the range to the end of the file.
+    let skip = skip.map(|list| split_skip(&list).into_iter().filter(|title| index_of(&headings, title).is_some()).collect::<Vec<_>>().join(","));
+    let to_the_end = end.as_deref().is_some_and(|value| value.trim().is_empty());
+    let work = Work { id: 0, title: String::new(), authors: String::new(), year: None, venue: String::new(), doi: String::new(), fields: Vec::new() };
+    let x = Explicit {
+        source: path.to_string(),
+        source_given: true,
+        file_id: 0,
+        citation_key: String::new(),
+        citation_key_given: false,
+        bibtex: String::new(),
+        bibtex_given: false,
+        book_title: String::new(),
+        book_title_given: false,
+        start,
+        end,
+        skip,
+    };
+    let range = resolve_range(&work, path, &headings, &x)?;
+    let end = if to_the_end { String::new() } else { range.end_heading };
+    Ok((range.start_heading, end, range.skip_join))
+}
+
+/// True when every top heading from `index` on is back matter, so nothing after it is content.
+fn tail_from(headings: &[Heading], index: usize) -> bool {
+    headings[index..].iter().filter(|h| h.level == 1).all(|h| is_back(&h.title))
+}
+
+/// The first heading after `index` that is content (neither back matter nor a section a digest never reads).
+fn content_after(headings: &[Heading], index: usize) -> Option<&Heading> {
+    // Top headings only: a notes section's own subsections (`## 第一章 契约`) are not content after the end.
+    headings[index + 1..].iter().find(|h| h.level == 1 && !is_back(&h.title) && !is_skippable(&h.title))
+}
+
+/// An appendix heading, wherever the word stands in it (`B. 模型附录`, `Online Appendix`).
+fn is_appendix(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    lower.contains("附录") || lower.contains("appendix") || lower.contains("appendices")
 }
 
 /// Every heading the range leaves out, with the reason, in reading order.
@@ -1220,6 +1284,44 @@ mod tests {
         assert_eq!(top_headings(&headings, &range).len(), 3);
     }
 
+    // brandimarti2026reorganizing (2026-11-10, the owner: "the appendix should definitely be included"): the paper
+    // sets its figures, tables and its model appendix with the proofs after the reference list. The reference list
+    // is left out; everything after it that is not back matter is digested.
+    #[test]
+    fn appendices_after_the_reference_list_are_digested_and_the_list_is_skipped() {
+        let raw = "# 1. 引言\n\nx\n\n# 2. 模型\n\nx\n\n# 参考文献\n\nx\n\n# 9. 图\n\nx\n\n# A. 补充图表\n\nx\n\n# B. 模型附录\n\nx\n\n## B.7. 证明\n\nx\n";
+        let headings = scan_headings(raw);
+        let range = resolve_range(&work("", "T", None, "", ""), "paper.md", &headings, &explicit()).unwrap();
+        assert_eq!(range.end, None, "nothing after the appendices is back matter, so the range runs to the end");
+        assert_eq!(range.skip_join, "参考文献");
+        let excluded: Vec<String> = excluded_sections(&headings, &range).iter().map(|e| s(&e["heading"])).collect();
+        assert_eq!(excluded, vec!["参考文献".to_string()]);
+    }
+
+    #[test]
+    fn a_book_whose_appendix_precedes_its_reference_list_digests_the_appendix() {
+        let raw = "# 导论\n\nx\n\n# 第一章\n\nx\n\n# 附录 A 证明\n\nx\n\n# 参考文献\n\nx\n\n# 索引\n\nx\n";
+        let headings = scan_headings(raw);
+        let range = resolve_range(&work("", "T", None, "", ""), "book.md", &headings, &explicit()).unwrap();
+        assert_eq!(range.end_heading, "参考文献", "a reference list followed only by back matter is still the end");
+        assert_eq!(range.skip_join, "");
+        assert!(!excluded_sections(&headings, &range).iter().any(|e| s(&e["heading"]).starts_with("附录")));
+    }
+
+    #[test]
+    fn an_end_heading_or_a_skip_that_would_leave_out_an_appendix_is_refused() {
+        let raw = "# 1. 引言\n\nx\n\n# 参考文献\n\nx\n\n# B. 模型附录\n\nx\n";
+        let headings = scan_headings(raw);
+        let mut cut = explicit();
+        cut.end = Some("参考文献".into());
+        let error = resolve_range(&work("", "T", None, "", ""), "paper.md", &headings, &cut).err().expect("refused").to_string();
+        assert!(error.contains("B. 模型附录"), "{error}");
+        let mut skipped = explicit();
+        skipped.skip = Some("B. 模型附录".into());
+        let error = resolve_range(&work("", "T", None, "", ""), "paper.md", &headings, &skipped).err().expect("refused").to_string();
+        assert!(error.contains("appendix"), "{error}");
+    }
+
     #[test]
     fn a_heading_matches_a_list_at_a_word_boundary() {
         assert!(is_front("Preface"));
@@ -1228,7 +1330,8 @@ mod tests {
         assert!(is_back("References and Notes"));
         assert!(is_back("参考文献"));
         assert!(is_back("参考文献与索引"));
-        assert!(is_back("Appendix A"));
+        assert!(!is_back("Appendix A"), "an appendix is content, never back matter");
+        assert!(is_appendix("B. 模型附录") && is_appendix("Online Appendix") && !is_appendix("参考文献"));
         assert!(!is_back("Reference prices in a market"));
         assert!(is_skippable("Exercises"));
         assert!(is_skippable("习题"));

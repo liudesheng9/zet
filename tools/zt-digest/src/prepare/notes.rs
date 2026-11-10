@@ -48,6 +48,8 @@ static REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\[［〔【]\s*(\d{
 pub(crate) struct Options {
     pub title: String,
     pub max_chars: i64,
+    /// The frozen skip headings: a skipped notes heading is the notes section, outside the digested text.
+    pub skip: Vec<String>,
 }
 
 /// One written part of a chapter's notes: a whole number of note blocks.
@@ -131,7 +133,16 @@ pub(crate) fn extract(
     {
         section = ((end + 1)..headings.len()).find(|&at| is_notes(&headings[at].title));
     }
+    // A notes heading the range skips stands outside the digested text too (2026-11-10: a book whose appendices
+    // follow its notes has no end heading, and the notes heading is skipped).
+    let skipped = |at: usize| options.skip.iter().any(|title| eq(title, &headings[at].title));
+    if section.is_none()
+        && let Some(start) = start_at
+    {
+        section = ((start + 1)..headings.len()).find(|&at| skipped(at) && is_notes(&headings[at].title));
+    }
     if end_at.is_none()
+        && section.is_none()
         && let Some(start) = start_at
         && let Some(at) = ((start + 1)..headings.len()).find(|&i| is_notes(&headings[i].title))
     {
@@ -736,6 +747,20 @@ pub(crate) fn reference_block(record: &Value, source: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 2026-11-10: appendices are digested, so a book with collected notes and an appendix after them has no
+    // end heading; its notes heading is skipped, and the skipped heading is the notes section, not a fault.
+    #[test]
+    fn a_skipped_notes_heading_before_an_appendix_is_the_notes_section() {
+        let raw = "# 一、正文\n\n正文[1]。\n\n# 注释\n\n[1] 一条注释。\n\n# 附录 A 证明\n\n附录正文。\n";
+        let staging = std::env::temp_dir().join(format!("zt-notes-skip-{}", std::process::id()));
+        std::fs::create_dir_all(&staging).unwrap();
+        let options = Options { title: "T".into(), max_chars: 6000, skip: vec!["注释".into()] };
+        let notes = extract(raw, "book.md", &staging.to_string_lossy(), &["一、正文".to_string()], "一、正文", "", &options).unwrap();
+        let _ = std::fs::remove_dir_all(&staging);
+        assert!(!notes.faults.iter().any(|f| f["kind"] == "notes_inside_range"), "{:?}", notes.faults);
+        assert_eq!(notes.summary["section"]["heading"], "注释");
+    }
 
     #[test]
     fn chapter_numbers_read_chinese_and_arabic_headings() {

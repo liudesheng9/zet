@@ -540,11 +540,16 @@ impl Prepared {
         {
             bail!("group manifest hash mismatch");
         }
+        if contract.get("extends") != manifest.get("extends") {
+            bail!("prepared identity mismatch: the manifest's extension record differs from the run contract");
+        }
+        let first = first_group(&contract);
         for (i, (g, m)) in groups.iter().zip(manifest_groups).enumerate() {
-            if g["n"].as_u64() != Some(i as u64 + 1)
-                || g["anchor"] != format!("{}/{}", field(&contract, "citation_key")?, i + 1)
+            let n = first + i as u64;
+            if g["n"].as_u64() != Some(n)
+                || g["anchor"] != format!("{}/{}", field(&contract, "citation_key")?, n)
             {
-                bail!("group manifest identity mismatch at group {}", i + 1);
+                bail!("group manifest identity mismatch at group {n}");
             }
             for key in ["n", "id", "anchor", "chapter", "headings", "chars"] {
                 if g[key] != m[key] {
@@ -8851,25 +8856,44 @@ fn verify_archive_receipts(
         .collect()
 }
 
-/// Setup creates only the frozen Literature root and its exact Direct anchors.
+/// The first group number of a prepared run: 1, or for an extension (`prepare -Extend`) the number its
+/// contract binds, one past the tree's last top-line Card. Group n is anchored at `key/n` either way.
+pub(crate) fn first_group(contract: &Value) -> u64 {
+    contract["extends"]["first_group"].as_u64().unwrap_or(1)
+}
+
+/// The Cards a prepared run's setup creates, in setup order: the Literature root and every group anchor, or for
+/// an extension, which continues an existing tree, only its group anchors.
+fn setup_addresses(contract: &Value) -> Vec<Value> {
+    let anchors = contract["groups"].as_array().into_iter().flatten().map(|g| g["anchor"].clone());
+    if contract.get("extends").is_some_and(|v| !v.is_null()) {
+        anchors.collect()
+    } else {
+        std::iter::once(contract["citation_key"].clone()).chain(anchors).collect()
+    }
+}
+
+/// Setup creates only the frozen Literature root and its exact Direct anchors (an extension: only the anchors,
+/// the first after the tree's last top-line Card).
 /// No address allocation, edit, alias, or caller-selected replacement is allowed.
 fn setup_calls(p: &Prepared) -> Result<Vec<Value>> {
     let calls = bound_json(&p.contract["artifacts"]["setup_calls"], "setup")?;
     let calls = calls.as_array().context("setup must be a call array")?;
-    let groups = p.contract["groups"].as_array().unwrap();
     let key = field(&p.contract, "citation_key")?;
-    if calls.len() != groups.len() + 1 {
+    let roots = setup_addresses(&p.contract).len() - p.contract["groups"].as_array().unwrap().len();
+    if calls.len() != setup_addresses(&p.contract).len() {
         bail!("setup does not enumerate every prepared anchor");
     }
     for (i, call) in calls.iter().enumerate() {
         let a = &call["arguments"];
-        let required: &[&str] = if i == 0 {
+        let root = i < roots;
+        let required: &[&str] = if root {
             &["workspace", "bibtex", "body"]
         } else {
             &["at", "kind", "title", "body"]
         };
         // A run prepared before the Literature type declares none; its tree stays `others`.
-        let known = |k: &str| required.contains(&k) || (i == 0 && k == "literature_type");
+        let known = |k: &str| required.contains(&k) || (root && k == "literature_type");
         if call.as_object().is_none_or(|v| v.len() != 2)
             || a.as_object().is_none_or(|v| {
                 required.iter().any(|k| !v.contains_key(*k)) || v.keys().any(|k| !known(k))
@@ -8877,7 +8901,7 @@ fn setup_calls(p: &Prepared) -> Result<Vec<Value>> {
         {
             bail!("invalid retained setup operation {i}");
         }
-        if i == 0 {
+        if root {
             if call["tool"] != "create_literature"
                 || a["workspace"] != "agent"
                 || canon::sha256_hex(field(a, "bibtex")?.as_bytes())
@@ -8885,21 +8909,23 @@ fn setup_calls(p: &Prepared) -> Result<Vec<Value>> {
             {
                 bail!("setup Literature metadata mismatch");
             }
-        } else if call["tool"] != "create_successor"
+            field(a, "body")?;
+            continue;
+        }
+        let n = first_group(&p.contract) + (i - roots) as u64;
+        if call["tool"] != "create_successor"
             || a["kind"] != "direct"
             || a["at"]
-                != if i == 1 {
+                != if n == 1 {
                     key.to_string()
                 } else {
-                    format!("{key}/{}", i - 1)
+                    format!("{key}/{}", n - 1)
                 }
         {
-            bail!("setup anchor target mismatch at group {i}");
+            bail!("setup anchor target mismatch at group {n}");
         }
         field(a, "body")?;
-        if i > 0 {
-            field(a, "title")?;
-        }
+        field(a, "title")?;
     }
     Ok(calls.clone())
 }
@@ -9148,15 +9174,8 @@ fn preparation_outputs(conn: &Connection, result: &Value) -> Result<()> {
     }
     let contract = meta(conn, "preparation")?;
     let run = meta(conn, "run_id")?;
-    let expected_addresses = std::iter::once(contract["citation_key"].clone())
-        .chain(
-            contract["groups"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|g| g["anchor"].clone()),
-        )
-        .collect::<Vec<_>>();
+    let expected_addresses = setup_addresses(&contract);
+    let anchors = contract["groups"].as_array().unwrap().iter().map(|g| g["anchor"].clone()).collect::<Vec<_>>();
     let expected_receipts = (0..expected_addresses.len())
         .map(|i| {
             json!(format!(
@@ -9169,8 +9188,8 @@ fn preparation_outputs(conn: &Connection, result: &Value) -> Result<()> {
         || result["kind"] != "prepare_completion"
         || result["unit"] != "prepare/book@1"
         || result["preparation_hash"] != meta(conn, "preparation_hash")?
-        || result["root"] != expected_addresses[0]
-        || result["anchors"] != json!(&expected_addresses[1..])
+        || result["root"] != contract["citation_key"]
+        || result["anchors"] != json!(anchors)
         || result["receipt_keys"] != json!(expected_receipts)
         || result["card_fingerprints"]
             .as_object()
@@ -9331,10 +9350,12 @@ fn prepare_finish(p: &Prepared, zt: &mut Zt, token: i64, path: &Path) -> Result<
         bail!("preparation plan identity mismatch");
     }
     let calls = setup_calls(p)?;
-    // A mismatched BibTeX key must fail before creating even the root.
+    // A mismatched BibTeX key must fail before creating even the root; an extension's first anchor must land at
+    // its frozen `key/F` before any Card is written.
+    let addresses = setup_addresses(&p.contract);
     let root = crate::calls::preview_identified(zt, &calls[..1], &prefix)?;
-    if root["results"][0]["result"]["address"] != p.contract["citation_key"] {
-        bail!("setup BibTeX Citation key differs from prepared Citation key");
+    if root["results"][0]["result"]["address"] != addresses[0] {
+        bail!("setup's first Card would not land at its prepared address {}", addresses[0]);
     }
     let reconciled = setup_readback(zt, &calls, &prefix, done)?;
     bound_json(record, "preparation plan")?;
@@ -9346,15 +9367,8 @@ fn prepare_finish(p: &Prepared, zt: &mut Zt, token: i64, path: &Path) -> Result<
         crate::calls::invoke_identified(zt, &calls, &prefix)?
     };
     let key = field(&p.contract, "citation_key")?;
-    let addresses = std::iter::once(key.to_string())
-        .chain(
-            p.contract["groups"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|g| g["anchor"].as_str().unwrap().to_string()),
-        )
-        .collect::<Vec<_>>();
+    let addresses = addresses.iter().map(|a| a.as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let anchors = p.contract["groups"].as_array().unwrap().iter().map(|g| g["anchor"].clone()).collect::<Vec<_>>();
     if receipts.len() != addresses.len()
         || receipts
             .iter()
@@ -9406,7 +9420,7 @@ fn prepare_finish(p: &Prepared, zt: &mut Zt, token: i64, path: &Path) -> Result<
         .iter()
         .map(|r| r["op_key"].clone())
         .collect::<Vec<_>>();
-    let mut result = json!({"schema_version":1,"kind":"prepare_completion","unit":unit,"token":token,"state":"done","complete":true,"reused":false,"input_hash":claimed.input_hash,"preparation_hash":p.hash,"plan":record,"root":key,"anchors":&addresses[1..],"card_fingerprints":fingerprints,"receipt_keys":receipt_keys});
+    let mut result = json!({"schema_version":1,"kind":"prepare_completion","unit":unit,"token":token,"state":"done","complete":true,"reused":false,"input_hash":claimed.input_hash,"preparation_hash":p.hash,"plan":record,"root":key,"anchors":anchors,"card_fingerprints":fingerprints,"receipt_keys":receipt_keys});
     let completion = publish(
         &p.out.join("prepare-completion.json"),
         &serde_json::to_string_pretty(&result)?,
@@ -20656,5 +20670,62 @@ mod lean_status_tests {
         let read = connect(&dir.path().join("ledger.sqlite3"), false).unwrap();
         let limit: i64 = read.pragma_query_value(None, "journal_size_limit", |r| r.get(0)).unwrap();
         assert_ne!(limit, WAL_LIMIT, "a reader changes nothing");
+    }
+}
+
+/// `prepare -Extend` (the owner, 2026-11-10: every appendix is digested): an extension continues an existing
+/// Literature tree. Its setup creates no root, and its first anchor follows the tree's last top-line Card.
+#[cfg(test)]
+mod extension_setup_tests {
+    use super::*;
+
+    fn prepared(calls: &[Value], extends: Option<u64>) -> (tempfile::TempDir, Prepared) {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::fs::canonicalize(dir.path()).unwrap();
+        let path = out.join("setup-calls.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&json!(calls)).unwrap()).unwrap();
+        let sha = canon::sha256_hex(&std::fs::read(&path).unwrap());
+        let groups = [11, 12].iter().map(|n| json!({"n": n, "anchor": format!("K/{n}")})).collect::<Vec<_>>();
+        let mut contract = json!({
+            "citation_key": "K",
+            "groups": groups,
+            "options": {"bibtex_sha256": canon::sha256_hex(b"@article{K}")},
+            "artifacts": {"setup_calls": {"path": path.to_string_lossy(), "sha256": sha}},
+        });
+        if let Some(first) = extends {
+            contract["extends"] = json!({"first_group": first});
+        }
+        let hash = canon::hash_value(&contract);
+        (dir, Prepared { out, contract, hash })
+    }
+
+    fn anchors(from: &str) -> Vec<Value> {
+        [(from.to_string(), 11), ("K/11".to_string(), 12)]
+            .into_iter()
+            .map(|(at, n)| json!({"tool": "create_successor", "arguments": {"at": at, "kind": "direct", "title": format!("第 {n} 组"), "body": "b"}}))
+            .collect()
+    }
+
+    #[test]
+    fn an_extension_setup_chains_its_anchors_from_the_last_top_line_card() {
+        let (_dir, p) = prepared(&anchors("K/10"), Some(11));
+        assert_eq!(first_group(&p.contract), 11);
+        assert_eq!(setup_calls(&p).unwrap().len(), 2);
+        assert_eq!(setup_addresses(&p.contract), [json!("K/11"), json!("K/12")]);
+        // The first anchor must follow K/10, the Card before group 11.
+        let (_dir, p) = prepared(&anchors("K"), Some(11));
+        assert!(setup_calls(&p).unwrap_err().to_string().contains("anchor target mismatch at group 11"));
+    }
+
+    #[test]
+    fn an_extension_setup_writes_no_literature_root() {
+        let mut calls = vec![json!({"tool": "create_literature", "arguments": {"workspace": "agent", "bibtex": "@article{K}", "body": "b"}})];
+        calls.extend(anchors("K/10"));
+        let (_dir, p) = prepared(&calls, Some(11));
+        assert!(setup_calls(&p).unwrap_err().to_string().contains("every prepared anchor"));
+        // A fresh run of the same groups needs its root, and lists it among the Cards it creates.
+        let (_dir, p) = prepared(&calls, None);
+        assert_eq!(setup_addresses(&p.contract)[0], json!("K"));
+        assert_eq!(first_group(&p.contract), 1);
     }
 }

@@ -14,6 +14,9 @@
 //! and manifest.json. -Apply creates the agent Literature tree with one anchor Card per group
 //! (refused when the tree exists). Prints the manifest as compact JSON.
 //!
+//! -Extend <earlier staging> prepares only the part an earlier digest of the book left out (its appendices),
+//! into the same tree, with groups numbered after the tree's last top-line Card (`extend`).
+//!
 //! The book's collected notes (注释 / 尾注 / notes) stand outside that range: `notes::extract`
 //! maps them to the digest's chapters and writes one read-only file per chapter under
 //! `notes\<chapter-id>.md` (design 11.6, R310/R311). The manifest records each chapter's chapter
@@ -54,6 +57,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
+pub(crate) mod extend;
 pub(crate) mod notes;
 pub(crate) mod resolve;
 
@@ -390,7 +394,12 @@ pub(crate) fn staged_sections(
     min_unit_chars: i64,
     empty: &str,
 ) -> Result<Staged> {
-    let units = split_units(kept, start, end, skip);
+    stage_units(split_units(kept, start, end, skip), start, end, min_unit_chars, empty)
+}
+
+/// Merge the selected units and render the section files and the whole-book text (`staged_sections`).
+/// An extension (`extend`) stages only the units the earlier digest left out.
+pub(crate) fn stage_units(units: Vec<Unit>, start: &str, end: &str, min_unit_chars: i64, empty: &str) -> Result<Staged> {
     if units.is_empty() {
         bail!("{empty}");
     }
@@ -488,6 +497,24 @@ pub(crate) fn build_prefix(dir: &str, files: &str, fill: &[(&str, &str)]) -> Res
     Ok(template)
 }
 
+/// The setup calls of a preparation: the Literature root (`root`, its `create_literature` arguments) and one
+/// Direct anchor per group, each after the top-line Card before it, so group n sits at `key/n`. An extension
+/// (`-Extend`) has no root: its first anchor follows the tree's last top-line Card `key/(F-1)`.
+pub(crate) fn setup_calls(key: &str, root: Option<Value>, groups: &[&Value]) -> Vec<Value> {
+    let mut setup: Vec<Value> = root.into_iter().map(|root| json!({ "tool": "create_literature", "arguments": root })).collect();
+    for group in groups {
+        let n = group["n"].as_u64().unwrap_or(0);
+        let at = if n == 1 { key.to_string() } else { format!("{key}/{}", n - 1) };
+        let headings: Vec<String> = ps::each(&group["headings"]).iter().map(|h| s(h)).collect();
+        setup.push(json!({ "tool": "create_successor", "arguments": {
+            "at": at, "kind": "direct",
+            "title": format!("第 {n} 组：{}", headings.join("；")),
+            "body": format!("本卡对应原书 {} 中的：{}。负责该组的代理将把它改写为这一部分的核心论点与小节索引。", s(&group["chapter"]), headings.join("；")),
+        } }));
+    }
+    setup
+}
+
 /// `zt-digest prepare` (prepare-book-digest.ps1).
 pub(crate) fn run_contract(
     manifest: &Map<String, Value>,
@@ -574,9 +601,12 @@ pub(crate) fn run_contract(
         "setup_calls".into(),
         file(&join_path(&s(&manifest["staging"]), "setup-calls.json"))?,
     );
-    Ok(
-        json!({"schema_version":1,"variant":variant,"citation_key":manifest["citation_key"],"archive_identity":archive,"source":source,"options":options,"contracts":{"base_version":base["version"],"variant_version":profile["version"],"artifact_schema":1},"groups":groups,"group_manifest_hash":group_manifest_hash,"artifacts":artifacts,"group_extension":if variant == "math" {json!({"marker":crate::math::group_extension_marker(),"by":"math-skeleton"})} else {Value::Null}}),
-    )
+    let mut contract = json!({"schema_version":1,"variant":variant,"citation_key":manifest["citation_key"],"archive_identity":archive,"source":source,"options":options,"contracts":{"base_version":base["version"],"variant_version":profile["version"],"artifact_schema":1},"groups":groups,"group_manifest_hash":group_manifest_hash,"artifacts":artifacts,"group_extension":if variant == "math" {json!({"marker":crate::math::group_extension_marker(),"by":"math-skeleton"})} else {Value::Null}});
+    // An extension (`-Extend`) binds its first group number: group n is still anchored at `key/n`.
+    if let Some(extends) = manifest.get("extends") {
+        contract["extends"] = extends.clone();
+    }
+    Ok(contract)
 }
 pub fn cli(argv: &[String]) -> Result<i32> {
     let params = [
@@ -602,6 +632,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "Book",
         "MaxAttempts",
         "DshRunCap",
+        "Extend",
     ];
     let a = Args::parse(&util::bind_positional(argv, &params)?, &params, &["NoEventCandidates", "NoFigures", "Apply", "Brief", "Validate", "Sections", "NewList"])?;
     // S1 (docs/workflow-simplicity-proposal.md): -Brief ends with one short line a relay carries whole (the group
@@ -658,7 +689,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             }
         }
     };
-    let (source, key, bibtex, title, start, end, skip_headings) = match &resolved {
+    let (source, key, bibtex, title, mut start, mut end, mut skip_headings) = match &resolved {
         Some(resolved) => (
             resolved.source.clone(),
             resolved.citation_key.clone(),
@@ -723,6 +754,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     };
     // The workflow modules pass the switches as JSON text; a hand-run prepare may name a file.
     let declared=if a.has("RunOptions") {Some(crate::canon::read_json_arg(&a.str("RunOptions"))?)}else{None};
+    // -Extend (the owner, 2026-11-10): digest only what an earlier digest of this book left out, into its tree.
+    let extension = if a.has("Extend") { Some(extend::Earlier::read(&a.str("Extend"), &key)?) } else { None };
+    let declared = match &extension { Some(_) => Some(extend::run_options(declared.as_ref())?), None => declared };
     let run_options=if variant.is_empty(){Value::Null}else{crate::ledger::run_options(&variant,no_figures,declared.as_ref())?};
     let scripts = scripts_dir();
 
@@ -734,6 +768,12 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let raw=String::from_utf8_lossy(&source_bytes);
     let raw=raw.strip_prefix('\u{FEFF}').unwrap_or(&raw).replace("\r\n","\n");
     drop(source_bytes);
+    // A source given as a file takes the same range rule as a resolved Work (the owner, 2026-11-10): the digest runs
+    // through every appendix, and an end heading or a skip that would leave one out is refused.
+    if resolved.is_none() {
+        let given = |name: &str| a.has(name).then(|| a.str(name));
+        (start, end, skip_headings) = resolve::source_range(&raw, &source, given("StartHeading"), given("EndHeading"), given("SkipHeadings"))?;
+    }
     if file_id == 0
         && let Some(id) = figures::file_id_in_path(&source)
     {
@@ -762,7 +802,27 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     } else {
         format!("no heading \"{start}\" found in {source}")
     };
-    let staged = staged_sections(&kept, &start, &end, &skip, min_unit_chars, &empty)?;
+    let staged = match &extension {
+        None => staged_sections(&kept, &start, &end, &skip, min_unit_chars, &empty)?,
+        Some(earlier) => {
+            let rest = extend::units(&kept, earlier, &start, &end, &skip)?;
+            let from = rest[0].heading.clone();
+            stage_units(rest, &from, &end, min_unit_chars, &empty)?
+        }
+    };
+    // A group n is anchored at the top-line Card `key/n`: an extension numbers its groups after the live tree's
+    // last top-line Card (brandimarti2026reorganizing 11, becker2025division 10, hansen2021demand 9).
+    let first_group = match &extension {
+        None => 1,
+        Some(_) => {
+            if held.is_none() {
+                held = Some(crate::zt::start()?);
+            }
+            let z = held.as_mut().context("no zt mcp process for the Literature tree")?;
+            let tree = z.call("get_tree", json!({ "tree": key })).with_context(|| format!("-Extend: the Literature tree {key} cannot be read"))?;
+            extend::first_group(&tree, &key)?
+        }
+    };
     let merged = staged.merged;
     let groups = group_units(&merged, max_units, max_chars, by_chapter);
 
@@ -794,7 +854,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         &chapter_titles,
         &start,
         &end,
-        &notes::Options { title: title.clone(), max_chars: note_max_chars },
+        &notes::Options { title: title.clone(), max_chars: note_max_chars, skip: skip_headings.split(',').map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect() },
     )?;
     // The preparation's own notes faults go into the same retained source-fault record the
     // architects add to, so the person who keeps the Scholar Archive reads one report.
@@ -812,6 +872,13 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         write(&join_path(&staging, &format!("sections\\{name}")), text)?;
     }
     write(&join_path(&staging, "book.zh.md"), &staged.book)?;
+    // An extension reuses the book's Term list: its writers read the earlier run's table, which the group file
+    // names as this staging's `terms.md`.
+    if let Some(earlier) = &extension {
+        let table = join_path(&earlier.staging, "terms.md");
+        let text = read_raw(&table).with_context(|| format!("-Extend: the earlier staging holds no term table {table}"))?;
+        write(&join_path(&staging, "terms.md"), &text)?;
+    }
     // The tables the digest does not stage (after the end heading, in a skipped section) stay
     // readable for an empirical model's brief, never as a section of their own.
     let back = back_matter(&kept, &start, &end, &skip);
@@ -824,7 +891,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let mut unit_group: HashMap<String, usize> = HashMap::new();
     for (g, members) in groups.iter().enumerate() {
         for &u in members {
-            unit_group.insert(ci(&unit_file[u]), g + 1);
+            unit_group.insert(ci(&unit_file[u]), first_group + g);
         }
     }
     let documents: Vec<(String, String)> = merged.iter().enumerate().map(|(u, unit)| (unit_file[u].clone(), unit.text.clone())).collect();
@@ -851,6 +918,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     manifest.insert("figures_file".into(), json!(join_path(&staging, "figures.json")));
     manifest.insert("documents".into(), json!(documents_line));
     manifest.insert("notes".into(), notes.summary.clone());
+    if let Some(earlier) = &extension {
+        manifest.insert("extends".into(), earlier.record(first_group));
+    }
     // The resolution was frozen (and persisted with every excluded section) before this
     // staging folder held any group work.
     if let Some(resolved) = &resolved {
@@ -880,7 +950,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     index.push_str(&format!("| 文件 | 字数 | 组 | 锚点卡片 | 章 | 小节 |{NL}|---|---|---|---|---|---|{NL}"));
     let mut group_entries: Vec<Value> = Vec::new();
     for (g, members) in groups.iter().enumerate() {
-        let n = g + 1;
+        let n = first_group + g;
         let id = format!("g{n:02}");
         let headings: Vec<String> = members.iter().flat_map(|&u| merged[u].headings.clone()).collect();
         let text: String = members.iter().map(|&u| merged[u].text.as_str()).collect();
@@ -994,25 +1064,23 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             z.archive_view()?["archive_identity"].clone()
         } else {Value::Null};
         let probe = calls::run(z,&[json!({ "tool": "get_card", "arguments": { "at": key } })], &mut calls::Options::new())?;
-        if probe.1.is_none() {
+        let exists = probe.1.is_none();
+        if exists && extension.is_none() {
             bail!("Literature tree {key} already exists; delete it or choose another key.");
         }
-        let body = if documents_line.is_empty() { "（全书索引待整理。）".to_string() } else { format!("（全书索引待整理。）\n\n{documents_line}") };
-        let mut root = json!({ "workspace": "agent", "bibtex": bibtex, "body": body });
-        if let Some(literature_type) = literature_type_of(&variant) {
-            root["literature_type"] = json!(literature_type);
+        if !exists && extension.is_some() {
+            bail!("-Extend: the Literature tree {key} does not exist; an extension continues an existing tree");
         }
-        let mut setup = vec![json!({ "tool": "create_literature", "arguments": root })];
-        for group in ps::each(&manifest["groups"]) {
-            let n = group["n"].as_u64().unwrap_or(0);
-            let at = if n == 1 { key.clone() } else { format!("{key}/{}", n - 1) };
-            let headings: Vec<String> = ps::each(&group["headings"]).iter().map(|h| s(h)).collect();
-            setup.push(json!({ "tool": "create_successor", "arguments": {
-                "at": at, "kind": "direct",
-                "title": format!("第 {n} 组：{}", headings.join("；")),
-                "body": format!("本卡对应原书 {} 中的：{}。负责该组的代理将把它改写为这一部分的核心论点与小节索引。", s(&group["chapter"]), headings.join("；")),
-            } }));
-        }
+        // An extension continues the existing tree: it creates no root, only its own group anchors.
+        let root = extension.is_none().then(|| {
+            let body = if documents_line.is_empty() { "（全书索引待整理。）".to_string() } else { format!("（全书索引待整理。）\n\n{documents_line}") };
+            let mut root = json!({ "workspace": "agent", "bibtex": bibtex, "body": body });
+            if let Some(literature_type) = literature_type_of(&variant) {
+                root["literature_type"] = json!(literature_type);
+            }
+            root
+        });
+        let setup = setup_calls(&key, root, &ps::each(&manifest["groups"]));
         write(&join_path(&staging, "setup-calls.json"), &ps::json_pretty(&Value::Array(setup.clone())))?;
         if !variant.is_empty() {
             let options=json!({"book_title":title,"bibtex_sha256":crate::canon::sha256_hex(bibtex.as_bytes()),"start_heading":start,"end_heading":end,"skip_headings":skip_headings,"max_chars":max_chars,"max_units":max_units,"min_unit_chars":min_unit_chars,"min_figure_bytes":min_figure_bytes,"max_event_candidates":max_event_candidates,"instructions":instructions,"no_event_candidates":no_event_candidates,"no_figures":no_figures,"run_options":run_options});

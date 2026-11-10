@@ -262,7 +262,7 @@ Base args (both workflows):
 | `source`, `bibtex`, `bookTitle` | string | — | the bilingual Markdown, the BibTeX entry, the title (mode `full`) |
 | `book` | any | — | a Scholar Archive Work id or exact title: mode `full` resolves the Work, its Chinese/bilingual Markdown, the BibTeX and the heading range through the read-only bridge, and the three explicit arguments are left out (base 2.4.0) |
 | `fileId` | any | read from the source path | the Scholar Archive file id of the book Markdown |
-| `startHeading`, `endHeading`, `skipHeadings` | string | none | where the text starts and stops; headings whose units are left out (`参考文献,习题`) |
+| `startHeading`, `endHeading`, `skipHeadings` | string | none | where the text starts; `endHeading` only at the back-matter tail (refused when content or an appendix follows); headings whose units are left out (`习题`; an appendix is refused). Leave `endHeading` out: appendices are always digested |
 | `groups` | number | — | the existing group count (modes `link`, `models`) |
 | `organize` | boolean | false | `true`: Organize after modes `link` and `models` (the Literature index, the structure Card and the notes on the book's own Cards) |
 | `maxChars`, `maxUnits` | number | 25000, 3 | group size for `prepare-book-digest.ps1`; `maxChars` is a soft limit, because one larger unit stays whole |
@@ -650,13 +650,15 @@ node $A verify zt-econ-digest --scope project --project E:\zet
 ```js
 Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: {
   book: 20, out: "D:\\zt-digest\\<key>", citationKey: "<key>",
-  startHeading: "<first chapter heading>", endHeading: "参考" } })
+  startHeading: "<first chapter heading>" } })
 // or the explicit form of an existing digest: source, bibtex and bookTitle instead of book
 Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-econ-digest.js", args: {
   source: "<the book's Chinese bilingual Markdown>", out: "D:\\zt-digest\\<key>",
   citationKey: "<key>", bibtex: "@book{<key>, title={…}}", bookTitle: "<中文书名>",
-  startHeading: "<first chapter heading>", endHeading: "参考" } })
+  startHeading: "<first chapter heading>" } })
 ```
+
+**Never pass `endHeading` to cut a work short, and never skip an appendix** (the owner, 2026-11-10, strict): a digest reads the whole work, appendices included. Leave `endHeading` out: the resolver ends at the true back-matter tail and skips a reference list that has appendices after it. An end heading or a skip that would leave out content or an appendix is refused.
 
 `book` is a Scholar Archive Work id or an exact title; prepare resolves the Work, its Chinese/bilingual Markdown, the BibTeX and the heading range through the read-only bridge, and reports the candidates (exit 3) when the title or the file is not unique. See [zt-digest](zt-digest.md), `prepare -Book`.
 
