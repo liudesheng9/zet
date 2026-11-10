@@ -2338,6 +2338,17 @@ impl Compiler {
             }
             let into = self.resolve(&mg["into"], model)?;
             self.write(vec![json!({ "tool": "delete_card", "arguments": { "at": from, "into": into, "confirm": "delete" } })])?;
+            // The run ledger follows the merge, so its receipts never name a Card that is gone
+            // (becker2025division-appendix, 2026-11-10: `24|a|18` merged into `24|a|b` stopped the Link preparation).
+            if !self.p.staging.is_empty() {
+                let moves: std::collections::BTreeMap<String, String> = [(from.clone(), into.clone())].into();
+                let staging = self.p.staging.clone();
+                if let Err(error) = crate::ledger::record_moves(&staging, self.zt()?, &moves) {
+                    let note = format!("merge {from} into {into} not recorded in the run ledger: {error}");
+                    let m = self.m_mut(model);
+                    m["notes"] = plus(&m["notes"], [json!(note)]);
+                }
+            }
         }
         // A refilled part loses its body to the skeleton: keep the old body for the job that rewrites it.
         self.m_mut(model)["old"] = json!({});

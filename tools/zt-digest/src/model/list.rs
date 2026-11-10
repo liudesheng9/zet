@@ -117,7 +117,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
                 "group": owner.get(&s(&head["address"])),
                 "level": st["level"],
                 "form": st["form"],
-                "parts": count(&st["parts"]),
+                "parts": own_parts(&s(&head["address"]), &pipe(&st["parts"])),
                 "todo": placeholders.len(),
                 "placeholders": placeholders,
                 "issues": count(&st["issues"]),
@@ -128,4 +128,25 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     }
     util::print_line(&ps::json_compact(&json!({ "models": models })))?;
     Ok(0)
+}
+
+/// The parts filed under the Model Card itself (`key/26|a|…`). `get_model` also names parts the model reads from
+/// elsewhere; becker2025division-appendix (2026-11-10): `26|a` had no part of its own, the listing counted 2, the
+/// planner skipped it as built while its unit stayed claimed, and the finish refused it with "no accepted plan".
+fn own_parts(head: &str, parts: &[&Value]) -> usize {
+    let prefix = format!("{}|", head.to_lowercase());
+    parts.iter().filter(|p| s(&p["address"]).to_lowercase().starts_with(&prefix)).count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_parts_filed_under_the_model_card_count() {
+        let parts = [json!({"address":"K/26|a|a"}), json!({"address":"K/24|a|b"}), json!({"address":"K/26|ab"})];
+        let refs: Vec<&Value> = parts.iter().collect();
+        assert_eq!(own_parts("K/26|a", &refs), 1);
+        assert_eq!(own_parts("K/26|b", &refs), 0, "a head with no part of its own is not built");
+    }
 }

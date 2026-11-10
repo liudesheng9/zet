@@ -3466,6 +3466,27 @@ fn recorded_moves(path: &str) -> Result<std::collections::BTreeMap<String, Strin
     Ok(composed)
 }
 
+/// The moves file a writer leaves in the staging folder for `relocate`: `{"moved":{old:new}}`, named for its first
+/// move so two writers never share one.
+pub(crate) fn moves_file(out: &str, moves: &std::collections::BTreeMap<String, String>) -> Option<(String, String)> {
+    let (first, _) = moves.iter().next()?;
+    let name = format!("moves-{}.json", canon::sha256_hex(first.as_bytes()).chars().take(12).collect::<String>());
+    Some((ps::join(out, &name), serde_json::to_string(&json!({ "moved": moves })).ok()?))
+}
+
+/// Record moves a writer made inside a prepared run, as `ledger relocate` does (becker2025division-appendix,
+/// 2026-11-10: a model build merged the digest Card `24|a|18` into its part `24|a|b`, nothing recorded it, and the
+/// Card plan and the Link preparation both stopped at the missing Card). A staging without a ledger records nothing.
+pub(crate) fn record_moves(out: &str, zt: &mut Zt, moves: &std::collections::BTreeMap<String, String>) -> Result<Option<Value>> {
+    if !Path::new(&ps::join(out, "ledger.sqlite3")).exists() {
+        return Ok(None);
+    }
+    let Some((path, text)) = moves_file(out, moves) else { return Ok(None) };
+    util::write_text(&path, &text)?;
+    let p = Prepared::read(out, zt)?;
+    Ok(Some(relocate(&p, zt, &path)?))
+}
+
 /// Apply a recorded structural mapping to every Card address this run published.
 /// A published address the archive no longer has, with no recorded mapping that
 /// explains it, is a precise conflict rather than a silent locator (T21).
@@ -18569,6 +18590,16 @@ mod tests {
     // becker2025division-appendix (2026-11-10): a model build merged `24|a|18` into `24|a|b`; `ledger relocate` recorded
     // the move and rewrote owned-g24.txt, and link-start then refused the manifest's hash. With the recorded moves
     // mapped back, the manifest is the frozen one.
+    #[test]
+    fn a_writers_moves_file_is_the_relocate_format() {
+        let moves: std::collections::BTreeMap<String, String> = [("B/24|a|18".to_string(), "B/24|a|b".to_string())].into();
+        let (path, text) = moves_file("D:\\s", &moves).unwrap();
+        assert!(path.starts_with("D:\\s") && path.ends_with(".json"), "{path}");
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["moved"]["B/24|a|18"], json!("B/24|a|b"));
+        assert!(moves_file("D:\\s", &std::collections::BTreeMap::new()).is_none());
+    }
+
     #[test]
     fn an_owned_manifest_rewritten_by_a_recorded_move_maps_back_to_its_frozen_form() {
         let frozen = "B/24\nB/24|a|17\nB/24|a|18\n";
