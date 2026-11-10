@@ -46,7 +46,7 @@ const DEFINES = /(?:^|[\s。；，：:、(（])记(?:号[:：])?\s*\$([^$]+)\$/g
 
 const isSetting = (c) => SETTING.test(c.facet || '') || SETTING.test(c.title || '')
 const isNotation = (c) => NOTATION.test(c.facet || '') || NOTATION.test(c.title || '')
-const symbolOf = (tex) => tex.split(/=|\\equiv|\\coloneqq/)[0].replace(/\s+/g, '')
+const symbolOf = (tex) => tex.split(/:=|=|\\equiv|\\coloneqq/)[0].replace(/\s+/g, '')
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /** The rows of the notation card's tables: each row's symbols (its first cell, split at 、 , ； and cut at

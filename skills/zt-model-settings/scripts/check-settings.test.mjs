@@ -45,6 +45,13 @@ test('an assumption stated in a chapter card is a fault; a use of one is advice;
   assert.deepEqual(r.notation.map((f) => [f.card, f.symbol]), [[S + '|2|a|a|1', 'Q(\\omega)']])
 })
 
+test('a definition written with := names the symbol before it, without the colon', () => {
+  const defs = new Map(cards)
+  defs.set(S + '|2|a|a|1', { ...cards.get(S + '|2|a|a|1'), body: '**步骤**\n1. 记 $H:=\\eta+\\pi x$，对 $H$ 求导。\n2. 记 $Q(\\omega):=C-\\gamma H$。' })
+  const r = audit({ build: { setting: S, order } }, defs)
+  assert.deepEqual(r.notation.map((f) => [f.card, f.symbol]), [[S + '|2|a|a|1', 'Q(\\omega)']])
+})
+
 const start = (deps) => '**起点**\n' + (deps.length ? deps.map((d) => `- 依赖 [[${d}]] 的设定。`).join('\n') : '- 原始设定：不依赖其他设定。') + '\n\n**设定**\n1. x'
 const tree = (rows) => {
   const order = rows.map(([address, facet, parent, deps, body = '']) => ({ address, facet, title: facet, line: parent ? 'side' : 'main' }))

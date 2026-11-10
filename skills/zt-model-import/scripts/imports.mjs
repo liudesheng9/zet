@@ -74,7 +74,8 @@ export function propose(m) {
   const roleOf = new Map((b.order || []).map((o) => [o.address, o.role]))
   const tested = (root) => {
     if (m.level !== 'empirical') return false
-    const from = (m.relations || []).filter((r) => r.kind === 'rests-on' && r.to === root && roleOf.has(r.from)).map((r) => r.from)
+    // Only this model's own parts decide: an imported prediction that rests on another one is not a user of it.
+    const from = (m.relations || []).filter((r) => r.kind === 'rests-on' && r.to === root && own.has(r.from)).map((r) => r.from)
     return from.length > 0 && from.every((a) => roleOf.get(a) === 'hypothesis')
   }
   for (const i of imports.filter((x) => x.mode === 'card')) {

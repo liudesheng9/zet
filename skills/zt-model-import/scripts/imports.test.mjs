@@ -99,3 +99,15 @@ test('plan: in an empirical model, a 单卡 import that only 假说 parts rest o
   m.build.order = m.build.order.map((o) => (o.address === H + '|a|1' ? { ...o, role: 'spec' } : o))
   assert.deepEqual(propose(m).changes.filter((c) => c.why === 'upgrade').map((c) => c.root), ['K/9|a|a'])
 })
+
+test('plan: a tested prediction stays 单卡 when another imported prediction rests on it', () => {
+  // brandimarti2026reorganizing/7|e (2026-11-10): the hypothesis imports corollary A.5(i) and A.5(ii); A.5(ii)
+  // rests on A.5(i) in its home model. Only this model's own parts decide whether a root is under test.
+  const m = model({ level: 'empirical', relations: [
+    { from: H + '|a|1', to: 'K/9|a|a', kind: 'rests-on' },
+    { from: 'K/9|a|b', to: 'K/9|a|a', kind: 'rests-on' },
+  ] })
+  m.build.order = [...m.build.order.map((o) => (o.address === H + '|a|1' ? { ...o, role: 'hypothesis' } : o)),
+    { address: 'K/9|a|b', line: 'shared', import: 'K/9|a|b', role: 'result' }]
+  assert.deepEqual(propose(m).changes.filter((c) => c.why === 'upgrade'), [])
+})
