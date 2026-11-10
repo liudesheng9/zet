@@ -258,6 +258,12 @@ $helper = Join-Path $PSScriptRoot '..\step-line.ps1'
 $over = & pwsh -NoProfile -Command ". '$helper'; Send-StepLine @{ ok = `$true; jobs = 24; planned = ('x' * 500) } -Name 'big' -Out '$scratch'" | Select-Object -Last 1
 $overJson = $over | ConvertFrom-Json
 Assert ($overJson.ok -eq $false -and $overJson.error -match '^line_overflow' -and $overJson.detail -and $over.Length -le 400) "overflow: a line over 400 characters fails the step with line_overflow and names its detail file ($over)"
+# hansen2021demand-appendix (2026-11-10): the finalize plan's line came to 407 characters, its card list path written
+# with the long-path prefix \\?\ (doubled by JSON). The prefix carries nothing in a line and is left out.
+$long = '\\?\D:\zt-digest\hansen2021demand-appendix\finalize\fix-cards.txt'
+$fitted = & pwsh -NoProfile -Command ". '$helper'; Send-StepLine @{ ok = `$true; list = '$long'; pad = ('y' * 250) } -Name 'fit' -Out '$scratch'" | Select-Object -Last 1
+$fittedJson = $fitted | ConvertFrom-Json
+Assert ($fittedJson.ok -eq $true -and $fittedJson.list -eq 'D:\zt-digest\hansen2021demand-appendix\finalize\fix-cards.txt') "a long-path prefix is left out of a step line, so the line fits ($fitted)"
 
 Remove-Item -Recurse -Force $scratch -ErrorAction SilentlyContinue
 Write-Host ''

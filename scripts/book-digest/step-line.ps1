@@ -83,8 +83,17 @@ function Keys-Of($Value) {
 # Fits the line into the 400 characters: a long error is the only allowed cut; anything else that still does not
 # fit moves the whole line to its detail file and answers {ok, detail}.
 function Step-FitLine($Flat, [string]$Name, [string]$Dir) {
+    # hansen2021demand-appendix (2026-11-10): the finalize plan's line came to 407 characters. A Windows long-path
+    # prefix (\\?\) carries nothing in a line, and a successful line that still does not fit leaves out its detail
+    # path: the detail file stays where every step writes it, drive-lines\<step>.json.
+    foreach ($k in @($Flat.Keys)) { if ($Flat[$k] -is [string] -and $Flat[$k].StartsWith('\\?\')) { $Flat[$k] = $Flat[$k].Substring(4) } }
     $text = $Flat | ConvertTo-Json -Depth 8 -Compress
     if ($text.Length -le $StepLineMax) { return $text }
+    if ($Flat['ok'] -eq $true -and $Flat.Contains('detail')) {
+        $Flat.Remove('detail')
+        $text = $Flat | ConvertTo-Json -Depth 8 -Compress
+        if ($text.Length -le $StepLineMax) { return $text }
+    }
     if ($Flat['error'] -is [string] -and $Flat['error'].Length -gt 0) {
         $over = $text.Length - $StepLineMax
         $keep = [Math]::Max(0, $Flat['error'].Length - $over - 4)
