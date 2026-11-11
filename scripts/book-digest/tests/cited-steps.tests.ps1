@@ -174,10 +174,15 @@ $env:CS_CITED_STATE = 'retry'
 Remove-Item -LiteralPath $calls
 $open = Step (@('-Step', 'list', '-SkipDone') + $common)
 Assert (-not $open.json.settled -and (Get-Content -LiteralPath $calls -Raw) -match 'cited -Step plan') 'list -SkipDone: an open unit plans as usual'
+$env:CS_CITED_STATE = 'failed'
+Remove-Item -LiteralPath $calls
+$lf = Step (@('-Step', 'list-finish') + $common)
+$c = Get-Content -LiteralPath $calls -Raw
+Assert ($lf.json.unit -eq 'done' -and $c -match 'ledger reopen .*-Units cited/book@1 -Reason ' -and $c.IndexOf('ledger reopen') -lt $c.IndexOf('ledger next')) "list-finish (donner2026industry, 2026-11-11): a failed list unit is reopened before the claim, so the Cited Card jobs are not blocked behind it ($($lf.text))"
 $env:CS_CITED_STATE = ''
 Remove-Item -LiteralPath $calls
 $lf = Step (@('-Step', 'list-finish') + $common)
-Assert ($lf.json.unit -eq 'done') "list-finish: the claimed unit completes ($($lf.text))"
+Assert ($lf.json.unit -eq 'done' -and (Get-Content -LiteralPath $calls -Raw) -notmatch 'ledger reopen') "list-finish: the claimed unit completes, with no reopen of an open unit ($($lf.text))"
 $c = Get-Content -LiteralPath $calls -Raw
 Assert ($c -match 'cited -Step apply -Staging .* -Token 4 -Apply' -and $c -match 'ledger done .*-Unit cited/book@1 -Token 4 -Outputs .*cited\\apply\.json') 'list-finish: apply under the claim, then done from the apply report'
 Remove-Item -LiteralPath $calls

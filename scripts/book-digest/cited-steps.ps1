@@ -95,6 +95,15 @@ switch ($Step) {
         Reply @{ ok = $true; rows = [int]$plan.json.rows; parts = [int]$plan.json.parts; jobs = [int]$plan.json.jobs; chunks = $chunks; file = "$($plan.json.file)" } @{ plan = $plan.json }
     }
     'list-finish' {
+        # donner2026industry (2026-11-11): a list-finish that failed (a part had no answer) left cited/book@1 failed.
+        # Mode cited-cards read the list again and wrote it without a claim, and every Cited Card job stayed blocked
+        # behind the failed unit. A list-finish runs only after the reading, so a failed list unit is reopened here.
+        if ($HasLedger) {
+            $listed = @((Run @('ledger', 'status', '-Out', $Out, '-Layer', 'cited')).json.units)
+            foreach ($u in @($listed | Where-Object { $_ -and $_.state -eq 'failed' -and $_.id -like 'cited/book@*' })) {
+                Run @('ledger', 'reopen', '-Out', $Out, '-Units', $u.id, '-Reason', 'the Cited list was read again; list-finish writes it under a new claim') | Out-Null
+            }
+        }
         $unit = if ($HasLedger) { Claim-One 'cited' 'cited/book@*' 'cited list' } else { $null }
         if ($unit) {
             $a = Run @('cited', '-Step', 'apply', '-Staging', $Out, '-Token', "$($unit.token)", '-Apply')
