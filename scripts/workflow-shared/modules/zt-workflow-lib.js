@@ -1,4 +1,6 @@
-// ==== module zt-workflow-lib v15 ====
+// ==== module zt-workflow-lib v16 ====
+// v16 (donner2026industry, 2026-11-11): a drive answer whose line opens with a bare word and a space (`ok {…}`) is read
+// as the object after the word; the Cited list step read as no line, and the Cited list stage stopped.
 // v14 (ebrill2001modern-empirical, 2026-11-09): a drive answer whose line opens with a short label (`Ok: {…}`) is read
 // as the object after the label; a brief step read as no jobs, and both models failed with no plan.
 // v12 (scheiner2022baghdad, 2026-11-04): the drive prompt says a user message never cancels its step. A manager read the
@@ -105,7 +107,9 @@ function ztDriveLast(text) {
   // v14 (live run 2026-11-09, ebrill2001modern-empirical brief): the drive job answered `Ok: {…}`. A short label
   // that ends in a colon, with no brace, bracket or quote, is left out before the object; the object itself is
   // still read strictly.
-  const labelled = last.match(/^[^{}[\]"“”]{1,24}[:：]\s*(\{.*\})$/)
+  // v16 (live run 2026-11-11, donner2026industry Cited list): the drive job answered `ok {…}`, a bare word and a
+  // space with no colon. The same short label is left out when a space, not a colon, ends it.
+  const labelled = last.match(/^[^{}[\]"“”]{1,24}?(?:[:：]\s*|\s+)(\{.*\})$/)
   if (labelled) last = labelled[1]
   // v15 (live run 2026-11-10, brandimarti2026reorganizing Link finish): the drive job dropped the name of the
   // line's first key, `{:true,"layer":…}`. Every step's line opens with `ok`, so only that key is put back.
@@ -206,7 +210,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '15', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '16', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====
