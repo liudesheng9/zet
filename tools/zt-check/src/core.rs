@@ -38,6 +38,8 @@ pattern!(LOCAL_CHAPTER, r"第\s*\d+\s*[章节]");
 pattern!(LOCAL_THIS, r"本节|本章");
 pattern!(LOCAL_SIGN, r"§\s*\d+(?:[.．][0-9A-Za-z]+)*");
 pattern!(SECTION, r"^\*{0,2}(思路|起点|步骤|结果|解读)\*\*\s*$");
+// A bold section header; `prose_lines` strips one leading `*` as a list marker, as SECTION allows.
+pattern!(BOLD_HEADER, r"^\*{0,2}([^*]+)\*\*$");
 pattern!(POSITION, r"^第 \d+ 张，共 \d+ 张");
 pattern!(NOTE, r"^说明\s*[：:]");
 pattern!(NOTE_LABEL, r"^说明\s*[：:]\s*");
@@ -782,9 +784,18 @@ impl Check {
         // grossman2002integration trials 10 and 11 a long Derivation facet made a 结构 line an R2 fault in a done
         // Model Card that the bounded correction may not reopen.
         let structure = structure_lines(&text(prop(card, "body")));
+        // The **直觉** section (是什么 / 为什么需要 / 怎样进入模型) explains a setting or 定义 part, like 思路 and
+        // 解读 explain a derivation: the owner (2026-11-11) keeps it, header included, outside R13.
+        let mut intuition = false;
         for line in prose_lines(&text(prop(card, "body"))) {
             if structure.contains(line.text.trim()) {
                 continue;
+            }
+            if let Some(caps) = BOLD_HEADER.captures(line.text.trim()) {
+                intuition = &caps[1] == "直觉";
+                if intuition {
+                    continue;
+                }
             }
             // A Term Card's `术语：`, `不用：`, `首次定义：` … lines are authored metadata, not
             // prose: the language rules read the explanation and sections, and T1/T2 read the
@@ -867,7 +878,7 @@ impl Check {
                             reading += 1;
                         }
                     }
-                } else {
+                } else if !intuition {
                     sentences += 1;
                     chars += size;
                 }
@@ -3316,6 +3327,22 @@ mod tests {
         let steps = |n: usize| (1..=n).map(|i| format!("{i}. 第{i}步代入上式。")).collect::<Vec<_>>().join("\n");
         assert!(of_rule(&lines(card("model", "推导", "推导", &steps(12))), "R14").is_empty());
         assert_eq!(of_rule(&lines(card("model", "推导", "推导", &steps(13))), "R14").len(), 1);
+    }
+
+    /// The **直觉** section of a setting or 定义 part explains the part (the owner, 2026-11-11): like 思路 and
+    /// 解读 it does not count under R13, its header neither. Its sentences still meet the sentence rules.
+    #[test]
+    fn the_intuition_section_does_not_count_under_r13() {
+        let own = (0..22).map(|i| format!("价格在第{i}期上升。")).collect::<Vec<_>>().join("");
+        let section = |head: &str| format!("**设定**\n{own}\n\n**{head}**\n- 是什么：价格随时间上升。\n- 为什么需要：模型要比较两期。\n- 怎样进入模型：第 2 章用它求均衡。");
+        let card = |body: String| json!([{ "address": "K/7|a|a|1", "type": "model", "facet": "设定", "level": "formal", "title": "设定", "body": body }]);
+        let run = |body: String| run_json(&card(body), "", Limits::default(), false, "");
+        assert!(of_rule(&run(section("直觉")), "R13").is_empty(), "{:#?}", run(section("直觉")));
+        // The same three lines under another header count, and push the part over 24.
+        assert_eq!(of_rule(&run(section("说明")), "R13").len(), 1);
+        // A long sentence in the section is still an R2 fault.
+        let long = section("直觉").replace("价格随时间上升。", &format!("{}。", "甲".repeat(81)));
+        assert_eq!(of_rule(&run(long), "R2").len(), 1);
     }
 
     fn small() -> Value {

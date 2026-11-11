@@ -33,7 +33,7 @@ use serde_json::{Map, Value, json};
 /// block (`text::broken_display`), so the same authored text is decided differently than under 6.
 /// 8 (2026-11-08, docs/empirical-models-proposal.md §5.5): the parts of an empirical model (level 3)
 /// take EM1 to EM5, so the same authored text is decided differently than under 7.
-pub const RULE_VERSION: &str = "8";
+pub const RULE_VERSION: &str = "9";
 
 /// The version of the published diagnostic shape: the eight fields of
 /// `core::Diagnostic::to_json` and the `block`/`advise` and `local`/`graph`
