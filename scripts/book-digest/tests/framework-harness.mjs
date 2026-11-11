@@ -1893,7 +1893,10 @@ function runtime(kind, opts = {}) {
           if (opts.citedNoList) return reply({ ok: true }, 'drive-cited-list')
           if (/-SkipDone/.test(command) && led.find('cited/book@1') && led.find('cited/book@1').state === 'done') return reply({ ok: true, settled: true }, 'drive-cited-list')
           led.add('cited/book@1', 'cited', {})
-          return reply({ ok: true, rows: 3, parts: 1, jobs: readJobs.length, file: 'D:\\x\\cited\\read\\jobs.json' }, 'drive-cited-list')
+          // v7: the plan after the reading jobs lists only a job with a part that has no passing answer.
+          const listed = citedCalls.filter((c) => c.step === 'list').length
+          const jobs = listed === 1 ? readJobs.length : (opts.citedPartMissing && listed === 2 ? 1 : 0)
+          return reply({ ok: true, rows: 3, parts: 1, jobs, file: 'D:\\x\\cited\\read\\jobs.json' }, 'drive-cited-list')
         }
         if (step === 'list-finish') { led.finish('cited/book@1'); return reply({ ok: true, rows: 3, card: `${led.key}/1|b`, repeated: 1, unit: 'done' }, 'drive-cited-list-finish') }
         if (step === 'start') {
@@ -2436,7 +2439,10 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const full = await run('econ', { ...base, figures: false })
   check(full.report.stages.cited.status === 'done' && full.report.stages['cited-cards'].status === 'done', `#221: a full run completes both Cited stages (${JSON.stringify([full.report.stages.cited, full.report.stages['cited-cards']])})`)
   const drives = full.citedCalls.map((c) => c.step)
-  check(drives.join(',') === 'list,list-finish,start,finish', `#221: the drive steps run in order list, list-finish, start, finish (${drives.join(',')})`)
+  check(drives.join(',') === 'list,list,list-finish,start,finish', `#221: the drive steps run in order list, list (again), list-finish, start, finish (${drives.join(',')})`)
+  check(!full.calls.some((c) => /^cited: read again/.test(c.label || '')), 'v7: a list whose parts all passed runs no reading job again')
+  const missing = await run('econ', { ...base, figures: false }, { citedPartMissing: true })
+  check(missing.calls.some((c) => /^cited: read again/.test(c.label || '')) && missing.report.stages.cited.status === 'done', `v7 (hickey2012wine, donner2026industry): a reading job that left a part without an answer runs once more before the list Card (${missing.calls.filter((c) => /^cited:/.test(c.label || '')).map((c) => c.label).join(',')})`)
   check(full.citedCalls.every((c) => /cited-steps\.ps1" -Step [\w-]+ -Out "/.test(c.cmd)) && full.citedCalls.some((c) => c.step === 'start' && / -PerJob 12/.test(c.cmd)), `#221: each drive job runs one cited-steps.ps1 step and the per-job size reaches the plan (${JSON.stringify(full.citedCalls.map((c) => c.cmd))})`)
   const citedAgents = full.calls.filter((c) => /^cited(-cards)?: /.test(c.label || ''))
   check(citedAgents.length > 0 && citedAgents.filter((c) => !/: workspace$/.test(c.label)).every((c) => c.model === 'haiku' && !c.agentType && /You are a DeepSeek subagent manager/.test(c.prompt || '')), `#221: every Cited stage agent is a Haiku DeepSeek manager (${citedAgents.length})`)
@@ -3411,7 +3417,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '60' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '6' && modules['zt-workflow-lib'] === '16' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '16' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '60' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '7' && modules['zt-workflow-lib'] === '16' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '16' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }

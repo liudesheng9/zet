@@ -1,4 +1,6 @@
-// ==== module zt-cited-cards v6 ====
+// ==== module zt-cited-cards v7 ====
+// v7 (2026-11-11): after the reading jobs the list is planned once more; a job that left a part without a passing
+// answer (its manager stopped before the job's last message) runs once more before the list is written.
 // v6 (2026-11-07, docs/cited-list-reading-proposal.md): the Cited list is read by DeepSeek, not parsed. `list` cuts the
 // reference material into parts and lists one reading job per four parts; a job is one conversation of one message a
 // part (an entry's "then"), and each part's answer passes the `cited -Step precheck` self-check. The parser, its
@@ -23,7 +25,7 @@
 // v2 (pilot 2026-10-31): `source` names the whole bilingual source for a backfill, whose adopted staging names the
 // Chinese-only book.zh.md; the list step passes it as -Source and the plan freezes it for the Cards.
 defineModule({
-  id: 'zt-cited-cards', version: '6', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-cited-cards', version: '7', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Cited list and Cited Cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers for the content; each unit completes only from the compiler\'s own artifacts.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -76,10 +78,10 @@ Each job has id, files, prompt, skills, model, effort. A job may also have "then
     }
     // A deterministic step: one DeepSeek drive job runs one script call and answers with its last line (the shared
     // zt-workflow-lib helper ztDrive). A step that answers no JSON line or `ok:false` stops the stage with its reason.
-    const drive = async (step) => {
+    const drive = async (step, again = '') => {
       const extra = `${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.heading ? ` -Heading "${p.heading}"` : ''}${p.source && step === 'list' ? ` -Source "${p.source}"` : ''}`
       const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${extra}${step === 'list' || step === 'start' ? ` -Chunk ${DSMP.perManager}` : ''}${step === 'list' && p.mode === 'resume' ? ' -SkipDone' : ''}`
-      const json = await ztDrive(ctx, { label: `${ctx.stage}: drive ${step}`, step, command, out: OUT, cwd: WORK, phase, ledger: 'zt-digest ledger', deepseek: report.deepseek })
+      const json = await ztDrive(ctx, { label: `${ctx.stage}: drive ${step}${again}`, step, command, out: OUT, cwd: WORK, phase, ledger: 'zt-digest ledger', deepseek: report.deepseek })
       if (json.ok !== true) throw new Error(`cited ${step}: ${tail(json.error || 'the step failed')}`)
       return json
     }
@@ -120,6 +122,16 @@ Each job has id, files, prompt, skills, model, effort. A job may also have "then
           const ran = listed.chunks > 0 ? await runChunks('read', 'read', listed.jobs) : await runFile('read', listed.file, listed.jobs)
           report.jobs.failed = ran.filter((j) => j.status !== 'done').length
           report.jobs.done = ran.length - report.jobs.failed
+          // v7 (hickey2012wine, donner2026industry, 2026-11-11): a manager stopped before the last messages of a
+          // job (its "then"), so a part had no answer and the list was never written. The plan lists only a job
+          // with a part that has no passing answer; that job runs once more, from its first message.
+          const again = await drive('list', ' again')
+          if (again.settled !== true && Number(again.jobs || 0) > 0) {
+            log(`Cited list: ${again.jobs} reading job(s) left a part without a passing answer; they run once more.`)
+            const rerun = again.chunks > 0 ? await runChunks('read again', 'read', again.jobs) : await runFile('read again', again.file, again.jobs)
+            report.jobs.retried = rerun.length
+            report.jobs.failed = rerun.filter((j) => j.status !== 'done').length
+          }
         }
         if (report.rows === 0) {
           report.status = 'skipped'
