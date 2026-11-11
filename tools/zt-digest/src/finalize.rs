@@ -1612,7 +1612,7 @@ fn run_final(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
             run_report: String::new(),
             task_sheet: String::new(),
         };
-        audit::run(zt, &params, &mut |line| {
+        audit::run_rereading(zt, &params, &mut |line| {
             let _ = util::print_line(line);
         })?;
         std::fs::canonicalize(dir.join("audit.json"))?

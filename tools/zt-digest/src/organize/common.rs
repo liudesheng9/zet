@@ -101,7 +101,7 @@ pub fn run_audit(zt: &mut Zt, key: &str, out: &str) -> Result<()> {
         run_report: String::new(),
         task_sheet: String::new(),
     };
-    if let Err(error) = audit::run(zt, &params, &mut |_| {}) {
+    if let Err(error) = audit::run_rereading(zt, &params, &mut |_| {}) {
         bail!("digest-audit failed: {error:#}");
     }
     Ok(())

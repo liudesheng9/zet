@@ -297,6 +297,18 @@ pub struct Outcome {
     pub summary: Value,
 }
 
+/// The audit run inside another step (the skeleton apply, the finalization's final audit), reading
+/// again while the archive revision changes under it, as the `audit` tool itself does
+/// (util::CHANGING_VIEW_WAITS). hickey2012wine (2026-11-11): a second digest ran beside it, its writes
+/// changed the revision during the read, and the skeleton apply failed with nothing written.
+pub fn run_rereading(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcome> {
+    run_rereading_with(&util::CHANGING_VIEW_WAITS, |s| std::thread::sleep(std::time::Duration::from_secs(s)), || run(zt, p, host))
+}
+
+fn run_rereading_with<T>(waits: &[u64], sleep: impl FnMut(u64), step: impl FnMut() -> Result<T>) -> Result<T> {
+    util::retry_changing_view(true, waits, sleep, step)
+}
+
 /// The audit; `host` prints a progress line (Write-Host).
 pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcome> {
     let out_dir = p.out.clone();
@@ -1148,6 +1160,18 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_audit_inside_a_step_reads_again_while_another_run_writes() {
+        // hickey2012wine (2026-11-11): the skeleton apply's audit saw the revision change once and failed.
+        let mut calls = 0;
+        let got: Result<u32> = run_rereading_with(&[0, 0], |_| {}, || {
+            calls += 1;
+            if calls < 3 { anyhow::bail!("incomplete audit inputs: changing read view") } else { Ok(7) }
+        });
+        assert_eq!(got.unwrap(), 7);
+        assert_eq!(calls, 3);
+    }
 
     #[test]
     fn a_captioned_alt_shows_its_figure_label() {
