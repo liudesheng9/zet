@@ -449,8 +449,28 @@ pub fn material(source: &str, custom: &str) -> Vec<Material> {
     let han = |line: &str| HAN.find_iter(line).count() >= 2;
     let listed: Vec<&String> = lines.iter().filter(|(_, l, inside)| *inside && !l.trim().is_empty()).map(|(_, l, _)| l).collect();
     let mixed = listed.iter().any(|l| han(l)) && listed.iter().any(|l| !han(l));
-    lines
-        .into_iter()
+    // hickey2012wine (2026-11-11): a heading inside a running list, with list lines of its own under it, is
+    // part of the list: an author-date list whose author lines the OCR made headings ("# Mazza, Roberta").
+    // It reaches the reader as its text, without its `#` marks; the list's own heading and a heading with no
+    // line of its own under it (the bilingual source's first copy, an index) do not.
+    let mut kept: Vec<(usize, String, bool)> = Vec::with_capacity(lines.len());
+    for index in 0..lines.len() {
+        let (n, line, inside) = &lines[index];
+        if let Some(text) = heading_text(line) {
+            let before = lines[..index].iter().rev().find(|(_, l, _)| !l.trim().is_empty() && heading_text(l).is_none());
+            let running = before.is_some_and(|(_, _, inside)| *inside);
+            let own = lines[index + 1..]
+                .iter()
+                .take_while(|(_, l, _)| heading_text(l).is_none())
+                .any(|(_, l, inside)| *inside && !l.trim().is_empty());
+            if running && own && !is_reference_heading(&text, custom) {
+                kept.push((*n, text, true));
+                continue;
+            }
+        }
+        kept.push((*n, line.clone(), *inside));
+    }
+    kept.into_iter()
         .filter(|(_, line, inside)| *inside && !line.trim().is_empty() && !translated(line) && !(mixed && han(line)))
         .map(|(n, line, _)| Material { line: n, text: clean(&line) })
         .filter(|m| !m.text.is_empty())
@@ -1041,5 +1061,18 @@ mod tests {
             .collect();
         assert_eq!(marked.len(), 3, "{marked:?}");
         assert!(marked.iter().all(|line| line.contains('(') && !line.contains("Yarmuk")), "{marked:?}");
+    }
+
+    #[test]
+    fn an_author_heading_inside_the_list_reaches_the_reader() {
+        // hickey2012wine (2026-11-11): an author-date list writes each author on a line of its own and the
+        // works under it by year. The OCR made some author lines headings ("# Mazza, Roberta"), the material
+        // left every heading out, and the reader gave 125 of 281 works no author.
+        let text = "# Literature Cited\n\n# 引用文献\n\nMayerson, Philip\n\n2006 Mega kankellon and metron. BASP 43:107–11.\n\n# Mazza, Roberta\n\n1995 Ricerche sul pagarca nell'Egitto tardoantico e bizantino. Aegyptus 75:169–242.\n\n2001 L'archivio degli Apioni. Bari: Edipuglia.\n\n# McCabe, Anne E.\n\n2007 A Byzantine encyclopaedia of horse medicine. Oxford: Oxford University Press.\n\n# Index Locorum\n\n# 引文索引\n\nP.Oxy. 1.133, 45\n";
+        let texts: Vec<String> = material(text, "Literature Cited").into_iter().map(|m| m.text).collect();
+        assert!(texts.contains(&"Mazza, Roberta".to_string()), "{texts:?}");
+        assert!(texts.contains(&"McCabe, Anne E.".to_string()), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains("Literature Cited") || t.contains("Index") || t.contains("P.Oxy")), "{texts:?}");
+        assert_eq!(texts.len(), 7, "{texts:?}");
     }
 }
