@@ -324,7 +324,8 @@ export function audit(m, cards, parents = new Map()) {
   // An assumption is stated once: a statement repeated in a later setting is replaced by a pointer.
   const plain = (s) => s.replace(/\[\[([^\]@]*)@[^\]]+\]\]/g, '$1').replace(/\[\[[^\]]+\]\]/g, '').replace(/[\s，。；：、,.;:()（）]/g, '')
   const statementsOf = (c) => {
-    const text = sectionText(c.body, isAssumption(c) ? '假设' : '设定') || ''
+    // Display equations are no statements: a variant system extends an equation it does not restate.
+    const text = (sectionText(c.body, isAssumption(c) ? '假设' : '设定') || '').replace(/\$\$[\s\S]*?\$\$/g, '')
     return text.split('\n').filter((l) => !/^\s*\$\$/.test(l)).map((l) => l.replace(LIST, '')).flatMap((l) => l.split('。')).map(plain).filter((s) => s.length >= 12)
   }
   const bigrams = (s) => new Set([...s].slice(1).map((ch, i) => s[i] + ch))

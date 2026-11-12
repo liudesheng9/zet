@@ -211,6 +211,22 @@ test('repeat: one assumption is stated in one card; cite: a card that names an a
   assert.deepEqual(strict(weaker).repeat, [])
 })
 
+test('repeat: the TeX lines of a multi-line display equation are no statements (a variant system extends an equation)', () => {
+  // The live case (liu2026managing/4|a): the joint first stage (4) extends the first stage (2).
+  const two = String.raw`I _ {i m, t} ^ {\text {Toxic}} = \alpha Z _ {j, - i} ^ {\text {Toxic}} + \mathbf {X} _ {i, t} ^ {\prime} \delta + \gamma_ {m, \text {year} (t)} + \nu_ {i m, t}, \tag {2}`
+  const four = String.raw`I _ {i m, t} ^ {\text {Toxic}} = \phi_ {\mathrm{T}} ^ {\text {Toxic}} Z _ {j, - i} ^ {\text {Toxic}} + \phi_ {\mathrm{P}} ^ {\text {Toxic}} Z _ {j, - i} ^ {\mathrm{P}} + \phi_ {\mathrm{C}} ^ {\text {Toxic}} Z _ {j, - i} ^ {\mathrm{C}} + \mathbf {X} _ {i, t} ^ {\prime} \delta^ {\text {Toxic}} + \gamma_ {m, \text {year} (t)} ^ {\text {Toxic}} + \nu_ {i m, t} ^ {\text {Toxic}}, \tag {4}`
+  const rows = good.map((r) => r[0] === P
+    ? [r[0], r[1], r[2], r[3] + '\n2. 第一阶段：\n\n$$\n' + two + '\n$$', r[4]]
+    : r[0] === P + '|c'
+      ? [P + '|c', '设定：联合', '设定：联合方程组', '**起点**\n- 依赖 [[' + P + '|b]] 的设定：第一阶段。\n\n**设定**\n1. 联合第一阶段：\n\n$$\n' + four + '\n$$']
+      : r)
+  assert.deepEqual(strict(rows).repeat, [])
+  // A statement in words is still compared.
+  const said = rows.map((r) => r[0] === P + '|c' ? [r[0], r[1], r[2], r[3] + '\n2. 有 $L$ 个工人，每个工人都在同一个团队里工作并且每周提交代码。'] : r)
+    .map((r) => r[0] === P ? [r[0], r[1], r[2], r[3].replace('1. 有 $L$ 个工人。', '1. 有 $L$ 个工人，每个工人都在同一个团队里工作并且每周提交代码。'), r[4]] : r)
+  assert.deepEqual(strict(said).repeat.map((f) => [f.card, f.other]), [[P + '|c', P]])
+})
+
 test('balance advice: an overloaded setting and a one-line setting; a one-line assumption stays its own card', () => {
   const many = '**起点**\n- 依赖 [[' + P + ']] 的设定。\n\n**设定**\n' + Array.from({ length: 11 }, (_, i) => `${i + 1}. 第 ${i} 条，$L$。`).join('\n')
   const one = '**起点**\n- 依赖 [[' + P + ']] 的设定。\n\n**设定**\n1. 时点是长期，$L$ 不变。'
