@@ -795,7 +795,18 @@ impl Compiler {
 
     /// Local groups need owned inputs; book cycles also need inferred book
     /// members and incoming agent carriers. Neither needs unrelated bodies.
+    /// The scoped audit is a pure read: a changing view reads it again (util::CHANGING_VIEW_WAITS), so
+    /// a Card step that holds a claim is not lost to another run's writes (liu2026managing, 2026-11-11).
     fn invoke_scoped_audit(&mut self, dir: &str, group_only: bool) -> Result<AuditView> {
+        util::retry_changing_view(
+            true,
+            &util::CHANGING_VIEW_WAITS,
+            |seconds| std::thread::sleep(std::time::Duration::from_secs(seconds)),
+            || self.invoke_scoped_audit_once(dir, group_only),
+        )
+    }
+
+    fn invoke_scoped_audit_once(&mut self, dir: &str, group_only: bool) -> Result<AuditView> {
         let book = field(&self.state, "book");
         let revision = self.zt()?.cards(&[], "text")?.archive_revision;
         let details = crate::snapshot::read_literature_trees(self.zt()?)?;

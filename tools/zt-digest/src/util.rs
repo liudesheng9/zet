@@ -140,7 +140,8 @@ pub fn rereads_on_changing_view(tool: &str, argv: &[String]) -> bool {
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
     match tool.to_ascii_lowercase().as_str() {
-        "audit" | "organize-survey" => true,
+        // `prepare-link` reads the archive and writes only its staging plan files.
+        "audit" | "organize-survey" | "prepare-link" => true,
         // `card -Step check` and `-Step report` read every Card of the cycle and write only their own files.
         "card" => matches!(step.as_str(), "plan" | "check" | "report"),
         "term-link" => step == "plan",
@@ -283,6 +284,8 @@ mod tests {
         assert!(rereads_on_changing_view("card", &argv(&["-Step", "check", "-Work", "D:\\w", "-Compact"])));
         // liu2026managing (2026-11-11): the whole-book cycle's report met haeckl2026dont's writes.
         assert!(rereads_on_changing_view("card", &argv(&["-Step", "report", "-Work", "D:\\w"])));
+        // liu2026managing (2026-11-11): the Link preparation read its gap scope while haeckl2026dont wrote.
+        assert!(rereads_on_changing_view("prepare-link", &argv(&["-Staging", "D:\\s"])));
         assert!(rereads_on_changing_view("term-link", &argv(&["-Step", "plan", "-Staging", "D:\\s"])));
         assert!(!rereads_on_changing_view("term-link", &argv(&["-Step", "apply", "-Staging", "D:\\s"])));
         assert!(!rereads_on_changing_view("card", &argv(&["-Step", "apply", "-Work", "D:\\w"])));

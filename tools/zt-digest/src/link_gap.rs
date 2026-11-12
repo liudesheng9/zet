@@ -444,8 +444,19 @@ pub(crate) fn position_paragraphs(body: &str) -> Vec<String> {
 
 /// The one archive read: the owned Cards' text facts, every authored Link, both registers, and the
 /// The one archive read: the owned Cards' text facts, every authored Link, both registers, and the
-/// title catalogue that classifies anchors and Literature trees. A changing view is refused.
+/// title catalogue that classifies anchors and Literature trees. A changing view reads the whole set
+/// again (util::CHANGING_VIEW_WAITS) and is refused only after the last wait: the read is pure, so it
+/// is safe inside a step that holds a claim (liu2026managing beside haeckl2026dont, 2026-11-11).
 pub(crate) fn read(zt: &mut Zt, book: &str, addresses: &[String]) -> Result<Facts> {
+    crate::util::retry_changing_view(
+        true,
+        &crate::util::CHANGING_VIEW_WAITS,
+        |seconds| std::thread::sleep(std::time::Duration::from_secs(seconds)),
+        || read_once(zt, book, addresses),
+    )
+}
+
+fn read_once(zt: &mut Zt, book: &str, addresses: &[String]) -> Result<Facts> {
     let trees = crate::snapshot::read_literature_trees(zt)?;
     let revision = trees
         .first()
