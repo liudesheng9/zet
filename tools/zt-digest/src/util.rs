@@ -141,7 +141,9 @@ pub fn rereads_on_changing_view(tool: &str, argv: &[String]) -> bool {
         .unwrap_or_default();
     match tool.to_ascii_lowercase().as_str() {
         "audit" | "organize-survey" => true,
-        "card" | "term-link" => step == "plan",
+        // `card -Step check` reads every Card of the cycle and writes only its own state file.
+        "card" => step == "plan" || step == "check",
+        "term-link" => step == "plan",
         _ => false,
     }
 }
@@ -277,6 +279,8 @@ mod tests {
         assert!(rereads_on_changing_view("audit", &argv(&["-CitationKey", "K"])));
         assert!(rereads_on_changing_view("organize-survey", &argv(&["-Work", "D:\\w"])));
         assert!(rereads_on_changing_view("card", &argv(&["-Step", "plan", "-Work", "D:\\w"])));
+        // haeckl2026dont (2026-11-11): the link check's whole-book card check met a second digest's writes.
+        assert!(rereads_on_changing_view("card", &argv(&["-Step", "check", "-Work", "D:\\w", "-Compact"])));
         assert!(rereads_on_changing_view("term-link", &argv(&["-Step", "plan", "-Staging", "D:\\s"])));
         assert!(!rereads_on_changing_view("term-link", &argv(&["-Step", "apply", "-Staging", "D:\\s"])));
         assert!(!rereads_on_changing_view("card", &argv(&["-Step", "apply", "-Work", "D:\\w"])));

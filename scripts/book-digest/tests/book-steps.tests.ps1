@@ -299,15 +299,14 @@ $cardsApply = Step 'cards-apply' @{ Work = $work; MaxJobs = 30 }
 $env:BS_APPLY_PENDING = ''
 Assert ($cardsApply.json -and $cardsApply.json.ok -eq $true -and $cardsApply.json.applied -eq 3 -and $cardsApply.json.faults -eq 1 -and $cardsApply.json.jobs -eq 1) "cards apply: every pending share is applied, then the check lists its fix job ($($cardsApply.text))"
 Assert (@(Get-Content -Raw (Join-Path $work 'out\jobs.json') | ConvertFrom-Json).Count -eq 1) 'cards apply: the check writes its own job file for the next content round'
-# becker2025division-appendix (2026-11-10): the check met "changing read view" while another session wrote to the
-# archive, and the whole-book cycle failed. The check is tried three times before the step fails.
+# becker2025division-appendix (2026-11-10), haeckl2026dont (2026-11-11): the check met a changing view while another
+# run wrote to the archive. zt-digest itself reads the check again (util::rereads_on_changing_view, 0.52.5); the step
+# runs it once, and a changing view that zt-digest still reports fails the step.
 $env:BS_CHECK_VIEW = '1'
-$viewApply = Step 'cards-apply' @{ Work = $work; MaxJobs = 30 }
-Assert ($viewApply.json -and $viewApply.json.ok -eq $true -and $viewApply.json.faults -eq 1) "cards apply: a check that met a changing read view is tried again ($($viewApply.text))"
-Remove-Item -LiteralPath (Join-Path $out 'check-view-count.txt') -ErrorAction SilentlyContinue
-$env:BS_CHECK_VIEW = '5'
 $viewFail = Step 'cards-apply' @{ Work = $work; MaxJobs = 30 }
-Assert ($viewFail.json -and $viewFail.json.ok -eq $false -and $viewFail.json.step -eq 'check') "cards apply: a check that keeps failing still fails the step ($($viewFail.text))"
+Assert ($viewFail.json -and $viewFail.json.ok -eq $false -and $viewFail.json.step -eq 'check') "cards apply: a changing view zt-digest still reports fails the step ($($viewFail.text))"
+$checks = @($viewFail.calls | Where-Object { $_ -match 'card -Step check' }).Count
+Assert ($checks -eq 1) "cards apply: the step runs the check once ($checks)"
 $env:BS_CHECK_VIEW = ''
 Remove-Item -LiteralPath (Join-Path $out 'check-view-count.txt') -ErrorAction SilentlyContinue
 $cardsFinish = Step 'cards-finish' @{ Work = $work; MaxJobs = 30 }

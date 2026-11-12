@@ -374,13 +374,9 @@ switch ($Step) {
             $pending = [int]$a.json.pending_jobs
             if ($pending -le 0) { break }
         }
-        # A check that met a changing read view is tried three times (becker2025division-appendix, 2026-11-10: another
-        # session wrote to the archive while the whole-book check read it, and the cycle failed).
-        $check = $null
-        for ($try = 1; $try -le 3; $try++) {
-            $check = Run @('card', '-Step', 'check', '-Work', $work, '-Compact')
-            if ($check.json -or "$($check.tail)" -notmatch 'changing read view') { break }
-        }
+        # A check that meets a changing view reads again inside zt-digest (util::rereads_on_changing_view, 0.52.5):
+        # becker2025division-appendix (2026-11-10) and haeckl2026dont (2026-11-11) met another run's writes here.
+        $check = Run @('card', '-Step', 'check', '-Work', $work, '-Compact')
         if (-not $check.json) { Fail 'check' "the card check printed no line: $($check.tail)"; break }
         $refusal = Refuse $check.json $check.tail
         if ($refusal) { Reply $refusal.line $refusal.raw; break }
