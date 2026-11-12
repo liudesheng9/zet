@@ -88,7 +88,9 @@ foreach ($case in @(
         @{ rule = 'the Model Card place under the anchor'; text = '排在讨论它的卡片之前' },
         @{ rule = 'the note that points to a derivation'; text = '该推导见' },
         @{ rule = 'the notes that point to Event and Finding Cards'; text = '事件和实证结果' },
-        @{ rule = 'the level field'; text = '"level"' }
+        @{ rule = 'the level field'; text = '"level"' },
+        # goldsmithpinkham2020bartik §VI (2026-11-12): an empirical section split over two groups got no Model Card.
+        @{ rule = 'the empirical part a group holds of a model that spans groups'; text = '跨组的实证模型' }
     )) {
     Assert ($models.Contains($case.text)) "the model supplement keeps $($case.rule)"
 }
