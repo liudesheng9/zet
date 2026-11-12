@@ -89,16 +89,24 @@ export function otherSide(trees, head) {
   }
 }
 
-/** The keys of judged pairs, in both directions (an A-B verdict also answers B-A). */
+/**
+ * The keys of judged pairs, in both directions (an A-B verdict also answers B-A): by address, and by the two Cards'
+ * statement fingerprints when the record has them, so a move that renames the Cards (a Literature organize) does not
+ * make the judge answer the same two statements again.
+ */
 export function judgedKeys(records) {
   const keys = new Set()
-  for (const r of records) { keys.add(`${r.from}>${r.to}`); keys.add(`${r.to}>${r.from}`) }
+  for (const r of records) {
+    keys.add(`${r.from}>${r.to}`); keys.add(`${r.to}>${r.from}`)
+    if (r.from_fp && r.to_fp) { keys.add(`#${r.from_fp}>${r.to_fp}`); keys.add(`#${r.to_fp}>${r.from_fp}`) }
+  }
   return keys
 }
 
-/** The pairs no earlier judgment answered, numbered again. */
+/** The pairs no earlier judgment answered, by address or by statements, numbered again. */
 export function unjudged(pairs, keys) {
-  return pairs.filter((p) => !keys.has(`${p.from}>${p.to}`)).map((p, k) => ({ ...p, id: `p${k + 1}` }))
+  const known = (p) => keys.has(`${p.from}>${p.to}`) || (p.from_fp && p.to_fp && keys.has(`#${p.from_fp}>${p.to_fp}`))
+  return pairs.filter((p) => !known(p)).map((p, k) => ({ ...p, id: `p${k + 1}` }))
 }
 
 /**
@@ -131,7 +139,7 @@ export function pairsFor(ours, theirs) {
       if (!shared.length) continue
       const linked = linkTargets(o.body).includes(t.address) || linkTargets(t.body).includes(o.address)
       if (linked) continue
-      pairs.push({ id: `p${pairs.length + 1}`, from: o.address, to: t.address, kind: t.kind, shared })
+      pairs.push({ id: `p${pairs.length + 1}`, from: o.address, to: t.address, from_fp: o.statement_fingerprint, to_fp: t.statement_fingerprint, kind: t.kind, shared })
     }
   }
   return pairs
@@ -257,7 +265,7 @@ async function apply(head, out, answersFile) {
   const links = linksFromAnswers(pairs, answers)
   // Every answered pair goes into the box's judged record, whatever its verdict.
   const byId = new Map(pairs.map((p) => [p.id, p]))
-  const judged = answers.filter((a) => byId.has(a.pair)).map((a) => ({ from: byId.get(a.pair).from, to: byId.get(a.pair).to, same: a.same, kind: a.kind, verdict: a.verdict, head, at: new Date().toISOString() }))
+  const judged = answers.filter((a) => byId.has(a.pair)).map((a) => ({ from: byId.get(a.pair).from, to: byId.get(a.pair).to, from_fp: byId.get(a.pair).from_fp, to_fp: byId.get(a.pair).to_fp, same: a.same, kind: a.kind, verdict: a.verdict, head, at: new Date().toISOString() }))
   if (judged.length) {
     fs.mkdirSync(path.dirname(judgedFile()), { recursive: true })
     fs.appendFileSync(judgedFile(), judged.map((j) => `${JSON.stringify(j)}\n`).join(''))

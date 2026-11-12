@@ -95,6 +95,20 @@ test('a judged pair is never judged again, in either direction, whatever the ver
   assert.deepEqual(unjudged(pairs, record).map((p) => [p.id, p.from, p.to]), [['p1', 'E/4|d|a|a|4|a', 'E/5|a|a|5|a']])
 })
 
+test('a judged pair is known by its two statements, so a move that renames both Cards does not judge it again', () => {
+  // liu2026managing 2026-11-11: the Literature organize renamed the estimates of 6|a after their first judging, and
+  // the next survey proposed 102 judged pairs again under their new addresses.
+  const record = judgedKeys([{ from: 'L/6|a|a|3|b', to: 'L/13|a|a|4|c', from_fp: 'f1', to_fp: 't1' }])
+  const pairs = [
+    { id: 'p1', from: 'L/4|b|a|a|3|b', to: 'L/6|a|a|4|c', from_fp: 'f1', to_fp: 't1' },
+    { id: 'p2', from: 'L/6|a|a|4|c', to: 'L/4|b|a|a|3|b', from_fp: 't1', to_fp: 'f1' },
+    { id: 'p3', from: 'L/4|b|a|a|3|b', to: 'L/6|a|a|4|d', from_fp: 'f1', to_fp: 't2' },
+  ]
+  assert.deepEqual(unjudged(pairs, record).map((p) => [p.id, p.to]), [['p1', 'L/6|a|a|4|d']])
+  // A record without fingerprints (written before this rule) still answers by address.
+  assert.equal(unjudged([{ id: 'p1', from: 'A', to: 'B', from_fp: 'x', to_fp: 'y' }], judgedKeys([{ from: 'B', to: 'A' }])).length, 0)
+})
+
 test('the judged record belongs to one box', () => {
   assert.notEqual(judgedFile({ ZT_CONFIG_DIR: 'D:\\zt-empirical-box\\config' }, 'C:\\h'), judgedFile({}, 'C:\\h'))
   assert.equal(judgedFile({}, 'C:\\h'), judgedFile({}, 'C:\\h'))
