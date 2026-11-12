@@ -3724,6 +3724,11 @@ for (const which of ['econ', 'math']) {
   const readText = (rel) => fs.readFileSync(path.join(root, rel), 'utf8')
   const growModule = readText('scripts/idea-grow/workflow/modules/zt-grow-cycle.js')
   const growSteps = readText('scripts/idea-grow/grow-steps.ps1')
+  // Owner, 2026-11-12: every Opus role of every ZT workflow runs at effort medium, never another level.
+  for (const file of ['scripts/book-digest/workflow/zt-digest-base.blueprint.json', 'scripts/book-digest/workflow/zt-econ-digest.blueprint.json', 'scripts/book-digest/workflow/zt-math-digest.blueprint.json', 'scripts/book-digest/workflow/zt-history-digest.blueprint.json', 'scripts/idea-grow/workflow/zt-idea-grow.blueprint.json', 'scripts/issue-dev/workflow/zt-issue-dev.blueprint.json', 'scripts/figure-explain/workflow/zt-figure-explain.blueprint.json']) {
+    const roles = JSON.parse(readText(file)).roles || {}
+    for (const [name, role] of Object.entries(roles)) if (role.model === 'opus') check(role.effort === 'medium', `${file}: the Opus role ${name} runs at effort medium (${role.effort})`)
+  }
   const growBp = JSON.parse(readText('scripts/idea-grow/workflow/zt-idea-grow.blueprint.json'))
   const growSim = JSON.parse(readText('scripts/idea-grow/workflow/zt-idea-grow.sim.json'))
   check(!/ztRelay\s*\(|runScript\s*\(|wfpScript\s*\(/.test(growModule), '#179: the grow module calls ztRelay, runScript and wfpScript zero times')
