@@ -40,6 +40,8 @@ From the Literature-note pilot (#189), the one-conversation card cycle (#191) an
 
 ## Provider limit in a digest (the owner, 2026-11-05)
 
+> **2026-11-12 (the owner):** every job runs on OpenCode Go again (`ZT_DRIVE_MODEL`, zt-workflow-lib v17). The Desktop fails over between the OpenCode Go accounts; when every account is limited, switch the one value to the official source, reinstall, stop and resume. The section below is the history of why the official source was used.
+
 Digests run on the official source (`deepseek-official/deepseek-flash`) with the protocol's limit, eight managers of eight jobs. OpenCode Go answered `429 ... overloaded` with 59 writers started at once and still on about one job in eight with two managers, and a retry in the same conversation recovered only some of them. A stage must never hold a pool slot while it waits for another stage: Events and Findings waited for the digest with `-Wait 600`, so they now run after it.
 
 ## Long jobs (the owner, 2026-11-06)

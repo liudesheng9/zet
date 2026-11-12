@@ -1,4 +1,5 @@
-// ==== module zt-digest-lib v60 ====
+// ==== module zt-digest-lib v61 ====
+// 61 (the owner, 2026-11-12): the DeepSeek source is OpenCode Go, read from the shared library's one value (ZT_DRIVE_MODEL).
 // 60 (docs/empirical-models-proposal.md §8.5): level 3. `level` takes empirical, `perEmpirical` (default 4) sizes an
 // empirical architect batch, and ARCH_EMPIRICAL names the empirical architect's instructions (model-architect-empirical.md).
 // 58 (2026-11-06, the owner's order: three times the Card faithful check per job): a card job can be one
@@ -112,9 +113,6 @@ const ZD_EDIT_PATIENCE = 180
 function zdTool(name, scripts = ZD_SCRIPTS) {
   return ZD_TOOLS[name] ? `${ZD_DIGEST} ${ZD_TOOLS[name]}` : `pwsh -NoProfile -File "${scripts}\\${name}.ps1"`
 }
-const ZD_DSH_SOURCES = {
-  official: 'deepseek-official/deepseek-flash',
-}
 const ZD_PER_MANAGER_MAX = 8
 const ZD_MAX_MANAGERS = 8
 // R343–R346: run usage is per provider run, recorded from that run's own result. This framework never
@@ -138,10 +136,9 @@ function zdLockRefusal(text) { return ztLockRefusal(text) }
 function zdLockSaid(refusal) { return ztLockSaid(refusal) }
 function zdLockStop(where, refusal) { return ztLockStop(where, refusal) }
 
-// The DeepSeek source is frozen at the official one (the owner, 2026-11-05, after OpenCode Go answered 429 overloaded): no
-// probe, no argument, no second source.
+// The DeepSeek source is OpenCode Go (the owner, 2026-11-12), the shared library's one value: no probe, no argument.
 function zdDefaultModel() {
-  return { source: 'official', model: ZD_DSH_SOURCES.official }
+  return { source: 'opencode', model: ZT_DRIVE_MODEL }
 }
 
 function zdMake(ctx, p) {
@@ -1153,7 +1150,7 @@ Return ok (true when no conversation stayed open), deleted (deleted or already g
 }
 
 defineModule({
-  id: 'zt-digest-lib', version: '60', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-digest-lib', version: '61', library: true, requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Library: the ZT digest machinery (settings, managers, the drive-step layer driver, the book-level stage steps and their card cycle, the model compiler) for the zt-* stage modules, and the Tree Lock seam that stops an affected write stage on the owner\'s typed card_locked refusal.',
 })
 // ==== end module zt-digest-lib ====

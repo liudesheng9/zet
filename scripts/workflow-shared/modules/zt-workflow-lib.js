@@ -1,4 +1,8 @@
-// ==== module zt-workflow-lib v16 ====
+// ==== module zt-workflow-lib v17 ====
+// v17 (the owner, 2026-11-12): every DeepSeek job of the ZT workflows runs on OpenCode Go. ZT_DRIVE_MODEL is the one
+// source value: the digests' content jobs, the Term and Cited writers and the drive jobs all read it. The Desktop
+// switches between the OpenCode Go accounts by itself (strategy failover); when every account is limited, the operator
+// sets this value to deepseek-official/deepseek-flash, reinstalls and resumes (the model is in no plan hash).
 // v16 (donner2026industry, 2026-11-11): a drive answer whose line opens with a bare word and a space (`ok {…}`) is read
 // as the object after the word; the Cited list step read as no line, and the Cited list stage stopped.
 // v14 (ebrill2001modern-empirical, 2026-11-09): a drive answer whose line opens with a short label (`Ok: {…}`) is read
@@ -53,7 +57,7 @@
 //    `{`, when every line after it is prose (none opens with `{` or `[`). The line itself is still read strictly:
 //    one object with a boolean top-level `ok`, with no prose before it on the same line.
 const ZT_LOCK = 'card_locked'
-const ZT_DRIVE_MODEL = 'deepseek-official/deepseek-flash'
+const ZT_DRIVE_MODEL = 'opencode-go/deepseek-v4.1-flash'
 const ZT_DRIVE_SCHEMA = {
   type: 'object',
   properties: {
@@ -210,7 +214,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '16', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '17', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====

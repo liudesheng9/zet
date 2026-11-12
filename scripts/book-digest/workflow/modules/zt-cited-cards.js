@@ -1,4 +1,5 @@
-// ==== module zt-cited-cards v7 ====
+// ==== module zt-cited-cards v8 ====
+// v8 (the owner, 2026-11-12): every job runs on the shared library's one source value (ZT_DRIVE_MODEL, OpenCode Go).
 // v7 (2026-11-11): after the reading jobs the list is planned once more; a job that left a part without a passing
 // answer (its manager stopped before the job's last message) runs once more before the list is written.
 // v6 (2026-11-07, docs/cited-list-reading-proposal.md): the Cited list is read by DeepSeek, not parsed. `list` cuts the
@@ -25,7 +26,7 @@
 // v2 (pilot 2026-10-31): `source` names the whole bilingual source for a backfill, whose adopted staging names the
 // Chinese-only book.zh.md; the list step passes it as -Source and the plan freezes it for the Cards.
 defineModule({
-  id: 'zt-cited-cards', version: '7', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-cited-cards', version: '8', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Cited list and Cited Cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers for the content; each unit completes only from the compiler\'s own artifacts.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -62,7 +63,7 @@ First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_run,
 JOBS: ${source}
 Each job has id, files, prompt, skills, model, effort. A job may also have "then".
 
-1. Start every job in ONE message: mcp__deepseek__deepseek_run with cwd "${WORK}", prompt_files = its "files", prompt = its "prompt", skills = its "skills", model = its "model", reasoning_effort = its "effort", wait_seconds 0.
+1. Start every job in ONE message: mcp__deepseek__deepseek_run with cwd "${WORK}", prompt_files = its "files", prompt = its "prompt", skills = its "skills", model "${ZT_DRIVE_MODEL}", reasoning_effort = its "effort", wait_seconds 0.
 2. Keep at most 8 jobs running at a time. Until no job is running: call mcp__deepseek__deepseek_wait (wait_seconds ${DSMP.pollSeconds}) on one running job, then mcp__deepseek__deepseek_wait (wait_seconds 0) on the others. A job asking a question: answer "按任务说明自行决定，不需要询问。". A job asking approval for a command, or for reading or writing a file under "${OUT}" or the book's source file its job file names: allow; anything else: reject. A job running longer than ${DSMP.budgetMinutes} minutes: cancel it.
 3. A job with "then" is one conversation of several messages. When its conversation answers "finished", send the next item of its "then": mcp__deepseek__deepseek_prompt with the same session_id, prompt_files = that item's files, prompt = that item's prompt, skills = the job's skills, reasoning_effort = the job's effort, wait_seconds 0. Send every item, in order, one at a time. The job ends with the answer to its last item.
 3b. A job that failed or gave an empty answer gets ONE more attempt in a new conversation (from its first message). Never a third.
