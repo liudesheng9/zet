@@ -115,7 +115,7 @@ pub(super) fn body_text(v: &Value) -> String {
 /// so it needs no `zt mcp`.
 pub(super) fn zt_check_json(json: &str, setting: &str) -> Result<Vec<String>> {
     let check = Check { json: json.to_string(), setting: setting.to_string(), ..Check::default() };
-    let lines = match zt_check::check::run_lines(&check.args(), None) {
+    let lines = match crate::check::run_lines_offline(&check.args()) {
         Ok(lines) => lines,
         Err(error) => bail!("zt-check did not run: {error:#}"),
     };

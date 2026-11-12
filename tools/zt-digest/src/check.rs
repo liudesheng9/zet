@@ -3,7 +3,24 @@
 //! `faults: N`) and fails when zt-check did not run.
 
 use crate::zt::Zt;
+use crate::util;
 use anyhow::{Result, bail};
+
+/// zt-check's run, read again while its read set meets a changing archive revision.
+pub(crate) fn run_lines_rereading(
+    waits: &[u64],
+    sleep: impl FnMut(u64),
+    step: impl FnMut() -> Result<Vec<String>>,
+) -> Result<Vec<String>> {
+    util::retry_changing_view(true, waits, sleep, step)
+}
+
+/// zt-check on files only (no `zt mcp`), read again on a changing view like [`Check::run`].
+pub(crate) fn run_lines_offline(args: &[String]) -> Result<Vec<String>> {
+    run_lines_rereading(&util::CHANGING_VIEW_WAITS, |s| std::thread::sleep(std::time::Duration::from_secs(s)), || {
+        zt_check::check::run_lines(args, None)
+    })
+}
 
 pub struct Check {
     pub json: String,
@@ -97,9 +114,15 @@ impl Check {
         a
     }
 
-    /// Runs the check on `zt` (reads go to that `zt mcp`).
+    /// Runs the check on `zt` (reads go to that `zt mcp`). A check is a pure read: when the archive
+    /// revision moves under its read set it reads again (util::CHANGING_VIEW_WAITS). liu2026managing
+    /// (2026-11-11): a second digest wrote beside the group-finish and card checks, each attempt met a
+    /// changing read view at once, and two units spent their three attempts with nothing checked.
     pub fn run(&self, zt: &mut Zt) -> Result<Vec<String>> {
-        let lines = match zt_check::check::run_lines(&self.args(), Some(zt)) {
+        let args = self.args();
+        let lines = match run_lines_rereading(&util::CHANGING_VIEW_WAITS, |s| std::thread::sleep(std::time::Duration::from_secs(s)), || {
+            zt_check::check::run_lines(&args, Some(&mut *zt))
+        }) {
             Ok(lines) => lines,
             Err(error) => bail!("zt-check did not run: {error:#}"),
         };
@@ -107,5 +130,34 @@ impl Check {
             bail!("zt-check did not run: {}", lines.join(" | "));
         }
         Ok(lines)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_check_that_meets_a_changing_read_view_reads_again() {
+        let mut calls = 0;
+        let mut slept = Vec::new();
+        let got = run_lines_rereading(&[5, 10], |s| slept.push(s), || {
+            calls += 1;
+            if calls < 3 { anyhow::bail!("incomplete checker inputs: changing read view") }
+            Ok(vec!["faults: 0".to_string()])
+        });
+        assert_eq!(got.unwrap(), vec!["faults: 0".to_string()]);
+        assert_eq!(slept, vec![5, 10]);
+    }
+
+    #[test]
+    fn a_check_with_a_content_fault_is_not_read_again() {
+        let mut calls = 0;
+        let got = run_lines_rereading(&[5, 10], |_| {}, || {
+            calls += 1;
+            anyhow::bail!("unknown option --bogus")
+        });
+        assert!(got.is_err());
+        assert_eq!(calls, 1);
     }
 }

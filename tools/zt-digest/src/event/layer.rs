@@ -306,7 +306,7 @@ fn scripts_dir() -> String {
 /// zt-check `--json` in-process. A JSON check reads no Card, so it needs no `zt mcp`.
 fn check_json(path: &str) -> Result<Vec<String>> {
     let check = Check { json: path.to_string(), ..Check::default() };
-    let lines = match zt_check::check::run_lines(&check.args(), None) {
+    let lines = match crate::check::run_lines_offline(&check.args()) {
         Ok(lines) => lines,
         Err(error) => bail!("zt-check did not run: {error:#}"),
     };
