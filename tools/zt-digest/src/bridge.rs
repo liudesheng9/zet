@@ -20,7 +20,7 @@
 
 mod answer;
 mod apply;
-pub(crate) use apply::without_bridge_lines;
+pub(crate) use apply::{keep_bridge_lines, without_bridge_lines};
 use crate::canon;
 mod report;
 

@@ -234,7 +234,8 @@ fn format_card(card: &Value, faults: &[(String, String)], parent_title: &str, so
     line("### 正文");
     line("");
     line("````markdown");
-    line(&trim_end(&field(card, "body")));
+    // The Bridge's `跨书关联：` paragraphs are not the writer's: the apply puts them back (keep_bridge_lines).
+    line(&trim_end(&crate::bridge::without_bridge_lines(&field(card, "body"))));
     line("````");
     line("");
     if !text.is_empty() {
@@ -2215,7 +2216,7 @@ impl Compiler {
                 let mut edits: Vec<Value> = Vec::new();
                 let mut entries: HashMap<String, Value> = HashMap::new();
                 let mut late_splits: Vec<(String, Value)> = Vec::new();
-                for entry in ps_array(&answer("cards")) {
+                for mut entry in ps_array(&answer("cards")) {
                     let a = field(&entry, "address");
                     if !is_in(&a, &job_cards) {
                         continue;
@@ -2231,6 +2232,10 @@ impl Compiler {
                     }
                     let verdict = field(&entry, "verdict");
                     let old = self.state["plan"][&a].clone();
+                    // The writer saw the body without the Bridge's paragraphs; the Card keeps its own.
+                    if entry.get("body").is_some() {
+                        entry["body"] = json!(crate::bridge::keep_bridge_lines(&field(&old, "body"), &field(&entry, "body")));
+                    }
                     let refuse = |state: &mut Value, counts: &mut Vec<(&str, i64)>, reason: String| {
                         state["refused"][&a] = json!({ "job": id, "reason": reason });
                         bump(counts, "refused");
@@ -2878,7 +2883,7 @@ impl Compiler {
         let job_cards: Vec<String> = ps_items(&the_job["cards"]).iter().map(s).collect();
         let mut entries: Vec<Value> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        for entry in ps_items(&result["cards"]).into_iter().filter(truthy) {
+        for mut entry in ps_items(&result["cards"]).into_iter().filter(truthy) {
             let a = field(&entry, "address");
             if !is_in(&a, &job_cards) {
                 add(if a.is_empty() { "-" } else { &a }, "refuse", &format!("`{a}` is not a Card of job {job}"));
@@ -2903,6 +2908,10 @@ impl Compiler {
                 continue;
             }
             let old = self.state["plan"][&a].clone();
+            // The writer saw the body without the Bridge's paragraphs; check the draft as it will be written.
+            if entry.get("body").is_some() {
+                entry["body"] = json!(crate::bridge::keep_bridge_lines(&field(&old, "body"), &field(&entry, "body")));
+            }
             if !self.writable(&a, &field(&old, "category")) {
                 add(&a, "refuse", &format!("category {} is not writable", field(&old, "category")));
                 continue;
@@ -3530,6 +3539,10 @@ mod tests {
         assert!(with_source.contains("- 记录来源行：`sections/s05.md:3-4`"));
         assert!(with_source.contains("### 原文行"));
         assert!(with_source.contains("第一行。\n第二行。"));
+        // goldsmithpinkham2020bartik (2026-11-12): the writer never sees the Bridge's paragraphs.
+        let bridged = json!({ "address": "0/3", "category": "idea", "parent": "", "title": "T", "body": "正文。\n\n跨书关联：对应 [[o/1]]：一句。" });
+        let shown = format_card(&bridged, &[], "", "", "", "");
+        assert!(shown.contains("正文。") && !shown.contains("跨书关联") && !shown.contains("o/1"), "{shown}");
     }
 
     #[test]

@@ -590,6 +590,17 @@ pub(crate) fn without_bridge_lines(body: &str) -> String {
     body.split("\n\n").filter(|paragraph| !paragraph.starts_with("跨书关联：")).collect::<Vec<_>>().join("\n\n")
 }
 
+/// A rewrite of a Card that keeps the Card's own Bridge paragraphs: the draft (whose writer saw the
+/// body without them) loses any it carries, and every `跨书关联：` paragraph of `old` goes back in
+/// its order, before a Model Card's **引入** section (goldsmithpinkham2020bartik, 2026-11-12).
+pub(crate) fn keep_bridge_lines(old: &str, draft: &str) -> String {
+    let mut body = without_bridge_lines(draft);
+    for paragraph in old.split("\n\n").filter(|p| p.starts_with("跨书关联：")) {
+        body = with_bridge_line(&body, &paragraph["跨书关联：".len()..]);
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,6 +636,27 @@ mod tests {
         );
         assert_eq!(without_bridge_lines(&twice), card);
         assert_eq!(with_bridge_line("问题：A？", "对照 [[o/1]]：一句。"), "问题：A？\n\n跨书关联：对照 [[o/1]]：一句。");
+    }
+
+    /// goldsmithpinkham2020bartik (2026-11-12): the link-check card cycle saw the Bridge's paragraphs
+    /// and rewrote 17 of them as bare `另见 [[…]]`; the writer now sees the body without them, and
+    /// the apply puts the Card's own Bridge paragraphs back after the draft.
+    #[test]
+    fn a_rewrite_keeps_the_cards_own_bridge_paragraphs() {
+        let old = "问题：A？\n\n来源：[[k]] §I\n\n跨书关联：对应 [[o/6|c|a]]：两处都一句。\n\n跨书关联：对照 [[p/1]]：二句。";
+        let draft = "问题：A，改写。\n\n来源：[[k]] §I";
+        assert_eq!(
+            keep_bridge_lines(old, draft),
+            "问题：A，改写。\n\n来源：[[k]] §I\n\n跨书关联：对应 [[o/6|c|a]]：两处都一句。\n\n跨书关联：对照 [[p/1]]：二句。"
+        );
+        // a draft that still carries a Bridge paragraph does not get it twice
+        let carried = format!("{draft}\n\n跨书关联：对照 [[p/1]]：二句。");
+        assert_eq!(keep_bridge_lines(old, &carried), keep_bridge_lines(old, draft));
+        // a Model Card keeps them before its **引入** section
+        let model_old = "问题：B？\n\n跨书关联：对照 [[o/1]]：一句。\n\n**引入**\n\n- 单卡 [[k/2|a]]：x";
+        let model_draft = "问题：B，改写。\n\n**引入**\n\n- 单卡 [[k/2|a]]：x";
+        assert_eq!(keep_bridge_lines(model_old, model_draft), "问题：B，改写。\n\n跨书关联：对照 [[o/1]]：一句。\n\n**引入**\n\n- 单卡 [[k/2|a]]：x");
+        assert_eq!(keep_bridge_lines("问题：C？", "问题：C，改写。"), "问题：C，改写。");
     }
 
     #[test]
