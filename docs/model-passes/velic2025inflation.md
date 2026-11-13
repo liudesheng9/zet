@@ -106,3 +106,24 @@ No pair to another book or to a Finding Card was proposed. DeepSeek: 3 conversat
 Gate: `dialogue.mjs check` clean on 7|a, 8|a, 10|a (broken 0, proposed_again 0); check-settings clean on all three; Term relink ok (0 Cards; the first run's empty "plan failed" was a read glitch, the retry clean); `list_broken_links` empty.
 
 Open: `7|a|a|3|f` and `8|a|a|4|c` restate the same Table 2 number in two models (the 印证 Link records it).
+
+## Stage 7: literature organize
+
+Backup: `D:\zt\backups\zt-before-velic2025inflation-organize.sqlite3` (integrity ok). One subagent (Opus, effort medium) under `zt-literature-organize`. 513 Cards before and after; no summary Card added.
+
+Top line: 1 摘要 · 2 引言 (§1) · 3 方法论框架 (§2) · 4 数据 (§3) · 5 实证结果 (§4) · 6 结论 (§5) · 7 术语表 (Term list) · 8 参考文献 (Cited list). 声明 was not digested.
+
+- §2 (3): §2.1 → 3|a (the ESTAR model with its §2.1 notes 3|a|1–6); §2.2 → 3|b (the reading notes old 3|a|7–14); §2.3 → 3|c; §2.4 → 3|d, with the opening chain 3|d|d (式 (4), logit, two channels, forces behind comovement), 3|d|e (§2.4.1–2) and 3|d|f (§2.4.3–7) kept as digest-group nesting levels.
+- §4 (5): §4.1 → 5|a (+ finding 5|a|a); §4.2 → 5|b with Model 5|b|a and findings 5|b|b–j; §4.3 → 5|c; §4.4 → 5|d.
+- Moves: lists 1|a → 7, 1|b → 8; old 8 → 5, 9 → 5|c, 10 → 5|d, 11 → 6; old 4|c (§2.3) → 3|c, old 4 → 3|d, old 5 → 3|d|e, old 6 → 3|d|f, old 7 → 4.
+- Summary leads rewritten on 3, 3|d and 5; 3|d|e and 3|d|f got a linked section index; the root index lists the new top line.
+
+**Model Cards after organize**: 3|a formal ESTAR (unchanged) · 4|a data and descriptive facts (was 7|a) · 5|b|a ESTAR estimation (was 8|a) · 5|c|a triad mechanism, concept (was 9|a) · 5|d|a drivers panel regression (was 10|a).
+
+Gate: top line follows the source; Term list then Cited list at the tail; no crosser; `list_broken_links` empty; Term relink ok (2 Cards), second plan 0 Cards; check-model self_sufficient and loose 0 on 3|a, 4|a, 5|b|a, 5|d|a; check-settings clean on 3|a, 4|a, 5|b|a. On 5|d|a check-settings reports `\chi`, `X`, `\xi` uncovered against 4|a|a|a: false, the model's own 变量表 5|d|a|a|a has all three rows. It is the `variable_uncovered` bug (stage 4): after the renumbering the imported table 4|a|a|a sorts first. Fixed in zt 0.62.2 (a813371b), not deployed while the IMEN1 digest queue runs on the box.
+
+Open: deploy zt 0.62.2, re-run check-settings on 5|d|a, then give 5|b|a the `整块 [[4|a|a]]` data import backed out in stage 4; 2|a|1|a (Lane 2020) sits in §1 while its source line says §摘要; the structure Card 1|i still describes the old divisions (its statements hold).
+
+## Result
+
+Five models: 3|a formal ESTAR (two chapters, five figures, full 直觉), 4|a, 5|b|a and 5|d|a empirical, 5|c|a concept. The tree follows the paper's sections. Next per the sequence: zt-idea-grow and zt-term-sync only on the owner's word.
