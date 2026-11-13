@@ -355,3 +355,10 @@ All seven stages passed their gates. Open items across the sequence:
 4. `5|h|a|f|c`'s GDP formula writes $p_{H,t}y_{H,t}$ for the second term; the figure repeats it (Stage 5).
 5. The evidence dialogue found 0 pairs: bergin2026exchange's Terms link to no other book's Term Card. Rerun the survey after a zt-term-sync pass on the economics shelf (Stage 6). goldsmithpinkham2020bartik/8\|a needs a survey with the fixed `section()` (Stage 6).
 6. The `section()` fix of zt-evidence-dialogue is committed (04d3ab61); this pass doc is committed with stage 7.
+
+## Follow-up: chart parts (2026-11-13)
+
+Owner: the Model Card figure of 5|h had three parts but the chart sheet could show it only as one whole. The GUI already supports parts (top-level `data-part` elements become tabs; `src/gui/chart-frame.js`), and brandimarti2026reorganizing's figures use them (`<section class="zpart" data-part="一 · 博弈顺序">`). `zt-model-illustrate` now builds and lints them (`part()`, `PART_CSS`, lint `parts`; [agent skills](../wiki/agent-skills.md)). The module's head moved to `5|h` and its three parts are `一 · 博弈与时序`, `二 · 因果结构`, `三 · 模型研究的变化`.
+
+The same check found that the organize (stage 7) left every chart click target at the old 7|a addresses: 20 targets in 25 charts opened no Card. `apply.mjs --write` with the head at 5|h rewrote them (6 Cards, then the head again for the part panels). Backup `D:\zt\backups\zt-before-bergin2026exchange-chart-parts.sqlite3` (integrity ok). Gate: `verify.mjs --model` 25 charts, 0 lint faults, 0 dead targets, one PNG per part; the live GUI shows the three tabs and each part alone.
+
