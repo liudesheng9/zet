@@ -4105,9 +4105,8 @@ fn regenerate_reverse_links_tx(conn: &Connection) -> Result<()> {
 
 fn replace_link_locations(text: &str, mapping: &BTreeMap<String, String>) -> Result<String> {
     let parsed = parse_card_text(text)?;
-    let body = link::LinkBody::parse(&parsed.body)?
-        .rewrite_targets(mapping)
-        .body;
+    // A chart's click targets (`data-zt`, `[[…]]` in a chart fence) follow their Cards as Links do.
+    let body = link::rewrite_body(&parsed.body, mapping)?;
     Ok(compose_card_text(&parsed.title, &body, &parsed.reverse))
 }
 
@@ -4539,7 +4538,7 @@ fn apply_delete_plan_into(
     // Re-point first, so a side compaction that renames `into` carries the new Links along.
     if !repoint.is_empty() {
         let cards = if link_index::ready(tx) {
-            link_index::sources_linking(tx, repoint.keys())?
+            link_index::rewrite_sources(tx, repoint.keys())?
                 .iter()
                 .map(|source| load_card(tx, source))
                 .collect::<Result<Vec<_>>>()?
@@ -4686,7 +4685,7 @@ fn apply_location_mapping_tx(
     tree_lock::ensure_unlocked(conn, tree_lock::Change::Mapping(mapping))?;
     let indexed = link_index::ready(conn);
     let sources = if indexed {
-        link_index::sources_linking(conn, mapping.keys())?
+        link_index::rewrite_sources(conn, mapping.keys())?
     } else {
         BTreeSet::new()
     };

@@ -10,9 +10,70 @@ use std::path::Path;
 
 type Row = (String, i64, String, Option<String>);
 const INDEX_VERSION: &str = "1";
+const CHART_INDEX_VERSION: &str = "1";
 
 pub(crate) fn ready(conn: &Connection) -> bool {
     matches!(conn.query_row("SELECT value FROM metadata WHERE key='links_index_version'", [], |r| r.get::<_, String>(0)), Ok(v) if v == INDEX_VERSION)
+}
+
+/// The chart index (`chart_links`) sits beside the Link index: one row per (source, Card address a
+/// chart in the source names). A chart's click target is no Link (no Reverse link, no relation, no
+/// broken-Link count), so it keeps its own table; a rename re-keys it and rewrites the charts it
+/// names, so a figure never points at the Card that took a moved Card's address (2026-11-13).
+pub(crate) fn charts_ready(conn: &Connection) -> bool {
+    ready(conn)
+        && matches!(conn.query_row("SELECT value FROM metadata WHERE key='chart_index_version'", [], |r| r.get::<_, String>(0)), Ok(v) if v == CHART_INDEX_VERSION)
+}
+
+fn chart_rows(card: &crate::Card) -> Result<BTreeSet<String>> {
+    let parsed =
+        crate::parse_card_text(&card.text).with_context(|| format!("Card `{}`", card.address))?;
+    Ok(crate::link::chart_targets(&parsed.body))
+}
+
+fn chart_source_rows(conn: &Connection, at: &str) -> Result<BTreeSet<String>> {
+    let mut query = conn.prepare_cached("SELECT target FROM chart_links WHERE source=?1")?;
+    let rows = query
+        .query_map([at], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    Ok(rows)
+}
+
+fn write_chart_rows(conn: &Connection, at: &str, targets: &BTreeSet<String>) -> Result<()> {
+    conn.execute("DELETE FROM chart_links WHERE source=?1", [at])?;
+    let mut insert = conn.prepare_cached("INSERT INTO chart_links(source,target) VALUES(?1,?2)")?;
+    for target in targets {
+        insert.execute(params![at, target])?;
+    }
+    Ok(())
+}
+
+fn rebuild_charts(conn: &Connection, cards: &[crate::Card]) -> Result<()> {
+    conn.execute("DELETE FROM chart_links", [])?;
+    for card in cards {
+        let targets = chart_rows(card)?;
+        if !targets.is_empty() {
+            write_chart_rows(conn, &card.address, &targets)?;
+        }
+    }
+    Ok(())
+}
+
+/// Build the chart index on an archive whose Link index is ready. It is derived from the bodies and
+/// changes no Card, so it needs no backup.
+fn ensure_charts(conn: &mut Connection) -> Result<()> {
+    if !ready(conn) || charts_ready(conn) {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS chart_links(source TEXT NOT NULL, target TEXT NOT NULL, PRIMARY KEY(source,target)); CREATE INDEX IF NOT EXISTS chart_links_by_target ON chart_links(target,source);")?;
+    rebuild_charts(&tx, &crate::load_cards(&tx)?)?;
+    tx.execute(
+        "INSERT INTO metadata(key,value) VALUES('chart_index_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [CHART_INDEX_VERSION],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub(crate) fn revision(conn: &Connection) -> Result<u64> {
@@ -65,12 +126,12 @@ fn rows(card: &crate::Card) -> Result<Vec<Row>> {
 }
 
 pub(crate) fn ensure(root: &Path, conn: &mut Connection) -> Result<()> {
-    if ready(conn) {
+    if charts_ready(conn) {
         return Ok(());
     }
     let _lock = crate::acquire_edit_lock_within(root, std::time::Duration::from_secs(20), "reindex")?;
     if ready(conn) {
-        return Ok(());
+        return ensure_charts(conn);
     }
     let version: Option<String> = conn
         .query_row(
@@ -122,7 +183,7 @@ pub(crate) fn ensure(root: &Path, conn: &mut Connection) -> Result<()> {
         root,
         &format!("Link index migration complete; backup {}", backup.display()),
     )?;
-    Ok(())
+    ensure_charts(conn)
 }
 
 /// Full rebuild for migrations and structural operations, within their transaction.
@@ -143,6 +204,9 @@ pub(crate) fn rebuild(conn: &Connection) -> Result<usize> {
         insert.execute(params![source, ord, target, kind])?;
     }
     drop(insert);
+    if charts_ready(conn) {
+        rebuild_charts(conn, &cards)?;
+    }
     let affected = cards.iter().map(|c| c.address.clone()).collect();
     let changed = refresh_reverse(conn, &affected)?;
     write_stats(conn, cards.len(), affected.len(), changed)?;
@@ -167,6 +231,35 @@ pub(crate) fn source_changed(conn: &Connection, at: &str) -> Result<()> {
 /// A batch/edit owns the revision boundary and calls this before its commit.
 pub(crate) fn sync_source(conn: &Connection, at: &str) -> Result<()> {
     sync_sources(conn, &BTreeSet::from([at.to_string()]))
+}
+
+/// Re-key one index table's rows through `mapping`, as sources and as targets. Two steps through a
+/// marked value, so a chain (`3/2 -> 3/3`, `3/3 -> 3/4`) never maps a row twice and never meets the
+/// key of a row still waiting to move.
+fn rekey(conn: &Connection, table: &str, mapping: &BTreeMap<String, String>) -> Result<()> {
+    for (old, new) in mapping {
+        conn.execute(
+            &format!("UPDATE {table} SET source=char(1)||?2 WHERE source=?1"),
+            params![old, new],
+        )?;
+        conn.execute(
+            &format!("UPDATE {table} SET target=char(1)||?2 WHERE target=?1"),
+            params![old, new],
+        )?;
+    }
+    // Clear the marks row by row through the indexes; a scan of the whole table would cost the
+    // archive's size on every rename.
+    for new in mapping.values() {
+        conn.execute(
+            &format!("UPDATE {table} SET source=?1 WHERE source=char(1)||?1"),
+            params![new],
+        )?;
+        conn.execute(
+            &format!("UPDATE {table} SET target=?1 WHERE target=char(1)||?1"),
+            params![new],
+        )?;
+    }
+    Ok(())
 }
 
 /// Refresh the union of old/new targets once for one transaction's sources.
@@ -217,6 +310,12 @@ impl Changes {
                 insert.execute(params![source, ord, target, kind])?;
             }
         }
+        if charts_ready(conn) {
+            let new = chart_rows(&card)?;
+            if chart_source_rows(conn, at)? != new {
+                write_chart_rows(conn, at, &new)?;
+            }
+        }
         Ok(())
     }
 
@@ -235,6 +334,9 @@ impl Changes {
             self.affected
                 .extend(source_rows(conn, at)?.into_iter().map(|r| r.2));
             conn.execute("DELETE FROM links WHERE source=?1", [at])?;
+            if charts_ready(conn) {
+                conn.execute("DELETE FROM chart_links WHERE source=?1", [at])?;
+            }
             self.sources.insert(at.clone());
         }
         Ok(())
@@ -257,29 +359,9 @@ impl Changes {
         }
         self.affected.extend(mapping.values().cloned());
         self.sources.extend(mapping.values().cloned());
-        // Two steps through a marked value, so a chain (`3/2 -> 3/3`, `3/3 -> 3/4`) never maps a
-        // row twice and never meets the (source, ord) key of a row still waiting to move.
-        for (old, new) in mapping {
-            conn.execute(
-                "UPDATE links SET source=char(1)||?2 WHERE source=?1",
-                params![old, new],
-            )?;
-            conn.execute(
-                "UPDATE links SET target=char(1)||?2 WHERE target=?1",
-                params![old, new],
-            )?;
-        }
-        // Clear the marks row by row through the indexes; a scan of the whole table would cost the
-        // archive's size on every rename.
-        for new in mapping.values() {
-            conn.execute(
-                "UPDATE links SET source=?1 WHERE source=char(1)||?1",
-                params![new],
-            )?;
-            conn.execute(
-                "UPDATE links SET target=?1 WHERE target=char(1)||?1",
-                params![new],
-            )?;
+        rekey(conn, "links", mapping)?;
+        if charts_ready(conn) {
+            rekey(conn, "chart_links", mapping)?;
         }
         Ok(())
     }
@@ -314,6 +396,40 @@ pub(crate) fn sources_linking<'a>(
     for target in targets {
         for source in query.query_map([target], |r| r.get::<_, String>(0))? {
             sources.insert(source?);
+        }
+    }
+    Ok(sources)
+}
+
+/// The Cards a rename of `targets` rewrites: the sources that link one of them (the Link index) and
+/// the Cards whose charts name one (the chart index). Without the chart index the charts are found
+/// by a scan of the bodies that can hold a chart target at all.
+pub(crate) fn rewrite_sources<'a>(
+    conn: &Connection,
+    targets: impl IntoIterator<Item = &'a String>,
+) -> Result<BTreeSet<String>> {
+    let targets: Vec<&String> = targets.into_iter().collect();
+    let mut sources = sources_linking(conn, targets.iter().copied())?;
+    if charts_ready(conn) {
+        let mut query = conn.prepare_cached("SELECT source FROM chart_links WHERE target=?1")?;
+        for target in &targets {
+            for source in query.query_map([target], |r| r.get::<_, String>(0))? {
+                sources.insert(source?);
+            }
+        }
+        return Ok(sources);
+    }
+    let wanted: BTreeSet<&str> = targets.iter().map(|t| t.as_str()).collect();
+    let mut query = conn.prepare_cached(
+        "SELECT COALESCE(location, citation_key), text FROM cards WHERE instr(text,'data-zt')>0 OR instr(text,'[[')>0",
+    )?;
+    let rows = query
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (address, text) in rows {
+        let body = crate::parse_card_text(&text)?.body;
+        if crate::link::chart_targets(&body).iter().any(|t| wanted.contains(t.as_str())) {
+            sources.insert(address);
         }
     }
     Ok(sources)
@@ -451,6 +567,23 @@ pub(crate) fn check(conn: &Connection) -> Result<Value> {
     actual.sort();
     let reverse = crate::link_lifecycle_from_cards(&cards)?.reverse_sections()?;
     let mut faults = Vec::new();
+    if charts_ready(conn) {
+        let mut want = BTreeSet::new();
+        for card in &cards {
+            for target in chart_rows(card)? {
+                want.insert((card.address.clone(), target));
+            }
+        }
+        let mut stmt = conn.prepare("SELECT source,target FROM chart_links")?;
+        let have = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+        if want != have {
+            faults.push(json!({"kind":"charts","expected":want.len(),"actual":have.len(),
+                "first_missing":want.difference(&have).next(),
+                "first_unexpected":have.difference(&want).next()}));
+        }
+    }
     if expected != actual {
         let expected_set: BTreeSet<_> = expected.iter().collect();
         let actual_set: BTreeSet<_> = actual.iter().collect();
@@ -525,7 +658,7 @@ mod tests {
         if indexed {
             assert!(ready(&conn));
         } else {
-            conn.execute_batch("DROP TABLE links; DELETE FROM metadata WHERE key='links_index_version';")
+            conn.execute_batch("DROP TABLE links; DROP TABLE chart_links; DELETE FROM metadata WHERE key IN ('links_index_version','chart_index_version');")
                 .unwrap();
             assert!(!ready(&conn));
         }
@@ -791,6 +924,73 @@ mod tests {
             .ensure_link_rewrites_allowed(&conn, &subtree.mapping)
             .unwrap();
         assert_eq!(reads(), before, "a plan read every Card");
+    }
+
+    /// A chart's click targets (`data-zt`, `[[…]]` in a chart fence) follow their Cards through a
+    /// move and a delete with `into`, as Links do, on the indexed path and the full-scan path. A
+    /// Card that names a moved Card only in a chart is still found (the chart index), and the
+    /// index matches a fresh parse after each write (2026-11-13).
+    #[test]
+    fn chart_targets_follow_their_cards_through_moves_and_deletes() {
+        for indexed in [true, false] {
+            let temp = archive(indexed);
+            let root = temp.path();
+            seed(root);
+            let text = "# 图\n\n模型的图。\n\n```chart\n<div data-zt=\"0/4|a\">四甲</div><svg><g data-zt=\"1/1|a|a\"><text>词</text></g></svg><p>[[0/2|b]]</p>\n```\n";
+            let (figure, _) =
+                ops::create_successor(root, OWNER, Successor::Side, "1/2", CardType::Idea, None, text).unwrap();
+            let body = || {
+                let conn = crate::open_db(root).unwrap();
+                crate::parse_card_text(&crate::load_card(&conn, &figure).unwrap().text).unwrap().body
+            };
+            confirmed(|confirm| ops::move_card(root, OWNER, "0/4|a", &Target::Before("0/2|b".into()), false, confirm))
+                .unwrap();
+            let moved = body();
+            // Each chart target names the Card it named before the move, wherever it now stands.
+            let at = |title: &str| {
+                let conn = crate::open_db(root).unwrap();
+                crate::load_cards(&conn)
+                    .unwrap()
+                    .into_iter()
+                    .find(|c| c.text.starts_with(&format!("# {title}\n")))
+                    .unwrap()
+                    .address
+            };
+            let (four, two) = (at("四甲"), at("二乙"));
+            assert_ne!(four, "0/4|a", "the Card moved");
+            assert!(moved.contains(&format!("data-zt=\"{four}\">四甲")), "indexed {indexed}: {moved}");
+            assert!(moved.contains(&format!("<p>[[{two}]]</p>")), "indexed {indexed}: {moved}");
+            confirmed(|confirm| ops::delete(root, OWNER, "1/1|a|a", Some("1/1"), confirm)).unwrap();
+            let deleted = body();
+            assert!(deleted.contains("<g data-zt=\"1/1\">"), "indexed {indexed}: {deleted}");
+            if indexed {
+                let report = report(root);
+                assert_eq!(report["ok"], true, "{report}");
+            }
+        }
+    }
+
+    /// A Lock covers a chart's click targets too: a move that would rewrite a chart in a locked
+    /// Card is refused, as a move that would rewrite its Link is.
+    #[test]
+    fn a_move_that_would_rewrite_a_chart_in_a_locked_card_is_refused() {
+        for indexed in [true, false] {
+            let temp = archive(indexed);
+            let root = temp.path();
+            seed(root);
+            let (topic, _) = ops::create_topic(root, OWNER, Workspace::Agent, "# 锁\n").unwrap();
+            let text = "# 图\n\n图。\n\n```chart\n<div data-zt=\"0/4|a\">四甲</div>\n```\n";
+            ops::create_successor(root, OWNER, Successor::Direct, &topic, CardType::Idea, None, text).unwrap();
+            let conn = crate::open_db(root).unwrap();
+            let plan = crate::tree_lock::plan(&conn, &topic, Some("锁住")).unwrap();
+            crate::tree_lock::lock_tx(&conn, &plan).unwrap();
+            drop(conn);
+            let error = confirmed(|confirm| {
+                ops::move_card(root, OWNER, "0/4|a", &Target::Before("0/2|b".into()), false, confirm)
+            })
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("lock"), "indexed {indexed}: {error:#}");
+        }
     }
 
     /// S2 (#230): an agent change that would rewrite a Link in a human Card is refused with the same

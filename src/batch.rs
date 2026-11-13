@@ -155,9 +155,7 @@ impl Follow {
         if !self.current_of.is_empty() {
             for name in ["title", "body", "text"] {
                 if let Some(Value::String(authored)) = fields.get(name) {
-                    let body = crate::link::LinkBody::parse(authored)?
-                        .rewrite_targets(&self.current_of)
-                        .body;
+                    let body = crate::link::rewrite_body(authored, &self.current_of)?;
                     fields.insert(name.to_string(), json!(body));
                 }
             }

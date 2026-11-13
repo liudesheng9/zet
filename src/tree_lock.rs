@@ -2271,7 +2271,7 @@ fn check_link_rewrites(
     if crate::link_index::ready(conn) {
         // The sources that link a renamed Card, from the index, in address order (S2, #230).
         let mut touched = Vec::new();
-        for source in crate::link_index::sources_linking(conn, mapping.keys())? {
+        for source in crate::link_index::rewrite_sources(conn, mapping.keys())? {
             if let Some(row_id) = row_at(conn, &source)?
                 && let Some(blocker) = member_blocker(state, row_id)
             {
@@ -2295,6 +2295,9 @@ fn check_link_rewrites(
             .occurrences()
             .iter()
             .any(|occurrence| mapping.contains_key(occurrence.target))
+            || crate::link::chart_targets(&parsed.body)
+                .iter()
+                .any(|target| mapping.contains_key(target))
         {
             touched.push((card.address.clone(), blocker));
         }

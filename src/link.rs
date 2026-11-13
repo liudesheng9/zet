@@ -80,6 +80,142 @@ impl<'a> LinkBody<'a> {
     }
 }
 
+/// A fence opens a chart when its info string is `chart` or `html chart` (the GUI's rule).
+pub(crate) fn is_chart_info(info: &str) -> bool {
+    let mut words = info.split_whitespace();
+    match words.next() {
+        Some("chart") => true,
+        Some("html") => words.any(|word| word == "chart"),
+        _ => false,
+    }
+}
+
+/// Every fenced code block of `body`: the byte range of its content and whether it is a chart.
+/// An unclosed fence runs to the end of the body, as in CommonMark.
+fn fences(body: &str) -> Vec<(Range<usize>, bool)> {
+    let mut out = Vec::new();
+    let mut open: Option<(usize, u8, usize, bool)> = None;
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let content = line.trim_end_matches(['\n', '\r']);
+        let unindented = content.trim_start_matches(' ');
+        if content.len() - unindented.len() > 3 {
+            continue;
+        }
+        let first = unindented.as_bytes().first().copied();
+        match open {
+            None => {
+                if let Some(mark @ (b'`' | b'~')) = first {
+                    let run = unindented.bytes().take_while(|b| *b == mark).count();
+                    let info = unindented[run..].trim();
+                    if run >= 3 && !(mark == b'`' && info.contains('`')) {
+                        open = Some((offset, mark, run, is_chart_info(info)));
+                    }
+                }
+            }
+            Some((from, mark, run, chart)) => {
+                if first == Some(mark) {
+                    let close = unindented.bytes().take_while(|b| *b == mark).count();
+                    if close >= run && unindented[close..].trim().is_empty() {
+                        out.push((from..start, chart));
+                        open = None;
+                    }
+                }
+            }
+        }
+    }
+    if let Some((from, _, _, chart)) = open {
+        out.push((from.min(body.len())..body.len(), chart));
+    }
+    out
+}
+
+/// The Card addresses a chart names outside the Link grammar, as byte ranges of `body` in order:
+/// the value of every `data-zt` attribute that is not inside a non-chart code fence, and every
+/// `[[address]]` inside a chart fence. The GUI opens the named Card on a click on either, so a move
+/// rewrites them as it rewrites Links (2026-11-13). An ordinary `[[…]]` outside a fence is a Link and
+/// belongs to [`LinkBody`].
+pub(crate) fn chart_target_ranges(body: &str) -> Vec<Range<usize>> {
+    let fences = fences(body);
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(found) = body[from..].find("data-zt") {
+        let at = from + found;
+        from = at + "data-zt".len();
+        if fences.iter().any(|(range, chart)| !chart && range.contains(&at)) {
+            continue;
+        }
+        let rest = body[from..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        let start = body.len() - rest.len() + 1;
+        let Some(length) = body[start..].find([quote, '\n']) else {
+            continue;
+        };
+        if body[start + length..].starts_with(quote) && length > 0 {
+            out.push(start..start + length);
+        }
+    }
+    for (range, chart) in &fences {
+        if !chart {
+            continue;
+        }
+        let mut from = range.start;
+        while let Some(found) = body[from..range.end].find("[[") {
+            let start = from + found + 2;
+            from = start;
+            let Some(length) = body[start..range.end].find("]]") else {
+                break;
+            };
+            let inner = &body[start..start + length];
+            if !inner.is_empty() && !inner.contains(['[', ']', '\n']) {
+                out.push(start..start + length);
+                from = start + length + 2;
+            }
+        }
+    }
+    out.sort_by_key(|range| range.start);
+    out
+}
+
+/// The distinct Card addresses a chart in `body` names (see [`chart_target_ranges`]).
+pub(crate) fn chart_targets(body: &str) -> BTreeSet<String> {
+    chart_target_ranges(body)
+        .into_iter()
+        .map(|range| body[range].to_string())
+        .collect()
+}
+
+/// Rewrite the Card addresses a chart names through `mapping`.
+pub(crate) fn rewrite_chart_targets(body: &str, mapping: &BTreeMap<String, String>) -> LinkRewrite {
+    let mut out = String::with_capacity(body.len());
+    let mut offset = 0;
+    let mut count = 0;
+    for range in chart_target_ranges(body) {
+        if let Some(replacement) = mapping.get(&body[range.clone()]) {
+            out.push_str(&body[offset..range.start]);
+            out.push_str(replacement);
+            offset = range.end;
+            count += 1;
+        }
+    }
+    out.push_str(&body[offset..]);
+    LinkRewrite { body: out, count }
+}
+
+/// What a move rewrites in one authored body: its Links, then the Card addresses its charts name.
+pub(crate) fn rewrite_body(body: &str, mapping: &BTreeMap<String, String>) -> Result<String> {
+    let links = LinkBody::parse(body)?.rewrite_targets(mapping).body;
+    Ok(rewrite_chart_targets(&links, mapping).body)
+}
+
 /// Validate one authored body's Links against the archive (R0252, R0254; design 10.3).
 ///
 /// An ordinary Link to a new target must reach a Card, while an old Broken target may stay at any
@@ -461,6 +597,45 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// A chart names Cards outside the Link grammar: a `data-zt` attribute (either quote) and a
+    /// `[[address]]` inside a chart fence. A move rewrites both; an address in another code fence
+    /// is an example and stays, and an ordinary Link is the Link rewrite's (2026-11-13).
+    #[test]
+    fn a_move_rewrites_the_card_addresses_a_chart_names() {
+        let body = concat!(
+            "见 [[0/1]]。\n\n",
+            "```chart\n",
+            "<div data-zt=\"0/1\">甲</div><svg><g data-zt='0/1|a'><text>乙</text></g></svg>\n",
+            "<p>[[0/1]] 与 [[0/2]]</p><i data-zt=\"0/9\">丙</i>\n",
+            "```\n\n",
+            "```html\n<div data-zt=\"0/1\">[[0/1]]</div>\n```\n",
+        );
+        let named: Vec<&str> = chart_target_ranges(body).into_iter().map(|r| &body[r]).collect();
+        assert_eq!(named, ["0/1", "0/1|a", "0/1", "0/2", "0/9"]);
+        assert_eq!(
+            chart_targets(body),
+            BTreeSet::from(["0/1", "0/1|a", "0/2", "0/9"].map(String::from))
+        );
+        let mapping = BTreeMap::from([
+            ("0/1".to_string(), "3/4".to_string()),
+            ("0/1|a".to_string(), "3/4|a".to_string()),
+        ]);
+        assert_eq!(
+            rewrite_body(body, &mapping).unwrap(),
+            concat!(
+                "见 [[3/4]]。\n\n",
+                "```chart\n",
+                "<div data-zt=\"3/4\">甲</div><svg><g data-zt='3/4|a'><text>乙</text></g></svg>\n",
+                "<p>[[3/4]] 与 [[0/2]]</p><i data-zt=\"0/9\">丙</i>\n",
+                "```\n\n",
+                "```html\n<div data-zt=\"0/1\">[[0/1]]</div>\n```\n",
+            )
+        );
+        // `html chart` opens a chart too; an unclosed chart fence runs to the end of the body.
+        let open = "```html chart\n<b data-zt=\"0/1\">[[0/1]]</b>\n";
+        assert_eq!(rewrite_body(open, &mapping).unwrap(), "```html chart\n<b data-zt=\"3/4\">[[3/4]]</b>\n");
     }
 
     /// R0250–R0254 (S10, #151): the root wrapper reuses the shared scan, so a Term link keeps its

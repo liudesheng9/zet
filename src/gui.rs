@@ -2588,14 +2588,9 @@ fn document_close(target: Target<'_>) -> &'static str {
     }
 }
 
-/// A fence opens a chart when its info string is `chart` or `html chart`.
+/// A fence opens a chart when its info string is `chart` or `html chart`; a move reads the same rule.
 fn is_chart_info(info: &str) -> bool {
-    let mut words = info.split_whitespace();
-    match words.next() {
-        Some("chart") => true,
-        Some("html") => words.any(|word| word == "chart"),
-        _ => false,
-    }
+    crate::link::is_chart_info(info)
 }
 
 fn is_html_comment(raw: &str) -> bool {

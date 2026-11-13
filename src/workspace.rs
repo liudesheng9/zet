@@ -95,7 +95,7 @@ impl Access {
         }
         if crate::link_index::ready(conn) {
             // The sources that link a renamed Card, from the index, in address order (S2, #230).
-            let sources = crate::link_index::sources_linking(conn, mapping.keys())?;
+            let sources = crate::link_index::rewrite_sources(conn, mapping.keys())?;
             for source in sources {
                 if mapping.contains_key(&source) {
                     continue;
@@ -120,6 +120,7 @@ impl Access {
                 .rewrite_targets(mapping)
                 .count
                 > 0
+                || crate::link::rewrite_chart_targets(&parsed.body, mapping).count > 0
             {
                 bail!(
                     "this change would rewrite Links in {} workspace Card `{}`, which is read-only for AI agents",
