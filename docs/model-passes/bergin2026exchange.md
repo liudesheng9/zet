@@ -279,5 +279,79 @@ The skill pairs an empirical estimate with the estimates of other empirical mode
 
 1. bergin2026exchange has no zt-term-sync Links. Its Terms (资本管制, 储备积累, 劳动生产率, 企业动态, 扩展边际, 集约边际) link to no other book's Term Card, so the survey cannot find a cross-book pair. After a zt-term-sync pass on the economics shelf, run the survey again. The two hand-written cross-book `对照` lines of the head (goldsmithpinkham2020bartik/7\|a, velic2025inflation/3\|d\|f\|b\|a) stay as they are.
 2. goldsmithpinkham2020bartik/8\|a also opens with an inline `问题：`. Its earlier dialogue ran with the old `section()` and had no estimand Terms. A second survey with the fixed script can show pairs that it missed.
-3. The `section()` fix is in the repository and installed, uncommitted, as the stage pass doc is.
+3. The `section()` fix is in the repository and installed, committed in 04d3ab61.
 4. No `card_locked` and no read-view error occurred. assenza2026louder ran on the box throughout.
+
+## Stage 7: literature organize
+
+Date 2026-11-13, live box, under `zt-literature-organize`, done in the main thread by scripts (`batch.mjs`, `leads.mjs`, hand `edit_card` calls under `-Allow`). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-bergin2026exchange-organize.sqlite3`. The tree went from 559 to 563 Cards (four new summary leads). No Card was deleted.
+
+### Source divisions
+
+From `D:\zt-digest\bergin2026exchange\book.zh.md`: cover and acknowledgements, 摘要, 1. 引言, 相关文献 (unnumbered top heading), 2. 经验动机 (2.1–2.3), 3. 理论模型 (3.1–3.7), 4. 若干分析性关系 (4.1–4.2), 5. 模型模拟结果 (a preamble, 5.1 with 5.1.1–5.1.4, 5.2, 5.3), 6. 结论, then 参考文献. The appendices the text cites (A.1–A.4, appendix tables) are not in the source. The top line takes the numbered sections, with the front matter first and 相关文献 as its own top Card (it is a top heading of the source).
+
+### Final tree (top line and divisions)
+
+```
+1   前置页 (rewrite)            a 封面 → a|1 致谢与免责声明;  b 摘要 (from 2|c);  c 结构卡
+2   1. 引言 (rewrite)           2|c chain (§1 notes), 2|d, 2|e
+3   相关文献                     unchanged
+4   2. 经验动机 (new summary)   a 2.1 数据 (old 4) · b 2.2 (old 5) · c 2.3 (old 6) · d empirical model
+5   3. 理论模型 (new summary)   a 3.1 (old 7) · b 3.2 · c 3.3 · d 3.4 (old 10|b) · e 3.5 (old 10) · f 3.6 (old 11|a..11|a|1) · g 3.7 (old 11) · h formal model
+6   4. 若干分析性关系 (new)     a 4.1 (old 12) · b 4.2 (old 13)
+7   5. 模型模拟结果 (new)       a 实验设定 (old 14|a, §5 preamble) · b 5.1 (old 14, rewritten as summary: b|b 5.1.1, b|c 5.1.2, b|d 5.1.3, b|e 5.1.4) · c 5.2 (old 17) · d 5.3 (old 18)
+8   6. 结论                      old 18|b|6, with 18|b|7–9 as its Side chain
+9   术语表 (Term list, from 1|a)
+10  参考文献 (Cited list, from 1|b)
+```
+
+### Crossers and how each was settled
+
+- Old 2 (引言) held the abstract 2|c at the head of its §1 chain: the abstract moved alone to the front matter (`1|b`), the §1 chain closed up.
+- Old 4 led both §2 and §2.1: demoted, a new §2 summary took its place, old 4 is the §2.1 head (retitled, its `§2 -` line dropped).
+- Old 7 led §3 and §3.1: demoted the same way, old 7 is the §3.1 head (its §3 purpose sentences went to the summary).
+- Old 10 held §3.4 (10|b) and §3.5 (its Direct chain and footnote 17): 10|b moved alone to be the §3.4 head (`5|d`), old 10 stays the §3.5 head (`5|e`, text trimmed to §3.5, source line added).
+- Old 11 held §3.6 (11|a, 11|a|1) and §3.7 (the rest): the §3.6 span moved out (`5|f`), old 11 (more content) stays the §3.7 head (`5|g`, rewritten to §3.7 only).
+- Old 14 held the §5 preamble (14|a), §5.1 and §5.1.1: 14|a became the §5 preamble (`7|a`), old 14 the §5.1 lead (rewritten as a summary of 5.1.1–5.1.4), the 5.1.1 chain its first subdivision (`7|b|b`, headed by its first Card).
+- Old 16 held §5.1.3 (16|a chain, 16|b, 16|c) and §5.1.4 (the rest): the 5.1.3 Cards moved out under 16|a (`7|b|d`), old 16 (more content) stays the §5.1.4 head (`7|b|e`, rewritten).
+- Old 18 held §5.3 and §6 (18|b|6–9): 18|b|6 became the §6 top Card with 18|b|7–9 under it; old 18 is the §5.3 head (`7|d`, conclusion sentence and `§6` line dropped).
+- Old 6|a (the empirical Model Card) had 12 §2.3 reading notes as its Direct chain. Moving the model alone left them under the §2.3 head (`4|c|a` chain), where they belong. They were not model members (get_model members stay 92).
+
+Calls that could go the other way: 相关文献 as its own top Card rather than a part of §1; the abstract inside the front matter rather than its own top Card; both models filed as the last Side branch of their section's summary (the empirical model spans §2.1–2.3, the formal model §3–5) rather than under the subsection where their head was first written.
+
+### Summary leads and other text
+
+- New summaries (`leads.mjs`): `4`, `5`, `6`, `7`. Rewrites: `1`, `2` (index line for the moved abstract dropped), `7|b` (5.1). Text trimmed or rewritten by hand: `5|a`, `5|e`, `5|g`, `7|b|e`, `7|d`, `8` (position line). Division heads retitled with their section number: `4|a`–`4|c`, `5|a`–`5|c`, `5|e`, `5|g`, `6|a`, `6|b`, `7|b`, `7|b|c`, `7|b|e`, `7|c`, `7|d`, `8`.
+- The root index lists the ten top Cards. The structure Card `1|c` (old 1\|d) now lists the final parts and the two models only (its old list of 14 digest Model Cards was stale since the fold).
+- R3 fixes in the formal model's setting text (wording otherwise unchanged, no formula changed): `5|h|a` (当作给定。), `5|h|a|b` (不依赖其他设定。), `5|h|a|f|b|1` (the five simplifications of footnote 17 joined by commas), `5|h|a|i` (起点。), `5|h|a|j` ×2 (沉没成本。, 全部时期。). `zt-check --cards` on the five: 0 faults.
+
+### Gate
+
+- `check.mjs`: top line 1 前置页, 2 §1, 3 相关文献, 4 §2, 5 §3, 6 §4, 7 §5, 8 §6, 9 Term list, 10 Cited list; `no fault`. Against the start snapshot it reported 559 → 563 Cards and the empirical unit 103 → 91 Cards: the 12 are the §2.3 reading notes that left the Model Card's Direct chain (see above), not model parts.
+- A source-line walk found no Card filed outside its division: no crosser left.
+- `list_broken_links` (agent): empty.
+- `check-model.mjs`: `4|d` 92 members (8 main, 79 side, 2 shared, 3 off), loose 0, `self_sufficient` true. `5|h` 82 members (10 main, 72 side), loose 0, `self_sufficient` true.
+- `check-network.mjs`: `network: clean` for both.
+- `check-settings.mjs`: `4|d` `the data tree and the specification ladder are in place`; `5|h` `all in the setting part, as a dependency tree` (advice: three `uses an assumption` lines on H\|a\|2, H\|a\|4\|b\|a, H\|a\|6\|a\|a).
+- `imports.mjs check`: exit 0 for both (copy advice 4\|d\|a\|1 ~ 5\|h\|a\|1 and 4\|d\|a\|5 ~ 5\|h\|a\|6, the comparisons kept at Stage 4).
+- `zt-check --cards` on every written lead and the root: 0 blocking faults after one fix round (three R2 long sentences in `1|c` split, an I3 source line added to `5|e`).
+- Term relink: `{"rounds":1,"ok":true,"cards_changed":5,"links_added":43,"cards_refused":0,"links_repaired":0}`; after the fix round a second run and a `-PlanOnly` plan both changed nothing (`rounds 0`). No relink bug.
+- No `card_locked` and no read-view error occurred. assenza2026louder ran on the box throughout.
+
+## Result
+
+Final top line: 前置页 · 1. 引言 · 相关文献 · 2. 经验动机 · 3. 理论模型 · 4. 若干分析性关系 · 5. 模型模拟结果 · 6. 结论 · 术语表 · 参考文献.
+
+Models (final addresses):
+
+- `bergin2026exchange/5|h`, formal (level 2): the two-country DSGE, 82 parts, setting card `5|h|a`, chapters `5|h|a|1`–`9`; filed under the §3 summary.
+- `bergin2026exchange/4|d`, empirical (level 3): the 45-country panel estimation, 92 members (2 imported predictions from `5|h|a|6|c`, `5|h|a|7|a`); filed under the §2 summary.
+
+All seven stages passed their gates. Open items across the sequence:
+
+1. Restructure step 3 text was not redrafted: result cards keep their old body without **为什么**/**证明**, derivation cards keep their digest format (Stage 3).
+2. The empirical model's limits cards still overlap in part (上市缺口, sample end), and its chapter cards say `本模型检验 …` (Stages 2–3).
+3. `check-settings` advice lines on the formal model (three `uses an assumption` lines) stay as advice (Stages 4, 7).
+4. `5|h|a|f|c`'s GDP formula writes $p_{H,t}y_{H,t}$ for the second term; the figure repeats it (Stage 5).
+5. The evidence dialogue found 0 pairs: bergin2026exchange's Terms link to no other book's Term Card. Rerun the survey after a zt-term-sync pass on the economics shelf (Stage 6). goldsmithpinkham2020bartik/8\|a needs a survey with the fixed `section()` (Stage 6).
+6. The `section()` fix of zt-evidence-dialogue is committed (04d3ab61); this pass doc is committed with stage 7.
