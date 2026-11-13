@@ -434,6 +434,67 @@ fn an_empirical_model_reports_each_role_fault() {
     assert_eq!(build["evidence_bound"], false);
 }
 
+/// `variable_uncovered` reads every 变量表 the model holds, its own and the ones it imports
+/// (velic2025inflation 8|a, 2026-11-13): a model that imports another model's data block
+/// (`整块`) brings that model's 变量表 among its members. The check read the first one by
+/// address, the imported table, and reported every symbol of the model's own table as
+/// uncovered.
+#[test]
+fn an_empirical_model_reads_its_own_and_its_imported_variable_tables() {
+    let home = TestHome::new();
+    let mut mcp = home.mcp();
+    book(&mut mcp);
+    let first = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "Hart1995/1", "kind": "side", "type": "model", "level": "empirical", "title": "数据构造" }),
+    ));
+    let lent = part(&mut mcp, &first, "side", "数据", "原始设定：38 国。".into());
+    part(
+        &mut mcp,
+        &lent,
+        "side",
+        "变量表",
+        format!("| 变量 | 含义 |\n| --- | --- |\n| $X$ | 协变量 |\n\n依赖 [[{lent}]]。"),
+    );
+    let second = address(mcp.ok(
+        "create_successor",
+        json!({ "at": "Hart1995/1", "kind": "side", "type": "model", "level": "empirical", "title": "逐国估计" }),
+    ));
+    mcp.ok(
+        "edit_card",
+        json!({ "at": second, "body": format!("问题：逐国估计。\n\n**引入**\n\n- 整块 [[{lent}]]：共用的面板与协变量\n") }),
+    );
+    let m = &mut mcp;
+    let data = part(m, &second, "side", "数据", format!("依赖 [[{lent}]]：38 国面板。"));
+    part(
+        m,
+        &data,
+        "side",
+        "变量表",
+        format!("| 变量 | 含义 |\n| --- | --- |\n| $Y$ | 缺口 |\n| $\\phi$ | 调整系数 |\n\n依赖 [[{data}]]。"),
+    );
+    let design = part(m, &data, "direct", "设计", format!("依赖 [[{data}]]。"));
+    let spec = part(
+        m,
+        &design,
+        "direct",
+        "规格：基准",
+        format!("依赖 [[{data}]]、[[{design}]]。\n\n$$ Y = \\phi X + \\varepsilon \\tag{{1}} $$"),
+    );
+    let chapter = part(m, &spec, "direct", "第 1 章：主要估计", format!("依赖 [[{spec}]]。"));
+    part(m, &chapter, "side", "估计：调整系数", format!("依赖 [[{spec}]]。"));
+
+    let build = mcp.ok("get_model", json!({ "at": second }))["build"].clone();
+    let uncovered = build["variable_uncovered"]
+        .as_array()
+        .expect("variable_uncovered")
+        .iter()
+        .map(|entry| entry["symbol"].as_str().expect("symbol").to_string())
+        .collect::<Vec<_>>();
+    // Y and φ have rows in the model's own table, X in the imported one; only ε has none.
+    assert_eq!(uncovered, ["\\varepsilon"], "{build}");
+}
+
 /// `empirical_shape`: the main line starts with a 数据 part and holds a 设计 part and a
 /// 规格 part, and the model holds an estimate. A formal model takes none of the role rules.
 #[test]

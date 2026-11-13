@@ -123,11 +123,27 @@ pub(crate) fn faults(
     }
 
     // variable_uncovered: every symbol of a specification's display equation has a 变量表 row.
-    let table = members
+    // Every 变量表 among the members counts: the model's own and each one an import brings in
+    // (velic2025inflation 8|a: a `整块` data import put the lender's table first by address).
+    // The fix names the model's own table when it has one.
+    let tables = members
         .iter()
-        .find(|at| role(at) == Some(EmpiricalRole::Variables))
+        .filter(|at| role(at) == Some(EmpiricalRole::Variables))
+        .cloned()
+        .collect::<Vec<_>>();
+    let table = tables
+        .iter()
+        .find(|at| in_range.contains(*at))
+        .or_else(|| tables.first())
         .cloned();
-    let names = table.as_deref().map(|at| table_names(&(view.body)(at))).unwrap_or_default();
+    let mut names = Vec::new();
+    for at in &tables {
+        for name in table_names(&(view.body)(at)) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
     for at in in_range {
         if role(at) != Some(EmpiricalRole::Spec) {
             continue;
