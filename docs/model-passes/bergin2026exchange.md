@@ -119,3 +119,61 @@ The kept build is 6\|a's own: data card `6|a|a`, 变量表 `6|a|a|a`, 假说 `6|
 2. `check-settings` reads $l_t(h)$ and $e_t$ as first met in `7|a|a|d` and `7|a|a|e` (it matches $l_t$ and $ne_t$); the rows point where the check says.
 3. 6\|a's chapter 5 (6\|a\|a\|8) keeps only a limits card after its descriptive statistics moved to the data tree; the restructure decides whether it stays. The six limits cards overlap in part (exogeneity of the policy variables in 6\|a\|d and 6\|a\|e) and were not merged.
 4. The kept measure (4) writes $CC=1-KAOPEN$ without indices; the dropped §2.1 copy wrote $CC_{jt}=1-KAOPEN_{jt}$. The kept spelling stays.
+
+## Stage 3: restructure
+
+Date 2026-11-13, live box, under `zt-model-restructure`, done in the main thread by scripts (no subagent, no DeepSeek job, so no DeepSeek cost; the chapter leads were written by hand). Backup: `D:\zt\backups\zt-before-bergin2026exchange-restructure.sqlite3`. Moves ran as `apply_batch` tree batches (preview, then commit under the plan hash; `links_that_will_break` empty in every preview); text ran as `edit_card` calls under `-Allow`. No display formula or equation number changed. The tree went from 558 to 559 Cards (one new chapter card).
+
+### 7\|a (formal): the intuition spine
+
+```
+7|a|a  设定 (setting part as the settings pass left it)
+7|a|a|1  第 1 章：文字版本与直觉（§1）        ← 设定, 7|a|a|b
+7|a|a|2  第 2 章：商品市场与价格指数（§3.1）  (new) ← 7|a|a|c
+    a 结果：贸易品价格指数与品种需求 (7b)(9a,b)  ← proof a|a → a|a|1;  example b
+    b 结果：消费价格指数与部门需求 (7a)(8a,b)    ← proof b|a → b|a|1
+7|a|a|3  第 3 章：家庭的跨期选择（§3.2）      ← 第 2 章
+    a 欧拉方程 (proof: FOC → (12));  b 劳动供给;  c 货币需求;  d 横截性;  e 外国居民
+7|a|a|4  第 4 章：贸易部门企业（§3.3–3.4）    ← 第 2、3 章
+    a 常数加成定价 (proof: (21) → mc → (17)–(19) → (22) → (23));  b 企业价值的上下界 (proof: 定义);  c 加总
+7|a|a|5  第 5 章：政府储备政策（§3.5）        ← 7|a|a|f
+    a 推导：非贸易品定价 (25);  b 储备购买由税收融资 (proof: two tax steps)
+7|a|a|6  第 6 章：储备政策与企业进入（§4.1）  ← 第 4 章
+    a 利润增加 1/φ (proof: TB=Ω → (30) → (31));  b 无限规划期无进入 (proof: (32) → 迭代);  c 有限规划期引致进入 (proof: (33); 外国对照)
+7|a|a|7  第 7 章：企业区位转移外部性（§5.1.2） ← 第 6 章, 第 2 章
+    a 机制;  b 结果：基准解释不到一半 (例子)
+7|a|a|8  第 8 章：外国企业退出（§5.2）        ← 第 6 章
+    a 结果：外国企业退出 (proof: 规则 → 推导; 数值结果)
+7|a|a|9  第 9 章：无限规划期（§5.3）          ← 第 6 章
+    a 本国无企业进入 (proof: (37) → 迭代; 对照 0.108);  b 外国企业永久进入;  c 福利方向相反
+```
+
+- The goods-market derivations (former 7\|a\|a\|2–7) left the main line: a new chapter card `7|a|a|2` (第 2 章) took the Model Card's old goods-market 问题/概要/关联/来源 and its cross-book line to atkinson2015lectures/9\|e\|b\|b; its two results hang under it with their proof chains. The later chapters renumbered 2–8 → 3–9 (facets and titles `第 k 章：…`).
+- Every chapter card got **直觉** (lead of 20+ characters), **本章结果** (pointers `结果：[[…]]`) and **承上启下** with a `依赖` line to the earlier chapter it builds on; the old 问题/概要/关联 text follows unchanged (`本模型` → `本章`). Chapter 1 rests on `7|a|a` and `7|a|a|b`.
+- In each chapter the derivation chain was cut into results with their proof chains as Side branches (one batch of 31 tree items, 60 Cards renamed). Result facets read `结果：…` (16 Cards; the former `命题`, `结论`, `福利` facets; titles unchanged).
+- The Model Card: new title (汇率政策的两国动态一般均衡模型：储备积累、企业进入与制造业生产率), a model-wide 问题/概要, **结构** rebuilt from the tree, **分部** (设定与直觉 from 7\|a\|a; 模型构件 from 第 2 章; 储备政策的效应 from 第 6 章; 模拟变体 from 第 8 章).
+- Setting part: structure untouched. Chapter numbers in text were updated for the renumbering (`7|a|a|c` 第 3 章 → 第 2 章; notation card 第 5 章 → 第 6 章 twice; `7|a|a|g` 第 3 章 → 第 4 章). Because the result 常数加成定价 (`7|a|a|4|a`) now comes before its proof, `check-settings` found $mc_t$ and $p_t^*(h)$ first met there: the result now defines both in one sentence and the notation rows point to it.
+
+### 6\|a (empirical): the evidence spine
+
+Main line: 数据 `6|a|a` → 假说 `|1` → 设计 `|2` → 规格：基准 `|3` → 第 1 章 部门生产率 `|4` → 第 2 章 企业动态渠道 `|5` → 第 3 章 内生性与识别检验 `|6` → 第 4 章 企业动态的工具变量估计 `|7`. Network: 1 → 2 → 4 under the baseline specification; 3 under the specification.
+
+- Forward fault fixed by moving: the Table 2 (2) AR and over-identification tests (former `6|a|a|4|c|b`, `|c`) rest on chapter 3 and say they belong to it; they are now `6|a|a|6|b`, `|c` under chapter 3, after Table 4 (facets `检验：表 2 (2) 的 AR 检验`, `检验：表 2 (2) 的过度识别`; their text 第 2 章 → 第 3 章).
+- Chapter 5 (§2.1, former `6|a|a|8`) held no estimate or test, only a limits card, so it left the main line: it is now the Model Card's aside `6|a|d` (facet `旁注：数据与度量（§2.1）`, emphasis aside), with the data limits `6|a|d|a` and the measurement limits `6|a|d|b` (former 6\|a\|c) under it. No Card was deleted.
+- The other limits cards went under what they limit: 上市缺口 (former 6\|a\|b) → `6|a|a|5|f|a` under the listed-firms estimate; 式 (5) 资本管制给定 (former 6\|a\|d) → `6|a|a|4|h`; 式 (6) 政策外生 (former 6\|a\|e) → `6|a|a|5|g`; 相关与因果 (former 6\|a\|f) → `6|a|a|6|j`. The four that had no relation got one plain reference line to the card they limit, so loose fell from 4 to 0. Their overlaps (上市缺口 in three cards, sample end 2007 in two) were not merged.
+- **直觉** leads added to the four main-line build cards (data, hypothesis, design, baseline specification; one sentence each, prepended). Chapters 1–4 already had the empirical format. **结构** rebuilt.
+
+### Gate
+
+- `check-model.mjs 7|a`: 82 members (10 main, 72 side), loose 0, no closure/forward/unanchored fault, `self_sufficient` true. `6|a`: 90 members (8 main, 79 side, 3 off), loose 0, no fault, `self_sufficient` true.
+- `check-network.mjs`: `network: clean` for both (advice only: chapter 1 of 7\|a has no 结果 card, right for the intuition chapter).
+- `check-premises.mjs`: 7\|a 8 hits, 6\|a 9 hits, all pointers kept with this reason: 7\|a\|a\|c, e\|a, g, j are **直觉**/**说明** lines that say where a setting is used later (`后面推 (30)…`, `(22) 是第 4 章的结果，见 …`); 6\|a\|a\|a is the 变量表 (symbol rows naming their equation); 6\|a\|a\|2\|f, h, i, j are assumptions' `怎样进入模型` lines. None uses a later result.
+- `check-settings.mjs`: 7\|a `settings: all in the setting part, as a dependency tree` (advice: 9 settings under the setting card); 6\|a `settings: the data tree and the specification ladder are in place`.
+- `model-survey.mjs`: two Model Cards, one read pair 6\|a → 7\|a (kin 5, compare 4). `list_broken_links` (agent): empty. Term relink: `{"rounds":1,"ok":true,"cards_changed":14,"links_added":105,"cards_refused":0,"links_repaired":0}`; a second run after two small text fixes changed nothing (`rounds 0`); all checks rerun after it stay clean.
+
+### Open
+
+1. Step 3 card text was not redrafted: result cards keep their old body (they rest on their last proof card by `依赖`, without the `**为什么**`/`**证明**` sections of the result format), and derivation cards keep their digest format. A DeepSeek drafting job per chapter would bring them to the card formats.
+2. 7\|a's chapter 1 keeps 机制/结论 facets (intuition chapter); 第 5 章's `推导：非贸易品定价 (25)` stands alone under the chapter (it ends in no result of its own).
+3. 6\|a's limits cards still overlap in part (上市缺口 in 5\|f\|a, 5\|g, 6\|j; sample end in d\|a and 6\|j). The 6\|a chapter cards still say `本模型检验 …`.
+4. Tree unlocked throughout; no `card_locked` met. assenza2026louder ran on the box at the same time; no read-view error occurred.
