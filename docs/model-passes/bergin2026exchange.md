@@ -215,3 +215,38 @@ Date 2026-11-13, live box, under `zt-model-import` steps 1–8, done in the main
 1. The two `uses an assumption` advice lines of `check-settings` on 7\|a (the T→∞ remark in 7\|a\|a\|4\|b\|a; the reading of (29) in the refreshed 7\|a\|a\|6\|a\|a) are advice, not faults; not changed.
 2. 6\|a\|a\|5 (第 2 章) still points to the theory chapters 7\|a\|a\|6 and 7\|a\|a\|7 as comparisons; the evidence dialogue decides whether its estimates `印证` the imported predictions.
 3. No `card_locked` and no read-view error met; assenza2026louder ran on the box throughout.
+
+## Stage 5: illustrate
+
+Date 2026-11-13, live box, under `zt-model-illustrate`, done in the main thread by scripts. No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-bergin2026exchange-illustrate.sqlite3`. Only the formal model 7\|a was illustrated. The empirical model 6\|a has no figures (owner, 2026-11-11). Module: `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\bergin2026exchange-7_a.mjs`. Before the live write, each figure was drawn locally from the module and inspected. `apply.mjs --write` then wrote 19 Cards, and a second write corrected four 直觉 wordings. No display formula, equation number or text outside the chart and the **直觉** section changed (apply guard).
+
+### Figures
+
+- Model Card 7\|a (**图**, before **结构**): (1) the game and timing: the government announces the Ω_t path, firms enter or exit by v_t(h) against [0, P_T K], firms set prices and inputs, the household chooses, and the settlement TB_t = Ω_t, with the solution order by chapter (第 2–6 章 solve; 第 7–9 章 simulate); (2) the causal structure: Ω_t, horizon T, parameters and the foreign starting value → trade surplus (29) → home profit → firm value → firm numbers (dashed feedback: entry lowers value) → home variety share → manufacturing price index P_T → measured labour productivity and welfare; (3) six panels of the changes studied (profit 1/φ, infinite and finite horizon in 第 6 章, location-shift externality 第 7 章, foreign exit 第 8 章, infinite-horizon simulation 第 9 章). Each box opens its Card.
+- One figure per setting card (17), at the end of **说明**: a (two countries × two sectors, the two-layer CES tree with θ, ρ, φ, the variety line n_t, n_t^* as 示意); b (active home and passive foreign, the ten-year policy line); c (expenditure minimization → P_t, P_{T,t}, demand; number lines ρ > 1, φ > 1); d (given / chosen / objective / constraint; assets allowed and forbidden); d\|a (three terms of (10); β^t weights, 示意); d\|b (the sources and uses of (11)); e (entry timing (16), technology (15), varieties as inputs); e\|a (identical firms, iceberg 1+τ, every variety exported); f (the two governments and the reserve asset); f\|a (the line (24)); f\|b ((26) and (27) term by term); f\|b\|1 (which terms of (26) are fixed, the other restrictions); f\|c (the ratio (28), a given path, 示意); g (goods flows, the official flow, private flows blocked, TB_t = Ω_t, the three constants); h (the 5% ten-year path with the measurement window, the steady state, the firms); i (the value bands with the home and foreign starting points); j (finite and infinite summation windows, the three actions on the value line, K = 1).
+
+### 直觉
+
+The 直觉 section was rewritten on all 17 setting cards and on the 定义 part 7\|a\|a\|4\|b\|a. 7\|a\|a\|f\|a and f\|b had none. The digest's sections named the "模型卡" or later equations, so the rewritten sections name chapters instead (第 2–9 章). The sections contain no Link and no result.
+
+### Chart fixes outside the setting part
+
+`verify.mjs --model` also lints the digest's own charts in five chapter parts: 7\|a\|a\|3\|c, 9\|b, 2\|a\|b, 8\|a\|a and 9\|a\|b. They had raw `P_T K` and `n_t` text and no axis labels. Only the chart fences of these parts changed: subscripts became tspans, the existing axis texts got `data-axis`, and the missing axis labels were added (实际货币余额 / 名义利率, 企业价值 / 时期 t, 价格指数之比 / 品种总数, 外国企业价值 / 时期, 回归系数 / 规划期设定). No curve and no number changed.
+
+### Gate
+
+- `verify.mjs --model bergin2026exchange/7|a` (light and dark): 25 charts in 83 Cards, 0 lint faults, 0 Cards without a figure, 0 setting Cards without a full 直觉. The PNGs were inspected.
+- `apply.mjs` rerun: `same` for all 19 Cards.
+- `check-settings.mjs`: `settings: all in the setting part, as a dependency tree`. The advice lines are the same as at Stage 4.
+- `check-model.mjs`: 82 members (10 main, 72 side), loose 0, `self_sufficient` true.
+- `check-network.mjs`: `network: clean`.
+- `check-premises.mjs`: 1 hit, down from 8. It is the existing 说明 pointer on 7\|a\|a\|g to (22). It is kept as a pointer.
+- `zt-check --cards` on the 24 written Cards: 6 R3 faults remain, all in existing **起点** / **设定** / **说明** text (7\|a\|a, b, f\|b\|1, i, j ×2). None is in a 直觉 section or a chart. The new 直觉 faults (R4 on f, R7 on c, R21 on b and g) were reworded away.
+- `list_broken_links` (agent): empty.
+- Term relink: `{"rounds":1,"ok":true,"cards_changed":12,"links_added":20,"cards_refused":0,"links_repaired":0}`. A second run after the rewording gave `cards_changed 2, links_added 3`. All checks were rerun after it and stay clean.
+
+### Open
+
+1. The six R3 faults (semicolons in existing **起点**/**设定**/**说明** lines of 7\|a\|a, b, f\|b\|1, i, j) predate this pass and were not changed.
+2. 7\|a\|a\|f\|c's GDP formula writes $p_{H,t}y_{H,t}$ for the second term. The figure repeats it as written and does not say which sector it is.
+3. No `card_locked` and no read-view error occurred. assenza2026louder ran on the box throughout.
