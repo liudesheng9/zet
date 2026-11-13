@@ -77,3 +77,16 @@ Open:
 1. **zt checker bug** (`src/model/empirical.rs`, `variable_uncovered`): the check reads the first 变量表 among all members, imported cards included. With `整块 [[7|a|a]]` on 8|a it read 7|a|a|a and raised false `uncovered` faults, so that import was backed out (8|a|a's 起点 back to 原始设定); 10|a passes only because "10|" sorts before "7|". Once fixed and deployed, 8|a takes `整块 [[7|a|a]]` like 10|a.
 2. 9|a's Model Card keeps the false share `对应 [[3|a|a|2]]` (concept model left as is).
 3. Sample start differs: 8|a's data card 1996:01, 7|a|a 1996:02.
+
+## Stage 5: illustrate (formal model 3|a)
+
+Backup: `D:\zt\backups\zt-before-velic2025inflation-illustrate.sqlite3` (integrity ok). One subagent (Opus, effort medium) under `zt-model-illustrate`; only 3|a (the empirical and concept models are not illustrated, owner 2026-11-11). Module `velic2025inflation-3_a.mjs` copied into the skill's `modules/`.
+
+- `3|a` Model Card **图**: the monthly order (given π and π* → transition weight F̃(y_{t−d}) → adjustment → country-by-country NLS → persistence and half-life), the causal diagram from the two inflation series, the shock and the parameters through the gap, F̃, the effective coefficient and (1) to persistence and half-life (2) with the gap feeding the next month, and six panels of the changes the model studies (distance from μ, the two extreme regimes, the two γ̃ limits, the gap channel, the adjustment channel, the two channels opposed), each opening its chapter.
+- `3|a|a`: the gap π − π*, a time line of which period each term of (1) reads, the linear and F̃-weighted components adding to Δy_t.
+- `3|a|a|b`: F̃ against y_{t−d} (0 at μ, symmetric rise to 1, two γ̃ values, 示意), with the range, γ = e^{γ̃}/σ_y² and σ_y².
+- `3|a|a|c`: many disturbances in one ε_t, an example path reverting to μ (示意), one NLS estimate per country.
+- `3|a|a|d`: number lines for F(.) (inner/outer regime) and for φ ≈ 0, φ* ∈ (−1, 0), and the chain to the effective coefficient, persistence and half-life (2).
+- **直觉** (是什么/为什么需要/怎样进入模型) rewritten on all four setting cards (the old ones named facets that no longer exist); the model has no 定义 part.
+
+Gate: `verify.mjs` 5 charts light and dark, lint 0, no card without a figure or a full 直觉; second apply run `same` on all five Cards; check-settings, check-model (self_sufficient, loose 0), check-network and check-premises clean; Term relink ok (2 Cards, 2 links); `list_broken_links` empty. Two older R3 faults (semicolons in 3|a's 来源 line and in 3|a|a|d's 说明, which also named the old facets 构件卡/结果卡) fixed by hand afterwards.
