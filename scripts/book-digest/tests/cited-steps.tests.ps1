@@ -48,6 +48,7 @@ switch -Regex ($flat) {
         exit 0
     }
     '^ledger status' {
+        if ($flat -match '-Layer citedcards' -and $env:CS_BOOK_STATE) { Write-Output (ConvertTo-Json -Compress -Depth 6 @{ schema_version = 1; units = @(@{ id = 'citedcards/t001@1'; state = 'done' }, @{ id = 'citedcards/book@1'; state = $env:CS_BOOK_STATE }) }); exit 0 }
         if ($flat -match '-Layer cited( |$)' -and $env:CS_CITED_STATE) { Write-Output (ConvertTo-Json -Compress -Depth 6 @{ schema_version = 1; units = @(@{ id = 'cited/book@1'; state = $env:CS_CITED_STATE }) }); exit 0 }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = @(@{ id = 'citedcards/t001@1'; state = 'claimed' }) })
         exit 0
@@ -63,6 +64,7 @@ switch -Regex ($flat) {
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'cited/book@1'; token = 4; input_hash = 'ih-c' }) })
             exit 0
         }
+        if ($flat -match '-Take 1 ' -and $env:CS_BOOK_STATE) { Write-Output (ConvertTo-Json -Compress @{ units = @() }); exit 0 }
         if ($flat -match '-Take 1 ') {
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'citedcards/book@1'; token = 9; input_hash = 'ih-b' }) })
             exit 0
@@ -239,6 +241,16 @@ Remove-Item -LiteralPath $calls
 $finish = Step (@('-Step', 'finish') + $common)
 Assert ($finish.json.book -eq 'done' -and $finish.json.complete -eq $true) "finish: a complete publication completes the book unit ($($finish.text))"
 Assert ((Get-Content -LiteralPath $calls -Raw) -match 'ledger done .*-Unit citedcards/book@1 -Token 9 -Outputs .*cited-cards\\report\.json') 'finish: the book completes from the report'
+
+# Live resume 2026-11-13 (bergin2026exchange, wf_9ee9f169-549): citedcards/book@1 was done in the first invocation,
+# nothing was claimable, and the finish answered 'incomplete' with 62/62 rows published.
+$env:CS_BOOK_STATE = 'done'
+$resumed = Step (@('-Step', 'finish') + $common)
+$env:CS_BOOK_STATE = 'blocked'
+$blocked = Step (@('-Step', 'finish') + $common)
+$env:CS_BOOK_STATE = ''
+Assert ($resumed.json.book -eq 'done' -and $resumed.json.complete -eq $true) "finish: a resume whose book unit the ledger holds done answers done ($($resumed.text))"
+Assert ($blocked.json.book -eq 'incomplete') "finish: a book unit the ledger holds blocked stays incomplete ($($blocked.text))"
 
 # 3. A failed command answers its own line.
 $env:CS_PLAN_FAIL = '1'

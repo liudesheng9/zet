@@ -17244,6 +17244,104 @@ fn cleanup_issue(
     })
 }
 
+fn deleted_id(resource: &Value, id: &str) -> bool {
+    resource["conversations"].as_array().is_some_and(|list| {
+        list.iter().any(|conversation| {
+            conversation["id"] == json!(id)
+                && matches!(
+                    conversation["delete"].as_str(),
+                    Some("confirmed") | Some("already_absent")
+                )
+        })
+    })
+}
+
+/// A workspace outside the run's staging folder is a shared parent: the run never owns it whole. Live run
+/// 2026-11-13 (bergin2026exchange): the preparation drive job ran in D:\zt-digest because the staging folder did
+/// not exist yet, and that folder also held a conversation an earlier run left behind.
+fn shared_parent_workspace(out: &Path, resource: &Value) -> bool {
+    let Some(path) = resource["workspace"]["path"].as_str() else {
+        return false;
+    };
+    let norm = |text: &str| {
+        text.trim_start_matches(r"\\?\")
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    let workspace = norm(path);
+    let staging = norm(&out.to_string_lossy());
+    !(workspace == staging || workspace.starts_with(&format!("{staging}\\")))
+}
+
+/// The workspace rule of one recorded resource: the issues it raises and, for a shared parent, the members this
+/// run never recorded (reported, never a block). A workspace inside the staging folder is the run's own: it is
+/// settled when every conversation this run recorded there is absent and no other member remains, and the
+/// run-level unit removes it (R327). A shared parent is settled once every conversation this run recorded there
+/// is absent; its other members stay, and it is never removed.
+fn workspace_rule(resource: &Value, same_workspace: &[&Value], shared: bool, run_level: bool) -> (Vec<Value>, Option<Value>) {
+    let mut issues = Vec::new();
+    let unknown = resource["listing"]["unknown"].as_array().cloned().unwrap_or_default();
+    let mut foreign = None;
+    if !unknown.is_empty() {
+        if shared {
+            foreign = Some(json!({"workspace":resource["workspace"]["path"],"resource":resource["id"],"members":unknown}));
+        } else {
+            let ids = unknown
+                .iter()
+                .filter_map(|member| member["id"].as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            issues.push(cleanup_issue(
+                "reconcile",
+                "workspace_unknown_member",
+                resource,
+                None,
+                &format!("the workspace still holds conversations this run never recorded: {ids}"),
+            ));
+        }
+    }
+    // The workspace rule is one fact about the whole shared workspace (R327): every conversation
+    // this run recorded there is absent and, for the run's own workspace, no other member remains.
+    let workspace_unknown = same_workspace
+        .iter()
+        .any(|other| other["listing"]["unknown"].as_array().is_some_and(|list| !list.is_empty()));
+    let recorded_absent = same_workspace.iter().all(|other| {
+        other["conversations"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|conversation| !conversation["id"].is_null())
+            .all(|conversation| deleted_id(other, conversation["id"].as_str().unwrap_or_default()))
+    });
+    let workspace_settled = recorded_absent && (shared || !workspace_unknown);
+    if resource["workspace_removed"] == true {
+        if !workspace_settled {
+            issues.push(cleanup_issue(
+                "operator",
+                "cleanup_workspace_removed_early",
+                resource,
+                None,
+                "the workspace was reported removed while a recorded conversation or an unknown member remained",
+            ));
+        }
+    } else if run_level && !(shared && workspace_settled) {
+        issues.push(cleanup_issue(
+            "transient",
+            "cleanup_transient",
+            resource,
+            None,
+            if shared {
+                "a conversation this run recorded in the shared workspace is not absent yet"
+            } else {
+                "the owned workspace is not removed yet; remove it once every recorded conversation is absent"
+            },
+        ));
+    }
+    (issues, foreign)
+}
+
 /// Verify the recorded resources of one cleanup unit (or of every unit, for the run-level unit) and
 /// settle only what the ledger can prove: the exact ids, the retained evidence, and the workspace
 /// rule that no unknown member is removed wholesale (R324–R330).
@@ -17267,18 +17365,8 @@ fn cleanup_assessment(p: &Prepared, unit: &str, remove: bool) -> Result<Value> {
     if resources.is_empty() && !run_level {
         bail!("cleanup_not_registered: {unit} has no recorded resource to settle");
     }
-    let deleted_id = |resource: &Value, id: &str| -> bool {
-        resource["conversations"].as_array().is_some_and(|list| {
-            list.iter().any(|conversation| {
-                conversation["id"] == json!(id)
-                    && matches!(
-                        conversation["delete"].as_str(),
-                        Some("confirmed") | Some("already_absent")
-                    )
-            })
-        })
-    };
     let mut issues = Vec::new();
+    let mut foreign = Vec::new();
     let mut views = Vec::new();
     let mut scratch_removed = Vec::new();
     let mut retained = Vec::new();
@@ -17348,69 +17436,15 @@ fn cleanup_assessment(p: &Prepared, unit: &str, remove: bool) -> Result<Value> {
                 "no per-run usage was retained for this resource",
             ));
         }
-        let unknown = resource["listing"]["unknown"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        if !unknown.is_empty() {
-            let ids = unknown
-                .iter()
-                .filter_map(|member| member["id"].as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            issues.push(cleanup_issue(
-                "reconcile",
-                "workspace_unknown_member",
-                resource,
-                None,
-                &format!("the workspace still holds conversations this run never recorded: {ids}"),
-            ));
-        }
         let workspace = resource["workspace"]["id"].as_str().unwrap_or_default();
         let same_workspace: Vec<&Value> = all
             .iter()
             .filter(|other| other["workspace"]["id"].as_str() == Some(workspace))
             .collect();
-        // The workspace rule is one fact about the whole shared workspace (R327): every conversation
-        // this run recorded there is absent and no other member remains.
-        let workspace_unknown: Vec<Value> = same_workspace
-            .iter()
-            .flat_map(|other| {
-                other["listing"]["unknown"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .collect();
-        let workspace_settled = workspace_unknown.is_empty()
-            && same_workspace.iter().all(|other| {
-                other["conversations"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|conversation| !conversation["id"].is_null())
-                    .all(|conversation| deleted_id(other, conversation["id"].as_str().unwrap_or_default()))
-            });
-        if resource["workspace_removed"] == true {
-            if !workspace_settled {
-                issues.push(cleanup_issue(
-                    "operator",
-                    "cleanup_workspace_removed_early",
-                    resource,
-                    None,
-                    "the workspace was reported removed while a recorded conversation or an unknown member remained",
-                ));
-            }
-        } else if run_level {
-            issues.push(cleanup_issue(
-                "transient",
-                "cleanup_transient",
-                resource,
-                None,
-                "the owned workspace is not removed yet; remove it once every recorded conversation is absent",
-            ));
-        }
+        let shared = shared_parent_workspace(&p.out, resource);
+        let (workspace_issues, members) = workspace_rule(resource, &same_workspace, shared, run_level);
+        issues.extend(workspace_issues);
+        foreign.extend(members);
         for entry in resource["scratch"].as_array().cloned().unwrap_or_default() {
             match scratch_settle(p, &entry, remove) {
                 Ok(settled) => {
@@ -17449,6 +17483,7 @@ fn cleanup_assessment(p: &Prepared, unit: &str, remove: bool) -> Result<Value> {
         "issues":issues,
         "hard_issues":hard,
         "reconciliation":reconcile,
+        "foreign_members":foreign,
         "content":content,
         "resources":views,
         "scratch":{"removed":scratch_removed,"retained":retained},
@@ -19377,6 +19412,39 @@ mod tests {
                 json!({"op":"settle_workspace","cwd":"D:\\run\\chain"}),
             ]
         );
+    }
+
+    // Live run 2026-11-13 (bergin2026exchange): the preparation drive job ran in the shared parent D:\zt-digest,
+    // which also held a stray conversation of an earlier run. The run-level cleanup kept that workspace (right) and
+    // then waited for its removal forever, so the run report kept one gap. The resource below is the ledger's own.
+    #[test]
+    fn a_shared_parent_workspace_settles_once_the_runs_own_conversations_are_absent() {
+        let bergin: Value = serde_json::from_str(r#"{"cleanup_unit":"cleanup/book@1","conversations":[{"delete":"confirmed","evidence":{"answer":{"path":"\\\\?\\D:\\zt-digest\\bergin2026exchange\\cleanup\\evidence\\7281daca-9ed4-4679-b8cd-4352242f40d1.answer.txt","sha256":"4508859c64d9b159ab20121f459d10b7c6fbc58a03251af266f340631dafb14d"}},"id":"7281daca-9ed4-4679-b8cd-4352242f40d1","label":"zet-4f964ab2f58fced8eecda8a144599734-run-t1","lost":false,"outcome":"finished","run":null,"state":"terminal"}],"id":"cleanup/book@1#D:\\zt-digest","label":"zet-4f964ab2f58fced8eecda8a144599734-run-t1","listing":{"conversations":[],"unknown":[{"id":"3b1d187b-66dd-44cb-a277-4d437eda7c9f","title":""}]},"owner":"run","scratch":[],"token":1,"workspace":{"id":"D:\\zt-digest","path":"D:\\zt-digest"},"workspace_removed":false}"#).unwrap();
+        let staging = Path::new(r"\\?\D:\zt-digest\bergin2026exchange");
+        assert!(shared_parent_workspace(staging, &bergin), "the parent of the staging folder is shared");
+        let (issues, foreign) = workspace_rule(&bergin, &[&bergin], true, true);
+        assert_eq!(issues, Vec::<Value>::new(), "the run's own conversation is gone: nothing blocks the run");
+        let foreign = foreign.expect("the stray is reported");
+        assert_eq!(foreign["members"][0]["id"], json!("3b1d187b-66dd-44cb-a277-4d437eda7c9f"));
+        // The same resource inside the staging folder keeps today's rule: the stray and the unremoved workspace block.
+        let mut own = bergin.clone();
+        own["workspace"] = json!({"id":"D:\\zt-digest\\bergin2026exchange\\prepare","path":"D:\\zt-digest\\bergin2026exchange\\prepare"});
+        assert!(!shared_parent_workspace(staging, &own), "a folder inside the staging folder is the run's own");
+        assert!(!shared_parent_workspace(Path::new(r"D:\zt-digest\bergin2026exchange"), &own));
+        let (issues, foreign) = workspace_rule(&own, &[&own], false, true);
+        let codes: Vec<&str> = issues.iter().filter_map(|issue| issue["code"].as_str()).collect();
+        assert_eq!(codes, ["workspace_unknown_member", "cleanup_transient"]);
+        assert!(foreign.is_none());
+        // A shared parent whose recorded conversation is still there is not settled yet.
+        let mut open = bergin.clone();
+        open["conversations"][0]["delete"] = Value::Null;
+        let (issues, _) = workspace_rule(&open, &[&open], true, true);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["code"], json!("cleanup_transient"));
+        // A sibling staging folder whose name starts with this one is not inside it.
+        let mut sibling = bergin.clone();
+        sibling["workspace"]["path"] = json!("D:\\zt-digest\\bergin2026exchange-old");
+        assert!(shared_parent_workspace(staging, &sibling));
     }
 
     #[test]

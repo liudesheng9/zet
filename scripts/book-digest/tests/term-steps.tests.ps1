@@ -39,6 +39,7 @@ $flat = $args2 -join ' '
 $flat = $args2 -join ' '
 switch -Regex ($flat) {
     '^ledger status' {
+        if ($env:TS_BOOK_STATE -and $flat -match '-Layer termcards') { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = @(@{ id = 'termcards/t001@1'; state = 'done' }, @{ id = 'termcards/book@1'; state = $env:TS_BOOK_STATE }) }); exit 0 }
         Write-Output (ConvertTo-Json -Compress -Depth 8 @{ schema_version = 1; units = @(@{ id = 'termcards/t001@1'; state = 'claimed' }) })
         exit 0
     }
@@ -55,6 +56,7 @@ switch -Regex ($flat) {
             if ($n -eq 0) { Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'termcards/t001@1'; token = 8; input_hash = 'ih-1'; inputs = @{ job = @{ id = 't001' } } }) }) } else { Write-Output (ConvertTo-Json -Compress @{ units = @() }) }
             exit 0
         }
+        if ($env:TS_BOOK_STATE -and $flat -match '-Owner term cards book') { Write-Output (ConvertTo-Json -Compress @{ units = @() }); exit 0 }
         if ($flat -match '-Layer termlink') {
             if ($env:TS_NO_LINK_UNIT) { Write-Output (ConvertTo-Json -Compress @{ units = @() }); exit 0 }
             Write-Output (ConvertTo-Json -Compress -Depth 8 @{ units = @(@{ id = 'termlink/book@1'; token = 5; input_hash = 'ih-l' }) })
@@ -314,6 +316,17 @@ $env:TS_APPLY_STALE = '1'
 $stale = Step (@('-Step', 'finish') + $common)
 $env:TS_APPLY_STALE = ''
 Assert ($stale.json.ok -eq $true -and $stale.json.publish_error -match 'plan_stale') "finish: a refused publication names its code ($($stale.text))"
+
+# Live resume 2026-11-13 (bergin2026exchange, wf_9ee9f169-549): the book unit was done in the first invocation, so
+# nothing was claimable and the finish answered book 'incomplete' with all 87 rows published. A book unit the
+# ledger holds done is done; one it holds blocked is still incomplete.
+$env:TS_BOOK_STATE = 'done'
+$resumed = Step (@('-Step', 'finish') + $common)
+$env:TS_BOOK_STATE = 'blocked'
+$blocked = Step (@('-Step', 'finish') + $common)
+$env:TS_BOOK_STATE = ''
+Assert ($resumed.json.ok -eq $true -and $resumed.json.book -eq 'done' -and $resumed.json.complete -eq $true) "finish: a resume whose book unit the ledger holds done answers done ($($resumed.text))"
+Assert ($blocked.json.ok -eq $true -and $blocked.json.book -eq 'incomplete') "finish: a book unit the ledger holds blocked stays incomplete ($($blocked.text))"
 
 # 5. link: plan, apply under the claim, plan again; the line answers counts, never the nested plan.
 $link = Step (@('-Step', 'link') + $common)

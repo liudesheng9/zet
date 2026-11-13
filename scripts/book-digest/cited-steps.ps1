@@ -223,7 +223,13 @@ switch ($Step) {
         } else {
             # A job that is not ready leaves the book unit blocked: the ready prefix is still published.
             $a = Run @('cited-cards', '-Step', 'apply', '-Staging', $Out, '-Apply')
-            $bookState = if ($a.json -and $a.json.complete -eq $true -and -not $HasLedger) { 'done' } else { 'incomplete' }
+            # A resume finds the book unit already done in an earlier invocation (live 2026-11-13, bergin2026exchange):
+            # nothing is claimable, and the ledger's own state answers.
+            $bookState = if ($a.json -and $a.json.complete -eq $true -and -not $HasLedger) { 'done' } elseif ($HasLedger) {
+                $s = Run @('ledger', 'status', '-Out', $Out, '-Layer', 'citedcards')
+                $held = @(@($s.json.units) | Where-Object { $_ -and "$($_.id)" -like 'citedcards/book@*' }) | Select-Object -Last 1
+                if ($held -and ($held.state -eq 'done' -or $held.state -eq 'noop')) { 'done' } else { 'incomplete' }
+            } else { 'incomplete' }
         }
         $publishError = if (-not $a.json) { "$($a.tail)".Trim() } elseif ($a.json.ok -eq $false) { "$($a.json.error)".Trim() } else { '' }
         if ($publishError.Length -gt 160) { $publishError = $publishError.Substring($publishError.Length - 160) }

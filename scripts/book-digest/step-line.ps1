@@ -23,6 +23,12 @@
   so the stage stops instead of reading a line without its fields as a success; the step scripts' own tests
   assert every answer of theirs fits.
 #>
+
+# zt-digest prints UTF-8. PowerShell decodes a native command's output in [Console]::OutputEncoding, which is the
+# console code page (936 on this machine) unless set. Live run 2026-11-13 (bergin2026exchange): a provider line that
+# named a conversation by its Chinese title lost its closing quote in that decoding and no longer parsed. Every
+# step script dot-sources this file, so it sets UTF-8 for all of them.
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $StepLineMax = 400
 
 # The tool reads its instruction files from here. Its built-in default is the folder it was built in, which a

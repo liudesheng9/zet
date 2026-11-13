@@ -242,6 +242,12 @@ switch ($Step) {
                 else { $failed += $u.inputs.job.id; Fail-Unit $x "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
             }
         }
+        function Book-State([string]$Layer) {
+            $s = Run @('ledger', 'status', '-Out', $Out, '-Layer', $Layer)
+            $held = @(@($s.json.units) | Where-Object { $_ -and "$($_.id)" -like "$Layer/book@*" }) | Select-Object -Last 1
+            if ($held -and ($held.state -eq 'done' -or $held.state -eq 'noop')) { return 'done' }
+            return 'incomplete'
+        }
         $book = Run @('ledger', 'next', '-Out', $Out, '-Layer', 'termcards', '-Take', '1', '-Owner', 'term cards book', '-Wait', '60', '-Lease', '3600')
         # `next` hands out any ready unit of the layer: a job unit it gives here is released at once.
         foreach ($x in @($book.json.units | Where-Object { $_.id -notlike 'termcards/book@*' })) {
@@ -258,7 +264,9 @@ switch ($Step) {
         } else {
             # A failed job leaves the book unit blocked: its ready contiguous prefix is still published.
             $a = Run @('term-cards', '-Step', 'apply', '-Staging', $Out, '-Apply')
-            $bookState = 'incomplete'
+            # A resume finds the book unit already done in an earlier invocation (live 2026-11-13, bergin2026exchange):
+            # nothing is claimable, and the ledger's own state answers.
+            $bookState = Book-State 'termcards'
         }
         $publication = @{ complete = ($a.json.complete -eq $true); rows = [int]$a.json.rows; committed = [int]$a.json.committed; ready_unpublished = [int]$a.json.ready_unpublished; stop = $a.json.stop }
         # Live run 2026-10-26 (staging5): an apply that prints no line is named, never read as zero rows.

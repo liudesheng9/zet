@@ -757,11 +757,11 @@ switch ($Step) {
         if (-not $fallback.json) { Fail 'cleanup apply' "neither the provider results nor the cleanup-finish line answered: $($r.tail) | $($fallback.tail)"; break }
         $ready = $fallback.json
         Reply @{
-            ok = $true; fallback = $true; provider_error = (Tail $r.tail)
+            ok = $true; fallback = $true; provider_error = "exit $($r.code): the provider results printed no readable line"
             ready_claimed = [int]$ready.claimed; ready_done = [int]$ready.done; ready_partial = [int]$ready.partial
             ready_retry = [int]$ready.retry_count; ready_failed = [int]$ready.failed_count
             book_unit = "$($ready.book.unit)"; book_ok = ($ready.book.ok -eq $true); book_status = "$($ready.book.status)"
-        } @{ ready = $ready; provider = $null }
+        } @{ ready = $ready; provider = $null; provider_output = $r.tail }
     }
     'cleanup-report' {
         $r = Run @('ledger', 'report', '-Out', $Out)

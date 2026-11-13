@@ -176,6 +176,7 @@ switch -Regex ($cmd) {
     }
     '^cleanup-run ' {
         if ($flat -match '-Step plan') { Out @{ kind = 'cleanup_run'; step = 'plan'; deletes = 3; workspaces = 1; plan_file = (Join-Path $env:BS_OUT 'cleanup\settle-plan.json') } }
+        if ($env:BS_CLEANUP_FAIL -eq 'long') { Write-Output ('the provider printed ' + ('x' * 600)); exit 1 }
         if ($env:BS_CLEANUP_FAIL) { Write-Output 'the settle results do not answer the plan'; exit 1 }
         Out @{ kind = 'cleanup_run'; step = 'apply'; deleted = 3; absent = 0; failed_count = 0; workspaces_removed = 1; workspaces_kept = 0; ready = @{ kind = 'cleanup_ready'; claimed = 1; done = 1; partial = 0; retry_count = 0; failed_count = 0; book = @{ unit = 'cleanup/book@1'; ok = $true; status = 'complete'; cleanup_complete = $true; content_complete = $true } } }
     }
@@ -433,6 +434,31 @@ $env:BS_CLEANUP_FAIL = '1'
 $clFallback = Step 'cleanup-apply'
 $env:BS_CLEANUP_FAIL = ''
 Assert ($clFallback.json -and $clFallback.json.ok -eq $true -and $clFallback.json.fallback -eq $true -and $clFallback.json.ready_claimed -eq 1 -and (Has $clFallback.calls 'cleanup-finish -Out .* -Ready -Owner cleanup-run')) "cleanup apply: without the provider results the finished units still settle ($($clFallback.text))"
+# Live run 2026-11-13 (bergin2026exchange): the provider line named a foreign conversation by its Chinese title;
+# the step decoded the native tool's output in the console code page (936), the line did not parse, and the
+# fallback put 400 characters of that line into the step line (548 > 400). The provider line must parse, and a
+# fallback carries only its counts; the failed command's output belongs in the detail file.
+$env:BS_CLEANUP_FAIL = 'long'
+$clLong = Step 'cleanup-apply'
+$env:BS_CLEANUP_FAIL = ''
+Assert ($clLong.json -and $clLong.json.ok -eq $true -and $clLong.json.fallback -eq $true -and "$($clLong.json.provider_error)".Length -le 120) "cleanup apply: a long provider failure keeps the line to counts ($($clLong.last.Length): $($clLong.text))"
+$detailLong = if ($clLong.json -and $clLong.json.detail) { Get-Content -LiteralPath $clLong.json.detail -Raw -Encoding utf8 } else { '' }
+Assert ($detailLong -match 'the provider printed x') 'cleanup apply: the failed provider output is kept in the detail file'
+$nativeLine = Join-Path $scratch 'provider-line.json'
+$nativeTool = Join-Path $scratch 'native-zt-digest.cmd'
+$provider = [ordered]@{ schema_version = 1; kind = 'cleanup_run'; deleted = 0; absent = 0; workspaces_removed = 0; workspaces_kept = 1; failed_count = 0; failed = @(); unknown_count = 1
+    unknown = @(@{ workspace = 'D:zt-digest'; id = '3b1d187b-66dd-44cb-a277-4d437eda7c9f'; title = '执行 zt-digest 命令并回复末行输出' }); unrecorded_count = 0; unrecorded = @()
+    ready = @{ kind = 'cleanup_ready'; claimed = 1; done = 0; partial = 0; retry_count = 1; failed_count = 0; book = @{ unit = 'cleanup/book@1'; ok = $false; status = 'ready' } } }
+[IO.File]::WriteAllText($nativeLine, ($provider | ConvertTo-Json -Compress -Depth 8) + "`r`n", [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($nativeTool, "@echo off`r`ntype `"%~dp0provider-line.json`"`r`n", [Text.Encoding]::ASCII)
+$fakeTool = $tool
+$tool = $nativeTool
+$saved = [Console]::OutputEncoding
+try { [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(936) } catch { }
+$clNative = Step 'cleanup-apply'
+try { [Console]::OutputEncoding = $saved } catch { }
+$tool = $fakeTool
+Assert ($clNative.json -and $clNative.json.ok -eq $true -and -not $clNative.json.fallback -and $clNative.json.unknown -eq 1 -and $clNative.json.workspaces_kept -eq 1) "cleanup apply: a native tool's UTF-8 provider line parses under a 936 console ($($clNative.text))"
 $clReport = Step 'cleanup-report'
 Assert ($clReport.json -and $clReport.json.ok -eq $true -and -not $clReport.json.complete -and $clReport.json.settled -and $clReport.json.quality_complete -and $clReport.json.usage -and (Has $clReport.calls 'ledger report -Out ')) "cleanup report: the verified run report is the step's answer ($($clReport.text))"
 
