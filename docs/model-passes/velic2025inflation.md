@@ -37,3 +37,17 @@ Backup: `D:\zt\backups\zt-before-velic2025inflation-settings.sqlite3` (integrity
 Gate: `check-settings.mjs` clean on 3|a, 7|a, 8|a, 10|a; `check-model` 10|a `self_sufficient: true`; `list_broken_links` empty; Term relink ok (11 Cards, 36 links added).
 
 Open: §2.4 says the observation unit is country-month, the kept data card country-year (both recorded in the data card); the two builds assigned Table 5 columns (3), (5)–(8) differently (kept list stands, the §2.4 assignment recorded in 10|a|a|4|b); 7|a and 8|a have 2 and 1 loose parts.
+
+## Stage 3: restructure
+
+Backup: `D:\zt\backups\zt-before-velic2025inflation-restructure.sqlite3` (integrity ok). One subagent (Opus, effort medium) under `zt-model-restructure`; 9|a untouched. Text rewritten by the subagent (no DeepSeek); every display formula and equation number kept.
+
+- **3|a (formal)**: spine 设定 `3|a|a` → `3|a|a|1` 第 1 章 缺口越大调整越快，总体动态是两种极端区制的加权平均 (§2.1; new) → `3|a|a|2` 第 2 章 缺口渠道与调整渠道共同决定半衰期，两者反向时净影响不确定 (§2.4). Chapter 1: `|1|a` 结果：有效调整系数 (proof in the card), `|1|b` 结果：两区制的持续性 with proof chain `|1|b|a` 推导：区制加权平均, `|1|c` 旁注：两个极限. Chapter 2: `|2|a` 结果：半衰期的两个截面, `|2|b` 结果：两渠道反向 (the 整块 import root 10|a uses; moved whole, Links rewritten by zt) with example `|2|b|a`. Facets 构件/机制/结论 → 结果/推导/旁注.
+- **7|a**: 数据 → 设计 → 规格：基准 → `|3` 第 1 章 国内通胀普遍随国际通胀联动，大缺口之后调整更大 (Tables 1–2) → `|4` 第 2 章 换用国际通胀的其他度量与协变量的其他口径，结论不变. Limits card 7|a|b → aside 7|a|a|4|c; loose 0.
+- **8|a**: 数据 → 假说 → 设计 → 规格：基准 → 第 1–4 章 (`|4`–`|7`), retitled as claims; chapter 4 (GIRF) rests on chapter 2's half-lives. Limits card 8|a|b → aside 8|a|a|7|b.
+- **10|a**: 数据 → 假说 → 设计 → 规格：基准 → 第 1–6 章 (`|4`–`|9`); network 1 → 3 → 6, chapters 2, 4, 5 under the specification. Chapter 6 rests on Tables 7–8 (`|6|a`, `|6|b`), chapter 3 and the imported `3|a|a|2|b`. Limits card 10|a|b → aside 10|a|a|8|k.
+- **直觉** leads added to 假说, design and specification cards (7|a, 8|a, 10|a) and one sentence to each data card (the network check needs it; settings check still clean).
+
+Gate: `check-model` self_sufficient true and loose 0 on all four; `check-network` clean on all four; `check-premises` none on 3|a and 7|a; 3 hits on 8|a and 4 on 10|a, all pointers, not uses (the 变量表 row "由式 (2) 换算", formula (2) itself in a measure card, "式 (4) 用这个变换", and table column numbers "第 (1) 列" read as equation numbers) — they stay; `check-settings` clean on all four; Term relink ok (22 Cards, 56 links); `list_broken_links` empty.
+
+Open: chapter facets on 7|a, 8|a, 10|a keep short names (titles state the claims); 9|a|a|1 has no **直觉** (concept model, not in scope).
