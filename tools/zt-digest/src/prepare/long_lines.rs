@@ -42,6 +42,7 @@ static NOTE_MARK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\s*\^\s*\{?\s*(\d{1,3})\s*\}?\s*\$|<sup>\s*(\d{1,3})\s*</sup>").unwrap());
 static SUPERSCRIPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+").unwrap());
 static EN_ELLIPSIS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.\.\.|…|\. \. \.").unwrap());
+static PERCENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bper\s?cent\b").unwrap());
 static SCALE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(?:billion|million|thousand|trillion)").unwrap());
 static BAD_START: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:\$\$|\$\^|```|~~~|<table|<details|</details|<summary|<img|<div|#|[-*+>|=](?:\s|$)|!\[|\d{1,3}[.)](?:\s|$)|$)").unwrap()
@@ -220,13 +221,34 @@ fn note_marks(s: &str) -> std::collections::BTreeSet<u32> {
     marks
 }
 
-fn pair_words(en: &str, zh: &str) -> usize {
+/// The English words of a pair that the Chinese does not keep in Latin letters. A number is never a word.
+fn english_words(en: &str, zh: &str) -> usize {
     let kept: std::collections::HashSet<&str> = LATIN.find_iter(zh).map(|m| m.as_str()).collect();
     LATIN.find_iter(&plain(en)).filter(|m| !kept.contains(m.as_str())).count()
 }
 
+/// The English words a translation must render in Han: [`english_words`] less "percent", which Chinese writes as
+/// `%` (when the Chinese has one). Das & Grigorian 2026, line 473: five "percent" made a whole translation look
+/// short.
+fn pair_words(en: &str, zh: &str) -> usize {
+    if !zh.contains(['%', '％']) {
+        return english_words(en, zh);
+    }
+    english_words(&PERCENT.replace_all(en, " "), zh)
+}
+
+/// Han characters per English word of the pair, the words the translation must render in Han.
 fn han_ratio(en: &str, zh: &str) -> Option<f64> {
     let w = pair_words(en, zh);
+    (w >= MIN_WORDS).then(|| HAN.find_iter(zh).count() as f64 / w as f64)
+}
+
+/// The book's median is read on the plain word count, so the sign rule only raises a pair's own ratio and
+/// never moves the line other pairs are measured against: it can clear a false alarm, never raise a new one.
+/// (Read on the corrected count, the median of a percent-dense book rose and flagged whole pairs elsewhere,
+/// for example Sylla & Cowen 2018 line 2560; a possessive-'s rule moved every median and flagged 14.)
+fn median_ratio(en: &str, zh: &str) -> Option<f64> {
+    let w = english_words(en, zh);
     (w >= MIN_WORDS).then(|| HAN.find_iter(zh).count() as f64 / w as f64)
 }
 
@@ -387,7 +409,7 @@ pub(crate) fn uncovered_pairs(raw: &str) -> Vec<(usize, Vec<String>)> {
             pairs.push((blocks[i + 1].0, &blocks[i].1, zh.join("\n\n")));
         }
     }
-    let mut ratios: Vec<f64> = pairs.iter().filter_map(|(_, en, zh)| han_ratio(en, zh)).collect();
+    let mut ratios: Vec<f64> = pairs.iter().filter_map(|(_, en, zh)| median_ratio(en, zh)).collect();
     ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median = ratios.get(ratios.len() / 2).copied();
     pairs
@@ -477,6 +499,56 @@ mod tests {
         let half = "各行省的总督们就税收和军队问题写信给哈里发。".repeat(3);
         assert!(coverage_faults(&para, &half, Some(1.6)).iter().any(|f| f.starts_with("short")));
         assert!(!coverage_faults(&para, &half.repeat(3), Some(1.6)).iter().any(|f| f.starts_with("short")));
+    }
+
+    /// Chinese writes "percent" as `%`, with no Han of its own, so it does not count as an English word in the
+    /// length ratio; a Chinese that leaves half the paragraph out is still short.
+    #[test]
+    fn a_word_that_chinese_writes_as_a_sign_does_not_count_in_the_ratio() {
+        let en = vec!["The country's exports fell by 60 percent and its remittances by 33 percent in the first half of the year."; 6].join(" ");
+        let zh = "该国出口下降60%，侨汇在上半年下降33%。".repeat(6);
+        // 14 Han for 19 words is short against 0.75 × 1.0; for the 17 words a translation renders in Han it is not.
+        assert!(!coverage_faults(&en, &zh, Some(1.0)).iter().any(|f| f.starts_with("short")), "{:?}", coverage_faults(&en, &zh, Some(1.0)));
+        let cut = "该国出口下降60%，侨汇在上半年下降33%。".repeat(3);
+        assert!(coverage_faults(&en, &cut, Some(1.0)).iter().any(|f| f.starts_with("short")));
+        // Without the sign in the Chinese, "percent" is a word the translation had to render.
+        assert_eq!(pair_words("fell by 60 percent", "下降了"), 3);
+        assert_eq!(pair_words("fell by 60 percent", "下降60%"), 2);
+        assert_eq!(pair_words("fell by 60 per cent", "下降60%"), 2);
+    }
+
+    /// The Das & Grigorian (CGD 2026) pair at line 473 that `prepare` refused: its Chinese is whole, and the
+    /// English is dense with "percent", which the Chinese writes as `%`.
+    #[test]
+    fn the_das_jamaica_paragraph_is_covered() {
+        // book text, so not in the repository: the Scholar Archive mirror holds it
+        let path = "C:/Users/chenx/AppData/Roaming/zt/scholar-archive/files/1910/Das_Grigorian_2026_Domestic_Debt_Restructuring_Central_Bank_EMDEs_CGD.zh-bilingual.md";
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            eprintln!("skipped: no {path}");
+            return;
+        };
+        let found = uncovered_pairs(&raw);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// Every flag of the books the cut repairs read (2026-11-12, `D:/zt/backups/cut-repair-2026-11-12`), written
+    /// to `ZT_COVERAGE_OUT` so two builds can be compared: `cargo test -- --ignored coverage_flags_of_the_cut_repair_books`.
+    #[test]
+    #[ignore]
+    fn coverage_flags_of_the_cut_repair_books() {
+        let dir = "D:/zt/backups/cut-repair-2026-11-12";
+        let out = std::env::var("ZT_COVERAGE_OUT").expect("ZT_COVERAGE_OUT");
+        let mut names: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".zh-bilingual.md.before-cut-repair-")).collect();
+        names.sort();
+        let mut lines = Vec::new();
+        for name in names {
+            let raw = std::fs::read_to_string(format!("{dir}/{name}")).unwrap();
+            for (line, faults) in uncovered_pairs(&raw) {
+                lines.push(format!("{name}\t{line}\t{}", faults.join(";")));
+            }
+        }
+        std::fs::write(out, lines.join("\n")).unwrap();
     }
 
     #[test]
