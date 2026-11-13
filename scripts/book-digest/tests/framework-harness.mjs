@@ -3017,6 +3017,14 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   check(JSON.stringify(zdJsonIn('{"state":"done","unit":"digest/g001@1"} (abridged)')) === '{"state":"done","unit":"digest/g001@1"}', 'json: a JSON line with a trailing remark is still read')
   check(JSON.stringify(zdJsonIn('done: {"a":{"b":1}} and more {x')) === '{"a":{"b":1}}', 'json: prose before and after the object is ignored')
   check(zdJsonIn('no json here') === null, 'json: a line without an object reads as nothing')
+  // bergin2026exchange resume (2026-11-13): the drive prompt said "不修改任何文件" (modify no file); the cleanup-apply
+  // job read the step's own deletes and ledger writes as forbidden and refused to run it. The prompt forbids only the
+  // job's own edits and says the command's writes are its purpose.
+  const driveCommand = new Function(`${take('ztDriveCommand')}; return ztDriveCommand`)()
+  const drivePrompt = driveCommand('zt-digest finish-batch -Out "D:\\x"')
+  check(!/不修改任何文件/.test(drivePrompt), 'drive: the prompt does not forbid every file change (the step command writes by design)')
+  check(/命令自己的写入|命令本身.*(写入|修改|删除)/.test(drivePrompt) && /你自己不(编辑|修改|创建)/.test(drivePrompt), `drive: the prompt says the command's own writes are its purpose and the job edits no file itself (${drivePrompt.split('\n')[0].slice(0, 160)})`)
+  check(/zt-digest finish-batch -Out "D:\\x"$/.test(drivePrompt), 'drive: the command stays the last line, unchanged')
 }
 
 // ================================================================================================================
@@ -3417,13 +3425,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '61' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '8' && modules['zt-workflow-lib'] === '17' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '17' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '61' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '8' && modules['zt-workflow-lib'] === '18' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '17' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '17', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '18', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -3753,7 +3761,7 @@ for (const which of ['econ', 'math']) {
     const t = readText(`scripts/book-digest/workflow/modules/${m}`)
     check(!t.includes('model = its "model"') && t.includes('model "${ZT_DRIVE_MODEL}"'), `${m}: the manager starts every job on the run's one source value`)
   }
-  check(/version: '17'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  check(/version: '18'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
 }
 
 // ================================================================================================================

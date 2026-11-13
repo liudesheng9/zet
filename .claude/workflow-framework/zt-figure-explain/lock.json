@@ -1,16 +1,16 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-figure-explain",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "scope": "project",
   "script": ".claude/workflows/zt-figure-explain.js",
   "scriptRel": "workflows/zt-figure-explain.js",
-  "sha256": "6b75fdda6d2d06e5f4fb0e4eb4fb73e556af5ad9843ae69a9548cb06c144bfe9",
-  "fingerprint": "f7a66402115e4a79",
-  "blueprintSha256": "dce87a42c6a907a45e8f2d94599c3c87ddb677459dad4d01cd4209cdc5cafaf6",
+  "sha256": "9885296b593ccbadaeaaf7d5892ed227397e2427a0842a672c094a13d2b428be",
+  "fingerprint": "11de13c2796402b5",
+  "blueprintSha256": "c303ebba69716b09e7fcbadeaeff99f318c3088c106767116939459d4a20a5ab",
   "modules": {
     "gate": "1",
-    "zt-workflow-lib": "17",
+    "zt-workflow-lib": "18",
     "zt-figure-explain": "1"
   },
   "moduleFiles": {
@@ -20,7 +20,7 @@
     },
     "zt-workflow-lib": {
       "file": "scripts/workflow-shared/modules/zt-workflow-lib.js",
-      "sha256": "c684017df4bb363434fdf7243ce55a3fa91e0da04ad439cc2a30b0f8bc8012fe"
+      "sha256": "3356573fd1c369b9059b3ea2bdc16245dee391820615c9aa3ccea87607032b8a"
     },
     "zt-figure-explain": {
       "file": "scripts/workflow-shared/modules/zt-figure-explain.js",
@@ -30,10 +30,10 @@
   "sources": [
     {
       "file": "scripts/figure-explain/workflow/zt-figure-explain.blueprint.json",
-      "sha256": "971403f173a68db1cbbdf20148a5053cb6d5768ca81009f2716b9feb00c58424"
+      "sha256": "58ec2a892ae3ebbe1b34061751b8b06b889bce695ec056b456eedc8cf4e72db5"
     }
   ],
-  "installedAt": "2026-11-12T09:01:09.084Z",
+  "installedAt": "2026-11-13T08:47:20.327Z",
   "dryRun": {
     "agents": 4,
     "order": [

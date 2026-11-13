@@ -1,4 +1,7 @@
-// ==== module zt-workflow-lib v17 ====
+// ==== module zt-workflow-lib v18 ====
+// v18 (bergin2026exchange resume, 2026-11-13): the drive prompt said "不修改任何文件"; a DeepSeek job read the cleanup-apply
+// step's own deletes and ledger writes as forbidden and refused to run it. The prompt now forbids only the job's own edits
+// and says the command's writes are the step's purpose.
 // v17 (the owner, 2026-11-12): every DeepSeek job of the ZT workflows runs on OpenCode Go. ZT_DRIVE_MODEL is the one
 // source value: the digests' content jobs, the Term and Cited writers and the drive jobs all read it. The Desktop
 // switches between the OpenCode Go accounts by itself (strategy failover); when every account is limited, the operator
@@ -161,7 +164,7 @@ function ztLockStop(where, refusal) {
 }
 // The exact prompt a drive job runs: the one command as given, then only its last line, copied.
 function ztDriveCommand(command) {
-  return `在 PowerShell 里原样运行下面这一条命令，不改写它，不运行别的命令，不修改任何文件。命令结束后，只回复它输出的最后一行：把那一行一字不改地复制过来，不要改写、缩写、翻译或补充任何字。那一行是一个紧凑的 JSON 对象，以 "ok" 开头。\n\n${command}`
+  return `在 PowerShell 里原样运行下面这一条命令，不改写它，不运行别的命令。这条命令本身会写入、修改或删除文件、账本记录和会话，这正是这一步的任务：命令自己的写入是预期的，照常运行它，不需要先检查或确认。你自己不编辑、不创建、不删除任何文件。命令结束后，只回复它输出的最后一行：把那一行一字不改地复制过来，不要改写、缩写、翻译或补充任何字。那一行是一个紧凑的 JSON 对象，以 "ok" 开头。\n\n${command}`
 }
 // The one manager prompt of a drive job: start it, wait, retry once, record (when the workflow keeps a ledger) and
 // delete the conversation. `record: false` is a workflow with no run ledger (zt-idea-grow): the job records nothing,
@@ -214,7 +217,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '17', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '18', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====

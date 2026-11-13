@@ -256,6 +256,7 @@ Workflow({ scriptPath: "E:\\zet\\.claude\\workflows\\zt-idea-grow.js",
 
 ## Change history
 - `2026-11-09` — **4.0.14** (zt-workflow-lib v14): a patch reinstall on the shared drive answer reader. A last line that opens with a short label ending in a colon (`Ok: {…}`, at most 24 characters with no brace, bracket or quote) is read as the object after the label; the object is still read strictly. A digest drive job met this on the live run `ebrill2001modern-empirical`; the grow cycle's own behaviour does not change.
+- `2026-11-13` — **4.0.18** (zt-workflow-lib v18): the drive prompt forbids only the job's own file edits; the step command's writes are its purpose (a drive job refused a writing step under "不修改任何文件").
 - `2026-11-12` — **4.0.17** (zt-workflow-lib v17): drive jobs run on OpenCode Go (`ZT_DRIVE_MODEL` = `opencode-go/deepseek-v4.1-flash`), the digests' one source value; the content jobs keep `consts.model`.
 - `2026-11-05` — **4.0.13** (zt-workflow-lib v13): drive jobs run on the official source again (`ZT_DRIVE_MODEL` = `deepseek-official/deepseek-flash`), the same model as the content jobs in `consts.model`.
 - `2026-11-04` — **4.0.12** (zt-workflow-lib v12): the drive prompt says a user message never cancels its step.

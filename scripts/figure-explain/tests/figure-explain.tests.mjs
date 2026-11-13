@@ -49,10 +49,10 @@ await test('one start, one queue of managers, one finish; each reader gets its i
   const reader = globalThis.__readers[0]
   assert.match(reader, /images = the entry's images/, 'the manager hands the images to deepseek_run')
   assert.match(reader, /jobs-001\.json/, 'each manager has its own job file')
-  assert.match(reader, /model "deepseek-official\/deepseek-flash", reasoning_effort "high"/)
+  assert.match(reader, /model "opencode-go\/deepseek-v4\.1-flash", reasoning_effort "high"/)
   assert.match(reader, /zt-digest figures -Step explain-check/, 'the SELF-CHECK is the one command it approves')
   assert.match(reader, /never archive/)
-  assert.match(globalThis.__commands[0], /^zt-digest figures -Step explain-start -Work "D:\\zt-digest\\_figure-explain\\95-1283" -FileIds 95,1283 -Model deepseek-official\/deepseek-flash$/)
+  assert.match(globalThis.__commands[0], /^zt-digest figures -Step explain-start -Work "D:\\zt-digest\\_figure-explain\\95-1283" -FileIds 95,1283 -Model opencode-go\/deepseek-v4\.1-flash$/)
   assert.match(globalThis.__commands[1], /^zt-digest figures -Step explain-finish -Work "D:\\zt-digest\\_figure-explain\\95-1283" -Model /)
 })
 
