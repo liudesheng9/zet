@@ -100,7 +100,8 @@ function Save($Path, $Value) {
     $dir = Split-Path -Parent $Path
     if ($dir) { [void][System.IO.Directory]::CreateDirectory($dir) }
     $list = @($Value)
-    $text = if ($list.Count) { $list | ConvertTo-Json -Depth 64 } else { '[]' }
+    # -InputObject keeps a one-entry list an array (piping unwraps it to a bare object: arrocannarsa2026flight notes).
+    $text = if ($list.Count) { ConvertTo-Json -InputObject $list -Depth 64 } else { '[]' }
     Set-Content -LiteralPath $Path -Value $text -Encoding utf8
 }
 function Tail([string]$Text) {

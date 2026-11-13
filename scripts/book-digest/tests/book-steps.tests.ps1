@@ -300,6 +300,10 @@ $cardsApply = Step 'cards-apply' @{ Work = $work; MaxJobs = 30 }
 $env:BS_APPLY_PENDING = ''
 Assert ($cardsApply.json -and $cardsApply.json.ok -eq $true -and $cardsApply.json.applied -eq 3 -and $cardsApply.json.faults -eq 1 -and $cardsApply.json.jobs -eq 1) "cards apply: every pending share is applied, then the check lists its fix job ($($cardsApply.text))"
 Assert (@(Get-Content -Raw (Join-Path $work 'out\jobs.json') | ConvertFrom-Json).Count -eq 1) 'cards apply: the check writes its own job file for the next content round'
+# arrocannarsa2026flight (2026-11-13): the notes cycle's check listed ONE fix job and Save piped it to ConvertTo-Json,
+# which wrote a bare object; the manager, told to read a JSON array, refused and fix-01 never ran. A one-entry list
+# is still an array on disk.
+Assert ((Get-Content -Raw (Join-Path $work 'out\jobs.json')).TrimStart().StartsWith('[')) 'cards apply: a job file with one job is a JSON array, not a bare object'
 # becker2025division-appendix (2026-11-10), haeckl2026dont (2026-11-11): the check met a changing view while another
 # run wrote to the archive. zt-digest itself reads the check again (util::rereads_on_changing_view, 0.52.5); the step
 # runs it once, and a changing view that zt-digest still reports fails the step.

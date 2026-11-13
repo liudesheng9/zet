@@ -52,7 +52,8 @@ function Run([string[]]$CommandArgs) {
 }
 function Save($Path, $Value) {
     $list = @($Value)
-    $text = if ($list.Count) { $list | ConvertTo-Json -Depth 64 } else { '[]' }
+    # -InputObject keeps a one-entry list an array (piping unwraps it to a bare object; see book-steps.ps1 Save).
+    $text = if ($list.Count) { ConvertTo-Json -InputObject $list -Depth 64 } else { '[]' }
     Set-Content -LiteralPath $Path -Value $text -Encoding utf8
 }
 # The step's answer: its compact line and the detail file beside it (#180).
