@@ -127,3 +127,7 @@ Open: deploy zt 0.62.2, re-run check-settings on 5|d|a, then give 5|b|a the `整
 ## Result
 
 Five models: 3|a formal ESTAR (two chapters, five figures, full 直觉), 4|a, 5|b|a and 5|d|a empirical, 5|c|a concept. The tree follows the paper's sections. Next per the sequence: zt-idea-grow and zt-term-sync only on the owner's word.
+
+## Follow-up after zt 0.62.2 (2026-11-13)
+
+zt 0.62.2 deployed on the live box (`zt.exe.0.62.1-old` aside). `check-settings` on 5|d|a is now clean (the three false `uncovered` faults are gone). Backup `D:\zt\backups\zt-before-velic2025inflation-imports2.sqlite3` (integrity ok). 5|b|a takes `整块 [[4|a|a]]` in its **引入**, and its data card 5|b|a|a's **起点** now rests on 4|a|a. Gate: `imports.mjs check` exit 0, `check-settings` clean, `check-model` self_sufficient true and loose 0, Term relink 0 Cards, `list_broken_links` empty. The sample start still differs (5|b|a|a 1996:01, 4|a|a 1996:02); both lines stay as the source states them.
