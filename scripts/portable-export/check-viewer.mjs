@@ -258,11 +258,20 @@ async function checkContent(page) {
   const frame = `document.querySelector('#reader iframe.zt-chart-frame')`;
   check('a chart sits in a sandboxed frame', (await page.value(`${frame}.getAttribute('sandbox')`)) === 'allow-scripts');
   check('a chart runs and sizes itself', await page.until(`!!${frame}.style.height`, 'the chart height'));
+  // In a Card the chart is a print: a click lifts it onto the sheet, and a box on the sheet opens
+  // its Card in the reader beside it. Esc puts the chart back.
   await page.value(`${frame}.scrollIntoView({ block: 'center' })`);
   await sleep(300);
-  const box = await page.value(`(() => { const r = ${frame}.getBoundingClientRect(); return { x: r.x, y: r.y }; })()`);
+  const print = await page.value(`(() => { const r = ${frame}.getBoundingClientRect(); return { x: r.x, y: r.y }; })()`);
+  await page.click(print.x + 12, print.y + 10);
+  const sheetFrame = `document.querySelector('.chart-sheet:not([hidden]) iframe.chart-sheet-frame')`;
+  check('a click on a chart lifts it onto the sheet', await page.until(`!!${sheetFrame} && !!${sheetFrame}.style.height && !document.querySelector('.chart-sheet-wait:not([hidden])')`, 'the chart sheet'));
+  await sleep(500);
+  const box = await page.value(`(() => { const r = ${sheetFrame}.getBoundingClientRect(); return { x: r.x, y: r.y }; })()`);
   await page.click(box.x + 12, box.y + 10);
   check('a Link in a chart opens its Card', await page.until(titleIs(scene.first_title), 'the Card a chart opens'));
+  await page.press('Escape', 'Escape', 27);
+  check('Esc puts the chart back', await page.until(`!document.querySelector('.chart-sheet:not([hidden])')`, 'the sheet closed'));
   await page.value(hashTo(scene.shows));
   await page.until(titleIs(scene.shows_title), 'the Card again');
 }
@@ -275,7 +284,8 @@ async function checkUnsupported(page) {
     await page.value(`${clearToasts}; 0`);
     await page.value(`${expression}; 0`);
     const shown = await page.until(toastHas(NOTICE), `the notice of ${name}`, 3000);
-    const stray = await page.value(`document.querySelectorAll('[role="dialog"]:not(.finder-tray)').length`);
+    // A shown dialog; the chart sheet stays in the page, hidden, once it has opened.
+    const stray = await page.value(`document.querySelectorAll('[role="dialog"]:not(.finder-tray):not([hidden])').length`);
     check(`${name} says it is not available`, shown && stray === 0, { stray });
   };
   for (const label of ['Edit', 'Reply', 'Direct', 'Side', 'Insert', 'Move', 'Delete', 'Bridge report']) {
