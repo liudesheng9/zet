@@ -14,6 +14,15 @@ test('the estimand section is read up to the next label', () => {
   assert.equal(section('没有这一节。', '估计对象'), '')
 })
 
+test('a label written inline (问题：…) is read from the text after its colon', () => {
+  // bergin2026exchange/6|a and goldsmithpinkham2020bartik/8|a open with `问题：…` on the label's own line.
+  const body = '问题：[[资本管制@B/1|a|b]]是否提高生产率。\n数据是面板。\n\n**结构**\n- 数据 [[B/6|a|a]]'
+  assert.equal(section(body, '问题'), '[[资本管制@B/1|a|b]]是否提高生产率。\n数据是面板。')
+  assert.equal(section('**问题**：哪些因素。\n\n**设计**\n比较。', '问题'), '哪些因素。')
+  assert.deepEqual(headTerms({ title: 't', body }), ['B/1|a|b'])
+  assert.equal(section('对问题：无关。', '问题'), '')
+})
+
 test('the estimand Terms are the head title, **问题** and **估计对象**, since a Term is linked only where a Card first names it', () => {
   // ebrill2001modern/5|a: 增值税 is linked in **问题**, so **估计对象** names it as plain text. A Term the head links
   // in a later section (a regressor in **设计** or **主要估计**) is not the estimand: an estimate that names it

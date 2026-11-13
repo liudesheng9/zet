@@ -22,12 +22,19 @@ export function linkTargets(text) {
   return [...String(text || '').matchAll(/\[\[([^\]@]+)\]\]/g)].map((m) => m[1].trim())
 }
 
-/** One bold section of a body (`**估计对象**`), up to the next bold label or the source line. */
+/**
+ * One section of a body (`**估计对象**`), up to the next bold label or the source line. The label may also stand
+ * inline at a line start (`问题：…`, `**问题**：…`, as bergin2026exchange/6|a writes it): the text after its colon
+ * opens the section.
+ */
 export function section(body, name) {
   const lines = String(body || '').split('\n')
-  const at = lines.findIndex((l) => l.trim().replace(/[：:]$/, '') === `**${name}**`)
+  const inline = new RegExp(`^\\s*(?:\\*\\*${name}\\*\\*|${name})\\s*[：:]\\s*(.*)$`)
+  const at = lines.findIndex((l) => l.trim().replace(/[：:]$/, '') === `**${name}**` || inline.test(l))
   if (at < 0) return ''
   const out = []
+  const first = (lines[at].match(inline) || [])[1]?.trim()
+  if (first) out.push(first)
   for (const l of lines.slice(at + 1)) {
     if (/^\s*\*\*[^*]+\*\*\s*[：:]?\s*$/.test(l) || /^\s*来源[：:]/.test(l)) break
     out.push(l)

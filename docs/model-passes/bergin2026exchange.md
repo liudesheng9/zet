@@ -250,3 +250,34 @@ The 直觉 section was rewritten on all 17 setting cards and on the 定义 part 
 1. The six R3 faults (semicolons in existing **起点**/**设定**/**说明** lines of 7\|a\|a, b, f\|b\|1, i, j) predate this pass and were not changed.
 2. 7\|a\|a\|f\|c's GDP formula writes $p_{H,t}y_{H,t}$ for the second term. The figure repeats it as written and does not say which sector it is.
 3. No `card_locked` and no read-view error occurred. assenza2026louder ran on the box throughout.
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-13, live box, under `zt-evidence-dialogue` steps 1–5, done in the main thread by scripts. Backup: `D:\zt\backups\zt-before-bergin2026exchange-dialogue.sqlite3` (369 MB, taken before the pass). No Card was written, and no DeepSeek job ran, so there is no DeepSeek cost.
+
+### Survey
+
+- The first `survey bergin2026exchange/6|a` read 21 estimates of ours and 1,073 Cards of the other side (the estimates of every other empirical model, and the Finding Cards of the other books). It gave `estimand_terms: []` and 0 pairs. The cause was a script fault: `section()` read only a bold label on its own line (`**问题**`), and the head of 6\|a opens with an inline `问题：…` and has no **估计对象** section. Thus the 9 estimates that link no Term outside the model's reporting frame (4\|c, 4\|d, 4\|f, 4\|g, 6\|d, 6\|e, 6\|f, 6\|g, 6\|h) had nothing to pair on.
+- Fix (test first, `dialogue.test.mjs` 15/15 pass): `section()` also reads an inline label at a line start (`问题：…`, `**问题**：…`) from the text after its colon. Installed to `~/.claude/skills` and `~/.codex/skills`. Wiki: `docs/wiki/agent-skills.md` change history.
+- The second survey gave the estimand Terms 资本管制 (1\|a\|b), 储备积累 (1\|a\|d), 劳动生产率 (1\|a\|n) and 企业动态 (1\|a\|p), and again 0 pairs. The reporting frame of the model is 资本管制 and 储备增长 (1\|a\|b, 1\|a\|e), linked by at least half of the estimates. The survey pairs Cards only on shared Term addresses, widened by zt-term-sync Links. No Term Card of bergin2026exchange has a Link to a Term Card of another book, so no Card of another book shares a Term with our estimates. A text search confirms that the other side is thin: 资本管制, 外汇储备, 储备积累 and 劳动生产率 occur in 1, 2, 6 and 17 Cards of other books, and none of these Cards is a Finding Card or a model estimate.
+- Pairs surveyed 0, judged 0, written 0. The judged record was not changed (no apply).
+
+### Comparison with 7\|a
+
+The skill pairs an empirical estimate with the estimates of other empirical models and with the Finding Cards of other books. A formal model's results are not on its other side, so the test of the imported predictions (7\|a\|a\|6\|c, 7\|a\|a\|7\|a) is not judged here. That relation stays as the Stage 4 **引入** lines and the `检验 [[7|a]]` line of the head.
+
+### Gate
+
+- `dialogue.mjs check`: `{"broken":0,"proposed_again":0,"ok":true}`.
+- No judged pair, so no **对应** line to check.
+- `check-settings.mjs`: `settings: the data tree and the specification ladder are in place`.
+- `check-model.mjs`: 92 members (8 main, 79 side, 2 shared, 3 off), loose 0, `self_sufficient` true.
+- `list_broken_links` (agent): empty.
+- Term relink: `{"rounds":0,"ok":true,"cards_changed":0,"links_added":0,"cards_refused":0}`.
+
+### Open
+
+1. bergin2026exchange has no zt-term-sync Links. Its Terms (资本管制, 储备积累, 劳动生产率, 企业动态, 扩展边际, 集约边际) link to no other book's Term Card, so the survey cannot find a cross-book pair. After a zt-term-sync pass on the economics shelf, run the survey again. The two hand-written cross-book `对照` lines of the head (goldsmithpinkham2020bartik/7\|a, velic2025inflation/3\|d\|f\|b\|a) stay as they are.
+2. goldsmithpinkham2020bartik/8\|a also opens with an inline `问题：`. Its earlier dialogue ran with the old `section()` and had no estimand Terms. A second survey with the fixed script can show pairs that it missed.
+3. The `section()` fix is in the repository and installed, uncommitted, as the stage pass doc is.
+4. No `card_locked` and no read-view error occurred. assenza2026louder ran on the box throughout.
