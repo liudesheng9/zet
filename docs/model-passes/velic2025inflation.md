@@ -51,3 +51,29 @@ Backup: `D:\zt\backups\zt-before-velic2025inflation-restructure.sqlite3` (integr
 Gate: `check-model` self_sufficient true and loose 0 on all four; `check-network` clean on all four; `check-premises` none on 3|a and 7|a; 3 hits on 8|a and 4 on 10|a, all pointers, not uses (the 变量表 row "由式 (2) 换算", formula (2) itself in a measure card, "式 (4) 用这个变换", and table column numbers "第 (1) 列" read as equation numbers) — they stay; `check-settings` clean on all four; Term relink ok (22 Cards, 56 links); `list_broken_links` empty.
 
 Open: chapter facets on 7|a, 8|a, 10|a keep short names (titles state the claims); 9|a|a|1 has no **直觉** (concept model, not in scope).
+
+## Stage 4: import + explanations
+
+Backup: `D:\zt\backups\zt-before-velic2025inflation-imports.sqlite3` (integrity ok). One subagent (Opus, effort medium) under `zt-model-import`, order 3|a, 7|a, 8|a, 10|a, 9|a.
+
+| Model | Line | Reason |
+|---|---|---|
+| 3\|a | — | home model; lends its blocks |
+| 7\|a | — | lends its data block to 10\|a |
+| 8\|a | 整块 [[3\|a]] | the estimation imports the theory it estimates; 假说 8\|a\|a\|1 rests on 3\|a\|a\|1\|a (effective adjustment coefficient), 规格：基准 rests on 3\|a\|a (the special case φ^i=0 of (1)), 测量 8\|a\|a\|b rests on 3\|a\|a\|b (假设 1, form of F̃) |
+| 10\|a | 整块 [[3\|a\|a\|2\|b]] (kept) | the two-channel result it tests |
+| 10\|a | 整块 [[7\|a\|a]] | the shared 38-country panel and covariates; 10\|a's data card rests on it |
+| 10\|a | 整块 [[8\|a\|a\|5\|a]] | Table 3 φ* estimates used as data in Tables 7–8; 测量 10\|a\|a\|b rests on it and on 7\|a\|a\|d |
+| 10\|a | 单卡 [[9\|a\|a\|1]] | the triad prediction, tested only; 假说 10\|a\|a\|1 now rests on 3\|a\|a\|2\|b and 9\|a\|a\|1; its copied §2.4 openness paragraph replaced by a 参照 to the imported example 3\|a\|a\|2\|b\|a |
+| 9\|a | 单卡 → 整块 [[3\|a\|a\|d]] | upgraded by the plan; nothing else in 9\|a changed |
+
+No cross-book import (the survey found no borrowed block in another book). Notation: 8\|a's 变量表 adds `沿用 [[3|a|a|a]] 的 ESTAR 符号` and notes the two meanings of `m`.
+
+Explain job: one part (3\|a\|a\|1\|b\|a), one DeepSeek conversation (deepseek-flash, high), 1 applied, 0 refused; `explain.mjs finish` exit 0; conversation deleted, workspace removed.
+
+Gate: `imports.mjs check` exit 0 on 3|a, 7|a, 8|a, 9|a, 10|a; `self_sufficient: true` on all five (10|a tolerates 9|a|a behind its 单卡 import; 9|a tolerates 3|a|a|1|b behind a false share); `check-settings` clean on 3|a, 7|a, 8|a, 10|a; Term relink ok (2 Cards, 2 links); `list_broken_links` empty.
+
+Open:
+1. **zt checker bug** (`src/model/empirical.rs`, `variable_uncovered`): the check reads the first 变量表 among all members, imported cards included. With `整块 [[7|a|a]]` on 8|a it read 7|a|a|a and raised false `uncovered` faults, so that import was backed out (8|a|a's 起点 back to 原始设定); 10|a passes only because "10|" sorts before "7|". Once fixed and deployed, 8|a takes `整块 [[7|a|a]]` like 10|a.
+2. 9|a's Model Card keeps the false share `对应 [[3|a|a|2]]` (concept model left as is).
+3. Sample start differs: 8|a's data card 1996:01, 7|a|a 1996:02.
