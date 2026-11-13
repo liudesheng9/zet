@@ -177,3 +177,41 @@ Main line: 数据 `6|a|a` → 假说 `|1` → 设计 `|2` → 规格：基准 `|
 2. 7\|a's chapter 1 keeps 机制/结论 facets (intuition chapter); 第 5 章's `推导：非贸易品定价 (25)` stands alone under the chapter (it ends in no result of its own).
 3. 6\|a's limits cards still overlap in part (上市缺口 in 5\|f\|a, 5\|g, 6\|j; sample end in d\|a and 6\|j). The 6\|a chapter cards still say `本模型检验 …`.
 4. Tree unlocked throughout; no `card_locked` met. assenza2026louder ran on the box at the same time; no read-view error occurred.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-13, live box, under `zt-model-import` steps 1–8, done in the main thread by scripts (one DeepSeek job, for the explanation refresh). Backup: `D:\zt\backups\zt-before-bergin2026exchange-imports.sqlite3`. No display formula, equation number or estimate changed.
+
+### 7\|a (formal)
+
+- `imports.mjs check` exit 0 before and after; `plan`: `nothing to import`. No import was written. The model reads in itself: no part rests on another model's part, and the cross-book Links (atkinson2015lectures, acemoglu2010labor, ebrill2001modern) are comparisons (`对应`, `类比`, `对照`) in chapter cards, not premises. The CES goods block, the household and the entry block are the paper's own derivations; no other book's model holds a block that 7\|a restates, so no copy was found.
+- Tolerated 0, false shares 0. 7\|a now lends two Cards to 6\|a (`lent`: 7\|a\|a\|6\|c, 7\|a\|a\|7\|a).
+
+### 6\|a (empirical)
+
+- The hypothesis `6|a|a|1` named the theory with `参照` Links only (to the Model Card 7\|a and to the chapter cards 7\|a\|a\|6, 7\|a\|a\|7), so `plan` found nothing. The hypothesis now rests on the two results it tests (`依赖`, replacing `参照 [[7|a]]` and the two chapter `参照` sentences); its sign statements and formulas are unchanged; `参照 [[7|a|a|1]]` (the verbal chapter) stays as a comparison.
+- `plan` then proposed, and `apply` wrote, two `**引入**` lines (made before **结构**); the text after `：` was then reworded to say what the test uses:
+  - `单卡 [[bergin2026exchange/7|a|a|6|c]]`: 假说检验的预测之一，有限规划期下储备购买引致本国企业进入.
+  - `单卡 [[bergin2026exchange/7|a|a|7|a]]`: 假说检验的预测之二，本国企业进入压低制造业价格指数，提高制造业劳动生产率.
+  They stay `单卡` (a test takes the prediction, not its proof); `plan` proposes no upgrade. Tolerated 0 → 3 (7\|a\|a\|6\|c\|a, 7\|a\|a\|4\|b, 7\|a\|a\|h stay in 7\|a), as the skill expects for a tested prediction.
+- Copy advice left as comparisons: `6|a|a|1` ~ `7|a|a|1` (the hypothesis compares the verbal chapter; it restates nothing) and `6|a|a|5` ~ `7|a|a|6` (chapter 2's `对应`/`对照` lines to the theory chapters). The Model Card's **关联** line `检验 [[7|a]] 的预测` is a Link to a whole Model Card, not a false share (false shares 0). The cross-book `对照` lines to goldsmithpinkham2020bartik/7\|a and velic2025inflation/3\|d\|f\|b\|a and the `对应` to becker2025division/2\|g\|f stay comparisons for the evidence dialogue.
+- No data, measure or instrument is shared with another book's model, so no data import; no false `variable_uncovered` fault arose (zt 0.62.2).
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan`: 7\|a 7 Derivation parts in 1 job; 6\|a `nothing to explain`.
+- One DeepSeek conversation (`opencode-go/deepseek-v4.1-flash`, effort high, the box's drive model; OpenCode Go Account 2, 54 requests, 433 s, context 137k of 1M): answer `{"done":7,"blocked":0}`. Cost: OpenCode Go subscription, the Harness ledger books 0 CNY for the source (no per-job token split is available; the day ledger is shared with the assenza2026louder run). Conversation deleted, workspace removed.
+- `apply`: applied 7, refused 0, blocked 0, no follow-up job. `finish`: 7 parts explained (7\|a\|a\|6\|a\|a, 6\|a\|a\|1, 6\|a\|a\|2, 6\|b\|a, 6\|b\|a\|1, 9\|a\|a, 9\|a\|a\|1), Term links changed in 7 Cards, second plan 0, left 0, refused 0. A later `plan` on 7\|a finds nothing.
+
+### Gate
+
+- `imports.mjs check`: exit 0 for both. `get_model`: 7\|a `self_sufficient` true (82 parts, no fault); 6\|a `self_sufficient` true (92 members: 90 own + 2 shared, no fault).
+- `check-settings.mjs`: 7\|a `settings: all in the setting part, as a dependency tree` (advice: two `uses an assumption` lines on 7\|a\|a\|4\|b\|a and 7\|a\|a\|6\|a\|a, the latter in the refreshed 说明); 6\|a `settings: the data tree and the specification ladder are in place`.
+- `check-model.mjs`: 7\|a 82 members (10 main, 72 side), loose 0, self_sufficient true; 6\|a 92 members (8 main, 79 side, 2 shared, 3 off), loose 0, self_sufficient true.
+- `list_broken_links` (agent): empty. Term relink: `{"rounds":1,"ok":true,"cards_changed":2,"links_added":8,"cards_refused":0,"links_repaired":0}`; the import check and `get_model` were rerun after it and stay clean.
+
+### Open
+
+1. The two `uses an assumption` advice lines of `check-settings` on 7\|a (the T→∞ remark in 7\|a\|a\|4\|b\|a; the reading of (29) in the refreshed 7\|a\|a\|6\|a\|a) are advice, not faults; not changed.
+2. 6\|a\|a\|5 (第 2 章) still points to the theory chapters 7\|a\|a\|6 and 7\|a\|a\|7 as comparisons; the evidence dialogue decides whether its estimates `印证` the imported predictions.
+3. No `card_locked` and no read-view error met; assenza2026louder ran on the box throughout.
