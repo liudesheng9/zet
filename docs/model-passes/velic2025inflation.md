@@ -24,3 +24,16 @@ Five models. Method: `fold.mjs` (the goldsmithpinkham2020bartik session script: 
 Gate: survey lists exactly 3\|a (formal, 12 parts), 7\|a (empirical, 27), 8\|a (empirical, 43), 9\|a (concept, 5 incl. one import), 10\|a (empirical, 120); `list_broken_links` empty; `check-model.mjs`: every former head is a part; the only faults are the `unanchored` new chapter cards (3\|a\|b\|7, 10\|a\|a\|9, 10\|a\|a\|10), left to the restructure. Term relink: 0 Cards changed.
 
 Note: 10\|a now holds two parallel builds of the same estimation (former 4\|a's specification ladder and estimates duplicate 10\|a's own). The settings and restructure passes merge them.
+
+## Stage 2: settings (strict)
+
+Backup: `D:\zt\backups\zt-before-velic2025inflation-settings.sqlite3` (integrity ok). Done by one subagent (Opus, effort medium) under `zt-model-settings`, model by model in book order; 9|a (concept, 4 own parts) untouched.
+
+- **3|a (formal)**: setting card moved from 3|a|b to `3|a|a` (Model Card Sides reordered; the footnote Idea card is now 3|a|b). Setting part: `3|a|a` 设定 gap y=π−π* and ESTAR (1) (primitive) → `|a` 符号表与读法 (new, 4 symbol blocks + term table) · `|b` 假设 1 exponential transition F̃ · `|c` 设定：冲击与估计 (composite shock, reversion to μ, country-by-country NLS) · `|d` 设定：持续性分解 (two adjustment coefficients and half-life (2); the former 4|b setting, from 3|a|b|7|a). Mechanism, conclusion and example of the §2.4 chapter stay in the chapter (3|a|a|6, 3|a|a|7, 3|a|a|7|a). Two duplicated symbol/term tables folded into the notation card; 起点 sections added.
+- **7|a (empirical)**: 起点 added to the measure and description cards 7|a|a|b–e.
+- **8|a (empirical)**: variants 3|a–3|g each have **相对基准的改动**; every 补写 sentence opens its 估计式; 起点 on 8|a|a|b–c; the δ row of the 变量表 names both meanings (lag coefficient, GIRF shock size).
+- **10|a (empirical, merged)**: the two parallel builds (the former 4|a §2.4 build and 10|a's own) merged. Data tree `10|a|a` → 变量表 (unused `$P$` row dropped), 测量 (with 起点, four covariate groups, 直觉), 样本 (Table 7/8 information sets, the former chapter setting 10|a|a|10|a). Design `10|a|a|2` with 假设 1–7 (6 and 7 new from the §2.4 build). One ladder of 12 specifications, `规格：基准` 10|a|a|3 on the main line. Chapters 1–6, the last renamed 第 6 章 two-channel identification (now 10|a|a|9). Deleted: the whole §2.4 duplicate build (42 Cards) after moving each card's unique text into its kept counterpart and re-pointing every Link. Kept as new cards: test 7|e (time-dummy column comparison) and estimate 8|j (GDP per capita and comovement). No 补写 equation was needed (every specification already had one); two duplicate equations that differed in substance kept both forms (3|e Table 7 header form in **说明**; 3|f indexed system as main 估计式).
+
+Gate: `check-settings.mjs` clean on 3|a, 7|a, 8|a, 10|a; `check-model` 10|a `self_sufficient: true`; `list_broken_links` empty; Term relink ok (11 Cards, 36 links added).
+
+Open: §2.4 says the observation unit is country-month, the kept data card country-year (both recorded in the data card); the two builds assigned Table 5 columns (3), (5)–(8) differently (kept list stands, the §2.4 assignment recorded in 10|a|a|4|b); 7|a and 8|a have 2 and 1 loose parts.
