@@ -90,3 +90,19 @@ Backup: `D:\zt\backups\zt-before-velic2025inflation-illustrate.sqlite3` (integri
 - **直觉** (是什么/为什么需要/怎样进入模型) rewritten on all four setting cards (the old ones named facets that no longer exist); the model has no 定义 part.
 
 Gate: `verify.mjs` 5 charts light and dark, lint 0, no card without a figure or a full 直觉; second apply run `same` on all five Cards; check-settings, check-model (self_sufficient, loose 0), check-network and check-premises clean; Term relink ok (2 Cards, 2 links); `list_broken_links` empty. Two older R3 faults (semicolons in 3|a's 来源 line and in 3|a|a|d's 说明, which also named the old facets 构件卡/结果卡) fixed by hand afterwards.
+
+## Stage 6: evidence dialogue (empirical models 7|a, 8|a, 10|a)
+
+Backup: `D:\zt\backups\zt-before-velic2025inflation-dialogue.sqlite3` (integrity ok). One subagent (Opus, effort medium) under `zt-evidence-dialogue`.
+
+| Model | Pairs surveyed | Written | Rejected |
+|---|---|---|---|
+| 7\|a | 72 (44 vs 8\|a, 28 vs 10\|a) | 1: `7|a|a|3|f` ↔ `8|a|a|4|c` **印证** (Belgium, mean absolute change in the high-gap regime m_H = 0.022, the same Table 2 row) | 71 different estimands (a country correlation or regime mean against φ*, a half-life or a panel coefficient); one borderline (p4: `7|a|a|3|g` Belgium m_L 0.005 against `8|a|a|4|c`, judged false and kept) |
+| 8\|a | 33 (8 vs `7|a|a|3|e`, 25 vs 10\|a) | 0 | 33 different estimands |
+| 10\|a | 13 (all vs `7|a|a|3|e`) | 0 | 13 different estimands (a covariate coefficient against the overall comovement level) |
+
+No pair to another book or to a Finding Card was proposed. DeepSeek: 3 conversations (one per model, deepseek-official/deepseek-flash, effort high — the dialogue script's own source, not OpenCode Go), 11 messages, 118 pairs judged, all 3 conversations deleted; cost not separable from the day ledger (about 0.27 CNY at the pilot rate of 0.0023 CNY a pair).
+
+Gate: `dialogue.mjs check` clean on 7|a, 8|a, 10|a (broken 0, proposed_again 0); check-settings clean on all three; Term relink ok (0 Cards; the first run's empty "plan failed" was a read glitch, the retry clean); `list_broken_links` empty.
+
+Open: `7|a|a|3|f` and `8|a|a|4|c` restate the same Table 2 number in two models (the 印证 Link records it).
