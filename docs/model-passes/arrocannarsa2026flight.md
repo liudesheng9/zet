@@ -252,3 +252,67 @@ Main line unchanged: 数据 → 假说：下限分支 `|1` → 假说：储备�
 4. The setting card still carries fourteen settings (advice `wide`, stage 2 open item 2).
 5. The owner decision on merging the Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a stays open.
 6. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-14, live box, under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent; one DeepSeek job, for the explanation refresh). Backup: `D:\zt\backups\zt-before-arrocannarsa2026flight-imports.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok; drive D had 237 GB free). Text ran as `edit_card` calls (arrocannarsa2026flight Cards only, 5 Cards written by hand: 16\|a\|a\|1, 16\|a\|a\|2, 8\|a\|a\|b and the Model Cards 8\|a, 16\|a for the import-line wording). The Model Card rewording ran through a script that compared the display formulas and the backslash count before the write and read each Card back (`same`, backslashes 5 → 5 on 8\|a). After the pass a script compared the whole book with the backup: 891 Cards before and after, 1,390 display formulas identical, every `估计` value line identical; the only equation-number differences are `\quad (N)` references in the refreshed 思路/说明/解读 prose of the 19 explained parts, outside any display formula. A scan of every changed Card found no control character and no TeX command without its backslash. No `card_locked`, no `read_view_changed` and no failed batch occurred. Order: 2\|a, then 8\|a and 16\|a.
+
+Before any edit, `check` exited 0 and `plan` said `nothing to import` on all three heads: the two empirical models named the theory only with `参照` Links (16\|a\|a\|1 → chapter 10, 16\|a\|a\|2 → chapter 12) or in words (8\|a\|a\|b `按 (52) 式`).
+
+### 2\|a (formal)
+
+- No import. The model reads in itself; no part rests on another model's part. Tolerated 0, false shares 0. It now lends the definition block `2|a|a|7|a` to 8\|a and four result Cards to 16\|a (`lent`).
+- Cross-book copy advice judged by hand, both comparisons, not copies: `2|a|a|16` (第 16 章, the deterministic steady state, A.3) ~ gomezcram2026government/3\|i\|a\|5 (that model's linearized system and determinacy regions), joined only by the `跨书关联：对应` line `两处都在确定性稳态附近作一阶线性化`; `2|a|a|13|d|b` (the appendix B overview) ~ gomezcram2026government/3\|i\|a\|8 (A.2, regime loadings), joined only by `对应 … 两处都在附录里把线性化系统写成载荷递推`. The two models share a method, not a block: neither restates the other's setting, symbols or result. The advice stays in `check` output.
+- Stage-3 open item 2 (the B proofs of 命题 1–4 restate the main-text derivations step for step; the A.1 proof restates the derivation of (3)(4)): both proofs lie inside 2\|a, and an import from the model's own range is refused (`import_target`), so no import applies. `check` lists no copy for these pairs (it compares across models only). Decision: both proofs stay; the paper gives both, and each is filed as its own proof branch of the result. Whether one should cite the other step by step is a restructure matter, left open.
+
+### 8\|a (empirical: the convenience-yield measurement)
+
+- Decision: the measurement imports the theory block that defines the convenience yield; 2\|a's calibration does not import 8\|a's estimate. Reasons: (1) the measure `8|a|a|b` takes its object from the definition (52) (`作者按 (52) 式把两者相减`), so the definition is its premise, the case of a measure resting on the theory it measures; (2) 2\|a holds no parameter card for $\nu$: the model treats $\nu$ as a parameter ($0<\nu<1$), its propositions hold for any $\nu$, and the value 300 bp enters only as the author's rounded choice in chapter 7's summary and the examples, with a plain pointer `便利收益的测量见 [[8|a]]`; importing `8|a|a|3|d` would need a new setting card in a model whose settings are closed, and would make the two models rest on each other. The pointer in chapter 7 stays a reference.
+- `8|a|a|b` **起点**: `依赖 [[2|a|a|7|a]]：测量的对象是这张卡的定义 (52)，便利收益是两种债券利率之差。` (the duplicate `见 [[8|a|a]]` line dropped; the display formula unchanged).
+- Import: `plan` round 1 `单卡 [[2|a|a|7|a]]` (tolerated 0 → 1, `2|a|a|i`), round 2 upgraded it: `整块 [[arrocannarsa2026flight/2|a|a|7|a]]：测量对象的定义，便利收益 $\nu$ 是普通债券利率与政策利率之差 (52)，利差序列是它的观测对应物` (tolerated 1 → 0). The closure brings 11 setting Cards of 2\|a (`i`, `h`, `d|a`, `e|a`, `f`, `g`, `d`, `c`, `e`, the setting card, `b`): 28 members (16 own + 12 shared).
+- Symbols (step 6): the 变量表 `8|a|a|a` defines its observed $\nu_t$; `check-settings` finds no symbol uncovered, so no `沿用` line was added. No false `variable_uncovered` fault.
+
+### 16\|a (empirical: Table 6 against the four branches)
+
+- A test of the theory imports the predictions it tests, `单卡`. The two hypotheses now rest on the result Cards (the `参照` lines to the chapter cards were replaced; the `直觉` and prediction sentences unchanged):
+  - `16|a|a|1` (下限分支): `依赖 [[2|a|a|10|b]]`（政策利率在下限停留十三个季度）, `依赖 [[2|a|a|10|c]]`（非贸易产出下降 3.1%，非贸易品通胀下降 3.3 个百分点）, `依赖 [[2|a|a|10|d]]`（冲击当期升值 3.9%）, each `本假说检验的预测之…`.
+  - `16|a|a|2` (储备支持型): `依赖 [[2|a|a|12|b]]：本假说检验的预测，储备支持下政府外国资产上升，返还下政府外国资产不变。`
+- `plan` → `apply` wrote four `**引入**` lines (made before **结构**), then reworded to say what the test uses:
+  - `单卡 [[arrocannarsa2026flight/2|a|a|10|b]]：下限分支的预测之一，政策利率在下限停留十三个季度，对照表 6 的利率行`
+  - `单卡 [[arrocannarsa2026flight/2|a|a|10|c]]：下限分支的预测之二，非贸易产出与非贸易品通胀的下降，对照表 6 的产出行与通胀行`
+  - `单卡 [[arrocannarsa2026flight/2|a|a|10|d]]：下限分支的预测之三，冲击当期的升值，对照表 6 的升值行`
+  - `单卡 [[arrocannarsa2026flight/2|a|a|12|b]]：储备支持型分支的预测，只有储备支持下政府外国资产上升，对照表 6 的央行外币投资行`
+- They stay `单卡`; `plan` proposes no upgrade. Tolerated 0 → 2 (2\|a\|a\|10\|a, the solution method, and 2\|a\|a\|12\|a, 命题 3, stay in 2\|a), as the skill expects for a tested prediction. False shares 0. 44 members (40 own + 4 shared).
+- The copy advice `16|a|a|1` ~ `2|a|a|10` and `16|a|a|2` ~ `2|a|a|12` came from the `参照` lines and is gone. The Model Card's **关联** Links (`检验 [[13]]`, `对照 [[15]]`, to Literature section cards) and the cross-book `对照 [[becker2025division/5|b|b|8]]` are no false shares; they stay for the evidence dialogue.
+
+### Cross-book blocks
+
+`plan` proposed no cross-book line for any head, and no part of the three models rests on another book's Card. The cross-book Links (gomezcram2026government on chapters 16 and 13\|d\|b, assenza2026louder and velic2025inflation on chapter 10, atkinson2015lectures and bergin2026exchange on chapter 12, atkinson2015lectures on chapter 7, becker2025division on 16\|a) are comparisons (`对应`, `对照`), kept.
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan`: 2\|a 19 Derivation parts in 1 job; 8\|a and 16\|a `nothing to explain`.
+- One DeepSeek conversation (`opencode-go/deepseek-v4.1-flash`, effort high, the box's drive model; OpenCode Go account Primary, 24 requests, 434 s, 1 turn, context 143k of 1M; tools: 21 pwsh, 3 read, 2 write of which 1 failed and was retried; only `out/explain-01.json` was written in the work folder): answer `{"done":19,"blocked":0}`. Cost: OpenCode Go subscription, the Harness ledger books 0 CNY for the source (the 2026-11-14 opencode-go day line went from 3,296 to 3,370 calls during the job but is shared with the IMEN1 queue, so no per-job token split). Conversation a27aade5 deleted, workspace removed. Conversation 3b1d187b was not touched.
+- `apply`: `applied 19, refused 0, blocked 0, follow-up jobs 0`. `finish`: `explained 19 part(s); Term links changed 19 Card(s), second plan 0; left 0; refused 0` (exit 0); parts 2\|a\|a\|4\|a\|a and \|1–\|5 (UIP chain (18)–(23)), 5\|a\|a and \|1–\|4 (home equilibrium (29)–(35)), 5\|b\|a and \|1–\|3 (flight entry and absorption (36)–(38)), 6\|b\|a and \|1–\|3 (linear price and aggregation relations (44)–(51)).
+- Assumption Links: the refreshed text of the 19 parts names no `假设` and no (H\_n) label, and `check-settings` reports no `cite` fault, so no Link had to be added by hand. The stage-3 roadmap hits of `4|a|a|1` (4 `check-premises` hits) went with the refresh: 39 → 35 hits.
+
+### Gate
+
+- `imports.mjs check`: exit 0 on 2\|a, 8\|a, 16\|a; `plan`: `nothing to import` on all three (2\|a keeps the two cross-book copy advice lines above).
+- `get_model`: `self_sufficient: true` on all three; false shares 0 everywhere; tolerated 0 on 2\|a and 8\|a, 2 on 16\|a (above); 8\|a imports `整块 2|a|a|7|a` (12 shared members), 16\|a four `单卡` lines; 2\|a lends to both.
+- `explain.mjs finish`: exit 0 on all three (`left 0; refused 0`; 8\|a and 16\|a `explained 0 part(s)`).
+- `check-model.mjs`: 2\|a 256 members `{"main":20,"side":236}`, loose 0, self_sufficient true; 8\|a 28 `{"shared":12,"main":4,"side":12}`, loose 0, self_sufficient true; 16\|a 44 `{"main":8,"side":32,"shared":4}`, loose 0, self_sufficient true.
+- `check-network.mjs`: `network: clean` on all three (advice only: 第 2 章 of 2\|a has no `结果：` card, as at stage 3).
+- `check-premises.mjs`: 16\|a `premises: none used before their card`; 2\|a 35 hits, all the stage-3 pointers (setting-part 直觉/说明 lines, `15|b|a|1`, `1|a|a|a|5`, `6|a`, `7|b|a|2`, `8|d|a`); 8\|a 1 hit, the same stage-3 pointer in the imported closure Card `2|a|a|c` (`怎样进入模型：…家庭预算约束 (2) …定价条件 (7)`), kept.
+- `check-settings.mjs`: 2\|a `settings: all in the setting part, as a dependency tree` (advice only: 14 settings under the setting card; nine `uses an assumption` lines, unchanged); 8\|a and 16\|a `settings: the data tree and the specification ladder are in place`.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"links_added":7,"cards_refused":0,"cards_changed":3,"applied":true,"ok":true,"links_repaired":0,"rounds":1,"book":"arrocannarsa2026flight"}`. All checks above, `get_model` and the formula comparison with the backup were rerun after it and stay as listed.
+
+### Open
+
+1. The two cross-book copy advice lines on 2\|a (`2|a|a|16` ~ gomezcram2026government/3\|i\|a\|5, `2|a|a|13|d|b` ~ gomezcram2026government/3\|i\|a\|8) stay in `check` output; judged comparisons of method.
+2. The appendix B proofs of 命题 1–4 and the A.1 proof restate the main-text derivations step for step (stage-3 open item 2). Inside one model, so no import applies; both proofs stay. A later restructure may let the appendix proof cite the main-text steps.
+3. 8\|a's measure imports the definition block with its closure (11 setting Cards on the 共用 shelf). 2\|a's calibration value $\nu=300$ bp keeps a plain pointer to 8\|a in chapter 7; if the owner wants the calibration to rest on the estimate, 2\|a needs a parameter card for $\nu$ first.
+4. Stage-3 open items 1, 3 and 4 (result and derivation text not redrafted; the stale **分部** in 第 6 章; fourteen settings under the setting card) stay.
+5. The owner decision on merging the Event Cards stays open. Current addresses (found by their 2009-03-12 content): `arrocannarsa2026flight/16|a|7|a` (2009 年 3 月瑞士国家银行开始买入外汇) and `arrocannarsa2026flight/11|b|2|a|a` (2009 年瑞士国家银行首次外汇干预), both unchanged and untouched.
+6. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
