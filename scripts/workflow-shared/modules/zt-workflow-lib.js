@@ -121,6 +121,9 @@ function ztDriveLast(text) {
   // v15 (live run 2026-11-10, brandimarti2026reorganizing Link finish): the drive job dropped the name of the
   // line's first key, `{:true,"layer":…}`. Every step's line opens with `ok`, so only that key is put back.
   if (/^\{:(true|false)\s*[,}]/.test(last)) last = '{"ok"' + last.slice(1)
+  // v19 (live run 2026-11-13, ozhan2026monetary find models): the drive job doubled the closing quote of that same
+  // first key, `{"ok"":true,…}`. Only that key is repaired; the rest of the line is still read strictly.
+  if (/^\{"ok""\s*:/.test(last)) last = '{"ok":' + last.slice(last.indexOf(':') + 1)
   return !last.includes('"') && /[“”]/.test(last) ? last.replace(/[“”]/g, '"') : last
 }
 function ztDriveAnswer(text) {
@@ -166,6 +169,7 @@ function ztLockStop(where, refusal) {
 function ztDriveCommand(command) {
   return `现在就在 PowerShell 里原样运行下面这一条命令，不改写它，不运行别的命令。先运行，再回复：不要回复「我会运行」之类的计划或承诺，也不要提问。这条命令本身会写入、修改或删除文件、账本记录和会话，这正是这一步的任务：命令自己的写入是预期的，照常运行它，不需要先检查或确认。你自己不编辑、不创建、不删除任何文件。命令结束后，只回复它输出的最后一行：把那一行一字不改地复制过来，不要改写、缩写、翻译或补充任何字。那一行是一个紧凑的 JSON 对象，以 "ok" 开头。\n\n${command}`
 }
+// v19 also reads a line whose first key's closing quote was doubled (`{"ok"":true,…}`, ozhan2026monetary).
 // v19 (rotunno2026industrial resume, 2026-11-13): a drive job answered "我会完全按这条命令原样运行。" and ran nothing; its
 // manager, whose retry rule named only a failed or empty answer, ran the step itself through Bash. A promise, a plan
 // or a question is now an answer with no line: the job is told to run first, and the manager retries once and then

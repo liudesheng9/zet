@@ -1873,6 +1873,8 @@ function runtime(kind, opts = {}) {
           const rest = JSON.stringify({ ...value, ok: undefined }).slice(1)
           return { answer: `{:${value.ok === false ? 'false' : 'true'}${rest === '}' ? '}' : ',' + rest}`, session_id: session, ...recorded }
         }
+        // ozhan2026monetary (2026-11-13): the drive job doubled the closing quote of the first key: `{"ok"":true,…}`.
+        if (opts.driveOkQuoteDoubled && opts.driveOkQuoteDoubled.test(label)) return { answer: answer.replace(/^\{"ok":/, '{"ok"":'), session_id: session, ...recorded }
         if (opts.driveNoOk && opts.driveNoOk.test(label)) return { answer: JSON.stringify({ ...value, ok: undefined }), session_id: session, ...recorded }
         // hansen2021demand: a manager wrapped the line in a json code fence, or retyped its quotes as curly ones.
         if (opts.driveFenced && opts.driveFenced.test(label)) return { answer: '```json\n' + answer + '\n```', session_id: session, ...recorded }
@@ -3153,7 +3155,7 @@ for (const branch of ['fix', 'no_fix', 'conflict', 'unresolved']) {
   const fills = r.layerManagers.filter((m) => /^fill: /.test(m.label) && m.kind === 'content')
   check(fills.length > 0 && fills.every((m) => /\\models\\drive\\jobs\.m-[^\\]+\.json$/.test(m.file) && m.jobs.length > 0), `atkinson2015lectures: a fill line without its file runs the batch's own job file (${JSON.stringify(fills.map((m) => [m.file, m.jobs.length]))})`)
 }
-for (const [name, o] of [['a json code fence', { driveFenced: /^audit cards$/ }], ['curly quotes', { driveCurly: /^audit cards$/ }], ['a manager remark after it', { driveNote: /^audit cards$/ }], ['a label before it', { driveLabel: /^audit cards$/ }], ['a bare word before it', { driveWord: /^audit cards$/ }], ['the ok key name dropped', { driveOkKeyDropped: /^audit cards$/ }]]) {
+for (const [name, o] of [['a json code fence', { driveFenced: /^audit cards$/ }], ['curly quotes', { driveCurly: /^audit cards$/ }], ['a manager remark after it', { driveNote: /^audit cards$/ }], ['a label before it', { driveLabel: /^audit cards$/ }], ['a bare word before it', { driveWord: /^audit cards$/ }], ['the ok key name dropped', { driveOkKeyDropped: /^audit cards$/ }], ['the ok key quote doubled', { driveOkQuoteDoubled: /^audit cards$/ }]]) {
   // hansen2021demand: a manager retyped the step's line; the line is still the step's answer.
   const r = await run('econ', base, o)
   check(r.result.audit && r.result.audit.status === 'done', `hansen2021demand: a drive line in ${name} is read as the step's answer (${JSON.stringify(r.result.audit && { status: r.result.audit.status, error: r.result.audit.error })})`)
