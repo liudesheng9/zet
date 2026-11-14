@@ -254,3 +254,57 @@ Chapter 1 got **直觉**/**本章结果**/**承上启下** (anchored on the sett
 4. 3\|a: the legacy shares, the 共用前提 block and the Links to 2\|a's chapter 4 for the repression rule (stage 2 open item 6) are the import stage's.
 5. The setting card of 2\|a still carries twelve settings (advice `wide`, stage 2 open item 2).
 6. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-14, live box, under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent; one DeepSeek job, for the explanation refresh). A first attempt stopped before any write: the `VACUUM INTO` failed with `database or disk is full` (drive D had 0 GB free); the partial backup file was removed and the owner freed space (about 20 GB). Backup: `D:\zt\backups\zt-before-gomezcram2026government-imports.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Text ran as `edit_card` calls under `-Allow` (gomezcram2026government Cards only, 6 Cards written). Before each text write a script compared the display formulas, the equation numbers and the count of backslashes of the old and new bodies; no display formula, equation number or estimate changed, and every written Card was read back with its TeX intact. No `card_locked`, no `read_view_changed` and no failed batch occurred. Order: 2\|a, then 3\|a and 20\|a.
+
+### 2\|a (formal, baseline)
+
+- No import. The baseline takes the wedge Ω as a primitive: the portfolio constraint (3) (`2|a|a|c|a`) and the repression rule (20) (`2|a|a|e|e`) are its own settings, and no part rests on 3\|a or 20\|a. The two micro-foundations explain where Ω comes from; a micro-foundation is borrowed by the model it founds, not the reverse, so 2\|a imports nothing from them (the fold decision, stage 1). `check` exit 0, `plan` `nothing to import`, tolerated 0, false shares 0.
+- Copy advice judged by hand: `2|a|a|3` (第 3 章, the policy block) ~ `20|a|a|1` (20\|a's verbal QE chapter). Not a copy: the policy block states the Taylor rule (13), the tax rule (14), the spending process (15), the budget constraint (16)–(18) and the price equation (19); its only tie to the QE chapter is the comparison line `对应 [[20|a|a|1]]：量化宽松把中介约束写成时变抑制规则` in **关联**. It stays a comparison; the advice remains in `check` output.
+- Stage-3 open item 2 (chapter 13 restates the ψ→∞ utility and the SDF derivation of chapter 2) is inside one model, so no import applies (`import_target` forbids importing from the model's own range); left open.
+- 2\|a now lends `2|a|a|2|a` (with its closure) to 3\|a (`lent`).
+
+### 3\|a (formal, micro-foundation of the wedge)
+
+- Kept: `整块 [[gomezcram2026government/2|a|a|2|a]]：约束 (3)、乘子与楔子 (6)、定价方程 (7)` (written in the fold/settings passes from the old （共用） lines). Its closure brings the setting card 2\|a\|a, the budget constraint 2\|a\|a\|c and the constraint (3) 2\|a\|a\|c\|a, and the proof chain 2\|a\|a\|2\|a\|a → \|a\|1 (6 shared members). The setting card rests on the result; the closed-form step `3|a|a|1|a|a|1` rests on the wedge definition (6) in `2|a|a|2|a|a|1`.
+- The two remaining legacy shares were false shares (comparisons on the Model Card; no part rests on either), so `plan`'s two `整块` proposals were not applied:
+  - `2|a|a|4` (第 4 章, equilibrium): the Model Card named it in **概要** and **关联** for the repression rule. Now `并映射到基准模型的抑制规则 (20)` and `对应 [[2|a]] 的约束 (3)、楔子 (6) 与抑制规则 (20)`. The result card `3|a|a|1|a` pointed twice to chapter 4 for the rule; it now names the rule's setting card: `这个时变楔子映射到基准模型的抑制规则 (20)，见 [[2|a|a|e|e]]。抑制规则本身由那张设定卡给出，本卡不重复。` (stage 2 open item 6, stage 3 open item 4).
+  - `20|a|a|1` (20\|a's verbal chapter): a comparison of one micro-foundation with another. **关联** now reads `对应 [[20|a]]（第 1 章文字版本与附录 C.1）的量化宽松中介抵押约束`.
+- Tolerated 4 → 0 (the four were premises of the two false shares), false shares 0, legacy shares 2 → 0. Symbols (step 6): 3\|a has its own notation card (`3|a|a|a`, 14 rows); `check-settings` finds no symbol of the imported block uncovered, so no `沿用` line was needed.
+
+### 20\|a (formal, QE intermediary model)
+
+- No import. The model defines Ω itself in its derivation (`20|a|a|2|a|a|1` step 1, the ratio of the bond price to its discounted payoff, noted as equivalent to (7)) and rests on no part of 2\|a; the Model Card says `抑制楔子的定义式 (6) 与定价式 (7) 在 [[2|a]] 中给出，本模型不重述` as a plain reference.
+- Two false shares removed from **关联**: `对照 [[2|a|a|1]]：该模型把抑制楔子当政策参数……` and `参照 [[2|a|a|3]]：该政策块给出模型闭合用的政策规则` were folded into the existing whole-model line: `对照 [[2|a]]：抑制楔子与政府债券定价由该模型给出，它把楔子当政策参数（第 1 章），用政策块（第 3 章）的规则闭合模型；本模型只补金融中介的摩擦，给出楔子的来源。` Tolerated 4 → 0, false shares 2 → 0.
+
+### Cross-book blocks
+
+`plan` proposed no cross-book line for any head, and no part of the three models rests on another book's Card. The cross-book Links (assenza2026louder/5\|b\|e\|c\|1 on the policy block, bergin2026exchange/5\|f and ozhan2026monetary/27\|a on chapter 4, atkinson2015lectures/18\|c\|c\|1 on 20\|a's chapter 1) are comparisons (`对照`, `对应`, `类比`), kept as they are.
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan`: 2\|a 4 Derivation parts in 1 job; 3\|a and 20\|a `nothing to explain`.
+- One DeepSeek conversation (`opencode-go/deepseek-v4.1-flash`, effort high, the box's drive model; OpenCode Go account Primary, 3 requests, 91 s, 1 turn, context 57k of 1M; tools: 1 pwsh, 1 write, only `out/explain-01.json` written): answer `{"done":4,"blocked":0}`. Cost: OpenCode Go subscription, the Harness ledger books 0 CNY for the source (the 2026-11-14 opencode-go day line went from 1,123 to 1,162 calls during the job but is shared with the IMEN1 queue, so no per-job token split). Conversation adc28d26 deleted, workspace removed.
+- `apply`: `applied 4, refused 0, blocked 0, follow-up jobs 0`. `finish`: `explained 4 part(s); Term links changed 0 Card(s), second plan 0; left 0; refused 0` (exit 0); parts `2|a|a|11|a|a`, `11|a|a|1` (B.2 continuum paths) and `2|a|a|12|b|b|a`, `12|b|b|a|1` (B.3: (A19) well defined).
+- The refreshed text named `假设 4` (`11|a|a|1` 解读) and `假设 5` (`12|b|b|a` 思路 and one step's 说明) without the Link; `check-settings` reported two `cite` faults. The bare names were replaced by `[[2|a|a|l]]` and `[[2|a|a|m|a]]` (text only, backslash count unchanged); the faults are gone, and a later `explain.mjs plan` and `finish` on 2\|a find nothing.
+
+### Gate
+
+- `imports.mjs check`: exit 0 on 2\|a, 3\|a, 20\|a; `plan`: `nothing to import` on all three (2\|a keeps the copy advice above).
+- `get_model`: `self_sufficient: true` on all three; tolerated 0 and false shares 0 everywhere; 3\|a imports `整块 2|a|a|2|a` (6 shared members); 2\|a lends it.
+- `explain.mjs finish`: exit 0 on all three (`explained 0 part(s); … left 0; refused 0` on the rerun).
+- `check-model.mjs`: 2\|a 144 members `{"main":14,"side":130}`, loose 0, self_sufficient true; 3\|a 14 `{"shared":6,"main":2,"side":6}`, loose 0 (was 1), self_sufficient true; 20\|a 14 `{"main":3,"side":10,"off":1}`, loose 0 (was 1), self_sufficient true.
+- `check-network.mjs`: `network: clean` on all three (advice only: chapter 1 of 2\|a and 20\|a has no `结果：` card, as at stage 3).
+- `check-settings.mjs`: `settings: all in the setting part, as a dependency tree` on all three (advice only: 2\|a 12 settings under the setting card; `uses an assumption` lines on 2\|a\|a\|12\|d\|a, 2\|a\|a\|13\|c\|a and 20\|a\|a\|2).
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"applied":false,"ok":true,"links_repaired":0,"links_added":0,"rounds":0,"cards_changed":0,"cards_refused":0,"book":"gomezcram2026government"}`. All checks above were rerun after it and stay as listed.
+
+### Open
+
+1. The copy advice `2|a|a|3` ~ `20|a|a|1` stays in `check` output; judged a comparison, not a copy.
+2. Chapter 13 (A.1) of 2\|a still restates the ψ→∞ utility and SDF derivation of chapter 2 (stage 3 open item 2); inside one model, so it is a matter for a later restructure, not an import.
+3. Stage-3 open items 1, 3 and 5 (result and derivation text not redrafted; `2|a|a|5|c` alone; twelve settings under the setting card) stay.
+4. The explanation job wrote assumption names without their Links; fixed by hand here. The explain prompt could ask for `[[…]]` in place of a bare `假设 N`.
+5. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
