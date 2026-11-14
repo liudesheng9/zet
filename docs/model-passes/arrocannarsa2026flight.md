@@ -486,11 +486,11 @@ Models (final addresses):
 - `arrocannarsa2026flight/5|c|a`, empirical (level 3): the Swiss franc convenience-yield measurement (was 8\|a), 28 members (12 imported); filed under the 4.2 head.
 - `arrocannarsa2026flight/6|f|a`, empirical (level 3): the Table 6 acute-phase comparison (was 16\|a), 44 members (4 imported); filed under the 5.6 head.
 
-Event Cards awaiting the owner's merge decision (both record the 2009-03-12 SNB FX intervention; not merged, not edited): `arrocannarsa2026flight/6|f|a|7|a` (was 16\|a\|7\|a, inside the 5.6 model) and `arrocannarsa2026flight/6|a|d|a|a` (was 11\|b\|2\|a\|a, under the 5.1 footnote card). Merge them? Still open.
+Event Cards awaiting the owner's merge decision (both record the 2009-03-12 SNB FX intervention; not merged, not edited): `arrocannarsa2026flight/6|f|a|7|a` (was 16\|a\|7\|a, inside the 5.6 model) and `arrocannarsa2026flight/6|a|d|a|a` (was 11\|b\|2\|a\|a, under the 5.1 footnote card). Owner decision 2026-11-14: leave both; they are not merged.
 
 All seven stages passed their gates. Open items across the sequence:
 
-1. The owner decision on merging the two Event Cards above (from the digest).
+1. Closed 2026-11-14: the owner decided to leave both Event Cards above as they are.
 2. The 34 zt-check faults in existing text of 2\|a (31 R3, 1 R4, 2 R20 advisory) and the 26 `check-premises` pointers predate stage 5 and were not changed (Stage 5).
 3. No cross-book evidence pair: survey 8\|a and 16\|a (now `5|c|a`, `6|f|a`) again after a zt-term-sync pass on the economics shelf; the `dialogue.mjs` Term widening also takes the book root (Stage 6).
 4. The causal figure of the Model Card reads small at 640 px; the digest chart 19\|c\|b (now inside 3\|e) keeps 9 px labels (Stage 5).
