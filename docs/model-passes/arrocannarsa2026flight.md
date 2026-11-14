@@ -402,3 +402,98 @@ All lines below are the reruns after the Term relink.
 3. Script observation, not changed: the survey's Term widening (`equiv` in `dialogue.mjs`) takes every non-Term Link of an estimand Term Card, so the book root `arrocannarsa2026flight` (from each Term Card's source line) appears in `estimand_terms`. It forms no pair (pairs match Term-link targets only, and no Card Term-links the book root), so it was left; a later fix can keep only Term Cards of other books.
 4. The owner decision on merging the Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a stays open; both were not touched.
 5. No `card_locked`, no `read_view_changed` and no failed read or write occurred. Other sessions wrote other books on the box throughout. Nothing committed (stage brief).
+
+## Stage 7: literature organize
+
+Date 2026-11-14, live box (owner's request), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, one structure batch through the skill's `zt.mjs`, `leads.mjs`, `check.mjs`, and small `edit_card` scripts for link fixes, titles, source lines, the root index and the structure card; session scratchpad `org/`). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-arrocannarsa2026flight-organize.sqlite3` (`VACUUM INTO`, 404 MB, `PRAGMA integrity_check` ok; drive D had 236 GB free). The structure batch was previewed first (complete true, refusals none, `links_that_will_break` empty, 891 Cards renamed) and committed under its plan hash. The tree went from 892 to 894 Cards (two new top Cards: 前置页 and the §5 summary). No Card was deleted, and no formula, equation number or estimate changed. Only Cards of arrocannarsa2026flight were written. No `card_locked`, no `read_view_changed` and no failed batch occurred; the tree was unlocked throughout. Other sessions wrote other books on the box.
+
+### Source divisions
+
+From `D:\zt-digest\arrocannarsa2026flight\book.zh.md`: the title page (title, author with unit, first version 2025-11, this version 2026-10-27, award footnote) and 摘要 (with JEL codes and keywords); 1 引言; 2 模型 (2.1 一般框架, 2.2 H 国, 2.3 F 国, 2.4 资产市场关系); 3 均衡 (3.1 对数线性化一般均衡); 4 校准 (4.1 稳态识别, 4.2 便利收益, 4.3 资产组合头寸, 4.4 其余参数, 4.5 冲击); 5 结果 (5.1–5.7); 6 结论; A 推导 (A.1, A.2, A.3); B 证明; C 结果 (C.1–C.8). The Markdown has no reference list and no third-level numbered division. The top line takes the numbered sections and the three appendices, with the front matter first.
+
+The digest had filed the paper as 28 group Cards, mostly one per subsection (old 3 = 2.3, old 4 = 2.4, old 6 = 3.1, old 8–10 = 4.2–4.4, old 12–17 = 5.2–5.7, old 20 = A.3, old 23–28 = C.3–C.8), with four crossers (old 2 = §2–2.2, old 7 = §4 + 4.1, old 11 = 4.5 + 5.1, old 19 = A.1 + A.2, old 22 = §C + C.1 + C.2), and the Term list, the Cited list and the structure Card under old 1 (引言).
+
+### Final tree (top line and divisions)
+
+```
+1   前置页 (new Card)                    a 结构卡 (old 1|e, rewritten)
+2   1 引言 (old 1, edited)               c §1 chain (old 1|c–1|c|12, events c|1|b, c|1|c) · d finding (old 1|d)
+3   2 模型 (old 2, rewritten)            a 2.1 (old 2|b–2|b|2) · b 2.2 (old 2|b|3–12) · c 2.3 (old 3) · d 2.4 (old 4)
+                                         e formal model (old 2|a)
+4   3 均衡 (old 5, rewritten)            b §3 notes (old 5|b–5|b|9) · c 3.1 (old 6)
+5   4 校准 (old 7, rewritten)            a §4 preamble (old 7|d–7|d|2)
+                                         b 4.1 (old 7|d|3–6; findings b|a old 7|b, b|3|a old 7|c)
+                                         c 4.2 (old 8; c|a empirical model old 8|a) · d 4.3 (old 9) · e 4.4 (old 10)
+                                         f 4.5 (old 11|b–11|b|1; finding f|1|a old 11|c)
+6   5 结果 (new summary)                 a 5.1 (old 11, rewritten; chain a|d old 11|b|2–9, event a|d|a|a)
+                                         b 5.2 (old 12) · c 5.3 (old 13) · d 5.4 (old 14) · e 5.5 (old 15)
+                                         f 5.6 (old 16; f|a empirical model old 16|a, event f|a|7|a) · g 5.7 (old 17)
+7   6 结论 (old 18, retitled)
+8   A 推导 (old 19, rewritten)           c A.1 (old 19|c chain) · d A.2 (old 19|d chain) · e A.3 (old 20)
+9   B 证明 (old 21)
+10  C 结果 (old 22, rewritten)           a §C preamble (old 22|a) · b C.1 (old 22|a|1–3; findings old 22|b–d)
+                                         c C.2 (old 22|a|4–8; findings old 22|e–i)
+                                         d C.3 (old 23) · e C.4 (old 24) · f C.5 (old 25) · g C.6 (old 26)
+                                         h C.7 (old 27) · i C.8 (old 28)
+11  术语表 (Term list, from 1|a)
+12  参考文献 (Cited list, from 1|b)
+```
+
+One structure batch (51 items: 2 creates, 45 moves, 6 reorders, 891 renamed), then `leads.mjs` (eight rewrites, no demote), then `edit_card` scripts.
+
+### Crossers and how each was settled
+
+- Old 1 held §1 (and named 摘要 in its index), the two lists and the structure Card. The lists went to the tail (`11`, `12`). A new 前置页 Card took the first place on the top line, with the structure Card under it (`1|a`). Old 1 is the §1 Card (`2`): retitled `1 引言：…`, its `§摘要` index line dropped, its position Links for §4 and §5 redirected to the new section summaries. 2\|c keeps its source line `§摘要、§1`: its text is the opening of §1.
+- Old 2 (§2–2.2) already introduced the model framework: rewritten as the §2 summary (`3`). Its chain was cut by source line into 2.1 (`3|a`, three Cards) and 2.2 (`3|b`, ten Cards); old 3 and old 4 moved under it as 2.3 and 2.4; the Model Card 2\|a became its last Side branch `3|e`.
+- Old 5 spoke for §3: rewritten as the §3 summary (`4`), with its §3 chain first and old 6 (3.1) after it.
+- Old 7 (§4 + 4.1) introduced the calibration: rewritten as the §4 summary (`5`). Its chain was cut into the §4 preamble (`5|a`, source line `§4`) and 4.1 (`5|b`, source line `§4.1`); the two 4.1 findings went under the notes that state them.
+- Old 11 (4.5 + 5.1): the 4.5 notes (old 11\|b, 11\|b\|1, two Cards and one finding) went under §4 as 4.5 (`5|f`); old 11, with eight 5.1 notes, is the 5.1 head (`6|a`), rewritten to speak for 5.1 only. §5 had no Card that spoke for it, so a new summary (`6`) heads 5.1–5.7.
+- Old 19 (A.1 + A.2) became the A summary (`8`) with old 20 (A.3) under it. Old 22 (§C + C.1 + C.2) became the C summary (`10`): its chain was cut into the §C preamble, C.1 and C.2, its findings went under C.1 and C.2, and old 23–28 moved under it.
+- Within 5.3, 5.5, C.5 and C.8 the reading notes now come before the Finding Cards (the digest had filed the findings first).
+- Links that a move made false were redirected (text unchanged otherwise): `3|c` (2.1/2.2 → `3|a`, `3|b`), `5|c`, `5|d`, `5|e` (4.1 → `5|b`; `5|e` also 4.5 → `5|f`), `3|e|a|16` (model part: 稳态锚 → `5|b`), `8|e` (A.2 → `8|d`, 3.1 → `4|c`, §4 → `5`), `8|e|b` (3.1 → `4|c`, a digest error that named the calibration group), `10|d`, `10|e`, `10|e|a`, `10|h` (C.1 → `10|b`, and C.2 → `10|c` in `10|d`), `5|f|1|a` (source line from the old 11 group to the book root, §4.5).
+
+Calls that could go the other way: the front matter as its own top Card written from the source (title page and 摘要), since no digest Card held the abstract; 2\|c (`§摘要、§1`) left in §1; old 2, old 7, old 19 and old 22 rewritten as summaries rather than demoted (each already introduced its whole division); 2.1 and 2.2 headed by their first reading notes (`3|a`, `3|b`), which keep their titles; 2\|a filed as the last Side branch of the §2 summary (it spans §2–§5 and A–C; its head's source line starts at §2, as gomezcram filed 2\|a); 8\|a under 4.2 and 16\|a under 5.6 by their source lines; the findings moved behind the notes in four divisions.
+
+### Summary leads and other text
+
+- Rewrites by `leads.mjs` (Term names turned into Term uses): `1` (前置页), `3` (2 模型), `4` (3 均衡), `5` (4 校准), `6` (5 结果), `6|a` (5.1), `8` (A 推导), `10` (C 结果). Each has the source's name and main claim as title, a paragraph that walks the subdivisions, `小节索引：`, `在全书中的位置：` and the source line. The old `对应` Links of old 5, old 7 and old 19 were kept. Formulas and equation numbers the old text carried are copied unchanged.
+- Division heads retitled with their section number: `3|c` (2.3), `3|d` (2.4), `5|c`–`5|e` (4.2–4.4, 4.4 drops 校准), `6|b`–`6|f` (5.2–5.6), `7` (6), `10|d`, `10|e`, `10|g`, `10|h` (C.3, C.4, C.6, C.7); `2` retitled `1 引言：…`. Source lines added to `3|c`, `5|d`, `5|e`, `6|c`, `6|f`, `10|d`, `10|e`, `10|g`, `10|h` (zt-check I3).
+- The root index lists the twelve top Cards. The structure Card `1|a` adds the 前置页 and §5 lines and lists the three models with their levels (its old model list named the chapters of 2\|a as models, stale since the fold); its events list was kept.
+- `zt-check --cards` on the root and the 30 written Cards: first run 16 faults (R2 ×2 in the root index; R4 and R2 ×2 in `1|a`; I3 ×10 on group heads without a source line; F2 and L1 on `5|f|1|a`), fixed once; second run `faults: 0`, exit 0.
+
+### Chart targets
+
+Backup: `D:\zt\backups\zt-before-arrocannarsa2026flight-chart-targets.sqlite3` (integrity ok). In `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\arrocannarsa2026flight-2_a.mjs` the `head` is now `arrocannarsa2026flight/3|e`, and the header comment names the new head and the old one; the module has no other hard-coded address (every target is built from `head`), and the file name stays. `apply.mjs --write`: `same` for all 38 Cards, `nothing to write`: zt had already rewritten every `data-zt` target with the moves. Gate: `verify.mjs --model arrocannarsa2026flight/3|e` (light and dark): `44 chart(s) in 257 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉` (exit 0); 0 dead targets (`dead-target` is a lint rule).
+
+### Gate
+
+- `check.mjs arrocannarsa2026flight` (against the last outline): top line 1 前置页 (2), 2 1 引言 (19), 3 2 模型 (284), 4 3 均衡 (22), 5 4 校准 (58), 6 5 结果 (142), 7 6 结论 (8), 8 A 推导 (16), 9 B 证明 (13), 10 C 结果 (98), 11 Term list (181), 12 Cited list (50); `no fault`. Against the start snapshot the only fault is `892 Cards before, 894 now` (the two new Cards); no whole unit changed size (2\|a 257, 8\|a 21, 16\|a 51, Term list 181, Cited list 50).
+- Source-line walk (322 Cards with a source line, whole units excluded): every Card under its own top division, and every second-level branch holds only its own section's label. No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- `check-model.mjs`: `3|e` `members 256 {"main":20,"side":236}`, `relations {"refers":221,"rests-on":430,"corresponds":28,"contrasts":11,"illustrates":20}; loose 0; self_sufficient true`; `5|c|a` `members 28 {"shared":12,"main":4,"side":12}`, `relations {"rests-on":24,"refers":26,"corresponds":1}; loose 0; self_sufficient true`; `6|f|a` `members 44 {"main":8,"side":32,"shared":4}`, `relations {"rests-on":26,"refers":76,"illustrates":8,"corresponds":1,"objects":1}; loose 0; self_sufficient true` (all as at stages 5–6).
+- `check-network.mjs`: `network: clean` on all three.
+- `check-settings.mjs`: `3|e` `settings: all in the setting part, as a dependency tree`; `5|c|a`, `6|f|a` `settings: the data tree and the specification ladder are in place`.
+- `imports.mjs check`: exit 0 on all three.
+- Term relink: `{"links_added":0,"links_repaired":0,"rounds":0,"ok":true,"applied":false,"cards_refused":0,"book":"arrocannarsa2026flight","cards_changed":0}` (`leads.mjs` had already turned the Term names of the new text into Term uses); `-PlanOnly`: `{"cards_refused":0,"cards_changed":0,"links_added":0,"rounds":0,"book":"arrocannarsa2026flight","applied":false,"ok":true,"links_repaired":0}`. No relink bug. The relink changed no Card, so the checks above stand after it.
+
+## Result
+
+Final top line: 前置页 · 1 引言 · 2 模型 · 3 均衡 · 4 校准 · 5 结果 · 6 结论 · A 推导 · B 证明 · C 结果 · 术语表 · 参考文献.
+
+Models (final addresses):
+
+- `arrocannarsa2026flight/3|e`, formal (level 2): the two-country flight-to-safety model (was 2\|a), 256 parts, setting card `3|e|a`, illustrated (44 charts); filed as the last Side branch of the §2 summary.
+- `arrocannarsa2026flight/5|c|a`, empirical (level 3): the Swiss franc convenience-yield measurement (was 8\|a), 28 members (12 imported); filed under the 4.2 head.
+- `arrocannarsa2026flight/6|f|a`, empirical (level 3): the Table 6 acute-phase comparison (was 16\|a), 44 members (4 imported); filed under the 5.6 head.
+
+Event Cards awaiting the owner's merge decision (both record the 2009-03-12 SNB FX intervention; not merged, not edited): `arrocannarsa2026flight/6|f|a|7|a` (was 16\|a\|7\|a, inside the 5.6 model) and `arrocannarsa2026flight/6|a|d|a|a` (was 11\|b\|2\|a\|a, under the 5.1 footnote card). Merge them? Still open.
+
+All seven stages passed their gates. Open items across the sequence:
+
+1. The owner decision on merging the two Event Cards above (from the digest).
+2. The 34 zt-check faults in existing text of 2\|a (31 R3, 1 R4, 2 R20 advisory) and the 26 `check-premises` pointers predate stage 5 and were not changed (Stage 5).
+3. No cross-book evidence pair: survey 8\|a and 16\|a (now `5|c|a`, `6|f|a`) again after a zt-term-sync pass on the economics shelf; the `dialogue.mjs` Term widening also takes the book root (Stage 6).
+4. The causal figure of the Model Card reads small at 640 px; the digest chart 19\|c\|b (now inside 3\|e) keeps 9 px labels (Stage 5).
+5. The illustrate module keeps its file name `arrocannarsa2026flight-2_a.mjs`; only `head` and the header comment changed (Stage 7).
+6. The front-matter Card `1` is written from the source's title page and 摘要, not from digest Cards (Stage 7).
+7. This pass doc is not committed (the stage brief said no commit).
