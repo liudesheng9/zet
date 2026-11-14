@@ -353,3 +353,61 @@ All lines below are the reruns after the Term relink.
 2. The R3 faults that `zt-check` reports on the written Cards (semicolons) are all in existing text: the 7\|a summary, 7\|a\|a (item 3 and **说明**), 7\|a\|a\|c **说明**, 7\|a\|a\|g item 3, 7\|a\|a\|h **起点**. They predate this pass and were not changed.
 3. The 8 remaining `check-premises` hits on 7\|a and 1 on 5\|a are the existing **说明** pointers listed at stage 3; none is in a figure or a 直觉 section.
 4. No `card_locked`, no `read_view_changed` and no failed write occurred. Other sessions wrote other books on the box throughout.
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-14, live box (owner's request), under `zt-evidence-dialogue` steps 1–5, done in one side session by scripts (`dialogue.mjs survey | apply | check`) and one DeepSeek judging conversation. No subagent ran. Backup: `D:\zt\backups\zt-before-assenza2026louder-dialogue.sqlite3` (`VACUUM INTO`, 396 MB, `PRAGMA integrity_check` ok). The Terms were relinked at the end of stage 5, so the survey ran without a first relink. Only the empirical models 4\|a, 6\|a and 6\|a\|28 took this pass; the formal models 5\|a and 7\|a are not on the dialogue's other side. Only Cards of assenza2026louder were written.
+
+### Survey
+
+The models were surveyed one at a time, each after the previous one was applied, so the judged record dropped the mirror pairs.
+
+- `survey 4|a`: 5 estimates of ours, 1,368 Cards of the other side, estimand Terms 沟通努力 (1\|a\|a), 词汇多样性 (1\|a\|h), 1\|a\|i, 1\|a\|e, 对数熵 (1\|a\|f). 88 pairs in 8 messages: the four descriptive estimates of Table 1 (4\|a\|a\|3\|b–e: mean log entropy 1.65 / 1.70 / 0.87, standard deviation 0.85) against each of 22 estimates of 6\|a and 6\|a\|28, all paired on the book's own Terms 沟通努力 and 对数熵.
+- `survey 6|a`: 13 estimates, 1,360 Cards, estimand Terms 1\|a\|a, 1\|a\|ci, 1\|a\|f. 47 pairs in 4 messages: 3 against 4\|a\|a\|4\|b (the entropy time series) and 44 between the US rule estimates (6\|a\|a\|4\|d, 4\|e, 6\|g–6\|j, 6\|m, 7\|a, 7\|b) and the five-country estimates (6\|a\|28\|a\|4\|b–f, 6\|a–6\|d).
+- `survey 6|a|28`: 9 estimates, 1,364 Cards, estimand Terms 1\|a\|b, 1\|a\|y, 1\|a\|f, 1\|a\|ci, 1\|a\|cv. 13 pairs in 2 messages (the Canadian ψr estimate 6\|a\|28\|a\|6\|d against the US estimates, the two ψΔs estimates against ρe).
+- **No cross-book pair.** As in bergin2026exchange, the survey pairs on shared Term addresses, widened only by zt-term-sync Links, and no Term Card of assenza2026louder links a Term Card of another book (checked on 沟通努力 1\|a\|a: no outbound or inbound Link from another book). A text search of the other books' Finding Cards and Model Cards confirms that the other side is thin for this estimand: no Finding Card names 央行沟通 or 熵; riboni2026presidential has 90 model parts and 20 Finding Cards that name the FOMC, but they estimate the policy stance of appointees (8\|a), not the communication effort; ozhan2026monetary, arrocannarsa2026flight and gomezcram2026government name the Taylor rule, which is the interest-rate rule, not the communication rule. No pair was forced.
+
+### Judging (DeepSeek)
+
+One conversation for the three surveys (the messages of 6\|a and 6\|a\|28 followed those of 4\|a in the same conversation, which kept the judge prompt as a cached prefix): `opencode-go/deepseek-v4.1-flash`, effort high (the box's drive model, as at stage 4), OpenCode Go account Primary (pinned), 14 requests, about 155 s of model time, context 149k of 1M at the end, no tool call. Cost: OpenCode Go subscription; the Harness ledger books 0 CNY for the source (the 2026-11-14 opencode-go day line is shared with other sessions, so there is no per-job token split). Conversation d1dc9c80 deleted, workspace removed.
+
+One answer was wrong and was judged again: 6\|a p5 (US ψy 6\|a\|a\|4\|e against euro-area ψπ 6\|a\|28\|a\|4\|b) first came back `same: true` with the euro-area ψy number of another card. Asked to read the pair again, the judge answered `same: false` (different coefficients); only the second answer went to `apply`. Every other answer was checked against its pair's two titles.
+
+### Pairs judged and written
+
+| Head | Pairs | Same estimand | Agree / disagree / not comparable | Links written |
+|---|---|---|---|---|
+| 4\|a | 88 | 0 | 0 / 0 / 0 | 0 |
+| 6\|a | 47 | 16 | 0 / 0 / 16 | 16 pairs, 32 lines (both sides agent) |
+| 6\|a\|28 | 13 | 0 | 0 / 0 / 0 | 0 |
+
+- 4\|a: the Table 1 moments of log entropy are levels of the text measure; every 6\|a and 6\|a\|28 estimate is a coefficient of the communication rule (ρe, π*, ψπ, ψy, ψΔs, ψr). Judged `same: false` throughout.
+- 6\|a: the 16 same-estimand pairs set a US coefficient beside the same coefficient in another central bank's rule. All are `对照` (not comparable: different sample, and for the robustness rows also a different measure). The judge wrote the Canadian ψy (+1.37 against the US's negative values) as `对照`, not `反驳`, because the samples differ; the book itself states the Canadian sign is the exception.
+- Pairs of different coefficients in the same rule (ψπ against ψy, ψr, ψΔs, π*), the decomposition 2.97 (7.04 − 4.07, 6\|a\|a\|7\|b) against any estimated coefficient, and the descriptive entropy series 4\|a\|a\|4\|b against any coefficient were judged `same: false` and wrote nothing.
+
+The written Links (`对照`, in the **对应** section of both estimates, reason sentence quoting only the two Cards' numbers):
+
+- ψπ, US against euro area 6\|a\|28\|a\|4\|b (3.82, s.e. 1.91): 6\|a\|a\|4\|d (7.04, s.e. 1.05), 6\|a\|a\|6\|g (CPI, 11.33), 6\|a\|a\|6\|j (Tealbook PCE, 8.48), 6\|a\|a\|6\|m (log length, 4.07).
+- ψπ, US against Japan 6\|a\|28\|a\|4\|d (7.16, s.e. 3.06): 6\|a\|a\|4\|d, 6\|a\|a\|6\|g, 6\|a\|a\|6\|j, 6\|a\|a\|6\|m.
+- ψy, US against euro area 6\|a\|28\|a\|4\|c (−0.27, s.e. 0.59): 6\|a\|a\|4\|e (−1.46, s.e. 0.68), 6\|a\|a\|6\|h (quadratic trend, −1.49), 6\|a\|a\|6\|i (k = q = 4, −1.43), 6\|a\|a\|7\|a (post-2008, −6.26).
+- ψy, US against Canada 6\|a\|28\|a\|4\|f (1.37, s.e. 0.58): 6\|a\|a\|4\|e, 6\|a\|a\|6\|h, 6\|a\|a\|6\|i, 6\|a\|a\|7\|a.
+
+`apply` lines: 4\|a `{"links":0,"written":0,"errors":0}`; 6\|a `{"links":16,"written":12,"errors":0}` (8 Cards of 6\|a, 4 of 6\|a\|28); 6\|a\|28 `{"links":0,"written":0,"errors":0}`. All 148 answered pairs are in the judged record (`~/.zt-evidence-dialogue/judged-default.jsonl`).
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `dialogue.mjs check`: 4\|a `{"broken":0,"proposed_again":0,"ok":true}`; 6\|a `{"broken":0,"proposed_again":0,"ok":true}`; 6\|a\|28 `{"broken":0,"proposed_again":0,"ok":true}` (exit 0 each).
+- Every same-estimand pair is written as `对照` in **对应** on both sides (32 lines read back from the box); no pair was judged `印证` or `反驳`.
+- `check-settings.mjs`: 4\|a, 6\|a, 6\|a\|28 `settings: the data tree and the specification ladder are in place`.
+- `check-model.mjs`: 4\|a `members 31; loose 0; self_sufficient true`; 6\|a `members 63 {"shared":11,"main":8,"side":44}; loose 0; self_sufficient true`; 6\|a\|28 `members 43 {"shared":11,"main":7,"side":25}; loose 0; self_sufficient true`. The new `对照` Links run between two models, so they do not appear among a model's internal relations.
+- `list_broken_links` (agent): `{"broken":[]}` before and after the relink.
+- Term relink: `{"book":"assenza2026louder","ok":true,"rounds":1,"cards_changed":10,"cards_refused":0,"links_repaired":0,"links_added":13,"applied":true}` (Term links in the new reason sentences); `-PlanOnly` afterwards: `cards_changed 0, rounds 0`.
+
+### Open
+
+1. No cross-book pair: assenza2026louder's Terms (沟通努力, 对数熵, 沟通规则, …) link to no Term Card of another book. After a zt-term-sync pass on the economics shelf, survey the three heads again; the judged record keeps the 148 pairs judged here from being paid for twice. The likeliest neighbour is riboni2026presidential (FOMC text measures), but its estimates found so far measure policy stance, not communication effort.
+2. The reverse lines on 6\|a\|28 read from the US side ("7.04 … 与 3.82"), as `apply` writes the judge's one reason sentence on both sides. Accepted: the numbers and the comparison are the same.
+3. The cross-book comparisons on the formal model 5\|a (Stage 4 Open 1: `对照 [[velic2025inflation/3|a]]`, the riboni2026presidential contrasts) are not this skill's pairs and stay as written.
+4. No script fault was found; no skill file changed. No `card_locked`, no `read_view_changed` and no failed write occurred. Other sessions wrote other books on the box throughout.
