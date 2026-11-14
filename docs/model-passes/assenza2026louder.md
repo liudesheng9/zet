@@ -138,3 +138,109 @@ The owner's rule of 2026-11-12 (formal estimating equations) requires every IV o
 - Not changed: the two baselines (6\|a\|a\|3, 6\|a\|28\|a\|3) already state both stages; 6\|a\|a\|3\|f\|a is a coefficient difference with no regression; the 4\|a specifications are descriptive and each already has its equation; 5\|a has no instruments.
 
 Gate after the addendum: `check-settings.mjs` reports `settings: the data tree and the specification ladder are in place` for 4\|a, 6\|a and 6\|a\|28; `list_broken_links` (agent) empty; term relink `{"links_repaired":0,"rounds":1,"book":"assenza2026louder","ok":true,"applied":true,"links_added":2,"cards_refused":0,"cards_changed":2}`.
+
+## Stage 3: restructure
+
+Date 2026-11-14, live box, under `zt-model-restructure`, done in one side session by scripts (no subagent, no DeepSeek job, so no DeepSeek cost; the chapter leads were written by hand). Backup: `D:\zt\backups\zt-before-assenza2026louder-restructure.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Moves ran as `apply_batch` tree batches (preview, then commit under the plan hash; `links_that_will_break` empty in every preview); text ran as `edit_card` calls under `-Allow`. Before each text write a script compared the display formulas and the equation numbers of the old and new bodies; no display formula and no equation number changed (the Model Card 7\|a lost its equation numbers only with its old **结构** and summary, which were rebuilt). No `card_locked` error, no `read_view_changed` and no failed batch occurred. The Literature tree went from 722 to 725 Cards (three new chapter cards: 5\|a\|a\|1, 7\|a\|a\|2, 7\|a\|a\|7). The setting parts kept their structure; the only edits there were two chapter numbers in text and the first-meeting column of seven notation rows (below).
+
+### 4\|a (empirical): the evidence spine
+
+Main line: 数据 `4|a|a` → 设计 `|1` → 规格：基准 `|2` → 第 1 章 声明熵的水平 `|3` (Table 1) → 第 2 章 季度变化序列 `|4` (Figure 1) → 第 3 章 识别检验 `|5`. The paper has no hypothesis here (measurement and description). Network: chapters 1–3 under the baseline specification.
+
+- The chapters were numbered 0–2; they are now 1–3 (facets, titles and the chapter numbers in the **承上启下** and `依赖` lines).
+- The two limits cards left the Model Card's side and went under what they limit: 熵只度量沟通供给 (former 4\|a\|b) → `4|a|a|5|c` under chapter 3; 非常规声明只有 14 份 (former 4\|a\|c) → `4|a|a|3|d|a` under the estimate of the mean for non-regular statements. Each got one plain reference line to that card, so loose fell from 2 to 0.
+- **直觉** leads added to the data, design and specification cards (one sentence each, prepended).
+
+### 5\|a (formal): the intuition spine
+
+```
+5|a|a  设定 (setting part as the settings pass left it)
+5|a|a|1  第 1 章：熵的变化按部分调整趋向目标值，长期停在合意的稳态值 (new)  ← 5|a|a|c, 5|a|a|d
+    a 推导：稳态 (former 5|a|a|1)
+        a 图示：部分调整路径
+```
+
+The steady-state derivation no longer stands alone on the main line: a new chapter card (facet `第 1 章：调整与稳态（§2.2）`, **直觉**/**本章结果**/**承上启下**, `依赖` the settings (3) and (4)) holds it as its Side branch. The chapter has no `结果：` card (advice only): the derivation is the whole result.
+
+### 6\|a (empirical): the evidence spine
+
+Main line unchanged: 数据 → 假说 `|1` → 设计 `|2` → 规格：基准 `|3` → 第 1 章 主要估计 `|4` → 第 2 章 识别检验 `|5` → 第 3 章 稳健性 `|6` → 第 4 章 异质性与机制 `|7`. Network: 1 → {3, 4}; 2 under the specification.
+
+- Limits cards moved under what they limit: 归一化 (former 6\|a\|b) → `6|a|a|4|c|a` under the estimate of the inflation anchor; 需求侧外部工具变量 (former 6\|a\|c) → `6|a|a|6|k|a` under the IV2 estimate. One plain reference line each; loose 2 → 0.
+- **直觉** leads added to the data, hypothesis, design and specification cards. Chapter 3's lead (18 characters) was lengthened to state what was re-estimated.
+
+### 6\|a\|28 (empirical): the evidence spine
+
+Main line unchanged: 数据 → 假说 `|1` → 设计 `|2` → 规格：基准 `|3` → 第 1 章 基准规则的跨国估计 `|4` → 第 2 章 识别检验 `|5` → 第 3 章 汇率与美国利率扩展 `|6`. Network: 1 → {2, 3}.
+
+- The limits card 跨国系数不可直接横比 (former 6\|a\|28\|b) → `6|a|28|a|4|g` under chapter 1, with one reference line.
+- **直觉** added to the data, hypothesis, design and specification cards; the three chapter cards had their opening sentence but no **直觉** heading, which was added.
+
+### 7\|a (formal, CRANK): the intuition spine
+
+```
+7|a|a  设定 (setting part as the settings pass left it)
+7|a|a|1  第 1 章：文字版本与直觉（引言）                 ← 设定, 7|a|a|b
+    a 机制 → a|1 结论 → a|1|a 例子 (unchanged)
+7|a|a|2  第 2 章：家庭的信号提取（§3.1.1） (new)         ← 7|a|a|c
+    a 结果：沟通质量的充分统计量 K   (proof a|a 先读基本面 (17) → a|a|1 再读信号 (18))
+    b 结果：引理 1 误差衰减更快      (proof b|a 逐冲击 (19) → 平稳先验方差 → 沟通前新息 → 误差分解 (20) → 引理一;  b|b 图示)
+7|a|a|3  第 3 章：厂商与定价（§3.1.2）                    ← 7|a|a|e
+    a 结果：静态定价条件 (22)        (proof a|a 需求 → 价格指数 → 边际成本 → 一阶条件 → 对称均衡;  a|b 图示)
+7|a|a|4  第 4 章：货币当局的两条规则（§3.1.3）            ← 7|a|a|f|a|a, f|a|b
+    a 结果：两条规则共用通胀目标     (proof a|a 沟通规则取对数 → 利率规则取对数)
+    b 对应：(24) 与第 2 节的符号约定
+7|a|a|5  第 5 章：不完全信息下的动态 IS 方程（§3.2）       ← 第 2 章, 7|a|a|g
+    a 定义：风险成分
+    b 结果：命题 1 风险即沟通 (27)(28)  (proof b|a 改写欧拉方程 → 式 (26) → 一阶近似)
+    c 结果：命题 2 动态 IS 方程 (29)    (proof c|a 代入)
+    d 结果：均值扭曲的两个成分          (proof d|a 分解)
+    e 结果：风险渠道刺激需求
+    f 局限：沟通有效性的来源与变体
+7|a|a|6  第 6 章：均衡动态（§3.3）                         ← 第 5 章, 第 3 章, 第 4 章
+    a 均衡系统 (30)–(33)
+    b 结果：利率与沟通可替代
+    c 结果：命题 3 贴现与复利          (proof c|a 改写沟通规则 → 简约式 (34) → Θ 的范围;  c|b 说明)
+    d 结果：命题 4 局部确定 (35)(36)   (proof d|a 纯前瞻产出方程 → 局部确定性条件;  d|b 例子)
+    e 结果：命题 5 产出分解 (37)–(39)  (proof e|a 定义 Δ, Δ_i → 闭式解 → 载荷)
+    f 结果：均值扭曲的消退 (43)        (proof f|a 脉冲响应 → 当期均值扭曲比 (44))
+    g 结果：推论 1 响应的符号
+    h 结果：推论 2 逆周期沟通          (h|a 例子)
+    i 结果：推论 3 响应的形状          (proof i|a 极值时点 (45))
+7|a|a|7  第 7 章：零利率下限（§3.3） (new)                 ← 第 6 章, 7|a|a|h
+    a 结果：零下限处的确定性 (47)      (proof a|a 零下限的确定性条件 (46) → 有效乘数的走廊;  a|b 例子)
+    b 结果：双重使命必要不充分 (48)    (proof b|a 产出敏感性的上界)
+```
+
+- The household and information derivations (former 7\|a\|a\|2–10) left the main line. A new chapter card `7|a|a|2` holds them as two results with their proof chains; it took the Model Card's old household-block 问题 and 概要 (with `本模型` → `本章` and the symbols written out in words). The later chapters renumbered 2–5 → 3–6 (facets and titles `第 k 章：…`; chapter 4's facet now names §3.1.3, the section its source line gives).
+- The §3.3 zero-lower-bound results (former 14\|a\|20–24) left chapter 5 for a new chapter `7|a|a|7`: chapter 6 already held 30 Cards, and the zero lower bound has its own setting variant `7|a|a|h`.
+- In every chapter the flat derivation chain was cut into results with their proof chains as Side branches (one batch of 42 tree items, 65 Cards renamed). Result facets read `结果：…` (18 Cards; the former `结果`, `命题`, `命题 1–5`, `引理`, `推论 1–3` facets; titles unchanged).
+- Decision on `均衡系统` (now `7|a|a|6|a`): it stays the first card of chapter 6, as the system every result of that chapter starts from, and keeps its facet and **直觉**. It no longer carries the chapter's chain: the results are Side branches of the chapter card beside it. It is no result of chapter 6 (it collects (30) from chapter 5, (31) from chapter 3 and (32)(33) from chapter 4), so it got no `结果：` facet.
+- Every chapter card got **直觉** (a lead of 20+ characters), **本章结果** (pointers `结果：[[…]]`) and **承上启下** with `依赖` lines to the earlier chapter or setting it builds on; the old text follows (`本模型`/`那一模型` → `本章`/`那一章` in the chapter cards). This anchored chapters 1–5 and 7. The two forward faults of chapter 4 (the chapter rested by `依赖` on its own result 4\|a and its correspondence 4\|b) were lines of the chapter's table of contents, not premises: the chapter card states the rules and does not use their log-linear form. They are now the **本章结果** lines `结果：[[4|a]]` and `旁注：[[4|b]]`; the chapter rests on the two rule settings it does use.
+- Chapter 1 rests on `7|a|a` as well as `7|a|a|b`, because `7|a|a|b` (原始设定) has no rests-on path to the setting card itself.
+- Hidden forward fault fixed by moving: the figure 图示：K 随噪声方差变化，以及误差两项此消彼长 (former 7\|a\|a\|4\|a) draws the two terms of the error (20), which the lemma's proof chain derives; it moved from under the result K to under the lemma (`7|a|a|2|b|b`).
+- With results now ahead of their proofs, `check-settings` found seven symbols first met in a result card. Each result card already defines its symbol ($1-\Gamma_i$, $\varrho_i$ in 2\|b; $\Lambda_\delta$ in 5\|c; $\mathcal M$ in 6\|d; $\zeta_i,\xi_i$ in 6\|e; $\mathcal R_i$ in 6\|f), except $\Upsilon$, for which 5\|b got one defining clause. The notation rows now name those result cards. The chapter 2 card writes the gain and the pre-communication belief in words, so $K$ and $m_t$ are still first met in the proof chain, as their rows say.
+- Chapter numbers in the setting part's text: the notation card's γ row (第 4 章 → 第 5 章) and the **说明** of `7|a|a|c` (第 5 章 → 第 6 章).
+- The Model Card: new title (CRANK 模型：带沟通规则的不完全信息新凯恩斯模型), a model-wide 问题/概要, **结构** rebuilt from the tree, **分部** (设定与直觉 from 7\|a\|a; 模型构件 from 第 2 章; 需求与均衡 from 第 5 章). Its three stale 对照 lines to the chapters (written when 7\|a held only the household block) were dropped; its source line and cross-book line stay.
+
+The **结构** sections of 4\|a, 5\|a, 6\|a and 6\|a\|28 were rebuilt from the tree as well (main line and one level under it).
+
+### Gate
+
+- `check-model.mjs`: 4\|a 31 members (6 main, 25 side), 5\|a 8 (2, 6), 6\|a 52 (8, 44), 6\|a\|28 32 (7, 25), 7\|a 85 (8 main, 77 side); every one loose 0, no closure, forward or unanchored fault, `self_sufficient` true.
+- `check-network.mjs`: `network: clean` for all five (advice only: chapter 1 of 5\|a and chapter 1 of 7\|a have no `结果：` card, right for a single-derivation chapter and the intuition chapter). 7\|a's network: 设定 → {1, 2, 3, 4, 5}; 5 → 6 → 7.
+- `check-premises.mjs`: 6\|a\|28 none; the other hits are pointers, kept with this reason:
+  - 4\|a, 2 hits: the 变量表 rows name equations (1) and (2) of the specification cards.
+  - 5\|a, 3 hits: the assumption's `怎样进入模型` line and the 说明 of (3) point to the equations the settings feed (stage 2 listed them).
+  - 6\|a, 4 hits: the measure card, the hypothesis and two assumptions name the estimating equation (7) of the baseline specification; the evidence spine fixes the order data → hypothesis → design → specification, and the cards state the symbols of (7), not its estimates.
+  - 7\|a, 9 hits: `7|a|a|g`, `g|a` and `h` are setting 说明 lines that say where (18), (20), (32), (36), (46) are derived (stage 2 listed them); `7|a|a|1|a` is the intuition chapter's preview of (30); `7|a|a|2|b|a|1` matches "AR(1)"; `7|a|a|6|e|a` is a definition's `怎样进入模型` line naming (38)(39)(43), where Δ and Δ_i are used.
+- `check-settings.mjs`: 4\|a, 6\|a, 6\|a\|28 `settings: the data tree and the specification ladder are in place`; 5\|a, 7\|a `settings: all in the setting part, as a dependency tree`.
+- `list_broken_links` (agent): empty. Literature tree 722 → 725 Cards.
+- Term relink: `{"cards_changed":24,"links_added":109,"book":"assenza2026louder","rounds":1,"cards_refused":0,"ok":true,"applied":true,"links_repaired":0}`. The 7\|a **结构** was rebuilt once more after the figure move, and a second relink took its Term links back: `{"links_added":18,"cards_changed":1,"rounds":1,"links_repaired":0,"applied":true,"ok":true,"cards_refused":0,"book":"assenza2026louder"}`. All checks above were rerun after it and stay clean.
+
+### Open
+
+1. Step 3 card text was not redrafted: result cards keep their old body (they rest on their last proof card by `依赖`, without the `**为什么**`/`**证明**` sections of the result format), and derivation cards keep their digest format. Chapter cards 3–6 keep their old 问题/概要/关联 text below the new sections; chapter 6's 概要 still summarizes the zero-lower-bound results that now form chapter 7.
+2. `7|a|a|g|a` (setting part, untouched) still points to the Model Card 7\|a for the posterior (18) and the error (20); both are now in chapter 2 (`7|a|a|2`).
+3. The 6\|a hypothesis and 6\|a\|28 hypothesis still say `本模型检验 …`; the empirical chapter cards were not rewritten beyond their leads.
+4. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
