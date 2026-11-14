@@ -411,3 +411,92 @@ All lines below are the reruns after the Term relink.
 2. The reverse lines on 6\|a\|28 read from the US side ("7.04 … 与 3.82"), as `apply` writes the judge's one reason sentence on both sides. Accepted: the numbers and the comparison are the same.
 3. The cross-book comparisons on the formal model 5\|a (Stage 4 Open 1: `对照 [[velic2025inflation/3|a]]`, the riboni2026presidential contrasts) are not this skill's pairs and stay as written.
 4. No script fault was found; no skill file changed. No `card_locked`, no `read_view_changed` and no failed write occurred. Other sessions wrote other books on the box throughout.
+
+## Stage 7: literature organize
+
+Date 2026-11-14, live box (owner's request), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, `batch.mjs`, `leads.mjs`, `check.mjs`, and small `edit_card` scripts for titles and three heads). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-assenza2026louder-organize.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Every batch was previewed first (`links_that_will_break` empty, complete true) and then committed under its plan hash. The tree went from 725 to 727 Cards (two new summary leads). No Card was deleted, and no formula, equation number or estimate changed. Only Cards of assenza2026louder were written. No `card_locked`, no `read_view_changed` and no failed batch occurred; the tree was unlocked throughout.
+
+### Source divisions
+
+From `D:\zt-digest\assenza2026louder\book.zh.md`: the title page (title, four authors, date 2026-10-30, 摘要, keywords, footnote 1), 引言, 1. 相关文献, 2. 实证分析 (2.1 with the run-in subsections 2.1.1 数据描述 and 2.1.2 以香农熵衡量词汇多样性; 2.2 with 2.2.1 前瞻性反应函数, 2.2.2 估计程序, 2.2.3 基准设定与数据, 2.2.4 基准估计, 2.2.5 稳健性分析; 2.3 国际证据), 3. 简单 RANK 模型中的系统性沟通 (3.1 环境 with 3.1.1 家庭, 3.1.2 中间品与最终品厂商, 3.1.3 货币当局; 3.2 动态 IS 方程; 3.3 均衡动态 with 3.3.1 正常时期 and 3.3.2 零利率下限), 4. 结论, then 参考文献. Only some of the third-level numbers are Markdown headings (2.2.2, 3.1.2); the others open a paragraph. They are the author's own numbered divisions, so they nest as the third level. The top line takes the numbered sections, with the title page first and 引言 as its own top Card (it is unnumbered but a top heading of the source).
+
+### Final tree (top line and divisions)
+
+```
+1   前置页 (rewrite)                       a 封面与关键词 (a|a 脚注) · b 摘要 (b|a finding, b|1) · c 结构卡
+2   引言                                   unchanged (2|a chain, findings 2|c–f)
+3   1. 相关文献                            unchanged (retitled)
+4   2. 实证分析 (new summary)             a §2 task (old 4|b)
+                                           b 2.1 (old 4, rewritten): b|b 2.1.1 (old 4|b|1–4) · b|c 2.1.2 (old 4|b|5–13; Table 1 finding c|6|a, Figure 1 finding c|8|b) · b|d empirical model (old 4|a)
+                                           c 2.2 (old 6, rewritten): c|a 2.2.1 (old 5; c|a|a notes old 5|a|1–4; c|a|b formal model old 5|a) · c|b 2.2.2 (old 6|a|1–4) · c|c 2.2.3 (old 6|a|5–6) · c|d 2.2.4 (old 6|a|7–9, findings old 6|b–g) · c|e 2.2.5 (old 6|a|10–26, finding old 6|h) · c|f empirical model (old 6|a)
+                                           d 2.3 (old 6|a|27, chain old 6|a|29–35; d|a empirical model old 6|a|28)
+5   3. 简单 RANK 模型中的系统性沟通 (new)  a §3 preamble (old 7|b)
+                                           b 3.1 (old 7, rewritten): b|b §3.1 preamble (old 7|b|1) · b|c 3.1.1 (old 7|b|2–12, footnote 20 under the budget card) · b|d 3.1.2 (old 8|c–8|c|3) · b|e 3.1.3 (old 8, trimmed; old 8|c|4–8)
+                                           c 3.2 (old 9)
+                                           d 3.3 (old 10, rewritten): d|a §3.3 system (old 10|b–10|b|6) · d|b 3.3.1 (old 10|b|7–19) · d|c 3.3.2 (old 10|b|20–23)
+                                           e formal model CRANK (old 7|a)
+6   4. 结论                                old 11 (retitled)
+7   术语表 (Term list, from 1|a)
+8   参考文献 (Cited list, from 1|b)
+```
+
+Batches (tail to head, one division each): §3 (11 items, 151 renamed), §2.2–2.3 (19 items, 296 renamed), §2.1 (5 items, 195 renamed), front matter and lists (5 items, 343 renamed). Then `leads.mjs` twice: five rewrites, then two demotes.
+
+### Crossers and how each was settled
+
+- Old 1 held the front matter, the Term list and the Cited list: the two lists went to the tail (`7`, `8`); the abstract chain (old 1\|c\|1–2), which ran on the cover card's Direct line, became its own Side branch `1|b`, with the abstract finding (old 1\|d) under it.
+- Old 4 led §2 and §2.1, and its body speaks for §2.1 only: demoted. A new §2 summary took its place, and old 4 is the §2.1 head (`4|b`, rewritten as a 2.1 summary). Old 4\|b (`§2, §2.1`, the four-step task) is the §2 preamble `4|a`; its Direct chain split into 2.1.1 and 2.1.2.
+- Old 5 (titled 2.2) speaks only for §2.2.1, and old 6 summarized §2.2.2–§2.3 (a top Card that was two divisions at once). Old 6 became the §2.2 head and was rewritten to cover 2.2.1–2.2.5; its §2.3 content went into the §2 summary. Old 5 is the §2.2.1 head (`4|c|a`, retitled, its position line rewritten, a source line added).
+- The model 6\|a carried 35 reading notes (§2.2.2–§2.3) and the model 6\|a\|28 on its Direct chain. The chain was cut by source line into 2.2.2, 2.2.3, 2.2.4, 2.2.5 and 2.3; 6\|a\|28 moved out as the 2.3 head's Side branch. The same held for 5\|a (four §2.2.1 notes on its chain, now under the 2.2.1 head) and for 6\|a\|28 (seven §2.3 notes and one event, now the 2.3 chain). No model member moved out of its model: `get_model` members stay 31, 8, 63, 43 and 85.
+- Old 7 led §3, §3.1 and §3.1.1: demoted. A new §3 summary took its place; old 7 is the §3.1 head (`5|b`, rewritten as a 3.1 summary); old 7\|b (`§3`) is the §3 preamble `5|a`; old 7\|b\|1 (`§3.1`, the four agents) is the 3.1 preamble `5|b|b`; old 7\|b\|2–12 form 3.1.1.
+- Old 8 summarized §3.1.2 and §3.1.3 with equal content on each side (five Cards each). The tie went to the later division: old 8 is the §3.1.3 head (`5|b|e`, retitled, its firm sentences and three firm `依赖` lines dropped, a source line added), and old 8\|c (the first §3.1.2 Card, which opens the section) heads 3.1.2.
+- Old 10 already spoke for all of §3.3: rewritten in place (`5|d`); its single chain was cut into the §3.3 system cards, 3.3.1 and 3.3.2.
+- Footnote 20 (old 8\|d, source line `§3.1.2`) explains the demand shock in the budget constraint (21) of §3.1.1; its source line gives the page where the note stands. Filed under the budget card `5|b|c|10|a`.
+- Findings went under the notes that report them: Table 1 (`4|b|c|6|a`), Figure 1 (`4|b|c|8|b`), the five 2.2.4 baseline findings under the 2.2.4 head, the post-2008 finding under its note, the core-PCE finding under the 2.2.5 price-index note.
+
+Calls that could go the other way: the third-level run-in subsections nested as divisions (rather than left flat under their second-level heads); old 6 as the 2.2 summary instead of a demote of old 5; the tie rule giving old 8 to 3.1.3; footnote 20 filed in 3.1.1 against its source line; 6\|a filed as the last Side branch of the 2.2 summary (it spans 2.2.2–2.2.5, as bergin filed its models), while 5\|a sits under 2.2.1 and 6\|a\|28 under 2.3, where they start and end; the CRANK model as the last Side branch of the §3 summary (it spans 引言 and §3).
+
+### Summary leads and other text
+
+- New summaries (`leads.mjs` demote): `4` (2. 实证分析), `5` (3. 简单 RANK 模型中的系统性沟通). Rewrites: `1` (前置页), `4|b` (2.1), `4|c` (2.2), `5|b` (3.1), `5|d` (3.3). Each has the source's name and main claim as title, a paragraph that walks the subdivisions, `小节索引：`, `在全书中的位置：` and the source line.
+- Hand edits: `4|c|a` (2.2.1 head: title, position line, source line), `5|b|e` (3.1.3 head: title, text trimmed to 3.1.3, position line, source line). Division heads retitled with their section number: `3`, `4|b|b`, `4|b|c`, `4|c|b`–`4|c|e`, `4|d`, `5|b|c`, `5|b|d`, `5|d|b`, `5|d|c`, `6`.
+- The root index lists the eight top Cards. The structure Card `1|c` now lists the six parts and the five models with their sections (its old model list named chapters of 7\|a as models, stale since the fold).
+- `zt-check --cards` on the root and the 23 written heads: first run 6 faults (R4 in the root index line `是否被系统性设定`; R2 ×3 and R3 ×2 in `1|c`), reworded once; second run `faults: 0`, exit 0.
+
+### Chart targets
+
+Backup: `D:\zt\backups\zt-before-assenza2026louder-chart-targets.sqlite3` (integrity ok). In `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\assenza2026louder-5_a.mjs` the `head` is now `assenza2026louder/4|c|a|b`, and its two hard-coded targets of the estimation model (`assenza2026louder/6|a`, which after the organize names a 结论 note) now read `assenza2026louder/4|c|f`; in `assenza2026louder-7_a.mjs` the `head` is now `assenza2026louder/5|e`. The module file names stay as they are (the bergin module kept its old name too). `apply.mjs --write`: `same` for all 5 + 16 Cards, `nothing to write`: zt had already rewritten every `data-zt` target with the moves, including the two estimation boxes. Gate: `verify.mjs --model assenza2026louder/4|c|a|b`: `6 chart(s) in 9 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`; `verify.mjs --model assenza2026louder/5|e`: `19 chart(s) in 86 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`. 0 dead targets on both (dead targets are a lint rule).
+
+### Gate
+
+- `check.mjs assenza2026louder`: top line 1 前置页, 2 引言, 3 1. 相关文献, 4 2. 实证分析, 5 3. 简单 RANK 模型中的系统性沟通, 6 4. 结论, 7 Term list (245), 8 Cited list (92); `no fault`. Against the start snapshot: 725 → 727 Cards, and three units smaller (5\|a 14 → 9, 6\|a 121 → 53, 6\|a\|28 41 → 33): the reading notes, the event and the nested model 6\|a\|28 that stood on the Model Cards' Direct chains, not model parts.
+- Source-line walk (185 Cards with a source line): no reading note outside its division. The 12 lines that differ are model parts inside whole units (5\|e chapters, the model heads), footnote 20 (settled above) and the 2008 event under Figure 1, whose source line `§4.1` is a digest label. No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`, before and after the relink.
+- `check-model.mjs`: `4|b|d` members 31 (6 main, 25 side), `4|c|a|b` 8 (2, 6), `4|c|f` 63 (11 shared, 8 main, 44 side), `4|d|a` 43 (11 shared, 7 main, 25 side), `5|e` 85 (8 main, 77 side); loose 0 and `self_sufficient` true on all five.
+- `check-network.mjs`: `network: clean` on all five.
+- `check-settings.mjs`: `4|b|d`, `4|c|f`, `4|d|a` `settings: the data tree and the specification ladder are in place`; `4|c|a|b`, `5|e` `settings: all in the setting part, as a dependency tree`.
+- `imports.mjs check`: exit 0 on all five.
+- Term relink: `{"rounds":0,"book":"assenza2026louder","cards_changed":0,"cards_refused":0,"links_repaired":0,"applied":false,"links_added":0,"ok":true}` (`leads.mjs` had already turned the Term names of the new text into Term uses); `-PlanOnly`: `{"rounds":0,"cards_changed":0,"links_repaired":0,"ok":true,"book":"assenza2026louder","applied":false,"cards_refused":0,"links_added":0}`. No relink bug.
+
+## Result
+
+Final top line: 前置页 · 引言 · 1. 相关文献 · 2. 实证分析 · 3. 简单 RANK 模型中的系统性沟通 · 4. 结论 · 术语表 · 参考文献.
+
+Models (final addresses):
+
+- `assenza2026louder/5|e`, formal (level 2): CRANK, the incomplete-information New Keynesian model with a communication rule, 85 parts, setting card `5|e|a`, chapters `5|e|a|1`–`7`, illustrated; filed under the §3 summary.
+- `assenza2026louder/4|c|a|b`, formal (level 2): the Fed communication reaction function (3)–(4), 8 parts, illustrated; filed under the 2.2.1 head. It lends the whole model to `4|c|f` and `4|d|a`.
+- `assenza2026louder/4|b|d`, empirical (level 3): the entropy measure of communication effort, 31 parts; filed under the 2.1 summary. It lends the measure `4|b|d|a|d` to both estimations.
+- `assenza2026louder/4|c|f`, empirical (level 3): the US rule estimation (iterated GMM), 63 members (11 imported); filed under the 2.2 summary.
+- `assenza2026louder/4|d|a`, empirical (level 3): the cross-country rule estimation, 43 members (11 imported); filed under the 2.3 head.
+
+All seven stages passed their gates. Open items across the sequence:
+
+1. Restructure step 3 text was not redrafted in 5\|e: result cards keep their old body without **为什么**/**证明**, derivation cards keep their digest format, and chapter cards 3–5 keep their old 问题/概要 below the new sections (Stages 3–4).
+2. R3 faults (semicolons) in existing setting text of 5\|e predate the illustrate pass and were not changed (Stage 5).
+3. `check-premises` hits (1 on 4\|c\|a\|b, 8 on 5\|e) are existing **说明** pointers (Stages 3, 5); `check-settings` advice lines (`uses an assumption`) stay as advice (Stage 4).
+4. The evidence dialogue found no cross-book pair: the book's Terms link to no other book's Term Card. Survey the three empirical heads again after a zt-term-sync pass on the economics shelf (Stage 6).
+5. Notation row of $n_t(j)$ in 5\|e names the setting card instead of the firm setting (Stage 2 Open 5).
+6. The illustrate modules keep their file names (`assenza2026louder-5_a.mjs`, `-7_a.mjs`) and their header comments still name the old addresses; only `head` and the two estimation targets changed.
+7. The 2008 event `4|b|c|8|a` carries the digest source line `§4.1`, which the paper does not have.
+8. This pass doc is not committed (the stage brief said no commit).
