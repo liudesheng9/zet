@@ -81,7 +81,7 @@ switch -Regex ($cmd) {
         Emit @{ ok = $true; models = @(
                 @{ address = 'Key/2|c'; title = '模型一'; group = 1; level = $(if ($env:MS_EMPIRICAL -eq '1') { 'empirical' } else { 'formal' }); form = $null; parts = 0; issues = 0; faults = 0 },
                 @{ address = 'Key/3|c'; title = '模型二'; group = 2; level = 'concept'; form = 'theory'; parts = 0; issues = 0; faults = 0 },
-                @{ address = 'Key/4|c'; title = '模型三'; group = 3; level = $null; form = $null; parts = 4; issues = 0; faults = 0 },
+                @{ address = 'Key/4|c'; title = '模型三'; group = 3; level = $null; form = $null; parts = 4; issues = 0; faults = 0; todo = $(if ($env:MS_TODO -eq '1') { 1 } else { 0 }) },
                 @{ address = 'Key/5|c'; title = '模型四'; group = 4; level = 'formal'; form = $null; parts = 2; issues = 1; faults = 1 }
             ) }
     }
@@ -250,6 +250,15 @@ $env:MS_EMPIRICAL = '1'
 $empStart = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 5', '-PerEmpirical', '1', '-Out', $empOut, '-Tool', $tool))
 $env:MS_EMPIRICAL = ''
 Assert ($empStart.json -and $empStart.json.ok -eq $true -and $empStart.json.plan -eq 'concept:3|c;empirical:2|c') "empirical: an empirical model is its own batch kind ($($empStart.text))"
+
+# 9b. riboni2026presidential (2026-11-14): a reopened model with all its parts and no issue, but one part still
+# 待写 (the listing's `todo`), was left out of the plan as built; the block built nothing and its finish refused it again.
+$todoOut = Join-Path $scratch 'out-todo'
+New-Item -ItemType Directory -Force $todoOut | Out-Null
+$env:MS_TODO = '1'
+$todoStart = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 6', '-Out', $todoOut, '-Tool', $tool))
+$env:MS_TODO = ''
+Assert ($todoStart.json -and $todoStart.json.ok -eq $true -and $todoStart.json.plan.Split([char]59) -contains 'formal:2|c,4|c') "unwritten part: a built model whose listing names a 待写 part is planned again ($($todoStart.text))"
 
 # 9. Live run 2026-10-26 (staging4): a line over 400 characters was answered as `{ok:true, detail}`, which the module
 # read as a fill with no jobs, so six models stayed unwritten. An overflow is now a failed step, never a silent

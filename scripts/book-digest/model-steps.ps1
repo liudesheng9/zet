@@ -213,7 +213,9 @@ switch ($Step) {
         $skipped = @("$SkipForms".Split(',') | Where-Object { $_ })
         $todo = @($blockModels | Where-Object { $skipped -notcontains "$($_.form)" })
         if ($onlyList.Count) { $todo = @($todo | Where-Object { $onlyList -contains "$($_.address)" }) }
-        $todo = @($todo | Where-Object { $Rebuild -or ($Level -and "$($_.level)" -ne $Level) -or -not ([int]$_.parts -gt 0 -and -not [bool]$_.issues) })
+        # A model with all its parts and no issue is built, unless the listing names a part still 待写 (`todo`,
+        # riboni2026presidential 2026-11-14: a reopened model was left out as built and its finish refused it again).
+        $todo = @($todo | Where-Object { $Rebuild -or ($Level -and "$($_.level)" -ne $Level) -or -not ([int]$_.parts -gt 0 -and -not [bool]$_.issues -and -not [int]$_.todo) })
         $groupOf = { param($m) $g = [int]$m.group; if (-not $g) { $g = [int]("$($m.address)".Split('/')[1].Split('|')[0]) }; $g }
         $todo = @($todo | Sort-Object @{ Expression = { & $groupOf $_ } }, @{ Expression = { "$($_.address)" } })
         $concept = @($todo | Where-Object { $(if ($Level) { $Level } else { "$($_.level)" }) -eq 'concept' })
