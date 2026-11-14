@@ -149,3 +149,106 @@ Every setting left the main line and the chapters. The seven settings on the set
 3. The six `前提` cards in chapters 14–19 restate settings with the appendix's own equation numbers. The restructure decides whether they stay as chapter heads or become result cards; deleting them would drop display formulas that stand nowhere else byte for byte.
 4. The check reads some symbols first in a card that only carries them in a sub- or superscript ($N$ in $C_{N,t}$ in `d`, $s$ in $Q^s_t$ in the setting card); the rows name both readings.
 5. The owner decision on merging the Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a stays open.
+
+## Stage 3: restructure
+
+Date 2026-11-14, live box, under `zt-model-restructure`, done in one side session by scripts (no subagent, no DeepSeek job, so no DeepSeek cost; the chapter leads were written by hand). Backup: `D:\zt\backups\zt-before-arrocannarsa2026flight-restructure.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Moves ran as six `apply_batch` tree batches (2\|a: one batch of 13 cross-chapter items, three chain-cutting batches of 27, 37 and 36 items, one batch of 1 item; 8\|a and 16\|a: one batch of 2 items), each previewed, then committed under the plan hash; `links_that_will_break` was empty in every preview. The first commit of the 27-item batch returned no reply; the script previewed again and committed, and the tree read afterwards shows the batch applied once. Text ran as `edit_card` calls under `-Allow`. Before each text write a script compared the display formulas and the equation numbers of the old and new bodies, and after the pass a script compared the whole book with the backup: 1,390 display formulas and 227 `\tag`/`\quad (N)` equation numbers before and after, no difference. No `card_locked` error and no `read_view_changed` error occurred. The Literature tree went from 890 to 892 Cards (two new chapter cards, 2\|a\|a\|1 and 2\|a\|a\|2); no Card was deleted. The Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a were not touched.
+
+### 2\|a (formal): the intuition spine
+
+```
+2|a|a  设定 (setting part as the settings pass left it)
+2|a|a|1   第 1 章：H 国家庭与三类资产的定价（§2.2） (new)       ← 2|a|a|d, d|a
+    a 结果：价格指数与支出份额 (3)(4)        (proof a|a 证明：支出最小化（A.1）, the former chapter 13, with its chain a|a|a…a|a|a|7)
+    b 结果：便利收益形成回报楔子 (5)–(7)     (proof b|a 一阶条件 → (5) → (6) → (7), the former main-line cards 2–5)
+2|a|a|2   第 2 章：H 国厂商的 Calvo 定价（§2.2） (new)          ← 2|a|a|e, e|a
+    a 推导：最优重设价格 (11) → a|1 价格指数的演化 (12)
+2|a|a|3   第 3 章：F 国（§2.3）                                  ← 2|a|a|g, g|b
+    a 结果：外国持有者按 L* 折价持有         (proof a|a (15) → (16))
+2|a|a|4   第 4 章：资产市场关系（§2.4）                          ← 第 1 章, 第 3 章
+    a 结果：UIP 不成立                        (proof a|a (18) → … → (23), six steps)
+    b 结果：两国便利收益之差;  c 附注
+2|a|a|5   第 5 章：均衡（§3）                                    ← 第 1、2、3 章, 2|a|a|h
+    a 结果：本国均衡条件                      (proof a|a (29) → … → (33)–(35))
+    b 结果：外逃的进入与吸收                  (proof b|a (36) → (37) → 名义经常账户 → (38))
+2|a|a|6   第 6 章：对数线性化一般均衡（§3.1）                    ← 第 5 章, 2|a|a|j
+    a 定义：线性化系数
+    b 结果：价格与加总的线性关系 (44)–(51)   (proof b|a, four steps)
+    c 结果：17 个方程闭合系统                 (proof c|a (39) → (40) → (41) → (42) → (43))
+    d 前提：证明用的两国线性化系统与政策规则（附录 B）
+2|a|a|7   第 7 章：稳态识别（§4.1）                              ← 第 5 章, 2|a|a|i
+    a 定义：便利收益楔子 (52);  b 结果：稳态通胀与实际利率 (proof b|a three steps; b|b 例子)
+2|a|a|8   第 8 章：基准经济的外逃冲击（§4.5、§5.1）              ← 第 6 章, 2|a|a|k
+    a 避风港模式;  b 三条吸收渠道;  c 紧缩冲击;  d 净资源转移为正 (proof d|a)
+2|a|a|9   第 9 章：便利收益的作用与区制依赖（§5.2）              ← 第 6 章, 2|a|a|k
+    a 结果：命题 1  (proof a|a 正文三步;  proof a|b 附录 B 四步 → 结论：命题 1（附录 B）)
+    b 结果：命题 1 (i);  c 结果：命题 1 (ii) (c|a 例子)
+2|a|a|10  第 10 章：零利率下限（§5.3）                           ← 第 8 章, 2|a|a|l
+    a 方法;  b–e 四个结果;  f 限制
+2|a|a|11  第 11 章：资产负债表政策（§5.4）                       ← 第 6 章, 2|a|a|m
+    a 结果：命题 2  (proof a|a 正文四步;  proof a|b 附录 B 七步 → 结论：命题 2（附录 B）;  a|c 变体;  a|d 例子)
+    b 结果：均衡存在且唯一 (proof b|a);  c 盯住汇率的代价;  d 加权目标的权衡 (proof d|a)
+2|a|a|12  第 12 章：储备支持型操作（§5.5）                       ← 第 11 章, 2|a|a|m|c
+    a 结果：命题 3  (proof a|a 正文两步;  proof a|b 附录 B 两步 → 结论：命题 3（附录 B）)
+    b 稳定相同、对外账户不同 (b|a 例子);  c ψ>0 时等价破裂 (c|a 例子)
+2|a|a|13  第 13 章：永久性外逃（§5.7）                           ← 第 6 章, 2|a|a|n
+    a 结果：命题 4 (i)   (proof a|a 正文四步;  proof a|b 附录 B 四步 → 结论：命题 4 (i)（附录 B）;  a|c 例子)
+    b 命题 4 (ii) (proof b|a);  c 命题 4 (iii) (proof c|a; c|b 例子)
+    d 结果：命题 4 (iv)  (proof d|a 正文;  d|b 证明：命题 4 (ii)–(iv)（附录 B）, the former chapter 16 card, with its chain of four steps)
+    e 命题 4 (v) (proof e|a)
+2|a|a|14  第 14 章：已知持续时间的外逃（§5.7）                   ← 2|a|a|o, o|a
+    a 方法;  b–e 四个结果 (b with proof b|a and example b|b)
+2|a|a|15  第 15 章：Calvo 定价与菲利普斯曲线（A.2）              ← 2|a|a|e, e|a
+    a 前提 (65)–(68);  b 重设价格比 (69);  c 价格指数 (71) 与 (70);  d 递归形式 (77)   (each with its proof chain)
+2|a|a|16  第 16 章：确定性稳态（A.3）                            ← 2|a|a|i, i|b
+    a 前提;  b 稳态便利收益楔子;  c 两国贸易品通胀相等;  d 外国持有量与净出口 (d|b 例子);  e 价格与资产市场闭合
+2|a|a|17  第 17 章：两目标的资产负债表实验（C.5）                ← 2|a|a|m, m|b
+    a 前提;  b 国内目标的操作规模 (b|b 图 18);  c 汇率目标的操作规模 (c|b 图 19);  d 加权目标的单调性
+2|a|a|18  第 18 章：净资源转移（C.7）                            ← 第 5 章, 2|a|a|h|c
+    a 前提;  b 跨期预算约束 (87);  c 净流入的流量形式 (88) (c|b, c|c 例子);  d 国外收入只取决于合并头寸
+2|a|a|19  第 19 章：永久性与有限期外逃实验（C.8）                ← 第 13 章, 2|a|a|o
+    a 前提;  b 永久性外逃的稳态 (b|b 图 22);  c 有限期外逃的衰退加速 (c|b 图 23, c|c 例子);  d 逼近命题 4 的阈值
+```
+
+- The eight H-country cards (former 2\|a\|a\|1–8) left the main line into two new chapter cards: 第 1 章 holds the result (3)(4) and the wedge (5)–(7) with its four-step proof chain; 第 2 章 holds the Calvo derivation chain (11) → (12), which ends in no result card (advice only).
+- Appendices. A.1 (former 第 13 章) only proves (3)(4): its chapter card is now the proof branch `2|a|a|1|a|a` of that result (facet `证明：支出最小化（A.1）`, `本模型` → `本证明`), and the result card's sentence `本模型不重推` now points to it. A.2 and A.3 derive more than one result (the recursive Phillips curve (74)(76)(77); the steady state (78)–(83)) and stay chapters (第 15、16 章). Appendix B (former 第 16 章) was split by the results it proves: the 前提 card (the proof system) went to 第 6 章 (`6|d`), because every B proof starts from it; the proofs of 命题 1, 2, 3 and 4 (i) became the second proof branch (`…|b`) of 9\|a, 11\|a, 12\|a and 13\|a, and the former chapter card with the (ii)–(iv) chain became the proof branch 13\|d\|b of 命题 4 (iv) (facet `证明：命题 4 (ii)–(iv)（附录 B）`, one opening paragraph that names where the other three B proofs now stand). Its three `依赖` Links (the stage 1–2 forward faults) are unchanged: two now point back to the B proof of 命题 2 in 第 11 章, one into its own branch. Each B chain's last card has the facet `结论：命题 N（附录 B）`. C.5, C.7 and C.8 stay chapters (each has its own results).
+- Decision on the six `前提` cards: all stay, each as the first Side card of its chapter (15\|a, 16\|a, 17\|a, 18\|a, 19\|a), and the B one as `6|d`. Each restates settings with the appendix's own equation numbers and holds display formulas found in no setting card; its chapter's proof chains rest on it.
+- In every chapter the flat chain was cut into results with their proof chains as Side branches (a 定义, 方法 or 前提 card heading a chain stays the chapter's first Side card). Result facets now read `结果：…` (56 Cards; the former `结果` and `命题` facets; titles unchanged).
+- Chapter renumbering, old → new: 1–12 → 3–14, 13 → (A.1 under 第 1 章), 14 → 15, 15 → 16, 16 → (B, split), 17–19 unchanged. Chapter facets carry the new numbers; chapter titles are unchanged. Chapter numbers in text were updated in the setting part (the setting card, the notation card, `d|b`, `h`, `i`, `i|a`, `i|b`, `j`, `j|a`, `k`, `k|b`, `l`, `l|a`, `m`, `m|c`, `n`, `o`; `d|b` and `j|a` now name the A.1 and B proofs) and in chapters 4 and 6. Two lines that say `第 4 章的校准` (6\|a and 6\|c\|a\|4) refer to the paper's §4 and were left.
+- Every chapter card got **直觉** (lead of 20+ characters), **本章结果** (pointers `结果：`, `定义：`, `前提：`, `方法：`, `推导：`, `旁注：`; for 命题 1–4 the line names both proof branches) and **承上启下** with two to four `依赖` lines to the setting or earlier chapter it builds on; the old text follows (`本模型` → `本章`). This anchored all 19 chapters. 第 6 章 keeps the old **分部** section from its fold (it is not read from a chapter card).
+- With the B proofs and the A.1 proof now ahead of the main-text derivations, `check-settings` found four symbols first met earlier: the notation rows of $\lambda_t$ (now naming both meanings, the A.1 multiplier included), $V_q(q^*)$, $A_1$ and $\Phi_0$ point to 1\|a\|a\|a, 1\|b, 11\|a\|b and 13\|a\|b\|2; 1\|b, 11\|a\|b and 13\|a\|b\|2 got one defining clause each.
+- Hidden forward fault fixed by moving: the A.1 figure example (former 21\|a\|2\|a, `按 (58) 与 (62) 画图`) drew (62) before the card that derives it; it moved from under the relative-demand step to under the cost-share result (`2|a|a|1|a|a|a|4|a`).
+- The Model Card: title and 问题 unchanged; 概要 rewritten for the whole model (the stale sentence that market clearing and the F country are in later models is gone); **结构** rebuilt from the tree; **分部** added (设定与两国模型 from 2\|a\|a; 均衡、线性化与校准 from 第 5 章; 外逃冲击与政策 from 第 8 章; 附录推导与实验 from 第 15 章). Its six stale 对应/对照 lines to its own chapters were dropped; the source line now names §2–§5 and appendices A–C.
+
+Network (`check-network.mjs`): 设定 → {1, 2, 3, 5, 9, 10, 12, 14, 15, 16, 17, 18, 19}; 1 → 4; 5 → {6, 7}; 6 → {8, 11, 13}.
+
+### 8\|a (empirical): the evidence spine
+
+Main line unchanged: 数据 `8|a|a` → 设计 `|1` → 规格：基准 `|2` → 第 1 章 主要估计 `|3`. The paper has no hypothesis here (measurement). **直觉** leads added to the data, design and specification cards. The limits card 序列只确定量级 (former 8\|a\|b) moved under chapter 1 (`8|a|a|3|e`) with one reference line; loose 1 → 0. **结构** rebuilt.
+
+### 16\|a (empirical): the evidence spine
+
+Main line unchanged: 数据 → 假说：下限分支 `|1` → 假说：储备支持型 `|2` → 设计 `|3` → 规格：基准 `|4` → 第 1 章 主要估计 `|5` → 第 2 章 识别检验 `|6` → 第 3 章 机制 `|7`. The mechanism chapter was numbered 第 4 章 (no 第 3 章 existed); facet and title now read 第 3 章. **直觉** leads added to the data, the two hypotheses, the design and the specification. The limits card 窗口与单一冲击 (former 16\|a\|b) moved under chapter 1 (`16|a|a|5|k`, it limits the reading of table 6) with one reference line; loose 1 → 0. **结构** rebuilt.
+
+### Gate
+
+- `check-model.mjs 2|a`: 256 members (20 main, 236 side), loose 0, no closure, forward or unanchored fault, `self_sufficient` true (was false). `8|a`: 16 members (4 main, 12 side), loose 0, `self_sufficient` true. `16|a`: 40 members (8 main, 32 side), loose 0, `self_sufficient` true.
+- `check-network.mjs`: `network: clean` for all three (advice only: 第 2 章 of 2\|a has no `结果：` card; it is one derivation chain).
+- `check-premises.mjs`: 8\|a and 16\|a `premises: none used before their card`. 2\|a 39 hits, all pointers, kept with this reason:
+  - 29 are setting-part **直觉**/**说明**/`怎样进入模型` lines (`c`, `e`, `e|a`, `i|b`, `j`, `j|a`, `k|b`, `l`, `m`, `m|a`) that say where (2), (7), (30)–(32), (36)–(44), (46), (49), (51), (65)–(68), (79), (82) are derived or used, as after stage 2.
+  - `4|a|a|1` (4 hits) is the 思路 roadmap of its own chain (`全链依次推出` (20)–(23)); `15|b|a|1` names (71) as the next step's target; `1|a|a|a|5` remarks how (64) differs from the next step.
+  - `6|a` (2) says the coefficients it defines enter (39)–(43).
+  - `7|b|a|2` derives $\Pi_N=\beta(1+i)$ itself and names it by its appendix number (78).
+  - `8|d|a` names (84) but writes the definition of $\mathcal N_t$ out in its own step 1.
+- `check-settings.mjs`: 2\|a `settings: all in the setting part, as a dependency tree` (advice: 14 settings under the setting card); 8\|a and 16\|a `settings: the data tree and the specification ladder are in place`.
+- `list_broken_links` (agent): `{"broken":[]}`. Literature tree 890 → 892 Cards.
+- Term relink: `{"links_repaired":0,"rounds":1,"applied":true,"links_added":143,"book":"arrocannarsa2026flight","cards_refused":0,"cards_changed":29,"ok":true}`. All checks above, `list_broken_links` and the formula comparison with the backup were rerun after it and stay as listed.
+
+### Open
+
+1. Step 3 card text was not redrafted: result cards keep their digest body (no `**为什么**`/`**证明**` sections), derivation cards keep their digest format, and the old chapter cards keep their 问题/概要/关联 text below the new sections; their titles still read `… 模型：…`.
+2. The B proofs of 命题 1–4 and the A.1 proof restate the main-text derivations step for step (9\|a\|a against 9\|a\|b; 11\|a\|a against 11\|a\|b; 12\|a\|a against 12\|a\|b; 13\|a\|a against 13\|a\|b; 1\|a\|a against the result (3)(4)). Both proofs are kept; the import stage may decide whether one should cite the other.
+3. 第 6 章 (2\|a\|a\|6) still carries the **分部** section the fold left in it (stale addresses into the setting part); 6\|a and 6\|c\|a\|4 say `第 4 章的校准` for the paper's §4.
+4. The setting card still carries fourteen settings (advice `wide`, stage 2 open item 2).
+5. The owner decision on merging the Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a stays open.
+6. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
