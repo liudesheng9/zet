@@ -244,3 +244,71 @@ The **结构** sections of 4\|a, 5\|a, 6\|a and 6\|a\|28 were rebuilt from the t
 2. `7|a|a|g|a` (setting part, untouched) still points to the Model Card 7\|a for the posterior (18) and the error (20); both are now in chapter 2 (`7|a|a|2`).
 3. The 6\|a hypothesis and 6\|a\|28 hypothesis still say `本模型检验 …`; the empirical chapter cards were not rewritten beyond their leads.
 4. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-14, live box, under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent; one DeepSeek job, for the explanation refresh). Backup: `D:\zt\backups\zt-before-assenza2026louder-imports.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Text ran as `edit_card` calls under `-Allow` (assenza2026louder Cards only). A script compared the display formulas and `\tag` numbers before each text write; no display formula, equation number or estimate changed. No `card_locked`, no `read_view_changed` and no failed batch occurred. Order: 5\|a, 4\|a, 7\|a, 6\|a, 6\|a\|28. Before any edit, `check` exited 0 and `plan` said `nothing to import` on all five heads: the two estimations named the theory and the measure only with `参照`/`对应` Links and `见` pointers.
+
+### 5\|a (formal)
+
+- No import. The rule (3)–(4) is stated for any series $\Delta e_t$; its setting card names the entropy series of 4\|a in words and the Model Card points to 4\|a with a plain reference, so no part rests on 4\|a. The measurement enters where the estimations bind the rule to data (below). Tolerated 0, false shares 0.
+- 5\|a now lends the whole model to 6\|a and 6\|a\|28 (`lent`).
+
+### 4\|a (empirical)
+
+- No import: the measurement and its descriptive facts are the paper's own, and no other model in the box holds the series. It lends `4|a|a|d` (with its closure 4\|a\|a\|c, 4\|a\|a) to 6\|a and 6\|a\|28. Tolerated 0, false shares 0.
+
+### 7\|a (formal, CRANK)
+
+- No import. Rule (24) is the CRANK model's own setting (`7|a|a|f|a|b`, a log-level rule in $\exp(\Delta e_t)$ with $-\psi_y$); it corresponds to 5\|a's function but is no copy of it and rests on nothing in 5\|a. The correspondence stays a comparison: `7|a|a|4|b` (`对应 [[5|a]]`, the sign convention of (24) against the estimated rule). Tolerated 0, false shares 0.
+
+### 6\|a (empirical: US rule estimation)
+
+Premises set first (the plan finds only rests-on Links):
+
+- 规格：基准 `6|a|a|3` now rests on `依赖 [[5|a|a|c]]` (the partial adjustment (3), kept with one lag) and `依赖 [[5|a|a|d]]` (the target (4) with $k=q=1$): equation (7) is (3) and (4) combined.
+- 假说 `6|a|a|1`: `参照 [[5|a]]` became `依赖 [[5|a|a|d]] 的目标值 (4)`: the two signs are the signs of the coefficients $\psi_\pi$, $\psi_y$ of (4). A first wording that also named `[[5|a]]` on that line was read as resting on the whole Model Card (`plan`: by hand, whole model); the Model Card Link was dropped from the line.
+- 数据 `6|a|a`: **起点** `原始设定` became `依赖 [[4|a|a|d]]`: the dependent variable is that card's quarterly statement entropy, taken in first log differences.
+
+Import lines (`plan` → `apply` wrote `单卡` 4\|a\|a\|d, 5\|a\|a\|d, 5\|a\|a\|c; round 2 upgraded 4\|a\|a\|d to `整块`; the two 5\|a lines were then replaced by hand with one whole-model line, because an estimation imports the theory it estimates whole, as velic2025inflation 8\|a ← 3\|a):
+
+- `整块 [[assenza2026louder/5|a]]`: 本模型估计的整个沟通反应函数，部分调整 (3) 与目标值 (4) 合成式 (7)，假说取 (4) 中两个系数的符号. Absorbs the two `单卡` lines; brings 8 parts (setting tree, notation card, chapter 1 with the steady state).
+- `整块 [[assenza2026louder/4|a|a|d]]`: 因变量的来源，按式 (1) 逐份计算、加总到季度的 FOMC 声明熵序列. Brings the measure 4\|a\|a\|d and its closure 4\|a\|a\|c (formula (1)) and the data card 4\|a\|a (the FOMC statements), as velic 10\|a ← 7\|a\|a. The whole 4\|a data tree (`整块 [[4|a|a]]`) was not taken: 6\|a uses the entropy series, not the sample split, the corpus counts or the length descriptions.
+
+Tolerated 0 → 5 after round 1 → 4 after the upgrade → 0 with the whole-model line. False shares 0. Symbols (step 6): the 变量表 `6|a|a|a` got the line `沿用 [[5|a|a|a]] 的符号。规则只留一阶滞后，本表的 $\rho_{e}$ 即那张卡的 $\overline{\rho}_{e}$；预测期取 $k=q=1$。` No copy found by `check`. The Model Card's **关联** lines `对应 [[4|a]]` and `参照 [[5|a]]` are Links to whole Model Cards (no false share) and stay.
+
+### 6\|a\|28 (empirical: cross-country estimation)
+
+- Premises: 规格：基准 `6|a|28|a|3` rests on `5|a|a|c` and `5|a|a|d` (the per-country rule is (3) with one lag and (4) with $k=q=1$); 假说 `6|a|28|a|1`: `参照 [[5|a]]` → `依赖 [[5|a|a|d]] 的目标值 (4)`; the measure `6|a|28|a|b`: the sentence `测量细节见 [[4|a]]，本模型沿用同一构造` became `声明熵沿用美联储声明的同一构造。` and its **起点** gained `依赖 [[4|a|a|d]]：各国声明的熵按同一构造逐份计算（式 (1)），再加总到季度`.
+- Import lines (same rounds as 6\|a):
+  - `整块 [[assenza2026louder/5|a]]`: 本模型在五家央行上估计的沟通反应函数，部分调整 (3) 与目标值 (4) 是基准规则，(9) 在 (4) 上加汇率项与美国利率项.
+  - `整块 [[assenza2026louder/4|a|a|d]]`: 声明熵的构造，各国声明按同一方法逐份计算 (1) 再加总到季度. Its closure brings the FOMC data card 4\|a\|a, on which the construction is defined; 6\|a\|28's own sample stays its data card 6\|a\|28\|a.
+- Not imported from 6\|a: the model re-estimates the same rule on other data (the fold decision); `参照 [[6|a]]` on its Model Card stays a comparison for the evidence dialogue. Its design assumption 5 (`6|a|28|a|2|e`, $\Delta_e^*$ and $\pi^*$ not separately identified) states for its own samples what 6\|a\|a\|2\|d states for the US; `check` lists no copy, and each estimation keeps its own normalization. Tolerated 0, false shares 0. The 变量表 `6|a|28|a|a` got the same `沿用 [[5|a|a|a]]` line.
+
+### Stage-3 leftovers fixed (no formula change)
+
+1. Chapter 6 `7|a|a|6`: the 问题 no longer asks about the zero lower bound (`正常时期的局部确定条件是什么。`); the 概要 sentence on (47)/(48) became `零利率下限处的确定性条件 (47) 与双重使命的作用 (48) 不在本章，归第 7 章。`; the velic 对照 line says `本模型第 7 章让零利率下限改变确定性条件`. The inline $\Theta+\kappa/\gamma$ and $(-1,1)$ of the old sentence went with it (no display formula).
+2. `7|a|a|g|a` **说明**: `式 (11) 的冲击分解见设定卡 [[7|a|a]]。后验 (18) 见第 2 章的 [[7|a|a|2|a]]，信号提取误差 (20) 见同章的 [[7|a|a|2|b|a|3]]。` (was: all three `见 [[7|a]]`).
+3. The two hypothesis cards: `这两个符号是本模型检验的预测` → `这两个符号是美国沟通规则估计检验的预测` (6\|a\|a\|1); `本模型检验同一条规则是否在五个经济体都成立` → `跨国沟通规则估计检验同一条规则是否在五个经济体都成立` (6\|a\|28\|a\|1).
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan`: 7\|a 5 Derivation parts in 1 job; 5\|a, 4\|a, 6\|a, 6\|a\|28 `nothing to explain`.
+- One DeepSeek conversation (`opencode-go/deepseek-v4.1-flash`, effort high, the box's drive model `ZT_DRIVE_MODEL`; OpenCode Go account Primary, 11 requests, 168 s, context 66k of 1M; tools: 6 pwsh, 3 read, 2 write of which 1 failed and was retried; only `out/explain-01.json` was written): answer `{"done":5,"blocked":0}`. Cost: OpenCode Go subscription, the Harness ledger books 0 CNY for the source (no per-job token split; the 2026-11-13 opencode-go day line is shared with the IMEN1 queue). Conversation f3a28942 deleted, workspace removed.
+- `apply`: `applied 5, refused 0, blocked 0, follow-up jobs 0`. `finish`: `explained 5 part(s); Term links changed 0 Card(s), second plan 0; left 0; refused 0` (exit 0); parts 7\|a\|a\|3\|a\|a, 3\|a\|a\|1, 3\|a\|a\|2, 3\|a\|a\|3, 3\|a\|a\|4 (the chapter-3 pricing chain). A later `plan` on 7\|a: `nothing to explain`.
+
+### Gate
+
+- `imports.mjs check`: exit 0 on 5\|a, 4\|a, 7\|a, 6\|a, 6\|a\|28; `plan`: `nothing to import` on all five.
+- `get_model`: `self_sufficient: true` on all five; tolerated 0 and false shares 0 everywhere; 5\|a 8 parts (lends the model to 6\|a, 6\|a\|28), 4\|a 31 (lends 4\|a\|a\|d to both), 7\|a 85, 6\|a 63 (52 own + 11 shared), 6\|a\|28 43 (32 own + 11 shared).
+- `check-settings.mjs`: 5\|a, 7\|a `settings: all in the setting part, as a dependency tree` (advice only: 5\|a 1 and 7\|a 4 `uses an assumption` lines, unchanged from stage 3); 4\|a, 6\|a, 6\|a\|28 `settings: the data tree and the specification ladder are in place` (no false `variable_uncovered` with the imported 4\|a\|a).
+- `check-model.mjs`: loose 0, `self_sufficient true` on all five (6\|a `{"shared":11,"main":8,"side":44}`, 6\|a\|28 `{"shared":11,"main":7,"side":25}`); `check-network.mjs`: `network: clean` on all five.
+- `list_broken_links` (agent): empty.
+- Term relink: `{"book":"assenza2026louder","ok":true,"rounds":1,"cards_changed":2,"cards_refused":0,"links_repaired":0,"links_added":2,"applied":true}`. All checks above were rerun after it and stay clean.
+
+### Open
+
+1. The cross-book comparisons (5\|a `对照 [[velic2025inflation/3|a]]`, the riboni2026presidential contrasts on 5\|a\|a, the 6\|a/6\|a\|28 estimates) are for the evidence dialogue (stage 6); 6\|a\|28's `参照 [[6|a]]` likewise.
+2. Two shell-written edits lost TeX backslashes (`$\rho_{e}$` came out as a carriage return plus `ho`); found by reading the stored card and rewritten at once from a file written with `String.raw`. No other card carried the fault (the other edits were checked by reading back).
+3. 6\|a\|28 imports the FOMC data card 4\|a\|a as closure of the measure; a reader of the GUI board sees it on the 共用 shelf. Accepted: the construction is defined on it.
+4. Stage-3 open item 1 (result and derivation card text not redrafted; chapter cards 3–6 keep their old 问题/概要 below the new sections) stays, except the chapter 6 summary fixed here.
