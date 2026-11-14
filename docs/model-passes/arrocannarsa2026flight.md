@@ -72,3 +72,80 @@ Gate:
 - `check-model.mjs 8|a`: 16 members, loose 1, `self_sufficient` true. `16|a`: 40 members, loose 1, `self_sufficient` true.
 - `list_broken_links` (agent): empty.
 - Term relink: `{"rounds":1,"ok":true,"cards_changed":5,"links_added":6,"cards_refused":0,"links_repaired":0}`.
+
+## Stage 2: settings (strict)
+
+Date 2026-11-14, live box, under `zt-model-settings`, done in one side session by scripts (no subagent, no DeepSeek job, so no DeepSeek cost). Backup: `D:\zt\backups\zt-before-arrocannarsa2026flight-settings.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). The notation card of 2\|a was created first by `create_successor`. The moves and the three deletes ran as one `apply_batch` tree batch of 40 items (preview, then commit under the plan hash; 252 Cards renamed; `links_that_will_break` empty). Text ran as `edit_card` calls under `-Allow`. Before each text write a script compared the display formulas and the equation numbers (`\tag{…}` and `\quad (N)`) of the old and new bodies, and every written card was read back and compared with the intended text (0 differences). No display formula and no equation number changed; one display block was dropped as a byte-identical duplicate (the F-country preference formula, kept in `g|a`, dropped from `g`). No `card_locked` error, no `read_view_changed` error and no failed batch occurred. The Literature tree went from 892 Cards to 890: one notation card was created and three restating setting cards were deleted.
+
+### 2\|a (formal)
+
+Every setting left the main line and the chapters. The seven settings on the setting card's own main line (former 2\|a\|a\|1–4, 11, 12, 15) moved into the setting part, so the eight H-country derivations now stand on the main line as 2\|a\|a\|1–8 and the chapters renumbered: 第 1 章 is now 2\|a\|a\|9, … 第 19 章 2\|a\|a\|27. A chapter setting moved by `move_span` alone, so the derivation chain that stood on its Direct line rose into the chapter's Side slot `a`.
+
+```
+2|a|a   设定：H 国的三类资产与四类主体                         原始设定 (17|a merged in)
+├ a  符号表与读法 (new; blocks: 时间与资产, H 国家庭, 非贸易品企业, F 国与均衡, 稳态与线性化, 基准经济与变体, 推导中的辅助符号, 术语)
+├ b  假设：外国政策债券不提供便利服务 (from 2|a|a|2)           ← 2|a|a
+├ c  假设：外国政策债券的调整成本是二次式 (from 2|a|a|1)       ← 2|a|a
+├ d  设定：家庭偏好与消费束 (1) (from 2|a|a|3)                ← 2|a|a, b
+│    d|a 设定：家庭预算约束 (2) (from 2|a|a|4)                ← d, c
+│    d|b 设定：期内支出最小化 (55) (from 28|a, A.1)           ← d
+├ e  设定：非贸易品最终品生产者 (8)(9) (from 2|a|a|11)          ← 2|a|a
+│    e|a 假设：Calvo 定价与利润最大化 (10) (from 2|a|a|12; 29|a|1 merged in)  ← e, d
+├ f  设定：政府预算约束 (13) (from 2|a|a|15)                   ← 2|a|a, c
+├ g  设定：F 国代表性家庭与外国政府 (from 16|a)                 ← 2|a|a
+│    g|a 假设：外国偏好 (16|a|1);  g|b 设定：外国家庭预算约束 (14) (16|a|2);  g|c 设定：外国政府预算约束 (17) (16|a|5)
+├ h  设定：两国经济的均衡 (from 18|a)                          ← d|a, e|a, f, g
+│    h|a 设定：五个市场出清 (24)–(28) (18|a|1);  h|b 假设：一价定律 (18|a|2)
+│    h|c 假设：两条无庞氏条件 (from 33|a|1, C.7)               ← h, h|b
+├ i  设定：确定性稳态，以政策利率为锚 (from 20|a)              ← h
+│    i|a 假设：政策利率取急性期均值 (20|a|1)
+│    i|b 假设：稳态下偏好移动因子取 1 … (from 30|a|1, A.3)     ← i, c, h|b
+├ j  设定：对数线性化，19 个内生变量与政策闭合 (from 19|a)     ← h, i
+│    j|a 假设：外国通胀与政策利率为零，路径有界 (from 31|a|1, B)  ← j
+├ k  设定：基准经济：外国被动，冲击是 θ* 的 AR(1) (from 21|a; 22|a merged in)  ← j, j|a
+│    k|a 假设：校准 (21|a|1);  k|b 假设：供给固定、泰勒原理、一阶近似 (22|a|1)
+├ l  设定：变体一：零利率下限 (from 23|a)                       变体一 ← k
+│    l|a 设定：泰勒规则与 (54) 的下限约束 (23|a|1)             ← l, k|a
+├ m  设定：变体二：央行把便利资产供给当作工具 (from 24|a)       变体二 ← k
+│    m|a 假设：ψ>0、规则不变 (24|a|1);  m|b 假设：两目标 (from 32|a|1, C.5)
+│    m|c 设定：变体二之一：储备支持型操作与返还融资 (from 25|a)  ← m, c
+│        m|c|a 假设：逐期稳定通胀，规则不以头寸为条件 (25|a|1)
+├ n  设定：变体三：带下限的规则与永久外逃 (from 26|a)           变体三 ← k, l|a
+└ o  设定：变体四：已知持续时间的外逃 (from 27|a)               变体四 ← k, l|a
+     o|a 假设：完全预见、互补条件、新息 (from 34|a|1, C.8)      ← o, k
+```
+
+- Every setting card is in the format **起点** / **设定** (or **假设**) / **直觉** / **说明**. The symbol tables and term tables of the folded setting cards went into the notation card (64 rows, 28 terms), which covers every symbol of every setting and the auxiliary symbols the derivations introduce with 记 ($\lambda_t$, $X_k$, $L^*_t$, $B_t$, $V_q(q^*)$, $A_1$, $\kappa$, $\Phi_0$). Rows are written by the letter the check reads; a letter with two meanings in the source gets one row that names both ($B$, $\theta$, $\kappa$, $\lambda$, $T$, $N$, $s$). Each row names the card where a reader meets the symbol first, as the check reads it.
+- Deleted `into` the card each restates (Links re-pointed): 17\|a (chapter 2: the two countries' households and the three assets) into the setting card 2\|a\|a, after its timing sentence (households observe the state, then choose; $S_{t+1}$ realizes next period) moved into item 2 and the $\tilde E_t$ remark into **说明**; 22\|a (chapter 7: the linearized small economy) into `k`, after its fixed supply moved into item 3 and its remark that Proposition 1 takes the paths as given into **说明**; 29\|a\|1 (A.2: reset probability, ownership, indexation) into `e|a`, whose items 2–4 now carry the exogenous reset probability and the indexation rule $P_{N,t}(i)=\Pi P_{N,t-1}(i)$. None of the three held a display formula.
+- Retyped and kept in their chapters, because each holds display formulas found in no setting card (the appendix restatements with their own `\tag` numbers or spacing): 2\|a\|a\|22\|a `前提：附录 A.2 的厂商问题 (65)–(68)`, 23\|a `前提：稳态要用的均衡条件` ((25)–(38)), 24\|a `前提：证明用的两国线性化系统与政策规则` ((31), the (39)–(49) table, the two rules), 25\|a `前提：固定供给基准下的线性系统 (C.5)` ((39)–(49)), 26\|a `前提：可贸易品块与净流入 (C.7)` ((36)–(38), (84), (85), (51)), 27\|a `前提：两个外逃实验的系统 (C.8)` (no display; the figure 22 and the experiment parameters). Each lost its symbol and term tables and opens with a line naming the settings it restates.
+- Statements moved and pointers: the setting card names its block order in **说明**; the variants `l`, `m`, `n`, `o` open with a `变体` line; `m|c` is the sub-variant of `m` (its `变体` line carries no Link, so the rests-on relation to `m` comes from its `依赖` line). The assumptions that rested on the chapter setting cards now rest on the setting they refine (`i|b` on `i`, `j|a` on `j`, `m|b` on `m`, `h|c` on `h`, `o|a` on `o`). `i|b` and `h|c` cite the one-price assumption `h|b` by Link instead of restating it. `l` no longer rests on `l|a` (an `order` fault): the rule is named as the next setting card in **直觉**.
+- Definitions added at first use: $S_t$, $V(\cdot)$, $q_t$ (look-up), $Q^s_t$, $F^s_t$ in the setting card; $P_{T,t}$, $\bar F$, $P_T^*$ in `c`; $C_{T,t}$, $C_{N,t}$ in `d`; $Y_{N,t}$, $P_{N,t}(i)$ in `e`; $A_t$, $H_t(i)$ in `e|a`; $F^*_t$, $Q^*_t$, $P^*_{T,t}$ in `g`; $q^*_t$, $f_t$, $f^g_t$ in `h|c`; $\varepsilon_t$ in `o|a`. The linearization coefficients point to the definition card 2\|a\|a\|12\|a.
+- The **结构** section of 2\|a was rebuilt from the build order (setting part and main line).
+
+### 8\|a (empirical)
+
+- The measure 8\|a\|a\|b now has a one-line summary, a **起点** section with its `依赖` line and the former `见` pointer, and a **内容** section.
+- Each of the three specifications already had its equation. Their **估计式** sections now open with `原书没有写出本规格的估计式。本卡按……补写：`, followed by the existing equation; the internal file reference (`s09.md 第 5、13 行`) became `§4.2 正文`. No equation changed and none was added.
+
+### 16\|a (empirical)
+
+- The data tree and the specification ladder were already in place, and each of the five specifications already states its equation with the 补写 opening ($x^{data}_{k}=Z_{k}$; $x^{b}_{k}=\mathcal{M}^{b}_{k}(\varepsilon)$ for the four model branches). Each variant now names, after its equation, which branch the superscript $b$ takes. No equation changed. There is no IV specification in 8\|a or 16\|a.
+- The Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a were not touched.
+
+### Gate
+
+- `check-settings.mjs arrocannarsa2026flight/2|a`: `settings: all in the setting part, as a dependency tree` (advice only: the setting card has 14 settings filed under it).
+- `check-settings.mjs arrocannarsa2026flight/8|a`: `settings: the data tree and the specification ladder are in place`.
+- `check-settings.mjs arrocannarsa2026flight/16|a`: `settings: the data tree and the specification ladder are in place`.
+- `check-model.mjs 2|a`: 254 members (28 main, 226 side), loose 2, no closure fault; 3 `forward` faults (chapter 16, 2\|a\|a\|24, names its own parts \|a\|5, \|a\|11, \|a\|19 with `依赖` lines) and `unanchored` on 18 chapter cards (2\|a\|a\|9–23, 25–27), as after stage 1; left to the restructure.
+- `check-model.mjs 8|a`: 16 members, loose 1, `self_sufficient` true. `16|a`: 40 members, loose 1, `self_sufficient` true.
+- `list_broken_links` (agent): empty, before and after the relink.
+- Term relink: `{"cards_changed":33,"ok":true,"cards_refused":0,"applied":true,"links_added":105,"book":"arrocannarsa2026flight","rounds":1,"links_repaired":0}`. The three settings checks and `list_broken_links` were rerun after it and stay clean.
+
+### Open
+
+1. 2\|a: 18 chapter cards are unanchored and chapter 16 has three forward faults; the eight H-country derivations (2\|a\|a\|1–8) stand on the main line before chapter 1. The restructure builds the spine. The Model Card's **概要** still says that market clearing and the F country are in later models; the restructure rewrites it.
+2. The setting card carries fourteen settings (advice `wide`). The blocks are named in its **说明**; no block card was added.
+3. The six `前提` cards in chapters 14–19 restate settings with the appendix's own equation numbers. The restructure decides whether they stay as chapter heads or become result cards; deleting them would drop display formulas that stand nowhere else byte for byte.
+4. The check reads some symbols first in a card that only carries them in a sub- or superscript ($N$ in $C_{N,t}$ in `d`, $s$ in $Q^s_t$ in the setting card); the rows name both readings.
+5. The owner decision on merging the Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a stays open.
