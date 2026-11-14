@@ -58,12 +58,28 @@ fn id_of(parts: &[Value], id: &str) -> Option<Value> {
     parts.iter().find(|p| s(&p["id"]).eq_ignore_ascii_case(id)).cloned()
 }
 
+/// One Markdown table cell: a bare `|` is escaped so it does not split the row, and a Link keeps
+/// its address whole (`[[key/5|a]]`): zt reads the Link before the row's cells, as `head_sections`'
+/// estimate table already relies on. furceri2026divide 7|a (2026-11-14): `5\|a` was refused as a Link target.
+pub(crate) fn table_cell(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("[[") {
+        let Some(close) = rest[open..].find("]]") else { break };
+        out.push_str(&rest[..open].replace('|', "\\|"));
+        out.push_str(&rest[open..open + close + 2]);
+        rest = &rest[open + close + 2..];
+    }
+    out.push_str(&rest.replace('|', "\\|"));
+    out
+}
+
 /// The symbols the plan's `variables` define (their first column).
 fn defined(plan: &Value) -> BTreeSet<String> {
     let mut rows = String::from("| 变量 |\n| --- |\n");
     for row in list(&plan["variables"]) {
         let first = pipe(row).first().map(|v| s(v)).unwrap_or_default();
-        rows.push_str(&format!("| {} |\n", first.replace('|', "\\|")));
+        rows.push_str(&format!("| {} |\n", table_cell(&first)));
     }
     table_names(&rows)
 }
@@ -363,8 +379,8 @@ pub(crate) fn skeleton(
             for row in list(&plan["variables"]) {
                 let cells = pipe(row).into_iter().map(s).collect::<Vec<_>>();
                 let first = cells.get(4).and_then(|id| id_of(&parts, id)).map(|p| s(&p["facet"])).unwrap_or_default();
-                let cell = |k: usize| cells.get(k).cloned().unwrap_or_default().replace('|', "\\|");
-                rows.push(format!("| {} | {} | {} | {} | {} |", cell(0), cell(1), cell(2), cell(3), first.replace('|', "\\|")));
+                let cell = |k: usize| table_cell(&cells.get(k).cloned().unwrap_or_default());
+                rows.push(format!("| {} | {} | {} | {} | {} |", cell(0), cell(1), cell(2), cell(3), table_cell(&first)));
             }
             format!("{}\n\n{lead}", rows.join("\n"))
         }
@@ -452,7 +468,7 @@ pub(crate) fn setting_text(plan: &Value, model: &str, resolve: &dyn Fn(&str) -> 
     out += "\n## 变量表（脚本写好，各卡的符号都用这里的写法）\n\n| 变量 | 含义 | 度量 | 来源 |\n| --- | --- | --- | --- |\n";
     for row in list(&plan["variables"]) {
         let cells = pipe(row).into_iter().map(s).collect::<Vec<_>>();
-        let cell = |k: usize| cells.get(k).cloned().unwrap_or_default().replace('|', "\\|");
+        let cell = |k: usize| table_cell(&cells.get(k).cloned().unwrap_or_default());
         out += &format!("| {} | {} | {} | {} |\n", cell(0), cell(1), cell(2), cell(3));
     }
     // The tables the plan uses, as the script read them.
@@ -477,8 +493,8 @@ pub(crate) fn setting_text(plan: &Value, model: &str, resolve: &dyn Fn(&str) -> 
                 let header = pipe(&t["header"]).into_iter().map(s).collect::<Vec<_>>();
                 out += &format!("| 行 | {} |\n|{}\n", header.join(" | "), " --- |".repeat(header.len() + 1));
                 for row in pipe(&t["rows"]) {
-                    let cells = pipe(&row["cells"]).into_iter().map(|c| s(c).replace('|', "\\|")).collect::<Vec<_>>();
-                    out += &format!("| {} | {} |\n", s(&row["label"]).replace('|', "\\|"), cells.join(" | "));
+                    let cells = pipe(&row["cells"]).into_iter().map(|c| table_cell(&s(c))).collect::<Vec<_>>();
+                    out += &format!("| {} | {} |\n", table_cell(&s(&row["label"])), cells.join(" | "));
                 }
                 if !s(&t["notes"]).is_empty() {
                     out += &format!("\n{}\n", s(&t["notes"]));
@@ -518,7 +534,7 @@ pub(crate) fn head_sections(plan: &Value, resolve: &dyn Fn(&str) -> Result<Strin
             ),
             None => ("见估计卡".into(), "见估计卡".into(), if truthy(&p["figure"]) { s(&p["figure"]) } else { "原书正文".into() }),
         };
-        let title = s(&p["title"]).replace('|', "\\|");
+        let title = table_cell(&s(&p["title"]));
         rows.push(format!("| [[{at}]] {title} | {value} | {uncertainty} | [[{spec}]] {place} |"));
     }
     out.push(("主要估计".to_string(), rows.join("\n")));
@@ -741,6 +757,24 @@ mod tests {
         assert!(spec.contains("7. 标准误：按企业聚类。"), "{spec}");
         let design = skeleton(&p["parts"][2], &p, &[], &resolve, None).unwrap();
         assert!(design.contains("**识别假设**\n- [[K/5|c|a1]] 假设 1：特征先于职位描述"), "{design}");
+    }
+
+    /// furceri2026divide 7|a, 8|a, 9|a (batch B, 2026-11-14): a 变量表 row's 来源 cell is the Link
+    /// [[furceri2026divide/5|a]]; escaping every `|` of the cell wrote `5\|a`, which zt refuses as a Link target,
+    /// so the fill never wrote the model. A Link keeps its `|`; a bare `|` in a cell is still escaped.
+    #[test]
+    fn a_link_in_a_variable_table_cell_keeps_its_address() {
+        let resolve = |id: &str| -> Result<String> { Ok(format!("K/5|c|{}", id.to_lowercase())) };
+        let mut p = plan();
+        p["variables"].as_array_mut().unwrap().push(json!(["$\\text{shock}_{t}$", "第二部分面板 SVAR 识别的对所有国家共同的碎片化结构冲击", "一个标准差", "[[furceri2026divide/5|a]]", "S0"]));
+        p["variables"].as_array_mut().unwrap().push(json!(["$g$", "a|b 两类", "", "", "S0"]));
+        let body = skeleton(&p["parts"][1], &p, &[], &resolve, None).unwrap();
+        assert!(body.contains("| 一个标准差 | [[furceri2026divide/5|a]] |"), "{body}");
+        assert!(!body.contains("5\\|a"), "{body}");
+        assert!(body.contains("a\\|b 两类"), "{body}");
+        let setting = setting_text(&p, "K/5|c", &resolve, None).unwrap();
+        assert!(setting.contains("| [[furceri2026divide/5|a]] |"), "{setting}");
+        assert!(!setting.contains("5\\|a"), "{setting}");
     }
 
     #[test]
