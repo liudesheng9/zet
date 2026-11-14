@@ -27,11 +27,11 @@
       "older_binary_refuses": "2"
     },
     "workflow": {
-      "base": "5.12.8",
-      "zt-econ-digest": "6.12.8",
-      "zt-math-digest": "5.12.8",
-      "zt-history-digest": "1.1.8",
-      "zt-idea-grow": "4.0.18"
+      "base": "5.12.9",
+      "zt-econ-digest": "6.12.9",
+      "zt-math-digest": "5.12.9",
+      "zt-history-digest": "1.1.9",
+      "zt-idea-grow": "4.0.19"
     }
   },
   "capabilities": {
