@@ -354,3 +354,110 @@ All lines below are the reruns after the Term relink.
 4. The digest chart 10\|b\|b keeps its two small 200-wide panels (font 9); only labels were fixed. The causal figure of 2\|a has 13 boxes and three feedbacks and reads small at 640 px; the chart sheet shows it alone as part 二.
 5. The relink JSON of the applying run was lost (Gate); the follow-up plan is empty, so no Card is left unlinked.
 6. No `card_locked`, no failed write. `read_view_changed`-type refusals (zt-check "changing read view", relink "archive changed while reading") were retried. Other sessions wrote other books on the box throughout. Nothing committed (stage brief).
+
+## Stage 6: evidence dialogue
+
+Does not apply: the book has no empirical model (its three models, 2\|a, 3\|a and 20\|a, are formal), so no dialogue survey ran.
+
+## Stage 7: literature organize
+
+Date 2026-11-14, live box (owner's request), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, `batch.mjs`, `leads.mjs`, `check.mjs`, and small `edit_card` scripts for link fixes, titles, the root index and the structure card). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-gomezcram2026government-organize.sqlite3` (`VACUUM INTO`, 399 MB, `PRAGMA integrity_check` ok; drive D had 66 GB free). The structure batch was previewed first (complete true, refusals none, `links_that_will_break` empty, 520 Cards renamed) and committed under its plan hash; the five demotes each previewed clean before commit. The tree went from 521 to 526 Cards (five new summary leads). No Card was deleted, and no formula or equation number changed. Only Cards of gomezcram2026government were written. No `card_locked`, no `read_view_changed` and no failed batch occurred; the tree was unlocked throughout.
+
+### Source divisions
+
+From `D:\zt-digest\gomezcram2026government\book.zh.md`: the title page (title, four authors with their units, date 2026-11-03, acknowledgement footnote) and 摘要; 1 引言 (1.1 相关文献); 2 基准模型 (2.1 with 2.1.1 资产持有者, 2.1.2 手到口主体; 2.2 with 2.2.1 强制持有, 2.2.2 资本监管, 2.2.3 量化宽松; 2.3 货币政策; 2.4 财政政策; 2.5 抑制政策; 2.6 市场出清; 2.7 均衡定义); 3 抑制的效应 (3.1 求解方法; 3.2 with 3.2.1–3.2.3; 3.3 with 3.3.1–3.3.3); 4 其他结果 (4.1, 4.2); 5 结论; 附录A (A.1–A.5; A.2 has the run-in numbered paragraphs A.2.1–A.2.4); 附录B (B.1 with B.1.1; B.2; B.3 with B.3.1–B.3.3); 附录 C (C.1). The source has no reference list in the Markdown. The top line takes the numbered sections and the three appendices, with the front matter first. The run-in A.2.1–A.2.4 are the author's own numbered divisions, so they nest as the third level (the assenza decision).
+
+The digest had filed the book as 20 group Cards, each spanning several sections (for example old 3 = §2.1.2–2.2.2, old 4 = §2.2.3–2.4, old 12 = §5 + A.1, old 15 = A.5 + B.1, old 20 = B.3.3 + C), with the Term list, the Cited list, the abstract chain and the structure Card all under old 1, and the §2–§2.1.1 reading notes on the Direct chain of the Model Card 2\|a.
+
+### Final tree (top line and divisions)
+
+```
+1   前置页 (new summary)              a 摘要 (old 1|d) · b 结构卡 (old 1|e, rewritten)
+2   1 引言 (old 1, rewritten)          f §1 notes (old 1|d|1–10) · g 1.1 相关文献 (old 1|d|11–15)
+3   2 基准模型 (new summary)           a §2 preamble (old 2|a|1)
+                                       b 2.1 (old 2, rewritten): b|b §2.1 preamble (old 2|a|2) · b|c 2.1.1 (old 2|a|3–9) · b|d 2.1.2 (old 3|b, 3|b|1)
+                                       c 2.2 (old 3, rewritten): c|a preamble (old 3|b|2) · c|b 2.2.1 (old 3|b|3) · c|c 2.2.2 (old 3|b|4–5) · c|d 2.2.3 (old 4|d) · c|e formal model (old 3|a)
+                                       d 2.3 (old 4|c) · e 2.4 (old 4, trimmed; old 4|c|1–4) · f 2.5 (old 5|b, 5|b|1) · g 2.6 (old 5, trimmed; old 5|b|2–4) · h 2.7 (old 5|b|5–6)
+                                       i formal model (old 2|a)
+4   3 抑制的效应 (old 6, rewritten)    b §3 preamble (old 6|b–6|b|2) · c 3.1 (old 6|b|3–7)
+                                       d 3.2 (new summary): d|a preamble (old 6|b|8–10) · d|b 3.2.1 (old 6|b|11–14) · d|c 3.2.2 (old 7) · d|d 3.2.3 (old 8)
+                                       e 3.3 (old 9, rewritten): e|b preamble (old 9|b) · e|c 3.3.1 (old 9|b|1–4) · e|d 3.3.2 (old 10, trimmed; old 10|a–10|a|2) · e|e 3.3.3 (old 10|a|3–4)
+5   4 其他结果 (old 11, rewritten)     b §4 preamble (old 11|b) · c 4.1 (old 11|b|1–4) · d 4.2 (old 11|b|5–6)
+6   5 结论 (old 12, trimmed)           b §5 notes (old 12|b–12|b|3)
+7   附录A (new summary)                a A.1 (old 12|b|4)
+                                       b A.2 (old 13, rewritten): b|b preamble (old 13|b–13|b|2) · b|c–b|f A.2.1–A.2.4 (old 13|b|3–6)
+                                       c A.3 (old 14|a) · d A.4 (old 14, trimmed; old 14|a|1–8) · e A.5 (old 15|b)
+8   附录B (new summary)                a B.1 (old 15, rewritten): a|b B.1 notes (old 15|b|1–4) · a|c B.1.1 (old 16)
+                                       b B.2 (old 17|c, 17|c|1)
+                                       c B.3 (old 17, rewritten): c|d preamble (old 17|d–17|d|2) · c|e B.3.1 (old 18) · c|f B.3.2 (old 19) · c|g B.3.3 (old 20|b–20|b|2)
+9   附录C (old 20, rewritten)          a C.1 (old 20|b|3–10) · b formal model (old 20|a)
+10  术语表 (Term list, from 1|a)
+11  参考文献 (Cited list, from 1|b)
+```
+
+One structure batch (48 items, 520 renamed), then `leads.mjs` twice: five demotes (前置页, §2, 3.2, 附录A, 附录B), then fifteen rewrites.
+
+### Crossers and how each was settled
+
+- Old 1 held the abstract chain, §1, §1.1, the two lists and the structure Card. The abstract (old 1\|d) went to the front matter, which got a new summary; the §1 notes and the §1.1 notes became two Side chains of old 1 (rewritten as the §1 summary); the lists went to the tail.
+- Old 2 led §2, §2.1 and §2.1.1 and spoke for the asset holders only: demoted. A new §2 summary took its place; old 2 is the 2.1 head (`3|b`), rewritten as a 2.1 summary. Its notes (old 2\|a\|1–9) sat on the Direct chain of the Model Card 2\|a; they are not model members and moved out by source line: §2 preamble `3|a`, §2.1 preamble `3|b|b`, 2.1.1 chain `3|b|c`.
+- Old 3 covered §2.1.2–2.2.2: its 2.1.2 notes (old 3\|b, 3\|b\|1) went to 2.1.2 (`3|b|d`), and old 3 (most content in 2.2) is the 2.2 head (`3|c`), rewritten for 2.2.1–2.2.3.
+- Old 4 covered §2.2.3–2.4: the 2.2.3 note (old 4\|d) went under 2.2, the 2.3 note (old 4\|c) became the 2.3 head, and old 4 (most content in 2.4) is the 2.4 head (`3|e`, trimmed to 2.4).
+- Old 5 covered §2.5–2.7: 2.5 and 2.7 notes moved out; old 5 (most content in 2.6) is the 2.6 head (`3|g`, trimmed to 2.6).
+- Old 6 spoke for §3 as a whole (3.1, 3.2, 3.2.1): rewritten as the §3 summary. Its single chain was cut into the §3 preamble, 3.1, the 3.2 preamble and 3.2.1. 3.2 had no head that spoke for it: the 3.2 preamble card (old 6\|b\|8) was demoted under a new 3.2 summary.
+- Old 9 (3.3 + 3.3.1) became the 3.3 summary; old 10 (3.3.2 + 3.3.3, more content in 3.3.2) is the 3.3.2 head (`4|e|d`, trimmed), and its 3.3.3 notes head 3.3.3.
+- Old 12 held §5 and the A.1 note: the A.1 note became the A.1 head under the new 附录A summary; old 12 is the §5 card (trimmed).
+- Old 14 (A.3 + A.4, more content in A.4) is the A.4 head (`7|d`, trimmed); the A.3 note heads A.3. Old 15 (A.5 + B.1): its A.5 note heads A.5; old 15 (more content in B.1) is the B.1 head (`8|a`, rewritten as a B.1 summary since B.1 has B.1.1).
+- Old 17 (B.2 + B.3) became the B.3 summary; the B.2 notes head B.2. Old 20 (B.3.3 + C.1, more content in C.1) is the 附录C card (`9`); the B.3.3 notes moved under B.3.
+- Links that a move made false were redirected (text unchanged otherwise): `3|f|1` and `3|g|b` (HtM holdings → 2.1.2 `3|b|d`), `5|c` (B.1 → `8|a`; it named old 17, an error from the digest), `8|a|c` (stochastic version → `8|c|g`), `8|a|c|b|3` (→ 3.3.3 `4|e|e`), `8|c|g` (the 3.2 pricing result → `4|d|d`), `9|a` and the Cited Card `11|m` (2.2.3 → `3|c|d`), `8|c|e` (baseline model → `3|i`), `8|c|f` (→ `8|c|g`), and the Model Card `3|i` (its 政策块 line → the §2 summary `3`).
+
+Calls that could go the other way: the run-in A.2.1–A.2.4 nested as divisions (one Card each); 2\|a filed as the last Side branch of the §2 summary (it spans §1–§4 and A–B; its head's source line is §2–2.1.1); 20\|a filed under 附录C by its head's source line (§C.1) and not under 2.2.3, where its chapter 1 (the folded verbal version) starts; 3\|a filed as the last Side branch of the 2.2 head (it spans 2.2.1–2.2.2); the front matter as its own top Card with a new summary, though the title page has no Card of its own; old 4 and old 5 given to 2.4 and 2.6 by the content rule.
+
+### Summary leads and other text
+
+- New summaries (`leads.mjs` demote): `1` (前置页), `3` (2 基准模型), `4|d` (3.2), `7` (附录A), `8` (附录B). Rewrites: `2` (1 引言), `3|b` (2.1), `3|c` (2.2), `4` (3), `4|e` (3.3), `5` (4), `7|b` (A.2), `8|a` (B.1), `8|c` (B.3), `9` (附录C); trims to one section: `3|e` (2.4), `3|g` (2.6), `4|e|d` (3.3.2), `6` (5), `7|d` (A.4). Each summary has the source's name and main claim as title, a paragraph that walks the subdivisions, `小节索引：`, `在全书中的位置：` and the source line. Formulas the old text carried are copied unchanged.
+- Division heads retitled with their section number: `4|d|c` (3.2.2), `4|d|d` (3.2.3), `8|c|e` (B.3.1), `8|c|f` (B.3.2); source lines added to these four and to `8|a|c` (B.1.1).
+- The root index lists the eleven top Cards. The structure Card `1|b` lists the nine parts and the three models with their sections (its old list named 2\|a's chapters as models, stale since the fold).
+- `zt-check --cards` on the root and the 31 written leads and fixed notes: first run 6 faults (R2 ×2, R3 ×2 in `1|b`; I3 in `8|c|e`, `8|c|f`), fixed once; second run `faults: 0`, exit 0. The link-only edits of `3|i` and `11|m` carry existing faults (3\|i 概要 R2/R3, as at Stage 5; 11\|m nine R2 in digest lines) that this pass did not change.
+
+### Chart targets
+
+Backup: `D:\zt\backups\zt-before-gomezcram2026government-chart-targets.sqlite3` (integrity ok). In `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\gomezcram2026government-2_a.mjs` the `head` is now `gomezcram2026government/3|i`; in `-3_a.mjs` the `head` is `gomezcram2026government/3|c|e` and the `B()` prefix (imported 2\|a parts) is `gomezcram2026government/3|i|a`; in `-20_a.mjs` the `head` is `gomezcram2026government/9|b`. The modules hold no other hard-coded address (the 2\|a and 20\|a modules build every target from `head`). The header comments name the new head and the old one; the file names stay. `apply.mjs --write`: `same` for all 27 + 4 + 5 Cards, `nothing to write`: zt had already rewritten every `data-zt` target with the moves. Gate (light and dark):
+
+- `verify.mjs --model gomezcram2026government/3|i`: `28 chart(s) in 145 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`.
+- `verify.mjs --model gomezcram2026government/3|c|e`: `7 chart(s) in 15 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`.
+- `verify.mjs --model gomezcram2026government/9|b`: `5 chart(s) in 15 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`.
+- 0 dead targets on all three (`dead-target` is a lint rule of `verify.mjs`).
+
+### Gate
+
+- `check.mjs gomezcram2026government`: top line 1 前置页 (3), 2 1 引言 (21), 3 2 基准模型 (189), 4 3 抑制的效应 (41), 5 4 其他结果 (9), 6 5 结论 (6), 7 附录A (21), 8 附录B (36), 9 附录C (25), 10 Term list (146), 11 Cited list (28); `no fault`. The start snapshot was overwritten by a later outline run, so the snapshot comparison was made by hand from the first outline: 521 → 526 Cards (five new summaries); units 2\|a 156 → 145 (the eleven §2–2.1.1 reading notes that stood on the Model Card's Direct chain, not model parts; `get_model` members stay 144), 3\|a 9 → 9, 20\|a 15 → 15, Term list 146, Cited list 28.
+- Source-line walk (175 Cards with a source line): every Card under its own top division, and every second- and third-level branch holds only its own section's label (for example `3|c|b` §2.2.1, `7|b|e` §A.2.3, `8|c|g` §B.3.3). No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- `check-model.mjs`: `3|i` `members 144 {"main":14,"side":130}`, `relations {"refers":138,"rests-on":247,"corresponds":15,"illustrates":9,"contrasts":13}; loose 0; self_sufficient true`; `3|c|e` `members 14 {"shared":6,"main":2,"side":6}`, `relations {"rests-on":17,"refers":6}; loose 0; self_sufficient true`; `9|b` `members 14 {"main":3,"side":10,"off":1}`, `relations {"refers":14,"rests-on":15}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean` on all three (advice only: chapter 1 of `3|i` and `9|b` has no result card, as before).
+- `check-settings.mjs`: `settings: all in the setting part, as a dependency tree` on all three (advice unchanged: `uses an assumption` lines on `3|i|a|11|a|a`, `3|i|a|12|d|a`, `3|i|a|13|c|a`, `9|b|a|2`).
+- `imports.mjs check`: exit 0 on all three (`3|i` keeps the copy advice `3|i|a|3` ~ `9|b|a|1`, judged a comparison at Stage 4).
+- Term relink: `{"cards_changed":0,"links_added":0,"ok":true,"links_repaired":0,"rounds":0,"applied":false,"cards_refused":0,"book":"gomezcram2026government"}` (`leads.mjs` had already turned the Term names of the new text into Term uses); `-PlanOnly`: `{"links_repaired":0,"applied":false,"links_added":0,"ok":true,"cards_changed":0,"cards_refused":0,"rounds":0,"book":"gomezcram2026government"}`. No relink bug.
+
+## Result
+
+Final top line: 前置页 · 1 引言 · 2 基准模型 · 3 抑制的效应 · 4 其他结果 · 5 结论 · 附录A 模型求解与证明 · 附录B 附加结果 · 附录C 金融抑制的微观基础 · 术语表 · 参考文献.
+
+Models (final addresses):
+
+- `gomezcram2026government/3|i`, formal (level 2): the baseline repression model (was 2\|a), 144 parts, setting card `3|i|a`, chapters `3|i|a|1`–`13`, illustrated (28 charts); filed as the last Side branch of the §2 summary. It lends the block `3|i|a|2|a` to `3|c|e`.
+- `gomezcram2026government/3|c|e`, formal (level 2): the micro-foundation of the wedge (was 3\|a), 14 members (6 imported from `3|i`), illustrated (7 charts); filed under the 2.2 head.
+- `gomezcram2026government/9|b`, formal (level 2): the QE balance-sheet channel (was 20\|a), 14 parts, illustrated (5 charts); filed under the 附录C card.
+
+All applicable stages passed their gates; Stage 6 does not apply. Open items across the sequence:
+
+1. Restructure step 3 text was not redrafted: result and derivation cards keep their digest format; `3|i|a|5|c` stands alone; twelve settings sit directly under the setting card (Stages 3–4).
+2. Chapter 13 (A.1) of `3|i` restates the ψ→∞ utility and SDF derivation of chapter 2, a matter for a later restructure (Stages 3–4).
+3. The copy advice `3|i|a|3` ~ `9|b|a|1` stays as a judged comparison (Stage 4); the explain prompt could ask for `[[…]]` in place of a bare `假设 N` (Stage 4).
+4. Existing zt-check faults not changed: `3|i` 概要 R2/R3, `3|i|a|m` R3, `9|b` **关联** R3 (Stage 5), and nine R2 in the digest lines of the Cited Card `11|m` (Stage 7, link-only edit).
+5. `check-premises` hits (10 on `3|i`, 2 on `3|c|e`) are existing **说明**/**起点** pointers (Stage 5).
+6. The illustrate modules keep their file names (`gomezcram2026government-2_a.mjs`, `-3_a.mjs`, `-20_a.mjs`); only `head`, the `B()` prefix and the header comments changed (Stage 7).
+7. The organize's start snapshot was overwritten, so the `check.mjs` snapshot comparison was done by hand (Stage 7).
+8. The Stage-5 relink JSON of the applying run was lost; later plans are empty (Stage 5).
+9. This pass doc is not committed (the stage brief said no commit).
