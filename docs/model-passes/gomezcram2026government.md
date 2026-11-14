@@ -145,3 +145,112 @@ The **结构** sections of the three Model Cards were rebuilt from the build ord
 4. `check-premises.mjs 2|a` lists pointers from settings to later equations ((6), (17), (19), (21)–(24), (26)–(29), (31), (32)); all are pointers in **直觉** or **说明**, not uses.
 5. The check reads some symbols first in a card that only carries them in a sub- or superscript or in a function argument ($r$ in $R^{gr}_{t+1}$ in the policy block, $G(\delta_b)$ in the spending process, $x_t$ in the loading sum); the rows point where the check says.
 6. 3\|a's head and its proposition still link chapter 3 of 2\|a (now 2\|a\|a\|9) for the repression rule; the rule itself is now the setting 2\|a\|a\|e\|e. The import stage settles these Links with the shares.
+
+## Stage 3: restructure
+
+Date 2026-11-14, live box, under `zt-model-restructure`, done in one side session by scripts (no subagent, no DeepSeek job, so no DeepSeek cost; the chapter leads were written by hand). Backup: `D:\zt\backups\zt-before-gomezcram2026government-restructure.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Moves ran as four `apply_batch` tree batches (2|a in two batches of 40 and 43 items, because a batch takes at most 64; 3|a 3 items; 20|a 4 items), each previewed, then committed under the plan hash; `links_that_will_break` was empty in every preview. One commit of the second 2|a batch returned no reply; the script previewed again and committed (applied once). Text ran as `edit_card` calls under `-Allow`. Before each text write a script compared the display formulas and the equation numbers of the old and new bodies; no display formula and no equation number changed. No `card_locked` error and no `read_view_changed` error occurred. The Literature tree went from 518 to 521 Cards (three new chapter cards: 2\|a\|a\|2, 3\|a\|a\|1, 20\|a\|a\|2). The setting parts kept their structure; the only edits there were chapter numbers in text, the first-meeting column of 22 notation rows (below).
+
+### 2\|a (formal): the intuition spine
+
+```
+2|a|a  设定 (setting part as the settings pass left it)
+2|a|a|1   第 1 章：文字版本与两条渠道（§1）                 ← 设定, 2|a|a|b
+    a 机制 → a|1 结论;  b 例子 (unchanged)
+2|a|a|2   第 2 章：抑制楔子与债券定价（§2.1–2.1.1） (new)    ← 2|a|a|c, c|a
+    a 结果：楔子抬高债券价格 (6)(7)        (proof a|a 债券一阶条件 (5) → a|a|1 楔子与定价方程)
+    b 结果：极限下的类 CAPM 定价核 (8)     (proof b|a ψ→∞ 的效用 → b|a|1 对数定价核;  b|b 注记)
+2|a|a|3   第 3 章：货币与财政政策块（§2.3–2.4）             ← 第 2 章, 2|a|a|e
+    a 结果：实际预算约束 (17)              (proof a|a 定义 (18) → a|a|1 实际形式)
+    b 结果：含楔子的债券价格方程 (19)       (proof b|a)
+2|a|a|4   第 4 章：抑制政策、市场出清与均衡（§2.5–2.7）      ← 第 3 章, 2|a|a|f
+    a 结果：盈余把资源转给资产持有者 (24)   (proof a|a 消费配置)
+    b 定义：竞争性均衡
+2|a|a|5   第 5 章：线性化系统与确定性区域（§3.1）            ← 第 4 章, 2|a|a|h
+    a 定义：复合参数 (29)
+    b 结果：引理 1 四个确定性区域          (proof b|a (26) → b|a|1 (27) → b|a|2 (28))
+    c 推导：区域 3 的抑制强度
+2|a|a|6   第 6 章：货币配合下的风险溢价（§3.2.3）            ← 第 5 章, 假设 1
+    a 前提：均衡解 (31)(32) → a|1 前提：效用的线性化
+    b 结果：推论 1.3 风险溢价为正          (proof b|a (A7) → (A8) → (36);  b|b 图)
+    c 结果：推论 1.3 抑制降低溢价          (proof c|a (A10) → G 的根)
+2|a|a|7   第 7 章：货币不配合时的抑制均衡（§3.3.1）          ← 第 5 章, 假设 2
+    a 前提：线性化系统
+    b 结果：命题 2 抑制下通胀为零          (proof b|a 通胀为零 → 价格载荷 → 债务载荷 → ω_g* (39);  b|b 图 3)
+    c 结果：推论 2.1 财政支撑越弱抑制越强   (proof c|a)
+2|a|a|8   第 8 章：线性化均衡与四体制载荷（A.2）             ← 第 7 章, 2|a|a|h|a
+    a 结果：载荷通解                        (proof a|a 序列空间递推 → 通胀与价格载荷 → 债务载荷;  a|b 分区图)
+    b 结果：体制一;  c 结果：体制二 (proof c|a);  d 结果：体制三 (proof d|a);  e 结果：体制四
+2|a|a|9   第 9 章：财政配合体制（§4.1、B.1）                 ← 第 8 章, 假设 3
+    a 前提：支出偏离与线性化回报
+    b 结果：财政配合的载荷 (A12)(A13)       (proof b|a → b|a|1)
+    c 结果：命题 3 抑制抬高债券价格         (proof c|a 三个偏导;  c|b 图 4)
+    d 结果：推论 3.1 福利再分配             (proof d|a 福利 1/2 → 2/2 → ω_H 的作用)
+2|a|a|10  第 10 章：财政配合体制的风险溢价（B.1.1）          ← 第 9 章
+    a 定义：风险溢价
+    b 结果：风险溢价为负 (A14)              (proof b|a 回报反应 → 效用弹性 → 闭式;  b|b 图 5)
+    c 结果：推论 3.2 溢价的比较静态         (proof c|a)
+2|a|a|11  第 11 章：双配合体制的连续统均衡（B.2）            ← 第 8 章, 假设 4
+    a 结果：命题 4 均衡连续统 (A16)          (proof a|a 通胀与价格路径 → 债务路径;  a|b 均衡族)
+    b 结果：两端的退化
+2|a|a|12  第 12 章：抑制的随机持续时间（§4.2、B.3）          ← 第 7 章, 变体五
+    a 政策函数形式 (A17)(A18)
+    b 结果：状态依赖的载荷 (A19)            (proof b|a 四步载荷;  b|b 证明：(A19) 良定（B.3） → 公共因子 → 特例 (32) → 结果)
+    c 结果：命题 5 抑制越不持久效果越弱     (proof c|a 两步比较静态;  c|b 图 6)
+    d 结果：推论 5.1 抑制终结的效应         (proof d|a (A20)–(A22);  d|b 图 7)
+    e 结果：推论 5.2 终结风险被定价         (proof e|a (A23))
+2|a|a|13  第 13 章：非线性方程组（A.1）                      ← 第 4 章, 2|a|a|g
+    a 结果：效用与贴现因子 (proof a|a → a|a|1);  b 结果：两种债券的定价;  c 结果：两类消费 (proof c|a)
+    d 结果：政府预算与债券回报;  e 结果：政策规则;  f 结果：抑制的两条通道
+```
+
+- The base pricing chain (former 2\|a\|a\|2–7) left the main line: a new chapter card `2|a|a|2` (第 2 章) holds the proposition (6)(7) and the CAPM-limit conclusion (8) as results, each with its derivation chain as a Side branch.
+- Chapter order follows the book with one exception forced by the premises: A.2 (former 第 10 章, the four-regime loadings) comes right after the active/active chapter and before the fiscal-accommodation chapter, because its regime-3 card rests on 命题 2 (chapter 7) and the fiscal chapter's four proof steps rest on its 体制一 (the five stage-2 forward faults of 第 7 章 → 第 10 章 are gone by this move). B.1.1 and B.2 stay chapters (each states its own results, 推论 3.2 and 命题 4, and B.1.1 is the fiscal counterpart of the §3.2.3 risk-premium chapter); they follow the fiscal chapter. B.3 (former 第 13 章) proves that (A19) is well defined and nests (32): it is now the second proof branch of the result (A19) in chapter 12 (`2|a|a|12|b|b`, facet `证明：(A19) 良定（B.3）`, new title, one opening sentence naming the result, `本模型` → `本卡`). A.1 is the last chapter (it proves no result; it lists the full system).
+- Renumbering, old → new: 2→3, 3→4, 4→5, 5→6, 6→7, 10→8, 7→9, 11→10, 12→11, 8→12, 9→13, 13→(B.3 under 12).
+- In every chapter the flat chain was cut into results with their proof chains as Side branches. A 前提 or 定义 card that heads a chapter and serves several results stays the chapter's first Side branch (5\|a, 6\|a with 6\|a\|1, 7\|a, 9\|a, 10\|a, 12\|a), as 均衡系统 in assenza 7\|a. The aside cards (图, 注记, 分区图, 均衡族) stay under their result after the proof. Result facets now read `结果：…` (31 Cards; the former `命题`, `结论`, `推论`, `结果`, `体制一`–`体制四`, `均衡条件`, `政策规则` facets; titles unchanged).
+- Every chapter card got **直觉** (lead of 20+ characters), **本章结果** (pointers `结果：[[…]]`, `前提：`, `定义：`, `推导：`, `机制：`, `旁注：`) and **承上启下** with two `依赖` lines (the earlier chapter or setting it builds on); the old text follows (`本模型` → `本章`). Chapter facets carry the new numbers. This anchored all 13 chapters.
+- Chapter numbers in text, old → new: the 前提 cards `2|a|a|7|a` (第 6/4 章 → 第 7/5 章) and `2|a|a|9|a` (第 7 章 → 第 9 章); the notation card (第 9 章 → 第 13 章, 第 5 章 → 第 6 章); settings `g`, `h`, `i`, `j`, `k`, `l`, `m` (variant five: 第 13 章 → 第 12 章).
+- With results now ahead of their proofs, `check-settings` found 12 symbols first met in a result card. The notation rows now name those cards; three result cards got one defining clause ($M_{t+1}$ in 2\|a; $rp^{gr}$ in 6\|b; $r_{\varepsilon,k}^{gr}$ in 9\|c); the others already define theirs ($m_{t+1}$, $r_{At+1}$ in 2\|b; $B_g$, $Q_g$, $\Pi_g$ in the (A19) display of 12\|b; $u_{A,\varepsilon}$ in 10\|a; the two $rp^{gr,i}$ in 12\|e). The $B$ row now points to 2\|a\|a\|2\|a, because the check reads $B$ in $Q_tB_{it}$ (as stage 2 open item 5). `cite`: 第 6 章's 本章结果 line and the B.3 opening sentence now link 假设 1 and 假设 5 in place of the bare names.
+- The Model Card: new title (基准模型：金融抑制经定价楔子与财政再分配改变政府融资成本，效果取决于货币—财政体制), the question widened to the regimes, one model-wide sentence added to 概要 (the old 概要 kept), **结构** rebuilt from the tree, **分部** (设定与直觉 from 2\|a\|a; 基准模型 from 第 2 章; 线性化与货币主导 from 第 5 章; 财政配合 from 第 9 章; 随机持续时间与非线性系统 from 第 12 章).
+
+Network (`check-network.mjs`): 设定 → {1, 2, 3, 4, 7, 13}; 4 → 5 → 6; 7 → {8, 12}; 8 → {9, 11}; 9 → 10.
+
+### 3\|a (formal)
+
+```
+3|a|a   设定 (unchanged)
+3|a|a|1  第 1 章：监管约束与楔子的闭式（§2.2.1–2.2.2） (new)   ← 3|a|a|b, 3|a|a|c
+    a 结果：监管约束映射为楔子   (proof a|a 边际监管价值 (12) → a|a|1 楔子取闭式)
+```
+
+The two derivations and the proposition left the main line under a new chapter card. The notation rows of $\mu_t$ and $\Omega_t$ now name the result card, which now writes `抑制楔子 $\Omega_t$ 的定义 (6)`. **结构** rebuilt. The eight legacy shares and the 共用前提 block stay for the import stage.
+
+### 20\|a (formal)
+
+```
+20|a|a  设定 (unchanged)
+20|a|a|1  第 1 章：文字版本（§2.2.3）                       ← 20|a|a, 20|a|a|b
+    a 机制 → a|1 结论 (unchanged)
+20|a|a|2  第 2 章：杠杆约束与楔子（附录 C.1） (new)          ← 20|a|a|c, 20|a|a|c|a
+    a 结果：楔子的决定式 (A28)        (proof a|a (A27) → a|a|1 对数线性化)
+    b 结果：量化宽松抬高楔子
+```
+
+Chapter 1 got **直觉**/**本章结果**/**承上启下** (anchored on the setting card and the overview). Eight notation rows ($v_{t+1}$, $n_{t+1}$, $r_{t+1}^D$, $\Omega^{ss}$, $\bar\mu^{GK}$, $\chi_{V/N}$, $\chi_D$, $\chi_\mu$) now name the result card; it got one clause defining $\Omega^{ss}$. **结构** rebuilt.
+
+### Gate
+
+- `check-model.mjs 2|a`: 144 members (14 main, 130 side), loose 0, no closure, forward or unanchored fault, `self_sufficient` true (was false). `3|a`: 16 members (2 main, 6 side, 8 shared), loose 1, `self_sufficient` true. `20|a`: 16 members (3 main, 10 side, 2 shared, 1 off), loose 1, `self_sufficient` true. The two loose Links are the Model Cards' cross-model **关联** lines (3\|a → 20\|a\|a\|1, 20\|a → 2\|a\|a\|1), as after stage 2.
+- `check-network.mjs`: `network: clean` for all three (advice only: chapter 1 of 2\|a and of 20\|a has no `结果：` card, right for the verbal chapter).
+- `check-premises.mjs`: 20\|a `premises: none used before their card`. 2\|a 25 hits, all pointers: 22 are the setting-part **直觉**/**说明**/`依赖` lines stage 2 listed (c\|a, d, e, e\|d, e\|e, e\|f, h, h\|a, i, j, l naming (6), (17), (19), (21)–(24), (26)–(29), (31), (32)); 3 are the definition (29) `2|a|a|5|a`, whose **直觉** lines say which of (26)–(28) the composite parameters enter. 3\|a 2 hits: `2|a|a|c|a` (stage-2 pointer to (6)) and `2|a|a|2|a|a|1`, the proof step of the result that states (6); it derives (6) itself.
+- `check-settings.mjs`: `settings: all in the setting part, as a dependency tree` for all three (2\|a advice: 12 settings under the setting card).
+- `list_broken_links` (agent): `{"broken":[]}`. Literature tree 518 → 521 Cards.
+- Term relink: `{"ok":true,"links_repaired":0,"links_added":92,"applied":true,"rounds":1,"cards_changed":21,"book":"gomezcram2026government","cards_refused":0}`. All checks above were rerun after it and stay as listed.
+
+### Open
+
+1. Step 3 card text was not redrafted: result cards keep their digest body (no `**为什么**`/`**证明**` sections), derivation cards keep their digest format, chapter cards keep their old 问题/概要/关联 text below the new sections. The chapter-1 cards of 2\|a and 20\|a keep the facets 机制/结论.
+2. Chapter 13 (A.1) restates the ψ→∞ utility and the SDF derivations of chapter 2 (`13|a|a`, `13|a|a|1` against `2|b|a`, `2|b|a|1`); the import stage may share them.
+3. `2|a|a|5|c` (推导：区域 3 的抑制强度) stands alone under chapter 5; it ends in no result card of its own. Inside the B.3 proof branch, `2|a|a|12|b|b|a|2` keeps its facet `结果`.
+4. 3\|a: the legacy shares, the 共用前提 block and the Links to 2\|a's chapter 4 for the repression rule (stage 2 open item 6) are the import stage's.
+5. The setting card of 2\|a still carries twelve settings (advice `wide`, stage 2 open item 2).
+6. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
