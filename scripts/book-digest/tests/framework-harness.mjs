@@ -1552,7 +1552,8 @@ function runtime(kind, opts = {}) {
       const real = (b.jobs || []).filter(Boolean)
       const jobs = real.length ? real.map((j) => job(j.id || 'brief', { files: j.files, prompt: j.prompt })) : batchModels.map((m) => job(jobOf(m, 'brief')))
       modelJobLists.push({ step, jobs })
-      return { ok: true, step, jobs: jobs.length, file: saved('brief-jobs.json', jobs), skipped: b.skipped || [] }
+      // 2026-11-13: a model whose accepted build only lacks unwritten parts comes back under `resumed`.
+      return { ok: true, step, jobs: jobs.length, file: saved('brief-jobs.json', jobs), skipped: b.skipped || [], resumed: opts.modelResumed ? batchModels.join(',') : '' }
     }
     if (step === 'fill') {
       // S10: the plans the architect wrote. A plan the architect only claimed (opts.noPlanFile) is a failed
@@ -1682,7 +1683,7 @@ function runtime(kind, opts = {}) {
       const gate = raw.gate ? { gate_complete: raw.gate.complete === true, gate_open: n(raw.gate.counts && raw.gate.counts.open) } : {}
       return { ok: true, units: list(raw.units), claimed: n(raw.claimed), models: list(raw.models), batches: plan ? plan.split(';').length : 0, plan, file: raw.file, ...gate }
     }
-    if (step === 'brief') return { ok: true, step, jobs: n(raw.jobs), file: raw.file, skipped: (raw.skipped || []).map((x) => shortAt(x && x.model ? x.model : x)).join(',') }
+    if (step === 'brief') return { ok: true, step, jobs: n(raw.jobs), file: raw.file, skipped: (raw.skipped || []).map((x) => shortAt(x && x.model ? x.model : x)).join(','), resumed: String(raw.resumed || '').split(',').filter(Boolean).map(shortAt).join(',') }
     if (step === 'fill') {
       const plans = raw.plans || []
       return { ok: true, step, plans: plans.length, derive: raw.derive === true, deferred: (raw.deferred || []).map((d) => `${shortAt(d.model)}:${d.why}`).join(';'), statuses: modelPairs(plans), jobs: n(raw.jobs), file: raw.file }
@@ -3425,13 +3426,13 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '61' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '8' && modules['zt-workflow-lib'] === '18' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '17' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '61' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '8' && modules['zt-workflow-lib'] === '19' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '17' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
   const growLoad = lib.loadBlueprint(path.join(root, 'scripts', 'idea-grow', 'workflow', 'zt-idea-grow.blueprint.json'))
   const grow = lib.build(growLoad.bp, lib.loadModules(growLoad.dirs))
-  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '18', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
+  check(grow.modules['zt-grow-cycle'] === '14' && grow.modules['zt-workflow-lib'] === '19', `lock: the idea-grow build carries zt-grow-cycle v13 and the shared zt-workflow-lib v10 (${grow.modules['zt-grow-cycle']})`)
   // S6: both workflows read the Lock with the one shared function; neither keeps a copy of its own.
   check(grow.script.includes('function ztLockRefusal(') && grow.script.includes('card_locked at ${where}') && !grow.script.includes('const lockRefusal = (text) =>') && !grow.script.includes('stopOnLock'), 'lock: the idea-grow build reads the Lock with the shared seam, not its own copy')
   check(!builds.econ.script.includes('v.code === ZD_LOCK || v.error === ZD_LOCK') && (builds.econ.script.match(/function ztLockRefusal\(/g) || []).length === 1, 'lock: the digest build keeps no copy of the Lock reader')
@@ -3676,6 +3677,20 @@ for (const which of ['econ', 'math']) {
 }
 
 // ================================================================================================================
+// zt-model-lib v19 (rotunno2026industrial/4|a, 2026-11-13): a model the brief resumes keeps its accepted build. Its
+// batch calls no architect and runs no fill, derive or review; the close rounds and the report still run over it.
+// ================================================================================================================
+{
+  const { modelCalls, calls } = await run('econ', { ...base, figures: false }, { modelResumed: true })
+  const steps = modelCalls.map((c) => c.step)
+  const seen = [...new Set(steps)].join(', ')
+  check(steps.includes('brief') && steps.includes('close'), `v19: a resumed batch briefs and closes (${seen})`)
+  check(!steps.some((st) => ['fill', 'derive', 'review', 'explain'].includes(st)), `v19: a resumed batch runs no fill, derive, review or explain (${seen})`)
+  const architects = calls.filter((c) => /^plan: /.test(String(c.label || ''))).map((c) => c.label)
+  check(!architects.length, `v19: a resumed batch calls no Sonnet architect (${architects.join(', ') || 'none'})`)
+}
+
+// ================================================================================================================
 // #178: the mathematics stages without relay agents (docs/workflow-module-structure-proposal.md)
 // ================================================================================================================
 {
@@ -3761,7 +3776,9 @@ for (const which of ['econ', 'math']) {
     const t = readText(`scripts/book-digest/workflow/modules/${m}`)
     check(!t.includes('model = its "model"') && t.includes('model "${ZT_DRIVE_MODEL}"'), `${m}: the manager starts every job on the run's one source value`)
   }
-  check(/version: '18'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  check(/version: '19'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  // v19 (rotunno2026industrial resume, 2026-11-13): a promise is no answer; the manager retries and never runs the step.
+  check(/先运行，再回复/.test(shared) && /不要回复「我会运行」/.test(shared) && /a promise such as/.test(shared) && /never yours, even once/.test(shared), 'v19: the drive job runs first and never promises; its manager retries a promise once and never runs the step itself')
 }
 
 // ================================================================================================================

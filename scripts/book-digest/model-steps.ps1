@@ -238,7 +238,8 @@ switch ($Step) {
         $r = Compiler 'brief' ($extra + $Limits.Split(' '))
         if (-not $r.json) { Fail 'brief' $r; break }
         $file = Jobs 'jobs.json' $r
-        Reply @{ ok = $true; step = 'brief'; jobs = @($r.json.jobs).Count; file = $file; skipped = (@($r.json.skipped | Where-Object { $_ } | ForEach-Object { Short "$(if ($_.model) { $_.model } else { $_ })" }) -join ',') } $r.json
+        # `resumed`: a model whose accepted build only lacks unwritten parts; its job is in the same file (2026-11-13).
+        Reply @{ ok = $true; step = 'brief'; jobs = @($r.json.jobs).Count; file = $file; skipped = (@($r.json.skipped | Where-Object { $_ } | ForEach-Object { Short "$(if ($_.model) { $_.model } else { $_ })" }) -join ','); resumed = (@($r.json.resumed | Where-Object { $_ } | ForEach-Object { Short "$(if ($_.model) { $_.model } else { $_ })" }) -join ',') } $r.json
     }
     'fill' {
         Renew

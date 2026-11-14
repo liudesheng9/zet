@@ -338,14 +338,26 @@ fn every_content_job_of_a_model_continues_its_brief() {
     mcp.call("edit_card", json!({"at": model, "body": "**问题**\n\n买者如何选择数量。\n\n**概要**\n\n买者按价格选数量。\n\n**来源**\n\n第一章。"}));
     drop(mcp);
 
-    // 5. Close: the unanchored part goes back to the model's conversation, never to `unowned`.
+    // 5. Close: the unanchored part goes back to the model's conversation, never to `unowned`. No fill or derive
+    //    job ran here, so every part is still 待写 and goes back too (rotunno2026industrial/4|a part O, 2026-11-13):
+    //    the notes fall into the fill job and the derive job, yet close lists ONE follow-up for the model's one
+    //    conversation, its ALLOW file naming the Cards of both jobs and its fallback both job files.
     let close = ok_json(&zt.digest(&["model", "-Step", "close", "-Work", work.to_str().unwrap(), "-Staging", staged.to_str().unwrap()]), "close");
     assert!(close["faults"].as_u64().unwrap_or(0) > 0, "the close round sees the unanchored part: {close}");
     assert_eq!(close["unowned"], json!([]), "a Card of a model of this batch is never unowned: {close}");
     let jobs = close["jobs"].as_array().expect("close jobs");
     assert_eq!(jobs.len(), 1, "close lists one follow-up per model conversation: {close}");
     assert_eq!(jobs[0]["continue"], json!(format!("{slug}:brief")));
-    assert_eq!(jobs[0]["fallback"].as_array().map(Vec::len), Some(4));
+    assert_eq!(jobs[0]["fallback"].as_array().map(Vec::len), Some(5), "the fill doc, setting.md, both job files and the follow-up: {close}");
+    let note = std::fs::read_to_string(jobs[0]["files"][0].as_str().expect("follow-up file")).expect("read follow-up");
+    assert!(note.contains("构建检查（未写）") && note.contains("构建检查（未接上）"), "both kinds of note go back together: {note}");
+    let allow = note.lines().find_map(|l| l.strip_prefix("ALLOW 已更新：")).expect("the ALLOW line").to_string();
+    let allowed = std::fs::read_to_string(&allow).expect("read merged allow");
+    let state = state_of(&work);
+    for id in ["F1", "D1", "D2"] {
+        let at = state["models"][&model]["ids"][id].as_str().expect("part address");
+        assert!(allowed.lines().any(|l| l.trim() == at), "the ALLOW file names {id} {at}: {allowed}");
+    }
 
     // 6. #197 pilot: the model's one fill job writes the Model Card too, and a writer that re-wrote the head
     //    without the compiler's 结构 list made model-finish refuse the model. report puts the list back from
@@ -416,3 +428,72 @@ fn the_math_variant_reviews_in_its_own_conversation() {
 
 
 
+
+/// rotunno2026industrial/4|a (2026-11-13): a built and reviewed model whose writer left one part 待写 is resumed,
+/// not rebuilt. The reopened model comes back to `brief`; the brief keeps its plan, part map and review, and
+/// sends ONE job for the missing part alone (continuing the model's conversation). The review does not run
+/// again, and close and report then read the model as usual.
+#[test]
+fn a_reviewed_model_with_an_unwritten_part_is_resumed_not_rebuilt() {
+    let Some(program) = zt_program() else {
+        eprintln!("skipped: no zt binary");
+        return;
+    };
+    let zt = Zt::new(program);
+    let staged = staging(zt._dir.path(), "Key");
+    {
+        let mut mcp = zt.mcp();
+        mcp.call("create_literature", json!({"bibtex": "@book{Key, title={Test Book}}", "body": "一本测试书。"}));
+        mcp.call(
+            "create_successor",
+            json!({"at": "Key", "kind": "direct", "title": "买者模型", "body": "问题：买者如何选择数量。", "type": "model", "level": "formal"}),
+        );
+    }
+    let model = "Key/1".to_string();
+    let work = work(&staged, &model, "brief");
+    let slug = model.replace(['/', '|', '\\'], "_");
+    let w = work.to_str().unwrap();
+    let s = staged.to_str().unwrap();
+    ok_json(&zt.digest(&["model", "-Step", "apply", "-Work", w, "-Staging", s]), "apply");
+    // The writers wrote every Card but the side part F7, and the model was reviewed.
+    let ids = state_of(&work)["models"][&model]["ids"].clone();
+    let missing = ids["F7"].as_str().expect("F7 address").to_string();
+    {
+        let mut mcp = zt.mcp();
+        mcp.call("edit_card", json!({"at": model, "body": "**问题**\n\n买者如何选择数量。\n\n**概要**\n\n买者按价格选数量。"}));
+        for (id, at) in ids.as_object().expect("part map") {
+            let at = at.as_str().unwrap_or_default();
+            if at != missing && id != "F7" {
+                mcp.call("edit_card", json!({"at": at, "body": format!("分卡 {id} 的正文。")}));
+            }
+        }
+    }
+    let mut state = state_of(&work);
+    state["models"][&model]["status"] = json!("reviewed");
+    set_state(&work, &state);
+    let jobs_before = state["jobs"].as_object().map(|j| j.len()).unwrap_or(0);
+
+    let brief = ok_json(&zt.digest(&["model", "-Step", "brief", "-Work", w, "-Staging", s, "-Models", &model]), "brief");
+    assert_eq!(brief["resumed"][0]["model"], json!(model), "the model is resumed: {brief}");
+    assert_eq!(brief["resumed"][0]["round"], json!("fill"));
+    assert_eq!(brief["resumed"][0]["missing"], json!(1));
+    let jobs = brief["jobs"].as_array().expect("brief jobs");
+    assert_eq!(jobs.len(), 1, "one job, for the missing part, and no brief job: {brief}");
+    assert_eq!(jobs[0]["continue"], json!(format!("{slug}:brief")), "it continues the model's conversation");
+    let text = job_file(&work, jobs[0]["id"].as_str().expect("job id"));
+    assert_eq!(text.matches("## 分卡 ").count(), 1, "the job holds the missing part alone: {text}");
+    assert!(text.contains("数值例子"), "it is F7: {text}");
+    let after = state_of(&work);
+    assert_eq!(after["models"][&model]["status"], json!("reviewed"), "the accepted build stays");
+    assert_eq!(after["models"][&model]["ids"], ids, "the part map stays");
+    assert!(after["jobs"].as_object().map(|j| j.len()).unwrap_or(0) > jobs_before);
+
+    let review = ok_json(&zt.digest(&["model", "-Step", "review", "-Work", w, "-Staging", s]), "review");
+    assert_eq!(review["jobs"], json!([]), "a resumed model keeps its review: {review}");
+    // The writer leaves F7 待写 again: close sends it back to the same conversation.
+    let close = ok_json(&zt.digest(&["model", "-Step", "close", "-Work", w, "-Staging", s]), "close");
+    let jobs = close["jobs"].as_array().expect("close jobs");
+    assert_eq!(jobs.len(), 1, "{close}");
+    let note = std::fs::read_to_string(jobs[0]["files"][0].as_str().expect("follow-up file")).expect("read follow-up");
+    assert!(note.contains(&format!("## 修正：[[{missing}]]")) && note.contains("构建检查（未写）"), "{note}");
+}

@@ -1,4 +1,4 @@
-// ==== module zt-workflow-lib v18 ====
+// ==== module zt-workflow-lib v19 ====
 // v18 (bergin2026exchange resume, 2026-11-13): the drive prompt said "不修改任何文件"; a DeepSeek job read the cleanup-apply
 // step's own deletes and ledger writes as forbidden and refused to run it. The prompt now forbids only the job's own edits
 // and says the command's writes are the step's purpose.
@@ -164,8 +164,12 @@ function ztLockStop(where, refusal) {
 }
 // The exact prompt a drive job runs: the one command as given, then only its last line, copied.
 function ztDriveCommand(command) {
-  return `在 PowerShell 里原样运行下面这一条命令，不改写它，不运行别的命令。这条命令本身会写入、修改或删除文件、账本记录和会话，这正是这一步的任务：命令自己的写入是预期的，照常运行它，不需要先检查或确认。你自己不编辑、不创建、不删除任何文件。命令结束后，只回复它输出的最后一行：把那一行一字不改地复制过来，不要改写、缩写、翻译或补充任何字。那一行是一个紧凑的 JSON 对象，以 "ok" 开头。\n\n${command}`
+  return `现在就在 PowerShell 里原样运行下面这一条命令，不改写它，不运行别的命令。先运行，再回复：不要回复「我会运行」之类的计划或承诺，也不要提问。这条命令本身会写入、修改或删除文件、账本记录和会话，这正是这一步的任务：命令自己的写入是预期的，照常运行它，不需要先检查或确认。你自己不编辑、不创建、不删除任何文件。命令结束后，只回复它输出的最后一行：把那一行一字不改地复制过来，不要改写、缩写、翻译或补充任何字。那一行是一个紧凑的 JSON 对象，以 "ok" 开头。\n\n${command}`
 }
+// v19 (rotunno2026industrial resume, 2026-11-13): a drive job answered "我会完全按这条命令原样运行。" and ran nothing; its
+// manager, whose retry rule named only a failed or empty answer, ran the step itself through Bash. A promise, a plan
+// or a question is now an answer with no line: the job is told to run first, and the manager retries once and then
+// returns the answer as it is, never running the command.
 // The one manager prompt of a drive job: start it, wait, retry once, record (when the workflow keeps a ledger) and
 // delete the conversation. `record: false` is a workflow with no run ledger (zt-idea-grow): the job records nothing,
 // keeps the answer under its work folder and only deletes its conversation.
@@ -186,7 +190,7 @@ First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_run,
 
 1. Start the job: mcp__deepseek__deepseek_run with cwd "${o.cwd}", prompt ${JSON.stringify(ztDriveCommand(o.command))}, skills [], model "${o.model || ZT_DRIVE_MODEL}", reasoning_effort "${o.effort || 'high'}", wait_seconds 0.
 2. Wait with mcp__deepseek__deepseek_wait (wait_seconds ${DSMP.pollSeconds}) until it ends. A job asking a question: answer "按任务说明自行决定，不需要询问。". A job asking approval for the one command, or for writing the answer file under "${answers}": allow; anything else: reject.
-3. A job that failed or gave an empty answer gets ONE more attempt in a new conversation. Never a third.
+3. A job that failed, gave an empty answer, or ended without running the command (its last line is no JSON object: a promise such as "我会……运行", a plan or a question) gets ONE more attempt in a new conversation. Never a third. When that attempt also ends with no JSON line, return its answer as it is: the step's command is the job's to run, never yours, even once.
 ${records}
 The record commands, when this step has records, are the only commands you run: each in the foreground with timeout_ms: 600000. You have no terminal tabs, no Monitor loop, no session handoff and no general shell: never start another agent, never hand the work on, never poll with Start-Sleep or any other timer, and wait only with deepseek_wait. Keep at most 8 jobs running at a time.
 5. Return answer: the job's final line copied character for character, with no word added, removed or changed: never a summary, never a retyped or shortened line. Also return session_id, deleted, registered and evidence.`
@@ -217,7 +221,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '18', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '19', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====

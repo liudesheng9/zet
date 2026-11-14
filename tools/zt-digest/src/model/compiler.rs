@@ -48,6 +48,8 @@ pattern!(FIGURE_PREFIX, r"(?i)^\s*(图|Figure|Fig\.)\s*");
 pattern!(TODO_BODY, r"(?i)^\s*待写\s*$");
 // A whole 待写 line, or an unwritten line of a setting's **直觉** section (`- 是什么：待写`).
 pattern!(TODO_LINE, r"(?i)(^|\n)\s*(-\s*(是什么|为什么需要|怎样进入模型)\s*[：:]\s*)?待写\s*($|\n)");
+// An unwritten 直觉 line alone: `intuition_entries` sends it back, so `unwritten_entries` reads the body without it.
+pattern!(INTUITION_TODO, r"(?m)^\s*-\s*(是什么|为什么需要|怎样进入模型)\s*[：:]\s*待写\s*$");
 pattern!(CHART, r"(?i)```chart");
 pattern!(FAULTS_LINE, r"(?i)^faults: \d+");
 pattern!(FAULTS_PREFIX, r"(?i)^faults: ");
@@ -373,6 +375,38 @@ fn intuition_entries(plan_parts: &[Value], ids: &Value, st: &Value, empirical: b
                     "## 修正：[[{address}]]\n\n构建检查（直觉）：{lack}。这张卡设定一个对象，读者先要知道它是什么、为什么需要它、它怎样进入模型。在设定内容之后、符号表和术语表之前写出这一节：\n\n**直觉**\n- 是什么：……\n- 为什么需要：……\n- 怎样进入模型：……\n\n按填写说明的“讲清设定”一节写。不要增删其余内容，不要移动卡片。改完照常运行 CHECK。\n"
             )));
         }
+    }
+    out
+}
+
+/// The 修正 notes for the parts this build owns that are still unwritten (`待写`) at close: each goes back to
+/// the conversation that should have written it, with the plan's title, content and source. Before this an
+/// unwritten part had no way back after its fill: rotunno2026industrial/4|a part O (line `off`) stayed 待写
+/// through the close round, the model reached `reviewed` with `todo: 1`, and model-finish refused it. A part
+/// whose only 待写 lines are its **直觉** goes back through [`intuition_entries`]; a taken part belongs to its
+/// home model, and an existing part the plan keeps is not this build's.
+fn unwritten_entries(plan_parts: &[Value], ids: &Value, st: &Value) -> Vec<(String, String)> {
+    let bodies: BTreeMap<String, String> = list(&st["parts"]).into_iter().map(|p| (s(&p["address"]), s(&p["body"]))).collect();
+    let mut out = Vec::new();
+    for part in plan_parts {
+        let id = s(&part["id"]);
+        if id.is_empty() || truthy(&part["take"]) || (truthy(&part["existing"]) && !truthy(&part["refill"])) {
+            continue;
+        }
+        let address = s(&ids[&id]);
+        let Some(body) = bodies.get(&address) else { continue };
+        if !TODO_LINE.is_match(&INTUITION_TODO.replace_all(body, "")) {
+            continue;
+        }
+        let sources: Vec<String> = pipe(&part["src"]).into_iter().map(s).filter(|x| !x.is_empty()).collect();
+        let kind = if derives(part) { "这是一张推导分卡：按填写说明的推导格式写出思路、起点、步骤、结果和解读，" } else { "" };
+        out.push((address.clone(), format!(
+            "## 修正：[[{address}]]\n\n构建检查（未写）：这张分卡还是「待写」，模型缺了它就不完整。{kind}按计划写出它，读原文后再写：\n\n- 分面：{}\n- 标题：{}\n- 内容：{}\n- 来源：{}\n\n照填写说明写全这张卡（设定、假设、定义卡连同 **直觉** 一节），保留它已有的链接。不要改别的卡，不要移动卡片。写完照常运行 CHECK。\n",
+            s(&part["facet"]),
+            s(&part["title"]),
+            s(&part["spec"]),
+            if sources.is_empty() { "见计划".to_string() } else { sources.join("、") }
+        )));
     }
     out
 }
@@ -1950,6 +1984,7 @@ impl Compiler {
     fn step_brief(&mut self) -> Result<()> {
         let mut jobs = Vec::new();
         let mut skipped = Vec::new();
+        let mut resumed: Vec<Value> = Vec::new();
         let models = self.model_list();
         begin_batch_order(&mut self.state, &models);
         for model in models {
@@ -1964,6 +1999,22 @@ impl Compiler {
             let same_level = self.p.level.is_empty() || (!st["level"].is_null() && ps::eq(&s(&st["level"]), &self.p.level));
             if built && !self.p.rebuild && same_level {
                 skipped.push(model);
+                continue;
+            }
+            // An accepted build whose only gap is unwritten parts is resumed, never re-planned (R235): the first
+            // missing part's own round (fill or derive) goes out with the briefs, and the batch's close rounds and
+            // report then run over the model like any other. rotunno2026industrial/4|a (2026-11-13): part O stayed
+            // 待写 after the build, and a reopened model would otherwise be briefed, planned and filled again.
+            let accepted = ps::is_in(&s(&self.m(&model)["status"]), &["built", "derived", "reviewed"])
+                && self.m(&model)["ids"].as_object().is_some_and(|ids| !ids.is_empty())
+                && ps::exists(&ps::join(&self.dir(&model), "plan.json"));
+            if todo && accepted && !self.p.rebuild && same_level {
+                if !ps::is_in(&model, &self.order()) {
+                    self.state["order"] = plus(&self.state["order"], [json!(model)]);
+                }
+                let report = self.resume_model(&model, &mut jobs)?;
+                self.m_mut(&model)["resumed"] = json!(true);
+                resumed.push(json!({ "model": model, "round": report["round"], "missing": list(&report["missing"]).len() }));
                 continue;
             }
             let dir = self.dir(&model);
@@ -2040,7 +2091,7 @@ impl Compiler {
             );
         }
         self.save_state()?;
-        self.out_last(&json!({ "jobs": jobs, "skipped": skipped }))
+        self.out_last(&json!({ "jobs": jobs, "skipped": skipped, "resumed": resumed }))
     }
 
     fn step_validate(&mut self) -> Result<()> {
@@ -2551,6 +2602,11 @@ impl Compiler {
         let mut jobs = Vec::new();
         let independent = self.p.independent_review;
         for model in self.order() {
+            // A model resumed for its unwritten parts kept its review: only a resumed derive round (status
+            // `derived`) is reviewed again.
+            if truthy(&self.m(&model)["resumed"]) && !ps::eq(&s(&self.m(&model)["status"]), "derived") {
+                continue;
+            }
             // Level 3: the evidence review, once, one job per twelve cards side by side.
             if ps::eq(&s(&self.m(&model)["level"]), "empirical") && ps::is_in(&s(&self.m(&model)["status"]), &["built", "derived"]) && !self.p.changed {
                 let before = jobs.len();
@@ -3091,6 +3147,7 @@ impl Compiler {
                 let plan_parts: Vec<Value> = list(&plan["parts"]).into_iter().cloned().collect();
                 entries.extend(planned_link_entries(&model, &plan_parts, &own, &models, &resolve, &parts, &pairs, &rests));
                 let empirical = super::empirical::is_empirical(&plan);
+                entries.extend(unwritten_entries(&plan_parts, &own, &st));
                 entries.extend(intuition_entries(&plan_parts, &own, &st, empirical));
             }
             let review_path = ps::join(&self.dir(&model), "source-review.json");
@@ -3277,44 +3334,92 @@ impl Compiler {
     /// carries the ALLOW file of the job that wrote the Card; a Card no job of this batch wrote gets a
     /// new job whose own allow list names it, so a Card of a model of this batch is never `unowned`.
     fn follow_jobs(&mut self, follow: &CiMap<Follow>) -> Result<Vec<Value>> {
+        // ONE follow-up per model: every follow-up continues the model's one conversation (`<slug>:brief`),
+        // so two of them would run in it side by side. The notes of every job the model's faults sit in go
+        // into one job file, and its ALLOW file names every Card those jobs may write. rotunno2026industrial
+        // (2026-11-13): once close also sent unwritten parts back, a model's notes fell into its fill job and
+        // its derive job alike.
+        let mut models: Vec<String> = Vec::new();
+        let mut grouped: CiMap<Vec<(String, String, Vec<String>, Vec<String>)>> = CiMap::new();
+        for (key, f) in follow.iter() {
+            if !models.iter().any(|m| ps::eq(m, &f.model)) {
+                models.push(f.model.clone());
+            }
+            let mut entries = grouped.get(&f.model).cloned().unwrap_or_default();
+            entries.push((key.clone(), f.text.clone(), f.ids.clone(), f.cards.clone()));
+            grouped.insert(&f.model, entries);
+        }
         let mut jobs = Vec::new();
-        let entries: Vec<(String, String, String, Vec<String>, Vec<String>)> = follow
-            .iter()
-            .map(|(k, f)| (k.clone(), f.model.clone(), f.text.clone(), f.ids.clone(), f.cards.clone()))
-            .collect();
-        for (key, model, text, ids, cards) in entries {
-            let seq = self.next_seq();
-            let dir = self.dir(&model);
-            let file = ps::join(&dir, &format!("follow-{seq}.md"));
-            let allow = if ps::like(&key, "new:*") { Value::Null } else { self.state["jobs"][&key]["allow"].clone() };
-            if !truthy(&allow) {
-                let mut blocks = Vec::new();
-                let mut n = 0;
-                for id in &ids {
-                    if let Some(p) = self.plan_part(&model, id)? {
-                        n += 1;
-                        blocks.push(self.part_block(n, &p, &model, true)?);
+        for model in models {
+            let entries = grouped.get(&model).cloned().unwrap_or_default();
+            let mut text = String::new();
+            let mut new_ids: Vec<String> = Vec::new();
+            let mut cards: Vec<String> = Vec::new();
+            let mut owned: Vec<String> = Vec::new();
+            let mut allowed: Vec<String> = Vec::new();
+            for (key, note, ids, entry_cards) in &entries {
+                text += note;
+                let allow = if ps::like(key, "new:*") { Value::Null } else { self.state["jobs"][key]["allow"].clone() };
+                if truthy(&allow) {
+                    owned.push(key.clone());
+                    for line in std::fs::read_to_string(s(&allow)).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()) {
+                        if !allowed.iter().any(|a| a == line) {
+                            allowed.push(line.to_string());
+                        }
+                    }
+                } else {
+                    new_ids.extend(ids.iter().filter(|i| !new_ids.contains(i)).cloned().collect::<Vec<_>>());
+                }
+                for c in entry_cards {
+                    if !cards.contains(c) {
+                        cards.push(c.clone());
                     }
                 }
-                let ids = ids.iter().map(|i| json!(i)).collect();
-                let mut job = self.new_job(
-                    &model,
-                    "d",
-                    ids,
-                    &format!("{text}\n{}", blocks.join("\n")),
-                    "按以上说明完成你的分卡，最后每张分卡回复一行 JSON。",
-                )?;
+            }
+            let mut blocks = Vec::new();
+            let mut n = 0;
+            for id in &new_ids {
+                if let Some(p) = self.plan_part(&model, id)? {
+                    n += 1;
+                    blocks.push(self.part_block(n, &p, &model, true)?);
+                }
+            }
+            if owned.is_empty() {
+                // No job of this batch wrote these Cards: a new job, whose own allow list names them.
+                let ids = new_ids.iter().map(|i| json!(i)).collect();
+                let mut job = self.new_job(&model, "d", ids, &format!("{text}\n{}", blocks.join("\n")), "按以上说明完成你的分卡，最后每张分卡回复一行 JSON。")?;
                 self.add_cards_to_job(&mut job, &cards)?;
                 self.continue_model(&mut job, &model, &self.docs.fill)?;
                 jobs.push(job);
                 continue;
             }
-            let allow = s(&allow);
-            util::write_text(&file, &format!("# 补充任务（接着你刚才的分卡写）\n\nALLOW 已更新：{allow}\n\n{text}\n写完后照常运行 CHECK（地址加上新分卡）。"))?;
+            // Every Card a note names, at its current address: a split after the job renumbers its parts, and the
+            // job's own ALLOW file keeps the old ones.
+            let named: Vec<String> = entries.iter().flat_map(|(_, _, ids, _)| ids.clone()).collect();
+            let before = allowed.len();
+            for at in named.iter().map(|id| self.id_address(&model, id)).chain(cards.iter().cloned()).collect::<Vec<_>>() {
+                if !at.is_empty() && !at.contains('#') && !allowed.contains(&at) {
+                    allowed.push(at);
+                }
+            }
+            let seq = self.next_seq();
+            let dir = self.dir(&model);
+            let file = ps::join(&dir, &format!("follow-{seq}.md"));
+            let allow = if owned.len() == 1 && allowed.len() == before {
+                s(&self.state["jobs"][&owned[0]]["allow"])
+            } else {
+                let merged = ps::join(&dir, &format!("follow-{seq}.allow.txt"));
+                util::write_text(&merged, &(allowed.join("\n") + "\n"))?;
+                merged
+            };
+            let blocks = if blocks.is_empty() { String::new() } else { format!("\n{}", blocks.join("\n")) };
+            util::write_text(&file, &format!("# 补充任务（接着你刚才的分卡写）\n\nALLOW 已更新：{allow}\n\n{text}{blocks}\n写完后照常运行 CHECK（地址加上新分卡）。"))?;
             // fallback: the files of a fresh conversation, when the model's conversation is gone
-            let fallback = json!([self.docs.fill, ps::join(&dir, "setting.md"), self.state["jobs"][&key]["file"], file]);
+            let mut fallback = vec![json!(self.docs.fill), json!(ps::join(&dir, "setting.md"))];
+            fallback.extend(owned.iter().map(|k| self.state["jobs"][k]["file"].clone()));
+            fallback.push(json!(file));
             jobs.push(json!({
-                "id": format!("{key}+{seq}"),
+                "id": format!("{}+{seq}", owned[0]),
                 "continue": format!("{}:brief", Self::slug(&model)),
                 "files": [file],
                 "fallback": fallback,
@@ -4190,7 +4295,7 @@ fn divisions_section(plan: &Value, resolve: impl Fn(&str) -> Result<String>) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, intuition_entries, lacks_main_line, marker_entries, supplied_entries, track_renames, current_address, TODO_LINE};
+    use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, intuition_entries, lacks_main_line, marker_entries, supplied_entries, track_renames, current_address, unwritten_entries, TODO_LINE};
     use std::collections::BTreeMap;
     use serde_json::json;
 
@@ -4228,6 +4333,42 @@ mod tests {
         assert!(TODO_LINE.is_match("内容。\n\n**直觉**\n- 是什么：待写\n- 为什么需要：好。"));
         assert!(!TODO_LINE.is_match(&format!("内容。\n\n{written}")));
         assert!(!TODO_LINE.is_match("- 值：待写（从原文抄录）"));
+    }
+
+    // rotunno2026industrial/4|a (2026-11-13): part O (line `off`, 校准与求解) was in the fill job, the writer
+    // left it 待写, the close round sent no note for it, and the model reached `reviewed` with `todo: 1`, which
+    // model-finish refuses. Close sends every part this build owns that is still unwritten back to its writer,
+    // with the plan's title, content and source; a part whose only 待写 lines are its 直觉 goes back through
+    // `intuition_entries`, and a taken or kept part is not this build's.
+    #[test]
+    fn an_unwritten_part_goes_back_to_its_writer_at_close() {
+        let parts = vec![
+            json!({"id": "S", "facet": "设定", "line": "main", "title": "设定"}),
+            json!({"id": "O", "facet": "校准与求解", "line": "off", "emphasis": "aside", "title": "校准与求解：十国加 ROW、20 个部门、迭代算法", "spec": "十国加 ROW、20 部门、2015 年基年", "src": ["sections/s04.md:75-98"]}),
+            json!({"id": "D1", "facet": "推导", "line": "side", "derive": true, "title": "第一步", "spec": "从需求推出份额", "src": ["sections/s03.md:10-20"]}),
+            json!({"id": "A1", "facet": "假设 1", "line": "side", "title": "假设"}),
+            json!({"id": "T", "facet": "设定", "take": true}),
+            json!({"id": "E", "facet": "设定", "existing": true}),
+        ];
+        let ids = json!({"S": "K/4|a|a", "O": "K/4|a|b", "D1": "K/4|a|a|1", "A1": "K/4|a|a|a", "T": "C/2|a|a", "E": "K/4|a|a|b"});
+        let st = json!({"parts": [
+            {"address": "K/4|a|a", "body": "设定内容。\n\n**直觉**\n- 是什么：甲。\n- 为什么需要：乙。\n- 怎样进入模型：丙。"},
+            {"address": "K/4|a|b", "body": "待写"},
+            {"address": "K/4|a|a|1", "body": "**思路**\n待写\n\n**起点**\n- 依赖上一步 [[K/4|a|a]] 的结果：份额。\n\n**步骤**\n待写\n\n**结果**\n份额\n\n**解读**\n待写"},
+            {"address": "K/4|a|a|a", "body": "假设内容。\n\n**直觉**\n- 是什么：待写\n- 为什么需要：待写\n- 怎样进入模型：待写"},
+            {"address": "C/2|a|a", "body": "待写"},
+            {"address": "K/4|a|a|b", "body": "待写"},
+        ]});
+        let notes = unwritten_entries(&parts, &ids, &st);
+        let at: Vec<&str> = notes.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(at, ["K/4|a|b", "K/4|a|a|1"], "{notes:?}");
+        let o = &notes[0].1;
+        assert!(o.starts_with("## 修正：[[K/4|a|b]]"), "{o}");
+        assert!(o.contains("待写") && o.contains("校准与求解：十国加 ROW、20 个部门、迭代算法") && o.contains("十国加 ROW、20 部门、2015 年基年") && o.contains("sections/s04.md:75-98"), "{o}");
+        assert!(notes[1].1.contains("从需求推出份额") && notes[1].1.contains("推导"), "{}", notes[1].1);
+        // A Model Card's own parts written in full send nothing.
+        let done = json!({"parts": [{"address": "K/4|a|b", "body": "十国加 ROW，20 个部门。"}]});
+        assert!(unwritten_entries(&parts[1..2], &ids, &done).is_empty());
     }
 
     // #204 (B6): the architect's divisions (the model's parts, 分部) start at main-line parts; the

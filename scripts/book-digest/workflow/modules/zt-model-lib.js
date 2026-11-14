@@ -1,4 +1,4 @@
-// ==== module zt-model-lib v18 ====
+// ==== module zt-model-lib v19 ====
 // The model layer's machinery (docs/zt-digest-framework.md), moved from zt-digest-lib: the model list and the
 // model compiler per batch: DeepSeek brief → Sonnet architect plan → DeepSeek fill, derive, review, split →
 // report and clean-up. A book type installs the model layer with its profile (economics: the economic
@@ -41,6 +41,9 @@
 // 18 (docs/empirical-models-proposal.md §8): level 3. The start step batches empirical models apart
 // (`empirical:<addresses>`, `perEmpirical` a batch), their architect reads model-architect-empirical.md, and a
 // batch whose fill names `review` runs the evidence review even when no model derives.
+// 19 (rotunno2026industrial/4|a, 2026-11-13): a model whose accepted build only lacks unwritten parts is resumed, not
+// rebuilt: the brief step answers it under `resumed` with a job for its missing parts alone; the batch skips plan, fill,
+// derive and review for it, and its close rounds (which now send every unwritten part back) and report run as usual.
 function zmlMake(ctx, p) {
   const Z = zdMake(ctx, p)
   const {
@@ -157,10 +160,18 @@ function zmlMake(ctx, p) {
     if (!brief.ok) return failed(`brief failed: ${brief.error}`)
     if (Number(brief.jobs || 0)) await content('brief', brief.file, brief.jobs, BRIEF_EFFORT)
     const skipped = new Set((Array.isArray(brief.skipped) ? brief.skipped : String(brief.skipped || '').split(',')).map(full).filter(Boolean))
-    const todo = addresses.filter((at) => !skipped.has(at))
-    if (!todo.length) return addresses.map((model) => ({ model, status: 'skipped' }))
-    // 2. Plan: Sonnet reads the briefs and writes plan.json for each model; nothing else.
+    // 19: a model whose accepted build only lacks unwritten parts is resumed by the brief: its missing parts went out
+    // with the briefs, and it skips plan, fill, derive and review; the close rounds and the report read it as usual.
+    const resumed = new Set(String(brief.resumed || '').split(',').map(full).filter(Boolean))
+    const todo = addresses.filter((at) => !skipped.has(at) && !resumed.has(at))
+    if (!todo.length && !resumed.size) return addresses.map((model) => ({ model, status: 'skipped' }))
+    if (resumed.size) log(`${tag}: ${[...resumed].join(', ')} resumed: the accepted build stays; only its unwritten parts were sent back.`)
     const levelOf = (at) => (LEVEL || (batch.kind === 'concept' ? 'concept' : batch.kind === 'empirical' ? 'empirical' : 'formal'))
+    let fill = { derive: false, review: false }
+    let deferred = new Map()
+    const outcome = (at) => ({ model: at, status: deferred.get(at), issues: [deferred.get(at) === 'waiting' ? 'waits for the model it takes a part from' : 'a reference to another model\'s part was refused'] })
+    if (todo.length) {
+    // 2. Plan: Sonnet reads the briefs and writes plan.json for each model; nothing else.
     // Level 3 plans against the empirical schema with its own instructions; the supplement is the formal one's.
     const empirical = batch.kind === 'empirical' || LEVEL === 'empirical'
     const archDoc = empirical ? ARCH_EMPIRICAL : ARCH_DOC
@@ -183,20 +194,22 @@ Return plans: one entry per model, in this order.`,
     // 3. Fill: plan-status, the batch's model-deps references, the defer of the models they release, and the
     // fill, in ONE step. S10: the plans as the architect wrote them (plan.json per model), read by the compiler;
     // the answer only adds notes.
-    const fill = await step('fill', 'fill', { models: todo, limits: LIMITS })
+    fill = await step('fill', 'fill', { models: todo, limits: LIMITS })
     if (!fill.ok) return failed(`fill failed: ${fill.error}`)
     const said = (planned && planned.plans) || []
     const statusOf = new Map(fullPairs(fill.statuses))
     const plans = todo.map((model) => ({ ...(said.find((y) => y.model === model) || {}), model, status: statusOf.get(model) || 'failed', level: levelOf(model) }))
-    const deferred = new Map(fullPairs(fill.deferred).map(([at, why]) => [at, why || 'refused']))
+    deferred = new Map(fullPairs(fill.deferred).map(([at, why]) => [at, why || 'refused']))
     if (deferred.size) log(`${tag}: ${[...deferred].map(([at, why]) => `${at} ${why === 'waiting' ? 'waits for the model it takes a part from' : 'has a reference the ledger refused'}`).join('; ')}.`)
-    const outcome = (at) => ({ model: at, status: deferred.get(at), issues: [deferred.get(at) === 'waiting' ? 'waits for the model it takes a part from' : 'a reference to another model\'s part was refused'] })
     if (!plans.some((x) => x.status === 'planned' && !deferred.has(x.model))) {
-      log(`${tag}: no model of the batch is planned; the batch builds nothing.`)
-      return addresses.map((m) => skipped.has(m) ? { model: m, status: 'skipped' }
-        : deferred.has(m) ? outcome(m)
-          : { model: m, status: 'failed' })
-    }
+      log(`${tag}: no model of the batch is planned; the batch builds nothing${resumed.size ? ' new' : ''}.`)
+      if (!resumed.size) {
+        return addresses.map((m) => skipped.has(m) ? { model: m, status: 'skipped' }
+          : deferred.has(m) ? outcome(m)
+            : { model: m, status: 'failed' })
+      }
+      fill = { derive: false, review: false }
+    } else {
     // A composer that needs more parts for one part asks through its answer; the split step takes the need.
     const splitNeeds = async (results) => {
       const need = answerLines({ results }).filter((l) => l.status === 'split' && l.address && l.need > 1).map((l) => `${l.address}=${l.need}`)
@@ -226,6 +239,8 @@ Return plans: one entry per model, in this order.`,
         if (!split.ok) return failed(`split failed: ${split.error}`)
         await splitNeeds(await content(`split ${round + 1}`, split.file, split.jobs, DERIVE_EFFORT))
       }
+    }
+    }
     }
     // 7. Close: the build faults the compiler still sees go back once, as 修正 notes, to the conversations that
     // wrote those Cards; the round that sends nothing back also writes the batch report (-Report). At most
@@ -317,7 +332,7 @@ Return plans: one entry per model, in this order.`,
 }
 
 defineModule({
-  id: 'zt-model-lib', version: '18', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-model-lib', version: '19', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: the model layer\'s model-steps.ps1 steps (list, claim and batch; brief, fill, derive, review, split, close, report, explain, explain-apply, finish), the Sonnet architect, and the model compiler\'s report and clean-up.',
 })
 // ==== end module zt-model-lib ====
