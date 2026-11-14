@@ -356,3 +356,49 @@ All lines below are the reruns after the Term relink.
 4. The causal figure of the Model Card has 13 boxes and reads small at 640 px; the chart sheet shows it alone as part 二. The digest chart 19\|c\|b keeps its 9 px labels; only its axis labels were added.
 5. The owner decision on merging the Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a stays open; both were not touched.
 6. No `card_locked`, no failed write. One `changing read view` refusal of zt-check was retried. Other sessions wrote other books on the box throughout. Nothing committed (stage brief).
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-14, live box (owner's request), under `zt-evidence-dialogue` steps 1–5, done in one side session by scripts (`dialogue.mjs survey | apply | check`) and one DeepSeek judging conversation. No subagent ran. Backup: `D:\zt\backups\zt-before-arrocannarsa2026flight-dialogue.sqlite3` (`VACUUM INTO`, 403 MB, `PRAGMA integrity_check` ok; drive D had 236 GB free). The Terms were relinked at the end of stage 5 (`-PlanOnly` 0), so the survey ran without a first relink. Only the empirical models 8\|a and 16\|a took this pass; the formal model 2\|a is not on the dialogue's other side. No Card was written.
+
+### Survey
+
+The models were surveyed one at a time, 16\|a after 8\|a was applied, so the judged record dropped the mirror pair.
+
+- `survey 8|a`: 3 estimates of ours (8\|a\|a\|3\|b 2007 年后均值 27 个基点, 3\|c 2008 年末峰值约 287 个基点, 3\|d 校准取值每年 300 个基点), 1,496 Cards of the other side, estimand Terms 便利收益 (1\|a\|b) and 代理变量 (1\|a\|ad). 1 pair in 1 message: 8\|a\|a\|3\|d (ν = 3.000% p.a.) against 16\|a\|a\|5\|i (Table 6 data, $i^R$ at the window end 0.25% p.a.), shared Term 稳态 (1\|a\|ap) only.
+- `survey 16|a`: 19 estimates, 1,480 Cards, estimand Term 急性期 (1\|a\|v). Before the 8\|a apply it proposed only the mirror of the pair above; after it, 0 pairs.
+- **No cross-book pair.** As in bergin2026exchange and assenza2026louder, the survey pairs on shared Term addresses, widened only by zt-term-sync Links. None of the book's 181 Term Cards has a Link to another book's Card (all read and checked), and 急性期 has no inbound Link from another book. A text search for 瑞士法郎 (22 hits) and 避风港 (32 hits) finds no Card of another book except das2026domestic/6\|a\|3 (an Idea Card, not a Finding Card or a model estimate); the search for 便利收益 stops at its 200-row limit inside this book, so it is no proof for that word. No pair was forced.
+
+### Judging (DeepSeek)
+
+One conversation, one message: `opencode-go/deepseek-v4.1-flash`, effort high (the box's drive model, as at stage 4), OpenCode Go account Primary (pinned), 1 request, 8 s, context 39k of 1M, no tool call. Cost: OpenCode Go subscription; the Harness ledger books 0 CNY for the source (the 2026-11-14 opencode-go day line, 3,899 calls at the end, is shared with other sessions, so there is no per-job token split). Conversation e3efdd27 deleted, workspace removed. Conversation 3b1d187b was not touched.
+
+Answer: p1 `same: false` (the calibrated convenience yield ν against the window-end policy rate; only the Term 稳态 is shared). Checked against the two titles: right.
+
+### Pairs judged and written
+
+| Head | Pairs | Same estimand | Agree / disagree / not comparable | Links written |
+|---|---|---|---|---|
+| 8\|a | 1 | 0 | 0 / 0 / 0 | 0 |
+| 16\|a | 0 | — | — | 0 |
+
+`apply` 8\|a: `{"links":0,"written":0,"errors":0}`; the answered pair is in the judged record (`~/.zt-evidence-dialogue/judged-default.jsonl`). 16\|a had no pair, so no apply.
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `dialogue.mjs check`: 8\|a `{"broken":0,"proposed_again":0,"ok":true}`; 16\|a `{"broken":0,"proposed_again":0,"ok":true}`.
+- No same-estimand pair, so no **对应** line to check.
+- `check-settings.mjs`: 8\|a and 16\|a `settings: the data tree and the specification ladder are in place`.
+- `check-model.mjs`: 8\|a `members 28 {"shared":12,"main":4,"side":12}; relations {"rests-on":24,"refers":26,"corresponds":1}; loose 0; self_sufficient true`; 16\|a `members 44 {"main":8,"side":32,"shared":4}; relations {"rests-on":26,"refers":76,"illustrates":8,"corresponds":1,"objects":1}; loose 0; self_sufficient true`.
+- `list_broken_links` (agent): `{"broken":[]}`, before and after the relink.
+- Term relink: `{"cards_changed":0,"ok":true,"book":"arrocannarsa2026flight","links_added":0,"rounds":0,"links_repaired":0,"applied":false,"cards_refused":0}`.
+
+### Open
+
+1. No cross-book pair: the book's Terms (便利收益, 代理变量, 急性期, …) link to no Term Card of another book. After a zt-term-sync pass on the economics shelf, survey both heads again; the judged record keeps the pair judged here from being paid for twice. The hand-written cross-book Links of 16\|a (`对照 [[becker2025division/5|b|b|8]]`) and the stage-4 comparisons on 2\|a stay as written.
+2. Within the book, the measured convenience yield of 8\|a and the Table 6 rows of 16\|a share no estimate-level Term, so the survey proposes no pair between, for example, the 287 bp peak (8\|a\|a\|3\|c) and Table 6's data rows. The relation of 16\|a to 8\|a is the theory's (both rest on 2\|a); none was forced here.
+3. Script observation, not changed: the survey's Term widening (`equiv` in `dialogue.mjs`) takes every non-Term Link of an estimand Term Card, so the book root `arrocannarsa2026flight` (from each Term Card's source line) appears in `estimand_terms`. It forms no pair (pairs match Term-link targets only, and no Card Term-links the book root), so it was left; a later fix can keep only Term Cards of other books.
+4. The owner decision on merging the Event Cards 16\|a\|7\|a and 11\|b\|2\|a\|a stays open; both were not touched.
+5. No `card_locked`, no `read_view_changed` and no failed read or write occurred. Other sessions wrote other books on the box throughout. Nothing committed (stage brief).
