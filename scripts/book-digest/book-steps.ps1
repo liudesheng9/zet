@@ -527,6 +527,20 @@ switch ($Step) {
     }
     'bridge-start' {
         $work = At "$(Opt 'Work')"
+        # furceri2026divide + ozhan2026monetary (2026-11-14): a frozen report whose apply ended partial (stale
+        # lines) was reused by every later run, so its stale lines could never be redone. Such a folder is set
+        # aside whole as <work>-rN (kept, never deleted) and the Bridge plans afresh; existing Bridge links are
+        # never proposed again. A folder with a plan and no applied state (judge jobs failed) resumes in place.
+        $renewed = $null
+        $applied = Join-Path $work 'state.json'
+        if (Test-Path -LiteralPath $applied) {
+            $st = try { Get-Content -LiteralPath $applied -Raw | ConvertFrom-Json } catch { $null }
+            if ($st -and "$($st.status)" -eq 'partial') {
+                $n = 1; while (Test-Path -LiteralPath "$work-r$n") { $n++ }
+                Move-Item -LiteralPath $work -Destination "$work-r$n"
+                $renewed = "$work-r$n"
+            }
+        }
         [void][System.IO.Directory]::CreateDirectory($work)
         $argv = @('bridge', '-Step', 'plan', '-Staging', $Out, '-CitationKey', (Book-Key "$(Opt 'CitationKey')"), '-Work', $work,
             '-Profile', "$(Opt 'Profile')", '-MaxSources', "$(Opt 'MaxSources' 60)", '-Candidates', "$(Opt 'Candidates' 5)")
@@ -536,7 +550,9 @@ switch ($Step) {
         $refusal = Refuse $r.json $r.tail
         if ($refusal) { Reply $refusal.line $refusal.raw; break }
         $saved = Save-Jobs $work $r.json
-        Reply @{ ok = ($r.json.ok -ne $false); jobs = $saved.count; file = $saved.file } $r.json
+        $line = @{ ok = ($r.json.ok -ne $false); jobs = $saved.count; file = $saved.file }
+        if ($renewed) { $line.renewed = (Split-Path $renewed -Leaf) }
+        Reply $line $r.json
     }
     'bridge-report' {
         $work = At "$(Opt 'Work')"

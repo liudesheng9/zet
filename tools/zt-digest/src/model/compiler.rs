@@ -1997,7 +1997,7 @@ impl Compiler {
                 && list(&st["build"]["beyond_level"]).is_empty()
                 && !todo;
             let same_level = self.p.level.is_empty() || (!st["level"].is_null() && ps::eq(&s(&st["level"]), &self.p.level));
-            if built && !self.p.rebuild && same_level {
+            if built && !self.p.rebuild && same_level && !failed_build_elsewhere(&self.p.work, &model) {
                 skipped.push(model);
                 continue;
             }
@@ -4291,6 +4291,63 @@ fn divisions_section(plan: &Value, resolve: impl Fn(&str) -> Result<String>) -> 
         lines.push(format!("- {}：[[{}]] 起", s(&d["name"]).trim(), resolve(&s(&d["start"]))?));
     }
     Ok(Some(format!("**分部**\n\n{}", lines.join("\n"))))
+}
+
+/// furceri2026divide (2026-11-14): models 7|a, 8|a and 9|a had every part and no 待写, but their build in an
+/// earlier batch had `failed`; a new batch's brief skipped them as built and the finish refused them again. The
+/// newest other batch state (`models\*\state.json` beside this batch) that names the model decides: a status
+/// other than a completed build (`built`, `derived`, `reviewed`) keeps the model unbuilt.
+fn failed_build_elsewhere(work: &str, model: &str) -> bool {
+    let own = std::path::Path::new(work);
+    let Some(root) = own.parent() else { return false };
+    let Ok(entries) = std::fs::read_dir(root) else { return false };
+    let mut latest: Option<(std::time::SystemTime, String)> = None;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() || dir.file_name() == own.file_name() {
+            continue;
+        }
+        let file = dir.join("state.json");
+        let Ok(meta) = std::fs::metadata(&file) else { continue };
+        let Ok(time) = meta.modified() else { continue };
+        let Ok(state) = util::read_json(&file) else { continue };
+        let Some(models) = state["models"].as_object() else { continue };
+        let Some(entry) = models.iter().find(|(k, _)| ps::eq(k, model)).map(|(_, v)| v) else { continue };
+        if latest.as_ref().is_none_or(|(t, _)| time > *t) {
+            latest = Some((time, s(&entry["status"])));
+        }
+    }
+    latest.is_some_and(|(_, status)| !ps::is_in(&status, &["built", "derived", "reviewed"]))
+}
+
+#[cfg(test)]
+mod failed_build_tests {
+    use super::failed_build_elsewhere;
+
+    #[test]
+    fn a_model_whose_latest_other_batch_build_failed_is_not_built() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |dir: &str, body: &str, age: u64| {
+            let d = root.path().join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            let f = d.join("state.json");
+            std::fs::write(&f, body).unwrap();
+            let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+            std::fs::File::options().write(true).open(&f).unwrap().set_modified(t).unwrap();
+        };
+        write("m-old", r#"{"models":{"K/7|a":{"status":"failed"},"K/8|a":{"status":"failed"}}}"#, 7200);
+        write("m-new", r#"{"models":{"K/8|a":{"status":"reviewed"}}}"#, 3600);
+        let own = root.path().join("m-this");
+        std::fs::create_dir_all(&own).unwrap();
+        let work = own.to_string_lossy().to_string();
+        assert!(failed_build_elsewhere(&work, "K/7|a"), "the only build failed");
+        assert!(failed_build_elsewhere(&work, "k/7|A"), "addresses compare without case");
+        assert!(!failed_build_elsewhere(&work, "K/8|a"), "a newer reviewed build wins over an older failed one");
+        assert!(!failed_build_elsewhere(&work, "K/9|a"), "a model no batch names keeps the listing's verdict");
+        // The batch's own state is this run's, never the earlier verdict.
+        write("m-this", r#"{"models":{"K/9|a":{"status":"failed"}}}"#, 0);
+        assert!(!failed_build_elsewhere(&work, "K/9|a"));
+    }
 }
 
 #[cfg(test)]

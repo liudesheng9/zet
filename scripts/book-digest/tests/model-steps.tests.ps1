@@ -260,6 +260,21 @@ $todoStart = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Ow
 $env:MS_TODO = ''
 Assert ($todoStart.json -and $todoStart.json.ok -eq $true -and $todoStart.json.plan.Split([char]59) -contains 'formal:2|c,4|c') "unwritten part: a built model whose listing names a 待写 part is planned again ($($todoStart.text))"
 
+# 9c. furceri2026divide (2026-11-14): models 7|a, 8|a, 9|a had all their parts and no 待写, but their compiler build had
+# failed (state.json status `failed`). The resume left them out as built; their finish refused them again. The latest
+# compiler state of a model decides: a model whose latest state is not a completed build is planned again; a later
+# batch whose state is `reviewed` wins over an older `failed` one.
+$failOut = Join-Path $scratch 'out-failed-build'
+foreach ($d in @('m-old', 'm-new')) { New-Item -ItemType Directory -Force (Join-Path $failOut "models\$d") | Out-Null }
+$oldState = Join-Path $failOut 'models\m-old\state.json'
+$newState = Join-Path $failOut 'models\m-new\state.json'
+[IO.File]::WriteAllText($oldState, '{"models":{"Key/4|c":{"status":"failed"},"Key/5|c":{"status":"failed"}}}', [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($newState, '{"models":{"Key/5|c":{"status":"reviewed"}}}', [Text.UTF8Encoding]::new($false))
+(Get-Item $oldState).LastWriteTime = (Get-Date).AddHours(-2)
+(Get-Item $newState).LastWriteTime = (Get-Date).AddHours(-1)
+$failStart = Step (@('-Step', 'start', '-CitationKey', 'Key', '-Take', '8', '-Owner', 'models block 7', '-Out', $failOut, '-Tool', $tool))
+Assert ($failStart.json -and $failStart.json.ok -eq $true -and $failStart.json.plan.Split([char]59) -contains 'formal:2|c,4|c') "failed build: a model whose latest compiler state is failed is planned again ($($failStart.text))"
+
 # 9. Live run 2026-10-26 (staging4): a line over 400 characters was answered as `{ok:true, detail}`, which the module
 # read as a fill with no jobs, so six models stayed unwritten. An overflow is now a failed step, never a silent
 # success.

@@ -215,7 +215,15 @@ switch ($Step) {
         if ($onlyList.Count) { $todo = @($todo | Where-Object { $onlyList -contains "$($_.address)" }) }
         # A model with all its parts and no issue is built, unless the listing names a part still 待写 (`todo`,
         # riboni2026presidential 2026-11-14: a reopened model was left out as built and its finish refused it again).
-        $todo = @($todo | Where-Object { $Rebuild -or ($Level -and "$($_.level)" -ne $Level) -or -not ([int]$_.parts -gt 0 -and -not [bool]$_.issues -and -not [int]$_.todo) })
+        # furceri2026divide (2026-11-14): a model whose compiler build failed can still have all its parts and no
+        # 待写; the latest compiler state (models\*\state.json, newest file wins) decides, as the finish's check does.
+        $buildOf = @{}
+        foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $Out 'models') -Directory -ErrorAction SilentlyContinue | ForEach-Object { Get-Item -LiteralPath (Join-Path $_.FullName 'state.json') -ErrorAction SilentlyContinue } | Where-Object { $_ } | Sort-Object LastWriteTime)) {
+            $st = try { Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json -AsHashtable } catch { $null }
+            if ($st -and $st.models -is [System.Collections.IDictionary]) { foreach ($k in $st.models.Keys) { $buildOf[$k.ToLowerInvariant()] = "$($st.models[$k].status)" } }
+        }
+        $failedBuild = { param($m) $b = $buildOf["$($m.address)".ToLowerInvariant()]; $b -and @('built', 'derived', 'reviewed') -notcontains $b }
+        $todo = @($todo | Where-Object { $Rebuild -or ($Level -and "$($_.level)" -ne $Level) -or (& $failedBuild $_) -or -not ([int]$_.parts -gt 0 -and -not [bool]$_.issues -and -not [int]$_.todo) })
         $groupOf = { param($m) $g = [int]$m.group; if (-not $g) { $g = [int]("$($m.address)".Split('/')[1].Split('|')[0]) }; $g }
         $todo = @($todo | Sort-Object @{ Expression = { & $groupOf $_ } }, @{ Expression = { "$($_.address)" } })
         $concept = @($todo | Where-Object { $(if ($Level) { $Level } else { "$($_.level)" }) -eq 'concept' })

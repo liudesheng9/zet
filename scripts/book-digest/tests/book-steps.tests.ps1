@@ -382,6 +382,21 @@ $brReport = Step 'bridge-report' @{ Work = $br; CitationKey = 'Key' }
 Assert ($brReport.json -and $brReport.json.ok -eq $true -and $brReport.json.report_id -eq 'r-1' -and (Has $brReport.calls 'bridge -Step report -Staging .* -CitationKey Key -Work .*bridge')) "bridge report: the frozen report is the step's answer ($($brReport.text))"
 $brApply = Step 'bridge-apply' @{ Work = $br; CitationKey = 'Key'; ReportId = 'r-1'; Accept = 'all' }
 Assert ($brApply.json -and $brApply.json.ok -eq $true -and $brApply.json.status -eq 'done' -and $brApply.json.applied -eq 1 -and (Has $brApply.calls 'bridge -Step apply -Staging .* -CitationKey Key -Work .*bridge -ReportId r-1 -Accept all -Apply')) "bridge apply: the applied report is the step's answer ($($brApply.text))"
+# furceri2026divide + ozhan2026monetary (2026-11-14): a frozen report whose apply ended partial (stale lines: their
+# target Cards changed after the plan) was reused by every later mode bridge, so the stale lines could never be
+# redone. A start finds the applied state partial, sets the frozen folder aside as <work>-rN and plans afresh; a
+# folder with no applied state (judge jobs failed) still resumes in place.
+$brStale = Join-Path $out 'bridge-stale'
+New-Item -ItemType Directory -Force $brStale | Out-Null
+[IO.File]::WriteAllText((Join-Path $brStale 'plan.json'), '{"frozen":true}', [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $brStale 'state.json'), '{"schema":1,"status":"partial"}', [Text.UTF8Encoding]::new($false))
+$staleStart = Step 'bridge-start' @{ Work = $brStale; CitationKey = 'Key'; Profile = 'book' }
+Assert ($staleStart.json -and $staleStart.json.ok -eq $true -and $staleStart.json.renewed -and (Test-Path (Join-Path "$brStale-r1" 'plan.json')) -and -not (Test-Path (Join-Path $brStale 'plan.json'))) "bridge start: a partial applied state sets the frozen folder aside and plans afresh ($($staleStart.text))"
+$brResume = Join-Path $out 'bridge-resume'
+New-Item -ItemType Directory -Force $brResume | Out-Null
+[IO.File]::WriteAllText((Join-Path $brResume 'plan.json'), '{"frozen":true}', [Text.UTF8Encoding]::new($false))
+$resumeStart = Step 'bridge-start' @{ Work = $brResume; CitationKey = 'Key'; Profile = 'book' }
+Assert ($resumeStart.json -and $resumeStart.json.ok -eq $true -and -not $resumeStart.json.renewed -and (Test-Path (Join-Path $brResume 'plan.json')) -and -not (Test-Path "$brResume-r1")) "bridge start: a plan with no applied state resumes in place ($($resumeStart.text))"
 
 # 14. the audit: one read-only pass on the book or on the whole Workspace.
 $audit = Step 'audit' @{ CitationKey = 'Key' }

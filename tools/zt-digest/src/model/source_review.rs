@@ -72,12 +72,17 @@ pub fn resolve(staging: &str, span: &Span) -> Option<String> {
     ps::exists(&path).then_some(path)
 }
 
-/// Every `（补` in the text is one of the two established markers.
+/// Ordinary words that open with 补 inside a bracket, never a supplied-step marker: 补写 is the owner's label for
+/// an estimating equation the source does not write (furceri2026divide/7|a, 2026-11-14: titles "（补写式 4¹）"
+/// failed R298); 补贴 and 补偿 are economics words ("（补贴为 $G$…）" in the live box).
+const WORDS: [&str; 3] = ["（补写", "（补贴", "（补偿"];
+
+/// Every `（补` in the text is one of the two established markers or one of the ordinary [`WORDS`].
 pub fn markers_ok(text: &str) -> bool {
     let mut start = 0;
     while let Some(found) = OPEN_MARKER.find_at(text, start) {
         let rest = &text[found.start()..];
-        if !MARKERS.iter().any(|marker| rest.starts_with(marker)) {
+        if !MARKERS.iter().chain(WORDS.iter()).any(|marker| rest.starts_with(marker)) {
             return false;
         }
         start = found.start() + "（补".len();
@@ -293,6 +298,12 @@ mod tests {
         assert!(markers_ok("书中直接给出结果。"));
         assert!(!markers_ok("这一步（补充：由我补上）得到结论。"));
         assert!(!markers_ok("（补：书中略去）（补）"));
+        // furceri2026divide/7|a (2026-11-14): 补写 labels a supplied equation; 补贴 and 补偿 are ordinary words.
+        assert!(markers_ok("规格：m 取人均 GDP（补写式 4¹）"));
+        assert!(markers_ok("政府给出补贴（补贴为 $G/(1+t)$）。"));
+        assert!(markers_ok("（补偿变化）与（补：书中未写）"));
+        assert!(!markers_ok("（补写式 4¹）（补充：由我补上）"));
+        assert!(!supplied_marked("（补写式 4¹）"));
         assert!(supplied_marked("（补：书中未写）"));
         assert!(!supplied_marked("（补充说明）"));
     }
