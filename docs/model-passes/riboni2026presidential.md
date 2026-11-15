@@ -362,3 +362,7 @@ Stage 5 (illustrate) did not apply (no formal model). All other stages passed th
 7. The 3.5 head `4|e` still says the projections estimate the effect on 政策立场, while the outcome is the policy decision (Stage 3 corrected the specifications and chapter 6, not this reading note) (Stage 7).
 8. `leads.mjs` (`linkTerms`) links a shorter Term inside a longer word once the longer Term's first use is taken (`理事` in `理事会多数`); fixed by hand here, the script is unchanged (Stage 7).
 9. This pass doc is not committed (the stage brief said no commit).
+
+### Follow-up (2026-11-14, parent session)
+
+The open item on the 3.5 head is closed: `4|e` now asks about the effect on 政策决策 (the policy decision), not 政策立场, as §3.5 states. `term-relink.ps1`: 1 Link added, 1 Card changed.
