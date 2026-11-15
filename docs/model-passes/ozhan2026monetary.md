@@ -276,3 +276,71 @@ Main line: 设定 `19|a|a` → 第 1 章：约束使受约束部门如弹性价�
 4. 5\|a: the false share to `8|a|a|3` (head 对照 line) and the **引入** line of 8\|a to `5|a|a|e|a` are left to stage 4.
 5. 13\|a: chapters 4 and 5 hold no estimate card; their figures and numbers stay in the chapter text.
 6. Tree unlocked throughout; no `card_locked` and no read-view error met.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-14, live box, under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent; one DeepSeek job, for the explanation refresh). Backup: `D:\zt\backups\zt-before-ozhan2026monetary-imports.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok; drive D had 223 GB free). Text ran as `edit_card` calls under `-Allow` (ozhan2026monetary Cards only): 9 Cards by hand (the Model Cards 5\|a and 13\|a, and 13\|a\|a\|1, \|3, \|3\|a, \|4\|b–\|4\|e), 1 import line on 8\|a by `imports.mjs apply`, and 1 Derivation part by `explain.mjs apply`. Before each hand write a script compared the display formulas and the `\tag`/`\quad (N)` numbers of the old and new bodies, and every written Card was read back (`same` on all nine). After the pass a script compared the whole book with the backup: 711 Cards before and after, 1,029 display formulas and 49 `\tag`/`\quad (N)` numbers identical as multisets, the 8 `值` lines of the estimate cards identical; 11 Cards changed in all. No `card_locked`, no `read_view_changed` and no failed batch occurred. Order: 5\|a (it lends to 8\|a), then 8\|a (it lends to 13\|a), 19\|a, 13\|a.
+
+Before any edit, `check` exited 0 on all four heads; `plan` proposed one line (the `整块` upgrade on 8\|a) and nothing on 5\|a, 19\|a, 13\|a: 13\|a named the quantitative model only with `参照` Links and in words.
+
+### 5\|a (formal, stylized model)
+
+- No import. The model reads in itself; no part rests on another model's part.
+- False share resolved by rewording, not by an import: the Model Card's **关联** line `对照 [[8|a|a|3]]：定量版用常替代弹性技术加劳动上限……` made 8\|a's chapter 3 a member (with its three settings 8\|a\|a\|e, e\|a, e\|b tolerated). Nothing in 5\|a rests on it: it compares two technologies of the same bottleneck. An import was also excluded because 8\|a imports 5\|a's feedback rule, so 5\|a importing from 8\|a would make the two models lend to each other. The line now reads `对照 [[ozhan2026monetary/8|a]]：定量模型（第 3 章）用常替代弹性技术加劳动上限，本卡用两项任务的柯布—道格拉斯技术。` (a Link between two Model Cards, no member). The reverse comparison stays where it was, as a part-level Link in 8\|a's chapter 3 (`对照 [[5|a]]`). False shares 1 → 0, tolerated 3 → 0, shared members 1 → 0 (32 → 31 members).
+- Copy advice judged by hand, both comparisons, not copies: `5|a|a|3` (第 3 章, market clearing and the feedback rule) ~ `8|a|a|5` (8\|a's 第 5 章: Taylor rule, subsidy, three clearings) and ~ arrocannarsa2026flight/3\|e\|a\|5 (that model's five-market equilibrium). They are joined only by `对应` lines (`定量版政策与出清区块`; `跨书关联：对应 …两处都把最终品市场出清写成产出等于支出`); the equations differ (one-good clearing $Y^f_t=X_t+C_t$ against multi-sector two-region clearing). The advice stays in `check` output.
+- 5\|a now lends `5|a|a|e|a` with its closure to 8\|a (`lent`).
+
+### 8\|a (formal, quantitative model)
+
+- Kept and upgraded: the fold's line to the stylized feedback rule. The Taylor rule `8|a|a|g|a` names it in **起点** (`依赖 [[5|a|a|e|a]]：程式化模型的反馈规则（经 **引入**），本规则是它的完整版本`). `plan` round 1 proposed `upgrade: 整块 [[5|a|a|e|a]]`; `apply`: `wrote 1 import line(s); tolerated 1 -> 0; check passes`; round 2 `nothing to import`. The line now reads `整块 [[ozhan2026monetary/5|a|a|e|a]]：程式化模型的反馈式利率规则，是本模型泰勒规则的简化版本`; its closure brings the stylized market clearing `5|a|a|e`, the setting card `5|a|a`, the downstream technology `5|a|a|d` and the assumption `5|a|a|b` (5 shared members; 142 members in all). No import cycle: 5\|a now imports nothing.
+- Symbols (step 6): 8\|a keeps its own notation card; `check-settings` finds no symbol of the imported block uncovered, so no `沿用` line.
+- Copy advice judged by hand: `8|a|a|4` (第 4 章, Calvo and DCP Phillips curves) and `8|a|a|13` (第 13 章, A.3) ~ arrocannarsa2026flight/3\|e\|a\|15 (that model's A.2 Calvo reset-price derivation). Joined only by `跨书关联：对应 … 两处都按 Calvo 规则重设价格`; the curves differ (two currencies of invoicing, sectoral slopes, expectation rules against one non-traded sector with indexation). A shared method, no restated block; the advice stays.
+- 8\|a now lends the whole model to 13\|a.
+
+### 19\|a (formal, DC-index weighting experiment)
+
+- No import, decided. The model's setting card is a primitive setting of its own: a closed economy (item 5: stabilizing the DC index closes the output gap only in a closed economy with flexible wages and labour mobility), an **output** cap at steady-state output (`19|a|a|b`), and a rule on the DC index with weights $\mathrm{Domar}_{c,i}/\kappa_{c,i}$. 8\|a is a two-region open economy with a **labour** cap and a CPI Taylor rule; it does not define the DC index or the sectoral slopes $\kappa_{c,i}$, so no block of 8\|a is a premise of 19\|a. The PST weight (35%) and the sector calibration come from the book's calibration notes, which are no model part; the Model Card says so with `参照 [[ozhan2026monetary]]`. `19|a|a|b` item 4 (a labour cap gives qualitatively similar results) is a remark, not a premise.
+- `check` exit 0, `plan` `nothing to import`, tolerated 0, false shares 0, no copy advice.
+
+### 13\|a (empirical, fit of the quantitative model to 2020–23 data)
+
+- Decision: an estimation of a theory imports the theory whole. The fit filters the data through the linearized quantitative model (state space $Y_t=Hs_t$, $s_t=Gs_{t-1}+\Psi\varepsilon_t$), extracts the multiplier of 8\|a's labour cap, takes the parameters of 8\|a's settings (Table 2) and runs the counterfactual in the same model. So the Model Card gained (before **结构**) `整块 [[ozhan2026monetary/8|a]]：本模型拟合的定量模型，状态空间所线性化的均衡方程组、劳动上限的乘子 (20) 与表 2 各参数所属的设定都取自它`, written by hand (`plan` proposes no whole-model line). 177 members (40 own + 137 shared).
+- The parts now rest on the imported parts (one `依赖` line each, added after the existing ones; no estimate, no display formula changed):
+  - baseline `13|a|a|3`: `依赖 [[8|a|a|10|h]]` (the full equilibrium system, 附录 A.1.1, whose linearization is the state space);
+  - variant `13|a|a|3|a`: `依赖 [[8|a|a|3|a]]` ($\lambda^{L}$ is the multiplier of (20); the non-negativity and complementarity restrictions come from it);
+  - parameters: `4|b` ($\gamma_c$) on `8|a|a|c` (two-layer CES); `4|c` ($\theta_c$) on `8|a|a|i` (OLG survival); `4|d` ($\gamma_L$) on `8|a|a|j|b` (CET labour (23), there $\gamma_l$); `4|e` ($\alpha_{c,\pi}$) on `8|a|a|g|a` (Taylor rule, there $\alpha^i_c$);
+  - hypothesis `13|a|a|1`: `依赖 [[8|a|a|3|b]]：本假说检验的预测，楔子只在劳动上限起作用时为正 (21)，负向供给冲击因此经上限进入。` The `参照` lines to 8\|a's verbal chapter 1 and to 5\|a stay as pointers. The whole-model import covers the result, so no separate `单卡` line.
+- Tolerated 0 → 1: `8|a|a|g|a` rests on `5|a|a|e|a`, which 8\|a imports; a whole-model import does not carry the lender's own imports, and `plan` proposes nothing. 13\|a uses no part of the stylized rule, so no line was added; a reader leaves the model there.
+- Symbols (step 6): the 变量表 `13|a|a|a` keeps its rows; the imported notation card counts as the model's; `check-settings` clean, no `沿用` line.
+- Copy advice `13|a|a|1` ~ `8|a|a|1` comes from the kept `参照` line; the hypothesis states the prediction, it does not restate the chapter. Left as advice.
+
+### Cross-book blocks
+
+`plan` proposed no cross-book line for any head, and no part of the four models rests on another book's Card. The cross-book Links are comparisons and stay: arrocannarsa2026flight/3\|e\|a\|5 and \|15 (judged above), arrocannarsa2026flight/8\|d, assenza2026louder/5\|b\|d\|1 and bergin2026exchange/5\|c\|b on 8\|a's chapter 3, bergin2026exchange/5\|g and furceri2026divide/4\|a on 13\|a (left for the evidence dialogue), atkinson2015lectures on 5\|a and 8\|a. No bergin2026exchange or arrocannarsa2026flight block is restated by these models: those are other open-economy models with their own settings.
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan`: 8\|a 1 Derivation part in 1 job (`8|a|a|12|a|a`, the labour demand of 第 12 章, whose position line `第 2 张，共 2 张` no longer matched its chain after stage 3); 5\|a, 19\|a, 13\|a `nothing to explain`.
+- One DeepSeek conversation (`opencode-go/deepseek-v4.1-flash`, effort high, the box's drive model; OpenCode Go account Account 2, 17 requests, 440 s, 1 turn, context 115k of 1M; tools: 1 skill, 16 pwsh, 2 read, 1 write; only `out/explain-01.json` was written in the work folder; no approval was asked): answer `{"done":1,"blocked":0}`. Cost: OpenCode Go subscription, the Harness ledger books 0 CNY; the 2026-11-14 opencode-go day line went from 5,019 to 5,036 calls during the job (cache miss +114,777, cached read +1,159,424, output +31,378 tokens), matching the job's 17 requests. Conversation a0dcbf5a deleted, workspace removed. Conversation 3b1d187b was not touched.
+- `apply`: `applied 1, refused 0, blocked 0, follow-up jobs 0`. `finish` 8\|a: `explained 1 part(s); Term links changed 0 Card(s), second plan 0; left 0; refused 0` (exit 0). The new **思路** drops the stale position line; it names no `假设`, so no Link had to be added. The part's **起点** still reads `依赖上一步 [[8|a|a|3|b|a]]` (explain leaves 起点 alone).
+
+### Gate
+
+- `imports.mjs check`: exit 0 on 5\|a, 8\|a, 19\|a, 13\|a; `plan`: `nothing to import` on all four.
+- `get_model`: `self_sufficient: true` on all four; `false_share` empty on all four; no `import_cycle`, `import_target`, `closure`, `reach_in`, `forward` or `unanchored` fault; tolerated 0 on 5\|a, 8\|a, 19\|a and 1 on 13\|a (above). 8\|a imports `整块 5|a|a|e|a` (closure 4); 13\|a imports `整块 8|a` (137); 5\|a lends to 8\|a, 8\|a lends to 13\|a.
+- `explain.mjs finish`: exit 0 on all four (`left 0; refused 0`); a later `plan`: `nothing to explain` on all four.
+- `check-model.mjs`: 5\|a 31 members `{"main":4,"side":27}`, `relations {"refers":23,"rests-on":51,"corresponds":1,"illustrates":4,"contrasts":1}; loose 0; self_sufficient true`; 8\|a 142 `{"shared":5,"main":15,"side":122}`, `relations {"refers":114,"corresponds":19,"rests-on":221,"contrasts":7,"illustrates":4}; loose 0; self_sufficient true`; 19\|a 12 `{"main":3,"side":9}`, `relations {"refers":11,"rests-on":17}; loose 0; self_sufficient true`; 13\|a 177 `{"main":9,"side":31,"shared":137}`, `relations {"refers":165,"rests-on":257,"corresponds":20,"illustrates":8,"contrasts":7}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean` on all four (advice only for 8\|a: chapters 7 and 8 have no `结果：` card, as at stage 3).
+- `check-settings.mjs`: 5\|a, 8\|a, 19\|a `settings: all in the setting part, as a dependency tree` (advice only: `uses an assumption` lines on 5\|a\|a\|2 and on 8\|a\|a\|5\|c, \|6, \|13); 13\|a `settings: the data tree and the specification ladder are in place`.
+- `check-premises.mjs`: 19\|a `premises: none used before their card`; 5\|a 1 hit and 8\|a 3 hits, the stage-3 pointers; 13\|a 4 hits: the same three pointers in the imported 8\|a setting cards (`8|a|a|e`, `8|a|a|e|b|a` name (20), (21)) and the 变量表 row of $\lambda^{L}_{i,t}$ (`式 (20) 的乘子`), a pointer to the imported block. Kept.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"applied":true,"book":"ozhan2026monetary","cards_changed":7,"rounds":1,"links_repaired":0,"cards_refused":0,"links_added":8,"ok":true}`. All checks above, `get_model` and the formula comparison with the backup were rerun after it and stay as listed.
+
+### Open
+
+1. 13\|a tolerates `5|a|a|e|a` through 8\|a's own import (a whole-model import does not carry the lender's imports). If the owner wants tolerated 0, 13\|a needs a second line `整块 [[5|a|a|e|a]]`, which it does not use.
+2. 8\|a's `g|a` rests on the stylized rule as "its full version"; the quantitative Taylor rule responds to CPI inflation only and has no output-gap term, so the rest is closer to a comparison than a premise. Kept as the fold decided (owner-approved, stage 1).
+3. `8|a|a|12|a|a` **起点** still says `依赖上一步 [[8|a|a|3|b|a]]` and step 2 says `代入第 1 张`, although the premise now stands in chapter 3 (stage-3 open item 2); the explanation refresh changes no 起点 or step.
+4. Copy advice lines stay in `check` output, judged comparisons: 5\|a\|a\|3 ~ 8\|a\|a\|5 and ~ arrocannarsa2026flight/3\|e\|a\|5; 8\|a\|a\|4 and \|13 ~ arrocannarsa2026flight/3\|e\|a\|15; 13\|a\|a\|1 ~ 8\|a\|a\|1.
+5. Stage-3 open items 1–5 (result and derivation text not redrafted; appendix chapters restating §3; the two notations; 13\|a chapters 4–5 without estimate cards) stay.
+6. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
