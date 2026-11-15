@@ -87,3 +87,65 @@ The **结构** sections of the Model Cards 3\|a and 4\|a were rebuilt from the b
 3. 4\|a: the notation card carries a row `$A$` for the appendix equation prefix, because the check reads the `A` of `(A.3)` inside the display formula as a symbol; the formula was not changed.
 4. 4\|a: the §1 verbal setting `b` restates the calibration scope (ten countries plus ROW, 20 sectors) that `e` states; the check finds no repeat and it stays as the overview.
 5. 4\|a: chapters 1 and 10 are unanchored; the derivations of §3 (`4|a|a|2`–`9`) stand on the main line between them. The restructure builds the spine.
+
+## Stage 3: restructure
+
+Date 2026-11-14, live box, under `zt-model-restructure`, done in one side session by scripts (no subagent, no DeepSeek job, so no DeepSeek cost; the chapter leads were written by hand). Backup: `D:\zt\backups\zt-before-rotunno2026industrial-restructure.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Moves ran as two `apply_batch` tree batches (4\|a: one batch of 26 items, four of them the creates of the new chapter cards; 3\|a with one reorder in 4\|a: one batch of 4 items), each previewed, then committed under the plan hash; `links_that_will_break` was empty in both previews. Text ran as 25 `edit_card` calls under `-Allow` (23 edits, then the two **结构** sections rebuilt from the edited tree); every written card was read back and compared with the intended text (0 differences). Before each text write a script compared the display formulas and the equation numbers of the old and new bodies, and after the pass a script compared the whole book with the backup: 859 display formulas and 41 `\tag`/`(N)` equation numbers before and after, no difference. The one equation label that left a body is `(A.7)` in the title of a Link line inside the stale **分部** list of chapter 5, which was removed (no formula). No `card_locked` error, no `read_view_changed` error and no failed batch occurred. The Literature tree went from 530 to 534 Cards (four new chapter cards in 4\|a); no Card was deleted. Titles changed on five cards (the chapter 1 and chapter 5 cards, the A.2 test card, the two 命题 cards, now `结果：…`).
+
+### 3\|a (empirical): the evidence spine
+
+Main line: 数据 `3|a|a` → 设计 `|1` → 规格：基准 `|2` → 第 1 章 主要估计 `|3` → 第 2 章 识别检验 `|4` → 第 3 章 稳健性 `|5` → 第 4 章 异质性与回溯结果 `|6`. The paper has no hypothesis here (measurement). Network: chapters 1–4 under the baseline specification.
+
+- Decision on chapter 5 (`3|a|a|7`, Appendix A.2): merged into chapter 2, not kept as a chapter. After stage 2 it held only its head and a limits card, with no estimate or test of its own; the skill asks that a chapter hold at least one estimate or test, and the four Table A.2 estimates and the fixed-effects test already stand in chapter 2, which is the identification test of the same prediction relation. Keeping it as a chapter resting on chapter 2 would have left a chapter whose table of contents points only into another chapter. The head moved as the first Side card of chapter 2 (`3|a|a|4|a`, facet `检验：附录 A.2 的预测检验`, title `检验：GTA 计数外推的补贴变化能复现 NIPO 观测的变化（附录 A.2）`) with its limits card under it (`3|a|a|4|a|b`). It keeps its display formula (the Table A.2 regression in $\alpha,\beta,\gamma_j,\delta_c$ notation) and its estimates table; it now rests on the specification `3|a|a|2|c` and on 假设 3 `3|a|a|1|c` (`依赖`), and `本章`/`本模型` became `本检验`. No Card was deleted.
+- Chapter 2's Side branches are in the order of Table A.2: `4|a` the A.2 test, `4|b` the table card, then the slopes `4|c` column (1) 0.594, `4|d` (2) 0.526, `4|e` (3) 0.543, `4|f` (4) 0.407 with its test `4|f|a`. **本章估计** lists them in this order.
+- The limits card 覆盖与口径 (former 3\|a\|b) moved under chapter 4 (`3|a|a|6|c`), whose **承上启下** already pointed to it; the two limits cards got one plain reference line each (`见 [[…]]`), so loose fell from 2 to 0.
+- **直觉** leads added to the data, design and specification cards (one sentence each, prepended). **结构** rebuilt from the tree (main line and one level under it).
+
+### 4\|a (formal): the intuition spine
+
+```
+4|a|a  设定 (setting part as the settings pass left it)
+4|a|a|1  第 1 章：文字版本（§1）                         ← 4|a|a, 4|a|a|b
+    a 机制 → a|1 结论 → a|1|a 例子 (unchanged)
+4|a|a|2  第 2 章：价格指数与引力方程（§3） (new)         ← 4|a|a|c, c|1, d
+    a 结果：引力方程 (6)              (proof a|a 最低到岸价格的分布 → a|a|1 价格指数 (5); former 2, 3, 4)
+4|a|a|3  第 3 章：变化率形式（§3） (new)                 ← 第 2 章
+    a 结果：补贴改变份额的方向 (7)    (proof a|a 变化率形式 (7); former 5, 6)
+4|a|a|4  第 4 章：补贴对出口的六项分解（§3） (new)       ← 第 2 章, 第 3 章
+    a 结果：出口变化的六项分解 (8)    (proof a|a 对数差 → a|a|1 六项分解 (8); a|b 解读; a|c 例子; former 7, 8, 9)
+4|a|a|5  第 5 章：均衡条件（附录 A.1） (former 10)       ← 第 2 章, 4|a|a|d
+    a 结果：劳动需求与劳动出清 (A.1)(A.2)  (proof a|a 部门就业 (A.1))
+    b 结果：均衡由四个条件决定             (proof b|a 部门产品市场出清 (A.5))
+4|a|a|6  第 6 章：变化率系统与求解（附录 A.1） (new)     ← 第 5 章, 第 3 章
+    a 结果：价格指数与就业的变化 (A.7)(A.9) (proof a|a (A.6) → (A.7) → (A.8) → (A.9))
+    b 结果：变化率系统只需基准份额          (proof b|a (A.10) → (A.11) → (A.12) → (A.13); b|b 传导图)
+    c 求解：四个变化率变量的迭代
+```
+
+- The §3 derivations (former main-line 4\|a\|a\|2–9) left the main line: three new chapter cards hold the gravity equation, the hat form and the six-term decomposition, each result with its proof chain as a Side branch. On chapter 4 the proof chain is the result's first Side branch, before the reading and the example.
+- Decision on the appendix: A.1 stays as chapters of its own, not as proof chains of §3 results. No §3 result states the equilibrium conditions (A.1), (A.2), (A.5) or the hat system (A.6)–(A.13): §3 shows only the gravity equation (as the setting `d` says), so the appendix proves results of its own (the equilibrium proposition and the hat-algebra proposition). It was split by those results into two chapters: chapter 5 (the former A.1 chapter card, equilibrium conditions) and a new chapter 6 (hat system and solution algorithm), because the former single chapter already held two parts (its **分部**) and 18 Cards. Its stale **分部** section was removed from the chapter card; the Model Card holds the parts.
+- Every chapter card got **直觉** (a lead of 20+ characters), **本章结果** (pointers `结果：`, `求解：`) and **承上启下** with `依赖` lines to the setting or earlier chapter it builds on, and a 来源 line; chapters 1 and 5 keep their old 问题/概要/关联 text below the new sections (`本卡` → `本章`). This anchored chapters 1 and 5 and the four new chapters. Chapter 1's title now states its mechanism (`第 1 章：补贴吸引资源，规模经济放大降价，形成三类效应`); chapter 5's facet and title read `第 5 章：…`.
+- Result facets read `结果：…` (7 Cards; the former `结果` and `命题` facets; the two 命题 titles now start with `结果：`).
+- With results now ahead of their proofs, `check-settings` found eight symbols first met in a result card. The result cards now define them in one sentence ($Exp_i^j$, $\bar r_{ni}^j$, $\Delta$ in 4\|a; $Z_{in}^j$, $\nu_{in}^j$ in 6\|a; $\lambda_i^j$, $\xi_n^j$, $\kappa_n^{js}$ in 6\|b), and the notation rows point to those cards.
+- The Model Card: **结构** rebuilt from the tree; **分部** rewritten (设定与直觉 from 4\|a\|a; 价格、引力方程与分解（§3） from 第 2 章; 均衡与求解（附录 A.1） from 第 5 章), since two of the old parts started off the main line; its two stale lines to its own chapters (对应 the A.1 chapter, 对照 chapter 1) were dropped. Title, 问题 and 概要 unchanged.
+
+Network (`check-network.mjs`): 设定 → {1, 2, 5}; 2 → 3 → 4; 5 → 6.
+
+### Gate
+
+- `check-model.mjs 3|a`: 46 members (7 main, 39 side), loose 0, no closure, forward or unanchored fault, `self_sufficient` true (was false). `4|a`: 44 members (7 main, 37 side), loose 0, no fault, `self_sufficient` true (was false).
+- `check-network.mjs`: `network: clean` for both (advice only: chapter 1 of 4\|a has no `结果：` card, right for the verbal chapter).
+- `check-premises.mjs`: 3\|a 2 hits, 4\|a 1 hit, all pointers, kept with this reason:
+  - 3\|a: `3|a|a|a` (变量表) and `3|a|a|e` (the A.2 sample) name the column (1) of Table A.2, not equation (1) of the baseline specification.
+  - 4\|a: `4|a|a|e` (calibration **说明**) says the solution algorithm computes trade shares with (7) and points to `4|a|a|6|c`; it does not use (7), as after stage 2.
+- `check-settings.mjs`: 3\|a `settings: the data tree and the specification ladder are in place`; 4\|a `settings: all in the setting part, as a dependency tree`.
+- `list_broken_links` (agent): `{"broken":[]}`. Literature tree 530 → 534 Cards.
+- Term relink: `{"links_added":39,"links_repaired":0,"rounds":1,"ok":true,"cards_changed":12,"cards_refused":0,"applied":true,"book":"rotunno2026industrial"}`. All checks above, `list_broken_links` and the formula comparison with the backup were rerun after it and stay as listed.
+
+### Open
+
+1. Step 3 card text was not redrafted: result cards keep their old body (they rest on their last proof card by `依赖`, without the `**为什么**`/`**证明**` sections of the result format), and derivation cards keep their digest format. Chapter 5 keeps its old 概要, which also summarizes the hat system that now forms chapter 6.
+2. 3\|a: the A.2 test card `3|a|a|4|a` keeps its own display formula of the Table A.2 regression ($\alpha,\beta,\gamma_j,\delta_c$), beside the ladder's $\kappa,\theta_3,\gamma_j,\eta_i$ notation (stage 2 open item 1); the import stage may decide whether it should cite the ladder instead.
+3. 3\|a: the 变量表 row of $\theta_3$ reads `表 A.2 第 (1) 列系数`, although $\theta_3$ is the slope in all four columns.
+4. The stage 2 open items 3 (the notation row `$A$`) and 4 (the §1 verbal setting restates the calibration scope) stay.
+5. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
