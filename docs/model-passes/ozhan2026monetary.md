@@ -396,3 +396,40 @@ All lines below are the reruns after the Term relink.
 4. Several figures draw shapes or values the source does not fix (shares, paths, the slope's $\beta_c\theta_c=0.99$, the cohort shares' $\iota_c=0.06$, $\theta_c=0.95$, the interpolated caps of sectors 2–9); each caption says 示意.
 5. The stage-4 open items stay.
 6. No `card_locked`, no `read_view_changed` and no failed write. Other sessions may have written other books on the box at the same time. Nothing committed (stage brief).
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-15, live box (owner's request), under `zt-evidence-dialogue` steps 1–5, done in one side session by scripts (`dialogue.mjs survey | check`). No subagent and no DeepSeek job ran (the survey found no pair, so there was nothing to judge). Backup: `D:\zt\backups\zt-before-ozhan2026monetary-dialogue.sqlite3` (`VACUUM INTO`, 408 MB, `PRAGMA integrity_check` ok; drive D had 221 GB free). The Terms were relinked at the end of stage 5, so the survey ran without a first relink. Only 13\|a is empirical; 5\|a, 8\|a and 19\|a are formal and have no dialogue. No Card was written.
+
+### Survey
+
+- `survey 13|a`: `{"head":"ozhan2026monetary/13|a","ours":8,"theirs":1512,"pairs":0,"messages":[]}` (about 50 s). Estimand Terms: 准非线性 (1\|a\|bs), 生产率冲击 (1\|a\|z), 供给约束 (1\|a\|c), 产出缺口 (1\|a\|az), 识别假设 (1\|a\|aa), 可观测变量 (1\|a\|bm), 世界其他地区 (1\|a\|bj) and the book root (the `equiv` observation of arrocannarsa2026flight Stage 6 Open 3; it forms no pair). None of the seven Term Cards has a Link to a Term Card of another book (outbound only the book root, no inbound from another book), so nothing widened them. The judged record held no ozhan2026monetary line before the survey.
+- **Our side: 8 parts.** The four calibrated parameters of 第 1 章 (`13|a|a|4|b` γ = 0.8, linked Term 1\|a\|ao; `4|c` θ = 0.95, 1\|a\|cn; `4|d` γ_L = 0.76, no Term; `4|e` Taylor-rule inflation response 1.5, 泰勒规则 1\|a\|ad) and the four S02 constraint levels of 第 2 章 (`5|c`–`5|f`: 0.94, 0.46, 0.61, 0.78; no Term of their own, so they pair on the estimand Terms). None of these Terms is linked by another book's estimate or Finding Card, so no pair formed.
+- **Why 0 cross-book pairs, checked rather than assumed.** A `search_cards` on Finding Cards (供给约束, 供给冲击, 泰勒规则, 通胀, 供应链, 疫情后通胀) found no other book that estimates the contribution of supply constraints to US inflation in 2020–22, a sectoral labour-constraint level, or a Taylor-rule inflation coefficient: velic2025inflation estimates inflation gaps, co-movement and half-lives across 38 countries; assenza2026louder estimates the Fed's communication effort and an inflation anchor (1.93%); riboni2026presidential the effect of appointments on expected and realized inflation; das2026domestic and furceri2026divide report country inflation paths; arrocannarsa2026flight/10\|i\|e is a model result on the Taylor rule's split of a real-rate fall, not an estimate of the rule's coefficient. The four parameters are calibrations from the literature (Table 2), not estimates of an estimand another book measures. The two existing cross-book Links on the head (`bergin2026exchange/5|g`, an Idea Card on that book's calibration, and `furceri2026divide/4|a`, the head of a formal model) stay as written in stage 4; neither is an estimate part or a Finding Card, so the survey does not see them.
+- The book's own Finding Cards that state the decomposition (`ozhan2026monetary/3|b`, `20|c`, `22|c`: supply constraints contributed 2–3 pp of US inflation; `3|c`, `20|d`, `20|e`, `28|d`: the GDP drag) are of the same book, so the survey does not pair them (Finding Cards of other books only).
+
+### Pairs judged and written
+
+| Head | Pairs | Same estimand | Agree / disagree / not comparable | Links written |
+|---|---|---|---|---|
+| 13\|a | 0 | 0 | 0 / 0 / 0 | 0 |
+
+No `apply` ran (no pair). No DeepSeek conversation was started, so there is no DeepSeek cost and nothing to delete; conversation 3b1d187b was not touched.
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `dialogue.mjs check`: 13\|a `{"head":"ozhan2026monetary/13|a","broken":0,"proposed_again":0,"ok":true}` (exit 0).
+- No pair, so no **对应** line to check.
+- `check-settings.mjs`: 5\|a, 8\|a, 19\|a `settings: all in the setting part, as a dependency tree` (exit 0; advice lines as at stage 4); 13\|a `settings: the data tree and the specification ladder are in place` (exit 0).
+- `check-model.mjs` (exit 0, unchanged from stage 5): 5\|a `members 31 {"main":4,"side":27}`, `relations {"refers":21,"rests-on":51,"corresponds":1,"illustrates":4,"contrasts":1}; loose 0; self_sufficient true`; 8\|a `members 142 {"shared":5,"main":15,"side":122}`, `relations {"refers":113,"corresponds":19,"rests-on":221,"contrasts":7,"illustrates":4}; loose 0; self_sufficient true`; 13\|a `members 177 {"main":9,"side":31,"shared":137}`, `relations {"refers":165,"rests-on":257,"corresponds":20,"illustrates":8,"contrasts":7}; loose 0; self_sufficient true`; 19\|a `members 12 {"main":3,"side":9}`, `relations {"refers":11,"rests-on":17}; loose 0; self_sufficient true`.
+- `list_broken_links` (agent): `{"broken":[]}`, before and after the relink.
+- Term relink: `{"links_added":0,"ok":true,"cards_changed":0,"rounds":0,"book":"ozhan2026monetary","links_repaired":0,"cards_refused":0,"applied":false}`.
+
+### Open
+
+1. No cross-book pair: the book's Terms (供给约束, 产出缺口, 泰勒规则, …) link to no Term Card of another book. After a zt-term-sync pass on the economics shelf, survey 13\|a again (after stage 7, at its new address).
+2. The model's headline result, the decomposition of 第 5 章 (supply constraints added 2–3 pp to US inflation in 2020–22 and depressed GDP), has no estimate part: chapters 4 and 5 (`13|a|a|7`, `13|a|a|8`) hold no `估计：` card, so the survey reads only the four parameters and the four S02 levels. A later survey can pair the decomposition only if the restructure gives it estimate parts; not changed here (the stage writes only judged Links). No neighbour on the box states that estimand today, so no pair is lost now.
+3. No script fault was found; no skill file changed.
+4. The stage-4 and stage-5 open items stay. No `card_locked`, no `read_view_changed` and no failed read or write occurred. Nothing committed (stage brief).
