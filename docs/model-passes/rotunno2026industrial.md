@@ -238,3 +238,31 @@ All lines below are the reruns after the Term relink.
 2. The 3 R3 faults (semicolons in the **说明** of `4|a|a` and `b`, and the summary line of `d|2`) predate this pass and were not changed.
 3. The stage-4 open items (the back-cast denominator, the duplicate multiplication in `3|a|a|f`, result and derivation text not redrafted) stay.
 4. No `card_locked`, no `read_view_changed` and no failed write. Other sessions wrote other books on the box at the same time. Nothing committed (stage brief).
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-14, live box (owner's request), under `zt-evidence-dialogue` steps 1–5, done in one side session by scripts (`dialogue.mjs survey | check`). No subagent ran. Backup: `D:\zt\backups\zt-before-rotunno2026industrial-dialogue.sqlite3` (`VACUUM INTO`, 406 MB, `PRAGMA integrity_check` ok; drive D had 229 GB free). The Terms were relinked at the end of stage 5 (`-PlanOnly` 0), so the survey ran without a first relink. Only the empirical model 3\|a took this pass; the formal model 4\|a is not on the dialogue's other side. No Card was written, and no DeepSeek job ran, so there is no DeepSeek cost.
+
+### Survey
+
+- `survey 3|a`: `{"head":"rotunno2026industrial/3|a","ours":10,"theirs":1516,"pairs":0,"messages":[]}`. The 10 estimates are 3\|a\|a\|3\|a (ΔNS 35.8, s.e. 9.5), 3\|b (MAD about 17), 4\|c–4\|f (Table A.2 slopes 0.594 / 0.526 / 0.543 / 0.407), 5\|a (47.3, s.e. 12.7, no fixed effects), 5\|b (MAD about 20), 6\|a (China 2015—23, 1.8% of value added) and 6\|b (2023, strategic 1.8%, other 0.9%). The estimand Terms are 补贴金额 (1\|a\|bb), 战略部门 (1\|a\|a), 补贴措施 (1\|a\|g), and the book root (the survey's `equiv` takes the source line of each Term Card, as noted in arrocannarsa2026flight Stage 6 Open 3; it forms no pair).
+- **No pair, and none was forced.** As in bergin2026exchange, assenza2026louder and arrocannarsa2026flight, the survey pairs on shared Term addresses, widened only by zt-term-sync Links. All 184 Term Cards of the book were read: none has an outbound or inbound Link to another book's Card. The other side was also read in full by text, beyond the Terms: of the 925 Finding Cards of other books, the 63 other empirical model heads and their 591 estimate parts, none names 补贴, 产业政策, 政府援助 or 国家援助 (the same scan finds 关税 in 3 Finding Cards, so the scan reads the bodies). The other books' Cards that name subsidies or industrial policy are Idea, Term, Cited or formal-model Cards (for example ebrill2001modern/8\|f\|a, a formal subsidy-rate model; furceri2026divide and bergin2026exchange Term Cards on 产业政策), none an estimate of the same estimand.
+- The book's own Finding Cards (2\|f, 2\|g, 10\|b–d) are not on the other side: the skill pairs an estimate with other empirical models and with the Finding Cards of other books. The relation of 3\|a to them is the book's own and stays as the earlier stages wrote it.
+- Pairs surveyed 0, judged 0, written 0. The judged record was not changed (no apply).
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `dialogue.mjs check`: `{"head":"rotunno2026industrial/3|a","broken":0,"proposed_again":0,"ok":true}` (exit 0).
+- No judged pair, so no **对应** line to check.
+- `check-settings.mjs`: 3\|a `settings: the data tree and the specification ladder are in place`; 4\|a `settings: all in the setting part, as a dependency tree`.
+- `check-model.mjs`: 3\|a `members 46 {"main":7,"side":39}`, `relations {"refers":68,"rests-on":23,"illustrates":5}; loose 0; self_sufficient true`; 4\|a `members 48 {"shared":4,"main":7,"side":37}`, `relations {"refers":37,"rests-on":72,"illustrates":3}; loose 0; self_sufficient true`.
+- `list_broken_links` (agent): `{"broken":[]}`, before and after the relink.
+- Term relink: `{"links_repaired":0,"book":"rotunno2026industrial","links_added":0,"rounds":0,"cards_refused":0,"cards_changed":0,"applied":false,"ok":true}`.
+
+### Open
+
+1. No cross-book pair: the book's Terms (补贴金额, 补贴措施, 补贴率, 战略部门, …) link to no Term Card of another book, and no other book's Finding Card or empirical estimate names subsidies. After a zt-term-sync pass on the economics shelf, or after another book with subsidy estimates is digested, survey 3\|a again.
+2. The stage-5 Open items (head and hard-coded address in the 4\|a figures to update after stage 7, the 3 R3 faults, the stage-4 items) stay.
+3. No script fault was found; no skill file changed. No `card_locked`, no `read_view_changed` and no failed read occurred. Nothing committed (stage brief).
