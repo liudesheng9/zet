@@ -275,3 +275,90 @@ All lines below are the reruns after the Term relink.
 2. Survey noise: 8\|b\|a\|3\|d and 3\|e carry no Term of what they measure, so they paired with every 4\|a estimate that names 理事 (52 pairs, all `same: false`). A Term link for 行长 / 立场 in those two cards would narrow a later survey; not added here (the stage writes only judged Links).
 3. Script observation carried from arrocannarsa2026flight Stage 6 Open 3: the book root appears in `estimand_terms`; it formed no pair. No script fault was found; no skill file changed.
 4. Stage-4 Open items 1–3 stay. No `card_locked`, no `read_view_changed` and no failed read or write occurred. Nothing committed (stage brief).
+
+## Stage 7: literature organize
+
+Date 2026-11-14, live box (owner's request), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, three structure batches through `batch.mjs`, one `leads.mjs` run, one scripted `edit_card` batch for titles, position lines, the root index and the structure card, and one fix). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-riboni2026presidential-organize.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Every batch was previewed first (complete true, refusals none, `links_that_will_break` empty) and then committed under its plan hash. Before the text batch a script compared the display and inline formulas and `\tag` numbers of the old and new bodies (0 changes), and every written Card was read back and compared with the intended text (0 differences). The tree went from 442 to 444 Cards (two new summary leads, §1 and §3). No Card was deleted, and no formula, equation number or estimate changed. Only Cards of riboni2026presidential were written; the moves re-pointed Links in other books by themselves (furceri2026divide/8\|a now reads `riboni2026presidential/4|f|a|6`, the same chapter-4 card). No `card_locked`, no `read_view_changed` and no failed batch occurred; the tree was unlocked throughout. Other sessions wrote other books on the box.
+
+### Source divisions
+
+From `D:\zt-digest\riboni2026presidential\book.zh.md`: the title, 摘要, 1. 引言 (1.1 总统与理事会, 1.2 对文献的贡献, `##` 1.3 全文结构), 2. 数据, 3. 计量策略 (`##` 3.1 局部投影, `##` 3.2 外部工具变量, then 3.3 基准结果, 3.4 选举周期, 3.5 党派行为, which the translation marks as top-level `#` but which are subsections of 3), 4. 机制 (4.1 政策立场, also marked `#`; `##` 4.2 政策决策, `##` 4.3 异议行为), 5. 经济结果, 6. 结论. The translation stops before the reference list. The top line takes the abstract and the six numbered sections, then the two lists.
+
+The digest had filed the paper as 10 groups: old 1 = 摘要 + §1.1, with the Term list, the Cited list, the abstract (whose Direct chain held the eight §1.1 notes) and the structure Card under it; old 2 = §1.2; old 3 = §1.3 + §2; old 4 = §3.1–3.2, whose 24 reading notes and events ran on the Direct line of the Model Card 4\|a; old 5–7 = §3.3–3.5 as top Cards; old 8 = §4, with all of §4.1–4.3 on one Direct chain; old 9 = §5; old 10 = §6.
+
+### Final tree (top line and divisions)
+
+```
+1   摘要 (old 1|c)                          a 结构卡 (old 1|e)
+2   1. 引言 (new summary, demote of old 1)  a 1.1 (old 1; a|f chain = old 1|c|1–8, finding a|f|6|a = old 1|d)
+                                            b 1.2 (old 2) · c 1.3 (old 3|c)
+3   2. 数据 (old 3, retitled, 1.3 part out)  c chain (old 3|c|1–6; footnote 7 old 3|d now c|1|b)
+4   3. 计量策略 (new summary, demote of old 4)
+                                            a 3.1 (old 4; a|a chain = old 4|a|1–3)
+                                            b 3.2 (old 4|a|4, chain b|1–b|5 = old 4|a|5–9; findings b|1|a, b|2|a = old 4|b, 4|c)
+                                            c 3.3 (old 5) · d 3.4 (old 6) · e 3.5 (old 7)
+                                            f empirical model, appointment effect (old 4|a)
+5   4. 机制 (old 8, rewritten)               a §4 preamble (old 8|d)
+                                            b 4.1 (old 8|d|1, chain b|1; finding b|1|b = old 8|e)
+                                            c 4.2 (old 8|d|3, chain c|1; findings c|a, c|b = old 8|f, 8|g; c|c empirical model, reaction function = old 8|b)
+                                            d 4.3 (old 8|d|5, chain d|1–d|2; findings d|a, d|b, d|1|a = old 8|h, 8|i, 8|j)
+6   5. 经济结果 (old 9, retitled)           b VAR chain; findings under figures 6–8 (b|2|a, b|3|a, b|4|a = old 9|c–e)
+7   6. 结论 (old 10, retitled)              a chain; findings under figure 9 (a|2|a|a–c = old 10|b–d) and table 3 (a|3|a|a = old 10|e)
+8   术语表 (Term list, from 1|a)
+9   参考文献 (Cited list, from 1|b)
+```
+
+Batches (tail to head): §4 (11 items, 42 renamed), §3 (8 items, 235 renamed), findings + lists + §1 (22 items, 217 renamed). Then `leads.mjs`: two demotes (old 1, old 4) and one rewrite (old 8).
+
+### Crossers and how each was settled
+
+- Old 1 was 摘要 and §1.1 at once and held the Term list, the Cited list and the structure Card. The lists went to the tail (`8`, `9`). The abstract (old 1\|c) became the top Card `1`, with the structure Card under it (`1|a`). Its Direct chain (old 1\|c\|1–8, all `§1.1`) moved under old 1. Old 1 spoke for §1.1 only, so it was demoted: a new §1 summary took its place, and old 1 is the 1.1 head `2|a` (retitled, its abstract sentence and its `§摘要` / `§1. 引言` lines dropped, position and source lines rewritten to §1.1).
+- Old 3 was §1.3 and §2: the 1.3 Card (old 3\|c) moved under the §1 summary as `2|c`, and its Direct chain (old 3\|c\|1–6, all `§2`) stayed under old 3, which is now the §2 Card `3` (its 1.3 sentences and `§1.3` line removed, a source line `§2` added).
+- Old 4 spoke for §3.1–3.2 only: demoted. A new §3 summary took its place; old 4 is the 3.1 head `4|a` (its §3.2 paragraph and `§3.2` line dropped, since the summary and the 3.2 notes `4|b`, `4|b|4` carry them; position and source lines rewritten to §3.1). Old 5–7 (3.3–3.5, top Cards that are subdivisions) moved under the summary.
+- The Model Card 4\|a carried 24 reading notes of §3.1–3.2 (with 9 events) on its Direct line. The chain was cut by source line: old 4\|a\|1–3 (§3.1) under the 3.1 head, old 4\|a\|4–9 (§3.2) as the 3.2 chain. No model member moved: `check-model.mjs` members stay 113 and 28.
+- Old 8\|d (§4 preamble) carried all of §4.1–4.3 on its Direct chain: cut by source line into 4.1 (old 8\|d\|1–2), 4.2 (old 8\|d\|3–4) and 4.3 (old 8\|d\|5–7). Old 8 already walked §4.1–4.3 and was rewritten in place.
+- Whole units: 4\|a moved once and is now `4|f`, the last Side branch of the §3 summary (its chapters span §2–§5); 8\|b moved once and is now `5|c|c`, under the 4.2 head.
+
+Calls that could go the other way: the abstract as its own top Card rather than under a 前置页 summary (the front matter is the title, which is the root, and the abstract); the 3.2 head is the first-instrument note `4|b` (retitled `3.2 外部工具变量：…`) rather than a new 3.2 summary; 4\|f under the §3 summary rather than under 3.1 where its head is first written; old 8 rewritten rather than demoted (it spoke for all of §4); the §4 preamble `5|a` kept before the subdivisions; the findings moved under the notes that report them (§3.2, §3.3, §3.4, §4, §5, §6) rather than left as Side branches of the division heads.
+
+### Summary leads and other text
+
+- `leads.mjs`: new summaries `2` (1. 引言, demote of old 1, `keep` the §1.1 chain) and `4` (3. 计量策略, demote of old 4, `keep` the §3.1 chain); rewrite `5` (4. 机制). Each has the source's name and main claim as title, paragraphs that walk the subdivisions, `小节索引：`, `在全书中的位置：` and the source line.
+- `leads.mjs` turned Term names into Term uses and linked `理事` inside `理事会多数` and `总统任命` inside `每位总统任命 3 至 9 名理事` in the §1 summary; the hand batch rewrote that paragraph (and split three sentences over 40 characters).
+- Hand edits (one scripted batch of 17 writes, then one fix): `2|a` (1.1 head, above), `3` (§2, above), `4|a` (3.1 head, above); retitled with the section number: `2|b` 1.2, `2|c` 1.3, `3` 2., `4|b` 3.2, `4|c` 3.3, `4|d` 3.4, `4|e` 3.5, `5|b` 4.1, `5|c` 4.2, `5|d` 4.3, `6` 5., `7` 6. Four pointer Links that named the wrong section were corrected: §5's VAR results in the 1.2 Card, and 第 5 节的经济结果 in the 1.3 Card and in the §2 Card, pointed at old 10 (结论) and now point at `6`; the 结论 Card's `引言提出的问题` now points at the §1 summary `2` instead of the 1.1 head. The fix round added the missing source line `§3.4` to `4|d` (zt-check I3).
+- The root index lists the nine top Cards. The structure Card `1|a` got a new **论证** (the top line with its subdivisions) and **模型** (the two empirical models only; its old model list named 4\|a's chapters and its data tree as models, stale since the fold); its **事件** section stays.
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `check.mjs riboni2026presidential`: top line 1 摘要 (2), 2 1. 引言 (25), 3 2. 数据 (17), 4 3. 计量策略 (168), 5 4. 机制 (43), 6 5. 经济结果 (12), 7 6. 结论 (14), 8 Term list (93), 9 Cited list (69); `no fault`. Against the start snapshot (before the summaries) it reported `442 Cards before, 444 now` (the two new summaries) and the 4\|a unit `138 Cards before, 114 now` (the 24 reading notes moved off the Model Card's Direct line, as above).
+- Source-line walk (139 Cards with a source line, whole units excluded): every Card under its own top division, and every second-level branch holds only its own subsection's label (2\|a 1.1, 2\|b 1.2, 2\|c 1.3, 4\|a–e 3.1–3.5, 5\|b–d 4.1–4.3). No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`, before and after the relink.
+- `check-model.mjs`: `4|f` `members 113 {"main":12,"side":99,"off":2}`, `relations {"refers":185,"rests-on":85,"contrasts":1}; loose 0; self_sufficient true`; `5|c|c` `members 28 {"shared":4,"main":6,"side":17,"off":1}`, `relations {"refers":43,"rests-on":18}; loose 0; self_sufficient true` (as at stages 4–6).
+- `check-network.mjs`: `network: clean` on both.
+- `check-settings.mjs`: both `settings: the data tree and the specification ladder are in place`.
+- `imports.mjs check`: exit 0 on both (5\|c\|c's `整块` import now names `4|f|a|i`).
+- `zt-check --cards` on the root, the structure Card and the 17 written heads: first run `faults: 1` (I3, no source line in `4|d`), fixed once; second run `faults: 0`, exit 0 (advisory L1/L2/I4/R20 lines only).
+- Term relink: `{"links_repaired":0,"applied":true,"cards_changed":3,"ok":true,"cards_refused":0,"rounds":1,"links_added":6,"book":"riboni2026presidential"}`; `-PlanOnly` afterwards: `{"ok":true,"links_added":0,"rounds":0,"book":"riboni2026presidential","links_repaired":0,"cards_changed":0,"cards_refused":0,"applied":false}`. No relink bug.
+
+## Result
+
+Final top line: 摘要 · 1. 引言 · 2. 数据 · 3. 计量策略 · 4. 机制 · 5. 经济结果 · 6. 结论 · 术语表 · 参考文献.
+
+Models (final addresses):
+
+- `riboni2026presidential/4|f`, empirical (level 3): the appointment effect (local projections with 2SLS and four external instruments; SVAR-IV for §5), 113 members, data card `4|f|a`, design `4|f|a|1`, specification ladder `4|f|a|2`, chapters `4|f|a|3`–`11` (§3.2–§5); filed as the last Side branch of the §3 summary. It lends the stance measure `4|f|a|i` to 5\|c\|c.
+- `riboni2026presidential/5|c|c`, empirical (level 3): the reaction function (stated stance and the same meeting's decision, OLS), 28 members (4 imported: `整块 4|f|a|i` with its closure); filed under the 4.2 head.
+
+Stage 5 (illustrate) did not apply (no formal model). All other stages passed their gates. Open items across the sequence:
+
+1. Restructure step 3 text was not redrafted in 4\|f: estimate and test cards keep their digest format, and chapters 3–9 keep their old 问题/概要/主要估计/关联 text below the new sections (Stage 3).
+2. `4|f|a|6|b` (Republican estimate of (2)) says its uncertainty is not stated, although the source draws 90% HAC bands (Stage 3).
+3. The weak-instrument test is written once per specification, although the source states it once for all 26 projections (Stage 3).
+4. Several notations for one object stay in the specification ladder ($G^{R}_t$ and $R_t$, the letter $D$) (Stage 2).
+5. `5|c|c|a|4|b` names Figure 2 panel A only in words; a `对照` Link would make it navigable (Stage 4).
+6. No cross-book evidence pair: survey 4\|f and 5\|c\|c again after a zt-term-sync pass on the economics shelf (Stage 6).
+7. The 3.5 head `4|e` still says the projections estimate the effect on 政策立场, while the outcome is the policy decision (Stage 3 corrected the specifications and chapter 6, not this reading note) (Stage 7).
+8. `leads.mjs` (`linkTerms`) links a shorter Term inside a longer word once the longer Term's first use is taken (`理事` in `理事会多数`); fixed by hand here, the script is unchanged (Stage 7).
+9. This pass doc is not committed (the stage brief said no commit).
