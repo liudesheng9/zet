@@ -433,3 +433,104 @@ All lines below are the reruns after the Term relink.
 2. The model's headline result, the decomposition of 第 5 章 (supply constraints added 2–3 pp to US inflation in 2020–22 and depressed GDP), has no estimate part: chapters 4 and 5 (`13|a|a|7`, `13|a|a|8`) hold no `估计：` card, so the survey reads only the four parameters and the four S02 levels. A later survey can pair the decomposition only if the restructure gives it estimate parts; not changed here (the stage writes only judged Links). No neighbour on the box states that estimand today, so no pair is lost now.
 3. No script fault was found; no skill file changed.
 4. The stage-4 and stage-5 open items stay. No `card_locked`, no `read_view_changed` and no failed read or write occurred. Nothing committed (stage brief).
+
+## Stage 7: literature organize
+
+Date 2026-11-15, live box (owner's request), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, two structure batches through `batch.mjs`, one `leads.mjs` run, one scripted `edit_card` batch for titles, trimmed heads, moved passages and false position lines, one scripted write of the root index and the structure card, and one fix round). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-ozhan2026monetary-organize.sqlite3` (`VACUUM INTO`, 408 MB, `PRAGMA integrity_check` ok). Every batch was previewed first (complete true, refusals none, `links_that_will_break` empty) and then committed under its plan hash. The edit script compared the display and inline formulas of every old and new body: no formula was added or changed; one restatement was dropped (see 3.3 below). The tree went from 711 to 715 Cards (four new summary leads: §3, §4, §6, A.1). No Card was deleted, and no formula, equation number or estimate changed. Only Cards of ozhan2026monetary were written. No `card_locked`, no `read_view_changed` and no failed batch occurred; the tree was unlocked throughout. Other sessions may have written other books on the box.
+
+### Source divisions
+
+From `D:\zt-digest\ozhan2026monetary\book.zh.md`: front matter (IMF WP title page with disclaimer, 摘要, JEL codes, keywords and acknowledgement footnote; a second title page; 目录; 图 and 表 lists); 1 引言 (1.1 文献综述); 2 程式化模型 (2.1 家庭, 2.2 企业 with 2.2.1 上游生产 and 2.2.2 下游生产, 2.3 市场出清与货币政策); 3 定量模型 (3.1 家庭 with 3.1.1/3.1.2, 3.2 企业 with 3.2.1 生产/3.2.2 定价, 3.3 货币政策, 3.4 政府, 3.5 市场出清, 3.6 扩展, 3.7 校准); 4 数据、模型模拟与数据拟合 (4.1–4.3); 5 模型性质 (5.1–5.3); 6 政策含义 (6.1, 6.2 with 6.2.1); 7 结论; 附录 A：模型的更多细节 (the translation numbers its sections 7.1–7.7 with 7.1.1, 7.1.2, 7.2.1, 7.2.2; they are A.1–A.7: A.1 家庭——世代交叠结构, A.2 企业, A.3 定价, A.4 市场出清, A.5 货币政策, A.6 不完全劳动流动性, A.7 冲击过程); 附录 B：补充图表. The translation marks most subsections as top-level `#`; they are nested here under their numbered parent. The 目录 lists 参考文献 on p. 51, but the Markdown has no reference list (the Cited list holds it). The top line takes the front matter, the seven numbered sections and the two appendices, then the two lists.
+
+The digest had filed the paper as 28 groups: old 1 front matter with the Term list, the Cited list, the abstract chain and the structure Card under it; old 2 the second title page, 目录 and 图 list; old 3 §1 (its chain ended in the 表 list, old 3\|e\|16); old 4 §1.1; old 5–7 §2 (old 5 = 2.1–2.2.1 with the model 5\|a, old 6 = 2.2.2, old 7 = 2.3); old 8–12 §3 (old 8 = §3 + 3.1 with the model 8\|a, old 9 = 3.2, old 10 = 3.3–3.5 on one chain, old 11 = 3.6, old 12 = 3.7); old 13 §4 + 4.1 with the empirical model 13\|a; old 14 4.2; old 15 4.3 + §5 preamble; old 16–18 5.1–5.3; old 19 §6 + 6.1 with the model 19\|a; old 20 6.2; old 21 6.2.1; old 22 §7 + A.1 (one top Card for two divisions); old 23 A.1.1; old 24 A.1.2 + A.2.1; old 25 A.2.2; old 26 A.3; old 27 A.4–A.6; old 28 A.7 + appendix B.
+
+### Final tree (top line and divisions)
+
+```
+1   前置页 (old 1, rewrite)                 a 题页与致谢 (old 1|d) · b 摘要 (old 1|c chain) · c 目录与图表目录 (old 2; 表目录 old 3|e|16 at c|a|5) · d 结构卡 (old 1|e)
+2   1 引言 (old 3, rewrite)                 b–d findings · e §1 chain · f 1.1 文献综述 (old 4)
+3   2 程式化模型 (old 5, rewrite)           a formal model (old 5|a) · b 2.2.2 (old 6) · c 2.3 (old 7)
+4   3 定量模型 (new summary, demote)        a 3.1 (old 8) · b 3.2 (old 9, rewrite: b|c 3.2.1, b|d 3.2.2 old 9|c|5..8)
+                                            c 3.3 (old 10, trimmed) · d 3.4 (old 10|b|1..2) · e 3.5 (old 10|b|3..6)
+                                            f 3.6 (old 11) · g 3.7 (old 12) · h formal model (old 8|a)
+5   4 数据、模型模拟与数据拟合 (new, demote) a §4 preamble (old 13|b) · b 4.1 (old 13; chain old 13|b|1..4, findings)
+                                            c 4.2 (old 14) · d 4.3 (old 15|c, 15|d) · e empirical model (old 13|a)
+6   5 模型性质 (old 15, rewrite)            a §5 preamble (old 15|b chain) · b 5.1 (old 16) · c 5.2 (old 17) · d 5.3 (old 18)
+7   6 政策含义 (new summary, demote)        a §6 preamble (old 19|b; a|a footnote 24, old 19|b|1|a)
+                                            b 6.1 (old 19; chain old 19|b|1..9, findings, formal model b|f old 19|a)
+                                            c 6.2 (old 20, rewrite; c|g 6.2.1 old 21)
+8   7 结论 (old 22|a)                       a chain (old 22|a|1..3) · b finding (old 22|c)
+9   附录 A (old 22, rewrite)                a A.1 (new summary, demote: a|a old 22|d chain, a|b A.1.1 old 23, a|c A.1.2 old 24|b..b|3)
+                                            b A.2 (old 24, rewrite: b|a A.2.1 old 24|b|4..7, b|b A.2.2 old 25)
+                                            c A.3 (old 26) · d A.4 (old 27) · e A.5 (old 27|b|2) · f A.6 (old 27|b|3) · g A.7 (old 28|a)
+10  附录 B (old 28)                         a chain (old 28|a|1..9) · b–h findings
+11  术语表 (Term list, from 1|a)
+12  参考文献 (Cited list, from 1|b)
+```
+
+Batches: one structure batch (46 items: 37 moves and 9 reorders, 709 Cards renamed); `leads.mjs` (four demotes, eight rewrites); one text batch (32 `edit_card` writes); the root and the structure Card; one move (the §6 footnote card, 1 Card renamed); one fix round (3 writes).
+
+### Crossers and how each was settled
+
+- Old 1 held the front matter and both lists: the lists went to the tail (`11`, `12`), old 2 (second title page, 目录, 图 list) moved under the front-matter Card as `1|c`, and the 表 list card (old 3\|e\|16, last on the §1 chain) moved to the end of the 目录 chain (`1|c|a|5`).
+- Old 8 led §3 and 3.1: demoted. A new §3 summary took its place; old 8 is the 3.1 head `4|a` (first two sentences on the §3 set-up cut, `§3 -` line dropped, source line `§3.1` added).
+- Old 10 held 3.3, 3.4 and 3.5 on one chain: cut by source line into `4|c` (3.3, old 10 with old 10\|b), `4|d` (3.4) and `4|e` (3.5). Old 10 speaks for all three; it went to 3.3 because its source line and first paragraph are 3.3 (the tie rule would have given it to 3.5, which has most Cards). Its 3.4 and 3.5 sentences were cut (the 3.4 sentence restated $1/\mu_{c,i}-1$; that formula stands unchanged in `4|d`'s title and body).
+- Old 9 (3.2) held 3.2.1 and 3.2.2 on one chain: the 3.2.2 chain (old 9\|c\|5–8) became its own Side branch `4|b|d`; old 9 already spoke for 3.2 and was rewritten as its summary.
+- Old 13 led §4 and 4.1: demoted. Old 13\|b (the §4 preamble) became `5|a`; its Direct chain (4.1, old 13\|b\|1–4) and the three 4.1 findings stayed with old 13, now the 4.1 head `5|b` (the §4 sentences cut, source line `§4.1`).
+- Old 15 was 4.3 and the §5 preamble: the head went to §5 (four Cards against two) and was rewritten as the §5 summary; old 15\|c and 15\|d (4.3) moved to §4 as `5|d`. The 4.3 method paragraph of old 15's text moved into `5|d` (now titled 4.3).
+- Old 19 led §6 and 6.1: demoted. Old 19\|b (the §6 preamble) became `7|a`; its Direct chain (6.1, old 19\|b\|1–9) stayed with old 19, now the 6.1 head `7|b` (`§6 -` line dropped, source line added). The §6 footnote card (old 19\|b\|1\|a, source line §6) moved under the §6 preamble (`7|a|a`). Old 20 (6.2) moved under the summary with old 21 (6.2.1) nested as `7|c|g`.
+- Old 22 was §7 and A.1 at once (five Cards against seven): the head went to appendix A by majority and was rewritten as the appendix A summary. Its §7 card old 22\|a became the top Card `8` with its chain as Side branches; the §7 paragraph of old 22's text moved into `8`. The A.1 chain (old 22\|d) got a new A.1 summary `9|a` (demote), with A.1.1 (old 23) and A.1.2 (old 24\|b..b\|3) nested under it.
+- Old 24 held A.1.2 and A.2.1 (four Cards each): by the tie rule the head went to the later division and was rewritten as the A.2 summary `9|b`, with A.2.1 (old 24\|b\|4–7) and A.2.2 (old 25) nested.
+- Old 27 held A.4–A.6: the head stays A.4 (two Cards against one each; text trimmed to A.4); old 27\|b\|2 (A.5) and 27\|b\|3 (A.6) became top Cards of the appendix.
+- Old 28 held A.7 (one Card) and appendix B (16 Cards): the head went to B (`10`, text trimmed to B); old 28\|a (A.7) moved to the appendix as `9|g`, and its Direct chain (B) closed up under `10`.
+- Whole units: each model moved once with all its parts. 5\|a → `3|a` (31 members, unchanged), 8\|a → `4|h` (142 members), 13\|a → `5|e` (177 members), 19\|a → `7|b|f` (12 members). 8\|a spans §1, §3, §5.2–5.3 and appendix A and is filed under §3 (as the brief asked); 13\|a spans §4 and §6.2 and is filed under §4; 19\|a is §6.1 only and stays with the 6.1 head. Term list 140 and Cited list 63 Cards, unchanged.
+
+Calls that could go the other way: 2.1 and 2.2.1 (and 3.1.1, 3.1.2) have no reading notes outside the models, so 2.2 has no lead of its own and 2.2.2 nests directly under the §2 summary; old 10 given to 3.3 by its source line rather than to 3.5 by Card count; the models filed as the last Side branch of their section's summary (3\|a first in §2, where it is the section's main content); old 5 (§2) rewritten rather than demoted, since its text was the model's 2.1–2.2.1 set-up and the summary keeps it; old 15 rewritten for §5, with its 4.3 paragraph moved rather than dropped; old 22's §7 paragraph appended to the §7 top Card `8`, whose own title is a single claim (prefixed `7 结论：`); appendix A headings written A.1–A.7 in titles, with the translation's 7.x numbers kept in the source lines.
+
+### Summary leads and other text
+
+- `leads.mjs`: demotes `4` (§3), `5` (§4), `7` (§6), `9|a` (A.1); rewrites `1` (前置页), `2` (§1), `3` (§2), `4|b` (3.2), `6` (§5), `7|c` (6.2), `9` (附录 A), `9|b` (A.2). Each has the source's name and main claim as title, one or two paragraphs that walk the subdivisions, `小节索引：` with a Link to each subdivision head, `在全书中的位置：` and the source line; `leads.mjs` turned Term names into Term uses. The §2 summary keeps old 5's paragraph (with $(1-\alpha)/\alpha$ copied unchanged); the 3.2 and A.2 summaries keep their formulas ($\gamma^{z}$, $L_{c,i,t}\leq\hat{x}_{c,i,t}\bar{L}_{c,i}$, $\gamma^{x}$) unchanged.
+- Hand edits (one scripted batch, formula check before write): trimmed heads `4|a` (3.1), `4|c` (3.3), `5|b` (4.1), `9|d` (A.4), `10` (B); moved passages into `5|d` (4.3 method, from old 15) and `8` (§7 conclusions, from old 22); source lines added to `4|a`, `7|b`, `9|d`, and in the fix round `9|b|b` and `9|c`; position lines made true again in `1|c`, `3|c`, `3|c|b|3`, `5|c`, `6|b`, `7|c|g`, `7|c|g|a`, `9|a|b` (Links that meant the §3 model or the 4.3 method now reach `4` and `5|d`; the 6.2.1 card now leads to `8` and `9`); the finding `8|b` had its source Link to old 22 (now the appendix summary) turned to `8`. Retitled with the section number: `1|c`, `2|f`, `3|b`, `3|c`, `4|c`–`4|g`, `5|c`, `5|d`, `6|b`–`6|d`, `7|c|g`, `8`, `9|a|b`, `9|a|c`, `9|b|a`, `9|b|b`, `9|c`–`9|g`, `10`.
+- The root index lists the twelve top Cards. The structure Card `1|d` lists the ten parts and the four models only (its old list named 8\|a's and 13\|a's chapters as models, stale since the fold).
+- `zt-check --cards` on the root, the structure Card and the 44 written Cards: first run `faults: 3` (R2, a 42-character sentence in `1|d`; I3, no source line in `9|b|b` and `9|c`, both pre-existing), fixed once; second run `faults: 0`, exit 0 (advisory L1/L2/I4 lines only).
+
+### Chart targets
+
+Backup: `D:\zt\backups\zt-before-ozhan2026monetary-chart-targets.sqlite3` (`PRAGMA integrity_check` ok). In `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\` the `head` of `ozhan2026monetary-5_a.mjs` is now `ozhan2026monetary/3|a`, of `-19_a.mjs` `ozhan2026monetary/7|b|f`, of `-8_a.mjs` `ozhan2026monetary/4|h`, each with a comment naming the old head; every target is built from `head` (`A()`), so no hard-coded target needed a change; the 8\|a module's header comment now names the imported rule block `3|a|a|e|a`. The skill sets no file-name convention (bergin2026exchange-7_a.mjs serves head 5\|h), so the file names stay. `apply.mjs --write`: `nothing to write` on all three (`same` for 8, 4 and 45 Cards): zt had already rewritten every `data-zt` target with the moves. Gate: `verify.mjs --model ozhan2026monetary/3|a` (light and dark): `8 chart(s) in 32 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`; `verify.mjs --model ozhan2026monetary/7|b|f`: `4 chart(s) in 13 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`; `verify.mjs --model ozhan2026monetary/4|h`: `37 chart(s) in 143 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉` (the count includes the five charts of the imported 3|a cards). 0 dead targets (`dead-target` is a lint rule).
+
+### Gate
+
+All lines below are the reruns after the Term relink, except the chart verify (run before the relink; the relink changed four summary Cards, none of them a model part).
+
+- `check.mjs ozhan2026monetary`: top line 1 前置页 (18), 2 1 引言 (28), 3 2 程式化模型 (52), 4 3 定量模型 (184), 5 4 数据、模型模拟与数据拟合 (61), 6 5 模型性质 (44), 7 6 政策含义 (52), 8 7 结论 (5), 9 附录 A (50), 10 附录 B (17), 11 Term list (140), 12 Cited list (63); `no fault`. Against the start snapshot the only line was `711 Cards before, 715 now` (the four new summaries; the run then included the §6 footnote move, which keeps the count); no whole unit changed size.
+- Source-line walk (every Card with a source line, whole units excluded): every Card stands under its own top division, and every second- and third-level branch holds only its own subsection's label (2\|f 1.1; 3\|b 2.2.2, 3\|c 2.3; 4\|a–4\|g 3.1–3.7 with 4\|b\|c 3.2.1, 4\|b\|d 3.2.2; 5\|b–5\|d 4.1–4.3; 6\|b–6\|d 5.1–5.3; 7\|b 6.1, 7\|c 6.2 with 7\|c\|g 6.2.1; 9\|a\|a–c §7.1/7.1.1/7.1.2; 9\|b\|a–b §7.2.1/7.2.2; 9\|c–9\|g §7.3–§7.7; 10 附录 B). The walk found one Card off its division, the §6 footnote under 6.1 (source line §6), which moved to the §6 preamble. No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`, after the moves and after the relink.
+- `get_model`: `3|a` formal, `4|h` formal, `5|e` empirical, `7|b|f` formal; `self_sufficient` true on all four.
+- `check-model.mjs` (as at stages 5–6): `3|a` `members 31 {"main":4,"side":27}`, `relations {"refers":21,"rests-on":51,"corresponds":1,"illustrates":4,"contrasts":1}; loose 0; self_sufficient true`; `4|h` `members 142 {"shared":5,"main":15,"side":122}`, `relations {"refers":113,"corresponds":19,"rests-on":221,"contrasts":7,"illustrates":4}; loose 0; self_sufficient true`; `5|e` `members 177 {"main":9,"side":31,"shared":137}`, `relations {"refers":165,"rests-on":257,"corresponds":20,"illustrates":8,"contrasts":7}; loose 0; self_sufficient true`; `7|b|f` `members 12 {"main":3,"side":9}`, `relations {"refers":11,"rests-on":17}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean` on all four (advice on `4|h`: chapters 7 and 8 have no `结果：` card).
+- `check-settings.mjs`: `3|a`, `4|h`, `7|b|f` `settings: all in the setting part, as a dependency tree`; `5|e` `settings: the data tree and the specification ladder are in place`.
+- `imports.mjs check`: exit 0 on all four (copy advice as at stage 4, now at the new addresses).
+- `check-premises.mjs`: `3|a` 1 hit (the stage-3 pointer in `3|a|a|2|b|a` to (16)); `4|h`, `7|b|f` `premises: none used before their card`.
+- Chart verify: see **Chart targets** (0 lint faults, 0 dead targets on `3|a`, `7|b|f`, `4|h`).
+- `zt-check --cards` on the root, the structure Card and the 44 written Cards: `faults: 0`, exit 0.
+- Term relink: `{"applied":true,"ok":true,"book":"ozhan2026monetary","links_added":15,"rounds":1,"cards_refused":0,"cards_changed":4,"links_repaired":0}`; `-PlanOnly` afterwards: `{"applied":false,"cards_refused":0,"links_repaired":0,"ok":true,"cards_changed":0,"rounds":0,"book":"ozhan2026monetary","links_added":0}`. No relink bug.
+
+## Result
+
+Final top line: 前置页 · 1 引言 · 2 程式化模型 · 3 定量模型 · 4 数据、模型模拟与数据拟合 · 5 模型性质 · 6 政策含义 · 7 结论 · 附录 A 模型的更多细节 · 附录 B 补充图表 · 术语表 · 参考文献.
+
+Models (final addresses):
+
+- `ozhan2026monetary/3|a`, formal (level 2): the stylized two-sector model with a task-based capacity cap (§2), 31 members, three chapters, illustrated (8 charts); filed under the §2 summary.
+- `ozhan2026monetary/4|h`, formal (level 2): the two-region, eleven-sector quantitative model with time-varying labour caps (§1 verbal chapter, §3, §5.2–5.3 experiments, appendix A chapters), 142 members (5 imported: the stylized feedback-rule block `3|a|a|e|a` with its closure), illustrated (37 charts); filed as the last Side branch of the §3 summary.
+- `ozhan2026monetary/5|e`, empirical (level 3): the fit to 2020–2023 data (shock extraction, counterfactuals, constraint contribution; §4 and §6.2), 177 members (imports `4|h` whole); filed as the last Side branch of the §4 summary.
+- `ozhan2026monetary/7|b|f`, formal (level 2): the DC-index weighting experiment of §6.1, 12 members, illustrated (4 charts); filed under the 6.1 head.
+
+All seven stages passed their gates. Open items across the sequence:
+
+1. Stage 4 open items stay (the copy advice `3|a|a|3` ~ `4|h|a|5`, `4|h|a|13` ~ arrocannarsa2026flight/3\|e\|a\|15 and `5|e|a|1` ~ `4|h|a|1` remain advice; the restatements in 4\|h's appendix chapters).
+2. `4|h|a|i|a|a` **设定** writes `$b_{c,a,t}^{\$}$`, whose escaped dollar can mislead check-settings' `$`-pairing; a rewrite of the symbol waits for the owner (Stage 5).
+3. The 14 zt-check R2/R3 faults in existing **起点**/**设定**/**说明** text of the setting cards predate stage 5 and stay (Stage 5); figures that draw shapes the source does not fix say 示意 (Stage 5).
+4. No cross-book evidence pair: survey `5|e` again after a zt-term-sync pass on the economics shelf; its chapters 4–5 hold no `估计：` card for the headline decomposition (Stage 6).
+5. Advice lines stay: `check-network` on `4|h` (chapters 7 and 8 have no `结果：` card); `check-premises` on `3|a` (one stage-3 pointer to (16)).
+6. Stage 7: 2.2 has no lead of its own; the illustrate modules keep their file names (heads changed); the model part `5|e|a|5` keeps a plain Link to `6` (the §5 summary, "模型性质"), which a move turned from the old 4.3-and-§5 group into the §5 summary; it was not touched because it is a model part. This pass doc is not committed (stage brief).
