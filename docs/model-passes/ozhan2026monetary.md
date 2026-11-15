@@ -162,3 +162,117 @@ The **结构** sections of the four Model Cards were rebuilt from the build orde
 5. 8\|a: the setting card carries nine settings (advice `wide`); its blocks are named in **说明**. The check reads $C$ and $M$ first in the setting card (in the superscript $CPI$ and the label $\mathrm{HtM}$) and $N$ first in `c` (the upper limit of a sum); the rows name every reading.
 6. 13\|a: the head's **问题** still says the identifying assumptions are in §4.2 and that the group does not estimate; since the fold the extraction is part of this model. The restructure rewrites the head.
 7. 5\|a: the false share to 8\|a and the import line of 8\|a (to `5|a|a|e|a`) are left to stage 4.
+
+## Stage 3: restructure
+
+Date 2026-11-14, live box, under `zt-model-restructure`, done in one side session by scripts (no subagent, no DeepSeek job, so no DeepSeek cost; the chapter leads were written by hand). Backup: `D:\zt\backups\zt-before-ozhan2026monetary-restructure.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Moves ran as five `apply_batch` tree batches (5\|a: 14 items, one of them the create of the new chapter card; 8\|a: two batches of 39 and 40 items; 13\|a: 11 items; 19\|a: 8 items, two of them creates), each previewed, then committed under the plan hash; `links_that_will_break` was empty in every preview, and every commit applied on the first call. Text ran as `edit_card` calls under `-Allow`; before each text write a script compared the display formulas and the equation numbers (`\tag{…}`, `\quad (N)`) of the old and new bodies, and every written card was read back and compared with the intended text (0 differences). After the pass a script compared the whole book with the backup: 1,028 display formulas and 106 equation numbers before and after, no difference in either multiset (the eight display formulas of the four merged appendix cards were carried byte for byte into the cards they were merged into). No `card_locked` error, no `read_view_changed` error and no failed batch occurred. The Literature tree went from 712 to 711 Cards: four new chapter cards (5\|a: 1; 8\|a: 1; 19\|a: 2) and five cards deleted `into` the card they restate (8\|a: 4; 13\|a: 1).
+
+### 5\|a (formal): the intuition spine
+
+```
+5|a|a  设定 (setting part as the settings pass left it)
+5|a|a|1  第 1 章：B 类任务受产能上限约束，部门供给曲线越过上限后陡升（§2.2.1） (new)   ← 5|a|a, 5|a|a|c
+    a 结果：部门供给曲线 (7)   (proof a|a 约束不起作用 → 约束起作用 → (6) → (7), the former main-line 2–5;  a|b 图 1;  a|c 曲线移动)
+5|a|a|2  第 2 章：商品部门的瓶颈经迂回投入抬高最终品价格，下游供给曲线分三段（§2.2.2）   ← 第 1 章, 5|a|a|d, d|a
+    a 结果：两部门不受约束时 P=W (10)   (proof a|a)
+    b 结果：商品约束下的最终品价格 (15)  (proof b|a (14) → (15))
+    c 结果：下游供给曲线的三段           (proof c|a (11)–(13) → (16)–(18);  c|b 图 2)
+5|a|a|3  第 3 章：市场出清与反馈规则闭合模型，陡峭的供给曲线使宽松只换来有限产出（§2.3）   ← 第 2 章, 5|a|a|e, e|a
+    a 推导：欧拉方程 (3)
+    b 结果：供给冲击下宽松的两难   (b|a 暂时冲击;  b|b 积极规则)
+```
+
+- The §2.2.1 derivations (former main-line 5\|a\|a\|2–5) left the main line into a new chapter card; the proposition became its result, with its four-step chain as the first Side branch and figure 1 and the curve shift after it. The flat Direct chain of chapter 2 was cut into its three propositions, each with its proof chain as a Side branch.
+- Decision on the Euler equation (former 5\|a\|a\|1, §2.1): it went to chapter 3 as the first Side card, not to chapter 1. Its own **解读** says no later derivation of the upstream block uses (3) and that it serves the closure; it rests only on settings, so it stays a derivation without a result card.
+- Result facets read `结果：…` (4 Cards; titles `命题：` → `结果：`). Every chapter card has **直觉** (lead of 20+ characters), **本章结果** and **承上启下** with `依赖` lines; chapters 2 and 3 keep their old 问题/概要/关联 text below (`本模型` → `本章`). The figure-2 card said `第 7 个模型`; it now says `第 3 章`.
+- Notation card: the row `$\lambda_t$、$\lambda$` was split into two rows, because $\lambda$ (the multiplier of (8)) is now met first in 5\|a\|a\|2\|a\|a and $\lambda_t$ (the household multiplier) in 5\|a\|a\|3\|a.
+- The Model Card: **结构** rebuilt (main line and one level under it); 概要 extended by one sentence on chapters 2–3; the two stale 对应 lines to its own chapters dropped; source now §2–§2.3. Three chapters, so no **分部**.
+
+Network (`check-network.mjs`): 设定 → {1, 2, 3}.
+
+### 8\|a (formal): the intuition spine
+
+```
+8|a|a   设定 (setting part as the settings pass left it)
+8|a|a|1   第 1 章：约束起作用时价格而非数量吸收需求，政策面对跨期权衡（§1）   ← 8|a|a|b, 8|a|a
+    a 机制 → a|1 结论 → a|1|a 数值例子 (unchanged)
+8|a|a|2   第 2 章：家庭按工资、利率与财富选择劳动、债券与消费（§3.1） (new)   ← 8|a|a, d, c, c|a
+    a 结果：劳动供给条件 (proof a|a);  b 结果：无抛补利率平价 (proof b|a);  c 结果：消费函数
+    d 结果：对数偏好的消费倾向 (proof d|a);  e 结果：CRRA 下 Ω 的递归式 (proof e|a)
+    f 结果：OLG 与习惯下 Ω 的递归式 (f|a 脚注 9);  g 结果：两层价格指数 (proof g|a)
+8|a|a|3   第 3 章：劳动上限起作用时楔子抬高企业对劳动的估值（§3.2.1）   ← e, e|a, e|b
+    a 结果：楔子与库恩—塔克条件 (20) (proof a|a)
+    b 结果：楔子的取值 (21) (proof b|a, with A.2.2 merged;  b|b 含义)
+8|a|a|4   第 4 章：国内与出口两条菲利普斯曲线同斜率，通胀预期可偏离理性预期（§3.2.2）   ← 第 3 章, f, f|a, f|a|a
+    a 结果：国内与出口菲利普斯曲线 (proof a|a);  b 结果：预期偏离理性预期的程度 (proof b|a; b|b 校准)
+8|a|a|5   第 5 章：泰勒规则、消除加成的补贴与三类市场出清闭合定量模型（§3.3–3.5）   ← 第 4 章, 第 2 章, g, g|a, g|b
+    a 结果：单位补贴 (proof a|a);  b 结果：转移支付总额 (proof b|a);  c 结果：价格关系
+    d 出清：产品市场;  e 出清：资产市场;  f 出清：劳动力市场 (22)
+8|a|a|6   第 6 章：工资粘性、不完全劳动流动与固定资本使总体菲利普斯曲线更陡（§3.6）   ← 第 3 章, j, j|b, j|c
+    a 结果：部门劳动供给 (proof a|a → a|a|1, with A.6 merged);  b 结果：固定资本与菲利普斯曲线 (proof b|a)
+8|a|a|7   第 7 章：开放结构、工会与政策规则使部门冲击的总量效应偏离 Hulten 基准（§5.2）   ← 第 5 章, 第 6 章
+8|a|a|8   第 8 章：部门劳动上限依次起作用，总体菲利普斯曲线在扩张段上翘并左移（§5.3）   ← 第 3 章, h
+    a 机制 → a|1 结论 → a|1|a 例子 (unchanged)
+8|a|a|9   第 9 章：世代交叠的家庭把工资、股息与国外资产折成财富（附录 A.1）   ← 第 2 章, i, i|a, i|a|a
+    a 推导：劳动供给 (7.1-6);  b 推导：无抛补利率平价 (7.1-7);  c 定义：加总;  d 定义：两种财富与 Ω
+    e 推导：劳动财富 (7.1-14);  f 结果：加总消费与财富成比例 (7.1-12) (proof f|a three steps);  g 推导：股息财富 (7.1-13)
+8|a|a|10  第 10 章：工资、财富与净国外资产的总量方程闭合均衡（附录 A.1.1）   ← 第 9 章, i, j|a|a|a
+    a–c 定义;  d 推导：Ω 的递推;  e–f 定义;  g 结果：净国外资产的累积;  h 结果：十四式闭合一般均衡
+8|a|a|11  第 11 章：家庭与企业的需求把两层相对价格分开（附录 A.1.2、A.2.1）   ← 第 2 章, c, c|a, e|a
+    a 定义;  b 结果：家庭的两层需求 (proof b|a);  c 结果：两级价格指数 (proof c|a two steps)
+    d 结果：企业的两层中间品需求 (proof d|a);  e 推导：投入价格指数 → e|1 总投入价格
+8|a|a|12  第 12 章：劳动上限只经有效工资进入劳动需求（附录 A.2.2）   ← 第 3 章, j|c
+    a 结果：劳动需求只经有效工资 (proof a|a);  b 结果：资本与中间品需求 (proof b|a two steps);  c 结果：楔子抬高边际成本 (proof c|a)
+8|a|a|13  第 13 章：Calvo 定价推出国内与出口的部门菲利普斯曲线（附录 A.3）   ← 第 4 章, f
+    a, b 定义;  c 结果：国内与出口的实际价格 (proof c|a two steps);  d 结果：部门菲利普斯曲线 (proof d|a three steps)
+8|a|a|14  第 14 章：国内线与出口线折算成总产出，费雪方程（附录 A.4–A.5）   ← 第 5 章, g
+    a, b 定义;  c 结果：两条线折算成总产出 (proof c|a);  d 定义：费雪方程
+```
+
+(Chapter facets read `第 k 章：<short name>`; the titles above are shortened.)
+
+- The household derivations of §3.1 (former main-line 8\|a\|a\|2–13) left the main line into a new chapter card 第 2 章; each `结果` card became a Side branch with its derivation as its proof. In chapters 3–6 the flat chains were cut the same way. The §1 verbal chapter and the §5.3 experiment keep their 机制/结论 chains.
+- Decision on Appendix A: its derivations are not proof chains of the §3 results. They derive the blocks of the full model in the appendix notation and in the variant settings (the OLG households of variant one, the three-input technology with fixed capital of variant two), and several state forms the main text does not have (the UIP (7.1-7) carries an inflation ratio; the A.1.2 price index uses conditional shares, which the appendix itself sets apart from §3.1.2; the A.3 export curve does not divide marginal cost by the exchange rate). So the six appendix chapters stay chapters of their own (第 9–14 章, part four), the OLG form as its own variant chapter (第 9 章) with its aggregate block (第 10 章). The §3 result cards that state an appendix result now point to it: 2\|c (`附录的推导见第 9 章 [[…9|f]]`) and 2\|f (`附录的递推见第 10 章 [[…10|d]]`).
+- Merged, because the appendix card restates a §3 derivation step for step (delete `into`, Links re-pointed; each was first moved out as a leaf, so its chain stayed in its chapter): the A.2.2 wedge derivation (former 23\|a) into `3|b|a`, the derivation of (21), which already writes (21) in the appendix notation $PZ_{d,j,t}$; the A.6 sector labour supply, wage index and their proposition (former 25\|a\|5, \|6, \|7) into `6|a|a`, `6|a|a|1` and `6|a`. Their eight display formulas went into the kept cards byte for byte, under a heading `附录 A.2.2 的写法` or `附录 A.6 的写法` with one sentence that names the notation. The A.6 chapter's stale **分部** section was removed (its third part pointed into the setting part).
+- Result facets read `结果：…` (26 Cards; the former `结果` and `命题` facets; titles `命题：` → `结果：`). Every chapter card has **直觉**, **本章结果** and **承上启下** with `依赖` lines; the old 问题/概要/关联 text follows (`本模型` → `本章`; chapter 7 lost an empty **结构** heading; chapter 8 says `§3 的定量模型` for the paper's section). The 承上启下 line of chapter 6 first said `扩展设定`, which zt read as a `relaxes` relation; it now names the three settings on three `依赖` lines.
+- Setting part, text only: `j|a|a` said `第 21 章的定义卡` (now `第 10 章`), `h` said `取自第 3 章` for the paper's §3 (now `§3 的`). No setting moved.
+- The Model Card: new title (定量模型：两区域多部门网络中，劳动上限使价格而非产量吸收需求); 问题 widened from the household block to the whole model; one model-wide paragraph put before the old 概要 (now headed 家庭部门); **结构** rebuilt from the tree; **分部** added (设定与直觉 from 8\|a\|a; 家庭、企业与政策（§3） from 第 2 章; 数值实验（§5.2–5.3） from 第 7 章; 附录 A 的完整方程 from 第 9 章); the 关联 line that said the other parts have their own Model Cards and the source line were updated. The **引入** line to `5|a|a|e|a` is unchanged.
+
+Network (`check-network.mjs`): 设定 → {1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14}; 6 → 7.
+
+### 13\|a (empirical): the evidence spine
+
+Main line: 数据 `13|a|a` → 假说：非对称供给传播 `|1` → 设计 `|2` → 规格：基准 `|3` (variant `|3|a`) → 第 1 章 参数取值 `|4` → 第 2 章 准非线性冲击提取 `|5` → 第 3 章 识别检验 `|6` → 第 4 章 准非线性反事实模拟 `|7` → 第 5 章 供给约束的贡献分解 `|8`. Network: 数据 → {假说, 设计}; 设计 → 规格 → {1, 2}; 2 → {3, 4}; 4 → 5.
+
+- The hypothesis card (former `13|a|a|4|a`) moved to the main line before the design, as the skill's evidence spine asks; it rests on the data card only.
+- Chapter 2 is the former §4.2 chapter card `13|a|a|4`. Its sub-chapter card `4|a|1` (第 1 章：提取的约束水平) held only a lead and a list of its estimates; its six children (图 15, 表 6, the four S02 estimates) moved under chapter 2, and the card was deleted `into` chapter 2, whose new **直觉** and **本章估计** carry its lead and list. The tests chapter (former `4|a|2`) became main-line chapter 3. The limits cards 预期 and 未报告拟合 and the former head-level limit 区域加总 (`13|a|b`) are the last Side branches of chapter 2 (`5|g`–`5|i`), each with one plain reference line (`见 […]`); loose 5 → 0.
+- Chapters 4 and 5 (§4.3 counterfactual method, §6.2 decomposition) are kept as quantification chapters without estimate cards (their numbers are in the text and figures 10 and 14); each got **直觉**, **本章估计** (one line saying so) and **承上启下** with `依赖` lines to chapter 2 and the specification, or to chapter 4.
+- **直觉** leads prepended to the data, hypothesis, design and baseline cards. Chapter numbers in text updated (`第 1 章` → `第 2 章` in the design's 假设 4–7 and the six estimate cards; `第 2 章` → `第 3 章` in the two tests).
+- The Model Card: new title (拟合 2020–2023 年数据：两区域 11 部门的冲击提取、反事实与约束贡献); **问题** rewritten (the fit now includes the extraction, the counterfactual and the decomposition, and the identifying assumptions are 假设 4–7 of the design); **估计对象** no longer says the group does not estimate; **结构** rebuilt; source §4.1–§4.3, §6.2. No formula changed.
+
+### 19\|a (formal)
+
+Main line: 设定 `19|a|a` → 第 1 章：约束使受约束部门如弹性价格，按原权重盯住 DC 指数的规则收得过紧 `|1` (new; a 机制, b 结果：忽略约束的规则) → 第 2 章：把受约束部门的权重设为 0，约束期零缺口，解除后负缺口 `|2` (new; a 结果：按约束永久存在调整权重 with proof a|a 推导：受约束部门的权重; b 结果：约束解除后; c 政策含义, former `19|a|b`). Network: 设定 → {1, 2}. **结构** rebuilt.
+
+### Gate
+
+- `check-model.mjs 5|a`: 32 members (4 main, 27 side, 1 shared), no closure, forward or unanchored fault, loose 1, `self_sufficient` true (was false). The loose Link and the shared member are the false share to 8\|a's chapter 3 (`8|a|a|3`, the head's 对照 line), left to stage 4.
+- `check-model.mjs 8|a`: 138 members (15 main, 122 side, 1 shared: the imported rule `5|a|a|e|a`), no fault, loose 0, `self_sufficient` true (was false).
+- `check-model.mjs 13|a`: 40 members (9 main, 31 side), no fault, loose 0, `self_sufficient` true (was false).
+- `check-model.mjs 19|a`: 12 members (3 main, 9 side), no fault, loose 0, `self_sufficient` true.
+- `check-network.mjs`: `network: clean` for all four (advice only for 8\|a: chapters 1, 7 and 8 have no `结果：` card, right for the verbal chapter, the Hulten comparison and the §5.3 experiment).
+- `check-premises.mjs`: 13\|a and 19\|a `premises: none used before their card`. 5\|a 1 hit, 8\|a 3 hits, all pointers, kept with this reason:
+  - 5\|a: `5|a|a|2|b|a` remarks that the book's (16) also calls the rising term the goods input; it does not use (16).
+  - 8\|a: the setting `8|a|a|e` (**直觉**, 怎样进入模型) says that the derivations of (20) and (21) start from (19), and `8|a|a|e|b|a` says that the derivation of (20) uses the assumption to separate $\lambda=0$ and $\lambda>0$; both point to the cards that use them, as after stage 2.
+- `check-settings.mjs`: 5\|a, 8\|a, 19\|a `settings: all in the setting part, as a dependency tree` (8\|a advice: 9 settings under the setting card; `b` and `h` state one thing each); 13\|a `settings: the data tree and the specification ladder are in place`.
+- `list_broken_links` (agent): `{"broken":[]}`. Literature tree 712 → 711 Cards. Whole-book formula comparison with the backup: 1,028 display formulas and 106 equation numbers, no difference.
+- Term relink: `{"links_added":133,"applied":true,"cards_changed":28,"book":"ozhan2026monetary","cards_refused":0,"links_repaired":0,"ok":true,"rounds":1}`. It linked the word 基准模型 in the **分部** line of 8\|a, which made the part line fail the parts check; the part was renamed `家庭、企业与政策（§3）`, and a second relink planned no change: `{"cards_refused":0,"rounds":0,"book":"ozhan2026monetary","links_repaired":0,"ok":true,"links_added":0,"cards_changed":0,"applied":false}`. All checks above, `list_broken_links` and the formula comparison were rerun after it and stay as listed.
+
+### Open
+
+1. Step 3 card text was not redrafted: result cards keep their digest body (no `**为什么**`/`**证明**` sections), derivation cards keep their digest format, and the old chapter cards keep their 问题/概要/关联 text below the new sections. The chapter-1 and chapter-8 cards of 8\|a keep the facets 机制/结论; 8\|a's appendix chapters keep the facets 定义 and 推导 for cards that end in no result.
+2. 8\|a: the appendix chapters 9–14 still restate parts of §3 in the appendix notation (the OLG labour supply and UIP against chapter 2; the two-level demand and price indices against 2\|g; the A.3 Calvo curves against chapter 4; the A.4 output definitions against 5\|d). Their formulas differ from the main text, so they were kept; the import stage may decide whether one should cite the other. `12|a|a` (labour demand) still opens with `依赖上一步`, although its premise, the merged wedge derivation, now stands in chapter 3 (`3|b|a`).
+3. 8\|a: the four stage-2 notation issues (two notations side by side, the A.6 CET exponent, the reading of $C$, $M$, $N$) stay; the A.6 formulas merged into chapter 6 carry the $\sum_{i\in N}$ notation.
+4. 5\|a: the false share to `8|a|a|3` (head 对照 line) and the **引入** line of 8\|a to `5|a|a|e|a` are left to stage 4.
+5. 13\|a: chapters 4 and 5 hold no estimate card; their figures and numbers stay in the chapter text.
+6. Tree unlocked throughout; no `card_locked` and no read-view error met.
