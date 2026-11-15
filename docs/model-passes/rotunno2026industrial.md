@@ -149,3 +149,54 @@ Network (`check-network.mjs`): 设定 → {1, 2, 5}; 2 → 3 → 4; 5 → 6.
 3. 3\|a: the 变量表 row of $\theta_3$ reads `表 A.2 第 (1) 列系数`, although $\theta_3$ is the slope in all four columns.
 4. The stage 2 open items 3 (the notation row `$A$`) and 4 (the §1 verbal setting restates the calibration scope) stay.
 5. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-14, live box, under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent; one DeepSeek job, for the explanation refresh). Backup: `D:\zt\backups\zt-before-rotunno2026industrial-imports.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Text ran as one `edit_card` call (the premise line on `4|a|a|e`) and one scripted batch of 3 `edit_card` calls under `-Allow` (the import-line wording on 4\|a and the two stage-3 leftovers); before the batch a script compared the display formulas and `\tag` numbers of the old and new bodies, and every written card was read back and compared with the intended text (`same` on all three). After the pass a script compared the whole book with the backup: 534 Cards before and after, 859 display formulas and 48 `\tag` numbers identical, no estimate card changed. No `card_locked`, no `read_view_changed` and no failed batch occurred. Order: 3\|a, then 4\|a. Before any edit, `check` exited 0 and `plan` said `nothing to import` on both heads: the calibration named the measurement only in words (`取自第 2 节的 2015—23 年估计`).
+
+### 3\|a (empirical: subsidy measurement)
+
+- No import. The measurement takes nothing from another model: its data (NIPO, GTA), its specifications and its back-cast are the paper's own, and it tests no theory prediction (no `假说：` part; the paper's §2 is measurement). Its Model Card's `参照 [[rotunno2026industrial]]` (the rates are the source of the policy shock) is a plain reference to the Literature root, no false share. Tolerated 0, false shares 0.
+- It now lends `3|a|a|2|d` (the back-cast) with its closure to 4\|a (`lent`).
+
+### 4\|a (formal: the quantitative trade model)
+
+- Decision: the theory imports the measurement block it takes as input, the case "a measurement block a theory uses as input". The calibration `4|a|a|e` item 2 takes the subsidy-rate changes (the change of $\tilde s_i^j$) from the §2 back-cast; that back-cast is the specification `3|a|a|2|d` (the coefficient 35.8 times the GTA count changes, summed over years, giving the amounts by country, sector and year). The block root is the specification, not an estimate card: the estimates `3|a|a|6|a` (China 1.8%) and `6|b` (strategic 1.8% vs 0.9%) are summaries of the back-cast series, and the model uses the whole series, not those numbers. The measure `3|a|a|f` states the same multiplication in words; the specification carries the equation and the rate $r_{iT}^j$, so it was chosen.
+- `4|a|a|e` **起点** gained `依赖 [[rotunno2026industrial/3|a|a|2|d]] 的回溯：补贴率变化所用的各国、各部门、各年补贴金额来自这张规格。` (no symbol, so the notation card stays complete).
+- Import: `plan` round 1 `单卡 [[3|a|a|2|d]]` (tolerated 0 → 1), round 2 upgraded it to `整块` (tolerated 1 → 0); the closure brings `3|a|a|2` (规格：基准), `3|a|a` (数据) and `3|a|a|1` (设计): 48 members (44 own + 4 shared). The line was reworded: `整块 [[rotunno2026industrial/3|a|a|2|d]]：校准的政策输入，第 2 节回溯的各国、各部门、各年补贴金额，除以 2015 年部门总产出得到补贴率变化`.
+- Symbols (step 6): 4\|a keeps its own notation card; the calibration names no symbol of 3\|a, so no `沿用` line. `check-settings` clean.
+- No copy: no part of 4\|a restates a 3\|a setting. False shares 0.
+
+### Cross-book blocks
+
+`plan` proposed no cross-book line, and no part of either model rests on another book's Card. Searched by hand: the box holds no other Caliendo–Parro / Ju et al. trade model or Fréchet-productivity block (becker2025division/3\|a\|a\|13\|d\|a has a relative gravity equation (S.10), a derivation of that model's own, not a block 4\|a restates). The cross-book Links (4\|a `对照` acemoglu2025nobel/3\|h\|e\|1 and atkinson2015lectures/17\|b\|a\|b\|4; chapter 5 `对照` gomezcram2026government/3\|i\|a\|13; 3\|a `对应` brandimarti2026reorganizing/10\|a\|7) are comparisons, kept; the 3\|a one is for the evidence dialogue.
+
+### Stage-3 leftovers fixed (no formula change)
+
+1. Chapter 5 `4|a|a|5`: the 问题 dropped its second sentence (whether the system can be written in change form, which is chapter 6's question); the 概要 sentence on (A.6)–(A.13) became `同一系统的变化率形式 (A.6)–(A.13) 不在本章，归第 6 章 [[rotunno2026industrial/4|a|a|6]]。` The inline $\theta^j,\psi^j,\beta_i^j,\gamma_i^{sj}$ of the old sentence went with it (no display formula).
+2. 3\|a 变量表 `3|a|a|a`: the $\theta_3$ row now reads `NIPO 观测变化的斜率，表 A.2 四列共同的系数` (was `表 A.2 第 (1) 列系数`). `check-premises` on 3\|a went from 2 to 1 hit.
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan`: 4\|a 4 Derivation parts in 1 job; 3\|a `nothing to explain`.
+- One DeepSeek conversation (`opencode-go/deepseek-v4.1-flash`, effort high, the box's drive model; OpenCode Go account Primary, 8 requests, 131 s, 1 turn, context 66k of 1M; tools: 4 pwsh, 2 read, 1 write; only `out/explain-01.json` was written; no approval was asked): answer `{"done":4,"blocked":0}`. Cost: OpenCode Go subscription, the Harness ledger books 0 CNY; the 2026-11-14 opencode-go day line went from 5,000 to 5,008 calls during the job (cache miss +66,021, cached read +385,152, output +10,855 tokens), matching the job's 8 requests. Conversation 219a3693 deleted, workspace removed. Conversation 3b1d187b was not touched.
+- `apply`: `applied 4, refused 0, blocked 0, follow-up jobs 0`. `finish` 4\|a: `explained 4 part(s); Term links changed 3 Card(s), second plan 0; left 0; refused 0` (exit 0); parts 4\|a\|a\|6\|a\|a and \|1–\|3 (the chain (A.6)–(A.9)). `finish` 3\|a: `explained 0 part(s) … left 0; refused 0` (exit 0).
+
+### Gate
+
+- `imports.mjs check`: exit 0 on 3\|a and 4\|a; `plan`: `nothing to import` on both.
+- `get_model`: `self_sufficient: true` on both; tolerated 0 and false shares 0 on both; 3\|a 46 parts, lends `3|a|a|2|d` to 4\|a; 4\|a 48 parts, one `整块` import (closure 3\|a\|a\|2, 3\|a\|a, 3\|a\|a\|1).
+- `explain.mjs finish`: exit 0 on both (`left 0; refused 0`); a later `plan`: `nothing to explain` on both.
+- `check-model.mjs`: 3\|a 46 members `{"main":7,"side":39}`, `relations {"refers":68,"rests-on":23,"illustrates":5}; loose 0; self_sufficient true`; 4\|a 48 members `{"shared":4,"main":7,"side":37}`, `relations {"refers":37,"rests-on":72,"illustrates":3}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean` on both (advice only: chapter 1 of 4\|a has no result card, as at stage 3).
+- `check-premises.mjs`: 1 hit each, both pointers kept: 3\|a `3|a|a|e` names column (1) of Table A.2, not equation (1); 4\|a `4|a|a|e` **说明** names (7) for the solution algorithm and points to `4|a|a|6|c` (as at stage 3).
+- `check-settings.mjs`: 3\|a `settings: the data tree and the specification ladder are in place`; 4\|a `settings: all in the setting part, as a dependency tree`.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"links_added":4,"applied":true,"cards_refused":0,"links_repaired":0,"book":"rotunno2026industrial","ok":true,"cards_changed":2,"rounds":1}`. All checks above, `list_broken_links` and the formula comparison with the backup were rerun after it and stay as listed.
+
+### Open
+
+1. Denominator: the back-cast `3|a|a|2|d` defines the rate $r_{iT}^j$ over sector value added (as Figure 3), while the calibration `4|a|a|e` item 2 divides the back-cast amounts by 2015 gross output. Both follow the paper; the import takes the amounts, and the import line names the 2015-output division. Not changed.
+2. The measure `3|a|a|f` and the specification `3|a|a|2|d` state the same multiplication (35.8 times the GTA count changes, summed); left as stage 2 left them.
+3. Stage-3 open items 1 (result and derivation text not redrafted; chapter 5 keeps its old **关联** line naming the Literature notes 9\|a\|4–5 on the hat form and the decomposition), 2 (the A.2 test card's own $\alpha,\beta,\gamma_j,\delta_c$ regression) and 4 (stage-2 items 3 and 4) stay. The A.2 test card was not changed here: it imports nothing, and citing the ladder instead of its own equation would delete a display formula.
+4. Tree unlocked throughout; no `card_locked` met. Other sessions wrote other books on the box at the same time; no read-view error occurred.
