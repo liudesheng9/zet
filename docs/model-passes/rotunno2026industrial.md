@@ -266,3 +266,88 @@ All lines below are the reruns after the Term relink.
 1. No cross-book pair: the book's Terms (补贴金额, 补贴措施, 补贴率, 战略部门, …) link to no Term Card of another book, and no other book's Finding Card or empirical estimate names subsidies. After a zt-term-sync pass on the economics shelf, or after another book with subsidy estimates is digested, survey 3\|a again.
 2. The stage-5 Open items (head and hard-coded address in the 4\|a figures to update after stage 7, the 3 R3 faults, the stage-4 items) stay.
 3. No script fault was found; no skill file changed. No `card_locked`, no `read_view_changed` and no failed read occurred. Nothing committed (stage brief).
+
+## Stage 7: literature organize
+
+Date 2026-11-14, live box (owner's request), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, two structure batches through `batch.mjs`, one `leads.mjs` run, one scripted `edit_card` batch for titles, position lines, the root index and the structure card, and one fix round). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-rotunno2026industrial-organize.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Every batch was previewed first (complete true, refusals none, `links_that_will_break` empty) and then committed under its plan hash. Before the text batch a script compared the display formulas of the old and new bodies (no difference). The tree went from 534 to 535 Cards (one new summary lead, §4). No Card was deleted, and no formula, equation number or estimate changed. Only Cards of rotunno2026industrial were written. No `card_locked`, no `read_view_changed` and no failed batch occurred; the tree was unlocked throughout. Other sessions wrote other books on the box.
+
+### Source divisions
+
+From `D:\zt-digest\rotunno2026industrial\book.zh.md`: the title page and IMF working-paper front matter (title, authors, WP/26/155, disclaimer, 摘要, JEL codes and keywords, acknowledgement footnote); 1 引言; 2 估计补贴 (three run-in subsections that open a paragraph, labelled 2.1 补贴金额与计数之间的关系, 2.2 补贴的回溯, 2.3 估计的补贴因国家和部门而异 on the digest's Cards); 3 模型 (run-in paragraphs 模型假设, 均衡, 贸易效应的分解, 校准, all inside the formal model); 4 结果 (a preamble, `## 4.1`, then 4.2 机制, 4.3 近期关税行动的贸易效应, 4.4 效率与福利含义, which the translation marks as top-level `#` but which are subsections of 4); 5 结论; A 附录 (A.1 量化模型 with 均衡条件, 差分模型, 分解; A.2 补充表格与图形, also marked `#` in the translation). The Markdown has no reference list. The top line takes the numbered sections and the appendix, with the front matter first.
+
+The digest had filed the paper as 10 groups: old 1 front matter with the Term list, the Cited list and the structure Card under it; old 2–4 = §1–§3; old 5 = §4 preamble + 4.1; old 6–8 = 4.2–4.4 as top Cards; old 9 = §5 + A.1 (one top Card for two divisions); old 10 = A.2 as a top Card.
+
+### Final tree (top line and divisions)
+
+```
+1   前置页 (old 1, rewrite)               a 文献信息 (old 1|c; a|a 致谢) · b 摘要 (old 1|c|1–7, now its own branch, to JEL) · c 结构卡 (old 1|d)
+2   1 引言 (old 2, retitled)              unchanged (2|b chain, findings 2|c–g)
+3   2 估计补贴 (old 3, rewrite)           a §2 preamble (old 3|b, 3|b|1)
+                                          b 2.1 (old 3|b|2–6; findings b|1|a, b|1|b old 3|c, 3|d)
+                                          c 2.2 (old 3|b|7–9, event c|1|a) · d 2.3 (old 3|b|10–13)
+                                          e empirical model (old 3|a)
+4   3 模型 (old 4, retitled)              a formal model 4|a (unchanged address)
+5   4 结果 (new summary, demote)          a §4 preamble (old 5|a) · b 4.1 (old 5; notes b|b chain old 5|a|1–8, findings b|c–k)
+                                          c 4.2 (old 6) · d 4.3 (old 7) · e 4.4 (old 8)
+6   5 结论 (old 9|a)                      a (old 9|a|1) → a|1 (old 9|a|2)
+7   A 附录 (old 9, rewrite)               a A.1 (old 9|a|3 均衡条件 → a|1 差分模型 → a|2 分解)
+                                          b A.2 (old 10; findings under the notes they report: e|4|a, e|5|a, e|5|b)
+8   术语表 (Term list, from 1|a)
+9   参考文献 (Cited list, from 1|b)
+```
+
+Batches: one structure batch (21 items, 429 Cards renamed), one batch of 3 items (the A.2 findings), then `leads.mjs` (one demote, three rewrites), then 12 `edit_card` writes and one fix.
+
+### Crossers and how each was settled
+
+- Old 1 held the front matter, the Term list and the Cited list: the two lists went to the tail (`8`, `9`). The abstract chain (old 1\|c\|1–7), which ran on the cover card's Direct line, became its own Side branch `1|b`.
+- Old 5 led §4 and 4.1 and spoke for both (`§4–§4.1`): demoted. A new §4 summary took its place. Old 5 is the 4.1 head (`5|b`, retitled, its first sentences on the §4 set-up and its `§4 -` line dropped, its position line and source line rewritten to 4.1). Old 5\|a (`§4`) is the §4 preamble `5|a`; its Direct chain (old 5\|a\|1–8, all `§4.1`) moved under the 4.1 head. Old 6–8 (4.2–4.4, top Cards that are subdivisions) moved under the summary.
+- Old 9 was two divisions at once (§5 and A.1), three Cards each. The tie went to the later division: old 9 is the A summary (`7`, rewritten for A.1 and A.2). The §5 Card old 9\|a became the top Card `6`, with old 9\|a\|1–2 as its Side chain. Old 9\|a\|3–5 (A.1) stay under old 9 as the A.1 head `7|a` and its chain. Old 10 (A.2) moved under the A summary as `7|b`.
+- Old 3 held one Direct chain across §2's preamble and 2.1–2.3: cut by source line and content into the preamble (`3|a`) and 2.1, 2.2, 2.3 (`3|b`–`3|d`). Old 3\|b\|7 (no source line; the back-cast itself) heads 2.2. The two §2 findings (cross-validation, 47.3 without fixed effects) went under the cross-validation note `3|b|1`.
+- Whole units: the empirical model 3\|a moved once, as the last Side branch of the §2 summary (`3|e`, 47 Cards, unchanged in size); the formal model 4\|a stays under the §3 Card at `4|a` (65 Cards). Both span sections (3\|a: §2 and A.2; 4\|a: §1, §3 and A.1) and are filed where the source presents them.
+
+Calls that could go the other way: the run-in subsections of §2 nested as divisions (they are unnumbered in the translation); the three unnumbered parts of A.1 (均衡条件, 差分模型, 分解, one Card each) kept as the A.1 Direct chain under its first Card rather than nested under a new A.1 summary; old 9 given to A by the tie rule (its text was mostly A.1); old 5 demoted rather than rewritten; the abstract chain inside the front matter rather than its own top Card; 3\|e filed as the last Side branch of the §2 summary rather than under 2.1, where its head was first written; the A.2 findings moved behind the notes that report them.
+
+### Summary leads and other text
+
+- `leads.mjs`: new summary `5` (4 结果, demote of old 5, `first` the §4 preamble, `keep` the 4.1 chain and findings); rewrites `1` (前置页), `3` (2 估计补贴), `7` (A 附录). Each has the source's name and main claim as title, one or two paragraphs that walk the subdivisions, `小节索引：`, `在全书中的位置：` and the source line; `leads.mjs` turned Term names into Term uses. The front-matter and §2 summaries keep the old first paragraph; the A summary keeps old 9's A.1 paragraphs, with its inline $3 \times \mathrm{N} \times \mathrm{J} + \mathrm{N}$ copied unchanged.
+- Hand edits (one scripted batch): `5|b` (4.1 head, above); `5|e` (4.4: position line now points to 5 结论 `6` and to A.2 `7|b`, which a move had made false, and a source line `§4.4`); `4` and `2` (position lines: `[[5]]` for the §4 results, A.1 `7|a`, 结论 `6`; 引言 is no longer 全书的入口); `3|c` (its inline source line moved to a line of its own). Retitled with the section number: `2` (1 引言), `3|b` (2.1), `3|c` (2.2), `3|d` (2.3), `4` (3 模型), `5|d` (4.3), `5|e` (4.4), `6` (5 结论), `7|a` (A.1 量化模型（均衡条件）). `5|c` (4.2) and `7|b` (A.2) already had their numbers.
+- The root index lists the nine top Cards. The structure Card `1|c` lists the seven parts and the two models only (its old model list named 4\|a's chapters 1 and 5 and 3\|a's A.2 test as models, stale since the fold).
+- `zt-check --cards` on the root and the 15 written Cards: first run `faults: 1` (R2, a 42-character sentence in `1|c`), split once; second run `faults: 0`, exit 0 (advisory L1/L2/I4 lines only).
+
+### Chart targets
+
+Backup: `D:\zt\backups\zt-before-rotunno2026industrial-chart-targets.sqlite3` (integrity ok). The formal model kept its address `4|a`, so `head` in `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\rotunno2026industrial-4_a.mjs` stays `rotunno2026industrial/4|a` and the file name stays. The one hard-coded imported target in the calibration figure now reads `${BOOK}/3|e|a|2|d` (was `3|a|a|2|d`), and the header comment records the move. `apply.mjs --write`: `same` for all 9 Cards, `nothing to write`: zt had already rewritten the `data-zt` target with the moves. Gate: `verify.mjs --model rotunno2026industrial/4|a` (light and dark): `11 chart(s) in 49 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`; 0 dead targets (`dead-target` is a lint rule).
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `check.mjs rotunno2026industrial`: top line 1 前置页 (11), 2 1 引言 (34), 3 2 估计补贴 (65), 4 3 模型 (66), 5 4 结果 (81), 6 5 结论 (3), 7 A 附录 (25), 8 Term list (185), 9 Cited list (64); `no fault`. The start snapshot was overwritten by a later outline run in the shared scratch folder, so the comparison was made by hand against the start outline: 534 → 535 Cards (the §4 summary), whole units unchanged (3\|a → 3\|e 47, 4\|a 65, Term list 185, Cited list 64).
+- Source-line walk (172 Cards with a source line, whole units excluded): every Card under its own top division, and every second-level branch holds only its own subsection's label (3\|b 2.1, 3\|c 2.2, 3\|d 2.3, 5\|b–e 4.1–4.4, 7\|a A.1, 7\|b A.2). No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`, before and after the relink.
+- `check-model.mjs`: `3|e` `members 46 {"main":7,"side":39}`, `relations {"refers":68,"rests-on":23,"illustrates":5}; loose 0; self_sufficient true`; `4|a` `members 48 {"shared":4,"main":7,"side":37}`, `relations {"refers":37,"rests-on":72,"illustrates":3}; loose 0; self_sufficient true` (as at stages 4–6; the shared four are now 3\|e\|a\|2\|d and its closure).
+- `check-network.mjs`: `network: clean` on both (advice only: chapter 1 of 4\|a has no result card, as before).
+- `check-settings.mjs`: `3|e` `settings: the data tree and the specification ladder are in place`; `4|a` `settings: all in the setting part, as a dependency tree`.
+- `imports.mjs check`: exit 0 on both.
+- `zt-check --cards` on the written leads, heads, root and structure Card: `faults: 0`, exit 0.
+- Term relink: `{"book":"rotunno2026industrial","rounds":1,"applied":true,"cards_refused":0,"links_repaired":0,"links_added":6,"cards_changed":4,"ok":true}`; `-PlanOnly` afterwards: `{"cards_changed":0,"links_added":0,"rounds":0,"cards_refused":0,"links_repaired":0,"book":"rotunno2026industrial","ok":true,"applied":false}`. No relink bug.
+
+## Result
+
+Final top line: 前置页 · 1 引言 · 2 估计补贴 · 3 模型 · 4 结果 · 5 结论 · A 附录 · 术语表 · 参考文献.
+
+Models (final addresses):
+
+- `rotunno2026industrial/4|a`, formal (level 2): the multi-country multi-sector trade model with external economies of scale, 48 members (44 own, 4 imported: the back-cast block `3|e|a|2|d` with its closure), setting card `4|a|a`, chapters `4|a|a|1`–`6` (§1 verbal version, §3, A.1), illustrated (11 charts); filed under the §3 Card.
+- `rotunno2026industrial/3|e`, empirical (level 3): the subsidy measurement (NIPO amount–count relation, back-cast, A.2 prediction test), 46 members; filed as the last Side branch of the §2 summary. It lends `3|e|a|2|d` to 4\|a.
+
+All seven stages passed their gates. Open items across the sequence:
+
+1. Restructure step 3 text was not redrafted in 4\|a: result cards keep their old body without **为什么**/**证明**, derivation cards keep their digest format, chapter 5 keeps its old **关联** line on the Literature notes of the hat form (Stages 3–4).
+2. The A.2 test card `3|e|a|4|a` keeps its own display formula of the Table A.2 regression ($\alpha,\beta,\gamma_j,\delta_c$) beside the ladder's $\kappa,\theta_3$ notation; the measure `3|e|a|f` and the specification `3|e|a|2|d` state the same multiplication (Stages 2–4).
+3. Denominator: the back-cast defines the rate over value added, the calibration divides by 2015 gross output; both follow the paper (Stage 4).
+4. The notation row `$A$` in 4\|a, the §1 verbal setting restating the calibration scope, and 3 R3 faults (semicolons) in existing setting text of 4\|a stay (Stages 2, 5).
+5. No cross-book evidence pair: survey 3\|e again after a zt-term-sync pass on the economics shelf (Stage 6).
+6. The A.1 notes `7|a` keep two plain `另见` lines to 4\|a parts (L2 advisory), and the A.1 parts were not nested under a separate A.1 summary (Stage 7).
+7. The illustrate module keeps its file name; only the imported target and the header comment changed (Stage 7). This pass doc is not committed (the stage brief said no commit).
