@@ -77,12 +77,17 @@ pub fn resolve(staging: &str, span: &Span) -> Option<String> {
 /// failed R298); 补贴 and 补偿 are economics words ("（补贴为 $G$…）" in the live box).
 const WORDS: [&str; 3] = ["（补写", "（补贴", "（补偿"];
 
-/// Every `（补` in the text is one of the two established markers or one of the ordinary [`WORDS`].
+/// The zt-math-digest marker of a supplied example, non-example or counterexample (math.rs, rule M10;
+/// prompts dsh-math-fill / dsh-math-boundary). It is a supplied marker like [`MARKERS`], so a Card
+/// that carries it passes R298 in the shared card cycle and model checks.
+pub const MATH_MARKER: &str = "（补：书中未给）";
+
+/// Every `（补` in the text is an established marker ([`MARKERS`], [`MATH_MARKER`]) or one of the ordinary [`WORDS`].
 pub fn markers_ok(text: &str) -> bool {
     let mut start = 0;
     while let Some(found) = OPEN_MARKER.find_at(text, start) {
         let rest = &text[found.start()..];
-        if !MARKERS.iter().chain(WORDS.iter()).any(|marker| rest.starts_with(marker)) {
+        if !MARKERS.iter().chain(WORDS.iter()).chain([&MATH_MARKER]).any(|marker| rest.starts_with(marker)) {
             return false;
         }
         start = found.start() + "（补".len();
@@ -92,7 +97,7 @@ pub fn markers_ok(text: &str) -> bool {
 
 /// The text carries at least one established supplied-step marker.
 pub fn supplied_marked(text: &str) -> bool {
-    MARKERS.iter().any(|marker| text.contains(marker))
+    MARKERS.iter().chain([&MATH_MARKER]).any(|marker| text.contains(marker))
 }
 
 /// A part this build authors: not a taken-in, moved, or kept existing part.
@@ -306,6 +311,10 @@ mod tests {
         assert!(!supplied_marked("（补写式 4¹）"));
         assert!(supplied_marked("（补：书中未写）"));
         assert!(!supplied_marked("（补充说明）"));
+        // zt-math-digest marks a supplied example or counterexample （补：书中未给） (math.rs, M10).
+        assert!(markers_ok("反例：取 $f(x)=|x|$。（补：书中未给）"));
+        assert!(supplied_marked("反例：取 $f(x)=|x|$。（补：书中未给）"));
+        assert!(!markers_ok("（补：书中未给出）"));
     }
 
     #[test]
