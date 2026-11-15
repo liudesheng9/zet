@@ -182,3 +182,50 @@ Network: 规格 → 第 1 章 → 第 3 章; 第 2 章 under the specification. 
 4. Stage 2 open item 3 (several notations for one object in the ladder) stays.
 5. 8\|b: the Link to chapter 7 of 4\|a becomes an **引入** line in stage 4.
 6. Tree unlocked throughout; no `card_locked` met. Other sessions may write other books on the box; no read-view error occurred.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-14, live box, under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent, no DeepSeek job: neither model has a Derivation part, so no DeepSeek cost). Backup: `D:\zt\backups\zt-before-riboni2026presidential-imports.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Text ran as 2 `edit_card` calls (the two 8\|b setting cards) and 3 scripted `edit_card` calls under `-Allow` (the 8\|b Model Card; the two setting cards again, semicolons split into sentences after R3 advice); `imports.mjs apply` wrote one line. Every scripted write was read back and compared with the intended text (`same`); the Model Card write was guarded by a comparison of its display formulas and `\tag` numbers (unchanged). Only riboni2026presidential Cards were written; no display formula, equation number or estimate changed (the three edited setting cards hold no display formula). No `card_locked`, no `read_view_changed` and no failed batch occurred. Order: 4\|a (the lender), then 8\|b.
+
+Before any edit: `check` exit 0 on both; `plan` 4\|a `nothing to import`; 8\|b `nothing to import`, with advice: 2 tolerated premises (4\|a\|a\|2\|c and 4\|a\|a\|6, behind chapter 7 `4|a|a|9`), the false share `对应 [[4|a|a|9]]` in the Model Card's **关联**, and a possible copy (`8|b|a|b` corresponds to `4|a|a|9`).
+
+### 4\|a (empirical: appointment effect)
+
+- No import line. Its data, instruments, measures and specifications are the paper's own; it has no `假说：` part that names a theory result, and no part rests on another model's part (`check` exit 0, `plan` `nothing to import`). Tolerated 0, false shares 0.
+- It now lends `4|a|a|i` (the stance measure, with `4|a|a|i|a` and the closure 4\|a\|a, 4\|a\|a\|b) to 8\|b (`lent`).
+
+### 8\|b (empirical: reaction function)
+
+- The false share pointed at the wrong card. 8\|b takes from 4\|a the **measure** of stance, not chapter 7 (the effect of appointments on stance, where stance is the outcome; in 8\|b stance is a regressor of the same meeting's decision). The measure lives in `4|a|a|i` (测量：目标关键词旁的鹰派与鸽派词对, formula (4)), with its sample card `4|a|a|i|a` (the 17 meetings before March 1976).
+- Copy → variant. `8|b|a|b` restated the construction (`本卡的度量与……模型相同`, word pairs, normalization, weighting). Rewritten as a variant: summary `沿用 [[4|a|a|i]] 的词对度量 (4)。本卡只改分组`; **起点** `依赖 [[4|a|a|i]] 的测量` (the whole construction (4)) before `依赖 [[8|b|a]] 的数据`; **内容** states only the change (all governors as one group $H_t, V_t$, bank presidents as another $B^{H}_t, B^{V}_t$; the party split $H^{R}_t \dots V^{D}_t$ as in 4\|a\|a\|i) and that stance is a regressor here and an outcome in chapter 7 of 4\|a. The `对应 [[4|a|a|9]]` Link went with the restatement.
+- Data card `8|b|a`: **起点** `原始设定` → `依赖 [[4|a|a]] 的数据：同一批例行 FOMC 会议、会议记录与绿皮书。本卡只列本模型用到的部分。` (same 391 meetings, same Greenbook source, the skill's "own data card rests on it").
+- Import: `plan` proposed `整块 [[4|a|a]]` (absorbing 4\|a\|a\|i, since both premises lie in the data tree); `apply` wrote it. It was replaced by hand with `整块 [[riboni2026presidential/4|a|a|i]]：政策立场的词对度量 (4)，目标关键词旁的鹰派与鸽派词对按字数标准化、按陈述字数占比加总到会议层面，连同它所建立的会议数据；本模型按理事与行长分组，构造同一次会议的立场回归元`. Reasons: 8\|b uses the stance measure and the meeting data, not the instruments, the policy coding, the VAR series or the dissent measures of the whole data tree (as assenza2026louder 6\|a took `4|a|a|d`, not `4|a|a`); and the whole tree would bring 4\|a's 变量表 `4|a|a|a` into 8\|b, which the `variable_uncovered` checker bug (velic2025inflation stage 4, Open 1) reads before 8\|b's own table because "4\|" sorts first. The block's closure brings 4\|a\|a and 4\|a\|a\|b, so the data card's premise is covered: members 4\|a\|a\|i, 4\|a\|a\|i\|a, closure 4\|a\|a, 4\|a\|a\|b.
+- Model Card **关联**: the sentence `对应 [[4|a|a|9]]：立场度量取自任命对政策立场的局部投影模型。` deleted (replaced by the import line); `参照 [[riboni2026presidential]]` and the cross-book `对应 [[assenza2026louder/4|c|a|a]]` stay.
+- Tolerated 2 → 0; false shares 1 → 0; members 25 (1 shared) → 28 (24 own + 4 shared). Symbols (step 6): 8\|b keeps its own 变量表, which defines every symbol it uses; it names no symbol of 4\|a, so no `沿用` line.
+
+### Cross-book blocks
+
+None written. `plan` proposed none, and no part of either model rests on another book's Card. Searched by hand (Model Cards on 绿皮书, FOMC 会议, 理事, 异议, Thornton, 鹰派, 局部投影, 任命): no other book holds the FOMC meeting data, the word-pair stance measure or the appointment instruments. assenza2026louder's entropy measure and communication-rule estimation (4\|b, 4\|c\|a\|a, 5\|a, 6\|a) are comparisons (entropy measures volume, not tone; a rule versus stated stance), kept as the existing `对照`/`对应` Links for the evidence dialogue; furceri2026divide's local projections estimate other effects (comparisons).
+
+### Explanation refresh (step 8)
+
+`explain.mjs plan`: `nothing to explain` on both heads (`parts 0, jobs []`): neither empirical model has a Derivation part (`推导：估计式`). No DeepSeek job ran, so no model, account, requests, time or cost to record; conversation 3b1d187b was not touched. `finish`: `explained 0 part(s); Term links changed 0 Card(s), second plan 0; left 0; refused 0` (exit 0) on both.
+
+### Gate
+
+- `imports.mjs check`: exit 0 on 4\|a and 8\|b (no advice left on 8\|b); `plan`: `nothing to import` on both.
+- `get_model`: `self_sufficient: true` on both; tolerated 0 and `false_share` [] on both; 4\|a `lent` to 8\|b (root 4\|a\|a\|i); 8\|b one `整块` import (mode block, members 4\|a\|a\|i, 4\|a\|a\|i\|a; closure 4\|a\|a, 4\|a\|a\|b).
+- `explain.mjs finish`: exit 0 on both; a later `plan`: `nothing to explain` on both.
+- `check-model.mjs`: 4\|a `members 113 {"main":12,"side":99,"off":2}`, `relations {"refers":185,"rests-on":85,"contrasts":1}; loose 0; self_sufficient true`; 8\|b `members 28 {"shared":4,"main":6,"side":17,"off":1}`, `relations {"refers":43,"rests-on":18}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean` on both.
+- `check-premises.mjs`: 8\|b `premises: none used before their card`; 4\|a the same 5 pointer hits as at stage 3 (setting part naming (1)/(2)).
+- `check-settings.mjs`: both `settings: the data tree and the specification ladder are in place` (no false `variable_uncovered` with the imported block).
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"rounds":1,"cards_changed":1,"links_added":2,"links_repaired":0,"applied":true,"book":"riboni2026presidential","ok":true,"cards_refused":0}`. All checks above and `list_broken_links` were rerun after it and stay as listed.
+
+### Open
+
+1. `8|b|a|4|b` (检验：反应函数结果与图 2 A 面板一致) names Figure 2 panel A only in words; a `对照` Link to 4\|a's figure card would make the comparison navigable. Not added here (a comparison, not an import).
+2. furceri2026divide/8\|a has a false share of `riboni2026presidential/4|a|a|6` (a cross-book `对照` in its Model Card); it belongs to furceri's book and was not written.
+3. Stage-3 open items 1–4 stay (estimate/test card text not redrafted; panel-B bands of `4|a|a|6|b`; one weak-instrument test per specification; several notations in the ladder).
+4. Tree unlocked throughout; no `card_locked` met. Other sessions may write other books on the box; no read-view error occurred.
