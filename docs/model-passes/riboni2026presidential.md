@@ -229,3 +229,49 @@ None written. `plan` proposed none, and no part of either model rests on another
 2. furceri2026divide/8\|a has a false share of `riboni2026presidential/4|a|a|6` (a cross-book `对照` in its Model Card); it belongs to furceri's book and was not written.
 3. Stage-3 open items 1–4 stay (estimate/test card text not redrafted; panel-B bands of `4|a|a|6|b`; one weak-instrument test per specification; several notations in the ladder).
 4. Tree unlocked throughout; no `card_locked` met. Other sessions may write other books on the box; no read-view error occurred.
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-14, live box (owner's request), under `zt-evidence-dialogue` steps 1–5, done in one side session by scripts (`dialogue.mjs survey | apply | check`) and one DeepSeek judging conversation. No subagent ran. Backup: `D:\zt\backups\zt-before-riboni2026presidential-dialogue.sqlite3` (`VACUUM INTO`, 407 MB, `PRAGMA integrity_check` ok; drive D had 225 GB free). The Terms were relinked at the end of stage 4, so the survey ran without a first relink. Both models are empirical; the book has no formal model, so stage 5 did not apply. No Card was written.
+
+### Survey
+
+The models were surveyed one at a time, 8\|b after 4\|a was applied, so the judged record dropped the mirror pairs.
+
+- `survey 4|a`: `{"ours":28,"theirs":1515,"pairs":67}`, 6 messages. Estimand Terms: 1\|a\|a, 理事 (1\|a\|b), 1\|a\|ar, 1\|a\|ay, 1\|a\|aw, 1\|a\|bc, 统一政府 (1\|a\|bd), 1\|a\|bf, 1\|a\|bg, 1\|a\|h and the book root (the `equiv` observation of arrocannarsa2026flight Stage 6 Open 3; it forms no pair). All 67 pairs are within the book: 4\|a estimates against the 8\|b reaction-function coefficients (8\|b\|a\|3\|b–e, 5\|a–d), on the shared Terms 理事 1\|a\|b (16), 1\|a\|n (27), 1\|a\|o (16), 扩张性政策 1\|a\|ab (10), 1\|a\|ac (3).
+- `survey 8|b`: `{"ours":8,"theirs":1535,"pairs":52}`, 5 messages, 0 mirrors of the 4\|a pairs. Estimand Terms 1\|a\|b, 1\|a\|bp, 1\|a\|m, 1\|a\|c, 1\|a\|bk, 鸽派 1\|a\|bj, 1\|a\|ah and the book root. All 52 pairs are again within the book: the two chair-stance coefficients 8\|b\|a\|3\|d (鹰派 0.115, s.e. 0.026) and 3\|e (鸽派 −0.497, s.e. 0.133), each against 26 estimates of 4\|a, on 理事 (52), 1\|a\|bj (4), 1\|a\|bk (4). The asymmetry is the script's rule: these two estimates carry no Term of their own beyond the estimand Terms, so they pair on the estimand Terms against the other side's text.
+- **The skill does pair 4\|a with 8\|b**, as in assenza2026louder (two empirical models of one book are each other's other side).
+- **No cross-book pair, and none was forced.** As in rotunno2026industrial, assenza2026louder and arrocannarsa2026flight, the survey pairs on shared Term addresses, widened only by zt-term-sync Links. Read from a read-only connection to the box: none of the book's 93 Term Cards has a Link to or from another book's Card. The other books' Finding Cards and empirical Model Cards that name FOMC, 联邦公开市场委员会, 任命 or 异议 are 13: assenza2026louder's communication-effort cards (4\|b\|d, 4\|c\|f, 1\|b\|a, 2\|c–f, 4\|b\|c\|6\|a, 6\|b, 6\|c: entropy of statements and the communication rule, not appointee effects or stated stance), and three unrelated matches on 任命/异议 (acemoglu2025nobel/1\|k, hansen2021demand/5\|c\|e, haeckl2026dont/5\|d\|e). velic2025inflation and the other monetary-policy books estimate no appointee share, no member stance and no FOMC decision on stance.
+
+### Judging (DeepSeek)
+
+One conversation for both surveys (the 8\|b messages followed the 4\|a messages, which kept the judge prompt as a cached prefix): `opencode-go/deepseek-v4.1-flash`, effort high (the box's drive model, as in the earlier stage 6 records), OpenCode Go account Primary (pinned), 11 requests (one per message file), about 50 s of model time, context 124k of 1M at the end, no tool call. Prompts were sent as `prompt_files` (`references/judge.zh.md` + `judge-1.md`, then each later file). The Harness ledger moved by 11 opencode-go calls during the job (113,084 uncached input, 842,368 cached, 10,495 output tokens; cache hit about 88%), cost 0 CNY (OpenCode Go subscription; the day line is shared with other sessions, but no other call landed in the window). Conversation 5e210269 deleted, workspace removed. Conversation 3b1d187b was not touched.
+
+All 119 answers came back `same: false`. Checked against the pairs' titles: right. 4\|a estimates the effect of the appointees' share on later decisions, stance, dissents, inflation and output (instrumented, the share is the regressor; in chapter 7 the stance is the outcome); 8\|b estimates the association of the stated stance (the regressor) with the same meeting's decision. The judge named exactly this inversion on the stance pairs (for example 4\|a\|a\|9\|b against 8\|b\|a\|5\|a: "一个的因变量是立场、另一个的自变量是立场"). The descriptive estimates of 4\|a (median vacancy days 177/266, the polarization correlation 0.35) and the SVAR responses set beside a stance coefficient were judged different objects as well.
+
+### Pairs judged and written
+
+| Head | Pairs | Same estimand | Agree / disagree / not comparable | Links written |
+|---|---|---|---|---|
+| 4\|a | 67 | 0 | 0 / 0 / 0 | 0 |
+| 8\|b | 52 | 0 | 0 / 0 / 0 | 0 |
+
+`apply` lines: 4\|a `{"links":0,"written":0,"errors":0}`; 8\|b `{"links":0,"written":0,"errors":0}`. All 119 answered pairs are in the judged record (`~/.zt-evidence-dialogue/judged-default.jsonl`: 67 lines with head 4\|a, 52 with head 8\|b).
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `dialogue.mjs check`: 4\|a `{"head":"riboni2026presidential/4|a","broken":0,"proposed_again":0,"ok":true}` (exit 0); 8\|b `{"head":"riboni2026presidential/8|b","broken":0,"proposed_again":0,"ok":true}` (exit 0).
+- No same-estimand pair, so no **对应** line to check.
+- `check-settings.mjs`: 4\|a and 8\|b `settings: the data tree and the specification ladder are in place` (exit 0).
+- `check-model.mjs`: 4\|a `members 113 {"main":12,"side":99,"off":2}`, `relations {"refers":185,"rests-on":85,"contrasts":1}; loose 0; self_sufficient true`; 8\|b `members 28 {"shared":4,"main":6,"side":17,"off":1}`, `relations {"refers":43,"rests-on":18}; loose 0; self_sufficient true` (unchanged from stage 4).
+- `list_broken_links` (agent): `{"broken":[]}`, before and after the relink.
+- Term relink: `{"links_repaired":0,"cards_changed":0,"cards_refused":0,"ok":true,"book":"riboni2026presidential","rounds":0,"applied":false,"links_added":0}`.
+
+### Open
+
+1. No cross-book pair: the book's Terms (理事, 鸽派, 鹰派, 统一政府, …) link to no Term Card of another book. After a zt-term-sync pass on the economics shelf, survey both heads again; the judged record keeps the 119 pairs judged here from being paid for twice. The likeliest neighbour stays assenza2026louder (FOMC text), whose estimates measure communication effort, not stance; the hand-written `对照` Links between the two books (stage 2, policy measure) stay as written.
+2. Survey noise: 8\|b\|a\|3\|d and 3\|e carry no Term of what they measure, so they paired with every 4\|a estimate that names 理事 (52 pairs, all `same: false`). A Term link for 行长 / 立场 in those two cards would narrow a later survey; not added here (the stage writes only judged Links).
+3. Script observation carried from arrocannarsa2026flight Stage 6 Open 3: the book root appears in `estimand_terms`; it formed no pair. No script fault was found; no skill file changed.
+4. Stage-4 Open items 1–3 stay. No `card_locked`, no `read_view_changed` and no failed read or write occurred. Nothing committed (stage brief).
