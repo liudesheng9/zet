@@ -753,14 +753,21 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     }
     // A Chinese block that does not cover its English (a note mark or a late number lost, far too few Han characters,
     // an ellipsis of its own) is a cut translation: the digest reads the Chinese alone and would never see the rest.
-    let uncovered = long_lines::uncovered_pairs(&raw);
+    // An operator who read a flagged pair against its English and found it whole (the original text, not a cut)
+    // records it in the judgement file of this exact source; only those flags are dismissed.
+    let judged = long_lines::judged_dir();
+    let (uncovered, dismissed) = long_lines::dismiss_judged(long_lines::uncovered_pairs(&raw), &judged, &source_file_hash)?;
+    if !dismissed.is_empty() {
+        eprintln!("zt-digest prepare: {} coverage flags judged original by hand ({}): lines {:?}", dismissed.len(), judged.join(format!("{source_file_hash}.json")).display(), dismissed);
+    }
     if !uncovered.is_empty() {
         let shown: Vec<String> = uncovered.iter().take(20).map(|(line, faults)| format!("line {line} ({})", faults.join("; "))).collect();
         bail!(
-            "{} Chinese blocks of {source} do not cover their English: {}{}; retranslate them with a pdf-ocr-bilingual fill round (fillOnly) first",
+            "{} Chinese blocks of {source} do not cover their English: {}{}; read each against its English: retranslate a cut with a pdf-ocr-bilingual fill round (fillOnly), and record a pair that renders the original text as {{\"line\",\"verdict\":\"original\",\"reason\"}} in {}",
             uncovered.len(),
             shown.join(", "),
-            if uncovered.len() > 20 { ", ..." } else { "" }
+            if uncovered.len() > 20 { ", ..." } else { "" },
+            judged.join(format!("{source_file_hash}.json")).display()
         );
     }
     // The converter's OCR of each image reaches no writer: the explanation stands in its place.

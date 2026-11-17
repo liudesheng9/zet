@@ -231,10 +231,40 @@ fn english_words(en: &str, zh: &str) -> usize {
 /// `%` (when the Chinese has one). Das & Grigorian 2026, line 473: five "percent" made a whole translation look
 /// short.
 fn pair_words(en: &str, zh: &str) -> usize {
+    let en = once_each(en);
     if !zh.contains(['%', '％']) {
-        return english_words(en, zh);
+        return english_words(&en, zh);
     }
-    english_words(&PERCENT.replace_all(en, " "), zh)
+    english_words(&PERCENT.replace_all(&en, " "), zh)
+}
+
+/// `en` with a run the OCR repeated left out: an OCR line can hold a run of its own sentences twice (Sylla &
+/// Cowen 2018, the letter to William Seton), and a translation renders them once. A sentence goes when it repeats
+/// an earlier sentence of five words or more together with a different neighbour that repeats too; one sentence
+/// said again and again is no OCR run.
+fn once_each(en: &str) -> String {
+    let mut sentences: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let chars: Vec<(usize, char)> = en.char_indices().collect();
+    for (k, &(i, c)) in chars.iter().enumerate() {
+        let end = matches!(c, '.' | '!' | '?') && chars.get(k + 1).is_none_or(|&(_, n)| n.is_whitespace());
+        if end || k + 1 == chars.len() {
+            let stop = i + c.len_utf8();
+            sentences.push(en[start..stop].trim());
+            start = stop;
+        }
+    }
+    let keys: Vec<Vec<String>> = sentences.iter().map(|s| LATIN.find_iter(s).map(|m| m.as_str().to_lowercase()).collect()).collect();
+    let same = |a: usize, b: usize| keys[a] == keys[b];
+    let repeated = |k: usize| {
+        keys[k].len() >= 5
+            && (0..k).any(|p| {
+                same(p, k)
+                    && ((k + 1 < keys.len() && p + 1 < k && same(p + 1, k + 1) && !same(k, k + 1))
+                        || (p > 0 && same(p - 1, k - 1) && !same(k, k - 1)))
+            })
+    };
+    sentences.iter().enumerate().filter(|&(k, _)| !repeated(k)).map(|(_, s)| *s).collect::<Vec<_>>().join(" ")
 }
 
 /// Han characters per English word of the pair, the words the translation must render in Han.
@@ -302,6 +332,14 @@ fn numbers(s: &str) -> Vec<String> {
             }
         }
         let decimal = k > j;
+        // a dot-grouped amount ("2.000.000", "700.000"): thousands, as "300,000" is
+        let grouped = decimal
+            && k - j == 4
+            && (c[j + 1..k].iter().all(|&d| d == '0') || (c.get(k) == Some(&'.') && c.get(k + 1).is_some_and(|ch| ch.is_ascii_digit())));
+        if grouped {
+            i = k;
+            continue;
+        }
         let fits = (2..=4).contains(&int) || (int == 1 && decimal);
         let next = c.get(k).copied();
         let after: String = c[k..].iter().collect();
@@ -344,6 +382,11 @@ pub(crate) fn coverage_faults(en: &str, zh: &str, median: Option<f64>) -> Vec<St
     // a leading …… carries on a sentence that the block before began
     let body = zh.trim_start_matches(['“', '‘', '"', '\'', '（', '(', ' ']);
     let body = body.strip_prefix("……").unwrap_or(body);
+    // a closing …… carries the sentence on into the next block when the English block itself stops mid-sentence
+    // (a page break: "long the world's largest by")
+    let open = plain(en).trim_end().chars().last().is_some_and(|c| c.is_alphanumeric() || matches!(c, ',' | '—' | '–' | '-'));
+    let closed = body.trim_end_matches(['”', '’', '"', '\'', '）', ')', ' ']);
+    let body = if open { closed.strip_suffix("……").unwrap_or(body) } else { body };
     if body.contains("……") && !EN_ELLIPSIS.is_match(en) {
         faults.push("ellipsis".into());
     }
@@ -419,6 +462,46 @@ pub(crate) fn uncovered_pairs(raw: &str) -> Vec<(usize, Vec<String>)> {
             (!f.is_empty()).then(|| (*line, f))
         })
         .collect()
+}
+
+/// The folder of the hand judgements of coverage flags: `ZT_COVERAGE_JUDGED`, else `%APPDATA%\zt\coverage-judged`.
+pub(crate) fn judged_dir() -> std::path::PathBuf {
+    if let Ok(d) = std::env::var("ZT_COVERAGE_JUDGED")
+        && !d.trim().is_empty()
+    {
+        return d.into();
+    }
+    std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_else(|_| ".".into())).join("zt").join("coverage-judged")
+}
+
+/// The flags an operator has not judged `original`, and the lines of those dismissed. The judgement file is
+/// `<dir>/<source sha256>.json`: `{"source_sha256", "judged": [{"line", "verdict": "original", "reason"}]}`;
+/// each entry is the operator's reading of the pair against its English (a cut is fixed in the source, never
+/// judged). No file: every flag stays.
+pub(crate) fn dismiss_judged(
+    flags: Vec<(usize, Vec<String>)>,
+    dir: &std::path::Path,
+    source_sha256: &str,
+) -> anyhow::Result<(Vec<(usize, Vec<String>)>, Vec<usize>)> {
+    let path = dir.join(format!("{source_sha256}.json"));
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok((flags, Vec::new())) };
+    let v: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{FEFF}')).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    if v["source_sha256"].as_str() != Some(source_sha256) {
+        anyhow::bail!("{}: source_sha256 does not name this source ({source_sha256})", path.display());
+    }
+    let mut lines = std::collections::BTreeSet::new();
+    for j in v["judged"].as_array().map(|a| a.as_slice()).unwrap_or_default() {
+        let line = j["line"].as_u64().ok_or_else(|| anyhow::anyhow!("{}: an entry has no line", path.display()))? as usize;
+        if j["verdict"].as_str() != Some("original") {
+            anyhow::bail!("{}: line {line}: the verdict must be \"original\" (a cut is fixed in the source)", path.display());
+        }
+        if j["reason"].as_str().is_none_or(|r| r.trim().is_empty()) {
+            anyhow::bail!("{}: line {line}: a judgement needs its reason", path.display());
+        }
+        lines.insert(line);
+    }
+    let (dismissed, kept): (Vec<_>, Vec<_>) = flags.into_iter().partition(|(line, _)| lines.contains(line));
+    Ok((kept, dismissed.into_iter().map(|(l, _)| l).collect()))
 }
 
 #[cfg(test)]
@@ -529,6 +612,84 @@ mod tests {
         };
         let found = uncovered_pairs(&raw);
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// A `……` that closes the Chinese of an English block cut at a page break mid-sentence carries the sentence on
+    /// into the next block, as a leading one does; after an English sentence that ends, it is still a cut.
+    #[test]
+    fn a_closing_ellipsis_after_an_english_page_break_carries_on() {
+        let en = "The New York Stock Exchange, long the world's largest by";
+        let zh = "纽约证券交易所长期以来一直是世界上最大的……";
+        // too short for the ratio, so only the ellipsis rule speaks
+        assert!(coverage_faults(en, zh, Some(1.5)).is_empty(), "{:?}", coverage_faults(en, zh, Some(1.5)));
+        assert!(coverage_faults("Some were for a division of the power—others were for ", "有些人主张划分征税权——另一些人则主张……", Some(1.5)).is_empty());
+        assert_eq!(coverage_faults("The exchange was founded in New York.", "该交易所……", Some(1.5)), vec!["ellipsis"]);
+        assert_eq!(coverage_faults("The exchange, long the largest by", "该交易所……成立于纽约。", Some(1.5)), vec!["ellipsis"]);
+    }
+
+    /// Hamilton writes thousands with dots ("2.000.000 of Dollars", "700.000 Dollars"); the Chinese writes
+    /// 2,000,000 or 70万. A grouped amount is no number a translation must copy, but a decimal still is.
+    #[test]
+    fn a_dot_grouped_amount_is_no_decimal() {
+        assert_eq!(numbers("will amount to 2.000.000 of Dollars, 700.000 Dollars and 50.000 Men"), Vec::<String>::new());
+        assert_eq!(numbers("a rate of 1.500 and 4.5 here"), vec!["1.500", "4.5"]);
+    }
+
+    /// An OCR line that holds its own sentences twice (Sylla & Cowen 2018, the letter to William Seton) is short
+    /// against a whole translation of it; each sentence counts once.
+    #[test]
+    fn a_sentence_the_ocr_repeated_counts_once() {
+        let once = "I am under a necessity of authorizing the Treasurer to draw upon you for One hundred thousand Dollars. \
+                    It is a necessary aid to the Bank which feels more than you do the effects of certain machinations.";
+        let en = format!("{once} {once} I may be compelled to go further; but it will be on the same conditions of the loan.");
+        let zh = "我不得不授权司库向您开出十万美元的汇票。这是对合众国银行的一项必要援助，该行比您更深切地感受到某些阴谋的影响。我可能被迫采取进一步行动；但条件将与这笔借款相同。";
+        assert_eq!(pair_words(&en, zh), english_words(&format!("{once} I may be compelled to go further; but it will be on the same conditions of the loan."), zh));
+    }
+
+    /// The Sylla & Cowen 2018 source (Scholar Archive file 1893) that `prepare` refused on 2026-11-17 with 11
+    /// pairs, every one whole against its English: the rules clear five (three page-break ellipses, two
+    /// dot-grouped amounts) and the OCR-repeated run; the five legal pairs below the ratio are left to the hand.
+    #[test]
+    fn the_sylla_cowen_hamilton_book_leaves_only_its_legal_pairs() {
+        let path = "C:/Users/chenx/AppData/Roaming/zt/scholar-archive/files/1893/Sylla_Cowen_2018_Hamilton_on_Finance_Credit_and_Debt_CUP.zh-bilingual.md";
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            eprintln!("skipped: no {path}");
+            return;
+        };
+        let lines: Vec<usize> = uncovered_pairs(&raw).into_iter().map(|(l, _)| l).collect();
+        assert_eq!(lines, vec![2438, 2600, 3354, 3394, 7373]);
+    }
+
+    /// An operator judges each flag by hand against its English: a cut is fixed in the source, a pair that only
+    /// renders the original text is recorded as `original` with its reason in the judgement file named after the
+    /// source's SHA-256, and only those flags are dismissed. A changed source has another hash, so no judgement
+    /// carries over to it.
+    #[test]
+    fn a_flag_judged_original_by_hand_is_dismissed() {
+        let dir = std::env::temp_dir().join(format!("zt-judged-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = vec![(10, vec!["short 1.0/1.5".to_string()]), (20, vec!["ellipsis".to_string()]), (30, vec!["number 12".to_string()])];
+        // no file: every flag stays
+        let (kept, dismissed) = dismiss_judged(flags.clone(), &dir, "abc").unwrap();
+        assert_eq!((kept.len(), dismissed.len()), (3, 0));
+        std::fs::write(
+            dir.join("abc.json"),
+            r#"{"source_sha256":"abc","judged":[{"line":10,"verdict":"original","reason":"legal English, whole Chinese"},{"line":20,"verdict":"original","reason":"page break"},{"line":99,"verdict":"original","reason":"stale"}]}"#,
+        )
+        .unwrap();
+        let (kept, dismissed) = dismiss_judged(flags.clone(), &dir, "abc").unwrap();
+        assert_eq!(kept, vec![(30, vec!["number 12".to_string()])]);
+        assert_eq!(dismissed, vec![10, 20]);
+        // another source hash reads no judgement
+        assert_eq!(dismiss_judged(flags.clone(), &dir, "def").unwrap().0.len(), 3);
+        // a judgement without a reason, of an unknown verdict or of another source is refused
+        std::fs::write(dir.join("abc.json"), r#"{"source_sha256":"abc","judged":[{"line":10,"verdict":"original","reason":" "}]}"#).unwrap();
+        assert!(dismiss_judged(flags.clone(), &dir, "abc").is_err());
+        std::fs::write(dir.join("abc.json"), r#"{"source_sha256":"abc","judged":[{"line":10,"verdict":"fine","reason":"x"}]}"#).unwrap();
+        assert!(dismiss_judged(flags.clone(), &dir, "abc").is_err());
+        std::fs::write(dir.join("abc.json"), r#"{"source_sha256":"zzz","judged":[]}"#).unwrap();
+        assert!(dismiss_judged(flags, &dir, "abc").is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Every flag of the books the cut repairs read (2026-11-12, `D:/zt/backups/cut-repair-2026-11-12`), written

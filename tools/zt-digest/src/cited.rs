@@ -179,14 +179,33 @@ fn section_goes_on(lines: &[&str], from: usize) -> bool {
 
 /// The source's lines, each marked when it stands in a reference list. A list runs on through its
 /// own subheadings (hoyland2015path, donner1981conquests: a bibliography split by kind or region).
+/// An operator's heading that opens endnotes: the notes run on through one subheading per chapter, whatever
+/// those chapters' notes quote, and end at the index (sylla2018hamilton, 2026-11-17).
+fn is_notes_heading(text: &str) -> bool {
+    let t = SECTION_NUMBER.replace(text.trim_end_matches([':', '：']).trim(), "").trim().to_lowercase();
+    matches!(t.as_str(), "notes" | "endnotes" | "注释" | "尾注" | "注")
+}
+
+fn is_index_heading(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    t == "index" || t.ends_with(" index") || t == "索引" || t.ends_with("索引")
+}
+
 pub fn reference_lines(source: &str, custom: &str) -> Vec<(usize, String, bool)> {
     let all: Vec<&str> = source.lines().collect();
     let mut inside = false;
+    let mut notes = false;
     all.iter()
         .enumerate()
         .map(|(index, line)| {
             if let Some(text) = heading_text(line) {
-                inside = is_reference_heading(&text, custom) || (inside && section_goes_on(&all, index + 1));
+                let opens = is_reference_heading(&text, custom);
+                if opens {
+                    notes = is_notes_heading(&text);
+                } else if !inside || is_index_heading(&text) || is_reference_heading(&text, "") {
+                    notes = false;
+                }
+                inside = opens || (inside && (notes || section_goes_on(&all, index + 1)));
                 return (index + 1, line.to_string(), false);
             }
             (index + 1, line.to_string(), inside)
@@ -1061,6 +1080,23 @@ mod tests {
             .collect();
         assert_eq!(marked.len(), 3, "{marked:?}");
         assert!(marked.iter().all(|line| line.contains('(') && !line.contains("Yarmuk")), "{marked:?}");
+    }
+
+    #[test]
+    fn an_endnotes_heading_runs_on_through_every_chapter_of_the_notes_to_the_index() {
+        // sylla2018hamilton (2026-11-17): the book has no bibliography; its works are cited in endnotes
+        // grouped under one subheading per chapter at the level of "Notes". A chapter whose notes quote a
+        // document ("Section 8": the Constitution) carries few years, and the plan stopped there (7 rows).
+        let text = "# Conclusion\n\nText.\n\n# Notes\n\n# 注释\n\n# Introduction: Hamilton and the Revolution\n\n# 导论\n\n1. See Peter Lindert, Unequal Gains (Princeton, 2016).\n\n1. 参见 Lindert。\n\n# Section 8\n\n# 第八款\n\n1: The Congress shall have Power To lay and collect Taxes.\n\n2: To borrow Money on the credit of the United States.\n\n3: To regulate Commerce with foreign Nations.\n\n# 15. To William Seton (February 10 and March 22, 1792)\n\n# 15. 致 William Seton\n\n1. Richard Sylla, Alexander Hamilton (New York, 2016).\n\n# Index\n\n# 索引\n\nAbbasids, 12, 45\n";
+        let marked: Vec<String> = reference_lines(text, "Notes")
+            .into_iter()
+            .filter(|(_, line, inside)| *inside && !line.trim().is_empty())
+            .map(|(_, line, _)| line)
+            .collect();
+        assert!(marked.iter().any(|l| l.contains("Sylla")), "{marked:?}");
+        assert!(!marked.iter().any(|l| l.contains("Abbasids") || l.contains("Text.")), "{marked:?}");
+        // without the operator's heading a book's notes are no reference list
+        assert!(reference_lines(text, "").iter().all(|(_, _, inside)| !inside));
     }
 
     #[test]
