@@ -153,6 +153,10 @@ pub(crate) fn heading_text(line: &str) -> Option<String> {
 static SECTION_NUMBER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:[IVXLC]+|[0-9]+(?:\.[0-9]+)*)\.?\s+").unwrap());
 
+/// A note mark at the start of a line: `$^{10}$`, `$^10$`, `^10`, `¹⁰`, `10. `.
+static NOTE_MARK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:\$\s*\^\s*\{?\s*[0-9]+\s*\}?\s*\$|\^[0-9]+|[¹²³⁴⁵⁶⁷⁸⁹⁰]+|[0-9]{1,3}\.\s)").unwrap());
+
 fn is_reference_heading(text: &str, custom: &str) -> bool {
     let lower = text
         .trim_end_matches(['*', '\\', ':', '：'])
@@ -165,16 +169,22 @@ fn is_reference_heading(text: &str, custom: &str) -> bool {
 /// Whether the section after a heading goes on with a reference list: at least half of its lines
 /// carry a year. A section with no line of its own goes on too: the bilingual source writes each
 /// heading twice, and the first has only the second under it. A book's index and its appendices
-/// carry no years, so the list ends there.
+/// carry no years, so the list ends there. A line that opens with a note mark (`$^{10}$ Bryant (1980)`) is an
+/// endnote of the book's text, not an entry of its list, so its year does not count: a chapter's text whose
+/// short-cite notes all carry years is no reference list (ugolini2017evolution, kennedy2025land, 2026-11-19).
+/// Nor is a section with more translated prose lines than dated entries, such as a chapter's opening with a
+/// dated epigraph; a list keeps at most an introductory paragraph in Chinese (kennedy2001armies, hoyland2015path).
 fn section_goes_on(lines: &[&str], from: usize) -> bool {
-    let body: Vec<&str> = lines[from..]
+    let section: Vec<&str> = lines[from..]
         .iter()
         .take_while(|line| heading_text(line).is_none())
         .copied()
-        .filter(|line| !line.trim().is_empty() && !translated(line))
+        .filter(|line| !line.trim().is_empty())
         .collect();
-    let dated = body.iter().filter(|line| ANY_YEAR.is_match(line)).count();
-    dated * 2 >= body.len()
+    let prose = section.iter().filter(|line| translated(line)).count();
+    let body: Vec<&str> = section.into_iter().filter(|line| !translated(line)).collect();
+    let dated = body.iter().filter(|line| ANY_YEAR.is_match(line) && !NOTE_MARK.is_match(line)).count();
+    dated * 2 >= body.len() && prose <= dated
 }
 
 /// The source's lines, each marked when it stands in a reference list. A list runs on through its
@@ -1080,6 +1090,43 @@ mod tests {
             .collect();
         assert_eq!(marked.len(), 3, "{marked:?}");
         assert!(marked.iter().all(|line| line.contains('(') && !line.contains("Yarmuk")), "{marked:?}");
+    }
+
+    /// The reference lines of every source named in `ZT_CITED_SOURCES` (one `key<TAB>path<TAB>heading` a line),
+    /// written to `ZT_CITED_OUT`, so two builds can be compared:
+    /// `cargo test -- --ignored reference_lines_of_the_live_books`.
+    #[test]
+    #[ignore]
+    fn reference_lines_of_the_live_books() {
+        let list = std::fs::read_to_string(std::env::var("ZT_CITED_SOURCES").expect("ZT_CITED_SOURCES")).unwrap();
+        let mut out = Vec::new();
+        for row in list.lines().filter(|l| !l.trim().is_empty()) {
+            let cols: Vec<&str> = row.split('\t').collect();
+            let raw = std::fs::read_to_string(cols[1]).unwrap();
+            let marked: Vec<String> = reference_lines(&raw, cols.get(2).copied().unwrap_or(""))
+                .into_iter()
+                .filter(|(_, line, inside)| *inside && !line.trim().is_empty())
+                .map(|(n, _, _)| n.to_string())
+                .collect();
+            out.push(format!("{}\t{}\t{}", cols[0], marked.len(), marked.join(",")));
+        }
+        std::fs::write(std::env::var("ZT_CITED_OUT").expect("ZT_CITED_OUT"), out.join("\n")).unwrap();
+    }
+
+    #[test]
+    fn a_chapter_bibliography_ends_where_the_next_chapter_opens_with_translated_notes() {
+        // ugolini2017evolution and kennedy2025land (2026-11-19): each chapter ends on its own bibliography, and
+        // the next chapter opens with a bare number heading and sections whose short-cite endnotes all carry
+        // years. The empty number section and the year-dense notes kept the list open, so the plan read the
+        // chapter's prose and notes; three parts of Ugolini had no passing answer and the list was refused.
+        let text = "# 正文\n\n正文。\n\n# Bibliography\n\n# 参考文献\n\nBryant, J. (1980). A Model of Reserves, Bank Runs, and Deposit Insurance. Journal of Banking and Finance 4, 335–344.\n\nDiamond, D. W., and P. H. Dybvig (1983). Bank Runs, Deposit Insurance, and Liquidity. Journal of Political Economy 91, 401–419.\n\n# 3\n\n# Lending of Last Resort and Supervision\n\n# 最后贷款与监管\n\nBanks are special because their liabilities are used as means of payment.\n\n银行之所以特殊，是因为其负债被用作支付手段。\n\n$^{10}$ Bryant (1980); Diamond and Dybvig (1983).\n$^{11}$ Goodfriend (1991, pp. 11–12).\n$^{12}$ Kahn and Roberds (2002).\n\n$^{10}$ Bryant (1980)；Diamond and Dybvig (1983)。\n$^{11}$ Goodfriend (1991, pp. 11–12)。\n$^{12}$ Kahn and Roberds (2002)。\n\n# 3.1.1 The Problem\n\n# 3.1.1 问题\n\n$^{13}$ De Young and Rice (2004).\n\n$^{13}$ De Young and Rice (2004)。\n";
+        let marked: Vec<String> = reference_lines(text, "")
+            .into_iter()
+            .filter(|(_, line, inside)| *inside && !line.trim().is_empty())
+            .map(|(_, line, _)| line)
+            .collect();
+        assert_eq!(marked.len(), 2, "{marked:?}");
+        assert!(marked.iter().all(|line| line.contains("Journal")), "{marked:?}");
     }
 
     #[test]
