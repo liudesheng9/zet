@@ -7618,6 +7618,9 @@ const TRANSIENT_CAUSES: &[&str] = &[
     "changing read view", "changing view",
     // autor2004will (2026-11-09): the same for the title catalogue the check classifies against.
     "changing or partial title view",
+    // rowlandson1996landowners (2026-11-19): a write that waited out its patience for the archive's edit lock
+    // while another digest held it ("edit in progress: apply_batch is held by … after 180100 ms of waiting").
+    "edit in progress",
 ];
 
 pub(crate) fn cause_code(cause: &str) -> &'static str {
@@ -18788,6 +18791,13 @@ mod tests {
         // atkinson2015lectures: a check whose read view moved is retried, never a content failure.
         assert_eq!(
             cause_code("zt-check did not run: incomplete checker inputs: changing read view"),
+            "provider_transient"
+        );
+        // rowlandson1996landowners (2026-11-19): the Term-table publication waited 180 s for the archive's
+        // edit lock while kennedy2025land's Cited-card publication held it; the timeout was read as content,
+        // the unit never retried, and all 44 digest groups were blocked behind it.
+        assert_eq!(
+            cause_code("zt-digest terms: zt: edit in progress: apply_batch is held by unreadable(read refused with os error 33) after 180100 ms of waiting (patience 180 s)"),
             "provider_transient"
         );
     }
