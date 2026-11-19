@@ -1380,8 +1380,26 @@ struct Fresh {
     existing_plan: Option<Value>,
 }
 
-/// The one read sequence of `plan`, shared with the publication steps. It writes nothing.
+/// The refusal of a read set whose archive revision moved under it: a changing read view.
+const MOVED_READ: &str =
+    "the archive changed while reading it (changing read view); run the step again for the new archive revision";
+
+/// The one read sequence of `plan`, shared with the publication steps, read again while the archive
+/// revision moves under it (`util::CHANGING_VIEW_WAITS`): the revision is global, so a second digest's
+/// writes move it (bowman2007oxyrhynchus beside kennedy2025land, 2026-11-19). It writes nothing.
 fn read_fresh(p: &Params, manifest: &Value, zt: &mut Zt) -> Result<Fresh> {
+    read_fresh_rereading_with(
+        &crate::util::CHANGING_VIEW_WAITS,
+        |s| std::thread::sleep(std::time::Duration::from_secs(s)),
+        || read_fresh_once(p, manifest, zt),
+    )
+}
+
+fn read_fresh_rereading_with<T>(waits: &[u64], sleep: impl FnMut(u64), read: impl FnMut() -> Result<T>) -> Result<T> {
+    crate::util::retry_changing_view(true, waits, sleep, read)
+}
+
+fn read_fresh_once(p: &Params, manifest: &Value, zt: &mut Zt) -> Result<Fresh> {
     let staging = p.staging.as_str();
     let key = pstr(manifest, "citation_key");
     let book_title = {
@@ -1414,9 +1432,7 @@ fn read_fresh(p: &Params, manifest: &Value, zt: &mut Zt) -> Result<Fresh> {
     let planning_artifact = read_planning_artifact(staging)?;
     let after = zt.call("get_cards", json!({"addresses":[],"view":"text"}))?;
     if after["archive_revision"].as_u64() != Some(archive_revision) {
-        bail!(
-            "the archive changed while reading it; run the step again for the new archive revision"
-        );
+        bail!(MOVED_READ);
     }
     let inputs = PlanInputs {
         staging,
@@ -3894,6 +3910,20 @@ mod tests {
 
     fn argv(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_term_card_read_that_moved_under_another_book_is_read_again() {
+        // bowman2007oxyrhynchus (2026-11-19): kennedy2025land's link check wrote beside it, the archive
+        // revision moved during the publication's fresh read, and all 65 ready jobs were refused as
+        // plan_stale with no Card written. The read writes nothing, so it is read again.
+        let mut reads = 0;
+        let read = read_fresh_rereading_with(&[0, 0], |_| {}, || {
+            reads += 1;
+            if reads == 1 { Err(anyhow::anyhow!(MOVED_READ)) } else { Ok(reads) }
+        });
+        assert_eq!(read.unwrap(), 2);
+        assert!(crate::util::is_changing_view(&anyhow::anyhow!(MOVED_READ)));
     }
 
     #[test]
