@@ -2,9 +2,9 @@
   "protocol": "workflow-framework-protocol/1",
   "base": "./zt-digest-base.blueprint.json",
   "name": "zt-math-digest",
-  "version": "5.12.9",
+  "version": "5.12.10",
   "description": "Digest a Chinese-translated mathematics textbook into ZET Cards: the ZT digest base with the mathematics profile and the math stages (statement skeleton and notation, Boundary, Proof, Theory, the M1-M18 check), built and frozen by the workflow framework; it builds only the Literature tree (Topic trees, hubs and the register are zt-idea-grow's)",
-  "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base.",
+  "whenToUse": "Turn a Scholar Archive mathematics textbook (Chinese bilingual Markdown with numbered definitions and theorems) into an agent Literature tree of mathematical units and Theory Cards. It writes no Topic tree, no Hub Card and no register: zt-idea-grow grows those afterwards. Mode math re-runs only Boundary, Proof, Theory, and the math check on an existing math digest; the other modes are those of the base. Before launch, the agent runs the source check itself, without asking (owner rule, 2026-11-18): dry-run `zt-digest prepare` into D:/zt-digest/_dry/<key>, then clear every flag it raises by hand. Fix the material in the source file (backup in D:/zt/backups/source-normalize-<date>, relink with a normalization note, mirror SHA checked), or dismiss a coverage flag whose pair is the original text in %APPDATA%/zt/coverage-judged/<source sha256>.json. Dry-run again until 0 source faults. Never change the flagging process (zt-digest prepare rules) for a book. Procedure: docs/agents/workflow-principles.md, \"Source check before launch\".",
   "modules": [
     "./modules"
   ],
