@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-history-digest",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "scope": "project",
   "script": ".claude/workflows/zt-history-digest.js",
   "scriptRel": "workflows/zt-history-digest.js",
-  "sha256": "eac2fdb552a8be6aadd00fabe555e88bafcd2c181f1fb587627dbd9694274723",
-  "fingerprint": "3ae08775b7223ada",
-  "blueprintSha256": "1be6f5cf6dcb3d28900af7ad91f2c2bd406f98a2264ebda7a234f2fac99cfd54",
+  "sha256": "e5d3b5be19ec2e46beab91cd7028e929701616f3cfd6ead8fed36fd74a6cbedc",
+  "fingerprint": "6149d16e8f64b305",
+  "blueprintSha256": "dc0f4b0de8a43a80ad9d76c13c535db8e776dbbad7ebd257060fe21a51b4da61",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "19",
@@ -135,7 +135,7 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-history-digest.blueprint.json",
-      "sha256": "1e96c6dbf1324acab476c93a13b22494b51163d54983229b070559e271644e4b"
+      "sha256": "7dbda55a877ee39801994073b1c09d41b052b14feaa91bb50396afe110902227"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
@@ -143,7 +143,7 @@
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-14T05:38:50.986Z",
+  "installedAt": "2026-11-19T04:11:29.840Z",
   "dryRun": {
     "agents": 58,
     "order": [
