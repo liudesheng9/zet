@@ -205,3 +205,81 @@ The broad-money estimate `5|b|a|4|b` carried `反驳 [[5|b|a|1]]` (the four-chan
 
 1. No cross-book pair: survey 5\|b again after a zt-term-sync pass on the economics shelf (at its stage-7 address).
 2. No `card_locked`, `scope_refused` or `read_view_changed` error occurred.
+
+## Stage 7: literature organize
+
+Date 2026-11-21, live box (owner's request), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, one structure batch through `batch.mjs`, one `leads.mjs` run, one scripted `edit_card` batch of 59 writes and two fix writes). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-das2026domestic-organize.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). The structure batch and the demote were previewed first (complete true, refusals none, `links_that_will_break` empty) and committed under their plan hash; every text write was read back (0 differences). The tree went from 396 to 397 Cards (one new summary lead: §IV). No Card was deleted, and no formula, number or model part changed. Only Cards of das2026domestic were written. No `card_locked`, `scope_refused` or `read_view_changed` error occurred; the tree was unlocked throughout.
+
+### Source divisions
+
+From `D:\zt-digest\das2026domestic\book.zh.md` (the Scholar Archive Markdown the digest read): front matter (title page, 摘要, 关键词, the second title page with authors and acknowledgement, the CGD publication page, 目录, 图 list, 表 list); I. 引言; II. 为何国内债务重组（DDR）对货币政策而言有所不同 (A. 国内体系内部的损失分配, B. 三张相互关联的资产负债表, C. 中央银行的双重角色); III. 国内债务重组（DDR）如何削弱货币政策; IV. 案例证据 (A. 跨国推断, B. 牙买加 2010 年重组, C. 巴巴多斯 2018–19 年重组, D. 加纳 2022–24 年重组, E. 国内债务重组的比较; B–D each with three unnumbered subheadings, E with four); V. 政策考量与设计教训; VI. 结论; 附录 (the event classification table, printed twice in the Markdown); 参考文献 (the Cited list). The top line takes the front matter, the six numbered sections and the appendix, then the two lists. The appendix is kept and organized like the body (owner rule).
+
+The digest had filed the paper as 13 groups: old 1 title page and abstract, with the Term list, the structure Card and the Cited list under it; old 2 §I with the 版权页与目录 Card at its head; old 3 §II.A–B (one chain across A and B) and the concept model 3\|a; old 4 §II.C and §III on one chain; old 5 §IV and IV.A with the empirical model 5\|b; old 6 and old 7 §IV.B (old 7 its subheading 货币结果); old 8–10 §IV.C–E; old 11 §V with the concept model 11\|a; old 12 §VI; old 13 附录.
+
+### Final tree (top line and divisions)
+
+```
+1   前置页 (old 1, rewrite)          a 摘要与关键词 (old 1|b chain) · b 版权页与目录 (old 2|a) · c 结构卡 (old 1|c)
+2   I. 引言 (old 2, trimmed)         a §I chain (old 2|a|1..7)
+3   II. … (old 3, rewrite)           a A. (old 3|b..3|b|3) · b B. (old 3|b|4..7) · c model 3|c (old 3|a) · d C. (old 4|b..4|b|1)
+4   III. … (old 4, trimmed)          b §III chain (old 4|b|2..11)
+5   IV. 案例证据 (new, demote of old 5)
+      a §IV preamble (old 5|a) · b A. 跨国推断 (old 5; b IV.A chain old 5|a|1..6, c model 5|b|c, d–i findings)
+      c B. 牙买加 (old 6, rewrite; i 货币结果 = old 7) · d C. 巴巴多斯 (old 8) · e D. 加纳 (old 9) · f E. 比较 (old 10)
+6   V. 政策考量与设计教训 (old 11)    a model 6|a (old 11|a)
+7   VI. 结论 (old 12)
+8   附录 (old 13)
+9   术语表 (Term list, from 1|a)      104 Cards
+10  参考文献 (Cited list, from 1|d)   43 Cards
+```
+
+Batches: one structure batch (15 items, 388 Cards renamed); `leads.mjs` (one demote: §IV; three rewrites: 1, 3, IV.B); one text batch (59 `edit_card` writes: 46 Finding source lines, the root index, the structure Card, 11 heads and titles); two fix writes (zt-check R2/R4 in the root and the structure Card; I3 on the Ghana head, which had no source line since the digest).
+
+### Crossers and how each was settled
+
+- Old 1 held the front matter and both lists: the lists went to the tail (`9`, `10`); the 版权页与目录 Card (old 2\|a, filed at the head of §I) moved under the front matter as `1|b`, its Direct chain (the §I notes) stayed under §I and closed up to `2|a`.
+- Old 3 ran II.A and II.B on one chain: cut at old 3\|b\|4 (the first `§II.B` Card); II.A `3|a`, II.B `3|b` (with its Side note), the model as `3|c` after II.B (it is §II.B's framework), then II.C.
+- Old 4 held II.C (two Cards) and §III (ten Cards): the head went to §III by majority and was trimmed to §III (`4`, title `III. …`, the dual-role half of its text and the `§II.C`/`§III` index lines dropped, source line `§III` added); the II.C chain moved to §II as `3|d`.
+- Old 5 was §IV and IV.A at once: demoted. A new §IV summary took its place; old 5\|a (the §IV preamble) stands first (`5|a`); old 5 became the IV.A head `5|b` (title `A. 跨国推断：…`, its §IV sentences and index lines dropped, source line `§IV.A` added) with the IV.A notes (cut off old 5\|a's chain) as `5|b|b`, the model 5\|b as `5|b|c` and the six findings.
+- Old 6 and old 7 were two groups of §IV.B: old 6 became the IV.B head `5|c` (rewritten as the summary of IV.B), old 7 (货币结果) its Side branch `5|c|i` with its chain and findings. Old 8–10 moved under §IV unchanged as C–E (titles given their letters).
+- Whole units: each model moved once with all its parts. 3\|a → `3|c` (8 parts), 5\|b → `5|b|c` (37 members incl. the shared `3|c|a|3`), 11\|a → `6|a` (5 parts). Term list 104 and Cited list 43 Cards, unchanged.
+
+Calls that could go the other way: the unnumbered subheadings of IV.B–E have no lead of their own (they run on one chain per case, as the digest filed them; the IV.B summary indexes their first Cards, IV.C–E name them in their own index lines); 货币结果 alone is a Side branch of IV.B, because the digest had made it a group; the concept model 3\|c filed as a Side of the §II summary between B and C rather than under II.B; old 4's head given to §III by Card count.
+
+### Summary leads and other text
+
+- `leads.mjs`: demote `5` (§IV); rewrite `1` (前置页), `3` (§II), `5|j` → `5|c` (IV.B). Each has the source's name and main claim as title, a walk through the subdivisions, `小节索引：` with a Link to each subdivision head, `在全书中的位置：` and the source line. Its Term-use pass linked no shorter Term inside a longer word (checked). One position Link that `leads.mjs` read as "the division" (IV.B's link to A. 跨国推断, which resolved to the §IV summary) was turned to `5|b` in the text batch.
+- Hand edits: titles with the section number on `2` (I.), `4` (III.), `5|b` (A.), `5|d` (C.), `5|e` (D.), `5|f` (E.), `6` (V.), `7` (VI.); trimmed heads `2` (no longer the 版权页 Card's head), `4`, `5|b`; position lines made true in `2`, `4`, `5|b`, `5|d`, and in the appendix `8` and `8|b`, which since the digest named the Jamaica group (old 6) as "the cross-country inference"; they now link the IV.A head `5|b`.
+- Source lines: the 46 Finding Cards of §IV named their old group head as source Link (`来源：[[…/5]] §4.A`, `[[…/6]] §IV.B`, …); after the moves these are no longer anchors (zt-check F2). All 46 now link the book root with the label (`来源：[[das2026domestic]] §IV.A` … `§IV.E`; the digest's `§4.A` normalized to `§IV.A`).
+- The root index lists the ten top Cards (the old 13-group list named digest groups); its lead line now says 每部分一行. The structure Card `1|c` lists the eight parts and the three models; its old model list named the chapter `3|a|a|3` and the coding table `5|b|a|c` as models, stale since the fold.
+- `zt-check --cards` on the root, the structure Card, the 15 heads and the 46 Findings: first run `faults: 12` (R2/R3/R4 in new lines of the root and `1|c`, I3 on the Ghana head), fixed; final run `faults: 0`.
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `check.mjs das2026domestic`: top line 1 前置页 (10), 2 I. 引言 (9), 3 II. (21), 4 III. (13), 5 IV. 案例证据 (166), 6 V. (16), 7 VI. (8), 8 附录 (6), 9 Term list (104), 10 Cited list (43); no fault. Against the start snapshot: `396 Cards before, 397 now`.
+- Source-line walk (337 Cards with a source line, model parts and the two lists excluded): every Card stands under its own top division; under §IV each branch holds only its own labels (`5|a` §IV; `5|b` §IV.A; `5|c` §IV.B; `5|d` §IV.C–C.3; `5|e` §IV.D; `5|f` §IV.E–E.4). No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- `check-model.mjs 5|b|c`: `members 37 {"main":7,"side":28,"shared":1,"off":1}`, `relations {"rests-on":21,"illustrates":9,"refers":53,"contrasts":1}; loose 0; self_sufficient true`. `check-network.mjs`: `network: clean`; `check-premises.mjs`: `premises: none used before their card`; `check-settings.mjs --symbols`: `settings: the data tree and the specification ladder are in place`; `imports.mjs check`: `takes what it uses from other models by import lines`.
+- `model-survey.mjs das2026domestic`: 3 Model Cards, `3|c` concept (8 parts), `5|b|c` empirical (37), `6|a` concept (5).
+- Term relink: `{"applied":true,"links_added":1,"cards_changed":1,"cards_refused":0,"rounds":1,"links_repaired":0,"ok":true}`; `-PlanOnly` afterwards: `{"applied":false,"cards_changed":0,"links_added":0,"rounds":0,…}`. No relink bug.
+
+## Result
+
+Final top line: 前置页 · I. 引言 · II. 为何国内债务重组对货币政策而言有所不同 · III. 国内债务重组如何削弱货币政策 · IV. 案例证据 · V. 政策考量与设计教训 · VI. 结论 · 附录 · 术语表 · 参考文献. 397 Cards.
+
+Models (final addresses):
+
+- `das2026domestic/3|c`, concept: the three-balance-sheet framework of §II.B with its §III chapter on the four channels (`3|c|a|3`, the former 4\|a), 8 parts; lends `3|c|a|3` to 5\|b\|c; filed as a Side branch of the §II summary between II.B and II.C.
+- `das2026domestic/5|b|c`, empirical: the event study of base money, broad money, the money multiplier and the reserve ratio around 17 DDRs (data tree with the appendix coding table, design, specification ladder, three chapters, ten estimates), 37 members (1 imported `单卡`: `3|c|a|3`); filed under the IV.A head.
+- `das2026domestic/6|a`, concept: DDR design between relief and the central bank's viability (§V), 5 parts.
+
+All applicable stages passed their gates (stage 5 does not apply: no formal model). Open items across the sequence (addresses as they now stand):
+
+1. Owner decision carried from the digest queue: merge the Barbados idea Card `5|d|a|12` (重组暴露并固化了货币政策传导的弱点; the digest's 8\|a\|12) into `5|d|a|11` (结构性超额流动性使政策利率几乎不影响信贷; the digest's 8\|a\|11). Not decided by this sequence.
+2. `3|c` stays a concept model with `self_sufficient` false (its folded chapter `3|c|a|3` has no rests-on Link to its setting, stage 1); by the sequence skill it takes no further pass without the owner's word. `6|a` likewise has had the fold only.
+3. No Figure 2 card inside 5\|b\|c: the image sits on the footnote idea card `5|b|c|b`, a Side of the Model Card outside the model (and on the panel notes `5|b|b|…` and findings); the organize moved the model whole and did not move it (stage 3).
+4. The footnote idea card `5|b|c|b` stays a Side of the Model Card outside the model (stage 2).
+5. No cross-book evidence pair for `5|b|c`: survey again after a zt-term-sync pass on the economics shelf (stage 6). The broad-money estimate `5|b|c|a|4|b` now reads `对照` the hypothesis (stage 6 decision; the owner may still prefer another word).
+6. Stage 7: the unnumbered subheadings of IV.B–E have no lead of their own, and only 货币结果 (`5|c|i`) is a branch of its own (see **Crossers**).
