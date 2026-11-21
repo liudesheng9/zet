@@ -534,3 +534,26 @@ All seven stages passed their gates. Open items across the sequence:
 4. No cross-book evidence pair: survey `5|e` again after a zt-term-sync pass on the economics shelf; its chapters 4–5 hold no `估计：` card for the headline decomposition (Stage 6).
 5. Advice lines stay: `check-network` on `4|h` (chapters 7 and 8 have no `结果：` card); `check-premises` on `3|a` (one stage-3 pointer to (16)).
 6. Stage 7: 2.2 has no lead of its own; the illustrate modules keep their file names (heads changed); the model part `5|e|a|5` keeps a plain Link to `6` (the §5 summary, "模型性质"), which a move turned from the old 4.3-and-§5 group into the §5 summary; it was not touched because it is a model part. This pass doc is not committed (stage brief).
+
+## Follow-up: open items fixed (2026-11-21)
+
+Owner's request ("solve them", 2026-11-21), live box, by scripts (`create_successor`, `edit_card` under `-Allow`). Box backup taken by the parent: `D:/zt/backups/zt-before-small-items-2026-11-21.sqlite3`. No DeepSeek job. No `card_locked`, no `scope_refused`.
+
+### Result open item 4 (Stage 6 open 2): no estimate card for the headline decomposition
+
+From the source §6.2 (`book.zh.md` lines 1144–1173; Figure 10, appendix Figure 14), two `估计：` cards under chapter 5 of `5|e` (`5|e|a|8`), each resting on the sign-restricted specification `5|e|a|3|a`, on chapter 5 and on the quasi-nonlinear counterfactual of chapter 4:
+
+- `ozhan2026monetary/5|e|a|8|a` 估计：供给约束为 2020–22 年美国通胀贡献约 2–3 个百分点 (value as the text gives it, a range; s.e. and significance 原书未写明); **对应** 印证 the hypothesis `5|e|a|1`.
+- `ozhan2026monetary/5|e|a|8|b` 估计：2023 年之后供给约束对美国通胀的净贡献为负 (direction only; the source gives no number).
+
+Chapter 5's **本章估计** now lists both cards; chapter 4 (`5|e|a|7`, the §4.3 method) says the headline estimates are computed with it and keeps no estimate card of its own: §4.3 reports no number, and the §6.2.1 policy counterfactuals (−2 pp peak inflation, −0.8 pp 2022 GDP) are the quantitative model's (`4|h`) and the Literature notes' (`7|c|g`). The Model Card's **结构** lists the two new cards. No GDP number was taken from the figure descriptions (they are image readings, not source text).
+
+### A fault met on the way
+
+`check-model` showed loose 1 after the creates: `furceri2026divide/3|e|a`. The Model Card's cross-book line had linked furceri's old Model Card `4|a`, which furceri's fold today deleted `into` its data card `3|e|a`; that made another model's data card a part of `5|e`. The Link now names furceri's Model Card `[[furceri2026divide/3|e]]` with the words `（该模型的数据卡）`; loose 1 → 0. No Link was removed.
+
+### Gates
+
+- `5|e`: `check-settings` `settings: the data tree and the specification ladder are in place`; `check-model` `members 180`, `relations {"refers":171,"rests-on":261,"corresponds":20,"illustrates":9,"contrasts":7}; loose 0; self_sufficient true`; `check-network` `network: clean`; `check-premises` 1 hit (the 变量表 row for (20), a pointer); `imports.mjs check` exit 0.
+- `list_broken_links` (agent): empty. Term relink: `{"applied":true,"rounds":1,"cards_changed":3,"links_added":9,"ok":true}`.
+- 2 Cards created, 3 edited (`5|e`, `5|e|a|7`, `5|e|a|8`), none deleted. The evidence dialogue was not rerun; the new estimates can pair once another book states the same estimand.

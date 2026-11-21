@@ -362,3 +362,30 @@ Owner: the Model Card figure of 5|h had three parts but the chart sheet could sh
 
 The same check found that the organize (stage 7) left every chart click target at the old 7|a addresses: 20 targets in 25 charts opened no Card. `apply.mjs --write` with the head at 5|h rewrote them (6 Cards, then the head again for the part panels). Backup `D:\zt\backups\zt-before-bergin2026exchange-chart-parts.sqlite3` (integrity ok). Gate: `verify.mjs --model` 25 charts, 0 lint faults, 0 dead targets, one PNG per part; the live GUI shows the three tabs and each part alone.
 
+
+## Follow-up: open items fixed (2026-11-21)
+
+Owner's request ("solve them", 2026-11-21), live box. Box backup taken by the parent: `D:/zt/backups/zt-before-small-items-2026-11-21.sqlite3`. Edits by `edit_card` under `-Allow`; drafts of item 1 by three DeepSeek jobs (deepseek-flash, effort high; conversations deleted, workspace removed). No Card created, moved or deleted. No `card_locked`, no `scope_refused`.
+
+### Result open item 1: result and derivation cards of `5|h` in their role formats
+
+All 16 result cards (`5|h|a|2|a`, `2|b`, `3|a`–`3|c`, `4|a`, `4|b`, `5|b`, `6|a`–`6|c`, `7|b`, `8|a`, `9|a`–`9|c`) now read: claim sentence, **结果** (the old statement, formulas unchanged), **为什么**, **证明** (`证明见下面的推导分支，从 [[…]] 读起。` and `依赖 [[last proof card]] 的结果`; for a result without a proof chain the old `依赖` premises, or the aside that holds the simulation numbers), `来源` with the section. All 24 derivation cards got a `目的：` line and the `推导链第 k 步，共 n 步：` opener of **思路**; their **起点**, **步骤**, **结果** and **解读** are byte for byte the old text (checked by script). The digest's `全链依次推出 …` lists were dropped from **思路** (they only repeated the chain's results), so `check-drafts.mjs` reports four equation numbers no longer named on the derivation cards `2|a|a`, `2|b|a`, `3|a|a`, `4|a|a|3` (mentions in that list only). Every display formula, inline formula and Link survives (scripted check; the one inline formula gone, in `2|a|a|1`, stood in the dropped "从 … 推到 …" opener and is the 起点 of that card). Titles that began with 命题/结论/福利 now begin with 结果：. `check-premises` hits on 5\|h fell from 8 to 1 (the setting `g`'s pointer to (22)).
+
+### Result open item 2: `4|d` limits and chapter cards
+
+- Overlaps: the 上市缺口 limit now stands only in `4|d|a|5|f|a`; the sample end (2007) only in `4|d|d|a`. The repeats in `4|d|a|5|g` (式 (6) 政策外生) and `4|d|a|6|j` (相关与因果) became one pointer line each to the home card. No limits card was deleted: each of the six holds a limit no other card states (式 (5), 式 (6), 相关与因果, 上市缺口, 法定度量与拼接, 度量与部门划分), so a delete-into would have lost a fact.
+- Chapter cards `4|d|a|4`–`7`: in the empirical chapter format (**直觉**, **本章估计** with `估计：[[…]]` lines, **承上启下** holding the `依赖` lines that stood above **直觉**); `本模型检验 …` → `本章检验 …`, `本模型的数据…` → `本章的数据…`. Links unchanged.
+
+### Result open item 4: the GDP formula of `5|h|a|f|c`
+
+Not a misstatement. The source writes the second term as $p_{H,t}y_{H,t}$: the original Markdown (`Bergin_et_al_2026_…_w35609.md` line 411), the PDF text layer (`pdftotext`, §3.5: "pH ,t yH ,t / Pt") and `book.zh.md` line 413 all agree. The card and its figure stay; the card's **说明** now says the source writes it so and the card copies it.
+
+### Gates
+
+- `5|h`: `check-settings` `settings: all in the setting part, as a dependency tree` (advice: 9 settings under the setting card, as before); `check-model` `relations {"refers":74,"rests-on":126,"corresponds":11,"contrasts":4,"illustrates":3}; loose 0; self_sufficient true`; `check-network` `network: clean` (advice: chapter 1 has no result card); `check-premises` 1 hit (pointer); `imports.mjs check` exit 0; `apply.mjs` dry run `same` on every Card; `verify.mjs --model` `25 chart(s) in 83 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`, 0 dead targets.
+- `4|d`: `check-settings` `the data tree and the specification ladder are in place`; `check-model` `relations {"refers":102,"rests-on":98,"illustrates":14,"contrasts":2,"corresponds":3}; loose 0; self_sufficient true`; `check-network` `network: clean`; `check-premises` 9 hits (the Stage-3 pointers); `imports.mjs check` exit 0.
+- `list_broken_links` (agent): empty. Term relink: `{"applied":true,"rounds":1,"cards_changed":27,"links_added":54,"ok":true}`; `-PlanOnly` afterwards `cards_changed 0`; all gates rerun after the relink.
+
+### Left open
+
+- Result open items 3, 5 (advice lines; evidence-dialogue rerun after a term-sync pass) were not in this request. The 为什么 lines that go beyond the old text are marked `（补：书中未写）`.

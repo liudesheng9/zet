@@ -351,3 +351,16 @@ All seven stages passed their gates. Open items across the sequence:
 5. No cross-book evidence pair: survey 3\|e again after a zt-term-sync pass on the economics shelf (Stage 6).
 6. The A.1 notes `7|a` keep two plain `另见` lines to 4\|a parts (L2 advisory), and the A.1 parts were not nested under a separate A.1 summary (Stage 7).
 7. The illustrate module keeps its file name; only the imported target and the header comment changed (Stage 7). This pass doc is not committed (the stage brief said no commit).
+
+## Follow-up: open items fixed (2026-11-21)
+
+Live box, by the owner's request ("solve them"), one side session, scripts plus `edit_card` (no subagent, no DeepSeek job). Box backup taken by the parent: `D:/zt/backups/zt-before-small-items-2026-11-21.sqlite3`. Only Cards of this book were written; no `card_locked` or `scope_refused` error; no number or estimate changed.
+
+- **Result item 2a (A.2 test card's own notation): fixed.** The source writes no equation for Table A.2 (column heads and note only), so both notations were the digest's. The test card `3|e|a|4|a` now writes the regression in the ladder's notation, $\Delta S_{ij}^{GTA}=\kappa+\theta_3\,\Delta S_{ij}^{NIPO}+\gamma_j+\eta_i+u_{ij}$ (byte-identical to `3|e|a|2|c|c`), names the 变量表 `3|e|a|a`, and says which of $\gamma_j,\eta_i$ each column drops, with Links to `2|c`, `2|c|a`, `2|c|b`. The $\alpha,\beta,\delta_c,\varepsilon_{c,j}$ symbols are gone; no 变量表 row was needed.
+- **Result item 2b (the multiplication stated twice): fixed.** The measure `3|e|a|f` (retitled `测量：2023 年的预测补贴变化取自回溯的外推`) no longer states the multiplication. It defines $\Delta S_{ij}^{GTA}$ as the 2023 extrapolated change, says the multiplication (35.8 times the GTA count changes, summed) is written once in the specification `3|e|a|2|d`, and keeps the coefficient's standard error 9.5 with its Link to `3|e|a|3|a`. The **起点** is unchanged.
+
+Cards changed: `3|e|a|4|a`, `3|e|a|f`.
+
+Gate (after the Term relink): `check-settings.mjs` 3\|e `settings: the data tree and the specification ladder are in place`, 4\|a `settings: all in the setting part, as a dependency tree`; `check-model.mjs` 3\|e 46 members, `relations {"refers":72,"rests-on":23,"illustrates":5}; loose 0; self_sufficient true`, 4\|a 48 members, self-sufficient; `check-network.mjs` `network: clean` on both; `check-premises.mjs` 1 hit each, the same pointers as at stage 4; `imports.mjs check` exit 0 on both; `list_broken_links` (agent) `{"broken":[]}`; Term relink `{"links_added":1,"cards_changed":1,"cards_refused":0,"ok":true}`.
+
+Left open: Result items 1, 3, 4, 5, 6 and 7 (not in this brief).

@@ -461,3 +461,29 @@ All applicable stages passed their gates; Stage 6 does not apply. Open items acr
 7. The organize's start snapshot was overwritten, so the `check.mjs` snapshot comparison was done by hand (Stage 7).
 8. The Stage-5 relink JSON of the applying run was lost; later plans are empty (Stage 5).
 9. This pass doc is not committed (the stage brief said no commit).
+
+## Follow-up: open items fixed (2026-11-21)
+
+Owner's request ("solve them", 2026-11-21), live box, one side session by scripts (`apply_batch` tree batches previewed and committed under the plan hash, `edit_card` under `-Allow`). Box backup taken by the parent before the work: `D:/zt/backups/zt-before-small-items-2026-11-21.sqlite3`. No DeepSeek job. No `card_locked`, no `scope_refused`.
+
+### Result open item 1 (part): the twelve settings under the setting card
+
+The setting part of `3|i` is now a dependency tree (`zt-model-settings`); each card is filed under a setting its **起点** rests on, and no **起点** text changed. Final addresses (old → new): d 手到口主体 (9) → `3|i|a|c|b` (under the budget constraint it rests on); e 政策块 → `d` (its six rules `d|a`–`d|f`); f 出清与资源约束 → `e`; g 时序与内生变量 → `e|a` (rests on f); h 一阶线性化 → `f`, h\|a → `f|a`; the four regime assumptions i, j, k, l (假设 1–4, each resting on the linearization) → `f|b`, `f|c`, `f|d`, `f|e`; the stochastic-duration variant m → `g` (top level: it rests on the repression rule and on 假设 1, so it cannot sit under either without a forward premise) with 假设 5 `g|a`. Top level now: b 概述, c 预算约束, d 政策块, e 出清, f 线性化, g 变体五 (6, was 12; the `wide` advice is gone). zt rewrote every Link and chart target with the moves (167 macros in the reorder alone). The illustrate module `gomezcram2026government-2_a.mjs` was remapped (FIG keys, intuition keys and `A()` targets, 61 strings; header note added); `apply.mjs` reports `same` on every Card.
+
+### Result open item 2: chapter 13 (A.1) restated the ψ→∞ derivation
+
+- `3|i|a|13|a|a` (推导：递归效用, ψ→∞ utility) restated `3|i|a|2|b|a` step for step; it held no fact of its own (its full form of (1) with θ is the setting card's). Deleted `into` `3|i|a|2|b|a` (3 Links re-pointed, among them the Literature note `3|b|c|6|a`); its successor, the derivation of the level SDF A.1-4 (new in A.1, not derived in chapter 2), moved up to `3|i|a|13|a|a`.
+- `3|i|a|13|a|a` (推导：随机贴现因子): 思路 says the chain is one card and the utility limit comes from chapter 2; 起点 rests on `[[3|i|a|2|b|a]]` once (the duplicate A.1-3 line dropped). Steps and formulas unchanged.
+- `3|i|a|13|a` (结果：效用与贴现因子): rewritten in the result format (claim, **结果** with both A.1 formulas unchanged, **为什么**, **证明**: A.1-3 rests on chapter 2's `2|b|a`, A.1-4 on `13|a|a`).
+- Chapter card `3|i|a|13`: **承上启下** says the utility limit is chapter 2's and adds `依赖 [[3|i|a|2]]`.
+- Net: 1 Card deleted, 0 created, 3 rewritten (526 → 525 Cards). No display formula changed (checked by script).
+
+### Gates
+
+- `3|i`: `check-settings` `settings: all in the setting part, as a dependency tree`; `check-model` `members 143 {"main":14,"side":129}`, loose 0, self_sufficient true; `check-network` `network: clean` (advice: chapter 1 has no result card); `check-premises` 10 hits, the same pointers as Stage 7; `imports.mjs check` exit 0 (copy advice `3|i|a|3` ~ `9|b|a|1` unchanged); `verify.mjs --model` `28 chart(s) in 144 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`, 0 dead targets.
+- `3|c|e`, `9|b`: `check-model` loose 0, self_sufficient true; `imports.mjs check` exit 0.
+- `list_broken_links` (agent): empty. Term relink: `{"applied":true,"rounds":1,"cards_changed":1,"links_added":2,"ok":true}`.
+
+### Not fixed
+
+- Result open item 1's other parts (result and derivation cards of `3|i` outside chapter 13 still in digest format; `3|i|a|5|c` alone) were not in this request.

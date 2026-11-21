@@ -1394,3 +1394,51 @@ The owner asked to fix the three ledger gaps of the Liu digest by hand, and to o
 **Rule changes** (prompts and skills; no code): `model-architect-empirical.md` (every 规格 part has an `equation`; how to compose one; 2SLS as two lines joined by `\`; indices in sub- and superscripts), `model-architect.md` and the 设定卡 rule of `dsh-fill-instructions.zh.md` (an econometric framework states its whole estimation system in the setting part), `dsh-empirical-brief-instructions.zh.md`, `dsh-fill-instructions.zh.md` (supplied sections, symbols kept) and `dsh-empirical-review-instructions.zh.md`, the `zt-model-settings` skill. `model-architect-empirical.md` itself was repaired: a `$`-replacement had expanded it into three nested copies of itself (358 → 166 lines). `check-settings.mjs` `repeat` no longer compares the TeX lines of display equations (test from the live equations).
 
 **Left open.** zt-digest's skeleton still writes 书中没有写出估计式 for an empty `equation`, `validate` still names `no_equation`, and zt-check EM3 still accepts the line; changing them is a code change the owner did not ask for. 158 规格 cards in seven other books still carry the line (dell2010persistent 43, brandimarti2026reorganizing 34, haeckl2026dont 23, deming2015growing 21, acemoglu2001colonial 16, ebrill2001modern 12, becker2025division 9; hansen2021demand has none). Liu's formal value-added model `12|b|a` keeps its estimator steps (8)–(10) in chapter cards, because they are derived construction steps.
+
+### 14.21 Brandimarti et al. 2026: Appendix B results and setting balance (2026-11-21)
+
+The owner asked that the two open items of §14.12 on `brandimarti2026reorganizing` be solved: the Appendix B results that had only reading notes, and the two long setting cards. A side session did it for this tree only. A box backup was taken before the session started (`D:/zt/backups/zt-before-small-items-2026-11-21.sqlite3`). Every change is an agent-Workspace Card of this tree, made through the zt tools. No lock and no `scope_refused` was met, and no Card was created, moved or deleted.
+
+**What the live box already held.** Both items had been done before this session, and the §14.12 bullets stayed open only in the record. No Model part, setting card or import line was written again.
+- Item 1 (the §B.3 and §B.6 results). §14.13 wrote them as chapters 3 and 6 of the formal model, now `13|a|a`: proposition A.1 `13|a|a|a|3|a`, corollary A.1 (A.10) `|3|b`, the separable benchmark (A.9) `|3|c`, corollary A.2(i) and (ii) `|3|d`, `|3|e`, corollary A.3(i)–(iii) `|3|f`–`|3|h`, the aside on the three channels of $\theta$ `|3|i`, the redesign gain (A.16) and its split `|6|a`, and proposition A.4(i)–(iii) `|6|b`–`|6|d`. Each result has its §B.7 proof chain as a Side branch and rests on the stage settings `13|a|a|a|f|a|a` (fix $p^0$ and coaching, vary $m$) and `|f|a|b`. The import of prediction 1 was changed in §14.13 too: the hypothesis of `4|b|e` imports proposition A.1 (`|3|a`) and corollaries A.1–A.3 `单卡`, and no longer cites the §5 statement `13|a|a|a|1|b`. So no import changed now. `explain.mjs plan` finds nothing to explain, and the Model Card figure already sends 变化一 to 第 3 章 and 变化四 to 第 6 章. So no DeepSeek job ran, no figure changed, and no new setting needed a **直觉**.
+- Item 2 (setting balance). The setting card `13|a|a|a` (the §14.12 `15|a|a`, 11 statements) now states three items: the participants and the type distribution, the meaning of $\theta_i$, and the information. The §B.4 stage setting `13|a|a|a|f|a|b` (the §14.12 `15|a|a|f|a|a`, 19 statements) states five. The other statements are in the settings `|b`–`|g`, each with **起点**, **设定** or **假设**, **直觉** and **说明**. The backup of 2026-11-13 (`zt-before-velic2025inflation-imports2.sqlite3`) holds the same texts, so a pass between 2026-11-10 and 2026-11-13 made the split, most likely the 直觉 pass of 2026-11-11; no section records it. `check-settings.mjs` gives no `balance` advice on the model.
+
+**What this session changed.**
+- The reading notes link their parts. Thirty-one Idea notes received one closing line `形式模型中的…见 [[…]]`. The §B.3 notes `13|c`, `13|c|a` and `13|c|a|1`–`|8` point to chapter 3 and to `|3|a`–`|3|i`. The §B.6 notes `13|f`, `13|f|a`, `13|f|a|1`–`|5` and `13|f|a|3|a` point to chapter 6 and to `|6|a`–`|6|d` and `|6|c|a`. The §B.7 proof notes `13|g|a|1`–`|10` and `13|g|a|26`–`|28` point to the derivation parts of chapters 3 and 6. Before, these notes linked only the chapter-1 card (the §5 framework) or no part of the model. The notes stay Idea notes, as §14.13 decided.
+- Four inline formulas had lost their backslashes in an earlier edit of the two **调整边际** paragraphs and the **两个边际** paragraph (a backspace character stood in place of `\b`). They are restored from the source (`book.zh.md`, footnote 26 and §5.3): `$i\in[0,1]$` in `13|a|a|a|b`, `$e_{Si}\ge0$` and `$y_{Ri}=\min\{A_Re_{Ri},D_i\}$` in `13|a|a|a|c`, and `$\bar\lambda$` in `13|a|a|a|4|i`. The damaged spans gave the two `uncovered` faults on the letter $n$. A script compared every other formula of the 35 edited Cards before the write: all are unchanged.
+- The notation rows of $y_i^0$ and $y_i^1$ now name `13|a|a|a|4|i`, where a reader meets them first (the two `first` faults).
+
+**Cost.** No DeepSeek job ran: 0 CNY.
+
+**Gates.** On `13|a|a`: `check-settings.mjs` (all in the setting part, as a dependency tree, no fault and no balance advice), `check-model.mjs` (self-sufficient, loose 0), `check-network.mjs` (`network: clean`), `check-premises.mjs` (none used before their card), `imports.mjs check` (exit 0), `explain.mjs finish` (exit 0, 0 parts left, 0 refused), `verify.mjs` (17 charts in 108 Cards, 0 lint faults, 0 Cards without a figure, 0 setting cards without a full 直觉). `imports.mjs check` exits 0 on the five empirical models `4|b|e`, `6|b|g`, `6|c|e`, `6|e|f` and `7|c|f`. `list_broken_links` is empty. The Term relink changed 7 Cards (16 Links added, one round), and its last plan changes nothing.
+
+**Left open.** The same backslash loss can stand in Cards of other books that the same edit wrote (paragraphs headed **调整边际** or **两个边际**). This session scanned only this tree (840 Cards, no other fault).
+
+### 14.22 AJR and Dell: stale Bridges and 另述 sections (2026-11-21)
+
+The owner asked for the open items of §14.9 and §14.10 to be solved. The work was done by hand on the live box through the zt tools, after the box backup `D:/zt/backups/zt-before-small-items-2026-11-21.sqlite3`. `mode bridge` was not run.
+
+**The 12 stale Bridges.** The Bridge reports (`D:/zt-digest/<key>/bridge/state.json`, outcome `stale`) show that the 12 proposals were never written: apply refused them because a carrier or a target had changed. There was therefore no wrong Link on the box. Each proposal was checked against the Cards it names today, found by title after the 2026-11-10 organize. The pairing and the reason still held for all 12, so each line was written by hand as a `跨书关联：` paragraph at today's addresses:
+
+| Report | Carrier now | Target now | Word |
+|---|---|---|---|
+| Dell b003 | `1\|d` | AJR `2\|d` | 对照 |
+| Dell b006 | `1\|d\|4` | AJR `2\|d` | 对照 |
+| Dell b008 | `1\|d\|6` | AJR `1\|d` | 对照 |
+| Dell b018 | `3\|a` (was `4\|b`) | AJR `2\|a` | 对应 |
+| Dell b020 | `3\|c\|9` (was `4\|b\|12`) | AJR `2\|d` | 类比 |
+| Dell b022 | `3\|c\|5` (was `4\|b\|8`) | AJR `2\|a\|5` | 对应 |
+| Dell b023 | `3\|d\|a` (the merged model, was `5\|a`) | AJR `6\|c\|a\|2` (was `7\|a\|2`) | 对应 |
+| Dell b024 | `3\|d\|b\|3` (was `5\|b\|3`) | AJR `5\|q\|a\|a\|4\|c` (was `5\|b\|a\|4\|c`) | 对照 |
+| Dell b025 | `3\|d\|b\|8` (was `5\|b\|8`) | AJR `2\|d` | 对应 |
+| Dell b027 | `4\|b\|1` (was `6\|a\|3`) | AJR `2\|a\|5` | 例示 |
+| Dell b028 | `4\|b\|2` (was `6\|a\|4`) | AJR `1\|c\|a` | 印证 |
+| AJR b006 | AJR `1\|d` | Dell `1\|d\|5` | 对应 |
+
+AJR `2|b` of the report is `2|d` today (the three persistence mechanisms). The nine Bridges between the two books that were verified in §14.9 were read again; each still names the right Card.
+
+**The 另述（§3.2） sections.** 24 Cards of the merged Dell model, now `dell2010persistent/3|d|a` after the organize, carried a **另述（§3.2）** section. Each section was folded into its Card's own sections, and its heading was removed. Every fact, number, formula and Link was kept once, and the duplicate wording was deleted. Examples: the model head keeps estimating equation (1) and its terms under **估计对象**, the 0.084 stunting row in **主要估计**, and its §3.2 Links (`dell2010persistent`, `2|e|a`) under **关联**. Assumption 1 keeps the continuity condition $E[c_1|x,y]$, $E[c_0|x,y]$. The design card gained the three threats that only 4|a stated (semi-parametric RD, over-fitting, Cusco), and the data card gained the SRTM source.
+- Two wrong Links were found while folding. The estimate `3|d|a|a|4|b` (consumption, −0.284) carried `对应` Links to `3|c|e` and `3|c|f`, which are the 1572 tribute Findings. Now it points to `3|d|c` (the Finding "consumption about 25% lower"). The two tribute Findings rested on that consumption estimate. They now rest on `3|d|a|a|5|k`, the balance test that holds their Table I numbers.
+- After the fold, six long sentences that the fold had written into the model head were split for R2. The design card's assumption heading became a plain `**识别假设**` (EM4), and its Term Link moved to the next line.
+
+**Gates.** On `dell2010persistent/3|d|a`: check-model self_sufficient true, check-network clean, check-premises none, check-settings "the data tree and the specification ladder are in place", `imports.mjs check` exit 0. zt-check on the model shows two R2 sentences and three R20 advisories that this pass did not write. `list_broken_links` is empty. Term relink: Dell 12 Links in 11 Cards, AJR nothing to add.

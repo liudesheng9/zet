@@ -500,3 +500,16 @@ All seven stages passed their gates. Open items across the sequence:
 6. The illustrate modules keep their file names (`assenza2026louder-5_a.mjs`, `-7_a.mjs`) and their header comments still name the old addresses; only `head` and the two estimation targets changed.
 7. The 2008 event `4|b|c|8|a` carries the digest source line `§4.1`, which the paper does not have.
 8. This pass doc is not committed (the stage brief said no commit).
+
+## Follow-up: open items fixed (2026-11-21)
+
+Live box, by the owner's request ("solve them"), one side session (no subagent, no DeepSeek job). Box backup taken by the parent: `D:/zt/backups/zt-before-small-items-2026-11-21.sqlite3`. Only Cards of this book were written; no `card_locked` or `scope_refused` error.
+
+- **Result item 5 (notation row of $n_t(j)$): fixed.** `check-settings.mjs` reads $n_t(j)$ as the symbol $n_t$ (it cuts a symbol at its argument), so a separate row pointing to the firm setting fails `first` (tried: `first: … a reader meets it first in H|a`). Following the skill's rule for one letter with two meanings, the notation card `5|e|a|a` now has one row `$n_t$、$n_t(j)$` whose meaning cell names both: aggregate labour $n_t$ in the setting card `5|e|a`, and variety labour $n_t(j)$, first met in the firm setting `5|e|a|e`; the 首次出现 cell stays `5|e|a`. The old `$n_t(j)$` row was removed.
+- **Result item 7 (the 2008 event's `§4.1`): not changed, the line is correct.** `4|b|c|8|a` is an Event Card shared by three books. Its own line reads `来源：[[assenza2026louder]] §2.1.2`, which is the paper's real section (2.1.2 以香农熵衡量词汇多样性, where Figure 1 and the 2008 jump are discussed). The `§4.1` line is `来源：[[arrocannarsa2026flight]] §4.1`, the section of that paper (4.1 稳态识别, which anchors the calibration on the 2008 crisis). The stage-7 source-line walk read the other book's line; nothing in this book is wrong.
+
+Cards changed: `5|e|a|a`.
+
+Gate: `check-settings.mjs 5|e` `settings: all in the setting part, as a dependency tree` (no `first` fault; advice lines only); `check-model.mjs` 85 parts, `loose 0; self_sufficient true`; `check-network.mjs` `network: clean`; `check-premises.mjs` 8 hits (unchanged pointers); `imports.mjs check` exit 0; `list_broken_links` (agent) `{"broken":[]}`; Term relink `{"links_added":0,"cards_changed":0,"ok":true}`.
+
+Left open: Result items 1–4, 6 and 8 (not in this brief).
