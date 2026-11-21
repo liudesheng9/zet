@@ -283,3 +283,10 @@ All applicable stages passed their gates (stage 5 does not apply: no formal mode
 4. The footnote idea card `5|b|c|b` stays a Side of the Model Card outside the model (stage 2).
 5. No cross-book evidence pair for `5|b|c`: survey again after a zt-term-sync pass on the economics shelf (stage 6). The broad-money estimate `5|b|c|a|4|b` now reads `对照` the hypothesis (stage 6 decision; the owner may still prefer another word).
 6. Stage 7: the unnumbered subheadings of IV.B–E have no lead of their own, and only 货币结果 (`5|c|i`) is a branch of its own (see **Crossers**).
+
+## Follow-up: merge of 5|d|a|12 into 5|d|a|11 (2026-11-21, owner decision)
+
+The owner checked both Cards and approved the merge ("merge is OK"). Both are Idea notes on §IV.C.3 (Barbados), formerly 8\|a\|11 and 8\|a\|12; the second paragraph of 5\|d\|a\|11 already stated the whole content of 5\|d\|a\|12. Backup: `D:\zt\backups\zt-before-das2026domestic-merge-5_d_a_12.sqlite3` (integrity ok).
+
+- Carried into 5\|d\|a\|11 first (the only content 5\|d\|a\|12 held alone): the footnote-19 sentence (Giles Álvarez and Mooney 2020 on access to finance), the line `印证 [[das2026domestic/5|d|j]]` and the line `例示 [[das2026domestic/3|b|1]]` (主权—银行关联). No other word of 5\|d\|a\|11 changed; its title stays.
+- Then `delete_card 5|d|a|12 into 5|d|a|11`: 1 Card deleted, no successors, 1 Link re-pointed (`5|d|j`). `list_broken_links` empty; Term relink run after. The tree has 396 Cards.
