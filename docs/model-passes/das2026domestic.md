@@ -130,3 +130,43 @@ Network (`check-network.mjs`): 数据 → 假说 → 设计 → 规格 → 第 1
 1. Stage-2 open item 2 stays: the broad-money estimate `4|b` keeps `反驳` the hypothesis; the owner may prefer `对照`.
 2. No figure card for Figure 2: the image sits on the footnote idea card `5|b|b` outside the model; the estimate cards name the panel in 来源.
 3. Tree unlocked throughout; no `card_locked` met.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-21, live box, under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent, no DeepSeek job: the explanation plan found nothing, so no DeepSeek cost). Backup: `D:\zt\backups\zt-before-das2026domestic-imports.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Text ran as 2 `edit_card` calls under `-Allow` (the Model Card 5\|b and its hypothesis card); both read back (`same`); no display formula changed. 3\|a and 11\|a were not edited: 3\|a only lends its card. No `card_locked`, `scope_refused` or `read_view_changed` error occurred. Tree 396 Cards (unchanged).
+
+Before any edit: `check` exit 0, `plan` `nothing to import`, with one `copy` advice: `5|b|a|1 corresponds to 3|a|a|3 of another model` (the hypothesis named the four-channel chapter with `参照`).
+
+### 5\|b (empirical): the decision on the hypothesis
+
+- **Decision: import `单卡 [[3|a|a|3]]` and let the hypothesis rest on it.** The hypothesis `5|b|a|1` (假说：四渠道) is the prediction of §III that the event study tests: the four-channel chapter of the concept model 3\|a (`3|a|a|3`, 第 1 章：四个渠道, the former 4\|a folded in stage 1). By the import skill's rule for an empirical model, a test imports the prediction it tests `单卡`, and the 假说 part rests on it (`依赖` in place of `参照`). It stays `单卡`: the test takes the prediction, not the accounting framework of 3\|a that the chapter builds on; `plan` proposes no upgrade, and the chapter has no rests-on Link inside 3\|a, so tolerated stays 0.
+- Line written (by hand, since `plan` proposes nothing for a `参照` Link) as the new **引入** section before **结构**: `单卡 [[das2026domestic/3|a|a|3]]：第 III 节的四渠道框架；假说 [[das2026domestic/5|b|a|1]] 检验它对中央银行资产负债表渠道与银行信贷渠道的预测（流动性投放、银行中介收缩、可自由支配缓冲下降）`.
+- Hypothesis card: `参照 [[3|a|a|3]]：本假说来自它的预测。` → `依赖 [[3|a|a|3]]：本假说检验它的预测（经 **引入**）。`; one sentence added from footnote 7: the four indicators bear only on the central-bank balance-sheet and bank-credit channels, the government-securities and credibility channels are left to the case studies. The hypothesis restates no part of the chapter.
+- The estimates that `印证` (and the one that `反驳`) the hypothesis stay comparisons; their **量级** and **为什么** do not contradict the new premise, so none was rewritten.
+- Result: members 36 → 37 (1 shared: `3|a|a|3`); tolerated 0; false shares 0; imports one line, mode card, closure []. 3\|a now lends `3|a|a|3` to 5\|b. Symbols (step 6): the imported chapter has no symbol; nothing to settle.
+
+### Cross-book blocks
+
+None written. `plan` proposed none and no part of 5\|b rests on another book's Card. Searched the agent Workspace for Model Cards on domestic debt restructuring, debt restructuring, the money multiplier, reserves and the IMF (2021, Table A-2) sample: only das2026domestic holds them (other hits are Cited, Term or idea Cards of hart1995firms, liu2026managing, sylla2018hamilton, arrocannarsa2026flight, bergin2026exchange, gomezcram2026government, ugolini2017evolution, none a model's premise). The Model Card's cross-book Links stay comparisons for the evidence dialogue: `对照 haeckl2026dont/2|b` and `对应 velic2025inflation/4|b|2` (both lines `跨书关联`; `false_share` is empty).
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan 5|b`: `nothing to explain` (an empirical model with no `推导：估计式` part); no DeepSeek job.
+- `explain.mjs finish 5|b`: `explained 0 part(s); Term links changed 0 Card(s), second plan 0; left 0; refused 0` (exit 0).
+
+### Gate
+
+- `imports.mjs check`: exit 0, no advice left; `plan`: `nothing to import`.
+- `get_model`: `self_sufficient: true`; tolerated []; `false_share` []; imports `[{"root":"das2026domestic/3|a|a|3","mode":"card","members":["das2026domestic/3|a|a|3"],"closure":[]}]`; no `closure`, `reach_in`, `forward`, `unanchored`, `import_target` or `import_cycle` fault.
+- `explain.mjs finish`: exit 0; a later `plan`: `nothing to explain`.
+- `check-model.mjs`: `members 37 {"main":7,"side":28,"shared":1,"off":1}`, `relations {"rests-on":21,"illustrates":9,"refers":53,"objects":1}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean`; `check-premises.mjs`: `premises: none used before their card`; `check-settings.mjs`: `settings: the data tree and the specification ladder are in place`.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"book":"das2026domestic","links_added":6,"links_repaired":0,"cards_changed":2,"cards_refused":0,"ok":true,"applied":true,"rounds":1}`. All checks above and `get_model` rerun after it: unchanged.
+
+### Open
+
+1. 3\|a stays a concept model with `self_sufficient` false (its folded chapter `3|a|a|3` has no rests-on Link to its setting, stage 1); by the sequence skill it takes no further pass without the owner's word. The import does not depend on it.
+2. Stage-2/3 open items stay: `4|b` keeps `反驳` the hypothesis; no Figure 2 card inside the model.
+3. Stages 5 (illustrate: not applicable, no formal model), 6 (evidence dialogue on 5\|b) and 7 (organize) not run; they wait for the owner's go-ahead.
+4. Tree unlocked throughout; no `card_locked` met.
