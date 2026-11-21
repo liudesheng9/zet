@@ -227,3 +227,38 @@ None written. `plan` proposed none, and no part of either model rests on another
 2. 10\|a's (5) mixes $\tau_q(u_i)$ (first line) and $\tau_q(v_i)$ (second line), as the source does; 6\|a's card and 变量表 use $v_i$, the estimate `6|a|a|14|c` writes $\tau_q(u_i)$. Not changed (no display formula changes).
 3. Stage-3 open items 2–4 stay (the IV short form in `2|d`; two notations in the ladder; source-file pointers in some estimate cards; 第 1 章 without an estimate card).
 4. Tree unlocked throughout; no `card_locked` met.
+
+## Stage 5: illustrate
+
+Date 2026-11-21, live box, under `zt-model-illustrate`, done in one side session by scripts. No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-furceri2026divide-illustrate.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Only the formal model 10\|a was illustrated; the empirical model 6\|a has no figures (owner, 2026-11-11), and the block it imports (`10|a|a` with its notation and assumption cards) is 10\|a's own setting part, illustrated here in its home model. Module: `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\furceri2026divide-10_a.mjs` (outside the repo, uncommitted, under `~/.claude`). Before the live write, every figure was rendered from the module with a copy of `verify.mjs` that reads the figures from the module (session scratchpad `local.mjs`), in light and dark, and the PNGs were inspected; faults fixed there: two box titles whose nested subscripts ran into the second line (setting card: $\tau_q(y_{i,t+h})$ and $\tau_q(u_i)$ moved to the second line; Model Card part 二: the quantile box), the labels $\tau_q(u_i)<0$ and $>0$ over the heading of the assumption card's number line, and the $\tau_{0.95}(u_i)>0$ label over its arrow. `apply.mjs --write` then wrote 3 Cards in one write, `written 3, errors 0`. No display formula, equation number or text outside the chart and the **直觉** section changed (apply guard).
+
+### Figures
+
+- Model Card 10\|a (**图**, before **结构**), three parts (`part()`, top-level `data-part`): (一 · 估计次序) ① the first stage: the panel SVAR of 6\|a gives the GFI structural innovation $shock_t$, taken as a given regressor (opens 6\|a); ② the covariates $X$: current and $p$ lagged shocks, lagged macro-fiscal variables, country terms and constants; ③ one regression per $q$, coefficients by horizon and quantile (opens the assumption card); ④ the readings: location effect $\beta_0^{h,q}$, scale effect $\pi_0^{h,q}$, total effect; the solution order (第 1 章: the median step, then the total-effect step, then the result card reads Figure 19). (二 · 因果结构) the shock, the controls and $\tau_q(u_i)$ → location part $X'\beta$ (coefficient $\beta_0^{h,q}$) and scale part $(X'\pi)\tau_q(u_i)$ (coefficient $\pi_0^{h,q}$) → the $q$-th quantile, (5) → the median (only $\beta_0^{h,q}$, opens 推导：位置成分), the total effect $\beta_0^{h,q}+\pi_0^{h,q}\tau_q(u_i)$ (opens 推导：总效应), the 95th percentile (在险债务, opens the result); a dashed arrow: the disturbance quantile multiplies only the scale part. (三 · 模型研究的变化) six panels for a one-s.d. shock: centre up (coincides with the baseline LP IRF), distribution wider (about 1 pp of GDP in the medium term), upper tail above lower tail, debt-at-risk (95th percentile close to 4 pp on impact, insignificant after about two years), the numerical example (0.75 s.d. of the 5.3 pp annual variation, opens `|1|a|b`), the growth variant (5th percentile down, opens `|1|a|c`). Each box opens its Card.
+- Setting card `10|a|a` (end of **说明**): (5) as boxes, $q$-th quantile = location part $X'\beta$ + scale part $X'\pi$ × $\tau_q(u_i)$ (each opening the notation card); the covariates both parts share (the shock box opens 6\|a); two density plots, 示意 (x: 债务—GDP 比 $y$, y: 条件密度): a larger location part shifts the whole distribution, a larger scale part widens it around the centre. No estimate and no sign of an effect is drawn.
+- Assumption card `10|a|a|b` (end of **说明**): linear form (x: 碎片化冲击 $shock_t$, y: 第 $q$ 分位数 $\tau_q(y_{i,t+h})$; three straight lines for $q$ = 0.05, 0.5, 0.95, positions and slopes 示意); median zero (the $q$ number line: $\tau_q(u_i)<0$ below the median, $\tau_{0.5}(u_i)=0$, $>0$ above, so the scale part is multiplied by 0 at the median); separate estimation (one coefficient set per $q$). No assumption is named by number.
+- The model has no 定义 part.
+
+### 直觉
+
+Both setting cards had a stage-2 **直觉**. 是什么 and 为什么需要 were kept as written. 怎样进入模型 was rewritten on both to name the chapter in words (第 1 章) instead of "推导卡"/"结果卡": `10|a|a` (第 1 章用这些系数算第 $q$ 分位数的总效应) and `10|a|a|b` (第 1 章靠第一条写出斜率、靠第二条化简中位数处的效应，第三条让第 1 章逐分位数报出估计). The notation card `10|a|a|a` is neither 设定 nor 假设 and needs no figure or **直觉**.
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `verify.mjs --model furceri2026divide/10|a` (light and dark): `3 chart(s) in 10 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`; 0 dead targets; lint 0 incl. `axis-label`, `parts` and `dead-target`. The PNGs, one per part, were inspected (`%TEMP%\zt-illustrate\furceri2026divide-10-a\`).
+- `apply.mjs` rerun: `same` for all 3 Cards.
+- `check-settings.mjs`: 10\|a `settings: all in the setting part, as a dependency tree` (the advice line of stages 3–4 only); 6\|a `settings: the data tree and the specification ladder are in place`.
+- `check-model.mjs`: 10\|a `relations {"refers":7,"rests-on":9}; loose 0; self_sufficient true`; 6\|a `relations {"rests-on":154,"refers":261,"corresponds":3,"illustrates":12}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean` on both. `check-premises.mjs 10|a`: `premises: none used before their card`.
+- `imports.mjs check`: 10\|a and 6\|a `take what they use from other models by import lines`.
+- `zt-check --cards` on the 3 written Cards: `faults: 3`, all R3 in existing text (item 7 of the setting card's **设定**, its **说明**, the opening sentence of the assumption card); none is in a 直觉 section or a chart.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"cards_changed":0,"applied":false,"rounds":0,"ok":true,"cards_refused":0,"book":"furceri2026divide","links_repaired":0,"links_added":0}`.
+
+### Open
+
+1. The three R3 faults of the existing text in `10|a|a` and `10|a|a|b` (semicolons from stage 2) stay; this pass changes only figures and 直觉.
+2. Stage-4 open items 1–3 stay.
+3. Tree unlocked throughout; no `card_locked` or `scope_refused` met. Stage 6 (literature organize) not started.
