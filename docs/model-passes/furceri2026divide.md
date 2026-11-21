@@ -262,3 +262,38 @@ All lines below are the reruns after the Term relink.
 1. The three R3 faults of the existing text in `10|a|a` and `10|a|a|b` (semicolons from stage 2) stay; this pass changes only figures and 直觉.
 2. Stage-4 open items 1–3 stay.
 3. Tree unlocked throughout; no `card_locked` or `scope_refused` met. Stage 6 (evidence dialogue on 6|a) not started.
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-21, live box (owner's request), under `zt-evidence-dialogue` steps 0–5, done in one side session by scripts (`dialogue.mjs survey | check`). No subagent and no DeepSeek job ran (the survey found no pair, so there was nothing to judge). Backup: `D:\zt\backups\zt-before-furceri2026divide-dialogue.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). The Term relink at the end of stage 5 changed nothing (`applied: false`) and no Card changed since, so the survey ran without a first relink (step 0). Only 6\|a is empirical; 10\|a is formal and has no dialogue. No Card was written.
+
+### Survey
+
+- `survey 6|a` (out folder `D:\zt-dialogue\furceri2026divide`): `{"head":"furceri2026divide/6|a","ours":43,"theirs":1438,"pairs":0,"messages":[]}` (about 58 s). Estimand Terms: 地缘经济碎片化 (`1|a|c`), 公共债务 (`1|a|a`) and the book root (the `equiv` observation of arrocannarsa2026flight Stage 6 Open 3; it forms no pair). Neither Term Card has a Link to or from a Term Card of another book (their outbound Links and Term uses are all within furceri2026divide), so zt-term-sync has widened nothing; no estimate of another book links these Terms. The judged record held no furceri2026divide line before or after.
+- **Hand search for other books' estimates of public-debt responses to shocks** (`search_cards`, Finding Cards and Model Cards, 公共债务, 债务, 财政, 局部投影, 碎片化): no other book estimates the response of public debt (or debt/GDP) to any shock.
+  - das2026domestic: Finding Cards on debt levels and debt-exchange outcomes in single countries (`9|b` debt 57% → 92% of GDP, `8|f` the exchange took debt to 116% of GDP, `9|f` DDEP cut the PV of domestic debt by 9 pp, `6|h`, `8|g`, `9|c` interest-to-revenue ratios); its one empirical model `5|b` is an event-time median study of four monetary indicators around 17 domestic debt restructurings. Descriptive levels and restructuring outcomes, not a shock response: not the same estimand.
+  - atkinson2015lectures: the debt results (`11|b|a|a|a|9`, `11|d|a|a|a|4`–`5`, `11|e|a|a`, `11|e|c|a`) are formal or concept models of steady-state capital under government debt; no estimate. ebrill2001modern: VAT revenue and administration findings only. hart1995firms: corporate debt renegotiation findings. rotunno2026industrial/5\|e\|c: a model-simulated welfare result on subsidies.
+  - 碎片化 (200 hits) and 局部投影 match only furceri2026divide Cards. The cross-book Links already on 6\|a (velic2025inflation/4\|a and rotunno2026industrial/2\|b\|19 on the data card; riboni2026presidential/4\|f and goldsmithpinkham2020bartik/2\|b\|a on 第 3 章) compare data and identification, not estimates, and stay as written.
+- The book's own Finding Cards that state 6\|a's estimates (`1|e`, `6|b`–`6|j`, `8|b`–`8|g`, `9|b`, `9|g`, `10|c`–`10|j`, `11|b`–`11|f`) are of the same book, so the survey does not pair them (Finding Cards of other books only).
+
+### Pairs judged and written
+
+| Head | Pairs | Same estimand | Agree / disagree / not comparable | Links written |
+|---|---|---|---|---|
+| 6\|a | 0 | 0 | 0 / 0 / 0 | 0 |
+
+No `apply` ran (no pair). No DeepSeek conversation was started, so there is no DeepSeek cost and nothing to delete or remove.
+
+### Gate
+
+- `dialogue.mjs check`: `{"head":"furceri2026divide/6|a","broken":0,"proposed_again":0,"ok":true}` (the second survey inside the check proposes nothing).
+- No pair, so no **对应** line to check.
+- `check-model.mjs 6|a`: `members 163 {"main":15,"side":142,"shared":3,"off":3}`, `relations {"rests-on":154,"refers":261,"corresponds":3,"illustrates":12}; loose 0; self_sufficient true` (unchanged from stage 5).
+- `check-network.mjs 6|a`: `network: clean`. `check-settings.mjs 6|a`: `settings: the data tree and the specification ladder are in place`. `imports.mjs check 6|a`: `takes what it uses from other models by import lines`.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"rounds":0,"links_added":0,"applied":false,"cards_refused":0,"links_repaired":0,"ok":true,"cards_changed":0,"book":"furceri2026divide"}`.
+
+### Open
+
+1. No cross-book pair: 公共债务 and 地缘经济碎片化 link to no Term Card of another book, and no other book on the box estimates a public-debt response to a shock. After a zt-term-sync pass on the economics shelf (and after stage 7, at 6\|a's new address), survey again; das2026domestic's debt levels would still be a different estimand.
+2. The stage-4 and stage-5 open items stay. No `card_locked`, `scope_refused` or `read_view_changed` error occurred. Stage 7 (literature organize) not started.
