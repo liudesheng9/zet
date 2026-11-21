@@ -261,4 +261,4 @@ All lines below are the reruns after the Term relink.
 
 1. The three R3 faults of the existing text in `10|a|a` and `10|a|a|b` (semicolons from stage 2) stay; this pass changes only figures and 直觉.
 2. Stage-4 open items 1–3 stay.
-3. Tree unlocked throughout; no `card_locked` or `scope_refused` met. Stage 6 (literature organize) not started.
+3. Tree unlocked throughout; no `card_locked` or `scope_refused` met. Stage 6 (evidence dialogue on 6|a) not started.
