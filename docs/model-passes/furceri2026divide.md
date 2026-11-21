@@ -113,3 +113,69 @@ After the fold each of the seven folded chapters carried its own build: a data c
 3. 6\|a: `2|d` keeps the digest's short form $\mathrm{shock}_{t}=\pi Z_{t}+\nu_{t}$ with a second stage on $\widehat{\mathrm{shock}}$ beside the source's internal-instrument form; the short form does not match §II.B.1 (the IRF comes from the augmented VAR, not from an LP on a fitted shock). It was kept because no display formula may change; the owner may decide to drop it.
 4. 6\|a: two notations stay side by side in the ladder (bold $\boldsymbol{c}$, $\boldsymbol{Y}$ in (3) and the chapter-11 copies; plain $c$, $Y$ in the chapter-12 and 13 variants); the 变量表 names both.
 5. 6\|a: the assumption numbers of the heterogeneity analysis changed (7–15); estimate and test cards that name an assumption by number in prose (not by Link) still use the old chapter-local numbers. The restructure should check them.
+
+## Stage 3: restructure
+
+Date 2026-11-21, live box, under `zt-model-restructure`, done in one side session by scripts (no subagent, no DeepSeek job, so no DeepSeek cost; chapter cards written by hand, estimate and test cards redrafted by a script that rebuilds each card in its role format and carries the facts of the merged duplicates). Backup: `D:\zt\backups\zt-before-furceri2026divide-restructure.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). 6\|a's moves and merges ran as three `apply_batch` tree batches (A: 31 moves; B: 32 deletes `into`; C: 27 deletes `into` and 5 reorders), 10\|a's as two (one `insert_card`; two moves and one reorder); each batch was previewed, its `deleted` set compared with the intended set, and committed under the plan hash (`links_that_will_break` empty in all). Text ran as `edit_card` calls under `-Allow` (6\|a: 96 + 6; 10\|a: 8); every written card was read back and compared with the intended text (0 differences). Before each write a script compared the display formulas and the `\tag` numbers of the old and new bodies, and checked that no image and no Link outside the chapter pointer lists was lost. After the pass the two models hold 61 display formulas (39 distinct) and 6 `\tag` numbers, as before; none of the deleted cards held a display formula. No estimate number was changed; numbers that only a deleted duplicate stated were carried into the card that kept the estimate. No `card_locked`, `scope_refused` or `read_view_changed` error occurred. The Literature tree went from 543 to 485 Cards (59 deleted `into` the cards that hold their content, 1 created: the chapter card of 10\|a).
+
+### 6\|a (empirical): the evidence spine
+
+```
+6|a|a     数据 → |1 设计 (假设 1–15) → |2 规格：基准递归 SVAR (ladder as stage 2 left it)
+6|a|a|3   第 1 章：直觉（摘要与引言）            ← 规格                     a 局限：引言只给摘要
+6|a|a|4   第 2 章：主要估计（§II.C.1）           ← 规格                     a 图 2; b 基准递归 → b|a 换算; c 局部投影; d GFI 居末 → d|a 检验;
+                                                                         e 全球区块居首 → e|a 检验; f IV-SVAR; g 引言的 1–3 个百分点 → g|a 检验;
+                                                                         h 幅度比较 → h|a 图 3; i 子成分 → i|a 图 4; j 外部有效性
+6|a|a|5   第 3 章：识别检验（§II.B.1）           ← 2|d, 第 2 章              a 检验：第一阶段; b, c 局限
+6|a|a|6   第 4 章：稳健性（§II.C.2）             ← 规格, 第 2 章             a 表 1; b 符号约束; c 均值组 → c|a 检验; d 剔除美中 → d|a 检验;
+                                                                         e 安慰剂 → e|a 检验; f 剔除四起事件 → f|a 检验, f|b 表 s13-2;
+                                                                         g 危机控制 → g|a 检验, g|b 表 s13-3
+6|a|a|7   第 5 章：传导渠道（§II.C.3）           ← 2|j, 第 2 章              a 图 8; b–g 产出、物价、总赤字、支出与收入、税种与支出类别、利差
+6|a|a|8   第 6 章：状态依赖框架（§III.A）         ← 2|a|a, 第 2 章, 数据      a θ 的敏感性 → a|a 检验; b 局限
+6|a|a|9   第 7 章：收入水平（§III.B.1）          ← 2|a|a|a, 第 6 章          a 图 10; b, c 估计; d 表 s13-4; e 发达与西方（引言）; f 图 11; g–i 估计; j 局限
+6|a|a|10  第 8 章：贸易敞口（§III.B.2）          ← 2|a|a|b, 第 7 章          a 图 12; b, c 估计; d 图 13; e, f 估计
+6|a|a|11  第 9 章：地缘政治集团（§III.B.3）       ← 2|a|a|c, 第 7 章          a 图 14; b 估计; c 表 s13-5; d 图 15; e–g 估计; h 局限
+6|a|a|12  第 10 章：制度与金融开放（§III.B.4）    ← 2|a|a|d (d|a, d|b), 第 9 章  a 假说; b 图 16; c, d 估计
+6|a|a|13  第 11 章：状态依赖的稳健性（§III.B.5）  ← 2|a|a, 第 10 章          a 图 17; b 联合 → b|a 检验; c 图 18; d 替代形式 → d|a 检验
+6|a|a|14  第 12 章：债务分布与在险债务（§IV）     ← 2|a|b, 第 2 章            a 位置; b 尺度; c 在险债务 → c|a 换算; d 在险增长
+6|a|b, c, d  局限 (Model Card side, unchanged place)
+```
+
+Network (`check-network.mjs`): 数据 → 设计 → 规格; under 规格 chapters 1, 2, 3, 4, 9, 10, 11; under 第 2 章 chapters 5, 6 and 12; 6 → 7 → 8. **分部** (new in the Model Card): 数据与识别 from `6|a|a`; 平均效应 from 第 1 章; 国家之间的差异 from 第 6 章; 债务分布的尾部 from 第 12 章.
+
+- **Stage-2 open item 1 (the verbal and identification chapters) resolved.** The abstract chapter (former `|3`) became 第 1 章：直觉. Its **直觉** states the paper's question in three layers, the data and the two identifications; its **本章估计** are pointer lines from each statement of the abstract and the introduction to the estimate card that gives it (no premise; the chapter rests on the baseline specification only). The introduction chapter (former `|4`) was deleted `into` it after its limits card moved under it. The identification chapter (former `|5`) was deleted `into` the identification-test chapter (now 第 3 章), whose **直觉** took its two-stage description and whose **关联** took its four Links (book §II.B.1, Literature card 6, riboni2026presidential/4\|f, goldsmithpinkham2020bartik/2\|b\|a).
+- **Duplicates merged** (delete `into`, leaf first, Links re-pointed): from the abstract chapter 29 cards (its five inner chapters into 第 2, 3, 4, 5 章 and 第 12 章's head; 24 estimates, tests and figures into the cards of chapters 2, 4, 5, 7–9, 11 that state the same estimate), from the introduction chapter 10, from the identification chapter 16, and the three inner chapter cards `10|a`, `11|a`, `12|b` into their chapter heads. Facts only a deleted copy stated were carried into the kept card: the LP readings of Figure 2 (2.7, 1.3, 1.0), the Figure 3 readings (−0.9, +1.9, 2.3/3.2/2.8), the year-4 value and 60% interval of the corrected instrument (2.8; 3.3–4.1), the year-0/1 values of the crisis controls (1.95, 1.60), the four removed events, the crisis years, the Figure 5 middle-panel range (2.8–2.9) and right-panel band (−5 to 5), the introduction's output (1.5%–1.6%), spending (0.4 pp in the medium term) and spread wording, the Figure 12 year-4 reading, the Figure 16 starting values (2.3, 1.3), and the reading lines of five estimates. Links of deleted cards carried: `对应 [[furceri2026divide/1|e]]`, `/3|b`, `/3|c`, `/3|d` into the estimates of chapters 4 and 5; 假设 1 into the test of the US–China exclusion; 假设 10 into the functional-form test; the mean-group and sign-restriction specifications into the slope test. Images of deleted cards that the kept card lacked were appended to it.
+- **Moved, because no card held them:** the introduction's 1–3 pp estimate with its test (`4|g`), the two ordering tests (`4|d|a`, `4|e|a`), the slope-homogeneity test (`6|c|a`), Tables s13-2 to s13-5, the introduction's advanced-and-Western estimate (`9|e`), the θ estimate, the hypothesis card (to 第 10 章, the chapter whose dimension it predicts) and the limits cards. The distribution chapter (former abstract inner chapter 5) went to the end of the main line as 第 12 章; the exposure, structure and state-robustness inner chapters went to the main line as 第 8, 10 and 11 章.
+- **Step 3 redraft done.** Every estimate card now reads: one sentence; **估计** (估计量 with its specification Link and the table, figure or text it comes from; 值; 标准误 or 不确定性; 显著性; 样本量; the digest's separate 规格 and 出处 items folded into 估计量); **量级**; **为什么**; **依据** (`依赖` the specification, `识别见设计`, `检验见` its tests, rests-on Links to figure cards kept); **对应**; 来源 with the section. Every test card reads: one sentence; **检验什么** (`依赖` the assumption); **做法** (`依赖` the specification); **结果**; **结论**; `印证` the estimate; 来源. The lines that only said a card belongs to a chapter (`它属于第 k 章`, `本估计是该章的一张估计卡`) were dropped; figures, tables and limits filed directly under a chapter say `本卡属于第 k 章 [[…]]`. Every chapter card is **直觉** (lead of 20+ characters), **本章估计** (pointer lines), **承上启下** (`依赖` the specification and the chapter it extends), **关联** (cross-book and book Links of the former heads), 来源; none of the old 问题/概要/估计对象/设计/主要估计/结构 text stays. The Model Card's **结构** keeps its setting lines and lists the twelve chapters with one level under each; its 关联 and source lines now cover §摘要–§IV.
+- **Stage-2 open item 5 resolved.** The prose mentions of assumptions by old chapter-local numbers were in the folded heads' **结构** lists (rewritten) and in the θ test (`假设 5` → `假设 11`, beside its Link). A scan finds no assumption named by number in prose without its Link, and every number matches the assumption card's facet.
+- **Setting part, text only:** a **直觉** lead was prepended to the data, design and baseline specification cards (the network's `lead` check); in the 变量表 the row of $F(m)$ said `基于中位数的虚拟变量`, which zt read as a rests-on cue to the specification it names (a `forward` fault from the 变量表); it now says `按中位数构造的虚拟变量`. The two loose Model Card limits (`6|a|c`, `6|a|d`) got one plain reference line each, to the descriptions `j` and `k`/表 A1.
+
+### 10\|a (formal): the intuition spine
+
+```
+10|a|a        设定 (a 符号表与读法, b 假设; as stage 2 left them)
+10|a|a|1      第 1 章：位置与尺度（§IV） (new)        ← 10|a|a, 10|a|a|b
+  a  结果：上尾响应大于下尾 (former 10|a|a|3)
+     a  推导：位置成分 → a|1 推导：总效应   (proof chain, former main line |1, |2)
+     b  数值例子;  c  变体：增长分布
+```
+
+The derivations left the main line: a new chapter card holds the result as its Side branch, and the two-step proof chain hangs under the result. The result card is in the result format (one sentence, **结果** with the original text and figure, **为什么**, **证明** with its two `依赖` lines). The derivations got a `目的` line, `推导链第 k 步，共 2 步`, the mark `（论文略去，此处补出）` for the skipped steps, and pointers to the next step and to the result. The notation card got a **怎样读卡片上的记号** section. **结构** rebuilt. One chapter, so no **分部**.
+
+### Gate
+
+- `check-model.mjs 6|a`: `members 160 {"main":15,"side":142,"off":3}`, `relations {"rests-on":152,"refers":257,"corresponds":3,"illustrates":12}; loose 0; self_sufficient true`; no closure, forward or unanchored fault (was 4 forward, 4 unanchored, loose 3).
+- `check-model.mjs 10|a`: `members 9 {"main":2,"side":7}`, loose 0, `self_sufficient` true.
+- `check-network.mjs`: `network: clean` for both (6\|a: 16 blocks, 7 layers; 10\|a: 2 blocks, 2 layers).
+- `check-premises.mjs 10|a`: `premises: none used before their card`. `6|a`: 9 hits, all in the setting part and all pointers: Table A1 (`6|a|a|k|a`) labels its five columns `(1)`–`(5)`, which the check reads as equation numbers; 假设 2, 5 and 6 (`1|c`, `1|f`, `1|g`) say how they enter (1) and (2). The data → design → specification order of the evidence spine is fixed, as in riboni2026presidential.
+- `check-settings.mjs`: 6\|a `settings: the data tree and the specification ladder are in place`; 10\|a `settings: all in the setting part, as a dependency tree`, with one advice line (the chapter card rests on the assumption card by its Link, which is the intended citation).
+- `list_broken_links` (agent): `{"broken":[]}`. Literature tree 543 → 485 Cards.
+- Term relink: `{"book":"furceri2026divide","applied":true,"rounds":1,"links_added":100,"cards_changed":30,"cards_refused":0,"ok":true,"links_repaired":0}`. All checks above and `list_broken_links` were rerun after it and stay as listed.
+
+### Open
+
+1. Stage-2 open item 2 stays for stage 4: `6|a|a|2|a|b` restates 10\|a's (5); the four distribution estimates of 第 12 章 (`6|a|a|14|a`–`d`) rest on it.
+2. Stage-2 open items 3 and 4 (the IV short form in `2|d`; two notations in the ladder) stay.
+3. Some estimate cards keep the digest's source pointers in the source-file form (`s10.md:7`, `s11.md:5`) inside 估计量 and 量级; the 来源 line now names the section.
+4. 第 1 章 has no estimate card of its own (pointer lines only), as the intuition chapter of the spine.
+5. Tree unlocked throughout; no `card_locked` met.
