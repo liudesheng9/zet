@@ -179,3 +179,51 @@ The derivations left the main line: a new chapter card holds the result as its S
 3. Some estimate cards keep the digest's source pointers in the source-file form (`s10.md:7`, `s11.md:5`) inside 估计量 and 量级; the 来源 line now names the section.
 4. 第 1 章 has no estimate card of its own (pointer lines only), as the intuition chapter of the spine.
 5. Tree unlocked throughout; no `card_locked` met.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-21, live box, under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent; one DeepSeek job, for the explanation refresh). Backup: `D:\zt\backups\zt-before-furceri2026divide-imports.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Text ran as 3 `edit_card` calls under `-Allow` (furceri2026divide Cards only): the Model Card 6\|a (one **引入** line), the specification `6|a|a|2|a|b` (variant wording) and one repair of that card (a `\t` in `$\text{shock}$` was written as a tab by the edit script; rewritten as `$\mathrm{shock}_{t}$`, the form the card's first stage uses). Before the write a script compared the display formulas of the old and new bodies (identical); both cards were read back (`same` after the repair, no tab). `explain.mjs apply` wrote 2 Derivation parts of 10\|a. No display formula, equation number or estimate changed. No `card_locked`, `scope_refused` or `read_view_changed` error occurred. Order: 10\|a (the lender), then 6\|a.
+
+Before any edit: `check` exit 0 and `plan` `nothing to import` on both heads, with no advice: the stage-2 restatement had left `6|a|a|2|a|b` with refers-only Links to 10\|a, so the scripts saw no premise and no copy.
+
+### 10\|a (formal, location–scale quantile regression)
+
+- No import. Its setting card is a primitive setting (原始设定); item 4 names the SVAR shock of 6\|a in prose as the regressor it takes as given, and nothing in 10\|a rests on a part of 6\|a. The Model Card's `对应 [[6|a]]` is a Link between two Model Cards (no member). Tolerated 0, false shares 0.
+- It now lends `10|a|a` (with `10|a|a|a`, `10|a|a|b`) to 6\|a (`lent`).
+
+### 6\|a (empirical): the decision on `6|a|a|2|a|b`
+
+- **Decision: import 10\|a's setting block `整块`, keep 6\|a's specification card as a variant that rests on it.** `6|a|a|2|a|b` wrote (5), the location and scale coefficients and the median-zero reading that 10\|a's setting card `10|a|a` states, its notation card `10|a|a|a` reads and its assumption card `10|a|a|b` assumes: a restated copy. Chapter 12 (`6|a|a|14` and its four estimates) estimates exactly that framework, so the framework is a premise of 6\|a, which the skill writes as an import, not a copy. The models stay two (fold, stage 1: a different estimand); an import keeps them two.
+- **Why `整块 [[10|a|a]]` and not `整块 [[10|a]]`.** 6\|a uses the setting (the estimating form, the coefficients and the assumption), not 10\|a's chapter: 10\|a's result card `10|a|a|1|a` states the same §IV estimates that 6\|a's chapter 12 holds, so a whole-model import would make one statement of the estimates a member of 6\|a twice. The block stops at the chapter boundary (`10|a|a|1`, a Direct successor, does not come). Closure empty (the notation and assumption cards are the block's Side successors).
+- **Why the card stays (not deleted `into` 10\|a\|a).** The card is a rung of 6\|a's ladder: it adds the first stage (2) with the 补写 `shock = e^{GFI}` and is the specification each chapter-12 estimate names in **估计量**; the owner rule (formal estimating equations, 2026-11-12) wants every 规格 card to show its equation, both stages. So (5) stays written in full on the card, and the card now says that it is taken from the import.
+- Line written (by hand: `plan` proposes no line where nothing rests on the target) before **结构**: `整块 [[furceri2026divide/10|a|a]]：形式模型的位置—尺度分位数设定 (5)，连同它的符号表与假设；第 12 章的规格 [[furceri2026divide/6|a|a|2|a|b]] 用它估计碎片化冲击对债务分布与增长分布的位置效应、尺度效应与第 $q$ 分位数总效应`.
+- `6|a|a|2|a|b` rewritten as a variant: the opening sentence says it uses the imported setting; **各项** gained `依赖 [[10|a|a]]：式 (5) 的位置—尺度设定（经 **引入**）。本卡沿用它的式 (5)、位置系数与尺度系数的定义，以及假设 [[10|a|a|b]]。` (after the kept `依赖 [[6|a|a|2|a]]`); **说明** now names the block, the notation card, and the two changes (the shock from 6\|a's first stage (2); controls and fixed effects in 6\|a's 变量表 notation), and why (5) stays written. The four estimates of 第 12 章 (`6|a|a|14|a`–`d`) keep their text, values and their `依赖 [[6|a|a|2|a|b]]`; every estimate and fact stays.
+- Result: members 160 → 163 (3 shared: 10\|a\|a, \|a\|a, \|a\|b); tolerated 0; false shares 0; `imports` one line, mode block, closure []. Symbols (step 6): 6\|a keeps its own 变量表, whose rows already cover every symbol of (5) (it names $v_i$ for the quantile regression); no `沿用` line; `check-settings` clean.
+
+### Cross-book blocks
+
+None written. `plan` proposed none, and no part of either model rests on another book's Card. Searched the Model Cards for 分位数回归 and GFI: only furceri2026divide holds the location–scale quantile regression, the GFI index or its narrative instrument. The cross-book Links stay comparisons: velic2025inflation/4\|a and rotunno2026industrial/2\|b\|19 on the data card, riboni2026presidential/4\|f and goldsmithpinkham2020bartik/2\|b\|a on 第 3 章, becker2025division/11\|d\|d and atkinson2015lectures/16\|c\|b\|a\|1 on 10\|a (left for the evidence dialogue). The false share riboni2026presidential recorded on furceri's former 8\|a (riboni stage 4, Open 2) no longer exists: `false_share` is empty.
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan`: 10\|a 2 Derivation parts in 1 job (`10|a|a|1|a|a` 推导：位置成分 and `10|a|a|1|a|a|1` 推导：总效应, moved under the result by stage 3); 6\|a `nothing to explain` (no `推导：估计式` part).
+- One DeepSeek conversation (`opencode-go/deepseek-v4.1-flash`, effort high, the box's drive model as in ozhan2026monetary; OpenCode Go account chenxt200409_002, 14 requests, 151 s, 1 turn, context 68k of 1M; tools: 1 skill, 9 pwsh, 3 read, 1 grep, 1 write; only `out/explain-01.json` written; no approval asked): answer `{"done":2,"blocked":0}`. Cost: OpenCode Go subscription, the Harness ledger books 0 CNY; the 2026-11-21 opencode-go line went from absent to 14 calls (cache miss 68,729, cached read 736,768, output 11,397 tokens); the deepseek-official line did not move (790 calls, 4.8764 CNY before and after). Conversation 2d48f305 deleted, workspace removed.
+- `apply`: `applied 2, refused 0, blocked 0, follow-up jobs 0`. `finish` 10\|a: `explained 2 part(s); Term links changed 0 Card(s), second plan 0; left 0; refused 0` (exit 0); 6\|a: `explained 0 part(s) … left 0; refused 0` (exit 0).
+
+### Gate
+
+- `imports.mjs check`: exit 0 on 10\|a and 6\|a; `plan`: `nothing to import` on both.
+- `get_model`: `self_sufficient: true` on both; tolerated 0 and `false_share` [] on both; no `closure`, `reach_in`, `forward`, `unanchored`, `import_target` or `import_cycle` fault. 6\|a imports `整块 10|a|a` (members 10\|a\|a, \|a\|a, \|a\|b; closure []); 10\|a lends `10|a|a` to 6\|a.
+- `explain.mjs finish`: exit 0 on both; a later `plan`: `nothing to explain` on both.
+- `check-model.mjs`: 10\|a 9 members `{"main":2,"side":7}`, `relations {"refers":7,"rests-on":9}; loose 0; self_sufficient true`; 6\|a 163 `{"main":15,"side":142,"shared":3,"off":3}`, `relations {"rests-on":154,"refers":261,"corresponds":3,"illustrates":12}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean` on both.
+- `check-settings.mjs`: 10\|a `settings: all in the setting part, as a dependency tree` (advice only: the chapter's derivation cites the assumption card by its Link, as at stage 3); 6\|a `settings: the data tree and the specification ladder are in place`.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"links_added":4,"rounds":1,"applied":true,"ok":true,"links_repaired":0,"cards_refused":0,"book":"furceri2026divide","cards_changed":2}`. All checks above and `get_model` were rerun after it and stay as listed.
+
+### Open
+
+1. `6|a|a|2|a|b` keeps (5) written in full (owner rule on 规格 equations) beside the imported setting; a reader sees the formula twice on the GUI board (shelf and ladder). If the owner prefers, the second stage could become `沿用 [[10|a|a]] 的式 (5)` and the card keep only the first stage.
+2. 10\|a's (5) mixes $\tau_q(u_i)$ (first line) and $\tau_q(v_i)$ (second line), as the source does; 6\|a's card and 变量表 use $v_i$, the estimate `6|a|a|14|c` writes $\tau_q(u_i)$. Not changed (no display formula changes).
+3. Stage-3 open items 2–4 stay (the IV short form in `2|d`; two notations in the ladder; source-file pointers in some estimate cards; 第 1 章 without an estimate card).
+4. Tree unlocked throughout; no `card_locked` met.
