@@ -319,6 +319,13 @@ pub(crate) fn plan_card(
                             text: body[index..end].to_string(),
                             reason,
                         });
+                    } else if word.link.is_some() && negated(body, index, &body[index..end]) {
+                        plan.skips.push(Skip {
+                            start: index,
+                            end,
+                            text: body[index..end].to_string(),
+                            reason: "negated",
+                        });
                     } else if let Some(link) = word.link {
                         let allowed = policy == Policy::All || !used.contains(&link);
                         let term = &vocabulary.terms[link];
@@ -477,7 +484,7 @@ fn handle_macro(
     // R0383: a Term Card's own exact term is protected everywhere in its own head and parts, so
     // an authored self-link reads as its label again and the pass creates no self-reference.
     let own = profile.own_term == Some(label);
-    let linkable = matches::link_word(vocabulary, label).filter(|_| !own);
+    let linkable = matches::link_word(vocabulary, label).filter(|_| !own && !negated(body, range.start, label));
     match linkable {
         Some((head, index)) if policy == Policy::All || !used.contains(&index) => {
             used.insert(index);
@@ -516,6 +523,32 @@ fn handle_macro(
                 after: label.to_string(),
             });
         }
+    }
+}
+
+/// Whether the Han word at `start` follows a privative prefix that makes it another word, so a
+/// Term there is neither linked nor counted as the first use. 非 makes an antonym compound
+/// (非认知技能 is no 认知技能, 非线性所得税 no 线性所得税) except after 并, 绝, 而, 是, 若 and 远
+/// ("is not", "far from") and in the names 东非, 西非, 南非, 北非, 亚非 and 苏非. 不 is a
+/// negating verb before most Terms (人不储蓄, 若不重新谈判), so it counts only before the
+/// antonym stems 完全, 可, 对称 and 确定 (不完全信息, 不可验证). 无 and 反 never count: 毫无,
+/// 并无 and 违反 are verbs far more often than prefixes.
+fn negated(body: &str, start: usize, word: &str) -> bool {
+    let starts_han = word
+        .chars()
+        .next()
+        .is_some_and(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch));
+    if !starts_han {
+        return false;
+    }
+    let mut before = body[..start].chars().rev();
+    match before.next() {
+        Some('非') => !matches!(
+            before.next(),
+            Some('并' | '绝' | '而' | '是' | '若' | '远' | '东' | '西' | '南' | '北' | '亚' | '苏')
+        ),
+        Some('不') => ["完全", "可", "对称", "确定"].iter().any(|stem| word.starts_with(stem)),
+        _ => false,
     }
 }
 
@@ -747,6 +780,36 @@ mod tests {
             );
         }
         assert_preserved(body, &planned);
+    }
+
+    #[test]
+    fn a_term_after_a_privative_prefix_is_a_different_word_and_never_links() {
+        // 非生产函数 is no 生产函数: the prefix makes another word, so the first standalone use links.
+        let body = "非生产函数与生产函数。";
+        let first = plan(body, Policy::First);
+        assert_eq!(edits(&first), [("link", "生产函数", "[[生产函数@K/4]]")]);
+        assert_eq!(first.new_body, "非生产函数与[[生产函数@K/4]]。");
+        assert_eq!(first.skips.iter().filter(|skip| skip.reason == "negated").count(), 1);
+        assert_preserved(body, &first);
+        // 并非 / 远非 say "is not", and 东非 / 苏非 are names: the Term after them is the Term itself.
+        for text in ["这并非生产函数。", "远非生产函数。", "东非生产函数。", "苏非生产函数。"] {
+            assert_eq!(edits(&plan(text, Policy::First)), [("link", "生产函数", "[[生产函数@K/4]]")], "{text}");
+        }
+        // 不, 无 and 反 are negating verbs before most Terms (人不储蓄, 违反生产效率): they link.
+        for text in ["人不生产函数。", "无生产函数。", "违反生产函数。"] {
+            assert_eq!(edits(&plan(text, Policy::First)), [("link", "生产函数", "[[生产函数@K/4]]")], "{text}");
+        }
+        // 不 makes an antonym only before 完全, 可, 对称 and 确定: 不完全信息 is no 完全信息.
+        let info = own_book(&[term(1, "完全信息", &[], &["K/1"], true), term(2, "可验证", &[], &["K/2"], true)]);
+        let negative = run(&info, "不完全信息与不可验证，再看完全信息与可验证。");
+        assert_eq!(
+            negative.new_body,
+            "不完全信息与不可验证，再看[[完全信息@K/1]]与[[可验证@K/2]]。"
+        );
+        // A stored link after the prefix reads as its label again, and frees the first use.
+        let stored = plan("非[[生产函数@K/4]]与生产函数。", Policy::First);
+        assert_eq!(stored.new_body, "非生产函数与[[生产函数@K/4]]。");
+        assert_preserved("非[[生产函数@K/4]]与生产函数。", &stored);
     }
 
     #[test]
