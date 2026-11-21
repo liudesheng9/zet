@@ -487,3 +487,106 @@ One conversation per model with pairs (seven conversations), `opencode-go/deepse
 3. The stage-4 open item 1 stays: 10\|a's 第 5 章 states the Table 9/10 numbers that 13\|c and 13\|d also state. 10\|a is formal, so the survey does not read it; the overlap is a question for an import or a text pass, not a dialogue Link.
 4. For stage 7 (literature organize): the dialogue wrote nothing, so it adds no address the organize must carry; the stage-5 open item 1 (chart module heads to change after the renumbering) stays.
 5. No `card_locked`, `scope_refused` or `read_view_changed` error and no failed write. No skill or script changed. Nothing committed (stage brief).
+
+## Stage 7: literature organize
+
+Date 2026-11-21, live box (owner asleep, overnight authority: every decision below was taken without asking and is recorded here), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, seven structure batches through `batch.mjs`, one `leads.mjs` run, one scripted `edit_card` batch, one root/structure write). No subagent and no DeepSeek job ran (the summaries were written by hand from the Cards under each division), so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-bedford2026learning-organize.sqlite3` (`VACUUM INTO` through `node:sqlite` read-only, 521 MB, `PRAGMA integrity_check` ok). Every batch was previewed first (complete true, refusals none, `links_that_will_break` empty) and committed under its plan hash. The tree went from 868 to 872 Cards (four new summary leads: §II, §III, §IV, Appendix C). No Card was deleted. The text batch compared the display and inline formulas and `\tag{}` of each old and new body: 0 formulas added or changed, 0 removed (the trimmed heads keep `$[-20, 20]$` and `$\tilde p_{t+1}(1-\tilde p_{t+1})$`); no model part was edited. Only Cards of bedford2026learning were written. No `card_locked`, `scope_refused` or `read_view_changed` error; the tree was unlocked throughout.
+
+### Source divisions
+
+From the bilingual file 2408: title page with authors, abstract and acknowledgement footnote; I. 引言; II. 管理者—企业匹配质量：概念框架 (A. 相关文献; B. 概念框架 with 1. 潜在的、不断演变的状态, 2. 摩擦下的聘用决策, 3. 任命后的学习与决策, 4. 与经验分析的对应); III. 相关性与度量 (A–D); IV. 后果 (A–C); V. 资本市场学习 (A–B); VI. 任命环节与状态转移中的摩擦 (A–B); VII. 结论; 参考文献; 附录 A; 附录 B; 附录 C (A–F, Figure C1 at its end); then 表 1–10 and 图 1–10 with no heading of their own. The top line takes the title page, the seven sections, the three appendices and the two blocks of tables and figures, then the Term list and the Cited list (the source's 参考文献 is the Cited list at the tail).
+
+The digest had filed the paper as 20 groups: old 1 introduction with the Term list, the Cited list, the abstract card 1\|e and the structure Card 1\|j under it; old 2 II.A; old 3 II.B (the framework model 3\|a); old 4 II.B.3 + B.4; old 5–7 III.A–C; old 8 III.D + the §IV preamble + IV.A; old 9 IV.B + IV.C; old 10 §V; old 11 V.A; old 12 V.B; old 13 §VI; old 14 VII + Appendix A; old 15 Appendix B; old 16–20 Appendix C.A, C.B, C.C + D, C.E, C.F (old 20 also held the table and figure cards 20\|b, 20\|c).
+
+### Final tree (top line and divisions)
+
+```
+1   标题页与摘要 (old 1|e)                      a 结构卡 (old 1|j)
+2   I. 引言 (old 1)                            f §I chain, g–i findings
+3   II. 概念框架 (new, demote of old 2)        a A. 相关文献 (old 2, chain old 2|a)
+                                              b B. 概念框架 (old 3, rewrite): a framework model (old 3|a) · b 3. (old 4|b..b|1) · c 4. (old 4, trimmed; chain old 4|b|2..4)
+4   III. 相关性与度量 (new, demote of old 5)    a A (old 5, model old 5|a) · b B (old 6, model old 6|a) · c C (old 7, model old 7|a)
+                                              d D (old 8|b..b|3, findings old 8|c,d,e,g,h,i)
+5   IV. 后果 (new, demote of old 8)            a §IV preamble (old 8|b|4) · b A (old 8, trimmed; model old 8|a, chain old 8|b|5..7, findings)
+                                              c B (old 9|c..c|1, model old 9|a, findings old 9|d,g) · d C (old 9, trimmed; model old 9|b, chain old 9|c|2..5, findings)
+6   V. 资本市场学习 (old 10, rewrite)           a learning model (old 10|a) · b §V chain (old 10|b) · c A (old 11) · d B (old 12)
+7   VI. 摩擦 (old 13, rewrite)                 a §VI preamble (old 13|e) · b A (old 13|e|1..6, model old 13|a, findings) · c B (old 13|e|7..11, models old 13|c, 13|d, findings)
+8   VII. 结论 (old 14|b, chain as 8|a)
+9   附录 A (old 14, trimmed)                   b chain (old 14|b|3..7), c–f findings
+10  附录 B (old 15)
+11  附录 C (new, demote of old 16)             a A (old 16) · b B (old 17) · c C (old 18|b..b|2) · d D (old 18, trimmed; chain old 18|b|3..6) · e E (old 19) · f F (old 20, with the Figure C1 panels old 20|e–g)
+12  表 1 至表 10 (old 20|b)
+13  图 1 至图 10 (old 20|c)
+14  术语表 (Term list, from 1|a)               160 Cards
+15  参考文献 (Cited list, from 1|b)            69 Cards
+```
+
+Batches, tail to head: b1 appendix C, tables and figures, VII out of old 14 (59 renamed); b2 §VI (110); b3 §V (248); b4 §IV with III.D to the III.A head (427); b5 §III (544); b6 §II (609); b7 VII chain under its head, both lists to the tail, the abstract to the top, the structure Card under it (867). One reorder in b2 (13\|e\|1, 13\|e\|7) and one in b3 (model 10\|a to the end) were dropped: the first was already the order (`side_of` appends in order), the second was a choice reversed (see Calls).
+
+### Crossers and how each was settled
+
+- Old 1 held the introduction, the abstract, the structure Card and both lists: the lists went to the tail (`14`, `15`); the abstract card became the first top Card `1` (title 标题页与摘要, source line `标题页与摘要`, was `I`) with the structure Card as `1|a`; old 1 is `2` (I).
+- Old 4 held B.3 (two Cards) and B.4 (three Cards): the head went to B.4 by count and was trimmed (`3|b|c`, title `4. 与经验分析的对应：…`; the B.3 sentences and the `§3` index line dropped, they stand in `3|b|b` and `3|b|b|1`); the B.3 chain became `3|b|b`.
+- Old 8 held III.D (four notes, six findings) and the §IV preamble + IV.A (four notes, two findings, the model): the head went to IV.A by count (the model) and was trimmed (`5|b`; the III.D and §IV sentences, the `§D`/`§IV` index lines and the `对应 …4|d|3` line dropped). The III.D chain became the III.D head `4|d` with its six findings; the §IV preamble `8|b|4` became `5|a`, placed before IV.A by the demote's `first`.
+- Old 9 held IV.B (two notes, the model 9\|a, two findings) and IV.C (five notes, the model 9\|b, four findings): the head went to IV.C by count and was trimmed (`5|d`; the IV.B sentence and index line dropped); IV.B got the head `9|c` (`5|c`) with its chain, model and findings.
+- Old 13 held §VI preamble, VI.A and VI.B on one Direct chain with all models and findings flat beside it: old 13 was rewritten as the §VI summary; the chain was cut into `7|a` (preamble), `7|b` (A, from 13\|e\|1) and `7|c` (B, from 13\|e\|7), each with its model(s) and findings.
+- Old 14 held VII (three notes) and Appendix A (six notes, four findings): the head went to Appendix A by count and was trimmed (`9`; the VII sentences, the `§VII` index line, the old position line and the `承接 …8|a` line dropped); VII became the top Card `8` (old 14\|b) with its chain as `8|a`.
+- Old 18 held C.C (three notes) and C.D (four notes): the head went to C.D and was trimmed (`11|d`, the C.C formula kept as one sentence naming C 节); the C.C chain became `11|c`.
+- Old 20 (C.F) held the table and figure cards: they became the top Cards `12` and `13` (titles 表 1 至表 10 / 图 1 至图 10, source lines `表 1–10` / `图 1–10`, were `§F`).
+- Whole units: each model moved once with all its parts (check.mjs: every unit the same size before and after). Term list 160 and Cited list 69 Cards, unchanged.
+
+Calls that could go the other way: B.1 and B.2 have no reading note of their own (their content is the framework model's setting), so the II.B summary indexes both by the Model Card `3|b|a`; the §V learning model `6|a` stays the first Side branch of the §V summary (the book's own pattern: model first in its division) rather than last; the Figure C1 panel cards `11|f|e`–`g` stay under C.F, where the source prints the figure and where the C.F head describes it, although the figure shows the C.D simulations; the tables and the figures are two top Cards in the source's order, not one 表与图 Card; VI.A and VI.B open on their first reading note (no lead of their own), as do III.D, IV.B and C.C.
+
+### Summary leads and other text
+
+- `leads.mjs`: demotes `3` (§II), `4` (§III), `5` (§IV, `first` the §IV preamble), `11` (Appendix C); rewrites `3|b` (II.B), `6` (§V), `7` (§VI). Each has the source's name and main claim as title, one or two paragraphs that walk the subdivisions, `小节索引：` with a Link to each subdivision head, `在全书中的位置：` and the source line. leads.mjs turned the Term names into Term uses.
+- Text batch (63 `edit_card` writes, 0 errors): titles with the section label on `1`, `2` (I.), `3|a` (A.), `4|a`–`4|d` (A.–D.), `5|b`–`5|d` (A.–C.), `6|c`, `6|d`, `7|b`, `7|c`, `8` (VII.), `9`, `10`, `11|a`, `11|b`, `11|d`, `11|f`, `12`, `13`; trimmed heads `3|b|c`, `5|b`, `5|d`, `9`, `11|d`; position lines made true in `1`, `2`, `3|a`, `8`, `9` and the II.B summary's 上一节 Link (leads.mjs had read `3|a` as the old chain card; now the II.A head); Links that meant another division: `4|c` IV → `5`, its 附录 A Link (it named Appendix B) → `9`; `6|d` and `11|a` C.C → `11|c`; `11|b` 下一节 → `11|c`; `11|f` now names `6|d` and `7` (it named Appendix A). Source lines added where a head had none (`2`, `3|a`, `3|b|c`, `4|a`, `5|b`, `5|d`, `9`, `10`, `11|a`, `11|b`, `11|d`, `11|f`). 40 Finding Cards named their old group head as source Link (zt-check F2 after the moves); they now link the book root with the label (`来源：[[bedford2026learning]] §III.A`, …, `§D` written `§III.D`).
+- The root index lists the 13 content top Cards and the two lists (the old index named 20 digest groups). The structure Card `1|a` lists the top line and the 12 models at their new addresses (its old model list named chapters and parts of 3\|a and 10\|a as models, stale since the fold).
+- `zt-check --cards` on the root, the structure Card, the 7 leads and the 63 written Cards: first run `faults: 16` (R2/R3 in new lines of the root and `1|a`), fixed twice (one R5 met on the way); last run on the two `faults: 0`; the other Cards had no fault (advisory L1 lines only).
+
+### Chart targets
+
+In `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\bedford2026learning-3_a.mjs`, `-6_a.mjs` and `-10_a.mjs` the `head` is now `bedford2026learning/3|b|a`, `4|b|a` and `6|a`, and in the 6\|a module `EQ2 = 'bedford2026learning/4|a|a|a|2'`, each with a comment naming the old address. The file names stay. `apply.mjs`: `same` on all 5 + 2 + 11 Cards (zt had rewritten every `data-zt` target with the moves), so nothing was written. 71 `data-zt` targets in the book, 0 dead.
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `check.mjs bedford2026learning`: top line 1 标题页与摘要 (2), 2 I. 引言 (19), 3 II. 概念框架 (41), 4 III. 相关性与度量 (160), 5 IV. 后果 (101), 6 V. 资本市场学习 (148), 7 VI. 摩擦 (111), 8 VII. 结论 (3), 9 附录 A (11), 10 附录 B (9), 11 附录 C (35), 12 表 1–10 (1), 13 图 1–10 (1), 14 Term list (160), 15 Cited list (69). Its only line: `868 Cards before, 872 now` (the four new summaries); no list fault, no unit change.
+- Source-line walk (every Card with a source line, model parts excluded): every Card stands under its own top division, and each second-level branch holds only its own subsection's labels (3\|a §II.A; 3\|b §II.B, §3, §4; 4\|a–d §III.A–D; 5\|a §IV; 5\|b–d §IV.A–C; 6\|b §V; 6\|c–d §V.A–B; 7\|a §VI; 7\|b–c §VI.A–B; 8 §VII; 9 附录 A; 10 附录 B; 11\|a–f 附录 C.A–F). No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- `check-model.mjs` on the 12 new heads: `self_sufficient true`, `loose 0` on all (3\|b\|a members 16; 4\|a\|a 22; 4\|b\|a 12; 4\|c\|a 77; 5\|b\|b 33; 5\|c\|a 35; 5\|d\|a 32; 6\|a 62; 6\|c\|b 79; 7\|b\|a 39; 7\|c\|a 35; 7\|c\|b 33); the relation counts of the three formal models are those of stage 5.
+- `verify.mjs --model` (light and dark): `3|b|a` `5 chart(s) in 17 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`; `4|b|a` `2 chart(s) in 13 card(s); …0…`; `6|a` `14 chart(s) in 63 card(s); …0…`; `apply.mjs` again `same` on all 18 Cards.
+- Term relink: `{"rounds":1,"links_added":30,"applied":true,"cards_refused":0,"cards_changed":6,"ok":true,"links_repaired":0}`; `-PlanOnly` afterwards: `{"rounds":0,"links_added":0,"cards_changed":0,…,"applied":false}`. No relink bug.
+
+## Result
+
+Final top line: 标题页与摘要 · I. 引言 · II. 概念框架 · III. 管理者—企业匹配的相关性与度量 · IV. 管理者—企业匹配的后果 · V. 资本市场学习 · VI. 任命环节与状态转移中的摩擦 · VII. 结论 · 附录 A · 附录 B · 附录 C · 表 1 至表 10 · 图 1 至图 10 · 术语表 · 参考文献. 872 Cards (183 Idea, 63 Finding, 397 Model and part, 160 Term, 69 Cited).
+
+Models (final addresses; old address in brackets):
+
+- `bedford2026learning/3|b|a` [3\|a], formal: the conceptual framework of §II.B (binary latent match state, board hiring under frictions, two channels, learning after appointment), 16 members, illustrated (5 charts); II.B.
+- `bedford2026learning/4|a|a` [5\|a], empirical: mixed-effects variance decomposition, match variance about ten times the manager variance (§III.A); lends equation (2) `4|a|a|a|2`.
+- `bedford2026learning/4|b|a` [6\|a], formal: the directional-distance-function measure of match quality (§III.B), 12 members, imports `4|a|a|a|2` `单卡`, illustrated (2 charts).
+- `bedford2026learning/4|c|a` [7\|a], empirical: validation of the score against the traditional match effects, with the Appendix A correlations (§III.C).
+- `bedford2026learning/5|b|b` [8\|a], `5|c|a` [9\|a], `5|d|a` [9\|b], empirical: forced turnover, annual returns, announcement returns (§IV.A–C).
+- `bedford2026learning/6|a` [10\|a], formal: the Bayesian learning model of §V and Appendix C, 62 members, illustrated (14 charts); first Side branch of the §V summary.
+- `bedford2026learning/6|c|b` [11\|b], empirical: volatility on tenure deciles and initial match quality, split by within-tenure variance (§V.A–B).
+- `bedford2026learning/7|b|a` [13\|a], `7|c|a` [13\|c], `7|c|b` [13\|d], empirical: frictions and initial match quality; frictions and transitions; industry shocks and transitions (§VI.A–B).
+
+All seven stages passed their gates. Open items across the sequence (addresses as they now stand):
+
+1. 30 identical-title Finding Card pairs remain (for example `4|a|b` = `4|a|d`, `4|c|b` = `4|c|f`, `7|c|c` = `7|c|i`, `9|c` = `9|e`); only the three pairs under the introduction were merged before stage 1. A `delete into` pass on the pairs whose body and statement fingerprint agree would remove 30 Cards; not done here (the organize moves and leads, it does not merge).
+2. `6|a`'s 第 5 章 (`6|a|a|5`, §VI.B) states the Table 9 panel A frequencies and the Table 10 rates that `7|c|a` and `7|c|b` also state; no import was written (stage 4).
+3. `4|b|a` imports `4|a|a|a|2` `单卡` by decision, so every score user tolerates it through `4|b|a` (stage 4).
+4. In `6|a`, (C2) stands in three setting cards and (C4)–(C6) in two; two restatements stay inside proof chains ((C15) and the App. C.C proposition) (stages 2–4).
+5. Result and derivation cards of the formal models keep their digest bodies; the old chapter cards keep their 问题/概要/关联 text under the new sections; copy advice left as judged comparisons between 3\|b\|a and 6\|a chapters (stages 3–4).
+6. The 10 zt-check faults (R3/R13) in existing setting text of the three formal models and the import line of `4|b|a`; several figures draw 示意 shapes the source does not fix (stage 5).
+7. No cross-book evidence pair for the nine empirical models: survey again after a zt-term-sync pass on the economics shelf; the judged record holds the 2,147 within-book pairs (stage 6). Survey noise: estimates without a Term of their own regressor pair with every estimate naming 匹配质量 (stage 6).
+8. Stage 7: B.1 and B.2 are indexed by the framework Model Card; VI.A, VI.B, III.D, IV.B and C.C open on their first reading note; the Figure C1 panels stay under C.F; the illustrate modules keep their file names (`bedford2026learning-3_a.mjs`, `-6_a.mjs`, `-10_a.mjs`) with new heads. Nothing committed (stage brief).
+
+## After Stage 7: duplicate Finding Cards (main session)
+
+Date 2026-11-21, live box. Backup: `D:\zt\backups\zt-before-bedford2026learning-finding-dedup.sqlite3` (`VACUUM INTO`, integrity ok). Stage 7 reported 30 pairs of Finding Cards with identical titles. A script compared every Finding Card's `statement_fingerprint`: all 30 pairs were exact duplicates (same statement, no inbound Link on either copy), 63 Finding Cards for 33 statements, which is the 33 the first Findings pass created (`mid_applied_created 33`). The Findings retry of the digest wrote the already-applied groups a second time (a workflow fault; recorded in `docs/agents/workflow-principles.md`). Each later copy was deleted `into` the earlier one, from the highest address down so that no pending address shifted (30 deletes, 0 errors). The re-pointed Links left 19 "另见" lines that named one Card twice; a script kept the first of each and rewrote those 19 Cards (read back the same). Two **关联** prose lines and the tables lead that name a Card twice on purpose were left.
+
+Gate: 33 Finding Cards, 0 duplicate fingerprints; `list_broken_links` (agent) empty; Term relink 0 changes; `check-model.mjs` `self_sufficient true`, `loose 0` on all 12 heads (3|b|a, 4|a|a, 4|b|a, 4|c|a, 5|b|b, 5|c|a, 5|d|a, 6|a, 6|c|b, 7|b|a, 7|c|a, 7|c|b). The Literature tree went from 872 to 842 Cards.
