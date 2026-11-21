@@ -588,7 +588,12 @@ fn render(book: &Book, row: &Value, item: &Value) -> (String, String) {
 /// `引用处：` line is all titles and counts, and a location line is `<title>（第 N 行）：<the writer's use>`.
 /// The book's own titles are never reworded (atkinson2015lectures: `公司税的影响`, `资本课税的归宿`, where the
 /// Term list avoids 公司税 and 资本课税), so only the writer's text counts.
-fn only_in_section_title(message: &str) -> bool {
+///
+/// A title that opens on a letter label (`A. 聘任时点匹配质量的差异`, bedford2026learning) makes the checker's
+/// snippet start after the label, so the snippet no longer opens on `引用处：`. Such a snippet counts as a
+/// title when every piece (between `、`, before `（`) that holds the word stands inside one of the book's
+/// own section titles.
+fn only_in_section_title(message: &str, titles: &[String]) -> bool {
     let Some(word) = message.split('`').nth(1) else {
         return false;
     };
@@ -598,10 +603,16 @@ fn only_in_section_title(message: &str) -> bool {
     if line.starts_with("引用处：") {
         return true;
     }
-    match line.split_once("行）：") {
-        Some((_, written)) => !written.contains(word),
-        None => false,
+    if let Some((_, written)) = line.split_once("行）：") {
+        return !written.contains(word);
     }
+    let pieces: Vec<&str> = line
+        .split('、')
+        .map(|p| p.split('（').next().unwrap_or("").trim())
+        .filter(|p| p.contains(word))
+        .collect();
+    !pieces.is_empty()
+        && pieces.iter().all(|p| p.chars().count() >= word.chars().count() + 2 && titles.iter().any(|t| t.contains(p)))
 }
 
 /// The faults of one draft item: C3 against the source, then the zt-check rules on the render.
@@ -731,10 +742,11 @@ fn item_faults(book: &Book, plan: &Value, item: &Value, terms: Option<&str>) -> 
     let report = zt_check::core::Check::new(zt_check::core::Limits::default(), false, "")
         .with_terms(terms)
         .report(&[entry]);
+    let titles: Vec<String> = book.headings.iter().filter_map(|(h, _)| h.clone()).collect();
     for d in report {
         // The `文献：` line quotes the reference verbatim; it is never reworded, so R6 does not count there
         // (ebrill2001modern: `CVAT, VIVAT, and All That`, where the Term list avoids CVAT).
-        if d.rule == "R6" && (d.message.contains(": 文献：") || cited::quotes_the_reference(&d.message, &pstr(row, "entry")) || only_in_section_title(&d.message)) {
+        if d.rule == "R6" && (d.message.contains(": 文献：") || cited::quotes_the_reference(&d.message, &pstr(row, "entry")) || only_in_section_title(&d.message, &titles)) {
             continue;
         }
         // R6 counts here: a Cited Card keeps the book's Term spellings.

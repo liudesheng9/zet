@@ -603,6 +603,39 @@ fn r6_leaves_a_quoted_section_title_alone() {
     assert!(precheck(&zt, &staging, &draft).contains("row1 R6"), "the writer's own text still counts");
 }
 
+/// bedford2026learning (2026-11-21): 33 Cited Cards stayed not ready on R6 because two section titles open on
+/// a letter label (`A. 聘任时点匹配质量的差异`, `F. 将匹配质量的 CEO 内部方差映射为转换风险`) and hold a
+/// word the Term list avoids. The checker's snippet starts after the label, so it no longer opens on
+/// `引用处：`; the title is still the book's own and no writer can reword it.
+#[test]
+fn r6_leaves_a_lettered_section_title_alone() {
+    let Some(program) = zt_program() else { return };
+    let zt = Zt::new(program);
+    let mut mcp = zt.mcp();
+    book(&mut mcp, "tax2027", "Tax");
+    mcp.call(
+        "create_successor",
+        json!({ "at": "tax2027/1", "kind": "side", "type": "term", "title": "术语表：《Tax》的 1 个术语",
+                "body": "本卡是术语表。\n\n术语表\n\n| 术语 | 不用 | 意思 | 首次定义 |\n| --- | --- | --- | --- |\n| 公司利润税 | 公司税 | 对公司利润征收的税 | §1 |\n\n来源：[[tax2027]]" }),
+    );
+    let source = "# A. Corporation Tax\n# A. 公司税的影响\nAs Keen (2000) shows, the tax falls on capital.\n# B. Incidence\n# B. 归宿\nKeen (2000) also measures it.\n\n# References\n\nKeen, Michael, 2000, “Taxing Profits,” Canadian Tax Journal, Vol. 48, pp. 409–24.\\n\n# Appendix\n";
+    let dir = tempfile::tempdir().unwrap();
+    let staging = staging(dir.path(), "tax2027", "Tax", source, json!([{ "anchor": "tax2027/1", "headings": ["A. 公司税的影响", "B. 归宿"] }]));
+    let s = staging.to_str().unwrap();
+    last_json(&zt.digest(&["cited", "-Step", "plan", "-Staging", s]));
+    cited_read::answer_parts(&staging, &cited_read::default_fields);
+    last_json(&zt.digest(&["cited", "-Step", "apply", "-Staging", s, "-Apply"]));
+    last_json(&zt.digest(&["cited-cards", "-Step", "plan", "-Staging", s]));
+    let draft = draft_path(&staging, "t001");
+    std::fs::create_dir_all(draft.parent().unwrap()).unwrap();
+    let item = |used: &str| json!([{ "row": 1, "short_title": "利润的课税", "why": "本书引用它说明公司利润税落在资本上。", "role": "它给出公司利润税归宿的结论。", "relationship": "本书依赖它的结论。", "relations": ["依赖"], "locations": [{ "line": 3, "use": used }, { "line": 6, "use": "本书用它度量归宿。" }] }]);
+    std::fs::write(&draft, item("本书用它说明公司利润税落在资本上。").to_string()).unwrap();
+    let text = precheck(&zt, &staging, &draft);
+    assert!(text.trim_end().ends_with("faults: 0"), "the lettered section title is no R6 fault:\n{text}");
+    std::fs::write(&draft, item("本书用它说明公司税落在资本上。").to_string()).unwrap();
+    assert!(precheck(&zt, &staging, &draft).contains("row1 R6"), "the writer's own text still counts");
+}
+
 /// 2026-11-07: the agentic Cited list replaced the parser on every finished book. A new reading changes the
 /// rows; each live Cited Card whose work the new list still holds is read back and carried (no writer job),
 /// the old drafts move aside, and only a new work goes to a writer. The carried Card keeps its text.
