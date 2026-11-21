@@ -170,3 +170,38 @@ None written. `plan` proposed none and no part of 5\|b rests on another book's C
 2. Stage-2/3 open items stay: `4|b` keeps `反驳` the hypothesis; no Figure 2 card inside the model.
 3. Stages 5 (illustrate: not applicable, no formal model), 6 (evidence dialogue on 5\|b) and 7 (organize) not run; they wait for the owner's go-ahead.
 4. Tree unlocked throughout; no `card_locked` met.
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-21, live box (owner's request), under `zt-evidence-dialogue` steps 0–5, done in one side session by scripts (`dialogue.mjs survey | check`) and one scripted `edit_card` write. No subagent and no DeepSeek job ran (the survey found no pair, so there was nothing to judge): no DeepSeek cost, nothing to delete or remove. Backup: `D:\zt\backups\zt-before-das2026domestic-dialogue.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). The Term relink at the end of stage 4 left no Card to change since, so the survey ran without a first relink (step 0). Only 5\|b is empirical; 3\|a and 11\|a are concept models and have no dialogue.
+
+### Survey
+
+- `survey 5|b` (out folder `D:\zt-dialogue\das2026domestic`): `{"head":"das2026domestic/5|b","ours":10,"theirs":1599,"pairs":0,"messages":[]}` (about 59 s). The economics shelf has had no zt-term-sync, so the estimand Terms (基础货币 `1|a|s`, 广义货币 `1|a|t`, 货币乘数 `1|a|r`, 国内债务重组 `1|a|a`) link no Term Card of another book.
+- **Hand search** (`search_cards`, Finding Cards and Model Cards: 货币乘数, 基础货币, 广义货币, 准备金, 流动性, 货币供应, 中央银行, 信贷, 债务): no other book estimates base money, broad money, the money multiplier, the reserve ratio or central-bank liquidity around a debt or financial crisis. Every hit on the four indicators is a das2026domestic Card (the §IV.A findings `5|c`–`5|h`, the Jamaica case `6|g`, `7|h`). The nearest Cards elsewhere are not the same estimand: arrocannarsa2026flight `6|d|d` (the central bank expands supply by 4.7% of the stock) and `10|g|c`, `10|g|f` are simulations of the formal model 3\|e, not estimates; velic2025inflation `5|d|n`–`p` estimate central-bank independence against inflation; bergin2026exchange 4\|d estimates reserve accumulation against sector productivity; assenza2026louder estimates central-bank communication; gomezcram2026government, ozhan2026monetary and furceri2026divide hold no Finding Card or estimate on monetary aggregates; atkinson2015lectures holds only formal debt models. sylla2018hamilton `20|a|6` already links `6|g` as `对照` (`跨书关联`, a historical idea Card, no estimate). The Model Card's cross-book Links (`对照 haeckl2026dont/2|b`, `对应 velic2025inflation/4|b|2`) compare designs, not estimates, and stay as written.
+- The book's own Finding Cards that state 5\|b's estimates are of the same book, so the survey does not pair them.
+
+### Pairs judged and written
+
+| Head | Pairs | Same estimand | Agree / disagree / not comparable | Links written |
+|---|---|---|---|---|
+| 5\|b | 0 | 0 | 0 / 0 / 0 | 0 |
+
+No `apply` ran.
+
+### The stage-2/3/4 open item: `5|b|a|4|b` against the hypothesis
+
+The broad-money estimate `5|b|a|4|b` carried `反驳 [[5|b|a|1]]` (the four-channel hypothesis). Read against §IV.A and footnote 7 of the source: footnote 7 names broad-money growth (panel B) and the multiplier (panel C) together as the summary of the bank-credit channel; the text reports panel B only as "no clear break", with the change in its dispersion; and the closing paragraph reads Figure 2 as a whole as "DDRs are typically accompanied by central-bank liquidity provision and some contraction of bank intermediation and of discretionary buffers", i.e. as support for the framework. The source never presents the flat broad-money median as evidence against the hypothesis; with base money rising, a flat broad-money median is the other side of the falling multiplier. It is not plainly 印证 either (on its own it shows no contraction). The word the source supports is therefore **对照**. The line now reads `对照 [[das2026domestic/5|b|a|1]]：广义货币增长没有断点，原文没有把它读作反对四渠道预测的证据；银行中介的收缩由乘数（面板 C）显示，基础货币增长加快而广义货币增长不变，正是乘数下降的另一面。` Written by script (`edit_card`, read back `same`); a check confirmed that no number outside the line changed. The relation in `check-model` turned from `objects` 1 to `contrasts` 1.
+
+### Gate
+
+- `dialogue.mjs check`: `{"head":"das2026domestic/5|b","broken":0,"proposed_again":0,"ok":true}` (the second survey inside the check proposes nothing). No pair, so no written pair to check.
+- `check-model.mjs 5|b`: `members 37 {"main":7,"side":28,"shared":1,"off":1}`, `relations {"rests-on":21,"illustrates":9,"refers":53,"contrasts":1}; loose 0; self_sufficient true`.
+- `check-network.mjs`: `network: clean`; `check-premises.mjs`: `premises: none used before their card`; `check-settings.mjs --symbols`: `settings: the data tree and the specification ladder are in place`; `imports.mjs check`: `takes what it uses from other models by import lines`.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"applied":true,"links_repaired":0,"cards_changed":1,"cards_refused":0,"links_added":1,"ok":true,"rounds":1}` (the new sentence). The checks above rerun after it: unchanged.
+
+### Open
+
+1. No cross-book pair: survey 5\|b again after a zt-term-sync pass on the economics shelf (at its stage-7 address).
+2. No `card_locked`, `scope_refused` or `read_view_changed` error occurred.
