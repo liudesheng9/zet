@@ -426,3 +426,64 @@ All lines below are the reruns after the Term relink.
 5. The stage-4 open items stay. No `card_locked`, `scope_refused` or `read_view_changed` error and no failed write. Nothing committed (stage brief).
 
 After the stage (main session): the open sentence in `10|a|a` **设定** item 3 now reads "**说明**末尾的图给出一期内的时序" (was "下图…"), written by script and read back the same.
+
+## Stage 6: evidence dialogue
+
+Date 2026-11-21, live box (owner asleep, overnight authority: every decision below was taken without asking and is recorded here), under `zt-evidence-dialogue` steps 0–5 for the nine empirical models, one at a time in the order 5\|a, 7\|a, 8\|a, 9\|a, 9\|b, 11\|b, 13\|a, 13\|c, 13\|d (each surveyed after the previous one was applied, so the judged record dropped the mirror pairs). 3\|a, 6\|a and 10\|a are formal and have no dialogue. Backup: `D:\zt\backups\zt-before-bedford2026learning-dialogue.sqlite3` (`VACUUM INTO` through `node:sqlite` read-only, 521 MB, `PRAGMA integrity_check` ok). Step 0: the Term relink before the first survey changed nothing (`applied: false`, `links_added: 0`). Out folders `D:\zt-dialogue\bedford2026learning\<5a|7a|…>`. No Card was written.
+
+### Survey
+
+| Head | Ours | Theirs | Pairs | Messages | Our estimates paired | Other side (pairs) |
+|---|---|---|---|---|---|---|
+| 5\|a | 6 | 1,616 | 375 | 32 | 5 | 7\|a 135, 8\|a 30, 9\|a 30, 11\|b 75, 13\|a 70, 13\|c 35 |
+| 7\|a | 27 | 1,595 | 49 | 5 | 1 (`7|a|a|7|c`, 0.224) | 5\|a 1, 8\|a 6, 9\|a 6, 11\|b 15, 13\|a 14, 13\|c 7 |
+| 8\|a | 6 | 1,616 | 438 | 37 | 6 | 5\|a 6, 7\|a 156, 9\|a 36, 9\|b 24, 11\|b 90, 13\|a 84, 13\|c 42 |
+| 9\|a | 6 | 1,616 | 402 | 34 | 6 | 5\|a 6, 7\|a 156, 9\|b 24, 11\|b 90, 13\|a 84, 13\|c 42 |
+| 9\|b | 4 | 1,618 | 0 | 0 | 0 | none |
+| 11\|b | 15 | 1,607 | 528 | 44 | 11 | 5\|a 11, 7\|a 286, 13\|a 154, 13\|c 77 |
+| 13\|a | 14 | 1,608 | 195 | 17 | 8 | 5\|a 5, 7\|a 130, 11\|b 20, 13\|c 38, 13\|d 2 |
+| 13\|c | 7 | 1,615 | 160 | 14 | 4 | 5\|a 4, 7\|a 104, 11\|b 16, 13\|a 36 |
+| 13\|d | 6 | 1,616 | 0 | 0 | 0 | none |
+
+- **All 2,147 pairs are within the book** (estimate against estimate of another bedford2026learning empirical model); none is a Finding Card or another book's estimate. The estimand Terms are the book's own (匹配质量 `1|a|a` in every model but 9\|b and 13\|d, 匹配效应 `1|a|h`, 管理者效应 `1|a|i`, 混合效应模型 `1|a|y`, 强制 CEO 更替 `1|a|ar`, 股票收益 `1|a|at`, 任期 `1|a|bh`, 好匹配/坏匹配 `1|a|bx`/`1|a|by`, …, and the book root, which forms no pair). None of them links to a Term Card of another book, so zt-term-sync has widened nothing.
+- **Survey noise.** Most estimates of 5\|a, 8\|a, 9\|a, 11\|b, 13\|a and 13\|c carry no Term of what they measure beyond the estimand Terms, so by the script's rule they pair on 匹配质量 against every estimate of the book that names it (for example 11\|b pairs 286 times with 7\|a). The asymmetry 7\|a → 49 against 8\|a → 7\|a 156 is that rule: 7\|a's estimates link their own regressors.
+- **Hand search for cross-book neighbours** (`search_cards`: Finding Cards on CEO and 更替; all Cards on 管理者效应; Model Cards on 管理者). Only bedford2026learning and hansen2021demand have CEO Finding Cards. hansen2021demand estimates the demand for executive social skills in search mandates (`5|c|e`, `1|c`, `7|a|b`: CEO searches are 42.8% of five titles), not a match or manager variance component, a turnover probability or a return response: not the same estimand. No other book states a forced-turnover or announcement-return estimate. brandimarti2026reorganizing has no Card in these searches. No cross-book pair was forced.
+
+### Judging (DeepSeek)
+
+One conversation per model with pairs (seven conversations), `opencode-go/deepseek-v4.1-flash`, effort high, OpenCode Go account 904315849\_002 (workspace 002), one job at a time; the official source was not used (its ledger line stayed at 16.0161 CNY, 1,797 calls throughout). Prompts were sent as `prompt_files`: `references/judge.zh.md` + `judge-1.md`, then each later file in the same conversation, one message at a time. No 429, no tool call, no `needs_response`, no resend. Conversations: 5\|a 88a643ce (32 turns, context 294k of 1M at the end), 7\|a 380634fc (5 turns, 73k), 8\|a 828ca91b (37, 340k), 9\|a 982aea24 (34, 316k), 11\|b dcfa0aa1 (44, 398k), 13\|a 3e29bfab (17, 167k), 13\|c 8008d57b (14, 147k). Each was deleted after its answers were collected; the workspace `D:\zt-dialogue\bedford2026learning` was removed at the end.
+
+- **Decision: answers collected by script, not by hand.** The judge's JSON lines were read from the conversation's stored session (`~/.dsh/sessions/--D-zt-dialogue-bedford2026learning--/<id>/session.v4.jsonl.zstd`, zstd frames decoded with `node:zlib`) by `D:\zt-dialogue\bedford2026learning\extract-answers.mjs` before the delete; every model's `answers.jsonl` holds exactly one line per pair (`missing: []` on all seven). The message loops of 5\|a (files 2–32), 8\|a, 9\|a, 11\|b, 13\|a and 13\|c were driven by a general-purpose helper agent that only sent the files; 7\|a was sent from the main session. The helper for 8\|a sent `judge-5` and `judge-6` in one step (briefly two requests in flight in one conversation); both answers came back complete and in order.
+- **Usage.** The opencode-go ledger moved by exactly 151 calls between the snapshot after 5\|a and the end, the number of requests of the six later conversations (5 + 37 + 34 + 44 + 17 + 14), so no other session wrote in that window: 1,442,272 uncached input, 25,034,624 cached, 158,937 output tokens (cache hit about 95%). 5\|a's 32 calls were not isolated (no snapshot before it); by its context growth they are of the same order. Cost 0 CNY (OpenCode Go subscription).
+- **Verdicts.** All 2,147 answers came back `same: false` (`not-comparable`, `kind: none`). Checked by reading the reasons of the within-book pairs most likely to share an estimand: 9\|a's return-decile coefficients against 9\|b's announcement-day abnormal returns (different event and window), 13\|a's appointment-friction coefficients on initial match quality against 13\|c's coefficients on state persistence and transition (different dependent variable; the judge named it, for example `13|a|a|4|e` −3.623 against `13|c|a|4|d` −0.248), 13\|a against 13\|d's shock-response differences, and 5\|a's variance components against 7\|a's standardized coefficients (variance against a regression coefficient): right.
+
+### Pairs judged and written
+
+| Head | Pairs | Same estimand | Agree / disagree / not comparable | Links written |
+|---|---|---|---|---|
+| 5\|a | 375 | 0 | 0 / 0 / 0 | 0 |
+| 7\|a | 49 | 0 | 0 / 0 / 0 | 0 |
+| 8\|a | 438 | 0 | 0 / 0 / 0 | 0 |
+| 9\|a | 402 | 0 | 0 / 0 / 0 | 0 |
+| 9\|b | 0 | 0 | 0 / 0 / 0 | 0 |
+| 11\|b | 528 | 0 | 0 / 0 / 0 | 0 |
+| 13\|a | 195 | 0 | 0 / 0 / 0 | 0 |
+| 13\|c | 160 | 0 | 0 / 0 / 0 | 0 |
+| 13\|d | 0 | 0 | 0 / 0 / 0 | 0 |
+
+`apply` on the seven heads with pairs: `{"links":0,"written":0,"errors":0}` each. No apply on 9\|b and 13\|d (no pair). All 2,147 answered pairs are in the judged record (`~/.zt-evidence-dialogue/judged-default.jsonl`, 2,147 lines naming bedford2026learning), so no later survey pays for them again. The **对应** lines already on the estimates (印证 to the book's own hypotheses, written in stages 3–4) stay as written.
+
+### Gate
+
+- `dialogue.mjs check`: `{"broken":0,"proposed_again":0,"ok":true}` (exit 0) on all nine heads (5\|a, 7\|a, 8\|a, 9\|a, 9\|b, 11\|b, 13\|a, 13\|c, 13\|d).
+- No same-estimand pair, so no new **对应** line to check.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink after the stage: `{"applied":false,"rounds":0,"cards_changed":0,"links_added":0,"links_repaired":0,"cards_refused":0,"ok":true}`.
+
+### Open
+
+1. No cross-book pair: the book's Terms (匹配质量, 管理者效应, 强制 CEO 更替, …) link to no Term Card of another book. After a zt-term-sync pass on the economics shelf (and after stage 7, at the new addresses), survey again; the judged record keeps the 2,147 pairs from being judged twice. hansen2021demand stays a different estimand.
+2. Survey noise: estimates without a Term of what they measure pair with every estimate naming 匹配质量 (2,147 pairs for 0 Links). A Term link for each estimate's own regressor or outcome would narrow a later survey; not added here (the stage writes only judged Links).
+3. The stage-4 open item 1 stays: 10\|a's 第 5 章 states the Table 9/10 numbers that 13\|c and 13\|d also state. 10\|a is formal, so the survey does not read it; the overlap is a question for an import or a text pass, not a dialogue Link.
+4. For stage 7 (literature organize): the dialogue wrote nothing, so it adds no address the organize must carry; the stage-5 open item 1 (chart module heads to change after the renumbering) stays.
+5. No `card_locked`, `scope_refused` or `read_view_changed` error and no failed write. No skill or script changed. Nothing committed (stage brief).
