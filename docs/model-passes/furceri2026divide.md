@@ -297,3 +297,98 @@ No `apply` ran (no pair). No DeepSeek conversation was started, so there is no D
 
 1. No cross-book pair: 公共债务 and 地缘经济碎片化 link to no Term Card of another book, and no other book on the box estimates a public-debt response to a shock. After a zt-term-sync pass on the economics shelf (and after stage 7, at 6\|a's new address), survey again; das2026domestic's debt levels would still be a different estimand.
 2. The stage-4 and stage-5 open items stay. No `card_locked`, `scope_refused` or `read_view_changed` error occurred. Stage 7 (literature organize) not started.
+
+## Stage 7: literature organize
+
+Date 2026-11-21, live box (owner's request), under `zt-literature-organize`, done in one side session by scripts (`outline.mjs`, two structure batches through `batch.mjs`, one `leads.mjs` run, two scripted `edit_card` batches and one fix write). No subagent and no DeepSeek job ran, so there is no DeepSeek cost. Backup: `D:\zt\backups\zt-before-furceri2026divide-organize.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). Every batch was previewed first (complete true, refusals none, `links_that_will_break` empty) and committed under its plan hash. The tree went from 485 to 487 Cards (two new summary leads: §II and §III). No Card was deleted, and no formula, equation number or estimate changed; the hand edits touched no display formula and no model part. Only Cards of furceri2026divide were written. No `card_locked`, `scope_refused` or `read_view_changed` error occurred; the tree was unlocked throughout.
+
+### Source divisions
+
+From `D:\zt-digest\furceri2026divide\book.zh.md`: front matter (title page with the IMF disclaimer and logo, a second title page with 摘要, JEL codes, keywords and the acknowledgement footnote, a third title page; 目录; 图 list; 表 list); I. 引言; II. 对公共债务的影响与传导渠道 (A. 数据与样本; B. 实证策略 with B.1 面板 SVAR 识别 and B.2 使用局部投影方法进行估计; C. 结果 with C.1 对公共债务的影响, C.2 稳健性检验, C.3 宏观经济传导渠道); III. 异质性分析 (A. 实证策略; B. 结果 with B.1–B.5); IV. 债务预测分布（在险债务）; 五、结论; 图与表 (图 1–20, 表 1); 附录 (表 A1, A2, A3); 出版物 (back cover, no Card). The Markdown has no reference list; the Cited list holds it. The top line takes the front matter, the five numbered sections, 图与表 and the appendix, then the two lists.
+
+The digest had filed the paper as 12 groups: old 1 cover and abstract with the Term list, the Cited list and the structure Card under it; old 2 the second title page, 目录 and 图 list; old 3 §I (source line `§表、§I`, though no 表-list Card is in it); old 4 §II preamble + II.A; old 5 II.B + B.1; old 6 II.C with the empirical model 6\|a; old 7 III.A; old 8 the III.B preamble + B.1 + B.2; old 9 B.3 + B.4; old 10 B.5 + §IV with the formal model 10\|a; old 11 五、结论 + 图与表; old 12 附录.
+
+### Final tree (top line and divisions)
+
+```
+1   前置页 (old 1, rewrite)                  a 封面 (old 1|d) · b 摘要 (old 1|d|1 chain, findings old 1|e–g) · c 目录与图目录 (old 2) · d 结构卡 (old 1|h)
+2   I. 引言 (old 3)                          b–d findings · e §I chain
+3   II. 对公共债务的影响与传导渠道 (new, demote of old 4)
+      a §II preamble (old 4|b) · b A. 数据与样本 (old 4; chain old 4|b|1..4, finding old 4|c)
+      c B. 实证策略 (old 5, rewrite; b two-stage preamble with the B.1 chain)
+      d C. 结果 (old 6, rewrite; a the C.1–C.3 note chain, b–n findings) · e empirical model (old 6|a)
+4   III. 异质性分析 (new, demote of old 7)
+      a A. 实证策略 (old 7, with the III.A chain)
+      b B. 结果 (old 8, rewrite): a preamble (old 8|i) · b B.1 (old 8|i|1..3, findings old 8|b–e)
+        c B.2 (old 8|i|4..7, findings old 8|f–h) · d B.3 (old 9, trimmed; chain old 9|h..h|4, findings old 9|b–f)
+        e B.4 (old 9|h|5..6, finding old 9|g) · f B.5 (old 10|b..b|1, findings old 10|c, d)
+5   IV. 债务预测分布（在险债务） (old 10, trimmed)  a §IV chain (old 10|b|2..6) · b–g findings · h formal model (old 10|a)
+6   V. 结论 (old 11|a)                       a chain (old 11|a|1..2) · b finding (old 11|b)
+7   图与表 (old 11, trimmed)                  a figure chain 图 1–20, 表 1 (old 11|a|3..23) · c–f findings
+8   附录 (old 12, rewrite)                    a 表 A1 (findings a–c) · f 表 A2 (finding a) · g 表 A3
+9   术语表 (Term list, from 1|a)             98 Cards
+10  参考文献 (Cited list, from 1|b)          46 Cards
+```
+
+Batches: one structure batch (36 moves, 480 Cards renamed); one reorder batch (4 reorders, 275 renamed); `leads.mjs` (two demotes, five rewrites); one text batch (21 `edit_card` writes); one source-line batch (29 writes); one fix write (root and structure Card).
+
+### Crossers and how each was settled
+
+- Old 1 held the front matter and both lists: the lists went to the tail (`9`, `10`); old 2 (目录, 图 list) moved under the front-matter summary as `1|c`; the abstract chain (old 1\|d\|1–3, hanging on the cover Card) became its own branch `1|b` with the three abstract findings under it.
+- Old 3 named `§表` in its source line and index, but no Card of the 表 list exists; the line and the label were dropped (source line now `§I`).
+- Old 4 was the §II preamble and II.A: demoted. A new §II summary took its place; old 4\|b (the §II preamble, source §II) became `3|a`; its Direct chain (II.A) moved to old 4, now the II.A head `3|b` (title `A. …`, the `§II -` line and the `§II.A -` index line dropped, source line `§II.A`).
+- Old 5 (II.B, B.1) and old 6 (II.C) moved under the §II summary. B.2 has no reading note of its own (its content is the linear LP specification inside the model); the II.B summary names B.2 and links the specification card `3|e|a|2|a`.
+- Old 6\|a (the empirical model) had a Direct chain of 13 reading notes (C.1–C.3, plus one Side card), which the outline counted with the model (176). The model moved `side_of` the §II summary, and the chain stayed under II.C as `3|d|a` (check.mjs: "176 Cards before, 161 now" for the unit; the 15 Cards are reading notes, not members; the model's members are unchanged, 163).
+- Old 7 led III and III.A: demoted. A new §III summary took its place; old 7 is the III.A head `4|a` (title `A. …`, source line `§III.A` added, its position line made true).
+- Old 8 (III.B preamble + B.1 + B.2 on one chain) was rewritten as the III.B summary `4|b`; its preamble old 8\|i stays first (`4|b|a`); the B.1 and B.2 parts of its chain became Side branches `4|b|b`, `4|b|c`, each with its findings.
+- Old 9 held B.3 and B.4 (six Cards against two): the head went to B.3 by majority and was trimmed to B.3 (`4|b|d`; the B.4 sentences are in `4|b|e|1`, which states them); the B.4 chain (old 9\|h\|5–6) became `4|b|e` with its finding.
+- Old 10 held B.5 (four Cards) and §IV (14 Cards and the model): the head went to §IV by majority and was trimmed to §IV (`5`); the B.5 chain (old 10\|b..b\|1) moved to III.B as `4|b|f` with its two findings; the §IV chain (old 10\|b\|2–6) closed up under `5`.
+- Old 11 held 五、结论 (four Cards) and 图与表 (25): the head went to 图与表 by majority (`7`, conclusion paragraph and `五、结论` index line dropped; the conclusion text is in `6` and `6|a`); old 11\|a (the conclusion's first Card, §五) became the top Card `6` with its chain and its finding as Side branches.
+- Old 12 (附录): its A1–A3 chain was cut into three Side branches (`8|a`, `8|f`, `8|g`), each table finding under its table.
+- Whole units: each model moved once with all its parts. 6\|a → `3|e` (163 members, 3 shared), filed as the last Side branch of the §II summary, where its data, identification and main results are; it also holds §III and §IV chapters. 10\|a → `5|h` (9 members), last Side branch of §IV. Term list 98 and Cited list 46 Cards, unchanged.
+
+Calls that could go the other way: II.C's subsections C.1–C.3 and II.B's B.1 have no lead of their own (C.1–C.3 are one Direct chain of reading notes with the findings flat beside it; B.1 runs on from the II.B preamble), and the II.B and II.C summaries index the first Card of each; 6\|a filed under §II rather than as a top Card; 图与表 kept as one top Card (the source's own heading) with its figures on one chain; old 9 given to B.3 by Card count.
+
+### Summary leads and other text
+
+- `leads.mjs`: demotes `3` (§II), `4` (§III); rewrites `1` (前置页), `3|c` (II.B), `3|d` (II.C), `4|b` (III.B), `8` (附录). Each has the source's name and main claim as title, one paragraph that walks the subdivisions, `小节索引：` with a Link to each subdivision head, `在全书中的位置：` and the source line; `leads.mjs` turned Term names into Term uses. Two position Links that leads.mjs read as "the division" (II.B's and III.B's "上一节" Link to `3` and `4`) were turned to the A heads `3|b` and `4|a` in the text batch.
+- Hand edits (text batch): titles with the section number on `2` (I.), `6` (V.), `4|b|d` (B.3), `5` (IV.), `7` (图与表); trimmed heads `4|b|d`, `5`, `7`; position lines made true in `2`, `3|b`, `4|a`, `6`, `1|c`; Links that meant a narrower division turned to it: `4|b|d|h` → B.2 `4|b|c`, `4|b|d|h|4`, `4|b|e|1`, `8|f` → B.1 `4|b|b`, `1|c`, `1|c|a` → the abstract `1|b`.
+- Source lines: 29 Finding Cards named their old group head as source Link (`来源：[[…/4|b]] §B.1`); after the moves these are no longer anchors (zt-check F2). All 29 now link the book root with the full label (`来源：[[furceri2026divide]] §III.B.1`, `§II.C.2`, …); `6|b` now links `6`.
+- The root index lists the ten top Cards (the old 12-group list named digest groups). The structure Card `1|d` lists the eight parts and the two models only (its old model list named 6\|a's chapters as models, stale since the fold).
+- `zt-check --cards` on the root, the structure Card and the 52 written Cards: first run `faults: 10` (R2/R3 in new lines of the root and `1|d`), fixed once; second run `faults: 0` (advisory L1/L2/I4 lines only).
+
+### Chart targets
+
+In `C:\Users\chenx\.claude\skills\zt-model-illustrate\modules\furceri2026divide-10_a.mjs` the `head` is now `furceri2026divide/5|h` and `EMP` (the empirical model the first-stage box opens) `furceri2026divide/3|e`, each with a comment naming the old address; every target is built from these two constants. The file name stays. `apply.mjs`: `same` on all 3 Cards (zt had already rewritten every `data-zt` target with the moves). No other Card of the book holds a chart. Gate: `verify.mjs --model furceri2026divide/5|h` (light and dark): `3 chart(s) in 10 card(s); 0 lint fault(s); 0 card(s) without a figure; 0 setting card(s) without a full 直觉`; 0 dead targets (29 `data-zt` targets in the three Cards, all live).
+
+### Gate
+
+All lines below are the reruns after the Term relink.
+
+- `check.mjs furceri2026divide`: top line 1 前置页 (16), 2 I. 引言 (15), 3 II. 对公共债务的影响与传导渠道 (206), 4 III. 异质性分析 (42), 5 IV. 债务预测分布 (24), 6 V. 结论 (4), 7 图与表 (26), 8 附录 (9), 9 Term list (98), 10 Cited list (46); `no fault`. Against the start snapshot: `485 Cards before, 487 now`.
+- Source-line walk (every Card with a source line, model parts excluded): every Card stands under its own top division, and every second- and third-level branch holds only its own subsection's labels (3\|b §II.A; 3\|c §II.B/B.1; 3\|d §II.C.1–3; 4\|a §III.A; 4\|b\|a §III.B; 4\|b\|b–f §III.B.1–B.5; 5 §IV; 6 §五; 7 图与表; 8\|a, f, g 表 A1–A3). No crosser left.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- `check-model.mjs`: `3|e` `members 163 {"main":15,"side":142,"shared":3,"off":3}`, `relations {"rests-on":154,"refers":261,"corresponds":3,"illustrates":12}; loose 0; self_sufficient true`; `5|h` `members 9 {"main":2,"side":7}`, `relations {"refers":7,"rests-on":9}; loose 0; self_sufficient true` (as at stages 5–6).
+- `check-network.mjs`: `network: clean` on both. `check-settings.mjs`: `3|e` `settings: the data tree and the specification ladder are in place`; `5|h` `settings: all in the setting part, as a dependency tree` (the advice line of stages 3–6). `imports.mjs check`: both `take what they use from other models by import lines`.
+- Chart verify: see **Chart targets**.
+- Term relink: `{"applied":true,"links_added":29,"ok":true,"cards_refused":0,"rounds":1,"cards_changed":4,"links_repaired":0}`; `-PlanOnly` afterwards: `{"cards_changed":0,"applied":false,"links_added":0,"rounds":0,…}`. No relink bug.
+
+## Result
+
+Final top line: 前置页 · I. 引言 · II. 对公共债务的影响与传导渠道 · III. 异质性分析 · IV. 债务预测分布（在险债务） · V. 结论 · 图与表 · 附录 · 术语表 · 参考文献. 487 Cards.
+
+Models (final addresses):
+
+- `furceri2026divide/3|e`, empirical (level 3): the effect of a GFI structural shock on public debt (panel SVAR first stage, local projections; data tree, design with 15 assumptions, specification ladder, twelve chapters from the abstract to §IV), 163 members (3 imported: the setting block `5|h|a` of the formal model); filed as the last Side branch of the §II summary.
+- `furceri2026divide/5|h`, formal (level 2): the location–scale quantile regression of §IV (setting, notation, assumption, one chapter with the result and its two-step proof), 9 members, illustrated (3 charts); lends `5|h|a` to `3|e`; filed as the last Side branch of §IV.
+
+All seven stages passed their gates. Open items across the sequence (addresses as they now stand):
+
+1. `3|e|a|2|d` (IV-SVAR) keeps the digest's short form $\mathrm{shock}_{t}=\pi Z_{t}+\nu_{t}$ beside the source's internal-instrument form; it does not match §II.B.1 and waits for the owner (stage 2).
+2. Two notations side by side in 3\|e's ladder (bold and plain $c$, $Y$); the 变量表 names both (stage 2).
+3. Some estimate cards keep source-file pointers (`s10.md:7`) inside 估计量 and 量级; 第 1 章 has no estimate card of its own (stage 3).
+4. `3|e|a|2|a|b` writes (5) in full beside the imported setting `5|h|a` (owner rule on 规格 equations); it could become `沿用 [[5|h|a]] 的式 (5)` if the owner prefers. (5) mixes $\tau_q(u_i)$ and $\tau_q(v_i)$ as the source does (stage 4).
+5. Three R3 faults (semicolons) in the existing text of `5|h|a` and `5|h|a|b` (stage 5).
+6. No cross-book evidence pair for `3|e`: survey again after a zt-term-sync pass on the economics shelf (stage 6).
+7. Advice lines stay: check-settings on `5|h` (the chapter cites the assumption card by its Link); check-premises on `3|e` (9 pointer hits in the setting part: Table A1 columns, 假设 2, 5, 6) (stage 3).
+8. Stage 7: II.B's B.1 and II.C's C.1–C.3 have no lead of their own (see **Crossers**); the illustrate module keeps its file name `furceri2026divide-10_a.mjs` (head changed); the model part `3|e|a|11` keeps `对应 [[4|b]]` (now the III.B summary, which holds the income and exposure results it means), and `4|a|b|3` names `4|b` and `4|b|d` for the results; both stay true and were not touched.
