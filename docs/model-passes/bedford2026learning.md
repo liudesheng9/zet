@@ -256,3 +256,112 @@ Cards per model subtree, before → after: 3\|a 24 → 25, 6\|a 22 → 24, 10\|a
 4. 10\|a: chapters 3 and 4 hang under the setting block in the network (their derivations rest mostly on `d`, `e` and `c`), although their 承上启下 rests on 第 2 章; the network is clean. Two restatements stay inside proof chains: (C15) `3|a|4|a|5` beside `3|a|3`, and the App. C.C proposition `4|a|1|b|4` beside the bullet of `4|a|1`.
 5. Step 3 card text was not redrafted: result and derivation cards keep their digest bodies (no `**为什么**` section on most results), the old chapter cards keep their 问题/概要/关联 text below the new sections, and the merged appendix chapter texts stand under `**附录 C.x 的概要**` headings.
 6. Tree unlocked throughout; no `card_locked` met.
+
+## Stage 4: imports and explanations
+
+Date 2026-11-21, live box (owner asleep, overnight authority: every decision below was taken without asking and is recorded here), under `zt-model-import` steps 1–8, done in one side session by scripts (no subagent; no DeepSeek job, see step 8, so no DeepSeek cost). Backup: `D:\zt\backups\zt-before-bedford2026learning-imports.sqlite3` (`VACUUM INTO` through `node:sqlite` read-only, `PRAGMA integrity_check` ok). Hand text ran as `edit_card` calls under `-Allow` (bedford2026learning Cards only), one Card at a time, 38 writes on 34 Cards: before each write a script compared the display formulas and the equation numbers (`\tag{…}`, `\quad (N)`, `(Cn)`) of the old and new bodies and allowed a display to disappear only when it was named in the write's spec; every written Card was read back (`same` on all). Import lines: 22 written by `imports.mjs apply` as premises (`单卡`), 12 of them upgraded to `整块` by a second `apply`, then their text after `：` rewritten by hand to say what the model uses. One script fault on our side: the shell collapsed `\\` in a heredoc, so the first write of `10|a|a|c` had `$sigma_y^2$`, `gg`, `lambda`; `check-settings` caught it (uncovered letters) and the next write restored `\sigma`, `\gg`, `\lambda`. No `card_locked`, `scope_refused` or `read_view_changed` error occurred.
+
+Before any edit: `check` exit 1 on 3\|a (legacy share: the Model Card's **关联** Link to 10\|a's 第 5 章 `10|a|a|5`), exit 0 on the other eleven; `plan` proposed only that line. False shares on 10\|a (`3|a|a|3`), 11\|b (`10|a|a|3`), 13\|c (`10|a|a|5`), 13\|d (`10|a|a|4`, `10|a|a|5`); every hypothesis named its theory with `参照`, so no premise reached another model. Order: 3\|a, 5\|a, 6\|a (lenders), then 10\|a, then the empirical tests.
+
+### 3\|a (formal, framework)
+
+- No import. The legacy share was not a premise (nothing in 3\|a rests on `10|a|a|5`): the **关联** line now reads `参照 [[10|a]]，状态演变的形式写法（两状态马尔可夫过程）见学习模型的第 5 章。` (a Link between Model Cards, no member). The stale line `对照 [[3|a|a|3]]，任命后学习不在本卡，本卡只到任命时点` (wrong since stage 3 moved the chapter in) now reads `参照 [[3|a|a|3]]，任命后的学习在第 3 章。` Legacy shares 1 → 0, members 17 → 16, loose 1 → 0.
+- Copy advice judged, comparisons, not copies: `3|a|a|1` ~ `10|a|a|1` and ~ `10|a|a|4`; `3|a|a|3` ~ `10|a|a|4` and ~ `10|a|a|7`. They come from `对应` lines in the chapters' old **关联** text. 3\|a's chapters state the framework in words for both the board and the market; 10\|a's chapters derive the market half formally (stage 1: the two models stay two). Left as advice.
+- Decision: 10\|a imports nothing from 3\|a either. Both setting cards write the binary latent state and the prior, each as a primitive of its own model; 10\|a uses none of 3\|a's board, frictions or selection rule.
+- 3\|a now lends `3|a|a|1|a|1` (结论：三个可检验方向) to 8\|a, 9\|a, 9\|b, 13\|c, 13\|d and `3|a|a|2|b` (结果：摩擦的两条渠道) to 13\|a, all `单卡`.
+
+### 5\|a (empirical, variance decomposition)
+
+- No import; `check` exit 0, `plan` `nothing to import`. It lends the specification `5|a|a|2` (方程 (2)) to 6\|a.
+
+### 6\|a (formal, DDF measurement)
+
+- Decision: 6\|a takes the decomposition (2) from 5\|a. The setting card's item 6 uses its symbols ($\alpha_t$, $\delta_j$, $\eta_m$, $\xi_{mj}$) and 第 2 章 strips its year and firm terms. The setting card's **起点** gained `依赖 [[5|a|a|2]]：第 6 项的分解符号取自它的方程 (2)（经 **引入**）。` (item 6 keeps its `参照 [[5|a]]`). `plan`: `premise: 单卡 [[5|a|a|2]]`; `apply`: `wrote 1 import line(s); tolerated 0 -> 2`. Line: `单卡 [[5|a|a|2]]：方程 (2) 把资产收益率分成年份、企业、管理者与匹配四个成分；设定第 6 项沿用它的符号，第 2 章按它逐项剥离年份项与企业项`.
+- **Decision: the line stays `单卡`; the `整块` upgrade that `plan` proposes was not applied.** It would bring 5\|a's data card and design (`5|a|a`, `5|a|a|1`) into a formal measurement model that uses only the equation's decomposition, by the same rule as a formal model that takes an estimate (`单卡`). Tolerated 2 (`5|a|a`, `5|a|a|1`); `plan` keeps proposing the upgrade (advice, not a check fault).
+- Symbols: 6\|a's notation card already lists the four components; `check-settings` clean, no `沿用` line.
+- 6\|a now lends `6|a|a|2|b` with its closure (the whole model) to the eight empirical models that use the score.
+
+### 10\|a (formal, Bayesian learning model)
+
+- No import. The false share `对应 [[3|a|a|3]]` in the Model Card's **关联** now reads `对应 [[3|a]]：框架的第 3 章写董事会一侧，用同一贝叶斯逻辑更新，但信息集不同。` False shares 1 → 0, members 63 → 62, tolerated 2 → 0.
+- Copy advice judged: `10|a|a|1` ~ `3|a|a|1` (as above); `10|a|a|4` ~ `11|b|a|7` (a theory chapter and the empirical chapter that tests it, joined by the old `对应` text). Left as advice.
+- **Stage 2 leftover (C2), (C4)–(C6), decided.** Inside one model the copy rule applies where a card rests on another and restates it with no change; a display was removed only when the same formula, with the same entries and conditions, stays in the card it rests on.
+  - (C2): kept once, in the setting card `10|a|a` (item 8, the App. C.A writing, where the notation card says $P$, $P_{G\to G}$, $P_{B\to G}$ are first met). Variant two `10|a|a|e` (item 2, `pmatrix` with `\tag{C2}`) and the variance mapping `10|a|a|g` (item 2, `bmatrix` without the final period) restated it: both now say `转移矩阵是设定卡 [[10|a|a]] 第 8 项的 (C2)`; `e` keeps that both probabilities lie in the open interval $(0,1)$ and its reading of the two rows; `g` adds `（变体二 [[10|a|a|e]] 沿用它）`. Bracket style and tag form are the only differences lost.
+  - (C4): kept once, in the setting card (item 4). The assumption card `10|a|a|c` (item 1) restated it identically; it now says `附录 C 还设两类匹配下绩效同方差 $\sigma_y^2$，即设定卡 [[10|a|a]] 第 4 项的 (C4)。`
+  - (C5)(C6): **both copies kept.** The setting card's display carries the definitions $\Pr(X_t=1\mid G)\equiv q_G(t)$ and $\Pr(X_t=1\mid B)\equiv q_B(t)$; the assumption card's display carries $q_G(t)\gg q_B(t)$ and $\lambda>0$. Neither holds the other's content, so neither is a restated copy. The assumption card's **说明** now says which card writes which part.
+  - `check-settings 10|a` after the writes: `settings: all in the setting part, as a dependency tree`.
+- 10\|a now lends `10|a|a|e` (with closure `10|a|a`, `10|a|a|c`) to 13\|c and 13\|d; `10|a|a|3|a|1`, `10|a|a|3|a|4`, `10|a|a|4|a|1` (`单卡`) and `10|a|a|6|a|4`, `10|a|a|7|a|5` (`整块`) to 11\|b.
+
+### Empirical models: the predictions they test
+
+Each `假说：` part now rests on the theory's result (`依赖` in place of `参照`, with `（经 **引入**）`), and the result is imported `单卡`; `plan` proposed no upgrade for these, as the skill says for a result only 假说 parts rest on.
+
+| Model | Hypothesis | Rests on (单卡) | Replaced |
+|---|---|---|---|
+| 8\|a | `8|a|a|1` | `3|a|a|1|a|1` first direction (turnover) | `参照 [[3|a]]` |
+| 9\|a | `9|a|a|1` | `3|a|a|1|a|1` first direction (pricing) | added; `参照 [[9|c]]` kept |
+| 9\|b | `9|b|a|1` | `3|a|a|1|a|1` first direction (pricing) | `参照 [[3|a|a|3]]`; `参照 [[10|a]]` kept |
+| 13\|a | `13|a|a|1` | `3|a|a|2|b` two channels | `参照 [[3|a]]` |
+| 13\|c | `13|c|a|1` | `3|a|a|1|a|1` third direction (frictions → initial match; transitions → environment) | `参照 [[3|a]]` |
+| 13\|d | `13|d|a|1` | `3|a|a|1|a|1` third direction (transitions → environment) | `参照 [[10|a|a|4]]` |
+| 11\|b | `11|b|a|1` 假说一 | `10|a|a|3|a|1` (convergence, volatility falls), `10|a|a|3|a|4` (asymmetric learning) | `参照 [[10|a|a|3]]` |
+| 11\|b | `11|b|a|1` 假说二 | `10|a|a|4|a|1` (transition risk keeps uncertainty) | `参照 [[10|a|a|4]]` |
+| 7\|a | `7|a|a|1` | `6|a|a|2|b` (the residual is the match-quality proxy), inside the `整块` import below | `参照 [[6|a]]` |
+
+Decisions: the 8\|a, 9\|a, 9\|b hypotheses test the framework's first direction (match quality enters the board's turnover decision and the investors' pricing), not 3\|a's 第 3 章, which only says beliefs keep updating; 13\|c's null and 13\|d's conjecture test the third direction (`3|a|a|1|a|1` states both halves: initial match ~ frictions, transitions ~ environment). 13\|d's conjecture is the authors' own (`这是作者的猜想`), so it rests on the framework direction and on the transition process (below), not on a 10\|a result.
+
+### Empirical models: the shared measure and the theory's mappings
+
+- **The match-quality score (all eight score users).** The two-stage DDF score of 6\|a is a measure shared by 7\|a, 8\|a, 9\|a, 9\|b, 11\|b, 13\|a, 13\|c, 13\|d. Each model's first measure card that uses it gained `依赖 [[6|a|a|2|b]]：匹配质量得分是 DDF 度量模型第 2 章的残差化效率（经 **引入**）。`: `8|a|a|b`, `9|a|a|b`, `9|b|a|c`, `11|b|a|c`, `13|a|a|b`, `13|c|a|b`, `13|d|a|b`. `plan` round 1: `单卡 [[6|a|a|2|b]]`; round 2: `upgrade: 整块 [[6|a|a|2|b]]` (closure: the setting card, the notation card, 第 1 章 with its result and proof chain, 第 2 章, the first stage; +6 members besides the root). Round 3: `nothing to import`.
+- **7\|a (copy turned into a variant).** `7|a|a|c` (测量：方向距离函数的相对效率，再对固定效应残差化) restated 6\|a's construction (第 1–2 章). It now rests on `6|a|a|2|b` (**起点** `依赖 … 两阶段构造取自 DDF 度量模型的第 1、2 章（经 **引入**）`) and opens its **内容** with `本卡沿用引入的构造，只记附录 A 主做法的口径：前沿按同年度全部企业估计，第二阶段对企业固定效应残差化。`. The rest of the card (directions, $\theta_{mjt}=1-\beta^{*}_{mjt}$, $q_{mjt}$, the **直觉**) stays: it is the Appendix A main implementation that the robustness ladder `7|a|a|5` varies, and its symbols are 7\|a's 变量表 rows. Not deleted.
+- **11\|b, the theory's mappings.** 假设 1 `11|b|a|2|a` (volatility moves with uncertainty about match quality) now rests on `10|a|a|6|a|4` (收益方差与 $p(1-p)$ 成线性关系); 假设 4 `11|b|a|2|d` and the grouping measure `11|b|a|d` rest on `10|a|a|7|a|5` (任职期内方差是转换风险的仿射变换). Both imports were `单卡` in round 1 and `整块` after round 2 (closures: 第 6 章's proof chain with `10|a|a|f`, `f|a`, the setting card, +7; 第 7 章's chain with `g`, `g|a`, `e`, `c`, the setting card, +10). The Model Card's **关联** `参照 [[10|a|a|3]]：本模型检验它的两条预测` (false share) now reads `参照 [[10|a]]：本模型检验它第 3 章与第 4 章的预测（经 **引入**）`.
+- **13\|c, 13\|d, the transition process.** Their state measures (`13|c|a|b`, `13|d|a|b`) read the median split as the two states of 10\|a's variant two; each gained `依赖 [[10|a|a|e]]：好坏两个状态及其转移按学习模型变体二的两状态马尔可夫过程读（经 **引入**）`, and 13\|d's conjecture rests on `10|a|a|e` too. Import `整块 [[10|a|a|e]]` (closure: setting card and assumption card, +2). The Model Cards' Links to 10\|a's 第 4、5 章 (false shares) now name the Model Card: 13\|c `对应 [[10|a]]：两状态设定取自它的马尔可夫过程（变体二，经 **引入**）；它的第 5 章用同一组转移频率组织证据。`; 13\|d `参照 [[10|a]]：它的第 5 章…过程设定在变体二（经 **引入**）` and `参照 [[10|a]]：它的第 4 章…给出转换风险的来源`.
+- **Decision: no import of 10\|a's 第 5 章.** The chapter's conclusion and example (`10|a|a|5|a|1`, `|1|a`) state Table 9 panel A and Table 10 numbers that 13\|c's description `13|c|a|c` and 13\|d's estimates also state: the formal model holds the §VI.B evidence. Importing the chapter into 13\|c or 13\|d would make those numbers members twice; importing 13\|c/13\|d parts into 10\|a would make the two sides lend to each other. The premise both tests use is the state process (`10|a|a|e`), which is imported. Left open (below).
+- Symbols (step 6): every empirical model keeps its 变量表; the imported notation cards count as the models'; `check-settings` clean on all nine, no `沿用` line.
+
+Import lines after the pass (text after `：` rewritten by hand to say what the model uses):
+
+| Model | Lines | Members (main/side/shared/off) | Tolerated before → after |
+|---|---|---|---|
+| 7\|a | 整块 6\|a\|a\|2\|b | 77 (9/60/7/1) | 0 → 1 |
+| 8\|a | 单卡 3\|a\|a\|1\|a\|1; 整块 6\|a\|a\|2\|b | 33 (6/18/8/1) | 0 → 2 |
+| 9\|a | 单卡 3\|a\|a\|1\|a\|1; 整块 6\|a\|a\|2\|b | 35 (6/20/8/1) | 0 → 2 |
+| 9\|b | 单卡 3\|a\|a\|1\|a\|1; 整块 6\|a\|a\|2\|b | 32 (7/16/8/1) | 0 → 2 |
+| 11\|b | 单卡 10\|a\|a\|3\|a\|1, 10\|a\|a\|3\|a\|4, 10\|a\|a\|4\|a\|1; 整块 10\|a\|a\|6\|a\|4, 10\|a\|a\|7\|a\|5, 6\|a\|a\|2\|b | 79 (8/42/28/1) | 2 → 7 |
+| 13\|a | 单卡 3\|a\|a\|2\|b; 整块 6\|a\|a\|2\|b | 39 (6/23/8/2) | 0 → 4 |
+| 13\|c | 单卡 3\|a\|a\|1\|a\|1; 整块 6\|a\|a\|2\|b, 10\|a\|a\|e | 35 (6/17/11/1) | 2 → 2 |
+| 13\|d | 单卡 3\|a\|a\|1\|a\|1; 整块 10\|a\|a\|e, 6\|a\|a\|2\|b | 33 (6/15/11/1) | 3 → 2 |
+| 6\|a | 单卡 5\|a\|a\|2 | 12 (3/8/1/0) | 0 → 2 |
+
+What stays tolerated: the premises of the `单卡` hypothesis imports (`3|a|a|1|a`; `3|a|a|2|a`, `|2|b|a`, `c`; 10\|a's `3|a`, `2|b`, `3|a|3`, `3|a|4|a|5`, `|a|6`, `4|a`), which a test does not take, and in every score user `5|a|a|2`, the premise of 6\|a's setting card that a `整块` import of 6\|a does not carry (a lender's own imports stay with the lender, as in ozhan2026monetary 13\|a).
+
+### Cross-book blocks
+
+None written. `plan` proposed none, and no part of the twelve models rests on another book's Card. The cross-book Links stay comparisons (grossman2002integration/4\|a\|a on 3\|a; assenza2026louder/5\|b\|c\|8 and atkinson2015lectures/14\|d\|a\|d\|1 on 10\|a; brandimarti2026reorganizing/6\|d\|a\|6 and hansen2021demand/1\|b\|10 on `3|a|a|1`; hansen2021demand/2\|a on `3|a|a|3`; gomezcram2026government/9\|a\|2 on `10|a|a|5`; liu2026managing/11\|a\|1 on 6\|a; goldsmithpinkham2020bartik/2\|c\|b\|3 on 11\|b; arrocannarsa2026flight/10\|i\|a\|7 on 13\|d), left for the evidence dialogue.
+
+### Explanation refresh (step 8)
+
+- `explain.mjs plan`: `nothing to explain` on all twelve heads (`parts: 0, jobs: []`). The Derivation parts of 10\|a (and 3\|a's, 6\|a's) already carry **思路**/**解读** whose position lines match their chains after stage 3 (checked by hand on `10|a|a|2|a|b`, `第 1 张，共 2 张`, and `10|a|a|7|a|3`, `第 2 张，共 3 张`); the empirical models have no `推导：估计式` part that lacks them. No estimate's premise changed its content (the new `依赖` lines name the theory a hypothesis or measure already named in words), so no **量级**/**为什么** was reread.
+- No DeepSeek conversation was started: no job, no cost, nothing to delete and no DeepSeek workspace to remove. The twelve local work folders (`%TEMP%\zt-model-explain\bedford2026learning-*`) were deleted.
+- `explain.mjs finish`: exit 0 on all twelve (`explained 0 part(s); Term links changed 0 Card(s), second plan 0; left 0; refused 0`).
+
+### Gate
+
+- `imports.mjs check`: exit 0 on all twelve. `plan`: `nothing to import` on eleven; on 6\|a it proposes `upgrade: 整块 [[5|a|a|2]]`, not applied (decision above).
+- `get_model`: `self_sufficient: true` on all twelve; `false_share` empty on all twelve; no `closure`, `forward`, `reach_in`, `unanchored`, `import_target` or `import_cycle` fault; loose 0 on all twelve (3\|a 1 → 0, 13\|c 1 → 0). Members: 3\|a 16, 6\|a 12, 5\|a 22, 10\|a 62, and the empirical models as in the table.
+- `check-settings.mjs`: 3\|a, 6\|a, 10\|a `settings: all in the setting part, as a dependency tree`; the nine empirical models `settings: the data tree and the specification ladder are in place`.
+- `check-network.mjs`: `network: clean` on all twelve.
+- `explain.mjs finish`: exit 0 on all twelve.
+- `list_broken_links` (agent): `{"broken":[]}`.
+- Term relink: `{"cards_refused":0,"cards_changed":16,"links_repaired":0,"rounds":1,"applied":true,"book":"bedford2026learning","links_added":32,"ok":true}`. `check`, `get_model` and the comparison below were rerun after it and stay as listed.
+- Whole-book comparison with the backup (Term macros stripped): 867 Cards before and after; 57 Cards changed (the 34 hand-written Cards, the 9 Model Cards with import lines among them, plus lender and Term Cards whose regenerated back-link lists changed; no other text changed). Display formulas 1,194 → 1,191 (distinct 1,087 → 1,085): lost exactly the three restated copies above (`10|a|a|e` (C2), `10|a|a|g` (C2), `10|a|a|c` (C4)), nothing added. Equation tags 139 → 136: lost `\tag{C2}`, `\quad(C2)`, `\quad(C4)` with those displays; (C2) and (C4) still stand in the setting card. Estimate sections (**估计**/**值**/**量级**) 182 → 182, identical.
+
+### Open
+
+1. 10\|a's 第 5 章 (`10|a|a|5`, §VI.B) holds evidence: its conclusion `5|a|1` and example `5|a|1|a` state the Table 9 panel A frequencies that 13\|c's description `13|c|a|c` states, the friction null of 13\|c and the Table 10 rates of 13\|d. A later pass could make the chapter rest on those parts (a formal model citing estimates imports them `单卡`) or move the numbers to the empirical models; no import was written because either direction would make the models lend to each other.
+2. 6\|a imports `5|a|a|2` `单卡` by decision (tolerated 2; `plan` keeps proposing the `整块` upgrade). Every score user therefore tolerates `5|a|a|2` through 6\|a. If the owner wants tolerated 0, either 6\|a takes 5\|a's specification block whole or the eight models add `单卡 [[5|a|a|2]]`, which they do not use.
+3. (C5)(C6) still stand in two cards of 10\|a (setting card: the defining identities; assumption card: the ordering and $\lambda>0$); each holds content the other lacks.
+4. Copy advice left as judged comparisons: 3\|a\|a\|1 ~ 10\|a\|a\|1, 10\|a\|a\|4; 3\|a\|a\|3 ~ 10\|a\|a\|4, 10\|a\|a\|7; 10\|a\|a\|4 ~ 11\|b\|a\|7. They come from `对应` text in old **关联** paragraphs of the chapter cards (stage-3 open item 5).
+5. For stage 5 (illustrate the formal models 3\|a, 6\|a, 10\|a): the blocks they lend are their own parts and are illustrated in the home model; 6\|a's setting card now rests on 5\|a's equation (2), which a figure of the setting can show as an imported input. 10\|a's variant two and variance mapping now point to the setting card's (C2) instead of writing it.
+6. For stage 6 (evidence dialogue of the nine empirical models): the hypotheses now rest on imported results, so 印证/反驳 Links from estimates to hypotheses can name the theory's result through the import; the cross-book comparisons listed above wait for it.
+7. Stage-3 open items 4–5 stay. Tree unlocked throughout; nothing committed (stage brief).
