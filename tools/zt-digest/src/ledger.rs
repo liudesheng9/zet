@@ -6640,6 +6640,34 @@ fn detect_cycles(tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
+/// The state of the unit that superseded a `failed` prerequisite (its fault `{code: superseded, by}`),
+/// followed through later supersessions; `None` for any other prerequisite.
+fn superseded_successor_state(tx: &Transaction, state: &str, fault: Option<&str>) -> Result<Option<String>> {
+    let mut state = state.to_string();
+    let mut fault = fault.map(str::to_string);
+    let mut followed = false;
+    for _ in 0..16 {
+        if state != "failed" {
+            break;
+        }
+        let Some(text) = fault.as_deref() else { break };
+        let value: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+        let Some(by) = value["by"].as_str().filter(|_| value["code"] == "superseded") else { break };
+        let Some((next_state, next_fault)) = tx
+            .query_row("SELECT state,fault_json FROM units WHERE id=?1", [by], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })
+            .optional()?
+        else {
+            break;
+        };
+        state = next_state;
+        fault = next_fault;
+        followed = true;
+    }
+    Ok(followed.then_some(state))
+}
+
 /// Dependency waiting consumes no attempt. Aggregates wait for their explicit enumeration barrier.
 fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
     detect_cycles(tx)?;
@@ -6661,16 +6689,27 @@ fn reconcile(tx: &Transaction, now: i64) -> Result<()> {
         drop(statement);
         let mut changed = false;
         for (id, layer, state, retry_after, fault_class, previous_fault) in rows {
-            let mut deps=tx.prepare_cached("SELECT d.needs_id,d.condition,u.state FROM deps d JOIN units u ON u.id=d.needs_id WHERE d.unit_id=?1 ORDER BY d.needs_id")?;
+            let mut deps=tx.prepare_cached("SELECT d.needs_id,d.condition,u.state,u.fault_json FROM deps d JOIN units u ON u.id=d.needs_id WHERE d.unit_id=?1 ORDER BY d.needs_id")?;
             let deps = deps
                 .query_map([&id], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
+            // A prerequisite that a later plan revision superseded stands for the unit that replaced it
+            // (`fault.by`), followed to the end of the chain (bedford2026learning, 2026-11-21: the Term-link
+            // pass stayed blocked on `termcards/book@1` after `termcards/book@2` published every row).
+            let deps = deps
+                .into_iter()
+                .map(|(need, condition, state, fault)| {
+                    let state = superseded_successor_state(tx, &state, fault.as_deref())?.unwrap_or(state);
+                    Ok((need, condition, state))
+                })
+                .collect::<Result<Vec<_>>>()?;
             let failed = deps
                 .iter()
                 .filter(|(_, c, s)| c == "success" && matches!(s.as_str(), "failed" | "blocked"))
@@ -19878,6 +19917,31 @@ mod term_card_ledger_tests {
             .unwrap();
         assert_eq!((state.as_str(), fault.as_str()), ("failed", "{\"code\":\"check_failed\"}"));
         tx.commit().unwrap();
+    }
+
+    /// bedford2026learning (2026-11-21): the Term-link pass depended on `termcards/book@1`. A second plan
+    /// revision superseded it (`failed`, fault `superseded`, `by` `termcards/book@2`), so the pass stayed
+    /// `blocked` by `dependency_failed` after `termcards/book@2` published all 114 rows. A superseded
+    /// prerequisite stands for the unit that replaced it.
+    #[test]
+    fn a_superseded_prerequisite_stands_for_the_revision_that_replaced_it() {
+        let (_dir, conn) = ledger();
+        let tx = conn.unchecked_transaction().unwrap();
+        register_term_cards(&tx, &plan(1, &["剩余控制权"])).unwrap();
+        tx.commit().unwrap();
+        conn.execute("INSERT INTO units(id,layer,logical_key,revision,state,inputs_json,input_hash,created_at) VALUES('termlink/book@1','termlink','book',1,'registered','{}','h','now')", []).unwrap();
+        conn.execute("INSERT INTO deps(unit_id,needs_id,condition) VALUES('termlink/book@1','termcards/book@1','success')", []).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let next = register_term_cards(&tx, &plan(2, &["剩余控制权"])).unwrap();
+        assert!(next["superseded"].as_array().unwrap().contains(&json!("termcards/book@1")), "{next}");
+        super::reconcile(&tx, 0).unwrap();
+        let state: String = tx.query_row("SELECT state FROM units WHERE id='termlink/book@1'", [], |r| r.get(0)).unwrap();
+        assert_ne!(state, "blocked", "a superseded prerequisite is no failure while its replacement can still run");
+        assert_ne!(state, "ready", "the pass waits for the replacing revision");
+        tx.execute("UPDATE units SET state='done',completed_at='now' WHERE id IN ('termcards/t001@2','termcards/book@2')", []).unwrap();
+        super::reconcile(&tx, 0).unwrap();
+        let state: String = tx.query_row("SELECT state FROM units WHERE id='termlink/book@1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(state, "ready", "the pass runs once the replacing revision is done");
     }
 
     #[test]
