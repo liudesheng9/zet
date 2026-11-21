@@ -93,3 +93,40 @@ No number or formula the source states was changed (the source states none for t
 1. 第 3 章 holds `表 A1：附录事件分类` (`5|b|a|6|a`), which restates the coding table now in the data tree; the restructure decides the merge.
 2. The estimate `4|b` (broad money) says `反驳` the hypothesis ("介质的数量总量没有断点"); a flat broad-money median with a falling multiplier is not plainly a refutation of the four-channel prediction. Kept as the digest judged it; the restructure rewords only the sentence.
 3. The footnote idea card `5|b|b` stays a Side of the Model Card outside the model.
+
+## Stage 3: restructure
+
+Date 2026-11-21, live box, under `zt-model-restructure` (empirical form: the evidence spine), done in one side session by scripts (no subagent, no DeepSeek job, so no DeepSeek cost; chapter cards written by hand, estimate cards rebuilt by a script in the role format). Backup: `D:\zt\backups\zt-before-das2026domestic-restructure.sqlite3` (`VACUUM INTO`, `PRAGMA integrity_check` ok). One `apply_batch` (preview, `deleted` set compared, commit under the plan hash; `links_that_will_break` empty); text as 19 `edit_card` calls under `-Allow` (18 cards and the Model Card's **结构**), every card read back (0 differences). Before the write a script checked that no display formula and no image was lost, and listed every Link a card dropped: only the `见 [[第 k 章]]` lines of the ten estimate cards (a card filed under its chapter needs no pointer to it, as in furceri2026divide). No estimate number changed. No `card_locked`, `scope_refused` or `read_view_changed` error occurred. Tree 397 → 396 Cards (1 deleted `into`, 0 created).
+
+### 5\|b (empirical): the evidence spine
+
+```
+5|b|a     数据 (data tree as stage 2 left it) → |1 假说：四渠道 → |2 设计 (假设 1–5) → |3 规格：基准 (ladder)
+5|b|a|4   第 1 章：四个指标的中位数路径（§IV.A，图 2）   ← 规格      a 面板 A 15.5%; b 面板 B 12.7/12.8%; c 面板 C 98 → 93; d 面板 D −2 至 −5%
+5|b|a|5   第 2 章：离散与份额                          ← 第 1 章   a 面板 A 四分位距; b 面板 B 四分位距; c 60% (t+2); d 约四分之三
+5|b|a|6   第 3 章：异质性与稳健性                      ← 第 1 章, 编码表   a 货币框架：无稳健差异; b 多年期乘数约 90%
+5|b|b     (footnote idea card, outside the model);  5|b|c 局限
+```
+
+Network (`check-network.mjs`): 数据 → 假说 → 设计 → 规格 → 第 1 章 → {第 2 章, 第 3 章}; 8 blocks, 6 layers. Three chapters, so no **分部**.
+
+- **Duplicate merged:** `表 A1：附录事件分类` (`5|b|a|6|a`, in 第 3 章) restated the appendix coding table that stage 2 put into the data tree; it was deleted `into` the coding measure `5|b|a|c`, whose item 8 already names the two specifications the table's columns feed (the regime split and the duration split). Inbound Links re-pointed by zt; the two estimates of 第 3 章 moved up to `6|a`, `6|b`.
+- **Chapter cards** rewritten in the format **直觉** (a lead of 20+ characters stating the chapter's finding), **本章估计** (one pointer line per estimate, with its number), **承上启下** (`依赖` the baseline specification for 第 1 章, 第 1 章 for 第 2 and 3 章, and the coding table for 第 3 章; plain words for what comes next), 来源; none of the old one-line opening or the old short **直觉** stays.
+- **Estimate cards (10) redrafted:** one sentence; **估计** with 估计量 (its specification Link and `出自 §IV.A 正文与图 2 面板 X`), 值 (unchanged, `从原文抄录`), 不确定性 (the source reports no standard error or interval; Figure 2's band is the cross-case IQR, not sampling uncertainty), 显著性 (none reported; 第 3 章: "no robust differences" and "not statistically robust" in the source's words), 样本量 (panels A–D 15, 17, 15, 13 cases; the two splits 8/9 cases from the appendix table, with the note that the source gives no per-group count in panel C); **量级** and **为什么** kept; **依据** (`依赖` the specification, `识别见设计`); **对应** kept; 来源 with section and panel. The `反驳` line of the broad-money estimate kept its relation and target; its sentence was reworded ("介质的数量总量" was a translation slip for broad money).
+- **Setting part, text only:** a **直觉** lead was prepended to the data, hypothesis, design and baseline cards (the network's four `lead` faults of stage 2). The loose limits card got one plain reference line to the design and its 假设 5.
+- **结构** of the Model Card rebuilt from the build order (36 lines).
+
+### Gate
+
+- `check-model.mjs 5|b`: `members 36 {"main":7,"side":28,"off":1}`, `relations {"rests-on":20,"illustrates":9,"refers":53,"objects":1}; loose 0; self_sufficient true`; no closure, forward or unanchored fault.
+- `check-network.mjs`: `network: clean` (was 4 `lead` faults).
+- `check-premises.mjs`: `premises: none used before their card`.
+- `check-settings.mjs`: `settings: the data tree and the specification ladder are in place`.
+- `list_broken_links` (agent): `{"broken":[]}`; tree 396 Cards.
+- Term relink: `{"applied":true,"ok":true,"links_added":19,"rounds":1,"links_repaired":0,"cards_changed":12,"cards_refused":0,"book":"das2026domestic"}`. All checks above and `list_broken_links` rerun after it: unchanged.
+
+### Open
+
+1. Stage-2 open item 2 stays: the broad-money estimate `4|b` keeps `反驳` the hypothesis; the owner may prefer `对照`.
+2. No figure card for Figure 2: the image sits on the footnote idea card `5|b|b` outside the model; the estimate cards name the panel in 来源.
+3. Tree unlocked throughout; no `card_locked` met.
