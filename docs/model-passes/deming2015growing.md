@@ -67,4 +67,36 @@ All lines below are the reruns after the Term relink.
 
 1. The relink tool links 认知技能 inside 非认知技能 (21 places in this book before this stage, one more in `3|f`). The Term-use rule says a shorter Term inside a longer word is wrong, but the relink would restore any hand fix; this is a tool question, not fixed here.
 2. The unnumbered opening of §II and the title-only §IV have no source heading of their own; the opening is a Side branch `2|a` titled `II 开篇`, and §IV's new summary states that the source gives IV only a title.
-3. The model appendix (3.6–3.7) is still not in the digested source (§14.12); an appendix extension would add a division after VI.
+3. The model appendix (3.6–3.7) is still not in the digested source (§14.12); an appendix extension would add a division after VI. **Done 2026-11-21**, see "Online appendix" below. Item 1 is fixed in zt-digest 0.54.12 (a Term after a privative prefix stays unlinked) and the relink was rerun on every tree.
+
+## Online appendix (2026-11-21)
+
+The owner asked to include the appendix in the digest source and apply a fast fix. Full working records: `x/deming-appendix-formal.md`, `x/deming-appendix-empirical.md`, `x/deming-appendix-organize.md` (untracked scratch, not in the repository).
+
+### Source and extension digest
+
+- NBER data appendix `Deming_SocialSkills_APPENDIX_May2017_FINAL.pdf` (51 pages) went through pdf-ocr-bilingual and was archived on the book's Work (files 2413–2418, not shown). The bilingual appendix was appended to source file 1472 as divisions A (supplementary tables and figures), B (data appendix §1 O*NET, §2 Occ1990dd) and C (model appendix §1–§3); the appendix's own reference list is skipped as back matter. Backup `D:\zt\backups\source-normalize-2026-11-21\…before-appendix`; new SHA `808ea79a…`. Source check: one coverage flag (the title page) judged original; then 0 faults.
+- `zt-digest prepare -Extend` into `D:\zt-digest\deming2015growing-appendix` (groups 9–14), then zt-econ-digest mode resume (cited and Cited Cards off). The run left four gaps, closed one by one:
+  - `models/g013-m0000`: the Model Card `13|a` linked the main-text chapter `2|b|a|2` from its head (a false share). The brief counted the Link as a part and skipped the model as built, and the finish refused it with "no accepted plan". The Link was turned into plain text, the unit reopened, and mode models built it.
+  - Figures: 5 appendix figures had no explanation; zt-figure-explain on file 1472, then mode complete.
+  - `cards-book/book@2` stayed claimed after the model failure: `ledger reclaim -Release`, mode cards (0 hard faults left, 4 duplicates deleted).
+  - Cleanup failed twice: the Haiku manager ran the plan command itself, then the cleanup's own drive conversation stayed open. The conversation was deleted by hand and the unit settled with `zt-digest cleanup-finish -Ready` (the bedford2026learning recovery in workflow-principles).
+  - Run report: `complete: true` (824 Cards, 12 Model Cards, 51 derivations explained, 76 Terms).
+
+### Model passes
+
+- **Formal `2|b`** (40 → 83 parts): `12|a`, `13|a`, `14|a` folded in; 22 duplicates deleted into their twins. Where the main text had only a 补 reconstruction, the appendix proof was kept: (9), (10), (15), (16)(17). Chapter 3 gains the symmetric closed form (50)(51), the wages proof (52)–(60) and the cognitive × social complementarity proof (61)–(68). Chapter 4 carries the §3.6 proof (69)–(77) and the §3.7 proof (78)–(85) as Side branches of their results. New chapter 5 (lognormal source of γ, θ≈2σ). Settings: new 假设 3 (lognormal draws); the notation card maps appendix to main-text equation numbers. Explanation refresh: one DeepSeek job, 19 derivation parts. Illustrate: the new setting card has its figure and 直觉. check-settings, check-model, check-network, imports and verify clean; check-premises 13 hits, all appendix/main-text equation-number clashes.
+- **Empirical**: appendix Tables A.2–A.4 estimate equation (18) on the same NLSY79 person-years, so the appendix model was folded into `4|a|a` (now 92 parts; chapters 3 and 4; 假设 5–7). 23 spec cards got a 补写 estimating equation, six of them Table I variants that had said 书中没有写出估计式. Tables A.5–A.6 (census/ACS occupation cells) stay a model of their own, now `7|a|8|b`; it imports the prediction `2|b|a|1|b` (单卡), and its false-share Link to `2|b|a|3` is gone. The O*NET measures are a concept model, now `8|a|a` (fold only). Evidence dialogue: `4|a|a` 30 `对照` Links (against `5|b|a`, `5|c|a`); `7|a|8|b` 0 pairs. Cost about 5.2 CNY (official, an upper bound). All empirical gates clean.
+
+### Organize
+
+Top line now: 1 I. 引言, 2 II. 模型, 3 III. 数据, 4 IV. NLSY79 结果, 5 V., 6 VI. 结论, 7 在线附录 A 补充图表, 8 在线附录 B 数据附录 (8|a §1 O*NET, 8|b §2 Occ1990dd), 9 在线附录 C 模型附录 (9|a §1, 9|b §2, 9|c §3), 10 Term list (110), 11 Cited list (85). Two new summary leads (B, C); 797 Cards. No Card or Link deleted, no model split. `check.mjs` no structural fault; every model's checks clean; `list_broken_links` empty; backslash scan 0 hits; Term relink 0 changes on a second run.
+
+### Open items (appendix)
+
+1. The import of `7|a|8|b` could be `2|b|a|4|c` (the S*×θ time prediction) instead of `2|b|a|1|b`.
+2. 15 spec cards of `4|b|a`, `4|c|b`, `5|b|a`, `5|c|a` still lack an estimating equation (part of the open count in formal-estimating-equations).
+3. The installed `check-settings.mjs` does not flag a missing estimating equation.
+4. The evidence-dialogue judged record is keyed by address, so an organize that renames addresses makes it judge and pay for old pairs again.
+5. A Model Card whose head links another model's part makes the model brief skip it as built (this run's `13|a`); the brief could read a false share as no part.
+6. Appendix and main-text equation numbers clash at (7) and (12)–(17); the notation card maps them.
