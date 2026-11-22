@@ -7,6 +7,7 @@
 // estimate part of another empirical model, or a Finding Card of another book, whose text shares a Term with this
 // model's estimand (a Term link `[[label@address]]`, or a Term the zt-term-sync pass linked to it). A pair that
 // is already linked either way is never proposed again.
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -106,13 +107,29 @@ export function judgedKeys(records) {
   for (const r of records) {
     keys.add(`${r.from}>${r.to}`); keys.add(`${r.to}>${r.from}`)
     if (r.from_fp && r.to_fp) { keys.add(`#${r.from_fp}>${r.to_fp}`); keys.add(`#${r.to_fp}>${r.from_fp}`) }
+    if (r.from_sk && r.to_sk) { keys.add(`$${r.from_sk}>${r.to_sk}`); keys.add(`$${r.to_sk}>${r.from_sk}`) }
   }
   return keys
+}
+
+/**
+ * The statement key of one body: the statement with every Link kept in place but without its address, a Term link
+ * read as its label, the reverse-link block and the source lines dropped. The zt statement fingerprint keeps ordinary
+ * Links as written, so a move that rewrites the Links inside a statement changes it (deming2015growing, 2026-11-21);
+ * this key does not change, and a changed formula, value or word still does.
+ */
+export function statementKey(body) {
+  const text = String(body || '').replace(/\r\n?/g, '\n').split('<!-- zt:reverse-links -->')[0]
+    .replace(/\[\[([^\]@]*)@[^\]]*\]\]/g, '$1')
+    .replace(/\[\[[^\]]*\]\]/g, '[[]]')
+    .split('\n').filter((l) => !/^\s*(来源|出处|Source)\s*[：:]/.test(l)).join('\n').trim()
+  return crypto.createHash('sha256').update(text).digest('hex')
 }
 
 /** The pairs no earlier judgment answered, by address or by statements, numbered again. */
 export function unjudged(pairs, keys) {
   const known = (p) => keys.has(`${p.from}>${p.to}`) || (p.from_fp && p.to_fp && keys.has(`#${p.from_fp}>${p.to_fp}`))
+    || (p.from_sk && p.to_sk && keys.has(`$${p.from_sk}>${p.to_sk}`))
   return pairs.filter((p) => !known(p)).map((p, k) => ({ ...p, id: `p${k + 1}` }))
 }
 
@@ -146,7 +163,7 @@ export function pairsFor(ours, theirs) {
       if (!shared.length) continue
       const linked = linkTargets(o.body).includes(t.address) || linkTargets(t.body).includes(o.address)
       if (linked) continue
-      pairs.push({ id: `p${pairs.length + 1}`, from: o.address, to: t.address, from_fp: o.statement_fingerprint, to_fp: t.statement_fingerprint, kind: t.kind, shared })
+      pairs.push({ id: `p${pairs.length + 1}`, from: o.address, to: t.address, from_fp: o.statement_fingerprint, to_fp: t.statement_fingerprint, from_sk: statementKey(o.body), to_sk: statementKey(t.body), kind: t.kind, shared })
     }
   }
   return pairs
@@ -272,7 +289,7 @@ async function apply(head, out, answersFile) {
   const links = linksFromAnswers(pairs, answers)
   // Every answered pair goes into the box's judged record, whatever its verdict.
   const byId = new Map(pairs.map((p) => [p.id, p]))
-  const judged = answers.filter((a) => byId.has(a.pair)).map((a) => ({ from: byId.get(a.pair).from, to: byId.get(a.pair).to, from_fp: byId.get(a.pair).from_fp, to_fp: byId.get(a.pair).to_fp, same: a.same, kind: a.kind, verdict: a.verdict, head, at: new Date().toISOString() }))
+  const judged = answers.filter((a) => byId.has(a.pair)).map((a) => ({ from: byId.get(a.pair).from, to: byId.get(a.pair).to, from_fp: byId.get(a.pair).from_fp, to_fp: byId.get(a.pair).to_fp, from_sk: byId.get(a.pair).from_sk, to_sk: byId.get(a.pair).to_sk, same: a.same, kind: a.kind, verdict: a.verdict, head, at: new Date().toISOString() }))
   if (judged.length) {
     fs.mkdirSync(path.dirname(judgedFile()), { recursive: true })
     fs.appendFileSync(judgedFile(), judged.map((j) => `${JSON.stringify(j)}\n`).join(''))

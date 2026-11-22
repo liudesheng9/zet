@@ -264,6 +264,28 @@ test('an empirical model: the data tree and the specification ladder (docs/empir
   assert.equal(r.ok, false)
 })
 
+test('an empirical model: every specification states its equation in **估计式**; "书中没有写出估计式" is no answer', async () => {
+  const { auditEmpirical } = await import('./check-settings.mjs')
+  const H = 'K/4|a'
+  const o = (address, role, line = 'side') => ({ address, role, line, facet: role, title: role })
+  const m = {
+    level: 'empirical', head: { address: H },
+    build: { order: [o(H + '|a', 'data', 'main'), o(H + '|a|a', 'variables'), o(H + '|b', 'spec', 'main'), o(H + '|b|a', 'spec'), o(H + '|b|b', 'spec'), o(H + '|b|c', 'spec'), o(H + '|b|d', 'spec')],
+      variable_uncovered: [], estimate_unbound: [], spec_unbound: [], test_unbound: [], empirical_shape: [] },
+  }
+  const cards = new Map([
+    [H + '|a|a', { body: '| 变量 | 含义 |\n| --- | --- |\n| $y$ | 结果 |' }],
+    [H + '|b', { body: '**估计式**\n$$\ny = \\beta x\n$$\n\n**说明**\n…' }],
+    [H + '|b|a', { body: '**相对基准的改动**\n加入控制变量。\n\n**估计式**\n原书没有写出本规格的估计式。本卡按正文式 (1) 补写：\n$$ y = \\beta x + \\gamma z $$' }],
+    [H + '|b|b', { body: '**相对基准的改动**\n换样本。\n\n**估计式**\n书中没有写出估计式。' }],
+    [H + '|b|c', { body: '**相对基准的改动**\n换样本。\n\n**说明**\n同 $y$。' }],
+    [H + '|b|d', { body: '**相对基准的改动**\n加年份。\n\n**估计式**\n$y=\\beta x+\\delta_t$（补：书中未写）' }],
+  ])
+  const r = auditEmpirical(m, cards)
+  assert.deepEqual(r.equation.map((x) => x.card), [H + '|b|b', H + '|b|c', H + '|b|d'])
+  assert.equal(r.ok, false)
+})
+
 test('an empirical model: a Greek letter written in prose uses its 变量表 row', async () => {
   // becker2025division/6|g on the live box (2026-11-09): the 参数 cards write σ, γ and θ in prose, and the
   // check called the rows $\sigma$, $\gamma$ and $\hat \theta$ unused.

@@ -392,6 +392,7 @@ export function audit(m, cards, parents = new Map()) {
 //   unused          a 变量表 row whose symbol no card of the model uses
 //   variant_change  a specification variant with no **相对基准的改动** section
 //   spec_in_chapter a specification filed in a chapter: specifications live on the ladder under 规格：基准
+//   equation        a specification with no formula in **估计式**, or one that says the book writes none
 //   assumption      an assumption (假设 k) that is not a Side successor of the design card
 //   start           a sample, measure or descriptive card of the data tree with no **起点** section
 //   order           a card of the data tree that rests (依赖) on a card of the data tree a reader meets later
@@ -436,6 +437,16 @@ export function auditEmpirical(m, cards) {
     .map((o) => ({ card: o.address, fix: `${o.address} is a specification variant without **相对基准的改动**: state the one change against the specification it is filed under` }))
   const specInChapter = specs.filter((o) => chapters.some((c) => o.address.startsWith(c + '|')))
     .map((o) => ({ card: o.address, fix: `${o.address} is a specification filed in a chapter: move it onto the ladder, under the specification it changes (a chapter holds the estimates of a variant, never the variant)` }))
+  // Owner rule (2026-11-12): every specification, baseline and variant, states its equation in **估计式**; when the
+  // source writes none, the card composes it as 补写 (原书没有写出本规格的估计式。本卡按……补写：). A missing
+  // section, a section with no formula, or "书中没有写出估计式" / "书中未写" is a fault.
+  const equation = specs.flatMap((o) => {
+    const text = body(o.address)
+    const section = text.match(/^\s*\*\*估计式\*\*[^\n]*\n([\s\S]*?)(?=^\s*\*\*[^*\n]+\*\*\s*$|(?![\s\S]))/m)
+    if (/书中没有写出估计式|书中未写/.test(text)) return [{ card: o.address, fix: `${o.address} says the book writes no equation: compose it in **估计式** and open with 原书没有写出本规格的估计式。本卡按……补写：` }]
+    if (!section || !/\$[^$]+\$/.test(section[1])) return [{ card: o.address, fix: `${o.address} is a specification without an equation in **估计式**: write it (from the source, or as 补写 opening with 原书没有写出本规格的估计式。本卡按……补写：)` }]
+    return []
+  })
   const design = order.find((o) => roleOf(o) === 'design' && o.line === 'main')
   const parentOf = (a) => a.replace(/\|[^|]+$/, '')
   const assumption = order.filter((o) => roleOf(o) === 'assumption' && (!design || parentOf(o.address) !== design.address || /\|\d+$/.test(o.address)))
@@ -450,8 +461,8 @@ export function auditEmpirical(m, cards) {
     .filter((p) => dataTree.has(p) && at.get(p) > at.get(o.address))
     .map((p) => ({ card: o.address, premise: p, fix: `${o.address} rests on ${p}, which a reader meets later: reorder the data card's Side branches so ${p} comes first` })))
   const roles = ['empirical_shape', 'estimate_unbound', 'spec_unbound', 'test_unbound'].flatMap((k) => (m.build[k] || []).map((f) => ({ card: f.address, kind: k, fix: f.fix })))
-  const ok = !place.length && !uncovered.length && !unused.length && !variantChange.length && !specInChapter.length && !assumption.length && !start.length && !orderFaults.length && !roles.length
-  return { level: 'empirical', data: data?.address || null, variables: table?.address || null, place, uncovered, unused, variant_change: variantChange, spec_in_chapter: specInChapter, assumption, start, order: orderFaults, roles, ok }
+  const ok = !place.length && !uncovered.length && !unused.length && !variantChange.length && !specInChapter.length && !equation.length && !assumption.length && !start.length && !orderFaults.length && !roles.length
+  return { level: 'empirical', data: data?.address || null, variables: table?.address || null, place, uncovered, unused, variant_change: variantChange, spec_in_chapter: specInChapter, equation, assumption, start, order: orderFaults, roles, ok }
 }
 
 async function main() {
@@ -465,7 +476,7 @@ async function main() {
     const r = auditEmpirical(m, new Map(cards(order).map((c) => [c.address, c])))
     if (flag === '--json') { console.log(JSON.stringify(r, null, 2)); process.exit(r.ok ? 0 : 1) }
     console.log(`empirical model: data card ${r.data || 'none'}, 变量表 ${r.variables || 'none'}`)
-    for (const k of ['place', 'uncovered', 'unused', 'variant_change', 'spec_in_chapter', 'assumption', 'start', 'order', 'roles']) r[k].forEach((x) => console.log(`${x.kind || k}: ${x.fix}`))
+    for (const k of ['place', 'uncovered', 'unused', 'variant_change', 'spec_in_chapter', 'equation', 'assumption', 'start', 'order', 'roles']) r[k].forEach((x) => console.log(`${x.kind || k}: ${x.fix}`))
     console.log(r.ok ? 'settings: the data tree and the specification ladder are in place' : 'settings: faults above; move cards, never delete a Link')
     process.exit(r.ok ? 0 : 1)
   }

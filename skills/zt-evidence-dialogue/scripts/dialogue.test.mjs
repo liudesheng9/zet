@@ -1,7 +1,7 @@
 // node --test dialogue.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { termTargets, linkTargets, section, headTerms, estimateTerms, otherSide, judgedKeys, unjudged, judgedFile, widen, pairsFor, messages, withCorrespondence, linksFromAnswers } from './dialogue.mjs'
+import { termTargets, linkTargets, section, headTerms, estimateTerms, otherSide, judgedKeys, unjudged, judgedFile, statementKey, widen, pairsFor, messages, withCorrespondence, linksFromAnswers } from './dialogue.mjs'
 
 test('Term links and plain Links are read apart', () => {
   const text = '社交技能[[社交技能@A/1|c|3]]与企业规模[[企业规模@A/1|c|9]]，见 [[A/5|c]]。'
@@ -116,6 +116,23 @@ test('a judged pair is known by its two statements, so a move that renames both 
   assert.deepEqual(unjudged(pairs, record).map((p) => [p.id, p.to]), [['p1', 'L/6|a|a|4|d']])
   // A record without fingerprints (written before this rule) still answers by address.
   assert.equal(unjudged([{ id: 'p1', from: 'A', to: 'B', from_fp: 'x', to_fp: 'y' }], judgedKeys([{ from: 'B', to: 'A' }])).length, 0)
+})
+
+test('a judged pair is still known when a move rewrote the Links inside the two statements', () => {
+  // deming2015growing 2026-11-21: the organize moved group 9 to 7|a|8; every Link to a moved Card was rewritten, so
+  // the zt statement fingerprints (which keep Links as written) changed and judged pairs were judged and paid again.
+  const before = '估计：$\\beta=0.04$，见 [[D/9|a|a|2]] 与 [[样本@D/7|t]]。\n\n来源：[[D]] 表 A2'
+  const after = '估计：$\\beta=0.04$，见 [[D/7|a|8|b|a|2]] 与 [[样本@D/10|t]]。\n\n来源：[[D]] §A 表 A2'
+  assert.equal(statementKey(before), statementKey(after))
+  assert.notEqual(statementKey(before), statementKey(after.replace('0.04', '0.05')), 'a changed value is a new statement')
+  assert.notEqual(statementKey('见 [[A]]。'), statementKey('见。'), 'a Link stays in the statement, only its address is dropped')
+  const record = judgedKeys([{ from: 'D/9|a|a|3', to: 'E/5|b', from_fp: 'f-old', to_fp: 't', from_sk: statementKey(before), to_sk: 'k2' }])
+  const pairs = pairsFor(
+    [{ address: 'D/7|a|8|b|a|3', body: after, statement_fingerprint: 'f-new', terms: new Set(['T']), specific: true }],
+    [{ address: 'E/5|b', body: 'x', statement_fingerprint: 't', kind: 'estimate', own: new Set(['T']), head: new Set() }],
+  ).map((p) => ({ ...p, to_sk: 'k2' }))
+  assert.equal(pairs[0].from_sk, statementKey(after))
+  assert.equal(unjudged(pairs, record).length, 0)
 })
 
 test('the judged record belongs to one box', () => {
