@@ -29,7 +29,7 @@
     "workflow": {
       "base": "5.12.9",
       "zt-econ-digest": "6.12.10",
-      "zt-math-digest": "5.13.0",
+      "zt-math-digest": "5.13.1",
       "zt-history-digest": "1.1.10",
       "zt-idea-grow": "4.0.19"
     }
