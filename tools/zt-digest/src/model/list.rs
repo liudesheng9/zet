@@ -133,7 +133,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 /// The parts filed under the Model Card itself (`key/26|a|…`). `get_model` also names parts the model reads from
 /// elsewhere; becker2025division-appendix (2026-11-10): `26|a` had no part of its own, the listing counted 2, the
 /// planner skipped it as built while its unit stayed claimed, and the finish refused it with "no accepted plan".
-fn own_parts(head: &str, parts: &[&Value]) -> usize {
+pub(crate) fn own_parts(head: &str, parts: &[&Value]) -> usize {
     let prefix = format!("{}|", head.to_lowercase());
     parts.iter().filter(|p| s(&p["address"]).to_lowercase().starts_with(&prefix)).count()
 }

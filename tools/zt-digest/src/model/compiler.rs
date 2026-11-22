@@ -1992,10 +1992,7 @@ impl Compiler {
             // An unwritten placeholder keeps a model unbuilt even when it has many parts (R235).
             let todo = TODO_LINE.is_match(&s(&st["head"]["body"]))
                 || pipe(&st["parts"]).into_iter().any(|p| TODO_LINE.is_match(&s(&p["body"])));
-            let built = !list(&st["parts"]).is_empty()
-                && truthy(&st["build"]["self_sufficient"])
-                && list(&st["build"]["beyond_level"]).is_empty()
-                && !todo;
+            let built = built_as_is(&model, &st, todo);
             let same_level = self.p.level.is_empty() || (!st["level"].is_null() && ps::eq(&s(&st["level"]), &self.p.level));
             if built && !self.p.rebuild && same_level && !failed_build_elsewhere(&self.p.work, &model) {
                 skipped.push(model);
@@ -4318,6 +4315,34 @@ fn failed_build_elsewhere(work: &str, model: &str) -> bool {
         }
     }
     latest.is_some_and(|(_, status)| !ps::is_in(&status, &["built", "derived", "reviewed"]))
+}
+
+/// Whether the brief may skip a model as already built: parts of its own, self-sufficient, nothing beyond its
+/// level, nothing unwritten. deming2015growing/13|a (2026-11-21): the Model Card had no part of its own, but its
+/// head linked the main-text chapter `2|b|a|2`; `get_model` listed that chapter among `parts` (a false share), the
+/// brief skipped the model as built and the finish refused it with "no accepted plan". Only the parts filed under
+/// the Model Card count, as in the model listing (`list::own_parts`).
+fn built_as_is(model: &str, st: &Value, todo: bool) -> bool {
+    super::list::own_parts(model, &pipe(&st["parts"])) > 0
+        && truthy(&st["build"]["self_sufficient"])
+        && list(&st["build"]["beyond_level"]).is_empty()
+        && !todo
+}
+
+#[cfg(test)]
+mod built_tests {
+    use super::built_as_is;
+    use serde_json::json;
+
+    #[test]
+    fn a_model_whose_only_part_is_another_models_chapter_is_not_built() {
+        let st = |parts: serde_json::Value| json!({"parts": parts, "build": {"self_sufficient": true, "beyond_level": []}});
+        let shared = st(json!([{"address": "K/2|b|a|2"}]));
+        assert!(!built_as_is("K/13|a", &shared, false), "a false share is not a part of the model");
+        let own = st(json!([{"address": "K/13|a|a"}, {"address": "K/2|b|a|2"}]));
+        assert!(built_as_is("K/13|a", &own, false));
+        assert!(!built_as_is("K/13|a", &own, true), "an unwritten part keeps the model unbuilt");
+    }
 }
 
 #[cfg(test)]
