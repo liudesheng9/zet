@@ -23,9 +23,7 @@ use crate::util;
 use anyhow::{Result, bail};
 use regex::Regex;
 use serde_json::{Value, json};
-use std::sync::LazyLock;
 
-static TODO_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(^|\n)\s*待写\s*($|\n)").unwrap());
 
 pub fn cli(argv: &[String]) -> Result<i32> {
     let a = Args::parse(argv, &["Staging", "Groups", "CitationKey"], &["All"])?;
@@ -104,13 +102,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             let build = &st["build"];
             let count = |v: &Value| pipe(v).len();
             // The unwritten state, not the part count, says whether a model still needs work.
-            let mut placeholders: Vec<String> = Vec::new();
-            if TODO_LINE.is_match(&s(&st["head"]["body"])) {
-                placeholders.push(s(&head["address"]));
-            }
-            for part in pipe(&st["parts"]).into_iter().filter(|p| TODO_LINE.is_match(&s(&p["body"]))) {
-                placeholders.push(s(&part["address"]));
-            }
+            let placeholders = placeholders_of(&s(&head["address"]), &st);
             models.push(json!({
                 "address": head["address"],
                 "title": head["title"],
@@ -138,9 +130,38 @@ pub(crate) fn own_parts(head: &str, parts: &[&Value]) -> usize {
     parts.iter().filter(|p| s(&p["address"]).to_lowercase().starts_with(&prefix)).count()
 }
 
+/// The unwritten Cards of one model read: its head and every part that still holds a placeholder,
+/// by the run report's own test (a bare 待写 line, a skeleton section or title), so the compiler and
+/// the report agree on when a head is written.
+fn placeholders_of(head: &str, st: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if crate::report::is_placeholder(&s(&st["head"]["title"]), &s(&st["head"]["body"])) {
+        out.push(head.to_string());
+    }
+    for part in pipe(&st["parts"]) {
+        if crate::report::is_placeholder(&s(&part["title"]), &s(&part["body"])) {
+            out.push(s(&part["address"]));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skeleton_head_with_boundary_parts_is_still_unwritten() {
+        // Astra round 5: a definition whose head kept `**陈述**：待写。` but already had 例子/非例 parts was
+        // listed with todo 0 and skipped as built.
+        let st = json!({"head":{"title":"微分 dx：待写","body":"**陈述**：待写。
+
+来源：[[k]]"},
+            "parts":[{"address":"k/2|a|1","title":"例子","body":"$x=3$ 时 $dx=0.1$。"},{"address":"k/2|a|2","title":"非例","body":"- 是什么：待写"}]});
+        assert_eq!(placeholders_of("k/2|a", &st), vec!["k/2|a".to_string(), "k/2|a|2".to_string()]);
+        let written = json!({"head":{"title":"微分 dx","body":"**定义**：(C1) ……"},"parts":[{"address":"k/2|a|1","title":"例子","body":"……"}]});
+        assert!(placeholders_of("k/2|a", &written).is_empty());
+    }
 
     #[test]
     fn only_the_parts_filed_under_the_model_card_count() {

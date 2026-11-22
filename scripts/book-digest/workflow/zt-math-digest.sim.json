@@ -555,6 +555,12 @@
       }
     },
     {
+      "label": "^math-theory: publish$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"theory\",\"unit\":\"theory/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"
+      }
+    },
+    {
       "label": "^organize: publish$",
       "answer": {
         "answer": "{\"ok\":true,\"layer\":\"organize\",\"unit\":\"organize/book@2\",\"revision\":2,\"state\":\"done\",\"complete\":true,\"disposition\":\"published\"}"

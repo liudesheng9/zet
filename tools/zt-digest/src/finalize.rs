@@ -1425,8 +1425,10 @@ fn stage_scope(layer: &str, coverage: &[Value]) -> Value {
 /// whose final audit found nothing to correct kept `link-check/book@1` ready (acemoglu2025nobel trial 1).
 fn run_stage(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
     let layer = a.layer.trim().to_string();
-    if !["link-check", "organize", "skeleton", "figures", "bridge"].contains(&layer.as_str()) {
-        bail!("`{layer}` is not a stage-owned publication (link-check, organize, skeleton, figures, bridge)");
+    // The math variant's Theory pass publishes its own revision too (thompson1914calculus, 2026-11-22): no
+    // step wrote `theory/book@1`, so the Organize revision that needs it settled could never publish.
+    if !["link-check", "organize", "skeleton", "figures", "bridge", "theory"].contains(&layer.as_str()) {
+        bail!("`{layer}` is not a stage-owned publication (link-check, organize, skeleton, figures, bridge, theory)");
     }
     if !prepared_layers(p)?.contains(&layer) {
         return Ok(json!({"layer": layer, "state": "excluded", "reason": "the prepared run excluded this layer"}));
@@ -1454,6 +1456,15 @@ fn run_stage(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
                     None => Value::Null,
                 };
                 bridge_coverage(&report, &state)
+            }
+            // Each Theory Card the Theory pass rewrote, from its applied record; the ledger checks each one
+            // against the Card's dependency order and members.
+            "theory" => {
+                let applied = util::read_json(&a.applied).context("the applied theory record is not readable")?;
+                ps::ps_items(&applied["theories"])
+                    .iter()
+                    .map(|t| json!({"ref": ps::field(t, "address"), "outcome": "rebuilt"}))
+                    .collect()
             }
             _ => Vec::new(),
         }

@@ -344,6 +344,19 @@ pub fn usage_facts(resources: &[Value]) -> Value {
 
 static TODO_LINE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(^|\n)\s*待写\s*($|\n)").unwrap());
+/// A skeleton section left unwritten: `**陈述**：待写。`, `**问题**：待写。` (the math skeleton).
+static TODO_SECTION: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?m)[：:]\s*待写\s*[。.]?\s*$").unwrap());
+/// A skeleton title: `4.1 幂法则：待写`, `理论：第 4 章（待写）`.
+static TODO_TITLE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"([：:]\s*待写|（待写）)\s*$").unwrap());
+
+/// Whether a Card still holds a placeholder the digest was to replace: a bare `待写` line, a
+/// skeleton section whose value is `待写`, or a skeleton title. Prose that only mentions the
+/// word is written text (docs/math-digest-redesign-proposal.md §6.1, the P0 gate).
+pub(crate) fn is_placeholder(title: &str, body: &str) -> bool {
+    TODO_LINE.is_match(body) || TODO_SECTION.is_match(body) || TODO_TITLE.is_match(title.trim())
+}
 
 /// R336: the current placeholder addresses and parts, counted from verified reads.
 ///
@@ -405,15 +418,16 @@ fn verified_placeholders(zt: &mut Zt, citation_key: &str) -> Result<Value> {
             .next()
             .unwrap_or(Value::Null);
         let mut placeholders = Vec::new();
-        if TODO_LINE.is_match(head["body"].as_str().unwrap_or_default())
-            || TODO_LINE.is_match(structure["head"]["body"].as_str().unwrap_or_default())
+        let text = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
+        if is_placeholder(&text(head, "title"), &text(head, "body"))
+            || is_placeholder(&text(&structure["head"], "title"), &text(&structure["head"], "body"))
         {
             placeholders.push(address.to_string());
         }
         let mut model_parts = 0usize;
         for part in structure["parts"].as_array().cloned().unwrap_or_default() {
             model_parts += 1;
-            if TODO_LINE.is_match(part["body"].as_str().unwrap_or_default()) {
+            if is_placeholder(part["title"].as_str().unwrap_or_default(), part["body"].as_str().unwrap_or_default()) {
                 if let Some(at) = part["address"].as_str() {
                     placeholders.push(at.to_string());
                 }
@@ -843,6 +857,26 @@ pub fn publish(out: &Path, facts: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_math_skeleton_left_unwritten_counts_as_a_placeholder() {
+        // thompson1914calculus: 158 unit heads kept the skeleton `**陈述**：待写。` and a title
+        // ending `：待写`, and the run still verified 0 placeholders.
+        assert!(is_placeholder("4.1 幂法则：待写", "**陈述**：待写。\n\n来源：[[thompson1914calculus]] 4.1"));
+        assert!(is_placeholder("幂法则", "**陈述**：待写。"));
+        assert!(is_placeholder("4.1 幂法则：待写", "**陈述**：若 $y=x^n$，则 $\\frac{dy}{dx}=nx^{n-1}$。"));
+        assert!(is_placeholder("理论：第 4 章（待写）", "**问题**：待写。\n\n**结构**：\n- [[a/1]]"));
+        // The older bare line still counts.
+        assert!(is_placeholder("推导", "待写"));
+        assert!(is_placeholder("推导", "第一步\n  待写  \n第二步"));
+    }
+
+    #[test]
+    fn written_prose_that_mentions_the_word_is_not_a_placeholder() {
+        assert!(!is_placeholder("幂法则", "**陈述**：若 $y=x^n$，则 $\\frac{dy}{dx}=nx^{n-1}$。"));
+        assert!(!is_placeholder("习题说明", "作者把第 3 题的答案标为待写稿，后来补上了。"));
+        assert!(!is_placeholder("待写稿的来历", "本书初版的一章。"));
+    }
 
     fn resource(unit: &str, token: i64, conversations: Value) -> Value {
         json!({

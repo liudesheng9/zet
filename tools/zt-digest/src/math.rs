@@ -72,7 +72,7 @@ static STARTS_C: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^C").unwrap
 static PROOF_BODY_FACET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(证明|推导|前提)").unwrap());
 static SUPPLIED_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)补：书中未给").unwrap());
 static COUNTER_FACET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^反例").unwrap());
-static PROOF_STEP_FACET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(前提|证明|结论|premises|proof|conclusion)").unwrap());
+static PROOF_STEP_FACET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(前提|证明|推导|结论|premises|proof|derivation|conclusion)").unwrap());
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]]+)\]\]").unwrap());
 static TODO_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)（待写）$").unwrap());
 static NOTATION_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^符号表").unwrap());
@@ -110,6 +110,66 @@ struct Compiler {
     key: String,
     title: String,
     work: String,
+}
+
+/// What the proof review owes one indexed unit.
+#[derive(Debug)]
+pub(crate) enum ProofDecision {
+    /// Review these main-line premise, proof and conclusion steps.
+    Review(Vec<Value>),
+    /// The unit owes no proof review: not a result, a concept-level result, or a result the
+    /// source states without proof.
+    Skip,
+    /// The source proves the result and the unit holds no proof step (or was never built): an
+    /// obligation the run must meet, never an empty queue (docs/math-digest-redesign-proposal.md, Bug C).
+    Unmet(String),
+}
+
+/// The proof obligation of one indexed unit (`units.json` entry) given its current model read.
+pub(crate) fn proof_decision(unit: &Value, model: &Value) -> ProofDecision {
+    if !is_in(&field(unit, "form"), RESULTS) {
+        return ProofDecision::Skip;
+    }
+    let proved_at = unit["proof"].as_i64().unwrap_or(0);
+    if !truthy(model) || model["head"].is_null() {
+        return if proved_at > 0 {
+            ProofDecision::Unmet(format!("the source proves it from line {proved_at}; the unit was never built"))
+        } else {
+            ProofDecision::Skip
+        };
+    }
+    if !eq(&field(model, "level"), "formal") {
+        return ProofDecision::Skip;
+    }
+    let steps: Vec<Value> = pipe(&model["build"]["order"])
+        .into_iter()
+        .filter(|o| eq(&field(o, "line"), "main") && PROOF_STEP_FACET.is_match(&field(o, "facet")))
+        .cloned()
+        .collect();
+    // Premises and a conclusion frame a proof; only a 证明 or 推导 step is one.
+    let proves = steps.iter().any(|st| {
+        let facet = field(st, "facet");
+        let lower = facet.to_lowercase();
+        (facet.starts_with("证明") && !PLAN_FACET.is_match(&facet))
+            || facet.starts_with("推导")
+            || (lower.starts_with("proof") && !lower.starts_with("proof plan"))
+            || lower.starts_with("derivation")
+    });
+    if proves {
+        ProofDecision::Review(steps)
+    } else if proved_at > 0 {
+        ProofDecision::Unmet(format!("the source proves it from line {proved_at}; the unit has no proof step"))
+    } else {
+        ProofDecision::Skip
+    }
+}
+
+/// Whether a unit may take boundary work: its model is built and its head is written. Examples and
+/// contrasts never go onto a 待写 skeleton (docs/math-digest-redesign-proposal.md, Bug C).
+pub(crate) fn boundary_ready(model: &Value) -> bool {
+    truthy(model)
+        && truthy(&model["math"])
+        && !crate::report::is_placeholder(&field(&model["head"], "title"), &field(&model["head"], "body"))
 }
 
 /// The folder of the PowerShell scripts: ZT_DIGEST_SCRIPTS, else this repository's scripts\book-digest.
@@ -333,22 +393,37 @@ pub(crate) fn notation_table(
         }
     }
     let mut rows: Vec<String> = Vec::new();
-    let mut seen: CiMap<()> = CiMap::new();
+    // Bug G: a row is one (symbol, meaning) pair, compared case-sensitively ($C$ and $c$ differ), so a symbol
+    // with two senses keeps both rows; a later resolved locator replaces an earlier unresolved one.
+    let mut seen: std::collections::HashMap<String, (usize, bool)> = std::collections::HashMap::new();
     for item in pipe(&raw["symbols"]) {
         let symbol = field(&item, "symbol").trim().to_string();
-        if symbol.is_empty() || seen.contains(&symbol) || symbol.contains(['|', '\n']) {
+        let meaning = field(&item, "meaning").trim().replace('|', "/");
+        if symbol.is_empty() || symbol.contains(['|', '\n']) {
             continue;
         }
-        seen.insert(&symbol, ());
+        let row_key = format!("{symbol}\u{1f}{}", SPACES.replace_all(&meaning, " "));
         let unit = field(&item, "unit").trim().to_string();
-        let place = match by_id.get(&unit).filter(|a| truthy(a)) {
+        // Only a locator the allocation resolves is written; free text (`第 24 章`) is no locator.
+        let resolved = by_id.get(&unit).filter(|a| truthy(a));
+        let place = match resolved {
             Some(a) => format!("{unit} [[{}]]", s(a)),
-            None if !unit.is_empty() => unit.clone(),
             None => "—".to_string(),
         };
-        rows.push(format!("| {symbol} | {} | {place} |", field(&item, "meaning").trim().replace('|', "/")));
-        if rows.len() as i64 >= max_symbols {
-            break;
+        let row = format!("| {symbol} | {meaning} | {place} |");
+        match seen.get(&row_key).copied() {
+            Some((at, false)) if resolved.is_some() => {
+                rows[at] = row;
+                seen.insert(row_key, (at, true));
+            }
+            Some(_) => {}
+            None => {
+                if rows.len() as i64 >= max_symbols {
+                    continue;
+                }
+                seen.insert(row_key, (rows.len(), resolved.is_some()));
+                rows.push(row);
+            }
         }
     }
     let body = format!(
@@ -648,6 +723,19 @@ impl Compiler {
                 }
             }
         }
+        // A crash between the writes below and the saved list left heads no record names: adopt them, and
+        // the Theory Cards below likewise (recoverable allocation).
+        let heads: Vec<Value> = if self.p.apply {
+            let key = self.key.clone();
+            let tree = read_one(self.zt()?, "get_tree", json!({ "tree": key, "bodies": true }))?;
+            pipe(&tree["cards"]).into_iter().cloned().collect()
+        } else {
+            Vec::new()
+        };
+        let unrecorded: Vec<Value> = units.iter().filter(|u| !made.contains(&field(u, "id"))).cloned().collect();
+        for (id, address) in recover_allocation(&self.key, &unrecorded, &heads)? {
+            made.insert(&id, json!(address));
+        }
         let mut created = 0;
         let groups: Vec<Value> = pipe(&self.manifest["groups"]).into_iter().cloned().collect();
         for g in &groups {
@@ -697,8 +785,8 @@ impl Compiler {
             let list = members.iter().map(|u| format!("- [[{}]] {}{}", field(u, "address"), field(u, "id"), name_part(u))).collect::<Vec<_>>().join("\n");
             let body = format!("**问题**：待写。\n\n**主要结果**：待写。\n\n**对象**：待写。\n\n**结构**：\n{list}\n\n来源：[[{}]] {chapter}", self.key);
             let addresses: Vec<Value> = members.iter().map(|u| u["address"].clone()).collect();
-            let mut address = Value::Null;
-            if self.p.apply {
+            let mut address = recover_theory(&self.key, chapter, &heads)?.map_or(Value::Null, |a| json!(a));
+            if self.p.apply && address.is_null() {
                 address = self.write_one(
                     "create_successor",
                     json!({ "at": anchor, "kind": "side", "type": "model", "form": "theory", "title": format!("理论：{chapter}（待写）"), "body": body }),
@@ -724,7 +812,7 @@ impl Compiler {
                 if text.contains(marker) {
                     continue;
                 }
-                let mut sb = format!("{NL}{NL}{marker}（脚本已建骨架，你写它们的模型卡正文）{NL}{NL}");
+                let mut sb = format!("{NL}{NL}{marker}（单元流水线写它们，你只链接）{NL}{NL}");
                 for u in &mine {
                     let cites: Vec<String> = pipe(&u["cites"])
                         .into_iter()
@@ -757,7 +845,7 @@ impl Compiler {
                     sb.push_str(&format!("{NL}本章的理论卡：[[{}]]（理论阶段写它，你不改它）。{NL}", field(theory, "address")));
                 }
                 if !extra.is_empty() {
-                    sb.push_str(&format!("{NL}## 本组的例与习题（模型阶段把它们放进所属单元，你不另写卡片）{NL}{NL}"));
+                    sb.push_str(&format!("{NL}## 本组的例与习题（单元流水线把它们放进所属单元，你不另写卡片）{NL}{NL}"));
                     for e in &extra {
                         let after = if truthy(&e["after"]) {
                             let at = match made.get(&field(e, "after")).filter(|a| truthy(a)) {
@@ -916,13 +1004,15 @@ impl Compiler {
         let bw = self.boundary_work();
         std::fs::create_dir_all(join(&bw, "out"))?;
         let mut todo: Vec<(Value, Value, Vec<String>)> = Vec::new();
+        let mut unbuilt = 0usize;
         let forms: Vec<&str> = std::iter::once("definition").chain(RESULTS.iter().copied()).collect();
         for u in self.unit_addresses()? {
             if !is_in(&field(&u, "form"), &forms) {
                 continue;
             }
             let model = self.get(&u["address"], "get_model")?;
-            if !truthy(&model) || !truthy(&model["math"]) {
+            if !boundary_ready(&model) {
+                unbuilt += 1;
                 continue;
             }
             let facets: Vec<String> = pipe(&model["parts"]).into_iter().map(|p| field(p, "facet")).collect();
@@ -1006,7 +1096,7 @@ impl Compiler {
             ]));
         }
         save_json(&join(&bw, "plan.json"), &obj(vec![("schema_version", json!(1)), ("units", json!(planned)), ("batches", Value::Object(batches))]))?;
-        out_last(&obj(vec![("units", json!(todo.len())), ("jobs", json!(jobs))]))
+        out_last(&obj(vec![("units", json!(todo.len())), ("unbuilt", json!(unbuilt)), ("jobs", json!(jobs))]))
     }
 
     fn step_boundary_apply(&mut self) -> Result<()> {
@@ -1293,25 +1383,31 @@ impl Compiler {
         let pw = self.proof_work();
         std::fs::create_dir_all(join(&pw, "out"))?;
         let mut todo: Vec<(Value, Value, Vec<Value>)> = Vec::new();
+        let mut planned: Vec<Value> = Vec::new();
+        let mut unmet = 0usize;
         for u in self.unit_addresses()? {
             if !is_in(&field(&u, "form"), RESULTS) {
                 continue;
             }
             let model = self.get(&u["address"], "get_model")?;
-            if !truthy(&model) || !eq(&field(&model, "level"), "formal") {
-                continue;
-            }
-            let steps: Vec<Value> = pipe(&model["build"]["order"])
-                .into_iter()
-                .filter(|o| eq(&field(o, "line"), "main") && PROOF_STEP_FACET.is_match(&field(o, "facet")))
-                .cloned()
-                .collect();
-            if !steps.is_empty() {
-                todo.push((u, model, steps));
+            match proof_decision(&u, &model) {
+                ProofDecision::Review(steps) => todo.push((u, model, steps)),
+                ProofDecision::Skip => {}
+                ProofDecision::Unmet(reason) => {
+                    unmet += 1;
+                    planned.push(obj(vec![
+                        ("unit", u["address"].clone()),
+                        ("id", u["id"].clone()),
+                        ("form", u["form"].clone()),
+                        ("group", u["group"].clone()),
+                        ("model", model["head"]["address"].clone()),
+                        ("steps", json!([])),
+                        ("unmet", json!(reason)),
+                    ]));
+                }
             }
         }
         let mut jobs: Vec<Value> = Vec::new();
-        let mut planned: Vec<Value> = Vec::new();
         let mut batches = Map::new();
         let per_job = if todo.is_empty() { 1 } else { self.per_job()? };
         for (k, share) in todo.chunks(per_job).enumerate() {
@@ -1354,9 +1450,10 @@ impl Compiler {
                 ("prompt", json!(format!("按以上说明复核这些证明，写出 {name} 的 JSON 文件。最后只回复一行 JSON。"))),
             ]));
         }
-        // The ledger adapter reads this plan: one proof obligation per selected formal result (R240).
+        // The ledger adapter reads this plan: one proof obligation per selected formal result (R240), and
+        // one unmet obligation per result the source proves and the unit does not (Bug C).
         save_json(&join(&pw, "plan.json"), &obj(vec![("schema_version", json!(1)), ("units", json!(planned)), ("batches", Value::Object(batches))]))?;
-        out_last(&obj(vec![("units", json!(todo.len())), ("jobs", json!(jobs))]))
+        out_last(&obj(vec![("units", json!(todo.len())), ("unmet", json!(unmet)), ("jobs", json!(jobs))]))
     }
 
     fn step_proof_apply(&mut self) -> Result<()> {
@@ -1606,15 +1703,95 @@ impl Compiler {
     fn step_check(&mut self) -> Result<()> {
         let out = if self.p.out.is_empty() { self.p.staging.clone() } else { self.p.out.clone() };
         let key = self.key.clone();
-        let report = check_report(self.zt()?, &key, &out)?;
+        let staging = self.p.staging.clone();
+        let report = check_report(self.zt()?, &key, &out, &staging)?;
         out_last(&report)
     }
+}
+
+/// The skeleton heads a crashed allocation wrote but never recorded: a typed Model Card whose body
+/// still carries the skeleton's own source line `来源：[[key]] <id>（` for an indexed unit. A replay
+/// adopts them instead of writing the units again (recoverable allocation, proposal §5.1 stage 4).
+pub(crate) fn recover_allocation(key: &str, units: &[Value], heads: &[Value]) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for u in units {
+        let id = field(u, "id");
+        let form = field(u, "form");
+        let mark = format!("来源：[[{key}]] {id}（");
+        // A head of the unit's own form (never a Theory Card) that carries the unit's own source line.
+        let found: Vec<&Value> = heads
+            .iter()
+            .filter(|h| {
+                let f = field(h, "form");
+                eq(&field(h, "type"), "model")
+                    && !f.is_empty()
+                    && !eq(&f, "theory")
+                    && (form.is_empty() || eq(&f, &form))
+                    && field(h, "body").contains(&mark)
+            })
+            .collect();
+        match found.as_slice() {
+            [] => {}
+            [head] => out.push((id, field(head, "address"))),
+            many => bail!(
+                "the unit {id} has {} skeleton heads ({}); remove the duplicates before the skeleton runs again",
+                many.len(),
+                many.iter().map(|h| field(h, "address")).collect::<Vec<_>>().join(", ")
+            ),
+        }
+    }
+    Ok(out)
+}
+
+/// The Theory Card a crashed allocation wrote for `chapter` but never recorded: a `theory` head whose
+/// body ends on the skeleton's source line `来源：[[key]] <chapter>`. Two candidates are a fault.
+pub(crate) fn recover_theory(key: &str, chapter: &str, heads: &[Value]) -> Result<Option<String>> {
+    let mark = format!("来源：[[{key}]] {chapter}");
+    let found: Vec<String> = heads
+        .iter()
+        .filter(|h| eq(&field(h, "form"), "theory") && field(h, "body").trim_end().ends_with(&mark))
+        .map(|h| field(h, "address"))
+        .collect();
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.into_iter().next()),
+        _ => bail!("the chapter {chapter} has {} Theory skeletons ({}); remove the duplicates", found.len(), found.join(", ")),
+    }
+}
+
+/// The indexed units the tree does not hold as unit heads: an allocation without an address, or an
+/// address that is no typed head now. The release gate's denominator is the frozen allocation, not
+/// the heads that happen to exist (M0, docs/math-digest-redesign-proposal.md §6.1).
+pub(crate) fn missing_units(allocation: &Value, heads: &[Value]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut taken: Vec<String> = Vec::new();
+    for u in pipe(&allocation["units"]) {
+        let id = field(u, "id");
+        let address = field(u, "address");
+        let form = field(u, "form");
+        // The head must be a unit head (never a Theory Card) of the unit's own form, used by one unit only.
+        let head = heads.iter().find(|h| eq(&field(h, "address"), &address));
+        let fits = head.is_some_and(|h| {
+            let f = field(h, "form");
+            !eq(&f, "theory") && !form.is_empty() && eq(&f, &form)
+        });
+        if address.is_empty() {
+            out.push(format!("{id} (no address)"));
+        } else if !fits {
+            out.push(format!("{id} [[{address}]]"));
+        } else if taken.iter().any(|t| eq(t, &address)) {
+            out.push(format!("{id} [[{address}]] (shares its head)"));
+        } else {
+            taken.push(address);
+        }
+    }
+    out
 }
 
 /// The M1–M18 report of one book: every indexed unit and Theory Card with the rules it
 /// breaks, without writing anything. `math -Step check` writes it; the ledger's
 /// `math-check` compares the same read against the retained audit (R241).
-pub(crate) fn check_value(zt: &mut Zt, key: &str) -> Result<Value> {
+pub(crate) fn check_value(zt: &mut Zt, key: &str, staging: &str) -> Result<Value> {
     let key = key.to_string();
     {
         let tree = read_one(zt, "get_tree", json!({ "tree": key }))?;
@@ -1633,6 +1810,16 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str) -> Result<Value> {
         let mut add = |rule: &str, address: Value, text: Value| {
             faults.push(obj(vec![("rule", json!(rule)), ("address", address), ("text", text)]));
         };
+        // M0: every indexed unit of the frozen allocation is a unit head of the tree now.
+        let allocation_path = join(&join(staging, "math"), "units.json");
+        if Path::new(&allocation_path).is_file() {
+            let allocation = read_json(&allocation_path)?;
+            for gap in missing_units(&allocation, &heads) {
+                add("M0", json!(key), json!(format!("the indexed unit {gap} is not a unit of the tree")));
+            }
+        } else {
+            add("M0", json!(key), json!("the frozen allocation math/units.json is missing"));
+        }
         for (i, head) in heads.iter().enumerate() {
             let model = models.get(i).cloned().unwrap_or(Value::Null);
             let form = field(head, "form");
@@ -1647,7 +1834,7 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str) -> Result<Value> {
                 for c in pipe(&model["math"]["cycle"]) {
                     add("M4", at(), c["fix"].clone());
                 }
-                if body.contains("待写") {
+                if crate::report::is_placeholder(&field(&card, "title"), &body) {
                     add("M1", at(), json!("Theory Card still holds 待写"));
                 }
                 continue;
@@ -1656,7 +1843,7 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str) -> Result<Value> {
             let formal = eq(&field(head, "level"), "formal");
             // M1: one claim in the title, no skeleton left.
             let title = field(&card, "title");
-            if title.contains("待写") || body.contains("待写") {
+            if crate::report::is_placeholder(&title, &body) {
                 add("M1", at(), json!("the unit still holds 待写"));
             }
             if ps::len16(&title) > 40 {
@@ -1746,6 +1933,8 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str) -> Result<Value> {
         for h in &heads {
             bump(&mut forms, &field(h, "form"));
         }
+        // Blocking: M0, and an M1 placeholder (a long title is advice).
+        let blocking = faults.iter().filter(|f| eq(&field(f, "rule"), "M0") || (eq(&field(f, "rule"), "M1") && field(f, "text").contains("待写"))).count();
         let units = heads.iter().filter(|h| !eq(&field(h, "form"), "theory")).count();
         let theories = heads.iter().filter(|h| eq(&field(h, "form"), "theory")).count();
         let report = obj(vec![
@@ -1754,6 +1943,7 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str) -> Result<Value> {
             ("theories", json!(theories)),
             ("forms", counts(&forms)),
             ("faults", json!(faults.len())),
+            ("blocking", json!(blocking)),
             ("by_rule", counts(&by_rule)),
             ("list", json!(faults)),
         ]);
@@ -1762,8 +1952,8 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str) -> Result<Value> {
 }
 
 /// Write the M1–M18 report and its Markdown view, and answer with the step's last line.
-pub(crate) fn check_report(zt: &mut Zt, key: &str, out: &str) -> Result<Value> {
-    let report = check_value(zt, key)?;
+pub(crate) fn check_report(zt: &mut Zt, key: &str, out: &str, staging: &str) -> Result<Value> {
+    let report = check_value(zt, key, staging)?;
     let units = report["units"].clone();
     let theories = report["theories"].clone();
     let faults = report["faults"].as_u64().unwrap_or_default();
@@ -1786,6 +1976,7 @@ pub(crate) fn check_report(zt: &mut Zt, key: &str, out: &str) -> Result<Value> {
         ("theories", theories),
         ("forms", report["forms"].clone()),
         ("faults", json!(faults)),
+        ("blocking", report["blocking"].clone()),
         ("by_rule", report["by_rule"].clone()),
         ("report", json!(report_md)),
     ]))
@@ -1852,4 +2043,152 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         _ => compiler.step_check()?,
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(level: &str, order: Value) -> Value {
+        json!({"head":{"address":"k/5|a","title":"幂法则","body":"…"},"level":level,"build":{"order":order},"parts":[]})
+    }
+
+    #[test]
+    fn a_formal_result_the_source_proves_is_reviewed_through_its_main_line_steps() {
+        let unit = json!({"form":"theorem","proof":123,"address":"k/5|a"});
+        let order = json!([
+            {"address":"k/5|a|1","facet":"前提","line":"main"},
+            {"address":"k/5|a|2","facet":"证明：二项展开","line":"main"},
+            {"address":"k/5|a|3","facet":"例子","line":"main"},
+            {"address":"k/5|a|4","facet":"证明：另一法","line":"side"}
+        ]);
+        match proof_decision(&unit, &model("formal", order)) {
+            ProofDecision::Review(steps) => {
+                let at: Vec<String> = steps.iter().map(|s| field(s, "address")).collect();
+                assert_eq!(at, vec!["k/5|a|1", "k/5|a|2"]);
+            }
+            other => panic!("expected a review, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_proof_the_source_gives_and_the_unit_lacks_is_an_unmet_obligation() {
+        // thompson1914calculus: 96 results had 0 parts, the proof queue was empty, and the
+        // stage reported done.
+        let unit = json!({"form":"theorem","proof":123,"address":"k/5|a"});
+        assert!(matches!(proof_decision(&unit, &model("formal", json!([]))), ProofDecision::Unmet(_)));
+        // A unit the model layer never built is unmet too, never skipped.
+        assert!(matches!(proof_decision(&unit, &Value::Null), ProofDecision::Unmet(_)));
+        // Premises and a conclusion without a single proof step are no proof (Astra round 5).
+        let framed = json!([{"address":"k/5|a|1","facet":"前提","line":"main"},{"address":"k/5|a|2","facet":"结论","line":"main"}]);
+        assert!(matches!(proof_decision(&unit, &model("formal", framed)), ProofDecision::Unmet(_)));
+        // A derivation is a proof step (Astra round 6): it is reviewed, and listed with the other steps.
+        let derived = json!([{"address":"k/5|a|1","facet":"前提","line":"main"},{"address":"k/5|a|2","facet":"推导：二项展开","line":"main"}]);
+        match proof_decision(&unit, &model("formal", derived)) {
+            ProofDecision::Review(steps) => assert_eq!(steps.len(), 2),
+            other => panic!("a derivation-only proof is reviewed, got {other:?}"),
+        }
+        assert!(is_proof_step("推导：二项展开"));
+        let english = json!([{"address":"k/5|a|1","facet":"Derivation: expand","line":"main"}]);
+        assert!(matches!(proof_decision(&unit, &model("formal", english)), ProofDecision::Review(_)), "an English derivation is a proof step too");
+        let planned = json!([{"address":"k/5|a|1","facet":"证明思路","line":"main"},{"address":"k/5|a|2","facet":"结论","line":"main"}]);
+        assert!(matches!(proof_decision(&unit, &model("formal", planned)), ProofDecision::Unmet(_)), "a proof plan is no proof step");
+    }
+
+    #[test]
+    fn the_notation_table_keeps_each_sense_of_a_symbol_and_only_checked_locators() {
+        // Bug G: one row per symbol string, and `第 24 章` written in a 21-chapter book.
+        let units = json!({"units":[{"id":"定义「微分 dx」","address":"k/2|a"}]});
+        let raw = json!({"symbols":[
+            {"symbol":"$dx$","meaning":"x 的一小部分","unit":"定义「微分 dx」"},
+            {"symbol":"$dx$","meaning":"x 的一小部分","unit":"定义「微分 dx」"},
+            {"symbol":"$C$","meaning":"积分常数","unit":"第 24 章"},
+            {"symbol":"$C$","meaning":"圆周长","unit":""}
+        ]});
+        let (n, _, body) = notation_table(&raw, &units, "k", "微积分", 80);
+        assert_eq!(n, 3, "the same symbol with two meanings keeps two rows; an exact repeat is one");
+        assert!(body.contains("| $dx$ | x 的一小部分 | 定义「微分 dx」 [[k/2|a]] |"));
+        assert!(body.contains("| $C$ | 积分常数 | — |"), "an unchecked locator is not written");
+        assert!(body.contains("| $C$ | 圆周长 | — |"));
+        assert!(!body.contains("第 24 章"));
+        // Astra round 5: a case-insensitive key merged $C$ and $c$; an unresolved first row hid a later locator.
+        let raw = json!({"symbols":[
+            {"symbol":"$C$","meaning":"常数","unit":"第 3 章"},
+            {"symbol":"$c$","meaning":"常数","unit":""},
+            {"symbol":"$C$","meaning":"常数","unit":"定义「微分 dx」"}
+        ]});
+        let (n, _, body) = notation_table(&raw, &units, "k", "微积分", 80);
+        assert_eq!(n, 2);
+        assert!(body.contains("| $C$ | 常数 | 定义「微分 dx」 [[k/2|a]] |") && body.contains("| $c$ | 常数 | — |"));
+    }
+
+    #[test]
+    fn a_replay_adopts_the_skeleton_heads_a_crash_left_unrecorded() {
+        // Astra round 5: the skeleton writes heads, then saves units.json; a crash between them made a
+        // replay allocate the same units twice.
+        let units = vec![json!({"id":"定理「幂法则」"}), json!({"id":"定义「微分 dx」"})];
+        let heads = vec![
+            json!({"address":"k/5|a","type":"model","form":"theorem","body":"**陈述**：待写。\n\n来源：[[k]] 定理「幂法则」（`sections/s05.md:107-123`）"}),
+            json!({"address":"k/5|z","type":"model","form":"theorem","body":"**陈述**：待写。\n\n来源：[[other]] 定义「微分 dx」（`x`）"}),
+            json!({"address":"k/5|y","type":"idea","body":"来源：[[k]] 定义「微分 dx」（`x`）"}),
+        ];
+        let adopted = recover_allocation("k", &units, &heads).unwrap();
+        assert_eq!(adopted, vec![("定理「幂法则」".to_string(), "k/5|a".to_string())], "only a typed head of this book with the unit's own source line");
+        // Astra round 6: the head must have the unit's form, and two candidates are a fault, not a guess.
+        let typed = vec![json!({"id":"定理「幂法则」","form":"theorem"})];
+        let wrong_form = vec![json!({"address":"k/5|a","type":"model","form":"definition","body":"来源：[[k]] 定理「幂法则」（`x`）"})];
+        assert!(recover_allocation("k", &typed, &wrong_form).unwrap().is_empty());
+        let twice = vec![
+            json!({"address":"k/5|a","type":"model","form":"theorem","body":"来源：[[k]] 定理「幂法则」（`x`）"}),
+            json!({"address":"k/5|b","type":"model","form":"theorem","body":"来源：[[k]] 定理「幂法则」（`x`）"}),
+        ];
+        assert!(recover_allocation("k", &typed, &twice).is_err());
+        // The chapter's Theory Card is adopted the same way, by its own source line.
+        let theories = vec![
+            json!({"address":"k/5|b","type":"model","form":"theory","body":"**结构**：\n- [[k/5|a]]\n\n来源：[[k]] 第四章"}),
+            json!({"address":"k/6|b","type":"model","form":"theory","body":"来源：[[k]] 第四章之二"}),
+        ];
+        assert_eq!(recover_theory("k", "第四章", &theories).unwrap().as_deref(), Some("k/5|b"));
+        assert_eq!(recover_theory("k", "第五章", &theories).unwrap(), None);
+    }
+
+    #[test]
+    fn an_indexed_unit_the_tree_lacks_is_missing() {
+        // Astra round 5: a unit with no allocated head contributed 0 placeholders and 0 obligations.
+        let head = |a: &str, form: &str| json!({"address":a,"form":form});
+        let allocation = json!({"units":[
+            {"id":"定理「幂法则」","address":"k/5|a","form":"theorem"},
+            {"id":"定理「链式法则」","address":"","form":"theorem"},
+            {"id":"定义「微分 dx」","address":"k/2|a","form":"definition"}
+        ]});
+        let heads = vec![head("k/5|a", "theorem")];
+        assert_eq!(missing_units(&allocation, &heads), vec!["定理「链式法则」 (no address)".to_string(), "定义「微分 dx」 [[k/2|a]]".to_string()]);
+        assert!(missing_units(&allocation, &[head("k/5|a", "theorem"), head("k/2|a", "definition")]).len() == 1);
+        // Astra round 6: an allocation pointing at a Theory Card, or two units on one head, is no unit.
+        let theory = json!({"units":[{"id":"定理「幂法则」","address":"k/5|b","form":"theorem"}]});
+        assert_eq!(missing_units(&theory, &[head("k/5|b", "theory")]).len(), 1);
+        let shared = json!({"units":[{"id":"定理「a」","address":"k/5|a","form":"theorem"},{"id":"定理「b」","address":"k/5|a","form":"theorem"}]});
+        assert_eq!(missing_units(&shared, &[head("k/5|a", "theorem")]), vec!["定理「b」 [[k/5|a]] (shares its head)".to_string()]);
+        let formless = json!({"units":[{"id":"定理「a」","address":"k/5|a","form":""}]});
+        assert_eq!(missing_units(&formless, &[head("k/5|a", "theorem")]).len(), 1, "an allocation without a form names no unit (Astra round 7)");
+    }
+
+    #[test]
+    fn boundary_work_waits_for_a_written_unit_head() {
+        // thompson1914calculus: 123 例子/非例 parts were bolted onto 待写 definitions.
+        let head = |title: &str, body: &str| json!({"head":{"title":title,"body":body},"math":{"labels":[]},"parts":[]});
+        assert!(!boundary_ready(&head("微分 dx：待写", "**陈述**：待写。")));
+        assert!(!boundary_ready(&Value::Null));
+        assert!(boundary_ready(&head("微分 dx", "**定义**：(C1) $dx$ 是 $x$ 的一小部分。")));
+    }
+
+    #[test]
+    fn definitions_concept_results_and_unproved_results_owe_no_proof_review() {
+        let def = json!({"form":"definition","proof":0,"address":"k/2|a"});
+        assert!(matches!(proof_decision(&def, &model("concept", json!([]))), ProofDecision::Skip));
+        let concept = json!({"form":"theorem","proof":40,"address":"k/5|a"});
+        assert!(matches!(proof_decision(&concept, &model("concept", json!([]))), ProofDecision::Skip));
+        let asserted = json!({"form":"theorem","proof":0,"address":"k/5|a"});
+        assert!(matches!(proof_decision(&asserted, &model("formal", json!([]))), ProofDecision::Skip));
+    }
 }

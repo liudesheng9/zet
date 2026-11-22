@@ -1303,12 +1303,21 @@ fn register_notes(p: &Prepared, zt: &mut Zt, path: &str) -> Result<Value> {
     }))
 }
 
+/// Whether a registered mathematical unit may take new work: only an unsettled unmet proof
+/// obligation (no step planned because the unit was not built), which becomes the unit's review
+/// once the unit exists. Every other registered unit keeps its work (R167).
+fn may_rebind_math_unit(stored_inputs: &Value, state: &str) -> bool {
+    matches!(state, "registered" | "ready")
+        && stored_inputs["plan"]["unmet"].as_str().is_some_and(|r| !r.is_empty())
+        && stored_inputs["plan"]["steps"].as_array().is_some_and(Vec::is_empty)
+}
+
 /// The mathematics variant's per-unit obligations (R237). The compiler's own boundary
 /// and proof plans enumerate the mathematical units, and each planned unit becomes one
 /// unit of the same ledger: no second ledger, scheduler or compiler framework. A unit
 /// binds the exact plan entry it was enumerated from, so the same plan reuses its units
 /// and rebinding one key to different work is refused (R167).
-fn math_register(p: &Prepared, _zt: &mut Zt) -> Result<Value> {
+fn math_register(p: &Prepared, zt: &mut Zt) -> Result<Value> {
     if p.contract["variant"] != "math" {
         bail!("ledger math requires a prepared mathematics run");
     }
@@ -1332,26 +1341,88 @@ fn math_register(p: &Prepared, _zt: &mut Zt) -> Result<Value> {
         }
         plans.push((*layer, math_plan(layer, &util::read_json(&path)?)?));
     }
+    // Bug B: once the skeleton is settled, every allocated unit has its model build. A registered build is
+    // never rebound: its head fingerprint changes as soon as the unit is written.
+    let skeleton: Option<(String, String)> = {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        conn.query_row("SELECT state,input_hash FROM units WHERE id='math-skeleton/book@1'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?
+    };
+    let builds = match skeleton {
+        Some((state, hash)) if state == "done" && enabled("models") => {
+            let allocation = util::read_json(p.out.join("math").join("units.json"))
+                .context("the mathematics allocation math/units.json is not readable")?;
+            let addresses: Vec<String> = allocation["units"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|u| u["address"].as_str().filter(|a| !a.is_empty()).map(str::to_string))
+                .collect();
+            let read = zt.cards(&addresses, "text")?;
+            let fingerprints: BTreeMap<String, String> = read
+                .cards
+                .iter()
+                .map(|c| Ok((field(c, "address")?.to_string(), crate::calls::authored_fingerprint(c))))
+                .collect::<Result<_>>()?;
+            math_build_units(&allocation, &hash, &fingerprints)?
+        }
+        _ => Vec::new(),
+    };
     let mut conn = writer(p)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_binding(&tx, p)?;
     let mut units = Vec::new();
     let mut reused = true;
+    let mut build_of: BTreeMap<String, String> = BTreeMap::new();
+    for (id, inputs) in &builds {
+        let header = field(inputs, "header")?.to_string();
+        let exists: Option<String> = tx.query_row("SELECT id FROM units WHERE id=?1", [id], |r| r.get(0)).optional()?;
+        if exists.is_none() {
+            reused = false;
+            let key = id.trim_start_matches("models/").trim_end_matches("@1");
+            register(&tx, "models", key, 1, inputs, Some("math-skeleton/book@1"), false)?;
+            dependency(&tx, id, "math-skeleton/book@1", "success")?;
+            event(&tx, id, None, None, "registered", &json!({"layer":"models","header":header}))?;
+        }
+        units.push(json!({"unit":id,"layer":"models","key":header}));
+        build_of.insert(header, id.clone());
+    }
     for (layer, plan) in &plans {
         for entry in plan.as_array().context("invalid math plan")? {
             let key = field(entry, "unit")?;
             let inputs = json!({"schema_version":1,"layer":layer,"key":key,"plan":entry});
             let unit = format!("{layer}/{key}@1");
             let hash = canon::hash_value(&inputs);
-            let existing: Option<String> = tx
-                .query_row("SELECT input_hash FROM units WHERE id=?1", [&unit], |r| {
-                    r.get(0)
+            let existing: Option<(String, String, String)> = tx
+                .query_row("SELECT input_hash, inputs_json, state FROM units WHERE id=?1", [&unit], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
                 })
                 .optional()?;
             match existing {
-                Some(stored) => {
+                Some((stored, stored_inputs, state)) => {
+                    // A row registered before its unit's build existed still waits on that build (Astra round 6).
+                    if let Some(build) = build_of.get(key)
+                        && state != "done"
+                    {
+                        let has: Option<i64> = tx
+                            .query_row("SELECT 1 FROM deps WHERE unit_id=?1 AND needs_id=?2", params![unit, build], |r| r.get(0))
+                            .optional()?;
+                        if has.is_none() {
+                            dependency(&tx, &unit, build, "success")?;
+                            reused = false;
+                        }
+                    }
                     if stored != hash {
-                        bail!("a registered mathematical unit cannot be rebound to different work: {unit}");
+                        let before: Value = serde_json::from_str(&stored_inputs).unwrap_or(Value::Null);
+                        if !may_rebind_math_unit(&before, &state) {
+                            bail!("a registered mathematical unit cannot be rebound to different work: {unit}");
+                        }
+                        // An unmet proof whose unit is built now takes its planned review (Bug C).
+                        reused = false;
+                        tx.execute(
+                            "UPDATE units SET inputs_json=?1, input_hash=?2 WHERE id=?3 AND state IN ('registered','ready')",
+                            params![serde_json::to_string(&inputs)?, hash, unit],
+                        )?;
                     }
                 }
                 None => {
@@ -1362,6 +1433,11 @@ fn math_register(p: &Prepared, _zt: &mut Zt) -> Result<Value> {
                         // Notation must be applied and available before the proof and
                         // model work that requires it (R238).
                         dependency(&tx, &unit, "notation/book@1", "success")?;
+                    }
+                    // A unit's boundary and proof wait on the unit's own build (Bug C): an unmet proof
+                    // is not claimed while its unit is unbuilt, and stays a gap if the build fails.
+                    if let Some(build) = build_of.get(key) {
+                        dependency(&tx, &unit, build, "success")?;
                     }
                     event(
                         &tx,
@@ -2403,6 +2479,13 @@ fn math_plan(layer: &str, plan: &Value) -> Result<Value> {
             }
             "proof" => {
                 let steps = entry["steps"].as_array().context("invalid math plan")?;
+                // An unmet proof (the source proves the result, the unit has no proof step) is a
+                // registered obligation that `proof-finish` refuses until the unit is built: it can
+                // never pass as an empty queue (docs/math-digest-redesign-proposal.md, Bug C).
+                let unmet = entry["unmet"].as_str().is_some_and(|r| !r.trim().is_empty());
+                if steps.is_empty() && unmet {
+                    continue;
+                }
                 if steps.is_empty()
                     || steps.iter().any(|step| {
                         field(step, "address").is_err() || field(step, "facet").is_err()
@@ -3239,11 +3322,12 @@ fn math_check_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &P
         .context("invalid audit revision")?;
     // Read the checks again without writing: a refused completion must leave the
     // retained evidence exactly as the run published it.
-    let fresh = crate::math::check_value(zt, field(&p.contract, "citation_key")?)?;
+    let fresh = crate::math::check_value(zt, field(&p.contract, "citation_key")?, &p.out.to_string_lossy())?;
     if fresh["units"] != retained["units"]
         || fresh["theories"] != retained["theories"]
         || fresh["forms"] != retained["forms"]
         || fresh["by_rule"] != retained["by_rule"]
+        || fresh["blocking"] != retained["blocking"]
         || fresh["list"] != retained["list"]
     {
         bail!("the retained math audit is not the M1–M18 report of the current revision");
@@ -3261,6 +3345,7 @@ fn math_check_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &P
         "units":retained["units"],
         "theories":retained["theories"],
         "faults":retained["faults"],
+        "blocking":fresh["blocking"],
         "by_rule":retained["by_rule"],
         "audit":audit.0,
         "audit_revision":revision,
@@ -6217,6 +6302,11 @@ fn status_read(out: &Path, layer: &str, placeholders: Option<Value>, with_inputs
         Value::String("placeholders_not_verified".into())
     } else if placeholders["count"] != json!(0) {
         Value::String("placeholders_present".into())
+    } else if math_blocking(&units).is_none() {
+        Value::String("math_check_unverified".into())
+    } else if math_blocking(&units).unwrap_or(0) > 0 {
+        // M0/M1 (docs/math-digest-redesign-proposal.md §6.1): an indexed unit missing or unwritten.
+        Value::String("math_units_unwritten".into())
     } else if !content_complete {
         Value::String("content_incomplete".into())
     } else if content_gaps > 0 {
@@ -8152,6 +8242,17 @@ fn group_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Val
         field(anchor, "body")?,
         if by_messages { &source_units[0] } else { &source }
     );
+    // Bug A (docs/math-digest-redesign-proposal.md): the writer of a mathematics group sees the
+    // units the skeleton allocated, links them and writes no Model Card (group-finish refuses one).
+    let prompt = if p.contract["variant"] == "math" {
+        let block = match p.contract["group_extension"]["marker"].as_str() {
+            Some(marker) => math_unit_block(&util::read_text(field(group, "path")?)?, marker).to_string(),
+            None => String::new(),
+        };
+        format!("{prompt}\n\n{}", math_writer_note(&block))
+    } else {
+        prompt
+    };
     let (prompt, later_messages) = if by_messages {
         message_parts(&prompt, &source_units, &[card_check_command.as_str(), coverage_command.as_str()])
     } else {
@@ -9696,6 +9797,113 @@ fn verify_done_group(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Resul
     Ok(result)
 }
 
+/// The blocking faults (M0 missing, M1 unwritten unit) the settled math check recorded: `Some(0)` when the
+/// book has no settled math check (an unsettled one is content incompleteness), `None` when a settled check
+/// records no count (a completion older than zt-digest 0.56.0), which cannot certify quality.
+fn math_blocking(units: &[Value]) -> Option<i64> {
+    match units.iter().find(|u| u["id"] == "math-check/book@1" && u["state"] == "done") {
+        Some(u) => u["result"]["blocking"].as_i64(),
+        None => Some(0),
+    }
+}
+
+/// The model builds the skeleton produces: one `models/gNNN-uIIII@1` per allocated unit (numbered
+/// within its group), bound to the settled skeleton as producer and to the head's current
+/// fingerprint. The unit pipeline writes the whole unit (docs/math-digest-redesign-proposal.md §3.2,
+/// Bug B). A unit without an address, or a head the archive does not hold, is a fault.
+fn math_build_units(units: &Value, producer_hash: &str, fingerprints: &BTreeMap<String, String>) -> Result<Vec<(String, Value)>> {
+    let list = units["units"].as_array().context("the mathematics allocation (math\\units.json) lists no units")?;
+    let mut groups: Vec<u64> = list.iter().filter_map(|u| u["group"].as_u64()).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    let mut out = Vec::new();
+    for group in groups {
+        for (key, header) in math_unit_models(units, group)? {
+            let fingerprint = fingerprints
+                .get(&header)
+                .with_context(|| format!("the allocated unit {header} is not in the archive"))?;
+            out.push((
+                format!("models/{key}@1"),
+                json!({"producer":{"producer":"math-skeleton/book@1","producer_input_hash":producer_hash},"header":header,"fingerprint":fingerprint}),
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// The mathematics writer's rules after its group's unit list (Bug A): every math group gets them, with
+/// or without units, because the shared prefix still teaches Model Cards.
+fn math_writer_note(block: &str) -> String {
+    let rules = "本书是数学书：共享规则里写模型卡的部分对你不适用。你不写、不改任何模型卡（type: model，或带 form、facet、level 的卡），也不把卡片建在单元之下；group-finish 会拒绝它们。";
+    if block.trim().is_empty() {
+        format!("{rules}本组没有数学单元：只写读书笔记。\n")
+    } else {
+        format!("{block}\n\n{rules}以上单元由单元流水线写。你的读书笔记在讲到某个单元的地方用 `[[地址]]` 链接它；例与习题由单元收录，你不另写卡片。\n")
+    }
+}
+
+/// The declared extension of a prepared group file: from `marker` to the end (the mathematics
+/// unit and example lists the skeleton appended), or nothing when the group has none.
+/// The staging file of a variant's shared Link rules: `math -Step docs` writes the mathematics
+/// rules (按定义, 特例, no reach-in, Theory Cards untouched) to `math-link-prefix.md`.
+fn link_prefix_file(variant: &str) -> &'static str {
+    if variant == "math" { "math-link-prefix.md" } else { "link-prefix.md" }
+}
+
+fn math_unit_block<'a>(group_file: &'a str, marker: &str) -> &'a str {
+    group_file.find(marker).map_or("", |at| group_file[at..].trim_end())
+}
+
+/// The model builds a mathematics group registers: one per skeleton unit the allocation filed in
+/// this group, keyed `gNNN-uIIII` (apart from the `gNNN-mIIII` builds a receipt registers), with the
+/// unit's head as the Model address. Theory Cards are the theory layer's. A missing allocation or a
+/// unit without an address is a fault (docs/math-digest-redesign-proposal.md, Bug B).
+fn math_unit_models(units: &Value, group: u64) -> Result<Vec<(String, String)>> {
+    let list = units["units"].as_array().context("the mathematics allocation (math\\units.json) lists no units")?;
+    let mut out = Vec::new();
+    for unit in list.iter().filter(|u| u["group"].as_u64() == Some(group)) {
+        let address = unit["address"].as_str().unwrap_or_default();
+        if address.is_empty() {
+            bail!("the mathematical unit {} of group {group} has no allocated address; run the skeleton first", s(&unit["id"]));
+        }
+        out.push((format!("g{group:03}-u{:04}", out.len()), address.to_string()));
+    }
+    Ok(out)
+}
+
+/// Why a mathematics group writer may not make this call, if it may not: a call that creates,
+/// edits or retypes a Model Card or one of its parts (a `type: model`, or any `form`, `facet` or
+/// `level`, which only Model Cards carry). The unit pipeline owns the book's mathematics
+/// (docs/math-digest-redesign-proposal.md §3.2; thompson1914calculus wrote 37 untyped models).
+fn math_group_violation(tool: &str, args: &Value, units: &std::collections::HashSet<String>) -> Option<String> {
+    if !["create_successor", "insert_card", "edit_card"].contains(&tool) {
+        return None;
+    }
+    // A note filed beneath a unit would enter the unit's own chain; notes stand beside the chapter.
+    // The placement fields the archive reads: `at` (the Card it files beneath) and `before` (the Card whose
+    // place it takes).
+    if tool != "edit_card" {
+        for place in ["at", "before"] {
+            let target = args[place].as_str().unwrap_or_default();
+            if units.contains(target) {
+                return Some(format!("a mathematics chapter writer files no Card at the unit `{target}` ({place}); file the note in the chapter and link the unit"));
+            }
+        }
+    }
+    let model = args["type"] == "model";
+    let model_field = ["form", "facet", "level"]
+        .iter()
+        .find(|k| args.get(**k).is_some_and(|v| !v.is_null()));
+    if model || model_field.is_some() {
+        let what = if model { "`type: model`".to_string() } else { format!("`{}`", model_field.unwrap()) };
+        return Some(format!(
+            "a mathematics chapter writer writes reading notes only ({what} makes a Model Card); \
+             the unit pipeline writes every mathematical unit, so link the unit's address instead"
+        ));
+    }
+    None
+}
+
 fn group_finish(
     p: &Prepared,
     zt: &mut Zt,
@@ -9779,6 +9987,19 @@ fn group_finish(
         text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect()
     };
     let mut source_notes = BTreeMap::new();
+    // The allocated unit heads of a mathematics book: no note is filed beneath one.
+    let math_units: std::collections::HashSet<String> = if p.contract["variant"] == "math" {
+        let allocation = util::read_json(p.out.join("math").join("units.json"))
+            .context("the mathematics allocation math/units.json is not readable")?;
+        allocation["units"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|u| u["address"].as_str().filter(|a| !a.is_empty()).map(str::to_string))
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     for (i, call) in calls.iter_mut().enumerate() {
         if call.as_object().is_none_or(|v| {
             v.keys()
@@ -9791,6 +10012,13 @@ fn group_finish(
         // The draft check reads the same rule the server enforces (zt_check::scope).
         if let Some(violation) = zt_check::scope::literature_violation(tool, &call["arguments"]) {
             bail!("group call {i}: {}", violation.message);
+        }
+        // docs/math-digest-redesign-proposal.md §3.2: in a mathematics book the unit pipeline owns
+        // every Model Card; the chapter writer writes reading notes and links the units.
+        if p.contract["variant"] == "math" {
+            if let Some(why) = math_group_violation(tool, &call["arguments"], &math_units) {
+                bail!("group call {i}: {why}");
+            }
         }
         let args = call["arguments"]
             .as_object()
@@ -11387,7 +11615,8 @@ fn link_start(p: &Prepared, zt: &mut Zt, number: u64, token: i64) -> Result<Valu
     let gaps = ps::ps_items(&group["gaps"]);
     let skipped: Vec<String> = ps::ps_items(&group["skipped"]).iter().map(s).collect();
     let draft_path = p.out.join(format!("link-draft-g{number:03}.json"));
-    let prefix = p.out.join("link-prefix.md");
+    // Bug E (docs/math-digest-redesign-proposal.md): each variant reads its own Link rules.
+    let prefix = p.out.join(link_prefix_file(p.contract["variant"].as_str().unwrap_or_default()));
     let gap_doc = p.out.join(format!("link-{id}.md"));
     let job_file = p.out.join(format!("link-job-g{number:03}.md"));
     // The Link pass runs this group's DeepSeek job with cwd `<out>\link-jobs`; create it here, as
@@ -11676,7 +11905,8 @@ fn cards_consumer(p: &Prepared, zt: &mut Zt, number: u64, at: &str, card: &Value
         let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
         let children = conn
             .prepare("SELECT id,inputs_json FROM units WHERE layer='models' AND logical_key LIKE ?1 ORDER BY id")?
-            .query_map([format!("g{number:03}-m%")], |row| {
+            // A writer's model (`gNNN-mIIII`) or a unit build of the group (`gNNN-uIIII`, Bug B).
+            .query_map([format!("g{number:03}-%")], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -13402,7 +13632,11 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
             bail!("the model holds a part `{address}` that its accepted plan does not map; rebuild the model as a new revision");
         }
     }
-    if model_todo(&s(&head_card["body"])) || s(&head_card["body"]).trim().is_empty() {
+    // The run report's own placeholder test: a skeleton section or title is unwritten too (Bug C).
+    if model_todo(&s(&head_card["body"]))
+        || crate::report::is_placeholder(&s(&head_card["title"]), &s(&head_card["body"]))
+        || s(&head_card["body"]).trim().is_empty()
+    {
         bail!("the Model Card is still unwritten; resume the model from its first missing part");
     }
     // R298: a part the review records as an independently supplied step carries one of the two
@@ -18605,6 +18839,130 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unmet_proof_is_registered_as_an_obligation_and_a_silent_empty_one_is_refused() {
+        let plan = |entry: Value| json!({"schema_version":1,"units":[entry]});
+        let unmet = json!({"unit":"k/5|a","id":"定理「幂法则」","group":5,"steps":[],"unmet":"the source proves it from line 123; the unit has no proof step"});
+        assert_eq!(math_plan("proof", &plan(unmet.clone())).unwrap()[0], unmet);
+        let silent = json!({"unit":"k/5|a","id":"定理「幂法则」","group":5,"steps":[]});
+        assert!(math_plan("proof", &plan(silent)).is_err());
+    }
+
+    #[test]
+    fn an_unmet_proof_may_be_rebound_once_its_unit_is_built_and_nothing_else_may() {
+        let unmet = json!({"plan":{"unit":"k/5|a","steps":[],"unmet":"no proof step"}});
+        let built = json!({"plan":{"unit":"k/5|a","steps":[{"address":"k/5|a|1","facet":"证明"}]}});
+        let other = json!({"plan":{"unit":"k/5|a","steps":[{"address":"k/5|a|2","facet":"证明"}]}});
+        assert!(may_rebind_math_unit(&unmet, "ready"));
+        assert!(may_rebind_math_unit(&unmet, "registered"));
+        assert!(!may_rebind_math_unit(&unmet, "done"), "a settled unit keeps its work");
+        assert!(!may_rebind_math_unit(&unmet, "claimed"), "work never changes under a claimant");
+        assert!(!may_rebind_math_unit(&unmet, "failed"), "a failed unit is reopened by resume, not rebound");
+        assert!(!may_rebind_math_unit(&built, "ready"), "planned work is never rebound");
+        let _ = other;
+    }
+
+    #[test]
+    fn a_math_link_job_reads_the_math_link_rules() {
+        // Bug E: link-start read link-prefix.md in every variant, so 按定义, 特例 and the reach-in
+        // rule never reached a mathematics Link job.
+        assert_eq!(link_prefix_file("math"), "math-link-prefix.md");
+        assert_eq!(link_prefix_file("econ"), "link-prefix.md");
+        assert_eq!(link_prefix_file("history"), "link-prefix.md");
+    }
+
+    #[test]
+    fn every_math_writer_prompt_carries_the_math_writer_rules() {
+        let with_units = math_writer_note("## 本组的数学单元（单元流水线写它们，你只链接）\n\n- [[k/5|a]]");
+        assert!(with_units.contains("[[k/5|a]]") && with_units.contains("不写、不改任何模型卡"));
+        let without = math_writer_note("");
+        assert!(without.contains("不写、不改任何模型卡") && without.contains("不适用"), "a group without units still gets the rules");
+        assert!(!without.contains("以上单元"), "no list is referred to when there is none");
+    }
+
+    #[test]
+    fn a_math_writer_prompt_carries_its_group_unit_list_to_link() {
+        let file = "# 第四章\n\n原文……\n\n## 本组的数学单元（单元流水线写它们，你只链接）\n\n- [[k/5|a]] 定理「幂法则」\n\n## 本组的例与习题\n\n- 例：属于 [[k/5|a]]\n";
+        let block = math_unit_block(file, "## 本组的数学单元");
+        assert!(block.starts_with("## 本组的数学单元"));
+        assert!(block.contains("[[k/5|a]]") && block.contains("## 本组的例与习题"));
+        assert!(!block.contains("原文"));
+        assert_eq!(math_unit_block("# 第一章\n\n原文\n", "## 本组的数学单元"), "");
+    }
+
+    #[test]
+    fn a_math_check_with_blocking_faults_withholds_quality() {
+        let check = |state: &str, blocking: i64| json!({"id":"math-check/book@1","state":state,"result":{"faults":40,"blocking":blocking}});
+        assert_eq!(math_blocking(&[check("done", 3)]), Some(3));
+        assert_eq!(math_blocking(&[check("done", 0)]), Some(0), "advisory M6/M7 faults alone do not block");
+        assert_eq!(math_blocking(&[check("ready", 3)]), Some(0), "an unsettled check is content incompleteness, counted elsewhere");
+        assert_eq!(math_blocking(&[json!({"id":"digest/g001@1","state":"done","result":{}})]), Some(0), "a book without the math check");
+        // Astra round 6: a settled check that records no blocking count (an older completion) is unverified.
+        assert_eq!(math_blocking(&[json!({"id":"math-check/book@1","state":"done","result":{"faults":4}})]), None);
+    }
+
+    #[test]
+    fn the_skeleton_produces_one_model_build_per_allocated_unit() {
+        // Astra round 5: builds registered only by group-finish never reached mode math or a finished group.
+        let units = json!({"units":[
+            {"id":"定义「微分 dx」","group":2,"form":"definition","address":"k/2|a"},
+            {"id":"定理「幂法则」","group":5,"form":"theorem","address":"k/5|a"},
+            {"id":"推论「负幂」","group":5,"form":"corollary","address":"k/5|c"}
+        ]});
+        let fingerprints = BTreeMap::from([("k/2|a".to_string(), "f2".to_string()), ("k/5|a".to_string(), "f5".to_string()), ("k/5|c".to_string(), "f5c".to_string())]);
+        let builds = math_build_units(&units, "hs", &fingerprints).unwrap();
+        let ids: Vec<&str> = builds.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["models/g002-u0000@1", "models/g005-u0000@1", "models/g005-u0001@1"]);
+        assert_eq!(builds[1].1, json!({"producer":{"producer":"math-skeleton/book@1","producer_input_hash":"hs"},"header":"k/5|a","fingerprint":"f5"}));
+        let missing = BTreeMap::from([("k/2|a".to_string(), "f2".to_string())]);
+        assert!(math_build_units(&units, "hs", &missing).is_err(), "an allocated head the archive lacks is a fault");
+    }
+
+    #[test]
+    fn a_math_group_registers_a_model_build_for_each_of_its_skeleton_units() {
+        // thompson1914calculus: 0 of 158 units was ever claimed by the model layer, because model
+        // builds were registered only from the writers' own Model Cards.
+        let units = json!({"units":[
+            {"id":"定义「微分 dx」","group":2,"form":"definition","address":"k/2|a"},
+            {"id":"定理「幂法则」","group":5,"form":"theorem","address":"k/5|a"},
+            {"id":"推论「负幂」","group":5,"form":"corollary","address":"k/5|c"}
+        ],"theories":[{"address":"k/5|b","group":5}]});
+        let unallocated = json!({"units":[{"id":"定理「x」","group":5,"form":"theorem","address":""}]});
+        assert!(math_unit_models(&unallocated, 5).is_err(), "a unit without its address was never allocated");
+        assert_eq!(
+            math_unit_models(&units, 5).unwrap(),
+            vec![("g005-u0000".to_string(), "k/5|a".to_string()), ("g005-u0001".to_string(), "k/5|c".to_string())]
+        );
+        assert!(math_unit_models(&units, 3).unwrap().is_empty());
+        assert!(math_unit_models(&json!({}), 5).is_err(), "a missing allocation is a fault, not an empty group");
+    }
+
+    #[test]
+    fn a_math_group_writer_cannot_create_edit_or_retype_a_model_card() {
+        // thompson1914calculus: group writers wrote 37 untyped Model Cards beside the 158 unit
+        // skeletons; the unit pipeline owns every Model Card of a mathematics book.
+        let units: std::collections::HashSet<String> = std::collections::HashSet::from(["k/5|a".to_string()]);
+        let refused = |tool: &str, args: Value| math_group_violation(tool, &args, &units).is_some();
+        // A note filed beneath a unit would enter the unit's proof chain (Astra round 5).
+        assert!(refused("create_successor", json!({"at":"k/5|a","kind":"side","title":"t","body":"x"})));
+        assert!(refused("insert_card", json!({"at":"k/5|a","title":"t","body":"x"})));
+        // The archive places an insert by `before` (Astra round 6).
+        assert!(refused("insert_card", json!({"before":"k/5|a","title":"t","body":"x"})));
+        assert!(refused("create_successor", json!({"at":"k/5","before":"k/5|a","title":"t","body":"x"})));
+        assert!(!refused("insert_card", json!({"before":"k/5|d","title":"t","body":"x"})));
+        assert!(!refused("edit_card", json!({"at":"@@0","body":"见 [[k/5|a]]"})));
+        assert!(refused("create_successor", json!({"at":"k/5","kind":"side","type":"model","title":"幂法则模型","body":"x"})));
+        assert!(refused("insert_card", json!({"at":"k/5|a","type":"model","title":"t","body":"x"})));
+        assert!(refused("create_successor", json!({"at":"k/5","type":"idea","facet":"推导","title":"t","body":"x"})));
+        assert!(refused("edit_card", json!({"at":"@@2","type":"model","body":"x"})));
+        assert!(refused("edit_card", json!({"at":"k/5","form":"theorem"})));
+        assert!(refused("edit_card", json!({"at":"k/5","level":"formal"})));
+        // Reading notes, their edits and Links stay the writer's work.
+        assert!(!refused("create_successor", json!({"at":"k/5","kind":"side","type":"idea","title":"t","body":"见 [[k/5|a]]"})));
+        assert!(!refused("create_successor", json!({"at":"k/5","kind":"side","title":"t","body":"x"})));
+        assert!(!refused("edit_card", json!({"at":"k/5","body":"本章讲幂法则，见 [[k/5|a]]。"})));
+    }
 
     #[test]
     fn the_link_self_check_counts_only_blocking_lines_against_the_faults_count() {

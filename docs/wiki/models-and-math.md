@@ -298,14 +298,14 @@ The closure fixes (`closure_fix`):
 
 ### The theory report (`theory_report`)
 
-1. `units`: every unit head the Theory Card body links, any kind, any section, in first-mention order.
+1. `units`: the unit heads the Theory Card's `**结构**` (structure) section links, in list order (`theory_members`; the `来源：` line excluded). A Link elsewhere in the body (the problem's prerequisite, a motivating example) cites a unit and never enrols it. `theories_of` (the reverse direction, a unit's theories) reads the same list.
 2. `main_results` (section `主要结果` / `main results`) and `objects` (`对象` / `objects`) keep only those units.
 3. For each unit: `premises` (units cited by its Model Card and all its parts, reach-ins counted as their unit) and `statement_premises` (its Model Card and `前提` parts only).
 4. **Dependency order:** repeatedly take the ready unit (all member premises placed) with the lowest address. Units left over are appended in address order; each that reaches itself through premises is listed in `cycle`.
 5. `forward`: a unit cites a member that stands later in Folgezettel order (`the book states later`).
 6. `tools`: cited units outside the theory, each with its own theories. `users`: citers of the theory's units outside it, grouped by their other theories (`theory: null` for citers in none).
 7. Weight: `focus` for main results and objects, `detail` for lemmas, `support` otherwise; a load of `HIGH_LOAD` or more raises it one step, capped at `focus`.
-8. Faults: `over_budget` (more than 7 main results), `empty` (no unit).
+8. Faults: `over_budget` (more than 7 main results), `no_structure` (the card has no `结构` section), `empty` (a `结构` section that lists no unit).
 9. Study passes: `orient` (Theory Card, first three main results); `path` (per main result, in address order: the non-lemma units it needs, following a lemma's statement premises only, each listed once across results, in dependency order); `connect` (tools and users); `recall` (main results face down).
 
 ### Rules the code keeps
@@ -508,7 +508,7 @@ cargo test --bin zt ops::tests
 | `tests/math_units.rs` | Math form storage and refusals; cited premises and `reach_in`; tiers, budget, the contrast pair, crux and other unit faults; load and `used_by`; study stations; the theory's dependency order, weights, tools, building block; statement-only premises of a lemma on the study path; `specializes`, including the same kind in the derived Link index's `kinds` map |
 | `tests/term_reasoning.rs` | S16 (#158): a Term use gives no Model membership, relation, or neighbour — a retyped Term head keeps its Model part out of the model that only Term-uses it, a part's Term use to a member is no relation, and an ordinary Link to the same target still takes it in; the graph projection keeps every target in `links` and names the Term edges in `term_use_targets`; a cross-Workspace Term use gives no Model evidence; a question walk takes no Term edge; the general readers (Broken links, Term uses) still see every Term use |
 | `src/model.rs` `tests` | Facet parsing, emphasis parsing, `find_head`, `address_order`, sentence notes, kind reading, `印证`/`参照`/`引出`/`来自`, and the Term kind by syntax with the inheritance fixtures |
-| `src/math.rs` `tests` | Form parsing, facet roles, labels, `section_links`, notation tables |
+| `src/math.rs` `tests` | Form parsing, facet roles, labels, `section_links`, notation tables, `theory_members` (only `结构` links, no section is `None`) |
 
 Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `over_budget` (unit or theory), the theory `empty` fault, `no_plan`, a reach-in counted as a theory premise, `users` of a theory, or the `e.g.` cue. The header of `tests/model_levels.rs` names the Session view and the dump manifest, but its tests use MCP only (the dump manifest keys are tested in `src/dump.rs`).
 
@@ -548,6 +548,7 @@ Gaps: no test covers `cycle` or `forward` in a theory report, `too_many_crux`, `
 - **A new Math form needs a migration** for archives whose `math_form` column was added by `ALTER TABLE`, because the column CHECK lists the forms of the time.
 
 ## Change history
+- `2026-11-22` — zt 0.64.0 (docs/math-digest-redesign-proposal.md §3.6): Theory membership is the explicit `**结构**` list. `theory_members` is the one parser behind `theory_report` and `theories_of`; a Link in the problem or main results no longer enrols an external prerequisite, and a card without the section reports `no_structure`. Test: `math::tests::a_theory_takes_in_only_the_units_its_structure_lists`; `tests/math_units.rs` unchanged and passing.
 - `2026-11-09` — `empirical::badge(facet, body)`: an estimate's value, uncertainty as written (标准误 in parentheses, t, z), stars and N; a table card's columns and rows; a specification variant's change and column. Every block child carries `badge`, a 规格 child also `chain_badges` for the variants filed under it. A chapter `lead` reads a Term link as its label. Tests: `an_estimate_shows_its_value_its_uncertainty_as_the_source_writes_it_and_its_stars`, `a_table_card_shows_its_size_and_a_variant_its_change_and_column`, `a_chapter_lead_reads_a_term_link_as_its_label`.
 - `2026-11-13` — zt 0.62.2: `variable_uncovered` reads every 变量表 among the members, own and imported. It had read the first by address, so a `整块` data import (velic2025inflation 8|a importing 7|a|a) made the lender's table the only one and every symbol of the model's own table uncovered. Test: `tests/model_levels.rs` `an_empirical_model_reads_its_own_and_its_imported_variable_tables`.
 - `2026-11-08` — zt 0.61.0: Elaboration level 3, `empirical`, with the role faults of the build report (`empirical_shape`, `estimate_unbound`, `spec_unbound`, `test_unbound`, `variable_uncovered`, `beyond_level` for a Derivation part other than `推导：估计式`/`估计量`), `evidence_bound` and each part's `role`; the cards table rebuilt once to widen the level CHECK. Tests: `tests/model_levels.rs` (level 3, every fault, the out-of-shape model, the migration, the write gate's EM rules).

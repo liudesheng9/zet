@@ -769,14 +769,12 @@ pub fn run(zt: &mut Zt, p: &Params, host: &mut dyn FnMut(&str)) -> Result<Outcom
                 "closure": ps_count(&b["closure"]), "forward": ps_count(&b["forward"]),
                 "unanchored": ps_count(&b["unanchored"]), "beyond_level": ps_count(&b["beyond_level"])
             });
-            let num = |k: &str| n[k].as_i64().unwrap_or(0);
-            let open = num("closure") + num("forward") + num("unanchored") + if eq(&field(m, "level"), "concept") { num("beyond_level") } else { 0 };
             let derived: Vec<Value> = ps_items(&m["parts"]).into_iter().filter(|part| ps::starts_with(&field(part, "facet"), "推导")).collect();
             let explained = derived.iter().filter(|part| THINKING.is_match(&field(part, "body")) && READING.is_match(&field(part, "body"))).count();
             model_rows.push(json!({
                 "address": field(head, "address"), "title": field(head, "title"), "level": m["level"].clone(),
                 "parts": ps_count(&m["parts"]), "issues": ps_count(&m["issues"]), "faults": n,
-                "self_sufficient": open == 0, "derivations": derived.len(), "explained": explained
+                "self_sufficient": model_self_sufficient(m), "derivations": derived.len(), "explained": explained
             }));
         }
 
@@ -1157,9 +1155,37 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+
+/// Whether a model reads on its own: no open closure, forward or unanchored fault (and, at concept
+/// level, nothing beyond its level), and no placeholder left in its head or any part. An unwritten
+/// skeleton is never self-sufficient (docs/math-digest-redesign-proposal.md, Bug C).
+pub(crate) fn model_self_sufficient(m: &Value) -> bool {
+    let b = &m["build"];
+    let n = |k: &str| ps_count(&b[k]) as i64;
+    let open = n("closure") + n("forward") + n("unanchored") + if eq(&field(m, "level"), "concept") { n("beyond_level") } else { 0 };
+    let text = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
+    let unwritten = crate::report::is_placeholder(&text(&m["head"], "title"), &text(&m["head"], "body"))
+        || ps_items(&m["parts"]).iter().any(|p| crate::report::is_placeholder(&text(p, "title"), &text(p, "body")));
+    open == 0 && !unwritten
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unwritten_model_is_never_self_sufficient() {
+        // thompson1914calculus: the audit printed `Not self-sufficient: 0 of 225` over 158 skeletons.
+        let clean = json!({"closure":[],"forward":[],"unanchored":[],"beyond_level":[]});
+        let skeleton = json!({"level":"formal","build":clean,"head":{"title":"4.1 幂法则：待写","body":"**陈述**：待写。"},"parts":[]});
+        assert!(!model_self_sufficient(&skeleton));
+        let part_left = json!({"level":"formal","build":clean,"head":{"title":"幂法则","body":"**陈述**：……"},"parts":[{"title":"证明","body":"待写"}]});
+        assert!(!model_self_sufficient(&part_left));
+        let written = json!({"level":"formal","build":clean,"head":{"title":"幂法则","body":"**陈述**：若 $y=x^n$……"},"parts":[{"title":"证明","body":"展开 $(x+dx)^n$……"}]});
+        assert!(model_self_sufficient(&written));
+        let open = json!({"level":"formal","build":{"closure":[{"fix":"x"}],"forward":[],"unanchored":[],"beyond_level":[]},"head":{"title":"幂法则","body":"写好了"},"parts":[]});
+        assert!(!model_self_sufficient(&open));
+    }
 
     #[test]
     fn an_audit_inside_a_step_reads_again_while_another_run_writes() {

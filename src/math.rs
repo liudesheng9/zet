@@ -255,6 +255,31 @@ pub(crate) fn labels(body: &str) -> Vec<String> {
 
 /// The Links of a body section: the lines after a heading or bold label that
 /// names one of `names` (`## 主要结果`, `**主要结果**：`), up to the next one.
+/// The members a Theory Card lists: the Link targets of its `**结构**` (structure) section, in
+/// order, or `None` when the card has no such section. Links elsewhere in the body (a problem's
+/// prerequisite, a motivating example) cite a unit and never enrol it. Both directions of
+/// membership read this (docs/math-digest-redesign-proposal.md §3.6).
+pub(crate) fn theory_members(body: &str) -> Option<Vec<String>> {
+    let has_section = body.lines().any(|line| {
+        let t = line.trim_start();
+        let label = t
+            .strip_prefix("**")
+            .map(|rest| rest.split("**").next().unwrap_or(""))
+            .or_else(|| t.starts_with('#').then(|| t.trim_start_matches('#').trim()));
+        label.is_some_and(|l| {
+            let l = l.trim().trim_end_matches(['：', ':']).trim();
+            l == "结构" || l.eq_ignore_ascii_case("structure")
+        })
+    });
+    // The card's `来源：` line names the book, not a member.
+    let listed = body
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("来源"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    has_section.then(|| section_links(&listed, &["结构", "structure"]))
+}
+
 pub(crate) fn section_links(body: &str, names: &[&str]) -> Vec<String> {
     let mut inside = false;
     let mut found = Vec::new();
@@ -345,6 +370,7 @@ impl View<'_> {
             .into_iter()
             .flatten()
             .filter(|source| self.form(source) == Some(MathForm::Theory))
+            .filter(|source| theory_members(self.body(source)).is_some_and(|m| m.iter().any(|at| at == head)))
             .cloned()
             .collect::<Vec<_>>();
         theories.sort_by(|a, b| model::address_order(a, b));
@@ -809,12 +835,11 @@ fn unit_study(
 /// takes from other theories, the theories that use it, and its study passes.
 pub(crate) fn theory_report(view: &View<'_>, head: &str) -> Value {
     let body = view.body(head);
+    let listed = theory_members(body);
     let mut units = Vec::new();
-    for read in model::read_links(body, str::to_string) {
-        if view.by_address.get(&read.target).is_some_and(is_unit_head)
-            && !units.contains(&read.target)
-        {
-            units.push(read.target);
+    for target in listed.clone().unwrap_or_default() {
+        if view.by_address.get(&target).is_some_and(is_unit_head) && !units.contains(&target) {
+            units.push(target);
         }
     }
     let member_set = units.iter().cloned().collect::<BTreeSet<_>>();
@@ -1020,7 +1045,12 @@ pub(crate) fn theory_report(view: &View<'_>, head: &str) -> Value {
             "fix": format!("`{head}` lists {} main results; a theory lists at most {MAIN_RESULTS}: split the chapter into two or more theories", main_results.len()),
         }));
     }
-    if units.is_empty() {
+    if listed.is_none() {
+        faults.push(json!({
+            "fault": "no_structure",
+            "fix": format!("`{head}` has no 结构 section: list the theory's units there, one Link each"),
+        }));
+    } else if units.is_empty() {
         faults.push(json!({
             "fault": "empty",
             "fix": format!("`{head}` takes in no unit: list its units in its 结构 section"),
@@ -1122,6 +1152,17 @@ mod tests {
         assert_eq!(section_links(theory, &["主要结果"]), ["b/4|d", "b/4|e"]);
         assert_eq!(section_links(theory, &["对象"]), ["b/4|b"]);
         assert_eq!(section_links(theory, &["结构"]), ["b/4|c"]);
+    }
+
+    #[test]
+    fn a_theory_takes_in_only_the_units_its_structure_lists() {
+        // docs/math-digest-redesign-proposal.md §3.6: a prerequisite or motivating example linked in
+        // the problem or the main results is cited, not enrolled.
+        let theory = "**问题**：为什么能略去高阶小量？见 [[b/2|d]]。\n\n**主要结果**：\n- [[b/5|a]]\n\n**结构**：\n- [[b/5|a]] 幂法则\n- [[b/5|c]] 负幂\n\n来源：[[b]] 第 4 章";
+        assert_eq!(theory_members(theory), Some(vec!["b/5|a".to_string(), "b/5|c".to_string()]));
+        assert_eq!(theory_members("**结构**：[[b/7|a]]"), Some(vec!["b/7|a".to_string()]));
+        // No structure section is a fault the report names, never an empty or guessed membership.
+        assert_eq!(theory_members("**主要结果**：[[b/5|a]]"), None);
     }
 
     #[test]

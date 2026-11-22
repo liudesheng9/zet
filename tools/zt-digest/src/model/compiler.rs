@@ -1990,8 +1990,8 @@ impl Compiler {
         for model in models {
             let st = self.model_of(&json!(model))?;
             // An unwritten placeholder keeps a model unbuilt even when it has many parts (R235).
-            let todo = TODO_LINE.is_match(&s(&st["head"]["body"]))
-                || pipe(&st["parts"]).into_iter().any(|p| TODO_LINE.is_match(&s(&p["body"])));
+            // The run report's own test: a skeleton section or title (`**陈述**：待写。`) is unwritten too.
+            let todo = unwritten(&st["head"]) || pipe(&st["parts"]).into_iter().any(unwritten);
             let built = built_as_is(&model, &st, todo);
             let same_level = self.p.level.is_empty() || (!st["level"].is_null() && ps::eq(&s(&st["level"]), &self.p.level));
             if built && !self.p.rebuild && same_level && !failed_build_elsewhere(&self.p.work, &model) {
@@ -2302,6 +2302,9 @@ impl Compiler {
         let mut edit = json!({ "at": model, "level": plan["level"] });
         if truthy(&plan["title"]) {
             edit["title"] = plan["title"].clone();
+        } else if let Some(title) = cleared_title(&s(&self.card(&json!(model))?["title"])) {
+            // A unit skeleton's title (`4.1 幂法则：待写`) never survives a build the architect left untitled.
+            edit["title"] = json!(title);
         }
         self.edits(vec![json!({ "tool": "edit_card", "arguments": edit })])?;
 
@@ -3653,7 +3656,7 @@ impl Compiler {
             if !expected.trim().is_empty() && !ps::eq(actual.trim(), expected.trim()) {
                 bail!("stale part: `{address}` has facet `{actual}`, the accepted plan says `{expected}`; keep the accepted plan's part or re-plan the model");
             }
-            let written = !TODO_LINE.is_match(&s(&card["body"]));
+            let written = !unwritten(&card);
             if written {
                 reused.insert(address.clone(), json!(crate::calls::authored_fingerprint(&card)));
                 continue;
@@ -3681,7 +3684,7 @@ impl Compiler {
             Some(card) => card,
             None => bail!("missing part: the Model Card `{model}` is gone; keep the accepted part map or rebuild the model as a new revision"),
         };
-        let head_missing = TODO_LINE.is_match(&s(&head_card["body"])) || s(&head_card["body"]).trim().is_empty();
+        let head_missing = unwritten(&head_card) || s(&head_card["body"]).trim().is_empty();
         if !head_missing {
             reused.insert(model.to_string(), json!(crate::calls::authored_fingerprint(&head_card)));
         }
@@ -4375,8 +4378,43 @@ mod failed_build_tests {
     }
 }
 
+/// Whether a Card still holds a placeholder: the compiler's own `待写` lines (with the setting intuition
+/// lines) or the run report's skeleton sections and titles, so skip, resume and finish agree.
+fn unwritten(card: &Value) -> bool {
+    TODO_LINE.is_match(&s(&card["body"])) || crate::report::is_placeholder(&s(&card["title"]), &s(&card["body"]))
+}
+
+/// A skeleton title without its placeholder (`4.1 幂法则：待写` → `4.1 幂法则`), or `None` when the title
+/// is written already or nothing would remain.
+pub(crate) fn cleared_title(title: &str) -> Option<String> {
+    let t = title.trim();
+    let rest = t
+        .strip_suffix("（待写）")
+        .or_else(|| t.strip_suffix("待写").and_then(|r| r.trim_end().strip_suffix(['：', ':'])))?;
+    let rest = rest.trim();
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_unit_skeleton_head_is_unwritten_for_skip_and_resume() {
+        // Astra round 6: the body-only test took `**陈述**：待写。` as written, so a partly built unit was skipped.
+        assert!(super::unwritten(&json!({"title":"4.1 幂法则：待写","body":"**陈述**：待写。"})));
+        assert!(super::unwritten(&json!({"title":"幂法则","body":"**陈述**：待写。"})));
+        assert!(super::unwritten(&json!({"title":"假设","body":"- 是什么：待写
+- 为什么需要：x"})));
+        assert!(!super::unwritten(&json!({"title":"幂法则","body":"**陈述**：若 $y=x^n$……"})));
+    }
+
+    #[test]
+    fn a_skeleton_title_loses_its_placeholder_when_the_plan_names_none() {
+        assert_eq!(super::cleared_title("4.1 幂法则：待写").as_deref(), Some("4.1 幂法则"));
+        assert_eq!(super::cleared_title("理论：第 4 章（待写）").as_deref(), Some("理论：第 4 章"));
+        assert_eq!(super::cleared_title("幂法则：若 y=xⁿ 则 dy/dx=nxⁿ⁻¹"), None, "a written title stays");
+        assert_eq!(super::cleared_title("：待写"), None, "nothing left is no title");
+    }
+
     use super::{close_entries, division_faults, divisions_section, import_section, imports_rebuilt, intuition_entries, lacks_main_line, marker_entries, supplied_entries, track_renames, current_address, unwritten_entries, TODO_LINE};
     use std::collections::BTreeMap;
     use serde_json::json;

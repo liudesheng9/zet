@@ -146,7 +146,9 @@ const CANNED = {
   // #110: group 1 has semantic gaps; group 2's owned Cards are all linked, so it needs no job.
   'prepare-link': () => ({ pending: [1], no_gap: [2], blocked: [], groups: [{ n: 1, id: 'g01', owned: 3, done: false, digest: 'done', blocked: false, gaps: 2, skipped: 1, position: 'anchor_position_missing' }, { n: 2, id: 'g02', owned: 3, done: false, digest: 'done', blocked: false, gaps: 0, skipped: 3, position: 'linked' }], owned_total: 6, gap_total: 2, skipped_total: 4, pending_count: 1, no_gap_count: 1, scheduled: 1, unowned: 0, digest_state: 'ledger', cards_all: 'D:\\x\\Key\\cards-all.md' }),
   'snapshot-topics': () => ({ ok: true }),
-  'math index': () => ({ ok: true, units: 5, forms: { theorem: 1, lemma: 1 }, examples: 1, exercises: 1 }),
+  // zt-digest 0.55.0: `math index` plans the statement finder's DeepSeek jobs; `index-apply` builds the index.
+  'math index-apply': () => ({ ok: true, units: 5, forms: { theorem: 1, lemma: 1 }, examples: 1, exercises: 1 }),
+  'math index': () => ({ ok: true, sections: 2, chars: 9000, jobs: [{ id: 'ix-01', files: ['a'], prompt: 'p' }] }),
   'math docs': () => ({ ok: true, files: [] }),
   'math skeleton': () => ({ ok: true, units: 5, created: 5, theories: 2 }),
   'math check': () => ({ ok: true, units: 5, theories: 2, faults: 0, by_rule: {} }),
@@ -1715,9 +1717,14 @@ function runtime(kind, opts = {}) {
       return file
     }
     const job = (id) => ({ id, files: [`${out}\\math\\job.md`], prompt: 'p' })
+    if (step === 'index') {
+      const plan = call(`zt-digest math -Step index -Staging "${out}"`)
+      const jobs = (plan.jobs || []).map((j) => job(j.id))
+      return { ok: true, sections: Number(plan.sections || 0), chars: Number(plan.chars || 0), jobs: jobs.length, file: saved('index-jobs.json', jobs) }
+    }
     if (step === 'skeleton') {
       if (opts.mathSkeletonFails) return { ok: false, step: 'index', error: 'math-compiler: the prepared sections name no numbered statement' }
-      const index = call(`zt-digest math -Step index -Staging "${out}"`)
+      const index = call(`zt-digest math -Step index-apply -Staging "${out}"`)
       const docs = call(`zt-digest math -Step docs -Staging "${out}"`)
       const skeleton = call(`zt-digest math -Step skeleton -Staging "${out}" -Apply`)
       return { ok: true, index, docs, skeleton }
@@ -1782,6 +1789,7 @@ function runtime(kind, opts = {}) {
         const ix = raw.index || {}, sk = raw.skeleton || {}, docs = raw.docs || {}
         return { ok: true, index_units: n(ix.units), index_forms: Object.keys(ix.forms || {}).length, index_examples: n(ix.examples), index_exercises: n(ix.exercises), docs_files: list(docs.files), skeleton_units: n(sk.created !== undefined ? sk.created : (typeof sk.units === 'number' ? sk.units : list(sk.units))), skeleton_theories: n(sk.theories) }
       }
+      case 'index': return { ok: true, sections: n(raw.sections), chars: n(raw.chars), jobs: n(raw.jobs), file: raw.file }
       case 'notation': return { ok: true, candidates: n(raw.candidates), jobs: n(raw.jobs), file: raw.file }
       case 'notation-apply': return { ok: raw.ok === true, symbols: n(raw.symbols), card: raw.card, error: raw.error }
       case 'boundary': return { ok: true, units: n(raw.units), jobs: n(raw.jobs), file: raw.file }
@@ -3708,15 +3716,15 @@ for (const which of ['econ', 'math']) {
   // Every deterministic chain is one math-steps.ps1 call, run by one drive job.
   check(mathCalls.length > 0 && mathCalls.every((c) => /math-steps\.ps1" -Step [\w-]+ -Out "[^"]+"/.test(c.cmd)), `#178: every mathematics step is one math-steps.ps1 call (${mathCalls.length} drive jobs; ${mathCalls.filter((c) => !/math-steps\.ps1/.test(c.cmd)).slice(0, 2).map((c) => c.cmd.slice(0, 80)).join(' | ')})`)
   check(mathManagers.filter((m) => m.kind === 'drive').length === mathCalls.length && mathManagers.filter((m) => m.kind === 'drive').every((m) => /math-steps\.ps1/.test(m.cmd)), '#178: each mathematics step is one drive job under a Haiku manager')
-  // The stages' steps run in their stage order: the statement chain and the notation table, then boundary, then
+  // The stages' steps run in their stage order (zt-digest 0.55.0: the statement finder's `index` first): the statement chain and the notation table, then boundary, then
   // proof, then Theory (after the Link check) and the read-only check last.
   const order = mathCalls.map((c) => c.step).join(',')
-  check(order === 'skeleton,notation,notation-apply,boundary,boundary-apply,boundary-settle,proof,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
+  check(order === 'index,skeleton,notation,notation-apply,boundary,boundary-apply,boundary-settle,proof,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
   const at = (label) => mathCalls.findIndex((c) => c.step === label)
   check(at('skeleton') < at('notation') && at('notation') < at('notation-apply') && at('boundary-settle') < at('proof') && at('proof-apply') < at('theory') && at('theory-apply') < at('check'), `#178: one stage finishes before the next starts (${order})`)
   // Each content round runs the job list its plan step wrote, at most eight jobs per manager.
   const contents = layerManagers.filter((m) => m.kind === 'content' && /^math-/.test(m.label || ''))
-  const planned = mathCalls.filter((c) => ['notation', 'boundary', 'boundary-apply', 'proof', 'theory'].includes(c.step)).map((c) => c.step)
+  const planned = mathCalls.filter((c) => ['index', 'notation', 'boundary', 'boundary-apply', 'proof', 'theory'].includes(c.step)).map((c) => c.step)
   check(contents.length >= planned.length && contents.every((m) => /\\math\\drive\\[\w-]+\.json$/.test(m.file || '') && m.jobs.length <= 8), `#178: every content manager reads the job list its plan step wrote, at most eight jobs (${contents.map((m) => `${(m.file || '').split('\\').pop()}:${m.jobs.length}`).join(', ')})`)
   check(contents.filter((m) => m.jobs.length > 0).length === planned.length, `#178: each plan step's jobs run once (${contents.filter((m) => m.jobs.length > 0).map((m) => m.jobs.join('+')).join(', ')})`)
   // The run reports every mathematics stage; the report's own params read the skeleton stage's index, docs,

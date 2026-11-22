@@ -39,11 +39,29 @@ param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
 $ErrorActionPreference = 'Stop'
 $flat = $Rest -join ' '
 Add-Content -LiteralPath $env:MAS_CALLS -Value $flat -Encoding utf8
-$cmd = "$($Rest[0]) $($Rest[1])"
-$null = $flat -match '-Step (\S+)'
-if ($Matches[1]) { $cmd = "$($Rest[0]) $($Matches[1])" }
 function Emit($Value) { $Value | ConvertTo-Json -Compress -Depth 16; exit 0 }
+# The ledger (Bug D): no unit is ready in this stand-in, and `ledger math` registers nothing. The settlement
+# itself is pinned by math-steps-settle.tests.ps1.
+if ($Rest[0] -eq 'ledger') { if ($Rest[1] -eq 'next') { Emit @{ units = @() } }; Emit @{ schema_version = 1; units = @() } }
+$cmd = "$($Rest[0]) $($Rest[1])"
+if ($flat -match '-Step (\S+)') { $cmd = "$($Rest[0]) $($Matches[1])" }
 if ($env:MAS_FAIL -and $flat -match $env:MAS_FAIL) { Write-Output "zt-digest math: the compiler refused"; exit 1 }
+# Each command writes its evidence where the real compiler does, so the step can settle it.
+$staging = if ($flat -match '-Staging (\S+)') { $Matches[1] } else { '' }
+function Evidence([string]$Rel, [string]$Root = $staging) {
+    $path = Join-Path $Root $Rel
+    New-Item -ItemType Directory -Force (Split-Path $path -Parent) | Out-Null
+    Set-Content -LiteralPath $path -Value '{}' -Encoding utf8
+}
+switch -Regex ($cmd) {
+    '^math index-apply' { Evidence 'math\index.json' }
+    '^math docs' { Evidence 'math\docs.json' }
+    '^math skeleton' { Evidence 'math\units.json' }
+    '^math notation-apply' { if ($env:MAS_NO_ANSWER -ne '1') { Evidence 'math\notation\applied.json' } }
+    '^math boundary-settle' { Evidence 'math\boundary\settled.json' }
+    '^math proof-apply' { Evidence 'math\proof\applied.json' }
+    '^math check' { if ($flat -match '-Out (\S+)') { Evidence 'math-audit.json' $Matches[1] } }
+}
 switch -Regex ($cmd) {
     '^math index-apply' { Emit @{ ok = $true; units = 5; forms = @{ theorem = 1; lemma = 1 }; examples = 1; exercises = 2; proofs = 2; cites = 3; file = 'D:\x\Key\math\index.json' } }
     '^math index' { Emit @{ ok = $true; sections = 4; chars = 9000; jobs = @(@{ id = 'ix-01'; files = @('D:\x\Key\math\index\ix-01.md'); prompt = 'p' }) } }
