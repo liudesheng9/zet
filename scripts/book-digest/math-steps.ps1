@@ -6,8 +6,9 @@
 
   pwsh -NoProfile -File math-steps.ps1 -Step <step> -Out <staging> [-UnitsPerJob 4] [-Supply examples] [-MainResults 7]
 
-  skeleton        the statement index, the math prompt files and the unit and Theory Card skeleton, in one
-                  process                                                          -> {index, docs, skeleton}
+  index           the statement finder's DeepSeek jobs over the prepared sections   -> math\drive\index-jobs.json
+  skeleton        the index from the finder's checked answers, the math prompt files and the unit and Theory
+                  Card skeleton, in one process                                    -> {index, docs, skeleton}
   notation        the notation job (symbol candidates)                             -> math\drive\notation-jobs.json
   notation-apply  the Book notation table from the answer                          -> {ok, symbols, card}
   boundary        one job per -UnitsPerJob units: hypothesis roles and contrast pairs
@@ -25,11 +26,12 @@
   exits 0: its caller reads the line and stops the stage with its reason. Files stay under <staging>\math\drive.
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('skeleton', 'notation', 'notation-apply', 'boundary', 'boundary-apply', 'boundary-settle', 'proof', 'proof-apply', 'theory', 'theory-apply', 'check')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('index', 'skeleton', 'notation', 'notation-apply', 'boundary', 'boundary-apply', 'boundary-settle', 'proof', 'proof-apply', 'theory', 'theory-apply', 'check')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
     [ValidateRange(1, 64)][int]$UnitsPerJob = 4,
     [ValidateSet('none', 'examples', 'examples+answers')][string]$Supply = 'examples',
     [ValidateRange(1, 64)][int]$MainResults = 7,
+    [ValidateRange(2000, 200000)][int]$IndexChars = 30000,
     [string]$Tool = 'zt-digest'
 )
 $ErrorActionPreference = 'Stop'
@@ -75,10 +77,18 @@ function Save-Jobs([string]$Name, $Result) {
 }
 
 switch ($Step) {
+    'index' {
+        # The statement finder (owner, 2026-11-21): DeepSeek reads every prepared section with its line numbers and
+        # lists the book's definitions, results, examples and exercises, numbered or not. One job per -IndexChars.
+        $r = Math 'index' @('-IndexChars', "$IndexChars")
+        if (-not $r.json -or $r.json.ok -ne $true) { Fail 'index' $r }
+        $saved = Save-Jobs 'index-jobs.json' $r
+        Reply @{ ok = $true; sections = [int]$r.json.sections; chars = [int]$r.json.chars; jobs = $saved.count; file = $saved.file } $r.json
+    }
     'skeleton' {
-        # One process: the statement index, the prompt files the model stage reads, and the unit and Theory Card
-        # skeleton. The line carries their counts; each command's own line is the detail.
-        $index = Math 'index'
+        # One process: the index from the finder's checked answers, the prompt files the model stage reads, and the
+        # unit and Theory Card skeleton. The line carries their counts; each command's own line is the detail.
+        $index = Math 'index-apply'
         if (-not $index.json -or $index.json.ok -ne $true) { Fail 'index' $index }
         $docs = Math 'docs'
         if (-not $docs.json -or $docs.json.ok -ne $true) { Fail 'docs' $docs }

@@ -2492,7 +2492,7 @@ fn prepared_manifest(p: &Prepared) -> Result<Value> {
     util::read_json(p.out.join("manifest.json"))
 }
 
-/// `math-index/book@1`: every numbered statement of every prepared section file is
+/// `math-index/book@1`: every statement the finder found in every prepared section file is
 /// indexed, and the retained index is exactly what those prepared bytes produce. A
 /// missing or changed section is a fault, never an empty index.
 fn math_index_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Value> {
@@ -2505,7 +2505,7 @@ fn math_index_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resul
         bail!("`{unit}` completes at the prepared index it enumerated: {}", expected.display());
     }
     let retained = util::read_json(&path).context("invalid retained math index")?;
-    let (units, others) = crate::math::scan_index(&p.out.to_string_lossy(), &manifest)?;
+    let (units, others) = crate::math::retained_index(&p.out.to_string_lossy(), &manifest)?;
     if retained["units"] != json!(units) || retained["others"] != json!(others) {
         bail!("the retained math index does not match the prepared sections it must account for");
     }
@@ -2631,7 +2631,7 @@ fn math_skeleton_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path:
         bail!("`{unit}` completes at the skeleton unit list: {}", relayed.display());
     }
     let retained = util::read_json(&path).context("invalid retained unit list")?;
-    let (index_units, index_others) = crate::math::scan_index(&p.out.to_string_lossy(), &manifest)?;
+    let (index_units, index_others) = crate::math::retained_index(&p.out.to_string_lossy(), &manifest)?;
     let units = retained["units"].as_array().context("invalid unit list")?;
     if units.len() != index_units.len() {
         bail!(

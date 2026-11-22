@@ -75,6 +75,31 @@
       }
     },
     {
+      "label": "^math-skeleton: find statements$",
+      "answer": {
+        "answer": "{\"ok\":true,\"sections\":4,\"chars\":9000,\"jobs\":1,\"file\":\"D:\\\\x\\\\Key\\\\math\\\\drive\\\\index-jobs.json\"}"
+      }
+    },
+    {
+      "label": "^math-skeleton: find statements 1-1$",
+      "answer": {
+        "ok": true,
+        "deleted": 1,
+        "not_deleted": [],
+        "results": [
+          {
+            "id": "ix-01",
+            "session_id": "s-ix-01",
+            "status": "done",
+            "answer": "{\"statements\":7,\"faults\":0}",
+            "registered": true,
+            "evidence": true,
+            "deleted": true
+          }
+        ]
+      }
+    },
+    {
       "label": "^math-skeleton: start$",
       "answer": {
         "answer": "{\"ok\":true,\"index\":{\"ok\":true,\"units\":5,\"forms\":{\"theorem\":1},\"examples\":1,\"exercises\":1},\"docs\":{\"ok\":true,\"files\":[]},\"skeleton\":{\"ok\":true,\"units\":5,\"created\":5,\"theories\":2}}"

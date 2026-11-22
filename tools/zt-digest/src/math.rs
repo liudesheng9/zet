@@ -4,7 +4,10 @@
 //! mathematical unit and Theory Card, writes the job files, applies the answers, and checks the
 //! result. It never writes Card prose except skeletons, lists, and Links.
 //!
-//!   index            the numbered environments of the book -> math\index.json, math\index.md (files only)
+//!   index            the statement finder's jobs: one DeepSeek job per -IndexChars of prepared sections,
+//!                    each section with numbered lines (files only) -> math\index\jobs.json
+//!   index-check      (-Job) the self-check of one finder answer: one fault per line, then `faults: N`
+//!   index-apply      every checked answer -> math\index.json, math\index.md (files only)
 //!   docs             the math prompt files (each shared instruction file with its math supplement)
 //!   skeleton         (-Apply) one unit Model Card per indexed statement, one Theory Card per chapter,
 //!                    the group files' unit lists (writes with -Log owned-gNN.txt, -SrcLog src-gNN.txt)
@@ -22,6 +25,7 @@
 //! and named in job files as, ZT_DIGEST_SCRIPTS (the forwarder sets it) or the scripts\book-digest
 //! folder of the repository this binary was built from.
 
+mod index;
 mod text;
 
 use crate::args::Args;
@@ -35,10 +39,12 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::sync::LazyLock;
-use text::{RESULTS, dependency_map, form_zh, order_key, resolve_cites, section_of, set_section};
+use text::{RESULTS, dependency_map, form_zh, order_key, section_of, set_section};
 
 const STEPS: &[&str] = &[
     "index",
+    "index-check",
+    "index-apply",
     "docs",
     "skeleton",
     "notation",
@@ -52,7 +58,7 @@ const STEPS: &[&str] = &[
     "theory-apply",
     "check",
 ];
-const PARAMS: &[&str] = &["Step", "Staging", "Out", "UnitsPerJob", "Supply", "MainResults", "CoreBudget", "MaxSymbols"];
+const PARAMS: &[&str] = &["Step", "Staging", "Out", "UnitsPerJob", "Supply", "MainResults", "CoreBudget", "MaxSymbols", "Job", "IndexChars"];
 
 static OK_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+ ok ").unwrap());
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
@@ -92,6 +98,8 @@ struct Params {
     supply: String,
     main_results: i64,
     max_symbols: i64,
+    job: String,
+    index_chars: i64,
     apply: bool,
 }
 
@@ -167,26 +175,87 @@ fn bump(map: &mut CiMap<i64>, k: &str) {
     map.insert(k, n);
 }
 
-/// The statement index of a prepared book: every numbered environment of every prepared
-/// section file, in prepared group order, with its cited statements resolved. `step_index`
-/// writes this; the ledger's `math-index` check re-derives it from the same prepared bytes,
-/// so a retained index cannot drift from the source it claims to account for (R238).
-pub(crate) fn scan_index(staging: &str, manifest: &Value) -> Result<(Vec<Value>, Vec<Value>)> {
-    let mut units: Vec<Value> = Vec::new();
-    let mut others: Vec<Value> = Vec::new();
+/// The prepared sections of a book in prepared group order, each with its group, chapter and lines.
+pub(crate) fn prepared_sections(staging: &str, manifest: &Value) -> Result<Vec<index::Section>> {
+    let mut out = Vec::new();
     for g in pipe(&manifest["groups"]) {
         for file in pipe(&g["sections"]) {
             let file = s(file);
             let path = join(staging, &format!("sections\\{file}"));
             if !ps::exists(&path) {
-                continue;
+                bail!("a prepared section is missing: {path}");
             }
-            let lines = ps::read_lines(&path)?;
-            text::index_file(&lines, &file, ps::int(&g["n"])?, &field(g, "chapter"), &mut units, &mut others);
+            out.push(index::Section { file, group: ps::int(&g["n"])?, chapter: field(g, "chapter"), lines: ps::read_lines(&path)? });
         }
     }
-    resolve_cites(&mut units);
-    Ok((units, others))
+    Ok(out)
+}
+
+/// The finder's jobs: whole groups, in order, until a job holds -IndexChars characters.
+fn index_jobs(sections: &[index::Section], max_chars: usize) -> Vec<Vec<index::Section>> {
+    let mut jobs: Vec<Vec<index::Section>> = Vec::new();
+    let mut cur: Vec<index::Section> = Vec::new();
+    let mut chars = 0usize;
+    let mut i = 0;
+    while i < sections.len() {
+        let group = sections[i].group;
+        let mut j = i;
+        let mut size = 0usize;
+        while j < sections.len() && sections[j].group == group {
+            size += sections[j].lines.iter().map(|l| l.chars().count() + 1).sum::<usize>();
+            j += 1;
+        }
+        if !cur.is_empty() && chars + size > max_chars {
+            jobs.push(std::mem::take(&mut cur));
+            chars = 0;
+        }
+        cur.extend_from_slice(&sections[i..j]);
+        chars += size;
+        i = j;
+    }
+    if !cur.is_empty() {
+        jobs.push(cur);
+    }
+    jobs
+}
+
+/// The statement index of a prepared book, built from the finder's retained answers
+/// (`math\index\plan.json` and each job's `out\<id>.json`). Each answer must pass its check
+/// against the sections its job was given; a missing or failing answer is an error, never an
+/// empty index. `index-apply` writes this, and the ledger re-derives it from the same files.
+pub(crate) fn retained_index(staging: &str, manifest: &Value) -> Result<(Vec<Value>, Vec<Value>)> {
+    let sections = prepared_sections(staging, manifest)?;
+    let work = join(staging, "math\\index");
+    let plan = read_json(&join(&work, "plan.json"))?;
+    let mut answers = Vec::new();
+    let mut faults = Vec::new();
+    for job in pipe(&plan["jobs"]) {
+        let id = field(job, "id");
+        let files: Vec<String> = pipe(&job["sections"]).into_iter().map(s).collect();
+        let mine: Vec<index::Section> = sections.iter().filter(|x| files.iter().any(|f| eq(f, &x.file))).cloned().collect();
+        let file = join(&work, &format!("out\\{id}.json"));
+        if !ps::exists(&file) {
+            faults.push(format!("{id}: no answer"));
+            continue;
+        }
+        let answer = match read_json(&file) {
+            Ok(a) => a,
+            Err(e) => {
+                faults.push(format!("{id}: the answer is not JSON ({e})"));
+                continue;
+            }
+        };
+        let f = index::check_answer(&answer, &mine);
+        if !f.is_empty() {
+            faults.push(format!("{id}: {} faults ({})", f.len(), f[0]));
+            continue;
+        }
+        answers.push(answer);
+    }
+    if !faults.is_empty() {
+        bail!("the statement finder's answers are not complete: {}", faults.join("; "));
+    }
+    Ok(index::build(&answers, &sections))
 }
 
 /// The unit-list block the skeleton appends to a prepared group file: one entry per
@@ -410,14 +479,86 @@ impl Compiler {
 
     // --- index -----------------------------------------------------------------------------------
 
+    fn index_work(&self) -> String {
+        join(&self.work, "index")
+    }
+
+    /// The finder's jobs: one DeepSeek job per -IndexChars characters of whole groups. Each job
+    /// file holds its sections with numbered lines and the job's self-check command.
     fn step_index(&mut self) -> Result<()> {
-        let (units, others) = scan_index(&self.p.staging, &self.manifest)?;
+        let iw = self.index_work();
+        std::fs::create_dir_all(join(&iw, "out"))?;
+        if self.p.index_chars < 2000 {
+            bail!("-IndexChars must be 2000 or more, not {}", self.p.index_chars);
+        }
+        let sections = prepared_sections(&self.p.staging, &self.manifest)?;
+        let doc = join(&iw, "dsh-math-index-instructions.zh.md");
+        let instructions = util::read_text(self.script_file("dsh-math-index-instructions.zh.md"))?;
+        util::write_text(&doc, &instructions.replace("{{KEY}}", &self.key).replace("{{TITLE}}", &self.title))?;
+        let mut jobs = Vec::new();
+        let mut planned = Vec::new();
+        let mut chars = 0usize;
+        for (k, share) in index_jobs(&sections, self.p.index_chars as usize).iter().enumerate() {
+            let id = format!("ix-{}", ps::d2(k as i64 + 1));
+            let out = join(&iw, &format!("out\\{id}.json"));
+            let check = format!("zt-digest math -Step index-check -Staging \"{}\" -Job {id}", self.p.staging);
+            let text = index::job_text(&self.title, &id, &out, &check, share);
+            chars += text.chars().count();
+            let job = join(&iw, &format!("{id}.md"));
+            util::write_text(&job, &text)?;
+            let files: Vec<String> = share.iter().map(|x| x.file.clone()).collect();
+            planned.push(obj(vec![("id", json!(id)), ("sections", json!(files)), ("groups", json!(ps::select_unique(share.iter().map(|x| x.group.to_string()))))]));
+            jobs.push(obj(vec![
+                ("id", json!(id)),
+                ("files", json!([doc, job])),
+                ("prompt", json!(format!("按以上说明找出 {id} 各文件里的数学陈述，写出 JSON 文件，运行 SELF-CHECK。最后只回复一行 JSON。"))),
+            ]));
+        }
+        save_json(&join(&iw, "plan.json"), &obj(vec![("schema_version", json!(1)), ("index_chars", json!(self.p.index_chars)), ("jobs", json!(planned))]))?;
+        out_last(&obj(vec![("ok", json!(true)), ("sections", json!(sections.len())), ("chars", json!(chars)), ("jobs", json!(jobs))]))
+    }
+
+    /// The self-check of one finder answer: one fault per line, then `faults: N`.
+    fn step_index_check(&mut self) -> Result<()> {
+        let id = self.p.job.trim().to_string();
+        if id.is_empty() {
+            bail!("-Job is required");
+        }
+        let iw = self.index_work();
+        let plan = read_json(&join(&iw, "plan.json"))?;
+        let Some(job) = pipe(&plan["jobs"]).into_iter().find(|j| eq(&field(j, "id"), &id)).cloned() else {
+            bail!("no finder job {id} in {}", join(&iw, "plan.json"));
+        };
+        let files: Vec<String> = pipe(&job["sections"]).into_iter().map(s).collect();
+        let mine: Vec<index::Section> = prepared_sections(&self.p.staging, &self.manifest)?.into_iter().filter(|x| files.iter().any(|f| eq(f, &x.file))).collect();
+        let file = join(&iw, &format!("out\\{id}.json"));
+        let faults = if !ps::exists(&file) {
+            vec![format!("no answer file {file}")]
+        } else {
+            match read_json(&file) {
+                Ok(a) => index::check_answer(&a, &mine),
+                Err(e) => vec![format!("the answer is not valid JSON: {e}")],
+            }
+        };
+        for f in &faults {
+            println!("{f}");
+        }
+        println!("faults: {}", faults.len());
+        Ok(())
+    }
+
+    /// The index from every checked answer, in the record shape the skeleton reads.
+    fn step_index_apply(&mut self) -> Result<()> {
+        let (units, others) = match retained_index(&self.p.staging, &self.manifest) {
+            Ok(x) => x,
+            Err(e) => return out_last(&obj(vec![("ok", json!(false)), ("error", json!(e.to_string()))])),
+        };
         let index_file = join(&self.work, "index.json");
         save_json(&index_file, &obj(vec![("units", json!(units)), ("others", json!(others))]))?;
         let mut md = format!("# 数学单元索引：《{}》{NL}{NL}", self.title);
         md.push_str(&format!("| 编号 | 形式 | 层级 | 名称 | 原文 | 证明 | 引用 |{NL}| --- | --- | --- | --- | --- | --- | --- |{NL}"));
         for u in &units {
-            let proof = if truthy(&u["proof"]) { format!(":{}", field(u, "proof")) } else { "—".to_string() };
+            let proof = if ps::int(&u["proof"]).unwrap_or(0) > 0 { format!(":{}", field(u, "proof")) } else { "—".to_string() };
             let cites: Vec<String> = pipe(&u["cites"]).into_iter().map(s).collect();
             md.push_str(&format!(
                 "| {} | {} | {} | {} | `sections/{}:{}-{}` | {proof} | {} |{NL}",
@@ -431,6 +572,21 @@ impl Compiler {
                 cites.join("、")
             ));
         }
+        if !others.is_empty() {
+            md.push_str(&format!("{NL}## 例与习题{NL}{NL}| 编号 | 种类 | 名称 | 原文 | 属于 |{NL}| --- | --- | --- | --- | --- |{NL}"));
+            for o in &others {
+                md.push_str(&format!(
+                    "| {} | {} | {} | `sections/{}:{}-{}` | {} |{NL}",
+                    field(o, "id"),
+                    field(o, "kind"),
+                    field(o, "name"),
+                    field(o, "section"),
+                    field(o, "line"),
+                    field(o, "end"),
+                    field(o, "after")
+                ));
+            }
+        }
         util::write_text(join(&self.work, "index.md"), &md)?;
         let mut forms: CiMap<i64> = CiMap::new();
         for u in &units {
@@ -443,7 +599,7 @@ impl Compiler {
             ("forms", counts(&forms)),
             ("examples", json!(others.iter().filter(|o| eq(&field(o, "kind"), "example")).count())),
             ("exercises", json!(others.iter().filter(|o| eq(&field(o, "kind"), "exercise")).count())),
-            ("proofs", json!(units.iter().filter(|u| truthy(&u["proof"])).count())),
+            ("proofs", json!(units.iter().filter(|u| ps::int(&u["proof"]).unwrap_or(0) > 0).count())),
             ("cites", json!(cites)),
             ("file", json!(index_file)),
         ]))
@@ -1645,6 +1801,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         supply,
         main_results: a.int_or("MainResults", 7)?,
         max_symbols: a.int_or("MaxSymbols", 80)?,
+        job: a.str("Job"),
+        index_chars: a.int_or("IndexChars", 30000)?,
         apply: a.flag("Apply"),
     };
     // -CoreBudget is a parameter of the script that no step uses.
@@ -1654,9 +1812,10 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let title = field(&manifest, "book_title");
     // R328 (§15.2): a math step that allocates a job or writes Cards in the book's Literature tree
     // stops before its first file or Card when that tree is locked by the owner. `index` and `docs`
-    // read only the staging book and write prompt files (no Card and no archive read), and `check`
+    // read only the staging book and write prompt or job files (no Card and no archive read), as
+    // do `index-check` and `index-apply`, and `check`
     // is the read-only checker (R327): none of them asks.
-    let zt = if matches!(p.step.as_str(), "check" | "index" | "docs") {
+    let zt = if matches!(p.step.as_str(), "check" | "index" | "index-check" | "index-apply" | "docs") {
         None
     } else {
         let mut client = crate::zt::start()?;
@@ -1670,6 +1829,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let mut compiler = Compiler { p, zt, manifest, key, title, work };
     match compiler.p.step.as_str() {
         "index" => compiler.step_index()?,
+        "index-check" => compiler.step_index_check()?,
+        "index-apply" => compiler.step_index_apply()?,
         "docs" => compiler.step_docs()?,
         "skeleton" => compiler.step_skeleton()?,
         "notation" => compiler.step_notation()?,

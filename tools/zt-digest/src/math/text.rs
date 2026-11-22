@@ -1,27 +1,13 @@
-//! The pure parts of `zt-digest math`: the statement index of a section file, a Card body with one
+//! The pure parts of `zt-digest math`: a Card body with one
 //! section replaced (`Set-Section`), the dependency map (`Get-Map`), the Folgezettel order key
 //! (`Get-OrderKey`), and PowerShell's array slice `$lines[a..b]`.
 
 use crate::ps::{self, CiMap, field, s};
 use anyhow::{Result, bail};
 use regex::Regex;
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 use std::sync::LazyLock;
 
-/// A numbered environment at the start of a line (`-match`: case ignored).
-pub static ENV: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)^\s*(?:#{1,6}\s*)?(?:>\s*)?\**\s*(定义|公理|定理|命题|引理|推论|例子|例|习题|练习|Definition|Axiom|Theorem|Proposition|Lemma|Corollary|Example|Exercise)\s*([0-9]+(?:[.．][0-9A-Za-z]+)*)\s*\**\s*(?:[（(]([^）)\n]{1,30})[)）])?",
-    )
-    .unwrap()
-});
-static PROOF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(?:#{1,6}\s*)?(?:>\s*)?\**\s*(证明|Proof)\s*\**\s*([:：.。]|\s|$)").unwrap());
-/// `[regex]::Matches`: case counts.
-static REF: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(定义|公理|定理|命题|引理|推论|Definition|Axiom|Theorem|Proposition|Lemma|Corollary)\s*([0-9]+(?:[.．][0-9A-Za-z]+)*)").unwrap()
-});
-static HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^#{1,6}\s").unwrap());
-static EXAMPLE_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(例|例子|Example)$").unwrap());
 static IS_LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(\*\*([^*]+)\*\*|#{1,6}\s*(\S+))").unwrap());
 static BOLD_LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*\*\*([^*]+)\*\*").unwrap());
 static HEAD_LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*#{1,6}\s*(.+)$").unwrap());
@@ -31,19 +17,6 @@ static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\d+$").unwra
 static MAP_DROP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"[<>&"]"#).unwrap());
 
 pub const RESULTS: &[&str] = &["theorem", "proposition", "lemma", "corollary"];
-
-/// `$Forms[$word.ToLower()]`: the Math form of an environment word, or None (an example or exercise).
-pub fn form_of(word: &str) -> Option<&'static str> {
-    Some(match word.to_lowercase().as_str() {
-        "定义" | "definition" => "definition",
-        "公理" | "axiom" => "axiom",
-        "定理" | "theorem" => "theorem",
-        "命题" | "proposition" => "proposition",
-        "引理" | "lemma" => "lemma",
-        "推论" | "corollary" => "corollary",
-        _ => return None,
-    })
-}
 
 /// `$FormZh`: the Chinese word of a form ('' for an unknown form).
 pub fn form_zh(form: &str) -> &'static str {
@@ -87,125 +60,6 @@ pub fn section_of(lines: &[String], from: i64, to: i64, max: i64) -> String {
         to = from + max - 1;
     }
     ps_slice(lines, from - 1, to - 1).join("\n")
-}
-
-fn obj(pairs: Vec<(&str, Value)>) -> Value {
-    let mut map = Map::new();
-    for (k, v) in pairs {
-        map.insert(k.to_string(), v);
-    }
-    Value::Object(map)
-}
-
-/// The index of one section file: the units and the examples and exercises, in line order.
-/// `last_unit` is the last unit indexed so far (id, section), for the `after` of an example.
-pub fn index_file(lines: &[String], file: &str, group: i64, chapter: &str, units: &mut Vec<Value>, others: &mut Vec<Value>) {
-    struct Mark {
-        line: usize,
-        word: String,
-        number: String,
-        name: String,
-    }
-    let mut marks: Vec<Mark> = Vec::new();
-    for (i, l) in lines.iter().enumerate() {
-        if let Some(m) = ENV.captures(l) {
-            marks.push(Mark {
-                line: i + 1,
-                word: m[1].to_string(),
-                number: m[2].replace('．', "."),
-                name: m.get(3).map(|x| x.as_str().to_string()).unwrap_or_default(),
-            });
-        }
-    }
-    for (k, m) in marks.iter().enumerate() {
-        let mut end = if k + 1 < marks.len() { marks[k + 1].line - 1 } else { lines.len() };
-        // A heading ends the statement too, unless it is the statement's own heading.
-        for j in m.line..end {
-            if HEADING.is_match(&lines[j]) {
-                end = j;
-                break;
-            }
-        }
-        let mut proof = 0usize;
-        for j in m.line..end {
-            if PROOF.is_match(&lines[j]) {
-                proof = j + 1;
-                break;
-            }
-        }
-        let text = ps_slice(lines, m.line as i64 - 1, m.line.max(end) as i64 - 1).join("\n");
-        let own = format!("{} {}", m.word, m.number);
-        let refs = ps::select_unique(
-            REF.captures_iter(&text).map(|c| format!("{} {}", &c[1], c[2].replace('．', "."))).filter(|r| !ps::eq(r, &own)),
-        );
-        let mut entry = obj(vec![
-            ("id", json!(own)),
-            ("word", json!(m.word)),
-            ("number", json!(m.number)),
-            ("name", json!(m.name.trim())),
-            ("group", json!(group)),
-            ("chapter", json!(chapter)),
-            ("section", json!(file)),
-            ("line", json!(m.line)),
-            ("end", json!(end)),
-            ("proof", json!(proof)),
-            ("refs", json!(refs)),
-        ]);
-        let map = entry.as_object_mut().unwrap();
-        match form_of(&m.word) {
-            Some(form) => {
-                map.insert("form".into(), json!(form));
-                let level = if RESULTS.contains(&form) && proof > 0 { "formal" } else { "concept" };
-                map.insert("level".into(), json!(level));
-                units.push(entry);
-            }
-            None => {
-                let kind = if EXAMPLE_WORD.is_match(&m.word) { "example" } else { "exercise" };
-                map.insert("kind".into(), json!(kind));
-                // An example or exercise belongs beside the last statement before it.
-                let after = match units.last() {
-                    Some(u) if ps::eq(&field(u, "section"), file) => field(u, "id"),
-                    _ => String::new(),
-                };
-                map.insert("after".into(), json!(after));
-                others.push(entry);
-            }
-        }
-    }
-}
-
-/// Resolves each reference of each unit to an indexed unit: by word and number, else by number
-/// alone (when exactly one unit has it). Adds `cites` to every unit.
-pub fn resolve_cites(units: &mut [Value]) {
-    let mut by_id: CiMap<String> = CiMap::new();
-    let mut by_number: CiMap<String> = CiMap::new();
-    for u in units.iter() {
-        let id = field(u, "id");
-        by_id.insert(&id, id.clone());
-        let n = field(u, "number");
-        let v = if by_number.contains(&n) { String::new() } else { id.clone() };
-        by_number.insert(&n, v);
-    }
-    for u in units.iter_mut() {
-        let id = field(u, "id");
-        let mut cites = Vec::new();
-        for r in ps::pipe(&u["refs"]) {
-            let r = s(r);
-            let num = r.split_once(' ').map(|x| x.1.to_string()).unwrap_or_default();
-            let hit = if let Some(x) = by_id.get(&r) {
-                Some(x.clone())
-            } else {
-                by_number.get(&num).filter(|x| !x.is_empty()).cloned()
-            };
-            if let Some(hit) = hit
-                && !hit.is_empty()
-                && !ps::eq(&hit, &id)
-            {
-                cites.push(hit);
-            }
-        }
-        u.as_object_mut().unwrap().insert("cites".into(), json!(ps::select_unique(cites)));
-    }
 }
 
 /// `Set-Section`: a Card body with one section (a bold label or heading such as **结构**) replaced,
@@ -382,10 +236,7 @@ pub fn dependency_map(order: &[&Value]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn lines(text: &str) -> Vec<String> {
-        ps::split_lines(text)
-    }
+    use serde_json::json;
 
     #[test]
     fn slices_as_powershell() {
@@ -396,34 +247,6 @@ mod tests {
         assert_eq!(section_of(&l, 2, 9, 80), "b\nc");
         assert_eq!(section_of(&l, 1, 9, 2), "a\nb");
         assert_eq!(section_of(&[], 1, 5, 6), "");
-    }
-
-    #[test]
-    fn index_finds_units_proofs_and_citations() {
-        let text = "# 第 4 章\n\n**定义 4.3.1**（连续）设 f。\n\n**引理 4.4.2** 若 f 连续。\n\n证明：由定义 4.3.1 取。\n\n**定理 4.5.1**（介值定理）设。\n\n证明：由公理 1.3.3，由引理 4.4.2 排除。\n\n## 习题\n\n习题 4.5.3 证明。\n";
-        let l = lines(text);
-        let mut units = vec![json!({ "id": "公理 1.3.3", "number": "1.3.3", "section": "s01.md", "refs": [] })];
-        let mut others = Vec::new();
-        index_file(&l, "s02.md", 2, "第 4 章", &mut units, &mut others);
-        resolve_cites(&mut units);
-        assert_eq!(units.len(), 4);
-        let thm = &units[3];
-        assert_eq!(field(thm, "id"), "定理 4.5.1");
-        assert_eq!(field(thm, "name"), "介值定理");
-        assert_eq!(field(thm, "level"), "formal");
-        assert_eq!(thm["proof"], json!(11));
-        assert_eq!(thm["end"], json!(12), "a heading ends the statement");
-        assert_eq!(thm["cites"], json!(["公理 1.3.3", "引理 4.4.2"]));
-        assert_eq!(units[2]["cites"], json!(["定义 4.3.1"]));
-        assert_eq!(field(&units[1], "level"), "concept");
-        let keys: Vec<&String> = units[1].as_object().unwrap().keys().collect();
-        assert_eq!(
-            keys,
-            ["id", "word", "number", "name", "group", "chapter", "section", "line", "end", "proof", "refs", "form", "level", "cites"]
-        );
-        assert_eq!(others.len(), 1);
-        assert_eq!(field(&others[0], "kind"), "exercise");
-        assert_eq!(field(&others[0], "after"), "定理 4.5.1");
     }
 
     #[test]

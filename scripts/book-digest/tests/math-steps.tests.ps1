@@ -7,8 +7,10 @@
 .DESCRIPTION
   A stand-in zt-digest answers the math compiler's commands from a small table, so the suite proves the step's
   own behaviour without an archive, a book or a provider:
-  - `skeleton` runs the statement index, the math prompt files and the skeleton in ONE call and answers each
-    command's own line;
+  - `index` runs the statement finder's plan and saves its DeepSeek jobs (the owner, 2026-11-21: DeepSeek finds
+    the statements, no pattern does);
+  - `skeleton` runs the index from the finder's answers, the math prompt files and the skeleton in ONE call and
+    answers each command's own line;
   - `notation`, `boundary`, `proof` and `theory` each run their one plan command and save the jobs the stage's
     content managers read under <staging>\math\drive;
   - `notation-apply`, `boundary-apply`, `boundary-settle`, `proof-apply` and `theory-apply` run their one apply
@@ -43,7 +45,8 @@ if ($Matches[1]) { $cmd = "$($Rest[0]) $($Matches[1])" }
 function Emit($Value) { $Value | ConvertTo-Json -Compress -Depth 16; exit 0 }
 if ($env:MAS_FAIL -and $flat -match $env:MAS_FAIL) { Write-Output "zt-digest math: the compiler refused"; exit 1 }
 switch -Regex ($cmd) {
-    '^math index' { Emit @{ ok = $true; units = 5; forms = @{ theorem = 1; lemma = 1 }; examples = 1; exercises = 2; proofs = 2; cites = 3; file = 'D:\x\Key\math\index.json' } }
+    '^math index-apply' { Emit @{ ok = $true; units = 5; forms = @{ theorem = 1; lemma = 1 }; examples = 1; exercises = 2; proofs = 2; cites = 3; file = 'D:\x\Key\math\index.json' } }
+    '^math index' { Emit @{ ok = $true; sections = 4; chars = 9000; jobs = @(@{ id = 'ix-01'; files = @('D:\x\Key\math\index\ix-01.md'); prompt = 'p' }) } }
     '^math docs' { Emit @{ ok = $true; files = @('D:\x\Key\math\brief.zh.md', 'D:\x\Key\math\fill.zh.md') } }
     '^math skeleton' { Emit @{ ok = $true; units = 5; created = 5; theories = 2; applied = ($flat -match ' -Apply'); file = 'D:\x\Key\math\units.json' } }
     '^math notation-apply' {
@@ -87,7 +90,15 @@ function Step([string[]]$argv) {
 $common = @('-Out', $out, '-Tool', $tool)
 function Calls() { if (Test-Path -LiteralPath $calls) { Get-Content -LiteralPath $calls -Raw } else { '' } }
 
-# 1. skeleton: index, docs and the skeleton apply, in ONE call; the answer carries each command's own line.
+# 0. index: the finder's plan; its jobs are saved for the stage's content managers, with the job size passed on.
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$index = Step (@('-Step', 'index', '-IndexChars', '12000') + $common)
+$indexCalls = Calls
+Assert ($index.code -eq 0 -and $index.json -and $index.json.ok -eq $true -and $index.json.jobs -eq 1 -and $index.json.sections -eq 4) "index: the finder plan answers its sections and one job ($($index.text))"
+Assert ((Test-Path -LiteralPath $index.json.file) -and (@(Get-Content -LiteralPath $index.json.file -Raw | ConvertFrom-Json).Count -eq 1)) 'index: the finder jobs are saved as a JSON array'
+Assert ($indexCalls -match 'math -Step index -Staging .* -IndexChars 12000') 'index: -IndexChars reaches the plan command'
+
+# 1. skeleton: the index from the answers, docs and the skeleton apply, in ONE call; the answer carries each command's own line.
 Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
 $skeleton = Step (@('-Step', 'skeleton') + $common)
 $skeletonCalls = Calls
@@ -95,7 +106,7 @@ Assert ($skeleton.code -eq 0 -and $skeleton.json -and $skeleton.json.ok -eq $tru
 Assert-Line $skeleton 'skeleton'
 Assert ($skeleton.json.index_units -eq 5 -and $skeleton.json.index_forms -eq 2 -and $skeleton.json.index_examples -eq 1 -and $skeleton.json.index_exercises -eq 2) 'skeleton: the index line keeps its unit, form, example and exercise counts'
 Assert ($skeleton.json.docs_files -eq 2 -and $skeleton.json.skeleton_units -eq 5 -and $skeleton.json.skeleton_theories -eq 2) 'skeleton: the prompt files and the applied skeleton keep their own counts'
-Assert ($skeletonCalls -match 'math -Step index -Staging ' -and $skeletonCalls -match 'math -Step docs -Staging ' -and $skeletonCalls -match 'math -Step skeleton -Staging .* -Apply') 'skeleton: one process runs index, docs and the applied skeleton'
+Assert ($skeletonCalls -match 'math -Step index-apply -Staging ' -and $skeletonCalls -match 'math -Step docs -Staging ' -and $skeletonCalls -match 'math -Step skeleton -Staging .* -Apply') 'skeleton: one process runs index-apply, docs and the applied skeleton'
 
 # 2. notation: the plan command's jobs are saved for the stage's content manager.
 $notation = Step (@('-Step', 'notation') + $common)
@@ -149,7 +160,7 @@ $env:MAS_FAIL = 'math -Step boundary'
 $bad = Step (@('-Step', 'boundary') + $common)
 $env:MAS_FAIL = ''
 Assert ($bad.code -eq 0 -and $bad.json -and $bad.json.ok -eq $false -and $bad.json.step -eq 'boundary') "fail: a failed plan answers one ok:false line with its step ($($bad.text))"
-$env:MAS_FAIL = 'math -Step index'
+$env:MAS_FAIL = 'math -Step index-apply'
 $badSkeleton = Step (@('-Step', 'skeleton') + $common)
 $env:MAS_FAIL = ''
 Assert ($badSkeleton.code -eq 0 -and $badSkeleton.json -and $badSkeleton.json.ok -eq $false -and $badSkeleton.json.step -eq 'index') "fail: the statement chain names the command that failed ($($badSkeleton.text))"

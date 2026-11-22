@@ -40,6 +40,7 @@ function Save-Text($path, $text) { New-Item -ItemType Directory -Force -Path (Sp
 function Save-Json($path, $value) { Save-Text $path ($value | ConvertTo-Json -Depth 10) }
 function Read-Model($at) { @(Invoke-Zt @(@{ tool = 'get_model'; arguments = @{ at = $at } }))[0] }
 function Read-Card($at) { @(Invoke-Zt @(@{ tool = 'get_card'; arguments = @{ at = $at } }))[0] }
+. (Join-Path $PSScriptRoot 'math-finder-standin.ps1')
 $key = 'Abbott2015'
 try {
     # --- the fixture book: two chapters, one group each ------------------------------------------
@@ -84,8 +85,30 @@ try {
                 [ordered]@{ n = 2; id = 'g02'; anchor = "$key/2"; chapter = '第 4 章 函数极限与连续'; headings = @('4.3 连续函数'); sections = @('s02.md'); file = (Join-Path $staging 'groups\g02.md') })
         })
 
-    # --- index (files only) ------------------------------------------------------------------------
-    $index = Last (Run 'index')
+    # --- index (files only): the finder's plan, its stand-in answers, their self-check, the index ---
+    $finder = Last (Run 'index')
+    Assert ($finder.ok -eq $true -and $finder.sections -eq 2 -and @($finder.jobs).Count -eq 1) 'index: one finder job for the two small sections'
+    $jobText = Get-Content -Raw (Join-Path $staging 'math\index\ix-01.md')
+    Assert ($jobText.Contains('SELF-CHECK: zt-digest math -Step index-check') -and $jobText.Contains('5│ **公理 1.3.3**')) 'index: the job numbers every line and names its self-check'
+    Write-FinderAnswers $staging @(
+        @{ kind = 'axiom'; label = '公理 1.3.3'; name = '完备性公理'; quote = '公理 1.3.3' },
+        @{ kind = 'example'; label = '例 1.3.4'; name = '根号 2 的上确界'; quote = '例 1.3.4'; belongs_to = '公理 1.3.3' },
+        @{ kind = 'definition'; label = '定义 4.3.1'; name = '连续'; quote = '定义 4.3.1' },
+        @{ kind = 'lemma'; label = '引理 4.4.2'; name = '保号'; quote = '引理 4.4.2'; proofQuote = '证明：由定义'; cites = @('定义 4.3.1') },
+        @{ kind = 'theorem'; label = '定理 4.5.1'; name = '介值定理'; quote = '定理 4.5.1'; proofQuote = '证明：令'; cites = @('公理 1.3.3', '引理 4.4.2') },
+        @{ kind = 'corollary'; label = '推论 4.5.2'; name = '奇次多项式有实根'; quote = '推论 4.5.2'; proofQuote = '证明：由定理'; cites = @('定理 4.5.1') },
+        @{ kind = 'exercise'; label = '习题 4.5.3'; name = '零点练习'; quote = '习题 4.5.3' })
+    $selfCheck = @(Run 'index-check' @('-Job', 'ix-01'))
+    Assert ($selfCheck[-1] -eq 'faults: 0') "index-check: the stand-in answer passes its self-check ($($selfCheck -join ' | '))"
+    $answerFile = Join-Path $staging 'math\index\out\ix-01.json'
+    $goodAnswer = [IO.File]::ReadAllText($answerFile)
+    [IO.File]::WriteAllText($answerFile, $goodAnswer.Replace('"line": 5', '"line": 6'), $utf8)
+    $badCheck = @(Run 'index-check' @('-Job', 'ix-01'))
+    Assert ($badCheck[-1] -ne 'faults: 0' -and ($badCheck -join ' ') -match 'line 6') 'index-check: a wrong line number is a fault'
+    $refusedApply = Last (Run 'index-apply')
+    Assert ($refusedApply.ok -eq $false -and $refusedApply.error.Contains('not complete')) 'index-apply: a failing answer is refused, never an empty index'
+    [IO.File]::WriteAllText($answerFile, $goodAnswer, $utf8)
+    $index = Last (Run 'index-apply')
     Assert ($index.units -eq 5) 'index: five units'
     Assert ($index.forms.theorem -eq 1 -and $index.forms.lemma -eq 1 -and $index.forms.axiom -eq 1) 'index: the forms'
     Assert ($index.examples -eq 1 -and $index.exercises -eq 1) 'index: one example and one exercise'

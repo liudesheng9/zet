@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.12.10",
+  "version": "5.12.11",
   "scope": "project",
   "script": ".claude/workflows/zt-math-digest.js",
   "scriptRel": "workflows/zt-math-digest.js",
-  "sha256": "8b7ea0ab7cb3b449ceb8edbc55674b4e6f231aa9e5197b942c227e648eeff1e8",
-  "fingerprint": "df49d200b66dbfdf",
-  "blueprintSha256": "ae7505c8d5ef19553186dcf8f76f8afbf0d410e4a3587dfaa54730a8a6db6dfd",
+  "sha256": "a1120cf3778617221ff41f2220c5f329d72fb63629bcfe82cb44858e5d762b32",
+  "fingerprint": "35bad5040d4e0d9d",
+  "blueprintSha256": "3c7a7d8372779130b9263133d3ed32a0e99773cac4a995b6145857ee526e5104",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "19",
@@ -36,7 +36,7 @@
     "zt-math-boundary": "3",
     "zt-math-check": "2",
     "zt-math-proof": "3",
-    "zt-math-skeleton": "3",
+    "zt-math-skeleton": "4",
     "zt-math-theory": "3",
     "zt-model-layer": "11",
     "zt-organize": "9",
@@ -154,7 +154,7 @@
     },
     "zt-math-skeleton": {
       "file": "scripts/book-digest/workflow/modules/zt-math-skeleton.js",
-      "sha256": "c65b665ccfa05b5a1c90ec9e2f317269f46d225fc14d0fe9c5858bd35f2f41fd"
+      "sha256": "2db04cb0ac691b2db6ca121a64b77b25324207b000bb3462adfc2e045f1f1f8c"
     },
     "zt-math-theory": {
       "file": "scripts/book-digest/workflow/modules/zt-math-theory.js",
@@ -180,7 +180,7 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-math-digest.blueprint.json",
-      "sha256": "c1034cb5b99c1abd6b36796552257a632d84fc512c283c69a94f688412160fbb"
+      "sha256": "6e2652f3f9269406323c3fe4d2bd431f0f173ce192d3b5adc4ac3815c5d41cdd"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
@@ -188,9 +188,9 @@
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-19T04:19:24.825Z",
+  "installedAt": "2026-11-22T02:11:22.201Z",
   "dryRun": {
-    "agents": 84,
+    "agents": 86,
     "order": [
       "args",
       "source",

@@ -23,6 +23,7 @@ function Run-Digest([string[]]$Arguments) {
     return $lines[-1] | ConvertFrom-Json -AsHashtable
 }
 function Math([string]$Step,[string[]]$more = @()) { Run-Digest (@('math','-Step',$Step,'-Staging',$out) + $more) }
+. (Join-Path $PSScriptRoot 'math-finder-standin.ps1')
 function Claim([string]$Layer) { Run-Digest @('ledger','next','-Out',$out,'-Layer',$Layer,'-Take','4','-Owner',"math-$Layer") }
 function Complete([string]$Layer,[string]$Unit,[string]$Outputs) {
     $claim = Claim $Layer
@@ -88,7 +89,12 @@ try {
     $null = Run-Digest @('prepare','-Source',$source,'-Out',$out,'-CitationKey',$key,'-BibTeX',"@book{$key,title={Understanding Analysis}}",'-StartHeading','导论','-EndHeading','参考','-MinUnitChars','1','-MaxUnits','1','-NoFigures','-Variant','math','-Apply')
 
     # --- index, docs and the skeleton: allocation is not a built unit -------------------------------
-    $index = Math 'index'
+    $null = Math 'index'
+    Write-FinderAnswers $out @(
+        @{ kind = 'axiom'; label = '公理 1.3.3'; name = '完备性公理'; quote = '公理 1.3.3' },
+        @{ kind = 'definition'; label = '定义 4.3.1'; name = '连续'; quote = '定义 4.3.1' },
+        @{ kind = 'theorem'; label = '定理 4.5.1'; name = '介值定理'; quote = '定理 4.5.1'; proofQuote = '证明：令'; cites = @('公理 1.3.3') })
+    $index = Math 'index-apply'
     Assert ($index.units -eq 3 -and $index.forms.axiom -eq 1 -and $index.forms.definition -eq 1 -and $index.forms.theorem -eq 1) 'the index finds the book statements'
     $null = Math 'docs'
     $sk = Math 'skeleton' @('-Apply')

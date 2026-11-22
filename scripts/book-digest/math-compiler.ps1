@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   The deterministic half of the zt-math-digest workflow (docs/math-cards-design.md). DeepSeek writes
-  every Card body and every JSON answer; this script finds the book's numbered statements, builds
+  every Card body and every JSON answer, and finds the book's statements; this script plans that search, builds
   the skeleton of every mathematical unit and Theory Card, writes the job files, applies the
   answers, and checks the result. It never writes Card prose except skeletons, lists, and Links.
 
@@ -16,9 +16,12 @@
   <Staging>\math. Every step prints compact JSON as its last line. A step that hands work to
   DeepSeek prints {"jobs":[{"id","files","prompt"}], ...}.
 
-    index            finds every numbered environment in the book (定义, 公理, 定理, 命题, 引理, 推论,
-                     例, 习题, and their English names), its lines, its proof, its name, and the
-                     statements it cites; writes math\index.json and math\index.md. Reads files only.
+    index            plans the statement finder: one DeepSeek job per -IndexChars (30000) characters of
+                     whole groups, each section with numbered lines (math\index\ix-NN.md). DeepSeek
+                     lists every definition, axiom, result, example and exercise, numbered or not.
+    index-check      (-Job ix-NN) the self-check of one finder answer: one fault per line, then
+                     `faults: N`.
+    index-apply      builds math\index.json and math\index.md from the checked answers. Reads files only.
     docs             writes the math prompt files: math-prefix.md (the shared digest prefix with
                      the math supplement), math-link-prefix.md, and math\brief.zh.md, fill.zh.md,
                      review.zh.md (each shared instruction file with its math supplement). The
