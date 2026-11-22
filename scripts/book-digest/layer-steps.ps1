@@ -287,10 +287,12 @@ switch ($Step) {
         $refusal = $null
         foreach ($u in $stuck) {
             $released = Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release')
-            if ($released.code -ne 0 -and "$($released.tail)" -match 'claim_recent') {
-                # A claim refused only for recent activity was taken by this layer's own failed try a moment ago
-                # (brandimarti2026reorganizing, 2026-11-10): wait out the ledger's quiet window once and release it.
-                $wait = if ($env:ZT_RELEASE_WAIT_SECONDS) { [int]$env:ZT_RELEASE_WAIT_SECONDS } else { 125 }
+            # A claim refused only for recent activity was taken by this layer's own failed try a moment ago
+            # (brandimarti2026reorganizing, 2026-11-10): wait out the ledger's quiet window and release it. Its writer
+            # may still be working and record more activity (thompson1914calculus, 2026-11-21: one wait left digest
+            # g023/g024 claimed and every book publication blocked), so wait again, up to five windows.
+            $wait = if ($env:ZT_RELEASE_WAIT_SECONDS) { [int]$env:ZT_RELEASE_WAIT_SECONDS } else { 125 }
+            for ($w = 1; $w -le 5 -and $released.code -ne 0 -and "$($released.tail)" -match 'claim_recent'; $w++) {
                 Start-Sleep -Seconds $wait
                 $released = Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release')
             }

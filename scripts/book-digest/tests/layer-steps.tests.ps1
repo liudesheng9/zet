@@ -69,7 +69,7 @@ switch -Regex ($cmd) {
             if (Test-Path -LiteralPath $rf) { $k = [int](Get-Content -LiteralPath $rf -Raw) }
             $k++
             Set-Content -LiteralPath $rf -Value $k
-            if ($k -le 1) { Write-Output 'zt-digest ledger: claim_recent: digest/g001@1 recorded activity within the last 120 seconds; its holder may still be working'; exit 1 }
+            if ($k -le [int]$env:LS_RELEASE_RECENT) { Write-Output 'zt-digest ledger: claim_recent: digest/g001@1 recorded activity within the last 120 seconds; its holder may still be working'; exit 1 }
         }
         Set-Content -LiteralPath $env:LS_RELEASED -Value 'released'
         Write-Output '{"ok":true}'
@@ -412,6 +412,15 @@ $recent = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $commo
 Assert-Line $recent 'start (a recent claim)'
 Assert ($recent.json.ok -eq $true -and [int]$recent.json.units -gt 0) "a release refused as claim_recent waits and claims again ($($recent.last))"
 Assert ((@((Get-Content -LiteralPath $calls) | Where-Object { $_ -match '^ledger reclaim' })).Count -ge 2) 'the recent claim was released on the second try'
+Remove-Item -LiteralPath (Join-Path $out 'release-recent-count.txt') -ErrorAction SilentlyContinue
+# thompson1914calculus, 2026-11-21: the writer of the failed try was still working, so the claim was recent again after
+# one wait; the start waits again (up to five windows) instead of failing and leaving the group claimed.
+Remove-Item -LiteralPath $env:LS_RELEASED -ErrorAction SilentlyContinue
+$env:LS_RELEASE_RECENT = '3'
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$recent3 = Step (@('-Step', 'start', '-Layer', 'link', '-Owner', 'link') + $common)
+Assert ($recent3.json.ok -eq $true -and [int]$recent3.json.units -gt 0) "a claim recent three times running is released after the third wait ($($recent3.last))"
+Assert ((@((Get-Content -LiteralPath $calls) | Where-Object { $_ -match '^ledger reclaim' })).Count -ge 4) 'the claim was released on the fourth try'
 Remove-Item Env:LS_RELEASE_RECENT, Env:LS_HELD_RELEASE, Env:LS_RELEASED, Env:ZT_RELEASE_WAIT_SECONDS
 Remove-Item -LiteralPath (Join-Path $out 'release-recent-count.txt') -ErrorAction SilentlyContinue
 
