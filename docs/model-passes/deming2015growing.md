@@ -95,8 +95,8 @@ Top line now: 1 I. 引言, 2 II. 模型, 3 III. 数据, 4 IV. NLSY79 结果, 5 V
 ### Open items (appendix)
 
 1. The import of `7|a|8|b` could be `2|b|a|4|c` (the S*×θ time prediction) instead of `2|b|a|1|b`.
-2. 15 spec cards of `4|b|a`, `4|c|b`, `5|b|a`, `5|c|a` still lack an estimating equation (part of the open count in formal-estimating-equations).
-3. The installed `check-settings.mjs` does not flag a missing estimating equation.
-4. The evidence-dialogue judged record is keyed by address, so an organize that renames addresses makes it judge and pay for old pairs again.
-5. A Model Card whose head links another model's part makes the model brief skip it as built (this run's `13|a`); the brief could read a false share as no part.
+2. **Done 2026-11-22.** The 15 spec cards of `4|b|a` (4), `4|c|b` (3), `5|b|a` (5), `5|c|a` (3) got 补写 estimating equations from (18)–(21) and the Table II–V notes; the 变量表 of `4|b|a`, `4|c|b`, `5|b|a` got the missing symbol rows; the nine **各项** lists that said 无 now state the parts of their equation. `5|c|a` now reads δ_j as the age fixed effect (the book's j after (18)) and its fixed effects as worker, age, year, census region and urbanicity (Table V note), in the 变量表, the baseline spec and the head. Book-wide: 0 cards say 书中没有写出估计式, all 56 规格 cards carry an equation; check-settings and check-model clean on all four models. Backups `D:/zt/backups/zt-before-deming-equations-2026-11-22.sqlite3`, `…-items-2026-11-22.sqlite3`.
+3. **Done 2026-11-22** (4e43a6c2): `check-settings.mjs` reports an empirical specification with no formula in **估计式**, or one that says 书中没有写出估计式 / 书中未写, as `equation`. On Deming before the fix it found exactly the 15 cards of item 2.
+4. **Done 2026-11-22** (4e43a6c2): the judged record already matched zt statement fingerprints (since 2026-11-12), but those keep Links as written, so an organize that rewrites Links inside a statement changed them. Judged pairs are now also keyed by `statementKey` (the statement with each Link's address dropped). Records written before this keep only their address and fingerprint keys.
+5. **Done 2026-11-22** (fa72e72b, zt-digest 0.54.13 deployed): the brief counts only the parts filed under the Model Card (`built_as_is` with `list::own_parts`), as the model listing already did.
 6. Appendix and main-text equation numbers clash at (7) and (12)–(17); the notation card maps them.
