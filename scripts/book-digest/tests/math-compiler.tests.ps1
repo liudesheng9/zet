@@ -109,6 +109,8 @@ try {
     Assert ($refusedApply.ok -eq $false -and $refusedApply.error.Contains('not complete')) 'index-apply: a failing answer is refused, never an empty index'
     [IO.File]::WriteAllText($answerFile, $goodAnswer, $utf8)
     $index = Last (Run 'index-apply')
+    $replan = Last (Run 'index')
+    Assert ($replan.ok -eq $true -and @($replan.jobs).Count -eq 0 -and $replan.reused -eq 1) 'index: a resume plans no job for an answer that passes its check (the unit ids stay)'
     Assert ($index.units -eq 5) 'index: five units'
     Assert ($index.forms.theorem -eq 1 -and $index.forms.lemma -eq 1 -and $index.forms.axiom -eq 1) 'index: the forms'
     Assert ($index.examples -eq 1 -and $index.exercises -eq 1) 'index: one example and one exercise'

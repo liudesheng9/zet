@@ -498,16 +498,23 @@ impl Compiler {
         let mut jobs = Vec::new();
         let mut planned = Vec::new();
         let mut chars = 0usize;
+        let mut reused = 0usize;
         for (k, share) in index_jobs(&sections, self.p.index_chars as usize).iter().enumerate() {
             let id = format!("ix-{}", ps::d2(k as i64 + 1));
             let out = join(&iw, &format!("out\\{id}.json"));
+            let files: Vec<String> = share.iter().map(|x| x.file.clone()).collect();
+            planned.push(obj(vec![("id", json!(id)), ("sections", json!(files)), ("groups", json!(ps::select_unique(share.iter().map(|x| x.group.to_string()))))]));
+            // A resume reruns no finished work: an answer that passes its check against the same
+            // sections stays, so the index (and every unit id the skeleton built from it) stays.
+            if ps::exists(&out) && read_json(&out).map(|a| index::check_answer(&a, share).is_empty()).unwrap_or(false) {
+                reused += 1;
+                continue;
+            }
             let check = format!("zt-digest math -Step index-check -Staging \"{}\" -Job {id}", self.p.staging);
             let text = index::job_text(&self.title, &id, &out, &check, share);
             chars += text.chars().count();
             let job = join(&iw, &format!("{id}.md"));
             util::write_text(&job, &text)?;
-            let files: Vec<String> = share.iter().map(|x| x.file.clone()).collect();
-            planned.push(obj(vec![("id", json!(id)), ("sections", json!(files)), ("groups", json!(ps::select_unique(share.iter().map(|x| x.group.to_string()))))]));
             jobs.push(obj(vec![
                 ("id", json!(id)),
                 ("files", json!([doc, job])),
@@ -515,7 +522,7 @@ impl Compiler {
             ]));
         }
         save_json(&join(&iw, "plan.json"), &obj(vec![("schema_version", json!(1)), ("index_chars", json!(self.p.index_chars)), ("jobs", json!(planned))]))?;
-        out_last(&obj(vec![("ok", json!(true)), ("sections", json!(sections.len())), ("chars", json!(chars)), ("jobs", json!(jobs))]))
+        out_last(&obj(vec![("ok", json!(true)), ("sections", json!(sections.len())), ("chars", json!(chars)), ("reused", json!(reused)), ("jobs", json!(jobs))]))
     }
 
     /// The self-check of one finder answer: one fault per line, then `faults: N`.
