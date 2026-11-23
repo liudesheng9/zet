@@ -2848,10 +2848,18 @@ fn math_skeleton_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path:
         if field(allocated, "id")? != field(indexed, "id")? || allocated["form"] != indexed["form"] {
             bail!("the skeleton's units are not the indexed statements in book order");
         }
+        // P1a M2.2: every unit of the settled projection is allocated, under its chapter's entry anchor.
         if allocated["address"].is_null() {
-            continue;
+            bail!("the skeleton allocated no head for the indexed unit {}", field(allocated, "id")?);
         }
         let at = field(allocated, "address")?.to_string();
+        let chapter_id = allocated["chapter_id"].as_str().unwrap_or_default();
+        let entry = retained["chapters"].as_array().into_iter().flatten().find(|c| c["chapter_id"].as_str() == Some(chapter_id)).and_then(|c| c["entry_anchor"].as_str());
+        match entry {
+            Some(anchor) if at.starts_with(&format!("{anchor}|")) => {}
+            Some(anchor) => bail!("the unit {} [[{at}]] is not filed under its chapter's entry anchor {anchor}", field(allocated, "id")?),
+            None => bail!("the unit {} names chapter {chapter_id}, which the allocation's chapters do not hold", field(allocated, "id")?),
+        }
         let group = allocated["group"]
             .as_u64()
             .context("a skeleton unit names no group")?;
@@ -2870,6 +2878,11 @@ fn math_skeleton_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path:
         {
             bail!("a Theory Card must cover one chapter that holds units");
         }
+        // Its members are exactly the units of its printed chapter, in book order.
+        let members: Vec<Value> = units.iter().filter(|u| u["chapter_id"] == theory["chapter_id"]).map(|u| u["address"].clone()).collect();
+        if theory["units"] != json!(members) {
+            bail!("the Theory Card of {chapter} does not list exactly its chapter's units");
+        }
         addresses.push(field(theory, "address")?.to_string());
     }
     // The archive decides existence: an allocation that names no real Card is a gap.
@@ -2884,6 +2897,16 @@ fn math_skeleton_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path:
         .any(|c| c["workspace"] != "agent" || c["tree"] != tree)
     {
         bail!("every allocated mathematical unit belongs to this book's agent Literature tree");
+    }
+    // Each head is a unit head of its unit's own form.
+    for u in units.iter() {
+        let at = u["address"].as_str().unwrap_or_default();
+        if let Some(card) = cards.cards.iter().find(|c| c["address"].as_str() == Some(at))
+            && card.get("form").is_some()
+            && card["form"] != u["form"]
+        {
+            bail!("the head [[{at}]] has form {} but its unit {} is a {}", card["form"], u["id"], u["form"]);
+        }
     }
     // The declared group extension: the prepared text plus this group's own unit list.
     let marker = p.contract["group_extension"]["marker"]

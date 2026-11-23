@@ -120,8 +120,20 @@ try {
     $repair = Last (Run 'index')
     $repairText = Get-Content -Raw (Join-Path $staging 'math\index\ix-01.md')
     Assert ($repair.repair -eq 1 -and @($repair.jobs).Count -eq 1 -and $repairText.Contains('合并全书时发现的问题') -and $repairText.Contains('open_destination')) 'index: the repair round sends the fault to the job it names'
+    # The answer did not change, as when the run stopped before the job ran: the job is planned once more,
+    # and then no more.
     $again = Last (Run 'index')
-    Assert ($again.repair -eq 0 -and @($again.jobs).Count -eq 0) 'index: the same findings are never sent twice'
+    Assert ($again.repair -eq 1) 'index: an interrupted repair is planned once more'
+    $third = Last (Run 'index')
+    Assert ($third.repair -eq 0 -and @($third.jobs).Count -eq 0) 'index: the same findings are not sent a third time'
+    # A job that changed its answer without fixing the finding is not asked again.
+    $changed = ($faulty | ConvertTo-Json -Depth 12) + ' '
+    [IO.File]::WriteAllText($answerFile, $changed, $utf8)
+    Remove-Item -LiteralPath (Join-Path $staging 'math\index\repair.json')
+    $first = Last (Run 'index')
+    [IO.File]::WriteAllText($answerFile, $changed + ' ', $utf8)
+    $after = Last (Run 'index')
+    Assert ($first.repair -eq 1 -and $after.repair -eq 0) 'index: a repair whose job ran and did not fix its finding is not sent again'
     [IO.File]::WriteAllText($answerFile, $goodAnswer, $utf8)
     $corrected = Last (Run 'index-apply')
     Assert ($corrected.ok -eq $true -and (Test-Path (Join-Path $staging 'math\index.json'))) 'index-apply: the corrected answers settle the projection'

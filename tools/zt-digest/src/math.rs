@@ -133,10 +133,15 @@ pub(crate) fn proof_decision(unit: &Value, model: &Value) -> ProofDecision {
     if !is_in(&field(unit, "form"), RESULTS) {
         return ProofDecision::Skip;
     }
+    // The source proves it: a proof inline or elsewhere in these chapters (the projection's status,
+    // P1a), or, in an older record, a proof line in the statement's section.
     let proved_at = unit["proof"].as_i64().unwrap_or(0);
+    let status = field(unit, "proof_status");
+    let proved = matches!(status.as_str(), "inline" | "deferred_in_slice") || (status.is_empty() && proved_at > 0);
     if !truthy(model) || model["head"].is_null() {
-        return if proved_at > 0 {
-            ProofDecision::Unmet(format!("the source proves it from line {proved_at}; the unit was never built"))
+        let at = if field(unit, "proof_at").is_empty() { format!("line {proved_at}") } else { field(unit, "proof_at") };
+        return if proved {
+            ProofDecision::Unmet(format!("the source proves it from {at}; the unit was never built"))
         } else {
             ProofDecision::Skip
         };
@@ -236,6 +241,44 @@ fn counts(map: &CiMap<i64>) -> Value {
 fn bump(map: &mut CiMap<i64>, k: &str) {
     let n = map.get(k).copied().unwrap_or(0) + 1;
     map.insert(k, n);
+}
+
+/// The ownership of a group's passages, as runs of consecutive leaves with one owner (P1a M2.3):
+/// `- s01.md 3-5：你写（读书笔记）`, `- s01.md 7-12：定理 1.19 [[k/1|a]]（单元流水线写，你只链接）`.
+pub(crate) fn group_ownership(projection: &Value, files: &[String], units: &[Value]) -> String {
+    let address_of = |object: &str| units.iter().find(|u| field(u, "object_id") == object).map(|u| (field(u, "id"), field(u, "address")));
+    let mut out = String::new();
+    for file in files {
+        let mut runs: Vec<(String, usize, usize)> = Vec::new();
+        for l in ps::list(&projection["leaves"]).into_iter().filter(|l| eq(&field(l, "section"), file) && field(l, "obligation") == "write") {
+            let dest = field(l, "destination");
+            let owner = if dest.starts_with("narrative:") || dest == "provenance" {
+                "你写（读书笔记）".to_string()
+            } else if dest.starts_with("exercise:") {
+                "你写（习题卡）".to_string()
+            } else if let Some(unit) = dest.strip_prefix("unit:") {
+                match address_of(unit) {
+                    Some((id, at)) if !at.is_empty() => format!("{id} [[{at}]]（单元流水线写，你只链接）"),
+                    Some((id, _)) => format!("{id}（单元流水线写，你只链接）"),
+                    None => format!("{unit}（单元流水线写，你只链接）"),
+                }
+            } else if dest == "boilerplate_skip" {
+                "不写（版式杂项）".to_string()
+            } else {
+                format!("{dest}（其他阶段写）")
+            };
+            let (a, b) = (l["line"].as_u64().unwrap_or(0) as usize, l["end"].as_u64().unwrap_or(0) as usize);
+            match runs.last_mut() {
+                Some(last) if last.0 == owner => last.2 = last.2.max(b),
+                _ => runs.push((owner, a, b)),
+            }
+        }
+        for (owner, a, b) in runs {
+            let lines = if a == b { a.to_string() } else { format!("{a}-{b}") };
+            out.push_str(&format!("- {file} {lines}：{owner}{NL}"));
+        }
+    }
+    out
 }
 
 /// Remove a file when it exists: a failed step must not leave an earlier step's artifact behind.
@@ -650,10 +693,20 @@ impl Compiler {
                 let id = format!("ix-{}", ps::d2(k as i64 + 1));
                 let Some(findings) = by_job.get(&id) else { continue };
                 let digest = crate::canon::sha256_hex(findings.join("\n").as_bytes());
-                if field(&sent, &id) == digest {
-                    continue;
-                }
                 let out = join(&iw, &format!("out\\{id}.json"));
+                // A repair is consumed when its job changed the answer: the same findings on a changed
+                // answer mean the job could not fix them, so they stop here. On an unchanged answer the
+                // job never ran (an interrupted run), so it is planned once more.
+                let answer_sha = crate::canon::sha256_hex(&std::fs::read(&out).unwrap_or_default());
+                let prior = sent[id.as_str()].clone();
+                let attempts = if field(&prior, "digest") == digest {
+                    if field(&prior, "answer_sha") != answer_sha || prior["attempts"].as_u64().unwrap_or(0) >= 2 {
+                        continue;
+                    }
+                    prior["attempts"].as_u64().unwrap_or(0) + 1
+                } else {
+                    1
+                };
                 let check = format!("zt-digest math -Step index-check -Staging \"{}\" -Job {id}", self.p.staging);
                 let mut text = index::job_text(&self.title, &id, &out, &check, share);
                 text.push_str(&format!(
@@ -668,7 +721,7 @@ impl Compiler {
                     ("files", json!([doc, job])),
                     ("prompt", json!(format!("按以上说明改正 {id} 的答案文件里“合并全书时发现的问题”列出的问题，运行 SELF-CHECK。最后只回复一行 JSON。"))),
                 ]));
-                sent[id.as_str()] = json!(digest);
+                sent[id.as_str()] = json!({"digest": digest, "answer_sha": answer_sha, "attempts": attempts});
                 repaired += 1;
             }
             save_json(&repair_file, &sent)?;
@@ -832,6 +885,15 @@ impl Compiler {
         let index = read_json(&index_file)?;
         let mut units: Vec<Value> = ps::ps_array(&index["units"]);
         let done = self.units()?;
+        // A rerun reuses an earlier allocation only when it was made from this same settled index
+        // (P1a M2.2): an address of another projection is never carried under the new hash.
+        if truthy(&done) && done["index_hash"] != index["projection_hash"] {
+            bail!(
+                "the allocation in math\\units.json was made from another statement index ({}); the index is now {}: allocate on a fresh box",
+                done["index_hash"],
+                index["projection_hash"]
+            );
+        }
         let mut made: CiMap<Value> = CiMap::new();
         if truthy(&done) {
             for u in pipe(&done["units"]) {
@@ -861,11 +923,32 @@ impl Compiler {
         let chapter_rows: Vec<Value> = ps::list(&index["projection"]["chapters"]).into_iter().cloned().collect();
         let group_of = |file: &str| groups.iter().find(|g| pipe(&g["sections"]).into_iter().any(|x| eq(&s(x), file))).cloned();
         let mut entry: CiMap<String> = CiMap::new();
+        let mut assignments: Vec<Value> = Vec::new();
         for c in &chapter_rows {
             if let Some(first) = ps::list(&c["ranges"]).first()
                 && let Some(g) = group_of(&field(first, "section"))
             {
-                entry.insert(&field(c, "id"), field(&g, "anchor"));
+                let anchor = field(&g, "anchor");
+                // Two printed chapters that start in one prepared group would share one entry anchor:
+                // the reader's route would be ambiguous, so the allocation stops before any write.
+                if let Some(other) = assignments.iter().find(|a| field(a, "entry_anchor") == anchor) {
+                    bail!(
+                        "chapters {} and {} both start in group {} (anchor {anchor}): prepare the book so each printed chapter opens its own group",
+                        field(other, "chapter_id"),
+                        field(c, "id"),
+                        field(&g, "n")
+                    );
+                }
+                entry.insert(&field(c, "id"), anchor.clone());
+                // The chapter's exercise set has one writer: the group of its first exercise.
+                let exercise_group = pipe(&index["others"]).into_iter().find(|o| field(o, "kind") == "exercise" && field(o, "chapter_id") == field(c, "id")).map(|o| o["group"].clone()).unwrap_or(Value::Null);
+                assignments.push(obj(vec![
+                    ("chapter_id", json!(field(c, "id"))),
+                    ("name", json!(field(c, "name"))),
+                    ("entry_anchor", json!(anchor)),
+                    ("entry_group", g["n"].clone()),
+                    ("exercise_group", exercise_group),
+                ]));
             }
         }
         for g in &groups {
@@ -1014,6 +1097,12 @@ impl Compiler {
                         sb.push_str(&format!("- {}：原文 {}{hint}{answer}{NL}", field(e, "id"), src_of(e)));
                     }
                 }
+                // P1a M2.3: who writes each passage of this group. The writer claims (src) only its own
+                // lines; a unit's lines it links (coverage C6 refuses a note that restates them).
+                let ownership = group_ownership(&index["projection"], &pipe(&g["sections"]).into_iter().map(s).collect::<Vec<_>>(), &units);
+                if !ownership.is_empty() {
+                    sb.push_str(&format!("{NL}## 本组原文的归属（你的卡片只认领写明“你写”的行；单元的行只链接，不复述）{NL}{NL}{ownership}"));
+                }
                 util::write_text(&file, &format!("{}{sb}", text.trim_end()))?;
             }
         }
@@ -1023,7 +1112,7 @@ impl Compiler {
         save_json(
             &units_file,
             // The allocation record binds the settled index it allocated from (P1a M2.2).
-            &obj(vec![("key", json!(self.key)), ("index_hash", index["projection_hash"].clone()), ("units", json!(units)), ("others", json!(ps::ps_array(&index["others"]))), ("theories", json!(theories))]),
+            &obj(vec![("key", json!(self.key)), ("index_hash", index["projection_hash"].clone()), ("chapters", json!(assignments)), ("units", json!(units)), ("others", json!(ps::ps_array(&index["others"]))), ("theories", json!(theories))]),
         )?;
         out_last(&obj(vec![
             ("ok", json!(true)),
@@ -1972,6 +2061,22 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str, staging: &str) -> Result<Value
             for gap in missing_units(&allocation, &heads) {
                 add("M0", json!(key), json!(format!("the indexed unit {gap} is not a unit of the tree")));
             }
+            // P1a: the denominator is the settled projection, not the allocation: a unit the
+            // allocation leaves out is missing too, and an allocation from another index counts nothing.
+            let index_path = join(&join(staging, "math"), "index.json");
+            if Path::new(&index_path).is_file() {
+                let index = read_json(&index_path)?;
+                if allocation["index_hash"] != index["projection_hash"] {
+                    add("M0", json!(key), json!("the allocation math/units.json was made from another statement index"));
+                }
+                let allocated: Vec<String> = pipe(&allocation["units"]).into_iter().map(|u| field(u, "object_id")).collect();
+                for o in ps::list(&index["projection"]["objects"]) {
+                    let id = field(o, "id");
+                    if field(o, "destination") == format!("unit:{id}") && !allocated.iter().any(|a| a == &id) {
+                        add("M0", json!(key), json!(format!("the projection's unit {id} has no allocation")));
+                    }
+                }
+            }
         } else {
             add("M0", json!(key), json!("the frozen allocation math/units.json is missing"));
         }
@@ -2204,6 +2309,23 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_group_lists_who_writes_each_run_of_its_passages() {
+        let projection = json!({"leaves": [
+            {"section": "s01.md", "line": 1, "end": 1, "obligation": "none", "destination": null},
+            {"section": "s01.md", "line": 3, "end": 3, "obligation": "write", "destination": "narrative:ch1"},
+            {"section": "s01.md", "line": 5, "end": 5, "obligation": "write", "destination": "narrative:ch1"},
+            {"section": "s01.md", "line": 7, "end": 9, "obligation": "write", "destination": "unit:ch1:theorem:1.19"},
+            {"section": "s01.md", "line": 11, "end": 11, "obligation": "write", "destination": "unit:ch1:theorem:1.19"},
+            {"section": "s01.md", "line": 13, "end": 13, "obligation": "write", "destination": "exercise:ch1:exercise:1"}
+        ]});
+        let units = vec![json!({"object_id": "ch1:theorem:1.19", "id": "定理 1.19", "address": "k/1|a"})];
+        let text = group_ownership(&projection, &["s01.md".to_string()], &units);
+        let want: String = ["- s01.md 3-5：你写（读书笔记）", "- s01.md 7-11：定理 1.19 [[k/1|a]]（单元流水线写，你只链接）", "- s01.md 13：你写（习题卡）"].iter().map(|l| format!("{l}{NL}")).collect();
+        assert_eq!(text, want);
+    }
+
+
     fn model(level: &str, order: Value) -> Value {
         json!({"head":{"address":"k/5|a","title":"幂法则","body":"…"},"level":level,"build":{"order":order},"parts":[]})
     }
@@ -2252,6 +2374,18 @@ mod tests {
         assert!(matches!(proof_decision(&unit, &model("formal", english)), ProofDecision::Skip), "a bare derivation proves the result and leaves the proof review nothing");
         let planned = json!([{"address":"k/5|a|1","facet":"证明思路","line":"main"},{"address":"k/5|a|2","facet":"结论","line":"main"}]);
         assert!(matches!(proof_decision(&unit, &model("formal", planned)), ProofDecision::Unmet(_)), "a proof plan is no proof step");
+    }
+
+    #[test]
+    fn a_proof_in_another_section_is_still_the_sources_and_an_unbuilt_unit_owes_it() {
+        // P1a: Rudin 1.19's proof is the Appendix, so the statement's own section gives no proof line.
+        let unit = json!({"form":"theorem","proof":0,"proof_status":"deferred_in_slice","proof_at":"s07.md:5","address":"k/1|a"});
+        match proof_decision(&unit, &Value::Null) {
+            ProofDecision::Unmet(why) => assert!(why.contains("s07.md:5"), "{why}"),
+            other => panic!("a deferred proof of an unbuilt unit is unmet, got {other:?}"),
+        }
+        let external = json!({"form":"theorem","proof":0,"proof_status":"external","address":"k/3|b"});
+        assert!(matches!(proof_decision(&external, &Value::Null), ProofDecision::Skip), "a proof outside the book is no obligation here");
     }
 
     #[test]

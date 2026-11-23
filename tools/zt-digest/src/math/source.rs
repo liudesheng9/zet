@@ -908,6 +908,16 @@ pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec
         *n += 1;
         ids.insert(field(o, "id"), if *n == 1 { base } else { format!("{base}（{n}）") });
     }
+    // One writer per chapter exercise set: the group of the chapter's first exercise writes them all.
+    let mut set_group: BTreeMap<String, i64> = BTreeMap::new();
+    for o in objects.iter().filter(|o| field(o, "kind") == "exercise") {
+        let (g, _) = place(&field(&o["statement"][0], "section"));
+        set_group.entry(field(&o["key"], "chapter")).or_insert(g);
+    }
+    let span_text = |sp: &Value| match (sp["col"].as_u64(), sp["end_col"].as_u64()) {
+        (Some(c), Some(e)) => format!("sections/{}:{}-{}（第 {} 行第 {} 字起，至第 {} 行第 {} 字前）", field(sp, "section"), field(sp, "line"), field(sp, "end"), field(sp, "line"), c, field(sp, "end"), e),
+        _ => format!("sections/{}:{}-{}", field(sp, "section"), field(sp, "line"), field(sp, "end")),
+    };
     let mut units: Vec<Value> = Vec::new();
     let mut others: Vec<Value> = Vec::new();
     for o in &objects {
@@ -918,7 +928,12 @@ pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec
         }
         let st = &o["statement"][0];
         let section = field(st, "section");
-        let (group, prepared) = place(&section);
+        let (mut group, prepared) = place(&section);
+        if kind == "exercise"
+            && let Some(g) = set_group.get(&field(&o["key"], "chapter"))
+        {
+            group = *g;
+        }
         // The printed chapter: its id and its name (`第1章 实数系与复数系`); front matter keeps the
         // prepared group's chapter text.
         let chapter_id = field(&o["key"], "chapter");
@@ -945,6 +960,11 @@ pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec
                 .filter_map(|r| objects.iter().find(|x| field(x, "id") == s(&r["target"]) && field(x, "destination") == format!("unit:{}", s(&r["target"]))).map(|x| ids[&field(x, "id")].clone()))
                 .collect();
             map.insert("proof".into(), json!(proof));
+            // The projection's proof status and where its first step stands, in any section (a deferred
+            // proof's steps are in another section, so `proof` above is 0 for it).
+            map.insert("proof_status".into(), json!(field(&o["proof"], "status")));
+            let at = steps.first().map(|s| &s["spans"][0]).map(|s| format!("{}:{}", field(s, "section"), field(s, "line"))).unwrap_or_default();
+            map.insert("proof_at".into(), json!(at));
             map.insert("form".into(), json!(kind));
             map.insert("level".into(), json!(level));
             map.insert("cites".into(), json!(ps::select_unique(cites)));
@@ -959,7 +979,7 @@ pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec
                 objects
                     .iter()
                     .filter(|x| field(x, "kind") == role && field(x, "destination") == format!("exercise:{id}"))
-                    .flat_map(|x| ps::list(&x["statement"]).into_iter().map(|sp| format!("sections/{}:{}-{}", field(sp, "section"), field(sp, "line"), field(sp, "end"))).collect::<Vec<_>>())
+                    .flat_map(|x| ps::list(&x["statement"]).into_iter().map(span_text).collect::<Vec<_>>())
                     .collect()
             };
             map.insert("proof".into(), json!(0));
@@ -1616,7 +1636,7 @@ pub fn allocate(projection: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ps::field;
+    use crate::ps::{field, s};
 
     fn sec(file: &str, text: &str) -> Section {
         Section { file: file.into(), group: 1, chapter: String::new(), lines: text.split('\n').map(String::from).collect() }
@@ -2430,7 +2450,8 @@ mod tests {
         assert_eq!(oids, [("习题 1".to_string(), "exercise".to_string()), ("习题 2".to_string(), "exercise".to_string()), ("习题 19".to_string(), "exercise".to_string())]);
         assert_eq!(others[0]["group"], json!(3));
         assert_eq!((field(&others[1], "after"), field(&others[1], "writer")), (String::new(), "group".to_string()), "an exercise is its chapter set's, not the unit before it");
-        assert_eq!(others[1]["hints"], json!(["sections/s03.md:4-4"]));
+        // The hint starts on its question's line: its columns travel with it.
+        assert!(s(&others[1]["hints"][0]).starts_with("sections/s03.md:4-4（第 4 行第 "), "{}", others[1]["hints"]);
         assert_eq!(others[1]["answers"], json!([]));
     }
 

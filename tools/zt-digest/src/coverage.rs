@@ -204,6 +204,24 @@ pub struct Input {
     pub group: Option<i64>,
     /// A history run: a drafted Model, Event or Finding Card is fault C5.
     pub notes_only: bool,
+    /// A mathematics run's source ownership (`math/index.json`, P1a): each leaf with its primary
+    /// destination. Empty for every other run, which keeps the old rule.
+    pub owners: Vec<Owned>,
+}
+
+/// One owned leaf of a mathematics run: its lines and the destination that writes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Owned {
+    pub section: String,
+    pub start: usize,
+    pub end: usize,
+    pub destination: String,
+    pub leaf: String,
+}
+
+/// A destination a chapter writer writes: its reading notes, its exercise set, editorial notes.
+fn writer_owns(destination: &str) -> bool {
+    destination.starts_with("narrative:") || destination.starts_with("exercise:") || destination == "provenance"
 }
 
 /// One fault line: a location, a code and a message.
@@ -371,6 +389,12 @@ pub fn report(input: &Input) -> Coverage {
                 .iter()
                 .find(|skip| skip.span.section == *file && overlaps(&skip.span, unit))
                 .map(|skip| (skip.reason.clone(), skip.names.clone()));
+            // P1a: a paragraph every leaf of which another destination owns (a unit, a figure, skipped
+            // boilerplate) is that owner's to write; the chapter writer only links it, so it needs no note.
+            let owners: Vec<&Owned> = input.owners.iter().filter(|o| o.section == *file && o.start <= unit.end && unit.start <= o.end).collect();
+            if covering.is_empty() && !owners.is_empty() && owners.iter().all(|o| !writer_owns(&o.destination)) {
+                covering.insert(format!("owner:{}", owners[0].destination));
+            }
             let covered_by: Vec<String> = covering.into_iter().collect();
             let unit_report = UnitReport { start: unit.start, end: unit.end, text: unit.text.clone(), covered_by, skip: skip.clone() };
             if unit_report.covered_by.is_empty() && skip.is_none() {
@@ -393,6 +417,29 @@ pub fn report(input: &Input) -> Coverage {
         out.skipped += skipped;
         out.uncovered += uncovered;
         out.sections.push(SectionReport { file: file.clone(), group, units: detail.len(), covered, skipped, uncovered, detail });
+    }
+    // C6 (P1a): a note may not claim a leaf another destination owns. It links the unit instead of
+    // restating it. Only notes are judged: a unit's own Cards claim its lines by design.
+    if !input.owners.is_empty() {
+        let notes: BTreeSet<&str> = input.cards.iter().filter(|c| c.category == "idea").map(|c| c.address.as_str()).collect();
+        for source in input.sources.iter().filter(|s| notes.contains(s.address.as_str())) {
+            for span in &source.spans {
+                let (Some(a), Some(b)) = (span.start, span.end) else { continue };
+                if !in_scope(&span.section) {
+                    continue;
+                }
+                for o in input.owners.iter().filter(|o| o.section == span.section && o.start <= b && a <= o.end && !writer_owns(&o.destination) && o.destination != "boilerplate_skip") {
+                    faults.push(Fault {
+                        section: span.section.clone(),
+                        start: o.start,
+                        end: o.end,
+                        code: "C6",
+                        message: format!("{} claims leaf {} that belongs to {}: link it, do not restate it", source.address, o.leaf, o.destination),
+                        advisory: false,
+                    });
+                }
+            }
+        }
     }
     // C2: a span that names only a file covers nothing. Every such span is one fault, so the count
     // is the run's file-only span count, as the PRD measures it.
@@ -763,10 +810,31 @@ pub fn read_run(staging: &Path, group: Option<i64>) -> Result<Run> {
     let snapshot_cards = snapshot.cards.len();
     Ok(Run {
         book,
-        input: Input { groups, sections, sources, skips, cards: snapshot.cards, group, notes_only },
+        input: Input { groups, sections, sources, skips, cards: snapshot.cards, group, notes_only, owners: read_owners(staging)? },
         snapshot_path: snapshot.path,
         snapshot_cards,
     })
+}
+
+/// The source ownership a mathematics run's settled index records (P1a): every leaf that owes a
+/// claim, with its primary destination. No index, no ownership: the old rule.
+fn read_owners(staging: &Path) -> Result<Vec<Owned>> {
+    let file = staging.join("math").join("index.json");
+    if !file.is_file() {
+        return Ok(Vec::new());
+    }
+    let index = util::read_json(&file)?;
+    Ok(ps::ps_items(&index["projection"]["leaves"])
+        .iter()
+        .filter(|l| ps::field(l, "obligation") == "write" && l["destination"].is_string())
+        .map(|l| Owned {
+            section: ps::field(l, "section"),
+            start: l["line"].as_u64().unwrap_or(0) as usize,
+            end: l["end"].as_u64().unwrap_or(0) as usize,
+            destination: ps::field(l, "destination"),
+            leaf: ps::field(l, "id"),
+        })
+        .collect())
 }
 
 /// `zt-digest coverage`: the command line.
@@ -1569,5 +1637,38 @@ mod tests {
         );
         assert_eq!(coverage.uncovered, 9, "an invalid skip resolves nothing");
         assert_eq!(coverage.counted(), 10);
+    }
+
+    // --- P1a M2.3: ownership-aware coverage --------------------------------------------------------
+
+    fn owned(section: &str, start: usize, end: usize, destination: &str) -> Owned {
+        Owned { section: section.into(), start, end, destination: destination.into(), leaf: format!("{section}:{start}-{end}") }
+    }
+
+    #[test]
+    fn a_paragraph_another_destination_owns_needs_no_note_and_a_note_may_not_claim_it() {
+        let mut input = setup();
+        input.owners = vec![owned("s01.md", 1, 1, "unit:ch1:theorem:1.19"), owned("s01.md", 3, 3, "narrative:ch1")];
+        let c = report(&input);
+        let f: Vec<String> = c.faults.iter().map(Fault::line).collect();
+        assert!(!f.iter().any(|l| l.starts_with("s01.md:1 C1")), "a unit's paragraph is its owner's: {f:?}");
+        assert!(f.iter().any(|l| l.starts_with("s01.md:3 C1")), "the writer's own paragraph still needs its note: {f:?}");
+        assert_eq!(c.sections[0].detail[0].covered_by, ["owner:unit:ch1:theorem:1.19"]);
+        // A note that restates the unit's paragraph is C6; the unit's own head claiming it is not.
+        input.cards = vec![
+            CardRecord { address: "draft#1".into(), category: "idea".into(), body: "复述定理。".into() },
+            CardRecord { address: "K/1|a".into(), category: "model".into(), body: "定理 1.19".into() },
+        ];
+        input.sources = vec![source("draft#1", "sections/s01.md:1-3"), source("K/1|a", "sections/s01.md:1-1")];
+        let c = report(&input);
+        let c6: Vec<String> = c.faults.iter().filter(|f| f.code == "C6").map(Fault::line).collect();
+        assert_eq!(c6.len(), 1, "{c6:?}");
+        assert!(c6[0].contains("unit:ch1:theorem:1.19") && c6[0].contains("draft#1"), "{c6:?}");
+        assert!(c.counted() >= 1, "C6 blocks");
+        // Without a projection nothing changes: the old rule.
+        let mut plain = setup();
+        plain.sources = vec![source("draft#1", "sections/s01.md:1-3")];
+        plain.cards = vec![CardRecord { address: "draft#1".into(), category: "idea".into(), body: "笔记".into() }];
+        assert!(!report(&plain).faults.iter().any(|f| f.code == "C6"));
     }
 }
