@@ -537,7 +537,9 @@ fn table(book_title: &str, key: &str, terms: &[Term]) -> String {
     sb.line("术语表").blank().line("| 术语 | 不用 | 意思 | 首次定义 |").line("| --- | --- | --- | --- |");
     for t in terms {
         let avoid = if t.avoid.is_empty() { "—".to_string() } else { t.avoid.join("、") };
-        sb.line(format!("| {} | {} | {} | {} |", t.term, avoid, t.meaning.replace('|', "/"), t.section));
+        // A pipe in a meaning or a section (a mathematics book's `|a_n|`) becomes the full-width `｜`,
+        // which reads the same and keeps the table's cells (rudin1976principles pilot, 2026-11-23).
+        sb.line(format!("| {} | {} | {} | {} |", t.term, avoid, t.meaning.replace('|', "｜"), t.section.replace('|', "｜")));
     }
     sb.blank().line(format!("来源：[[{key}]]"));
     sb.0.trim_end().to_string()
@@ -565,7 +567,8 @@ pub(crate) fn claimed_table(raw: &Value, max: i64, book_title: &str, key: &str) 
                 .as_str()
                 .filter(|s| !s.trim().is_empty())
                 .with_context(|| format!("Terms row requires {name}"))?;
-            if value.contains(['|', '`', '\n', '\r', '\t']) {
+            // A term never holds a pipe; a meaning or a section may (the table renders it as `｜`).
+            if value.contains(['`', '\n', '\r', '\t']) || (name == "term" && value.contains('|')) {
                 bail!("Terms row {name} must be safe one-line table text");
             }
         }
@@ -738,9 +741,19 @@ mod tests {
         let body = table("书", "K", &terms);
         let nl = ps::NL;
         assert!(body.starts_with(&format!("本卡是《书》的术语表。")));
-        assert!(body.contains(&format!("| 剩余控制权 | 残余控制权 | 权利/定义 | §1 |{nl}")));
+        assert!(body.contains(&format!("| 剩余控制权 | 残余控制权 | 权利｜定义 | §1 |{nl}")));
         assert!(body.contains(&format!("| GDP | — |  |  |{nl}")));
         assert!(body.ends_with(&format!("{nl}{nl}来源：[[K]]")));
+    }
+
+    #[test]
+    fn an_absolute_value_in_a_meaning_is_a_claimed_row() {
+        // rudin1976principles: `Σ |a_n| 收敛时称 Σ a_n 绝对收敛` failed the whole Terms stage.
+        let raw = json!({ "terms": [{ "term": "绝对收敛", "avoid": [], "meaning": "Σ |a_n| 收敛时称 Σ a_n 绝对收敛", "section": "§3.45" }] });
+        let table = claimed_table(&raw, 0, "书", "K").unwrap();
+        assert!(ps::s(&table["body"]).contains("Σ ｜a_n｜ 收敛时称 Σ a_n 绝对收敛"), "{}", table["body"]);
+        let bad = json!({ "terms": [{ "term": "a|b", "avoid": [], "meaning": "m", "section": "§1" }] });
+        assert!(claimed_table(&bad, 0, "书", "K").is_err(), "a term itself never holds a pipe");
     }
 
     // The term table names its book in its title and first sentence. A long English title
