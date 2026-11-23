@@ -9,7 +9,7 @@
 use crate::ps;
 
 pub(crate) mod compiler;
-mod context;
+pub(crate) mod context;
 mod list;
 
 pub(crate) mod source_review;

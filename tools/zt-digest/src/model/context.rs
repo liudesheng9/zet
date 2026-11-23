@@ -68,6 +68,61 @@ fn same_number(v: &Value, n: i64) -> bool {
 }
 
 /// Writes the pack to `out` and returns the summary line's object.
+/// A mathematics unit's own passages (P1a M2.5, docs/math-digest-p1a-design.md §3): its statement,
+/// its proof steps in the book's order (across sections, an Appendix included), and the examples the
+/// settled projection gives to it, each with numbered lines. Empty for a Card that is no unit.
+pub(crate) fn owned_passages(staging: &str, address: &str) -> Result<Vec<String>> {
+    let units_file = ps::join(staging, "math\\units.json");
+    let index_file = ps::join(staging, "math\\index.json");
+    if !ps::exists(&units_file) || !ps::exists(&index_file) {
+        return Ok(Vec::new());
+    }
+    let units = util::read_json(&units_file)?;
+    let Some(object_id) = pipe(&units["units"]).into_iter().find(|u| ps::eq(&s(&u["address"]), address)).map(|u| s(&u["object_id"])).filter(|o| !o.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let index = util::read_json(&index_file)?;
+    let objects: Vec<Value> = each(&index["projection"]["objects"]).into_iter().cloned().collect();
+    let Some(unit) = objects.iter().find(|o| s(&o["id"]) == object_id) else { return Ok(Vec::new()) };
+    let section_no = |file: &str| file.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().unwrap_or(0);
+    let mut cache: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    let mut text_of = |span: &Value| -> Result<Vec<String>> {
+        let file = s(&span["section"]);
+        if !cache.contains_key(&file) {
+            let path = ps::join(staging, &format!("sections\\{file}"));
+            cache.insert(file.clone(), if ps::exists(&path) { ps::read_lines(&path)? } else { Vec::new() });
+        }
+        let lines = &cache[&file];
+        let (a, b) = (span["line"].as_u64().unwrap_or(0) as usize, span["end"].as_u64().unwrap_or(0) as usize);
+        Ok((a..=b).filter(|n| *n >= 1 && *n <= lines.len()).map(|n| format!("{n}│ {}", lines[n - 1])).collect())
+    };
+    let locator = |span: &Value| format!("`sections/{}:{}-{}`", s(&span["section"]), s(&span["line"]), s(&span["end"]));
+    let mut out = vec!["## 本单元的原文（写这个单元只依据这些行；证明按书的顺序排列）".to_string(), String::new()];
+    for span in each(&unit["statement"]) {
+        out.push(format!("### 陈述 {}", locator(span)));
+        out.extend(text_of(span)?);
+        out.push(String::new());
+    }
+    let mut steps: Vec<&Value> = each(&unit["proof"]["steps"]);
+    steps.sort_by_key(|st| (section_no(&s(&st["spans"][0]["section"])), st["spans"][0]["line"].as_u64().unwrap_or(0)));
+    for st in steps {
+        for span in each(&st["spans"]) {
+            let label = s(&st["label"]);
+            out.push(format!("### 证明{} {}", if label.is_empty() { String::new() } else { format!(" {label}") }, locator(span)));
+            out.extend(text_of(span)?);
+            out.push(String::new());
+        }
+    }
+    for ex in objects.iter().filter(|o| s(&o["destination"]) == format!("unit:{object_id}") && s(&o["id"]) != object_id) {
+        for span in each(&ex["statement"]) {
+            out.push(format!("### 属于本单元的例 {} {}", s(&ex["id"]), locator(span)));
+            out.extend(text_of(span)?);
+            out.push(String::new());
+        }
+    }
+    Ok(out)
+}
+
 pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value> {
     // Mandatory parameters refuse an empty string, as PowerShell's binder does.
     for (name, value) in [("Staging", staging), ("Model", model), ("Out", out)] {
@@ -210,6 +265,11 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
         line("");
     }
 
+    // A mathematics unit reads its own passages first (P1a M2.5); its group's sections stay a lookup.
+    let owned = owned_passages(staging, model)?;
+    for text in &owned {
+        line(text);
+    }
     line("## 来源");
     line("");
     let body = s(&card["body"]);
@@ -224,7 +284,11 @@ pub fn build(zt: &mut Zt, staging: &str, model: &str, out: &str) -> Result<Value
         let headings = pipe(&entry["headings"]).iter().map(|h| s(h)).collect::<Vec<_>>().join("；");
         line(&format!("第 {g} 组（锚点 [[{anchor_text}]]），{}；小节：{headings}。", s(&entry["chapter"])));
         line("");
-        line(&format!("DeepSeek 写这张模型卡时读的就是这一组的原文：`{}`。小节文件与其中的标题（行号: 标题）：", s(&entry["file"])));
+        if owned.is_empty() {
+            line(&format!("DeepSeek 写这张模型卡时读的就是这一组的原文：`{}`。小节文件与其中的标题（行号: 标题）：", s(&entry["file"])));
+        } else {
+            line(&format!("本单元所在组的原文（只供查找上下文；单元只依据上面“本单元的原文”）：`{}`。小节文件与其中的标题（行号: 标题）：", s(&entry["file"])));
+        }
         line("");
         for name in pipe(&entry["sections"]) {
             let path = ps::join(staging, &format!("sections\\{}", s(name)));
@@ -460,5 +524,33 @@ mod tests {
         let rows = vec![head("A2020/1|a"), head("A2020/2|a"), head("A2020/3|a"), head("C2022/1|a"), head("C2022/2|a")];
         let lines = block_catalogue(&rows, "B2021", 3);
         assert_eq!(lines, ["- [[A2020/1|a]] A2020/1|a", "- [[C2022/1|a]] C2022/1|a", "- [[A2020/2|a]] A2020/2|a"]);
+    }
+
+    // P1a M2.5: a math unit's writer reads the unit's own passages, not its group's sections.
+    #[test]
+    fn a_math_unit_reads_its_own_passages_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(dir.path().join("sections")).unwrap();
+        std::fs::create_dir_all(dir.path().join("math")).unwrap();
+        std::fs::write(dir.path().join("sections").join("s01.md"), "# 第1章\n\n1.19 定理。存在一个有序域。\n\n证明放在附录。").unwrap();
+        std::fs::write(dir.path().join("sections").join("s07.md"), "# 附录\n\n第 1 步 分割的定义。\n\n第 2 步 序的定义。").unwrap();
+        let index = json!({"projection": {"objects": [
+            {"id": "ch1:theorem:1.19", "kind": "theorem", "destination": "unit:ch1:theorem:1.19",
+             "statement": [{"section": "s01.md", "line": 3, "end": 5}],
+             "proof": {"status": "deferred_in_slice", "steps": [
+                 {"label": "第 2 步", "spans": [{"section": "s07.md", "line": 5, "end": 5}]},
+                 {"label": "第 1 步", "spans": [{"section": "s07.md", "line": 3, "end": 3}]}]}},
+            {"id": "ch1:example:1.9", "kind": "example", "destination": "unit:ch1:theorem:1.19", "statement": [{"section": "s01.md", "line": 5, "end": 5}], "proof": {"steps": []}}
+        ]}});
+        std::fs::write(dir.path().join("math").join("index.json"), index.to_string()).unwrap();
+        std::fs::write(dir.path().join("math").join("units.json"), json!({"units": [{"id": "定理 1.19", "object_id": "ch1:theorem:1.19", "address": "K/1|a"}]}).to_string()).unwrap();
+        let text = super::owned_passages(&staging, "K/1|a").unwrap().join("\n");
+        let statement = text.find("### 陈述").unwrap();
+        let (one, two) = (text.find("第 1 步 分割").unwrap(), text.find("第 2 步 序").unwrap());
+        assert!(statement < one && one < two, "the statement, then the steps in the book's order: {text}");
+        assert!(text.contains("3│ 1.19 定理") && text.contains("`sections/s07.md:3-3`"), "{text}");
+        assert!(text.contains("### 属于本单元的例") && text.contains("证明放在附录"), "{text}");
+        assert!(super::owned_passages(&staging, "K/9|z").unwrap().is_empty(), "a Card that is no unit gets no block");
     }
 }

@@ -1659,6 +1659,15 @@ impl Compiler {
                     field(&model["head"], "title"),
                     field(&model["head"], "body")
                 ));
+                // P1a M2.5: the book's own statement and proof, for the clause-level statement check and
+                // the step-by-step fidelity check.
+                let source = crate::model::context::owned_passages(&self.p.staging, &field(u, "address"))?;
+                if source.len() > 2 {
+                    sb.push_str(&format!("### 原书原文（对照用：单元的陈述要与原书陈述逐条一致，证明不漏步、不改顺序）{NL}{NL}"));
+                    for text in source.iter().skip(2) {
+                        sb.push_str(&format!("{}{NL}", text.replacen("### ", "#### ", 1)));
+                    }
+                }
                 for st in steps {
                     let part = pipe(&model["parts"]).into_iter().find(|p| eq(&field(p, "address"), &field(st, "address"))).cloned().unwrap_or(Value::Null);
                     let crux = if eq(&field(st, "emphasis"), "core") { "（关键步）" } else { "" };
@@ -1701,6 +1710,10 @@ impl Compiler {
         // and reads the reviewed steps and the applied fixes back from this record (R240).
         let mut owner: CiMap<String> = CiMap::new();
         for entry in pipe(&plan["units"]) {
+            // A verdict on the unit's head is the clause-level statement check (P1a M2.5).
+            if truthy(&entry["model"]) {
+                owner.insert(&field(&entry, "model"), field(&entry, "unit"));
+            }
             for step in pipe(&entry["steps"]) {
                 owner.insert(&field(&step, "address"), field(&entry, "unit"));
             }

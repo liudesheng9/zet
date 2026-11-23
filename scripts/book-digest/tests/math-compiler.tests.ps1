@@ -257,6 +257,7 @@ try {
     Assert ($pplan.units -eq 2 -and @($pplan.jobs).Count -eq 1) 'proof: the lemma and the theorem have proof steps'
     $pjob = Get-Content -Raw $pplan.jobs[0].files[1]
     Assert ($pjob -match '（关键步）') 'proof: the job marks the crux step'
+    Assert ($pjob.Contains('原书原文') -and $pjob.Contains('证明：令')) 'proof: the job carries the book''s own statement and proof (P1a M2.5)'
     $last = @((Read-Model $th).build.order | Where-Object { $_.line -eq 'main' })[-1].address
     $old = (Read-Card $last).body
     Save-Json (Join-Path $staging 'math\proof\out\p-01.json') @{ verdicts = @(
