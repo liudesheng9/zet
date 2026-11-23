@@ -1,4 +1,7 @@
-// ==== module zt-term-cards v18 ====
+// ==== module zt-term-cards v19 ====
+// v19 (rudin1976principles pilot, 2026-11-23: two writer drafts were not ready and only a manual resume ran them
+// again): the first finish runs with -Retry; a job that is not ready is released, start and the writers run once
+// more, and a finish without -Retry fails what is still not ready.
 // v18 (rudin1976principles pilot, 2026-11-23): the managers follow the shared rate-limit rule (DSMP_RATE_LIMIT).
 // v17 (the owner, 2026-11-12): every job runs on the shared library's one source value (ZT_DRIVE_MODEL, OpenCode Go);
 // the job file's "model" field is not read.
@@ -37,7 +40,7 @@
 // v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
 // only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '18', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '19', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers and review-and-fix jobs for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -91,8 +94,8 @@ Each job has id, files, prompt, skills, model, effort. A job may also have "then
     // A deterministic step: one DeepSeek drive job runs one script call and answers with its last line
     // (the shared zt-workflow-lib helper ztDrive). A step that answers no JSON line stops the branch; a step
     // that answers `ok:false` is the branch's failed reason.
-    const drive = async (step) => {
-      const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step} -Out "${OUT}"${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.mathPerJob ? ` -MathPerJob ${p.mathPerJob}` : ''}${step === 'start' ? ` -Chunk ${DSMP.perManager}` : ''}`
+    const drive = async (step, extra = '') => {
+      const command = `pwsh -NoProfile -File "${p.script || DEFAULT_SCRIPT}" -Step ${step}${extra} -Out "${OUT}"${p.perJob ? ` -PerJob ${p.perJob}` : ''}${p.mathPerJob ? ` -MathPerJob ${p.mathPerJob}` : ''}${step === 'start' ? ` -Chunk ${DSMP.perManager}` : ''}`
       const json = await ztDrive(ctx, { label: `${ctx.stage}: drive ${step}`, step, command, out: OUT, cwd: WORK, phase, ledger: 'zt-digest ledger', deepseek: report.deepseek })
       if (json.ok !== true) throw new Error(`term-cards ${step}: ${tail(json.error || 'the step failed')}`)
       return json
@@ -131,7 +134,17 @@ Each job has id, files, prompt, skills, model, effort. A job may also have "then
         const written = await runChunks('write', started.jobs)
         report.writer_failures = written.filter((j) => j.status !== 'done').length
       }
-      finished = await drive('finish')
+      finished = await drive('finish', ' -Retry')
+      if (Number(finished.retry || 0) > 0) {
+        report.retried = Number(finished.retry)
+        log(`Term cards: ${report.retried} job(s) not ready; one more writer round.`)
+        const again = await drive('start')
+        if (again.jobs > 0) {
+          const rewritten = await runChunks('rewrite', again.jobs)
+          report.writer_failures += rewritten.filter((j) => j.status !== 'done').length
+        }
+        finished = await drive('finish')
+      }
       report.jobs.done = Number(finished.done || 0) || 0
       report.not_ready = Number(finished.failed || 0) || 0
       report.publication = { complete: finished.complete === true, rows: Number(finished.rows || 0), committed: Number(finished.committed || 0), ready_unpublished: Number(finished.ready_unpublished || 0) }

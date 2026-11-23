@@ -298,6 +298,11 @@ try {
     $papplied = Last (Run 'proof-apply')
     Assert ($papplied.fixed -eq 3 -and $papplied.refused -eq 0) 'proof-apply: the repair answer stands in place of the refused verdict; the earlier fixes stay accepted'
     Assert ((Read-Card $steps[2]).body -match '补一句') 'proof-apply: the repaired fix is written'
+    # Rudin pilot 2026-11-23 (1|u): a fix already in place is recorded against the text the review read, so the ledger
+    # sees that it changed the step.
+    $appliedRec = Get-Content -Raw (Join-Path $staging 'math\proof\applied.json') | ConvertFrom-Json -AsHashtable
+    $again = @($appliedRec.reviewed | Where-Object { $_.address -eq $last })[0]
+    Assert ($again.verdict -eq 'fix' -and $again.before -ne $again.after) "proof-apply: a fix already in place keeps the reviewed text as its before ($($again.before) / $($again.after))"
     Assert ((Last (Run 'proof-repair')).repair -eq 0) 'proof-repair: a batch is repaired once'
 
     # --- theory ---------------------------------------------------------------------------------------------

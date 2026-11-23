@@ -2044,12 +2044,15 @@ impl Compiler {
                 if !new.trim().is_empty() && field(&card, "body") == new {
                     fixed += 1;
                     accepted.insert(address.clone(), json!(before));
+                    // Its before is the text the review read (the plan froze it), not the fixed text now in place:
+                    // the ledger checks that an accepted fix changed the step (Rudin pilot 2026-11-23, 1|u).
+                    let reviewed_text = frozen.get(&address).cloned().unwrap_or_else(|| before.clone());
                     reviewed.push(obj(vec![
                         ("unit", json!(unit)),
                         ("address", json!(address)),
                         ("verdict", json!("fix")),
                         ("reason", json!(reason)),
-                        ("before", json!(before)),
+                        ("before", json!(reviewed_text)),
                         ("after", json!(before)),
                     ]));
                     continue;

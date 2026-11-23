@@ -1400,6 +1400,18 @@ fn fingerprint_before_renames(card: &Value, back: &BTreeMap<String, String>) -> 
     crate::calls::authored_fingerprint(&original)
 }
 
+/// A kept boundary part is the part the settle recorded: its text with renamed Links read back, either as it
+/// stands or with each Term link read as its label (the term-link pass may wrap its words after the settle,
+/// Rudin pilot 2026-11-23).
+fn same_recorded_part(card: &Value, back: &BTreeMap<String, String>, recorded: &str) -> bool {
+    if fingerprint_before_renames(card, back) == recorded {
+        return true;
+    }
+    let mut plain = card.clone();
+    plain["body"] = json!(crate::term_link::unlinked(card["body"].as_str().unwrap_or_default()));
+    fingerprint_before_renames(&plain, back) == recorded
+}
+
 /// The mathematics variant's per-unit obligations (R237). The compiler's own boundary
 /// and proof plans enumerate the mathematical units, and each planned unit becomes one
 /// unit of the same ledger: no second ledger, scheduler or compiler framework. A unit
@@ -3249,8 +3261,7 @@ fn boundary_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Pat
         .filter(|(now, was)| now != was)
         .collect();
     for ((address, now, fingerprint), card) in kept.iter().zip(&kept_cards) {
-        if field(card, "address")? != now || fingerprint_before_renames(card, &back) != *fingerprint
-        {
+        if field(card, "address")? != now || !same_recorded_part(card, &back, fingerprint) {
             bail!("the kept boundary candidate `{address}` is no longer the part this settle recorded");
         }
     }
@@ -13687,6 +13698,12 @@ fn require_step(entry: &Value, name: &str) -> Result<Value> {
 /// atkinson2015lectures (2026-11-01): a part of the model's own subtree. The build order also holds what an imported
 /// block (`整块`) brings with it: the borrowed part's premises in its home model (`26|a|a` under a take of `26|a|a|3`),
 /// which that model's plan maps, never this one's; four built models were refused for them.
+/// A part the math boundary stage writes beside a built unit (`假设作用：H1`, `反例：去掉 H1`, `非例：…`): it is
+/// no part of the unit's accepted plan, and a later model finish (a reopened unit) keeps it.
+fn boundary_layer_part(variant: &str, facet: &str) -> bool {
+    variant == "math" && ["假设作用", "反例", "非例"].iter().any(|w| facet.trim().strip_prefix(w).is_some_and(|rest| rest.starts_with(['：', ':'])))
+}
+
 fn own_part(header: &str, address: &str) -> bool {
     address.starts_with(&format!("{header}|"))
 }
@@ -13883,8 +13900,9 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         }
         part_ids.insert(address.clone(), id.clone());
     }
-    for address in order.keys() {
-        if !part_ids.contains_key(address) && own_part(header, address) {
+    let variant = s(&p.contract["variant"]);
+    for (address, o) in &order {
+        if !part_ids.contains_key(address) && own_part(header, address) && !boundary_layer_part(&variant, &s(&o["facet"])) {
             bail!("the model holds a part `{address}` that its accepted plan does not map; rebuild the model as a new revision");
         }
     }
@@ -19240,6 +19258,17 @@ mod tests {
     }
 
     #[test]
+    fn a_kept_boundary_part_the_term_link_pass_touched_is_still_the_recorded_part() {
+        // Rudin pilot 2026-11-23 (15|c|d): Term links wrapped two words after the settle recorded the part.
+        let before = json!({"type":"model","facet":"反例：去掉 H2","title":"反例","body":"两个序列都不收敛，见 [[k/15|c]]。"});
+        let after = json!({"type":"model","facet":"反例：去掉 H2","title":"反例","body":"两个[[序列@k/1|ai|bj]]都不[[收敛@k/1|ai|cy]]，见 [[k/15|c]]。"});
+        let recorded = crate::calls::authored_fingerprint(&before);
+        assert!(same_recorded_part(&after, &BTreeMap::new(), &recorded));
+        let edited = json!({"type":"model","facet":"反例：去掉 H2","title":"反例","body":"两个[[序列@k/1|ai|bj]]都发散，见 [[k/15|c]]。"});
+        assert!(!same_recorded_part(&edited, &BTreeMap::new(), &recorded));
+    }
+
+    #[test]
     fn a_math_check_with_blocking_faults_withholds_quality() {
         let check = |state: &str, blocking: i64| json!({"id":"math-check/book@1","state":state,"result":{"faults":40,"blocking":blocking}});
         assert_eq!(math_blocking(&[check("done", 3)]), Some(3));
@@ -20442,6 +20471,17 @@ mod term_card_ledger_tests {
         let between = "问题：x\n\n**结构**\n\n- 设定 [[K/83|a|a]]：设定\n\n来源：[[K]] §6\n\n**引入**\n\n- 单卡 [[K/75|a|a|12]]：a_X";
         let lines = super::structure_lines(between);
         assert!(lines.iter().any(|l| l.contains("[[K/75|a|a|12]]")) && !lines.iter().any(|l| l.starts_with("来源")), "{lines:?}");
+    }
+
+    #[test]
+    fn a_boundary_part_belongs_to_the_math_boundary_layer() {
+        // Rudin pilot 2026-11-23 (9|am): the model finish ran again after the boundary stage had added its parts.
+        assert!(super::boundary_layer_part("math", "反例：去掉 H1"));
+        assert!(super::boundary_layer_part("math", "假设作用：H2"));
+        assert!(super::boundary_layer_part("math", "非例：把绝对值写成负数"));
+        assert!(!super::boundary_layer_part("math", "直觉"));
+        assert!(!super::boundary_layer_part("math", "例子：单位圆"), "an example is the unit's own part");
+        assert!(!super::boundary_layer_part("econ", "反例：去掉 H1"), "only a math run has a boundary layer");
     }
 
     #[test]

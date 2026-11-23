@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.14.1",
+  "version": "5.14.2",
   "scope": "project",
   "script": ".claude/workflows/zt-math-digest.js",
   "scriptRel": "workflows/zt-math-digest.js",
-  "sha256": "cd91655ca3b488325aa99316175cc3d638a8ed7a6107bdcd44d0cbc6af758676",
-  "fingerprint": "3e0b8d568e03fa57",
-  "blueprintSha256": "b48cd81fc3426598a44365466994c5ca2239fed9d1b57ac4aed56b9a1357651c",
+  "sha256": "3cce129670b8e5f9d3edfb934047cbadb4fea73207eac1cb7ab94d0ae19a6e09",
+  "fingerprint": "3486d07382194670",
+  "blueprintSha256": "4aabb76dce3bfb58452a385230dd9d77e198774ebe997f7e100a0b1682bf2301",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "20",
@@ -40,7 +40,7 @@
     "zt-math-theory": "4",
     "zt-model-layer": "11",
     "zt-organize": "9",
-    "zt-term-cards": "18",
+    "zt-term-cards": "19",
     "zt-term-link": "5"
   },
   "moduleFiles": {
@@ -170,7 +170,7 @@
     },
     "zt-term-cards": {
       "file": "scripts/book-digest/workflow/modules/zt-term-cards.js",
-      "sha256": "e77acd6dcdde27046f4c21a05d9ffa0cd0db346df53e46ebf1dcdd29dd59a423"
+      "sha256": "2551a399b55738d8c2a530a4ba4e7ecc5f773451b605e9e21b50e01c05d8b6af"
     },
     "zt-term-link": {
       "file": "scripts/book-digest/workflow/modules/zt-term-link.js",
@@ -180,15 +180,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-math-digest.blueprint.json",
-      "sha256": "e63375ee7fa1c9999a6b5d5d0f2591dbaf773764dc77d29b5e9f4c5fe35778fe"
+      "sha256": "2e0ed2cd7a4e34294b5caa5a9aa69f815c3b035bf68d4c94363834881be44949"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "6d7fb4c99028d6634600027b151ef0ce7e007b5a17f451445bb9d3a14d57d159"
+      "sha256": "d92d41a2c0f0983ff375fa5adaf22d6833976baf9db38854f1551c1bc8efa777"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-23T19:41:52.585Z",
+  "installedAt": "2026-11-23T20:48:12.863Z",
   "dryRun": {
     "agents": 91,
     "order": [

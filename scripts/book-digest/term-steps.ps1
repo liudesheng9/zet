@@ -12,7 +12,9 @@
           and runs its self-check); the v10 module no longer calls it     -> drive\reviews.json
   finish  complete each claimed job from the readiness result (fail the rest; a claim whose lease ran out
           is taken back first), then publish:
-          with the book unit claimed it completes from the report, else every ready row is published (#182)
+          with the book unit claimed it completes from the report, else every ready row is published (#182).
+          -Retry (v19): a job that is not ready is released for one more writer round instead of failed; when
+          any is, nothing is published and the line answers `retry`
   link    plan the Term links, apply under the claim (or, when the unit is blocked, the published
           prefix without a claim; when the unit is already done, the whole book again without a
           claim, status relinked), then plan again: the second plan must change no Card
@@ -29,6 +31,7 @@ param(
     [int]$PerJob = 0,
     [int]$MathPerJob = 0,
     [ValidateRange(1, 8)][int]$Chunk = 8,
+    [switch]$Retry,
     [string]$Tool = 'zt-digest'
 )
 $ErrorActionPreference = 'Stop'
@@ -212,12 +215,18 @@ switch ($Step) {
             if ($verdict -and $verdict.ok -eq $true) { Copy-Item -LiteralPath $old.FullName -Destination $j.answer; $bound++ }
         }
         if ($bound) { Run @('term-cards', '-Step', 'check', '-Staging', $Out) | Out-Null }
-        $done = @(); $failed = @(); $late = @()
+        $done = @(); $failed = @(); $late = @(); $retried = @()
         foreach ($u in @(Load 'units.json')) {
             if (-not $u) { continue }
             $d = Run @('ledger', 'done', '-Out', $Out, '-Unit', $u.id, '-Token', "$($u.token)", '-Outputs', (Join-Path $Work 'check\readiness.json'))
             if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $done += $u.inputs.job.id }
             elseif ("$($d.tail)" -match 'stale_claim') { $late += $u }
+            elseif ($Retry) {
+                # v19 (rudin1976principles pilot, 2026-11-23): one more writer round before a job fails. The claim goes
+                # back, the next start claims the job again and lists it with its draft's faults.
+                Run @('ledger', 'reclaim', '-Out', $Out, '-Unit', $u.id, '-Release') | Out-Null
+                $retried += $u.inputs.job.id
+            }
             else { $failed += $u.inputs.job.id; Fail-Unit $u "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
         }
         # v10: the queue claims every job at once, so a job may outlast its claim's lease. Its claim is taken back
@@ -241,6 +250,11 @@ switch ($Step) {
                 if ($d.code -eq 0 -and $d.json -and $d.json.state -eq 'done') { $done += $u.inputs.job.id }
                 else { $failed += $u.inputs.job.id; Fail-Unit $x "the job $($u.inputs.job.id) is not ready: $($d.tail)" }
             }
+        }
+        # A retry round comes first: the publication waits for the jobs it holds (a late claim was completed above).
+        if ($retried.Count) {
+            Reply @{ ok = $true; done = $done.Count; retry = $retried.Count } @{ done = $done; retry = $retried }
+            break
         }
         function Book-State([string]$Layer) {
             $s = Run @('ledger', 'status', '-Out', $Out, '-Layer', $Layer)

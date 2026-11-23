@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-history-digest",
-  "version": "1.1.11",
+  "version": "1.1.12",
   "scope": "project",
   "script": ".claude/workflows/zt-history-digest.js",
   "scriptRel": "workflows/zt-history-digest.js",
-  "sha256": "543794bab10691d16cd1cd648fc2c384021dc79e389688cb85a940dfb9701bef",
-  "fingerprint": "1dd49d0162a1c150",
-  "blueprintSha256": "0dc5fdc61716d94937831636380bcec97e153dbc2f6bb25a5f49f27ce9803501",
+  "sha256": "4b2161c2c57e3ff09123a2a5e5e3a673c8a39915f3bd7d7e6c27ee22a31e557d",
+  "fingerprint": "1234244051de604f",
+  "blueprintSha256": "7037e0bb4100c5295ce217362342ce054c2a8d5abb1fa46497adf30d1c19ac11",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "20",
@@ -31,7 +31,7 @@
     "zt-link-pass": "12",
     "zt-link-prepare": "9",
     "zt-organize": "9",
-    "zt-term-cards": "18",
+    "zt-term-cards": "19",
     "zt-term-link": "5"
   },
   "moduleFiles": {
@@ -125,7 +125,7 @@
     },
     "zt-term-cards": {
       "file": "scripts/book-digest/workflow/modules/zt-term-cards.js",
-      "sha256": "e77acd6dcdde27046f4c21a05d9ffa0cd0db346df53e46ebf1dcdd29dd59a423"
+      "sha256": "2551a399b55738d8c2a530a4ba4e7ecc5f773451b605e9e21b50e01c05d8b6af"
     },
     "zt-term-link": {
       "file": "scripts/book-digest/workflow/modules/zt-term-link.js",
@@ -135,15 +135,15 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-history-digest.blueprint.json",
-      "sha256": "a691011144b35875a71d5fa212044ad4bdb1ae3b083fa559528a79d956f24031"
+      "sha256": "73fdd6b33b7f4e61e1da5e029917ab35718344989bc7f7b3780612df17ff7977"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
-      "sha256": "6d7fb4c99028d6634600027b151ef0ce7e007b5a17f451445bb9d3a14d57d159"
+      "sha256": "d92d41a2c0f0983ff375fa5adaf22d6833976baf9db38854f1551c1bc8efa777"
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-23T19:24:22.665Z",
+  "installedAt": "2026-11-23T20:48:24.062Z",
   "dryRun": {
     "agents": 58,
     "order": [

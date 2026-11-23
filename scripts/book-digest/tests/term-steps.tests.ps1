@@ -105,6 +105,7 @@ switch -Regex ($flat) {
     }
     '^ledger done' {
         if ($env:TS_DONE_REFUSE -and $flat -match 'termcards/book@1') { Write-Output 'zt-digest ledger: the book is not ready'; exit 1 }
+        if ($env:TS_JOB_NOT_READY -and $flat -match 'termcards/t002@1') { Write-Output 'zt-digest ledger: row 2 of the Term-card job `t002` is `missing`, not ready'; exit 1 }
         if ($env:TS_STALE -and $flat -match 'termcards/t001@1 -Token 1 ') { Write-Output 'zt-digest ledger: stale_claim: termcards/t001@1 has no current unexpired claim for token 1'; exit 1 }
         Write-Output (ConvertTo-Json -Compress @{ schema_version = 1; state = 'done' })
         exit 0
@@ -302,6 +303,22 @@ $partial = Step (@('-Step', 'finish') + $common)
 $env:TS_PARTIAL = ''
 Assert-Line $partial 'finish partial'
 Assert ($partial.json.ok -eq $true -and $partial.json.book -eq 'failed' -and -not $partial.json.complete -and $partial.json.committed -eq 1) "finish: an incomplete publication answers its prefix counts ($($partial.text))"
+
+# 4b. v19 (rudin1976principles pilot, 2026-11-23: two writer jobs left a draft that was not ready and only a manual resume
+# could run them again): finish -Retry releases a job that is not ready instead of failing it, publishes nothing and
+# answers `retry`; the module runs start and the writers once more, then a finish without -Retry fails what is left.
+Set-Content -LiteralPath $calls -Value '' -Encoding utf8
+$env:TS_JOB_NOT_READY = '1'
+$retry = Step (@('-Step', 'finish', '-Retry') + $common)
+$retryCalls = @(Get-Content -LiteralPath $calls)
+Assert-Line $retry 'finish -Retry'
+Assert ($retry.json.ok -eq $true -and $retry.json.retry -eq 1 -and $retry.json.done -eq 1 -and -not $retry.json.failed) "finish -Retry: the job that is not ready is held for one more round ($($retry.text))"
+Assert (@($retryCalls | Where-Object { $_ -match '^ledger reclaim .*-Unit termcards/t002@1 -Release' }).Count -eq 1 -and -not @($retryCalls | Where-Object { $_ -match '^ledger fail .*termcards/t002@1' }).Count) "finish -Retry: its claim is released, never failed ($($retryCalls -join ' / '))"
+Assert (-not @($retryCalls | Where-Object { $_ -match '^term-cards -Step apply' }).Count) 'finish -Retry: nothing is published before the retry round'
+Set-Content -LiteralPath $calls -Value '' -Encoding utf8
+$final = Step (@('-Step', 'finish') + $common)
+$env:TS_JOB_NOT_READY = ''
+Assert ($final.json.ok -eq $true -and $final.json.failed -eq 1 -and -not $final.json.retry) "finish: without -Retry a job still not ready fails ($($final.text))"
 
 # Live run 2026-10-26 (staging5): the publication printed no line and the finish answered rows 0 with no reason.
 # An apply that fails is named in the line.
