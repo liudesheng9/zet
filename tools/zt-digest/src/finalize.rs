@@ -1554,7 +1554,10 @@ fn final_audit_published(conn: &Connection) -> Result<bool> {
             .unwrap_or(Value::Null);
         finalized = inputs["scope"]["kind"] == json!("finalize_refresh");
     }
-    Ok(finalized)
+    // Rudin pilot 2026-11-23: a resume rebuilt a model and republished the Term cards after the final audit; the
+    // audit stage kept that audit as final and Finalize read Cards that no longer existed. A final audit counts
+    // only while its publication is current.
+    Ok(finalized && ledger::publication_is_current(conn, "audit")?)
 }
 
 /// The `changes` line from the retained manifest (or none), the final-audit state and the state of a

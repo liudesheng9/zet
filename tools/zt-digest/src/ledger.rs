@@ -5509,6 +5509,16 @@ pub fn prepare_setup(out: &str, zt: &mut Zt) -> Result<Value> {
 
 /// Whether one registered aggregate revision still describes the present inputs.
 /// A non-publication obligation (the mathematics root) binds only its preparation.
+/// Whether the latest `<layer>/book` publication still describes the present inputs (the status's
+/// `required_unit_missing_or_changed` test, for one layer).
+pub(crate) fn publication_is_current(conn: &Connection, layer: &str) -> Result<bool> {
+    let root_hash = canon::hash_value(&json!({"preparation_hash":meta(conn, "preparation_hash")?}));
+    match required_publication(conn, layer)? {
+        None => Ok(false),
+        Some((_, raw)) => publication_current(conn, layer, &canon::parse_json(&raw)?, &root_hash),
+    }
+}
+
 fn publication_current(
     conn: &Connection,
     layer: &str,

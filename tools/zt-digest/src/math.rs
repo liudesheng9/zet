@@ -449,6 +449,12 @@ pub(crate) fn splice_statement(head: &str, section: &str) -> Option<String> {
     Some(text)
 }
 
+/// Whether a fix's text already stands in the Card: the same text, or the same once each Term link reads as
+/// its label (the term-link pass may wrap words after the fix was written).
+pub(crate) fn fix_in_place(current: &str, fix: &str) -> bool {
+    !fix.trim().is_empty() && (current == fix || crate::term_link::unlinked(current) == crate::term_link::unlinked(fix))
+}
+
 /// The proof reviewers' answer files in apply order: every first answer, then the repair answers
 /// (`p-NN.r1.json`), so the verdict a repair gave on an address is the one that stands.
 pub(crate) fn proof_answer_order(mut names: Vec<String>) -> Vec<String> {
@@ -2041,7 +2047,7 @@ impl Compiler {
                 }
                 // A fix already in place (an earlier round, or a run that stopped after writing it) is
                 // accepted as it stands.
-                if !new.trim().is_empty() && field(&card, "body") == new {
+                if fix_in_place(&field(&card, "body"), &new) {
                     fixed += 1;
                     accepted.insert(address.clone(), json!(before));
                     // Its before is the text the review read (the plan froze it), not the fixed text now in place:
@@ -2780,6 +2786,18 @@ mod tests {
         assert_eq!(splice_statement("**定义**：旧的一句。\n\n**说明**：甲。", "**定义**：新的一句。").unwrap(), "**定义**：\n新的一句。\n\n**说明**：甲。");
         // Bold words inside a sentence are no heading.
         assert_eq!(splice_statement("**陈述**\n旧。", "设 **f** 连续。").unwrap(), "**陈述**\n设 **f** 连续。");
+    }
+
+    #[test]
+    fn a_fix_in_place_survives_the_term_link_pass() {
+        // Rudin pilot 2026-11-23 (1|u|a|1): the fix was written, then the term-link pass wrapped two words, and the
+        // re-apply read the fix as one that drops those Term links.
+        let fix = "**关键想法**\n前十条由实数域继承，乘法逆元要另行构造坐标。";
+        let now = "**关键想法**\n前十条由实数域继承，乘法逆元要另行构造[[坐标@K/1|ai|aj]]。";
+        assert!(fix_in_place(now, fix));
+        assert!(fix_in_place(fix, fix));
+        assert!(!fix_in_place(now, "**关键想法**\n别的句子。"));
+        assert!(!fix_in_place(now, ""), "an empty fix is never in place");
     }
 
     #[test]
