@@ -17,7 +17,7 @@ Every module has one shape: **one start step → one queue of Haiku managers →
 
 - A start or finish step is a DeepSeek *drive job*: it runs one PowerShell step script, which plans the work, writes a job file and prints one JSON line.
 - A Haiku manager takes up to **8 jobs**. At most **8 managers** run at once (64 conversations).
-- A *job* is one DeepSeek conversation (V4.1 Flash, OpenCode Go source `opencode-go/deepseek-v4.1-flash` since 2026-11-12, effort high; the one value is `ZT_DRIVE_MODEL` in zt-workflow-lib; its only other setting is the official source `deepseek-official/deepseek-flash`, and the bridge's OpenCode Go key pool chooses every key, so no job, manager or workflow names a key or account). It writes its draft, runs its SELF-CHECK, and answers with one line. The manager collects the answer and deletes the conversation.
+- A *job* is one DeepSeek conversation (V4.1 Flash, OpenCode Go source `opencode-go/deepseek-v4.1-flash` since 2026-11-12, effort high; the one value is `ZT_DRIVE_MODEL` in zt-workflow-lib). It writes its draft, runs its SELF-CHECK, and answers with one line. The manager collects the answer and deletes the conversation.
 
 ## The three conversation patterns
 
