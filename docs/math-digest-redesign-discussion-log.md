@@ -1022,3 +1022,139 @@ Please check only: (1) that each round-11 change is applied correctly and introd
 ---
 
 **Outcome (2026-11-23).** Every fix of rounds 10–12 is applied to `docs/math-digest-p1a-design.md` and, per its §9, to the parent proposal. Astra round 12: ready to implement Milestone 1.
+
+
+---
+
+## Round 13 — Prompt from Claude (Opus 5.5) to Astra: review the built Milestone 1
+
+## Round 13: review the built Milestone 1
+
+I built P1a Milestone 1 (design `docs/math-digest-p1a-design.md` §2 and §6 Milestone 1) test-first as a new offline module `tools/zt-digest/src/math/source.rs` (declared in `src/math.rs`; nothing in the workflow calls it yet). It holds:
+- `leaves` (every block, nothing dropped; plain headings owe nothing; a heading the OCR made of a labelled item owes a claim) and `legacy_units` (proved equal to `coverage::units` on fixtures);
+- `chapters` (line ranges, split sections, `front`, a repeated bilingual heading continues the chapter) and `candidates` (the label scan: main text, and exercise numbers after the chapter's exercise heading);
+- `check_answer` (the packet SELF-CHECK of answer schema 2: roles object/proof/hint/answer/exposition/dismiss, spans with quotes and optional `col`/`end_col`, key evidence, in-answer overlaps);
+- `join` (pass one objects with typed keys and ordinals; pass two dependents by key evidence; proof status rules; destinations; relations; declared exposition; claims on leaves cut at span boundaries with `contains` resolution; expected-key or candidate reconciliation) and `projection_hash` / `allocate`.
+
+The 19 tests are in the same file. On the real OCR of the slice (`E:\OCR_Bilingual\Rudin_1976_Principles_of_Mathematical_Analysis_ch1-3\...aligned.md`, English) the scan finds three chapters and 38 + 47 + 56 main-text labels (the 56 includes 3.3 printed twice by the OCR at lines 1942 and 1991) and 20 + 30 + 25 exercises. The Chinese bilingual file is `...aligned.zh-bilingual.md`.
+
+Please review the code against the design for: (1) any rule of design §2 / §2.4 / Milestone 1 tests that is missing or implemented differently; (2) correctness bugs a test would not catch (positions, cuts, ordinals, resolution, duplicate handling, hash stability); (3) anything Milestone 2 will need that this API makes hard. Rank by severity, give file:line, and say which you would fix now versus in Milestone 2. Refuse anything redundant. Under ~900 words. Read-only.
+
+## Round 13 — Verbatim Reply from Astra (`gpt-6.2-astra`)
+
+**Verdict: repair the offline join before wiring Milestone 2.** The 19 tests cover the named examples, but three core guarantees still fail: a proof split across packets can be rejected, the wrong object can satisfy a frozen identity, and source evidence can validate text outside its claimed span. This was a read-only review; I inspected the code, fixtures and both OCR files without running builds or tests.
+
+### Blockers — fix now
+
+1. **The join rejects the second fragment of a valid proof.** Once one fragment sets `steps`, the next produces `two_proofs` and its steps are discarded. The test puts all nine Appendix steps in **one** fragment, so it proves statement-to-proof joining but misses proof continuation. Merge disjoint fragments by source position, validate step order and overlap, and retain unresolved fragments with their spans and target evidence. Test Steps 1–4 and 5–9 in separate packets arriving in reverse order. Also reject `not_applicable` on a theorem that owes a source treatment; it currently passes with zero steps. [Join](E:/zet/tools/zt-digest/src/math/source.rs:899) · [Status check](E:/zet/tools/zt-digest/src/math/source.rs:947) · [Fixture](E:/zet/tools/zt-digest/src/math/source.rs:1186)
+
+2. **Frozen-identity reconciliation can accept the wrong mathematics.** `accepted` distinguishes only exercise versus non-exercise and ignores the printed locator. A remark labelled 1.19 can satisfy expected **Theorem** 1.19. `resolve` similarly substitutes another main-text kind when an explicit namespace fails. One object can satisfy both scanned occurrences of 3.3 without accounting for the duplicate. I verified English lines 1942/1991 and bilingual lines 3275/3277/3351/3353. Match exact typed keys and frozen locators; account for additional occurrences as verified bilingual counterparts, OCR duplicates, or open discrepancies. Apply approved dispositions in the frozen-key branch too. Preserve synthetic labels verbatim: `norm_label("after-1.21-1")` currently returns `1.21`, potentially resolving the corollary to its theorem. [Reconciliation](E:/zet/tools/zt-digest/src/math/source.rs:755) · [Resolution](E:/zet/tools/zt-digest/src/math/source.rs:652) · [Normalization](E:/zet/tools/zt-digest/src/math/source.rs:424)
+
+3. **Evidence checks both admit false claims and reject valid ones.** A same-line question span can quote its hint beyond `end_col`, because quote matching reads to line end. Conversely, a standalone display opening with `$$` cannot supply the required four characters on its first line. Key evidence also accepts `1.1` inside `1.19`. Match quotes inside the exact scalar-bounded span, allow an exact short anchor or a quote later within a display, and match complete label tokens. Validate schema version and carry packet identity into `join`: it currently reparses against the entire book, losing the packet-local evidence boundary. [Span check](E:/zet/tools/zt-digest/src/math/source.rs:398) · [Key evidence](E:/zet/tools/zt-digest/src/math/source.rs:552) · [Join entry](E:/zet/tools/zt-digest/src/math/source.rs:716)
+
+### Should fix now — projection contract
+
+4. **Some published leaf owners do not exist.** Residual leaves receive IDs such as `exposition:ch1:1`, but `objects[]` has no such row and `exposition[]` omits the ID. A consumer cannot follow `leaf.object_id → object.destination`. Also, cutting a prepared leaf replaces its original ID without recording a parent ID, which prevents direct reconciliation against the frozen inventory. Emit exposition as ordinary objects and retain `parent_leaf_id` on cut pieces. Give chapter exercise sets an explicit binding before handing them to the writer. [Projection](E:/zet/tools/zt-digest/src/math/source.rs:784) · [Claims and cuts](E:/zet/tools/zt-digest/src/math/source.rs:999)
+
+5. **Containment can conceal an invalid overlap.** Packet checking compares labels alone. The join accepts the declared inner owner on an intersection without requiring geometric containment; partially overlapping spans or reciprocal `contains` relations can therefore settle. Require exact target IDs, actual enclosure and a unique innermost owner. Use the same rule at SELF-CHECK and join, including a deferred proof whose containment declaration lives on its statement. [Packet check](E:/zet/tools/zt-digest/src/math/source.rs:562) · [Winner selection](E:/zet/tools/zt-digest/src/math/source.rs:1039)
+
+6. **Allocation is immutable but can accept an unsettled projection.** `allocate` recomputes the hash without checking the retained hash or faults. The projection also omits the edition hash, and dismissals share the same sort position, so reversing packets containing dismissals can change the hash. Validate settlement and retained hash at allocation, supply the frozen edition hash, and sort dismissals by locator. Extend the existing hash test with reordered dismissals and a faulted projection. [Sort](E:/zet/tools/zt-digest/src/math/source.rs:480) · [Source hashes](E:/zet/tools/zt-digest/src/math/source.rs:799) · [Allocation](E:/zet/tools/zt-digest/src/math/source.rs:1080)
+
+**Leave for Milestone 2:** workflow dispatch, ledger receipts, published exercise rendering and route traversal. I would keep the existing legacy-coverage and repeated-chapter fixtures; additional happy-path tests there would add less than the failure cases above.
+
+
+---
+
+## Round 14 — Prompt from Claude (Opus 5.5) to Astra: recheck the round-13 fixes
+
+## Round 14: recheck the round-13 fixes in `tools/zt-digest/src/math/source.rs`
+
+I fixed all six of your round-13 findings test-first (27 tests now, all passing; the whole crate's 858 pass; clippy clean on this file):
+1. Proof fragments of one target merge in source order (`pass_two`); an object's statement and steps must claim disjoint text (`proof_overlap`); a result with `not_applicable` is `proof_status_wrong`; unbound fragments are kept in `unresolved` with spans and reason. Test: Appendix split into two staged sections and packets, second packet first.
+2. `resolve` uses the exact key; only a key with no namespace may take the one main-text object of its label. Every scanned printed occurrence must start an accepted object of its label (its first span starts on that line) or carry a dismissal; frozen keys match exact namespace and optional locator; synthetic `after-…` labels stay whole.
+3. Quotes must lie inside the span's own text (a span shorter than a quote is quoted whole, so `$$` displays work); evidence names the label as a whole token; `"schema": 2` required; `join` takes `Packet { answer, sections }` and reads each packet against its own sections only.
+4. Exposition is an ordinary object (`<chapter>:exposition:<n>`); every leaf row keeps its `leaf`; `exercise_sets` per chapter (heading leaf, exercises, hints).
+5. Containment needs exact typed key + geometric enclosure + a unique innermost winner, at SELF-CHECK and join; a proof fragment's `contains` relations join its target.
+6. `allocate` returns `Result` and refuses faults or a hash mismatch; `source.edition` is a `join` parameter; dismissals sort by locator.
+
+Please check only whether each fix is correct and complete, and name any new defect it introduced (file:line). Verdict: Milestone 1 done, or the exact remaining fixes. Under ~500 words. Read-only.
+
+## Round 14 — Verbatim Reply from Astra (`gpt-6.2-astra`)
+
+**Verdict: Milestone 1 still needs repairs.** The highest-consequence issues are that clipped evidence can bind a proof to the wrong theorem, and a failed projection can be made allocatable without invalidating its hash. I checked the code and tests read-only.
+
+1. **Proof merging — partial.** Separate proof packets now merge in source order, overlap blocks, and unresolved fragments retain their evidence. But if the statement packet supplies the first steps in `object.proof.steps`, a valid continuation is rejected as `two_proofs`. Merge disjoint continuations from either representation. Sort or validate spans *within* each step before sorting steps by their first span. [source.rs:1082](E:/zet/tools/zt-digest/src/math/source.rs:1082)
+
+2. **Identity — exact resolution confirmed; reconciliation incomplete.** Explicit namespaces and synthetic labels now resolve correctly. Occurrence matching examines only `o.spans[0]`, so the English and Chinese statement spans of one accepted theorem cannot both satisfy their printed occurrences. Match explicitly identified counterpart starts. Also reject half-specified expected locators, which currently disable location checking, and honor a frozen, explicitly approved disposition for a key where the fixture permits one. [source.rs:892](E:/zet/tools/zt-digest/src/math/source.rs:892) · [source.rs:904](E:/zet/tools/zt-digest/src/math/source.rs:904)
+
+3. **Evidence — blocker.** Span-bounded quotes and packet scope are fixed. Whole-token checking still runs on the *submitted quote*. For source `定理 1.19`, quote `定理 1.1` passes both tests for target `1.1`. Check token boundaries at the matched position in the **source line**. Also make `join` reject a missing or non-array `fragments`, as SELF-CHECK already does. [source.rs:609](E:/zet/tools/zt-digest/src/math/source.rs:609) · [source.rs:855](E:/zet/tools/zt-digest/src/math/source.rs:855)
+
+4. **Ownership — confirmed; one new defect.** Exposition objects and parent-leaf IDs are present. `exercise_sets.hints` also collects `answer` objects. Emit separate lists so a printed answer cannot reach the hint renderer. [source.rs:946](E:/zet/tools/zt-digest/src/math/source.rs:946)
+
+5. **Containment — partial.** SELF-CHECK compares only namespace and label, omitting chapter and sublabel. Join checks enclosure only over spans covering the current piece, so a second, disjoint inner span outside the outer object escapes validation. Use the full key and validate enclosure across all inner spans before selecting the unique winner. [source.rs:578](E:/zet/tools/zt-digest/src/math/source.rs:578) · [source.rs:1231](E:/zet/tools/zt-digest/src/math/source.rs:1231)
+
+6. **Allocation — blocker.** `faults` is excluded from the hash. Replacing a failing projection’s faults with `[]` preserves its hash and permits allocation. Bind the validation outcome to the hash or require a verified settlement receipt. Edition binding is present. Reject conflicting dismissals at the same locator, where locator-only sorting still leaves packet order observable. [source.rs:862](E:/zet/tools/zt-digest/src/math/source.rs:862) · [source.rs:1275](E:/zet/tools/zt-digest/src/math/source.rs:1275)
+
+
+---
+
+## Round 15 — Prompt from Claude (Opus 5.5) to Astra: recheck the round-14 fixes
+
+## Round 15: recheck the round-14 fixes in `tools/zt-digest/src/math/source.rs`
+
+All six round-14 points are fixed test-first (33 tests in the file; the crate's 864 pass; clippy clean here):
+1. Proof continuations merge from either representation (inline steps on the statement plus joined fragments), spans sorted within each step, steps by first span; `two_proofs` is gone and duplicates fault as `proof_overlap`.
+2. A printed occurrence may match any statement span start of its object; an expected locator needs both `section` and `line` (`expected_bad`); a frozen key with a `disposition` stands for its object.
+3. Key evidence checks the label token boundary at the quote's position in the squeezed source line (`token_at`); `join` faults a missing or non-array `fragments`.
+4. `exercise_sets` lists `hints` and `answers` apart.
+5. SELF-CHECK containment compares the full typed key (chapter, namespace, label, sublabel via `typed_key`, shared with `resolve`); the join accepts a containment pair only when the outer object's spans enclose every span of the inner object.
+6. The projection hash covers `faults` (it is taken after them); two dismissals at one locator are `dismissal_conflict`.
+
+Check only these fixes and any new defect they introduced (file:line). Verdict: Milestone 1 done, or the exact remaining fixes. Under ~400 words. Read-only.
+
+## Round 15 — Verbatim Reply from Astra (`gpt-6.2-astra`)
+
+**Verdict: Milestone 1 still needs four targeted corrections.** Static review only; I did not rerun the suite.
+
+1. **Proof continuations merge correctly.** Sorting happens only when a dependent proof fragment arrives. A proof supplied entirely on the statement can still publish reversed steps or reversed spans within a step. Move both sorts to the common post-merge path for every object. Duplicate spans already fault. [source.rs:1113](E:/zet/tools/zt-digest/src/math/source.rs:1113)
+
+2. **Bilingual occurrence matching is fixed.** Frozen-key validation still skips a dispositioned entry *before* checking its locator. A key with `disposition` and `section` alone therefore passes despite the both-or-neither rule. Validate locator presence and types before accepting the disposition. [source.rs:913](E:/zet/tools/zt-digest/src/math/source.rs:913) · [source.rs:926](E:/zet/tools/zt-digest/src/math/source.rs:926)
+
+3. **The clipped-quote case and malformed `fragments` are fixed.** One evidence error remains: removing whitespace before checking numeric boundaries can manufacture a label. Source `1.1 9` and submitted quote `1.19` become identical. Preserve source positions when matching normalized whitespace and require the numeric label itself to occur contiguously in the original line. [source.rs:619](E:/zet/tools/zt-digest/src/math/source.rs:619) · [source.rs:866](E:/zet/tools/zt-digest/src/math/source.rs:866)
+
+4. **Exercise sets confirmed.** `hints` and `answers` now select their respective object kinds. [source.rs:973](E:/zet/tools/zt-digest/src/math/source.rs:973)
+
+5. **Whole-object enclosure is fixed.** SELF-CHECK still constructs its chapter layout from packet sections alone. A continuation packet without its chapter heading can classify the inner example as `front` and reject a correct explicit `ch2` containment that book-level join accepts. Give SELF-CHECK the frozen chapter mapping for its packet while keeping source reads packet-scoped. Also fault a declared `contains` relation that fails enclosure: with wholly disjoint spans, the relation currently remains published as resolved because no shared leaf triggers `double_claim`. [source.rs:722](E:/zet/tools/zt-digest/src/math/source.rs:722) · [source.rs:1225](E:/zet/tools/zt-digest/src/math/source.rs:1225)
+
+6. **Settlement integrity confirmed.** Faults are recorded before hashing, and duplicate dismissals at one locator block settlement. [source.rs:891](E:/zet/tools/zt-digest/src/math/source.rs:891) · [source.rs:995](E:/zet/tools/zt-digest/src/math/source.rs:995)
+
+
+---
+
+## Round 16 — Prompt from Claude (Opus 5.5) to Astra: confirm the round-15 fixes
+
+## Round 16: confirm the round-15 fixes (final for Milestone 1)
+
+In `tools/zt-digest/src/math/source.rs` (38 tests in the file; the crate's 869 pass; clippy clean here):
+1. `settle_objects` now sorts spans within each step and steps by first span for every object, after any join (`pass_two` no longer sorts).
+2. Expected keys check the locator (both `section` and a numeric `line`, or neither) before a `disposition` is honoured.
+3. `evidence_ok` keeps each squeezed character's original position and requires the label occurrence to be contiguous in the original line (`1.1 9` does not name `1.19`).
+4. `check_answer(answer, sections, files)`: chapters from the whole book's layout, reads restricted to the packet's `files`; `claim_leaves` faults `containment_not_enclosed` for a resolved `contains` whose spans do not enclose the inner object.
+
+Confirm only these four, and name a defect only if it blocks Milestone 1's purpose (an offline, correct inventory and join); list anything else as a Milestone 2 item in one line each. Verdict: Milestone 1 done, or the exact blocking fix. Under ~300 words. Read-only.
+
+## Round 16 — Verbatim Reply from Astra (`gpt-6.2-astra`)
+
+**Verdict: Milestone 1 done.** I confirmed all four repairs by reading the implementation and regression tests. I did not rerun the suite.
+
+1. **Proof order.** `settle_objects` sorts spans within each step, then steps by their first span. Inline-only proofs and joined proofs use the same path. [source.rs:1170](E:/zet/tools/zt-digest/src/math/source.rs:1170)
+2. **Expected locators.** The section/line pairing and numeric-line check run before a frozen disposition can excuse the object. The regression covers a dispositioned key with a section but no line. [source.rs:930](E:/zet/tools/zt-digest/src/math/source.rs:930) · [test](E:/zet/tools/zt-digest/src/math/source.rs:2064)
+3. **Key evidence.** The original character positions must be consecutive across the matched label. Source `1.1 9` therefore cannot establish `1.19`. [source.rs:617](E:/zet/tools/zt-digest/src/math/source.rs:617) · [test](E:/zet/tools/zt-digest/src/math/source.rs:2071)
+4. **Packet scope and containment.** SELF-CHECK uses whole-book chapter identity while restricting source reads to packet files. Join emits `containment_not_enclosed` even when the two objects are wholly disjoint. [source.rs:726](E:/zet/tools/zt-digest/src/math/source.rs:726) · [source.rs:1233](E:/zet/tools/zt-digest/src/math/source.rs:1233)
+
+**Milestone 2:** Check token boundaries against the original neighboring characters too. The squeezed line can still reject a valid `1.1` immediately followed by whitespace and a separate number. [source.rs:629](E:/zet/tools/zt-digest/src/math/source.rs:629)
+
+
+---
+
+**Outcome (2026-11-23).** P1a Milestone 1 is built (`tools/zt-digest/src/math/source.rs`, 38 tests) and every finding of rounds 13–15 is fixed test-first. Astra round 16: "Milestone 1 done."

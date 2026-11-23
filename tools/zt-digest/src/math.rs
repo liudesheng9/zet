@@ -26,6 +26,7 @@
 //! folder of the repository this binary was built from.
 
 mod index;
+mod source;
 mod text;
 
 use crate::args::Args;

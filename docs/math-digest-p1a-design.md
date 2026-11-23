@@ -39,13 +39,14 @@ Three things are kept apart on purpose:
 "chapters": [{"id": "ch1", "label": "Chapter 1", "ranges": [{"section": "s01.md", "line": 1, "end": 412}, {"section": "s02.md", "line": 1, "end": 96}]}],
 "leaves": [{
   "id": "s03.md:41-47", "section": "s03.md", "line": 41, "end": 47, "col": null, "end_col": null,
-  "kind": "paragraph|display|heading|figure|list|editorial|boilerplate",
+  "kind": "paragraph|list|table|display|heading|figure",
   "object_id": "ch1:theorem:1.19",
   "obligation": "write|none", "reason": "",
   "disposition": null
 }]
 ```
 
+- A leaf's `kind` is physical; editorial matter and boilerplate are object kinds (§2.2). A plain heading owes no claim; a heading the OCR made of a labelled item (`# 3.4 Theorem.`) owes one.
 - A leaf keeps its physical `kind`, its source locator, its coverage `obligation` and its `disposition` as separate fields. Short text, standalone equations, figures, editorial matter and boilerplate are all leaves. None is dropped. `coverage::units` (`coverage.rs:75`) stays the legacy paragraph projection that today's coverage reads, and it is derived from the leaves.
 - A leaf has a unique locator within its frozen section. When two objects share a line (a Rudin Chapter 2 hint that begins on its question's line), the locator adds character offsets (`col`, `end_col`: zero-based Unicode scalar offsets, exclusive end), and the leaf ID includes them (`s07.md:12:0-12:58`).
 - An `obligation: none` leaf records its `reason`.
@@ -136,7 +137,9 @@ P1a is built in two milestones. Every step is test-first at the seam it names.
 3. Relations and reconciliation: a nested example (its own destination, referenced by the proof), a forward reference resolved, an unknown reference kept open with its reason, and a missing label masked by a duplicate (blocks). Residual prose: explicitly declared ordinary prose passes; silently omitted ordinary prose blocks; omitting the unnumbered corollary after 1.21 blocks even when all numbered identities reconcile.
 4. Immutability: allocation leaves the index hash unchanged.
 
-**Milestone 2: consumers and settlement.** This milestone must pass before a paid pilot.
+**Milestone 1 status (2026-11-23):** built as `tools/zt-digest/src/math/source.rs` (offline; 38 tests), checked on the Rudin slice's OCR, reviewed by Astra rounds 13–16 ("Milestone 1 done").
+
+**Milestone 2: consumers and settlement.** This milestone must pass before a paid pilot. Carried from the Milestone 1 review: the label-token boundary also checks the original neighbouring characters (a `1.1` followed by whitespace and another number is valid).
 
 5. Owner projections through the draft SELF-CHECK (C6), the `route` and zero-write dispositions at draft, preview, finish and replay (only the bound writer group edits a route), the card review packet and its routing of unit defects, and compiler packaging with the budget check after the architect.
 6. Exercise rendering and read-back (M21), against the expected set in both directions: Rudin's `no_source_answer` sets with hints, and an omitted exercise that fails; Thompson's Exercise I with its printed key as an offline fixture (`matched`, 10/10 pairs).
