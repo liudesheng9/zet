@@ -1,13 +1,13 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-math-digest",
-  "version": "5.13.1",
+  "version": "5.13.2",
   "scope": "project",
   "script": ".claude/workflows/zt-math-digest.js",
   "scriptRel": "workflows/zt-math-digest.js",
-  "sha256": "a34ee8eff45912730524cbd72d1731a484c107d08860129d164b897094947050",
-  "fingerprint": "b5b4ee7849ca568f",
-  "blueprintSha256": "8d975cf5ae6e8707f48076f9fb0ec26e7a2feee98c645eed2f389a1f5d9a1a9f",
+  "sha256": "846754e5b0fb940825685d639d130b5436210f38a6c00af5c1c65109d3b93d31",
+  "fingerprint": "4580710a664b9183",
+  "blueprintSha256": "3e499aa0e2858f10950f85671efd04ab0d5cae8b836f9a9c088cb4b50e16b047",
   "modules": {
     "gate": "1",
     "zt-workflow-lib": "19",
@@ -32,10 +32,10 @@
     "zt-link-check": "5",
     "zt-link-pass": "12",
     "zt-link-prepare": "9",
-    "zt-math-lib": "5",
-    "zt-math-boundary": "3",
+    "zt-math-lib": "6",
+    "zt-math-boundary": "4",
     "zt-math-check": "2",
-    "zt-math-proof": "3",
+    "zt-math-proof": "4",
     "zt-math-skeleton": "4",
     "zt-math-theory": "4",
     "zt-model-layer": "11",
@@ -138,11 +138,11 @@
     },
     "zt-math-lib": {
       "file": "scripts/book-digest/workflow/modules/zt-math-lib.js",
-      "sha256": "0a04302a3e848b6fdc1cf81cbb275ebeedcc40546f931cc8cf55199c259fbabf"
+      "sha256": "0fa9248cbb4183a84a87f53404d1cc2b38a0fc6a601075f62dac1541703ae7e6"
     },
     "zt-math-boundary": {
       "file": "scripts/book-digest/workflow/modules/zt-math-boundary.js",
-      "sha256": "2c39dc1eeb811d5d363e1b96e4a8cd0fcd1936e65c6a8414fe25de4de7b8312e"
+      "sha256": "3396b2f9c1db686e9b138a002320d55dea426f1482af4625faefc9669ec20dca"
     },
     "zt-math-check": {
       "file": "scripts/book-digest/workflow/modules/zt-math-check.js",
@@ -150,7 +150,7 @@
     },
     "zt-math-proof": {
       "file": "scripts/book-digest/workflow/modules/zt-math-proof.js",
-      "sha256": "76522946bdbf81632dfefbfd7693c7ee76bad92732533dba66ff8548c9b84442"
+      "sha256": "afda00bf61fc2792b00369eae67c625329c77ec998265a8a5b0393a5468bbd30"
     },
     "zt-math-skeleton": {
       "file": "scripts/book-digest/workflow/modules/zt-math-skeleton.js",
@@ -180,7 +180,7 @@
   "sources": [
     {
       "file": "scripts/book-digest/workflow/zt-math-digest.blueprint.json",
-      "sha256": "e13d6828dcbb42f22a4efe285e5f1242c7160c07b615146ba8217a55b6aa9630"
+      "sha256": "118023b7d8213acdcef3bb4e3f574cc65b26072d5e4092610dfb80ffcfed83d1"
     },
     {
       "file": "scripts/book-digest/workflow/zt-digest-base.blueprint.json",
@@ -188,9 +188,9 @@
     }
   ],
   "base": "./zt-digest-base.blueprint.json",
-  "installedAt": "2026-11-22T22:08:51.955Z",
+  "installedAt": "2026-11-23T04:05:56.242Z",
   "dryRun": {
-    "agents": 87,
+    "agents": 89,
     "order": [
       "args",
       "source",

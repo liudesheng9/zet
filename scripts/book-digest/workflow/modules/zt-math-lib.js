@@ -1,4 +1,4 @@
-// ==== module zt-math-lib v5 ====
+// ==== module zt-math-lib v6 ====
 // The shared code of the math stages (docs/math-cards-design.md): one script, math-steps.ps1, runs every
 // deterministic chain of the math compiler in one process (#178); each chain is one DeepSeek drive job, run by a
 // Haiku manager through the shared zt-workflow-lib helper `ztDrive`, and each content round (the notation table,
@@ -10,6 +10,7 @@
 // v4 (S8): the math script helper was the shared one (it had copied it without the Lock check), and the unread option remove: 'delete' left.
 // v5 (#178, docs/workflow-module-structure-proposal.md): `step` runs one math-steps.ps1 chain as a DeepSeek drive
 // job, `must` is the stage's stop on a failed chain, and `jobs` runs a step's content jobs in Haiku managers.
+// v6 (thompson1914calculus pilot): `step` takes extra arguments (`-Layer boundary` for layer-state and settle).
 // The relay-era math helper and the compiler-step drive leave.
 function zmMake(ctx, p) {
   const Z = zdMake(ctx, p)
@@ -26,8 +27,8 @@ function zmMake(ctx, p) {
   // One deterministic chain: one math-steps.ps1 call run by one DeepSeek drive job, answered by its one JSON
   // line. A step that printed no line at all is a transport fault (ztDrive throws); a line with `ok:false` is
   // the step's failure, which the caller reads and stops the stage with.
-  const step = async (stage, name, label) => {
-    const command = `pwsh -NoProfile -File "${MATH_STEPS}" -Step ${name} -Out "${OUT}" -UnitsPerJob ${UNITS_PER_JOB} -Supply ${SUPPLY} -MainResults ${MAIN_RESULTS}`
+  const step = async (stage, name, label, extra = '') => {
+    const command = `pwsh -NoProfile -File "${MATH_STEPS}" -Step ${name} -Out "${OUT}" -UnitsPerJob ${UNITS_PER_JOB} -Supply ${SUPPLY} -MainResults ${MAIN_RESULTS}${extra ? ` ${extra}` : ''}`
     const json = await ztDrive(ctx, { label: `${stage}: ${label}`, step: name, command, out: OUT, cwd: OUT, phase: ctx.phase, ledger: Z.LEDGER, deepseek })
     // Tree Lock (#140): a step whose answer carries the owner's typed refusal stops the stage with it.
     const lock = (json.code === Z.LOCK || json.error === Z.LOCK) ? json : ztLockRefusal(JSON.stringify(json))
@@ -54,7 +55,7 @@ function zmMake(ctx, p) {
 }
 
 defineModule({
-  id: 'zt-math-lib', version: '5', library: true, requires: ['zt-digest-lib'],
+  id: 'zt-math-lib', version: '6', library: true, requires: ['zt-digest-lib'],
   summary: 'Library: one math-steps.ps1 step per deterministic chain of the zt-math-* stages, run as a DeepSeek drive job, and their DeepSeek content jobs in Haiku managers.',
 })
 // ==== end module zt-math-lib ====

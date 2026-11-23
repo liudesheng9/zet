@@ -1717,6 +1717,9 @@ function runtime(kind, opts = {}) {
       return file
     }
     const job = (id) => ({ id, files: [`${out}\\math\\job.md`], prompt: 'p' })
+    // zt-math-boundary/proof v4: a stage reads its ledger state first; a fresh run holds no obligation yet.
+    if (step === 'layer-state') return { ok: true, layer: mathArg(cmd, 'Layer'), total: 0, done: 0, open: 0, evidence: false }
+    if (step === 'settle') return { ok: true, layer: mathArg(cmd, 'Layer'), settled: 0 }
     if (step === 'index') {
       const plan = call(`zt-digest math -Step index -Staging "${out}"`)
       const jobs = (plan.jobs || []).map((j) => job(j.id))
@@ -1789,6 +1792,8 @@ function runtime(kind, opts = {}) {
         const ix = raw.index || {}, sk = raw.skeleton || {}, docs = raw.docs || {}
         return { ok: true, index_units: n(ix.units), index_forms: Object.keys(ix.forms || {}).length, index_examples: n(ix.examples), index_exercises: n(ix.exercises), docs_files: list(docs.files), skeleton_units: n(sk.created !== undefined ? sk.created : (typeof sk.units === 'number' ? sk.units : list(sk.units))), skeleton_theories: n(sk.theories) }
       }
+      case 'layer-state': return { ok: true, layer: raw.layer }
+      case 'settle': return { ok: true, layer: raw.layer, settled: n(raw.settled) }
       case 'index': return { ok: true, sections: n(raw.sections), chars: n(raw.chars), jobs: n(raw.jobs), file: raw.file }
       case 'notation': return { ok: true, candidates: n(raw.candidates), jobs: n(raw.jobs), file: raw.file }
       case 'notation-apply': return { ok: raw.ok === true, symbols: n(raw.symbols), card: raw.card, error: raw.error }
@@ -3719,7 +3724,7 @@ for (const which of ['econ', 'math']) {
   // The stages' steps run in their stage order (zt-digest 0.55.0: the statement finder's `index` first): the statement chain and the notation table, then boundary, then
   // proof, then Theory (after the Link check) and the read-only check last.
   const order = mathCalls.map((c) => c.step).join(',')
-  check(order === 'index,skeleton,notation,notation-apply,boundary,boundary-apply,boundary-settle,proof,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
+  check(order === 'index,skeleton,notation,notation-apply,layer-state,boundary,boundary-apply,boundary-settle,layer-state,proof,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
   const at = (label) => mathCalls.findIndex((c) => c.step === label)
   check(at('skeleton') < at('notation') && at('notation') < at('notation-apply') && at('boundary-settle') < at('proof') && at('proof-apply') < at('theory') && at('theory-apply') < at('check'), `#178: one stage finishes before the next starts (${order})`)
   // Each content round runs the job list its plan step wrote, at most eight jobs per manager.

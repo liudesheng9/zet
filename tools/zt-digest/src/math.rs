@@ -72,7 +72,9 @@ static STARTS_C: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^C").unwrap
 static PROOF_BODY_FACET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(证明|推导|前提)").unwrap());
 static SUPPLIED_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)补：书中未给").unwrap());
 static COUNTER_FACET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^反例").unwrap());
-static PROOF_STEP_FACET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(前提|证明|推导|结论|premises|proof|derivation|conclusion)").unwrap());
+// The steps the proof review owns: the proof plan, each 证明 step and the conclusion. Premises are its context and
+// derivations are the compiler's independent reviewer's (dsh-math-proof-review.zh.md; thompson pilot, 2026-11-22).
+static PROOF_STEP_FACET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(证明|结论|proof|conclusion)").unwrap());
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]]+)\]\]").unwrap());
 static TODO_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)（待写）$").unwrap());
 static NOTATION_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^符号表").unwrap());
@@ -141,13 +143,10 @@ pub(crate) fn proof_decision(unit: &Value, model: &Value) -> ProofDecision {
     if !eq(&field(model, "level"), "formal") {
         return ProofDecision::Skip;
     }
-    let steps: Vec<Value> = pipe(&model["build"]["order"])
-        .into_iter()
-        .filter(|o| eq(&field(o, "line"), "main") && PROOF_STEP_FACET.is_match(&field(o, "facet")))
-        .cloned()
-        .collect();
-    // Premises and a conclusion frame a proof; only a 证明 or 推导 step is one.
-    let proves = steps.iter().any(|st| {
+    let main: Vec<Value> = pipe(&model["build"]["order"]).into_iter().filter(|o| eq(&field(o, "line"), "main")).cloned().collect();
+    let steps: Vec<Value> = main.iter().filter(|o| PROOF_STEP_FACET.is_match(&field(o, "facet"))).cloned().collect();
+    // Premises, a plan and a conclusion frame a proof; only a 证明 or 推导 step is one.
+    let proves = main.iter().any(|st| {
         let facet = field(st, "facet");
         let lower = facet.to_lowercase();
         (facet.starts_with("证明") && !PLAN_FACET.is_match(&facet))
@@ -155,8 +154,11 @@ pub(crate) fn proof_decision(unit: &Value, model: &Value) -> ProofDecision {
             || (lower.starts_with("proof") && !lower.starts_with("proof plan"))
             || lower.starts_with("derivation")
     });
-    if proves {
+    if proves && !steps.is_empty() {
         ProofDecision::Review(steps)
+    } else if proves {
+        // A bare derivation proves the result; the compiler's reviewer has checked it.
+        ProofDecision::Skip
     } else if proved_at > 0 {
         ProofDecision::Unmet(format!("the source proves it from line {proved_at}; the unit has no proof step"))
     } else {
@@ -1645,10 +1647,10 @@ impl Compiler {
                 if !mains.is_empty() {
                     body = set_section(&body, "主要结果", &format!("**主要结果**：\n{}", mains.join("\n")));
                 }
+                // An answered theory always replaces the skeleton's 对象 line: a theory whose units are all main
+                // results has none, which is an answer, not a placeholder (thompson pilot, 5|b).
                 let objects = lines(&a["objects"], usize::MAX);
-                if !objects.is_empty() {
-                    body = set_section(&body, "对象", &format!("**对象**：\n{}", objects.join("\n")));
-                }
+                body = set_section(&body, "对象", &objects_section(&objects));
             }
             // Recompute after the main results changed: the weights depend on them.
             let title = if truthy(&a) && truthy(&a["title"]) {
@@ -1741,6 +1743,12 @@ pub(crate) fn recover_allocation(key: &str, units: &[Value], heads: &[Value]) ->
         }
     }
     Ok(out)
+}
+
+/// A Theory Card's `**对象**` section from its answered object lines: the list, or `无。` when the theory
+/// has no object beside its main results.
+pub(crate) fn objects_section(objects: &[String]) -> String {
+    if objects.is_empty() { "**对象**：无。".to_string() } else { format!("**对象**：\n{}", objects.join("\n")) }
 }
 
 /// The Theory Card a crashed allocation wrote for `chapter` but never recorded: a `theory` head whose
@@ -2065,7 +2073,9 @@ mod tests {
         match proof_decision(&unit, &model("formal", order)) {
             ProofDecision::Review(steps) => {
                 let at: Vec<String> = steps.iter().map(|s| field(s, "address")).collect();
-                assert_eq!(at, vec!["k/5|a|1", "k/5|a|2"]);
+                // The proof review reads the premises as context and owns the plan, the 证明 steps and the
+                // conclusion; the compiler's independent reviewer owns the derivations (thompson pilot).
+                assert_eq!(at, vec!["k/5|a|2"]);
             }
             other => panic!("expected a review, got {other:?}"),
         }
@@ -2082,15 +2092,17 @@ mod tests {
         // Premises and a conclusion without a single proof step are no proof (Astra round 5).
         let framed = json!([{"address":"k/5|a|1","facet":"前提","line":"main"},{"address":"k/5|a|2","facet":"结论","line":"main"}]);
         assert!(matches!(proof_decision(&unit, &model("formal", framed)), ProofDecision::Unmet(_)));
-        // A derivation is a proof step (Astra round 6): it is reviewed, and listed with the other steps.
-        let derived = json!([{"address":"k/5|a|1","facet":"前提","line":"main"},{"address":"k/5|a|2","facet":"推导：二项展开","line":"main"}]);
+        // A derivation proves the result (Astra round 6), so the unit is not unmet; the proof review owns its plan
+        // and conclusion, and the compiler's reviewer the derivation itself (thompson pilot, 2026-11-22).
+        let derived = json!([{"address":"k/5|a|1","facet":"证明思路","line":"main"},{"address":"k/5|a|2","facet":"推导：二项展开","line":"main"},{"address":"k/5|a|3","facet":"结论","line":"main"}]);
         match proof_decision(&unit, &model("formal", derived)) {
-            ProofDecision::Review(steps) => assert_eq!(steps.len(), 2),
-            other => panic!("a derivation-only proof is reviewed, got {other:?}"),
+            ProofDecision::Review(steps) => assert_eq!(steps.iter().map(|s| field(s, "address")).collect::<Vec<_>>(), vec!["k/5|a|1", "k/5|a|3"]),
+            other => panic!("a derivation proof is reviewed through its plan and conclusion, got {other:?}"),
         }
-        assert!(is_proof_step("推导：二项展开"));
+        assert!(!is_proof_step("推导：二项展开") && !is_proof_step("前提"), "derivations and premises are not the proof review's");
+        assert!(is_proof_step("证明思路") && is_proof_step("证明：n 为正整数") && is_proof_step("结论"));
         let english = json!([{"address":"k/5|a|1","facet":"Derivation: expand","line":"main"}]);
-        assert!(matches!(proof_decision(&unit, &model("formal", english)), ProofDecision::Review(_)), "an English derivation is a proof step too");
+        assert!(matches!(proof_decision(&unit, &model("formal", english)), ProofDecision::Skip), "a bare derivation proves the result and leaves the proof review nothing");
         let planned = json!([{"address":"k/5|a|1","facet":"证明思路","line":"main"},{"address":"k/5|a|2","facet":"结论","line":"main"}]);
         assert!(matches!(proof_decision(&unit, &model("formal", planned)), ProofDecision::Unmet(_)), "a proof plan is no proof step");
     }
@@ -2150,6 +2162,15 @@ mod tests {
         ];
         assert_eq!(recover_theory("k", "第四章", &theories).unwrap().as_deref(), Some("k/5|b"));
         assert_eq!(recover_theory("k", "第五章", &theories).unwrap(), None);
+    }
+
+    #[test]
+    fn an_answered_theory_without_objects_says_so_instead_of_keeping_the_placeholder() {
+        // thompson pilot, 2026-11-22: the one-member theory 5|b had no object, and the skeleton's
+        // `**对象**：待写。` stayed, so the release gate (rightly) found a placeholder.
+        assert_eq!(objects_section(&[]), "**对象**：无。");
+        assert_eq!(objects_section(&["- [[k/4|b]]：撇号记号".to_string()]), "**对象**：\n- [[k/4|b]]：撇号记号");
+        assert!(!crate::report::is_placeholder("理论", &objects_section(&[])));
     }
 
     #[test]

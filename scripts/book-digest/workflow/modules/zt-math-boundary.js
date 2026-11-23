@@ -1,10 +1,10 @@
-// ==== module zt-math-boundary v3 ====
+// ==== module zt-math-boundary v4 ====
 // Boundary (#178): one math-steps.ps1 drive job plans the DeepSeek jobs that write hypothesis roles with
 // counterexamples and contrast pairs as JSON; the content managers run them; the apply step makes the parts and
 // lists one review job per supplied batch; the reviewers run; the settle step deletes what a review judged wrong.
 // 3 (#180): each step answers its own counts (`units`, `created`, `kept`, `deleted`), never a nested tool line.
 defineModule({
-  id: 'zt-math-boundary', version: '3', requires: ['zt-math-lib'],
+  id: 'zt-math-boundary', version: '4', requires: ['zt-math-lib'],
   summary: 'ZT math digest: hypothesis roles, counterexamples, contrast pairs (write → apply and review → settle).',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -15,6 +15,19 @@ defineModule({
   run: async (ctx, p) => {
     const M = zmMake(ctx, p)
     const n = (v) => Number(v || 0)
+    // v4 (thompson1914calculus pilot, 2026-11-22): a resume starts from the ledger. Every obligation done: the stage
+    // is reused. Open obligations whose evidence the compiler already wrote: the ledger settle alone. Planning again
+    // would rebind a registered unit to new work, which the ledger refuses.
+    const state = M.must('boundary state', await M.step('math-boundary', 'layer-state', 'state', '-Layer boundary'))
+    if (n(state.total) > 0 && n(state.open) === 0) {
+      log(`Boundary: all ${n(state.total)} obligations done; the stage is reused.`)
+      return { status: 'done', reused: true, total: n(state.total), deepseek: M.deepseek }
+    }
+    if (n(state.total) > 0 && state.evidence === true) {
+      const s = M.must('boundary settle', await M.step('math-boundary', 'settle', 'settle', '-Layer boundary'))
+      log(`Boundary: resumed at the settle; ${n(s.settled)} obligations settled, ${n(s.settle_refused)} refused.`)
+      return { status: 'done', resumed: 'settle', settled: n(s.settled), settle_refused: n(s.settle_refused), deepseek: M.deepseek }
+    }
     // One job per -UnitsPerJob units: the hypothesis roles and the definitions' contrast pairs.
     const plan = M.must('boundary', await M.step('math-boundary', 'boundary', 'write'))
     await M.jobs('math-boundary: write', plan, 'boundary')

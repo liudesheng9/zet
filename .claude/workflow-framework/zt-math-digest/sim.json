@@ -8,6 +8,18 @@
   },
   "answers": [
     {
+      "label": "^math-proof: state$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"proof\"}"
+      }
+    },
+    {
+      "label": "^math-boundary: state$",
+      "answer": {
+        "answer": "{\"ok\":true,\"layer\":\"boundary\"}"
+      }
+    },
+    {
       "label": "^figure explanations: start 1$",
       "answer": {
         "answer": "{\"ok\":true,\"figures\":0,\"settled\":0,\"jobs\":0,\"chunks\":0}",

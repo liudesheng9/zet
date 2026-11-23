@@ -26,8 +26,10 @@
   exits 0: its caller reads the line and stops the stage with its reason. Files stay under <staging>\math\drive.
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('index', 'skeleton', 'notation', 'notation-apply', 'boundary', 'boundary-apply', 'boundary-settle', 'proof', 'proof-apply', 'theory', 'theory-apply', 'check')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('index', 'skeleton', 'notation', 'notation-apply', 'boundary', 'boundary-apply', 'boundary-settle', 'proof', 'proof-apply', 'theory', 'theory-apply', 'check', 'layer-state', 'settle')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
+    # layer-state and settle: the mathematics layer whose ledger obligations they read or complete.
+    [ValidateSet('boundary', 'proof')][string]$Layer = '',
     [ValidateRange(1, 64)][int]$UnitsPerJob = 4,
     [ValidateSet('none', 'examples', 'examples+answers')][string]$Supply = 'examples',
     [ValidateRange(1, 64)][int]$MainResults = 7,
@@ -74,6 +76,12 @@ function Math([string]$StepName, [string[]]$Extra = @()) { Run (@('math', '-Step
 # archive, an unmet proof) is failed (retryable) for the next resume and named in `refused`. A claim the CLI refuses,
 # or a missing evidence file, is an `error`: it never reads as a layer with nothing to settle. A unit that is not
 # ready yet (its dependencies are open) is not claimed and stays for the step that meets them.
+# A refused unit is failed with the ledger's fault document (the ledger classifies it from the cause): the CLI reads -Fault as a file path or JSON
+# text, never plain words (thompson1914calculus pilot, 2026-11-22: a plain-text fault stopped the boundary stage).
+function Fail-Settle([string]$Id, $Token, [string]$Why) {
+    $fault = [ordered]@{ schema_version = 1; unit = $Id; cause = "math_settle_refused: $Why" } | ConvertTo-Json -Compress
+    Run @('ledger', 'fail', '-Out', $Out, '-Unit', $Id, '-Token', "$Token", '-Fault', $fault)
+}
 function Settle([string]$Layer, [string]$Evidence) {
     $result = [ordered]@{ layer = $Layer; settled = 0; refused = @(); error = $null }
     if (-not (Test-Path -LiteralPath $Evidence)) { $result.error = "no evidence file $Evidence"; return $result }
@@ -92,7 +100,7 @@ function Settle([string]$Layer, [string]$Evidence) {
             # The ledger claimed every unit it returned. A unit refused earlier in this drain became claimable
             # again: its claim is failed again with the same reason, never left held (Astra round 6).
             if ($seen.ContainsKey($id)) {
-                $failed = Run @('ledger', 'fail', '-Out', $Out, '-Unit', $id, '-Token', "$($u.token)", '-Class', 'retryable', '-Fault', "math_settle_refused: $($seen[$id])")
+                $failed = Fail-Settle $id $u.token $seen[$id]
                 if ($failed.code -ne 0 -and -not $result.error) { $result.error = "the $Layer unit $id could not be failed: $($failed.tail)" }
                 continue
             }
@@ -106,7 +114,7 @@ function Settle([string]$Layer, [string]$Evidence) {
                 if ($why.Length -gt 300) { $why = $why.Substring(0, 300) }
                 $seen[$id] = $why
                 $result.refused += "${id}: $why"
-                $failed = Run @('ledger', 'fail', '-Out', $Out, '-Unit', $id, '-Token', "$($u.token)", '-Class', 'retryable', '-Fault', "math_settle_refused: $why")
+                $failed = Fail-Settle $id $u.token $why
                 if ($failed.code -ne 0 -and -not $result.error) { $result.error = "the $Layer unit $id could not be failed: $($failed.tail)" }
             }
         }
@@ -120,10 +128,10 @@ function Settle([string]$Layer, [string]$Evidence) {
 }
 # One step's answer with its settlement: an error stops the step; the counts go on the line, the refusals in the detail.
 function Reply-Settled($Line, $Settle, $Detail) {
-    if ($Settle.error) { Send-StepFail -Step "$($Settle.layer) settle" -Reason $Settle.error -Name $LineName -Out $Work -Detail $Detail }
+    $full = [ordered]@{ step = $Detail; settle = $Settle }
+    if ($Settle.error) { Send-StepFail -Step "$($Settle.layer) settle" -Reason $Settle.error -Name $LineName -Out $Work -Detail $full }
     $Line.settled = [int]$Settle.settled
     $Line.settle_refused = @($Settle.refused).Count
-    $full = [ordered]@{ step = $Detail; settle = $Settle }
     Reply $Line $full
 }
 # The jobs one plan command printed, saved for the stage's content managers.
@@ -134,7 +142,34 @@ function Save-Jobs([string]$Name, $Result) {
     return [pscustomobject]@{ count = $jobs.Count; file = $file }
 }
 
+# The evidence file each per-unit mathematics layer completes with (the compiler writes it at its last step).
+$Evidence = @{ boundary = (Join-Path $Work 'boundary\settled.json'); proof = (Join-Path $Work 'proof\applied.json') }
+
 switch ($Step) {
+    'layer-state' {
+        # A resume starts a math stage from the ledger (thompson1914calculus pilot, 2026-11-22: a resume planned the
+        # boundary stage again and the ledger refused to rebind its open unit): the layer's obligations and evidence.
+        if (-not $Layer) { Send-StepFail -Step 'layer-state' -Reason 'layer-state needs -Layer' -Name $LineName -Out $Work }
+        $r = Run @('ledger', 'status', '-Out', $Out, '-Layer', $Layer)
+        if ($r.code -ne 0 -or -not $r.json) { Fail 'layer-state' $r }
+        $c = $r.json.counts.per_layer.$Layer
+        $n = { param($v) [int]$(if ($null -eq $v) { 0 } else { $v }) }
+        # The ledger's per-layer `open` leaves ready units out (pilot: 2|e ready, open 0, and the stage read itself as
+        # reused): open is every obligation neither done nor failed.
+        $total = & $n $c.total
+        $done = (& $n $c.done) + (& $n $c.noop) + (& $n $c.superseded)
+        $failedCount = (& $n $c.failed) + (& $n $c.refused)
+        Reply ([ordered]@{
+            ok = $true; layer = $Layer
+            total = $total; done = $done; open = [Math]::Max(0, $total - $done - $failedCount); failed = $failedCount
+            evidence = (Test-Path -LiteralPath $Evidence[$Layer])
+        }) $r.json.counts
+    }
+    'settle' {
+        # The ledger settle alone, with the layer's own evidence: a resume whose compiler steps already finished.
+        if (-not $Layer) { Send-StepFail -Step 'settle' -Reason 'settle needs -Layer' -Name $LineName -Out $Work }
+        Reply-Settled ([ordered]@{ ok = $true; layer = $Layer }) (Settle $Layer $Evidence[$Layer]) @{ layer = $Layer }
+    }
     'index' {
         # The statement finder (owner, 2026-11-21): DeepSeek reads every prepared section with its line numbers and
         # lists the book's definitions, results, examples and exercises, numbered or not. One job per -IndexChars.
@@ -165,7 +200,7 @@ switch ($Step) {
         # Bug B: the settled skeleton registers one model build per allocated unit, so the model stage (and a mode
         # math repair) builds every unit; idempotent on a replay.
         if (-not $settle.error) {
-            $reg = Run @('ledger', 'math', '-Out', $Out)
+            $reg = Run @('ledger', 'math', '-Out', $Out, '-Layer', 'models')
             if ($reg.code -ne 0) { $settle.error = "the unit builds were not registered: $($reg.tail)"; $settle.layer = 'models' }
         }
         Reply-Settled ([ordered]@{
@@ -196,7 +231,7 @@ switch ($Step) {
         if (-not $r.json) { Fail 'boundary' $r }
         $saved = Save-Jobs 'boundary-jobs.json' $r
         # The plan's units become ledger obligations (R237) before any job runs.
-        $reg = Run @('ledger', 'math', '-Out', $Out)
+        $reg = Run @('ledger', 'math', '-Out', $Out, '-Layer', 'boundary')
         if ($reg.code -ne 0) { Fail 'boundary register' $reg }
         Reply @{ ok = $true; units = [int]$r.json.units; jobs = $saved.count; file = $saved.file } $r.json
     }
@@ -216,7 +251,7 @@ switch ($Step) {
         if (-not $r.json) { Fail 'proof' $r }
         $saved = Save-Jobs 'proof-jobs.json' $r
         # Reviewed and unmet proofs become ledger obligations (R240, Bug C) before any job runs.
-        $reg = Run @('ledger', 'math', '-Out', $Out)
+        $reg = Run @('ledger', 'math', '-Out', $Out, '-Layer', 'proof')
         if ($reg.code -ne 0) { Fail 'proof register' $reg }
         Reply @{ ok = $true; units = [int]$r.json.units; unmet = [int]$r.json.unmet; jobs = $saved.count; file = $saved.file } $r.json
     }
@@ -242,6 +277,14 @@ switch ($Step) {
     'check' {
         $r = Math 'check' @('-Out', $Out)
         if (-not $r.json) { Fail 'check' $r }
+        # The check measures the archive now: a math-check unit a former check settled is reopened, so its recorded
+        # result (the blocking count the run report reads) is this check's (thompson pilot, mode math).
+        $state = Run @('ledger', 'status', '-Out', $Out, '-Layer', 'math-check')
+        $settledBefore = $state.json.counts.per_layer.'math-check'.done
+        if ($settledBefore -and [int]$settledBefore -gt 0) {
+            $reopen = Run @('ledger', 'reopen', '-Out', $Out, '-Units', 'math-check/book@1', '-Recheck', '-Reason', 'the math check ran again; its result is the current audit')
+            if ($reopen.code -ne 0) { Fail 'math-check reopen' $reopen }
+        }
         Reply-Settled ([ordered]@{ ok = ($r.json.ok -ne $false); units = [int]$r.json.units; theories = [int]$r.json.theories; faults = [int]$r.json.faults; rules = (Keys-Of $r.json.by_rule); report = "$($r.json.report)" }) (Settle 'math-check' (Join-Path $Out 'math-audit.json')) $r.json
     }
 }

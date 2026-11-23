@@ -1303,6 +1303,69 @@ fn register_notes(p: &Prepared, zt: &mut Zt, path: &str) -> Result<Value> {
     }))
 }
 
+/// Whether an applied theory record accounts for its Theory Card now: its members are the report's order
+/// and its cited tools the report's tools, each once.
+fn theory_record_matches(members: &[String], tools: &[String], order: &[String], report_tools: &[String]) -> bool {
+    use std::collections::BTreeSet;
+    let set = |v: &[String]| v.iter().cloned().collect::<BTreeSet<_>>();
+    set(members).len() == members.len()
+        && set(tools).len() == tools.len()
+        && set(members) == set(order)
+        && set(tools) == set(report_tools)
+}
+
+/// The steps a frozen proof plan asks the review for, read through the review's current scope
+/// (`math::is_proof_step`): a plan registered with premise or derivation steps narrows to the plan, the
+/// 证明 steps and the conclusion. Filtering only narrows an obligation, never widens it.
+fn planned_review_steps(plan: &Value) -> Result<std::collections::BTreeSet<String>> {
+    plan["steps"]
+        .as_array()
+        .context("the proof plan names no step")?
+        .iter()
+        .filter(|step| step["facet"].as_str().is_some_and(crate::math::is_proof_step))
+        .map(|step| field(step, "address").map(str::to_string))
+        .collect()
+}
+
+/// What one `ledger math` call registers: the unit builds, and which per-unit plans. Each math step owns one
+/// layer (`-Layer models` after the skeleton, `boundary`, `proof`), so a stale plan of another layer never blocks
+/// it (thompson1914calculus pilot, 2026-11-22).
+fn math_register_scope(layer: Option<&str>) -> Result<(bool, Vec<&'static str>)> {
+    match layer {
+        None => bail!("ledger math needs -Layer models, boundary or proof"),
+        Some("models") => Ok((true, Vec::new())),
+        Some(l) => match MATH_OBLIGATIONS.iter().find(|o| **o == l) {
+            Some(o) => Ok((false, vec![*o])),
+            None => bail!("ledger math registers models, boundary or proof, not `{l}`"),
+        },
+    }
+}
+
+/// What a registration does with a mathematical unit the ledger already holds.
+#[derive(Debug, PartialEq, Eq)]
+enum Registration {
+    /// The plan entry is the registered one.
+    Same,
+    /// The unit is settled: it keeps its work, whatever a later plan file says.
+    Keep,
+    /// An unmet proof takes its review now that the unit is built.
+    Rebind,
+    /// Open work may not change under the ledger (R167).
+    Refuse,
+}
+
+fn math_registration(stored_hash: &str, hash: &str, stored_inputs: &Value, state: &str) -> Registration {
+    if stored_hash == hash {
+        Registration::Same
+    } else if state == "done" {
+        Registration::Keep
+    } else if may_rebind_math_unit(stored_inputs, state) {
+        Registration::Rebind
+    } else {
+        Registration::Refuse
+    }
+}
+
 /// Whether a registered mathematical unit may take new work: only an unsettled unmet proof
 /// obligation (no step planned because the unit was not built), which becomes the unit's review
 /// once the unit exists. Every other registered unit keeps its work (R167).
@@ -1312,12 +1375,38 @@ fn may_rebind_math_unit(stored_inputs: &Value, state: &str) -> bool {
         && stored_inputs["plan"]["steps"].as_array().is_some_and(Vec::is_empty)
 }
 
+/// A Card's authored fingerprint with every Link target mapped back through `back` (current address ->
+/// the address it had when the fingerprint was recorded). A settle that deletes a part renumbers its
+/// siblings, and the archive rewrites the Links that named them; such a rewrite is no edit of the part.
+fn fingerprint_before_renames(card: &Value, back: &BTreeMap<String, String>) -> String {
+    let body = card["body"].as_str().unwrap_or_default();
+    let link = regex::Regex::new(r"\[\[([^\]]+)\]\]").expect("link pattern");
+    let restored = link.replace_all(body, |c: &regex::Captures| {
+        let inner = &c[1];
+        let (label, target) = match inner.rsplit_once('@') {
+            Some((label, target)) => (Some(label), target),
+            None => (None, inner),
+        };
+        match back.get(target) {
+            Some(old) => match label {
+                Some(label) => format!("[[{label}@{old}]]"),
+                None => format!("[[{old}]]"),
+            },
+            None => c[0].to_string(),
+        }
+    });
+    let mut original = card.clone();
+    original["body"] = json!(restored);
+    crate::calls::authored_fingerprint(&original)
+}
+
 /// The mathematics variant's per-unit obligations (R237). The compiler's own boundary
 /// and proof plans enumerate the mathematical units, and each planned unit becomes one
 /// unit of the same ledger: no second ledger, scheduler or compiler framework. A unit
 /// binds the exact plan entry it was enumerated from, so the same plan reuses its units
 /// and rebinding one key to different work is refused (R167).
-fn math_register(p: &Prepared, zt: &mut Zt) -> Result<Value> {
+fn math_register(p: &Prepared, zt: &mut Zt, layer: Option<&str>) -> Result<Value> {
+    let (with_builds, layers) = math_register_scope(layer)?;
     if p.contract["variant"] != "math" {
         bail!("ledger math requires a prepared mathematics run");
     }
@@ -1331,7 +1420,7 @@ fn math_register(p: &Prepared, zt: &mut Zt) -> Result<Value> {
     };
     let notation = enabled("notation");
     let mut plans = Vec::new();
-    for layer in MATH_OBLIGATIONS {
+    for layer in &layers {
         if !enabled(layer) {
             continue;
         }
@@ -1349,7 +1438,7 @@ fn math_register(p: &Prepared, zt: &mut Zt) -> Result<Value> {
             .optional()?
     };
     let builds = match skeleton {
-        Some((state, hash)) if state == "done" && enabled("models") => {
+        Some((state, hash)) if with_builds && state == "done" && enabled("models") => {
             let allocation = util::read_json(p.out.join("math").join("units.json"))
                 .context("the mathematics allocation math/units.json is not readable")?;
             let addresses: Vec<String> = allocation["units"]
@@ -1412,17 +1501,20 @@ fn math_register(p: &Prepared, zt: &mut Zt) -> Result<Value> {
                             reused = false;
                         }
                     }
-                    if stored != hash {
-                        let before: Value = serde_json::from_str(&stored_inputs).unwrap_or(Value::Null);
-                        if !may_rebind_math_unit(&before, &state) {
-                            bail!("a registered mathematical unit cannot be rebound to different work: {unit}");
+                    let before: Value = serde_json::from_str(&stored_inputs).unwrap_or(Value::Null);
+                    match math_registration(&stored, &hash, &before, &state) {
+                        Registration::Same | Registration::Keep => {}
+                        Registration::Refuse => {
+                            bail!("a registered mathematical unit cannot be rebound to different work: {unit}")
                         }
-                        // An unmet proof whose unit is built now takes its planned review (Bug C).
-                        reused = false;
-                        tx.execute(
-                            "UPDATE units SET inputs_json=?1, input_hash=?2 WHERE id=?3 AND state IN ('registered','ready')",
-                            params![serde_json::to_string(&inputs)?, hash, unit],
-                        )?;
+                        Registration::Rebind => {
+                            // An unmet proof whose unit is built now takes its planned review (Bug C).
+                            reused = false;
+                            tx.execute(
+                                "UPDATE units SET inputs_json=?1, input_hash=?2 WHERE id=?3 AND state IN ('registered','ready')",
+                                params![serde_json::to_string(&inputs)?, hash, unit],
+                            )?;
+                        }
                     }
                 }
                 None => {
@@ -3082,8 +3174,30 @@ fn boundary_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Pat
     if kept_cards.len() != kept.len() {
         bail!("a kept boundary candidate of `{at}` is gone from the archive");
     }
+    // The renumbering after a deletion rewrites the Links that named a moved sibling: map each
+    // surviving candidate's current address back to its recorded one before comparing.
+    // The original addresses are the candidates and every rename key no earlier rename produced (a part
+    // the fill wrote moves too); a deleted address is no original.
+    let mut originals: BTreeSet<String> = mine.iter().filter_map(|c| field(c, "address").ok().map(str::to_string)).collect();
+    let mut produced: BTreeSet<String> = BTreeSet::new();
+    for entry in &renames {
+        for (from, to) in entry["moved"].as_object().into_iter().flatten() {
+            if !produced.contains(from) {
+                originals.insert(from.clone());
+            }
+            if let Some(to) = to.as_str() {
+                produced.insert(to.to_string());
+            }
+        }
+    }
+    let back: BTreeMap<String, String> = originals
+        .iter()
+        .filter(|a| !deletions.iter().any(|d| field(d, "address").is_ok_and(|x| x == a.as_str())))
+        .map(|a| (resolve(a), a.clone()))
+        .filter(|(now, was)| now != was)
+        .collect();
     for ((address, now, fingerprint), card) in kept.iter().zip(&kept_cards) {
-        if field(card, "address")? != now || crate::calls::authored_fingerprint(card) != *fingerprint
+        if field(card, "address")? != now || fingerprint_before_renames(card, &back) != *fingerprint
         {
             bail!("the kept boundary candidate `{address}` is no longer the part this settle recorded");
         }
@@ -3166,12 +3280,7 @@ fn proof_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) 
     if applied["schema_version"] != 1 || applied["kind"] != "proof_apply" {
         bail!("invalid applied proof record");
     }
-    let planned = plan["steps"]
-        .as_array()
-        .context("the proof plan names no step")?
-        .iter()
-        .map(|step| field(step, "address").map(str::to_string))
-        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let planned = planned_review_steps(&plan)?;
     // The current proof decides: every main-line step the review must cover is the step
     // list of the unit's own model now, not the list the plan remembered.
     let model = zt.call("get_model", json!({"at":at}))?;
@@ -4655,17 +4764,15 @@ fn verify_theory_coverage(
                     .context("invalid cited premise")
             })
             .collect::<Result<Vec<_>>>()?;
-        // A Theory Card takes in whole units by Link, so its membership *and* its cited
-        // premises together are the units its model holds now. A rebuild that no longer
-        // accounts for them is stale, whatever the Card still says (R241).
-        let described = members
+        // The Theory Card's members are its 结构 list (the report's order) and its cited premises are the
+        // report's tools (zt 0.64.0); a rebuild that no longer accounts for either is stale (R241).
+        let report_tools = model["math"]["tools"]
+            .as_array()
+            .context("the Theory Card's model reports no cited premises")?
             .iter()
-            .chain(&recorded_tools)
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        if described.len() != members.len() + recorded_tools.len()
-            || described != order.iter().cloned().collect()
-        {
+            .map(|tool| field(tool, "address").map(str::to_string))
+            .collect::<Result<Vec<_>>>()?;
+        if !theory_record_matches(&members, &recorded_tools, &order, &report_tools) {
             bail!("the applied theory record for `{reference}` does not account for its model's current units");
         }
         let card = cards
@@ -7151,7 +7258,7 @@ fn reopen_units(tx: &Transaction, units: &[String], reason: &str, now: i64, rech
             .query_row("SELECT state,attempts FROM units WHERE id=?1", [unit], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         let Some((state, attempts)) = row else { bail!("unknown unit {unit}") };
-        let rechecked = recheck && state == "done" && unit.starts_with("models/");
+        let rechecked = recheck && state == "done" && recheckable(unit);
         if state != "failed" && !rechecked {
             bail!("unit {unit} is {state}, not failed: only a failed unit is reopened (a done Model unit with -Recheck)");
         }
@@ -9148,10 +9255,23 @@ fn registration_deps_ok(
         "link-check/book@1" => Some("link"),
         _ => None,
     };
-    needs.is_subset(actual)
-        && actual.difference(needs).all(|(needed, condition)| {
-            condition == "settled"
-                && child_layer.is_some_and(|layer| children.iter().any(|(child, l)| child == needed && l == layer))
+    // A frozen need on a book publication (`audit/book@1`) is met by its later revision with the same
+    // condition (`audit/book@2`): a republication repoints its dependents (thompson1914calculus).
+    let revision_of = |frozen: &str, actual: &str| match (frozen.rsplit_once('@'), actual.rsplit_once('@')) {
+        (Some((f, fr)), Some((a, ar))) => f == a && f.ends_with("/book") && ar.parse::<u64>().ok() > fr.parse::<u64>().ok(),
+        _ => false,
+    };
+    let met = |(need, cond): &(String, String)| {
+        actual.contains(&(need.clone(), cond.clone()))
+            || actual.iter().any(|(a, c)| c == cond && revision_of(need, a))
+    };
+    let later = |(have, cond): &(String, String)| needs.iter().any(|(n, c)| c == cond && revision_of(n, have));
+    needs.iter().all(met)
+        && actual.difference(needs).all(|dep| {
+            let (needed, condition) = dep;
+            later(dep)
+                || (condition == "settled"
+                    && child_layer.is_some_and(|layer| children.iter().any(|(child, l)| child == needed && l == layer)))
         })
 }
 
@@ -9795,6 +9915,12 @@ fn verify_done_group(p: &Prepared, zt: &mut Zt, unit: &str, token: i64) -> Resul
     }
     result["reused"] = json!(true);
     Ok(result)
+}
+
+/// A done unit `ledger reopen -Recheck` may open again: a Model build, or the math check, which measures the
+/// archive now and is settled again by every rerun of the check (thompson1914calculus pilot).
+fn recheckable(unit: &str) -> bool {
+    unit.starts_with("models/") || unit == "math-check/book@1"
 }
 
 /// The blocking faults (M0 missing, M1 unwritten unit) the settled math check recorded: `Some(0)` when the
@@ -18173,7 +18299,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         } else if command == "relocate" {
             vec!["Out", "Moves"]
         } else if command == "math" {
-            vec!["Out"]
+            vec!["Out", "Layer"]
         } else if command == "reclaim" {
             vec!["Out", "Unit", "Take"]
         } else if command == "reopen" {
@@ -18518,7 +18644,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     } else if command == "math" {
         let mut zt = crate::zt::start()?;
         let p = Prepared::read(&a.str("Out"), &mut zt)?;
-        math_register(&p, &mut zt)?
+        let layer = a.str("Layer");
+        math_register(&p, &mut zt, (!layer.is_empty()).then_some(layer.as_str()))?
     } else if matches!(
         command.as_str(),
         "init" | "next" | "renew" | "hold" | "done" | "fail"
@@ -18850,6 +18977,74 @@ mod tests {
     }
 
     #[test]
+    fn the_math_check_and_model_builds_are_recheckable_and_nothing_else() {
+        assert!(recheckable("math-check/book@1") && recheckable("models/g005-u0000@1"));
+        assert!(!recheckable("boundary/k/2|e@1") && !recheckable("audit/book@1") && !recheckable("digest/g001@1"));
+    }
+
+    #[test]
+    fn a_need_on_a_book_publication_is_met_by_its_later_revision() {
+        // thompson1914calculus (live and pilot): finalize published audit/book@2 and repointed math-check's
+        // need to it, so the preparation registration check reported a mismatch on every math run.
+        let set = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<std::collections::BTreeSet<_>>();
+        let none = std::collections::BTreeSet::new();
+        let frozen = set(&[("prepare/book@1", "success"), ("audit/book@1", "success")]);
+        assert!(registration_deps_ok("math-check/book@1", &frozen, &set(&[("prepare/book@1", "success"), ("audit/book@2", "success")]), &none));
+        assert!(!registration_deps_ok("math-check/book@1", &frozen, &set(&[("prepare/book@1", "success"), ("audit/book@2", "settled")]), &none), "the condition stays");
+        assert!(!registration_deps_ok("math-check/book@1", &frozen, &set(&[("prepare/book@1", "success"), ("organize/book@2", "success")]), &none), "another layer is no revision");
+        assert!(!registration_deps_ok("math-check/book@1", &frozen, &set(&[("prepare/book@1", "success")]), &none), "a missing need");
+    }
+
+    #[test]
+    fn a_theory_record_matches_its_members_and_its_cited_tools_apart() {
+        // thompson pilot, 2026-11-22: since zt 0.64.0 a Theory Card's order holds only its 结构 members and
+        // its cited premises are the report's tools; the check had compared members+tools with the order.
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(theory_record_matches(&s(&["k/5|a"]), &s(&["k/2|b", "k/2|e"]), &s(&["k/5|a"]), &s(&["k/2|e", "k/2|b"])));
+        assert!(!theory_record_matches(&s(&["k/5|a"]), &s(&["k/2|b"]), &s(&["k/5|a", "k/5|c"]), &s(&["k/2|b"])), "a member the record misses");
+        assert!(!theory_record_matches(&s(&["k/5|a"]), &s(&["k/2|b"]), &s(&["k/5|a"]), &s(&["k/2|b", "k/3|f"])), "a cited tool the record misses");
+        assert!(!theory_record_matches(&s(&["k/5|a", "k/5|a"]), &s(&[]), &s(&["k/5|a"]), &s(&[])), "a member twice");
+    }
+
+    #[test]
+    fn a_frozen_proof_plan_is_read_through_the_current_review_scope() {
+        // thompson pilot, 2026-11-22: proof/5|a@1 was registered with its premise and derivation steps; the
+        // review owns the plan, the 证明 steps and the conclusion, so the frozen plan narrows to those.
+        let plan = json!({"steps":[
+            {"address":"k/5|a|a","facet":"前提"},{"address":"k/5|a|a|1","facet":"证明思路"},
+            {"address":"k/5|a|a|2","facet":"推导：正整数幂的展开"},{"address":"k/5|a|a|3","facet":"证明：n 为正整数"},
+            {"address":"k/5|a|a|8","facet":"结论"}
+        ]});
+        let got = planned_review_steps(&plan).unwrap();
+        let want: std::collections::BTreeSet<String> = ["k/5|a|a|1", "k/5|a|a|3", "k/5|a|a|8"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(got, want);
+        assert!(planned_review_steps(&json!({})).is_err());
+    }
+
+    #[test]
+    fn each_math_step_registers_only_its_own_layer() {
+        // thompson pilot, 2026-11-22: the skeleton's registration re-read the boundary plan a broken resume had
+        // rewritten, and refused the whole resume on a boundary unit; each step owns one layer.
+        assert!(math_register_scope(None).is_err(), "every call names its layer: no register-everything path");
+        assert_eq!(math_register_scope(Some("models")).unwrap(), (true, vec![]));
+        assert_eq!(math_register_scope(Some("boundary")).unwrap(), (false, vec!["boundary"]));
+        assert_eq!(math_register_scope(Some("proof")).unwrap(), (false, vec!["proof"]));
+        assert!(math_register_scope(Some("theory")).is_err());
+    }
+
+    #[test]
+    fn a_settled_math_unit_keeps_its_work_whatever_a_later_plan_says() {
+        // thompson pilot, 2026-11-22: a resume rewrote the boundary plan after 12 of 13 units had settled;
+        // the proof stage's registration then refused the whole run on a boundary unit's changed entry.
+        let stored = json!({"plan":{"unit":"k/2|e","need":["example"]}});
+        assert_eq!(math_registration("h1", "h1", &stored, "ready"), Registration::Same);
+        assert_eq!(math_registration("h1", "h2", &stored, "done"), Registration::Keep, "a settled unit keeps its work");
+        assert_eq!(math_registration("h1", "h2", &stored, "ready"), Registration::Refuse, "open work is never silently changed");
+        let unmet = json!({"plan":{"unit":"k/5|a","steps":[],"unmet":"no proof step"}});
+        assert_eq!(math_registration("h1", "h2", &unmet, "registered"), Registration::Rebind);
+    }
+
+    #[test]
     fn an_unmet_proof_may_be_rebound_once_its_unit_is_built_and_nothing_else_may() {
         let unmet = json!({"plan":{"unit":"k/5|a","steps":[],"unmet":"no proof step"}});
         let built = json!({"plan":{"unit":"k/5|a","steps":[{"address":"k/5|a|1","facet":"证明"}]}});
@@ -18889,6 +19084,22 @@ mod tests {
         assert!(block.contains("[[k/5|a]]") && block.contains("## 本组的例与习题"));
         assert!(!block.contains("原文"));
         assert_eq!(math_unit_block("# 第一章\n\n原文\n", "## 本组的数学单元"), "");
+    }
+
+    #[test]
+    fn a_kept_boundary_part_whose_links_the_renumbering_rewrote_is_still_the_recorded_part() {
+        // thompson1914calculus pilot, 2026-11-22: deleting 2|e|b and 2|e|c renumbered the siblings, the
+        // archive rewrote the kept H2 role's Link to its partner (2|e|d -> 2|e|b), and the finish refused
+        // the unit because the fingerprint it recorded before the deletions no longer matched.
+        let before = json!({"type":"model","facet":"假设作用：H2","title":"假设作用","body":"去掉 H2 的反例：[[k/2|e|d]]。使用 H2 的步骤：[[k/2|e|a]]。"});
+        let after = json!({"type":"model","facet":"假设作用：H2","title":"假设作用","body":"去掉 H2 的反例：[[k/2|e|b]]。使用 H2 的步骤：[[k/2|e|a]]。"});
+        let back: BTreeMap<String, String> = BTreeMap::from([("k/2|e|b".into(), "k/2|e|d".into()), ("k/2|e|c".into(), "k/2|e|e".into())]);
+        let recorded = crate::calls::authored_fingerprint(&before);
+        assert_ne!(crate::calls::authored_fingerprint(&after), recorded);
+        assert_eq!(fingerprint_before_renames(&after, &back), recorded);
+        // A real edit is still a different part.
+        let edited = json!({"type":"model","facet":"假设作用：H2","title":"假设作用","body":"改写了。去掉 H2 的反例：[[k/2|e|b]]。"});
+        assert_ne!(fingerprint_before_renames(&edited, &back), recorded);
     }
 
     #[test]
