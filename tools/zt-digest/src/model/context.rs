@@ -94,7 +94,17 @@ pub(crate) fn owned_passages(staging: &str, address: &str) -> Result<Vec<String>
         }
         let lines = &cache[&file];
         let (a, b) = (span["line"].as_u64().unwrap_or(0) as usize, span["end"].as_u64().unwrap_or(0) as usize);
-        Ok((a..=b).filter(|n| *n >= 1 && *n <= lines.len()).map(|n| format!("{n}│ {}", lines[n - 1])).collect())
+        // A line shared with another destination shows only this unit's columns (P1a, Astra round 19).
+        let (c0, c1) = (span["col"].as_u64().map(|c| c as usize), span["end_col"].as_u64().map(|c| c as usize));
+        Ok((a..=b)
+            .filter(|n| *n >= 1 && *n <= lines.len())
+            .map(|n| {
+                let chars: Vec<char> = lines[n - 1].chars().collect();
+                let from = if n == a { c0.unwrap_or(0).min(chars.len()) } else { 0 };
+                let to = if n == b { c1.unwrap_or(chars.len()).min(chars.len()) } else { chars.len() };
+                format!("{n}│ {}", chars[from..to.max(from)].iter().collect::<String>())
+            })
+            .collect())
     };
     let locator = |span: &Value| format!("`sections/{}:{}-{}`", s(&span["section"]), s(&span["line"]), s(&span["end"]));
     let mut out = vec!["## 本单元的原文（写这个单元只依据这些行；证明按书的顺序排列）".to_string(), String::new()];
@@ -541,7 +551,7 @@ mod tests {
              "proof": {"status": "deferred_in_slice", "steps": [
                  {"label": "第 2 步", "spans": [{"section": "s07.md", "line": 5, "end": 5}]},
                  {"label": "第 1 步", "spans": [{"section": "s07.md", "line": 3, "end": 3}]}]}},
-            {"id": "ch1:example:1.9", "kind": "example", "destination": "unit:ch1:theorem:1.19", "statement": [{"section": "s01.md", "line": 5, "end": 5}], "proof": {"steps": []}}
+            {"id": "ch1:example:1.9", "kind": "example", "destination": "unit:ch1:theorem:1.19", "statement": [{"section": "s01.md", "line": 5, "end": 5, "col": 0, "end_col": 4}], "proof": {"steps": []}}
         ]}});
         std::fs::write(dir.path().join("math").join("index.json"), index.to_string()).unwrap();
         std::fs::write(dir.path().join("math").join("units.json"), json!({"units": [{"id": "定理 1.19", "object_id": "ch1:theorem:1.19", "address": "K/1|a"}]}).to_string()).unwrap();
@@ -550,7 +560,8 @@ mod tests {
         let (one, two) = (text.find("第 1 步 分割").unwrap(), text.find("第 2 步 序").unwrap());
         assert!(statement < one && one < two, "the statement, then the steps in the book's order: {text}");
         assert!(text.contains("3│ 1.19 定理") && text.contains("`sections/s07.md:3-3`"), "{text}");
-        assert!(text.contains("### 属于本单元的例") && text.contains("证明放在附录"), "{text}");
+        assert!(text.contains("### 属于本单元的例") && text.contains("5│ 证明放在
+"), "only the example's columns of a shared line: {text}");
         assert!(super::owned_passages(&staging, "K/9|z").unwrap().is_empty(), "a Card that is no unit gets no block");
     }
 }

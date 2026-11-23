@@ -217,6 +217,8 @@ pub struct Owned {
     pub end: usize,
     pub destination: String,
     pub leaf: String,
+    /// A piece of a line another destination shares (the leaf has columns).
+    pub split: bool,
 }
 
 /// A destination a chapter writer writes: its reading notes, its exercise set, editorial notes.
@@ -429,6 +431,11 @@ pub fn report(input: &Input) -> Coverage {
                     continue;
                 }
                 for o in input.owners.iter().filter(|o| o.section == span.section && o.start <= b && a <= o.end && !writer_owns(&o.destination) && o.destination != "boilerplate_skip") {
+                    // A line split between the writer and a unit is the writer's to cite: `src` names lines.
+                    let shared = o.split && input.owners.iter().any(|w| w.split && w.section == o.section && w.start <= o.end && o.start <= w.end && writer_owns(&w.destination));
+                    if shared {
+                        continue;
+                    }
                     faults.push(Fault {
                         section: span.section.clone(),
                         start: o.start,
@@ -833,6 +840,7 @@ fn read_owners(staging: &Path) -> Result<Vec<Owned>> {
             end: l["end"].as_u64().unwrap_or(0) as usize,
             destination: ps::field(l, "destination"),
             leaf: ps::field(l, "id"),
+            split: l["col"].is_number(),
         })
         .collect())
 }
@@ -1642,7 +1650,7 @@ mod tests {
     // --- P1a M2.3: ownership-aware coverage --------------------------------------------------------
 
     fn owned(section: &str, start: usize, end: usize, destination: &str) -> Owned {
-        Owned { section: section.into(), start, end, destination: destination.into(), leaf: format!("{section}:{start}-{end}") }
+        Owned { section: section.into(), start, end, destination: destination.into(), leaf: format!("{section}:{start}-{end}"), split: false }
     }
 
     #[test]
@@ -1670,5 +1678,22 @@ mod tests {
         plain.sources = vec![source("draft#1", "sections/s01.md:1-3")];
         plain.cards = vec![CardRecord { address: "draft#1".into(), category: "idea".into(), body: "笔记".into() }];
         assert!(!report(&plain).faults.iter().any(|f| f.code == "C6"));
+    }
+
+    #[test]
+    fn a_line_the_writer_shares_with_a_unit_is_no_restatement() {
+        // rudin1976principles s21.md:3: columns 0-33 are prose, 33-135 open Theorem 3.20. A note's
+        // `src` names whole lines, so citing that line is the writer's own passage, not a C6.
+        let mut input = setup();
+        let mut shared = owned("s01.md", 1, 1, "unit:ch3:theorem:3.20");
+        shared.split = true;
+        let mut prose = owned("s01.md", 1, 1, "narrative:ch3");
+        prose.split = true;
+        input.owners = vec![prose, shared, owned("s01.md", 3, 3, "unit:ch3:theorem:3.21")];
+        input.cards = vec![CardRecord { address: "draft#1".into(), category: "idea".into(), body: "笔记".into() }];
+        input.sources = vec![source("draft#1", "sections/s01.md:1-1")];
+        assert!(!report(&input).faults.iter().any(|f| f.code == "C6"), "the shared line is the writer's to cite");
+        input.sources = vec![source("draft#1", "sections/s01.md:1-3")];
+        assert_eq!(report(&input).faults.iter().filter(|f| f.code == "C6").count(), 1, "a whole unit-owned line still is");
     }
 }

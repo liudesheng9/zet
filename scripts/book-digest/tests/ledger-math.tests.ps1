@@ -211,6 +211,9 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
 
     # --- one tracked candidate at a time: supply, apply, independent review, settle -----------------
     $steps = @((Read-Model $th).build.order | Where-Object { $_.line -eq 'main' } | ForEach-Object { $_.address })
+    # The proof review answers only the steps it planned: a 前提 premise is context (P0), and a verdict on an
+    # address the plan never named is refused (P1a M2.6).
+    $reviewSteps = @((Read-Model $th).build.order | Where-Object { $_.line -eq 'main' -and $_.facet -notmatch '^前提' } | ForEach-Object { $_.address })
     Save-Json (Join-Path $out 'math\boundary\out\b-01.json') @{ items = @(
             @{ unit = $th; hypothesis = 'H1'; title = '假设作用：去掉连续性，函数可以跳过 c'; role = '步骤三用到连续性。'; used_in = $steps[3]; counterexample = @{ title = '反例：符号函数跳过 1/2'; body = '取符号函数。'; supplied = $true } },
             @{ unit = $th; hypothesis = 'H2'; title = '假设作用：c 须在两端值之间'; role = '步骤一用到它。'; used_in = $steps[2]; counterexample = $null },
@@ -255,7 +258,7 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     Assert (@($proofRegistered.units | Where-Object layer -eq 'proof').Count -eq 1) 'the proof plan registers its own ledger obligation'
     function Review([hashtable]$fixes) {
         $list = @()
-        foreach ($s in $script:steps) {
+        foreach ($s in $script:reviewSteps) {
             $list += $(if ($fixes.ContainsKey($s)) { $fixes[$s] } else { @{ address = $s; verdict = 'ok' } })
         }
         # P1a M2.6: the statement's clause-level check, a verdict on the unit's head.
@@ -272,7 +275,7 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     $proofToken = @($proofReady.units | Where-Object id -CEQ $proofUnit)[0].token
     $proofFile = Join-Path $out 'math\proof\applied.json'
     # A reviewer that answers nothing about one selected step leaves it unreviewed.
-    Save-Json (Join-Path $out 'math\proof\out\p-01.json') @{ verdicts = @($steps | Where-Object { $_ -ne $steps[2] } | ForEach-Object { @{ address = $_; verdict = 'ok' } }) }
+    Save-Json (Join-Path $out 'math\proof\out\p-01.json') @{ verdicts = @($reviewSteps | Where-Object { $_ -ne $steps[2] } | ForEach-Object { @{ address = $_; verdict = 'ok' } }) }
     $null = Math 'proof-apply'
     $incomplete = @(& $Digest ledger done -Out $out -Unit $proofUnit -Token $proofToken -Outputs $proofFile 2>&1)
     Assert ($LASTEXITCODE -eq 1 -and ($incomplete -join ' ').Contains('was not reviewed')) "a proof step nobody reviewed cannot complete the unit ($($incomplete -join ' '))"

@@ -3388,11 +3388,21 @@ fn proof_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) 
     }
     // P1a M2.6 (M20): the statement was checked against the book, clause by clause: a verdict on
     // the unit's head, `ok` or an accepted fix that changed it. A refused statement fix stays open.
-    match reviewed.iter().find(|r| r["address"].as_str() == Some(at.as_str())).map(|r| r["verdict"].as_str().unwrap_or_default()) {
+    let head_entry = reviewed.iter().find(|r| r["address"].as_str() == Some(at.as_str()));
+    match head_entry.map(|r| r["verdict"].as_str().unwrap_or_default()) {
         Some("ok") => {}
         Some("fix") => fixed += 1,
         Some("refused") => bail!("the refused correction of the statement of `{at}` remains a named obligation"),
         _ => bail!("the statement of `{at}` was not checked against the book (no verdict on the unit's head)"),
+    }
+    // The live head is the text the verdict judged: unchanged after `ok`, the written fix after `fix`.
+    if let Some(entry) = head_entry {
+        let head = zt.cards(&[at.clone()], "text")?.cards;
+        let live = head.first().map(crate::calls::authored_fingerprint).unwrap_or_default();
+        let want = if entry["verdict"] == "fix" { field(entry, "after")? } else { field(entry, "before")? };
+        if live != want {
+            bail!("the statement of `{at}` changed after its review without an accepted fix");
+        }
     }
     let addresses = current.iter().cloned().collect::<Vec<_>>();
     let cards = zt.cards(&addresses, "text")?.cards;
@@ -9014,6 +9024,33 @@ fn checked_lines(lines: Vec<String>) -> Result<Value> {
     )
 }
 
+/// A mathematics group whose every passage the settled projection gives to another destination (a
+/// unit, a figure, skipped boilerplate) has nothing for its writer: `no_cards` is its completion
+/// (P1a; rudin1976principles groups 16, 17 and 25). `None` for every other group or run.
+fn math_owned_elsewhere(p: &Prepared, group: &Value) -> Result<Option<Value>> {
+    let index = p.out.join("math").join("index.json");
+    if !index.is_file() {
+        return Ok(None);
+    }
+    let index = util::read_json(&index)?;
+    let files: Vec<String> = group["sections"]
+        .as_array()
+        .context("missing source sections")?
+        .iter()
+        .filter_map(|s| s["path"].as_str())
+        .filter_map(|p| Path::new(p).file_name().map(|f| f.to_string_lossy().to_string()))
+        .collect();
+    let leaves: Vec<&Value> = index["projection"]["leaves"]
+        .as_array()
+        .map(|l| l.iter().filter(|l| l["obligation"] == "write" && files.iter().any(|f| l["section"].as_str() == Some(f.as_str()))).collect())
+        .unwrap_or_default();
+    let writer = |l: &&Value| l["destination"].as_str().is_some_and(|d| d.starts_with("narrative:") || d.starts_with("exercise:") || d == "provenance");
+    if leaves.is_empty() || leaves.iter().any(writer) {
+        return Ok(None);
+    }
+    Ok(Some(json!({"reason":"owned_elsewhere","sections":group["sections"],"leaves":leaves.len()})))
+}
+
 fn source_is_empty(group: &Value) -> Result<Value> {
     let heading = regex::Regex::new(r"^#{1,6}(?:\s|$)")?;
     let mut sections = Vec::new();
@@ -10265,7 +10302,10 @@ fn group_finish(
         if !calls.is_empty() {
             bail!("no_cards requires no proposed writes");
         }
-        source_is_empty(group)?
+        match math_owned_elsewhere(p, group)? {
+            Some(record) => record,
+            None => source_is_empty(group)?,
+        }
     } else {
         Value::Null
     };
@@ -10352,6 +10392,27 @@ fn group_finish(
         bail!("group coverage requires its checked anchor plus substantive owned Cards");
     }
     let self_check = group_quality(cards, p)?;
+    // P1a (math): a note may not claim a passage the settled projection gives to a unit or a figure
+    // (C6). Unlike the group checker's faults, which the card review takes over, C6 refuses the
+    // draft before any write: a restated proof once published cannot be unpublished by a review
+    // (rudin1976principles group 17, Astra round 19).
+    let c6: Vec<String> = if p.out.join("math").join("index.json").is_file() {
+        crate::coverage::draft_faults(&p.out, &[number as i64], &path.to_string_lossy(), &draft)?
+            .into_iter()
+            .filter(|line| line.split_whitespace().nth(1) == Some("C6"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if !c6.is_empty() {
+        if check_only {
+            let mut lines = c6.clone();
+            lines.push(format!("faults: {}", c6.len()));
+            util::print_lines(&lines)?;
+            return Ok(None);
+        }
+        bail!("C6: the draft restates passages a unit owns ({}); link the unit instead", c6.join("; "));
+    }
     verify_group_consumers(p, cards, &self_check)?;
     if zt.archive_view()?["archive_revision"] != preview["archive_revision"] {
         bail!("read_view_changed: group draft preview");

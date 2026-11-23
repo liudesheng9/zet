@@ -282,62 +282,105 @@ pub(crate) fn group_ownership(projection: &Value, files: &[String], units: &[Val
 }
 
 /// M21 (P1a, docs/math-digest-p1a-design.md §3): every exercise of the settled projection has exactly
-/// one endpoint Card in its chapter's exercise group (the Card whose title opens with its printed
-/// label, `1.19：…`), and that Card renders it faithfully: the question's opening text, `**提示**`
-/// when the book prints a hint, and `**答案**` only when the book prints an answer. `cards` are the
-/// exercise groups' Cards with their bodies; `lines` reads a staged section's lines.
-pub(crate) fn exercise_faults(projection: &Value, cards: &[Value], lines: &dyn Fn(&str) -> Vec<String>) -> Vec<String> {
+/// one endpoint Card in its own chapter's exercise group (the Card whose title opens with its printed
+/// label, `1.19：…`), no Card of that group claims a label the chapter does not have, and the Card
+/// renders the book faithfully: the question's opening, the printed hint under `**提示**`, the printed
+/// answer under `**答案**`, and no answer the book does not print. `cards_of` gives a chapter's
+/// exercise-group Cards with their bodies; `lines` reads a staged section's lines.
+pub(crate) fn exercise_faults(projection: &Value, cards_of: &dyn Fn(&str) -> Vec<Value>, lines: &dyn Fn(&str) -> Vec<String>) -> Vec<String> {
     // Whitespace, TeX delimiters and the OCR's Markdown line-break backslash never decide fidelity.
-    let squeeze = |t: &str| t.trim_end().trim_end_matches('\\').chars().filter(|c| !c.is_whitespace() && *c != '$').collect::<String>();
+    let squeeze = |t: &str| t.trim_end().trim_end_matches('\\').chars().filter(|c| !c.is_whitespace() && *c != '$' && *c != '\\').collect::<String>();
+    // The text of one span, its columns kept.
+    let span_text = |sp: &Value| -> String {
+        let text = lines(&field(sp, "section"));
+        let (a, b) = (sp["line"].as_u64().unwrap_or(0) as usize, sp["end"].as_u64().unwrap_or(0) as usize);
+        (a..=b)
+            .filter(|n| *n >= 1 && *n <= text.len())
+            .map(|n| {
+                let chars: Vec<char> = text[n - 1].chars().collect();
+                let from = if n == a { sp["col"].as_u64().map(|c| c as usize).unwrap_or(0).min(chars.len()) } else { 0 };
+                let to = if n == b { sp["end_col"].as_u64().map(|c| c as usize).unwrap_or(chars.len()).min(chars.len()) } else { chars.len() };
+                chars[from..to.max(from)].iter().collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // Twelve characters of a passage after its own lead-in (a label, `提示：`, `（解：`).
+    let opening = |text: &str| -> String {
+        let t = squeeze(text);
+        let t = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
+        let t = t.trim_start_matches("提示").trim_start_matches("Hint").trim_start_matches(['：', ':', '（', '(']).trim_start_matches("解").trim_start_matches(['：', ':']);
+        t.chars().take(12).collect()
+    };
+    let title_label = |title: &str| -> Option<String> {
+        let t = title.trim_start_matches("习题").trim();
+        let end = t.find(['：', ':', ' '])?;
+        let label = &t[..end];
+        (!label.is_empty() && label.chars().all(|c| c.is_ascii_digit() || c == '.')).then(|| label.trim_end_matches('.').to_string())
+    };
     let objects = ps::list(&projection["objects"]);
+    let exercises: Vec<&&Value> = objects.iter().filter(|o| field(o, "kind") == "exercise").collect();
     let mut out = Vec::new();
-    for ex in objects.iter().filter(|o| field(o, "kind") == "exercise") {
-        let id = field(ex, "id");
-        let label = field(&ex["key"], "label");
-        let title_opens = |title: &str| {
-            let t = title.trim_start_matches("习题").trim();
-            t.strip_prefix(label.as_str()).is_some_and(|rest| rest.starts_with(['：', ':', ' ', '.']))
-        };
-        let hits: Vec<&Value> = cards.iter().filter(|c| title_opens(&field(c, "title"))).collect();
-        let card = match hits.as_slice() {
-            [one] => *one,
-            [] => {
-                out.push(format!("exercise {id} has no Card"));
-                continue;
+    let mut chapters: Vec<String> = exercises.iter().map(|e| field(&e["key"], "chapter")).collect();
+    chapters.dedup();
+    for chapter in &chapters {
+        let cards = cards_of(chapter);
+        let labels: Vec<String> = exercises.iter().filter(|e| field(&e["key"], "chapter") == *chapter).map(|e| field(&e["key"], "label")).collect();
+        // A Card that claims an exercise label this chapter does not have.
+        for c in &cards {
+            if let Some(l) = title_label(&field(c, "title"))
+                && !labels.contains(&l)
+            {
+                out.push(format!("[[{}]] claims exercise {l}, which chapter {chapter} does not print", field(c, "address")));
             }
-            many => {
-                out.push(format!("exercise {id} has {} Cards: {}", many.len(), many.iter().map(|c| field(c, "address")).collect::<Vec<_>>().join(", ")));
-                continue;
-            }
-        };
-        let at = field(card, "address");
-        let body = field(card, "body");
-        let has = |role: &str| objects.iter().any(|o| field(o, "kind") == role && field(o, "destination") == format!("exercise:{id}"));
-        // The question's opening: twelve characters after its printed label, as the book writes them.
-        if let Some(st) = ps::list(&ex["statement"]).first() {
-            let text = lines(&field(st, "section"));
-            let n = st["line"].as_u64().unwrap_or(0) as usize;
-            if let Some(first) = text.get(n.wrapping_sub(1)) {
-                // The question's own text only: up to its span's end column, and never into a hint.
-                let own: String = match st["end_col"].as_u64() {
-                    Some(e) if st["end"] == st["line"] => first.chars().take(e as usize).collect(),
-                    _ => first.clone(),
-                };
+        }
+        for ex in exercises.iter().filter(|e| field(&e["key"], "chapter") == *chapter) {
+            let id = field(ex, "id");
+            let label = field(&ex["key"], "label");
+            let hits: Vec<&Value> = cards.iter().filter(|c| title_label(&field(c, "title")).as_deref() == Some(label.as_str())).collect();
+            let card = match hits.as_slice() {
+                [one] => *one,
+                [] => {
+                    out.push(format!("exercise {id} has no Card"));
+                    continue;
+                }
+                many => {
+                    out.push(format!("exercise {id} has {} Cards: {}", many.len(), many.iter().map(|c| field(c, "address")).collect::<Vec<_>>().join(", ")));
+                    continue;
+                }
+            };
+            let at = field(card, "address");
+            let body = field(card, "body");
+            let flat = squeeze(&body);
+            if let Some(st) = ps::list(&ex["statement"]).first() {
+                let own = span_text(st);
                 let own = own.split("提示").next().unwrap_or_default().to_string();
-                let opening: String = squeeze(&own).trim_start_matches(|c: char| c.is_ascii_digit() || c == '.').chars().take(12).collect();
-                if opening.chars().count() >= 6 && !squeeze(&body).contains(&opening) {
-                    out.push(format!("exercise {id} [[{at}]] does not render the question as the book writes it ({opening}…)"));
+                let open = opening(&own);
+                if open.chars().count() >= 6 && !flat.contains(&open) {
+                    out.push(format!("exercise {id} [[{at}]] does not render the question as the book writes it ({open}…)"));
                 }
             }
-        }
-        if has("hint") && !body.contains("**提示**") {
-            out.push(format!("exercise {id} [[{at}]] leaves out the book's hint"));
-        }
-        if has("answer") && !body.contains("**答案**") {
-            out.push(format!("exercise {id} [[{at}]] leaves out the book's answer"));
-        }
-        if !has("answer") && body.contains("**答案**") {
-            out.push(format!("exercise {id} [[{at}]] writes an answer the book does not print"));
+            let parts = |role: &str| -> Vec<&Value> { objects.iter().filter(|o| field(o, "kind") == role && field(o, "destination") == format!("exercise:{id}")).copied().collect() };
+            for (role, heading, what) in [("hint", "**提示**", "hint"), ("answer", "**答案**", "answer")] {
+                let printed = parts(role);
+                if printed.is_empty() {
+                    if role == "answer" && body.contains(heading) {
+                        out.push(format!("exercise {id} [[{at}]] writes an answer the book does not print"));
+                    }
+                    continue;
+                }
+                if !body.contains(heading) {
+                    out.push(format!("exercise {id} [[{at}]] leaves out the book's {what}"));
+                    continue;
+                }
+                for p in printed {
+                    let text: String = ps::list(&p["statement"]).into_iter().map(span_text).collect::<Vec<_>>().join("\n");
+                    let open = opening(&text);
+                    if open.chars().count() >= 6 && !flat.contains(&open) {
+                        out.push(format!("exercise {id} [[{at}]] does not render the book's {what} ({open}…)"));
+                    }
+                }
+            }
         }
     }
     out
@@ -1164,6 +1207,11 @@ impl Compiler {
                 let ownership = group_ownership(&index["projection"], &pipe(&g["sections"]).into_iter().map(s).collect::<Vec<_>>(), &units);
                 if !ownership.is_empty() {
                     sb.push_str(&format!("{NL}## 本组原文的归属（你的卡片只认领写明“你写”的行；单元的行只链接，不复述）{NL}{NL}{ownership}"));
+                    // A group whose every passage a unit owns writes nothing (rudin1976principles groups
+                    // 16, 17, 25 restated three proofs; Astra round 19).
+                    if !ownership.contains("你写") {
+                        sb.push_str(&format!("{NL}本组没有归你写的原文：不写任何卡片，草稿的 `disposition` 写 `no_cards`。{NL}"));
+                    }
                 }
                 util::write_text(&file, &format!("{}{sb}", text.trim_end()))?;
             }
@@ -1741,6 +1789,13 @@ impl Compiler {
                         field(&part, "body")
                     ));
                 }
+                // The text the reviewer reads, frozen (Astra round 19): a verdict on text that changed
+                // since is no verdict on it.
+                let mut frozen = Map::new();
+                for at in std::iter::once(model["head"]["address"].clone()).chain(steps.iter().map(|st| st["address"].clone())) {
+                    let card = self.get(&at, "get_card")?;
+                    frozen.insert(s(&at), json!(crate::calls::authored_fingerprint(&card)));
+                }
                 planned.push(obj(vec![
                     ("unit", u["address"].clone()),
                     ("id", u["id"].clone()),
@@ -1748,6 +1803,7 @@ impl Compiler {
                     ("group", u["group"].clone()),
                     ("model", model["head"]["address"].clone()),
                     ("steps", json!(steps.iter().map(|st| obj(vec![("address", st["address"].clone()), ("facet", st["facet"].clone())])).collect::<Vec<_>>())),
+                    ("fingerprints", Value::Object(frozen)),
                 ]));
             }
             batches.insert(name.clone(), Value::Array(share.iter().map(|(u, _, _)| u["address"].clone()).collect()));
@@ -1771,7 +1827,13 @@ impl Compiler {
         // Which unit each reviewed step belongs to: the ledger completes one unit at a time
         // and reads the reviewed steps and the applied fixes back from this record (R240).
         let mut owner: CiMap<String> = CiMap::new();
+        let mut frozen: CiMap<String> = CiMap::new();
         for entry in pipe(&plan["units"]) {
+            if let Some(map) = entry["fingerprints"].as_object() {
+                for (at, fp) in map {
+                    frozen.insert(at, s(fp));
+                }
+            }
             // A verdict on the unit's head is the clause-level statement check (P1a M2.5).
             if truthy(&entry["model"]) {
                 owner.insert(&field(&entry, "model"), field(&entry, "unit"));
@@ -1783,15 +1845,38 @@ impl Compiler {
         let (mut ok, mut fixed) = (0, 0);
         let mut refused: Vec<Value> = Vec::new();
         let mut reviewed: Vec<Value> = Vec::new();
+        // The results of fixes this plan already accepted, in earlier apply rounds or before a crash:
+        // that text is current too, beside the text the plan froze.
+        let applied_file = join(&self.proof_work(), "applied.json");
+        let mut accepted: Map<String, Value> = if ps::exists(&applied_file) { read_json(&applied_file)?["accepted"].as_object().cloned().unwrap_or_default() } else { Map::new() };
         for name in ps::child_files(&out, "p-", ".json") {
             let answer = read_json(&join(&out, &name))?;
             for v in pipe(&answer["verdicts"]) {
                 let address = field(v, "address");
-                let unit = owner.get(&address).cloned().unwrap_or_default();
                 let reason = field(v, "reason");
+                // A verdict on an address the plan never named, or a verdict that is neither ok nor fix,
+                // decides nothing (Astra round 19).
+                let Some(unit) = owner.get(&address).cloned() else {
+                    refused.push(obj(vec![("address", json!(address)), ("reason", json!("not an address this review planned"))]));
+                    continue;
+                };
+                let verdict = field(v, "verdict");
                 let card = self.get(&json!(address), "get_card")?;
                 let before = crate::calls::authored_fingerprint(&card);
-                if !eq(&field(v, "verdict"), "fix") {
+                let stale = frozen.get(&address).is_some_and(|fp| *fp != before) && accepted.get(&address).and_then(Value::as_str) != Some(before.as_str());
+                if !matches!(verdict.as_str(), "ok" | "fix") || stale {
+                    let why = if stale { "the text changed after the review was planned".to_string() } else { format!("unknown verdict {verdict:?}") };
+                    refused.push(obj(vec![("address", json!(address)), ("reason", json!(why))]));
+                    reviewed.push(obj(vec![
+                        ("unit", json!(unit)),
+                        ("address", json!(address)),
+                        ("verdict", json!("refused")),
+                        ("reason", json!(why)),
+                        ("before", json!(before)),
+                    ]));
+                    continue;
+                }
+                if verdict == "ok" {
                     ok += 1;
                     reviewed.push(obj(vec![
                         ("unit", json!(unit)),
@@ -1803,6 +1888,21 @@ impl Compiler {
                     continue;
                 }
                 let new = field(v, "body");
+                // A fix already in place (an earlier round, or a run that stopped after writing it) is
+                // accepted as it stands.
+                if !new.trim().is_empty() && field(&card, "body") == new {
+                    fixed += 1;
+                    accepted.insert(address.clone(), json!(before));
+                    reviewed.push(obj(vec![
+                        ("unit", json!(unit)),
+                        ("address", json!(address)),
+                        ("verdict", json!("fix")),
+                        ("reason", json!(reason)),
+                        ("before", json!(before)),
+                        ("after", json!(before)),
+                    ]));
+                    continue;
+                }
                 if new.trim().is_empty() {
                     let why = format!("no body: {reason}");
                     refused.push(obj(vec![("address", json!(address)), ("reason", json!(why))]));
@@ -1846,6 +1946,7 @@ impl Compiler {
                     ("after", json!(crate::calls::authored_fingerprint(&after))),
                     ("kept_links", json!(kept)),
                 ]));
+                accepted.insert(address.clone(), json!(crate::calls::authored_fingerprint(&after)));
             }
         }
         save_json(
@@ -1857,6 +1958,7 @@ impl Compiler {
                 ("ok", json!(ok)),
                 ("fixed", json!(fixed)),
                 ("refused", json!(refused.len())),
+                ("accepted", Value::Object(accepted)),
             ]),
         )?;
         out_last(&obj(vec![("ok", json!(ok)), ("fixed", json!(fixed)), ("refused", json!(refused.len())), ("parts", json!(refused))]))
@@ -2154,19 +2256,25 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str, staging: &str) -> Result<Value
                     }
                 }
                 // M21 (P1a): every exercise has one faithful Card in its chapter's exercise group.
-                let groups: Vec<String> = ps::list(&allocation["chapters"]).into_iter().filter(|c| c["exercise_group"].is_number()).map(|c| field(c, "exercise_group")).collect();
-                let in_sets: Vec<String> = pipe(&tree["cards"])
-                    .into_iter()
-                    .map(|c| field(c, "address"))
-                    .filter(|a| groups.iter().any(|g| *a == format!("{key}/{g}") || a.starts_with(&format!("{key}/{g}|"))))
-                    .collect();
-                let mut set_cards: Vec<Value> = Vec::new();
-                for chunk in in_sets.chunks(100) {
-                    let reply = zt.call("get_cards", json!({ "addresses": chunk, "view": "text" }))?;
-                    set_cards.extend(ps::list(&reply["cards"]).into_iter().cloned());
+                // Each chapter's own exercise group, read once with bodies.
+                let mut by_chapter: std::collections::BTreeMap<String, Vec<Value>> = std::collections::BTreeMap::new();
+                for c in ps::list(&allocation["chapters"]).into_iter().filter(|c| c["exercise_group"].is_number()) {
+                    let g = field(c, "exercise_group");
+                    let in_set: Vec<String> = pipe(&tree["cards"])
+                        .into_iter()
+                        .map(|x| field(x, "address"))
+                        .filter(|a| *a == format!("{key}/{g}") || a.starts_with(&format!("{key}/{g}|")))
+                        .collect();
+                    let mut cards: Vec<Value> = Vec::new();
+                    for chunk in in_set.chunks(100) {
+                        let reply = zt.call("get_cards", json!({ "addresses": chunk, "view": "text" }))?;
+                        cards.extend(ps::list(&reply["cards"]).into_iter().cloned());
+                    }
+                    by_chapter.insert(field(c, "chapter_id"), cards);
                 }
                 let lines = |file: &str| ps::read_lines(&join(staging, &format!("sections\\{file}"))).unwrap_or_default();
-                for f in exercise_faults(&index["projection"], &set_cards, &lines) {
+                let cards_of = |chapter: &str| by_chapter.get(chapter).cloned().unwrap_or_default();
+                for f in exercise_faults(&index["projection"], &cards_of, &lines) {
                     add("M21", json!(key), json!(f));
                 }
                 let allocated: Vec<String> = pipe(&allocation["units"]).into_iter().map(|u| field(u, "object_id")).collect();
@@ -2412,30 +2520,44 @@ mod tests {
     #[test]
     fn every_exercise_has_one_faithful_card() {
         let projection = json!({"objects": [
-            {"id": "ch1:exercise:1.19", "kind": "exercise", "key": {"label": "1.19"}, "statement": [{"section": "s08.md", "line": 2, "end": 2}]},
-            {"id": "ch1:exercise:1.19:answer", "kind": "answer", "destination": "exercise:ch1:exercise:1.19"},
-            {"id": "ch1:exercise:1.2", "kind": "exercise", "key": {"label": "1.2"}, "statement": [{"section": "s08.md", "line": 1, "end": 1}]},
-            {"id": "ch1:exercise:1.3", "kind": "exercise", "key": {"label": "1.3"}, "statement": [{"section": "s08.md", "line": 3, "end": 3}]},
-            {"id": "ch1:exercise:1.3:hint", "kind": "hint", "destination": "exercise:ch1:exercise:1.3"}
+            {"id": "ch1:exercise:1.19", "kind": "exercise", "key": {"chapter": "ch1", "label": "1.19"}, "statement": [{"section": "s08.md", "line": 2, "end": 2}]},
+            {"id": "ch1:exercise:1.19:answer", "kind": "answer", "destination": "exercise:ch1:exercise:1.19", "statement": [{"section": "s08.md", "line": 4, "end": 4}]},
+            {"id": "ch1:exercise:1.2", "kind": "exercise", "key": {"chapter": "ch1", "label": "1.2"}, "statement": [{"section": "s08.md", "line": 1, "end": 1}]},
+            {"id": "ch1:exercise:1.3", "kind": "exercise", "key": {"chapter": "ch1", "label": "1.3"}, "statement": [{"section": "s08.md", "line": 3, "end": 3, "end_col": 14}]},
+            {"id": "ch1:exercise:1.3:hint", "kind": "hint", "destination": "exercise:ch1:exercise:1.3", "statement": [{"section": "s08.md", "line": 3, "end": 3, "col": 14}]}
         ]});
-        let lines = |_: &str| vec!["1.2. 证明不存在平方等于十二的有理数。\\".to_string(), "1.19. 设 a 与 b 属于 k 维空间，求球心。".to_string(), "1.3. 证明乘法消去律。提示：用公理。".to_string()];
+        let lines = |_: &str| {
+            vec![
+                "1.2. 证明不存在平方等于十二的有理数。\\".to_string(),
+                "1.19. 设 a 与 b 属于 k 维空间，求球心。".to_string(),
+                "1.3. 证明乘法的消去律。提示：用乘法公理。".to_string(),
+                "（解：3c = 4b - a，3r = 2 |b - a|。）".to_string(),
+            ]
+        };
         let good = vec![
-            json!({"address": "K/8|a|1", "title": "1.19：两定点距离之比", "body": "**题目**：1.19. 设 a 与 b 属于 k 维空间，求球心。\n\n**答案**：（解：……）"}),
+            json!({"address": "K/8|a|1", "title": "1.19：两定点距离之比", "body": "**题目**：1.19. 设 a 与 b 属于 k 维空间，求球心。\n\n**答案**：（解：3c = 4b - a，3r = 2 |b - a|。）"}),
             json!({"address": "K/8|a|2", "title": "1.2：12 不是平方", "body": "**题目**：证明不存在平方等于十二的有理数。"}),
-            json!({"address": "K/8|a|3", "title": "习题 1.3：消去律", "body": "**题目**：证明乘法消去律。\n\n**提示**：用公理。"}),
+            json!({"address": "K/8|a|3", "title": "习题 1.3：消去律", "body": "**题目**：证明乘法的消去律。\n\n**提示**：用乘法公理。"}),
+            json!({"address": "K/8", "title": "第 1 章习题", "body": "本章 3 道习题。"}),
         ];
-        assert!(exercise_faults(&projection, &good, &lines).is_empty(), "{:?}", exercise_faults(&projection, &good, &lines));
+        let of = |cards: Vec<Value>| move |chapter: &str| if chapter == "ch1" { cards.clone() } else { Vec::new() };
+        let f = exercise_faults(&projection, &of(good.clone()), &lines);
+        assert!(f.is_empty(), "{f:?}");
         let bad = vec![
-            json!({"address": "K/8|a|1", "title": "1.19：两定点距离之比", "body": "**题目**：设 a 与 b 属于 k 维空间，求球心。"}),
+            json!({"address": "K/8|a|1", "title": "1.19：两定点距离之比", "body": "**题目**：设 a 与 b 属于 k 维空间，求球心。\n\n**答案**：c 是某个点。"}),
             json!({"address": "K/8|a|2", "title": "1.2：12 不是平方", "body": "**题目**：证明不存在平方等于十二的有理数。\n\n**答案**：自己解出的答案。"}),
-            json!({"address": "K/8|a|3", "title": "1.3：消去律", "body": "**题目**：证明乘法消去律。"}),
-            json!({"address": "K/8|a|4", "title": "1.3：消去律（重复）", "body": "**题目**：证明乘法消去律。"}),
+            json!({"address": "K/8|a|3", "title": "1.3：消去律", "body": "**题目**：证明乘法的消去律。\n\n**提示**：随便试试。"}),
+            json!({"address": "K/8|a|4", "title": "2.6：放错章的题", "body": "**题目**：别的。"}),
         ];
-        let f = exercise_faults(&projection, &bad, &lines).join("\n");
-        assert!(f.contains("1.19 [[K/8|a|1]] leaves out the book's answer"), "{f}");
+        let f = exercise_faults(&projection, &of(bad.clone()), &lines).join("\n");
+        assert!(f.contains("1.19 [[K/8|a|1]] does not render the book's answer"), "{f}");
         assert!(f.contains("1.2 [[K/8|a|2]] writes an answer the book does not print"), "{f}");
-        assert!(f.contains("exercise ch1:exercise:1.3 has 2 Cards"), "{f}");
-        assert_eq!(exercise_faults(&projection, &bad[..2], &lines).iter().filter(|l| l.contains("has no Card")).count(), 1, "1.3 has no Card at all");
+        assert!(f.contains("1.3 [[K/8|a|3]] does not render the book's hint"), "{f}");
+        assert!(f.contains("[[K/8|a|4]] claims exercise 2.6, which chapter ch1 does not print"), "{f}");
+        let only_two = exercise_faults(&projection, &of(bad[..2].to_vec()), &lines);
+        assert_eq!(only_two.iter().filter(|l| l.contains("has no Card")).count(), 1, "1.3 has no Card at all");
+        let none = exercise_faults(&projection, &|_: &str| Vec::new(), &lines);
+        assert_eq!(none.iter().filter(|l| l.contains("has no Card")).count(), 3, "another chapter's Cards never count");
     }
 
 

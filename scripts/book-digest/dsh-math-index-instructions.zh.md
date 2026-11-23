@@ -24,7 +24,7 @@
 
 ## object 的字段
 
-- `kind`：以下之一，用英文小写：`definition`（定义）、`axiom`（公理）、`theorem`（定理）、`proposition`（命题）、`lemma`（引理）、`corollary`（推论）、`example`（例）、`remark`（注）、`notation`（记号）、`exercise`（习题）、`figure`（图）、`editorial`（编者或译者的说明）、`boilerplate`（版权页、目录等版式杂项）。书自己用了词时，按书的词选。书没有用词时，看内容：一般规则是结果，具体算例是例。
+- `kind`：以下之一，用英文小写：`definition`（定义）、`axiom`（公理）、`theorem`（定理）、`proposition`（命题）、`lemma`（引理）、`corollary`（推论）、`example`（例）、`remark`（注）、`notation`（记号）、`exercise`（习题）、`figure`（图）、`editorial`（编者或译者的说明）、`boilerplate`（版权页、目录等版式杂项）。书自己用了词时，按书的词选。书没有用词时，看内容：一般规则是结果，具体算例是例。书在正文里用“称为”“叫作”“记作”或粗体、斜体第一次说清一个概念（例如“若存在 M 使……，则称序列有界”），那一句是一个没有编号的 `definition`，不是说明文字。
 - `label`：书印的编号，只写编号，如 `1.19`、`19`、`III`。书没有印编号时写空字符串 `""`。不要自己编号。习题照书印的样子写：书印 `2.26.` 就写 `2.26`。
 - 一个编号下的几个小题或几个部分（(a)、(b)、(c)）是同一个对象：整段写成一个 `object`，不要为每个小题另写对象，`sublabel` 不写。
 - `name`：中文短名，最多 20 字，如 `实数域的存在`。
