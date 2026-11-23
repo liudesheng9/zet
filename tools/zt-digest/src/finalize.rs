@@ -433,7 +433,10 @@ fn run_plan(p: &Prepared, zt: &mut Zt, a: &Params) -> Result<Value> {
         bail!("this prepared run registered no audit publication");
     };
     let state = unit_state(&conn, &unit)?;
-    if state != "done" {
+    // A done revision that no longer describes the present inputs is no scheduling audit either (Rudin pilot
+    // 2026-11-23: a resume rebuilt a model and republished the Term cards after it, and the plan read Cards that
+    // no longer existed): the fresh report becomes a new revision.
+    if state != "done" || !ledger::publication_is_current(&conn, "audit")? {
         let mut artifacts = BTreeMap::new();
         artifacts.insert("report".to_string(), report_path.clone());
         complete_publication(p, zt, "audit", Value::Null, &artifacts, &[])?;
