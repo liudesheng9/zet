@@ -111,6 +111,21 @@ try {
     $index = Last (Run 'index-apply')
     $replan = Last (Run 'index')
     Assert ($replan.ok -eq $true -and @($replan.jobs).Count -eq 0 -and $replan.reused -eq 1) 'index: a resume plans no job for an answer that passes its check (the unit ids stay)'
+    # P1a M2.1: a book-level fault that the packet check cannot see goes back once to the job it names.
+    $faulty = ($goodAnswer | ConvertFrom-Json -AsHashtable)
+    foreach ($f in $faulty.fragments) { if ($f.kind -eq 'example') { $f.destination = @{ to = 'unit'; target = @{ label = '9.9.9' } } } }
+    [IO.File]::WriteAllText($answerFile, ($faulty | ConvertTo-Json -Depth 12), $utf8)
+    $refused = Last (Run 'index-apply')
+    Assert ($refused.ok -eq $false -and $refused.codes.open_destination -eq 1 -and -not (Test-Path (Join-Path $staging 'math\index.json'))) 'index-apply: a projection with a fault is refused and leaves no index behind'
+    $repair = Last (Run 'index')
+    $repairText = Get-Content -Raw (Join-Path $staging 'math\index\ix-01.md')
+    Assert ($repair.repair -eq 1 -and @($repair.jobs).Count -eq 1 -and $repairText.Contains('合并全书时发现的问题') -and $repairText.Contains('open_destination')) 'index: the repair round sends the fault to the job it names'
+    $again = Last (Run 'index')
+    Assert ($again.repair -eq 0 -and @($again.jobs).Count -eq 0) 'index: the same findings are never sent twice'
+    [IO.File]::WriteAllText($answerFile, $goodAnswer, $utf8)
+    $corrected = Last (Run 'index-apply')
+    Assert ($corrected.ok -eq $true -and (Test-Path (Join-Path $staging 'math\index.json'))) 'index-apply: the corrected answers settle the projection'
+    $index = $corrected
     Assert ($index.units -eq 5) 'index: five units'
     Assert ($index.forms.theorem -eq 1 -and $index.forms.lemma -eq 1 -and $index.forms.axiom -eq 1) 'index: the forms'
     Assert ($index.examples -eq 1 -and $index.exercises -eq 1) 'index: one example and one exercise'
@@ -197,7 +212,8 @@ try {
 
     # --- boundary ----------------------------------------------------------------------------------------
     $bplan = Last (Run 'boundary')
-    Assert ($bplan.units -eq 3 -and @($bplan.jobs).Count -eq 1) 'boundary: the theorem, the lemma, and the corollary need hypothesis roles'
+    # P0 (zt-digest 0.56.0): a head that still holds 待写 is not ready for boundary work; it waits.
+    Assert ($bplan.units -eq 2 -and $bplan.unbuilt -eq 1 -and @($bplan.jobs).Count -eq 1) 'boundary: the theorem and the lemma need hypothesis roles; the corollary, still 待写, waits'
     $bjob = Get-Content -Raw $bplan.jobs[0].files[1]
     Assert ($bjob -match 'hypotheses:H1,H2' -and $bjob -notmatch [regex]::Escape("[[$def]] 定义")) 'boundary: the definition with a contrast pair needs nothing'
     $steps = @($model.build.order | Where-Object { $_.line -eq 'main' } | ForEach-Object { $_.address })

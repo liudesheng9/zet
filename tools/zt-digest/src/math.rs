@@ -35,7 +35,7 @@ use crate::model::{read_calls, read_one};
 use crate::ps::{self, CiMap, NL, eq, field, is_in, join, pipe, s, truthy};
 use crate::util;
 use crate::zt::Zt;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -238,6 +238,14 @@ fn bump(map: &mut CiMap<i64>, k: &str) {
     map.insert(k, n);
 }
 
+/// Remove a file when it exists: a failed step must not leave an earlier step's artifact behind.
+fn remove_if_present(path: &str) -> Result<()> {
+    if ps::exists(path) {
+        std::fs::remove_file(path).with_context(|| format!("cannot remove {path}"))?;
+    }
+    Ok(())
+}
+
 /// The prepared sections of a book in prepared group order, each with its group, chapter and lines.
 pub(crate) fn prepared_sections(staging: &str, manifest: &Value) -> Result<Vec<index::Section>> {
     let mut out = Vec::new();
@@ -282,20 +290,20 @@ fn index_jobs(sections: &[index::Section], max_chars: usize) -> Vec<Vec<index::S
     jobs
 }
 
-/// The statement index of a prepared book, built from the finder's retained answers
-/// (`math\index\plan.json` and each job's `out\<id>.json`). Each answer must pass its check
-/// against the sections its job was given; a missing or failing answer is an error, never an
-/// empty index. `index-apply` writes this, and the ledger re-derives it from the same files.
-pub(crate) fn retained_index(staging: &str, manifest: &Value) -> Result<(Vec<Value>, Vec<Value>)> {
+/// The ownership projection of a prepared book (docs/math-digest-p1a-design.md §2), built from
+/// the finder's retained answers (`math\index\plan.json` and each job's `out\<id>.json`), each
+/// read against its own packet's sections, with the frozen expected set `math\expected.json`
+/// when the run has one. Each answer must pass its packet's check; a missing or failing answer is
+/// an error, never an empty projection. The projection itself may still carry faults.
+pub(crate) fn retained_projection(staging: &str, manifest: &Value) -> Result<Value> {
     let sections = prepared_sections(staging, manifest)?;
     let work = join(staging, "math\\index");
     let plan = read_json(&join(&work, "plan.json"))?;
-    let mut answers = Vec::new();
+    let mut packets = Vec::new();
     let mut faults = Vec::new();
     for job in pipe(&plan["jobs"]) {
         let id = field(job, "id");
         let files: Vec<String> = pipe(&job["sections"]).into_iter().map(s).collect();
-        let mine: Vec<index::Section> = sections.iter().filter(|x| files.iter().any(|f| eq(f, &x.file))).cloned().collect();
         let file = join(&work, &format!("out\\{id}.json"));
         if !ps::exists(&file) {
             faults.push(format!("{id}: no answer"));
@@ -308,17 +316,38 @@ pub(crate) fn retained_index(staging: &str, manifest: &Value) -> Result<(Vec<Val
                 continue;
             }
         };
-        let f = index::check_answer(&answer, &mine);
+        let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        let f = source::check_answer(&answer, &sections, &refs);
         if !f.is_empty() {
             faults.push(format!("{id}: {} faults ({})", f.len(), f[0]));
             continue;
         }
-        answers.push(answer);
+        packets.push(source::Packet { id: id.clone(), answer, sections: files });
     }
     if !faults.is_empty() {
         bail!("the statement finder's answers are not complete: {}", faults.join("; "));
     }
-    Ok(index::build(&answers, &sections))
+    let expected_file = join(staging, "math\\expected.json");
+    let expected = if ps::exists(&expected_file) { Some(read_json(&expected_file)?) } else { None };
+    Ok(source::join(&packets, &sections, expected.as_ref(), &field(manifest, "source_sha256")))
+}
+
+/// The statement index records the skeleton and the later steps read: the view of a settled
+/// projection (`source::legacy_view`). A projection with faults is an error: the index stage has
+/// not settled, so nothing may be allocated from it. `index-apply` writes this, and the ledger
+/// re-derives it from the same files.
+/// The hash of a retained projection, taken the way `index-apply` took it.
+pub(crate) fn source_projection_hash(projection: &Value) -> String {
+    source::projection_hash(projection)
+}
+
+pub(crate) fn retained_index(staging: &str, manifest: &Value) -> Result<(Vec<Value>, Vec<Value>)> {
+    let projection = retained_projection(staging, manifest)?;
+    let faults = ps::list(&projection["faults"]);
+    if !faults.is_empty() {
+        bail!("the statement projection has {} faults (first: {}: {})", faults.len(), field(faults[0], "code"), field(faults[0], "detail"));
+    }
+    Ok(source::legacy_view(&projection, &prepared_sections(staging, manifest)?))
 }
 
 /// The unit-list block the skeleton appends to a prepared group file: one entry per
@@ -584,7 +613,8 @@ impl Compiler {
             planned.push(obj(vec![("id", json!(id)), ("sections", json!(files)), ("groups", json!(ps::select_unique(share.iter().map(|x| x.group.to_string()))))]));
             // A resume reruns no finished work: an answer that passes its check against the same
             // sections stays, so the index (and every unit id the skeleton built from it) stays.
-            if ps::exists(&out) && read_json(&out).map(|a| index::check_answer(&a, share).is_empty()).unwrap_or(false) {
+            let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+            if ps::exists(&out) && read_json(&out).map(|a| source::check_answer(&a, &sections, &refs).is_empty()).unwrap_or(false) {
                 reused += 1;
                 continue;
             }
@@ -596,11 +626,54 @@ impl Compiler {
             jobs.push(obj(vec![
                 ("id", json!(id)),
                 ("files", json!([doc, job])),
-                ("prompt", json!(format!("按以上说明找出 {id} 各文件里的数学陈述，写出 JSON 文件，运行 SELF-CHECK。最后只回复一行 JSON。"))),
+                ("prompt", json!(format!("按以上说明找出 {id} 各文件里的数学对象，认领每一段原文，写出 JSON 文件，运行 SELF-CHECK。最后只回复一行 JSON。"))),
             ]));
         }
-        save_json(&join(&iw, "plan.json"), &obj(vec![("schema_version", json!(1)), ("index_chars", json!(self.p.index_chars)), ("jobs", json!(planned))]))?;
-        out_last(&obj(vec![("ok", json!(true)), ("sections", json!(sections.len())), ("chars", json!(chars)), ("reused", json!(reused)), ("jobs", json!(jobs))]))
+        save_json(&join(&iw, "plan.json"), &obj(vec![("schema_version", json!(2)), ("index_chars", json!(self.p.index_chars)), ("jobs", json!(planned))]))?;
+        // The repair round: when every answer passes its packet's check, the book-level join may still
+        // fault (a key printed in two packets, a proof whose theorem another packet names). Each fault
+        // names its jobs; a job gets its findings once, appended to its job file, and corrects its own
+        // answer in place. The same findings are never sent twice (`repair.json`), so a fault the job
+        // cannot fix stays in the projection and stops `index-apply`.
+        let mut repaired = 0usize;
+        if jobs.is_empty() {
+            let projection = retained_projection(&self.p.staging, &self.manifest)?;
+            let mut by_job: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+            for f in ps::list(&projection["faults"]) {
+                for j in ps::list(&f["jobs"]) {
+                    by_job.entry(s(j)).or_default().push(format!("- `{}`：{}", field(f, "code"), field(f, "detail")));
+                }
+            }
+            let repair_file = join(&iw, "repair.json");
+            let mut sent = if ps::exists(&repair_file) { read_json(&repair_file)? } else { json!({}) };
+            for (k, share) in index_jobs(&sections, self.p.index_chars as usize).iter().enumerate() {
+                let id = format!("ix-{}", ps::d2(k as i64 + 1));
+                let Some(findings) = by_job.get(&id) else { continue };
+                let digest = crate::canon::sha256_hex(findings.join("\n").as_bytes());
+                if field(&sent, &id) == digest {
+                    continue;
+                }
+                let out = join(&iw, &format!("out\\{id}.json"));
+                let check = format!("zt-digest math -Step index-check -Staging \"{}\" -Job {id}", self.p.staging);
+                let mut text = index::job_text(&self.title, &id, &out, &check, share);
+                text.push_str(&format!(
+                    "## 合并全书时发现的问题{NL}{NL}全书各任务的答案合在一起检查时，下面的问题涉及本任务的文件。你上次的答案已在 `{out}`：在这个文件上改正这些问题，不要从头重写；改完运行 SELF-CHECK。{NL}{NL}{}{NL}",
+                    findings.join(NL)
+                ));
+                chars += text.chars().count();
+                let job = join(&iw, &format!("{id}.md"));
+                util::write_text(&job, &text)?;
+                jobs.push(obj(vec![
+                    ("id", json!(id)),
+                    ("files", json!([doc, job])),
+                    ("prompt", json!(format!("按以上说明改正 {id} 的答案文件里“合并全书时发现的问题”列出的问题，运行 SELF-CHECK。最后只回复一行 JSON。"))),
+                ]));
+                sent[id.as_str()] = json!(digest);
+                repaired += 1;
+            }
+            save_json(&repair_file, &sent)?;
+        }
+        out_last(&obj(vec![("ok", json!(true)), ("sections", json!(sections.len())), ("chars", json!(chars)), ("reused", json!(reused)), ("repair", json!(repaired)), ("jobs", json!(jobs))]))
     }
 
     /// The self-check of one finder answer: one fault per line, then `faults: N`.
@@ -615,13 +688,14 @@ impl Compiler {
             bail!("no finder job {id} in {}", join(&iw, "plan.json"));
         };
         let files: Vec<String> = pipe(&job["sections"]).into_iter().map(s).collect();
-        let mine: Vec<index::Section> = prepared_sections(&self.p.staging, &self.manifest)?.into_iter().filter(|x| files.iter().any(|f| eq(f, &x.file))).collect();
+        let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        let sections = prepared_sections(&self.p.staging, &self.manifest)?;
         let file = join(&iw, &format!("out\\{id}.json"));
         let faults = if !ps::exists(&file) {
             vec![format!("no answer file {file}")]
         } else {
             match read_json(&file) {
-                Ok(a) => index::check_answer(&a, &mine),
+                Ok(a) => source::check_answer(&a, &sections, &refs),
                 Err(e) => vec![format!("the answer is not valid JSON: {e}")],
             }
         };
@@ -632,14 +706,51 @@ impl Compiler {
         Ok(())
     }
 
-    /// The index from every checked answer, in the record shape the skeleton reads.
+    /// The ownership projection from every checked answer (`math\index-projection.json`, kept
+    /// whether or not it settles, so its faults can be read), and, once it settles, the index in the
+    /// record shape the skeleton reads, bound to the projection's hash.
     fn step_index_apply(&mut self) -> Result<()> {
-        let (units, others) = match retained_index(&self.p.staging, &self.manifest) {
-            Ok(x) => x,
-            Err(e) => return out_last(&obj(vec![("ok", json!(false)), ("error", json!(e.to_string()))])),
-        };
+        // The settled index is one artifact: `mathindex.json` holds the projection and its record view, bound
+        // by the projection's hash. Any failure removes an earlier `index.json`, so no later step reads a stale one;
+        // a projection with faults is kept beside it for reading (`mathindex-projection.json`).
         let index_file = join(&self.work, "index.json");
-        save_json(&index_file, &obj(vec![("units", json!(units)), ("others", json!(others))]))?;
+        let projection_file = join(&self.work, "index-projection.json");
+        let projection = match retained_projection(&self.p.staging, &self.manifest) {
+            Ok(x) => x,
+            Err(e) => {
+                remove_if_present(&index_file)?;
+                return out_last(&obj(vec![("ok", json!(false)), ("error", json!(e.to_string()))]));
+            }
+        };
+        let faults = ps::list(&projection["faults"]);
+        if !faults.is_empty() {
+            remove_if_present(&index_file)?;
+            save_json(&projection_file, &projection)?;
+            let mut codes: CiMap<i64> = CiMap::new();
+            for f in &faults {
+                bump(&mut codes, &field(f, "code"));
+            }
+            let first: Vec<Value> = faults.iter().take(20).map(|f| (*f).clone()).collect();
+            return out_last(&obj(vec![
+                ("ok", json!(false)),
+                ("error", json!(format!("the statement projection has {} faults; read {projection_file}", faults.len()))),
+                ("codes", counts(&codes)),
+                ("faults", json!(first)),
+                ("file", json!(projection_file)),
+            ]));
+        }
+        remove_if_present(&projection_file)?;
+        let (units, others) = source::legacy_view(&projection, &prepared_sections(&self.p.staging, &self.manifest)?);
+        save_json(
+            &index_file,
+            &obj(vec![
+                ("schema_version", json!(2)),
+                ("projection_hash", projection["hash"].clone()),
+                ("projection", projection.clone()),
+                ("units", json!(units)),
+                ("others", json!(others)),
+            ]),
+        )?;
         let mut md = format!("# 数学单元索引：《{}》{NL}{NL}", self.title);
         md.push_str(&format!("| 编号 | 形式 | 层级 | 名称 | 原文 | 证明 | 引用 |{NL}| --- | --- | --- | --- | --- | --- | --- |{NL}"));
         for u in &units {
@@ -686,6 +797,9 @@ impl Compiler {
             ("exercises", json!(others.iter().filter(|o| eq(&field(o, "kind"), "exercise")).count())),
             ("proofs", json!(units.iter().filter(|u| ps::int(&u["proof"]).unwrap_or(0) > 0).count())),
             ("cites", json!(cites)),
+            ("objects", json!(ps::list(&projection["objects"]).len())),
+            ("leaves", json!(ps::list(&projection["leaves"]).len())),
+            ("hash", projection["hash"].clone()),
             ("file", json!(index_file)),
         ]))
     }

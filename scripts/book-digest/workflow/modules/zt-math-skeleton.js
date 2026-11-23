@@ -1,4 +1,4 @@
-// ==== module zt-math-skeleton v4 ====
+// ==== module zt-math-skeleton v5 ====
 // After Prepare (mode full): math-steps.ps1's skeleton step runs the statement index, writes the math prompt
 // files (docs: the shared instructions with the math supplements appended) and builds the skeleton (a unit Model
 // Card per definition, axiom, and result, a Theory Card per chapter) in ONE process (#178). Then, unless
@@ -10,8 +10,11 @@
 // finder (one job per 30,000 characters of whole groups, each section with numbered lines and a self-check);
 // the content managers run those jobs; then the skeleton chain builds the index from the checked answers. A
 // missing or failing answer stops the stage with its reason, never an empty index.
+// 5 (P1a M2.1, docs/math-digest-p1a-design.md §2): the finder answers in schema 2 and the index is the ownership
+// projection. After the finder jobs a second plan step joins the answers; a book-level fault goes back once to the
+// jobs it names (their findings appended to their job files), and the same findings are never sent twice.
 defineModule({
-  id: 'zt-math-skeleton', version: '4', requires: ['zt-math-lib'],
+  id: 'zt-math-skeleton', version: '5', requires: ['zt-math-lib'],
   summary: 'ZT math digest: statement finder (DeepSeek), math prompt files, unit and Theory Card skeleton, notation table.',
   params: {
     key: { type: 'any', description: "the run's Citation key from the prepared run (stages.prepare.output.citation_key): in mode full args.citationKey, in mode resume the ledger's retained key (#87)" },
@@ -25,13 +28,16 @@ defineModule({
     // The statement finder: one plan step, then its DeepSeek jobs in the content managers.
     const finder = M.must('index', await M.step('math-skeleton', 'index', 'find statements'))
     await M.jobs('math-skeleton: find statements', finder, 'index')
+    // The repair round: the joined answers' book-level faults go back to the jobs they name, once.
+    const repair = M.must('index', await M.step('math-skeleton', 'index', 'repair statements'))
+    if (n(repair.repair) > 0) await M.jobs('math-skeleton: repair statements', repair, 'index')
     // One chain, one drive job: the index from the answers, the prompt files, and the applied skeleton.
     const start = M.must('skeleton', await M.step('math-skeleton', 'skeleton', 'start'))
     const index = { units: n(start.index_units), forms: n(start.index_forms), examples: n(start.index_examples), exercises: n(start.index_exercises) }
     const docs = { files: n(start.docs_files) }
     const skeleton = { units: n(start.skeleton_units), theories: n(start.skeleton_theories) }
     log(`Math: ${index.units} units (${index.forms} forms), ${index.examples} examples, ${index.exercises} exercises; skeleton ${skeleton.units} units and ${skeleton.theories} Theory Cards.`)
-    const reports = { finder: { sections: n(finder.sections), jobs: n(finder.jobs) }, index, docs, skeleton }
+    const reports = { finder: { sections: n(finder.sections), jobs: n(finder.jobs), repaired: n(repair.repair) }, index, docs, skeleton }
     if (M.A.notation !== false) {
       // The notation table: one DeepSeek job over the symbol candidates, then the step that writes the table.
       const plan = await M.step('math-skeleton', 'notation', 'notation plan')

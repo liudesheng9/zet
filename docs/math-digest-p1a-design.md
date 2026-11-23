@@ -147,6 +147,19 @@ P1a is built in two milestones. Every step is test-first at the seam it names.
 
 Thompson's matched answers, its exact-versus-approximate arithmetic and its figure provenance stay as **offline fixtures**. Every paid pilot uses Rudin.
 
+**Milestone 2 slices (decided 2026-11-23 under the owner's overnight authority; each slice test-first, released and reviewed by Astra before the next):**
+
+| Slice | Content | Done when |
+|---|---|---|
+| M2.1 Finder on schema 2 | `index`/`index-check`/`index-apply` use `math/source.rs`; the SELF-CHECK also lists every passage of the packet that no fragment claims (a job sees what it left undone); `math/index.json` holds the projection and the old `units`/`others` records as a view derived from it (one path); `math-index/book@1` settles only on a projection with no faults and records its hash; an optional frozen `math/expected.json`; the finder instructions rewritten for schema 2 with a full-size sample | Script tests and the crate pass on the new answers |
+| M2.2 Allocation from the projection | The skeleton allocates one head per own `unit:` destination from the allocation record bound to the index hash; printed chapters (not prepared groups) carry the entry anchors and the Theory Cards; each chapter's exercise set is bound to one writer group; M0 against the projection | A copied-box skeleton run on the Rudin slice |
+| M2.3 Group writers | Assigned leaves and unit addresses in the group prompt; the `route` and zero-write dispositions; coverage C6 | Draft, preview, finish and replay tests |
+| M2.4 Card review | Assigned leaves, allowed endpoints and outstanding claims in the review packet; a unit defect routed to its owner | Card-review tests |
+| M2.5 Units and proofs | Owned spans as the unit compiler's source; the part budget after the architect; proof review with the source proof spans and a clause-level statement verdict | Compiler and proof tests |
+| M2.6 Checks and settlement | M19–M21 in `blocking`; exercise rendering and read-back; receipts bound to the index hash; M20 on passing verdicts | Math-check and ledger tests |
+| M2.7 Rudin pilot | The paid pilot of §7 on a box copy | The §7 gates |
+
+
 ## 7. The Rudin pilot
 
 The pilot runs on a fresh box copy built the way the Thompson box was (own config and archive, `zt-box.txt` pin, source check to 0 faults, `figures: false`, `bridge: false`), from the bilingual Markdown of the Rudin slice. Before dispatch, the pilot freezes, independently of the finder and the label scan (so an item both miss is still caught), the expected printed keys and their locators, the expected unnumbered objects by kind and source locator, and the designated main-result IDs of each chapter. A copied-box pass earns **pilot** status for P1a only. It qualifies neither full P1 nor production replacement.

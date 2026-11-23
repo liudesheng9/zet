@@ -1721,9 +1721,12 @@ function runtime(kind, opts = {}) {
     if (step === 'layer-state') return { ok: true, layer: mathArg(cmd, 'Layer'), total: 0, done: 0, open: 0, evidence: false }
     if (step === 'settle') return { ok: true, layer: mathArg(cmd, 'Layer'), settled: 0 }
     if (step === 'index') {
+      // zt-math-skeleton v5: the second index call is the repair plan; every answer passes and the joined
+      // projection has no fault, so it sends no job back (repair 0), as the real step does.
+      const repairRound = mathCalls.filter((c) => c.step === 'index').length > 1
       const plan = call(`zt-digest math -Step index -Staging "${out}"`)
-      const jobs = (plan.jobs || []).map((j) => job(j.id))
-      return { ok: true, sections: Number(plan.sections || 0), chars: Number(plan.chars || 0), jobs: jobs.length, file: saved('index-jobs.json', jobs) }
+      const jobs = repairRound ? [] : (plan.jobs || []).map((j) => job(j.id))
+      return { ok: true, sections: Number(plan.sections || 0), chars: Number(plan.chars || 0), repair: 0, jobs: jobs.length, file: saved('index-jobs.json', jobs) }
     }
     if (step === 'skeleton') {
       if (opts.mathSkeletonFails) return { ok: false, step: 'index', error: 'math-compiler: the prepared sections name no numbered statement' }
@@ -3724,12 +3727,13 @@ for (const which of ['econ', 'math']) {
   // The stages' steps run in their stage order (zt-digest 0.55.0: the statement finder's `index` first): the statement chain and the notation table, then boundary, then
   // proof, then Theory (after the Link check) and the read-only check last.
   const order = mathCalls.map((c) => c.step).join(',')
-  check(order === 'index,skeleton,notation,notation-apply,layer-state,boundary,boundary-apply,boundary-settle,layer-state,proof,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
+  check(order === 'index,index,skeleton,notation,notation-apply,layer-state,boundary,boundary-apply,boundary-settle,layer-state,proof,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
   const at = (label) => mathCalls.findIndex((c) => c.step === label)
   check(at('skeleton') < at('notation') && at('notation') < at('notation-apply') && at('boundary-settle') < at('proof') && at('proof-apply') < at('theory') && at('theory-apply') < at('check'), `#178: one stage finishes before the next starts (${order})`)
   // Each content round runs the job list its plan step wrote, at most eight jobs per manager.
   const contents = layerManagers.filter((m) => m.kind === 'content' && /^math-/.test(m.label || ''))
-  const planned = mathCalls.filter((c) => ['index', 'notation', 'boundary', 'boundary-apply', 'proof', 'theory'].includes(c.step)).map((c) => c.step)
+  // The repair plan (the second index call) sends no job on a clean run, so it has no content round.
+  const planned = mathCalls.filter((c, i) => ['index', 'notation', 'boundary', 'boundary-apply', 'proof', 'theory'].includes(c.step) && !(c.step === 'index' && mathCalls.findIndex((d) => d.step === 'index') !== i)).map((c) => c.step)
   check(contents.length >= planned.length && contents.every((m) => /\\math\\drive\\[\w-]+\.json$/.test(m.file || '') && m.jobs.length <= 8), `#178: every content manager reads the job list its plan step wrote, at most eight jobs (${contents.map((m) => `${(m.file || '').split('\\').pop()}:${m.jobs.length}`).join(', ')})`)
   check(contents.filter((m) => m.jobs.length > 0).length === planned.length, `#178: each plan step's jobs run once (${contents.filter((m) => m.jobs.length > 0).map((m) => m.jobs.join('+')).join(', ')})`)
   // The run reports every mathematics stage; the report's own params read the skeleton stage's index, docs,

@@ -176,7 +176,8 @@ switch ($Step) {
         $r = Math 'index' @('-IndexChars', "$IndexChars")
         if (-not $r.json -or $r.json.ok -ne $true) { Fail 'index' $r }
         $saved = Save-Jobs 'index-jobs.json' $r
-        Reply @{ ok = $true; sections = [int]$r.json.sections; chars = [int]$r.json.chars; jobs = $saved.count; file = $saved.file } $r.json
+        # repair: the jobs this plan sends back with the book-level findings of the joined answers (P1a M2.1).
+        Reply @{ ok = $true; sections = [int]$r.json.sections; chars = [int]$r.json.chars; repair = [int]$r.json.repair; jobs = $saved.count; file = $saved.file } $r.json
     }
     'skeleton' {
         # One process: the index from the finder's checked answers, the prompt files the model stage reads, and the

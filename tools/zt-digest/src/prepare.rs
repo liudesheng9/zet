@@ -645,6 +645,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
             end: a.has("EndHeading").then(|| a.str("EndHeading")),
             skip: a.has("SkipHeadings").then(|| a.str("SkipHeadings")),
             continues: a.has("Extend"),
+            keep_exercises: a.str("Variant").eq_ignore_ascii_case("math"),
         };
         match resolve::run(&mut zt, &out, book.trim(), &explicit)? {
             resolve::Outcome::NeedsSelection(result) => {
@@ -693,7 +694,9 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     let no_figures = a.flag("NoFigures");
     let apply = a.flag("Apply");
     let variant=if a.has("Variant") {a.choice("Variant",&["econ","math","history"])?} else {String::new()};
-    if !variant.is_empty() && !apply {bail!("Variant requires Apply so the prepared run can bind its actual archive");}
+    // A variant without -Apply is the source check's dry run (docs/agents/workflow-principles.md): it reads the
+    // range the variant reads (a mathematics run keeps its exercises) and binds no archive, ledger or Card; the
+    // binding below runs under -Apply only.
     if a.has("RunOptions") && variant.is_empty() {bail!("RunOptions requires Variant and Apply");}
     if (a.has("MaxAttempts") || a.has("DshRunCap")) && variant.is_empty() {bail!("MaxAttempts and DshRunCap require Variant and Apply");}
     // R329 (§15.2): a full digest that would write this Literature tree reads the tree normally and
@@ -740,7 +743,7 @@ pub fn cli(argv: &[String]) -> Result<i32> {
     // through every appendix, and an end heading or a skip that would leave one out is refused.
     if resolved.is_none() {
         let given = |name: &str| a.has(name).then(|| a.str(name));
-        (start, end, skip_headings) = resolve::source_range(&raw, &source, given("StartHeading"), given("EndHeading"), given("SkipHeadings"))?;
+        (start, end, skip_headings) = resolve::source_range(&raw, &source, given("StartHeading"), given("EndHeading"), given("SkipHeadings"), a.str("Variant").eq_ignore_ascii_case("math"))?;
     }
     if file_id == 0
         && let Some(id) = figures::file_id_in_path(&source)

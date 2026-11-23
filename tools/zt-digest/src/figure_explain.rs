@@ -74,6 +74,7 @@ fn file_ids(a: &Args, work: &str) -> Result<Vec<i64>> {
             end: None,
             skip: None,
             continues: false,
+            keep_exercises: false,
         };
         // An unresolved choice is the preparation's to report: this pass then has nothing to read.
         if let crate::prepare::resolve::Outcome::Ready(resolved) = crate::prepare::resolve::run(&mut zt, work, book.trim(), &explicit)? {

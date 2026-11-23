@@ -83,6 +83,9 @@ const BACK: &[&str] = &[
     "译后记",
 ];
 
+/// The exercise headings of `SKIP`: a mathematics run keeps them (docs/math-digest-p1a-design.md §2.2).
+const EXERCISE: &[&str] = &["习题", "练习题", "练习", "思考题", "exercises", "problems"];
+
 /// Headings whose sections the digest leaves out.
 const SKIP: &[&str] = &[
     "习题",
@@ -128,6 +131,8 @@ pub struct Explicit {
     pub skip: Option<String>,
     /// `-Extend`: the run continues the book's existing tree, so its Citation key must already name it.
     pub continues: bool,
+    /// A mathematics run (`-Variant math`): its exercise sections are content, not skipped.
+    pub keep_exercises: bool,
 }
 
 /// A frozen preparation: every choice the rest of `prepare` reads.
@@ -958,7 +963,7 @@ fn resolve_range(work: &Work, path: &str, headings: &[Heading], x: &Explicit) ->
     if headings.is_empty() {
         bail!("Work {}'s document at {path} has no `#` or `##` heading to split; pass the book's Markdown with -Source", work.id);
     }
-    let proposal = propose(headings);
+    let proposal = propose(headings, x.keep_exercises);
     let (start, start_explicit) = match x.start.as_deref().filter(|value| !value.trim().is_empty()) {
         Some(title) => match index_of(headings, title) {
             Some(index) => (index, true),
@@ -1040,7 +1045,7 @@ fn skip_titles(headings: &[Heading], skip: &[usize]) -> Vec<String> {
 /// Chinese text, where the bilingual filter drops an English-only heading whose next block is
 /// its translation, so a heading with Chinese characters is preferred for the start and the
 /// end; an English-only one is a last resort and `prepare` then reports it precisely.
-fn propose(headings: &[Heading]) -> Proposal {
+fn propose(headings: &[Heading], keep_exercises: bool) -> Proposal {
     let top = (0..headings.len()).filter(|index| headings[*index].level == 1).collect::<Vec<usize>>();
     let chinese = |index: &usize| crate::prepare::has_cjk(&headings[*index].title);
     let start = top
@@ -1066,7 +1071,8 @@ fn propose(headings: &[Heading]) -> Proposal {
     let skip = (start + 1..limit)
         .filter(|index| {
             let title = &headings[*index].title;
-            headings[*index].level <= 2 && (is_skippable(title) || (headings[*index].level == 1 && is_back(title)))
+            let exercise = keep_exercises && heading_matches(title, EXERCISE);
+            headings[*index].level <= 2 && !exercise && (is_skippable(title) || (headings[*index].level == 1 && is_back(title)))
         })
         .collect();
     Proposal { start, end, skip }
@@ -1074,7 +1080,7 @@ fn propose(headings: &[Heading]) -> Proposal {
 
 /// The start, end and skip headings of a source given as a file (`-Source`, no Work): the same rule as a resolved
 /// Work's range, so an appendix is digested whichever way the digest is fed. Returns (start, end, skip).
-pub(crate) fn source_range(raw: &str, path: &str, start: Option<String>, end: Option<String>, skip: Option<String>) -> Result<(String, String, String)> {
+pub(crate) fn source_range(raw: &str, path: &str, start: Option<String>, end: Option<String>, skip: Option<String>, keep_exercises: bool) -> Result<(String, String, String)> {
     let headings = scan_headings(raw);
     // As before this rule: a skip heading the file does not have leaves nothing out, and an explicit empty end
     // runs the range to the end of the file.
@@ -1095,6 +1101,7 @@ pub(crate) fn source_range(raw: &str, path: &str, start: Option<String>, end: Op
         end,
         skip,
         continues: false,
+        keep_exercises,
     };
     let range = resolve_range(&work, path, &headings, &x)?;
     let end = if to_the_end { String::new() } else { range.end_heading };
@@ -1193,6 +1200,7 @@ mod tests {
             end: None,
             skip: None,
             continues: false,
+            keep_exercises: false,
         }
     }
 
@@ -1285,7 +1293,7 @@ mod tests {
     fn the_proposal_starts_after_the_front_matter_and_stops_at_the_back_matter() {
         let raw = "# Preface\n\nx\n\n# 导论\n\n## Intro.1\n\nx\n\n# 第一章 契约\n\n## 1.1 不完全契约\n\nx\n\n## 习题\n\nx\n\n# 第二章 市场\n\nx\n\n# 参考文献\n\nx\n";
         let headings = scan_headings(raw);
-        let proposal = propose(&headings);
+        let proposal = propose(&headings, false);
         assert_eq!(headings[proposal.start].title, "导论");
         assert_eq!(proposal.end.map(|end| headings[end].title.clone()), Some("参考文献".to_string()));
         assert_eq!(skip_titles(&headings, &proposal.skip), vec!["习题".to_string()]);
@@ -1307,6 +1315,44 @@ mod tests {
         assert!(range.start_line > 0 && range.end_line > range.start_line);
         assert!(range.included >= 4);
         assert_eq!(top_headings(&headings, &range).len(), 3);
+    }
+
+    #[test]
+    fn a_mathematics_range_keeps_its_exercises_and_still_leaves_out_the_back_matter() {
+        // A math book's exercises are content (docs/math-digest-p1a-design.md §2.2): every exercise has
+        // its own destination. Its reference list and index are still left out.
+        let raw = "# 第一章 实数
+
+x
+
+## 习题
+
+1. 题。
+
+# 第二章 拓扑
+
+x
+
+## Exercises
+
+1. Prove it.
+
+## 参考文献
+
+x
+
+# 索引
+
+x
+";
+        let headings = scan_headings(raw);
+        let proposal = propose(&headings, true);
+        assert_eq!(skip_titles(&headings, &proposal.skip), vec!["参考文献".to_string()]);
+        let mut x = explicit();
+        x.keep_exercises = true;
+        let range = resolve_range(&work("", "T", None, "", ""), "book.md", &headings, &x).unwrap();
+        assert_eq!(range.skip_join, "参考文献");
+        assert_eq!(skip_titles(&headings, &propose(&headings, false).skip), vec!["习题".to_string(), "Exercises".to_string(), "参考文献".to_string()]);
     }
 
     // brandimarti2026reorganizing (2026-11-10, the owner: "the appendix should definitely be included"): the paper

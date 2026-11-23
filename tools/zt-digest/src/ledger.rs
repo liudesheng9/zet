@@ -2680,9 +2680,28 @@ fn math_index_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resul
         bail!("`{unit}` completes at the prepared index it enumerated: {}", expected.display());
     }
     let retained = util::read_json(&path).context("invalid retained math index")?;
-    let (units, others) = crate::math::retained_index(&p.out.to_string_lossy(), &manifest)?;
-    if retained["units"] != json!(units) || retained["others"] != json!(others) {
+    // The index settles only on a projection with no faults (`retained_index` refuses one), and the
+    // retained index is the view of exactly that projection: its hash binds them.
+    let staging = p.out.to_string_lossy();
+    let projection = crate::math::retained_projection(&staging, &manifest)?;
+    let (units, others) = crate::math::retained_index(&staging, &manifest)?;
+    if retained["units"] != json!(units)
+        || retained["others"] != json!(others)
+        || retained["projection"] != projection
+        || retained["projection_hash"] != projection["hash"]
+        || crate::math::source_projection_hash(&retained["projection"]) != s(&projection["hash"])
+    {
         bail!("the retained math index does not match the prepared sections it must account for");
+    }
+    // A replay of a settled index must describe the same projection: answers changed after it settled
+    // reopen the index, never reuse the old completion.
+    if done {
+        let conn = connect(&p.out.join("ledger.sqlite3"), false)?;
+        let stored: String = conn.query_row("SELECT result_json FROM units WHERE id=?1", [unit], |r| r.get(0))?;
+        let stored: Value = serde_json::from_str(&stored)?;
+        if stored["projection_hash"] != projection["hash"] {
+            bail!("`{unit}` settled on another projection ({}); the answers changed since: reopen the index", stored["projection_hash"]);
+        }
     }
     let sections = manifest["groups"]
         .as_array()
@@ -2713,6 +2732,9 @@ fn math_index_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Resul
         "disposition":"indexed",
         "units":units.len(),
         "others":others.len(),
+        "projection_hash":projection["hash"],
+        "objects":projection["objects"].as_array().map(|o| o.len()).unwrap_or(0),
+        "leaves":projection["leaves"].as_array().map(|o| o.len()).unwrap_or(0),
         "sections":sections,
         "forms":forms,
         "checks":{"prepared_sections":sections,"indexed_statements":units.len()}

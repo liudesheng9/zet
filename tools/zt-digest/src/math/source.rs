@@ -38,6 +38,10 @@ static EXERCISES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#{1,6}\s*(?:E
 static MAIN_LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\**\s*(\d+\.\d+)\s*\**\s+\**\s*[^\s\d]").unwrap());
 /// An exercise label at the start of a line in an exercise region: `1.`, `1.1.`.
 static EXERCISE_LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\**\s*(\d+(?:\.\d+)?)\s*\**\s*\.(?:\s+\S|\s*$)").unwrap());
+/// A labelled heading of an item: the label, then a kind word.
+static ITEM_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*\**\s*\d+\.\d+\s*\**\s+\**\s*(?i:definitions?|theorems?|propositions?|lemmas?|corollar(?:y|ies)|examples?|remarks?|notations?|axioms?|定义|定理|命题|引理|推论|例|注|记号|公理)").unwrap()
+});
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+(?:[.．]\d+)*").unwrap());
 
 fn squeeze(text: &str) -> String {
@@ -69,8 +73,10 @@ pub struct Leaf {
 }
 
 /// A heading the OCR made of a labelled item (`# 3.4 Theorem.`): its text after the `#`.
+/// A section heading may carry a number too (`## 1.3 完备性`): only a kind word after the label
+/// (`# 3.4 Theorem.`, `# 3.4 定理。`) makes the heading an item.
 fn labelled_heading(line: &str) -> bool {
-    HEADING.is_match(line) && MAIN_LABEL.is_match(line.trim_start_matches('#'))
+    HEADING.is_match(line) && ITEM_HEADING.is_match(line.trim_start_matches('#'))
 }
 
 fn make_leaf(section: &str, kind: &'static str, from: usize, to: usize, attached: Option<String>, lines: &[&str]) -> Leaf {
@@ -322,6 +328,7 @@ pub fn candidates(sections: &[Section]) -> Vec<Candidate> {
             if l.kind == "heading" {
                 let text = sec.lines[l.line - 1].trim().trim_start_matches('#');
                 if let Some(m) = MAIN_LABEL.captures(text).filter(|_| l.obligation && !layout.in_exercises((si, l.line, 0))) {
+                    // Only a heading that is an item (see `labelled_heading`) reports its label.
                     out.push(Candidate { chapter: layout.chapter((si, l.line, 0)), exercise: false, label: m[1].to_string(), section: sec.file.clone(), line: l.line });
                 }
                 continue;
@@ -566,6 +573,7 @@ impl Frag {
     fn key(&self, layout: &Layout) -> Option<Key> {
         match self {
             Frag::Object(o) if !o.label.is_empty() => Some((layout.chapter(self.pos()), o.kind.clone(), o.label.clone(), o.sublabel.clone())),
+            Frag::Object(o) if !o.name.is_empty() => Some((layout.chapter(self.pos()), o.kind.clone(), format!("name:{}", o.name), o.sublabel.clone())),
             _ => None,
         }
     }
@@ -588,7 +596,12 @@ type Key = (String, String, String, String);
 /// The full key a target names. A target with no chapter takes the chapter of an `N.M` label,
 /// else the chapter it is read in.
 fn typed_key(target: &Value, own_chapter: &str, layout: &Layout) -> Key {
-    let label = norm_label(&field(target, "label"));
+    // An unnumbered object is named by its `name` (`name:开覆盖`): the finder cannot know the
+    // ordinal the join gives it.
+    let label = match (norm_label(&field(target, "label")), field(target, "name").trim().to_string()) {
+        (l, n) if l.is_empty() && !n.is_empty() => format!("name:{n}"),
+        (l, _) => l,
+    };
     let chapter = match field(target, "chapter").trim() {
         "" => match label.split_once('.') {
             Some((n, _)) if !label.starts_with("after-") && layout.has(&format!("ch{n}")) => format!("ch{n}"),
@@ -614,7 +627,8 @@ fn evidence_ok(evidence: &Value, label: &str, scope: &Scope) -> bool {
     }
     let quote: Vec<char> = squeeze(&field(evidence, "quote")).chars().collect();
     // The squeezed line, each character with its place in the original line.
-    let (text, place): (Vec<char>, Vec<usize>) = scope.all[si].lines[line - 1].chars().enumerate().filter(|(_, c)| !c.is_whitespace()).map(|(k, c)| (c, k)).unzip();
+    let original: Vec<char> = scope.all[si].lines[line - 1].chars().collect();
+    let (text, place): (Vec<char>, Vec<usize>) = original.iter().enumerate().filter(|(_, c)| !c.is_whitespace()).map(|(k, c)| (*c, k)).unzip();
     let ls: Vec<char> = label.chars().collect();
     if quote.is_empty() || ls.is_empty() || quote.len() > text.len() {
         return false;
@@ -626,7 +640,7 @@ fn evidence_ok(evidence: &Value, label: &str, scope: &Scope) -> bool {
             && (0..quote.len()).any(|j| {
                 // The label stands whole and unbroken in the original line: `1.1 9` is no `1.19`.
                 let p = i + j;
-                j + ls.len() <= quote.len() && quote[j..j + ls.len()] == ls[..] && token_at(&text, p, ls.len()) && place[p + ls.len() - 1] - place[p] == ls.len() - 1
+                j + ls.len() <= quote.len() && quote[j..j + ls.len()] == ls[..] && place[p + ls.len() - 1] - place[p] == ls.len() - 1 && token_at(&original, place[p], ls.len())
             })
     })
 }
@@ -751,6 +765,8 @@ pub fn check_answer(answer: &Value, sections: &[Section], files: &[&str]) -> Vec
             }
         }
     }
+    faults.extend(unclaimed_in_packet(&scope, &parsed));
+    faults.extend(labels_in_packet(&scope, &layout, &parsed));
     for (i, (a, fa)) in parsed.iter().enumerate() {
         for (b, fb) in parsed.iter().skip(i + 1) {
             let overlap = fa.owned_spans().iter().any(|x| fb.owned_spans().iter().any(|y| x.overlaps(y)));
@@ -762,11 +778,190 @@ pub fn check_answer(answer: &Value, sections: &[Section], files: &[&str]) -> Vec
     faults
 }
 
+/// The text of the packet that no fragment claims: one line per leaf, or per uncovered run inside a
+/// leaf (`s03.md:4:17-4:30`), so the job sees what it left undone and claims it.
+fn unclaimed_in_packet(scope: &Scope, parsed: &[(usize, Frag)]) -> Vec<String> {
+    let spans: Vec<&Span> = parsed.iter().flat_map(|(_, f)| f.owned_spans()).collect();
+    let covered = |p: Pos| spans.iter().any(|s| s.start <= p && p < s.end);
+    let mut out = Vec::new();
+    for &si in &scope.allowed {
+        let sec = &scope.all[si];
+        for l in leaves(&sec.file, &sec.lines) {
+            if !l.obligation {
+                continue;
+            }
+            let mut runs: Vec<(Pos, Pos)> = Vec::new();
+            let mut open: Option<(Pos, Pos)> = None;
+            let mut whole = true;
+            for n in l.line..=l.end {
+                for (c, ch) in sec.lines[n - 1].chars().enumerate() {
+                    if ch.is_whitespace() {
+                        continue;
+                    }
+                    let p = (si, n, c);
+                    if covered(p) {
+                        whole = false;
+                        if let Some(r) = open.take() {
+                            runs.push(r);
+                        }
+                    } else {
+                        open = Some(match open {
+                            Some((a, _)) => (a, (si, n, c + 1)),
+                            None => (p, (si, n, c + 1)),
+                        });
+                    }
+                }
+            }
+            runs.extend(open);
+            if whole && !runs.is_empty() {
+                out.push(format!("{} ({}) is claimed by no fragment: put it in an object, a proof step, a hint or answer, or an exposition", l.id, l.kind));
+                continue;
+            }
+            for (a, b) in runs {
+                out.push(format!("{}:{}:{}-{}:{} ({}) is claimed by no fragment: put it in an object, a proof step, a hint or answer, or an exposition", l.section, a.1, a.2, b.1, b.2, l.kind));
+            }
+        }
+    }
+    out
+}
+
+/// What a packet alone decides about the printed labels in its sections: each opens an object of
+/// this answer with that label, or this answer dismisses its line; no exposition holds one; no two
+/// objects of the answer share a key. The join checks the same across the packets.
+fn labels_in_packet(scope: &Scope, layout: &Layout, parsed: &[(usize, Frag)]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mine = |file: &str| scope.allowed.iter().any(|&i| ps::eq(&scope.all[i].file, file));
+    let dismissed: Vec<(String, usize)> = parsed
+        .iter()
+        .filter_map(|(_, f)| match f {
+            Frag::Dismiss { section, line, .. } => Some((section.clone(), *line)),
+            _ => None,
+        })
+        .collect();
+    let is_dismissed = |c: &Candidate| dismissed.iter().any(|(s, l)| ps::eq(s, &c.section) && *l == c.line);
+    let cands: Vec<Candidate> = candidates(scope.all).into_iter().filter(|c| mine(&c.section) && !is_dismissed(c)).collect();
+    for c in &cands {
+        let opens = parsed.iter().any(|(_, f)| match f {
+            Frag::Object(o) => o.label == c.label && (o.kind == "exercise") == c.exercise && o.spans.iter().any(|s| ps::eq(&s.section, &c.section) && s.start.1 == c.line),
+            _ => false,
+        });
+        if !opens {
+            out.push(format!("{}:{} prints {} and no object of this answer starts there with that label: claim it as an object that starts on this line, or dismiss the line with a reason", c.section, c.line, c.label));
+        }
+    }
+    for (_, f) in parsed {
+        if let Frag::Exposition(sp) = f {
+            for c in cands.iter().filter(|c| ps::eq(&c.section, &sp.section) && c.line >= sp.start.1 && c.line <= sp.end.1) {
+                out.push(format!("an exposition may not hold the printed label {} ({}:{})", c.label, c.section, c.line));
+            }
+        }
+    }
+    let keys: Vec<(usize, String)> = parsed
+        .iter()
+        .filter_map(|(n, f)| match f {
+            Frag::Object(o) if !o.label.is_empty() => Some((*n, object_id(&layout.chapter(f.pos()), &o.kind, &o.label, &o.sublabel))),
+            _ => None,
+        })
+        .collect();
+    for (i, (a, ka)) in keys.iter().enumerate() {
+        if let Some((b, _)) = keys.iter().skip(i + 1).find(|(_, kb)| kb == ka) {
+            out.push(format!("fragments {a} and {b} both have the key {ka}: give each its own printed label, or merge them"));
+        }
+    }
+    out
+}
+
+// --- the old record view ---------------------------------------------------------------------------
+
+/// The statement index records the skeleton and the later steps read (`units`, `others`), as a
+/// view of the projection: one unit per object whose destination is its own unit, one other per
+/// example and exercise, in book order. The display id is the kind word and the printed label
+/// (`定理 1.19`), or the kind word and the name for an unnumbered item (`推论「根的乘积」`).
+/// `sections` carry the prepared group and its chapter text.
+pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec<Value>) {
+    let place = |file: &str| sections.iter().find(|x| ps::eq(&x.file, file)).map(|x| (x.group, x.chapter.clone())).unwrap_or((0, String::new()));
+    let objects = ps::list(&projection["objects"]);
+    let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    let mut ids: BTreeMap<String, String> = BTreeMap::new();
+    for o in &objects {
+        let kind = field(o, "kind");
+        let label = field(&o["key"], "label");
+        let zh = super::index::kind_zh(&kind);
+        let numeric = NUMBER.find(&label).is_some_and(|m| m.as_str() == label);
+        let base = if label.starts_with("after-") || label.is_empty() {
+            format!("{zh}「{}」", field(o, "name"))
+        } else if numeric && !zh.is_empty() {
+            format!("{zh} {label}")
+        } else {
+            label.clone()
+        };
+        let n = used.entry(base.clone()).or_insert(0);
+        *n += 1;
+        ids.insert(field(o, "id"), if *n == 1 { base } else { format!("{base}（{n}）") });
+    }
+    let mut units: Vec<Value> = Vec::new();
+    let mut others: Vec<Value> = Vec::new();
+    let mut last_unit: Option<(String, String)> = None;
+    for o in &objects {
+        let (id, kind) = (field(o, "id"), field(o, "kind"));
+        let own = field(o, "destination") == format!("unit:{id}");
+        if !own && !matches!(kind.as_str(), "example" | "exercise") {
+            continue;
+        }
+        let st = &o["statement"][0];
+        let section = field(st, "section");
+        let (group, chapter) = place(&section);
+        let label = field(&o["key"], "label");
+        let printed = !label.starts_with("after-");
+        let numeric = printed && NUMBER.find(&label).is_some_and(|m| m.as_str() == label);
+        let word = if numeric { super::index::kind_zh(&kind).to_string() } else { String::new() };
+        let mut rec = json!({
+            "id": ids[&id], "object_id": id,
+            "label": if printed { if numeric { format!("{word} {label}") } else { label.clone() } } else { String::new() },
+            "word": word, "number": if numeric { label.clone() } else { String::new() },
+            "name": field(o, "name"), "group": group, "chapter": chapter,
+            "section": section, "line": st["line"], "end": st["end"],
+        });
+        let map = rec.as_object_mut().unwrap();
+        if own {
+            let steps = ps::list(&o["proof"]["steps"]);
+            let proof = steps.first().map(|s| &s["spans"][0]).filter(|s| ps::eq(&field(s, "section"), &section)).and_then(|s| s["line"].as_u64()).unwrap_or(0);
+            let level = if RESULTS.contains(&kind.as_str()) && !steps.is_empty() { "formal" } else { "concept" };
+            let cites: Vec<String> = ps::list(&o["relations"])
+                .into_iter()
+                .filter(|r| field(r, "rel") == "cites" && r["target"].is_string() && s(&r["target"]) != id)
+                .filter_map(|r| objects.iter().find(|x| field(x, "id") == s(&r["target"]) && field(x, "destination") == format!("unit:{}", s(&r["target"]))).map(|x| ids[&field(x, "id")].clone()))
+                .collect();
+            map.insert("proof".into(), json!(proof));
+            map.insert("form".into(), json!(kind));
+            map.insert("level".into(), json!(level));
+            map.insert("cites".into(), json!(ps::select_unique(cites)));
+            last_unit = Some((section.clone(), ids[&id].clone()));
+            units.push(rec);
+        } else {
+            let dest = field(o, "destination");
+            let belongs = dest.strip_prefix("unit:").and_then(|t| ids.get(t)).cloned().unwrap_or_default();
+            let after = if !belongs.is_empty() {
+                belongs.clone()
+            } else {
+                last_unit.as_ref().filter(|(s, _)| ps::eq(s, &section)).map(|(_, u)| u.clone()).unwrap_or_default()
+            };
+            map.insert("proof".into(), json!(0));
+            map.insert("kind".into(), json!(kind));
+            map.insert("belongs_to".into(), json!(belongs));
+            map.insert("after".into(), json!(after));
+            others.push(rec);
+        }
+    }
+    (units, others)
+}
+
 // --- the join --------------------------------------------------------------------------------------
 
-/// One finder answer with the sections its packet gave.
+/// One finder answer with the sections its packet gave and the finder job that wrote it.
 #[derive(Clone, Debug)]
 pub struct Packet {
+    pub id: String,
     pub answer: Value,
     pub sections: Vec<String>,
 }
@@ -822,6 +1017,18 @@ fn object_id(chapter: &str, namespace: &str, label: &str, sublabel: &str) -> Str
 /// with no chapter takes the chapter of an `N.M` label, else the chapter it is read in.
 fn resolve(target: &Value, own_chapter: &str, layout: &Layout, objects: &[Obj]) -> Result<usize, String> {
     let (chapter, ns, label, sub) = typed_key(target, own_chapter, layout);
+    if let Some(name) = label.strip_prefix("name:") {
+        let hits: Vec<usize> = (0..objects.len())
+            .filter(|&k| {
+                let o = &objects[k];
+                !o.open && o.printed() && o.chapter == chapter && o.label.starts_with("after-") && o.name == name && (ns.is_empty() || o.namespace == ns)
+            })
+            .collect();
+        return match hits.as_slice() {
+            [k] => Ok(*k),
+            _ => Err(format!("no one unnumbered object is named {name} in {chapter}")),
+        };
+    }
     if ns.is_empty() {
         let hits: Vec<usize> = (0..objects.len())
             .filter(|&k| {
@@ -997,10 +1204,57 @@ pub fn join(packets: &[Packet], sections: &[Section], expected: Option<&Value>, 
         "candidates": cands.iter().map(|c| json!({"chapter": c.chapter, "exercise": c.exercise, "label": c.label, "section": c.section, "line": c.line})).collect::<Vec<_>>(),
         "unresolved": unresolved,
     });
-    p["faults"] = json!(faults.0);
+    // Each fault names the finder jobs whose answers it touches, so a repair round can send it back
+    // to exactly those jobs.
+    let mut annotated = faults.0;
+    for f in annotated.iter_mut() {
+        let jobs = fault_jobs(&field(f, "detail"), &field(f, "code"), packets, &objects, sections);
+        f["jobs"] = json!(jobs);
+    }
+    p["faults"] = json!(annotated);
     let hash = projection_hash(&p);
     p["hash"] = json!(hash);
     p
+}
+
+/// The finder jobs a fault touches: the packets whose sections its locators name, the packets of the
+/// objects it names, and for a frozen key that no object has, the packets of that chapter.
+fn fault_jobs(detail: &str, code: &str, packets: &[Packet], objects: &[Obj], sections: &[Section]) -> Vec<String> {
+    let mut jobs: BTreeSet<String> = BTreeSet::new();
+    let job_of = |file: &str| packets.iter().find(|p| p.sections.iter().any(|f| ps::eq(f, file))).map(|p| p.id.clone());
+    for sec in sections {
+        if detail.contains(&format!("{}:", sec.file))
+            && let Some(j) = job_of(&sec.file)
+        {
+            jobs.insert(j);
+        }
+    }
+    let ends_id = |rest: &str| rest.chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '.' || c == '-' || c == '('));
+    for o in objects {
+        if let Some(i) = detail.find(&o.id)
+            && ends_id(&detail[i + o.id.len()..])
+            && let Some(j) = job_of(&o.spans[0].section)
+        {
+            jobs.insert(j);
+        }
+    }
+    if let Some(rest) = detail.strip_prefix("answer ")
+        && let Some(n) = rest.split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse::<usize>().ok())
+        && let Some(p) = packets.get(n.wrapping_sub(1))
+    {
+        jobs.insert(p.id.clone());
+    }
+    if jobs.is_empty() && code == "expected_missing" {
+        let chapter = detail.split(':').next().unwrap_or("");
+        for c in chapters(sections).iter().filter(|c| c.id == chapter) {
+            for (file, _, _) in &c.ranges {
+                if let Some(j) = job_of(file) {
+                    jobs.insert(j);
+                }
+            }
+        }
+    }
+    jobs.into_iter().collect()
 }
 
 /// Pass one: the independently identified objects and the declared exposition, in book order, with
@@ -1161,7 +1415,10 @@ fn settle_objects(objects: &mut [Obj], layout: &Layout, faults: &mut Faults) {
             }
         }
         match o.status.as_str() {
-            "inline" | "deferred_in_slice" if o.steps.is_empty() => faults.add("proof_missing", format!("{}: a {} proof has no steps", o.id, o.status)),
+            "inline" | "deferred_in_slice" if o.steps.is_empty() => faults.add(
+                "proof_missing",
+                format!("{}: a {} proof has no steps in these chapters: write its steps where the proof stands, or, when the book proves it in a chapter these files do not hold, use `external` with that reason", o.id, o.status),
+            ),
             "source_omits" | "external" if o.reason.trim().is_empty() => faults.add("proof_reason", format!("{}: `{}` needs its reason", o.id, o.status)),
             "not_applicable" if result => faults.add("proof_status_wrong", format!("{}: a result owes a source treatment (inline, deferred_in_slice, source_omits or external)", o.id)),
             "source_omits" | "external" | "not_applicable" if !o.steps.is_empty() => faults.add("proof_conflict", format!("{}: `{}` with proof steps", o.id, o.status)),
@@ -1462,7 +1719,7 @@ mod tests {
     const ED: &str = "test-edition";
 
     fn pk(answer: Value, files: &[&str]) -> Packet {
-        Packet { answer, sections: files.iter().map(|f| f.to_string()).collect() }
+        Packet { id: files.join(","), answer, sections: files.iter().map(|f| f.to_string()).collect() }
     }
 
     fn pa(a: Value) -> Packet {
@@ -2103,5 +2360,108 @@ mod tests {
         a[0].answer["fragments"].as_array_mut().unwrap().push(json!({"role": "exposition", "spans": [sp("s01.md", 9, 9, "回到证明")]}));
         let p = jn(&a, &b, None);
         assert!(codes(&p).contains(&"containment_not_enclosed".to_string()), "{}", fault_text(&p));
+    }
+
+    // --- M2.1 ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_label_followed_by_a_space_and_another_number_is_still_the_label() {
+        let b = vec![sec("s01.md", "# 第 1 章\n\n由定理 1.1 9 个点都在圆上，这是下面证明的出发点。\n\n第 1 步 这一步完成构造中的第一个部分。")];
+        let ev = json!({"schema": 2, "fragments": [
+            {"role": "proof", "target": {"namespace": "theorem", "label": "1.1"}, "evidence": {"section": "s01.md", "line": 3, "quote": "由定理 1.1"}, "steps": [{"label": "", "spans": [sp("s01.md", 3, 5, "由定理 1.1 9 个点")]}]}]});
+        assert!(check_answer(&ev, &b, &["s01.md"]).is_empty(), "{:?}", check_answer(&ev, &b, &["s01.md"]));
+    }
+
+    #[test]
+    fn the_self_check_lists_what_no_fragment_claims() {
+        let b = book();
+        let mut a = packet_a();
+        a["fragments"].as_array_mut().unwrap().remove(0);
+        let f = check_answer(&a, &b, &["s01.md"]);
+        assert_eq!(f, ["s01.md:3-3 (paragraph) is claimed by no fragment: put it in an object, a proof step, a hint or answer, or an exposition"]);
+        // Part of a line: the hint left out of the exercise packet.
+        let mut c = packet_c(&b);
+        c["fragments"].as_array_mut().unwrap().remove(2);
+        let l4 = line_of(&b, "s03.md", 4);
+        let (k, n) = (l4.split("提示").next().unwrap().chars().count(), l4.chars().count());
+        assert_eq!(check_answer(&c, &b, &["s03.md"]), [format!("s03.md:4:{k}-4:{n} (list) is claimed by no fragment: put it in an object, a proof step, a hint or answer, or an exposition")]);
+    }
+
+    #[test]
+    fn the_old_unit_records_are_a_view_of_the_projection() {
+        let mut b = book();
+        for (k, s) in b.iter_mut().enumerate() {
+            s.group = k as i64 + 1;
+            s.chapter = "第 1 章".into();
+        }
+        let p = jn(&answers(&b), &b, None);
+        let (units, others) = legacy_view(&p, &b);
+        let ids: Vec<String> = units.iter().map(|u| field(u, "id")).collect();
+        assert_eq!(ids, ["定理 1.19", "定理 1.20", "定理 1.21", "推论「根的乘积」"]);
+        assert_eq!(field(&units[0], "object_id"), "ch1:theorem:1.19");
+        assert_eq!((field(&units[0], "form"), field(&units[0], "level")), ("theorem".to_string(), "formal".to_string()));
+        assert_eq!((units[0]["section"].clone(), units[0]["line"].clone(), units[0]["end"].clone(), units[0]["group"].clone()), (json!("s01.md"), json!(5), json!(7), json!(1)));
+        assert_eq!(units[2]["cites"], json!(["定理 1.20"]));
+        assert_eq!(units[1]["proof"], json!(11));
+        assert_eq!(units[0]["proof"], json!(0), "a proof in another section has no line in the statement's section");
+        let oids: Vec<(String, String)> = others.iter().map(|o| (field(o, "id"), field(o, "kind"))).collect();
+        assert_eq!(oids, [("习题 1".to_string(), "exercise".to_string()), ("习题 2".to_string(), "exercise".to_string()), ("习题 19".to_string(), "exercise".to_string())]);
+        assert_eq!(others[0]["group"], json!(3));
+    }
+
+    #[test]
+    fn an_unnumbered_nested_example_is_contained_by_its_name() {
+        let (b, mut a) = with_nested_example(true);
+        a[0].answer["fragments"][0]["relations"] = json!([{"rel": "contains", "target": {"namespace": "example", "name": "开覆盖"}}]);
+        a[0].answer["fragments"][1]["label"] = json!("");
+        a[0].answer["fragments"].as_array_mut().unwrap().push(json!({"role": "dismiss", "section": "s01.md", "line": 7, "reason": "the example is printed with a number this test drops"}));
+        assert!(check_answer(&a[0].answer, &b, &["s01.md"]).is_empty(), "{:?}", check_answer(&a[0].answer, &b, &["s01.md"]));
+        let p = jn(&a, &b, None);
+        assert!(codes(&p).is_empty(), "{}", fault_text(&p));
+        assert_eq!(field(leaf(&p, "s01.md:7-7"), "object_id"), "ch2:example:after-2.41-1");
+        assert_eq!(object(&p, "ch2:theorem:2.41")["relations"][0]["target"], json!("ch2:example:after-2.41-1"));
+    }
+
+    #[test]
+    fn a_numbered_section_heading_is_not_an_item() {
+        // Tao numbers his sections (`## 1.3 完备性`) and his items (`**公理 1.3.3**`) alike.
+        let b = vec![sec("s01.md", "# 第 1 章 实数\n\n## 1.3 完备性\n\n**公理 1.3.3** 每个有上界的非空集都有上确界。\n\n# 3.4 定理。\n\n(a) 有界数列有收敛的子列。")];
+        let ls = leaves("s01.md", &b[0].lines);
+        assert_eq!((ls[1].kind, ls[1].obligation), ("heading", false), "a section heading");
+        assert_eq!((ls[3].kind, ls[3].obligation), ("heading", true), "an item the OCR made a heading");
+        let c: Vec<String> = candidates(&b).into_iter().map(|x| x.label).collect();
+        assert_eq!(c, ["3.4"]);
+    }
+
+    #[test]
+    fn the_self_check_decides_what_its_packet_alone_can_decide() {
+        let b = book();
+        // A printed label nothing in the answer starts: the remark 1.22 left out, its line declared prose.
+        let mut a = packet_a();
+        a["fragments"].as_array_mut().unwrap().remove(5);
+        a["fragments"].as_array_mut().unwrap().push(json!({"role": "exposition", "spans": [sp("s01.md", 21, 21, "1.22 小数")]}));
+        let f = check_answer(&a, &b, &["s01.md"]).join("\n");
+        assert!(f.contains("s01.md:21 prints 1.22 and no object of this answer starts there"), "{f}");
+        assert!(f.contains("an exposition may not hold the printed label 1.22 (s01.md:21)"), "{f}");
+        // A dismissal is the answer's own disposition of that line.
+        a["fragments"].as_array_mut().unwrap().push(json!({"role": "dismiss", "section": "s01.md", "line": 21, "reason": "a closing remark"}));
+        assert!(check_answer(&a, &b, &["s01.md"]).is_empty(), "{:?}", check_answer(&a, &b, &["s01.md"]));
+        // Two objects with one key in one answer.
+        let mut a = packet_a();
+        a["fragments"][2]["label"] = json!("1.19");
+        let f = check_answer(&a, &b, &["s01.md"]).join("\n");
+        assert!(f.contains("fragments 2 and 3 both have the key ch1:theorem:1.19"), "{f}");
+    }
+
+    #[test]
+    fn each_join_fault_names_the_finder_jobs_it_touches() {
+        let b = book();
+        let mut bb = packet_b();
+        bb["fragments"][0]["target"]["namespace"] = json!("lemma");
+        let p = jn(&[pa(packet_a()), pb(bb), pc(packet_c(&b))], &b, Some(&json!({"keys": [{"chapter": "ch1", "namespace": "theorem", "label": "1.99"}]})));
+        let jobs_of = |code: &str| -> Vec<Value> { p["faults"].as_array().unwrap().iter().filter(|f| field(f, "code") == code).map(|f| f["jobs"].clone()).collect() };
+        assert_eq!(jobs_of("unresolved_target"), [json!(["s02.md"])], "{}", fault_text(&p));
+        assert_eq!(jobs_of("proof_missing"), [json!(["s01.md"])], "the theorem's own packet: {}", fault_text(&p));
+        assert_eq!(jobs_of("expected_missing"), [json!(["s01.md", "s02.md", "s03.md"])], "a missing key: every packet of its chapter");
     }
 }

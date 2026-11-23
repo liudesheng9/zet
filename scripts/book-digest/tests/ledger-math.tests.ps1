@@ -131,13 +131,13 @@ try {
     # --- boundary and proof plans register one obligation per mathematical unit ---------------------
     $bplan = Math 'boundary'
     Assert ($bplan.units -eq 2) 'the boundary plan names the units that need hypothesis roles'
-    $registered = Run-Digest @('ledger','math','-Out',$out)
+    $registered = Run-Digest @('ledger','math','-Out',$out,'-Layer','boundary')
     Assert ($registered.reused -eq $false -and @($registered.units | Where-Object layer -eq 'boundary').Count -eq 2) 'the boundary plan registers one ledger obligation per planned unit'
     $status = Run-Digest @('ledger','status','-Out',$out,'-Layer','boundary')
     $role = "boundary/$th@1"
     Assert (@($status.dependencies | Where-Object { $_.unit -eq $role -and $_.needs -eq 'notation/book@1' }).Count -eq 1) 'notation is a prerequisite of the boundary work that depends on it'
     Assert (@($status.dependencies | Where-Object { $_.unit -eq $role -and $_.needs -eq 'math-skeleton/book@1' }).Count -eq 1) 'the skeleton is a prerequisite of its unit obligations'
-    $again = Run-Digest @('ledger','math','-Out',$out)
+    $again = Run-Digest @('ledger','math','-Out',$out,'-Layer','boundary')
     Assert ($again.reused -eq $true -and @($again.units).Count -eq @($registered.units).Count) 'the same plan registers no second obligation'
     $declared = Run-Digest @('ledger','status','-Out',$out)
     Assert (('events' -in $declared.excluded_layers) -and ('findings' -in $declared.excluded_layers) -and (@($declared.units | Where-Object { $_.layer -in @('events','findings') }).Count -eq 0)) 'the mathematics profile declares no Event or Finding layer and registers none of their work'
@@ -251,7 +251,7 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     # --- every selected formal result gets its proof review and accepted fixes ----------------------
     $pplan = Math 'proof'
     Assert ($pplan.units -eq 1) 'the proof plan names the formal result with proof steps'
-    $proofRegistered = Run-Digest @('ledger','math','-Out',$out)
+    $proofRegistered = Run-Digest @('ledger','math','-Out',$out,'-Layer','proof')
     Assert (@($proofRegistered.units | Where-Object layer -eq 'proof').Count -eq 1) 'the proof plan registers its own ledger obligation'
     function Review([hashtable]$fixes) {
         $list = @()
@@ -287,7 +287,10 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     $papplied = Math 'proof-apply'
     Assert ($papplied.fixed -eq 1 -and $papplied.refused -eq 0) 'the second round accepts only the Link-preserving correction'
     $proofDone = Run-Digest @('ledger','done','-Out',$out,'-Unit',$proofUnit,'-Token',$proofToken,'-Outputs',$proofFile)
-    Assert ($proofDone.state -eq 'done' -and $proofDone.steps -eq @($steps).Count -and $proofDone.fixed -eq 1) 'the completed proof unit accounts for every reviewed step'
+    # P0 (zt-digest 0.56.0): the review owns the plan, the 证明 steps and the conclusion; a 前提
+    # premise is context, not a reviewed step.
+    $reviewed = @((Read-Model $th).build.order | Where-Object { $_.line -eq 'main' -and $_.facet -notmatch '^前提' })
+    Assert ($proofDone.state -eq 'done' -and $proofDone.steps -eq $reviewed.Count -and $proofDone.fixed -eq 1) 'the completed proof unit accounts for every reviewed step'
 
     # --- the theory revision follows link-check and rebuilds every Theory Card summary ---------------
     $tplan = Math 'theory'
@@ -303,7 +306,8 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
     $record2 = @($appliedRecord.theories | Where-Object { $_.address -ceq $theory2 })[0]
     $model2 = Read-Model $theory2
     $expectedMembers = @($model2.math.order).Count
-    Assert (@($record2['members']).Count + @($record2['tools']).Count -eq $expectedMembers) 'the applied theory record accounts for the units its model holds'
+    # zt 0.64.0 (P0): the model's order reads the **结构** members only; tools are not members.
+    Assert (@($record2['members']).Count -eq $expectedMembers) 'the applied theory record accounts for the units its model holds'
     # The digest groups are done fixtures (#70 owns their verifier). The Link pass then
     # completes through the ledger's own publication boundary, so the theory revision
     # consumes a real link-check publication rather than a hand-marked database row.
@@ -353,7 +357,7 @@ db.exec('commit');db.close();
     $null = Math 'theory-apply' @('-Apply')
     $theoryDone = Run-Digest @('ledger','done','-Out',$out,'-Unit',$theoryUnit,'-Token',$theoryToken,'-Outputs',$theoryEvidence)
     $rebuiltUnits = @((Read-Model $theory2).math.order).Count
-    Assert ($theoryDone.state -eq 'done' -and @($theoryDone.coverage).Count -eq 2 -and @($theoryDone.coverage | Where-Object { $_.ref -ceq $theory2 -and ($_.members + $_.tools) -eq $rebuiltUnits }).Count -eq 1) ("the rebuilt theory revision completes with every Theory Card's current summary recorded (" + ($theoryDone.coverage | ConvertTo-Json -Depth 6 -Compress) + ")")
+    Assert ($theoryDone.state -eq 'done' -and @($theoryDone.coverage).Count -eq 2 -and @($theoryDone.coverage | Where-Object { $_.ref -ceq $theory2 -and $_.members -eq $rebuiltUnits }).Count -eq 1) ("the rebuilt theory revision completes with every Theory Card's current summary recorded (" + ($theoryDone.coverage | ConvertTo-Json -Depth 6 -Compress) + ")")
     # A changed unit derives the next revision and makes the completed one terminal history.
     $anotherModel = @'
 const {DatabaseSync}=require('node:sqlite');const path=require('node:path');const os=require('node:os');const crypto=require('node:crypto');

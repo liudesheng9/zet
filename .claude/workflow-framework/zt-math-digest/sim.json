@@ -112,6 +112,12 @@
       }
     },
     {
+      "label": "^math-skeleton: repair statements$",
+      "answer": {
+        "answer": "{\"ok\":true,\"sections\":4,\"chars\":0,\"repair\":0,\"jobs\":0,\"file\":\"D:\\x\\Key\\math\\drive\\index-jobs.json\"}"
+      }
+    },
+    {
       "label": "^math-skeleton: start$",
       "answer": {
         "answer": "{\"ok\":true,\"index\":{\"ok\":true,\"units\":5,\"forms\":{\"theorem\":1},\"examples\":1,\"exercises\":1},\"docs\":{\"ok\":true,\"files\":[]},\"skeleton\":{\"ok\":true,\"units\":5,\"created\":5,\"theories\":2}}"
