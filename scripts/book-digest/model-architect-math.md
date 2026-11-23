@@ -51,7 +51,7 @@ The boundary pass writes the `假设作用` and `反例` parts that the book doe
 
 ## Examples and exercises
 
-The context names the book's examples and exercises that follow the unit (`本组的例与习题`). Plan each example as an `例子` part and each exercise as a `习题` part, with its `src` lines. An exercise answer stands under `## 答案` only when the book gives one.
+The context names the book's examples that belong to the unit (`本组属于单元的例`, each `属于` this unit). Plan each of them as an `例子` part, with its `src` lines. Exercises are not unit parts: each chapter's exercise set is written by its group writer, one Card per exercise (docs/math-digest-p1a-design.md §2.2). Examples listed under `本组由你写的例` belong to the reading notes, not to the unit.
 
 ## The Model Card
 

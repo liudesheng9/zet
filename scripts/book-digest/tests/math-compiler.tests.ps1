@@ -135,7 +135,9 @@ try {
     Assert ((@($thm.cites) -join ',') -eq '公理 1.3.3,引理 4.4.2') 'index: the theorem cites the axiom and the lemma'
     $ax = @($data.units | Where-Object { $_.id -eq '公理 1.3.3' })[0]
     Assert ($ax.level -eq 'concept') 'index: an axiom is a concept unit'
-    Assert ((@($data.others | Where-Object { $_.id -eq '习题 4.5.3' })[0]).after -eq '推论 4.5.2') 'index: the exercise follows the corollary'
+    # P1a M2.2: an exercise belongs to its chapter's exercise set and its group writer, not to the unit before it.
+    $exercise = @($data.others | Where-Object { $_.id -eq '习题 4.5.3' })[0]
+    Assert (-not $exercise.after -and $exercise.writer -eq 'group') 'index: the exercise is the group writer''s, not the corollary''s'
 
     # --- docs --------------------------------------------------------------------------------------
     $docs = Last (Run 'docs')
@@ -158,6 +160,10 @@ try {
     $theory4 = @($units.theories | Where-Object { $_.chapter -match '第 4 章' })[0].address
     $theory1 = @($units.theories | Where-Object { $_.chapter -match '第 1 章' })[0].address
     Assert ($at['公理 1.3.3'] -eq "$key/1|a" -and $at['定理 4.5.1'] -eq "$key/2|c") 'skeleton: units are Side successors of their anchors in book order'
+    # P1a M2.2: the allocation binds the settled index, and Theory Cards follow the printed chapters.
+    $indexHash = (Get-Content -Raw (Join-Path $staging 'math\index.json') | ConvertFrom-Json -AsHashtable).projection_hash
+    Assert ($units.index_hash -and $units.index_hash -eq $indexHash) 'skeleton: the allocation record carries the settled index hash'
+    Assert ((@($units.theories | ForEach-Object { $_.chapter_id }) -join ',') -eq 'ch1,ch4' -and $theory1 -and $theory4) 'skeleton: one Theory Card per printed chapter (ch1, ch4)'
     $card = Read-Card $at['定理 4.5.1']
     Assert ($card.form -eq 'theorem' -and $card.level -eq 'formal' -and $card.body -match 'sections/s02.md') 'skeleton: the theorem has its form, level, and source'
     Assert ((Get-Content -Raw (Join-Path $staging 'owned-g02.txt')) -match [regex]::Escape($at['定理 4.5.1'])) 'skeleton: the unit joins its group''s owned Cards'

@@ -855,6 +855,19 @@ impl Compiler {
         }
         let mut created = 0;
         let groups: Vec<Value> = pipe(&self.manifest["groups"]).into_iter().cloned().collect();
+        // P1a M2.2 (docs/math-digest-p1a-design.md §3): each printed chapter has one entry anchor, the
+        // anchor of the group that holds the chapter's start, and its units are filed there in reading
+        // order. The owned-Card logs stay per group, the group that holds the statement.
+        let chapter_rows: Vec<Value> = ps::list(&index["projection"]["chapters"]).into_iter().cloned().collect();
+        let group_of = |file: &str| groups.iter().find(|g| pipe(&g["sections"]).into_iter().any(|x| eq(&s(x), file))).cloned();
+        let mut entry: CiMap<String> = CiMap::new();
+        for c in &chapter_rows {
+            if let Some(first) = ps::list(&c["ranges"]).first()
+                && let Some(g) = group_of(&field(first, "section"))
+            {
+                entry.insert(&field(c, "id"), field(&g, "anchor"));
+            }
+        }
         for g in &groups {
             let n = ps::int(&g["n"])?;
             let mine: Vec<Value> = units.iter().filter(|u| num_eq(&u["group"], n) && !made.contains(&field(u, "id"))).cloned().collect();
@@ -867,8 +880,9 @@ impl Compiler {
                 .map(|u| {
                     let src = format!("sections/{}:{}-{}", field(u, "section"), field(u, "line"), field(u, "end"));
                     let title = format!("{}{}：待写", field(u, "id"), name_part(u));
+                    let at = entry.get(&field(u, "chapter_id")).cloned().unwrap_or_else(|| field(g, "anchor"));
                     json!({ "tool": "create_successor", "arguments": {
-                        "at": field(g, "anchor"), "kind": "side", "type": "model", "form": u["form"], "level": u["level"],
+                        "at": at, "kind": "side", "type": "model", "form": u["form"], "level": u["level"],
                         "title": title, "body": format!("**陈述**：待写。\n\n来源：[[{}]] {}（`{src}`）", self.key, field(u, "id")), "src": src
                     } })
                 })
@@ -890,15 +904,18 @@ impl Compiler {
                 None => bail!("The property 'address' cannot be found on this object. Verify that the property exists and can be set."),
             }
         }
-        // One Theory Card per chapter that holds units, under the chapter's first anchor.
+        // One Theory Card per printed chapter that holds units, under the chapter's entry anchor.
         let mut theories: Vec<Value> = if truthy(&done) { ps::ps_array(&done["theories"]) } else { Vec::new() };
-        let chapters = ps::select_unique(groups.iter().map(|g| field(g, "chapter")));
-        for chapter in &chapters {
-            let members: Vec<&Value> = units.iter().filter(|u| eq(&field(u, "chapter"), chapter) && truthy(&u["address"])).collect();
-            if members.is_empty() || theories.iter().any(|t| eq(&field(t, "chapter"), chapter)) {
+        for c in &chapter_rows {
+            let chapter_id = field(c, "id");
+            let members: Vec<&Value> = units.iter().filter(|u| eq(&field(u, "chapter_id"), &chapter_id) && truthy(&u["address"])).collect();
+            let Some(first) = members.first() else { continue };
+            let chapter = field(first, "chapter");
+            let chapter = chapter.as_str();
+            if theories.iter().any(|t| eq(&field(t, "chapter"), chapter)) {
                 continue;
             }
-            let anchor = groups.iter().find(|g| eq(&field(g, "chapter"), chapter)).map(|g| field(g, "anchor")).unwrap_or_default();
+            let anchor = entry.get(&chapter_id).cloned().unwrap_or_default();
             let list = members.iter().map(|u| format!("- [[{}]] {}{}", field(u, "address"), field(u, "id"), name_part(u))).collect::<Vec<_>>().join("\n");
             let body = format!("**问题**：待写。\n\n**主要结果**：待写。\n\n**对象**：待写。\n\n**结构**：\n{list}\n\n来源：[[{}]] {chapter}", self.key);
             let addresses: Vec<Value> = members.iter().map(|u| u["address"].clone()).collect();
@@ -909,7 +926,7 @@ impl Compiler {
                     json!({ "at": anchor, "kind": "side", "type": "model", "form": "theory", "title": format!("理论：{chapter}（待写）"), "body": body }),
                 )?;
             }
-            theories.push(obj(vec![("chapter", json!(chapter)), ("anchor", json!(anchor)), ("address", address), ("units", json!(addresses))]));
+            theories.push(obj(vec![("chapter", json!(chapter)), ("chapter_id", json!(chapter_id)), ("anchor", json!(anchor)), ("address", address), ("units", json!(addresses))]));
         }
         // Each group file names its units, examples, and exercises, so its digest run writes them.
         if self.p.apply {
@@ -955,32 +972,46 @@ impl Compiler {
                         field(u, "end")
                     ));
                 }
-                let theory = theories.iter().find(|t| eq(&field(t, "chapter"), &field(g, "chapter")));
+                // The group's printed chapter: that of its units, else the one its first section opens in.
+                let first_file = pipe(&g["sections"]).first().map(|x| s(x)).unwrap_or_default();
+                let group_chapter = mine.first().map(|u| field(u, "chapter_id")).or_else(|| {
+                    chapter_rows.iter().find(|c| ps::list(&c["ranges"]).into_iter().any(|r| eq(&field(r, "section"), &first_file))).map(|c| field(c, "id"))
+                });
+                let theory = theories.iter().find(|t| group_chapter.as_deref().is_some_and(|c| eq(&field(t, "chapter_id"), c)));
                 if let Some(theory) = theory
                     && truthy(&theory["address"])
                 {
                     sb.push_str(&format!("{NL}本章的理论卡：[[{}]]（理论阶段写它，你不改它）。{NL}", field(theory, "address")));
                 }
-                if !extra.is_empty() {
-                    sb.push_str(&format!("{NL}## 本组的例与习题（单元流水线把它们放进所属单元，你不另写卡片）{NL}{NL}"));
-                    for e in &extra {
-                        let after = if truthy(&e["after"]) {
-                            let at = match made.get(&field(e, "after")).filter(|a| truthy(a)) {
-                                Some(a) => format!(" [[{}]]", s(a)),
-                                None => String::new(),
-                            };
-                            format!("，属于 {}{at}", field(e, "after"))
-                        } else {
-                            String::new()
-                        };
-                        sb.push_str(&format!(
-                            "- {}：{}，`sections/{}:{}-{}`{after}{NL}",
-                            field(e, "id"),
-                            field(e, "kind"),
-                            field(e, "section"),
-                            field(e, "line"),
-                            field(e, "end")
-                        ));
+                // P1a M2.2: an example the projection gives to a unit is written into that unit; every
+                // other example, and every exercise of the chapter's exercise set, is this group's to write.
+                let to_unit: Vec<&&Value> = extra.iter().filter(|e| field(e, "writer") == "unit").collect();
+                let mine_ex: Vec<&&Value> = extra.iter().filter(|e| field(e, "kind") == "example" && field(e, "writer") != "unit").collect();
+                let exercises: Vec<&&Value> = extra.iter().filter(|e| field(e, "kind") == "exercise").collect();
+                let at_of = |id: &str| made.get(id).filter(|a| truthy(a)).map(|a| format!(" [[{}]]", s(a))).unwrap_or_default();
+                let src_of = |e: &Value| format!("`sections/{}:{}-{}`", field(e, "section"), field(e, "line"), field(e, "end"));
+                if !to_unit.is_empty() {
+                    sb.push_str(&format!("{NL}## 本组属于单元的例（单元流水线把它们写进所属单元，你只链接）{NL}{NL}"));
+                    for e in &to_unit {
+                        sb.push_str(&format!("- {}：{}，属于 {}{}{NL}", field(e, "id"), src_of(e), field(e, "after"), at_of(&field(e, "after"))));
+                    }
+                }
+                if !mine_ex.is_empty() {
+                    sb.push_str(&format!("{NL}## 本组由你写的例（写进你的读书笔记）{NL}{NL}"));
+                    for e in &mine_ex {
+                        sb.push_str(&format!("- {}：{}{NL}", field(e, "id"), src_of(e)));
+                    }
+                }
+                if !exercises.is_empty() {
+                    sb.push_str(&format!(
+                        "{NL}## 本组的习题（你写它们：每道习题一张卡片）{NL}{NL}每道习题写一张卡片，标题写“{{习题编号}}：{{这道题要做什么}}”。**题目**：照原文写全，不删不改。书中有提示时写 **提示**：照原文。书中印有答案或解时才写 **答案**：照原文；书中没有答案时不写答案，也不自己解题。题目用到的单元用 `[[地址]]` 链接。{NL}{NL}"
+                    ));
+                    for e in &exercises {
+                        let hints: Vec<String> = ps::list(&e["hints"]).into_iter().map(|h| format!("`{}`", s(h))).collect();
+                        let answers: Vec<String> = ps::list(&e["answers"]).into_iter().map(|h| format!("`{}`", s(h))).collect();
+                        let hint = if hints.is_empty() { String::new() } else { format!("；提示 {}", hints.join("、")) };
+                        let answer = if answers.is_empty() { "；书中没有答案".to_string() } else { format!("；答案 {}", answers.join("、")) };
+                        sb.push_str(&format!("- {}：原文 {}{hint}{answer}{NL}", field(e, "id"), src_of(e)));
                     }
                 }
                 util::write_text(&file, &format!("{}{sb}", text.trim_end()))?;
@@ -991,7 +1022,8 @@ impl Compiler {
         let theories_made = theories.iter().filter(|t| truthy(&t["address"])).count();
         save_json(
             &units_file,
-            &obj(vec![("key", json!(self.key)), ("units", json!(units)), ("others", json!(ps::ps_array(&index["others"]))), ("theories", json!(theories))]),
+            // The allocation record binds the settled index it allocated from (P1a M2.2).
+            &obj(vec![("key", json!(self.key)), ("index_hash", index["projection_hash"].clone()), ("units", json!(units)), ("others", json!(ps::ps_array(&index["others"]))), ("theories", json!(theories))]),
         )?;
         out_last(&obj(vec![
             ("ok", json!(true)),

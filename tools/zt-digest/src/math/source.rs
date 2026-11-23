@@ -194,7 +194,14 @@ type Pos = (usize, usize, usize);
 pub struct Chapter {
     pub id: String,
     pub label: String,
+    /// The heading right after the number heading (`# 第1章` then `# 实数系与复数系`), when there is one.
+    pub title: String,
     pub ranges: Vec<(String, usize, usize)>,
+}
+
+/// The chapter's name as a reader sees it: its number heading and its title (`第1章 实数系与复数系`).
+pub fn chapter_name(c: &Chapter) -> String {
+    if c.title.is_empty() || c.label.contains(&c.title) { c.label.clone() } else { format!("{} {}", c.label, c.title) }
 }
 
 fn zh_number(text: &str) -> Option<usize> {
@@ -254,7 +261,9 @@ pub fn chapters(sections: &[Section]) -> Vec<Chapter> {
                 ranges.push((sec.file.clone(), from, to.min(total)));
             }
         }
-        out.push(Chapter { id: id.clone(), label: label.clone(), ranges });
+        // The title: the next non-blank line of the same section, when it is a heading of its own.
+        let title = sections[p.0].lines.iter().skip(p.1).map(|l| l.trim()).find(|l| !l.is_empty()).filter(|l| HEADING.is_match(l) && !CHAPTER.is_match(l)).map(|l| l.trim_start_matches('#').trim().to_string()).unwrap_or_default();
+        out.push(Chapter { id: id.clone(), label: label.clone(), title, ranges });
     }
     out
 }
@@ -901,7 +910,6 @@ pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec
     }
     let mut units: Vec<Value> = Vec::new();
     let mut others: Vec<Value> = Vec::new();
-    let mut last_unit: Option<(String, String)> = None;
     for o in &objects {
         let (id, kind) = (field(o, "id"), field(o, "kind"));
         let own = field(o, "destination") == format!("unit:{id}");
@@ -910,7 +918,11 @@ pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec
         }
         let st = &o["statement"][0];
         let section = field(st, "section");
-        let (group, chapter) = place(&section);
+        let (group, prepared) = place(&section);
+        // The printed chapter: its id and its name (`第1章 实数系与复数系`); front matter keeps the
+        // prepared group's chapter text.
+        let chapter_id = field(&o["key"], "chapter");
+        let chapter = ps::list(&projection["chapters"]).into_iter().find(|c| field(c, "id") == chapter_id).map(|c| field(c, "name")).filter(|n| !n.is_empty()).unwrap_or(prepared);
         let label = field(&o["key"], "label");
         let printed = !label.starts_with("after-");
         let numeric = printed && NUMBER.find(&label).is_some_and(|m| m.as_str() == label);
@@ -919,7 +931,7 @@ pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec
             "id": ids[&id], "object_id": id,
             "label": if printed { if numeric { format!("{word} {label}") } else { label.clone() } } else { String::new() },
             "word": word, "number": if numeric { label.clone() } else { String::new() },
-            "name": field(o, "name"), "group": group, "chapter": chapter,
+            "name": field(o, "name"), "group": group, "chapter": chapter, "chapter_id": chapter_id,
             "section": section, "line": st["line"], "end": st["end"],
         });
         let map = rec.as_object_mut().unwrap();
@@ -936,20 +948,29 @@ pub fn legacy_view(projection: &Value, sections: &[Section]) -> (Vec<Value>, Vec
             map.insert("form".into(), json!(kind));
             map.insert("level".into(), json!(level));
             map.insert("cites".into(), json!(ps::select_unique(cites)));
-            last_unit = Some((section.clone(), ids[&id].clone()));
             units.push(rec);
         } else {
+            // P1a M2.2: an example whose destination is a unit is written into that unit; every other
+            // example and every exercise is the group writer's (an exercise belongs to its chapter's
+            // exercise set, never to the unit before it), with its printed hints and answers.
             let dest = field(o, "destination");
             let belongs = dest.strip_prefix("unit:").and_then(|t| ids.get(t)).cloned().unwrap_or_default();
-            let after = if !belongs.is_empty() {
-                belongs.clone()
-            } else {
-                last_unit.as_ref().filter(|(s, _)| ps::eq(s, &section)).map(|(_, u)| u.clone()).unwrap_or_default()
+            let spans_of = |role: &str| -> Vec<String> {
+                objects
+                    .iter()
+                    .filter(|x| field(x, "kind") == role && field(x, "destination") == format!("exercise:{id}"))
+                    .flat_map(|x| ps::list(&x["statement"]).into_iter().map(|sp| format!("sections/{}:{}-{}", field(sp, "section"), field(sp, "line"), field(sp, "end"))).collect::<Vec<_>>())
+                    .collect()
             };
             map.insert("proof".into(), json!(0));
             map.insert("kind".into(), json!(kind));
             map.insert("belongs_to".into(), json!(belongs));
-            map.insert("after".into(), json!(after));
+            map.insert("after".into(), json!(belongs));
+            map.insert("writer".into(), json!(if belongs.is_empty() { "group" } else { "unit" }));
+            if kind == "exercise" {
+                map.insert("hints".into(), json!(spans_of("hint")));
+                map.insert("answers".into(), json!(spans_of("answer")));
+            }
             others.push(rec);
         }
     }
@@ -1191,7 +1212,7 @@ pub fn join(packets: &[Packet], sections: &[Section], expected: Option<&Value>, 
     }
     let chapter_rows: Vec<Value> = chapters(sections)
         .iter()
-        .map(|c| json!({"id": c.id, "label": c.label, "ranges": c.ranges.iter().map(|(f, a, b)| json!({"section": f, "line": a, "end": b})).collect::<Vec<_>>()}))
+        .map(|c| json!({"id": c.id, "label": c.label, "title": c.title, "name": chapter_name(c), "ranges": c.ranges.iter().map(|(f, a, b)| json!({"section": f, "line": a, "end": b})).collect::<Vec<_>>()}))
         .collect();
     let mut p = json!({
         "schema_version": 2,
@@ -2399,6 +2420,7 @@ mod tests {
         let ids: Vec<String> = units.iter().map(|u| field(u, "id")).collect();
         assert_eq!(ids, ["定理 1.19", "定理 1.20", "定理 1.21", "推论「根的乘积」"]);
         assert_eq!(field(&units[0], "object_id"), "ch1:theorem:1.19");
+        assert_eq!((field(&units[0], "chapter"), field(&units[0], "chapter_id")), ("第 1 章 实数系".to_string(), "ch1".to_string()), "the printed chapter, not the prepared group's");
         assert_eq!((field(&units[0], "form"), field(&units[0], "level")), ("theorem".to_string(), "formal".to_string()));
         assert_eq!((units[0]["section"].clone(), units[0]["line"].clone(), units[0]["end"].clone(), units[0]["group"].clone()), (json!("s01.md"), json!(5), json!(7), json!(1)));
         assert_eq!(units[2]["cites"], json!(["定理 1.20"]));
@@ -2407,6 +2429,9 @@ mod tests {
         let oids: Vec<(String, String)> = others.iter().map(|o| (field(o, "id"), field(o, "kind"))).collect();
         assert_eq!(oids, [("习题 1".to_string(), "exercise".to_string()), ("习题 2".to_string(), "exercise".to_string()), ("习题 19".to_string(), "exercise".to_string())]);
         assert_eq!(others[0]["group"], json!(3));
+        assert_eq!((field(&others[1], "after"), field(&others[1], "writer")), (String::new(), "group".to_string()), "an exercise is its chapter set's, not the unit before it");
+        assert_eq!(others[1]["hints"], json!(["sections/s03.md:4-4"]));
+        assert_eq!(others[1]["answers"], json!([]));
     }
 
     #[test]
@@ -2463,5 +2488,16 @@ mod tests {
         assert_eq!(jobs_of("unresolved_target"), [json!(["s02.md"])], "{}", fault_text(&p));
         assert_eq!(jobs_of("proof_missing"), [json!(["s01.md"])], "the theorem's own packet: {}", fault_text(&p));
         assert_eq!(jobs_of("expected_missing"), [json!(["s01.md", "s02.md", "s03.md"])], "a missing key: every packet of its chapter");
+    }
+
+    // --- M2.2 ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_chapter_takes_the_heading_after_its_number_as_its_title() {
+        let b = vec![sec("s01.md", "# 第1章\n\n# 实数系与复数系\n\n# 引言\n\n正文。\n\n# 第 2 章 基本拓扑\n\n正文二。")];
+        let t: Vec<(String, String, String)> = chapters(&b).into_iter().map(|c| (c.id, c.label, c.title)).collect();
+        assert_eq!(t, [("ch1".to_string(), "第1章".to_string(), "实数系与复数系".to_string()), ("ch2".to_string(), "第 2 章 基本拓扑".to_string(), String::new())]);
+        assert_eq!(chapter_name(&chapters(&b)[0]), "第1章 实数系与复数系");
+        assert_eq!(chapter_name(&chapters(&b)[1]), "第 2 章 基本拓扑");
     }
 }

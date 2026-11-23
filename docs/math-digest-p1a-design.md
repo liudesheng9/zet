@@ -188,3 +188,18 @@ The compact glossary Term format (next), the true chapter spine with promotion, 
 - §§5.4 and 6.2–6.4: paid qualification uses Rudin only. Thompson's paired answers, arithmetic and figure provenance stay as offline fixtures.
 - §6.1: record the Thompson P0 observations (box copy, `c13ca62c`) and the three outstanding controls separately: the injected allocation crash, a deliberately unwritten theorem, and an economics `NO_FORM` control.
 - P1a acceptance qualifies neither full P1 nor production replacement.
+
+## 10. Decisions taken under the owner's overnight authority (2026-11-23)
+
+The owner authorized these decisions while asleep; the comprehension principles and the quality target are unchanged by any of them.
+
+| # | Decision | Reason |
+|---|---|---|
+| D1 | Run a finder-only probe on the Rudin slice after M2.1, before M2.2–M2.6 | The design rested on one untested claim: that DeepSeek V4.1 Flash can claim every passage of a packet. The probe (6 jobs + 1 repair job, about 0.28M output tokens) answered it: 0 packet faults, one book-level fault fixed by the repair round, 140/140 printed labels and 75/75 exercises |
+| D2 | `prepare` keeps a mathematics run's exercise sections | The default skip list left out every `习题` section, so no exercise reached the finder. A math book's exercises are content (§2.2); this is a variant rule for every math book, not a flag change for one book |
+| D3 | A variant without `-Apply` is a dry run | The source check must see the range the run will read; the archive binding still runs under `-Apply` only |
+| D4 | The OCR's duplicated Theorem 3.3 is removed from the box source | Per the source-check rule (fix the material, never the flagging rules); backup `D:\zt\backups\source-normalize-2026-11-23\` |
+| D5 | Numbered parts (a), (b), (c) stay inside their object; a hint or answer for one part targets the whole exercise | One destination per numbered item; parts become objects only if a book prints separate answers per part |
+| D6 | One Card per exercise, written by the group that holds the chapter's exercises; no answer without an answer span | One reachable endpoint per learning task (§3, M21); the unit architect plans only the examples the projection gives to its unit |
+| D7 | The cross-packet context pointer for split proofs (Astra round 17, point 4) is deferred | `index` packs whole groups and never splits one, and Rudin's Appendix is a group of its own; the pointer is needed only for a proof that crosses groups |
+| D8 | A relation may name an unnumbered object by its `name`; a dependent fragment's target needs a label | The finder cannot know the ordinal the join gives an unnumbered object |

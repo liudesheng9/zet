@@ -2829,6 +2829,11 @@ fn math_skeleton_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path:
     }
     let retained = util::read_json(&path).context("invalid retained unit list")?;
     let (index_units, index_others) = crate::math::retained_index(&p.out.to_string_lossy(), &manifest)?;
+    // The allocation binds the settled projection it allocated from (P1a M2.2).
+    let projection = crate::math::retained_projection(&p.out.to_string_lossy(), &manifest)?;
+    if retained["index_hash"] != projection["hash"] {
+        bail!("the skeleton allocated from another statement projection ({}); the index changed since: run the skeleton again", retained["index_hash"]);
+    }
     let units = retained["units"].as_array().context("invalid unit list")?;
     if units.len() != index_units.len() {
         bail!(
@@ -9986,7 +9991,7 @@ fn math_writer_note(block: &str) -> String {
     if block.trim().is_empty() {
         format!("{rules}本组没有数学单元：只写读书笔记。\n")
     } else {
-        format!("{block}\n\n{rules}以上单元由单元流水线写。你的读书笔记在讲到某个单元的地方用 `[[地址]]` 链接它；例与习题由单元收录，你不另写卡片。\n")
+        format!("{block}\n\n{rules}以上单元由单元流水线写。你的读书笔记在讲到某个单元的地方用 `[[地址]]` 链接它。属于单元的例由单元流水线写，你只链接；清单里由你写的例写进读书笔记；本组的习题由你写，每道习题一张卡片，没有原文答案时不写答案。\n")
     }
 }
 
