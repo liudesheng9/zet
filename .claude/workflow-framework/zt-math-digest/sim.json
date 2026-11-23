@@ -236,6 +236,12 @@
       }
     },
     {
+      "label": "^math-proof: repair$",
+      "answer": {
+        "answer": "{\"ok\":true,\"fixed\":1,\"refused\":0,\"repair\":0,\"jobs\":0,\"file\":\"D:\\\\x\\\\Key\\\\math\\\\drive\\\\proof-repair-jobs.json\"}"
+      }
+    },
+    {
       "label": "^math-proof: apply$",
       "answer": {
         "answer": "{\"ok\":true,\"applied\":{\"ok\":3,\"fixed\":1,\"refused\":0}}"

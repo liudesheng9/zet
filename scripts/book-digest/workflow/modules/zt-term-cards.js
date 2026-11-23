@@ -1,4 +1,5 @@
-// ==== module zt-term-cards v17 ====
+// ==== module zt-term-cards v18 ====
+// v18 (rudin1976principles pilot, 2026-11-23): the managers follow the shared rate-limit rule (DSMP_RATE_LIMIT).
 // v17 (the owner, 2026-11-12): every job runs on the shared library's one source value (ZT_DRIVE_MODEL, OpenCode Go);
 // the job file's "model" field is not read.
 // v16 (the owner, 2026-11-08, docs/digest-job-messages-proposal.md): a concept job is one message of 6 terms, and four
@@ -36,7 +37,7 @@
 // v6 (#180): a step answers one compact line whose fields are top-level counts and paths (`ztDrive` reads
 // only its last line, and only with a boolean top-level `ok`); the module reads counts, never a unit list.
 defineModule({
-  id: 'zt-term-cards', version: '17', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-term-cards', version: '18', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Term cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers and review-and-fix jobs for the content; each job completes from the readiness result and the book from its publication report.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -76,6 +77,7 @@ Each job has id, files, prompt, skills, model, effort. A job may also have "then
 2. Keep at most 8 jobs running at a time. Until no job is running: call mcp__deepseek__deepseek_wait (wait_seconds ${DSMP.pollSeconds}) on one running job, then mcp__deepseek__deepseek_wait (wait_seconds 0) on the others. A job asking a question: answer "按任务说明自行决定，不需要询问。". A job asking approval for a command or a file under "${OUT}": allow; anything else: reject. A job running longer than ${DSMP.budgetMinutes} minutes: cancel it.
 3. A job with "then" is one conversation of several messages. When its conversation answers "finished", send the next item of its "then": mcp__deepseek__deepseek_prompt with the same session_id, prompt_files = that item's files, prompt = that item's prompt, skills = the job's skills, reasoning_effort = the job's effort, wait_seconds 0. Send every item, in order, one at a time. The job ends with the answer to its last item.
 3b. A job that failed or gave an empty answer gets ONE more attempt in a new conversation (from its first message). Never a third.
+3c. ${DSMP_RATE_LIMIT}
 4. When a job ends, delete its conversation with mcp__deepseek__deepseek_delete. Never archive.
 5. Use the session_id that deepseek_run returned, never a word in its place. A step whose job list is empty starts no run: never send a placeholder prompt.
 5. You have no terminal tabs, no Monitor loop, no session handoff and no general shell: never start another agent, never hand the work on, never poll with Start-Sleep or any other timer, and wait only with deepseek_wait. Any command you are given to run is run in the foreground with timeout_ms: 600000.

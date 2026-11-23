@@ -1,4 +1,5 @@
-// ==== module zt-figure-explain v1 ====
+// ==== module zt-figure-explain v2 ====
+// v2 (rudin1976principles pilot, 2026-11-23): the managers follow the shared rate-limit rule (DSMP_RATE_LIMIT).
 // docs/figure-explanation-design.md. A DeepSeek agent looks at each figure and says what it shows; the explanation is
 // saved beside the image in the Scholar Archive. The pass belongs to the image, not to a digest: no ledger, no Card, no
 // staging. One start, one queue of Haiku managers, one finish; the start lists only the images with no explanation for
@@ -6,7 +7,7 @@
 // Prepare, so book.zh.md is written once with the explanations in it; the standalone workflow zt-figure-explain runs
 // it over many documents (the backfill).
 defineModule({
-  id: 'zt-figure-explain', version: '1', requires: ['zt-workflow-lib'],
+  id: 'zt-figure-explain', version: '2', requires: ['zt-workflow-lib'],
   summary: 'ZT figures: DeepSeek looks at each image and writes its explanation, saved beside the image in the Scholar Archive.',
   params: {
     fileIds: { type: 'any', description: 'the Markdown file ids of the documents (the standalone workflow)' },
@@ -40,6 +41,7 @@ JOBS: read the JSON array in "${file}" (Read tool) and run EVERY entry in it. Ea
 2. Follow each session until it ends, polling with mcp__deepseek__deepseek_wait (wait_seconds ${DSMP.pollSeconds}):
 - "needs_response" with an approval: allow only a command that runs "zt-digest figures -Step explain-check", a read of a file under "${WORK}", and writing a JSON file under "${WORK}\\out"; reject anything else. A question: answer with custom text "按任务说明自行决定，不需要询问。" through mcp__deepseek__deepseek_respond.
 - A session that ended in an error or without an answer gets ONE more attempt in a new conversation with the same arguments; then the job failed.
+- ${DSMP_RATE_LIMIT}
 3. Delete every conversation you started (mcp__deepseek__deepseek_delete, never archive) as soon as you have its answer.
 You have no terminal tabs, no Monitor loop and no general shell, and you never start another agent.
 Return done (the number of jobs that ended), failed (the ids of the jobs that failed) and not_deleted (session ids that stayed open).`

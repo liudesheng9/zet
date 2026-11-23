@@ -119,6 +119,13 @@ switch ($Step) {
         Reply @{ ok = $true; rows = [int]$a.json.rows; card = "$($a.json.card)"; repeated = [int]$a.json.repeated; unit = $state } @{ apply = $a.json; unit = $unit }
     }
     'start' {
+        # A book with no reference list (rudin1976principles pilot, 2026-11-23): the Cited list settled with zero rows
+        # and wrote no Card, so there is no Cited Card to write.
+        $listApply = Join-Path $Out 'cited\apply.json'
+        if (Test-Path -LiteralPath $listApply) {
+            $la = Get-Content -LiteralPath $listApply -Raw -Encoding utf8 | ConvertFrom-Json
+            if ($la.applied -eq $true -and [int]$la.rows -eq 0) { Reply @{ ok = $true; jobs = 0; no_list = $true } @{ list = $la }; break }
+        }
         if ($HasLedger) {
             # A start begins the branch: a Cited Card claim still held belongs to a stopped run. Release it.
             $status = Run @('ledger', 'status', '-Out', $Out, '-Layer', 'citedcards')

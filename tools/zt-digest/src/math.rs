@@ -53,8 +53,10 @@ const STEPS: &[&str] = &[
     "boundary",
     "boundary-apply",
     "boundary-settle",
+    "boundary-review-check",
     "proof",
     "proof-apply",
+    "proof-repair",
     "theory",
     "theory-apply",
     "check",
@@ -350,7 +352,8 @@ pub(crate) fn exercise_faults(projection: &Value, cards_of: &dyn Fn(&str) -> Vec
                 }
             };
             let at = field(card, "address");
-            let body = field(card, "body");
+            // A Term link reads as its label: the term-link pass wraps the book's own words.
+            let body = crate::term_link::unlinked(&field(card, "body"));
             let flat = squeeze(&body);
             if let Some(st) = ps::list(&ex["statement"]).first() {
                 let own = span_text(st);
@@ -384,6 +387,73 @@ pub(crate) fn exercise_faults(projection: &Value, cards_of: &dyn Fn(&str) -> Vec
         }
     }
     out
+}
+
+/// A bold section heading line of a unit head: `**陈述**`, `**陈述**：` or `**思路**：一句。`. Returns the
+/// section name, the heading prefix (through its colon) and the text after it on the same line.
+fn section_heading(line: &str) -> Option<(&str, &str, &str)> {
+    let t = line.trim_end();
+    let rest = t.strip_prefix("**")?;
+    let close = rest.find("**")?;
+    let name = &rest[..close];
+    if name.is_empty() || name.contains('*') {
+        return None;
+    }
+    let after = &rest[close + 2..];
+    let inline = after.strip_prefix('：').or_else(|| after.strip_prefix(':'));
+    match inline {
+        Some(text) => Some((name, &t[..t.len() - text.len()], text.trim())),
+        None if after.trim().is_empty() => Some((name, t, "")),
+        None => None,
+    }
+}
+
+/// The unit head with its 陈述 (or 定义) section replaced by `section`: the statement check answers the
+/// corrected statement alone (Rudin pilot 2026-11-23). `None` when `section` is a whole head (it holds another
+/// section heading) or the head has no statement section; the caller then takes `section` as the whole body.
+pub(crate) fn splice_statement(head: &str, section: &str) -> Option<String> {
+    const NAMES: [&str; 2] = ["陈述", "定义"];
+    let mut given: Vec<String> = section.trim_matches('\n').lines().map(str::to_string).collect();
+    // A reviewer that repeats the heading: its own line goes, and text after its colon opens the section.
+    if let Some((name, _, inline)) = given.first().and_then(|l| section_heading(l)).map(|(n, p, i)| (n.to_string(), p.to_string(), i.to_string()))
+        && NAMES.contains(&name.as_str())
+    {
+        given.remove(0);
+        if !inline.is_empty() {
+            given.insert(0, inline);
+        }
+    }
+    if given.iter().any(|l| section_heading(l).is_some()) {
+        return None;
+    }
+    let lines: Vec<&str> = head.lines().collect();
+    let start = lines.iter().position(|l| section_heading(l).is_some_and(|(n, _, _)| NAMES.contains(&n)))?;
+    let (_, prefix, _) = section_heading(lines[start])?;
+    // The section runs to the next heading, the reverse-link block, or the end; blank lines before that stay.
+    let mut end = lines[start + 1..]
+        .iter()
+        .position(|l| section_heading(l).is_some() || l.starts_with("<!-- zt:") || l.starts_with("## ") || l.starts_with("来源："))
+        .map(|k| start + 1 + k)
+        .unwrap_or(lines.len());
+    while end > start + 1 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    let mut out: Vec<String> = lines[..start].iter().map(|l| l.to_string()).collect();
+    out.push(prefix.to_string());
+    out.push(given.join("\n").trim_matches('\n').to_string());
+    out.extend(lines[end..].iter().map(|l| l.to_string()));
+    let mut text = out.join("\n");
+    if head.ends_with('\n') {
+        text.push('\n');
+    }
+    Some(text)
+}
+
+/// The proof reviewers' answer files in apply order: every first answer, then the repair answers
+/// (`p-NN.r1.json`), so the verdict a repair gave on an address is the one that stands.
+pub(crate) fn proof_answer_order(mut names: Vec<String>) -> Vec<String> {
+    names.sort_by_key(|n| (n.contains(".r"), n.to_uppercase()));
+    names
 }
 
 /// Remove a file when it exists: a failed step must not leave an earlier step's artifact behind.
@@ -1576,6 +1646,11 @@ impl Compiler {
                         field(&unit_card, "body")
                     ));
                 }
+                // The self-check (Rudin pilot 2026-11-23: two review jobs left their last candidate without a verdict).
+                sb.push_str(&format!(
+                    "## 自查（SELF-CHECK）{NL}{NL}写完 JSON 文件后运行下面的命令。它列出缺判定、判定不合格或不属于本任务的地址；改好后再运行，直到输出 `faults: 0`。{NL}{NL}```{NL}zt-digest math -Step boundary-review-check -Staging \"{}\" -Job v-{name}{NL}```{NL}",
+                    self.p.staging
+                ));
                 let job = join(&bw, &format!("v-{name}.md"));
                 util::write_text(&job, &sb)?;
                 reviews.push(obj(vec![
@@ -1587,6 +1662,57 @@ impl Compiler {
         }
         save_json(&state_file, &state)?;
         out_last(&obj(vec![("created", json!(made)), ("skipped_supplied", json!(skipped)), ("jobs", json!(reviews))]))
+    }
+
+    /// The self-check of one boundary review answer: one fault per line, then `faults: N`. Every supplied
+    /// candidate of the batch needs `ok` or `wrong`, a `wrong` needs its reason, and no verdict names an
+    /// address the job did not list.
+    fn step_boundary_review_check(&mut self) -> Result<()> {
+        let id = self.p.job.trim().to_string();
+        if id.is_empty() {
+            bail!("-Job is required");
+        }
+        let name = id.strip_prefix("v-").unwrap_or(&id).to_string();
+        let bw = self.boundary_work();
+        let state = read_json(&join(&bw, "state.json"))?;
+        if !state["created"][name.as_str()].is_array() {
+            bail!("no boundary review job {id} in {}", join(&bw, "state.json"));
+        }
+        let asked: Vec<String> = pipe(&state["created"][name.as_str()]).into_iter().filter(|c| truthy(&c["supplied"])).map(|c| field(c, "address")).collect();
+        let file = join(&bw, &format!("out\\v-{name}.json"));
+        let mut faults = Vec::new();
+        if !ps::exists(&file) {
+            faults.push(format!("没有答案文件 {file}"));
+        } else {
+            match read_json(&file) {
+                Err(e) => faults.push(format!("答案不是合法的 JSON：{e}")),
+                Ok(answer) => {
+                    let verdicts = pipe(&answer["verdicts"]);
+                    for v in &verdicts {
+                        let at = field(v, "address");
+                        if !asked.iter().any(|a| eq(a, &at)) {
+                            faults.push(format!("[[{at}]] 不是本任务列出的地址"));
+                        }
+                    }
+                    for at in &asked {
+                        match verdicts.iter().find(|v| eq(&field(v, "address"), at)) {
+                            None => faults.push(format!("[[{at}]] 没有判定")),
+                            Some(v) => match field(v, "verdict").as_str() {
+                                "ok" => {}
+                                "wrong" if !field(v, "reason").trim().is_empty() => {}
+                                "wrong" => faults.push(format!("[[{at}]] 判为 wrong，但没有写理由")),
+                                other => faults.push(format!("[[{at}]] 的判定是 {other:?}，只能是 ok 或 wrong")),
+                            },
+                        }
+                    }
+                }
+            }
+        }
+        for f in &faults {
+            println!("{f}");
+        }
+        println!("faults: {}", faults.len());
+        Ok(())
     }
 
     fn step_boundary_settle(&mut self) -> Result<()> {
@@ -1828,6 +1954,7 @@ impl Compiler {
         // and reads the reviewed steps and the applied fixes back from this record (R240).
         let mut owner: CiMap<String> = CiMap::new();
         let mut frozen: CiMap<String> = CiMap::new();
+        let mut heads: CiMap<bool> = CiMap::new();
         for entry in pipe(&plan["units"]) {
             if let Some(map) = entry["fingerprints"].as_object() {
                 for (at, fp) in map {
@@ -1837,6 +1964,7 @@ impl Compiler {
             // A verdict on the unit's head is the clause-level statement check (P1a M2.5).
             if truthy(&entry["model"]) {
                 owner.insert(&field(&entry, "model"), field(&entry, "unit"));
+                heads.insert(&field(&entry, "model"), true);
             }
             for step in pipe(&entry["steps"]) {
                 owner.insert(&field(&step, "address"), field(&entry, "unit"));
@@ -1849,9 +1977,19 @@ impl Compiler {
         // that text is current too, beside the text the plan froze.
         let applied_file = join(&self.proof_work(), "applied.json");
         let mut accepted: Map<String, Value> = if ps::exists(&applied_file) { read_json(&applied_file)?["accepted"].as_object().cloned().unwrap_or_default() } else { Map::new() };
-        for name in ps::child_files(&out, "p-", ".json") {
+        // Every answer's verdicts, a repair answer after the answer it corrects: the last verdict on an
+        // address is the one that stands (the proof repair round, Rudin pilot 2026-11-23).
+        let mut verdicts: Vec<Value> = Vec::new();
+        for name in proof_answer_order(ps::child_files(&out, "p-", ".json")) {
             let answer = read_json(&join(&out, &name))?;
             for v in pipe(&answer["verdicts"]) {
+                let address = field(v, "address");
+                verdicts.retain(|w| !eq(&field(w, "address"), &address));
+                verdicts.push(v.clone());
+            }
+        }
+        {
+            for v in &verdicts {
                 let address = field(v, "address");
                 let reason = field(v, "reason");
                 // A verdict on an address the plan never named, or a verdict that is neither ok nor fix,
@@ -1863,7 +2001,14 @@ impl Compiler {
                 let verdict = field(v, "verdict");
                 let card = self.get(&json!(address), "get_card")?;
                 let before = crate::calls::authored_fingerprint(&card);
-                let stale = frozen.get(&address).is_some_and(|fp| *fp != before) && accepted.get(&address).and_then(Value::as_str) != Some(before.as_str());
+                // The term-link pass after the review wraps words in Term links: the text the reviewer read is
+                // the same text, read with each Term link as its label.
+                let read_as = {
+                    let mut plain = card.clone();
+                    plain["body"] = json!(crate::term_link::unlinked(&field(&card, "body")));
+                    crate::calls::authored_fingerprint(&plain)
+                };
+                let stale = frozen.get(&address).is_some_and(|fp| *fp != before && *fp != read_as) && accepted.get(&address).and_then(Value::as_str) != Some(before.as_str());
                 if !matches!(verdict.as_str(), "ok" | "fix") || stale {
                     let why = if stale { "the text changed after the review was planned".to_string() } else { format!("unknown verdict {verdict:?}") };
                     refused.push(obj(vec![("address", json!(address)), ("reason", json!(why))]));
@@ -1887,7 +2032,13 @@ impl Compiler {
                     ]));
                     continue;
                 }
-                let new = field(v, "body");
+                let mut new = field(v, "body");
+                // The statement check answers the corrected 陈述 (or 定义) section of the head alone.
+                if heads.get(&address).is_some() && !new.trim().is_empty() {
+                    if let Some(whole) = splice_statement(&field(&card, "body"), &new) {
+                        new = whole;
+                    }
+                }
                 // A fix already in place (an earlier round, or a run that stopped after writing it) is
                 // accepted as it stands.
                 if !new.trim().is_empty() && field(&card, "body") == new {
@@ -1962,6 +2113,90 @@ impl Compiler {
             ]),
         )?;
         out_last(&obj(vec![("ok", json!(ok)), ("fixed", json!(fixed)), ("refused", json!(refused.len())), ("parts", json!(refused))]))
+    }
+
+    /// The proof repair round (Rudin pilot 2026-11-23): a fix the apply refused because it drops Links goes
+    /// back to its reviewer once, in a job file of its own beside the batch (`p-NN.r1.md`), with the current
+    /// text, the refused text and the Links it dropped. The answer (`out\p-NN.r1.json`) comes after the batch's
+    /// first answer, so the next apply reads its verdict in place of the refused one. A batch is sent once: a
+    /// repair answer that drops Links again stays refused, and the unit keeps its named obligation.
+    fn step_proof_repair(&mut self) -> Result<()> {
+        let pw = self.proof_work();
+        let out = join(&pw, "out");
+        let applied_file = join(&pw, "applied.json");
+        let plan_file = join(&pw, "plan.json");
+        if !ps::exists(&applied_file) || !ps::exists(&plan_file) {
+            return out_last(&obj(vec![("ok", json!(true)), ("repair", json!(0)), ("jobs", json!([]))]));
+        }
+        let plan = read_json(&plan_file)?;
+        let applied = read_json(&applied_file)?;
+        let mut heads: CiMap<bool> = CiMap::new();
+        for entry in pipe(&plan["units"]) {
+            if truthy(&entry["model"]) {
+                heads.insert(&field(entry, "model"), true);
+            }
+        }
+        // Each address's last verdict: the refused text and the reviewer's reason.
+        let mut last: CiMap<Value> = CiMap::new();
+        for name in proof_answer_order(ps::child_files(&out, "p-", ".json")) {
+            for v in pipe(&read_json(&join(&out, &name))?["verdicts"]) {
+                last.insert(&field(v, "address"), v.clone());
+            }
+        }
+        // The batch that reviewed each unit.
+        let mut batch_of: CiMap<String> = CiMap::new();
+        if let Some(map) = plan["batches"].as_object() {
+            for (name, units) in map {
+                for u in pipe(units) {
+                    batch_of.insert(&s(u), name.clone());
+                }
+            }
+        }
+        let mut by_batch: std::collections::BTreeMap<String, Vec<Value>> = std::collections::BTreeMap::new();
+        for r in pipe(&applied["reviewed"]) {
+            if field(r, "verdict") != "refused" || ps::list(&r["dropped_links"]).is_empty() {
+                continue;
+            }
+            if let Some(name) = batch_of.get(&field(r, "unit")) {
+                by_batch.entry(name.clone()).or_default().push(r.clone());
+            }
+        }
+        let repair_file = join(&pw, "repair.json");
+        let mut sent = if ps::exists(&repair_file) { read_json(&repair_file)? } else { json!({}) };
+        let mut jobs: Vec<Value> = Vec::new();
+        for (name, items) in &by_batch {
+            let answer = join(&out, &format!("{name}.r1.json"));
+            // Once per batch: a batch whose repair answered is never sent again; one planned and never
+            // answered (an interrupted run) is planned once more.
+            if sent[name.as_str()].is_object() && ps::exists(&answer) {
+                continue;
+            }
+            let mut sb = format!("# 证明复核：重做被退回的改写 {name}{NL}{NL}");
+            sb.push_str(&format!(
+                "你上次复核时给出的下列改写被退回了：改写删掉了原正文里的链接。链接是这张卡在盒子里的连接，改写删掉它，连接就断了。{NL}{NL}对下面每个地址重新判定，把结果写入 `{answer}`，格式与上次相同（`verdicts` 列表），只写下面列出的地址。只读本文件。{NL}{NL}- 仍需要改：在“现在的正文”上只改需要改的句子，保留原正文中的每一个 `[[链接]]`，包括开头的“依赖 [[…]]”行、**起点** 里的依赖行和术语链接 `[[词@地址]]`。{NL}- 你认为某个链接指错了卡：不要删它，也不要换成别的地址；保留它，在 `reason` 里写明。{NL}- 复查后认为原文没有错：写 `ok`。{NL}{NL}"
+            ));
+            for r in items {
+                let address = field(r, "address");
+                let card = self.get(&json!(address), "get_card")?;
+                let before = last.get(&address).cloned().unwrap_or(Value::Null);
+                let dropped: Vec<String> = ps::list(&r["dropped_links"]).iter().map(|l| format!("[[{}]]", s(l))).collect();
+                sb.push_str(&format!("## [[{address}]]{NL}{NL}被删掉的链接：{}{NL}{NL}", dropped.join("、")));
+                if heads.get(&address).is_some() {
+                    sb.push_str(&format!("这是单元模型卡：`body` 只写改好的 **陈述**（或 **定义**）一节的内容，不写节标题，不写别的节。{NL}{NL}"));
+                }
+                sb.push_str(&format!("你上次的理由：{}{NL}{NL}### 现在的正文{NL}{NL}{}{NL}{NL}### 你上次给的改写（被退回）{NL}{NL}{}{NL}{NL}", field(&before, "reason"), field(&card, "body"), field(&before, "body")));
+            }
+            let job = join(&pw, &format!("{name}.r1.md"));
+            util::write_text(&job, &sb)?;
+            jobs.push(obj(vec![
+                ("id", json!(format!("{name}.r1"))),
+                ("files", json!([self.script_file("dsh-math-proof-review.zh.md"), job])),
+                ("prompt", json!(format!("按以上说明重做 {name} 里被退回的改写，写出 {name}.r1 的 JSON 文件。最后只回复一行 JSON。"))),
+            ]));
+            sent[name.as_str()] = json!({ "addresses": items.iter().map(|r| r["address"].clone()).collect::<Vec<_>>() });
+        }
+        save_json(&repair_file, &sent)?;
+        out_last(&obj(vec![("ok", json!(true)), ("repair", json!(jobs.len())), ("jobs", json!(jobs))]))
     }
 
     // --- theory ----------------------------------------------------------------------------------
@@ -2506,6 +2741,8 @@ pub fn cli(argv: &[String]) -> Result<i32> {
         "boundary-settle" => compiler.step_boundary_settle()?,
         "proof" => compiler.step_proof()?,
         "proof-apply" => compiler.step_proof_apply()?,
+        "proof-repair" => compiler.step_proof_repair()?,
+        "boundary-review-check" => compiler.step_boundary_review_check()?,
         "theory" => compiler.step_theory()?,
         "theory-apply" => compiler.step_theory_apply()?,
         _ => compiler.step_check()?,
@@ -2516,6 +2753,37 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_head_fix_replaces_only_its_statement() {
+        // Rudin pilot 2026-11-23: the statement check answered the corrected 陈述 alone, and the apply took it for
+        // the whole head, so every 结构 Link read as dropped.
+        let head = "**动机**\n为什么。\n\n**陈述**\n(H1) $z$ 为[[复数@K/1|ai|u]]。\n结论：仅 $z=0$ 时为零。\n\n**结构**\n\n- 前提 [[K/1|aa|a]]：前提\n\n**来源**\n[[K]] 定理。";
+        let fixed = splice_statement(head, "(H1) $z$ 为[[复数@K/1|ai|u]]。\n结论：$z\\neq0$ 时为正。").unwrap();
+        assert_eq!(fixed, "**动机**\n为什么。\n\n**陈述**\n(H1) $z$ 为[[复数@K/1|ai|u]]。\n结论：$z\\neq0$ 时为正。\n\n**结构**\n\n- 前提 [[K/1|aa|a]]：前提\n\n**来源**\n[[K]] 定理。");
+        // A reviewer that repeats the heading writes the same Card.
+        assert_eq!(splice_statement(head, "**陈述**\n(H1) $z$ 为[[复数@K/1|ai|u]]。\n结论：$z\\neq0$ 时为正。\n").unwrap(), fixed);
+        // A definition's head names its statement 定义; the last section runs to the end.
+        assert_eq!(splice_statement("**定义**\n旧。", "新。").unwrap(), "**定义**\n新。");
+        assert_eq!(splice_statement("**动机**\n甲。\n\n**定义**\n旧。\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[K/2]] 乙", "新。").unwrap(), "**动机**\n甲。\n\n**定义**\n新。\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[K/2]] 乙");
+        // A whole head given back stays the whole head; a head without a statement section takes no splice.
+        assert_eq!(splice_statement(head, "**动机**\n新。\n\n**陈述**\n新。\n\n**结构**\n\n- 前提 [[K/1|aa|a]]"), None);
+        assert_eq!(splice_statement("**动机**\n无陈述节。", "新。"), None);
+        // A heading written with a colon, and a section that opens on the heading's own line.
+        assert_eq!(
+            splice_statement("**陈述**：\n- (H1) 旧。\n\n**思路**：取上确界。\n\n来源：[[K]]", "- (H1) 新。").unwrap(),
+            "**陈述**：\n- (H1) 新。\n\n**思路**：取上确界。\n\n来源：[[K]]"
+        );
+        assert_eq!(splice_statement("**定义**：旧的一句。\n\n**说明**：甲。", "**定义**：新的一句。").unwrap(), "**定义**：\n新的一句。\n\n**说明**：甲。");
+        // Bold words inside a sentence are no heading.
+        assert_eq!(splice_statement("**陈述**\n旧。", "设 **f** 连续。").unwrap(), "**陈述**\n设 **f** 连续。");
+    }
+
+    #[test]
+    fn repair_answers_come_after_the_answers_they_correct() {
+        let names = vec!["p-16.r1.json".to_string(), "p-16.json".to_string(), "p-02.json".to_string(), "p-02.r1.json".to_string()];
+        assert_eq!(proof_answer_order(names), vec!["p-02.json", "p-16.json", "p-02.r1.json", "p-16.r1.json"]);
+    }
 
     #[test]
     fn every_exercise_has_one_faithful_card() {
@@ -2536,8 +2804,9 @@ mod tests {
         };
         let good = vec![
             json!({"address": "K/8|a|1", "title": "1.19：两定点距离之比", "body": "**题目**：1.19. 设 a 与 b 属于 k 维空间，求球心。\n\n**答案**：（解：3c = 4b - a，3r = 2 |b - a|。）"}),
-            json!({"address": "K/8|a|2", "title": "1.2：12 不是平方", "body": "**题目**：证明不存在平方等于十二的有理数。"}),
-            json!({"address": "K/8|a|3", "title": "习题 1.3：消去律", "body": "**题目**：证明乘法的消去律。\n\n**提示**：用乘法公理。"}),
+            // The term-link pass wraps a word of the question: the reader still sees the book's words.
+            json!({"address": "K/8|a|2", "title": "1.2：12 不是平方", "body": "**题目**：证明不存在平方等于十二的[[有理数@K/1|ai|a]]。"}),
+            json!({"address": "K/8|a|3", "title": "习题 1.3：消去律", "body": "**题目**：证明[[乘法@K/1|ai|b]]的消去律。\n\n**提示**：用乘法公理。"}),
             json!({"address": "K/8", "title": "第 1 章习题", "body": "本章 3 道习题。"}),
         ];
         let of = |cards: Vec<Value>| move |chapter: &str| if chapter == "ch1" { cards.clone() } else { Vec::new() };

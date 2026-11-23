@@ -1,4 +1,7 @@
-// ==== module zt-workflow-lib v19 ====
+// ==== module zt-workflow-lib v20 ====
+// v20 (rudin1976principles pilot, 2026-11-23): 156 DeepSeek turns ended in 429 on OpenCode Go, and 40 Term-card jobs
+// spent both their attempts on it. DSMP_RATE_LIMIT is the managers' one rule: a rate-limited turn is no failed attempt;
+// the manager waits and continues the same conversation, at most six times.
 // v18 (bergin2026exchange resume, 2026-11-13): the drive prompt said "不修改任何文件"; a DeepSeek job read the cleanup-apply
 // step's own deletes and ledger writes as forbidden and refused to run it. The prompt now forbids only the job's own edits
 // and says the command's writes are the step's purpose.
@@ -61,6 +64,8 @@
 //    one object with a boolean top-level `ok`, with no prose before it on the same line.
 const ZT_LOCK = 'card_locked'
 const ZT_DRIVE_MODEL = 'opencode-go/deepseek-v4.1-flash'
+// Every DSMP manager prompt carries this rule beside its retry rule (v20).
+const DSMP_RATE_LIMIT = 'A turn that ends in "error" whose error text says 429 or rate_limit is a rate limit, not a failed attempt: keep that conversation. First wait: mcp__deepseek__deepseek_wait (wait_seconds 120) on another running job of yours, or on this one when no other runs. Then send mcp__deepseek__deepseek_prompt to the same session_id with prompt "上一轮因服务限流中断。从中断处继续完成任务，最后按任务要求回复。", the job\'s skills and effort, wait_seconds 0. Do this at most six times for one job; the seventh rate limit is a failed attempt.'
 const ZT_DRIVE_SCHEMA = {
   type: 'object',
   properties: {
@@ -195,6 +200,7 @@ First load the tools: ToolSearch with query "select:mcp__deepseek__deepseek_run,
 1. Start the job: mcp__deepseek__deepseek_run with cwd "${o.cwd}", prompt ${JSON.stringify(ztDriveCommand(o.command))}, skills [], model "${o.model || ZT_DRIVE_MODEL}", reasoning_effort "${o.effort || 'high'}", wait_seconds 0.
 2. Wait with mcp__deepseek__deepseek_wait (wait_seconds ${DSMP.pollSeconds}) until it ends. A job asking a question: answer "按任务说明自行决定，不需要询问。". A job asking approval for the one command, or for writing the answer file under "${answers}": allow; anything else: reject.
 3. A job that failed, gave an empty answer, or ended without running the command (its last line is no JSON object: a promise such as "我会……运行", a plan or a question) gets ONE more attempt in a new conversation. Never a third. When that attempt also ends with no JSON line, return its answer as it is: the step's command is the job's to run, never yours, even once.
+3b. ${DSMP_RATE_LIMIT}
 ${records}
 The record commands, when this step has records, are the only commands you run: each in the foreground with timeout_ms: 600000. You have no terminal tabs, no Monitor loop, no session handoff and no general shell: never start another agent, never hand the work on, never poll with Start-Sleep or any other timer, and wait only with deepseek_wait. Keep at most 8 jobs running at a time.
 5. Return answer: the job's final line copied character for character, with no word added, removed or changed: never a summary, never a retyped or shortened line. Also return session_id, deleted, registered and evidence.`
@@ -225,7 +231,7 @@ async function ztDrive(ctx, o) {
   return json
 }
 defineModule({
-  id: 'zt-workflow-lib', version: '19', requires: ['@dsmp'], library: true,
+  id: 'zt-workflow-lib', version: '20', requires: ['@dsmp'], library: true,
   summary: 'Library: what the ZT workflows share: the one reader of the owner\'s typed card_locked refusal, the JSON line reader, the strict drive answer reader (only the last line, one JSON object with a boolean top-level ok), and the one drive helper that runs a deterministic script step as a DeepSeek drive job through a Haiku manager (it records the conversation in the run ledger, or records nothing for a workflow that keeps none).',
 })
 // ==== end module zt-workflow-lib ====

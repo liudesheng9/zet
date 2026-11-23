@@ -267,6 +267,19 @@ $null = Step (@('-Step', 'list') + $common)
 Assert ((Get-Content -LiteralPath $env:CS_SCRIPTS -Raw).Trim() -eq (Split-Path $here -Parent)) "a step names its own folder as the tool's scripts folder"
 Remove-Item Env:CS_SCRIPTS
 
+# 4. A book with no reference list (rudin1976principles pilot, 2026-11-23): the Cited list settled with zero rows, so the
+# Cited Cards start answers no_list and plans nothing; a list with rows plans as before.
+New-Item -ItemType Directory -Force (Join-Path $out 'cited') | Out-Null
+'{"schema_version":1,"kind":"cited_apply","ok":true,"applied":true,"rows":0,"list":null}' | Set-Content -LiteralPath (Join-Path $out 'cited\apply.json') -Encoding utf8
+Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+$none = Step (@('-Step', 'start') + $common)
+Assert-Line $none 'start (no list)'
+Assert ($none.json.ok -eq $true -and $none.json.no_list -eq $true -and -not $none.json.jobs) "start: a settled list with zero rows answers no_list ($($none.text))"
+Assert (-not (Test-Path -LiteralPath $calls) -or (Get-Content -LiteralPath $calls -Raw) -notmatch 'cited-cards -Step plan') 'start: no Cited Card plan without a list'
+'{"schema_version":1,"kind":"cited_apply","ok":true,"applied":true,"rows":3,"list":"K/1|b"}' | Set-Content -LiteralPath (Join-Path $out 'cited\apply.json') -Encoding utf8
+$some = Step (@('-Step', 'start') + $common)
+Assert ($some.json.ok -eq $true -and -not $some.json.no_list) "start: a list with rows plans as before ($($some.text))"
+
 Remove-Item -Recurse -Force $scratch
 Write-Host "cited-steps: $ok ok, $failed failed"
 if ($failed) { exit 1 }

@@ -1,7 +1,7 @@
 {
   "protocol": "workflow-framework-protocol/1",
   "name": "zt-figure-explain",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Explain the figures of Scholar Archive documents: a DeepSeek agent looks at each image and writes what it shows, and the explanation is saved beside the image in the Scholar Archive (docs/figure-explanation-design.md). It reads no OCR text, writes no Card and needs no digest staging. A rerun redoes nothing: only images with no explanation for their current bytes get a job.",
   "whenToUse": "Backfill the figure explanations of books already digested, or explain the figures of any archived Markdown. args: {fileIds: [the Markdown file ids], root?: the existing folder to work under}. The digests run the same module by themselves before Prepare.",
   "modules": [

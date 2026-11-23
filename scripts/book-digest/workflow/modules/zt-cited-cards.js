@@ -1,4 +1,7 @@
-// ==== module zt-cited-cards v8 ====
+// ==== module zt-cited-cards v9 ====
+// v9 (rudin1976principles pilot, 2026-11-23): the managers follow the shared rate-limit rule (DSMP_RATE_LIMIT). A book
+// with no reference list settles its Cited list unit as a no-op (list-finish runs with zero rows; before, the unit stayed
+// ready and the run incomplete), and the Cited Cards skip when the start answers no_list.
 // v8 (the owner, 2026-11-12): every job runs on the shared library's one source value (ZT_DRIVE_MODEL, OpenCode Go).
 // v7 (2026-11-11): after the reading jobs the list is planned once more; a job that left a part without a passing
 // answer (its manager stopped before the job's last message) runs once more before the list is written.
@@ -26,7 +29,7 @@
 // v2 (pilot 2026-10-31): `source` names the whole bilingual source for a backfill, whose adopted staging names the
 // Chinese-only book.zh.md; the list step passes it as -Source and the plan freezes it for the Cards.
 defineModule({
-  id: 'zt-cited-cards', version: '8', requires: ['@dsmp', 'zt-workflow-lib'],
+  id: 'zt-cited-cards', version: '9', requires: ['@dsmp', 'zt-workflow-lib'],
   summary: 'Cited list and Cited Cards: Haiku managers run DeepSeek drive jobs for the deterministic steps and DeepSeek writers for the content; each unit completes only from the compiler\'s own artifacts.',
   params: {
     out: { type: 'string', required: true, description: 'the prepared run\'s staging folder' },
@@ -67,6 +70,7 @@ Each job has id, files, prompt, skills, model, effort. A job may also have "then
 2. Keep at most 8 jobs running at a time. Until no job is running: call mcp__deepseek__deepseek_wait (wait_seconds ${DSMP.pollSeconds}) on one running job, then mcp__deepseek__deepseek_wait (wait_seconds 0) on the others. A job asking a question: answer "按任务说明自行决定，不需要询问。". A job asking approval for a command, or for reading or writing a file under "${OUT}" or the book's source file its job file names: allow; anything else: reject. A job running longer than ${DSMP.budgetMinutes} minutes: cancel it.
 3. A job with "then" is one conversation of several messages. When its conversation answers "finished", send the next item of its "then": mcp__deepseek__deepseek_prompt with the same session_id, prompt_files = that item's files, prompt = that item's prompt, skills = the job's skills, reasoning_effort = the job's effort, wait_seconds 0. Send every item, in order, one at a time. The job ends with the answer to its last item.
 3b. A job that failed or gave an empty answer gets ONE more attempt in a new conversation (from its first message). Never a third.
+3c. ${DSMP_RATE_LIMIT}
 4. When a job ends, delete its conversation with mcp__deepseek__deepseek_delete. Never archive.
 5. Use the session_id that deepseek_run returned, never a word in its place. A step whose job list is empty starts no run: never send a placeholder prompt.
 6. You have no terminal tabs, no Monitor loop, no session handoff and no general shell: never start another agent, never hand the work on, never poll with Start-Sleep or any other timer, and wait only with deepseek_wait. Any command you are given to run is run in the foreground with timeout_ms: 600000.
@@ -134,17 +138,22 @@ Each job has id, files, prompt, skills, model, effort. A job may also have "then
             report.jobs.failed = rerun.filter((j) => j.status !== 'done').length
           }
         }
+        // Zero rows still finish: the list unit settles as a no-op and writes no Card.
+        const finished = await drive('list-finish')
+        report.list = finished.card || null
+        report.repeated = Number(finished.repeated || 0)
+        report.unit = finished.unit || null
         if (report.rows === 0) {
           report.status = 'skipped'
           report.reason = 'the source has no reference list'
-        } else {
-          const finished = await drive('list-finish')
-          report.list = finished.card || null
-          report.repeated = Number(finished.repeated || 0)
-          report.unit = finished.unit || null
         }
       } else {
         const started = await drive('start')
+        if (started.no_list === true) {
+          report.status = 'skipped'
+          report.reason = 'the source has no reference list'
+          return report
+        }
         report.jobs.total = started.jobs
         report.plan_revision = started.plan_revision
         if (started.jobs > 0) {

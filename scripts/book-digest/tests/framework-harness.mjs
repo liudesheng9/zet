@@ -1767,6 +1767,13 @@ function runtime(kind, opts = {}) {
       const line = call(`zt-digest math -Step proof-apply -Staging "${out}"`)
       return { ok: true, applied: line }
     }
+    // zt-math-proof v5 (Rudin pilot, 2026-11-23): the apply, then the repair jobs of the fixes refused for dropped Links.
+    if (step === 'proof-repair') {
+      const applied = call(`zt-digest math -Step proof-apply -Staging "${out}"`)
+      const plan = call(`zt-digest math -Step proof-repair -Staging "${out}"`)
+      const jobs = (plan.jobs || []).map((j) => job(j.id))
+      return { ok: true, fixed: Number(applied.fixed || 0), refused: Number(applied.refused || 0), repair: Number(plan.repair || 0), jobs: jobs.length, file: saved('proof-repair-jobs.json', jobs) }
+    }
     if (step === 'theory') {
       const plan = call(`zt-digest math -Step theory -Staging "${out}"`)
       const jobs = (plan.jobs || []).map((j) => job(j.id))
@@ -1805,6 +1812,7 @@ function runtime(kind, opts = {}) {
       case 'boundary-settle': return { ok: true, kept: n(raw.kept), deleted: n(raw.deleted), unreviewed: n(raw.unreviewed) }
       case 'proof': return { ok: true, units: n(raw.units), jobs: n(raw.jobs), file: raw.file }
       case 'proof-apply': return { ok: true, steps_ok: n(raw.ok), fixed: n(raw.fixed), refused: n(raw.refused), parts: list(raw.parts) }
+      case 'proof-repair': return { ok: true, fixed: n(raw.fixed), refused: n(raw.refused), repair: n(raw.repair), jobs: n(raw.jobs), file: raw.file }
       case 'theory': return { ok: true, theories: n(raw.theories), jobs: n(raw.jobs), file: raw.file }
       case 'theory-apply': return { ok: raw.ok !== false, theories: n(raw.theories), answered: n(raw.answered) }
       case 'check': return { ok: raw.ok !== false, units: n(raw.units), theories: n(raw.theories), faults: n(raw.faults), rules: Object.keys(raw.by_rule || {}).length, report: raw.report }
@@ -1917,6 +1925,9 @@ function runtime(kind, opts = {}) {
           const jobs = listed === 1 ? readJobs.length : (opts.citedPartMissing && listed === 2 ? 1 : 0)
           return reply({ ok: true, rows: 3, parts: 1, jobs, file: 'D:\\x\\cited\\read\\jobs.json' }, 'drive-cited-list')
         }
+        // v9 (Rudin pilot, 2026-11-23): a source with no reference list still finishes its list unit, as a no-op.
+        if (step === 'list-finish' && opts.citedNoList) { led.add('cited/book@1', 'cited', {}); led.finish('cited/book@1'); return reply({ ok: true, rows: 0, card: '', repeated: 0, unit: 'done' }, 'drive-cited-list-finish') }
+        if (step === 'start' && opts.citedNoList) return reply({ ok: true, no_list: true }, 'drive-cited-start')
         if (step === 'list-finish') { led.finish('cited/book@1'); return reply({ ok: true, rows: 3, card: `${led.key}/1|b`, repeated: 1, unit: 'done' }, 'drive-cited-list-finish') }
         if (step === 'start') {
           for (const job of citedJobs) { const u = led.add('citedcards/' + job.id + '@1', 'citedcards', { job }); u.state = 'claimed' }
@@ -2485,7 +2496,8 @@ const stageOf = (which, id) => builds[which].bp.stages.find((s) => (s.id || `[${
   const listFails = await run('econ', { ...base, figures: false }, { citedListFails: true })
   check(listFails.result.cited.status === 'failed' && /names no source/.test(listFails.result.cited.reason || '') && listFails.report.stages.digest.status === 'done', `#221: a failed Cited list is reported and the digest goes on (${JSON.stringify(listFails.result.cited)})`)
   const noList = await run('econ', { ...base, figures: false }, { citedNoList: true })
-  check(noList.result.cited.status === 'skipped' && /no reference list/.test(noList.result.cited.reason || '') && noList.citedCalls.every((c) => c.step !== 'list-finish'), `#221: a source with no reference list writes no list Card (${JSON.stringify(noList.result.cited)})`)
+  check(noList.result.cited.status === 'skipped' && /no reference list/.test(noList.result.cited.reason || '') && !noList.result.cited.list, `#221: a source with no reference list writes no list Card (${JSON.stringify(noList.result.cited)})`)
+  check(noList.citedCalls.some((c) => c.step === 'list-finish') && noList.result.cited_cards.status === 'skipped' && !noList.citedCalls.some((c) => c.step === 'finish'), `v9: the list unit still finishes (a no-op) and the Cited Cards skip after start answers no_list (${JSON.stringify(noList.result.cited_cards)})`)
   const off = await run('econ', { ...base, figures: false, cited: false, citedCards: false })
   check(off.report.stages.cited.status === 'skipped' && off.report.stages['cited-cards'].status === 'skipped' && off.citedCalls.length === 0, '#221: cited and citedCards false skip both stages')
 
@@ -3444,7 +3456,7 @@ for (const which of ['econ', 'math']) {
   // zt-digest-lib v32 carries the seam, and the frozen build keeps it verbatim: the reader, the code and
   // the stop marker every stage relies on are in the built script.
   const { modules, script } = builds.econ
-  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '61' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '8' && modules['zt-workflow-lib'] === '19' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '17' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
+  check(modules['zt-book-terms'] === '9' && modules['zt-digest-lib'] === '62' && modules['zt-digest-prepare'] === '24' && modules['zt-digest-report'] === '25' && modules['zt-cited-cards'] === '9' && modules['zt-workflow-lib'] === '20' && modules['zt-term-link-lib'] === '4' && modules['zt-term-link'] === '5' && modules['zt-term-cards'] === '18' && modules['zt-finalize'] === '7' && modules['zt-audit'] === '7', `lock: the frozen build carries zt-book-terms v8, zt-digest-lib v53, zt-digest-prepare v22, zt-digest-report v24, zt-cited-cards v4, zt-workflow-lib v10, zt-term-link-lib v4, zt-term-link v5, zt-term-cards v11 and zt-finalize v7 and zt-audit v7 (${modules['zt-digest-lib']}, ${modules['zt-digest-prepare']}, ${modules['zt-digest-report']})`)
   for (const piece of ['function zdLockRefusal', "const ZD_LOCK = 'card_locked'", 'error.lock_refusal = refusal', "code: ZD_LOCK"]) {
     check(script.includes(piece), `lock: the built script carries the seam (${piece})`)
   }
@@ -3727,7 +3739,7 @@ for (const which of ['econ', 'math']) {
   // The stages' steps run in their stage order (zt-digest 0.55.0: the statement finder's `index` first): the statement chain and the notation table, then boundary, then
   // proof, then Theory (after the Link check) and the read-only check last.
   const order = mathCalls.map((c) => c.step).join(',')
-  check(order === 'index,index,skeleton,notation,notation-apply,layer-state,boundary,boundary-apply,boundary-settle,layer-state,proof,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
+  check(order === 'index,index,skeleton,notation,notation-apply,layer-state,boundary,boundary-apply,boundary-settle,layer-state,proof,proof-repair,proof-apply,theory,theory-apply,check', `#178: the mathematics stages drive their steps in order (${order})`)
   const at = (label) => mathCalls.findIndex((c) => c.step === label)
   check(at('skeleton') < at('notation') && at('notation') < at('notation-apply') && at('boundary-settle') < at('proof') && at('proof-apply') < at('theory') && at('theory-apply') < at('check'), `#178: one stage finishes before the next starts (${order})`)
   // Each content round runs the job list its plan step wrote, at most eight jobs per manager.
@@ -3795,7 +3807,7 @@ for (const which of ['econ', 'math']) {
     const t = readText(`scripts/book-digest/workflow/modules/${m}`)
     check(!t.includes('model = its "model"') && t.includes('model "${ZT_DRIVE_MODEL}"'), `${m}: the manager starts every job on the run's one source value`)
   }
-  check(/version: '19'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
+  check(/version: '20'/.test(shared) && /record === false/.test(shared) && /function ztDrive\(/.test(shared) && /function ztDriveAnswer/.test(shared), '#179: zt-workflow-lib v4 keeps the one drive helper and can run a step of a workflow that keeps no ledger')
   // v19 (rotunno2026industrial resume, 2026-11-13): a promise is no answer; the manager retries and never runs the step.
   check(/先运行，再回复/.test(shared) && /不要回复「我会运行」/.test(shared) && /a promise such as/.test(shared) && /never yours, even once/.test(shared), 'v19: the drive job runs first and never promises; its manager retries a promise once and never runs the step itself')
 }

@@ -17,7 +17,9 @@
                                                                                    -> math\drive\boundary-review-jobs.json
   boundary-settle delete each supplied part a review judged wrong
   proof           one proof-review job per -UnitsPerJob formal results             -> math\drive\proof-jobs.json
-  proof-apply     write each fixed proof body that keeps every Link
+  proof-apply     write each fixed proof body that keeps every Link, then settle the proof obligations
+  proof-repair    write the fixes that keep their Links (no settle), then one repair job per batch with a fix
+                  refused for dropped Links                                        -> math\drive\proof-repair-jobs.json
   theory          one job per four Theory Cards                                    -> math\drive\theory-jobs.json
   theory-apply    rewrite each Theory Card from the answers
   check           the M1-M18 math rules on every unit and Theory Card (read-only)  -> math-audit.json
@@ -26,7 +28,7 @@
   exits 0: its caller reads the line and stops the stage with its reason. Files stay under <staging>\math\drive.
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('index', 'skeleton', 'notation', 'notation-apply', 'boundary', 'boundary-apply', 'boundary-settle', 'proof', 'proof-apply', 'theory', 'theory-apply', 'check', 'layer-state', 'settle')][string]$Step,
+    [Parameter(Mandatory)][ValidateSet('index', 'skeleton', 'notation', 'notation-apply', 'boundary', 'boundary-apply', 'boundary-settle', 'proof', 'proof-apply', 'proof-repair', 'theory', 'theory-apply', 'check', 'layer-state', 'settle')][string]$Step,
     [Parameter(Mandatory)][string]$Out,
     # layer-state and settle: the mathematics layer whose ledger obligations they read or complete.
     [ValidateSet('boundary', 'proof')][string]$Layer = '',
@@ -263,6 +265,16 @@ switch ($Step) {
         if (-not $r.json) { Fail 'proof-apply' $r }
         # The reviewed proofs settle; an unmet one waits on its unit's build and stays a gap of the run (Bug C).
         Reply-Settled ([ordered]@{ ok = $true; steps_ok = [int]$r.json.ok; fixed = [int]$r.json.fixed; refused = [int]$r.json.refused; parts = (Count-Of $r.json.parts) }) (Settle 'proof' (Join-Path $Work 'proof\applied.json')) $r.json
+    }
+    'proof-repair' {
+        # The proof repair round (Rudin pilot 2026-11-23): the apply writes every fix that keeps its Links, then a
+        # fix refused for dropped Links goes back to its reviewer once. proof-apply runs again after the jobs and settles.
+        $a = Math 'proof-apply'
+        if (-not $a.json) { Fail 'proof-apply' $a }
+        $r = Math 'proof-repair'
+        if (-not $r.json -or $r.json.ok -ne $true) { Fail 'proof-repair' $r }
+        $saved = Save-Jobs 'proof-repair-jobs.json' $r
+        Reply @{ ok = $true; fixed = [int]$a.json.fixed; refused = [int]$a.json.refused; repair = [int]$r.json.repair; jobs = $saved.count; file = $saved.file } @{ apply = $a.json; repair = $r.json }
     }
     'theory' {
         $r = Math 'theory' @('-MainResults', "$MainResults")

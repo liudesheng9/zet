@@ -1920,6 +1920,8 @@ fn cited_finish(p: &Prepared, unit: &str, token: i64, path: &Path) -> Result<Val
         "token": token,
         "list": report["list"],
         "rows": rows,
+        // A source without a reference list (rudin1976principles pilot, 2026-11-23): nothing to list, a no-op.
+        "noop": rows == 0,
         "report": {"path": path_to_string(path), "sha256": canon::sha256_hex(&std::fs::read(path)?)},
     });
     complete_verified(p, unit, token, path, result)
@@ -13689,6 +13691,15 @@ fn own_part(header: &str, address: &str) -> bool {
     address.starts_with(&format!("{header}|"))
 }
 
+/// The first Markdown heading that names a Model Card section the compiler writes in bold (`## 结构`).
+fn markdown_section_heading(body: &str) -> Option<String> {
+    const SECTIONS: [&str; 8] = ["结构", "引入", "陈述", "定义", "动机", "思路", "关联", "来源"];
+    body.split("<!-- zt:reverse-links -->").next().unwrap_or_default().lines().find_map(|line| {
+        let name = line.trim().strip_prefix('#')?.trim_start_matches('#').trim();
+        SECTIONS.contains(&name).then(|| line.trim().to_string())
+    })
+}
+
 fn structure_lines(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;
@@ -13931,6 +13942,13 @@ fn model_evidence(p: &Prepared, zt: &mut Zt, unit: &str, token: i64, inputs: &Va
         }
     }
     let structure = structure_lines(&s(&head_card["body"]));
+    // Rudin pilot 2026-11-23 (9|am): a head that wrote its sections as Markdown headings read as a head without a
+    // 结构 list. The refusal names that cause.
+    if structure.is_empty()
+        && let Some(heading) = markdown_section_heading(&s(&head_card["body"]))
+    {
+        bail!("the Model Card writes its section `{heading}` as a Markdown heading; write each section label in bold (**结构**, **陈述**, …), as the compiler's structure contribution does");
+    }
     for (address, id) in &part_ids {
         if !structure.iter().any(|line| line.contains(&format!("[[{address}]]"))) {
             bail!("the 结构 list does not name part `{address}` (id `{id}`); keep the compiler's structure contribution");
@@ -20424,6 +20442,16 @@ mod term_card_ledger_tests {
         let between = "问题：x\n\n**结构**\n\n- 设定 [[K/83|a|a]]：设定\n\n来源：[[K]] §6\n\n**引入**\n\n- 单卡 [[K/75|a|a|12]]：a_X";
         let lines = super::structure_lines(between);
         assert!(lines.iter().any(|l| l.contains("[[K/75|a|a|12]]")) && !lines.iter().any(|l| l.starts_with("来源")), "{lines:?}");
+    }
+
+    #[test]
+    fn a_markdown_section_heading_is_named_as_the_cause() {
+        // Rudin pilot 2026-11-23 (9|am): `## 结构` read as no 结构 list, and the refusal blamed a missing part.
+        let head = "## 动机\n甲。\n\n## 结构\n\n- 前提 [[K/9|am|a]]：前提\n\n<!-- zt:reverse-links -->\n## Reverse links\n\n- [[K/2]] 乙";
+        assert!(super::structure_lines(head).is_empty());
+        assert_eq!(super::markdown_section_heading(head).as_deref(), Some("## 动机"));
+        assert_eq!(super::markdown_section_heading("**结构**\n\n- 前提 [[K/9|am|a]]\n\n<!-- zt:reverse-links -->\n## Reverse links"), None);
+        assert_eq!(super::markdown_section_heading("## 推导：x=1。"), None, "a Term Card's own headings are no Model Card section");
     }
 
     #[test]

@@ -245,7 +245,19 @@ try {
     $role = @($parts | Where-Object { $_.facet -eq '假设作用：H1' })[0]
     $ce = @($parts | Where-Object { $_.facet -eq '反例：去掉 H1' })[0]
     Assert ($role -and $ce -and $role.body -match [regex]::Escape("[[$($ce.address)]]") -and $ce.body -match '（补：书中未给）') 'boundary-apply: the role links its counterexample, which carries the mark'
+    # The review job's self-check (Rudin pilot 2026-11-23: two review jobs left their last candidate without a verdict).
+    $vjob = Get-Content -Raw $bapplied.jobs[0].files[1]
+    Assert ($vjob.Contains('-Step boundary-review-check') -and $vjob.Contains('-Job v-b-01')) 'boundary-apply: the review job carries its self-check'
+    $vcheck = @(Run 'boundary-review-check' @('-Job', 'v-b-01'))
+    Assert ($vcheck[-1] -eq 'faults: 1' -and ($vcheck -join "`n").Contains('没有答案文件')) 'boundary-review-check: no answer file is a fault'
+    Save-Json (Join-Path $staging 'math\boundary\out\v-b-01.json') @{ verdicts = @(@{ address = 'K/9'; verdict = 'ok' }, @{ address = $ce.address; verdict = 'wrong' }) }
+    $vcheck = @(Run 'boundary-review-check' @('-Job', 'v-b-01'))
+    Assert ($vcheck[-1] -eq 'faults: 2' -and ($vcheck -join "`n").Contains("[[$($ce.address)]] 判为 wrong") -and ($vcheck -join "`n").Contains('[[K/9]] 不是本任务')) 'boundary-review-check: a wrong verdict without its reason, and a verdict on an address the job never named'
+    Save-Json (Join-Path $staging 'math\boundary\out\v-b-01.json') @{ verdicts = @() }
+    $vcheck = @(Run 'boundary-review-check' @('-Job', 'v-b-01'))
+    Assert ($vcheck[-1] -eq 'faults: 1' -and ($vcheck -join "`n").Contains("[[$($ce.address)]] 没有判定")) 'boundary-review-check: a candidate without a verdict'
     Save-Json (Join-Path $staging 'math\boundary\out\v-b-01.json') @{ verdicts = @(@{ address = $ce.address; verdict = 'wrong'; reason = '符号函数在 [-1,1] 上取不到 1/2，但它不满足 H2 的端点条件。' }) }
+    Assert ((@(Run 'boundary-review-check' @('-Job', 'v-b-01')))[-1] -eq 'faults: 0') 'boundary-review-check: a complete answer passes'
     $settled = Last (Run 'boundary-settle')
     Assert ($settled.deleted -eq 2) 'boundary-settle: the wrong counterexample goes, with the role that names it'
     $facets = @((Read-Model $th).parts | ForEach-Object { $_.facet })
@@ -260,14 +272,33 @@ try {
     Assert ($pjob.Contains('原书原文') -and $pjob.Contains('证明：令')) 'proof: the job carries the book''s own statement and proof (P1a M2.5)'
     $last = @((Read-Model $th).build.order | Where-Object { $_.line -eq 'main' })[-1].address
     $old = (Read-Card $last).body
+    $old2 = (Read-Card $steps[2]).body
+    # The statement check answers the corrected 陈述 section alone (Rudin pilot 2026-11-23: the apply took it for the
+    # whole head and refused it for every 结构 Link).
+    $headBody = (Read-Card $th).body
+    $statement = [regex]::Match($headBody, '(?s)\*\*陈述\*\*：?\r?\n(.*?)\r?\n\r?\n\*\*').Groups[1].Value
+    Assert ($statement -match '存在 x0 使') 'proof: the theorem head has a 陈述 section'
     Save-Json (Join-Path $staging 'math\proof\out\p-01.json') @{ verdicts = @(
             @{ address = $last; verdict = 'fix'; reason = '补出 x0>a。'; body = "$old`n由 (H2)，x0>a。" },
             @{ address = $steps[2]; verdict = 'fix'; reason = '删掉链接。'; body = '没有链接的正文。' },
-            @{ address = $th; verdict = 'fix'; reason = '结论漏了 x0 的范围。'; body = ((Read-Card $th).body -replace '存在 x0 使', '存在 x0∈[a,b] 使') }) }
+            @{ address = $th; verdict = 'fix'; reason = '结论漏了 x0 的范围。'; body = ($statement -replace '存在 x0 使', '存在 x0∈[a,b] 使') }) }
     $papplied = Last (Run 'proof-apply')
     Assert ($papplied.fixed -eq 2 -and $papplied.refused -eq 1) 'proof-apply: writes the Link-keeping step fix and the statement fix on the head, refuses one that drops Links'
-    Assert ((Read-Card $th).body -match 'x0∈\[a,b\]') 'proof-apply: the statement fix reaches the unit''s head (P1a M2.5)'
+    $headAfter = (Read-Card $th).body
+    Assert ($headAfter -match 'x0∈\[a,b\]') 'proof-apply: the statement fix reaches the unit''s head (P1a M2.5)'
+    Assert ($headAfter.Replace('存在 x0∈[a,b] 使', '存在 x0 使') -eq $headBody) 'proof-apply: the statement fix replaces the 陈述 section alone; the 结构 and every other section stay'
     Assert ((Read-Card $last).body -match 'x0>a') 'proof-apply: the fixed body is written'
+    # The repair round: the fix refused for dropped Links goes back to its reviewer once.
+    $rplan = Last (Run 'proof-repair')
+    Assert ($rplan.repair -eq 1 -and @($rplan.jobs).Count -eq 1 -and $rplan.jobs[0].id -eq 'p-01.r1') 'proof-repair: one repair job for the batch with a refused fix'
+    $rjob = Get-Content -Raw $rplan.jobs[0].files[1]
+    Assert ($rjob.Contains("## [[$($steps[2])]]") -and $rjob.Contains('没有链接的正文。') -and $rjob.Contains($old2.Split("`n")[0])) 'proof-repair: the job holds the current text and the refused text'
+    Assert (-not $rjob.Contains("## [[$last]]")) 'proof-repair: an accepted fix is not sent back'
+    Save-Json (Join-Path $staging 'math\proof\out\p-01.r1.json') @{ verdicts = @(@{ address = $steps[2]; verdict = 'fix'; reason = '补一句，保留链接。'; body = "$old2`n补一句。" }) }
+    $papplied = Last (Run 'proof-apply')
+    Assert ($papplied.fixed -eq 3 -and $papplied.refused -eq 0) 'proof-apply: the repair answer stands in place of the refused verdict; the earlier fixes stay accepted'
+    Assert ((Read-Card $steps[2]).body -match '补一句') 'proof-apply: the repaired fix is written'
+    Assert ((Last (Run 'proof-repair')).repair -eq 0) 'proof-repair: a batch is repaired once'
 
     # --- theory ---------------------------------------------------------------------------------------------
     $tplan = Last (Run 'theory')
