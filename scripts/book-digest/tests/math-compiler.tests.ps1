@@ -262,9 +262,11 @@ try {
     $old = (Read-Card $last).body
     Save-Json (Join-Path $staging 'math\proof\out\p-01.json') @{ verdicts = @(
             @{ address = $last; verdict = 'fix'; reason = '补出 x0>a。'; body = "$old`n由 (H2)，x0>a。" },
-            @{ address = $steps[2]; verdict = 'fix'; reason = '删掉链接。'; body = '没有链接的正文。' }) }
+            @{ address = $steps[2]; verdict = 'fix'; reason = '删掉链接。'; body = '没有链接的正文。' },
+            @{ address = $th; verdict = 'fix'; reason = '结论漏了 x0 的范围。'; body = ((Read-Card $th).body -replace '存在 x0 使', '存在 x0∈[a,b] 使') }) }
     $papplied = Last (Run 'proof-apply')
-    Assert ($papplied.fixed -eq 1 -and $papplied.refused -eq 1) 'proof-apply: writes a fix that keeps its Links and refuses one that drops them'
+    Assert ($papplied.fixed -eq 2 -and $papplied.refused -eq 1) 'proof-apply: writes the Link-keeping step fix and the statement fix on the head, refuses one that drops Links'
+    Assert ((Read-Card $th).body -match 'x0∈\[a,b\]') 'proof-apply: the statement fix reaches the unit''s head (P1a M2.5)'
     Assert ((Read-Card $last).body -match 'x0>a') 'proof-apply: the fixed body is written'
 
     # --- theory ---------------------------------------------------------------------------------------------

@@ -3386,6 +3386,14 @@ fn proof_finish(p: &Prepared, unit: &str, token: i64, zt: &mut Zt, path: &Path) 
             other => bail!("unknown proof verdict `{other}` for `{step}`"),
         }
     }
+    // P1a M2.6 (M20): the statement was checked against the book, clause by clause: a verdict on
+    // the unit's head, `ok` or an accepted fix that changed it. A refused statement fix stays open.
+    match reviewed.iter().find(|r| r["address"].as_str() == Some(at.as_str())).map(|r| r["verdict"].as_str().unwrap_or_default()) {
+        Some("ok") => {}
+        Some("fix") => fixed += 1,
+        Some("refused") => bail!("the refused correction of the statement of `{at}` remains a named obligation"),
+        _ => bail!("the statement of `{at}` was not checked against the book (no verdict on the unit's head)"),
+    }
     let addresses = current.iter().cloned().collect::<Vec<_>>();
     let cards = zt.cards(&addresses, "text")?.cards;
     if cards.len() != addresses.len() {

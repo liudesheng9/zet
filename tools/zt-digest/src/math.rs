@@ -2082,6 +2082,15 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str, staging: &str) -> Result<Value
                 if allocation["index_hash"] != index["projection_hash"] {
                     add("M0", json!(key), json!("the allocation math/units.json was made from another statement index"));
                 }
+                // M19 (P1a): every leaf that owes a claim has exactly one primary owner in the settled projection.
+                for f in ps::list(&index["projection"]["faults"]) {
+                    add("M19", json!(key), json!(format!("{}: {}", field(f, "code"), field(f, "detail"))));
+                }
+                for l in ps::list(&index["projection"]["leaves"]) {
+                    if field(l, "obligation") == "write" && !l["destination"].is_string() {
+                        add("M19", json!(key), json!(format!("leaf {} has no primary owner", field(l, "id"))));
+                    }
+                }
                 let allocated: Vec<String> = pipe(&allocation["units"]).into_iter().map(|u| field(u, "object_id")).collect();
                 for o in ps::list(&index["projection"]["objects"]) {
                     let id = field(o, "id");
@@ -2206,8 +2215,8 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str, staging: &str) -> Result<Value
         for h in &heads {
             bump(&mut forms, &field(h, "form"));
         }
-        // Blocking: M0, and an M1 placeholder (a long title is advice).
-        let blocking = faults.iter().filter(|f| eq(&field(f, "rule"), "M0") || (eq(&field(f, "rule"), "M1") && field(f, "text").contains("待写"))).count();
+        // Blocking: M0, M19 and M21 (P1a), and an M1 placeholder (a long title is advice).
+        let blocking = faults.iter().filter(|f| is_in(&field(f, "rule"), &["M0", "M19", "M21"]) || (eq(&field(f, "rule"), "M1") && field(f, "text").contains("待写"))).count();
         let units = heads.iter().filter(|h| !eq(&field(h, "form"), "theory")).count();
         let theories = heads.iter().filter(|h| eq(&field(h, "form"), "theory")).count();
         let report = obj(vec![

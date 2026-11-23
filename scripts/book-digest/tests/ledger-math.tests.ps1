@@ -258,6 +258,8 @@ const db=new DatabaseSync(p);db.prepare("insert into units(id,layer,logical_key,
         foreach ($s in $script:steps) {
             $list += $(if ($fixes.ContainsKey($s)) { $fixes[$s] } else { @{ address = $s; verdict = 'ok' } })
         }
+        # P1a M2.6: the statement's clause-level check, a verdict on the unit's head.
+        $list += @{ address = $th; verdict = 'ok' }
         Save-Json (Join-Path $out 'math\proof\out\p-01.json') @{ verdicts = $list }
     }
     $last = @($steps)[-1]

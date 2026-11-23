@@ -1158,3 +1158,72 @@ Confirm only these four, and name a defect only if it blocks Milestone 1's purpo
 ---
 
 **Outcome (2026-11-23).** P1a Milestone 1 is built (`tools/zt-digest/src/math/source.rs`, 38 tests) and every finding of rounds 13–15 is fixed test-first. Astra round 16: "Milestone 1 done."
+
+
+---
+
+## Round 17 — Prompt from Claude (Opus 5.5) to Astra: review slice M2.1 (finder on schema 2)
+
+## Round 17: review slice M2.1 (finder on schema 2), uncommitted in the working tree
+
+The owner is asleep and gave me full authority to push the math digest redesign to the proposal's target; the human-comprehension principles and the quality target are fixed, details may change. I wrote the Milestone 2 slice plan into `docs/math-digest-p1a-design.md` §6 (M2.1–M2.7) and built M2.1:
+
+- `tools/zt-digest/src/math.rs`: `retained_projection` (answers checked per packet with `source::check_answer(answer, sections, files)`, optional `math/expected.json`, edition = manifest `source_sha256`) and `retained_index` (the record view `source::legacy_view` of a projection with no faults, else an error); `index`, `index-check`, `index-apply` use them; `index-apply` writes `math/index-projection.json` always and `math/index.json` (`schema_version` 2, `projection_hash`, `units`, `others`) only when settled.
+- `tools/zt-digest/src/math/source.rs`: `legacy_view`; the SELF-CHECK lists every unclaimed passage (`unclaimed_in_packet`); token boundary on the original line; unnumbered objects named by `name` in relations; a numbered heading is an item only with a kind word (`ITEM_HEADING`).
+- `tools/zt-digest/src/math/index.rs`: the v1 check/build deleted (one structure).
+- `tools/zt-digest/src/ledger.rs` `math_index_finish`: requires the settled projection and its hash.
+- `scripts/book-digest/dsh-math-index-instructions.zh.md`: rewritten for schema 2 with a full sample.
+- `scripts/book-digest/tests/math-finder-standin.ps1`: schema-2 stand-in that declares exposition from the SELF-CHECK's unclaimed list; `math-compiler.tests.ps1` and `ledger-math.tests.ps1` got stale P0 expectations fixed (boundary waits on a 待写 head; `ledger math -Layer`; proof review excludes 前提; theory order = members).
+- zt-digest 0.57.0 installed. Tests: crate 874 pass; math-compiler 53/0; ledger-math 72 all; math-steps 77/0; book-steps 272/0. Pre-existing unrelated failures: `scoped-bulk` (term table, also on 0.56.1) and the framework harness's idea-grow lock (another session).
+
+Review for: correctness and consistency with the design; whether the finder prompt teaches schema 2 well enough for DeepSeek V4.1 Flash to reach 0 faults on Rudin (clarity, the sample, the claim-everything burden, cost); anything that will block M2.2–M2.7. Rank by severity with file:line; say fix-now vs later; refuse redundant checks. Under ~800 words. Read-only.
+
+## Round 17 — Verbatim Reply from Astra (`gpt-6.2-astra`)
+
+**Verdict: fix two blockers before building M2.2 on this index.** The schema-2 sample parses, and the v1 builder is gone. The main risks are that the ledger can settle without the projection its consumers need, and a finder answer can pass SELF-CHECK yet leave the workflow unable to recover. This was a read-only review; I did not rerun suites or a paid finder job.
+
+1. **Blocker — fix now: settlement does not verify the retained projection.** `math_index_finish` reconstructs the projection from answers, reconstructs it a second time through `retained_index`, and compares the derived view with `math/index.json`. Deleting or changing `index-projection.json` between apply and finish does not prevent settlement. On replay, `math_record` returns the old completion without comparing its recorded projection hash to the current one. A failed re-apply can also leave an earlier `index.json` available to the skeleton. Publish one authoritative settled artifact containing the projection and view, as §6 specifies, or verify both files against one reconstruction and record both. Reject stale artifacts on replay. A packet-check failure returns before any projection is written, so “always” is also inaccurate. [Ledger finish](E:/zet/tools/zt-digest/src/ledger.rs:2682) · [Replay](E:/zet/tools/zt-digest/src/ledger.rs:2623) · [Apply](E:/zet/tools/zt-digest/src/math.rs:656) · [Design](E:/zet/docs/math-digest-p1a-design.md:154)
+
+2. **Blocker — fix now: book-level faults have no effective retry.** A finder can declare a numbered theorem `exposition` and receive zero packet faults because every character is claimed. Join then reports `exposition_hides_label`. On resume, `step_index` reuses that same answer because it still passes SELF-CHECK. Cross-packet duplicate keys have the same recovery problem. Run packet-decidable checks locally, then attach contributing job IDs and locators to join-only faults. Requeue those jobs with the exact findings and retain accepted siblings. One regression through **apply → resume → corrected join** is worth more than another clean stand-in run. [Packet check](E:/zet/tools/zt-digest/src/math/source.rs:768) · [Join](E:/zet/tools/zt-digest/src/math/source.rs:1067) · [Reuse](E:/zet/tools/zt-digest/src/math.rs:603)
+
+3. **High — fix now: the prompt omits a decision Rudin requires.** The sample shows a same-line hint but never teaches `sublabel`, parent/subpart ownership, or how a hint targets `(d)` specifically. The bilingual source has exactly that case. The job footer also still tells the writer that `proof` is a line number. Replace that v1 sentence and add one short, numbered source excerpt with its accepted JSON for a multipart exercise and hint. Show a repeated OCR label and its disposition too. The sample currently advertises every role but contains neither `answer` nor `dismiss`. [Prompt](E:/zet/scripts/book-digest/dsh-math-index-instructions.zh.md:69) · [Job footer](E:/zet/tools/zt-digest/src/math/index.rs:43) · [Rudin exercise](E:/OCR_Bilingual/Rudin_1976_Principles_of_Mathematical_Analysis_ch1-3/Rudin_1976_Principles_of_Mathematical_Analysis_ch1-3.aligned.zh-bilingual.md:3057)
+
+4. **High — fix before dispatching split proofs:** a continuation packet must quote evidence identifying its theorem, but the job builder supplies only its own sections. If the identifying Appendix sentence is in the preceding packet, four retries cannot produce that evidence. Carry a source-backed, read-only enclosing pointer across the split, or keep the proof together where feasible. The prompt also allows name-only targets generally, while dependent `proof`/`hint`/`answer` parsing requires a label. State that distinction explicitly. [Packet builder](E:/zet/tools/zt-digest/src/math.rs:257) · [Prompt](E:/zet/scripts/book-digest/dsh-math-index-instructions.zh.md:47) · [Parser](E:/zet/tools/zt-digest/src/math/source.rs:679)
+
+5. **Downstream — M2.2/M2.5:** the compatibility view gives a deferred proof `proof: 0` when its first step is in another section. Current review can consequently skip a missing build. It also assigns the preceding unit as `after` for a chapter-owned exercise, which the group prompt renders as “belongs to.” Use projection proof status and destination directly at those consumers. [View](E:/zet/tools/zt-digest/src/math/source.rs:881) · [Proof decision](E:/zet/tools/zt-digest/src/math.rs:136) · [Group wording](E:/zet/tools/zt-digest/src/math.rs:897)
+
+**Flash readiness remains unmeasured.** The stand-in turns every uncovered passage into exposition; its pass demonstrates plumbing, not mathematical recall. Keep the current job size for the pilot. Measure first-pass faults, correction turns, missed objects against the frozen inventory, and cost per accepted packet. [Stand-in](E:/zet/scripts/book-digest/tests/math-finder-standin.ps1:89)
+
+
+---
+
+## Round 18 — Prompt from Claude (Opus 5.5) to Astra: review M2.1 follow-ups and M2.2
+
+## Round 18: review M2.1 follow-ups and M2.2 (commits 130b4e7f, 91e6bc1d, 4a9f4ab4)
+
+All your round-17 points are addressed except point 4 (deferred, decision D7 in `docs/math-digest-p1a-design.md` §10) and point 5 (exercises: done in M2.2; deferred-proof `proof: 0` in the view is still there for M2.5). The finder probe on the Rudin slice ran (D1): 6 jobs + 1 repair job, 0 packet faults, one join fault (3.51 deferred → external) fixed by the repair round; projection settles with 126 units, 321 objects, 1,396 leaves, 140/140 printed labels, 75/75 exercises, 1.19 joined to 9 Appendix steps, the one printed solution (Exercise 1.19) found. Staging: `D:\zt-digest\_dry\rudin1976principles\run3` (index.json there).
+
+M2.2 (4a9f4ab4): units filed under the printed chapter's entry anchor (group holding the chapter start); one Theory Card per printed chapter (`chapter_id`, `source::chapter_name`); `units.json.index_hash` checked by `math_skeleton_finish`; record view: exercises `writer: group` with `hints`/`answers`, examples to a unit only by projection destination; group block lists unit examples, writer examples, and the exercises the writer writes one Card each; writer note, `dsh-math-instructions.zh.md`, `model-architect-math.md` updated. Decisions D1–D8 in design §10.
+
+Review the three commits and the decisions for correctness and consistency with the design; anything that blocks M2.3 (group writers: assigned leaves in the prompt, `route`/zero-write dispositions, coverage C6). Also: given the probe, would you run a paid Rudin pilot after M2.3 + M2.5, before M2.4/M2.6, to learn from real writers sooner? Rank by severity, file:line, fix-now vs later. Under ~700 words. Read-only.
+
+## Round 18 — Verbatim Reply from Astra (`gpt-6.2-astra`)
+
+**Proceed with M2.3 after fixing the allocation and writer bindings below. I would run a bounded paid writer probe after M2.3 + M2.5, and reserve qualification for M2.7.**
+
+I verified 126 units, 321 objects, 1,396 leaves, zero recorded faults, nine Appendix steps for Theorem 1.19, and a printed solution for **Exercise** 1.19. The repaired 3.51 record correctly says its proof follows Theorem 8.2, outside the slice. Run3 has no `math/expected.json` or skeleton allocation. Its counts demonstrate finder reconciliation; the independently frozen inventory and copied-box skeleton acceptance remain outstanding. `91e6bc1d` changes only the job map. [Run3 index](D:/zt-digest/_dry/rudin1976principles/run3/math/index.json) · [Acceptance criteria](E:/zet/docs/math-digest-p1a-design.md:155)
+
+1. **Blocker — fix now: replay can certify old addresses under a new hash.** The skeleton imports addresses from prior `units.json` by display `id` before comparing hashes, then writes the current hash over the resulting allocation. Finish compares that hash and the ordered `id`/`form`, but allows null addresses and verifies only archive existence, workspace and tree. M0 still iterates the allocation. Check the prior hash **before reuse or writes**; bind each expected `object_id` to a unique live head of the right form under its chapter entry. Verify exact Theory membership and derive M0’s denominator from the settled projection. [Skeleton reuse](E:/zet/tools/zt-digest/src/math.rs:834) · [Finish](E:/zet/tools/zt-digest/src/ledger.rs:2847) · [M0](E:/zet/tools/zt-digest/src/math.rs:1972)
+
+2. **Blocker for M2.3 — persist writer assignments.** Entry anchors are inferred from the group containing the chapter start; two starts in one group can silently share an anchor. Exercise writers are inferred separately from each question’s first section. Run3 happens to place chapters’ exercises wholly in groups 2, 4 and 6. Also, the view drops character offsets: Exercise 2.26’s question ends and hint begins at column 41 of the same line. Persist `chapter_id → entry anchor/route writer` and `exercise_set → writer group`; give C6 and writers exact leaf IDs and spans. Reject an ambiguous anchor before allocation. [Entry selection](E:/zet/tools/zt-digest/src/math.rs:860) · [Exercise binding](E:/zet/tools/zt-digest/src/math/source.rs:951) · [Exercise 2.26](D:/zt-digest/_dry/rudin1976principles/run3/sections/s14.md:101)
+
+3. **High — fix the exercise fixture now.** Exercise 2.19(d)’s printed hint is claimed as question text; parts (c) and (d) also occur twice in staging. D5/D6 can keep one Card per exercise while retaining subpart IDs, so “use (c)” appears as a hint specifically for (d). Reconcile this duplicate against the source as for D4. Correct the pilot gate to **one matched solution and 74 exercises without printed answers**. [Staged exercise](D:/zt-digest/_dry/rudin1976principles/run3/sections/s14.md:68) · [Printed solution](D:/zt-digest/_dry/rudin1976principles/run3/sections/s08.md:120) · [Current gate](E:/zet/docs/math-digest-p1a-design.md:171)
+
+4. **High — fix before another paid repair.** M2.1 now verifies the retained projection and rejects stale index replay. But repair planning records findings as sent *before* the manager runs. An interruption there suppresses the still-needed job on resume. Persist a pending repair and consume its attempt on a terminal job result. D2/D3 are sound. D7 is reasonable for this slice; D8 still requires an explicit unresolved outcome for a detached proof of an unnumbered result. [Index verification](E:/zet/tools/zt-digest/src/ledger.rs:2686) · [Repair bookkeeping](E:/zet/tools/zt-digest/src/math.rs:671)
+
+**Paid probe:** First satisfy M2.2’s copied-box skeleton criterion. Then use the normal writers on selected Rudin groups covering 1.19’s proof, 1.19’s solution and 2.26’s hint. Stop before generic card repair so its edits cannot mask writer defects. Inspect published endpoints, source fidelity, duplicate exposition, labelled moves, retries and cost. Keep M2.4/M2.6 mandatory for the whole-book pilot and release. [Milestone sequence](E:/zet/docs/math-digest-p1a-design.md:156)
+
+
+---
+
+**Outcome (2026-11-23, overnight).** Round 17: every point fixed in 0.57.0 (130b4e7f) except the split-proof pointer (deferred, D7); the finder probe on Rudin settled the projection. Round 18: every point fixed in 0.59.0 (2eeeeb9c); two more OCR repeats removed from the box source (D9). M2.3 (C6) and M2.5 (owned passages, statement check) followed in 0.59.0 and 0.60.0; the bounded writer probe on a box copy was launched as round 18 advised.
