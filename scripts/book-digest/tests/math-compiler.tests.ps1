@@ -303,6 +303,15 @@ try {
     $appliedRec = Get-Content -Raw (Join-Path $staging 'math\proof\applied.json') | ConvertFrom-Json -AsHashtable
     $again = @($appliedRec.reviewed | Where-Object { $_.address -eq $last })[0]
     Assert ($again.verdict -eq 'fix' -and $again.before -ne $again.after) "proof-apply: a fix already in place keeps the reviewed text as its before ($($again.before) / $($again.after))"
+    # A plan frozen before zt-digest 0.63.0 holds no fingerprints: the before the fix's write recorded stays.
+    $planFile = Join-Path $staging 'math\proof\plan.json'
+    $planRec = Get-Content -Raw $planFile | ConvertFrom-Json -AsHashtable
+    foreach ($u in $planRec.units) { $u.Remove('fingerprints') }
+    Save-Json $planFile $planRec
+    $null = Run 'proof-apply'
+    $appliedRec = Get-Content -Raw (Join-Path $staging 'math\proof\applied.json') | ConvertFrom-Json -AsHashtable
+    $kept = @($appliedRec.reviewed | Where-Object { $_.address -eq $last })[0]
+    Assert ($kept.verdict -eq 'fix' -and $kept.before -eq $again.before -and $kept.before -ne $kept.after) "proof-apply: without frozen fingerprints a fix in place keeps the before its write recorded ($($kept.before) / $($kept.after))"
     Assert ((Last (Run 'proof-repair')).repair -eq 0) 'proof-repair: a batch is repaired once'
 
     # --- theory ---------------------------------------------------------------------------------------------

@@ -1983,6 +1983,16 @@ impl Compiler {
         // that text is current too, beside the text the plan froze.
         let applied_file = join(&self.proof_work(), "applied.json");
         let mut accepted: Map<String, Value> = if ps::exists(&applied_file) { read_json(&applied_file)?["accepted"].as_object().cloned().unwrap_or_default() } else { Map::new() };
+        // The text each earlier written fix replaced: a plan frozen before 0.63.0 holds no fingerprints, and a fix in
+        // place keeps the before its write recorded (Rudin pilot 2026-11-23, 1|u|a|1).
+        let mut written_before: CiMap<String> = CiMap::new();
+        if ps::exists(&applied_file) {
+            for r in pipe(&read_json(&applied_file)?["reviewed"]) {
+                if field(r, "verdict") == "fix" && field(r, "before") != field(r, "after") && !field(r, "before").is_empty() {
+                    written_before.insert(&field(r, "address"), field(r, "before"));
+                }
+            }
+        }
         // Every answer's verdicts, a repair answer after the answer it corrects: the last verdict on an
         // address is the one that stands (the proof repair round, Rudin pilot 2026-11-23).
         let mut verdicts: Vec<Value> = Vec::new();
@@ -2052,7 +2062,7 @@ impl Compiler {
                     accepted.insert(address.clone(), json!(before));
                     // Its before is the text the review read (the plan froze it), not the fixed text now in place:
                     // the ledger checks that an accepted fix changed the step (Rudin pilot 2026-11-23, 1|u).
-                    let reviewed_text = frozen.get(&address).cloned().unwrap_or_else(|| before.clone());
+                    let reviewed_text = frozen.get(&address).or_else(|| written_before.get(&address)).cloned().unwrap_or_else(|| before.clone());
                     reviewed.push(obj(vec![
                         ("unit", json!(unit)),
                         ("address", json!(address)),
