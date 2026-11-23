@@ -1227,3 +1227,36 @@ I verified 126 units, 321 objects, 1,396 leaves, zero recorded faults, nine Appe
 ---
 
 **Outcome (2026-11-23, overnight).** Round 17: every point fixed in 0.57.0 (130b4e7f) except the split-proof pointer (deferred, D7); the finder probe on Rudin settled the projection. Round 18: every point fixed in 0.59.0 (2eeeeb9c); two more OCR repeats removed from the box source (D9). M2.3 (C6) and M2.5 (owned passages, statement check) followed in 0.59.0 and 0.60.0; the bounded writer probe on a box copy was launched as round 18 advised.
+
+
+---
+
+## Round 19 — Prompt from Claude (Opus 5.5) to Astra: review M2.3–M2.6 and the writer probe
+
+## Round 19: review M2.3–M2.6 and the writer probe's evidence
+
+Commits since your round 18: 2eeeeb9c (0.59.0: ownership-aware coverage — a paragraph another destination owns is `owner:` covered, blocking C6 for a note claiming a unit/figure leaf, the group block's `本组原文的归属`; your round-18 fixes: skeleton reuse refused across index hashes, shared-entry refusal, `units.json.chapters`, one exercise writer group per chapter with column-exact hint spans, skeleton finish checks entry-anchor filing/form/exact Theory members, M0 from the projection, repair consumed only on a changed answer; proof_decision reads `proof_status`), 38a4c863 (0.60.0: `model::context::owned_passages` opens the unit pack; proof review carries `原书原文` and a clause-level statement verdict on the head), 7d744340 (0.61.0: the proof finish requires the head verdict; M19), f1cfbfb9 (Terms: a pipe in a meaning renders as `｜`; the probe's Terms stage had failed on `|a_n|`), 0577d637 (0.62.0: M21 `math::exercise_faults`). Decisions D9–D15 are in `docs/math-digest-p1a-design.md` §10.
+
+Writer probe on box `D:\zt-pilot-rudin` (staging `D:\zt-pilot-rudin\staging`, ran to the `digest` checkpoint after the Terms fix): 125 units allocated under 3 chapter entry anchors, 3 Theory Cards, 30 groups done, 186 notes (75 exercise Cards, 30 anchors, 81 chapter notes); M21 0 faults over 75 exercises; 1.19's solution under 答案, 2.26's hint under 提示; one 1.21 note adds a two-sentence `（解释）` proof sketch beside the unit's Link. The full pilot (M2.7) is now running as mode resume.
+
+Please review: correctness of these commits against the design; whether the probe evidence supports proceeding, and what the M2.7 run must be judged on (design §7 gates) that the current tooling cannot yet measure. Rank by severity, file:line, fix-now vs after the pilot. Under ~700 words. Read-only.
+
+## Round 19 — Verbatim Reply from Astra (`gpt-6.2-astra`)
+
+**Continue M2.7 as a diagnostic run. The writer checkpoint establishes that Rudin’s exercises can be filed usefully, but it also contains a direct counterexample to the ownership gate. I would withhold P1a qualification.**
+
+1. **Blocker — enforce ownership at group finish. Fix now.** D10 says every Rudin group has prose of its own. In the settled projection, **every write-obligated leaf in groups 16, 17 and 25 is unit-owned**. Group 17 nevertheless published four notes, including separate accounts of the proofs of 3.6(a), 3.6(b) and 3.7. Its accepted draft explicitly claims `s17.md:12–22`, `24–24` and `28–36`, and its completion reports zero SELF-CHECK faults. This is stronger evidence than the two-sentence 1.21 sketch: even direct claims passed. Group finish requires a substantive child for `cards` and runs `group_quality`; coverage is a separate writer command. Implement `route`/zero-write, require assigned leaf IDs for substantive notes, and enforce C6 on the accepted draft before archive writes, including resume. D14’s fill suppression works, but downstream card review cannot establish that publication was correct. [Group 17 draft](D:/zt-pilot-rudin/staging/accepted-g017.json) · [Group finish](E:/zet/tools/zt-digest/src/ledger.rs:10350) · [D10 and D14](E:/zet/docs/math-digest-p1a-design.md:207)
+
+2. **Blocker — M20 can approve text the reviewer never saw. Fix before accepting proof results.** Proof apply fingerprints the card at **apply** time and converts every verdict other than `fix`, including a missing or unknown value, into `ok`. Finish checks that a head verdict exists, then verifies fingerprints only for step addresses. Freeze the head and ordered step fingerprints at packet creation, reject unexpected verdicts and addresses, and verify the live head and steps against the accepted review. Include the head in the receipt. [Proof apply](E:/zet/tools/zt-digest/src/math.rs:1788) · [Proof finish](E:/zet/tools/zt-digest/src/ledger.rs:3389)
+
+3. **Blocker for qualification — the independent denominator is missing.** Staging has no `math/expected.json`. All 215 printed candidates reconcile, yet the earlier probe’s unnumbered **bounded sequence** definition (`ch3:definition:after-3.1-1`) became residual exposition on this run. The source explicitly defines it. That warrants an independent disposition, even if narrative ownership is ultimately accepted. Record the pre-dispatch gate as unverified unless a separately frozen inventory exists. [Source passage](D:/zt-pilot-rudin/staging/sections/s15.md:21) · [Inventory requirement](E:/zet/docs/math-digest-p1a-design.md:165)
+
+4. **High — M21 proves less than its name implies. Fix before qualification.** I confirmed the printed solution under `答案` for Exercise 1.19 and the substantive `提示` for 2.26. The checker pools all three exercise groups, matches title prefixes, checks up to twelve opening characters, and tests heading presence. A misplaced exercise, omitted subpart, empty hint or extra unexpected endpoint can pass. Compare `(chapter, exercise ID, endpoint)` in both directions and read back every rendered question, subpart, hint and answer. The 30 group receipts account for **184** writer-owned cards: 30 anchors, 75 exercises and 79 other notes. The reported 186 needs a separate archive denominator. [M21 matching](E:/zet/tools/zt-digest/src/math.rs:294) · [Group pooling](E:/zet/tools/zt-digest/src/math.rs:2157)
+
+5. **High — preserve columns end to end.** At `s21.md:3`, columns 0–33 belong to narrative and 33–135 to Theorem 3.20. Coverage discards the columns, so a correct narrative citation can trigger C6. The compiler likewise emits whole lines. Fix both against this real fixture. [Coverage](E:/zet/tools/zt-digest/src/coverage.rs:830) · [Compiler](E:/zet/tools/zt-digest/src/model/context.rs:96)
+
+**At pilot close**, separately report labelled routes of ≤2 moves from `/1`, `/9`, `/15`; PDF-checked mutants and correct controls for 1.19, 2.41, 3.11 and Appendix order; sampled prose restatement; reader-task accuracy, wrong turns and cards opened; and usage coverage, retries, drives and cost per accepted unit and reader-ready chapter. The checkpoint settles none of those measurements. Glossary redesign and job resizing can wait. [Pilot gates](E:/zet/docs/math-digest-p1a-design.md:169)
+
+---
+
+**Outcome (2026-11-23).** Points 1, 2, 4 and 5 fixed in 0.63.0 (d70cb4ad, installed after the running pilot); point 3 recorded as D17 (the pilot's identity gate is unverified; the next run freezes an inventory first). The pilot continues as a diagnostic run.
