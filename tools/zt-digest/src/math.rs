@@ -281,6 +281,68 @@ pub(crate) fn group_ownership(projection: &Value, files: &[String], units: &[Val
     out
 }
 
+/// M21 (P1a, docs/math-digest-p1a-design.md §3): every exercise of the settled projection has exactly
+/// one endpoint Card in its chapter's exercise group (the Card whose title opens with its printed
+/// label, `1.19：…`), and that Card renders it faithfully: the question's opening text, `**提示**`
+/// when the book prints a hint, and `**答案**` only when the book prints an answer. `cards` are the
+/// exercise groups' Cards with their bodies; `lines` reads a staged section's lines.
+pub(crate) fn exercise_faults(projection: &Value, cards: &[Value], lines: &dyn Fn(&str) -> Vec<String>) -> Vec<String> {
+    // Whitespace, TeX delimiters and the OCR's Markdown line-break backslash never decide fidelity.
+    let squeeze = |t: &str| t.trim_end().trim_end_matches('\\').chars().filter(|c| !c.is_whitespace() && *c != '$').collect::<String>();
+    let objects = ps::list(&projection["objects"]);
+    let mut out = Vec::new();
+    for ex in objects.iter().filter(|o| field(o, "kind") == "exercise") {
+        let id = field(ex, "id");
+        let label = field(&ex["key"], "label");
+        let title_opens = |title: &str| {
+            let t = title.trim_start_matches("习题").trim();
+            t.strip_prefix(label.as_str()).is_some_and(|rest| rest.starts_with(['：', ':', ' ', '.']))
+        };
+        let hits: Vec<&Value> = cards.iter().filter(|c| title_opens(&field(c, "title"))).collect();
+        let card = match hits.as_slice() {
+            [one] => *one,
+            [] => {
+                out.push(format!("exercise {id} has no Card"));
+                continue;
+            }
+            many => {
+                out.push(format!("exercise {id} has {} Cards: {}", many.len(), many.iter().map(|c| field(c, "address")).collect::<Vec<_>>().join(", ")));
+                continue;
+            }
+        };
+        let at = field(card, "address");
+        let body = field(card, "body");
+        let has = |role: &str| objects.iter().any(|o| field(o, "kind") == role && field(o, "destination") == format!("exercise:{id}"));
+        // The question's opening: twelve characters after its printed label, as the book writes them.
+        if let Some(st) = ps::list(&ex["statement"]).first() {
+            let text = lines(&field(st, "section"));
+            let n = st["line"].as_u64().unwrap_or(0) as usize;
+            if let Some(first) = text.get(n.wrapping_sub(1)) {
+                // The question's own text only: up to its span's end column, and never into a hint.
+                let own: String = match st["end_col"].as_u64() {
+                    Some(e) if st["end"] == st["line"] => first.chars().take(e as usize).collect(),
+                    _ => first.clone(),
+                };
+                let own = own.split("提示").next().unwrap_or_default().to_string();
+                let opening: String = squeeze(&own).trim_start_matches(|c: char| c.is_ascii_digit() || c == '.').chars().take(12).collect();
+                if opening.chars().count() >= 6 && !squeeze(&body).contains(&opening) {
+                    out.push(format!("exercise {id} [[{at}]] does not render the question as the book writes it ({opening}…)"));
+                }
+            }
+        }
+        if has("hint") && !body.contains("**提示**") {
+            out.push(format!("exercise {id} [[{at}]] leaves out the book's hint"));
+        }
+        if has("answer") && !body.contains("**答案**") {
+            out.push(format!("exercise {id} [[{at}]] leaves out the book's answer"));
+        }
+        if !has("answer") && body.contains("**答案**") {
+            out.push(format!("exercise {id} [[{at}]] writes an answer the book does not print"));
+        }
+    }
+    out
+}
+
 /// Remove a file when it exists: a failed step must not leave an earlier step's artifact behind.
 fn remove_if_present(path: &str) -> Result<()> {
     if ps::exists(path) {
@@ -2091,6 +2153,22 @@ pub(crate) fn check_value(zt: &mut Zt, key: &str, staging: &str) -> Result<Value
                         add("M19", json!(key), json!(format!("leaf {} has no primary owner", field(l, "id"))));
                     }
                 }
+                // M21 (P1a): every exercise has one faithful Card in its chapter's exercise group.
+                let groups: Vec<String> = ps::list(&allocation["chapters"]).into_iter().filter(|c| c["exercise_group"].is_number()).map(|c| field(c, "exercise_group")).collect();
+                let in_sets: Vec<String> = pipe(&tree["cards"])
+                    .into_iter()
+                    .map(|c| field(c, "address"))
+                    .filter(|a| groups.iter().any(|g| *a == format!("{key}/{g}") || a.starts_with(&format!("{key}/{g}|"))))
+                    .collect();
+                let mut set_cards: Vec<Value> = Vec::new();
+                for chunk in in_sets.chunks(100) {
+                    let reply = zt.call("get_cards", json!({ "addresses": chunk, "view": "text" }))?;
+                    set_cards.extend(ps::list(&reply["cards"]).into_iter().cloned());
+                }
+                let lines = |file: &str| ps::read_lines(&join(staging, &format!("sections\\{file}"))).unwrap_or_default();
+                for f in exercise_faults(&index["projection"], &set_cards, &lines) {
+                    add("M21", json!(key), json!(f));
+                }
                 let allocated: Vec<String> = pipe(&allocation["units"]).into_iter().map(|u| field(u, "object_id")).collect();
                 for o in ps::list(&index["projection"]["objects"]) {
                     let id = field(o, "id");
@@ -2330,6 +2408,36 @@ pub fn cli(argv: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_exercise_has_one_faithful_card() {
+        let projection = json!({"objects": [
+            {"id": "ch1:exercise:1.19", "kind": "exercise", "key": {"label": "1.19"}, "statement": [{"section": "s08.md", "line": 2, "end": 2}]},
+            {"id": "ch1:exercise:1.19:answer", "kind": "answer", "destination": "exercise:ch1:exercise:1.19"},
+            {"id": "ch1:exercise:1.2", "kind": "exercise", "key": {"label": "1.2"}, "statement": [{"section": "s08.md", "line": 1, "end": 1}]},
+            {"id": "ch1:exercise:1.3", "kind": "exercise", "key": {"label": "1.3"}, "statement": [{"section": "s08.md", "line": 3, "end": 3}]},
+            {"id": "ch1:exercise:1.3:hint", "kind": "hint", "destination": "exercise:ch1:exercise:1.3"}
+        ]});
+        let lines = |_: &str| vec!["1.2. 证明不存在平方等于十二的有理数。\\".to_string(), "1.19. 设 a 与 b 属于 k 维空间，求球心。".to_string(), "1.3. 证明乘法消去律。提示：用公理。".to_string()];
+        let good = vec![
+            json!({"address": "K/8|a|1", "title": "1.19：两定点距离之比", "body": "**题目**：1.19. 设 a 与 b 属于 k 维空间，求球心。\n\n**答案**：（解：……）"}),
+            json!({"address": "K/8|a|2", "title": "1.2：12 不是平方", "body": "**题目**：证明不存在平方等于十二的有理数。"}),
+            json!({"address": "K/8|a|3", "title": "习题 1.3：消去律", "body": "**题目**：证明乘法消去律。\n\n**提示**：用公理。"}),
+        ];
+        assert!(exercise_faults(&projection, &good, &lines).is_empty(), "{:?}", exercise_faults(&projection, &good, &lines));
+        let bad = vec![
+            json!({"address": "K/8|a|1", "title": "1.19：两定点距离之比", "body": "**题目**：设 a 与 b 属于 k 维空间，求球心。"}),
+            json!({"address": "K/8|a|2", "title": "1.2：12 不是平方", "body": "**题目**：证明不存在平方等于十二的有理数。\n\n**答案**：自己解出的答案。"}),
+            json!({"address": "K/8|a|3", "title": "1.3：消去律", "body": "**题目**：证明乘法消去律。"}),
+            json!({"address": "K/8|a|4", "title": "1.3：消去律（重复）", "body": "**题目**：证明乘法消去律。"}),
+        ];
+        let f = exercise_faults(&projection, &bad, &lines).join("\n");
+        assert!(f.contains("1.19 [[K/8|a|1]] leaves out the book's answer"), "{f}");
+        assert!(f.contains("1.2 [[K/8|a|2]] writes an answer the book does not print"), "{f}");
+        assert!(f.contains("exercise ch1:exercise:1.3 has 2 Cards"), "{f}");
+        assert_eq!(exercise_faults(&projection, &bad[..2], &lines).iter().filter(|l| l.contains("has no Card")).count(), 1, "1.3 has no Card at all");
+    }
+
 
     #[test]
     fn a_group_lists_who_writes_each_run_of_its_passages() {
