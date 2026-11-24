@@ -1048,6 +1048,9 @@
           updates[item.placement_id] = checked.gloss;
         }
         extra = { gloss_updates: { ...(args.gloss_updates || {}), ...updates } };
+        // The decisions are part of the request: plan again with them, then confirm that plan.
+        answer = await connApi(tool, { ...args, ...extra });
+        if (answer.applied !== false) return answer;
       }
       const ok = await confirmPlan(title, answer.lines || [], answer.confirm);
       if (!ok) return null;

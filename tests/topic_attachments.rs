@@ -89,7 +89,7 @@ fn a_side_mount_beside_an_occupied_slot_changes_no_home_projection() {
     assert_eq!(again["already_placed"], true);
 
     let plan = mcp.ok("unplace", json!({"placement_id": mount["placement_id"]}));
-    mcp.ok("unplace", json!({"placement_id": mount["placement_id"], "confirm": plan["confirm"]}));
+    mcp.ok("unplace", json!({"placement_id": mount["placement_id"], "confirm": plan["confirm"], "plan_hash": plan["plan_hash"], "expected_revision": plan["expected_revision"]}));
     assert_eq!(projections(&scratch, &mut mcp, &hub), before, "and so does its detach");
     assert_eq!(address(&mcp.ok("create_successor", json!({"at": "0/2", "kind": "side", "title": "Two b", "body": "two b"}))), "0/2|b");
 }
@@ -114,7 +114,7 @@ fn side_mounts_follow_their_anchor_and_their_source() {
     assert_eq!(stations["placements"][0]["coord"], "0/2+2");
     // Reorder: move the first mount back to the front.
     let plan = mcp.ok("move_placement", json!({"placement_id": first["placement_id"], "destination": {"anchor_at": "0/2", "before": second["placement_id"]}}));
-    mcp.ok("move_placement", json!({"placement_id": first["placement_id"], "destination": {"anchor_at": "0/2", "before": second["placement_id"]}, "confirm": plan["confirm"]}));
+    mcp.ok("move_placement", json!({"placement_id": first["placement_id"], "destination": {"anchor_at": "0/2", "before": second["placement_id"]}, "confirm": plan["confirm"], "plan_hash": plan["plan_hash"], "expected_revision": plan["expected_revision"]}));
     assert_eq!(mcp.ok("list_placements", json!({"at": event}))["placements"][0]["coord"], "0/2+1");
 
     // The anchor moves inside its Topic: the mounts follow by identity.

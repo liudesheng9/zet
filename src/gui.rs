@@ -1554,6 +1554,9 @@ impl App {
     /// the first one only (#242), so a Cited list of 1,589 works does not travel with each read.
     fn card(&self, target: &str, via: Option<&str>, parts: CardParts) -> ApiResult {
         let (mut snapshot, current) = self.snapshots.read(false)?;
+        // A promoted Card cited by its permanent handle opens at its current address.
+        let resolved = snapshot.canonical(target).to_string();
+        let target = resolved.as_str();
         // A Card the previous Snapshot lacks may be the change being read: wait for it (#251).
         if !current && !snapshot.by_address.contains_key(target) {
             snapshot = self.snapshots.fresh()?;

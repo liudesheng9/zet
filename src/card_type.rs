@@ -70,6 +70,10 @@ pub(crate) fn ensure_allowed(card: &Card, card_type: CardType) -> Result<()> {
     if card_type != CardType::Idea && crate::is_tree_root(card) {
         bail!("only Regular Cards can be Event, Finding, Model, Hub, Term, or Cited Cards");
     }
+    // A native Connection-tree Card keeps a type the tree may author natively, also on a retype.
+    if crate::coord::Handle::parse(&card.address).is_some_and(|h| h.local.is_some()) {
+        crate::connection::ensure_native_type(card_type)?;
+    }
     Ok(())
 }
 

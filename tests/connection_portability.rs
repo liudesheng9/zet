@@ -164,7 +164,7 @@ fn a_dump_rebuilds_an_archive_where_handles_bookmarks_and_connections_resolve() 
     let stay = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/2", "title": "留在树里的卡", "body": format!("见 [[~1#1]] 与 [[Hart1995]]。")}));
     let edge = mcp.ok("connect_placements", json!({"tree": "~1", "from_placement_id": native["placement_id"], "to_placement_id": hart["placement_id"], "direction": "directed", "relation_label": "extends"}));
     let plan = mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2"}));
-    mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2", "confirm": plan["confirm"]}));
+    mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2", "confirm": plan["confirm"], "plan_hash": plan["plan_hash"], "expected_revision": plan["expected_revision"]}));
     let gui = Gui::connect(source.cmd());
     let bookmark = format!("place:{}", hart["placement_id"].as_str().unwrap());
     gui.post("/api/create", &json!({"kind": "topic", "workspace": "human", "text": format!("# Human\n\nCites [[~1#1]] and bookmarks [the book's station]({bookmark}).\n")}));

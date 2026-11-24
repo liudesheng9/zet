@@ -1631,7 +1631,6 @@ fn initialize_database(root: &Path) -> Result<()> {
         // rebuild and after the Lock tables exist, so the fence covers them too.
         let _lock = acquire_edit_lock(root, "coordinate storage")?;
         coord::ensure_schema(&conn, root)?;
-        coord_lock::ensure_schema(&conn)?;
     }
     drop(conn);
     Ok(())
@@ -4356,9 +4355,12 @@ fn links_into(conn: &Connection, delete_set: &BTreeSet<String>) -> Result<Vec<(S
     let mut found = BTreeSet::new();
     if link_index::ready(conn) {
         for target in delete_set {
-            for source in link_index::sources_linking(conn, [target])? {
-                if !delete_set.contains(&source) {
-                    found.insert((source, target.clone()));
+            // A source citing a promoted Card by its permanent handle breaks too.
+            for spelling in coord::spellings(conn, target)? {
+                for source in link_index::sources_linking(conn, [&spelling])? {
+                    if !delete_set.contains(&source) {
+                        found.insert((source, spelling.clone()));
+                    }
                 }
             }
         }
@@ -4747,6 +4749,13 @@ fn apply_location_mapping_tx(
 ) -> Result<()> {
     if mapping.is_empty() {
         return Ok(());
+    }
+    // A Connection-homed Card (`~7`, `~7#4`) is never relocated by the legacy Location arithmetic:
+    // its stations move with move_placement and its home with promote_card.
+    if let Some(native) = mapping.keys().find(|address| address.starts_with('~')) {
+        bail!(
+            "`{native}` lives in a Connection tree: move its station with move_placement, or move its home into a Topic with promote_card"
+        );
     }
     // A Card a locked Connection tree or Topic mounts keeps its address (`pinned-move`).
     if !mapping.keys().all(|address| address.starts_with("__")) {

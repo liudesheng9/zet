@@ -49,6 +49,13 @@ pub(crate) fn move_plan(
     target: &Target,
     alone: bool,
 ) -> Result<MovePlan> {
+    // A promoted Card named by its permanent handle moves at its current address; a Card that
+    // lives in a Connection tree does not move by Location at all.
+    let canonical = crate::coord::canonical(conn, at)?.unwrap_or_else(|| at.to_string());
+    let at = canonical.as_str();
+    if at.starts_with('~') {
+        bail!("`{at}` lives in a Connection tree: move its station with move_placement, or its home with promote_card");
+    }
     if let (Target::To(to), false) = (target, alone) {
         return crate::move_plan(conn, at, to);
     }
@@ -90,6 +97,9 @@ pub(crate) fn move_plan(
 /// successor.
 pub(crate) fn insert_plan(conn: &Connection, before: &str) -> Result<InsertPlan> {
     let card = crate::load_card(conn, before)?;
+    if card.address.starts_with('~') {
+        bail!("`{}` lives in a Connection tree: write a native Card there with create_connection_card", card.address);
+    }
     if crate::is_tree_root(&card) {
         bail!("cannot insert before a tree root; insert before its Direct successor instead");
     }

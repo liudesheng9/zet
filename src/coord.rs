@@ -497,6 +497,7 @@ pub(crate) fn ensure_schema(conn: &Connection, root: &Path) -> Result<()> {
         // A Card-table rebuild by an earlier migration drops the triggers that belong to `cards`;
         // reinstalling them is idempotent.
         conn.execute_batch(IDENTITY_TRIGGERS_SQL)?;
+        crate::coord_lock::ensure_schema(conn)?;
         conn.execute_batch(APPLIED_OPS_SQL)?;
         conn.execute_batch(&writer_fence_sql(conn)?)?;
         return Ok(());
@@ -523,6 +524,9 @@ pub(crate) fn ensure_schema(conn: &Connection, root: &Path) -> Result<()> {
             [],
         )?;
         conn.execute_batch(IDENTITY_TRIGGERS_SQL)?;
+        // The coordinate Lock tables are part of the same installation, so the writer fence below
+        // covers them from the first start.
+        crate::coord_lock::ensure_schema(conn)?;
         conn.execute_batch(APPLIED_OPS_SQL)?;
         conn.execute_batch(&writer_fence_sql(conn)?)?;
         conn.execute(

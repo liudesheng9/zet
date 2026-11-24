@@ -217,8 +217,15 @@ fn a_move_reviews_glosses_and_keeps_connections_on_their_placements() {
     assert!(plan["lines"].to_string().contains("Compare asset-control allocation here."), "{plan}");
     let mut without = args.clone();
     without["confirm"] = json!("move");
+    without["plan_hash"] = plan["plan_hash"].clone();
+    without["expected_revision"] = plan["expected_revision"].clone();
     let refused = mcp.refused("move_placement", without);
     assert!(refused.to_string().contains("gloss review required"), "{refused}");
+    // A confirmation must carry the plan it confirms.
+    let mut bare = args.clone();
+    bare["confirm"] = json!("move");
+    let refused = mcp.refused("move_placement", bare);
+    assert!(refused.to_string().contains("plan_hash"), "{refused}");
     let mut reviewed = args.clone();
     reviewed["gloss_updates"] = json!({hp: "Read as a refinement of the frame."});
     let done = confirmed(&mut mcp, "move_placement", reviewed);
@@ -353,6 +360,8 @@ fn a_deleted_source_leaves_a_missing_mount_and_rebinding_decides_every_connectio
     assert!(plan["lines"].to_string().contains(edge["connection_id"].as_str().unwrap()), "{plan}");
     let mut undecided = args.clone();
     undecided["confirm"] = json!("rebind");
+    undecided["plan_hash"] = plan["plan_hash"].clone();
+    undecided["expected_revision"] = plan["expected_revision"].clone();
     let refused = gui.conn_refused("rebind_placement", undecided);
     assert!(refused.to_string().contains("disposition"), "{refused}");
     let mut decided = args;

@@ -98,7 +98,7 @@ fn a_station_detached_elsewhere_is_reported_and_its_home_opened() {
     thread::sleep(Duration::from_millis(1500));
     let station = mcp.ok("get_card", json!({"at": "~1/2|a"}))["station"]["placement_id"].as_str().unwrap().to_string();
     let plan = mcp.ok("unplace", json!({"placement_id": station}));
-    mcp.ok("unplace", json!({"placement_id": station, "confirm": plan["confirm"]}));
+    mcp.ok("unplace", json!({"placement_id": station, "confirm": plan["confirm"], "plan_hash": plan["plan_hash"], "expected_revision": plan["expected_revision"]}));
     writeln!(stdin).unwrap();
     writeln!(stdin, "q").unwrap();
     drop(stdin);

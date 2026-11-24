@@ -103,6 +103,8 @@ fn an_older_writer_cannot_change_the_upgraded_archive() {
         "DELETE FROM links",
         "DELETE FROM placements",
         "UPDATE connection_trees SET purpose = 'x'",
+        "DELETE FROM lock_placements",
+        "DELETE FROM lock_placement_pins",
     ] {
         let refused = old.execute(sql, []).expect_err(sql);
         assert!(refused.to_string().contains("no such function"), "{sql}: {refused}");

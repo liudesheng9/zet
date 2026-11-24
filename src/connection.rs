@@ -239,36 +239,7 @@ impl Ctx<'_> {
     /// Plan-or-apply: when the confirmation word is absent (or a stale plan is passed back), answer
     /// the plan and write nothing.
     fn confirmed(&self, word: &str, lines: &[String], effects: &Value) -> Result<Option<Value>> {
-        let plan_hash = hash_value(&json!({
-            "request": request_core(self.tool, self.args),
-            "revision": self.revision,
-            "effects": effects,
-        }));
-        let confirm = self.args.get("confirm").and_then(Value::as_str);
-        if confirm != Some(word) {
-            return Ok(Some(json!({
-                "applied": false,
-                "confirm": word,
-                "lines": lines,
-                "effects": effects,
-                "plan_hash": plan_hash,
-                "expected_revision": self.revision,
-            })));
-        }
-        if let Some(expected) = self.args.get("expected_revision").and_then(Value::as_u64)
-            && expected != self.revision
-        {
-            bail!(
-                "stale plan: the archive is at revision {} but the plan was made at revision {expected}; ask for a new plan",
-                self.revision
-            );
-        }
-        if let Some(given) = self.args.get("plan_hash").and_then(Value::as_str)
-            && given != plan_hash
-        {
-            bail!("stale plan: the plan changed since it was shown; ask for a new plan");
-        }
-        Ok(None)
+        confirm_plan(self.conn, self.tool, self.args, self.revision, word, lines, effects)
     }
 }
 
@@ -287,7 +258,7 @@ fn write(ctx: &mut Ctx) -> Result<Value> {
         "delete_connection" => delete_connection(ctx),
         "extract_branch" => extract(ctx),
         "promote_card" => promote(ctx),
-        "seed_connection_tree" => crate::dependencies::seed(ctx.conn, ctx.access, ctx.args, &mut |word, lines, effects| ctx_confirm(ctx.tool, ctx.args, ctx.revision, word, lines, effects)).map(|value| {
+        "seed_connection_tree" => crate::dependencies::seed(ctx.conn, ctx.access, ctx.args, &mut |word, lines, effects| confirm_plan(ctx.conn, ctx.tool, ctx.args, ctx.revision, word, lines, effects)).map(|value| {
             if value.get("applied").and_then(Value::as_bool).unwrap_or(true) {
                 ctx.changed = true;
             }
@@ -301,8 +272,13 @@ fn write(ctx: &mut Ctx) -> Result<Value> {
     }
 }
 
-/// The confirmation step for callers outside `Ctx` (seeding lives in `dependencies`).
-fn ctx_confirm(
+/// Plan-or-apply for every destructive write (also seeding, in `dependencies`): without the
+/// confirmation word the answer is the plan and nothing is written. A confirmation must carry the
+/// plan's word, its `expected_revision` and its `plan_hash`; the hash binds the archive identity,
+/// the revision, the whole request (with every decision such as `gloss_updates`) and the resolved
+/// effects, so a changed archive or a changed request is refused as stale.
+pub(crate) fn confirm_plan(
+    conn: &Connection,
     tool: &str,
     args: &Value,
     revision: u64,
@@ -310,15 +286,39 @@ fn ctx_confirm(
     lines: &[String],
     effects: &Value,
 ) -> Result<Option<Value>> {
-    let ctx = Ctx {
-        conn: &Connection::open_in_memory()?,
-        access: Access::Owner,
-        tool,
-        args,
-        revision,
-        changed: false,
+    let plan_hash = hash_value(&json!({
+        "archive": crate::tree_lock::archive_identity(conn)?,
+        "request": request_core(tool, args),
+        "revision": revision,
+        "effects": effects,
+    }));
+    let confirm = args.get("confirm").and_then(Value::as_str);
+    if confirm != Some(word) {
+        if let Some(other) = confirm {
+            bail!("the confirmation word of this plan is `{word}`, not `{other}`; ask for the plan again");
+        }
+        return Ok(Some(json!({
+            "applied": false,
+            "confirm": word,
+            "lines": lines,
+            "effects": effects,
+            "plan_hash": plan_hash,
+            "expected_revision": revision,
+        })));
+    }
+    let Some(expected) = args.get("expected_revision").and_then(Value::as_u64) else {
+        bail!("a confirmation carries the plan's expected_revision and plan_hash; ask for the plan first");
     };
-    ctx.confirmed(word, lines, effects)
+    if expected != revision {
+        bail!(
+            "stale plan: the archive is at revision {revision} but the plan was made at revision {expected}; ask for a new plan"
+        );
+    }
+    match args.get("plan_hash").and_then(Value::as_str) {
+        Some(given) if given == plan_hash => Ok(None),
+        Some(_) => bail!("stale plan: the plan changed since it was shown (or the request changed); ask for a new plan"),
+        None => bail!("a confirmation carries the plan's expected_revision and plan_hash; ask for the plan first"),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1094,6 +1094,24 @@ fn gloss_review(shape: &TreeShape, affected: &[String], args: &Value) -> Result<
     Ok((review, decided, missing))
 }
 
+/// The gloss decision for one station whose anchor or Card changes: a nonempty gloss must be named
+/// in `gloss_updates` (a string keeps or replaces it, null clears it). Returns the review line and the
+/// decision (`None` when the gloss is empty and nothing needs deciding).
+fn single_gloss_review(station: &Placement, args: &Value) -> Result<(Option<Value>, Option<Option<String>>, bool)> {
+    let Some(gloss) = &station.gloss else {
+        return Ok((None, None, false));
+    };
+    let review = json!({"placement_id": station.placement_id, "gloss": gloss});
+    let updates = args.get("gloss_updates").and_then(Value::as_object);
+    match updates.and_then(|u| u.get(&station.placement_id)) {
+        Some(Value::Null) => Ok((Some(review), Some(None), false)),
+        Some(Value::String(t)) if t.trim().is_empty() => Ok((Some(review), Some(None), false)),
+        Some(Value::String(t)) => Ok((Some(review), Some(Some(plain_line(t, "gloss", coord::GLOSS_MAX)?)), false)),
+        Some(_) => bail!("gloss_updates values are strings (keep or replace) or null (clear)"),
+        None => Ok((Some(review), None, true)),
+    }
+}
+
 fn apply_glosses(conn: &Connection, decided: &BTreeMap<String, Option<String>>) -> Result<()> {
     for (id, gloss) in decided {
         conn.execute("UPDATE placements SET gloss = ?2 WHERE placement_id = ?1", params![id, gloss])?;
@@ -1610,9 +1628,24 @@ fn move_attachment(ctx: &mut Ctx, moving: Placement, host: Host) -> Result<Value
     }
     let anchor_id = coord::card_id_of_row(conn, anchor.row_id)?;
     let old_anchor = moving.anchor_card_id.clone().unwrap_or_default();
-    let lines = vec![format!("move mount {} beside {}", coord::coordinate_of(conn, &moving)?, anchor.address)];
-    if let Some(plan) = ctx.confirmed("move", &lines, &json!({"moved": [moving.placement_id]}))? {
+    let mut lines = vec![format!("move mount {} beside {}", coord::coordinate_of(conn, &moving)?, anchor.address)];
+    let (review, decision, missing) = if old_anchor != anchor_id {
+        single_gloss_review(&moving, ctx.args)?
+    } else {
+        (None, None, false)
+    };
+    if let Some(r) = &review {
+        lines.push(format!("review gloss (its anchor changes): {}", r["gloss"].as_str().unwrap_or_default()));
+    }
+    let effects = json!({"moved": [moving.placement_id], "gloss_review": review.into_iter().collect::<Vec<_>>()});
+    if let Some(plan) = ctx.confirmed("move", &lines, &effects)? {
         return Ok(plan);
+    }
+    if missing {
+        bail!("gloss review required: pass gloss_updates for {}", moving.placement_id);
+    }
+    if let Some(gloss) = &decision {
+        conn.execute("UPDATE placements SET gloss = ?2 WHERE placement_id = ?1", params![moving.placement_id, gloss])?;
     }
     let mut siblings: Vec<Placement> = coord::attachments_of_anchor(conn, &anchor_id)?
         .into_iter()
@@ -1971,8 +2004,19 @@ fn rebind(ctx: &mut Ctx) -> Result<Value> {
             if coord::placements_of_host(conn, topic)?.iter().any(|p| p.card_id == card_id) {
                 bail!("`{}` is already mounted in Topic {topic}", card.address);
             }
-            if let Some(plan) = ctx.confirmed("rebind", &lines, &json!({"card_id": card_id}))? {
+            if TreeRole::of(&card) == TreeRole::Topic && crate::tree_id(&card.address) == topic {
+                bail!("`{}` already has its home in Topic {topic}; a Topic-side mount brings a Card from outside", card.address);
+            }
+            let (review, decision, missing) = single_gloss_review(&station, ctx.args)?;
+            if let Some(r) = &review {
+                lines.push(format!("review gloss (the Card changes): {}", r["gloss"].as_str().unwrap_or_default()));
+            }
+            let effects = json!({"card_id": card_id, "gloss_review": review.into_iter().collect::<Vec<_>>()});
+            if let Some(plan) = ctx.confirmed("rebind", &lines, &effects)? {
                 return Ok(plan);
+            }
+            if missing {
+                bail!("gloss review required: pass gloss_updates for {}", station.placement_id);
             }
             let new_id = coord::new_uuid()?;
             retire_placements_known(conn, &station, revision)?;
@@ -1980,6 +2024,9 @@ fn rebind(ctx: &mut Ctx) -> Result<Value> {
             let mut p = station.clone();
             p.placement_id = new_id.clone();
             p.card_id = card_id.clone();
+            if let Some(gloss) = decision {
+                p.gloss = gloss;
+            }
             insert_placement(conn, &p)?;
             ctx.changed = true;
             Ok(json!({"applied": true, "placement_id": new_id, "replaces": station.placement_id, "card_id": card_id, "changed": true}))

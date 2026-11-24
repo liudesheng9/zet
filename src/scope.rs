@@ -134,6 +134,28 @@ impl WriteScope {
             }
         }
         if self.kind == Kind::Literature {
+            // A Card named by a handle, or a promoted Card named by its handle, is checked at its
+            // resolved home: a Literature-scoped writer changes Literature-tree Cards only.
+            for field in ["at", "before", "into", "from", "through", "after", "side_of", "parent"] {
+                let Some(named) = args.get(field).and_then(Value::as_str) else { continue };
+                let resolved = crate::coord::canonical(conn, named)?.unwrap_or_else(|| named.to_string());
+                if named.starts_with('~') || resolved.starts_with('~') {
+                    return Err(self.refuse(
+                        tool,
+                        named,
+                        "connection_tree",
+                        format!("this connection writes only Literature trees: `{named}` is a Connection-tree Card"),
+                    ));
+                }
+                if resolved != named && crate::coord::TreeRole::of_address(&resolved) == crate::coord::TreeRole::Topic {
+                    return Err(self.refuse(
+                        tool,
+                        named,
+                        "topic_tree",
+                        format!("this connection writes only Literature trees: `{named}` is the Topic-tree Card `{resolved}`"),
+                    ));
+                }
+            }
             self.check_literature(conn, tool, args)?;
         }
         if let Some(allowed) = &self.allow {

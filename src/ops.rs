@@ -783,6 +783,8 @@ fn unchanged_card(conn: &Connection, at: &str, base: Option<&str>) -> Result<Car
 
 /// Every Card with its parsed text and Link graph, read once per request.
 pub(crate) struct Snapshot {
+    /// Permanent handles of promoted native Cards: `{handle → current address}`.
+    pub(crate) aliases: BTreeMap<String, String>,
     pub(crate) cards: Vec<Card>,
     pub(crate) by_address: BTreeMap<String, Card>,
     pub(crate) parsed: BTreeMap<String, crate::ParsedCard>,
@@ -969,6 +971,7 @@ impl Snapshot {
             }
         }
         Ok(Self {
+            aliases,
             cards,
             by_address,
             parsed,
@@ -984,6 +987,15 @@ impl Snapshot {
             summaries: OnceLock::new(),
             literature_types: BTreeMap::new(),
         })
+    }
+
+    /// The stored address an authored target or a typed address names: itself, or the current
+    /// address of a promoted Card named by its permanent handle.
+    pub(crate) fn canonical<'a>(&'a self, at: &'a str) -> &'a str {
+        if self.by_address.contains_key(at) {
+            return at;
+        }
+        self.aliases.get(at).map(String::as_str).unwrap_or(at)
     }
 
     /// The archive revision of the read that made this Snapshot.

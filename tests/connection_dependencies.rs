@@ -50,6 +50,17 @@ fn math(mcp: &mut Mcp) -> Math {
     Math { d1, d2, t, t_step, u }
 }
 
+/// Plan a seeding, then confirm that exact plan.
+fn seed(mcp: &mut Mcp, args: Value) -> Value {
+    let plan = mcp.ok("seed_connection_tree", args.clone());
+    assert_eq!(plan["applied"], false, "{plan}");
+    let mut confirmed = args;
+    confirmed["confirm"] = plan["confirm"].clone();
+    confirmed["plan_hash"] = plan["plan_hash"].clone();
+    confirmed["expected_revision"] = plan["expected_revision"].clone();
+    mcp.ok("seed_connection_tree", confirmed)
+}
+
 fn addresses(list: &Value, field: &str) -> Vec<String> {
     list.as_array()
         .unwrap_or(&Vec::new())
@@ -118,9 +129,7 @@ fn a_shared_cross_book_definition_has_exact_carriers_users_and_one_seat() {
     let args = json!({"from": "dependencies", "source_params": {"at": synthesis, "scope": "unit", "depth": 2}, "title": "Study order"});
     let plan = mcp.ok("seed_connection_tree", args.clone());
     assert_eq!(plan["applied"], false);
-    let mut confirmed = args;
-    confirmed["confirm"] = json!("seed");
-    let seeded = mcp.ok("seed_connection_tree", confirmed);
+    let seeded = seed(&mut mcp, args);
     let homes: Vec<String> = seeded["stations"].as_array().unwrap().iter().map(|s| s["home_address"].as_str().unwrap().to_string()).collect();
     assert_eq!(homes.iter().filter(|h| **h == m.d1).count(), 1, "D1 is seated once: {seeded}");
     let pos = |a: &str| homes.iter().position(|h| h == a).unwrap();
@@ -144,10 +153,10 @@ fn cycles_are_explicit_and_seeding_keeps_the_chosen_order() {
     assert_eq!(lens["cycles"].as_array().unwrap().len(), 1, "{lens}");
     let refused = mcp.refused("seed_connection_tree", json!({"from": "dependencies", "source_params": {"at": a, "depth": 2}, "title": "No", "confirm": "seed"}));
     assert!(refused.to_string().contains("cycle"), "{refused}");
-    let seeded = mcp.ok("seed_connection_tree", json!({"from": "dependencies", "source_params": {"at": a, "depth": 2, "order": [b, a]}, "title": "Chosen", "confirm": "seed"}));
+    let seeded = seed(&mut mcp, json!({"from": "dependencies", "source_params": {"at": a, "depth": 2, "order": [b, a]}, "title": "Chosen"}));
     let homes: Vec<&str> = seeded["stations"].as_array().unwrap().iter().map(|s| s["home_address"].as_str().unwrap()).collect();
     assert_eq!(homes, vec![b.as_str(), a.as_str()]);
-    let picked = mcp.ok("seed_connection_tree", json!({"from": "search", "source_params": {"cards": [a, b, a, "0/99"]}, "title": "Picked", "confirm": "seed"}));
+    let picked = seed(&mut mcp, json!({"from": "search", "source_params": {"cards": [a, b, a, "0/99"]}, "title": "Picked"}));
     assert_eq!(picked["stations"].as_array().unwrap().len(), 2);
     assert_eq!(picked["duplicates"], json!([a]));
     assert_eq!(picked["missing"], json!(["0/99"]));
@@ -163,7 +172,7 @@ fn seeding_from_a_hub_keeps_member_order() {
     let two = address(mcp.ok("create_successor", json!({"at": one, "title": "二", "body": "二。"})));
     let hub = mcp.ok("create_successor", json!({"at": two, "kind": "side", "type": "hub", "level": "line", "title": "线索：一与二", "body": format!("- [[{two}]] 第二步\n- [[{one}]] 第一步")}));
     let hub = hub["address"].as_str().unwrap().to_string();
-    let seeded = mcp.ok("seed_connection_tree", json!({"from": "hub", "source_params": {"at": hub}, "title": "From hub", "confirm": "seed"}));
+    let seeded = seed(&mut mcp, json!({"from": "hub", "source_params": {"at": hub}, "title": "From hub"}));
     let homes: Vec<&str> = seeded["stations"].as_array().unwrap().iter().map(|s| s["home_address"].as_str().unwrap()).collect();
     assert_eq!(homes, vec![two.as_str(), one.as_str()]);
     assert_eq!(seeded["connections"], 0);

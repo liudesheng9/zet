@@ -15,9 +15,27 @@ use crate::coord::{self, EdgeKind};
 
 /// Run one owner write through the shared operations: a plan asks for its confirmation word first.
 fn write(root: &Path, interaction: &mut dyn Interaction, tool: &str, args: Value) -> Result<Value> {
-    let first = crate::connection::run(root, crate::Access::Owner, tool, &args)?;
+    let mut args = args;
+    let mut first = crate::connection::run(root, crate::Access::Owner, tool, &args)?;
     if first.get("applied").and_then(Value::as_bool) != Some(false) {
         return Ok(first);
+    }
+    // A gloss whose predecessor changes is shown in the plan; confirming the plan keeps it as
+    // reviewed (change it afterwards with edit-gloss). The decision is part of the request, so the
+    // plan is made again with it before it is confirmed.
+    let review = first["effects"]["gloss_review"].as_array().cloned().unwrap_or_default();
+    if !review.is_empty() {
+        let mut updates = serde_json::Map::new();
+        for item in &review {
+            if let (Some(id), Some(gloss)) = (item["placement_id"].as_str(), item["gloss"].as_str()) {
+                updates.insert(id.to_string(), json!(gloss));
+            }
+        }
+        args["gloss_updates"] = Value::Object(updates);
+        first = crate::connection::run(root, crate::Access::Owner, tool, &args)?;
+        if first.get("applied").and_then(Value::as_bool) != Some(false) {
+            return Ok(first);
+        }
     }
     let word = first["confirm"].as_str().context("plan without a confirmation word")?.to_string();
     let lines: Vec<String> = first["lines"]
@@ -225,13 +243,8 @@ pub(super) fn execute(
         ["move-place", parent] | ["move-place", parent, _] => {
             let edge = if parts.len() == 3 && parts[2] == "side" { "side" } else { "direct" };
             let args = json!({"placement_id": id, "destination": {"parent": parent, "edge": edge}});
-            match write(root, interaction, "move_placement", args.clone()) {
-                Ok(_) => changed(),
-                Err(error) if format!("{error:#}").contains("gloss review required") => {
-                    bail!("{error:#}; review the glosses with edit-gloss after the move, or clear them first")
-                }
-                Err(error) => Err(error),
-            }
+            write(root, interaction, "move_placement", args)?;
+            changed()
         }
         ["promote", to] => {
             let home = home.context("missing mount: the Card of this station was deleted at its home")?;

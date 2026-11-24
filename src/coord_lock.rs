@@ -113,6 +113,14 @@ WHEN (NEW.location IS NOT OLD.location OR NEW.citation_key IS NOT OLD.citation_k
  AND EXISTS (SELECT 1 FROM lock_placement_pins p JOIN locks l ON l.lock_id = p.lock_id
              WHERE p.target_row = OLD.row_id AND l.unlocked_at IS NULL)
 BEGIN SELECT RAISE(ABORT, 'zt: card is pinned by a locked tree (pinned-move)'); END;
+CREATE TRIGGER IF NOT EXISTS coord_lock_native_insert BEFORE INSERT ON cards
+WHEN NEW.location LIKE '~%#%' AND EXISTS (SELECT 1 FROM locks l WHERE l.unlocked_at IS NULL
+      AND l.tree = substr(NEW.location, 1, instr(NEW.location, '#') - 1))
+BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;
+CREATE TRIGGER IF NOT EXISTS coord_lock_native_move_in BEFORE UPDATE OF location ON cards
+WHEN NEW.location IS NOT OLD.location AND NEW.location LIKE '~%#%' AND EXISTS (SELECT 1 FROM locks l
+      WHERE l.unlocked_at IS NULL AND l.tree = substr(NEW.location, 1, instr(NEW.location, '#') - 1))
+BEGIN SELECT RAISE(ABORT, 'zt: locked tree takes no new cards'); END;
 CREATE TRIGGER IF NOT EXISTS lock_source_reviews_append_only_update BEFORE UPDATE ON lock_source_reviews
 BEGIN SELECT RAISE(ABORT, 'zt: a source review is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS lock_source_reviews_append_only_delete BEFORE DELETE ON lock_source_reviews
@@ -482,6 +490,77 @@ pub(crate) fn review_source(conn: &Connection, access: Access, args: &Value) -> 
         ],
     )?;
     Ok(json!({"applied": true, "lock_id": lock_id, "placement_id": station.placement_id, "reviewed_fp": reviewed_fp, "changed": true}))
+}
+
+/// The coordinate faults of every active Lock, as `(lock_id, kind, subject, detail)`: the stored
+/// evidence no longer reproduces its seal, the live stations or connections differ from it, a
+/// Lock of a tree with stations has no evidence, or a live mounted target lacks its pin. Each is
+/// only possible by tampering, because the triggers refuse the changes.
+pub(crate) fn faults(conn: &Connection) -> Result<Vec<(i64, String, String, String)>> {
+    let mut out = Vec::new();
+    if !installed(conn) || !coord::installed(conn) {
+        return Ok(out);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT l.lock_id, l.root_address, s.structure_fp FROM locks l
+         LEFT JOIN lock_coordinate_seals s ON s.lock_id = l.lock_id
+         WHERE l.unlocked_at IS NULL ORDER BY l.lock_id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    for (lock_id, root, sealed) in rows {
+        let Ok(card) = crate::load_card(conn, &root) else { continue };
+        let now = snapshot(conn, &card)?;
+        let Some(sealed) = sealed else {
+            // A Topic Lock made before any mount exists, or before multi-tree coordinates, holds no
+            // coordinate evidence; its mounts are frozen by the host triggers all the same. A
+            // Connection-tree Lock always captures its root station.
+            if root.starts_with('~') {
+                out.push((lock_id, "coordinate-evidence-missing".into(), root.clone(), "the Lock of a Connection tree holds no coordinate evidence".into()));
+            }
+            continue;
+        };
+        // The stored evidence reproduces its own seal.
+        let placements: Vec<Value> = conn
+            .prepare("SELECT snapshot_json FROM lock_placements WHERE lock_id = ?1 ORDER BY placement_id")?
+            .query_map([lock_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|t| serde_json::from_str(&t).unwrap_or(Value::Null))
+            .collect();
+        let connections: Vec<Value> = conn
+            .prepare("SELECT snapshot_json FROM lock_connections WHERE lock_id = ?1 ORDER BY connection_id")?
+            .query_map([lock_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|t| serde_json::from_str(&t).unwrap_or(Value::Null))
+            .collect();
+        let host: String = conn.query_row(
+            "SELECT host_tree_key FROM lock_coordinate_seals WHERE lock_id = ?1",
+            [lock_id],
+            |r| r.get(0),
+        )?;
+        let stored = fp(&json!({"host": host, "placements": placements, "connections": connections}));
+        if stored != sealed {
+            out.push((lock_id, "coordinate-evidence-changed".into(), root.clone(), "the stored stations or connections no longer match the Lock's coordinate seal".into()));
+        }
+        if now["structure_fp"].as_str() != Some(sealed.as_str()) {
+            out.push((lock_id, "coordinate-structure-changed".into(), root.clone(), "the locked stations or connections differ from their Lock-time evidence".into()));
+        }
+        for pin in now["pins"].as_array().into_iter().flatten() {
+            let present: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM lock_placement_pins WHERE lock_id = ?1 AND placement_id = ?2 AND card_id = ?3)",
+                params![lock_id, pin["placement_id"].as_str(), pin["card_id"].as_str()],
+                |r| r.get(0),
+            )?;
+            if !present {
+                out.push((lock_id, "coordinate-pin-missing".into(), pin["target_address"].as_str().unwrap_or_default().to_string(), "a mounted target of the locked tree has lost its pin".into()));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The coordinate evidence of every active Lock compared with the stored structure: a fault when a

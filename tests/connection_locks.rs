@@ -173,6 +173,8 @@ fn a_promoted_handle_survives_its_tree_with_zero_human_rewrites() {
         assert_eq!(plan["applied"], false);
         let mut confirmed = args;
         confirmed["confirm"] = plan["confirm"].clone();
+        confirmed["plan_hash"] = plan["plan_hash"].clone();
+        confirmed["expected_revision"] = plan["expected_revision"].clone();
         mcp.ok("promote_card", confirmed)
     };
     assert_eq!(done["address"], "0/2");
@@ -253,4 +255,82 @@ fn a_topic_lock_freezes_its_side_mounts() {
     let refused = mcp.refused("delete_card", json!({"at": "Ev2001/1", "confirm": "delete"}));
     assert!(refused.to_string().contains("pinned"), "{refused}");
     locks_ok(&scratch);
+}
+
+/// Review findings (P1): a Connection-homed Card never moves by Location; a promoted Card named by
+/// its handle moves at its current address and its handle is never rewritten; a native Card keeps a
+/// native type; a Literature-scoped writer touches no Connection-tree Card; a Lock pins a promoted
+/// Card cited by its handle; the GUI opens a handle Link.
+#[test]
+fn connection_homes_and_promoted_handles_are_guarded_on_every_legacy_path() {
+    let scratch = ScratchBox::up();
+    let mut mcp = scratch.mcp(&[]);
+    let gui = Gui::connect(scratch.cmd());
+    mcp.ok("create_topic", json!({"title": "T", "body": "t"}));
+    mcp.ok("create_successor", json!({"at": "0/0", "title": "First", "body": "first"}));
+    mcp.ok("create_connection_tree", json!({"title": "Guarded"}));
+    let native = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/0", "title": "原生卡", "body": "内容。"}));
+    let other = mcp.ok("create_connection_card", json!({"tree": "~1", "parent_coord": "~1/1", "title": "第二张", "body": "内容。"}));
+    for at in ["~1", "~1#2"] {
+        let refused = mcp.refused("move_card", json!({"at": at, "to": "0/2", "confirm": "move"}));
+        assert!(refused.to_string().contains("Connection tree"), "{at}: {refused}");
+    }
+    let refused = mcp.refused("edit_card", json!({"at": other["handle"], "type": "model", "level": "concept"}));
+    assert!(refused.to_string().contains("native_structure_required"), "{refused}");
+    let mut literature = scratch.mcp(&["--scope", "literature"]);
+    let refused = literature.refused("edit_card", json!({"at": native["handle"], "body": "改写。"}));
+    assert!(refused.to_string().contains("connection_tree"), "{refused}");
+    let refused = literature.refused("delete_card", json!({"at": "~1", "confirm": "~1"}));
+    assert!(refused.to_string().contains("connection_tree"), "{refused}");
+    drop(literature);
+
+    // Promote ~1#1 to 0/2; a Card in another Topic cites it by its handle.
+    let plan = mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2"}));
+    mcp.ok("promote_card", json!({"at": "~1#1", "to": "0/2", "confirm": plan["confirm"], "plan_hash": plan["plan_hash"], "expected_revision": plan["expected_revision"]}));
+    mcp.ok("create_topic", json!({"title": "Citer", "body": "cites [[~1#1]]."}));
+    // Moving the promoted Card by its handle moves it at its current address; the handle stays.
+    let plan = mcp.ok("move_card", json!({"at": "~1#1", "to": "0/1|a"}));
+    mcp.ok("move_card", json!({"at": "~1#1", "to": "0/1|a", "confirm": plan["confirm"]}));
+    assert_eq!(mcp.ok("get_card", json!({"at": "~1#1"}))["address"], "0/1|a");
+    assert!(mcp.ok("get_card", json!({"at": "1/0"}))["body"].as_str().unwrap().contains("[[~1#1]]"));
+    // The GUI opens the handle Link.
+    let card = gui.get("/api/card?at=~1%231");
+    assert_eq!(card["address"], "0/1|a", "{card}");
+    // Locking the citing Topic pins the promoted Card.
+    let lock = gui.lock("1/0");
+    assert_eq!(lock["pin_count"].as_i64().unwrap_or(1), 1, "{lock}");
+    let refused = mcp.refused("delete_card", json!({"at": "0/1|a", "confirm": "delete"}));
+    assert!(refused.to_string().contains("locked") || refused.to_string().contains("pinned"), "{refused}");
+    let out = scratch.cmd().args(["status", "--check-locks"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let ws = mcp.ok("list_workspaces", json!({}));
+    assert_eq!(ws["broken_links"], 0, "{ws}");
+}
+
+/// Review finding P1.7: tampering with a locked Connection tree's stations behind the triggers is a
+/// Lock integrity fault, like tampering with a locked Card; the first start fences the coordinate
+/// Lock tables; a native Card cannot be inserted into a locked tree even by raw SQL.
+#[test]
+fn tampering_with_locked_coordinate_evidence_is_an_integrity_fault() {
+    let scratch = ScratchBox::up();
+    let mut mcp = scratch.mcp(&[]);
+    book(&mut mcp, "Tam2020");
+    let gui = Gui::connect(scratch.cmd());
+    mcp.ok("create_connection_tree", json!({"title": "Tamper"}));
+    let a = mcp.ok("place_card", json!({"host": "~1", "parent_coord": "~1/0", "target_at": "Tam2020/1", "gloss": "Original."}));
+    gui.lock("~1");
+    locks_ok(&scratch);
+    let db = writer::open(scratch.archive_root.join("zt.sqlite3")).unwrap();
+    let blocked = db.execute(
+        "INSERT INTO cards(location, is_topic, is_lit, text, workspace, card_type) VALUES('~1#9', 0, 0, '# x\n', 'agent', 'idea')",
+        [],
+    );
+    assert!(blocked.is_err(), "a locked Connection tree takes no new native Card");
+    db.execute_batch("DROP TRIGGER coord_lock_placement_update;").unwrap();
+    db.execute("UPDATE placements SET gloss = 'Tampered.' WHERE placement_id = ?1", [a["placement_id"].as_str().unwrap()]).unwrap();
+    drop(db);
+    let out = scratch.cmd().args(["status", "--check-locks"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "{text}");
+    assert!(text.contains("coordinate-structure-changed"), "{text}");
 }

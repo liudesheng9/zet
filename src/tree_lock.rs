@@ -1699,6 +1699,7 @@ pub(crate) fn plan(
             existing.seal_display()
         );
     }
+    let aliases = crate::coord::aliases(conn)?;
     let zone = if target.is_lit {
         "literature"
     } else if target.address.starts_with('~') {
@@ -1747,7 +1748,11 @@ pub(crate) fn plan(
         let parsed = crate::parse_card_text(&card.text)?;
         let body = crate::link::LinkBody::parse(&parsed.body)?;
         for occurrence in body.occurrences() {
-            let Some(target_card) = by_address.get(occurrence.target) else {
+            // A promoted Card cited by its permanent handle is pinned at its current address.
+            let Some(target_card) = by_address
+                .get(occurrence.target)
+                .or_else(|| aliases.get(occurrence.target).and_then(|address| by_address.get(address.as_str())))
+            else {
                 warnings.insert(Warning {
                     source: card.address.clone(),
                     target: occurrence.target.to_string(),
@@ -3258,6 +3263,7 @@ fn link_pin_faults(
     let mut faults = Vec::new();
     let broken = captured_warnings(conn, lock.lock_id)?;
     let indexed = crate::link_index::ready(conn);
+    let aliases = crate::coord::aliases(conn)?;
     for (row_id, address, _) in members {
         let Some(card) = by_address.get(address.as_str()) else {
             continue;
@@ -3275,7 +3281,10 @@ fn link_pin_faults(
         for occurrence in occurrences {
             let target = occurrence.target;
             authored.push(target.to_string());
-            let Some(target_card) = by_address.get(target) else {
+            let Some(target_card) = by_address
+                .get(target)
+                .or_else(|| aliases.get(target).and_then(|address| by_address.get(address.as_str())))
+            else {
                 continue;
             };
             if crate::is_tree_member(&target_card.address, &lock.tree) {
@@ -3362,6 +3371,11 @@ fn scan(conn: &Connection) -> Result<Integrity> {
         .collect::<BTreeMap<_, _>>();
     for lock in &locks {
         compare_lock(conn, lock, &cards, &by_address, &by_row, &mut integrity)?;
+    }
+    // The coordinate evidence of the same Locks: frozen stations and connections, and the pins on
+    // mounted targets (docs/multi-tree-coordinates-proposal.md §8.1).
+    for (lock_id, kind, subject, detail) in crate::coord_lock::faults(conn)? {
+        integrity.faults.push(Fault::lock(lock_id, &kind, &subject, detail));
     }
     integrity.latched = latched_faults(conn)?;
     integrity.faults.sort();

@@ -143,6 +143,8 @@ pub(crate) fn text_facts(
     let mut seen_term = BTreeSet::new();
     for row in rows {
         let (target, kind, exists) = row?;
+        // A promoted Card cited by its permanent handle still exists.
+        let exists = exists || crate::coord::handle_target(conn, &target)?.is_some();
         let first=seen.insert(target.clone());
         if !exists {continue;}
         if first {
@@ -816,7 +818,13 @@ pub(crate) fn workspaces(root: &Path) -> Result<Value> {
         total += cards;
         rows.push(json!({"id":ws.id(),"label":ws.label(),"access":if Access::Agent.can_write(ws){"read-write"}else{"read-only"},"zones":{"topic":{"trees":topics},"literature":{"trees":literature}},"cards":cards}));
     }
-    let broken:u64=tx.query_row("SELECT COUNT(*) FROM links l LEFT JOIN cards c ON c.location=l.target OR c.citation_key=l.target WHERE c.row_id IS NULL",[],|r|r.get(0))?;
+    // A promoted Card cited by its permanent handle is no Broken link.
+    let alias_clause = if crate::coord::installed(&tx) {
+        " AND NOT EXISTS (SELECT 1 FROM card_handles h JOIN card_identity i ON i.card_id=h.card_id AND i.status='live' WHERE h.handle=l.target)"
+    } else {
+        ""
+    };
+    let broken:u64=tx.query_row(&format!("SELECT COUNT(*) FROM links l LEFT JOIN cards c ON c.location=l.target OR c.citation_key=l.target WHERE c.row_id IS NULL{alias_clause}"),[],|r|r.get(0))?;
     tx.commit()?;
     Ok(json!({"workspaces":rows,"cards":total,"broken_links":broken}))
 }
@@ -875,6 +883,19 @@ pub(crate) fn links(
         Ok((source,source_workspace,target,target_workspace,kind))
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     drop(query);
+    // A promoted Card cited by its permanent handle has the Workspace of the Card it names.
+    let rows = rows
+        .into_iter()
+        .map(|(source, source_workspace, target, target_workspace, kind)| {
+            let target_workspace = match target_workspace {
+                Some(ws) => Some(ws),
+                None => crate::coord::handle_target(&tx, &target)?
+                    .and_then(|address| crate::load_card(&tx, &address).ok())
+                    .map(|card| card.workspace.id().to_string()),
+            };
+            Ok((source, source_workspace, target, target_workspace, kind))
+        })
+        .collect::<Result<Vec<_>>>()?;
     // A Term row names no label in the index; the authored body holds it. Only sources with at
     // least one Term use are parsed, and each source once.
     let mut labels: BTreeMap<(String, String), Option<String>> = BTreeMap::new();
