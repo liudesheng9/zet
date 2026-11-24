@@ -205,7 +205,7 @@
   // ------------------------------------------------------------ one Map for every tree role
   // A Connection tree is drawn on the same desk as a Topic or Literature tree: its stations are
   // index cards in the same focus lens. Cards pulled from different drawers keep the colour of their
-  // drawer: each home tree has one hue, the same in every view, from a palette of seven that stay
+  // drawer: each home tree has one hue, the same in every view, from a palette of ten that stay
   // apart at a glance and leave out the pointer's gold and the Link's blue. A Connection tree's own
   // Cards are plum. Inside one view no two trees share a hue.
 
@@ -222,10 +222,10 @@
     return text.startsWith('~') ? 'connection' : /^\d/.test(text) ? 'topic' : 'literature';
   }
 
-  // OKLCH hues: red, orange, green, teal, cyan, violet, rose. Gold (the pointer, ~85) and blue (a
-  // Link, ~255) stay out; plum is a Connection tree's own.
-  const PALETTE = [25, 50, 140, 172, 205, 292, 352];
-  const OWN_HUE = 322;
+  // OKLCH hues: red, orange, lime, green, teal, cyan, sky, indigo, violet, rose. Gold (the pointer,
+  // ~85) and blue (a Link, ~255) stay out; plum is a Connection tree's own.
+  const PALETTE = [18, 44, 112, 140, 164, 190, 214, 280, 300, 354];
+  const OWN_HUE = 328;
 
   /** A tree's place in the palette: a hash of its id, the same in every view. */
   function paletteSlot(tree) {
@@ -267,7 +267,7 @@
     }
     const own = tree && tree.tree;
     // Two trees whose hashes meet are told apart in this view: a later one takes the next free hue
-    // of the palette. Only past seven trees do two share one.
+    // of the palette. Only past ten trees do two share one.
     const hues = new Map();
     const hueOf = (homeTree, role) => {
       if (hues.has(homeTree)) return hues.get(homeTree);

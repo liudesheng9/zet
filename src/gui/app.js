@@ -1147,9 +1147,12 @@
     const key = CONN.treeKey(map);
     const titles = new Map((state.overview.trees || []).map((tree) => [tree.tree, tree.title]));
     const roles = { literature: 'Literature', topic: 'Topic', connection: 'Connection' };
-    const name = (entry) => entry.tree === map.handle ? `${map.title} · this tree` : `${titles.get(entry.tree) || entry.tree} · ${roles[entry.role]}`;
+    // The key names each tree briefly (its Citation key or Topic title); the full title is one hover away.
+    const short = (text) => (text.length > 22 ? text.slice(0, 20) + '…' : text);
+    const name = (entry) => entry.tree === map.handle ? 'this tree' : entry.role === 'literature' ? entry.tree : short(titles.get(entry.tree) || entry.tree);
+    const full = (entry) => `${entry.tree === map.handle ? map.title : titles.get(entry.tree) || entry.tree} · ${roles[entry.role]}`;
     $('#tree-key').replaceChildren(
-      ...key.trees.map((entry) => h('span', { class: 'tk ' + entry.role, style: `--tree-h:${entry.hue}`, title: `${entry.tree} · ${entry.count} station${entry.count === 1 ? '' : 's'}` },
+      ...key.trees.map((entry) => h('span', { class: 'tk ' + entry.role, style: `--tree-h:${entry.hue}`, title: `${full(entry)} · ${entry.count} station${entry.count === 1 ? '' : 's'}` },
         h('i'), name(entry))),
       key.missing ? h('span', { class: 'tk missing' }, h('i'), `missing · ${key.missing}`) : null,
     );
@@ -2469,7 +2472,8 @@
       state.tree = conn.map;
       state.outline = conn.outline;
       conn.focusCard = CONN.focusCard(conn.map, conn.station ? conn.station.coord : conn.map.root);
-      for (const id of ['#desk', '#table-plane', '#term-toggle', '#sky', '#table-tools']) $(id).hidden = true;
+      for (const id of ['#desk', '#table-plane', '#term-toggle', '#sky', '#table-tools', '#table-empty', '#table-hand', '#ask-bar']) $(id).hidden = true;
+      $('#stage-title').hidden = false;
       $('#plane').hidden = false;
       $('#legend').hidden = false;
       $('.zoom').hidden = false;

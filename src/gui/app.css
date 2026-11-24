@@ -3109,7 +3109,7 @@ button.mb-head:hover, button.mb-slip:hover { opacity: 1; transform: translateY(-
 /* ---------------------------------------------- Connection trees (关联树), proposal §9.1 */
 .conn-item { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 4px 0; font-size: 13px; }
 .conn-filter { width: 100%; margin: 4px 0 6px; padding: 4px 8px; border: 1px solid var(--line, #d8cfc0); border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 12px; }
-.drawer.connection .addr { color: oklch(var(--tree-l) var(--tree-c) 322); }
+.drawer.connection .addr { color: oklch(var(--tree-l) var(--tree-c) 328); }
 .conn-panel h3, .also-in h3, .side-shelf h3, .lens-pane h3 { font-size: 13px; margin: 8px 0 6px; }
 .conn-panel ul, .also-in ul, .side-shelf ul, .lens-pane ul { list-style: none; margin: 0; padding: 0; }
 .prov { font-size: 11px; padding: 0 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent, #c4622d) 12%, transparent); white-space: nowrap; }
