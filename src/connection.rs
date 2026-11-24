@@ -495,9 +495,13 @@ fn home_tree_size(conn: &Connection, card: &crate::Card) -> Result<i64> {
         }
         _ => {
             let tree = crate::tree_id(&card.address);
+            // Two index lookups: the Literature root by its key, and every Location under `tree/`
+            // as a range (`/` sorts just before `0`). A `LIKE` here scanned every Card once per
+            // mounted tree root, about 0.1 s each on a 55,000-Card archive.
             Ok(conn.query_row(
-                "SELECT COUNT(*) FROM cards WHERE citation_key = ?1 OR location = ?2 OR location LIKE ?3",
-                params![tree, format!("{tree}/0"), format!("{tree}/%")],
+                "SELECT (SELECT COUNT(*) FROM cards WHERE citation_key = ?1)
+                      + (SELECT COUNT(*) FROM cards WHERE location >= ?2 AND location < ?3)",
+                params![tree, format!("{tree}/"), format!("{tree}0")],
                 |r| r.get(0),
             )?)
         }

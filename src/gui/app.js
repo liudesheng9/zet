@@ -1136,10 +1136,10 @@
   function renderConnBar() {
     const conn = state.conn;
     const bar = $('#conn-bar');
-    bar.replaceChildren(
+    bar.replaceChildren(...[
       conn.tree.can_edit_tree && conn.station ? h('button', { class: 'mini-btn', text: '+ Mount a Card', title: `Mount a Card after ${conn.station.coord}`, onclick: () => mountHere().catch(fail) }) : null,
       h('button', { class: 'mini-btn', text: 'Lock…', title: 'Lock this Connection tree: its stations, glosses and connections freeze and its mounted Cards are pinned', onclick: () => lockTree(conn.tree.tree).catch(fail) }),
-    );
+    ].filter(Boolean));
   }
 
   /** The colour key under a Connection tree: each home tree's card stock, named. */
@@ -1151,11 +1151,12 @@
     const short = (text) => (text.length > 22 ? text.slice(0, 20) + '…' : text);
     const name = (entry) => entry.tree === map.handle ? 'this tree' : entry.role === 'literature' ? entry.tree : short(titles.get(entry.tree) || entry.tree);
     const full = (entry) => `${entry.tree === map.handle ? map.title : titles.get(entry.tree) || entry.tree} · ${roles[entry.role]}`;
-    $('#tree-key').replaceChildren(
+    // replaceChildren writes a null as the text "null": absent entries are filtered out first.
+    $('#tree-key').replaceChildren(...[
       ...key.trees.map((entry) => h('span', { class: 'tk ' + entry.role, style: `--tree-h:${entry.hue}`, title: `${full(entry)} · ${entry.count} station${entry.count === 1 ? '' : 's'}` },
         h('i'), name(entry))),
       key.missing ? h('span', { class: 'tk missing' }, h('i'), `missing · ${key.missing}`) : null,
-    );
+    ].filter(Boolean));
   }
 
   async function mountHere(parent) {
